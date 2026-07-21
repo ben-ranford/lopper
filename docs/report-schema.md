@@ -107,8 +107,14 @@ CycloneDX characteristics:
 - This is an analyse-only, direct-dependency SBOM. It is not a full transitive
   inventory and should complement, not replace, dedicated SBOM generators for
   full package-manager or container inventories.
-- `spdx-json`, dashboard-wide combined SBOMs, and signed attestations are
-  deferred from this first preview export.
+- `spdx-json` emits a preview SPDX 2.3 JSON direct-dependency SBOM when
+  `spdx-sbom-export-preview` is enabled.
+- `cyclonedx-vex-json` emits preview CycloneDX VEX vulnerability analysis
+  records when `vulnerability-exceptions-vex-preview` is enabled.
+- Dashboard-wide combined CycloneDX SBOMs are emitted by `lopper dashboard
+  --format cyclonedx-json` when `dashboard-cyclonedx-portfolio-preview` is
+  enabled.
+- Signed attestations are deferred from these preview exports.
 
 ## Key fields
 
@@ -122,12 +128,16 @@ CycloneDX characteristics:
 - `effectivePolicy`: resolved policy object, including precedence sources, merge trace, scoring weights, license policy controls, and vulnerability advisory policy (`CLI > repo config > imported policy packs > defaults`).
 - `cache`: incremental analysis cache metadata (hits/misses/writes and invalidation reasons).
 - `dependencies[].language`: language tag for each dependency row.
+- `dependencies[].identity`: preview dependency identity metadata (`ecosystem`,
+  `name`, `namespace`, `version`, `purl`, status fields, confidence, evidence,
+  and conflicts) when `dependency-identity-preview` is enabled.
 - `dependencies[].reachabilityConfidence`: deterministic v2 per-dependency confidence artifact (`model`, `score`, `summary`, `rationaleCodes`, and weighted `signals`).
 - `dependencies[].license`: normalized per-dependency license detection (`spdx`, `source`, `confidence`, `unknown`, `denied`).
 - `dependencies[].provenance`: per-dependency provenance signals (`source`, `confidence`, `signals`).
 - `dependencies[].vulnerabilities`: local advisory findings with `advisoryId`,
   `package`, `severity`, `fixedVersion`, `source`, reachability-weighted
-  `priority`, numeric `priorityScore`, `reachable`, and evidence strings.
+  `priority`, numeric `priorityScore`, `reachable`, optional VEX `decision`,
+  and evidence strings.
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
 - `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews, `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are stable under `python-codemod-suggestions` and remain explicitly disableable for rollback.
@@ -158,5 +168,9 @@ CycloneDX characteristics:
   reachability evidence. Baseline comparison reports newly introduced reachable
   findings under `baselineComparison.newReachableVulnerabilities`.
 - Stored reports or baselines created before the mutually exclusive license-bucket summary should be regenerated, or consumers should recompute `summary` from `dependencies`, before comparing license deltas.
-- `schemaVersion` is currently pinned to `0.1.0`.
+- `schemaVersion` is currently pinned to `0.2.0`.
+- Legacy `0.1.0` reports remain baseline-load/compare compatible; consumers that
+  pin the public schema should accept `0.2.0` for current output while treating
+  older saved reports as historical input rather than current-format validation
+  targets.
 - Baseline snapshots created with `--save-baseline --baseline-store DIR` are stored as immutable files keyed by `commit:<sha>` (default) or `label:<name>` when `--baseline-label` is passed. The stable `lopper baseline list` and `lopper baseline show KEY` commands expose bounded snapshot metadata; they do not print dependency rows from the stored report. The former `baseline-store-discovery-preview` feature name remains accepted for compatibility.

@@ -20,6 +20,89 @@ func sanitizeElixirSource(content []byte) []byte {
 	return sanitized
 }
 
+// MaskSource replaces strings, heredocs, sigils, and comments while preserving layout.
+func MaskSource(content []byte) []byte {
+	masked := sanitizeElixirSource(content)
+	maskElixirSigils(content, masked)
+	for index := 0; index < len(content); index++ {
+		if content[index] != '#' || masked[index] != '#' {
+			continue
+		}
+		for index < len(content) && content[index] != '\n' {
+			maskElixirSourceByte(masked, index)
+			index++
+		}
+	}
+	return masked
+}
+
+func maskElixirSigils(content, masked []byte) {
+	for index := 0; index < len(content); index++ {
+		end, ok := elixirSigilEnd(content, masked, index)
+		if !ok {
+			continue
+		}
+		for position := index; position <= end; position++ {
+			maskElixirSourceByte(masked, position)
+		}
+		index = end
+	}
+}
+
+func elixirSigilEnd(content, masked []byte, start int) (int, bool) {
+	if start+2 >= len(content) || masked[start] != '~' || !isElixirSigilLetter(content[start+1]) {
+		return 0, false
+	}
+	opening := content[start+2]
+	closing, paired, ok := elixirSigilDelimiter(opening)
+	if !ok || masked[start+2] != opening {
+		return 0, false
+	}
+	return findElixirSigilEnd(content, start+2, opening, closing, paired), true
+}
+
+func findElixirSigilEnd(content []byte, delimiterIndex int, opening, closing byte, paired bool) int {
+	depth := 1
+	escaped := false
+	for index := delimiterIndex + 1; index < len(content); index++ {
+		switch {
+		case escaped:
+			escaped = false
+		case content[index] == '\\':
+			escaped = true
+		case paired && content[index] == opening:
+			depth++
+		case content[index] == closing:
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return len(content) - 1
+}
+
+func elixirSigilDelimiter(opening byte) (byte, bool, bool) {
+	switch opening {
+	case '(':
+		return ')', true, true
+	case '[':
+		return ']', true, true
+	case '{':
+		return '}', true, true
+	case '<':
+		return '>', true, true
+	case '/', '|':
+		return opening, false, true
+	default:
+		return 0, false, false
+	}
+}
+
+func isElixirSigilLetter(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
+}
+
 func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	switch {
 	case state.inDoubleHeredoc:

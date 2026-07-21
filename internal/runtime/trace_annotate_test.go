@@ -179,6 +179,44 @@ func TestAnnotatePythonRuntimeUsageWhenSupported(t *testing.T) {
 	}
 }
 
+func TestAnnotatePythonRuntimeUsesCanonicalStaticDependencyKeyWithoutDuplicateRuntimeOnlyRow(t *testing.T) {
+	trace, err := loadTraceFromContent(t, `{"language":"python","dependency":"My__Package","module":"My__Package.client","parent":"/repo/app.py","entrypoint":"/repo/app.py"}`+"\n"+`{"language":"python","dependency":"my_.package","module":"my_.package.api","parent":"/repo/app.py","entrypoint":"/repo/app.py"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+
+	rep := report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name:     "my-package",
+				Language: runtimeLanguagePython,
+				UsedImports: []report.ImportUse{
+					{Name: "client", Module: "my_package"},
+				},
+			},
+		},
+	}
+
+	annotated := Annotate(rep, trace, AnnotateOptions{
+		IncludeRuntimeOnlyRows: true,
+		SupportedLanguages:     []string{runtimeLanguagePython},
+	})
+	if len(annotated.Dependencies) != 1 {
+		t.Fatalf("expected canonical static dependency to absorb runtime evidence without duplicate row, got %#v", annotated.Dependencies)
+	}
+
+	dependency := annotated.Dependencies[0]
+	if dependency.Name != "my-package" || dependency.Language != runtimeLanguagePython {
+		t.Fatalf("unexpected annotated dependency identity: %#v", dependency)
+	}
+	if dependency.RuntimeUsage == nil {
+		t.Fatalf("expected runtime usage on canonical static dependency")
+	}
+	if dependency.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap || dependency.RuntimeUsage.LoadCount != 2 {
+		t.Fatalf("expected overlap runtime usage with two loads, got %#v", dependency.RuntimeUsage)
+	}
+}
+
 func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 	rep := report.Report{
 		Dependencies: []report.DependencyReport{

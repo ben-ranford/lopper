@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net/url"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/csvsanitize"
@@ -31,6 +35,12 @@ func FormatReport(reportData Report, format Format) (string, error) {
 		return formatCSV(reportData)
 	case FormatHTML:
 		return formatHTML(reportData), nil
+	case FormatSlackSummary:
+		return formatTeamSummary(reportData, "slack"), nil
+	case FormatTeamsSummary:
+		return formatTeamSummary(reportData, "teams"), nil
+	case FormatCycloneDXJSON:
+		return formatPortfolioCycloneDX(reportData)
 	default:
 		return "", fmt.Errorf("%w: %s", ErrUnknownFormat, format)
 	}
@@ -149,6 +159,11 @@ func writeDashboardRemediationRowsCSV(write func([]string) error, items []Remedi
 		"repo_path",
 		"dependency",
 		"category",
+		"owner",
+		"team",
+		"due",
+		"status",
+		"routing_source",
 		"severity",
 		"priority",
 		"evidence",
@@ -164,6 +179,11 @@ func writeDashboardRemediationRowsCSV(write func([]string) error, items []Remedi
 			item.RepoPath,
 			item.Dependency,
 			item.Category,
+			item.Owner,
+			item.Team,
+			item.Due,
+			item.Status,
+			item.RoutingSource,
 			item.Severity,
 			item.Priority,
 			joinDashboardCSVValues(item.Evidence),
@@ -293,6 +313,11 @@ func writeDashboardBaselineRemediationRowsCSV(write func([]string) error, deltas
 		"repo_path",
 		"dependency",
 		"category",
+		"owner",
+		"team",
+		"due",
+		"status",
+		"routing_source",
 		"severity",
 		"priority",
 		"baseline_severity",
@@ -310,6 +335,11 @@ func writeDashboardBaselineRemediationRowsCSV(write func([]string) error, deltas
 			delta.RepoPath,
 			delta.Dependency,
 			delta.Category,
+			delta.Owner,
+			delta.Team,
+			delta.Due,
+			delta.Status,
+			delta.RoutingSource,
 			delta.Severity,
 			delta.Priority,
 			delta.BaselineSeverity,
@@ -412,7 +442,7 @@ func formatDashboardRemediationHTML(items []RemediationItem) string {
 	}
 	var buffer strings.Builder
 	buffer.WriteString("<h2>Remediation Queue</h2><table><thead><tr>")
-	buffer.WriteString("<th>Priority</th><th>Category</th><th>Repo</th><th>Dependency</th><th>Evidence</th><th>Suggested Action</th><th>Baseline</th><th>ID</th>")
+	buffer.WriteString("<th>Priority</th><th>Category</th><th>Repo</th><th>Dependency</th><th>Owner</th><th>Team</th><th>Due</th><th>Status</th><th>Evidence</th><th>Suggested Action</th><th>Baseline</th><th>ID</th>")
 	buffer.WriteString(htmlTableBodyOpen)
 	for _, item := range items {
 		buffer.WriteString("<tr>")
@@ -420,6 +450,10 @@ func formatDashboardRemediationHTML(items []RemediationItem) string {
 		buffer.WriteString("<td>" + html.EscapeString(item.Category) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(item.Repo) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(item.Dependency) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.Owner) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.Team) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(item.Due) + "</td>")
+		buffer.WriteString(htmlStatusCell + html.EscapeString(item.Status) + "</td>")
 		buffer.WriteString(htmlWrapCell + html.EscapeString(strings.Join(item.Evidence, "; ")) + "</td>")
 		buffer.WriteString(htmlWrapCell + html.EscapeString(item.SuggestedAction) + "</td>")
 		buffer.WriteString(htmlStatusCell + html.EscapeString(item.BaselineStatus) + "</td>")
@@ -485,7 +519,7 @@ func formatDashboardBaselineRemediationHTML(deltas []RemediationItemDelta) strin
 	}
 	var buffer strings.Builder
 	buffer.WriteString("<h2>Remediation Queue Baseline</h2><table><thead><tr>")
-	buffer.WriteString("<th>Kind</th><th>Priority</th><th>Baseline Priority</th><th>Category</th><th>Repo</th><th>Dependency</th><th>Suggested Action</th><th>ID</th>")
+	buffer.WriteString("<th>Kind</th><th>Priority</th><th>Baseline Priority</th><th>Category</th><th>Repo</th><th>Dependency</th><th>Owner</th><th>Team</th><th>Status</th><th>Suggested Action</th><th>ID</th>")
 	buffer.WriteString(htmlTableBodyOpen)
 	for _, delta := range deltas {
 		buffer.WriteString("<tr>")
@@ -495,6 +529,9 @@ func formatDashboardBaselineRemediationHTML(deltas []RemediationItemDelta) strin
 		buffer.WriteString("<td>" + html.EscapeString(delta.Category) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(delta.Repo) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(delta.Dependency) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(delta.Owner) + "</td>")
+		buffer.WriteString("<td>" + html.EscapeString(delta.Team) + "</td>")
+		buffer.WriteString(htmlStatusCell + html.EscapeString(delta.Status) + "</td>")
 		buffer.WriteString(htmlWrapCell + html.EscapeString(delta.SuggestedAction) + "</td>")
 		buffer.WriteString("<td>" + html.EscapeString(delta.ID) + "</td>")
 		buffer.WriteString("</tr>")
@@ -520,4 +557,246 @@ func joinDashboardCSVValues(values []string) string {
 		escaped = append(escaped, csvsanitize.EscapeLeadingFormula(value))
 	}
 	return strings.Join(escaped, "|")
+}
+
+func formatTeamSummary(reportData Report, _ string) string {
+	items := append([]RemediationItem{}, reportData.RemediationItems...)
+	sortRemediationItems(items)
+	var buffer strings.Builder
+	buffer.WriteString("Lopper remediation summary")
+	buffer.WriteString("\n")
+	buffer.WriteString(fmt.Sprintf("Repos: %d | Items: %d | Reachable vulnerabilities: %d\n", reportData.Summary.TotalRepos, len(items), reportData.Summary.ReachableVulnerabilities))
+	grouped := remediationByTeam(items)
+	teams := make([]string, 0, len(grouped))
+	for team := range grouped {
+		teams = append(teams, team)
+	}
+	sort.Strings(teams)
+	for _, team := range teams {
+		buffer.WriteString("\n")
+		buffer.WriteString(team)
+		buffer.WriteString("\n")
+		for _, item := range grouped[team] {
+			line := fmt.Sprintf("- [%s] %s/%s %s", firstNonBlank(item.Priority, item.Severity, "unknown"), item.Repo, item.Category, item.SuggestedAction)
+			if item.Dependency != "" {
+				line += " (" + item.Dependency + ")"
+			}
+			if item.Owner != "" {
+				line += " owner=" + item.Owner
+			}
+			if item.Due != "" {
+				line += " due=" + item.Due
+			}
+			buffer.WriteString(line)
+			buffer.WriteString("\n")
+		}
+	}
+	return buffer.String()
+}
+
+func remediationByTeam(items []RemediationItem) map[string][]RemediationItem {
+	grouped := make(map[string][]RemediationItem)
+	for _, item := range items {
+		team := firstNonBlank(item.Team, item.Owner, "unassigned")
+		grouped[team] = append(grouped[team], item)
+	}
+	return grouped
+}
+
+func formatPortfolioCycloneDX(reportData Report) (string, error) {
+	bom := map[string]any{
+		"$schema":     "http://cyclonedx.org/schema/bom-1.6.schema.json",
+		"bomFormat":   "CycloneDX",
+		"specVersion": "1.6",
+		"version":     1,
+		"metadata": map[string]any{
+			"timestamp": reportData.GeneratedAt.Format("2006-01-02T15:04:05Z07:00"),
+			"component": map[string]any{
+				"type": "application",
+				"name": "lopper-dashboard",
+			},
+		},
+		"components": portfolioCycloneDXComponents(reportData),
+		"properties": []map[string]string{
+			{"name": "lopper:dashboard:total-repos", "value": fmt.Sprintf("%d", reportData.Summary.TotalRepos)},
+			{"name": "lopper:dashboard:partial-failures", "value": fmt.Sprintf("%d", dashboardErrorCount(reportData.Repos))},
+		},
+	}
+	payload, err := json.MarshalIndent(bom, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(payload) + "\n", nil
+}
+
+func portfolioCycloneDXComponents(reportData Report) []map[string]any {
+	components := make([]map[string]any, 0, len(reportData.Repos)+len(reportData.PortfolioComponents))
+	repos := sortPortfolioCycloneDXRepos(reportData.Repos)
+	deps := sortPortfolioCycloneDXComponents(reportData.PortfolioComponents)
+	baseRefs := make([]string, 0, len(repos)+len(deps))
+	for _, repo := range repos {
+		baseRefs = append(baseRefs, portfolioRepoRef(repo))
+	}
+	for _, dep := range deps {
+		baseRefs = append(baseRefs, portfolioDependencyRef(dep))
+	}
+	refAllocator := newPortfolioRefAllocator(baseRefs)
+	for _, repo := range repos {
+		component := map[string]any{
+			"type":    "application",
+			"name":    repo.Name,
+			"bom-ref": refAllocator.allocate(portfolioRepoRef(repo)),
+		}
+		if repo.ResolvedCommit != "" {
+			component["version"] = repo.ResolvedCommit
+		}
+		components = append(components, component)
+	}
+	for _, dep := range deps {
+		component := map[string]any{
+			"type":    "library",
+			"name":    dep.Name,
+			"bom-ref": refAllocator.allocate(portfolioDependencyRef(dep)),
+			"properties": []map[string]string{
+				{"name": "lopper:repo", "value": dep.Repo},
+				{"name": "lopper:language", "value": dep.Language},
+				{"name": "lopper:ecosystem", "value": dep.Ecosystem},
+			},
+		}
+		if dep.Version != "" {
+			component["version"] = dep.Version
+		}
+		if dep.PURL != "" {
+			component["purl"] = dep.PURL
+		}
+		components = append(components, component)
+	}
+	return components
+}
+
+func dashboardErrorCount(repos []RepoResult) int {
+	count := 0
+	for _, repo := range repos {
+		if strings.TrimSpace(repo.Error) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func portfolioRepoRef(repo RepoResult) string {
+	parts := []string{repo.Name}
+	if path := stablePortfolioRefPath(repo.Path); path != "" {
+		parts = append(parts, path)
+	}
+	return "lopper:repo:" + joinPortfolioRefParts(parts...)
+}
+
+func portfolioDependencyRef(dep PortfolioComponent) string {
+	parts := []string{dep.Repo}
+	if path := stablePortfolioRefPath(dep.RepoPath); path != "" {
+		parts = append(parts, path)
+	}
+	parts = append(parts, dep.Language, dep.Name, dep.Version)
+	return "lopper:dependency:" + joinPortfolioRefParts(parts...)
+}
+
+type portfolioRefAllocator struct {
+	reserved map[string]struct{}
+	used     map[string]struct{}
+}
+
+func newPortfolioRefAllocator(bases []string) portfolioRefAllocator {
+	reserved := make(map[string]struct{}, len(bases))
+	for _, base := range bases {
+		reserved[base] = struct{}{}
+	}
+	return portfolioRefAllocator{
+		reserved: reserved,
+		used:     make(map[string]struct{}, len(bases)),
+	}
+}
+
+func (a *portfolioRefAllocator) allocate(base string) string {
+	if _, exists := a.used[base]; !exists {
+		a.used[base] = struct{}{}
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := base + ":" + strconv.Itoa(suffix)
+		if _, reserved := a.reserved[candidate]; reserved {
+			continue
+		}
+		if _, exists := a.used[candidate]; exists {
+			continue
+		}
+		a.used[candidate] = struct{}{}
+		return candidate
+	}
+}
+
+func joinPortfolioRefParts(parts ...string) string {
+	encoded := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		encoded = append(encoded, escapePortfolioRefPart(part))
+	}
+	return strings.Join(encoded, ":")
+}
+
+func escapePortfolioRefPart(value string) string {
+	escaped := url.PathEscape(value)
+	return strings.ReplaceAll(escaped, ":", "%3A")
+}
+
+func stablePortfolioRefPath(value string) string {
+	trimmed := filepath.ToSlash(strings.TrimSpace(value))
+	trimmed = strings.TrimPrefix(trimmed, "./")
+	if trimmed == "" || filepath.IsAbs(value) {
+		return ""
+	}
+	return strings.TrimPrefix(trimmed, "/")
+}
+
+func sortPortfolioCycloneDXComponents(components []PortfolioComponent) []PortfolioComponent {
+	items := append([]PortfolioComponent{}, components...)
+	sort.Slice(items, func(i, j int) bool {
+		left := portfolioComponentRefSortKey(items[i])
+		right := portfolioComponentRefSortKey(items[j])
+		return left < right
+	})
+	return items
+}
+
+func sortPortfolioCycloneDXRepos(repos []RepoResult) []RepoResult {
+	items := append([]RepoResult{}, repos...)
+	sort.Slice(items, func(i, j int) bool {
+		left := portfolioRepoRef(items[i]) + "\x00" + strings.TrimSpace(items[i].ResolvedCommit)
+		right := portfolioRepoRef(items[j]) + "\x00" + strings.TrimSpace(items[j].ResolvedCommit)
+		return left < right
+	})
+	return items
+}
+
+func portfolioComponentRefSortKey(component PortfolioComponent) string {
+	parts := []string{
+		component.Repo,
+		component.Language,
+		component.Name,
+		component.Version,
+		component.PURL,
+		component.Ecosystem,
+		component.RepoPath,
+	}
+	var key strings.Builder
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		key.WriteString(strconv.Itoa(len(part)))
+		key.WriteByte(':')
+		key.WriteString(url.PathEscape(part))
+	}
+	return key.String()
 }

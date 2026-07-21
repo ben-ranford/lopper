@@ -20,20 +20,20 @@ var (
 	featureReleaseLockProvider = featureflags.DefaultReleaseLock
 )
 
-func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, []report.PolicyMergeTrace, string, thresholds.FeatureConfig, string, error) {
+func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool) (thresholds.Values, thresholds.PathScope, []string, []report.PolicyMergeTrace, string, []report.VulnerabilityException, thresholds.FeatureConfig, string, error) {
 	loadResult, err := thresholds.LoadWithPolicy(strings.TrimSpace(*values.repoPath), strings.TrimSpace(*values.configPath))
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", nil, thresholds.FeatureConfig{}, "", err
 	}
 
 	resolvedThresholds := loadResult.Resolved
 	cliOverrides, err := cliThresholdOverrides(visited, values)
 	if err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", nil, thresholds.FeatureConfig{}, "", err
 	}
 	resolvedThresholds = cliOverrides.Apply(resolvedThresholds)
 	if err := resolvedThresholds.Validate(); err != nil {
-		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", thresholds.FeatureConfig{}, "", err
+		return thresholds.Values{}, thresholds.PathScope{}, nil, nil, "", nil, thresholds.FeatureConfig{}, "", err
 	}
 
 	policySources := append([]string{}, loadResult.PolicySources...)
@@ -60,7 +60,7 @@ func resolveAnalyseThresholds(values analyseFlagValues, visited map[string]bool)
 		policyTrace = mergePolicyTraceItems(policyTrace, report.PolicyMergeTrace{Field: "advisories.source", Source: "cli"})
 	}
 
-	return resolvedThresholds, loadResult.Scope, policySources, policyTrace, advisorySourcePath, loadResult.Features, loadResult.ConfigPath, nil
+	return resolvedThresholds, loadResult.Scope, policySources, policyTrace, advisorySourcePath, append([]report.VulnerabilityException{}, loadResult.VulnerabilityExceptions...), loadResult.Features, loadResult.ConfigPath, nil
 }
 
 func prependUniquePolicySource(source string, sources []string) []string {

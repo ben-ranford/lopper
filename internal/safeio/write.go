@@ -175,6 +175,16 @@ var (
 	writeFileParentReadyFn = func() error { return nil }
 )
 
+// CreateTempFileWithinRoot creates a temporary file under dir within root.
+func CreateTempFileWithinRoot(root Root, dir string, perm os.FileMode) (string, File, error) {
+	return createAtomicTempFile(root, dir, perm)
+}
+
+// CleanupTempFileWithinRoot closes and removes a temporary file within root.
+func CleanupTempFileWithinRoot(root Root, tempRel string, tempFile File) error {
+	return cleanupAtomicTempFile(root, tempRel, tempFile)
+}
+
 // WriteFileUnder atomically writes targetPath only if it resolves under rootDir.
 // Existing regular targets must be writable and retain their permission bits.
 // Ownership follows atomic replacement semantics; writes never fall back to in-place mutation.
@@ -240,6 +250,28 @@ func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.File
 	default:
 		return 0, false, err
 	}
+}
+
+// WriteFileWithinRoot atomically writes targetPath using an already-open
+// confined root.
+func WriteFileWithinRoot(root Root, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+
+	session, err := newAtomicWriteSession(root, targetRel, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanupErr := session.cleanup()
+		if returnErr == nil {
+			returnErr = cleanupErr
+		}
+	}()
+
+	return session.writeAndCommit(data, perm)
 }
 
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {

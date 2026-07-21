@@ -85,6 +85,11 @@ func detectFromRootFiles(repoPath string, detection *language.Detection, roots m
 }
 
 func detectUmbrellaAppsPath(content []byte) (bool, string) {
+	return DetectUmbrellaAppsPath(content)
+}
+
+// DetectUmbrellaAppsPath returns a statically declared umbrella apps path.
+func DetectUmbrellaAppsPath(content []byte) (bool, string) {
 	raw := stripElixirComments(content)
 	matches := appsPathRegex.FindStringSubmatch(raw)
 	if len(matches) >= 2 {
@@ -146,6 +151,11 @@ func addUmbrellaRoots(repoPath string, appsPath string, roots map[string]struct{
 }
 
 func shouldSkipDir(name string) bool {
+	return ShouldSkipDirectory(name)
+}
+
+// ShouldSkipDirectory reports whether Elixir discovery ignores a directory.
+func ShouldSkipDirectory(name string) bool {
 	lower := strings.ToLower(name)
 	switch lower {
 	case "_build", "deps", ".elixir_ls":

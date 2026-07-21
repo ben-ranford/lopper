@@ -2,6 +2,7 @@ package safeio
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -155,6 +156,44 @@ func TestWriteFileUnderRejectsReadOnlyExistingRegularFile(t *testing.T) {
 	}
 	if string(data) != "before" {
 		t.Fatalf("expected read-only target to remain unchanged, got %q", string(data))
+	}
+}
+
+func TestWriteFileWithinRootWritesRelativeFile(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestRoot(t, rootDir)
+
+	if err := WriteFileWithinRoot(root, writeTestFileName, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("WriteFileWithinRoot returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(rootDir, writeTestFileName))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("unexpected content: got %q", string(data))
+	}
+}
+
+func TestWriteFileWithinRootRejectsAbsolutePath(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+
+	err := WriteFileWithinRoot(root, filepath.Join(t.TempDir(), writeTestFileName), []byte("hello"), 0o640)
+	if err == nil || !strings.Contains(err.Error(), escapesRootErr) {
+		t.Fatalf("expected absolute path rejection, got %v", err)
+	}
+}
+
+func TestWriteFileWithinRootReturnsTempCreationError(t *testing.T) {
+	expectedErr := errors.New("open temp failure")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) { return nil, expectedErr },
+	}
+
+	err := WriteFileWithinRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if err == nil || !errors.Is(err, expectedErr) {
+		t.Fatalf("expected temp creation error, got %v", err)
 	}
 }
 
@@ -1355,5 +1394,697 @@ func TestResolveWriteTargetRelFailureViaFileSystem(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "compute relative path") {
 		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
+func TestMoveFileUnderRenamesWithinRootAndSetsMode(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
+		t.Fatalf("MoveFileUnder returned error: %v", err)
+	}
+
+	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source file to be moved away, got %v", err)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read moved file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("unexpected moved content %q", string(data))
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat moved file: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("unexpected moved file mode: got %#o", info.Mode().Perm())
+	}
+}
+
+func TestMoveFileUnderFallsBackToCopyAndSetsMode(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("copied"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeRoot{
+			Root: root,
+			rename: func(oldName, newName string) error {
+				if strings.Contains(oldName, atomicTempPrefix) {
+					return root.Rename(oldName, newName)
+				}
+				return syscall.EXDEV
+			},
+		}, nil
+	}})
+
+	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
+		t.Fatalf("MoveFileUnder returned error: %v", err)
+	}
+
+	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source file to be removed after copy fallback, got %v", err)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read copied file: %v", err)
+	}
+	if string(data) != "copied" {
+		t.Fatalf("unexpected copied content %q", string(data))
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat copied file: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("unexpected copied file mode: got %#o", info.Mode().Perm())
+	}
+}
+
+func TestMoveFileUnderReturnsRenameErrorWithoutFallback(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	renameErr := errors.New("rename failure")
+
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		return &fakeRoot{
+			chmod: func(string, os.FileMode) error {
+				return nil
+			},
+			mkdirAll: func(string, os.FileMode) error {
+				return nil
+			},
+			rename: func(string, string) error {
+				return renameErr
+			},
+			remove: func(string) error {
+				return nil
+			},
+			close: func() error {
+				return nil
+			},
+		}, nil
+	}})
+
+	err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error without fallback copy, got %v", err)
+	}
+}
+
+func TestMoveFileWithinRootPreservesSourceOnNonEXDEVRenameError(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootDir, "snapshots"), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	if err := os.WriteFile(sourcePath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	renameErr := errors.New("rename failure")
+	root := openTestRoot(t, rootDir)
+	failingRoot := &fakeRoot{
+		Root: root,
+		rename: func(oldName, newName string) error {
+			if oldName != filepath.Join("snapshots", "temp.json") || newName != filepath.Join("snapshots", "final.json") {
+				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			}
+			return renameErr
+		},
+	}
+
+	err := MoveFileWithinRoot(failingRoot, filepath.Join("snapshots", "temp.json"), filepath.Join("snapshots", "final.json"), 0o750, 0o640)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error without fallback copy, got %v", err)
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("expected source file to remain after rename error, got %v", err)
+	}
+	if _, err := os.Stat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected target file to remain absent after rename error, got %v", err)
+	}
+}
+
+func TestMoveFileWithinRootPreservesSourceOnChmodError(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootDir, "snapshots"), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	if err := os.WriteFile(sourcePath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	chmodErr := errors.New("chmod failure")
+	root := openTestRoot(t, rootDir)
+	failingRoot := &fakeRoot{
+		Root: root,
+		chmod: func(name string, perm os.FileMode) error {
+			if name != filepath.Join("snapshots", "temp.json") || perm != 0o640 {
+				t.Fatalf("unexpected chmod %q %#o", name, perm)
+			}
+			return chmodErr
+		},
+		rename: func(oldName, newName string) error {
+			t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(failingRoot, filepath.Join("snapshots", "temp.json"), filepath.Join("snapshots", "final.json"), 0o750, 0o640)
+	if !errors.Is(err, chmodErr) {
+		t.Fatalf("expected chmod error without fallback copy, got %v", err)
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("expected source file to remain after chmod error, got %v", err)
+	}
+	if _, err := os.Stat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected target file to remain absent after chmod error, got %v", err)
+	}
+}
+
+func TestMoveFileUnderValidationAndSetupErrors(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+
+	t.Run("source escapes root", func(t *testing.T) {
+		err := MoveFileUnder(rootDir, filepath.Join(rootDir, "..", "temp.json"), targetPath, 0o750, 0o640)
+		if err == nil || !strings.Contains(err.Error(), escapesRootErr) {
+			t.Fatalf("expected source escape error, got %v", err)
+		}
+	})
+
+	t.Run("target escapes root", func(t *testing.T) {
+		err := MoveFileUnder(rootDir, sourcePath, filepath.Join(rootDir, "..", "final.json"), 0o750, 0o640)
+		if err == nil || !strings.Contains(err.Error(), escapesRootErr) {
+			t.Fatalf("expected target escape error, got %v", err)
+		}
+	})
+
+	t.Run("open root error", func(t *testing.T) {
+		openRootErr := errors.New("open root failure")
+		withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+			return nil, openRootErr
+		}})
+
+		err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640)
+		if !errors.Is(err, openRootErr) {
+			t.Fatalf("expected open root error, got %v", err)
+		}
+	})
+
+	t.Run("mkdir all error", func(t *testing.T) {
+		mkdirErr := errors.New("mkdir failure")
+		withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+			return &fakeRoot{
+				mkdirAll: func(string, os.FileMode) error {
+					return mkdirErr
+				},
+				close: closeWithoutError,
+			}, nil
+		}})
+
+		err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640)
+		if !errors.Is(err, mkdirErr) {
+			t.Fatalf("expected mkdir error, got %v", err)
+		}
+	})
+}
+
+func TestMoveFileUnderCopyFallbackIgnoresMissingSourceRemoval(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+
+	withMoveFallbackFileSystem(t, moveFallbackConfig{
+		sourcePath:      filepath.Join("snapshots", "temp.json"),
+		sourceData:      "copied",
+		sourceRemoveErr: os.ErrNotExist,
+	})
+
+	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
+		t.Fatalf("expected os.ErrNotExist source cleanup to be ignored, got %v", err)
+	}
+}
+
+func TestMoveFileWithinRootReturnsSourceRemovalErrorAfterCopyFallback(t *testing.T) {
+	sourceRemoveErr := errors.New("remove source failure")
+	root := newMoveFallbackRoot(moveFallbackConfig{
+		sourcePath:      "source",
+		sourceData:      "copied",
+		sourceRemoveErr: sourceRemoveErr,
+	})
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); !errors.Is(err, sourceRemoveErr) {
+		t.Fatalf("expected source removal error after copy fallback, got %v", err)
+	}
+}
+
+func TestMoveFileWithinRootPreservesSourceWhenCopyFallbackFails(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage moveFallbackFailureStage
+	}{
+		{name: "open source", stage: moveFallbackFailSourceOpen},
+		{name: "read source", stage: moveFallbackFailSourceRead},
+		{name: "open temp", stage: moveFallbackFailTempOpen},
+		{name: "write temp", stage: moveFallbackFailTempWrite},
+		{name: "chmod temp", stage: moveFallbackFailTempChmod},
+		{name: "close temp", stage: moveFallbackFailTempClose},
+		{name: "rename temp", stage: moveFallbackFailTempRename},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sentinel := errors.New(tc.name + " failure")
+			state := &moveFallbackState{}
+			cfg := moveFallbackConfig{
+				sourcePath:   "source",
+				sourceData:   "copied",
+				failureStage: tc.stage,
+				failureErr:   sentinel,
+				state:        state,
+			}
+
+			err := MoveFileWithinRoot(newMoveFallbackRoot(cfg), "source", "target", 0o750, 0o640)
+			if err == nil {
+				t.Fatal("expected copy fallback failure")
+			}
+			if !errors.Is(err, syscall.EXDEV) {
+				t.Fatalf("expected EXDEV fallback error, got %v", err)
+			}
+			if !errors.Is(err, sentinel) {
+				t.Fatalf("expected %s error, got %v", tc.name, err)
+			}
+
+			assertMoveFallbackFailureState(t, state, "copied")
+		})
+	}
+}
+
+type moveFallbackConfig struct {
+	sourcePath      string
+	sourceData      string
+	sourceReadErr   error
+	sourceCloseErr  error
+	tempRemoveErr   error
+	sourceRemoveErr error
+	rootCloseErr    error
+	failureStage    moveFallbackFailureStage
+	failureErr      error
+	state           *moveFallbackState
+}
+
+type moveFallbackFailureStage uint8
+
+const (
+	moveFallbackFailSourceOpen moveFallbackFailureStage = iota + 1
+	moveFallbackFailSourceRead
+	moveFallbackFailTempOpen
+	moveFallbackFailTempWrite
+	moveFallbackFailTempChmod
+	moveFallbackFailTempClose
+	moveFallbackFailTempRename
+)
+
+type moveFallbackState struct {
+	sourceData   string
+	sourceExists bool
+	tempData     string
+	tempExists   bool
+	targetData   string
+	targetExists bool
+}
+
+func withMoveFallbackFileSystem(t *testing.T, cfg moveFallbackConfig) {
+	t.Helper()
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		return newMoveFallbackRoot(cfg), nil
+	}})
+}
+
+func newMoveFallbackRoot(cfg moveFallbackConfig) *fakeRoot {
+	state := newMoveFallbackState(cfg)
+	return &fakeRoot{
+		open:     newMoveFallbackOpenHook(cfg, state),
+		openFile: newMoveFallbackOpenFileHook(cfg, state),
+		chmod: func(string, os.FileMode) error {
+			return nil
+		},
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		rename:   newMoveFallbackRenameHook(cfg, state),
+		remove:   newMoveFallbackRemoveHook(cfg, state),
+		close:    func() error { return cfg.rootCloseErr },
+	}
+}
+
+func newMoveFallbackState(cfg moveFallbackConfig) *moveFallbackState {
+	state := cfg.state
+	if state == nil {
+		state = &moveFallbackState{}
+	}
+	state.sourceData = cfg.sourceData
+	state.sourceExists = true
+	return state
+}
+
+func (c *moveFallbackConfig) failure(stage moveFallbackFailureStage) error {
+	if stage == moveFallbackFailSourceRead && c.sourceReadErr != nil {
+		return c.sourceReadErr
+	}
+	if c.failureStage == stage {
+		return c.failureErr
+	}
+	return nil
+}
+
+func newMoveFallbackOpenHook(cfg moveFallbackConfig, state *moveFallbackState) func(string) (File, error) {
+	return func(name string) (File, error) {
+		if name != cfg.sourcePath {
+			return nil, errors.New("unexpected source open path")
+		}
+		if err := cfg.failure(moveFallbackFailSourceOpen); err != nil {
+			return nil, err
+		}
+		if !state.sourceExists {
+			return nil, os.ErrNotExist
+		}
+		return newMoveFallbackSourceFile(cfg, state), nil
+	}
+}
+
+func newMoveFallbackSourceFile(cfg moveFallbackConfig, state *moveFallbackState) File {
+	reader := strings.NewReader(state.sourceData)
+	return &fakeFile{
+		read: func(p []byte) (int, error) {
+			if err := cfg.failure(moveFallbackFailSourceRead); err != nil {
+				return 0, err
+			}
+			return reader.Read(p)
+		},
+		close: func() error { return cfg.sourceCloseErr },
+	}
+}
+
+func newMoveFallbackOpenFileHook(cfg moveFallbackConfig, state *moveFallbackState) func(string, int, os.FileMode) (File, error) {
+	return func(name string, _ int, _ os.FileMode) (File, error) {
+		if !isMoveFallbackTempPath(name) {
+			return nil, errors.New("unexpected temp file path")
+		}
+		if err := cfg.failure(moveFallbackFailTempOpen); err != nil {
+			return nil, err
+		}
+		state.tempData = ""
+		state.tempExists = true
+		return newMoveFallbackTempFile(cfg, state), nil
+	}
+}
+
+func newMoveFallbackTempFile(cfg moveFallbackConfig, state *moveFallbackState) File {
+	return &fakeFile{
+		write: func(p []byte) (int, error) {
+			if err := cfg.failure(moveFallbackFailTempWrite); err != nil {
+				return 0, err
+			}
+			state.tempData += string(p)
+			return len(p), nil
+		},
+		close: func() error { return cfg.failure(moveFallbackFailTempClose) },
+		chmod: func(os.FileMode) error { return cfg.failure(moveFallbackFailTempChmod) },
+	}
+}
+
+func newMoveFallbackRenameHook(cfg moveFallbackConfig, state *moveFallbackState) func(string, string) error {
+	return func(oldName, _ string) error {
+		if oldName == cfg.sourcePath {
+			return syscall.EXDEV
+		}
+		if !isMoveFallbackTempPath(oldName) {
+			return nil
+		}
+		if err := cfg.failure(moveFallbackFailTempRename); err != nil {
+			return err
+		}
+		state.targetData = state.tempData
+		state.targetExists = true
+		state.tempData = ""
+		state.tempExists = false
+		return nil
+	}
+}
+
+func newMoveFallbackRemoveHook(cfg moveFallbackConfig, state *moveFallbackState) func(string) error {
+	return func(name string) error {
+		if isMoveFallbackTempPath(name) {
+			state.tempData = ""
+			state.tempExists = false
+			return cfg.tempRemoveErr
+		}
+		if name != cfg.sourcePath {
+			return nil
+		}
+		if cfg.sourceRemoveErr == nil {
+			state.sourceExists = false
+		}
+		return cfg.sourceRemoveErr
+	}
+}
+
+func isMoveFallbackTempPath(name string) bool {
+	return strings.Contains(name, atomicTempPrefix)
+}
+
+func assertMoveFallbackFailureState(t *testing.T, state *moveFallbackState, wantSourceData string) {
+	t.Helper()
+	if !state.sourceExists || state.sourceData != wantSourceData {
+		t.Fatalf("expected source to remain %q after fallback failure, got exists=%t data=%q", wantSourceData, state.sourceExists, state.sourceData)
+	}
+	if state.targetExists {
+		t.Fatalf("expected target to remain absent after fallback failure, got %q", state.targetData)
+	}
+	if state.tempExists {
+		t.Fatalf("expected temp cleanup after fallback failure, found %q", state.tempData)
+	}
+}
+
+func copyRootWithOpenError(openErr error) *fakeRoot {
+	return &fakeRoot{
+		open: func(string) (File, error) { return nil, openErr },
+	}
+}
+
+func copyRootWithTempOpenError(openFileErr error) *fakeRoot {
+	return copyRootWithTempFile(tempFileOptions{openFileErr: openFileErr})
+}
+
+func copyRootWithTempChmodError(chmodErr error) *fakeRoot {
+	return copyRootWithTempFile(tempFileOptions{data: "x", chmodErr: chmodErr})
+}
+
+func copyRootWithTempCloseError(closeErr error) *fakeRoot {
+	return copyRootWithTempFile(tempFileOptions{data: "x", closeErr: closeErr})
+}
+
+func copyRootWithTempRenameError(renameErr error) *fakeRoot {
+	return copyRootWithTempFile(tempFileOptions{data: "x", renameErr: renameErr})
+}
+
+type tempFileOptions struct {
+	data        string
+	openFileErr error
+	chmodErr    error
+	closeErr    error
+	renameErr   error
+}
+
+func copyRootWithTempFile(opts tempFileOptions) *fakeRoot {
+	return &fakeRoot{
+		open: func(string) (File, error) {
+			return &fakeFile{
+				read: func(p []byte) (int, error) {
+					copy(p, opts.data)
+					return len(opts.data), io.EOF
+				},
+				close: closeWithoutError,
+			}, nil
+		},
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		openFile: func(string, int, os.FileMode) (File, error) {
+			if opts.openFileErr != nil {
+				return nil, opts.openFileErr
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				close: func() error { return opts.closeErr },
+				chmod: func(os.FileMode) error { return opts.chmodErr },
+			}, nil
+		},
+		rename: func(oldName, _ string) error {
+			if strings.Contains(oldName, atomicTempPrefix) {
+				return opts.renameErr
+			}
+			return nil
+		},
+		remove: func(string) error { return nil },
+	}
+}
+
+func TestOpenRootReturnsUsableRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootDir, "file.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write root file: %v", err)
+	}
+
+	root, err := OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenRoot returned error: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf(closeRootErrFmt, closeErr)
+		}
+	}()
+
+	file, err := root.Open("file.txt")
+	if err != nil {
+		t.Fatalf("open file through root: %v", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close root-opened file: %v", closeErr)
+		}
+	}()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatalf("read file through root: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("unexpected root-opened content %q", string(data))
+	}
+}
+
+func TestCreateTempFileWithinRootCreatesRemovableTempFile(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestRoot(t, rootDir)
+
+	tempRel, tempFile, err := CreateTempFileWithinRoot(root, ".", 0o600)
+	if err != nil {
+		t.Fatalf("CreateTempFileWithinRoot returned error: %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(tempRel), atomicTempPrefix) {
+		t.Fatalf("expected atomic temp prefix, got %q", tempRel)
+	}
+
+	if _, err := tempFile.Write([]byte("hello")); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := CleanupTempFileWithinRoot(root, tempRel, tempFile); err != nil {
+		t.Fatalf("cleanup temp file: %v", err)
+	}
+	if _, err := root.Open(tempRel); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected temp file removal, got %v", err)
+	}
+}
+
+func TestMoveFileUnderJoinsPrimaryAndCleanupErrors(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	primaryErr := errors.New("copy read failure")
+	sourceCloseErr := errors.New("close source failure")
+	tempRemoveErr := errors.New("remove temp failure")
+	sourceRemoveErr := errors.New("remove source failure")
+	rootCloseErr := errors.New("close root failure")
+
+	withMoveFallbackFileSystem(t, moveFallbackConfig{
+		sourcePath:      filepath.Join("snapshots", "temp.json"),
+		sourceReadErr:   primaryErr,
+		sourceCloseErr:  sourceCloseErr,
+		tempRemoveErr:   tempRemoveErr,
+		sourceRemoveErr: sourceRemoveErr,
+		rootCloseErr:    rootCloseErr,
+	})
+
+	err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640)
+	if err == nil {
+		t.Fatal("expected MoveFileUnder error")
+	}
+	for _, expected := range []error{primaryErr, sourceCloseErr, tempRemoveErr, rootCloseErr} {
+		if !errors.Is(err, expected) {
+			t.Fatalf("expected joined error to include %v, got %v", expected, err)
+		}
+	}
+	if errors.Is(err, sourceRemoveErr) {
+		t.Fatalf("expected fallback failure to preserve source instead of removing it, got %v", err)
+	}
+}
+
+func TestPrepareAndRenameWithinRootErrors(t *testing.T) {
+	chmodErr := errors.New("chmod failure")
+	chmodRoot := &fakeRoot{
+		chmod: func(string, os.FileMode) error {
+			return chmodErr
+		},
+	}
+	if err := prepareAndRenameWithinRoot(chmodRoot, "source", "target", 0o640); !errors.Is(err, chmodErr) {
+		t.Fatalf("expected chmod error, got %v", err)
+	}
+
+	renameErr := errors.New("rename failure")
+	renameRoot := &fakeRoot{
+		chmod: func(string, os.FileMode) error {
+			return nil
+		},
+		rename: func(string, string) error {
+			return renameErr
+		},
+	}
+	if err := prepareAndRenameWithinRoot(renameRoot, "source", "target", 0o640); !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error, got %v", err)
+	}
+}
+
+func TestCopyFileWithinRootErrorBranches(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		root func(error) *fakeRoot
+	}{
+		{name: "open source error", err: errors.New("open source failure"), root: copyRootWithOpenError},
+		{name: "create temp file error", err: errors.New("open temp failure"), root: copyRootWithTempOpenError},
+		{name: "temp chmod error", err: errors.New("temp chmod failure"), root: copyRootWithTempChmodError},
+		{name: "temp close error", err: errors.New("temp close failure"), root: copyRootWithTempCloseError},
+		{name: "rename temp file error", err: errors.New("rename temp failure"), root: copyRootWithTempRenameError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := copyFileWithinRoot(tc.root(tc.err), "source", "target", 0o640)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("expected %s, got %v", tc.name, err)
+			}
+		})
 	}
 }

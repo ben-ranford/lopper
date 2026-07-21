@@ -25,6 +25,8 @@ type Root interface {
 	OpenRoot(name string) (Root, error)
 	Lstat(name string) (fs.FileInfo, error)
 	Mkdir(name string, perm os.FileMode) error
+	Chmod(name string, perm os.FileMode) error
+	MkdirAll(name string, perm os.FileMode) error
 	Rename(oldName, newName string) error
 	Remove(name string) error
 	Close() error
@@ -40,6 +42,11 @@ type File interface {
 }
 
 var fileSystem FileSystem = &osFileSystem{}
+
+// OpenRoot opens a confined filesystem root.
+func OpenRoot(name string) (Root, error) {
+	return fileSystem.OpenRoot(name)
+}
 
 type osFileSystem struct{}
 
@@ -150,6 +157,14 @@ func (r *osRoot) Lstat(name string) (fs.FileInfo, error) {
 
 func (r *osRoot) Mkdir(name string, perm os.FileMode) error {
 	return r.root.Mkdir(name, perm)
+}
+
+func (r *osRoot) Chmod(name string, perm os.FileMode) error {
+	return r.root.Chmod(name, perm)
+}
+
+func (r *osRoot) MkdirAll(name string, perm os.FileMode) error {
+	return r.root.MkdirAll(name, perm)
 }
 
 func (r *osRoot) Rename(oldName, newName string) error {

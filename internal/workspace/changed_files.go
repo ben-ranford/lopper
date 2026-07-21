@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"errors"
 	"sort"
 	"strconv"
@@ -42,9 +43,65 @@ func ChangedFiles(repoPath string) ([]string, error) {
 	return collectUniquePaths(changed, func(v string) string { return v }), nil
 }
 
+func ChangedFilesBetween(repoPath, baseRef, headRef string) ([]string, error) {
+	normalized, err := normalizeRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	gitPath, err := resolveGitBinaryPath()
+	if err != nil {
+		return nil, err
+	}
+	diffOutput, err := runGit(gitPath, normalized, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", "--find-copies", "--diff-filter=ACMRD", strings.TrimSpace(baseRef)+".."+strings.TrimSpace(headRef))
+	if err != nil {
+		return nil, err
+	}
+	return parseNameStatusChangedFiles(diffOutput), nil
+}
+
 func parseChangedFileLines(output []byte) []string {
 	lines := strings.Split(strings.TrimRight(string(output), "\r\n"), "\n")
 	return collectUniquePaths(lines, decodeGitQuotedPath)
+}
+
+func parseNameStatusChangedFiles(output []byte) []string {
+	fields := bytes.Split(output, []byte{0})
+	paths := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); {
+		if len(fields[i]) == 0 {
+			i++
+			continue
+		}
+		status := string(fields[i])
+		i++
+		recordPaths, nextIndex, ok := nextNameStatusPaths(status, fields, i)
+		if !ok {
+			return collectUniquePaths(paths, func(v string) string { return v })
+		}
+		paths = append(paths, recordPaths...)
+		i = nextIndex
+	}
+	return collectUniquePaths(paths, func(v string) string { return v })
+}
+
+func nextNameStatusPaths(status string, fields [][]byte, index int) ([]string, int, bool) {
+	switch status[0] {
+	case 'R', 'C':
+		if index+1 >= len(fields) {
+			return nil, len(fields), false
+		}
+		return []string{string(fields[index]), string(fields[index+1])}, index + 2, true
+	case 'A', 'M', 'D':
+		if index >= len(fields) {
+			return nil, len(fields), false
+		}
+		return []string{string(fields[index])}, index + 1, true
+	default:
+		if index < len(fields) {
+			return nil, index + 1, true
+		}
+		return nil, index, true
+	}
 }
 
 func collectUniquePaths(lines []string, extractor func(string) string) []string {

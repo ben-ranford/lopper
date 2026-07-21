@@ -77,10 +77,14 @@ func featureDeprecationWarnings(req app.Request) []string {
 		return req.Dashboard.Features.DeprecationWarnings()
 	case app.ModeBaseline:
 		return req.Baseline.Features.DeprecationWarnings()
+	case app.ModePRReview:
+		return req.PRReview.Features.DeprecationWarnings()
 	case app.ModeProfile:
 		return req.Profile.Features.DeprecationWarnings()
 	case app.ModeMCP:
 		return req.MCP.Features.DeprecationWarnings()
+	case app.ModeAdvisory:
+		return req.Advisory.Features.DeprecationWarnings()
 	default:
 		return nil
 	}
@@ -130,7 +134,8 @@ func exitCodeForRunError(runErr error) int {
 	if errors.Is(runErr, app.ErrFailOnIncrease) ||
 		errors.Is(runErr, app.ErrUncertaintyThresholdExceeded) ||
 		errors.Is(runErr, app.ErrDeniedLicenses) ||
-		errors.Is(runErr, app.ErrReachableVulnerabilities) {
+		errors.Is(runErr, app.ErrReachableVulnerabilities) ||
+		errors.Is(runErr, app.ErrPRReviewRegressions) {
 		return 3
 	}
 	if errors.Is(runErr, app.ErrLockfileDrift) {

@@ -133,6 +133,38 @@ func TestLoadDeclaredDependenciesAndHelpers(t *testing.T) {
 	}
 }
 
+func TestMaskSourceRemovesCommentsStringsHeredocsAndSigils(t *testing.T) {
+	content := []byte("{:kept, \"# hidden {:string_dep, []}\"}\n# {:comment_dep, []}\n\"\"\"{:heredoc_dep, []}\"\"\"\n~S|{:sigil_dep, []}|\n~r({:nested_sigil_dep, [()]})\n~s/escaped \\/ {:escaped_sigil_dep, []}/\n~w(unclosed_sigil_dep\n")
+	masked := string(MaskSource(content))
+	if !strings.Contains(masked, "{:kept,") {
+		t.Fatalf("expected code structure to remain visible, got %q", masked)
+	}
+	for _, hidden := range []string{"string_dep", "comment_dep", "heredoc_dep", "sigil_dep", "nested_sigil_dep", "escaped_sigil_dep", "unclosed_sigil_dep"} {
+		if strings.Contains(masked, hidden) {
+			t.Fatalf("expected %s to be masked, got %q", hidden, masked)
+		}
+	}
+	if _, ok := elixirSigilEnd([]byte("~?not-a-sigil"), []byte("~?not-a-sigil"), 0); ok {
+		t.Fatal("expected non-letter sigils to be ignored")
+	}
+	if _, ok := elixirSigilEnd([]byte("~s!unsupported!"), []byte("~s!unsupported!"), 0); ok {
+		t.Fatal("expected a sigil with an unsupported delimiter to be ignored")
+	}
+	for opening, closing := range map[byte]byte{'[': ']', '{': '}', '<': '>'} {
+		gotClosing, paired, ok := elixirSigilDelimiter(opening)
+		if !ok || !paired || gotClosing != closing {
+			t.Fatalf("unexpected paired sigil delimiter for %q: %q, %t, %t", opening, gotClosing, paired, ok)
+		}
+	}
+	if _, _, ok := elixirSigilDelimiter('!'); ok {
+		t.Fatal("expected unsupported sigil delimiters to be ignored")
+	}
+	if isElixirSigilLetter('1') {
+		t.Fatal("expected a digit not to be a sigil letter")
+	}
+	maskElixirSourceByte([]byte("x"), -1)
+}
+
 func TestDependencyFromModuleRootFallbacks(t *testing.T) {
 	if dep := dependencyFromModule("Ecto.Query", map[string]struct{}{"ecto-sql": {}}); dep != "ecto-sql" {
 		t.Fatalf("expected unique root fallback to ecto-sql, got %q", dep)

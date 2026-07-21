@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -157,6 +158,116 @@ func TestSummarySnapshotIncludesBaselineComparison(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "baseline_key: label:baseline") {
 		t.Fatalf("expected baseline key in output, got %q", string(output))
+	}
+}
+
+func TestMapSummaryReportViewKeepsPerInstanceRuntimeDeltasForDuplicates(t *testing.T) {
+	loadDeltaV2 := 2
+	loadDeltaV3 := 7
+	reportView := mapSummaryReportView(report.Report{
+		Dependencies: []report.DependencyReport{
+			{
+				Name:     "duplicate",
+				Language: "js-ts",
+				Identity: &report.DependencyIdentity{Version: "3.0.0", PURL: "pkg:npm/duplicate@3.0.0"},
+				RuntimeUsage: &report.RuntimeUsage{
+					LoadCount: 30,
+				},
+			},
+			{
+				Name:     "duplicate",
+				Language: "js-ts",
+				Identity: &report.DependencyIdentity{Version: "2.0.0", PURL: "pkg:npm/duplicate@2.0.0"},
+				RuntimeUsage: &report.RuntimeUsage{
+					LoadCount: 20,
+				},
+			},
+		},
+		BaselineComparison: &report.BaselineComparison{
+			Dependencies: []report.DependencyDelta{
+				{
+					Kind:           report.DependencyDeltaChanged,
+					Language:       "js-ts",
+					Name:           "duplicate",
+					DependencyKey:  report.DependencyVersionlessKey(report.DependencyReport{Name: "duplicate", Language: "js-ts", Identity: &report.DependencyIdentity{PURL: "pkg:npm/duplicate@2.0.0"}}),
+					CurrentOrdinal: 0,
+					RuntimeDelta:   &report.RuntimeDelta{Comparable: true, CurrentPresent: true, BaselinePresent: true, LoadCountDelta: &loadDeltaV2, RuntimeOnlyRegression: true},
+				},
+				{
+					Kind:           report.DependencyDeltaChanged,
+					Language:       "js-ts",
+					Name:           "duplicate",
+					DependencyKey:  report.DependencyVersionlessKey(report.DependencyReport{Name: "duplicate", Language: "js-ts", Identity: &report.DependencyIdentity{PURL: "pkg:npm/duplicate@3.0.0"}}),
+					CurrentOrdinal: 1,
+					RuntimeDelta:   &report.RuntimeDelta{Comparable: true, CurrentPresent: true, BaselinePresent: true, LoadCountDelta: &loadDeltaV3, RuntimeOnlyRegression: true},
+				},
+			},
+		},
+	})
+
+	if len(reportView.Dependencies) != 2 {
+		t.Fatalf("expected two duplicate summary rows, got %#v", reportView.Dependencies)
+	}
+	if reportView.Dependencies[0].RuntimeDelta == nil || reportView.Dependencies[0].RuntimeDelta.LoadCountDelta == nil || *reportView.Dependencies[0].RuntimeDelta.LoadCountDelta != loadDeltaV3 {
+		t.Fatalf("expected first reversed duplicate row to keep v3 runtime delta, got %#v", reportView.Dependencies[0].RuntimeDelta)
+	}
+	if reportView.Dependencies[1].RuntimeDelta == nil || reportView.Dependencies[1].RuntimeDelta.LoadCountDelta == nil || *reportView.Dependencies[1].RuntimeDelta.LoadCountDelta != loadDeltaV2 {
+		t.Fatalf("expected second reversed duplicate row to keep v2 runtime delta, got %#v", reportView.Dependencies[1].RuntimeDelta)
+	}
+}
+
+func TestSummaryAnalyseSummaryViewReturnsAnalyzerError(t *testing.T) {
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{err: errors.New("boom")}, report.NewFormatter())
+
+	_, err := summary.analyseSummaryView(context.Background(), Options{RepoPath: ".", TopN: 5, Language: "go"})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected analyzer error, got %v", err)
+	}
+}
+
+func TestSummaryAnalyseSummaryViewReturnsBaselineError(t *testing.T) {
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{report: report.Report{}}, report.NewFormatter())
+
+	_, err := summary.analyseSummaryView(context.Background(), Options{
+		RepoPath:     ".",
+		BaselinePath: filepath.Join(t.TempDir(), "missing.json"),
+	})
+	if err == nil {
+		t.Fatal("expected baseline resolution error")
+	}
+}
+
+func TestHandleSummaryDetailInputSelectsDependency(t *testing.T) {
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
+	reportView := mapSummaryReportView(report.Report{
+		Dependencies: []report.DependencyReport{
+			{Name: "alpha", Language: "go", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100},
+		},
+	})
+	opts := &Options{RepoPath: ".", Language: "go"}
+	state := &summaryState{}
+
+	handled, err := summary.handleSummaryDetailInput(opts, &reportView, state, "detail alpha")
+	if err != nil {
+		t.Fatalf("handle detail input: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected detail command to be handled")
+	}
+	if state.selectedDependency != "alpha" {
+		t.Fatalf("expected selected dependency to update, got %q", state.selectedDependency)
+	}
+}
+
+func TestHandleSummaryDetailInputIgnoresNonDetailCommand(t *testing.T) {
+	summary := NewSummary(io.Discard, strings.NewReader(""), &stubAnalyzer{}, report.NewFormatter())
+
+	handled, err := summary.handleSummaryDetailInput(&Options{}, &summaryReportView{}, &summaryState{}, "sort waste")
+	if err != nil {
+		t.Fatalf("handle non-detail input: %v", err)
+	}
+	if handled {
+		t.Fatal("expected non-detail command to pass through")
 	}
 }
 

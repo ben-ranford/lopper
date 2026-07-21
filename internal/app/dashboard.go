@@ -20,13 +20,23 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if err := validateDashboardFeatures(req.Dashboard, resolved); err != nil {
+		return "", err
+	}
 
 	executionPlan := a.prepareDashboardExecutionPlan(ctx, req.Dashboard, resolved.repos)
 	analyses := a.executeDashboardAnalysisPlan(ctx, executionPlan)
 	now := time.Now()
-	includeRemediationQueue := req.Dashboard.Features.Enabled(DashboardRemediationQueuePreviewFeature)
+	includeRemediationQueue := req.Dashboard.Features.Enabled(DashboardRemediationQueuePreviewFeature) ||
+		req.Dashboard.Features.Enabled(DashboardRemediationRoutingSummariesPreviewFeature)
+	var remediationRouter func(dashboard.RepoInput, []dashboard.RemediationItem) []dashboard.RemediationItem
+	if req.Dashboard.Features.Enabled(DashboardRemediationRoutingSummariesPreviewFeature) {
+		remediationRouter = dashboardRemediationRouter(resolved.routing)
+	}
 	reportData := dashboard.AggregateWithOptions(now, analyses, dashboard.AggregateOptions{
-		IncludeRemediationQueue: includeRemediationQueue,
+		IncludeRemediationQueue:    includeRemediationQueue,
+		IncludePortfolioComponents: resolved.format == dashboard.FormatCycloneDXJSON,
+		RemediationRouter:          remediationRouter,
 	})
 
 	reportData, err = a.applyDashboardBaselineIfNeeded(reportData, req.RepoPath, resolved, includeRemediationQueue)
@@ -43,6 +53,33 @@ func (a *App) executeDashboard(ctx context.Context, req Request) (string, error)
 		return "", err
 	}
 	return persistDashboardOutput(formatted, resolved.outputPath, dashboardOutputTrustedRoots(executionPlan)...)
+}
+
+func dashboardRemediationRouter(base dashboard.RoutingOptions) func(dashboard.RepoInput, []dashboard.RemediationItem) []dashboard.RemediationItem {
+	return func(input dashboard.RepoInput, items []dashboard.RemediationItem) []dashboard.RemediationItem {
+		routing := base
+		if repoPath := strings.TrimSpace(input.Path); repoPath != "" {
+			routing.Codeowners = dashboard.LoadCodeowners(repoPath)
+		}
+		return dashboard.ApplyRouting(items, routing)
+	}
+}
+
+func validateDashboardFeatures(req DashboardRequest, resolved resolvedDashboardRequest) error {
+	switch resolved.format {
+	case dashboard.FormatSlackSummary, dashboard.FormatTeamsSummary:
+		if req.Features.Enabled(DashboardRemediationRoutingSummariesPreviewFeature) {
+			return nil
+		}
+		return fmt.Errorf("dashboard format %q requires --enable-feature %s", resolved.format, DashboardRemediationRoutingSummariesPreviewFeature)
+	case dashboard.FormatCycloneDXJSON:
+		if req.Features.Enabled(DashboardCycloneDXPortfolioPreviewFeature) {
+			return nil
+		}
+		return fmt.Errorf("dashboard format %q requires --enable-feature %s", resolved.format, DashboardCycloneDXPortfolioPreviewFeature)
+	default:
+		return nil
+	}
 }
 
 func (a *App) applyDashboardBaselineIfNeeded(reportData dashboard.Report, repoPath string, resolved resolvedDashboardRequest, includeRemediationQueue bool) (dashboard.Report, error) {

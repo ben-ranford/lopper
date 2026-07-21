@@ -107,6 +107,63 @@ func TestAggregateWithRemediationQueueDedupeDuplicateDependencyItems(t *testing.
 	}
 }
 
+func TestAggregateWithRemediationQueueOmitsSuppressedVulnerabilities(t *testing.T) {
+	unsuppressed := report.VulnerabilityFinding{
+		AdvisoryID:   "GHSA-unsuppressed",
+		Package:      "vuln-lib",
+		Severity:     report.VulnerabilityPriorityHigh,
+		Priority:     report.VulnerabilityPriorityCritical,
+		FixedVersion: "2.0.0",
+		Source:       "scanner",
+		Reachable:    true,
+		Evidence:     []string{"imported by api"},
+	}
+	acceptedRisk := report.VulnerabilityFinding{
+		AdvisoryID: "GHSA-accepted-risk",
+		Package:    "vuln-lib",
+		Severity:   report.VulnerabilityPriorityHigh,
+		Priority:   report.VulnerabilityPriorityHigh,
+		Decision:   &report.VulnerabilityExceptionDecision{Status: "accepted-risk"},
+	}
+	notAffected := report.VulnerabilityFinding{
+		AdvisoryID: "GHSA-not-affected",
+		Package:    "vuln-lib",
+		Severity:   report.VulnerabilityPriorityMedium,
+		Priority:   report.VulnerabilityPriorityMedium,
+		Decision:   &report.VulnerabilityExceptionDecision{Status: "not-affected"},
+	}
+	resolved := report.VulnerabilityFinding{
+		AdvisoryID: "GHSA-resolved",
+		Package:    "vuln-lib",
+		Severity:   report.VulnerabilityPriorityLow,
+		Priority:   report.VulnerabilityPriorityLow,
+		Decision:   &report.VulnerabilityExceptionDecision{Status: "resolved"},
+	}
+
+	reportData := AggregateWithOptions(time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC), []RepoAnalysis{{Input: RepoInput{Name: "api", Path: "./api"}, Report: report.Report{Dependencies: []report.DependencyReport{{Name: "vuln-lib", Vulnerabilities: []report.VulnerabilityFinding{unsuppressed, acceptedRisk, notAffected, resolved}}}}}}, AggregateOptions{IncludeRemediationQueue: true})
+
+	if len(reportData.RemediationItems) != 1 {
+		t.Fatalf("expected only one remediation item after suppressions, got %#v", reportData.RemediationItems)
+	}
+
+	item := reportData.RemediationItems[0]
+	if item.ID != stableRemediationID("./api", "vuln-lib", remediationCategoryVulnerability, "GHSA-unsuppressed", "vuln-lib") {
+		t.Fatalf("unexpected remediation item ID: %#v", item)
+	}
+	if item.Category != remediationCategoryVulnerability || item.Dependency != "vuln-lib" || item.Repo != "api" || item.RepoPath != "./api" {
+		t.Fatalf("unexpected remediation item identity: %#v", item)
+	}
+	if item.Severity != report.VulnerabilityPriorityHigh || item.Priority != report.VulnerabilityPriorityCritical {
+		t.Fatalf("unexpected remediation item priority normalization: %#v", item)
+	}
+	if !reflect.DeepEqual(item.Evidence, []string{"advisory: GHSA-unsuppressed", "source: scanner", "reachable: true", "imported by api"}) {
+		t.Fatalf("unexpected remediation item evidence: %#v", item)
+	}
+	if item.SuggestedAction != "Upgrade vuln-lib to 2.0.0 or later to address GHSA-unsuppressed." {
+		t.Fatalf("unexpected remediation suggested action: %#v", item)
+	}
+}
+
 func TestDashboardBaselineComparisonRemediationItems(t *testing.T) {
 	regressedID := stableRemediationID("api", "vuln-lib", "vulnerability", "GHSA-regressed")
 	existingID := stableRemediationID("api", "old-lib", "waste", "remove-unused-dependency")
@@ -183,7 +240,7 @@ func TestFormatReportRemediationQueueCSVAndHTML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("format remediation csv: %v", err)
 	}
-	for _, want := range []string{"remediation_id,baseline_status,repo,repo_path,dependency,category,severity,priority,evidence,suggested_action", "rqi-test,new,<api>,./api,vuln-lib,vulnerability,high,critical,<evidence>,Upgrade <vuln-lib>.", "remediation_id,kind,repo,repo_path,dependency,category"} {
+	for _, want := range []string{"remediation_id,baseline_status,repo,repo_path,dependency,category,owner,team,due,status,routing_source,severity,priority,evidence,suggested_action", "rqi-test,new,<api>,./api,vuln-lib,vulnerability,,,,,,high,critical,<evidence>,Upgrade <vuln-lib>.", "remediation_id,kind,repo,repo_path,dependency,category,owner,team,due,status,routing_source"} {
 		if !strings.Contains(csvOutput, want) {
 			t.Fatalf("expected csv output to contain %q, got %q", want, csvOutput)
 		}

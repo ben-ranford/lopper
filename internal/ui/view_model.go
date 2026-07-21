@@ -70,9 +70,12 @@ func mapSummaryReportView(reportData report.Report) summaryReportView {
 
 func mapSummaryDependencies(dependencies []report.DependencyReport, comparison *report.BaselineComparison) []summaryDependencyView {
 	views := make([]summaryDependencyView, 0, len(dependencies))
-	runtimeDeltas := baselineRuntimeDeltasByDependency(comparison)
-	for _, dep := range dependencies {
-		runtimeDelta := runtimeDeltas[summaryDependencyKey(dep.Language, dep.Name)]
+	runtimeDeltas := report.BaselineRuntimeDeltasForDependencies(dependencies, comparison)
+	for index, dep := range dependencies {
+		var runtimeDelta *report.RuntimeDelta
+		if index < len(runtimeDeltas) {
+			runtimeDelta = runtimeDeltas[index]
+		}
 		detail := mapDetailDependencyView(dep)
 		detail.RuntimeDelta = mapDetailRuntimeDelta(runtimeDelta)
 		views = append(views, summaryDependencyView{
@@ -94,25 +97,6 @@ func mapSummaryDependencies(dependencies []report.DependencyReport, comparison *
 		})
 	}
 	return views
-}
-
-func baselineRuntimeDeltasByDependency(comparison *report.BaselineComparison) map[string]*report.RuntimeDelta {
-	deltas := make(map[string]*report.RuntimeDelta)
-	if comparison == nil {
-		return deltas
-	}
-	for i := range comparison.Dependencies {
-		delta := comparison.Dependencies[i]
-		if delta.RuntimeDelta == nil {
-			continue
-		}
-		deltas[summaryDependencyKey(delta.Language, delta.Name)] = delta.RuntimeDelta
-	}
-	return deltas
-}
-
-func summaryDependencyKey(language, name string) string {
-	return language + "\x00" + name
 }
 
 func summaryDependencyDetailView(dep summaryDependencyView) detailDependencyView {
@@ -331,44 +315,36 @@ func mapDetailDependencyView(dep report.DependencyReport) detailDependencyView {
 }
 
 func mapDetailImports(imports []report.ImportUse) []detailImportView {
-	views := make([]detailImportView, 0, len(imports))
-	for _, imp := range imports {
-		views = append(views, detailImportView{
+	return mapDetailViews(imports, func(imp report.ImportUse) detailImportView {
+		return detailImportView{
 			Name:       imp.Name,
 			Module:     imp.Module,
 			Locations:  mapDetailLocations(imp.Locations),
 			Provenance: append([]string(nil), imp.Provenance...),
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailLocations(locations []report.Location) []detailLocationView {
-	views := make([]detailLocationView, 0, len(locations))
-	for _, location := range locations {
-		views = append(views, detailLocationView{File: location.File, Line: location.Line})
-	}
-	return views
+	return mapDetailViews(locations, func(location report.Location) detailLocationView {
+		return detailLocationView{File: location.File, Line: location.Line}
+	})
 }
 
 func mapDetailSymbolRefs(refs []report.SymbolRef) []detailSymbolRefView {
-	views := make([]detailSymbolRefView, 0, len(refs))
-	for _, ref := range refs {
-		views = append(views, detailSymbolRefView{Name: ref.Name, Module: ref.Module})
-	}
-	return views
+	return mapDetailViews(refs, func(ref report.SymbolRef) detailSymbolRefView {
+		return detailSymbolRefView{Name: ref.Name, Module: ref.Module}
+	})
 }
 
 func mapDetailRiskCues(cues []report.RiskCue) []detailRiskCueView {
-	views := make([]detailRiskCueView, 0, len(cues))
-	for _, cue := range cues {
-		views = append(views, detailRiskCueView{
+	return mapDetailViews(cues, func(cue report.RiskCue) detailRiskCueView {
+		return detailRiskCueView{
 			Code:     cue.Code,
 			Severity: cue.Severity,
 			Message:  cue.Message,
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailRecommendations(recommendations []report.Recommendation) []detailRecommendationView {
@@ -440,23 +416,19 @@ func mapDetailViews[Input any, View any](items []Input, mapItem func(Input) View
 }
 
 func mapDetailRuntimeModules(modules []report.RuntimeModuleUsage) []detailRuntimeModuleView {
-	views := make([]detailRuntimeModuleView, 0, len(modules))
-	for _, module := range modules {
-		views = append(views, detailRuntimeModuleView{Module: module.Module, Count: module.Count})
-	}
-	return views
+	return mapDetailViews(modules, func(module report.RuntimeModuleUsage) detailRuntimeModuleView {
+		return detailRuntimeModuleView{Module: module.Module, Count: module.Count}
+	})
 }
 
 func mapDetailRuntimeSymbols(symbols []report.RuntimeSymbolUsage) []detailRuntimeSymbolView {
-	views := make([]detailRuntimeSymbolView, 0, len(symbols))
-	for _, symbol := range symbols {
-		views = append(views, detailRuntimeSymbolView{
+	return mapDetailViews(symbols, func(symbol report.RuntimeSymbolUsage) detailRuntimeSymbolView {
+		return detailRuntimeSymbolView{
 			Symbol: symbol.Symbol,
 			Module: symbol.Module,
 			Count:  symbol.Count,
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailRuntimeDelta(delta *report.RuntimeDelta) *detailRuntimeDeltaView {
@@ -477,17 +449,15 @@ func mapDetailReachabilityConfidence(confidence *report.ReachabilityConfidence) 
 }
 
 func mapDetailReachabilitySignals(signals []report.ReachabilitySignal) []detailReachabilitySignalView {
-	views := make([]detailReachabilitySignalView, 0, len(signals))
-	for _, signal := range signals {
-		views = append(views, detailReachabilitySignalView{
+	return mapDetailViews(signals, func(signal report.ReachabilitySignal) detailReachabilitySignalView {
+		return detailReachabilitySignalView{
 			Code:         signal.Code,
 			Score:        signal.Score,
 			Weight:       signal.Weight,
 			Contribution: signal.Contribution,
 			Rationale:    signal.Rationale,
-		})
-	}
-	return views
+		}
+	})
 }
 
 func mapDetailRemovalCandidate(candidate *report.RemovalCandidate) *detailRemovalCandidateView {

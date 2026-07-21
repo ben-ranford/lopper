@@ -381,6 +381,50 @@ version = "0.1.0"
 	}
 }
 
+func TestPythonPackagingNormalizationUsesSharedPEP503Authority(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), "My__Package==1.2.3\nmy_.package>=1.2.3\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, pythonUVLockName), `
+version = 1
+
+[[package]]
+name = "My__Package"
+version = "1.2.3"
+
+[[package]]
+name = "my_.package"
+version = "1.2.3"
+`)
+
+	manifestDependencies, warnings, err := parseRequirementsDependencies(repo, filepath.Join(repo, pythonRequirementsTxt))
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no requirements warnings, got %#v", warnings)
+	}
+	if len(manifestDependencies) != 1 {
+		t.Fatalf("expected aliasing requirement spellings to collapse to one key, got %#v", manifestDependencies)
+	}
+	if _, ok := manifestDependencies["my-package"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "my-package", manifestDependencies)
+	}
+
+	lockDependencies, lockWarnings, err := parsePackageLockDependencies(repo, filepath.Join(repo, pythonUVLockName))
+	if err != nil {
+		t.Fatalf("parse package lock dependencies: %v", err)
+	}
+	if len(lockWarnings) != 0 {
+		t.Fatalf("expected no package lock warnings, got %#v", lockWarnings)
+	}
+	if len(lockDependencies) != 1 {
+		t.Fatalf("expected aliasing lock spellings to collapse to one key, got %#v", lockDependencies)
+	}
+	if _, ok := lockDependencies["my-package"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "my-package", lockDependencies)
+	}
+}
+
 func TestParsePackageLockDependenciesUnsupportedShape(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonUVLockName), `package = "invalid"`)

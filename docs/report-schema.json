@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "generatedAt", "repoPath", "dependencies"],
   "properties": {
-    "schemaVersion": { "type": "string", "const": "0.1.0" },
+    "schemaVersion": { "type": "string", "const": "0.2.0" },
     "generatedAt": { "type": "string", "format": "date-time" },
     "repoPath": { "type": "string" },
     "scope": { "$ref": "#/$defs/scopeMetadata" },
@@ -189,6 +189,7 @@
       "properties": {
         "language": { "type": "string" },
         "name": { "type": "string" },
+        "identity": { "$ref": "#/$defs/dependencyIdentity" },
         "usedExportsCount": { "type": "integer", "minimum": 0 },
         "totalExportsCount": { "type": "integer", "minimum": 0 },
         "usedPercent": { "type": "number", "minimum": 0 },
@@ -229,6 +230,29 @@
         }
       }
     },
+    "dependencyIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ecosystem": { "type": "string" },
+        "name": { "type": "string" },
+        "namespace": { "type": "string" },
+        "version": { "type": "string" },
+        "versionStatus": { "type": "string" },
+        "purl": { "type": "string" },
+        "purlStatus": { "type": "string" },
+        "source": { "type": "string" },
+        "confidence": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "vulnerabilityFinding": {
       "type": "object",
       "additionalProperties": false,
@@ -242,10 +266,26 @@
         "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
         "priorityScore": { "type": "number", "minimum": 0, "maximum": 100 },
         "reachable": { "type": "boolean" },
+        "decision": { "$ref": "#/$defs/vulnerabilityExceptionDecision" },
         "evidence": {
           "type": "array",
           "items": { "type": "string" }
         }
+      }
+    },
+    "vulnerabilityExceptionDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "type": "string" },
+        "justification": { "type": "string" },
+        "owner": { "type": "string" },
+        "reason": { "type": "string" },
+        "scope": { "type": "string" },
+        "expires": { "type": "string" },
+        "source": { "type": "string" },
+        "expired": { "type": "boolean" }
       }
     },
     "vulnerabilityPolicy": {

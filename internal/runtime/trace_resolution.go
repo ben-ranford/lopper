@@ -4,6 +4,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
@@ -312,8 +314,7 @@ func pythonModuleFromResolvedPath(value, dependency string) string {
 }
 
 func normalizePythonRuntimeDependency(dependency string) string {
-	replacer := strings.NewReplacer("_", "-", ".", "-")
-	normalized := replacer.Replace(strings.ToLower(strings.TrimSpace(dependency)))
+	normalized := report.CanonicalPackageNameForEcosystem("pypi", dependency)
 	if canonical, ok := pythonRuntimeImportAliases[normalized]; ok {
 		return canonical
 	}

@@ -14,9 +14,10 @@ type Config struct {
 }
 
 type ConfigDashboard struct {
-	Repos         []ConfigRepo `yaml:"repos"`
-	BaselineStore string       `yaml:"baseline_store"`
-	Output        string       `yaml:"output"`
+	Repos         []ConfigRepo    `yaml:"repos"`
+	BaselineStore string          `yaml:"baseline_store"`
+	Output        string          `yaml:"output"`
+	Ownership     ConfigOwnership `yaml:"ownership"`
 }
 
 type ConfigRepo struct {
@@ -27,6 +28,25 @@ type ConfigRepo struct {
 	Branch   string `yaml:"branch"`
 	Tag      string `yaml:"tag"`
 	Commit   string `yaml:"commit"`
+}
+
+type ConfigOwnership struct {
+	DefaultOwner  string                `yaml:"default_owner"`
+	DefaultTeam   string                `yaml:"default_team"`
+	DefaultStatus string                `yaml:"default_status"`
+	DefaultDue    string                `yaml:"default_due"`
+	Rules         []ConfigOwnershipRule `yaml:"rules"`
+}
+
+type ConfigOwnershipRule struct {
+	Repo       string `yaml:"repo"`
+	PathPrefix string `yaml:"path_prefix"`
+	Category   string `yaml:"category"`
+	Dependency string `yaml:"dependency"`
+	Owner      string `yaml:"owner"`
+	Team       string `yaml:"team"`
+	Due        string `yaml:"due"`
+	Status     string `yaml:"status"`
 }
 
 type LoadedConfig struct {

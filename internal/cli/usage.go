@@ -9,6 +9,9 @@ const usage = `Usage:
   lopper dashboard --config lopper-org.yml [--format json|csv|html] [--top N] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--output PATH] [--baseline-store DIR] [--baseline-key KEY] [--baseline-label LABEL] [--save-baseline] [--enable-feature NAME] [--disable-feature NAME]
   lopper baseline list [--store DIR] [--format table|json] [--limit N]
   lopper baseline show KEY [--store DIR] [--format table|json]
+  lopper advisory sync osv --cache-path PATH [--source-url URL] [--output PATH] [--enable-feature advisory-osv-sync-preview] [--disable-feature NAME]
+  lopper advisory status --cache-path PATH [--output PATH] [--enable-feature advisory-osv-sync-preview] [--disable-feature NAME]
+  lopper pr-review --base SHA --head SHA [--repo PATH] [--format markdown|json] [--language auto|all|js-ts|python|cpp|jvm|kotlin-android|go|php|ruby|rust|dotnet|elixir|swift|dart|powershell] [--top N] [--scope-mode repo|package|changed-packages] [--advisory-source PATH] [--license-deny SPDXS] [--material-waste-bytes N] [--max-rows N] [--fail-on-regression] [--enable-feature dependency-surface-pr-review-preview]
   lopper features [--format table|json] [--channel dev|rolling|release] [--release VERSION]
   lopper profile apply strict|balanced|noise-reduction [--output PATH] [--force] [--enable-feature threshold-profiles]
   lopper mcp
@@ -41,7 +44,13 @@ Options:
                              uv run python3 -m unittest; uv run -- python -m unittest;
                              uv run -- python3 -m unittest (runner arguments may follow each form)
   --advisory-source PATH     Local vulnerability advisory source (preview-gated by reachability-vulnerability-prioritization-preview)
+  --source-url URL           OSV snapshot URL for advisory sync
   --repos PATH1,PATH2        Comma-separated repo paths for org dashboard input
+  --base SHA                 Full immutable base commit SHA for pr-review
+  --head SHA                 Full immutable head commit SHA for pr-review
+  --material-waste-bytes N   Estimated unused byte increase required for a material PR regression (default: 1024)
+  --max-rows N               Maximum Markdown rows per pr-review section (default: 20)
+  --fail-on-regression       Exit non-zero when pr-review finds new regression rows
   --baseline-store DIR       Directory for immutable keyed dashboard baseline snapshots
   --baseline-key KEY         Baseline snapshot key for dashboard comparison
   --baseline-label LABEL     Label key to use when saving dashboard baselines

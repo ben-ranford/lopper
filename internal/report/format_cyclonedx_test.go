@@ -128,6 +128,48 @@ func TestFormatCycloneDXJSONDeterministicOrdering(t *testing.T) {
 	}
 }
 
+func TestFormatCycloneDXJSONDuplicateVersionsKeepStableRefsAcrossInputOrder(t *testing.T) {
+	first := Report{Dependencies: []DependencyReport{
+		{
+			Name:     "duplicate",
+			Language: "js-ts",
+			Identity: &DependencyIdentity{Version: "2.0.0", PURL: "pkg:npm/%40scope/duplicate@2.0.0?arch=x64#dist"},
+		},
+		{
+			Name:     "duplicate",
+			Language: "js-ts",
+			Identity: &DependencyIdentity{Version: "1.0.0", PURL: "pkg:npm/%40scope/duplicate@1.0.0?arch=arm64#dist"},
+		},
+	}}
+	second := Report{Dependencies: []DependencyReport{
+		first.Dependencies[1],
+		first.Dependencies[0],
+	}}
+
+	firstOutput, err := NewFormatter().Format(first, FormatCycloneDX)
+	if err != nil {
+		t.Fatalf("format first duplicate CycloneDX JSON: %v", err)
+	}
+	secondOutput, err := NewFormatter().Format(second, FormatCycloneDX)
+	if err != nil {
+		t.Fatalf("format second duplicate CycloneDX JSON: %v", err)
+	}
+	if firstOutput != secondOutput {
+		t.Fatalf("expected duplicate CycloneDX output to stay stable across reversed input\nfirst:\n%s\nsecond:\n%s", firstOutput, secondOutput)
+	}
+
+	bom := decodeCycloneDXBOM(t, firstOutput)
+	if len(bom.Components) != 2 {
+		t.Fatalf("expected two duplicate components, got %#v", bom.Components)
+	}
+	if bom.Components[0].BOMRef != "lopper:dependency:js-ts:duplicate" || bom.Components[0].Version != "1.0.0" || bom.Components[0].PURL != "pkg:npm/%40scope/duplicate@1.0.0?arch=arm64#dist" {
+		t.Fatalf("expected earliest version to receive base ref, got %#v", bom.Components[0])
+	}
+	if bom.Components[1].BOMRef != "lopper:dependency:js-ts:duplicate:2" || bom.Components[1].Version != "2.0.0" || bom.Components[1].PURL != "pkg:npm/%40scope/duplicate@2.0.0?arch=x64#dist" {
+		t.Fatalf("expected later version to receive suffixed ref, got %#v", bom.Components[1])
+	}
+}
+
 func TestFormatCycloneDXJSONPreservesDependencySurfaceMetadata(t *testing.T) {
 	loadDelta := 3
 	reportData := Report{
@@ -425,4 +467,93 @@ func TestFormatCycloneDXJSONKeepsDuplicateComponentsStableAndAttributed(t *testi
 	requireCycloneDXProperty(t, bom.Components[0].Properties, "lopper:baseline:used-exports-count-delta", "1")
 	requireCycloneDXProperty(t, bom.Components[1].Properties, "lopper:used-imports", `[{"name":"b","module":"m/b"}]`)
 	requireCycloneDXProperty(t, bom.Components[1].Properties, "lopper:baseline:used-exports-count-delta", "9")
+}
+
+func TestFormatCycloneDXJSONMapsDuplicatePURLBaselineContextPerInstance(t *testing.T) {
+	current := Report{Dependencies: []DependencyReport{
+		{
+			Language:          "js-ts",
+			Name:              "dup",
+			Identity:          &DependencyIdentity{PURL: "pkg:npm/dup@1.0.0"},
+			UsedExportsCount:  1,
+			TotalExportsCount: 2,
+			UsedImports:       []ImportUse{{Name: "alpha", Module: "m/alpha"}},
+		},
+		{
+			Language:          "js-ts",
+			Name:              "dup",
+			Identity:          &DependencyIdentity{PURL: "pkg:npm/dup@2.0.0"},
+			UsedExportsCount:  11,
+			TotalExportsCount: 12,
+			UsedImports:       []ImportUse{{Name: "beta", Module: "m/beta"}},
+		},
+	}}
+	baseline := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "dup", Identity: &DependencyIdentity{PURL: "pkg:npm/dup@1.0.0"}, TotalExportsCount: 2},
+		{Language: "js-ts", Name: "dup", Identity: &DependencyIdentity{PURL: "pkg:npm/dup@2.0.0"}, UsedExportsCount: 2, TotalExportsCount: 12},
+	}}
+	comparison := ComputeBaselineComparison(current, baseline)
+	current.BaselineComparison = &comparison
+
+	output, err := NewFormatter().Format(current, FormatCycloneDX)
+	if err != nil {
+		t.Fatalf("format CycloneDX duplicate purls: %v", err)
+	}
+
+	bom := decodeCycloneDXBOM(t, output)
+	if len(bom.Components) != 2 {
+		t.Fatalf("expected two duplicate purl components, got %#v", bom.Components)
+	}
+	requireCycloneDXProperty(t, bom.Components[0].Properties, "lopper:used-imports", `[{"name":"alpha","module":"m/alpha"}]`)
+	requireCycloneDXProperty(t, bom.Components[0].Properties, "lopper:baseline:used-exports-count-delta", "1")
+	requireCycloneDXProperty(t, bom.Components[1].Properties, "lopper:used-imports", `[{"name":"beta","module":"m/beta"}]`)
+	requireCycloneDXProperty(t, bom.Components[1].Properties, "lopper:baseline:used-exports-count-delta", "9")
+}
+
+func TestFormatCycloneDXJSONKeepsLiteralSuffixLikeBasesGloballyUnique(t *testing.T) {
+	reportData := Report{Dependencies: []DependencyReport{
+		{Language: "js-ts", Name: "x", UsedImports: []ImportUse{{Name: "first", Module: "m/first"}}},
+		{Language: "js-ts", Name: "x", UsedImports: []ImportUse{{Name: "second", Module: "m/second"}}},
+		{Language: "js-ts", Name: "x", UsedImports: []ImportUse{{Name: "third-long", Module: "m/third-long"}}},
+		{Language: "js-ts", Name: "x:2", UsedImports: []ImportUse{{Name: "literal", Module: "m/literal"}}},
+	}}
+
+	output, err := NewFormatter().Format(reportData, FormatCycloneDX)
+	if err != nil {
+		t.Fatalf("format adversarial CycloneDX duplicate refs: %v", err)
+	}
+
+	bom := decodeCycloneDXBOM(t, output)
+	if len(bom.Components) != 4 {
+		t.Fatalf("expected four adversarial components, got %#v", bom.Components)
+	}
+
+	seen := map[string]struct{}{}
+	wantRefs := map[string]string{
+		`[{"name":"first","module":"m/first"}]`:           "lopper:dependency:js-ts:x",
+		`[{"name":"second","module":"m/second"}]`:         "lopper:dependency:js-ts:x:3",
+		`[{"name":"third-long","module":"m/third-long"}]`: "lopper:dependency:js-ts:x:4",
+		`[{"name":"literal","module":"m/literal"}]`:       "lopper:dependency:js-ts:x:2",
+	}
+	for _, component := range bom.Components {
+		if _, exists := seen[component.BOMRef]; exists {
+			t.Fatalf("expected globally unique bom-refs, duplicate=%q components=%#v", component.BOMRef, bom.Components)
+		}
+		seen[component.BOMRef] = struct{}{}
+		usedImports, ok := cycloneDXPropertyValue(component.Properties, "lopper:used-imports")
+		if !ok {
+			t.Fatalf("expected used-imports property for %#v", component)
+		}
+		wantRef, ok := wantRefs[usedImports]
+		if !ok {
+			t.Fatalf("unexpected component properties %#v from %#v", component.Properties, bom.Components)
+		}
+		if component.BOMRef != wantRef {
+			t.Fatalf("expected used-imports %s to keep ref %q, got %q", usedImports, wantRef, component.BOMRef)
+		}
+		delete(wantRefs, usedImports)
+	}
+	if len(wantRefs) != 0 {
+		t.Fatalf("expected all adversarial components to be asserted, missing %#v from %#v", wantRefs, bom.Components)
+	}
 }

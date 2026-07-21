@@ -3,6 +3,7 @@ package model
 type DependencyReport struct {
 	Language               string                  `json:"language,omitempty"`
 	Name                   string                  `json:"name"`
+	Identity               *DependencyIdentity     `json:"identity,omitempty"`
 	UsedExportsCount       int                     `json:"usedExportsCount"`
 	TotalExportsCount      int                     `json:"totalExportsCount"`
 	UsedPercent            float64                 `json:"usedPercent"`
@@ -22,16 +23,57 @@ type DependencyReport struct {
 	Provenance             *DependencyProvenance   `json:"provenance,omitempty"`
 }
 
-type VulnerabilityFinding struct {
-	AdvisoryID    string   `json:"advisoryId"`
-	Package       string   `json:"package"`
-	Severity      string   `json:"severity"`
-	FixedVersion  string   `json:"fixedVersion,omitempty"`
-	Source        string   `json:"source"`
-	Priority      string   `json:"priority"`
-	PriorityScore float64  `json:"priorityScore"`
-	Reachable     bool     `json:"reachable"`
+type DependencyIdentity struct {
+	Ecosystem     string   `json:"ecosystem,omitempty"`
+	Name          string   `json:"name,omitempty"`
+	Namespace     string   `json:"namespace,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	VersionStatus string   `json:"versionStatus,omitempty"`
+	PURL          string   `json:"purl,omitempty"`
+	PURLStatus    string   `json:"purlStatus,omitempty"`
+	Source        string   `json:"source,omitempty"`
+	Confidence    string   `json:"confidence,omitempty"`
 	Evidence      []string `json:"evidence,omitempty"`
+	Conflicts     []string `json:"conflicts,omitempty"`
+}
+
+type VulnerabilityFinding struct {
+	AdvisoryID    string                          `json:"advisoryId"`
+	Package       string                          `json:"package"`
+	Severity      string                          `json:"severity"`
+	FixedVersion  string                          `json:"fixedVersion,omitempty"`
+	Source        string                          `json:"source"`
+	Priority      string                          `json:"priority"`
+	PriorityScore float64                         `json:"priorityScore"`
+	Reachable     bool                            `json:"reachable"`
+	Decision      *VulnerabilityExceptionDecision `json:"decision,omitempty"`
+	Evidence      []string                        `json:"evidence,omitempty"`
+}
+
+type VulnerabilityExceptionDecision struct {
+	Status        string `json:"status"`
+	Justification string `json:"justification,omitempty"`
+	Owner         string `json:"owner,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	Expires       string `json:"expires,omitempty"`
+	Source        string `json:"source,omitempty"`
+	Expired       bool   `json:"expired,omitempty"`
+}
+
+type VulnerabilityException struct {
+	VulnerabilityID string `json:"vulnerability_id" yaml:"vulnerability_id"`
+	PURL            string `json:"purl,omitempty" yaml:"purl,omitempty"`
+	Package         string `json:"package,omitempty" yaml:"package,omitempty"`
+	Repository      string `json:"repository,omitempty" yaml:"repository,omitempty"`
+	Path            string `json:"path,omitempty" yaml:"path,omitempty"`
+	Owner           string `json:"owner" yaml:"owner"`
+	Reason          string `json:"reason" yaml:"reason"`
+	Status          string `json:"status" yaml:"status"`
+	Justification   string `json:"justification,omitempty" yaml:"justification,omitempty"`
+	Issued          string `json:"issued,omitempty" yaml:"issued,omitempty"`
+	Expires         string `json:"expires" yaml:"expires"`
+	Source          string `json:"source,omitempty" yaml:"source,omitempty"`
 }
 
 type DependencyLicense struct {

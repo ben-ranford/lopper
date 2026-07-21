@@ -24,6 +24,10 @@ func (f *Formatter) Format(report Report, format Format) (string, error) {
 		return formatPRComment(report), nil
 	case FormatCycloneDX:
 		return formatCycloneDXJSON(report)
+	case FormatSPDX:
+		return formatSPDXJSON(report)
+	case FormatVEX:
+		return formatCycloneDXVEXJSON(report)
 	default:
 		return "", ErrUnknownFormat
 	}

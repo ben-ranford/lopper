@@ -6,7 +6,6 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 type preparedAnalyseExecution struct {
@@ -29,59 +28,46 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 		return preparedAnalyseExecution{}, err
 	}
 
-	lowConfidence := req.Analyse.Thresholds.LowConfidenceWarningPercent
-	minUsage := req.Analyse.Thresholds.MinUsagePercentForRecommendations
-	weights := thresholds.RemovalCandidateWeights(req.Analyse.Thresholds)
 	runtimeTracePath, runtimeTracePathExplicit := prepareRuntimeTracePlan(req)
-	effectiveThresholds := report.EffectiveThresholds{
-		FailOnIncreasePercent:             req.Analyse.Thresholds.FailOnIncreasePercent,
-		LowConfidenceWarningPercent:       req.Analyse.Thresholds.LowConfidenceWarningPercent,
-		MinUsagePercentForRecommendations: req.Analyse.Thresholds.MinUsagePercentForRecommendations,
-		MaxUncertainImportCount:           req.Analyse.Thresholds.MaxUncertainImportCount,
-		ReachableVulnerabilityPriority:    req.Analyse.Thresholds.ReachableVulnerabilityPriority,
+	baseRequest := analysis.Request{
+		RepoPath:                 req.RepoPath,
+		Dependency:               req.Analyse.Dependency,
+		TopN:                     req.Analyse.TopN,
+		ScopeMode:                req.Analyse.ScopeMode,
+		SuggestOnly:              req.Analyse.SuggestOnly || req.Analyse.ApplyCodemod,
+		Language:                 req.Analyse.Language,
+		ConfigPath:               req.Analyse.ConfigPath,
+		RuntimeProfile:           req.Analyse.RuntimeProfile,
+		RuntimeTracePath:         runtimeTracePath,
+		RuntimeTracePathExplicit: runtimeTracePathExplicit,
+		RuntimeTestCommand:       strings.TrimSpace(req.Analyse.RuntimeTestCommand),
+		IncludePatterns:          req.Analyse.IncludePatterns,
+		ExcludePatterns:          req.Analyse.ExcludePatterns,
+		Features:                 req.Analyse.Features,
+		Cache: &analysis.CacheOptions{
+			Enabled:  req.Analyse.CacheEnabled,
+			Path:     req.Analyse.CachePath,
+			ReadOnly: req.Analyse.CacheReadOnly,
+		},
 	}
+	policy := analysisRequestPolicy{
+		thresholds:              req.Analyse.Thresholds,
+		advisorySourcePath:      req.Analyse.AdvisorySourcePath,
+		vulnerabilityExceptions: req.Analyse.VulnerabilityExceptions,
+		policySources:           req.Analyse.PolicySources,
+		policyTrace:             req.Analyse.PolicyTrace,
+	}
+	preparedPolicy := prepareAnalysisPolicy(baseRequest, policy)
 
 	return preparedAnalyseExecution{
-		request: analysis.Request{
-			RepoPath:                          req.RepoPath,
-			Dependency:                        req.Analyse.Dependency,
-			TopN:                              req.Analyse.TopN,
-			ScopeMode:                         req.Analyse.ScopeMode,
-			SuggestOnly:                       req.Analyse.SuggestOnly || req.Analyse.ApplyCodemod,
-			Language:                          req.Analyse.Language,
-			ConfigPath:                        req.Analyse.ConfigPath,
-			RuntimeProfile:                    req.Analyse.RuntimeProfile,
-			RuntimeTracePath:                  runtimeTracePath,
-			RuntimeTracePathExplicit:          runtimeTracePathExplicit,
-			RuntimeTestCommand:                strings.TrimSpace(req.Analyse.RuntimeTestCommand),
-			IncludePatterns:                   req.Analyse.IncludePatterns,
-			ExcludePatterns:                   req.Analyse.ExcludePatterns,
-			Features:                          req.Analyse.Features,
-			LowConfidenceWarningPercent:       &lowConfidence,
-			MinUsagePercentForRecommendations: &minUsage,
-			RemovalCandidateWeights:           &weights,
-			LicenseDenyList:                   append([]string{}, req.Analyse.Thresholds.LicenseDenyList...),
-			IncludeRegistryProvenance:         req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
-			Cache: &analysis.CacheOptions{
-				Enabled:  req.Analyse.CacheEnabled,
-				Path:     req.Analyse.CachePath,
-				ReadOnly: req.Analyse.CacheReadOnly,
-			},
-		},
+		request:                 preparedPolicy.request,
 		lockfileWarnings:        lockfileWarnings,
-		effectiveThresholds:     effectiveThresholds,
-		removalCandidateWeights: weights,
-		licensePolicy: report.LicensePolicy{
-			Deny:                      report.SortedDenyList(req.Analyse.Thresholds.LicenseDenyList),
-			FailOnDenied:              req.Analyse.Thresholds.LicenseFailOnDeny,
-			IncludeRegistryProvenance: req.Analyse.Thresholds.LicenseIncludeRegistryProvenance,
-		},
-		vulnerabilityPolicy: report.VulnerabilityPolicy{
-			AdvisorySourcePath:         req.Analyse.AdvisorySourcePath,
-			ReachablePriorityThreshold: req.Analyse.Thresholds.ReachableVulnerabilityPriority,
-		},
-		policySources: append([]string{}, req.Analyse.PolicySources...),
-		policyTrace:   append([]report.PolicyMergeTrace{}, req.Analyse.PolicyTrace...),
+		effectiveThresholds:     preparedPolicy.effectiveThresholds,
+		removalCandidateWeights: preparedPolicy.removalCandidateWeights,
+		licensePolicy:           preparedPolicy.licensePolicy,
+		vulnerabilityPolicy:     preparedPolicy.vulnerabilityPolicy,
+		policySources:           preparedPolicy.policySources,
+		policyTrace:             preparedPolicy.policyTrace,
 	}, nil
 }
 

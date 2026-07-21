@@ -34,6 +34,11 @@ func normalizeDependencyID(value string) string {
 }
 
 func shouldSkipDir(name string) bool {
+	return ShouldSkipDirectory(name)
+}
+
+// ShouldSkipDirectory reports whether Ruby discovery ignores a directory.
+func ShouldSkipDirectory(name string) bool {
 	if shared.ShouldSkipCommonDir(name) {
 		return true
 	}

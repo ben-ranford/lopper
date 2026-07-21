@@ -58,15 +58,38 @@ var analyseCSVHeader = []string{
 	"provenance_signals",
 }
 
+var analyseCSVIdentityHeader = []string{
+	"identity_ecosystem",
+	"identity_name",
+	"identity_namespace",
+	"identity_version",
+	"identity_version_status",
+	"identity_purl",
+	"identity_purl_status",
+	"identity_source",
+	"identity_confidence",
+	"identity_evidence",
+	"identity_conflicts",
+}
+
 func formatCSV(reportData Report) (string, error) {
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
 
-	if err := writer.Write(analyseCSVHeader); err != nil {
+	includeIdentity := hasCSVIdentity(reportData.Dependencies)
+	header := append([]string{}, analyseCSVHeader...)
+	if includeIdentity {
+		header = append(header, analyseCSVIdentityHeader...)
+	}
+	if err := writer.Write(header); err != nil {
 		return "", err
 	}
 	for _, dep := range sortedDependenciesForCSV(reportData.Dependencies) {
-		if err := writer.Write(csvsanitize.EscapeLeadingFormulaRow(formatDependencyCSVRow(reportData, dep))); err != nil {
+		row := formatDependencyCSVRow(reportData, dep)
+		if includeIdentity {
+			row = append(row, formatDependencyIdentityCSVRow(dep.Identity)...)
+		}
+		if err := writer.Write(csvsanitize.EscapeLeadingFormulaRow(row)); err != nil {
 			return "", err
 		}
 	}
@@ -76,6 +99,15 @@ func formatCSV(reportData Report) (string, error) {
 		return "", err
 	}
 	return buffer.String(), nil
+}
+
+func hasCSVIdentity(dependencies []DependencyReport) bool {
+	for _, dep := range dependencies {
+		if dep.Identity != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedDependenciesForCSV(dependencies []DependencyReport) []DependencyReport {
@@ -149,6 +181,25 @@ func formatDependencyCSVRow(reportData Report, dep DependencyReport) []string {
 		formatCSVProvenanceSource(dep.Provenance),
 		formatCSVProvenanceConfidence(dep.Provenance),
 		formatCSVProvenanceSignals(dep.Provenance),
+	}
+}
+
+func formatDependencyIdentityCSVRow(identity *DependencyIdentity) []string {
+	if identity == nil {
+		return make([]string, len(analyseCSVIdentityHeader))
+	}
+	return []string{
+		identity.Ecosystem,
+		identity.Name,
+		identity.Namespace,
+		identity.Version,
+		identity.VersionStatus,
+		identity.PURL,
+		identity.PURLStatus,
+		identity.Source,
+		identity.Confidence,
+		joinSortedStrings(identity.Evidence),
+		joinSortedStrings(identity.Conflicts),
 	}
 }
 
@@ -344,7 +395,12 @@ func formatCSVVulnerabilities(findings []VulnerabilityFinding) string {
 	if len(findings) == 0 {
 		return ""
 	}
-	sorted := append([]VulnerabilityFinding{}, findings...)
+	sorted := make([]VulnerabilityFinding, 0, len(findings))
+	for _, finding := range findings {
+		if !FindingSuppressedByException(finding) {
+			sorted = append(sorted, finding)
+		}
+	}
 	sortVulnerabilityFindings(sorted)
 	items := make([]string, 0, len(sorted))
 	for _, finding := range sorted {
@@ -372,6 +428,9 @@ func formatCSVVulnerabilities(findings []VulnerabilityFinding) string {
 func formatCSVHighestVulnerabilityPriority(findings []VulnerabilityFinding) string {
 	highest := ""
 	for _, finding := range findings {
+		if FindingSuppressedByException(finding) {
+			continue
+		}
 		if priorityRank(finding.Priority) > priorityRank(highest) {
 			highest = finding.Priority
 		}
@@ -382,7 +441,7 @@ func formatCSVHighestVulnerabilityPriority(findings []VulnerabilityFinding) stri
 func countReachableCSVVulnerabilities(findings []VulnerabilityFinding) int {
 	count := 0
 	for _, finding := range findings {
-		if finding.Reachable {
+		if finding.Reachable && !FindingSuppressedByException(finding) {
 			count++
 		}
 	}

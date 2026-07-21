@@ -62,6 +62,9 @@ func repoErrorRemediationItem(input RepoInput, repoNameCounts map[string]int, er
 func vulnerabilityRemediationItems(repoID, repoLabel, repoPath, dependencyName string, findings []report.VulnerabilityFinding) []RemediationItem {
 	items := make([]RemediationItem, 0, len(findings))
 	for _, finding := range findings {
+		if report.FindingSuppressedByException(finding) {
+			continue
+		}
 		advisoryID := strings.TrimSpace(finding.AdvisoryID)
 		priority := normalizeRemediationLevel(finding.Priority)
 		severity := normalizeRemediationLevel(finding.Severity)
@@ -358,6 +361,11 @@ func remediationItemDelta(kind RemediationItemDeltaKind, item, baseline Remediat
 		RepoPath:         item.RepoPath,
 		Dependency:       item.Dependency,
 		Category:         item.Category,
+		Owner:            item.Owner,
+		Team:             item.Team,
+		Due:              item.Due,
+		Status:           item.Status,
+		RoutingSource:    item.RoutingSource,
 		Severity:         item.Severity,
 		Priority:         item.Priority,
 		BaselineSeverity: baseline.Severity,
@@ -411,6 +419,11 @@ func normalizeRemediationItem(item RemediationItem) RemediationItem {
 	item.RepoPath = strings.TrimSpace(item.RepoPath)
 	item.Dependency = strings.TrimSpace(item.Dependency)
 	item.Category = strings.TrimSpace(item.Category)
+	item.Owner = strings.TrimSpace(item.Owner)
+	item.Team = strings.TrimSpace(item.Team)
+	item.Due = strings.TrimSpace(item.Due)
+	item.Status = strings.TrimSpace(item.Status)
+	item.RoutingSource = strings.TrimSpace(item.RoutingSource)
 	item.Severity = normalizeRemediationLevel(item.Severity)
 	item.Priority = normalizeRemediationLevel(item.Priority)
 	item.Evidence = compactEvidence(item.Evidence)

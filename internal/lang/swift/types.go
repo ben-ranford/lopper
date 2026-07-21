@@ -126,3 +126,10 @@ type carthageDependency struct {
 	Reference  string
 	Dependency string
 }
+
+// CarthageResolvedIdentity is the package identity and semantic version pinned
+// by a Cartfile.resolved entry.
+type CarthageResolvedIdentity struct {
+	Name    string
+	Version string
+}

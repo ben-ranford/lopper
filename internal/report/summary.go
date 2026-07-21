@@ -103,7 +103,7 @@ func (b *vulnerabilitySummaryBuilder) add(findings []VulnerabilityFinding) {
 		priority := NormalizeVulnerabilityPriorityThreshold(finding.Priority)
 		b.bySeverity[severity]++
 		b.byPriority[priority]++
-		if finding.Reachable {
+		if finding.Reachable && !FindingSuppressedByException(finding) {
 			b.reachableFindings++
 		}
 		if severityRank(severity) > severityRank(b.highestSeverity) {

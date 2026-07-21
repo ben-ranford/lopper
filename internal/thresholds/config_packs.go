@@ -13,6 +13,7 @@ import (
 
 const invalidPolicyPackErrFmt = "parse config file %s: invalid policy.packs[%d]: %w"
 const advisorySourceField = "advisories.source"
+const advisoryExceptionsField = "advisories.exceptions"
 
 type packResolver struct {
 	repoPath string
@@ -24,12 +25,13 @@ type packTrust struct {
 }
 
 type resolveMergeResult struct {
-	overrides         Overrides
-	scope             PathScope
-	features          FeatureConfig
-	advisorySource    advisorySourceConfig
-	appliedSourcesLow []string
-	policyTrace       map[string]string
+	overrides               Overrides
+	scope                   PathScope
+	features                FeatureConfig
+	advisorySource          advisorySourceConfig
+	vulnerabilityExceptions vulnerabilityExceptionConfig
+	appliedSourcesLow       []string
+	policyTrace             map[string]string
 }
 
 func (r *resolveMergeResult) policySourcesHighToLow() []string {
@@ -92,6 +94,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	mergedScope := PathScope{}
 	mergedFeatures := FeatureConfig{}
 	mergedAdvisorySource := advisorySourceConfig{}
+	mergedVulnerabilityExceptions := vulnerabilityExceptionConfig{}
 	mergedTrace := defaultPolicyTrace()
 	sources := make([]string, 0, len(cfg.Policy.Packs)+1)
 	for idx, packRef := range cfg.Policy.Packs {
@@ -103,6 +106,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 		mergedScope = mergeScope(mergedScope, packResult.scope)
 		mergedFeatures = mergeFeatures(mergedFeatures, packResult.features)
 		mergedAdvisorySource = mergeAdvisorySource(mergedAdvisorySource, packResult.advisorySource)
+		mergedVulnerabilityExceptions = mergeVulnerabilityExceptions(mergedVulnerabilityExceptions, packResult.vulnerabilityExceptions)
 		mergedTrace = mergePolicyTrace(mergedTrace, packResult.policyTrace)
 		sources = append(sources, packResult.appliedSourcesLow...)
 	}
@@ -116,17 +120,24 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	mergedFeatures = mergeFeatures(mergedFeatures, cfg.Features.toFeatureConfig())
 	selfAdvisorySource := cfg.Advisories.toAdvisorySourceConfig(canonical)
 	mergedAdvisorySource = mergeAdvisorySource(mergedAdvisorySource, selfAdvisorySource)
+	selfVulnerabilityExceptions, err := cfg.Advisories.toVulnerabilityExceptionConfig(canonical)
+	if err != nil {
+		return resolveMergeResult{}, fmt.Errorf(parseConfigErrFmt, canonical, err)
+	}
+	mergedVulnerabilityExceptions = mergeVulnerabilityExceptions(mergedVulnerabilityExceptions, selfVulnerabilityExceptions)
 	mergedTrace = mergePolicyTrace(mergedTrace, traceForOverrides(canonical, selfOverrides))
 	mergedTrace = mergePolicyTrace(mergedTrace, traceForAdvisorySource(canonical, selfAdvisorySource))
+	mergedTrace = mergePolicyTrace(mergedTrace, traceForVulnerabilityExceptions(canonical, selfVulnerabilityExceptions))
 	sources = append(sources, canonical)
 
 	return resolveMergeResult{
-		overrides:         merged,
-		scope:             mergedScope,
-		features:          mergedFeatures,
-		advisorySource:    mergedAdvisorySource,
-		appliedSourcesLow: dedupeStable(sources),
-		policyTrace:       mergedTrace,
+		overrides:               merged,
+		scope:                   mergedScope,
+		features:                mergedFeatures,
+		advisorySource:          mergedAdvisorySource,
+		vulnerabilityExceptions: mergedVulnerabilityExceptions,
+		appliedSourcesLow:       dedupeStable(sources),
+		policyTrace:             mergedTrace,
 	}, nil
 }
 
@@ -243,12 +254,13 @@ var policyTraceFieldNames = []string{
 	"license.fail_on_deny",
 	"license.include_registry_provenance",
 	advisorySourceField,
+	advisoryExceptionsField,
 }
 
 func defaultPolicyTrace() map[string]string {
 	trace := make(map[string]string, len(policyTraceFieldNames))
 	for _, field := range policyTraceFieldNames {
-		if field == advisorySourceField {
+		if field == advisorySourceField || field == advisoryExceptionsField {
 			continue
 		}
 		trace[field] = defaultPolicySource
@@ -309,6 +321,13 @@ func traceForOverrides(source string, overrides Overrides) map[string]string {
 		trace["thresholds.reachable_vulnerability_priority"] = source
 	}
 	return trace
+}
+
+func traceForVulnerabilityExceptions(source string, exceptions vulnerabilityExceptionConfig) map[string]string {
+	if !exceptions.set && len(exceptions.exceptions) == 0 {
+		return nil
+	}
+	return map[string]string{advisoryExceptionsField: source}
 }
 
 func traceForAdvisorySource(source string, advisorySource advisorySourceConfig) map[string]string {

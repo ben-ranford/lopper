@@ -93,11 +93,32 @@ When running locally with `act`, target the Linux-backed jobs explicitly (for ex
 
 ## First-party GitHub Action
 
-Lopper ships the `Scan with Lopper` composite GitHub Action at the repository root. The action downloads a pinned Lopper release binary, builds `lopper analyse` arguments from named inputs, and supports the same CI outputs used by the CLI: threshold-gated analysis, JSON baselines, PR-comment markdown, and SARIF.
+Lopper ships the `Scan with Lopper` composite GitHub Action at the repository root. The action downloads a pinned Lopper release binary, builds Lopper arguments from named inputs, and supports the same CI outputs used by the CLI: threshold-gated analysis, JSON baselines, PR-comment markdown, SARIF, preview dashboard mode, and preview base/head PR review mode.
 
 Pin both the action ref and the `version` input for fully reproducible CI. The default `version: action` uses the matching concrete action tag when the workflow references a full release tag such as `v1.7.0`; when the workflow references a floating action tag such as `v1` or `v1.7`, it resolves the newest stable Lopper release in that series; otherwise it resolves the latest stable release. The action intentionally does not expose a raw `extra-args` passthrough, so shell values are never re-parsed by `eval` or another shell.
 
 The standard release workflow publishes the semver action ref and updates the floating action refs with every stable release.
+
+Preview action modes are explicitly gated:
+
+- `mode: dashboard` requires `enable-feature: action-dashboard-mode-preview`
+- `mode: pr-review` requires `enable-feature: dependency-surface-pr-review-preview`
+
+`mode: pr-review` accepts `pr-base` and `pr-head` as full immutable commit SHAs and does not infer merge bases. It creates detached temporary worktrees with Git hooks disabled and does not run package-manager or runtime test commands.
+
+```yaml
+- uses: ben-ranford/lopper@v1.9.0
+  with:
+    version: v1.9.0
+    mode: pr-review
+    repo: .
+    pr-base: ${{ github.event.pull_request.base.sha }}
+    pr-head: ${{ github.event.pull_request.head.sha }}
+    pr-review-format: markdown
+    pr-review-output: .artifacts/lopper-pr-review.md
+    pr-fail-on-regression: 'true'
+    enable-feature: dependency-surface-pr-review-preview,dependency-identity-preview
+```
 
 ### Pull request comment workflow
 

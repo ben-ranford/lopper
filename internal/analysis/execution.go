@@ -43,7 +43,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
 	rootSeen := make(map[string]struct{})
-	roots, rootWarnings := scopedCandidateRoots(req.ScopeMode, candidate.Detection.Roots, repoPath)
+	roots, rootWarnings := scopedCandidateRootsForRequest(req, candidate.Detection.Roots, repoPath)
 	warnings = append(warnings, rootWarnings...)
 	for _, root := range roots {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)

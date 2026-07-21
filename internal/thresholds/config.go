@@ -15,14 +15,15 @@ const (
 )
 
 type LoadResult struct {
-	Overrides          Overrides
-	Resolved           Values
-	Scope              PathScope
-	Features           FeatureConfig
-	AdvisorySourcePath string
-	ConfigPath         string
-	PolicySources      []string
-	PolicyTrace        []report.PolicyMergeTrace
+	Overrides               Overrides
+	Resolved                Values
+	Scope                   PathScope
+	Features                FeatureConfig
+	AdvisorySourcePath      string
+	VulnerabilityExceptions []report.VulnerabilityException
+	ConfigPath              string
+	PolicySources           []string
+	PolicyTrace             []report.PolicyMergeTrace
 }
 
 type PathScope struct {
@@ -60,12 +61,13 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	}
 	if !found {
 		return LoadResult{
-			Resolved:           Defaults(),
-			Scope:              normalizePathScope(PathScope{}),
-			Features:           normalizeFeatureConfig(FeatureConfig{}),
-			AdvisorySourcePath: "",
-			PolicySources:      []string{defaultPolicySource},
-			PolicyTrace:        policyTraceFromMap(defaultPolicyTrace()),
+			Resolved:                Defaults(),
+			Scope:                   normalizePathScope(PathScope{}),
+			Features:                normalizeFeatureConfig(FeatureConfig{}),
+			AdvisorySourcePath:      "",
+			VulnerabilityExceptions: nil,
+			PolicySources:           []string{defaultPolicySource},
+			PolicyTrace:             policyTraceFromMap(defaultPolicyTrace()),
 		}, nil
 	}
 
@@ -84,14 +86,15 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 	}
 
 	return LoadResult{
-		Overrides:          normalizeOverrides(mergeResult.overrides),
-		Resolved:           resolved,
-		Scope:              normalizePathScope(mergeResult.scope),
-		Features:           normalizeFeatureConfig(mergeResult.features),
-		AdvisorySourcePath: mergeResult.advisorySource.source,
-		ConfigPath:         configPath,
-		PolicySources:      mergeResult.policySourcesHighToLow(),
-		PolicyTrace:        policyTraceFromMap(mergeResult.policyTrace),
+		Overrides:               normalizeOverrides(mergeResult.overrides),
+		Resolved:                resolved,
+		Scope:                   normalizePathScope(mergeResult.scope),
+		Features:                normalizeFeatureConfig(mergeResult.features),
+		AdvisorySourcePath:      mergeResult.advisorySource.source,
+		VulnerabilityExceptions: append([]report.VulnerabilityException{}, mergeResult.vulnerabilityExceptions.exceptions...),
+		ConfigPath:              configPath,
+		PolicySources:           mergeResult.policySourcesHighToLow(),
+		PolicyTrace:             policyTraceFromMap(mergeResult.policyTrace),
 	}, nil
 }
 
@@ -136,7 +139,8 @@ type rawFeatures struct {
 }
 
 type rawAdvisories struct {
-	Source *string `yaml:"source" json:"source"`
+	Source     *string                         `yaml:"source" json:"source"`
+	Exceptions []report.VulnerabilityException `yaml:"exceptions" json:"exceptions"`
 }
 
 type rawThresholds struct {

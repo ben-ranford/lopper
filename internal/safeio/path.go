@@ -27,6 +27,13 @@ type exactFileTarget struct {
 	fileName  string
 }
 
+func resolveRelativeTarget(targetPath string, policy rootedTargetPolicy) (string, error) {
+	if filepath.IsAbs(targetPath) {
+		return "", fmt.Errorf("path escapes root: %s", targetPath)
+	}
+	return normalizeRootedTarget(targetPath, filepath.Clean(targetPath), policy)
+}
+
 func resolveRootedTarget(rootDir, targetPath string, policy rootedTargetPolicy) (rootedTarget, error) {
 	rootAbs, err := resolveAbsolutePath("root", rootDir)
 	if err != nil {

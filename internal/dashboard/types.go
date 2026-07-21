@@ -10,9 +10,12 @@ import (
 type Format string
 
 const (
-	FormatJSON Format = "json"
-	FormatCSV  Format = "csv"
-	FormatHTML Format = "html"
+	FormatJSON          Format = "json"
+	FormatCSV           Format = "csv"
+	FormatHTML          Format = "html"
+	FormatSlackSummary  Format = "slack-summary"
+	FormatTeamsSummary  Format = "teams-summary"
+	FormatCycloneDXJSON Format = "cyclonedx-json"
 )
 
 var ErrUnknownFormat = errors.New("unknown dashboard format")
@@ -25,6 +28,12 @@ func ParseFormat(value string) (Format, error) {
 		return FormatCSV, nil
 	case string(FormatHTML):
 		return FormatHTML, nil
+	case string(FormatSlackSummary):
+		return FormatSlackSummary, nil
+	case string(FormatTeamsSummary):
+		return FormatTeamsSummary, nil
+	case string(FormatCycloneDXJSON):
+		return FormatCycloneDXJSON, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrUnknownFormat, value)
 	}
@@ -112,6 +121,16 @@ type CrossRepoDependency struct {
 	Count        int      `json:"count"`
 }
 
+type PortfolioComponent struct {
+	Repo      string `json:"repo"`
+	RepoPath  string `json:"repo_path,omitempty"`
+	Language  string `json:"language,omitempty"`
+	Name      string `json:"name"`
+	Version   string `json:"version,omitempty"`
+	PURL      string `json:"purl,omitempty"`
+	Ecosystem string `json:"ecosystem,omitempty"`
+}
+
 type Summary struct {
 	TotalRepos                  int `json:"total_repos"`
 	TotalDeps                   int `json:"total_deps"`
@@ -130,6 +149,11 @@ type RemediationItem struct {
 	RepoPath        string   `json:"repo_path,omitempty"`
 	Dependency      string   `json:"dependency,omitempty"`
 	Category        string   `json:"category"`
+	Owner           string   `json:"owner,omitempty"`
+	Team            string   `json:"team,omitempty"`
+	Due             string   `json:"due,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	RoutingSource   string   `json:"routing_source,omitempty"`
 	Severity        string   `json:"severity,omitempty"`
 	Priority        string   `json:"priority,omitempty"`
 	Evidence        []string `json:"evidence,omitempty"`
@@ -205,6 +229,11 @@ type RemediationItemDelta struct {
 	RepoPath         string                   `json:"repo_path,omitempty"`
 	Dependency       string                   `json:"dependency,omitempty"`
 	Category         string                   `json:"category"`
+	Owner            string                   `json:"owner,omitempty"`
+	Team             string                   `json:"team,omitempty"`
+	Due              string                   `json:"due,omitempty"`
+	Status           string                   `json:"status,omitempty"`
+	RoutingSource    string                   `json:"routing_source,omitempty"`
 	Severity         string                   `json:"severity,omitempty"`
 	Priority         string                   `json:"priority,omitempty"`
 	BaselineSeverity string                   `json:"baseline_severity,omitempty"`
@@ -214,11 +243,12 @@ type RemediationItemDelta struct {
 }
 
 type Report struct {
-	GeneratedAt        time.Time             `json:"generated_at"`
-	Repos              []RepoResult          `json:"repos"`
-	Summary            Summary               `json:"summary"`
-	BaselineComparison *BaselineComparison   `json:"baseline_comparison,omitempty"`
-	CrossRepoDeps      []CrossRepoDependency `json:"cross_repo_deps,omitempty"`
-	RemediationItems   []RemediationItem     `json:"remediation_items,omitempty"`
-	SourceWarnings     []string              `json:"warnings,omitempty"`
+	GeneratedAt         time.Time             `json:"generated_at"`
+	Repos               []RepoResult          `json:"repos"`
+	Summary             Summary               `json:"summary"`
+	BaselineComparison  *BaselineComparison   `json:"baseline_comparison,omitempty"`
+	CrossRepoDeps       []CrossRepoDependency `json:"cross_repo_deps,omitempty"`
+	RemediationItems    []RemediationItem     `json:"remediation_items,omitempty"`
+	PortfolioComponents []PortfolioComponent  `json:"portfolio_components,omitempty"`
+	SourceWarnings      []string              `json:"warnings,omitempty"`
 }

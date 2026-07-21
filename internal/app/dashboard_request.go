@@ -17,17 +17,20 @@ type resolvedDashboardRequest struct {
 	baselineKey       string
 	baselineLabel     string
 	saveBaseline      bool
+	routing           dashboard.RoutingOptions
 }
 
 func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, error) {
 	repos := normalizedDashboardRepos(req.Repos)
 	configFormat := ""
+	configOwnership := dashboard.ConfigOwnership{}
 	loadedConfig, hasConfig, err := loadDashboardConfig(req.ConfigPath)
 	if err != nil {
 		return resolvedDashboardRequest{}, err
 	}
 	if hasConfig {
 		configFormat = loadedConfig.Dashboard.Output
+		configOwnership = loadedConfig.Dashboard.Ownership
 		if strings.TrimSpace(req.BaselineStorePath) == "" {
 			req.BaselineStorePath = resolveDashboardConfigPath(loadedConfig.ConfigDir, loadedConfig.Dashboard.BaselineStore)
 		}
@@ -56,7 +59,22 @@ func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, er
 		baselineKey:       strings.TrimSpace(req.BaselineKey),
 		baselineLabel:     strings.TrimSpace(req.BaselineLabel),
 		saveBaseline:      req.SaveBaseline,
+		routing:           dashboardRoutingOptions(configOwnership),
 	}, nil
+}
+
+func dashboardRoutingOptions(config dashboard.ConfigOwnership) dashboard.RoutingOptions {
+	rules := make([]dashboard.RoutingRule, 0, len(config.Rules))
+	for _, rule := range config.Rules {
+		rules = append(rules, dashboard.RoutingRule(rule))
+	}
+	return dashboard.RoutingOptions{
+		DefaultOwner:  config.DefaultOwner,
+		DefaultTeam:   config.DefaultTeam,
+		DefaultStatus: config.DefaultStatus,
+		DefaultDue:    config.DefaultDue,
+		Rules:         rules,
+	}
 }
 
 func normalizedDashboardRepos(repos []DashboardRepo) []dashboard.RepoInput {

@@ -47,3 +47,24 @@ func TestScopedCandidateRootsChangedPackagesSuccessBranch(t *testing.T) {
 		t.Fatalf("expected changed-packages scope to include changed and dirty package roots, got %#v", roots)
 	}
 }
+
+func TestScopedCandidateRootsUsesExplicitChangedFilesWithoutWorkspaceFallback(t *testing.T) {
+	repoRoot := t.TempDir()
+	rootA := filepath.Join(repoRoot, "packages", "a")
+	rootB := filepath.Join(repoRoot, "packages", "b")
+	writeFile(t, filepath.Join(rootA, "a.txt"), "a1\n")
+	writeFile(t, filepath.Join(rootB, "b.txt"), "b1\n")
+
+	req := Request{
+		ScopeMode:            ScopeModeChangedPackages,
+		ChangedFiles:         []string{"packages/b/b.txt"},
+		ChangedFilesExplicit: true,
+	}
+	roots, warnings := scopedCandidateRootsForRequest(req, []string{rootA, rootB}, repoRoot)
+	if len(warnings) != 0 {
+		t.Fatalf("expected explicit changed-packages roots without warnings, got %#v", warnings)
+	}
+	if len(roots) != 1 || roots[0] != rootB {
+		t.Fatalf("expected explicit changed files to select package b only, got %#v", roots)
+	}
+}

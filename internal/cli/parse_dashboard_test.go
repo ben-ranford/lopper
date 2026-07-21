@@ -90,6 +90,11 @@ func TestParseArgsDashboardValidation(t *testing.T) {
 		t.Fatalf("unexpected dashboard source validation error: %v", err)
 	}
 
+	err = expectParseArgsError(t, []string{"dashboard", dashboardReposFlagName}, "expected dashboard flag value error")
+	if !strings.Contains(err.Error(), "flag needs an argument") {
+		t.Fatalf("unexpected dashboard flag value error: %v", err)
+	}
+
 	err = expectParseArgsError(t, []string{"dashboard", dashboardConfigFlagName, dashboardConfigFileName, "--top", "0"}, "expected dashboard top validation error")
 	if !strings.Contains(err.Error(), "--top must be > 0") {
 		t.Fatalf("unexpected dashboard top validation error: %v", err)

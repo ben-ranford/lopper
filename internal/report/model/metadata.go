@@ -55,6 +55,9 @@ type DependencyDelta struct {
 	DeniedIntroduced                   bool                `json:"deniedIntroduced,omitempty"`
 	ReachableVulnerabilityCountDelta   int                 `json:"reachableVulnerabilityCountDelta,omitempty"`
 	ReachableVulnerabilitiesIntroduced bool                `json:"reachableVulnerabilitiesIntroduced,omitempty"`
+	DependencyKey                      string              `json:"-"`
+	CurrentOrdinal                     int                 `json:"-"`
+	BaselineOrdinal                    int                 `json:"-"`
 }
 
 type DeniedLicenseDelta struct {
@@ -64,16 +67,18 @@ type DeniedLicenseDelta struct {
 }
 
 type VulnerabilityDelta struct {
-	Language      string   `json:"language,omitempty"`
-	Name          string   `json:"name"`
-	AdvisoryID    string   `json:"advisoryId"`
-	Package       string   `json:"package"`
-	Severity      string   `json:"severity"`
-	FixedVersion  string   `json:"fixedVersion,omitempty"`
-	Source        string   `json:"source"`
-	Priority      string   `json:"priority"`
-	PriorityScore float64  `json:"priorityScore"`
-	Evidence      []string `json:"evidence,omitempty"`
+	Language       string   `json:"language,omitempty"`
+	Name           string   `json:"name"`
+	AdvisoryID     string   `json:"advisoryId"`
+	Package        string   `json:"package"`
+	Severity       string   `json:"severity"`
+	FixedVersion   string   `json:"fixedVersion,omitempty"`
+	Source         string   `json:"source"`
+	Priority       string   `json:"priority"`
+	PriorityScore  float64  `json:"priorityScore"`
+	Evidence       []string `json:"evidence,omitempty"`
+	DependencyKey  string   `json:"-"`
+	CurrentOrdinal int      `json:"-"`
 }
 
 type RuntimeChangeType string

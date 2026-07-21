@@ -2,10 +2,16 @@ package model
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/xeipuuv/gojsonschema"
 )
 
 func TestReportJSONContractRoundTrip(t *testing.T) {
@@ -119,6 +125,56 @@ func TestReportJSONContractShape(t *testing.T) {
 	removalCandidate := jsonObject(t, dependency, "removalCandidate")
 	assertKeys(t, removalCandidate, "confidence", "impact", "rationale", "score", "usage", "weights")
 	assertKeys(t, jsonObject(t, removalCandidate, "weights"), "confidence", "impact", "usage")
+	if got, _ := root["schemaVersion"].(string); got != SchemaVersion {
+		t.Fatalf("expected schemaVersion %q, got %q", SchemaVersion, got)
+	}
+	if SchemaVersion == "0.1.0" {
+		t.Fatalf("expected identity-capable reports to use a bumped schema version, got %q", SchemaVersion)
+	}
+}
+
+func TestReportJSONContractMatchesPublicSchema(t *testing.T) {
+	source := representativeReport()
+	payload, err := json.Marshal(source)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+
+	schemaPath := reportSchemaFilePath(t)
+	schemaPayload, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("read report schema: %v", err)
+	}
+
+	var schemaDocument struct {
+		Properties map[string]struct {
+			Const string `json:"const"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schemaPayload, &schemaDocument); err != nil {
+		t.Fatalf("decode report schema: %v", err)
+	}
+	if got := schemaDocument.Properties["schemaVersion"].Const; got != SchemaVersion {
+		t.Fatalf("docs/report-schema.json schemaVersion const = %q, want %q", got, SchemaVersion)
+	}
+
+	schema, err := gojsonschema.NewSchema(gojsonschema.NewBytesLoader(schemaPayload))
+	if err != nil {
+		t.Fatalf("compile report schema: %v", err)
+	}
+	result, err := schema.Validate(gojsonschema.NewBytesLoader(payload))
+	if err != nil {
+		t.Fatalf("validate report schema: %v", err)
+	}
+	if result.Valid() {
+		return
+	}
+
+	messages := make([]string, 0, len(result.Errors()))
+	for _, item := range result.Errors() {
+		messages = append(messages, item.String())
+	}
+	t.Fatalf("representative report failed public schema validation: %s", strings.Join(messages, "; "))
 }
 
 func representativeReport() Report {
@@ -201,7 +257,7 @@ func representativeReport() Report {
 					},
 				},
 				Codemod: &CodemodReport{
-					Mode: "suggest",
+					Mode: "suggest-only",
 					Suggestions: []CodemodSuggestion{
 						{
 							Language:          "js-ts",
@@ -373,4 +429,14 @@ func jsonArray(t *testing.T, object map[string]any, key string) []any {
 		t.Fatalf("%s has type %T, want array", key, value)
 	}
 	return array
+}
+
+func reportSchemaFilePath(t *testing.T) string {
+	t.Helper()
+
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve current test file: runtime.Caller failed")
+	}
+	return filepath.Join(filepath.Dir(filename), "..", "..", "..", "docs", "report-schema.json")
 }

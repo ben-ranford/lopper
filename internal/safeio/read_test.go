@@ -37,6 +37,39 @@ func TestReadFileUnderReadsFileInsideRoot(t *testing.T) {
 	}
 }
 
+func TestRootedReadCloserReadAtReadsRandomAccessFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reader-at.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open file: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close file: %v", err)
+		}
+	})
+
+	buffer := make([]byte, 3)
+	count, err := (&rootedReadCloser{file: file}).ReadAt(buffer, 1)
+	if err != nil {
+		t.Fatalf("ReadAt returned error: %v", err)
+	}
+	if count != len(buffer) || string(buffer) != "ell" {
+		t.Fatalf("unexpected random-access read: count=%d data=%q", count, string(buffer))
+	}
+}
+
+func TestRootedReadCloserReadAtRejectsUnsupportedFile(t *testing.T) {
+	buffer := make([]byte, 1)
+	count, err := (&rootedReadCloser{file: &fakeFile{}}).ReadAt(buffer, 0)
+	if err == nil || !strings.Contains(err.Error(), "random access") {
+		t.Fatalf("expected random-access error, got count=%d err=%v", count, err)
+	}
+}
+
 func TestReadFileUnderLimitReadsFileInsideRoot(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, "nested", writeTestFileName)
@@ -66,6 +99,51 @@ func TestReadFileUnderLimitRejectsOversizedFile(t *testing.T) {
 	_, err := ReadFileUnderLimit(rootDir, targetPath, 4)
 	if !errors.Is(err, ErrFileTooLarge) {
 		t.Fatalf("expected ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestReadFileWithinRootReadsRelativeFile(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootDir, writeTestFileName), []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	root := openTestRoot(t, rootDir)
+	data, err := ReadFileWithinRoot(root, writeTestFileName)
+	if err != nil {
+		t.Fatalf("ReadFileWithinRoot returned error: %v", err)
+	}
+	if got := string(data); got != "hello" {
+		t.Fatalf(unexpectedContentFmt, got)
+	}
+}
+
+func TestReadFileWithinRootRejectsAbsolutePath(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+
+	_, err := ReadFileWithinRoot(root, filepath.Join(t.TempDir(), writeTestFileName))
+	if err == nil || !strings.Contains(err.Error(), escapesRootErr) {
+		t.Fatalf("expected absolute path rejection, got %v", err)
+	}
+}
+
+func TestReadFileWithinRootCloseError(t *testing.T) {
+	expectedErr := errors.New("close failure")
+	root := &fakeRoot{
+		open: func(string) (File, error) {
+			return &fakeFile{
+				read: func(p []byte) (int, error) {
+					copy(p, "hello")
+					return len("hello"), io.EOF
+				},
+				close: func() error { return expectedErr },
+			}, nil
+		},
+	}
+
+	_, err := ReadFileWithinRoot(root, writeTestFileName)
+	if err == nil || !errors.Is(err, expectedErr) {
+		t.Fatalf("expected close error, got %v", err)
 	}
 }
 
