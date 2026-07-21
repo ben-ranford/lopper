@@ -11,6 +11,7 @@ import (
 )
 
 var titlePattern = regexp.MustCompile(`^(feat|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
+var releasePleaseTitlePattern = regexp.MustCompile(`^chore\(main\): release [0-9]+\.[0-9]+\.[0-9]+$`)
 
 var placeholderTexts = []string{
 	"Describe the problem and the intent of this change. Use `N/A` only when the section truly does not apply.",
@@ -49,6 +50,11 @@ type repoMergePolicy struct {
 	squashMergeCommitTitle string
 }
 
+type releasePleaseIdentity struct {
+	headRepositoryFullName string
+	repositoryFullName     string
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stderr))
 }
@@ -58,6 +64,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	title := fs.String("title", strings.TrimSpace(getenv("PR_TITLE")), "pull request title")
 	headRef := fs.String("head-ref", strings.TrimSpace(getenv("PR_HEAD_REF")), "pull request head ref")
+	headRepositoryFullName := fs.String("head-repo-full-name", strings.TrimSpace(getenv("PR_HEAD_REPO_FULL_NAME")), "pull request head repository full name")
+	repositoryFullName := fs.String("repo-full-name", strings.TrimSpace(getenv("REPOSITORY_FULL_NAME")), "repository full name")
 	bodyFile := fs.String("body-file", "", "path to a file containing the pull request body")
 	checkRepoPolicy := fs.Bool("check-repo-policy", false, "validate repository merge policy")
 	allowMergeCommit := fs.String("allow-merge-commit", strings.TrimSpace(getenv("REPO_ALLOW_MERGE_COMMIT")), "whether the repository allows merge commits")
@@ -77,7 +85,12 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		body = string(data)
 	}
 
-	if err := validate(*title, *headRef, body); err != nil {
+	releaseIdentity := releasePleaseIdentity{
+		headRepositoryFullName: *headRepositoryFullName,
+		repositoryFullName:     *repositoryFullName,
+	}
+
+	if err := validate(*title, *headRef, body, releaseIdentity); err != nil {
 		return writeRunError(stderr, "%v\n", err)
 	}
 	if *checkRepoPolicy {
@@ -105,14 +118,14 @@ func writeErrorMessage(stderr io.Writer, format string, args ...any) {
 	}
 }
 
-func validate(title, headRef, body string) error {
+func validate(title, headRef, body string, releaseIdentity releasePleaseIdentity) error {
 	var failures []string
 	title = strings.TrimSpace(title)
 	if !titlePattern.MatchString(title) {
 		failures = append(failures, "PR title must be a Conventional Commit title using one of feat, fix, perf, docs, refactor, revert, test, ci, build, or chore; use fix(scope): ... for bug fixes instead of bug: ...")
 	}
 
-	if isReleasePleasePR(headRef, title) {
+	if isTrustedReleasePleasePR(headRef, title, releaseIdentity) {
 		if len(failures) > 0 {
 			return errors.New(strings.Join(failures, "\n"))
 		}
@@ -182,9 +195,16 @@ func requiredItemFailures(content string, items []string, valid func(string, str
 	return failures
 }
 
-func isReleasePleasePR(headRef, title string) bool {
-	return strings.HasPrefix(strings.TrimSpace(headRef), "release-please--branches--") &&
-		regexp.MustCompile(`^chore\(main\): release [0-9]+\.[0-9]+\.[0-9]+$`).MatchString(strings.TrimSpace(title))
+func isTrustedReleasePleasePR(headRef, title string, identity releasePleaseIdentity) bool {
+	if strings.TrimSpace(headRef) != "release-please--branches--main" {
+		return false
+	}
+	if !releasePleaseTitlePattern.MatchString(strings.TrimSpace(title)) {
+		return false
+	}
+	headRepositoryFullName := strings.TrimSpace(identity.headRepositoryFullName)
+	repositoryFullName := strings.TrimSpace(identity.repositoryFullName)
+	return headRepositoryFullName != "" && headRepositoryFullName == repositoryFullName
 }
 
 func parseSections(body string) map[string]string {
