@@ -231,11 +231,13 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 	rejectOverrides := workflowStepByName(t, workflow.Jobs, "enforce", "Reject release overrides on preview PRs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "preview override condition", got: rejectOverrides.If, want: "${{ steps.classify_pr.outputs.preview_pr == 'true' }}"},
+		{label: "preview PR body", got: rejectOverrides.Env["PR_BODY"], want: "${{ github.event.pull_request.body }}"},
 	})
 	assertWorkflowStepRunContainsAll(t, rejectOverrides, "preview release override guard", []string{
+		`printf '%s\n' "${PR_BODY}"`,
+		`(BEGIN|END)_COMMIT_OVERRIDE`,
 		`git log --format=%B "origin/${base_ref}..HEAD"`,
 		`(BREAKING[ -]CHANGE|Release-As)`,
-		`(BEGIN|END)_COMMIT_OVERRIDE`,
 	})
 }
 

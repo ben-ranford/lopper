@@ -73,11 +73,18 @@ jobs:
         if: ${{ steps.classify_pr.outputs.preview_pr == 'true' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
           base_ref="${PR_BASE_REF:-main}"
           commit_messages="$(mktemp "${RUNNER_TEMP}/preview-commit-messages.XXXXXX")"
-          trap 'rm -f "${commit_messages}"' EXIT
+          pr_body="$(mktemp "${RUNNER_TEMP}/preview-pr-body.XXXXXX")"
+          trap 'rm -f "${commit_messages}" "${pr_body}"' EXIT
+          printf '%s\n' "${PR_BODY}" > "${pr_body}"
+          if grep -Eiq '^[[:space:]]*(BEGIN|END)_COMMIT_OVERRIDE[[:space:]]*$' "${pr_body}"; then
+            echo "::error::Preview PR descriptions must not contain release-please commit override blocks." >&2
+            exit 1
+          fi
           git log --format=%B "origin/${base_ref}..HEAD" > "${commit_messages}"
           if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|^(BEGIN|END)_COMMIT_OVERRIDE[[:space:]]*$' "${commit_messages}"; then
             echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
