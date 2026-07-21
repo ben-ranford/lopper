@@ -52,6 +52,8 @@ async function pullState(github, owner, repo, number) {
         pullRequest(number: $number) {
           id
           number
+          baseRefName
+          baseRefOid
           headRefOid
           isDraft
           mergeable
@@ -66,6 +68,19 @@ async function pullState(github, owner, repo, number) {
     { owner, repo, number },
   );
   return result.repository.pullRequest;
+}
+
+function assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid) {
+  if (state.baseRefName !== expectedBaseRefName) {
+    throw new Error(
+      `Pull request base changed from ${expectedBaseRefName} to ${state.baseRefName || 'unknown'} while advancing the queue.`,
+    );
+  }
+  if (state.baseRefOid !== expectedBaseRefOid) {
+    throw new Error(
+      `Pull request base ${expectedBaseRefName} moved from ${shortSHA(expectedBaseRefOid)} to ${shortSHA(state.baseRefOid)} while advancing the queue.`,
+    );
+  }
 }
 
 async function syncStatusComment(github, owner, repo, number, body) {
@@ -191,7 +206,8 @@ async function armAutoMerge(github, pullRequestId, expectedHeadOid) {
   );
 }
 
-async function armOrMerge(github, state) {
+async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefOid }) {
+  assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid);
   if (state.autoMergeRequest) {
     return 'armed';
   }
@@ -209,6 +225,7 @@ async function armOrMerge(github, state) {
         `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
       );
     }
+    assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
     if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
       await mergeNow(github, refreshed.id, state.headRefOid);
       return 'merged';
@@ -224,6 +241,8 @@ async function pullStateByID(github, pullRequestId) {
         ... on PullRequest {
           id
           number
+          baseRefName
+          baseRefOid
           headRefOid
           mergeable
           mergeStateStatus
@@ -404,7 +423,10 @@ async function runController({
         `Default branch ${defaultBranch} moved from ${shortSHA(branch.commit.sha)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
       );
     }
-    const result = await armOrMerge(github, state);
+    const result = await armOrMerge(github, state, {
+      expectedBaseRefName: defaultBranch,
+      expectedBaseRefOid: branch.commit.sha,
+    });
     const rebaseSummary = update.rebased
       ? `Rebased \`${shortSHA(leader.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
       : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
