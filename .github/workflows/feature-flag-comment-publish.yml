@@ -11,18 +11,95 @@ permissions: {}
 
 jobs:
   publish-comments:
-    if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.pull_requests[0].number != null }}
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
       issues: write
-    env:
-      PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+      pull-requests: read
     steps:
+      - name: Resolve triggering pull request and artifact
+        id: resolve_pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              },
+            );
+            const artifactPattern = /^feature-flag-comment-inputs-([1-9][0-9]*)$/;
+            const matches = artifacts
+              .map((artifact) => ({ artifact, match: artifact.name.match(artifactPattern) }))
+              .filter(({ artifact, match }) => match && !artifact.expired);
+            if (matches.length !== 1) {
+              throw new Error(`expected exactly one bounded comment artifact; found ${matches.length}`);
+            }
+
+            const [{ artifact, match }] = matches;
+            const prNumber = Number.parseInt(match[1], 10);
+            if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
+              throw new Error('artifact did not provide a valid pull request number');
+            }
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+            const expectedHeadRepository = run.head_repository?.full_name?.toLowerCase();
+            if (!expectedHeadRepository) {
+              throw new Error('workflow_run did not provide a head repository');
+            }
+            if (pull.base.repo.full_name.toLowerCase() !== expectedRepository) {
+              throw new Error('artifact pull request does not target this repository');
+            }
+            if (
+              pull.head.sha !== run.head_sha ||
+              pull.head.ref !== run.head_branch ||
+              pull.head.repo?.full_name?.toLowerCase() !== expectedHeadRepository
+            ) {
+              throw new Error('artifact pull request does not match the triggering workflow head');
+            }
+
+            const associatedPulls = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: run.head_sha,
+                per_page: 100,
+              },
+            );
+            if (!associatedPulls.some((candidate) => candidate.number === prNumber)) {
+              throw new Error('artifact pull request is not associated with the triggering commit');
+            }
+
+            core.setOutput('artifact-name', artifact.name);
+            core.exportVariable('PR_NUMBER', String(prNumber));
+            core.exportVariable(
+              'ENFORCEMENT_FAILED',
+              String(run.conclusion !== 'success'),
+            );
+            core.exportVariable(
+              'FEATURE_PR',
+              String(/^feat(\([^)]+\))?(!)?:\s+\S/.test(pull.title)),
+            );
+            core.exportVariable(
+              'RELEASE_PR',
+              String(pull.head.ref.startsWith('release-please--branches--')),
+            );
+
       - name: Download bounded comment inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: feature-flag-comment-inputs
+          name: ${{ steps.resolve_pr.outputs.artifact-name }}
           path: ${{ runner.temp }}/feature-flag-comment-inputs
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
@@ -40,37 +117,33 @@ jobs:
           fi
 
           file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
-          if [ "${file_count}" -lt 3 ] || [ "${file_count}" -gt 5 ]; then
-            echo "::error::Downloaded comment inputs must contain exactly the status files plus up to two summaries." >&2
+          if [ "${file_count}" -lt 1 ] || [ "${file_count}" -gt 3 ]; then
+            echo "::error::Downloaded comment inputs must contain the payload version plus up to two summaries." >&2
             exit 1
           fi
 
+          payload_version=""
           feature_summary_path=""
           release_summary_path=""
 
           while IFS= read -r path; do
             case "$(basename "${path}")" in
-              enforcement_failed.txt|feature_pr.txt|release_pr.txt)
+              payload-version.txt)
                 if [ ! -f "${path}" ] || [ -L "${path}" ] || [ ! -s "${path}" ]; then
-                  echo "::error::Status file ${path} is missing or unsafe." >&2
+                  echo "::error::Comment payload version is missing or unsafe." >&2
                   exit 1
                 fi
                 if [ "$(stat --format=%s "${path}")" -gt 8 ]; then
-                  echo "::error::Status file ${path} exceeds the 8-byte bound." >&2
+                  echo "::error::Comment payload version exceeds the 8-byte bound." >&2
                   exit 1
                 fi
-                status_value="$(tr -d '[:space:]' < "${path}")"
-                case "${status_value}" in
-                  true|false) ;;
+                payload_version="$(tr -d '[:space:]' < "${path}")"
+                case "${payload_version}" in
+                  1) ;;
                   *)
-                    echo "::error::Status file ${path} must contain true or false; got ${status_value}." >&2
+                    echo "::error::Unsupported comment payload version ${payload_version}." >&2
                     exit 1
                     ;;
-                esac
-                case "$(basename "${path}")" in
-                  enforcement_failed.txt) enforcement_failed="${status_value}" ;;
-                  feature_pr.txt) feature_pr="${status_value}" ;;
-                  release_pr.txt) release_pr="${status_value}" ;;
                 esac
                 ;;
               feature-flag-enforcement.md)
@@ -102,14 +175,9 @@ jobs:
             esac
           done < <(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | sort)
 
-          : "${enforcement_failed:?missing enforcement_failed status}"
-          : "${feature_pr:?missing feature_pr status}"
-          : "${release_pr:?missing release_pr status}"
+          : "${payload_version:?missing comment payload version}"
 
           {
-            printf 'ENFORCEMENT_FAILED=%s\n' "${enforcement_failed}"
-            printf 'FEATURE_PR=%s\n' "${feature_pr}"
-            printf 'RELEASE_PR=%s\n' "${release_pr}"
             printf 'FEATURE_SUMMARY_PATH=%s\n' "${feature_summary_path}"
             printf 'RELEASE_SUMMARY_PATH=%s\n' "${release_summary_path}"
           } >> "$GITHUB_ENV"
@@ -267,4 +335,3 @@ jobs:
                 body,
               });
             }
-

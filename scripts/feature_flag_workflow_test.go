@@ -41,17 +41,16 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		{label: "feature flag input validation shell", got: validateUpload.Shell, want: hardenedShell},
 	})
 	assertWorkflowStepEnv(t, validateUpload, "feature flag input validation", map[string]string{
-		"COMMENT_DIR":        "${{ runner.temp }}/feature-flag-comment-inputs",
-		"ENFORCEMENT_FAILED": "${{ steps.enforce_flags.outcome == 'failure' }}",
-		"FEATURE_PR":         "${{ steps.classify_pr.outputs.feature_pr }}",
-		"PATH":               "/usr/bin:/bin",
-		"RELEASE_PR":         "${{ steps.classify_pr.outputs.release_pr }}",
+		"COMMENT_DIR": "${{ runner.temp }}/feature-flag-comment-inputs",
+		"PATH":        "/usr/bin:/bin",
 	})
 	assertWorkflowStepRunContainsAll(t, validateUpload, "feature flag input validation", []string{
-		`status_path="${COMMENT_DIR}/$(printf '%s' "${status_name}" | tr '[:upper:]' '[:lower:]').txt"`,
-		`stat --format=%s "${status_path}"`,
 		`find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`if [ -f "${summary_path}" ] && [ ! -s "${summary_path}" ]; then`,
+		`rm -f -- "${summary_path}"`,
+		`printf '1\n' > "${COMMENT_DIR}/payload-version.txt"`,
 		`file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"`,
+		`payload-version.txt`,
 		`feature-flag-enforcement.md|release-feature-flag-comment.md`,
 		`stat --format=%s "${path}"`,
 	})
@@ -59,7 +58,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment upload guard", got: upload.If, want: "${{ always() && steps.validate_comment_inputs.outcome == 'success' }}"},
 		{label: "feature flag comment upload action", got: upload.Uses, want: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"},
-		{label: "feature flag comment upload name", got: upload.With["name"], want: "feature-flag-comment-inputs"},
+		{label: "feature flag comment upload name", got: upload.With["name"], want: "feature-flag-comment-inputs-${{ github.event.pull_request.number }}"},
 		{label: "feature flag comment upload path", got: upload.With["path"], want: "${{ runner.temp }}/feature-flag-comment-inputs"},
 		{label: "feature flag comment upload missing-file behavior", got: upload.With["if-no-files-found"], want: "error"},
 	})
@@ -70,6 +69,9 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		"pull-requests: write",
 		"actions/github-script@",
 		"publish-comments:",
+		"enforcement_failed.txt",
+		"feature_pr.txt",
+		"release_pr.txt",
 	} {
 		if strings.Contains(enforcementText, forbidden) {
 			t.Fatalf("untrusted feature flag workflow contains unsafe fragment %q", forbidden)
@@ -83,21 +85,41 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 
 	publication := workflowJobByName(t, publicationWorkflow.Jobs, "publish-comments")
 	assertWorkflowJobPermissions(t, publication, "feature flag comment publication", map[string]string{
-		"actions": "read",
-		"issues":  "write",
+		"actions":       "read",
+		"issues":        "write",
+		"pull-requests": "read",
 	})
 	assertWorkflowJobOmitsCheckout(t, publication, "feature flag comment publication")
 	assertWorkflowJobStepRunsOmitAllFold(t, publication, "feature flag comment publication", []string{"go run ./", "make ", "npm ", "npx ", "git "})
-	assertWorkflowStepOrder(t, publication, "Download bounded comment inputs", "Validate bounded comment inputs", "Sync feature flag enforcement comment on PR", "Sync release feature guidance comment on PR")
+	assertWorkflowStepOrder(t, publication, "Resolve triggering pull request and artifact", "Download bounded comment inputs", "Validate bounded comment inputs", "Sync feature flag enforcement comment on PR", "Sync release feature guidance comment on PR")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "feature flag publication event guard", got: publication.If, want: "${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.pull_requests[0].number != null }}"},
-		{label: "feature flag publication PR number", got: publication.Env["PR_NUMBER"], want: "${{ github.event.workflow_run.pull_requests[0].number }}"},
+		{label: "feature flag publication event guard", got: publication.If, want: "${{ github.event.workflow_run.event == 'pull_request' }}"},
+	})
+
+	resolvePR := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Resolve triggering pull request and artifact")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature flag PR resolution id", got: resolvePR.ID, want: "resolve_pr"},
+		{label: "feature flag PR resolution action", got: resolvePR.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
+	})
+	assertTextContainsAll(t, resolvePR.With["script"], "feature flag PR resolution", []string{
+		"github.rest.actions.listWorkflowRunArtifacts",
+		"/^feature-flag-comment-inputs-([1-9][0-9]*)$/",
+		"github.rest.pulls.get",
+		"pull.head.sha !== run.head_sha",
+		"pull.head.ref !== run.head_branch",
+		"pull.head.repo?.full_name?.toLowerCase() !== expectedHeadRepository",
+		"github.rest.repos.listPullRequestsAssociatedWithCommit",
+		"core.setOutput('artifact-name', artifact.name)",
+		"core.exportVariable('PR_NUMBER', String(prNumber))",
+		"String(run.conclusion !== 'success')",
+		"String(/^feat(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title))",
+		"String(pull.head.ref.startsWith('release-please--branches--'))",
 	})
 
 	download := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Download bounded comment inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment download action", got: download.Uses, want: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"},
-		{label: "feature flag comment download name", got: download.With["name"], want: "feature-flag-comment-inputs"},
+		{label: "feature flag comment download name", got: download.With["name"], want: "${{ steps.resolve_pr.outputs.artifact-name }}"},
 		{label: "feature flag comment download path", got: download.With["path"], want: "${{ runner.temp }}/feature-flag-comment-inputs"},
 		{label: "feature flag comment download token", got: download.With["github-token"], want: "${{ github.token }}"},
 		{label: "feature flag comment download repository", got: download.With["repository"], want: "${{ github.repository }}"},
@@ -115,7 +137,8 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	assertWorkflowStepRunContainsAll(t, validateDownload, "feature flag publication validation", []string{
 		`find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
 		`file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"`,
-		`status_value="$(tr -d '[:space:]' < "${path}")"`,
+		`payload_version="$(tr -d '[:space:]' < "${path}")"`,
+		`: "${payload_version:?missing comment payload version}"`,
 		`feature_summary_path=""`,
 		`release_summary_path=""`,
 		`printf 'FEATURE_SUMMARY_PATH=%s\n' "${feature_summary_path}"`,
@@ -148,7 +171,15 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 			t.Fatalf("trusted feature flag publisher is missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"actions/github-script@v", "actions/checkout@", "go run ./"} {
+	for _, forbidden := range []string{
+		"actions/github-script@v",
+		"actions/checkout@",
+		"go run ./",
+		"workflow_run.pull_requests[0]",
+		"enforcement_failed.txt",
+		"feature_pr.txt",
+		"release_pr.txt",
+	} {
 		if strings.Contains(publicationText, forbidden) {
 			t.Fatalf("trusted feature flag publisher contains unsafe fragment %q", forbidden)
 		}

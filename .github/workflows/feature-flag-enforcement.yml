@@ -178,47 +178,37 @@ jobs:
         if: ${{ always() }}
         env:
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
-          ENFORCEMENT_FAILED: ${{ steps.enforce_flags.outcome == 'failure' }}
-          FEATURE_PR: ${{ steps.classify_pr.outputs.feature_pr }}
           PATH: /usr/bin:/bin
-          RELEASE_PR: ${{ steps.classify_pr.outputs.release_pr }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
-          for status_name in ENFORCEMENT_FAILED FEATURE_PR RELEASE_PR; do
-            status_value="${!status_name}"
-            case "${status_value}" in
-              true|false) ;;
-              *)
-                echo "::error::${status_name} must be true or false; got ${status_value}." >&2
-                exit 1
-                ;;
-            esac
-            status_path="${COMMENT_DIR}/$(printf '%s' "${status_name}" | tr '[:upper:]' '[:lower:]').txt"
-            printf '%s\n' "${status_value}" > "${status_path}"
-            if [ ! -f "${status_path}" ] || [ -L "${status_path}" ] || [ ! -s "${status_path}" ]; then
-              echo "::error::Status file ${status_path} is missing or unsafe." >&2
-              exit 1
-            fi
-            if [ "$(stat --format=%s "${status_path}")" -gt 8 ]; then
-              echo "::error::Status file ${status_path} exceeds the 8-byte bound." >&2
-              exit 1
-            fi
-          done
-
           if find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
             echo "::error::Comment inputs contain a non-regular entry." >&2
             exit 1
           fi
 
+          for summary_path in \
+            "${COMMENT_DIR}/feature-flag-enforcement.md" \
+            "${COMMENT_DIR}/release-feature-flag-comment.md"; do
+            if [ -f "${summary_path}" ] && [ ! -s "${summary_path}" ]; then
+              rm -f -- "${summary_path}"
+            fi
+          done
+
+          printf '1\n' > "${COMMENT_DIR}/payload-version.txt"
+
           file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
-          if [ "${file_count}" -lt 3 ] || [ "${file_count}" -gt 5 ]; then
-            echo "::error::Comment inputs must contain exactly the status files plus up to two summaries." >&2
+          if [ "${file_count}" -lt 1 ] || [ "${file_count}" -gt 3 ]; then
+            echo "::error::Comment inputs must contain the payload version plus up to two summaries." >&2
             exit 1
           fi
 
           while IFS= read -r path; do
             case "$(basename "${path}")" in
-              enforcement_failed.txt|feature_pr.txt|release_pr.txt)
+              payload-version.txt)
+                if [ ! -f "${path}" ] || [ -L "${path}" ] || [ "$(tr -d '[:space:]' < "${path}")" != "1" ]; then
+                  echo "::error::Comment payload version is missing or unsafe." >&2
+                  exit 1
+                fi
                 ;;
               feature-flag-enforcement.md|release-feature-flag-comment.md)
                 if [ ! -s "${path}" ]; then
@@ -241,7 +231,7 @@ jobs:
         if: ${{ always() && steps.validate_comment_inputs.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: feature-flag-comment-inputs
+          name: feature-flag-comment-inputs-${{ github.event.pull_request.number }}
           path: ${{ runner.temp }}/feature-flag-comment-inputs
           if-no-files-found: error
 
