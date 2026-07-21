@@ -1,7 +1,7 @@
 package scripts
 
 import (
-	"strings"
+	"regexp"
 	"testing"
 )
 
@@ -48,13 +48,21 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 			stepName: "Comment on coverage failure",
 			wantUses: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
 		},
+		{
+			stepName: "Upload binary artifact",
+			wantUses: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+		},
 	} {
 		step := workflowStepByName(t, workflow.Jobs, "verify", check.stepName)
 		if step.Uses != check.wantUses {
 			t.Fatalf("verify step %q uses %q, want %q", check.stepName, step.Uses, check.wantUses)
 		}
-		if strings.Contains(step.Uses, "@v") {
-			t.Fatalf("verify step %q must not use a mutable major tag: %q", check.stepName, step.Uses)
+	}
+
+	immutableAction := regexp.MustCompile(`^[^@[:space:]]+@[0-9a-f]{40}$`)
+	for _, step := range verify.Steps {
+		if step.Uses != "" && !immutableAction.MatchString(step.Uses) {
+			t.Fatalf("verify step %q must use an immutable action SHA: %q", step.Name, step.Uses)
 		}
 	}
 
