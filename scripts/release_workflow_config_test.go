@@ -3176,10 +3176,20 @@ func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 		t.Fatalf("prepare-ghcr build tags = %q, want image_tags output", build.With["tags"])
 	}
 	publishImages := workflow.Jobs["publish-ghcr-images"]
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
 	if publishImages.If != "" {
 		t.Fatalf("publish-ghcr-images if = %q, want no override of failed-needs handling", publishImages.If)
 	}
+}
+
+func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
@@ -3253,7 +3263,7 @@ func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, arch
 	t.Helper()
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
 	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{"packages": "write"})
 	assertFreshGHCRPublisher(t, publishImages, "Log in to GHCR")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
