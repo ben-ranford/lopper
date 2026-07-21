@@ -1515,21 +1515,7 @@ func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
 	}
 }
 
-func TestFormatPREnforcementReportNonFeatureBranches(t *testing.T) {
-	previewFlag := featureflags.Flag{
-		Code:        "LOP-FEAT-0002",
-		Name:        "new-flag",
-		Description: "New behavior",
-		Lifecycle:   featureflags.LifecyclePreview,
-	}
-	addedPreview := formatPREnforcementReport(prEnforcementResult{
-		RequireFlag: false,
-		AddedFlags:  []featureflags.Flag{previewFlag},
-	})
-	if !strings.Contains(addedPreview, "Passed. Added feature flags all start as `preview`.") {
-		t.Fatalf("expected non-feature added preview success message, got %s", addedPreview)
-	}
-
+func TestFormatPREnforcementReportWithoutFlagChanges(t *testing.T) {
 	noRequirement := formatPREnforcementReport(prEnforcementResult{})
 	if !strings.Contains(noRequirement, "Passed. No new feature flag was required for this PR.") {
 		t.Fatalf("expected no-requirement success message, got %s", noRequirement)
@@ -1577,6 +1563,33 @@ func TestEvaluatePREnforcementRequiresLifecycleTitle(t *testing.T) {
 		{
 			name:     "graduation uses preview",
 			title:    "preview(flags): graduate capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+		{
+			name:    "new flag uses non-feature title",
+			title:   "chore(flags): add preview capture",
+			current: []featureflags.Flag{previewFlag},
+			want:    "must use a `preview(scope): ...` PR title",
+		},
+		{
+			name:     "graduation uses non-feature title",
+			title:    "fix(flags): stabilize capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+		{
+			name:     "graduation uses wrong feature scope",
+			title:    "feat(runtime): stabilize capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+		{
+			name:     "graduation uses breaking feature title",
+			title:    "feat(flags)!: stabilize capture",
 			current:  []featureflags.Flag{stableFlag},
 			previous: []featureflags.Flag{previewFlag},
 			want:     "Feature graduations must use a `feat(flags): ...` PR title",

@@ -15,11 +15,13 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 )
 
-var featurePRTitlePattern = regexp.MustCompile(`(?i)^(feat|preview)(?:\([^)]*\))?(?:!)?:\s+\S`)
+var featurePRTitlePattern = regexp.MustCompile(`(?i)^(feat|preview)(?:\(([^)]*)\))?(!)?:\s+\S`)
 
 type prEnforcementResult struct {
 	RequireFlag       bool
 	FeaturePRType     string
+	FeaturePRScope    string
+	FeaturePRBreaking bool
 	AddedFlags        []featureflags.Flag
 	GraduatedFlags    []featureflags.Flag
 	InvalidAddedFlags []featureflags.Flag
@@ -65,10 +67,12 @@ func runPREnforce(args []string) error {
 }
 
 func evaluatePREnforcement(prTitle string, current, previous []featureflags.Flag, catalogViolations []string) prEnforcementResult {
-	prType := featurePRType(prTitle)
+	prType, prScope, prBreaking := featurePRMetadata(prTitle)
 	result := prEnforcementResult{
 		RequireFlag:       prType != "",
 		FeaturePRType:     prType,
+		FeaturePRScope:    prScope,
+		FeaturePRBreaking: prBreaking,
 		CatalogViolations: catalogViolations,
 	}
 	if len(catalogViolations) > 0 {
@@ -185,11 +189,16 @@ func isFeaturePRTitle(title string) bool {
 }
 
 func featurePRType(title string) string {
+	prType, _, _ := featurePRMetadata(title)
+	return prType
+}
+
+func featurePRMetadata(title string) (string, string, bool) {
 	matches := featurePRTitlePattern.FindStringSubmatch(strings.TrimSpace(title))
-	if len(matches) < 2 {
-		return ""
+	if len(matches) < 4 {
+		return "", "", false
 	}
-	return strings.ToLower(matches[1])
+	return strings.ToLower(matches[1]), strings.ToLower(matches[2]), matches[3] == "!"
 }
 
 func newlyAddedFlags(current, previous []featureflags.Flag) []featureflags.Flag {
@@ -297,8 +306,6 @@ func previewEnforcementSuccessMessage(result prEnforcementResult) string {
 		return "Passed. This preview PR adds at least one new preview feature flag.\n"
 	case result.FeaturePRType == "feat" && len(result.GraduatedFlags) > 0:
 		return "Passed. This feature graduation PR promotes existing preview feature flags to stable.\n"
-	case len(result.AddedFlags) > 0:
-		return "Passed. Added feature flags all start as `preview`.\n"
 	default:
 		return "Passed. No new feature flag was required for this PR.\n"
 	}
@@ -322,30 +329,28 @@ func (r *prEnforcementResult) violations() []string {
 }
 
 func (r *prEnforcementResult) featurePRTypeViolations() []string {
+	violations := make([]string, 0, 2)
+	if len(r.AddedFlags) > 0 && r.FeaturePRType != "preview" {
+		violations = append(violations, "New preview feature flags must use a `preview(scope): ...` PR title so release-please keeps the current minor release line.")
+	}
+	validGraduationTitle := r.FeaturePRType == "feat" && r.FeaturePRScope == "flags" && !r.FeaturePRBreaking
+	if len(r.GraduatedFlags) > 0 && !validGraduationTitle {
+		violations = append(violations, "Feature graduations must use a `feat(flags): ...` PR title so release-please performs the minor version bump.")
+	}
+
 	switch r.FeaturePRType {
 	case "preview":
-		var violations []string
 		if len(r.AddedFlags) == 0 {
 			violations = append(violations, "Preview PRs must add at least one new feature flag in `internal/featureflags/features.json`.")
 		}
-		if len(r.GraduatedFlags) > 0 {
-			violations = append(violations, "Feature graduations must use a `feat(flags): ...` PR title so release-please performs the minor version bump.")
-		}
 		return violations
 	case "feat":
-		var violations []string
-		if len(r.AddedFlags) > 0 {
-			violations = append(violations, "New preview feature flags must use a `preview(scope): ...` PR title so release-please keeps the current minor release line.")
-		}
 		if len(r.GraduatedFlags) == 0 {
 			violations = append(violations, "Feature PRs must graduate at least one existing preview flag in `internal/featureflags/features.json`.")
 		}
 		return violations
 	default:
-		if r.RequireFlag && len(r.AddedFlags) == 0 && len(r.GraduatedFlags) == 0 {
-			return []string{"Feature PRs must add at least one new feature flag or graduate an existing preview flag in `internal/featureflags/features.json`."}
-		}
-		return nil
+		return violations
 	}
 }
 
