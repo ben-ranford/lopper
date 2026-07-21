@@ -249,15 +249,19 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 		{label: "preview PR body", got: rejectOverrides.Env["PR_BODY"], want: "${{ github.event.pull_request.body }}"},
 	})
 	assertWorkflowStepRunContainsAll(t, rejectOverrides, "preview release override guard", []string{
+		`release_directive_pattern='^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)'`,
+		`non_preview_entry_pattern='^(feat|feature|fix|bug|perf|docs|refactor|revert)`,
 		`printf '%s\n' "${PR_BODY}"`,
-		`grep -Eiq '(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${pr_body}"`,
-		`grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${commit_messages}"`,
+		`grep -Eiq "${release_directive_pattern}" "${pr_body}"`,
+		`grep -Eiq "${non_preview_entry_pattern}" "${pr_body}"`,
+		`grep -Eiq "${release_directive_pattern}" "${commit_messages}"`,
+		`grep -Eiq "${non_preview_entry_pattern}" "${commit_messages}"`,
 		`merge_base="$(git merge-base "origin/${base_ref}" HEAD)"`,
 		`git log --format=%B "${merge_base}..HEAD"`,
 		`(BREAKING[ -]CHANGE|Release-As)`,
 		`(feat|feature|fix|bug|perf|docs|refactor|revert)`,
 		`?!:[[:space:]]+[^[:space:]]`,
-		`[^[:space:]]' "${commit_messages}"`,
+		`[^[:space:]]'`,
 	})
 	if strings.Contains(rejectOverrides.Run, "commit_subjects") {
 		t.Fatal("preview release override guard must scan full commit messages instead of subjects only")
