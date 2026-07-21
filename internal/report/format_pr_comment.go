@@ -7,14 +7,20 @@ import (
 	"strings"
 )
 
-var prCommentMarkdownPairs = []string{
+var prCommentTablePairs = []string{
 	"\r\n", "\\n", "\r", "\\n", "\n", "\\n", "\t", "\\t",
 	"&", "&amp;", "<", "&lt;", ">", "&gt;",
 	"\\", "\\\\", "|", "\\|", "`", "'",
-	"[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)", "!", "\\!",
+	"[", "\\[", "]", "\\]",
 }
 
-var prCommentMarkdownReplacer = strings.NewReplacer(prCommentMarkdownPairs...)
+var prCommentCodePairs = []string{
+	"\r\n", "\\n", "\r", "\\n", "\n", "\\n", "\t", "\\t",
+	"\\", "\\\\", "|", "\\|", "`", "'",
+}
+
+var prCommentTableReplacer = strings.NewReplacer(prCommentTablePairs...)
+var prCommentCodeReplacer = strings.NewReplacer(prCommentCodePairs...)
 
 func formatPRComment(report Report) string {
 	comparison := report.BaselineComparison
@@ -50,7 +56,7 @@ func formatPRComment(report Report) string {
 		buffer.WriteString("| # | Dependency | Language | SPDX |\n")
 		buffer.WriteString("| --- | --- | --- | --- |\n")
 		for i, denied := range comparison.NewDeniedLicenses {
-			fmt.Fprintf(&buffer, "| %d | %s | %s | %s |\n", i+1, markdownCodeCell(denied.Name), markdownCodeCell(denied.Language), markdownCodeCell(denied.SPDX))
+			fmt.Fprintf(&buffer, "| %d | %s | %s | %s |\n", i+1, markdownCodeCell(denied.Name), escapeMarkdownTable(denied.Language), escapeMarkdownTable(denied.SPDX))
 		}
 	}
 
@@ -62,11 +68,11 @@ func formatPRComment(report Report) string {
 			row := []string{
 				fmt.Sprintf("%d", i+1),
 				markdownCodeCell(finding.Name),
-				markdownCodeCell(finding.AdvisoryID),
-				markdownCodeCell(finding.Severity),
-				markdownCodeCell(fmt.Sprintf("%s (%.1f)", finding.Priority, finding.PriorityScore)),
-				markdownCodeCell(emptyDash(finding.FixedVersion)),
-				markdownCodeCell(finding.Source),
+				escapeMarkdownTable(finding.AdvisoryID),
+				escapeMarkdownTable(finding.Severity),
+				escapeMarkdownTable(fmt.Sprintf("%s (%.1f)", finding.Priority, finding.PriorityScore)),
+				escapeMarkdownTable(emptyDash(finding.FixedVersion)),
+				escapeMarkdownTable(finding.Source),
 			}
 			buffer.WriteString("| " + strings.Join(row, " | ") + " |\n")
 		}
@@ -89,7 +95,7 @@ func formatPRComment(report Report) string {
 			fmt.Sprintf("%d", i+1),
 			string(delta.Kind),
 			markdownCodeCell(delta.Name),
-			markdownCodeCell(delta.Language),
+			escapeMarkdownTable(delta.Language),
 			signedPct(delta.UsedPercentDelta),
 			signedInt(delta.UsedExportsCountDelta),
 			signedInt(delta.TotalExportsCountDelta),
@@ -122,8 +128,8 @@ func appendRuntimePRCommentSection(buffer *strings.Builder, title string, deltas
 		row := []string{
 			fmt.Sprintf("%d", i+1),
 			markdownCodeCell(delta.Name),
-			markdownCodeCell(delta.Language),
-			markdownCodeCell(formatRuntimeDelta(delta.RuntimeDelta)),
+			escapeMarkdownTable(delta.Language),
+			escapeMarkdownTable(formatRuntimeDelta(delta.RuntimeDelta)),
 		}
 		buffer.WriteString("| " + strings.Join(row, " | ") + " |\n")
 	}
@@ -211,9 +217,15 @@ func signedBytes(value int64) string {
 }
 
 func escapeMarkdownTable(value string) string {
-	return sanitizeTerminalString(prCommentMarkdownReplacer.Replace(value))
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return sanitizeTerminalString(prCommentTableReplacer.Replace(value))
 }
 
 func markdownCodeCell(value string) string {
-	return "`" + escapeMarkdownTable(value) + "`"
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return "`" + sanitizeTerminalString(prCommentCodeReplacer.Replace(value)) + "`"
 }

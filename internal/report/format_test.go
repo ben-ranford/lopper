@@ -285,7 +285,7 @@ func TestFormatPRCommentZeroDeltasAreUnsigned(t *testing.T) {
 		t.Fatalf("format pr-comment with zero deltas: %v", err)
 	}
 
-	assertOutputContains(t, output, "| Dependency count | 0 |", "| Used percent | 0.0% |", "| Waste percent | 0.0% |", "| Estimated unused bytes | 0 B |", "| Known licenses | 0 |", "| Unknown licenses | 0 |", "| Denied licenses | 0 |", "| 1 | changed | `same` | `js-ts` | 0.0% | 0 | 0 | 0 B |")
+	assertOutputContains(t, output, "| Dependency count | 0 |", "| Used percent | 0.0% |", "| Waste percent | 0.0% |", "| Estimated unused bytes | 0 B |", "| Known licenses | 0 |", "| Unknown licenses | 0 |", "| Denied licenses | 0 |", "| 1 | changed | `same` | js-ts | 0.0% | 0 | 0 | 0 B |")
 	if strings.Contains(output, "+0") {
 		t.Fatalf("expected zero deltas to render without a leading plus, got %q", output)
 	}
@@ -335,14 +335,14 @@ func TestFormatPRCommentSanitizesDependencyAndLanguageMarkdown(t *testing.T) {
 	}
 
 	expectedContains := []string{
-		"`safe'name\\nwith\\|new-line\\t&lt;img src=x&gt;\\x1b\\[31m\\[link\\]\\(https://example.com\\)`",
-		"`js-ts\\n&lt;script&gt;alert\\(1\\)&lt;/script&gt;\\t\\!\\[img\\]\\(https://example.com/img.png\\)`",
-		"| 1 | added | `safe'name\\nwith\\|new-line\\t&lt;img src=x&gt;\\x1b\\[31m\\[link\\]\\(https://example.com\\)` | `js-ts\\n&lt;script&gt;alert\\(1\\)&lt;/script&gt;\\t\\!\\[img\\]\\(https://example.com/img.png\\)` |",
-		"| 1 | `deny\\|dep` | `lang\\x07` | `GPL-3.0\\n\\!\\[badge\\]\\(https://example.com/badge.svg\\)` |",
-		"| 1 | `runtime&lt;dep&gt;` | `lang\\[rt\\]` | `runtime-only regression` |",
+		"`safe'name\\nwith\\|new-line\\t<img src=x>\\x1b[31m[link](https://example.com)`",
+		"js-ts\\n&lt;script&gt;alert(1)&lt;/script&gt;\\t!\\[img\\](https://example.com/img.png)",
+		"| 1 | added | `safe'name\\nwith\\|new-line\\t<img src=x>\\x1b[31m[link](https://example.com)` | js-ts\\n&lt;script&gt;alert(1)&lt;/script&gt;\\t!\\[img\\](https://example.com/img.png) |",
+		"| 1 | `deny\\|dep` | lang\\x07 | GPL-3.0\\n!\\[badge\\](https://example.com/badge.svg) |",
+		"| 1 | `runtime<dep>` | lang\\[rt\\] | runtime-only regression |",
 	}
 	assertOutputContains(t, output, expectedContains...)
-	assertOutputNotContains(t, output, "<img src=x>", "<script>", "[link](https://example.com)", "![img](https://example.com/img.png)", "\x1b[31m")
+	assertOutputNotContains(t, output, "<script>", "![img](https://example.com/img.png)", "\x1b[31m", "safe'name\nwith")
 }
 
 func TestFormatPRCommentSanitizesAdvisoryMarkdownFields(t *testing.T) {
@@ -369,10 +369,27 @@ func TestFormatPRCommentSanitizesAdvisoryMarkdownFields(t *testing.T) {
 	}
 
 	expectedContains := []string{
-		"| 1 | `example.com/lib` | `GHSA-1234\\n\\[click\\]\\(https://example.com\\)` | `high&lt;script&gt;alert\\(1\\)&lt;/script&gt;` | `critical \\(9.7\\)` | `1.2.3\\t\\!\\[badge\\]\\(https://example.com/badge.svg\\)` | `repo&lt;details&gt;boom&lt;/details&gt;\\x1f` |",
+		"| 1 | `example.com/lib` | GHSA-1234\\n\\[click\\](https://example.com) | high&lt;script&gt;alert(1)&lt;/script&gt; | critical (9.7) | 1.2.3\\t!\\[badge\\](https://example.com/badge.svg) | repo&lt;details&gt;boom&lt;/details&gt;\\x1f |",
 	}
 	assertOutputContains(t, output, expectedContains...)
 	assertOutputNotContains(t, output, "[click](https://example.com)", "![badge](https://example.com/badge.svg)", "<script>", "<details>", "\x1f")
+}
+
+func TestMarkdownCellsPreserveReadableContentAndRenderEmptyValues(t *testing.T) {
+	t.Parallel()
+
+	if got := markdownCodeCell(""); got != "-" {
+		t.Fatalf("empty Markdown code cell = %q, want dash", got)
+	}
+	if got := escapeMarkdownTable(" \t "); got != "-" {
+		t.Fatalf("blank Markdown table cell = %q, want dash", got)
+	}
+	if got := markdownCodeCell("lang[rt] <script> (9.7)"); got != "`lang[rt] <script> (9.7)`" {
+		t.Fatalf("readable Markdown code cell = %q", got)
+	}
+	if got := escapeMarkdownTable("critical (9.7)"); got != "critical (9.7)" {
+		t.Fatalf("readable Markdown table cell = %q", got)
+	}
 }
 
 func TestFormatPRCommentNoBaseline(t *testing.T) {
