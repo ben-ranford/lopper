@@ -242,6 +242,7 @@ jobs:
           name: feature-flag-comment-inputs-${{ github.event.pull_request.number }}
           path: ${{ runner.temp }}/feature-flag-comment-inputs
           if-no-files-found: error
+          compression-level: "0"
 
       - name: Fail on feature flag enforcement errors
         if: ${{ steps.enforce_flags.outcome == 'failure' }}

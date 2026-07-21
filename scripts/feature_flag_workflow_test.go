@@ -1,6 +1,12 @@
 package scripts
 
 import (
+	"archive/zip"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -17,6 +23,382 @@ func TestFeatureFlagEnforcementWorkflowSeparatesUntrustedExecutionFromPrivileged
 	var publicationWorkflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &publicationWorkflow)
 	assertTrustedFeatureFlagPublicationWorkflow(t, publicationWorkflow, hardenedShell)
+}
+
+func TestFeatureFlagCommentResolverUsesTrustedPullIdentity(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	run := featureFlagWorkflowRun([]map[string]any{{"number": 7}})
+	pull := featureFlagPull(7, "open")
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             run,
+		"pulls":           []map[string]any{pull},
+		"associatedPulls": []map[string]any{featureFlagPull(8, "open")},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+			{"id": 20, "name": "feature-flag-comment-inputs-8", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected trusted workflow_run pull request: %s", result.Error)
+	}
+	if got := result.Outputs["artifact-id"]; got != "19" {
+		t.Fatalf("artifact-id = %q, want 19", got)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if result.Calls["associatedPulls"] != 0 {
+		t.Fatal("resolver must not use commit association fallback when workflow_run provides a PR")
+	}
+}
+
+func TestFeatureFlagCommentResolverRejectsAmbiguousAssociatedPullRequests(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun(nil),
+		"pulls":           []map[string]any{},
+		"associatedPulls": []map[string]any{featureFlagPull(7, "open"), featureFlagPull(8, "open")},
+		"artifacts":       []map[string]any{},
+	})
+	if result.OK {
+		t.Fatal("resolver accepted an ambiguous commit-to-PR association")
+	}
+	if !strings.Contains(result.Error, "expected exactly one pull request") {
+		t.Fatalf("resolver error = %q, want exact-one rejection", result.Error)
+	}
+}
+
+func TestFeatureFlagCommentResolverFiltersCommitAssociationFallback(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	closedPull := featureFlagPull(8, "closed")
+	wrongHeadPull := featureFlagPull(9, "open")
+	wrongHeadPull["head"].(map[string]any)["sha"] = "different-sha"
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":   featureFlagWorkflowRun(nil),
+		"pulls": []map[string]any{featureFlagPull(7, "open")},
+		"associatedPulls": []map[string]any{
+			closedPull,
+			wrongHeadPull,
+			featureFlagPull(7, "open"),
+		},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected unique matching associated pull request: %s", result.Error)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if result.Calls["associatedPulls"] != 1 {
+		t.Fatal("resolver did not use commit association fallback exactly once")
+	}
+}
+
+func TestFeatureFlagCommentResolverRejectsOversizedArtifactBeforeDownload(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+		"pulls":           []map[string]any{featureFlagPull(7, "open")},
+		"associatedPulls": []map[string]any{},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 2_200_001, "expired": false},
+		},
+	})
+	if result.OK {
+		t.Fatal("resolver accepted an oversized artifact")
+	}
+	if !strings.Contains(result.Error, "invalid or oversized") {
+		t.Fatalf("resolver error = %q, want size-bound rejection", result.Error)
+	}
+}
+
+func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &workflow)
+	extract := workflowStepByName(t, workflow.Jobs, "publish-comments", "Extract bounded comment inputs")
+	validator := embeddedPythonScript(t, extract.Run, "/usr/bin/python3 - <<'PY'")
+
+	tests := []struct {
+		name      string
+		members   []featureFlagZipMember
+		wantError string
+	}{
+		{
+			name: "valid bounded payload",
+			members: []featureFlagZipMember{
+				{name: "payload-version.txt", contents: "1\n"},
+				{name: "feature-flag-enforcement.md", contents: "summary\n"},
+			},
+		},
+		{
+			name: "ambiguous duplicate member",
+			members: []featureFlagZipMember{
+				{name: "payload-version.txt", contents: "1\n"},
+				{name: "payload-version.txt", contents: "1\n"},
+			},
+			wantError: "unsafe or oversized",
+		},
+		{
+			name: "path traversal",
+			members: []featureFlagZipMember{
+				{name: "payload-version.txt", contents: "1\n"},
+				{name: "../feature-flag-enforcement.md", contents: "summary\n"},
+			},
+			wantError: "unsafe or oversized",
+		},
+		{
+			name: "oversized summary",
+			members: []featureFlagZipMember{
+				{name: "payload-version.txt", contents: "1\n"},
+				{name: "feature-flag-enforcement.md", contents: strings.Repeat("x", 1_048_577)},
+			},
+			wantError: "unsafe or oversized",
+		},
+		{
+			name: "symlink",
+			members: []featureFlagZipMember{
+				{name: "payload-version.txt", contents: "1\n"},
+				{name: "feature-flag-enforcement.md", contents: "target", mode: os.ModeSymlink | 0o777},
+			},
+			wantError: "unsafe or oversized",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := t.TempDir()
+			archiveDir := filepath.Join(root, "archive")
+			commentDir := filepath.Join(root, "comments")
+			if err := os.Mkdir(archiveDir, 0o700); err != nil {
+				t.Fatalf("create archive directory: %v", err)
+			}
+			archivePath := filepath.Join(archiveDir, "payload.zip")
+			writeFeatureFlagZip(t, archivePath, tt.members)
+			archiveInfo, err := os.Stat(archivePath)
+			if err != nil {
+				t.Fatalf("stat archive: %v", err)
+			}
+
+			python, err := exec.LookPath("python3")
+			if err != nil {
+				t.Fatal("python3 is required to test artifact extraction")
+			}
+			command := exec.Command(python, "-c", validator)
+			environment := []string{
+				"ARCHIVE_DIR=" + archiveDir,
+				"COMMENT_DIR=" + commentDir,
+				"EXPECTED_ARTIFACT_SIZE=" + strconv.FormatInt(archiveInfo.Size(), 10),
+			}
+			command.Env = append(os.Environ(), environment...)
+			output, err := command.CombinedOutput()
+			if tt.wantError != "" {
+				if err == nil {
+					t.Fatalf("validator accepted unsafe archive; output: %s", output)
+				}
+				if !strings.Contains(string(output), tt.wantError) {
+					t.Fatalf("validator output = %q, want %q", output, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validator rejected bounded archive: %v\n%s", err, output)
+			}
+			for _, member := range tt.members {
+				contents, err := os.ReadFile(filepath.Join(commentDir, member.name))
+				if err != nil {
+					t.Fatalf("read extracted %s: %v", member.name, err)
+				}
+				if string(contents) != member.contents {
+					t.Fatalf("extracted %s contents changed", member.name)
+				}
+			}
+		})
+	}
+}
+
+type featureFlagResolverFixtureResult struct {
+	OK       bool              `json:"ok"`
+	Error    string            `json:"error"`
+	Outputs  map[string]string `json:"outputs"`
+	Exported map[string]string `json:"exported"`
+	Calls    map[string]int    `json:"calls"`
+}
+
+type featureFlagZipMember struct {
+	name     string
+	contents string
+	mode     os.FileMode
+}
+
+func featureFlagCommentResolverScript(t *testing.T) string {
+	t.Helper()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &workflow)
+	return workflowStepByName(t, workflow.Jobs, "publish-comments", "Resolve triggering pull request and artifact").With["script"]
+}
+
+func featureFlagWorkflowRun(pulls []map[string]any) map[string]any {
+	return map[string]any{
+		"id":              100,
+		"run_attempt":     1,
+		"conclusion":      "success",
+		"head_sha":        "fixture-sha",
+		"head_branch":     "fixture-branch",
+		"head_repository": map[string]any{"full_name": "octo/fork"},
+		"pull_requests":   pulls,
+	}
+}
+
+func featureFlagPull(number int, state string) map[string]any {
+	return map[string]any{
+		"number": number,
+		"state":  state,
+		"title":  "feat: fixture",
+		"base": map[string]any{
+			"repo": map[string]any{"full_name": "octo/lopper"},
+		},
+		"head": map[string]any{
+			"sha":  "fixture-sha",
+			"ref":  "fixture-branch",
+			"repo": map[string]any{"full_name": "octo/fork"},
+		},
+	}
+}
+
+func runFeatureFlagResolverFixture(t *testing.T, resolver string, fixture map[string]any) featureFlagResolverFixtureResult {
+	t.Helper()
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to test the feature flag comment resolver")
+	}
+	fixtureJSON, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("marshal resolver fixture: %v", err)
+	}
+	const harness = `
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const fixture = JSON.parse(process.env.RESOLVER_FIXTURE);
+const outputs = {};
+const exported = {};
+const calls = { artifacts: 0, associatedPulls: 0, jobs: 0, pulls: 0 };
+const listArtifacts = async () => {};
+const listAssociatedPulls = async () => {};
+const listJobs = async () => {};
+const pulls = new Map((fixture.pulls || []).map((pull) => [pull.number, pull]));
+const github = {
+  rest: {
+    actions: {
+      listWorkflowRunArtifacts: listArtifacts,
+      listJobsForWorkflowRunAttempt: listJobs,
+    },
+    repos: { listPullRequestsAssociatedWithCommit: listAssociatedPulls },
+    pulls: {
+      get: async ({ pull_number }) => {
+        calls.pulls += 1;
+        if (!pulls.has(pull_number)) {
+          throw new Error('fixture has no requested pull');
+        }
+        return { data: pulls.get(pull_number) };
+      },
+    },
+  },
+  paginate: async (method) => {
+    if (method === listArtifacts) {
+      calls.artifacts += 1;
+      return fixture.artifacts || [];
+    }
+    if (method === listAssociatedPulls) {
+      calls.associatedPulls += 1;
+      return fixture.associatedPulls || [];
+    }
+    if (method === listJobs) {
+      calls.jobs += 1;
+      return fixture.jobs || [];
+    }
+    throw new Error('unexpected paginated API method');
+  },
+};
+const context = {
+  repo: { owner: 'octo', repo: 'lopper' },
+  payload: { workflow_run: fixture.run },
+};
+const core = {
+  exportVariable: (name, value) => { exported[name] = String(value); },
+  setOutput: (name, value) => { outputs[name] = String(value); },
+};
+(async () => {
+  try {
+    const execute = new AsyncFunction('github', 'context', 'core', process.env.RESOLVER_SCRIPT);
+    await execute(github, context, core);
+    console.log(JSON.stringify({ ok: true, outputs, exported, calls }));
+  } catch (error) {
+    console.log(JSON.stringify({ ok: false, error: error.message, outputs, exported, calls }));
+  }
+})();
+`
+	command := exec.Command(node, "-e", harness)
+	environment := []string{
+		"RESOLVER_SCRIPT=" + resolver,
+		"RESOLVER_FIXTURE=" + string(fixtureJSON),
+	}
+	command.Env = append(os.Environ(), environment...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run resolver fixture: %v\n%s", err, output)
+	}
+
+	var result featureFlagResolverFixtureResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode resolver fixture result: %v\n%s", err, output)
+	}
+	return result
+}
+
+func writeFeatureFlagZip(t *testing.T, path string, members []featureFlagZipMember) {
+	t.Helper()
+
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create ZIP fixture: %v", err)
+	}
+	archive := zip.NewWriter(file)
+	for _, member := range members {
+		header := &zip.FileHeader{Name: member.name, Method: zip.Deflate}
+		mode := member.mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		header.SetMode(mode)
+		writer, err := archive.CreateHeader(header)
+		if err != nil {
+			t.Fatalf("create ZIP member %s: %v", member.name, err)
+		}
+		if _, err := writer.Write([]byte(member.contents)); err != nil {
+			t.Fatalf("write ZIP member %s: %v", member.name, err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatalf("close ZIP fixture: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close ZIP fixture file: %v", err)
+	}
 }
 
 func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkflow workflowConfig, hardenedShell string) {
@@ -62,6 +444,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		{label: "feature flag comment upload name", got: upload.With["name"], want: "feature-flag-comment-inputs-${{ github.event.pull_request.number }}"},
 		{label: "feature flag comment upload path", got: upload.With["path"], want: "${{ runner.temp }}/feature-flag-comment-inputs"},
 		{label: "feature flag comment upload missing-file behavior", got: upload.With["if-no-files-found"], want: "error"},
+		{label: "feature flag comment upload compression level", got: upload.With["compression-level"], want: "0"},
 	})
 
 	enforcementText := readConfig(t, ".github/workflows/feature-flag-enforcement.yml")
@@ -92,7 +475,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 	assertWorkflowJobOmitsCheckout(t, publication, "feature flag comment publication")
 	assertWorkflowJobStepRunsOmitAllFold(t, publication, "feature flag comment publication", []string{"go run ./", "make ", "npm ", "npx ", "git "})
-	assertWorkflowStepOrder(t, publication, "Resolve triggering pull request and artifact", "Download bounded comment inputs", "Validate bounded comment inputs", "Sync feature flag enforcement comment on PR", "Sync release feature guidance comment on PR")
+	assertWorkflowStepOrder(t, publication, "Resolve triggering pull request and artifact", "Download bounded comment inputs", "Extract bounded comment inputs", "Validate bounded comment inputs", "Sync feature flag enforcement comment on PR", "Sync release feature guidance comment on PR")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag publication event guard", got: publication.If, want: "${{ github.event.workflow_run.event == 'pull_request' }}"},
 	})
@@ -103,14 +486,21 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		{label: "feature flag PR resolution action", got: resolvePR.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
 	})
 	assertTextContainsAll(t, resolvePR.With["script"], "feature flag PR resolution", []string{
+		"(run.pull_requests ?? []).length > 0",
+		"candidateNumbers.length !== 1",
 		"github.rest.actions.listWorkflowRunArtifacts",
-		"/^feature-flag-comment-inputs-([1-9][0-9]*)$/",
+		"const expectedArtifactName = `feature-flag-comment-inputs-${prNumber}`",
+		"candidate.name === expectedArtifactName",
 		"github.rest.pulls.get",
-		"pull.head.sha !== run.head_sha",
-		"pull.head.ref !== run.head_branch",
-		"pull.head.repo?.full_name?.toLowerCase() !== expectedHeadRepository",
+		"pull.state === 'open'",
+		"pull.head.sha === run.head_sha",
+		"pull.head.ref === run.head_branch",
+		"pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository",
 		"github.rest.repos.listPullRequestsAssociatedWithCommit",
-		"core.setOutput('artifact-name', artifact.name)",
+		"const maxArtifactBytes = 2200000",
+		"artifact.size_in_bytes > maxArtifactBytes",
+		"core.setOutput('artifact-id', String(artifact.id))",
+		"core.setOutput('artifact-size', String(artifact.size_in_bytes))",
 		"core.exportVariable('PR_NUMBER', String(prNumber))",
 		"String(run.conclusion !== 'success')",
 		"String(/^feat(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title))",
@@ -120,11 +510,34 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	download := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Download bounded comment inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment download action", got: download.Uses, want: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"},
-		{label: "feature flag comment download name", got: download.With["name"], want: "${{ steps.resolve_pr.outputs.artifact-name }}"},
-		{label: "feature flag comment download path", got: download.With["path"], want: "${{ runner.temp }}/feature-flag-comment-inputs"},
+		{label: "feature flag comment download artifact ID", got: download.With["artifact-ids"], want: "${{ steps.resolve_pr.outputs.artifact-id }}"},
+		{label: "feature flag comment download path", got: download.With["path"], want: "${{ runner.temp }}/feature-flag-comment-archive"},
 		{label: "feature flag comment download token", got: download.With["github-token"], want: "${{ github.token }}"},
 		{label: "feature flag comment download repository", got: download.With["repository"], want: "${{ github.repository }}"},
 		{label: "feature flag comment download run ID", got: download.With["run-id"], want: "${{ github.event.workflow_run.id }}"},
+		{label: "feature flag comment download decompression", got: download.With["skip-decompress"], want: "true"},
+	})
+
+	extractDownload := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Extract bounded comment inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature flag publication extraction shell", got: extractDownload.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, extractDownload, "feature flag publication extraction", map[string]string{
+		"ARCHIVE_DIR":            "${{ runner.temp }}/feature-flag-comment-archive",
+		"COMMENT_DIR":            "${{ runner.temp }}/feature-flag-comment-inputs",
+		"EXPECTED_ARTIFACT_SIZE": "${{ steps.resolve_pr.outputs.artifact-size }}",
+		"PATH":                   "/usr/bin:/bin",
+	})
+	assertWorkflowStepRunContainsAll(t, extractDownload, "feature flag publication extraction", []string{
+		`/usr/bin/python3 - <<'PY'`,
+		`max_archive_bytes = 2_200_000`,
+		`actual_size != expected_size`,
+		`with zipfile.ZipFile(archive_path) as archive:`,
+		`member.filename not in limits`,
+		`member.filename in seen`,
+		`file_type not in (0, stat.S_IFREG)`,
+		`member.file_size > limits[member.filename]`,
+		`contents = source.read(limit + 1)`,
 	})
 
 	validateDownload := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Validate bounded comment inputs")
