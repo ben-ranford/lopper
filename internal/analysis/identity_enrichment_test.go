@@ -819,7 +819,7 @@ func assertPNPMDependencyVersions(t *testing.T) {
 	}
 }
 
-func TestJSLockfileParsingHelpersCoverSelectorsAndImporterVersions(t *testing.T) {
+func TestYarnLockfileParsingHelpersCoverSelectors(t *testing.T) {
 	selectors := parseYarnLockPackages(`
 "@scope/pkg@^1.0.0", "@scope/pkg@npm:^1.0.0":
   version "npm:1.2.3 (via peer)"
@@ -852,6 +852,9 @@ not-a-selector:
 	if _, ok := selectors[""]; ok {
 		t.Fatalf("expected blank selector entries to be ignored, got %#v", selectors)
 	}
+}
+
+func TestPNPMLockfileParsingHelpersCoverImporterVersions(t *testing.T) {
 	assertPNPMDependencyVersions(t)
 	items := []pnpmLockIdentity{{lookupName: "existing", name: "existing", version: "9.9.9"}}
 	dependencies := map[string]any{
@@ -867,6 +870,9 @@ not-a-selector:
 	}) {
 		t.Fatalf("unexpected importer dependencies: %#v", items)
 	}
+}
+
+func TestJSLockfileEvidenceSkipsEmptyVersions(t *testing.T) {
 	index := identityIndex{}
 	if count := addJSLockEvidence(index, "yarn.lock", jsLockPackages{
 		"empty":    {},
@@ -876,24 +882,32 @@ not-a-selector:
 	}
 	assertNoIdentityEvidence(t, index, identityKey("js-ts", "empty"))
 	assertSingleIdentityEvidence(t, index, identityKey("js-ts", "left-pad"), "1.3.0", "yarn.lock")
+}
+
+func TestJSLockfileSelectorHelpers(t *testing.T) {
 	if got := normalizeJSLockVersion(" npm:3.4.5 (deduped) "); got != "3.4.5" {
 		t.Fatalf("normalizeJSLockVersion() = %q, want 3.4.5", got)
 	}
-	if got := parseYarnSelectorName(" @scope/pkg "); got != "" {
-		t.Fatalf("expected selector without version to be rejected, got %q", got)
+	for _, tc := range []struct {
+		name     string
+		selector string
+		want     string
+	}{
+		{name: "scoped without version", selector: " @scope/pkg ", want: ""},
+		{name: "scoped", selector: "@scope/pkg@^2.0.0", want: "@scope/pkg"},
+		{name: "unscoped", selector: "left-pad@^1.0.0", want: "left-pad"},
+		{name: "scoped npm alias", selector: "@alias/pkg@npm:@target/pkg@^2.0.0", want: "@target/pkg"},
+		{name: "plain selector", selector: "plain-selector", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseYarnSelectorName(tc.selector); got != tc.want {
+				t.Fatalf("parseYarnSelectorName(%q) = %q, want %q", tc.selector, got, tc.want)
+			}
+		})
 	}
-	if got := parseYarnSelectorName("@scope/pkg@^2.0.0"); got != "@scope/pkg" {
-		t.Fatalf("expected scoped selector to retain package name, got %q", got)
-	}
-	if got := parseYarnSelectorName("left-pad@^1.0.0"); got != "left-pad" {
-		t.Fatalf("expected unscoped selector to retain package name, got %q", got)
-	}
-	if got := parseYarnSelectorName("@alias/pkg@npm:@target/pkg@^2.0.0"); got != "@target/pkg" {
-		t.Fatalf("expected scoped npm alias to resolve its target package, got %q", got)
-	}
-	if got := parseYarnSelectorName("plain-selector"); got != "" {
-		t.Fatalf("expected selector without version separator to be rejected, got %q", got)
-	}
+}
+
+func TestPackageIdentityPathClassification(t *testing.T) {
 	if !isVisibleNodeModuleScope("@scope") || isVisibleNodeModuleScope("scope") {
 		t.Fatalf("unexpected node module scope classification")
 	}
