@@ -87,7 +87,7 @@ jobs:
             exit 1
           fi
           git log --format=%B "origin/${base_ref}..HEAD" > "${commit_messages}"
-          if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|^[[:space:]]*(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)[[:space:]]*$' "${commit_messages}"; then
+          if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${commit_messages}"; then
             echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
             exit 1
           fi
