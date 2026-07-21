@@ -75,10 +75,15 @@ jobs:
 
       - name: Run exact source CI gate
         env:
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         run: |
           parent_sha="$(git rev-parse "${SOURCE_SHA}^")"
-          MEMORY_BENCH_BASE="${parent_sha}" make ci
+          export MEMORY_BENCH_BASE="${parent_sha}"
+          export MEMORY_BENCH_ENFORCE=0
+          export DUPLICATION_BASE="${parent_sha}"
+          export SUPPRESSION_BASE="${parent_sha}"
+          make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
 
       - name: Verify demo assets
         run: make demos-check

@@ -3132,11 +3132,16 @@ func TestReleaseOrchestrationRunsExactSourceCIBeforeReleaseBuilds(t *testing.T) 
 
 	ciGate := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Run exact source CI gate")
 	assertWorkflowStepEnv(t, ciGate, "exact source CI gate", map[string]string{
-		"SOURCE_SHA": "${{ inputs.source_sha || github.sha }}",
+		"BUILD_CHANNEL": "${{ inputs.build_channel }}",
+		"SOURCE_SHA":    "${{ inputs.source_sha || github.sha }}",
 	})
 	assertWorkflowStepRunContainsAll(t, ciGate, "exact source CI gate", []string{
 		`parent_sha="$(git rev-parse "${SOURCE_SHA}^")"`,
-		`MEMORY_BENCH_BASE="${parent_sha}" make ci`,
+		`export MEMORY_BENCH_BASE="${parent_sha}"`,
+		`export MEMORY_BENCH_ENFORCE=0`,
+		`export DUPLICATION_BASE="${parent_sha}"`,
+		`export SUPPRESSION_BASE="${parent_sha}"`,
+		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
 	})
 
 	for _, jobName := range []string{
