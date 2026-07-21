@@ -32,13 +32,6 @@ jobs:
           rm -rf -- "${comment_dir}" .artifacts
           mkdir -- "${comment_dir}" .artifacts
 
-      - name: Fetch PR base
-        env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags origin "+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}"
-
       - name: Capture base feature catalog
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -112,10 +105,6 @@ jobs:
             --pr-title "${PR_TITLE}" \
             --previous-catalog .artifacts/previous-features.json \
             > "${RUNNER_TEMP}/feature-flag-comment-inputs/feature-flag-enforcement.md"
-
-      - name: Fetch tags for release PR guidance
-        if: ${{ always() && steps.classify_pr.outputs.release_pr == 'true' }}
-        run: git fetch --tags --force
 
       - name: Capture previous release feature catalog
         if: ${{ always() && steps.classify_pr.outputs.release_pr == 'true' }}

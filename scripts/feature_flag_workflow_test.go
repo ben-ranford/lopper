@@ -518,7 +518,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 	enforce := workflowJobByName(t, enforcementWorkflow.Jobs, "enforce")
 	assertWorkflowJobPermissions(t, enforce, "feature flag enforcement", map[string]string{"contents": "read"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, enforce, "feature flag enforcement")
-	assertWorkflowStepOrder(t, enforce, "Checkout", "Setup Go", "Reset feature flag comment staging", "Fetch PR base", "Capture base feature catalog", "Classify PR", "Enforce feature flags on PRs", "Write feature flag summary", "Validate and stage bounded comment inputs", "Upload bounded comment inputs", "Fail on feature flag enforcement errors")
+	assertWorkflowStepOrder(t, enforce, "Checkout", "Setup Go", "Reset feature flag comment staging", "Capture base feature catalog", "Classify PR", "Enforce feature flags on PRs", "Write feature flag summary", "Validate and stage bounded comment inputs", "Upload bounded comment inputs", "Fail on feature flag enforcement errors")
 	if _, ok := enforcementWorkflow.Jobs["publish-comments"]; ok {
 		t.Fatal("pull_request workflow must not contain a privileged comment publisher")
 	}
@@ -527,6 +527,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 	setupGo := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Setup Go")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag enforcement checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
+		{label: "feature flag enforcement checkout history depth", got: checkout.With["fetch-depth"], want: "0"},
 		{label: "feature flag enforcement checkout persist-credentials", got: checkout.With["persist-credentials"], want: "false"},
 		{label: "feature flag enforcement setup-go action", got: setupGo.Uses, want: "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c"},
 	})
@@ -536,7 +537,6 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		t.Fatal("feature flag enforcement step must expose its real conclusion to the jobs API")
 	}
 	for _, stepName := range []string{
-		"Fetch tags for release PR guidance",
 		"Capture previous release feature catalog",
 		"Write release feature guidance",
 	} {
@@ -591,6 +591,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		"enforcement_failed.txt",
 		"feature_pr.txt",
 		"release_pr.txt",
+		"git fetch",
 	} {
 		if strings.Contains(enforcementText, forbidden) {
 			t.Fatalf("untrusted feature flag workflow contains unsafe fragment %q", forbidden)
