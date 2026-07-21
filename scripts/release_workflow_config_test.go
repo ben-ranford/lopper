@@ -263,6 +263,9 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 		`?!:[[:space:]]+[^[:space:]]`,
 		`[^[:space:]]'`,
 	})
+	if got := strings.Count(rejectOverrides.Run, "exit 1"); got != 3 {
+		t.Fatalf("preview release override guard failure exits = %d, want 3", got)
+	}
 	if strings.Contains(rejectOverrides.Run, "commit_subjects") {
 		t.Fatal("preview release override guard must scan full commit messages instead of subjects only")
 	}
