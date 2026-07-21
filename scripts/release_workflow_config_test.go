@@ -3115,8 +3115,13 @@ func TestReleaseOrchestrationRunsExactSourceCIBeforeReleaseBuilds(t *testing.T) 
 	})
 	assertWorkflowStepRunContainsAll(t, verifySource, "source CI verification", []string{
 		`[[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]`,
+		`echo "::error::Release source SHA must be a lowercase full 40-character commit SHA." >&2`,
+		`printf 'Rejected release source SHA: %q\n' "${source_sha}" >&2`,
 		`checked_out_sha="$(git rev-parse HEAD)"`,
 		`[ "${checked_out_sha}" != "${source_sha}" ]`,
+	})
+	assertWorkflowStepRunOmitsAll(t, verifySource, "source CI verification", []string{
+		`::error::Release source SHA must be a lowercase full 40-character commit SHA; got ${source_sha}.`,
 	})
 
 	setupGo := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Setup Go")

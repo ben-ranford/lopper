@@ -41,7 +41,8 @@ jobs:
         run: |
           source_sha="${SOURCE_SHA}"
           if [[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Release source SHA must be a lowercase full 40-character commit SHA; got ${source_sha}." >&2
+            echo "::error::Release source SHA must be a lowercase full 40-character commit SHA." >&2
+            printf 'Rejected release source SHA: %q\n' "${source_sha}" >&2
             exit 1
           fi
 
