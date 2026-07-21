@@ -31,6 +31,7 @@ function makePull(number, overrides = {}) {
 function makeHarness(options = {}) {
   const pulls = options.pulls || [];
   const eventPull = options.eventPull;
+  const branchSHAs = options.branchSHAs || ['base-sha'];
   const allPulls = eventPull && !pulls.some((pull) => pull.number === eventPull.number)
     ? [...pulls, eventPull]
     : pulls;
@@ -40,6 +41,8 @@ function makeHarness(options = {}) {
       {
         id: pull.node_id,
         number: pull.number,
+        baseRefName: pull.base.ref,
+        baseRefOid: branchSHAs[0],
         headRefOid: pull.head.sha,
         isDraft: pull.draft,
         mergeable: 'MERGEABLE',
@@ -92,7 +95,6 @@ function makeHarness(options = {}) {
       repos: {
         get: async () => ({ data: repository }),
         getBranch: async () => {
-          const branchSHAs = options.branchSHAs || ['base-sha'];
           const sha = branchSHAs[Math.min(calls.branchReads.length, branchSHAs.length - 1)];
           calls.branchReads.push(sha);
           return { data: { commit: { sha } } };
@@ -110,7 +112,11 @@ function makeHarness(options = {}) {
     },
     graphql: async (query, variables) => {
       if (query.includes('QueuePullState($owner')) {
-        return { repository: { pullRequest: { ...states.get(variables.number) } } };
+        const state = states.get(variables.number);
+        if (calls.branchReads.length >= 2 && options.stateAfterFinalBranchRead?.[variables.number]) {
+          Object.assign(state, options.stateAfterFinalBranchRead[variables.number]);
+        }
+        return { repository: { pullRequest: { ...state } } };
       }
       if (query.includes('QueuePullStateByID')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
@@ -361,6 +367,41 @@ test('controller never merges an unverified head after auto-merge arming races a
   assert.deepEqual(harness.calls.armed, []);
   assert.deepEqual(harness.calls.merged, []);
   assert.match(harness.calls.comments[0].body, /Pull request head moved/);
+});
+
+test('controller revalidates baseRefName and baseRefOid immediately before auto-merge or merge', async (t) => {
+  const cases = [
+    {
+      name: 'retargeted base pauses before auto-merge',
+      harness: makeHarness({
+        pulls: [makePull(10)],
+        stateAfterFinalBranchRead: {
+          10: { baseRefName: 'release' },
+        },
+      }),
+      message: /Pull request base changed from main to release/,
+    },
+    {
+      name: 'base tip drift pauses before merge',
+      harness: makeHarness({
+        pulls: [makePull(10)],
+        stateAfterFinalBranchRead: {
+          10: { baseRefOid: '1234567890abcdef', mergeStateStatus: 'CLEAN' },
+        },
+      }),
+      message: /Pull request base main moved from base-sha to 1234567890/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      await assert.rejects(runController(scenario.harness.args), scenario.message);
+
+      assert.deepEqual(scenario.harness.calls.armed, []);
+      assert.deepEqual(scenario.harness.calls.merged, []);
+      assert.match(scenario.harness.calls.comments[0].body, scenario.message);
+    });
+  }
 });
 
 test('changing a queued pull request away from main disables auto-merge', async () => {
