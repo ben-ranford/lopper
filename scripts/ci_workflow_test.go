@@ -136,7 +136,6 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		"git ",
 	})
 	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Post SonarQube review comments (PR)", "Comment on coverage failure")
-
 	coverageComment := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Comment on coverage failure")
 	if !coverageComment.ContinueOnError {
 		t.Fatal("coverage comment publication must not fail an otherwise-green CI run")
