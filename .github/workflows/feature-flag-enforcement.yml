@@ -78,16 +78,22 @@ jobs:
           set -euo pipefail
           base_ref="${PR_BASE_REF:-main}"
           commit_messages="$(mktemp "${RUNNER_TEMP}/preview-commit-messages.XXXXXX")"
+          commit_subjects="$(mktemp "${RUNNER_TEMP}/preview-commit-subjects.XXXXXX")"
           pr_body="$(mktemp "${RUNNER_TEMP}/preview-pr-body.XXXXXX")"
-          trap 'rm -f "${commit_messages}" "${pr_body}"' EXIT
+          trap 'rm -f "${commit_messages}" "${commit_subjects}" "${pr_body}"' EXIT
           printf '%s\n' "${PR_BODY}" > "${pr_body}"
           if grep -Eiq '^[[:space:]]*(BEGIN|END)_COMMIT_OVERRIDE[[:space:]]*$' "${pr_body}"; then
             echo "::error::Preview PR descriptions must not contain release-please commit override blocks." >&2
             exit 1
           fi
           git log --format=%B "origin/${base_ref}..HEAD" > "${commit_messages}"
-          if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|^(BEGIN|END)_COMMIT_OVERRIDE[[:space:]]*$' "${commit_messages}"; then
+          if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|^[[:space:]]*(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)[[:space:]]*$' "${commit_messages}"; then
             echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
+            exit 1
+          fi
+          git log --format=%s "origin/${base_ref}..HEAD" > "${commit_subjects}"
+          if grep -Eiq '^(feat|fix|bug|perf|docs|refactor|revert)(\([^)]+\))?:[[:space:]]+[^[:space:]]|^[[:alnum:]_-]+(\([^)]+\))?!:[[:space:]]+[^[:space:]]' "${commit_subjects}"; then
+            echo "::error::Preview branch commits must not add non-preview release entries or breaking subjects to the squash body." >&2
             exit 1
           fi
 

@@ -109,7 +109,7 @@ Use these commit types for changes that should appear in release notes:
 - `feat(flags): graduate ...` for feature graduation and the resulting minor release.
 - `type(scope)!: summary` or a `BREAKING CHANGE:` footer for major releases.
 
-Do not use breaking-change markers, `Release-As` footers, or commit override directives on `preview` commits. Preview work stays default-off and patch-versioned until a separate graduation PR uses `feat`.
+Do not use breaking-change markers, `Release-As` footers, commit override directives, or nested commit blocks on `preview` PRs. Because squash bodies include branch commit messages, branch commit subjects must also avoid the non-preview release-note types `feat`, `fix`, `bug`, `perf`, `docs`, `refactor`, and `revert`; use `preview`, `test`, `build`, `ci`, or `chore` as appropriate. Preview work stays default-off and patch-versioned until a separate graduation PR uses `feat(flags)`.
 
 Use non-release types such as `test`, `ci`, `build`, or `chore` when the change should not by itself create a release PR.
 Good scopes include `release`, `ci`, `vscode`, `js`, `jvm`, `go`, `report`, `ui`, `runtime`, and `homebrew`.

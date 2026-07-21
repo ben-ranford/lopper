@@ -29,7 +29,7 @@ Stable release automation:
 - Manual retries only rebuild an existing GitHub release for the selected tag. The workflow reuses the existing published or draft release metadata and fails instead of creating a missing release.
 - Release commits should use Conventional Commit prefixes: `fix:` for patch fixes, `preview:` for opt-in feature work that remains on the current patch line, `feat:` for graduated features and minor releases, and any non-preview type with a breaking-change marker (for example `feat!:` or `fix!:`) or a `BREAKING CHANGE:` footer for major releases.
 - Release Please includes `preview:` commits under **Preview Features**. Its default versioning treats that custom type as patch, while the separate `feat(flags): graduate ...` PR requests the minor bump.
-- CI rejects breaking-change markers and Release Please override directives in preview PR commit messages so a preview squash commit cannot escape the patch line.
+- CI rejects breaking-change markers, Release Please override/nested-commit directives, and non-preview release-note subjects in preview PR commit messages and descriptions so a preview squash commit cannot escape the patch line.
 - Stable releases also publish the first-party action version refs. The release tag, such as `v1.7.0`, is the exact action ref; the workflow force-updates `v1` and `v1.7` to the same release commit for standard GitHub Actions major/minor pinning.
 - Set repository secret `RELEASE_PLEASE_TOKEN` to a PAT with contents and pull request write access so release-please-created PRs can trigger normal CI. If it is not configured, the workflow falls back to `MAIN_SYNC_PAT` and then `GITHUB_TOKEN`.
 
