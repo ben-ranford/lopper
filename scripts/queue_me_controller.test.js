@@ -112,7 +112,11 @@ function makeHarness(options = {}) {
     },
     graphql: async (query, variables) => {
       if (query.includes('QueuePullState($owner')) {
-        return { repository: { pullRequest: { ...states.get(variables.number) } } };
+        const state = states.get(variables.number);
+        if (calls.branchReads.length >= 2 && options.stateAfterFinalBranchRead?.[variables.number]) {
+          Object.assign(state, options.stateAfterFinalBranchRead[variables.number]);
+        }
+        return { repository: { pullRequest: { ...state } } };
       }
       if (query.includes('QueuePullStateByID')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
@@ -371,7 +375,7 @@ test('controller revalidates baseRefName and baseRefOid immediately before auto-
       name: 'retargeted base pauses before auto-merge',
       harness: makeHarness({
         pulls: [makePull(10)],
-        initialStates: {
+        stateAfterFinalBranchRead: {
           10: { baseRefName: 'release' },
         },
       }),
@@ -381,7 +385,7 @@ test('controller revalidates baseRefName and baseRefOid immediately before auto-
       name: 'base tip drift pauses before merge',
       harness: makeHarness({
         pulls: [makePull(10)],
-        initialStates: {
+        stateAfterFinalBranchRead: {
           10: { baseRefOid: '1234567890abcdef', mergeStateStatus: 'CLEAN' },
         },
       }),

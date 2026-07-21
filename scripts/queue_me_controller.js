@@ -407,12 +407,6 @@ async function runController({
   }
 
   try {
-    const state = await pullState(github, owner, repo, leader.number);
-    if (state.headRefOid !== update.headSHA) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
-      );
-    }
     const { data: latestBranch } = await github.rest.repos.getBranch({
       owner,
       repo,
@@ -421,6 +415,12 @@ async function runController({
     if (latestBranch.commit.sha !== branch.commit.sha) {
       throw new Error(
         `Default branch ${defaultBranch} moved from ${shortSHA(branch.commit.sha)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
+      );
+    }
+    const state = await pullState(github, owner, repo, leader.number);
+    if (state.headRefOid !== update.headSHA) {
+      throw new Error(
+        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
       );
     }
     const result = await armOrMerge(github, state, {
