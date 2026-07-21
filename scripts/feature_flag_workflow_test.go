@@ -37,7 +37,15 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 
 	validateUpload := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Validate and stage bounded comment inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature flag input validation id", got: validateUpload.ID, want: "validate_comment_inputs"},
 		{label: "feature flag input validation shell", got: validateUpload.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateUpload, "feature flag input validation", map[string]string{
+		"COMMENT_DIR":        "${{ runner.temp }}/feature-flag-comment-inputs",
+		"ENFORCEMENT_FAILED": "${{ steps.enforce_flags.outcome == 'failure' }}",
+		"FEATURE_PR":         "${{ steps.classify_pr.outputs.feature_pr }}",
+		"PATH":               "/usr/bin:/bin",
+		"RELEASE_PR":         "${{ steps.classify_pr.outputs.release_pr }}",
 	})
 	assertWorkflowStepRunContainsAll(t, validateUpload, "feature flag input validation", []string{
 		`status_path="${COMMENT_DIR}/$(printf '%s' "${status_name}" | tr '[:upper:]' '[:lower:]').txt"`,
@@ -49,6 +57,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 	})
 	upload := workflowStepByName(t, enforcementWorkflow.Jobs, "enforce", "Upload bounded comment inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature flag comment upload guard", got: upload.If, want: "${{ always() && steps.validate_comment_inputs.outcome == 'success' }}"},
 		{label: "feature flag comment upload action", got: upload.Uses, want: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"},
 		{label: "feature flag comment upload name", got: upload.With["name"], want: "feature-flag-comment-inputs"},
 		{label: "feature flag comment upload path", got: upload.With["path"], want: "${{ runner.temp }}/feature-flag-comment-inputs"},

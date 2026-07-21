@@ -174,11 +174,13 @@ jobs:
           fi
 
       - name: Validate and stage bounded comment inputs
+        id: validate_comment_inputs
         if: ${{ always() }}
         env:
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
           ENFORCEMENT_FAILED: ${{ steps.enforce_flags.outcome == 'failure' }}
           FEATURE_PR: ${{ steps.classify_pr.outputs.feature_pr }}
+          PATH: /usr/bin:/bin
           RELEASE_PR: ${{ steps.classify_pr.outputs.release_pr }}
         shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         run: |
@@ -236,7 +238,7 @@ jobs:
           done < <(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | sort)
 
       - name: Upload bounded comment inputs
-        if: ${{ always() }}
+        if: ${{ always() && steps.validate_comment_inputs.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: feature-flag-comment-inputs
