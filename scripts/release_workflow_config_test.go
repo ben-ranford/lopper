@@ -117,20 +117,22 @@ type workflowStepConfig struct {
 	With             map[string]string `yaml:"with"`
 }
 
+type releasePleaseChangelogSection struct {
+	Type    string `json:"type"`
+	Section string `json:"section"`
+	Hidden  bool   `json:"hidden"`
+}
+
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
 		Versioning string `json:"versioning"`
 		Packages   map[string]struct {
-			Versioning        string `json:"versioning"`
-			ChangelogPath     string `json:"changelog-path"`
-			ChangelogSections []struct {
-				Type    string `json:"type"`
-				Section string `json:"section"`
-				Hidden  bool   `json:"hidden"`
-			} `json:"changelog-sections"`
-			ExtraFiles []struct {
+			Versioning        string                          `json:"versioning"`
+			ChangelogPath     string                          `json:"changelog-path"`
+			ChangelogSections []releasePleaseChangelogSection `json:"changelog-sections"`
+			ExtraFiles        []struct {
 				Path string `json:"path"`
 			} `json:"extra-files"`
 		} `json:"packages"`
@@ -151,19 +153,7 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 		t.Fatal("release-please must keep default versioning so preview commits bump patch and feat graduations bump minor")
 	}
 
-	previewSectionFound := false
-	for _, section := range rootPackage.ChangelogSections {
-		if section.Type != "preview" {
-			continue
-		}
-		previewSectionFound = true
-		if section.Section != "Preview Features" || section.Hidden {
-			t.Fatalf("preview changelog section = %#v, want visible Preview Features", section)
-		}
-	}
-	if !previewSectionFound {
-		t.Fatal("release-please config must expose preview commits in release notes")
-	}
+	assertPreviewChangelogSection(t, rootPackage.ChangelogSections)
 
 	extraFiles := map[string]bool{}
 	for _, extraFile := range rootPackage.ExtraFiles {
@@ -177,6 +167,21 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 			t.Fatalf("release-please config should keep syncing %s", path)
 		}
 	}
+}
+
+func assertPreviewChangelogSection(t *testing.T, sections []releasePleaseChangelogSection) {
+	t.Helper()
+
+	for _, section := range sections {
+		if section.Type != "preview" {
+			continue
+		}
+		if section.Section != "Preview Features" || section.Hidden {
+			t.Fatalf("preview changelog section = %#v, want visible Preview Features", section)
+		}
+		return
+	}
+	t.Fatal("release-please config must expose preview commits in release notes")
 }
 
 func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
