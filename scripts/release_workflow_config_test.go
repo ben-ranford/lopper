@@ -247,7 +247,7 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 		`grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${commit_messages}"`,
 		`git log --format=%B "origin/${base_ref}..HEAD"`,
 		`(BREAKING[ -]CHANGE|Release-As)`,
-		`(feat|fix|bug|perf|docs|refactor|revert)`,
+		`(feat|feature|fix|bug|perf|docs|refactor|revert)`,
 		`?!:[[:space:]]+[^[:space:]]`,
 		`[^[:space:]]' "${commit_messages}"`,
 	})

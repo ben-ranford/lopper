@@ -91,7 +91,7 @@ jobs:
             echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
             exit 1
           fi
-          if grep -Eiq '^(feat|fix|bug|perf|docs|refactor|revert)(\([^)]+\))?:[[:space:]]+[^[:space:]]|^[[:alnum:]_-]+(\([^)]+\))?!:[[:space:]]+[^[:space:]]' "${commit_messages}"; then
+          if grep -Eiq '^(feat|feature|fix|bug|perf|docs|refactor|revert)(\([^)]+\))?:[[:space:]]+[^[:space:]]|^[[:alnum:]_-]+(\([^)]+\))?!:[[:space:]]+[^[:space:]]' "${commit_messages}"; then
             echo "::error::Preview branch commits must not add non-preview release entries or breaking subjects to the squash body." >&2
             exit 1
           fi
