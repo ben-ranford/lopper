@@ -10,6 +10,10 @@ on:
         required: false
         type: string
         default: ''
+      memory_approved:
+        required: false
+        type: boolean
+        default: false
       artifact_prefix:
         required: true
         type: string
@@ -76,11 +80,11 @@ jobs:
       - name: Run exact source CI gate
         env:
           BUILD_CHANNEL: ${{ inputs.build_channel }}
+          MEMORY_BENCH_ENFORCE: ${{ inputs.memory_approved && '0' || '1' }}
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         run: |
           parent_sha="$(git rev-parse "${SOURCE_SHA}^")"
           export MEMORY_BENCH_BASE="${parent_sha}"
-          export MEMORY_BENCH_ENFORCE=0
           export DUPLICATION_BASE="${parent_sha}"
           export SUPPRESSION_BASE="${parent_sha}"
           make ci BUILD_CHANNEL="${BUILD_CHANNEL}"

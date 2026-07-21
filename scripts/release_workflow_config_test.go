@@ -49,7 +49,18 @@ type workflowDispatchConfig struct {
 	Inputs map[string]workflowInput `yaml:"inputs"`
 }
 
+type workflowCallConfig struct {
+	Inputs map[string]workflowCallInput `yaml:"inputs"`
+}
+
+type workflowCallInput struct {
+	Default  any    `yaml:"default"`
+	Required bool   `yaml:"required"`
+	Type     string `yaml:"type"`
+}
+
 type workflowOnConfig struct {
+	WorkflowCall     workflowCallConfig     `yaml:"workflow_call"`
 	WorkflowDispatch workflowDispatchConfig `yaml:"workflow_dispatch"`
 }
 
@@ -68,6 +79,8 @@ type workflowJobConfig struct {
 	RunsOn          string               `yaml:"runs-on"`
 	Steps           []workflowStepConfig `yaml:"steps"`
 	Strategy        workflowStrategy     `yaml:"strategy"`
+	Uses            string               `yaml:"uses"`
+	With            map[string]string    `yaml:"with"`
 }
 
 type workflowStrategy struct {
@@ -3132,13 +3145,13 @@ func TestReleaseOrchestrationRunsExactSourceCIBeforeReleaseBuilds(t *testing.T) 
 
 	ciGate := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Run exact source CI gate")
 	assertWorkflowStepEnv(t, ciGate, "exact source CI gate", map[string]string{
-		"BUILD_CHANNEL": "${{ inputs.build_channel }}",
-		"SOURCE_SHA":    "${{ inputs.source_sha || github.sha }}",
+		"BUILD_CHANNEL":        "${{ inputs.build_channel }}",
+		"MEMORY_BENCH_ENFORCE": "${{ inputs.memory_approved && '0' || '1' }}",
+		"SOURCE_SHA":           "${{ inputs.source_sha || github.sha }}",
 	})
 	assertWorkflowStepRunContainsAll(t, ciGate, "exact source CI gate", []string{
 		`parent_sha="$(git rev-parse "${SOURCE_SHA}^")"`,
 		`export MEMORY_BENCH_BASE="${parent_sha}"`,
-		`export MEMORY_BENCH_ENFORCE=0`,
 		`export DUPLICATION_BASE="${parent_sha}"`,
 		`export SUPPRESSION_BASE="${parent_sha}"`,
 		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
@@ -3153,6 +3166,36 @@ func TestReleaseOrchestrationRunsExactSourceCIBeforeReleaseBuilds(t *testing.T) 
 		job := workflowJobByName(t, workflow.Jobs, jobName)
 		assertWorkflowJobNeeds(t, job, jobName, workflowJobNeeds{"verify-source-ci"})
 	}
+}
+
+func TestReleaseCallersPassMemoryApprovalToSourceCI(t *testing.T) {
+	t.Parallel()
+
+	var reusable workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &reusable)
+	approval, ok := reusable.On.WorkflowCall.Inputs["memory_approved"]
+	if !ok {
+		t.Fatal("release orchestration must define a memory_approved input")
+	}
+	if approval.Required || approval.Type != "boolean" || approval.Default != false {
+		t.Fatalf("memory_approved input = %#v, want optional boolean defaulting to false", approval)
+	}
+
+	var rolling workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &rolling)
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling memory approval",
+		got:   rolling.Jobs["orchestrate-rolling"].With["memory_approved"],
+		want:  "${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}",
+	}})
+
+	var release workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &release)
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "release memory approval",
+		got:   release.Jobs["orchestrate-release"].With["memory_approved"],
+		want:  "false",
+	}})
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {

@@ -183,6 +183,7 @@ jobs:
       source_sha: ${{ needs.prepare-release.outputs.sha }}
       artifact_prefix: release
       build_channel: release
+      memory_approved: false
       image_tags: |
         ${{ needs.prepare-release.outputs.tag }}
         latest
