@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.8.1 (Unreleased)
+## 1.8.2 (2026-07-20)
+
+- Rejected workspace-local symlink binaries in untrusted workspaces, even when their targets resolve outside the workspace root.
+
+## 1.8.1 (2026-07-14)
 
 - Graduated Python unittest and uv runner profiles plus VS Code preview-capability routing to stable, default-on features with explicit rollback support.
 - Added safe per-workspace preview capability controls, CycloneDX JSON export, and Python runtime-aware refresh.
