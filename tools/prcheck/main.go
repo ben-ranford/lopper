@@ -51,8 +51,6 @@ type repoMergePolicy struct {
 }
 
 type releasePleaseIdentity struct {
-	authorLogin            string
-	repositoryOwnerLogin   string
 	headRepositoryFullName string
 	repositoryFullName     string
 }
@@ -66,8 +64,6 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	title := fs.String("title", strings.TrimSpace(getenv("PR_TITLE")), "pull request title")
 	headRef := fs.String("head-ref", strings.TrimSpace(getenv("PR_HEAD_REF")), "pull request head ref")
-	authorLogin := fs.String("author-login", strings.TrimSpace(getenv("PR_AUTHOR_LOGIN")), "pull request author login")
-	repositoryOwnerLogin := fs.String("repo-owner-login", strings.TrimSpace(getenv("REPOSITORY_OWNER_LOGIN")), "repository owner login")
 	headRepositoryFullName := fs.String("head-repo-full-name", strings.TrimSpace(getenv("PR_HEAD_REPO_FULL_NAME")), "pull request head repository full name")
 	repositoryFullName := fs.String("repo-full-name", strings.TrimSpace(getenv("REPOSITORY_FULL_NAME")), "repository full name")
 	bodyFile := fs.String("body-file", "", "path to a file containing the pull request body")
@@ -90,8 +86,6 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	}
 
 	releaseIdentity := releasePleaseIdentity{
-		authorLogin:            *authorLogin,
-		repositoryOwnerLogin:   *repositoryOwnerLogin,
 		headRepositoryFullName: *headRepositoryFullName,
 		repositoryFullName:     *repositoryFullName,
 	}
@@ -202,15 +196,10 @@ func requiredItemFailures(content string, items []string, valid func(string, str
 }
 
 func isTrustedReleasePleasePR(headRef, title string, identity releasePleaseIdentity) bool {
-	if !strings.HasPrefix(strings.TrimSpace(headRef), "release-please--branches--") {
+	if strings.TrimSpace(headRef) != "release-please--branches--main" {
 		return false
 	}
 	if !releasePleaseTitlePattern.MatchString(strings.TrimSpace(title)) {
-		return false
-	}
-	authorLogin := strings.TrimSpace(identity.authorLogin)
-	repositoryOwnerLogin := strings.TrimSpace(identity.repositoryOwnerLogin)
-	if authorLogin == "" || authorLogin != repositoryOwnerLogin {
 		return false
 	}
 	headRepositoryFullName := strings.TrimSpace(identity.headRepositoryFullName)

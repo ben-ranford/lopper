@@ -14,10 +14,8 @@ func TestRunAcceptsEnvBody(t *testing.T) {
 		"PR_TITLE":               "fix(release): validate PR metadata",
 		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
 		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
-		"PR_AUTHOR_LOGIN":        "ben-ranford",
 		"PR_BODY":                validBody(),
 		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
-		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	})
 	code := run(nil, env, &stderr)
 	if code != 0 {
@@ -44,10 +42,8 @@ func TestRunAcceptsValidRepoPolicy(t *testing.T) {
 		"PR_TITLE":               "fix(release): validate PR metadata",
 		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
 		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
-		"PR_AUTHOR_LOGIN":        "ben-ranford",
 		"PR_BODY":                validBody(),
 		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
-		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	values := mergeMaps(base, validRepoPolicyEnv())
 	env := mapEnv(values)
@@ -63,10 +59,8 @@ func TestRunRejectsInvalidRepoPolicy(t *testing.T) {
 		"PR_TITLE":               "fix(release): validate PR metadata",
 		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
 		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
-		"PR_AUTHOR_LOGIN":        "ben-ranford",
 		"PR_BODY":                validBody(),
 		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
-		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	policy := map[string]string{
 		"REPO_ALLOW_MERGE_COMMIT":        "true",
@@ -91,10 +85,8 @@ func TestRunRejectsMissingRepoPolicyValue(t *testing.T) {
 		"PR_TITLE":               "fix(release): validate PR metadata",
 		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
 		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
-		"PR_AUTHOR_LOGIN":        "ben-ranford",
 		"PR_BODY":                validBody(),
 		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
-		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	policy := map[string]string{
 		"REPO_ALLOW_MERGE_COMMIT": "false",
@@ -116,10 +108,8 @@ func TestRunHandlesRepoPolicyValidationErrorWriteFailure(t *testing.T) {
 		"PR_TITLE":               "fix(release): validate PR metadata",
 		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
 		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
-		"PR_AUTHOR_LOGIN":        "ben-ranford",
 		"PR_BODY":                validBody(),
 		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
-		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	policy := map[string]string{
 		"REPO_ALLOW_MERGE_COMMIT":        "false",
@@ -246,6 +236,19 @@ func TestValidateRejectsSpoofedReleasePleaseIdentity(t *testing.T) {
 	expectValidationError(t, err, `missing required template section "Summary"`)
 }
 
+func TestValidateRejectsReleasePleasePrefixSpoof(t *testing.T) {
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main-attacker", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
+	expectValidationError(t, err, `missing required template section "Summary"`)
+}
+
+func TestValidateAcceptsRepositoryOwnedReleasePRFromNonOwnerToken(t *testing.T) {
+	identity := trustedReleasePleaseIdentity()
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", identity)
+	if err != nil {
+		t.Fatalf("validate returned error: %v", err)
+	}
+}
+
 func TestValidateReleasePleaseExemptionStillRequiresReleaseTitle(t *testing.T) {
 	err := validate("release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
 	if err == nil {
@@ -318,8 +321,6 @@ func validRepoPolicyEnv() map[string]string {
 
 func trustedReleasePleaseIdentity() releasePleaseIdentity {
 	return releasePleaseIdentity{
-		authorLogin:            "ben-ranford",
-		repositoryOwnerLogin:   "ben-ranford",
 		headRepositoryFullName: "ben-ranford/lopper",
 		repositoryFullName:     "ben-ranford/lopper",
 	}
@@ -327,8 +328,6 @@ func trustedReleasePleaseIdentity() releasePleaseIdentity {
 
 func spoofedReleasePleaseIdentity() releasePleaseIdentity {
 	return releasePleaseIdentity{
-		authorLogin:            "attacker",
-		repositoryOwnerLogin:   "ben-ranford",
 		headRepositoryFullName: "attacker/lopper",
 		repositoryFullName:     "ben-ranford/lopper",
 	}
