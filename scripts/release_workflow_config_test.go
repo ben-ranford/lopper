@@ -3190,6 +3190,12 @@ func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t 
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
 	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
+
+	var rollingWorkflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &rollingWorkflow)
+
+	orchestrateRolling := workflowJobByName(t, rollingWorkflow.Jobs, "orchestrate-rolling")
+	assertWorkflowJobNeeds(t, orchestrateRolling, "orchestrate-rolling", workflowJobNeeds{"prepare-rolling", "build-darwin-amd64-rolling"})
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
