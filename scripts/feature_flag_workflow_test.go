@@ -51,6 +51,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		`printf '1\n' > "${COMMENT_DIR}/payload-version.txt"`,
 		`file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"`,
 		`payload-version.txt`,
+		`echo "::error::Comment payload version exceeds the 8-byte bound." >&2`,
 		`feature-flag-enforcement.md|release-feature-flag-comment.md`,
 		`stat --format=%s "${path}"`,
 	})

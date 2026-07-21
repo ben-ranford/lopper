@@ -205,8 +205,16 @@ jobs:
           while IFS= read -r path; do
             case "$(basename "${path}")" in
               payload-version.txt)
-                if [ ! -f "${path}" ] || [ -L "${path}" ] || [ "$(tr -d '[:space:]' < "${path}")" != "1" ]; then
+                if [ ! -f "${path}" ] || [ -L "${path}" ] || [ ! -s "${path}" ]; then
                   echo "::error::Comment payload version is missing or unsafe." >&2
+                  exit 1
+                fi
+                if [ "$(stat --format=%s "${path}")" -gt 8 ]; then
+                  echo "::error::Comment payload version exceeds the 8-byte bound." >&2
+                  exit 1
+                fi
+                if [ "$(tr -d '[:space:]' < "${path}")" != "1" ]; then
+                  echo "::error::Unsupported comment payload version." >&2
                   exit 1
                 fi
                 ;;
