@@ -558,7 +558,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	reportPreparation := workflowJobByName(t, workflow.Jobs, "prepare-release-feature-report")
-	assertWorkflowJobNeeds(t, reportPreparation, "release feature report preparation", workflowJobNeeds{"prepare-release"})
+	assertWorkflowJobNeeds(t, reportPreparation, "release feature report preparation", workflowJobNeeds{"prepare-release", "orchestrate-release"})
 	assertWorkflowJobPermissions(t, reportPreparation, "release feature report preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, reportPreparation, "release feature report preparation")
 	assertWorkflowJobOmitsText(t, reportPreparation, "secrets.", "release feature report preparation must not receive secrets")
@@ -834,7 +834,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertWorkflowJobPermissions(t, darwinProducer, "rolling Darwin amd64 producer", map[string]string{"contents": "read"})
 
 	notesPreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-release-notes")
-	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling"})
+	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling", "orchestrate-rolling"})
 	assertWorkflowJobPermissions(t, notesPreparation, "rolling release note preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, notesPreparation, "rolling release note preparation")
 	assertWorkflowJobOmitsText(t, notesPreparation, "secrets.", "rolling release note preparation must not receive secrets")
@@ -884,7 +884,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 
 	archivePreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-source-archive")
-	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling"})
+	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling", "orchestrate-rolling"})
 	assertWorkflowJobPermissions(t, archivePreparation, "rolling source archive preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, archivePreparation, "rolling source archive preparation")
 	assertWorkflowJobOmitsText(t, archivePreparation, "secrets.", "rolling source archive preparation must not receive secrets")
@@ -3196,6 +3196,58 @@ func TestReleaseCallersPassMemoryApprovalToSourceCI(t *testing.T) {
 		got:   release.Jobs["orchestrate-release"].With["memory_approved"],
 		want:  "false",
 	}})
+}
+
+func TestReleaseCallersWaitForExactSourceCIBeforeProducingArtifacts(t *testing.T) {
+	t.Parallel()
+
+	type producerContract struct {
+		name  string
+		needs workflowJobNeeds
+	}
+	testCases := []struct {
+		path         string
+		orchestrator string
+		producers    []producerContract
+	}{
+		{
+			path:         ".github/workflows/release.yml",
+			orchestrator: "orchestrate-release",
+			producers: []producerContract{
+				{name: "build-vscode-extension", needs: workflowJobNeeds{"prepare-release", "orchestrate-release"}},
+				{name: "build-darwin-amd64", needs: workflowJobNeeds{"prepare-release", "orchestrate-release"}},
+				{name: "prepare-release-feature-report", needs: workflowJobNeeds{"prepare-release", "orchestrate-release"}},
+			},
+		},
+		{
+			path:         ".github/workflows/rolling.yml",
+			orchestrator: "orchestrate-rolling",
+			producers: []producerContract{
+				{name: "build-darwin-amd64-rolling", needs: workflowJobNeeds{"prepare-rolling", "orchestrate-rolling"}},
+				{name: "prepare-rolling-release-notes", needs: workflowJobNeeds{"prepare-rolling", "orchestrate-rolling"}},
+				{name: "prepare-rolling-source-archive", needs: workflowJobNeeds{"prepare-rolling", "orchestrate-rolling"}},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.path, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow workflowConfig
+			readYAMLConfig(t, testCase.path, &workflow)
+
+			orchestrator := workflowJobByName(t, workflow.Jobs, testCase.orchestrator)
+			if orchestrator.Uses != "./.github/workflows/release-orchestration.yml" {
+				t.Fatalf("%s uses = %q", testCase.orchestrator, orchestrator.Uses)
+			}
+			for _, producer := range testCase.producers {
+				job := workflowJobByName(t, workflow.Jobs, producer.name)
+				assertWorkflowJobNeeds(t, job, producer.name, producer.needs)
+			}
+		})
+	}
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {

@@ -54,6 +54,7 @@ jobs:
   build-darwin-amd64-rolling:
     needs:
       - prepare-rolling
+      - orchestrate-rolling
     runs-on: macos-26-intel
     permissions:
       contents: read
@@ -155,6 +156,7 @@ jobs:
   prepare-rolling-release-notes:
     needs:
       - prepare-rolling
+      - orchestrate-rolling
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -278,6 +280,7 @@ jobs:
   prepare-rolling-source-archive:
     needs:
       - prepare-rolling
+      - orchestrate-rolling
     runs-on: ubuntu-latest
     permissions:
       contents: read
