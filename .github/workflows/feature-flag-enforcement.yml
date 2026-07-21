@@ -53,12 +53,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^(feat|preview)(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+          pr_title="$(printf '%s\n' "${PR_TITLE}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          if printf '%s\n' "${pr_title}" | grep -Eq '^(feat|preview)(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
             echo "feature_pr=true" >> "$GITHUB_OUTPUT"
           else
             echo "feature_pr=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^preview(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+          if printf '%s\n' "${pr_title}" | grep -Eq '^preview(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
             echo "preview_pr=true" >> "$GITHUB_OUTPUT"
           else
             echo "preview_pr=false" >> "$GITHUB_OUTPUT"

@@ -227,6 +227,14 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 	if !strings.Contains(classify.Run, `echo "preview_pr=true"`) {
 		t.Fatal("feature flag enforcement must expose preview PR classification")
 	}
+	for _, want := range []string{
+		`sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'`,
+		`printf '%s\n' "${pr_title}"`,
+	} {
+		if !strings.Contains(classify.Run, want) {
+			t.Fatalf("feature flag enforcement must classify the trimmed PR title using %q", want)
+		}
+	}
 
 	rejectOverrides := workflowStepByName(t, workflow.Jobs, "enforce", "Reject release overrides on preview PRs")
 	assertWorkflowStringValues(t, []workflowStringValue{
