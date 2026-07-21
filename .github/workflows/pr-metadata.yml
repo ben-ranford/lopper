@@ -55,4 +55,8 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --body-file "$PR_BODY_FILE"
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY_OWNER_LOGIN: ${{ github.event.repository.owner.login }}
+          REPOSITORY_FULL_NAME: ${{ github.repository }}
+        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --author-login "$PR_AUTHOR_LOGIN" --repo-owner-login "$REPOSITORY_OWNER_LOGIN" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --body-file "$PR_BODY_FILE"

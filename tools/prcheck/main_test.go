@@ -11,9 +11,13 @@ import (
 func TestRunAcceptsEnvBody(t *testing.T) {
 	var stderr bytes.Buffer
 	env := mapEnv(map[string]string{
-		"PR_TITLE":    "fix(release): validate PR metadata",
-		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
-		"PR_BODY":     validBody(),
+		"PR_TITLE":               "fix(release): validate PR metadata",
+		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
+		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
+		"PR_AUTHOR_LOGIN":        "ben-ranford",
+		"PR_BODY":                validBody(),
+		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
+		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	})
 	code := run(nil, env, &stderr)
 	if code != 0 {
@@ -37,9 +41,13 @@ func TestRunAcceptsBodyFile(t *testing.T) {
 func TestRunAcceptsValidRepoPolicy(t *testing.T) {
 	var stderr bytes.Buffer
 	base := map[string]string{
-		"PR_TITLE":    "fix(release): validate PR metadata",
-		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
-		"PR_BODY":     validBody(),
+		"PR_TITLE":               "fix(release): validate PR metadata",
+		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
+		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
+		"PR_AUTHOR_LOGIN":        "ben-ranford",
+		"PR_BODY":                validBody(),
+		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
+		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	values := mergeMaps(base, validRepoPolicyEnv())
 	env := mapEnv(values)
@@ -52,9 +60,13 @@ func TestRunAcceptsValidRepoPolicy(t *testing.T) {
 func TestRunRejectsInvalidRepoPolicy(t *testing.T) {
 	var stderr bytes.Buffer
 	base := map[string]string{
-		"PR_TITLE":    "fix(release): validate PR metadata",
-		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
-		"PR_BODY":     validBody(),
+		"PR_TITLE":               "fix(release): validate PR metadata",
+		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
+		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
+		"PR_AUTHOR_LOGIN":        "ben-ranford",
+		"PR_BODY":                validBody(),
+		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
+		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	policy := map[string]string{
 		"REPO_ALLOW_MERGE_COMMIT":        "true",
@@ -76,9 +88,13 @@ func TestRunRejectsInvalidRepoPolicy(t *testing.T) {
 func TestRunRejectsMissingRepoPolicyValue(t *testing.T) {
 	var stderr bytes.Buffer
 	base := map[string]string{
-		"PR_TITLE":    "fix(release): validate PR metadata",
-		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
-		"PR_BODY":     validBody(),
+		"PR_TITLE":               "fix(release): validate PR metadata",
+		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
+		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
+		"PR_AUTHOR_LOGIN":        "ben-ranford",
+		"PR_BODY":                validBody(),
+		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
+		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	policy := map[string]string{
 		"REPO_ALLOW_MERGE_COMMIT": "false",
@@ -97,9 +113,13 @@ func TestRunRejectsMissingRepoPolicyValue(t *testing.T) {
 
 func TestRunHandlesRepoPolicyValidationErrorWriteFailure(t *testing.T) {
 	base := map[string]string{
-		"PR_TITLE":    "fix(release): validate PR metadata",
-		"PR_HEAD_REF": "bug/issue-000-pr-title-template-gate",
-		"PR_BODY":     validBody(),
+		"PR_TITLE":               "fix(release): validate PR metadata",
+		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
+		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
+		"PR_AUTHOR_LOGIN":        "ben-ranford",
+		"PR_BODY":                validBody(),
+		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
+		"REPOSITORY_OWNER_LOGIN": "ben-ranford",
 	}
 	policy := map[string]string{
 		"REPO_ALLOW_MERGE_COMMIT":        "false",
@@ -161,13 +181,13 @@ func TestRunHandlesValidationErrorWriteFailure(t *testing.T) {
 
 func TestValidateAcceptsCompletedTemplate(t *testing.T) {
 	body := validBody()
-	if err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body); err != nil {
+	if err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}); err != nil {
 		t.Fatalf("validate returned error: %v", err)
 	}
 }
 
 func TestValidateRejectsBugTitle(t *testing.T) {
-	err := validate("bug: patch adapter parser", "bug/issue-123-parser", validBody())
+	err := validate("bug: patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{})
 	if err == nil {
 		t.Fatal("validate succeeded for unsupported bug title")
 	}
@@ -177,52 +197,57 @@ func TestValidateRejectsBugTitle(t *testing.T) {
 }
 
 func TestValidateRejectsNonConventionalTitle(t *testing.T) {
-	err := validate("patch adapter parser", "bug/issue-123-parser", validBody())
+	err := validate("patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{})
 	if err == nil {
 		t.Fatal("validate succeeded for non-conventional title")
 	}
 }
 
 func TestValidateRequiresTemplateSections(t *testing.T) {
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", strings.Replace(validBody(), "## Validation", "## Verification", 1))
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", strings.Replace(validBody(), "## Validation", "## Verification", 1), releasePleaseIdentity{})
 	expectValidationError(t, err, `missing required template section "Validation"`)
 }
 
 func TestValidateRejectsPlaceholderOnlySection(t *testing.T) {
 	body := strings.Replace(validBody(), "Stops release-please from missing patch fixes.", "Describe the problem and the intent of this change.", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
 	expectValidationError(t, err, `section "Summary" must be completed`)
 }
 
 func TestValidateRequiresRiskFields(t *testing.T) {
 	body := strings.Replace(validBody(), "- Performance impact: None\n", "", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
 	expectValidationError(t, err, `field "Performance impact"`)
 }
 
 func TestValidateRequiresCheckedChecklist(t *testing.T) {
 	body := strings.Replace(validBody(), "- [x] Ready for review", "- [ ] Ready for review", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
 	expectValidationError(t, err, `Checklist item "Ready for review"`)
 }
 
 func TestValidateRejectsBlankSectionWithCommentOnly(t *testing.T) {
 	body := strings.Replace(validBody(), "Stops release-please from missing patch fixes.", "<!-- TODO -->", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body)
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
 	if err == nil {
 		t.Fatal("validate succeeded with comment-only Summary")
 	}
 }
 
 func TestValidateExemptsGeneratedReleasePleaseBody(t *testing.T) {
-	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser")
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
 	if err != nil {
 		t.Fatalf("validate returned error: %v", err)
 	}
 }
 
+func TestValidateRejectsSpoofedReleasePleaseIdentity(t *testing.T) {
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", spoofedReleasePleaseIdentity())
+	expectValidationError(t, err, `missing required template section "Summary"`)
+}
+
 func TestValidateReleasePleaseExemptionStillRequiresReleaseTitle(t *testing.T) {
-	err := validate("release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser")
+	err := validate("release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
 	if err == nil {
 		t.Fatal("validate succeeded for generated release PR with non-conventional title")
 	}
@@ -288,6 +313,24 @@ func validRepoPolicyEnv() map[string]string {
 		"REPO_ALLOW_REBASE_MERGE":        "false",
 		"REPO_ALLOW_SQUASH_MERGE":        "true",
 		"REPO_SQUASH_MERGE_COMMIT_TITLE": "PR_TITLE",
+	}
+}
+
+func trustedReleasePleaseIdentity() releasePleaseIdentity {
+	return releasePleaseIdentity{
+		authorLogin:            "ben-ranford",
+		repositoryOwnerLogin:   "ben-ranford",
+		headRepositoryFullName: "ben-ranford/lopper",
+		repositoryFullName:     "ben-ranford/lopper",
+	}
+}
+
+func spoofedReleasePleaseIdentity() releasePleaseIdentity {
+	return releasePleaseIdentity{
+		authorLogin:            "attacker",
+		repositoryOwnerLogin:   "ben-ranford",
+		headRepositoryFullName: "attacker/lopper",
+		repositoryFullName:     "ben-ranford/lopper",
 	}
 }
 
