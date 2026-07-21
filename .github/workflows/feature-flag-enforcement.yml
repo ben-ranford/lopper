@@ -82,8 +82,8 @@ jobs:
           pr_body="$(mktemp "${RUNNER_TEMP}/preview-pr-body.XXXXXX")"
           trap 'rm -f "${commit_messages}" "${pr_body}"' EXIT
           printf '%s\n' "${PR_BODY}" > "${pr_body}"
-          if grep -Eiq '(BEGIN|END)_COMMIT_OVERRIDE' "${pr_body}"; then
-            echo "::error::Preview PR descriptions must not contain release-please commit override blocks." >&2
+          if grep -Eiq '(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${pr_body}"; then
+            echo "::error::Preview PR descriptions must not contain release-please override or nested commit blocks." >&2
             exit 1
           fi
           merge_base="$(git merge-base "origin/${base_ref}" HEAD)"
