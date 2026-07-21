@@ -260,8 +260,6 @@ jobs:
           fi
 
           payload_version=""
-          feature_summary_path=""
-          release_summary_path=""
 
           while IFS= read -r path; do
             case "$(basename "${path}")" in
@@ -292,7 +290,6 @@ jobs:
                   echo "::error::Feature enforcement summary exceeds the 1 MiB bound." >&2
                   exit 1
                 fi
-                feature_summary_path="${path}"
                 ;;
               release-feature-flag-comment.md)
                 if [ ! -f "${path}" ] || [ -L "${path}" ] || [ ! -s "${path}" ]; then
@@ -303,7 +300,6 @@ jobs:
                   echo "::error::Release feature summary exceeds the 1 MiB bound." >&2
                   exit 1
                 fi
-                release_summary_path="${path}"
                 ;;
               *)
                 echo "::error::Unexpected comment input ${path}." >&2
@@ -314,13 +310,83 @@ jobs:
 
           : "${payload_version:?missing comment payload version}"
 
-          {
-            printf 'FEATURE_SUMMARY_PATH=%s\n' "${feature_summary_path}"
-            printf 'RELEASE_SUMMARY_PATH=%s\n' "${release_summary_path}"
-          } >> "$GITHUB_ENV"
+      - name: Render inert comment bodies
+        env:
+          COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
+          RENDERED_DIR: ${{ runner.temp }}/feature-flag-comment-bodies
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import html
+          import os
+          import pathlib
+          import unicodedata
+
+          max_source_bytes = 8_192
+          comment_dir = pathlib.Path(os.environ["COMMENT_DIR"])
+          rendered_dir = pathlib.Path(os.environ["RENDERED_DIR"])
+          if rendered_dir.exists() or rendered_dir.is_symlink():
+              raise SystemExit("rendered comment directory already exists")
+          rendered_dir.mkdir(mode=0o700)
+
+          def render(source_name, destination_name, marker, title):
+              source = comment_dir / source_name
+              if not source.exists():
+                  return
+              if source.is_symlink() or not source.is_file():
+                  raise SystemExit(f"comment source {source_name!r} is unsafe")
+
+              with source.open("rb") as handle:
+                  raw = handle.read(max_source_bytes + 1)
+              truncated = len(raw) > max_source_bytes
+              text = raw[:max_source_bytes].decode("utf-8", errors="replace")
+              text = text.replace("\r\n", "\n").replace("\r", "\n")
+              text = "".join(
+                  character
+                  for character in text
+                  if character in "\n\t" or not unicodedata.category(character).startswith("C")
+              )
+              text = text.replace("@", "@\u200b")
+              inert = html.escape(text, quote=True)
+              if not inert:
+                  inert = "[empty after sanitization]"
+              if truncated:
+                  inert += "\n\n[output truncated at 8192 bytes]"
+
+              body = "\n".join([
+                  marker,
+                  f"## {title}",
+                  "",
+                  "_The diagnostic below is inert, untrusted pull-request output._",
+                  "",
+                  "<pre>",
+                  inert,
+                  "</pre>",
+                  "",
+              ])
+              destination = rendered_dir / destination_name
+              with destination.open("x", encoding="utf-8", newline="\n") as handle:
+                  handle.write(body)
+
+          render(
+              "feature-flag-enforcement.md",
+              "feature-flag-enforcement.md",
+              "<!-- lopper-feature-flag-enforcement -->",
+              "Feature flag enforcement",
+          )
+          render(
+              "release-feature-flag-comment.md",
+              "release-feature-flag-comment.md",
+              "<!-- lopper-feature-flag-release-pr -->",
+              "Release feature flags",
+          )
+          PY
 
       - name: Sync feature flag enforcement comment on PR
         continue-on-error: true
+        env:
+          FEATURE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/feature-flag-enforcement.md
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
@@ -331,7 +397,7 @@ jobs:
               throw new Error('workflow_run did not provide a valid pull request number');
             }
             const marker = '<!-- lopper-feature-flag-enforcement -->';
-            const summaryPath = process.env.FEATURE_SUMMARY_PATH;
+            const bodyPath = process.env.FEATURE_COMMENT_BODY_PATH;
             const fallbackBody = [
               marker,
               '## Feature flag enforcement',
@@ -340,11 +406,6 @@ jobs:
               '',
               'See the workflow logs for the failure details.',
             ].join('\n');
-
-            let summary = '';
-            if (summaryPath && fs.existsSync(summaryPath)) {
-              summary = fs.readFileSync(summaryPath, 'utf8').trim();
-            }
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -374,7 +435,10 @@ jobs:
               return;
             }
 
-            const body = summary || fallbackBody;
+            const body =
+              bodyPath && fs.existsSync(bodyPath)
+                ? fs.readFileSync(bodyPath, 'utf8').trim()
+                : fallbackBody;
             if (existing.length > 0) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -400,6 +464,8 @@ jobs:
 
       - name: Sync release feature guidance comment on PR
         continue-on-error: true
+        env:
+          RELEASE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/release-feature-flag-comment.md
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
@@ -410,7 +476,7 @@ jobs:
               throw new Error('workflow_run did not provide a valid pull request number');
             }
             const marker = '<!-- lopper-feature-flag-release-pr -->';
-            const summaryPath = process.env.RELEASE_SUMMARY_PATH;
+            const bodyPath = process.env.RELEASE_COMMENT_BODY_PATH;
             const fallbackBody = [
               marker,
               '## Release feature flags',
@@ -446,8 +512,8 @@ jobs:
             }
 
             const body =
-              summaryPath && fs.existsSync(summaryPath)
-                ? fs.readFileSync(summaryPath, 'utf8').trim()
+              bodyPath && fs.existsSync(bodyPath)
+                ? fs.readFileSync(bodyPath, 'utf8').trim()
                 : fallbackBody;
 
             if (existing.length > 0) {

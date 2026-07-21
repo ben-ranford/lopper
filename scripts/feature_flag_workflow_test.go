@@ -219,6 +219,115 @@ func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
 	}
 }
 
+func TestFeatureFlagTrustedCommentRenderingNeutralizesUntrustedMarkdown(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &workflow)
+	renderStep := workflowStepByName(t, workflow.Jobs, "publish-comments", "Render inert comment bodies")
+	renderer := embeddedPythonScript(t, renderStep.Run, "/usr/bin/python3 - <<'PY'")
+
+	root := t.TempDir()
+	commentDir := filepath.Join(root, "comments")
+	renderedDir := filepath.Join(root, "rendered")
+	tests := []trustedCommentRenderCase{
+		{
+			source: "feature-flag-enforcement.md",
+			marker: "<!-- lopper-feature-flag-enforcement -->",
+			title:  "Feature flag enforcement",
+		},
+		{
+			source: "release-feature-flag-comment.md",
+			marker: "<!-- lopper-feature-flag-release-pr -->",
+			title:  "Release feature flags",
+		},
+	}
+	writeUntrustedCommentSources(t, commentDir, tests)
+	runTrustedCommentRenderer(t, renderer, commentDir, renderedDir)
+
+	for _, tt := range tests {
+		assertTrustedCommentBody(t, renderedDir, tt)
+	}
+}
+
+func writeUntrustedCommentSources(t *testing.T, commentDir string, tests []trustedCommentRenderCase) {
+	t.Helper()
+
+	if err := os.Mkdir(commentDir, 0o700); err != nil {
+		t.Fatalf("create comment source directory: %v", err)
+	}
+	for _, tt := range tests {
+		malicious := tt.marker + "\r\n</pre><script>alert(1)</script>\n" +
+			"[link](https://example.invalid) ![image](https://example.invalid/x) @org/team\x00\u202e\n" +
+			strings.Repeat("'", 9_000)
+		if err := os.WriteFile(filepath.Join(commentDir, tt.source), []byte(malicious), 0o600); err != nil {
+			t.Fatalf("write untrusted %s: %v", tt.source, err)
+		}
+	}
+}
+
+func runTrustedCommentRenderer(t *testing.T, renderer, commentDir, renderedDir string) {
+	t.Helper()
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal("python3 is required to test trusted comment rendering")
+	}
+	command := exec.Command(python, "-c", renderer)
+	command.Env = append(os.Environ(), "COMMENT_DIR="+commentDir, "RENDERED_DIR="+renderedDir)
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("render inert comment bodies: %v\n%s", runErr, output)
+	}
+}
+
+func assertTrustedCommentBody(t *testing.T, renderedDir string, tt trustedCommentRenderCase) {
+	t.Helper()
+
+	bodyBytes, err := os.ReadFile(filepath.Join(renderedDir, tt.source))
+	if err != nil {
+		t.Fatalf("read rendered %s: %v", tt.source, err)
+	}
+	body := string(bodyBytes)
+	assertTrustedCommentIdentity(t, body, tt)
+	assertTrustedCommentEscaping(t, body, tt.source)
+	if len(bodyBytes) > 60_000 {
+		t.Fatalf("rendered %s body is oversized: %d bytes", tt.source, len(bodyBytes))
+	}
+}
+
+func assertTrustedCommentIdentity(t *testing.T, body string, tt trustedCommentRenderCase) {
+	t.Helper()
+
+	if !strings.HasPrefix(body, tt.marker+"\n## "+tt.title+"\n") {
+		t.Fatalf("rendered %s lacks its trusted marker and title", tt.source)
+	}
+	if strings.Count(body, tt.marker) != 1 {
+		t.Fatalf("rendered %s contains an untrusted marker", tt.source)
+	}
+}
+
+func assertTrustedCommentEscaping(t *testing.T, body, source string) {
+	t.Helper()
+
+	for _, want := range []string{
+		"<pre>",
+		"</pre>",
+		"&lt;!--",
+		"&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
+		"@\u200borg/team",
+		"[output truncated at 8192 bytes]",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered %s is missing %q", source, want)
+		}
+	}
+	for _, forbidden := range []string{"</pre><script>", "<script>", "@org/team", "\x00", "\u202e"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("rendered %s contains active untrusted content %q", source, forbidden)
+		}
+	}
+}
+
 type featureFlagResolverFixtureResult struct {
 	OK       bool              `json:"ok"`
 	Error    string            `json:"error"`
@@ -244,6 +353,12 @@ type featureFlagArchiveCase struct {
 	name      string
 	members   []featureFlagZipMember
 	wantError string
+}
+
+type trustedCommentRenderCase struct {
+	source string
+	marker string
+	title  string
 }
 
 func assertFeatureFlagEnforcementStepCase(t *testing.T, resolver string, tt featureFlagEnforcementStepCase) {
@@ -611,7 +726,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 	assertWorkflowJobOmitsCheckout(t, publication, "feature flag comment publication")
 	assertWorkflowJobStepRunsOmitAllFold(t, publication, "feature flag comment publication", []string{"go run ./", "make ", "npm ", "npx ", "git "})
-	assertWorkflowStepOrder(t, publication, "Resolve triggering pull request and artifact", "Download bounded comment inputs", "Extract bounded comment inputs", "Validate bounded comment inputs", "Sync feature flag enforcement comment on PR", "Sync release feature guidance comment on PR")
+	assertWorkflowStepOrder(t, publication, "Resolve triggering pull request and artifact", "Download bounded comment inputs", "Extract bounded comment inputs", "Validate bounded comment inputs", "Render inert comment bodies", "Sync feature flag enforcement comment on PR", "Sync release feature guidance comment on PR")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag publication event guard", got: publication.If, want: "${{ github.event.workflow_run.event == 'pull_request' }}"},
 	})
@@ -693,10 +808,26 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		`file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"`,
 		`payload_version="$(tr -d '[:space:]' < "${path}")"`,
 		`: "${payload_version:?missing comment payload version}"`,
-		`feature_summary_path=""`,
-		`release_summary_path=""`,
-		`printf 'FEATURE_SUMMARY_PATH=%s\n' "${feature_summary_path}"`,
-		`printf 'RELEASE_SUMMARY_PATH=%s\n' "${release_summary_path}"`,
+	})
+
+	renderBodies := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Render inert comment bodies")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "feature flag trusted rendering shell", got: renderBodies.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, renderBodies, "feature flag trusted rendering", map[string]string{
+		"COMMENT_DIR":  "${{ runner.temp }}/feature-flag-comment-inputs",
+		"RENDERED_DIR": "${{ runner.temp }}/feature-flag-comment-bodies",
+		"PATH":         "/usr/bin:/bin",
+	})
+	assertWorkflowStepRunContainsAll(t, renderBodies, "feature flag trusted rendering", []string{
+		`max_source_bytes = 8_192`,
+		`raw = handle.read(max_source_bytes + 1)`,
+		`unicodedata.category(character).startswith("C")`,
+		`text = text.replace("@", "@\u200b")`,
+		`inert = html.escape(text, quote=True)`,
+		`"<pre>"`,
+		`"</pre>"`,
+		`destination.open("x", encoding="utf-8", newline="\n")`,
 	})
 
 	featureComment := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Sync feature flag enforcement comment on PR")
@@ -705,10 +836,16 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		{label: "feature flag comment action", got: featureComment.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
 		{label: "release feature comment action", got: releaseComment.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
 	})
-	assertTextContainsAll(t, featureComment.With["script"], "feature flag comment publication", []string{"process.env.PR_NUMBER", "issue_number: prNumber"})
-	assertTextContainsAll(t, releaseComment.With["script"], "release feature comment publication", []string{"process.env.PR_NUMBER", "issue_number: prNumber"})
+	assertWorkflowStepEnv(t, featureComment, "feature flag comment publication", map[string]string{
+		"FEATURE_COMMENT_BODY_PATH": "${{ runner.temp }}/feature-flag-comment-bodies/feature-flag-enforcement.md",
+	})
+	assertWorkflowStepEnv(t, releaseComment, "release feature comment publication", map[string]string{
+		"RELEASE_COMMENT_BODY_PATH": "${{ runner.temp }}/feature-flag-comment-bodies/release-feature-flag-comment.md",
+	})
+	assertTextContainsAll(t, featureComment.With["script"], "feature flag comment publication", []string{"process.env.PR_NUMBER", "process.env.FEATURE_COMMENT_BODY_PATH", "issue_number: prNumber"})
+	assertTextContainsAll(t, releaseComment.With["script"], "release feature comment publication", []string{"process.env.PR_NUMBER", "process.env.RELEASE_COMMENT_BODY_PATH", "issue_number: prNumber"})
 	for _, script := range []string{featureComment.With["script"], releaseComment.With["script"]} {
-		for _, forbidden := range []string{".artifacts/", "go run ./tools/featureflag"} {
+		for _, forbidden := range []string{".artifacts/", "go run ./tools/featureflag", "process.env.FEATURE_SUMMARY_PATH", "process.env.RELEASE_SUMMARY_PATH"} {
 			if strings.Contains(script, forbidden) {
 				t.Fatalf("trusted feature flag comment publisher contains %q", forbidden)
 			}
