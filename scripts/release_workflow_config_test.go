@@ -3105,7 +3105,7 @@ func TestReleaseOrchestrationRunsExactSourceCIBeforeReleaseBuilds(t *testing.T) 
 		{label: "source CI checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
 		{label: "source CI checkout ref", got: checkout.With["ref"], want: "${{ inputs.source_sha || github.sha }}"},
 		{label: "source CI checkout persist-credentials", got: checkout.With["persist-credentials"], want: "false"},
-		{label: "source CI checkout fetch-depth", got: checkout.With["fetch-depth"], want: "0"},
+		{label: "source CI checkout fetch-depth", got: checkout.With["fetch-depth"], want: "2"},
 	})
 
 	verifySource := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Verify exact release source")
