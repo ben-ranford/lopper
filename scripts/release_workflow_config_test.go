@@ -220,6 +220,13 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/feature-flag-enforcement.yml", &workflow)
+	fetchBase := workflowStepByName(t, workflow.Jobs, "enforce", "Fetch PR base")
+	if strings.Contains(fetchBase.Run, "--depth") {
+		t.Fatal("feature flag enforcement must fetch complete base history for stale PRs")
+	}
+	if !strings.Contains(fetchBase.Run, `+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}`) {
+		t.Fatal("feature flag enforcement must update the base remote-tracking ref")
+	}
 	classify := workflowStepByName(t, workflow.Jobs, "enforce", "Classify PR")
 	if !strings.Contains(classify.Run, `grep -Eq '^(feat|preview)`) {
 		t.Fatal("feature flag enforcement must classify preview titles as feature PRs")
@@ -245,7 +252,8 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 		`printf '%s\n' "${PR_BODY}"`,
 		`grep -Eiq '(BEGIN|END)_COMMIT_OVERRIDE' "${pr_body}"`,
 		`grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${commit_messages}"`,
-		`git log --format=%B "origin/${base_ref}..HEAD"`,
+		`merge_base="$(git merge-base "origin/${base_ref}" HEAD)"`,
+		`git log --format=%B "${merge_base}..HEAD"`,
 		`(BREAKING[ -]CHANGE|Release-As)`,
 		`(feat|feature|fix|bug|perf|docs|refactor|revert)`,
 		`?!:[[:space:]]+[^[:space:]]`,

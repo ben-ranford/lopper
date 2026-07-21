@@ -32,7 +32,7 @@ jobs:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          git fetch --no-tags origin "+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}"
 
       - name: Capture base feature catalog
         env:
@@ -86,7 +86,8 @@ jobs:
             echo "::error::Preview PR descriptions must not contain release-please commit override blocks." >&2
             exit 1
           fi
-          git log --format=%B "origin/${base_ref}..HEAD" > "${commit_messages}"
+          merge_base="$(git merge-base "origin/${base_ref}" HEAD)"
+          git log --format=%B "${merge_base}..HEAD" > "${commit_messages}"
           if grep -Eiq '^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)' "${commit_messages}"; then
             echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
             exit 1
