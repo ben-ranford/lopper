@@ -3197,6 +3197,53 @@ func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t 
 	orchestrateRolling := workflowJobByName(t, rollingWorkflow.Jobs, "orchestrate-rolling")
 	assertWorkflowJobNeeds(t, orchestrateRolling, "orchestrate-rolling", workflowJobNeeds{"prepare-rolling", "build-darwin-amd64-rolling"})
 }
+func TestReleaseOrchestrationVerifiesRequiredSourceChecksBeforeReleaseBuilds(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	verification := workflowJobByName(t, workflow.Jobs, "verify-source-ci")
+	assertWorkflowJobPermissions(t, verification, "source CI verification", map[string]string{
+		"checks":   "read",
+		"contents": "read",
+	})
+	assertWorkflowJobOmitsCheckout(t, verification, "source CI verification")
+
+	step := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Verify required CI for source SHA")
+	assertWorkflowStepEnv(t, step, "source CI verification", map[string]string{
+		"PATH":             "/usr/bin:/bin",
+		"GH_TOKEN":         "${{ github.token }}",
+		"SOURCE_SHA":       "${{ inputs.source_sha || github.sha }}",
+		"PROTECTED_BRANCH": "main",
+	})
+	assertWorkflowStepRunContainsAll(t, step, "source CI verification", []string{
+		`rules_endpoint="${api_url}/repos/${GITHUB_REPOSITORY}/rules/branches/${PROTECTED_BRANCH}"`,
+		`check_runs_endpoint="${api_url}/repos/${GITHUB_REPOSITORY}/commits/${source_sha}/check-runs?per_page=100"`,
+		`statuses_endpoint="${api_url}/repos/${GITHUB_REPOSITORY}/commits/${source_sha}/status"`,
+		`select(.type == "required_status_checks")`,
+		`required_status_checks[]?`,
+		`unique_by(.context + ":" + (.integration_id | tostring))`,
+		`No required status checks are configured for ${PROTECTED_BRANCH}; refusing release promotion without exact CI validation.`,
+		`select(.head_sha == $source_sha)`,
+		`Required check ${context} is absent for exact source SHA ${source_sha}; refusing release promotion.`,
+		`Required check ${context} for ${source_sha} concluded ${check_conclusion:-unknown}; exact source SHA CI must pass before release.`,
+		`Required status ${context} for ${source_sha} is ${status_state:-unknown}; exact source SHA CI must pass before release.`,
+	})
+	if strings.Contains(step.Run, "scripts/") {
+		t.Fatal("source CI verification must use the GitHub API directly, not repository scripts")
+	}
+
+	for _, jobName := range []string{
+		"build-linux-windows",
+		"build-darwin",
+		"prepare-ghcr",
+		"prepare-ghcr-manifest",
+	} {
+		job := workflowJobByName(t, workflow.Jobs, jobName)
+		assertWorkflowJobNeeds(t, job, jobName, workflowJobNeeds{"verify-source-ci"})
+	}
+}
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {
 	t.Parallel()
