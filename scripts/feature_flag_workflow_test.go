@@ -125,12 +125,7 @@ func TestFeatureFlagCommentResolverRejectsOversizedArtifactBeforeDownload(t *tes
 func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name          string
-		jobs          []map[string]any
-		wantFailed    string
-		wantErrorPart string
-	}{
+	tests := []featureFlagEnforcementStepCase{
 		{
 			name: "unrelated failure does not become enforcement failure",
 			jobs: []map[string]any{{"steps": []map[string]any{
@@ -161,33 +156,7 @@ func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			run := featureFlagWorkflowRun([]map[string]any{{"number": 7}})
-			run["conclusion"] = "failure"
-			result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-				"run":             run,
-				"pulls":           []map[string]any{featureFlagPull(7, "open")},
-				"associatedPulls": []map[string]any{},
-				"artifacts": []map[string]any{
-					{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
-				},
-				"jobs": tt.jobs,
-			})
-			if tt.wantErrorPart != "" {
-				if result.OK {
-					t.Fatal("resolver accepted ambiguous enforcement step results")
-				}
-				if !strings.Contains(result.Error, tt.wantErrorPart) {
-					t.Fatalf("resolver error = %q, want %q", result.Error, tt.wantErrorPart)
-				}
-				return
-			}
-			if !result.OK {
-				t.Fatalf("resolver rejected named enforcement step fixture: %s", result.Error)
-			}
-			if got := result.Exported["ENFORCEMENT_FAILED"]; got != tt.wantFailed {
-				t.Fatalf("ENFORCEMENT_FAILED = %q, want %q", got, tt.wantFailed)
-			}
+			assertFeatureFlagEnforcementStepCase(t, resolver, tt)
 		})
 	}
 }
@@ -200,11 +169,7 @@ func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
 	extract := workflowStepByName(t, workflow.Jobs, "publish-comments", "Extract bounded comment inputs")
 	validator := embeddedPythonScript(t, extract.Run, "/usr/bin/python3 - <<'PY'")
 
-	tests := []struct {
-		name      string
-		members   []featureFlagZipMember
-		wantError string
-	}{
+	tests := []featureFlagArchiveCase{
 		{
 			name: "valid bounded payload",
 			members: []featureFlagZipMember{
@@ -249,53 +214,7 @@ func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			root := t.TempDir()
-			archiveDir := filepath.Join(root, "archive")
-			commentDir := filepath.Join(root, "comments")
-			if err := os.Mkdir(archiveDir, 0o700); err != nil {
-				t.Fatalf("create archive directory: %v", err)
-			}
-			archivePath := filepath.Join(archiveDir, "payload.zip")
-			writeFeatureFlagZip(t, archivePath, tt.members)
-			archiveInfo, err := os.Stat(archivePath)
-			if err != nil {
-				t.Fatalf("stat archive: %v", err)
-			}
-
-			python, err := exec.LookPath("python3")
-			if err != nil {
-				t.Fatal("python3 is required to test artifact extraction")
-			}
-			command := exec.Command(python, "-c", validator)
-			environment := []string{
-				"ARCHIVE_DIR=" + archiveDir,
-				"COMMENT_DIR=" + commentDir,
-				"EXPECTED_ARTIFACT_SIZE=" + strconv.FormatInt(archiveInfo.Size(), 10),
-			}
-			command.Env = append(os.Environ(), environment...)
-			output, err := command.CombinedOutput()
-			if tt.wantError != "" {
-				if err == nil {
-					t.Fatalf("validator accepted unsafe archive; output: %s", output)
-				}
-				if !strings.Contains(string(output), tt.wantError) {
-					t.Fatalf("validator output = %q, want %q", output, tt.wantError)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("validator rejected bounded archive: %v\n%s", err, output)
-			}
-			for _, member := range tt.members {
-				contents, err := os.ReadFile(filepath.Join(commentDir, member.name))
-				if err != nil {
-					t.Fatalf("read extracted %s: %v", member.name, err)
-				}
-				if string(contents) != member.contents {
-					t.Fatalf("extracted %s contents changed", member.name)
-				}
-			}
+			assertFeatureFlagArchiveCase(t, validator, tt)
 		})
 	}
 }
@@ -312,6 +231,126 @@ type featureFlagZipMember struct {
 	name     string
 	contents string
 	mode     os.FileMode
+}
+
+type featureFlagEnforcementStepCase struct {
+	name          string
+	jobs          []map[string]any
+	wantFailed    string
+	wantErrorPart string
+}
+
+type featureFlagArchiveCase struct {
+	name      string
+	members   []featureFlagZipMember
+	wantError string
+}
+
+func assertFeatureFlagEnforcementStepCase(t *testing.T, resolver string, tt featureFlagEnforcementStepCase) {
+	t.Helper()
+
+	run := featureFlagWorkflowRun([]map[string]any{{"number": 7}})
+	run["conclusion"] = "failure"
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             run,
+		"pulls":           []map[string]any{featureFlagPull(7, "open")},
+		"associatedPulls": []map[string]any{},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+		"jobs": tt.jobs,
+	})
+	if tt.wantErrorPart != "" {
+		assertFeatureFlagResolverError(t, result, tt.wantErrorPart)
+		return
+	}
+	if !result.OK {
+		t.Fatalf("resolver rejected named enforcement step fixture: %s", result.Error)
+	}
+	if got := result.Exported["ENFORCEMENT_FAILED"]; got != tt.wantFailed {
+		t.Fatalf("ENFORCEMENT_FAILED = %q, want %q", got, tt.wantFailed)
+	}
+}
+
+func assertFeatureFlagResolverError(t *testing.T, result featureFlagResolverFixtureResult, want string) {
+	t.Helper()
+
+	if result.OK {
+		t.Fatal("resolver accepted an unsafe fixture")
+	}
+	if !strings.Contains(result.Error, want) {
+		t.Fatalf("resolver error = %q, want %q", result.Error, want)
+	}
+}
+
+func assertFeatureFlagArchiveCase(t *testing.T, validator string, tt featureFlagArchiveCase) {
+	t.Helper()
+
+	commentDir, output, err := runFeatureFlagArchiveValidator(t, validator, tt.members)
+	if tt.wantError != "" {
+		assertFeatureFlagArchiveError(t, output, err, tt.wantError)
+		return
+	}
+	if err != nil {
+		t.Fatalf("validator rejected bounded archive: %v\n%s", err, output)
+	}
+	assertExtractedFeatureFlagMembers(t, commentDir, tt.members)
+}
+
+func runFeatureFlagArchiveValidator(t *testing.T, validator string, members []featureFlagZipMember) (string, []byte, error) {
+	t.Helper()
+
+	root := t.TempDir()
+	archiveDir := filepath.Join(root, "archive")
+	commentDir := filepath.Join(root, "comments")
+	if err := os.Mkdir(archiveDir, 0o700); err != nil {
+		t.Fatalf("create archive directory: %v", err)
+	}
+	archivePath := filepath.Join(archiveDir, "payload.zip")
+	writeFeatureFlagZip(t, archivePath, members)
+	archiveInfo, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatalf("stat archive: %v", err)
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal("python3 is required to test artifact extraction")
+	}
+	command := exec.Command(python, "-c", validator)
+	environment := []string{
+		"ARCHIVE_DIR=" + archiveDir,
+		"COMMENT_DIR=" + commentDir,
+		"EXPECTED_ARTIFACT_SIZE=" + strconv.FormatInt(archiveInfo.Size(), 10),
+	}
+	command.Env = append(os.Environ(), environment...)
+	output, commandErr := command.CombinedOutput()
+	return commentDir, output, commandErr
+}
+
+func assertFeatureFlagArchiveError(t *testing.T, output []byte, err error, want string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("validator accepted unsafe archive; output: %s", output)
+	}
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("validator output = %q, want %q", output, want)
+	}
+}
+
+func assertExtractedFeatureFlagMembers(t *testing.T, commentDir string, members []featureFlagZipMember) {
+	t.Helper()
+
+	for _, member := range members {
+		contents, err := os.ReadFile(filepath.Join(commentDir, member.name))
+		if err != nil {
+			t.Fatalf("read extracted %s: %v", member.name, err)
+		}
+		if string(contents) != member.contents {
+			t.Fatalf("extracted %s contents changed", member.name)
+		}
+	}
 }
 
 func featureFlagCommentResolverScript(t *testing.T) string {
