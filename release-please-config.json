@@ -15,6 +15,10 @@
           "section": "Features"
         },
         {
+          "type": "preview",
+          "section": "Preview Features"
+        },
+        {
           "type": "fix",
           "section": "Bug Fixes"
         },

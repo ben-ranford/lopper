@@ -1,4 +1,4 @@
-<!-- PR title must use Conventional Commits, for example `fix(scope): concise summary`. Squash merges publish that title to `main`, so do not rewrite it into a non-conventional subject. -->
+<!-- PR title must use Conventional Commits, for example `fix(scope): concise summary`. Use `preview(scope): summary` for default-off feature work and `feat(flags): graduate ...` only when graduating it. Squash merges publish that title to `main`, so do not rewrite it into a non-conventional subject. -->
 
 ## Summary
 

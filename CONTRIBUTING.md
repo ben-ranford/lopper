@@ -85,7 +85,8 @@ Contributor rules:
 - The stable release workflow stamps `firstStableRelease` after a flag ships in a semver release so later release PRs only surface first-release preview flags.
 - Graduation requires a separate PR that changes the registry lifecycle to `stable` and states the rollout evidence.
 - Use `make feature-flag-graduate FEATURE=...` locally, or run `graduate-feature.yml`, to prepare a graduation PR.
-- PRs that use the `feat` Conventional Commit type must add at least one new feature flag entry, and new entries must stay `preview`.
+- New preview implementations use `preview(scope): summary`, add at least one new feature flag entry, and keep every new entry `preview`.
+- Graduation PRs use `feat(flags): graduate ...` and change at least one existing flag from `preview` to `stable`.
 - PRs that add, lock, or graduate a feature flag must run `go run ./tools/featureflag validate`.
 
 Reviewers should ask for a flag when the change changes default user behavior but lacks enough evidence for immediate stable rollout.
@@ -104,8 +105,11 @@ Use these commit types for changes that should appear in release notes:
 - `docs(scope): summary` for documentation-only patch releases.
 - `refactor(scope): summary` for refactoring patch releases.
 - `perf(scope): summary` for performance patch releases.
-- `feat(scope): summary` for minor releases.
+- `preview(scope): summary` for opt-in feature work that stays on the current patch release line.
+- `feat(flags): graduate ...` for feature graduation and the resulting minor release.
 - `type(scope)!: summary` or a `BREAKING CHANGE:` footer for major releases.
+
+Do not use breaking-change markers, `Release-As` footers, commit override directives, or nested commit blocks on `preview` PRs. Because squash bodies include branch commit messages, branch commit subjects must also avoid the non-preview release-note types `feat`, `fix`, `bug`, `perf`, `docs`, `refactor`, and `revert`; use `preview`, `test`, `build`, `ci`, or `chore` as appropriate. Preview work stays default-off and patch-versioned until a separate graduation PR uses `feat(flags)`.
 
 Use non-release types such as `test`, `ci`, `build`, or `chore` when the change should not by itself create a release PR.
 Good scopes include `release`, `ci`, `vscode`, `js`, `jvm`, `go`, `report`, `ui`, `runtime`, and `homebrew`.

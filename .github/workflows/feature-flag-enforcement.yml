@@ -32,7 +32,7 @@ jobs:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          git fetch --no-tags origin "+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}"
 
       - name: Capture base feature catalog
         env:
@@ -53,15 +53,50 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          if printf '%s\n' "${PR_TITLE}" | grep -Eq '^feat(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+          pr_title="$(printf '%s\n' "${PR_TITLE}" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          if printf '%s\n' "${pr_title}" | grep -Eq '^(feat|preview)(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
             echo "feature_pr=true" >> "$GITHUB_OUTPUT"
           else
             echo "feature_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "${pr_title}" | grep -Eq '^preview(\([^)]+\))?(!)?:[[:space:]]+[^[:space:]]'; then
+            echo "preview_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "preview_pr=false" >> "$GITHUB_OUTPUT"
           fi
           if [[ "${PR_HEAD_REF}" == release-please--branches--* ]]; then
             echo "release_pr=true" >> "$GITHUB_OUTPUT"
           else
             echo "release_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reject release overrides on preview PRs
+        if: ${{ steps.classify_pr.outputs.preview_pr == 'true' }}
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          base_ref="${PR_BASE_REF:-main}"
+          commit_messages="$(mktemp "${RUNNER_TEMP}/preview-commit-messages.XXXXXX")"
+          pr_body="$(mktemp "${RUNNER_TEMP}/preview-pr-body.XXXXXX")"
+          trap 'rm -f "${commit_messages}" "${pr_body}"' EXIT
+          release_directive_pattern='^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)'
+          non_preview_entry_pattern='^(feat|feature|fix|bug|perf|docs|refactor|revert)(\([^)]+\))?:[[:space:]]+[^[:space:]]|^[[:alnum:]_-]+(\([^)]+\))?!:[[:space:]]+[^[:space:]]'
+          printf '%s\n' "${PR_BODY}" > "${pr_body}"
+          if grep -Eiq "${release_directive_pattern}" "${pr_body}" || grep -Eiq "${non_preview_entry_pattern}" "${pr_body}"; then
+            echo "::error::Preview PR descriptions must not contain release footers, non-preview entries, or release-please override blocks." >&2
+            exit 1
+          fi
+          merge_base="$(git merge-base "origin/${base_ref}" HEAD)"
+          git log --format=%B "${merge_base}..HEAD" > "${commit_messages}"
+          if grep -Eiq "${release_directive_pattern}" "${commit_messages}"; then
+            echo "::error::Preview commits must not contain breaking-change or release-please version override directives." >&2
+            exit 1
+          fi
+          if grep -Eiq "${non_preview_entry_pattern}" "${commit_messages}"; then
+            echo "::error::Preview branch commits must not add non-preview release entries or breaking subjects to the squash body." >&2
+            exit 1
           fi
 
       - name: Enforce feature flags on PRs

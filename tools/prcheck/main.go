@@ -10,7 +10,8 @@ import (
 	"strings"
 )
 
-var titlePattern = regexp.MustCompile(`^(feat|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
+var titlePattern = regexp.MustCompile(`^(feat|preview|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
+var breakingPreviewTitlePattern = regexp.MustCompile(`^preview(?:\([a-z0-9][a-z0-9._/-]*\))?!:`)
 var releasePleaseTitlePattern = regexp.MustCompile(`^chore\(main\): release [0-9]+\.[0-9]+\.[0-9]+$`)
 
 var placeholderTexts = []string{
@@ -122,7 +123,10 @@ func validate(title, headRef, body string, releaseIdentity releasePleaseIdentity
 	var failures []string
 	title = strings.TrimSpace(title)
 	if !titlePattern.MatchString(title) {
-		failures = append(failures, "PR title must be a Conventional Commit title using one of feat, fix, perf, docs, refactor, revert, test, ci, build, or chore; use fix(scope): ... for bug fixes instead of bug: ...")
+		failures = append(failures, "PR title must be a Conventional Commit title using one of feat, preview, fix, perf, docs, refactor, revert, test, ci, build, or chore; use fix(scope): ... for bug fixes instead of bug: ...")
+	}
+	if breakingPreviewTitlePattern.MatchString(title) {
+		failures = append(failures, "Preview PR titles must not use a breaking-change marker; graduate the feature with feat(flags): ... before requesting a larger version bump")
 	}
 
 	if isTrustedReleasePleasePR(headRef, title, releaseIdentity) {

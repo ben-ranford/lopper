@@ -56,7 +56,8 @@ Validate the registry and release locks before opening a PR:
 go run ./tools/featureflag validate
 ```
 
-PRs titled with the `feat` Conventional Commit type must add at least one new feature flag entry, and CI rejects any newly added flag whose lifecycle is not `preview`.
+PRs that introduce opt-in behavior use `preview(scope): summary`, must add at least one new feature flag entry, and keep every new flag in the `preview` lifecycle.
+Graduation PRs use `feat(flags): graduate ...` and promote an existing flag from `preview` to `stable`; this explicit title transition is what permits the next minor release.
 The PR enforcement workflow keeps a sticky report on feature PRs and on any PR that violates the preview-lifecycle rule.
 
 ## User Activation

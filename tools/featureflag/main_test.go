@@ -1027,7 +1027,7 @@ func TestFormatReportStableDefaultsRequiresComparison(t *testing.T) {
 	}
 }
 
-func TestRunPREnforceFeaturePRRequiresNewFlag(t *testing.T) {
+func TestRunPREnforcePreviewPRRequiresNewFlag(t *testing.T) {
 	root := t.TempDir()
 	writeFeatureCatalog(t, root, `[
   {
@@ -1049,9 +1049,9 @@ func TestRunPREnforceFeaturePRRequiresNewFlag(t *testing.T) {
 	t.Chdir(root)
 
 	output, err := captureStdout(t, func() error {
-		return run([]string{"pr-enforce", "--pr-title", "feat(runtime): add new feature", "--previous-catalog", previousCatalog})
+		return run([]string{"pr-enforce", "--pr-title", "preview(runtime): add new feature", "--previous-catalog", previousCatalog})
 	})
-	if err == nil || !strings.Contains(err.Error(), "must add at least one new feature flag or graduate an existing preview flag") {
+	if err == nil || !strings.Contains(err.Error(), "Preview PRs must add at least one new feature flag") {
 		t.Fatalf("expected missing feature flag enforcement error, got %v", err)
 	}
 	if !strings.Contains(output, "Check: failed") || !strings.Contains(output, "New feature flags in this PR") {
@@ -1086,7 +1086,7 @@ func TestRunPREnforceFeaturePRAllowsGraduationOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected graduation-only feature PR to pass, got %v", err)
 	}
-	for _, want := range []string{"Check: passed", "Graduated feature flags in this PR", "`LOP-FEAT-0001` `graduated-flag` (`preview` -> `stable`)", "Passed. This feature PR graduates existing preview feature flags to stable."} {
+	for _, want := range []string{"Check: passed", "Graduated feature flags in this PR", "`LOP-FEAT-0001` `graduated-flag` (`preview` -> `stable`)", "Passed. This feature graduation PR promotes existing preview feature flags to stable."} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected report to contain %q, got %s", want, output)
 		}
@@ -1362,12 +1362,12 @@ func TestRunPREnforceReportsAddedPreviewFlag(t *testing.T) {
 	t.Chdir(root)
 
 	output, err := captureStdout(t, func() error {
-		return run([]string{"pr-enforce", "--pr-title", "feat(vscode): add preview workflow", "--previous-catalog", previousCatalog})
+		return run([]string{"pr-enforce", "--pr-title", "preview(vscode): add preview workflow", "--previous-catalog", previousCatalog})
 	})
 	if err != nil {
 		t.Fatalf("expected preview feature flag enforcement success, got %v", err)
 	}
-	for _, want := range []string{"Check: passed", "`LOP-FEAT-0002` `new-flag` (`preview`)", "Passed. This feature PR adds at least one new preview feature flag."} {
+	for _, want := range []string{"Check: passed", "`LOP-FEAT-0002` `new-flag` (`preview`)", "Passed. This preview PR adds at least one new preview feature flag."} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected report to contain %q, got %s", want, output)
 		}
@@ -1515,21 +1515,7 @@ func TestRunReleasePRCommentRejectsInjectedErrors(t *testing.T) {
 	}
 }
 
-func TestFormatPREnforcementReportNonFeatureBranches(t *testing.T) {
-	previewFlag := featureflags.Flag{
-		Code:        "LOP-FEAT-0002",
-		Name:        "new-flag",
-		Description: "New behavior",
-		Lifecycle:   featureflags.LifecyclePreview,
-	}
-	addedPreview := formatPREnforcementReport(prEnforcementResult{
-		RequireFlag: false,
-		AddedFlags:  []featureflags.Flag{previewFlag},
-	})
-	if !strings.Contains(addedPreview, "Passed. Added feature flags all start as `preview`.") {
-		t.Fatalf("expected non-feature added preview success message, got %s", addedPreview)
-	}
-
+func TestFormatPREnforcementReportWithoutFlagChanges(t *testing.T) {
 	noRequirement := formatPREnforcementReport(prEnforcementResult{})
 	if !strings.Contains(noRequirement, "Passed. No new feature flag was required for this PR.") {
 		t.Fatalf("expected no-requirement success message, got %s", noRequirement)
@@ -1544,6 +1530,8 @@ func TestIsFeaturePRTitle(t *testing.T) {
 		{title: "feat: add preview workflow", want: true},
 		{title: "feat(ci): add preview workflow", want: true},
 		{title: "feat(ci)!: add preview workflow", want: true},
+		{title: "preview: add preview workflow", want: true},
+		{title: "preview(ci): add preview workflow", want: true},
 		{title: "fix(ci): repair workflow", want: false},
 		{title: "refactor(ci): split workflow", want: false},
 		{title: "", want: false},
@@ -1551,6 +1539,68 @@ func TestIsFeaturePRTitle(t *testing.T) {
 		if got := isFeaturePRTitle(tc.title); got != tc.want {
 			t.Fatalf("isFeaturePRTitle(%q) = %v, want %v", tc.title, got, tc.want)
 		}
+	}
+}
+
+func TestEvaluatePREnforcementRequiresLifecycleTitle(t *testing.T) {
+	previewFlag := featureflags.Flag{Code: "LOP-FEAT-0001", Name: "preview-flag", Lifecycle: featureflags.LifecyclePreview}
+	stableFlag := previewFlag
+	stableFlag.Lifecycle = featureflags.LifecycleStable
+
+	for _, tc := range []struct {
+		name     string
+		title    string
+		current  []featureflags.Flag
+		previous []featureflags.Flag
+		want     string
+	}{
+		{
+			name:    "preview implementation uses feat",
+			title:   "feat(runtime): add preview capture",
+			current: []featureflags.Flag{previewFlag},
+			want:    "must use a `preview(scope): ...` PR title",
+		},
+		{
+			name:     "graduation uses preview",
+			title:    "preview(flags): graduate capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+		{
+			name:    "new flag uses non-feature title",
+			title:   "chore(flags): add preview capture",
+			current: []featureflags.Flag{previewFlag},
+			want:    "must use a `preview(scope): ...` PR title",
+		},
+		{
+			name:     "graduation uses non-feature title",
+			title:    "fix(flags): stabilize capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+		{
+			name:     "graduation uses wrong feature scope",
+			title:    "feat(runtime): stabilize capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+		{
+			name:     "graduation uses breaking feature title",
+			title:    "feat(flags)!: stabilize capture",
+			current:  []featureflags.Flag{stableFlag},
+			previous: []featureflags.Flag{previewFlag},
+			want:     "Feature graduations must use a `feat(flags): ...` PR title",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := evaluatePREnforcement(tc.title, tc.current, tc.previous, nil)
+			if err := result.err(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected lifecycle title error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
