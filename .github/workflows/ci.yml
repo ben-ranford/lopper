@@ -29,13 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
-      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Go
         if: ${{ !env.ACT }}
@@ -104,8 +103,194 @@ jobs:
             make ci
           fi
 
+      - name: Fail on unapproved memory regression
+        if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
+        run: |
+          if [ ! -f .artifacts/memory-bench-status.txt ]; then
+            exit 0
+          fi
+          status="$(tr -d '[:space:]' < .artifacts/memory-bench-status.txt)"
+          if [ "$status" = "1" ]; then
+            echo "Memory benchmark regression detected. Add the memory-approved label to acknowledge and merge it."
+            exit 1
+          fi
+
+      - name: Verify demo assets are up to date
+        run: make demos-check
+
+      - name: Run lopper self-analysis (base branch)
+        id: lopper_base
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        run: |
+          base_ref="${BASE_REF:-main}"
+          mkdir -p .artifacts
+          git worktree add --detach .artifacts/base "origin/${base_ref}"
+          bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
+          git worktree remove --force .artifacts/base
+
+      - name: Run lopper delta summary (PR)
+        id: lopper_delta
+        if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
+        run: |
+          mkdir -p .artifacts
+          bin/lopper analyse --top 10 --repo . --language all --baseline .artifacts/lopper-base.json --format pr-comment > .artifacts/lopper-pr-comment.md
+
+      - name: Run coverage gate
+        id: cov
+        continue-on-error: true
+        env:
+          COVERAGE_MIN: 98
+          COVERAGE_PACKAGE_MIN: 98
+        run: |
+          set +e
+          if [ -n "${ACT:-}" ]; then
+            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
+          else
+            make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
+          fi
+          status=$?
+          mkdir -p .artifacts
+          printf '%s\n' "$status" > .artifacts/coverage-status.txt
+          if [ -f .artifacts/coverage-total.txt ]; then
+            total="$(cat .artifacts/coverage-total.txt)"
+          else
+            total=""
+          fi
+          echo "package_failures<<EOF" >> "$GITHUB_OUTPUT"
+          if [ -f .artifacts/coverage-package-failures.txt ]; then
+            cat .artifacts/coverage-package-failures.txt >> "$GITHUB_OUTPUT"
+          fi
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      - name: Stage PR report inputs
+        if: ${{ github.event_name == 'pull_request' && always() }}
+        env:
+          LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
+          LOPPER_DELTA_OUTCOME: ${{ steps.lopper_delta.outcome }}
+        run: |
+          report_root="${RUNNER_TEMP}/pr-report-inputs"
+          rm -rf -- "${report_root}"
+          mkdir -p -- "${report_root}"
+
+          printf '%s\n' "${LOPPER_BASE_OUTCOME}" > "${report_root}/lopper-base-outcome.txt"
+          printf '%s\n' "${LOPPER_DELTA_OUTCOME}" > "${report_root}/lopper-delta-outcome.txt"
+
+          for report in \
+            coverage-package-failures.txt \
+            coverage-status.txt \
+            coverage-total.txt \
+            lopper-pr-comment.md \
+            memory-bench-status.txt \
+            memory-bench-summary.md
+          do
+            src=".artifacts/${report}"
+            if [ -f "${src}" ] && [ ! -L "${src}" ]; then
+              cp -- "${src}" "${report_root}/${report}"
+            fi
+          done
+
+      - name: Upload PR report inputs
+        if: ${{ github.event_name == 'pull_request' && always() && !env.ACT }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr-report-inputs
+          path: ${{ runner.temp }}/pr-report-inputs
+          if-no-files-found: error
+
+      - name: Upload binary artifact
+        if: ${{ always() && !env.ACT }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lopper-bin
+          path: bin/lopper
+          if-no-files-found: ignore
+
+      - name: Mock artifact upload (act)
+        if: ${{ always() && env.ACT }}
+        run: |
+          test -f bin/lopper
+          ls -lh bin/lopper
+
+      - name: Fail workflow on coverage gate
+        if: ${{ steps.cov.outcome == 'failure' }}
+        run: exit 1
+
+  publish-pr-reports:
+    needs: verify
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Download PR report inputs
+        if: ${{ !env.ACT }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: pr-report-inputs
+          path: pr-report-inputs
+
+      - name: Validate PR report inputs
+        if: ${{ !env.ACT }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          PATH: /usr/bin:/bin
+          REPORT_ROOT: pr-report-inputs
+        run: |
+          if [ ! -d "${REPORT_ROOT}" ]; then
+            echo "PR report inputs are missing." >&2
+            exit 1
+          fi
+          if find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "PR report inputs must contain only regular files." >&2
+            exit 1
+          fi
+
+          allowed_files=(
+            coverage-package-failures.txt
+            coverage-status.txt
+            coverage-total.txt
+            lopper-base-outcome.txt
+            lopper-delta-outcome.txt
+            lopper-pr-comment.md
+            memory-bench-status.txt
+            memory-bench-summary.md
+          )
+          required_files=(
+            lopper-base-outcome.txt
+            lopper-delta-outcome.txt
+          )
+
+          for required in "${required_files[@]}"; do
+            path="${REPORT_ROOT}/${required}"
+            if [ ! -f "${path}" ] || [ -L "${path}" ]; then
+              echo "Missing required PR report input: ${required}" >&2
+              exit 1
+            fi
+          done
+
+          while IFS= read -r -d '' path; do
+            name="$(basename "${path}")"
+            case " ${allowed_files[*]} " in
+              *" ${name} "*) ;;
+              *)
+                echo "Unexpected PR report input: ${name}" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$(stat --format=%s "${path}")" -gt 1048576 ]; then
+              echo "PR report input exceeds the 1 MiB publication limit: ${name}" >&2
+              exit 1
+            fi
+          done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
+
       - name: Comment memory benchmark report on PR
-        if: ${{ github.event_name == 'pull_request' && !env.ACT && always() }}
+        if: ${{ !env.ACT }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
@@ -113,8 +298,9 @@ jobs:
             const fs = require('node:fs');
 
             const marker = '<!-- lopper-memory-bench -->';
-            const summaryPath = '.artifacts/memory-bench-summary.md';
-            const statusPath = '.artifacts/memory-bench-status.txt';
+            const reportRoot = 'pr-report-inputs';
+            const summaryPath = `${reportRoot}/memory-bench-summary.md`;
+            const statusPath = `${reportRoot}/memory-bench-status.txt`;
             const labels = context.payload.pull_request?.labels || [];
             const approved = labels.some((label) => label?.name === 'memory-approved');
             const status = fs.existsSync(statusPath) ? fs.readFileSync(statusPath, 'utf8').trim() : '';
@@ -162,53 +348,21 @@ jobs:
               });
             }
 
-      - name: Fail on unapproved memory regression
-        if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
-        run: |
-          if [ ! -f .artifacts/memory-bench-status.txt ]; then
-            exit 0
-          fi
-          status="$(tr -d '[:space:]' < .artifacts/memory-bench-status.txt)"
-          if [ "$status" = "1" ]; then
-            echo "Memory benchmark regression detected. Add the memory-approved label to acknowledge and merge it."
-            exit 1
-          fi
-
-      - name: Verify demo assets are up to date
-        run: make demos-check
-
-      - name: Run lopper self-analysis (base branch)
-        id: lopper_base
-        if: ${{ github.event_name == 'pull_request' }}
-        continue-on-error: true
-        run: |
-          base_ref="${BASE_REF:-main}"
-          mkdir -p .artifacts
-          git worktree add --detach .artifacts/base "origin/${base_ref}"
-          bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
-          git worktree remove --force .artifacts/base
-
-      - name: Run lopper delta summary (PR)
-        id: lopper_delta
-        if: ${{ github.event_name == 'pull_request' }}
-        continue-on-error: true
-        run: |
-          mkdir -p .artifacts
-          bin/lopper analyse --top 10 --repo . --language all --baseline .artifacts/lopper-base.json --format pr-comment > .artifacts/lopper-pr-comment.md
-
       - name: Comment lopper report on PR
-        if: ${{ github.event_name == 'pull_request' && !env.ACT }}
+        if: ${{ !env.ACT }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        env:
-          LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
-          LOPPER_DELTA_OUTCOME: ${{ steps.lopper_delta.outcome }}
         with:
           script: |
             const fs = require('node:fs');
 
             const marker = '<!-- lopper-pr-report -->';
-            const deltaCommentPath = '.artifacts/lopper-pr-comment.md';
+            const reportRoot = 'pr-report-inputs';
+            const deltaCommentPath = `${reportRoot}/lopper-pr-comment.md`;
+            const baseOutcomePath = `${reportRoot}/lopper-base-outcome.txt`;
+            const deltaOutcomePath = `${reportRoot}/lopper-delta-outcome.txt`;
+            const baseOutcome = fs.existsSync(baseOutcomePath) ? fs.readFileSync(baseOutcomePath, 'utf8').trim() : '';
+            const deltaOutcome = fs.existsSync(deltaOutcomePath) ? fs.readFileSync(deltaOutcomePath, 'utf8').trim() : '';
 
             const failureBody = [
               marker,
@@ -220,8 +374,8 @@ jobs:
             ].join('\n');
 
             const body =
-              process.env.LOPPER_BASE_OUTCOME !== 'success' ||
-              process.env.LOPPER_DELTA_OUTCOME !== 'success' ||
+              baseOutcome !== 'success' ||
+              deltaOutcome !== 'success' ||
               !fs.existsSync(deltaCommentPath)
                 ? failureBody
                 : `${marker}\n${fs.readFileSync(deltaCommentPath, 'utf8').trim()}`;
@@ -264,11 +418,11 @@ jobs:
             }
 
       - name: Post SonarQube review comments (PR)
+        if: ${{ !env.ACT && env.SONAR_TOKEN != '' }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_PROJECT_KEY: ben-ranford_lopper
           SONAR_HOST_URL: https://sonarcloud.io
-        if: ${{ github.event_name == 'pull_request' && !env.ACT && env.SONAR_TOKEN != '' }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
@@ -421,46 +575,32 @@ jobs:
               });
             }
 
-      - name: Run coverage gate
-        id: cov
-        continue-on-error: true
-        env:
-          COVERAGE_MIN: 98
-          COVERAGE_PACKAGE_MIN: 98
-        run: |
-          set +e
-          if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
-          else
-            make cov COVERAGE_MIN="${COVERAGE_MIN}" COVERAGE_PACKAGE_MIN="${COVERAGE_PACKAGE_MIN}"
-          fi
-          status=$?
-          if [ -f .artifacts/coverage-total.txt ]; then
-            total="$(cat .artifacts/coverage-total.txt)"
-          else
-            total=""
-          fi
-          echo "package_failures<<EOF" >> "$GITHUB_OUTPUT"
-          if [ -f .artifacts/coverage-package-failures.txt ]; then
-            cat .artifacts/coverage-package-failures.txt >> "$GITHUB_OUTPUT"
-          fi
-          echo "EOF" >> "$GITHUB_OUTPUT"
-          echo "total=$total" >> "$GITHUB_OUTPUT"
-          exit $status
-
       - name: Comment on coverage failure
-        if: ${{ github.event_name == 'pull_request' && steps.cov.outcome == 'failure' && !env.ACT }}
+        if: ${{ !env.ACT }}
+        continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           COVERAGE_MIN: 98
           COVERAGE_PACKAGE_MIN: 98
-          COVERAGE_TOTAL: ${{ steps.cov.outputs.total }}
-          COVERAGE_PACKAGE_FAILURES: ${{ steps.cov.outputs.package_failures }}
         with:
           script: |
+            const fs = require('node:fs');
+
+            const reportRoot = 'pr-report-inputs';
+            const statusPath = `${reportRoot}/coverage-status.txt`;
+            const totalPath = `${reportRoot}/coverage-total.txt`;
+            const packageFailuresPath = `${reportRoot}/coverage-package-failures.txt`;
+
+            if (!fs.existsSync(statusPath) || fs.readFileSync(statusPath, 'utf8').trim() === '0') {
+              core.info('Coverage gate passed or did not emit a status; skipping PR coverage comment.');
+              return;
+            }
+
             const marker = '<!-- lopper-coverage-failure -->';
-            const total = process.env.COVERAGE_TOTAL || 'unavailable';
-            const packageFailures = (process.env.COVERAGE_PACKAGE_FAILURES || '').trim();
+            const total = fs.existsSync(totalPath) ? fs.readFileSync(totalPath, 'utf8').trim() : 'unavailable';
+            const packageFailures = fs.existsSync(packageFailuresPath)
+              ? fs.readFileSync(packageFailuresPath, 'utf8').trim()
+              : '';
             const packageFailureSection = packageFailures
               ? `Packages below minimum:\n${packageFailures}\n\n`
               : '';
@@ -503,24 +643,6 @@ jobs:
                 body,
               });
             }
-
-      - name: Fail workflow on coverage gate
-        if: ${{ steps.cov.outcome == 'failure' }}
-        run: exit 1
-
-      - name: Upload binary artifact
-        if: ${{ always() && !env.ACT }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: lopper-bin
-          path: bin/lopper
-          if-no-files-found: ignore
-
-      - name: Mock artifact upload (act)
-        if: ${{ always() && env.ACT }}
-        run: |
-          test -f bin/lopper
-          ls -lh bin/lopper
 
   verify-rolling:
     name: verify (rolling)
