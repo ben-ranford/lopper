@@ -165,9 +165,10 @@ class SyncEngineTests(unittest.TestCase):
             side_effect=sync.SyncError("Linear GraphQL error: permission denied")
         )
         linear.identities[expected_id] = (expected_id, "BEN-99", "Human issue")
+        engine = sync.SyncEngine(test_config(), linear)
 
         with self.assertRaisesRegex(sync.SyncError, "permission denied"):
-            sync.SyncEngine(test_config(), linear).sync(issue)
+            engine.sync(issue)
         self.assertEqual(linear.links, [])
 
     def test_hand_authored_attached_issue_is_covered_but_untouched(self):
