@@ -149,27 +149,18 @@ func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing
 
 	tests := []featureFlagEnforcementStepCase{
 		{
-			name: "unrelated failure does not become enforcement failure",
-			jobs: []map[string]any{{"steps": []map[string]any{
-				{"name": "Enforce feature flags on PRs", "conclusion": "success"},
-				{"name": "Write release feature guidance", "conclusion": "failure"},
-			}}},
+			name:       "unrelated failure does not become enforcement failure",
+			jobs:       featureFlagEnforcementJobs("Enforce feature flags on PRs", "success", "Write release feature guidance", "failure"),
 			wantFailed: "false",
 		},
 		{
-			name: "enforcement failure is preserved",
-			jobs: []map[string]any{{"steps": []map[string]any{
-				{"name": "Enforce feature flags on PRs", "conclusion": "failure"},
-				{"name": "Write release feature guidance", "conclusion": "success"},
-			}}},
+			name:       "enforcement failure is preserved",
+			jobs:       featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
 			wantFailed: "true",
 		},
 		{
-			name: "ambiguous enforcement steps fail closed",
-			jobs: []map[string]any{{"steps": []map[string]any{
-				{"name": "Enforce feature flags on PRs", "conclusion": "success"},
-				{"name": "Enforce feature flags on PRs", "conclusion": "failure"},
-			}}},
+			name:          "ambiguous enforcement steps fail closed",
+			jobs:          featureFlagEnforcementJobs("Enforce feature flags on PRs", "success", "Enforce feature flags on PRs", "failure"),
 			wantErrorPart: "expected exactly one feature flag enforcement step",
 		},
 	}
@@ -181,6 +172,13 @@ func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing
 			assertFeatureFlagEnforcementStepCase(t, resolver, tt)
 		})
 	}
+}
+
+func featureFlagEnforcementJobs(firstName, firstConclusion, secondName, secondConclusion string) []map[string]any {
+	return []map[string]any{{"steps": []map[string]any{
+		{"name": firstName, "conclusion": firstConclusion},
+		{"name": secondName, "conclusion": secondConclusion},
+	}}}
 }
 
 func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
@@ -786,13 +784,11 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	download := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Download bounded comment inputs")
+	assertWorkflowArtifactDownloadByID(t, download, workflowArtifactDownloadExpectation{
+		label: "feature flag comment download", wantID: "${{ steps.resolve_pr.outputs.artifact-id }}", wantPath: "${{ runner.temp }}/feature-flag-comment-archive",
+		wantRepo: "${{ github.repository }}", wantRunID: "${{ github.event.workflow_run.id }}", wantToken: "${{ github.token }}",
+	})
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "feature flag comment download action", got: download.Uses, want: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"},
-		{label: "feature flag comment download artifact ID", got: download.With["artifact-ids"], want: "${{ steps.resolve_pr.outputs.artifact-id }}"},
-		{label: "feature flag comment download path", got: download.With["path"], want: "${{ runner.temp }}/feature-flag-comment-archive"},
-		{label: "feature flag comment download token", got: download.With["github-token"], want: "${{ github.token }}"},
-		{label: "feature flag comment download repository", got: download.With["repository"], want: "${{ github.repository }}"},
-		{label: "feature flag comment download run ID", got: download.With["run-id"], want: "${{ github.event.workflow_run.id }}"},
 		{label: "feature flag comment download decompression", got: download.With["skip-decompress"], want: "true"},
 	})
 
