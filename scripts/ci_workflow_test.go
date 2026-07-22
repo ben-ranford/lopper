@@ -242,7 +242,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "regression proof condition", got: proof.If, want: "${{ github.event_name == 'pull_request' }}"},
+		{label: "regression proof condition", got: proof.If, want: "${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}"},
 		{label: "regression proof title env", got: proof.Env["PR_TITLE"], want: "${{ github.event.pull_request.title }}"},
 		{label: "regression proof base env", got: proof.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
 		{label: "regression proof exemption label env", got: proof.Env["PR_REGRESSION_EXEMPT_LABEL"], want: "${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}"},

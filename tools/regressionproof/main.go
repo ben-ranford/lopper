@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -26,6 +27,21 @@ var (
 	statFile             = os.Stat
 	absPath              = filepath.Abs
 )
+
+const buildVCSFlag = "-buildvcs=false"
+
+type testAction string
+
+const (
+	testActionPass testAction = "pass"
+	testActionFail testAction = "fail"
+	testActionSkip testAction = "skip"
+)
+
+type goTestEvent struct {
+	Action string `json:"Action"`
+	Test   string `json:"Test"`
+}
 
 type confinedWriteRoot interface {
 	WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error
@@ -231,13 +247,13 @@ func selectProofFiles(changedFiles []string, declarations []prmetadata.Regressio
 	for _, declaration := range declarations {
 		packageDir := strings.TrimPrefix(declaration.PackagePath, "./")
 		for _, changed := range changedFiles {
-			if isPackageTestFile(packageDir, changed) || isPackageTestdataFile(packageDir, changed) {
+			if isProofSupportFile(packageDir, changed) {
 				selected[changed] = struct{}{}
 			}
 		}
 	}
 	if len(selected) == 0 {
-		return nil, errors.New("regression proof requires at least one changed *_test.go file or package testdata fixture in the declared package")
+		return nil, errors.New("regression proof requires at least one changed *_test.go file, package testdata fixture, or shared testdata fixture")
 	}
 
 	files := make([]string, 0, len(selected))
@@ -248,6 +264,10 @@ func selectProofFiles(changedFiles []string, declarations []prmetadata.Regressio
 	return files, nil
 }
 
+func isProofSupportFile(packageDir, changed string) bool {
+	return isPackageTestFile(packageDir, changed) || isPackageTestdataFile(packageDir, changed) || isSharedTestdataFile(changed)
+}
+
 func isPackageTestFile(packageDir, changed string) bool {
 	return filepath.ToSlash(filepath.Dir(changed)) == packageDir && strings.HasSuffix(changed, "_test.go")
 }
@@ -255,6 +275,10 @@ func isPackageTestFile(packageDir, changed string) bool {
 func isPackageTestdataFile(packageDir, changed string) bool {
 	prefix := packageDir + "/testdata/"
 	return strings.HasPrefix(changed, prefix)
+}
+
+func isSharedTestdataFile(changed string) bool {
+	return strings.HasPrefix(changed, "testdata/")
 }
 
 func (r *runner) createBaseWorktree(ctx context.Context, repoRoot, mergeBase string) (string, func() error, error) {
@@ -310,27 +334,84 @@ func copyProofFiles(headRoot, baseRoot string, files []string) (returnErr error)
 }
 
 func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath string) error {
-	_, err := r.execCommand(ctx, "go", []string{"test", "-buildvcs=false", "-run", "^$", packagePath}, repoRoot, os.Environ())
+	_, err := r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-run", "^$", packagePath}, repoRoot, os.Environ())
 	return err
 }
 
 func (r *runner) expectFailure(ctx context.Context, repoRoot string, declaration prmetadata.RegressionDeclaration) error {
-	_, err := r.execCommand(ctx, "go", []string{"test", "-buildvcs=false", "-count=1", "-run", "^" + declaration.TestName + "$", declaration.PackagePath}, repoRoot, os.Environ())
-	if err == nil {
+	action, err := r.runDeclaredTest(ctx, repoRoot, declaration)
+	if err != nil {
+		return fmt.Errorf("run base regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
+	}
+	switch action {
+	case testActionFail:
+		return nil
+	case testActionSkip:
+		return fmt.Errorf("base regression test must fail instead of skip: %s::%s", declaration.PackagePath, declaration.TestName)
+	case testActionPass:
 		return fmt.Errorf("base regression test unexpectedly passed: %s::%s", declaration.PackagePath, declaration.TestName)
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return nil
-	}
-	return fmt.Errorf("run base regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
+	return fmt.Errorf("base regression test finished without a recognized outcome: %s::%s", declaration.PackagePath, declaration.TestName)
 }
 
 func (r *runner) expectPass(ctx context.Context, repoRoot string, declaration prmetadata.RegressionDeclaration) error {
-	if _, err := r.execCommand(ctx, "go", []string{"test", "-buildvcs=false", "-count=1", "-run", "^" + declaration.TestName + "$", declaration.PackagePath}, repoRoot, os.Environ()); err != nil {
+	action, err := r.runDeclaredTest(ctx, repoRoot, declaration)
+	if err != nil {
 		return fmt.Errorf("pull request regression test must pass on head for %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
 	}
+	if action == testActionSkip {
+		return fmt.Errorf("pull request regression test must pass instead of skip on head for %s::%s", declaration.PackagePath, declaration.TestName)
+	}
+	if action != testActionPass {
+		return fmt.Errorf("pull request regression test must pass on head for %s::%s", declaration.PackagePath, declaration.TestName)
+	}
 	return nil
+}
+
+func (r *runner) runDeclaredTest(ctx context.Context, repoRoot string, declaration prmetadata.RegressionDeclaration) (testAction, error) {
+	output, err := r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-count=1", "-json", "-run", "^" + declaration.TestName + "$", declaration.PackagePath}, repoRoot, os.Environ())
+	action, parseErr := parseDeclaredTestAction(output, declaration.TestName)
+	if parseErr != nil {
+		if err != nil {
+			return "", errors.Join(err, parseErr)
+		}
+		return "", parseErr
+	}
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		return "", err
+	}
+	return action, nil
+}
+
+func parseDeclaredTestAction(output []byte, testName string) (testAction, error) {
+	var sawJSON bool
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		sawJSON = true
+		var event goTestEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return "", fmt.Errorf("parse go test json for %s: %w", testName, err)
+		}
+		if event.Test != testName {
+			continue
+		}
+		switch event.Action {
+		case string(testActionPass):
+			return testActionPass, nil
+		case string(testActionFail):
+			return testActionFail, nil
+		case string(testActionSkip):
+			return testActionSkip, nil
+		}
+	}
+	if sawJSON {
+		return "", fmt.Errorf("go test did not report an outcome for %s", testName)
+	}
+	return "", fmt.Errorf("go test did not emit JSON output for %s", testName)
 }
 
 func (r *runner) gitOutput(ctx context.Context, repoRoot string, args ...string) (string, error) {

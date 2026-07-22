@@ -35,7 +35,7 @@ func TestRunRejectsInvalidRegressionProofs(t *testing.T) {
 					"buggy/buggy.go": "package buggy\n\nfunc Fixed() bool { return true }\n",
 				},
 			},
-			wantErr: "requires at least one changed *_test.go file",
+			wantErr: "requires at least one changed *_test.go file, package testdata fixture, or shared testdata fixture",
 		},
 		{
 			name: "base unexpectedly passes",
@@ -164,6 +164,53 @@ func TestRegressionProof(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsSharedTopLevelFixtureProof(t *testing.T) {
+	t.Parallel()
+
+	repo := newRegressionProofRepo(t, regressionProofScenario{
+		baseFiles: map[string]string{
+			"go.mod": "module example.com/regressionproof\n\ngo 1.23\n",
+			"buggy/buggy.go": `package buggy
+
+func Fixed() bool { return false }
+`,
+			"testdata/shared/expected.txt": "false\n",
+		},
+		headFiles: map[string]string{
+			"buggy/buggy.go": `package buggy
+
+func Fixed() bool { return true }
+`,
+			"buggy/buggy_test.go": `package buggy
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestRegressionProof(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "shared", "expected.txt"))
+	if err != nil {
+		t.Fatalf("read shared fixture: %v", err)
+	}
+	want := strings.TrimSpace(string(data)) == "true"
+	if got := Fixed(); got != want {
+		t.Fatalf("Fixed() = %v, want %v", got, want)
+	}
+}
+`,
+			"testdata/shared/expected.txt": "true\n",
+		},
+	})
+
+	code, stderr := runRegressionProof(t, repo, regressionProofInvocation{title: "fix(buggy): prove shared fixture", body: regressionProofBody()})
+	if code != 0 {
+		t.Fatalf("run exited with %d, want 0 (stderr: %s)", code, stderr)
+	}
+}
+
 func TestCommandErrorFormattingAndUnwrap(t *testing.T) {
 	t.Parallel()
 
@@ -253,6 +300,73 @@ func TestRunnerRunRequiresReasonAndMaintainerLabelForExemption(t *testing.T) {
 			output := stdout.String() + stderr.String()
 			if !strings.Contains(output, tt.wantText) {
 				t.Fatalf("output = %q, want %q", output, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestParseDeclaredTestAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		output  string
+		test    string
+		want    testAction
+		wantErr string
+	}{
+		{
+			name:   "pass",
+			test:   "TestThing",
+			output: "{\"Action\":\"run\",\"Test\":\"TestThing\"}\n{\"Action\":\"pass\",\"Test\":\"TestThing\"}\n",
+			want:   testActionPass,
+		},
+		{
+			name:   "fail",
+			test:   "TestThing",
+			output: "{\"Action\":\"fail\",\"Test\":\"TestThing\"}\n",
+			want:   testActionFail,
+		},
+		{
+			name:   "skip",
+			test:   "TestThing",
+			output: "{\"Action\":\"skip\",\"Test\":\"TestThing\"}\n",
+			want:   testActionSkip,
+		},
+		{
+			name:    "missing outcome",
+			test:    "TestThing",
+			output:  "{\"Action\":\"pass\",\"Test\":\"OtherTest\"}\n",
+			wantErr: "did not report an outcome",
+		},
+		{
+			name:    "non json output",
+			test:    "TestThing",
+			output:  "plain text failure\n",
+			wantErr: "did not emit JSON output",
+		},
+		{
+			name:    "invalid json",
+			test:    "TestThing",
+			output:  "{broken\n",
+			wantErr: "parse go test json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseDeclaredTestAction([]byte(tt.output), tt.test)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseDeclaredTestAction error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseDeclaredTestAction returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseDeclaredTestAction = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -564,10 +678,50 @@ func TestCopyProofFilesAndExpectHelpers(t *testing.T) {
 	}
 
 	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
-		return nil, &exec.ExitError{}
+		return []byte("{\"Action\":\"fail\",\"Test\":\"TestThing\"}\n"), &exec.ExitError{}
 	}
 	if err := r.expectFailure(context.Background(), ".", prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err != nil {
 		t.Fatalf("expectFailure returned error for exit failure: %v", err)
+	}
+
+	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
+		return []byte("{\"Action\":\"skip\",\"Test\":\"TestThing\"}\n"), nil
+	}
+	if err := r.expectFailure(context.Background(), ".", prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil || !strings.Contains(err.Error(), "must fail instead of skip") {
+		t.Fatalf("expectFailure error = %v, want skipped-test rejection", err)
+	}
+	if err := r.expectPass(context.Background(), ".", prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil || !strings.Contains(err.Error(), "must pass instead of skip") {
+		t.Fatalf("expectPass error = %v, want skipped-test rejection", err)
+	}
+
+	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
+		return []byte("{\"Action\":\"run\",\"Test\":\"TestThing\"}\n"), nil
+	}
+	if err := r.expectFailure(context.Background(), ".", prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}); err == nil || !strings.Contains(err.Error(), "did not report an outcome") {
+		t.Fatalf("expectFailure error = %v, want unrecognized outcome rejection", err)
+	}
+}
+
+func TestRunDeclaredTestBranches(t *testing.T) {
+	t.Parallel()
+
+	declaration := prmetadata.RegressionDeclaration{PackagePath: "./pkg", TestName: "TestThing"}
+	r := &runner{stderr: &bytes.Buffer{}}
+
+	parseFailure := errors.New("transport failed")
+	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
+		return []byte("plain text\n"), parseFailure
+	}
+	if _, err := r.runDeclaredTest(context.Background(), ".", declaration); !errors.Is(err, parseFailure) || !strings.Contains(err.Error(), "did not emit JSON output") {
+		t.Fatalf("runDeclaredTest error = %v, want joined transport and parse errors", err)
+	}
+
+	commandFailure := errors.New("exec failed")
+	r.execCommand = func(context.Context, string, []string, string, []string) ([]byte, error) {
+		return []byte("{\"Action\":\"pass\",\"Test\":\"TestThing\"}\n"), commandFailure
+	}
+	if _, err := r.runDeclaredTest(context.Background(), ".", declaration); !errors.Is(err, commandFailure) {
+		t.Fatalf("runDeclaredTest error = %v, want command failure", err)
 	}
 }
 
@@ -821,6 +975,45 @@ func TestRegressionProof(t *testing.T) {
 		t.Fatal("prove succeeded despite failing head test")
 	}
 	if !strings.Contains(err.Error(), "must pass on head") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestProveFailsWhenHeadTestSkips(t *testing.T) {
+	repo := newRegressionProofRepo(t, regressionProofScenario{
+		baseFiles: map[string]string{
+			"go.mod": "module example.com/regressionproof\n\ngo 1.23\n",
+			"buggy/buggy.go": `package buggy
+
+func Fixed() bool { return false }
+`,
+		},
+		headFiles: map[string]string{
+			"buggy/buggy.go": `package buggy
+
+func Fixed() bool { return true }
+`,
+			"buggy/buggy_test.go": `package buggy
+
+import "testing"
+
+func TestRegressionProof(t *testing.T) {
+	if !Fixed() {
+		t.Fatal("expected true")
+	}
+	t.Skip("platform-specific")
+}
+`,
+		},
+	})
+
+	r := &runner{stderr: &bytes.Buffer{}, execCommand: (&execRunner{}).Run}
+	declaration := prmetadata.RegressionDeclaration{PackagePath: "./buggy", TestName: "TestRegressionProof"}
+	err := r.prove(context.Background(), repo.path, repo.baseSHA, []prmetadata.RegressionDeclaration{declaration}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("prove succeeded despite skipped head test")
+	}
+	if !strings.Contains(err.Error(), "must pass instead of skip on head") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
