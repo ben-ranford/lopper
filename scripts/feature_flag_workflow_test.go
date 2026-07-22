@@ -149,27 +149,18 @@ func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing
 
 	tests := []featureFlagEnforcementStepCase{
 		{
-			name: "unrelated failure does not become enforcement failure",
-			jobs: []map[string]any{{"steps": []map[string]any{
-				{"name": "Enforce feature flags on PRs", "conclusion": "success"},
-				{"name": "Write release feature guidance", "conclusion": "failure"},
-			}}},
+			name:       "unrelated failure does not become enforcement failure",
+			jobs:       featureFlagEnforcementJobs("Enforce feature flags on PRs", "success", "Write release feature guidance", "failure"),
 			wantFailed: "false",
 		},
 		{
-			name: "enforcement failure is preserved",
-			jobs: []map[string]any{{"steps": []map[string]any{
-				{"name": "Enforce feature flags on PRs", "conclusion": "failure"},
-				{"name": "Write release feature guidance", "conclusion": "success"},
-			}}},
+			name:       "enforcement failure is preserved",
+			jobs:       featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
 			wantFailed: "true",
 		},
 		{
-			name: "ambiguous enforcement steps fail closed",
-			jobs: []map[string]any{{"steps": []map[string]any{
-				{"name": "Enforce feature flags on PRs", "conclusion": "success"},
-				{"name": "Enforce feature flags on PRs", "conclusion": "failure"},
-			}}},
+			name:          "ambiguous enforcement steps fail closed",
+			jobs:          featureFlagEnforcementJobs("Enforce feature flags on PRs", "success", "Enforce feature flags on PRs", "failure"),
 			wantErrorPart: "expected exactly one feature flag enforcement step",
 		},
 	}
@@ -181,6 +172,13 @@ func TestFeatureFlagCommentResolverUsesNamedEnforcementStepConclusion(t *testing
 			assertFeatureFlagEnforcementStepCase(t, resolver, tt)
 		})
 	}
+}
+
+func featureFlagEnforcementJobs(firstName, firstConclusion, secondName, secondConclusion string) []map[string]any {
+	return []map[string]any{{"steps": []map[string]any{
+		{"name": firstName, "conclusion": firstConclusion},
+		{"name": secondName, "conclusion": secondConclusion},
+	}}}
 }
 
 func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {

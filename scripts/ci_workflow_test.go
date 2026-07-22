@@ -27,60 +27,15 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		wantUses  string
 		stepLabel string
 	}{
-		{
-			jobName:   "verify",
-			stepName:  "Checkout",
-			wantUses:  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-			stepLabel: "verify checkout",
-		},
-		{
-			jobName:   "verify",
-			stepName:  "Setup Go",
-			wantUses:  "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
-			stepLabel: "verify setup-go",
-		},
-		{
-			jobName:   "verify",
-			stepName:  "Upload PR report inputs",
-			wantUses:  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-			stepLabel: "verify PR report upload",
-		},
-		{
-			jobName:   "verify",
-			stepName:  "Upload binary artifact",
-			wantUses:  "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-			stepLabel: "verify binary upload",
-		},
-		{
-			jobName:   "publish-pr-reports",
-			stepName:  "Download PR report inputs",
-			wantUses:  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-			stepLabel: "PR report download",
-		},
-		{
-			jobName:   "publish-pr-reports",
-			stepName:  "Comment memory benchmark report on PR",
-			wantUses:  "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
-			stepLabel: "memory benchmark comment",
-		},
-		{
-			jobName:   "publish-pr-reports",
-			stepName:  "Comment lopper report on PR",
-			wantUses:  "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
-			stepLabel: "lopper report comment",
-		},
-		{
-			jobName:   "publish-pr-reports",
-			stepName:  "Post SonarQube review comments (PR)",
-			wantUses:  "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
-			stepLabel: "Sonar review comment",
-		},
-		{
-			jobName:   "publish-pr-reports",
-			stepName:  "Comment on coverage failure",
-			wantUses:  "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
-			stepLabel: "coverage failure comment",
-		},
+		{"verify", "Checkout", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "verify checkout"},
+		{"verify", "Setup Go", "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", "verify setup-go"},
+		{"verify", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},
+		{"verify", "Upload binary artifact", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify binary upload"},
+		{"publish-pr-reports", "Download PR report inputs", "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "PR report download"},
+		{"publish-pr-reports", "Comment memory benchmark report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "memory benchmark comment"},
+		{"publish-pr-reports", "Comment lopper report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "lopper report comment"},
+		{"publish-pr-reports", "Post SonarQube review comments (PR)", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "Sonar review comment"},
+		{"publish-pr-reports", "Comment on coverage failure", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "coverage failure comment"},
 	} {
 		step := workflowStepByName(t, workflow.Jobs, check.jobName, check.stepName)
 		if step.Uses != check.wantUses {
