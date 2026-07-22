@@ -119,6 +119,7 @@ func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type workflowStepConfig struct {
+	ContinueOnError  bool              `yaml:"continue-on-error"`
 	Name             string            `yaml:"name"`
 	ID               string            `yaml:"id"`
 	If               string            `yaml:"if"`
@@ -130,13 +131,22 @@ type workflowStepConfig struct {
 	With             map[string]string `yaml:"with"`
 }
 
+type releasePleaseChangelogSection struct {
+	Type    string `json:"type"`
+	Section string `json:"section"`
+	Hidden  bool   `json:"hidden"`
+}
+
 func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	t.Parallel()
 
 	var config struct {
-		Packages map[string]struct {
-			ChangelogPath string `json:"changelog-path"`
-			ExtraFiles    []struct {
+		Versioning string `json:"versioning"`
+		Packages   map[string]struct {
+			Versioning        string                          `json:"versioning"`
+			ChangelogPath     string                          `json:"changelog-path"`
+			ChangelogSections []releasePleaseChangelogSection `json:"changelog-sections"`
+			ExtraFiles        []struct {
 				Path string `json:"path"`
 			} `json:"extra-files"`
 		} `json:"packages"`
@@ -153,6 +163,11 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	if rootPackage.ChangelogPath == "extensions/vscode-lopper/CHANGELOG.md" {
 		t.Fatal("root release notes must not be written to the VS Code extension changelog")
 	}
+	if config.Versioning != "" || rootPackage.Versioning != "" {
+		t.Fatal("release-please must keep default versioning so preview commits bump patch and feat graduations bump minor")
+	}
+
+	assertPreviewChangelogSection(t, rootPackage.ChangelogSections)
 
 	extraFiles := map[string]bool{}
 	for _, extraFile := range rootPackage.ExtraFiles {
@@ -168,6 +183,21 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	}
 }
 
+func assertPreviewChangelogSection(t *testing.T, sections []releasePleaseChangelogSection) {
+	t.Helper()
+
+	for _, section := range sections {
+		if section.Type != "preview" {
+			continue
+		}
+		if section.Section != "Preview Features" || section.Hidden {
+			t.Fatalf("preview changelog section = %#v, want visible Preview Features", section)
+		}
+		return
+	}
+	t.Fatal("release-please config must expose preview commits in release notes")
+}
+
 func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	t.Parallel()
 
@@ -178,8 +208,8 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	if !ok {
 		t.Fatal("graduate-feature workflow must define the milestone input")
 	}
-	if milestone.Default != "v1.7.0" {
-		t.Fatalf("graduate-feature milestone default = %q, want v1.7.0", milestone.Default)
+	if milestone.Default != "v1.9.0" {
+		t.Fatalf("graduate-feature milestone default = %q, want v1.9.0", milestone.Default)
 	}
 
 	workflowText := readConfig(t, ".github/workflows/graduate-feature.yml")
@@ -188,6 +218,70 @@ func TestGraduateFeatureWorkflowTargetsCurrentSeries(t *testing.T) {
 	}
 	if strings.Contains(workflowText, "--label target-series:") {
 		t.Fatal("graduate-feature workflow must not hardcode a target-series label")
+	}
+	for _, want := range []string{
+		`git commit -m "feat(flags): graduate ${FEATURE} to stable"`,
+		`--title "feat(flags): graduate ${FEATURE} to stable"`,
+	} {
+		if !strings.Contains(workflowText, want) {
+			t.Fatalf("graduate-feature workflow must preserve the minor-bump title %q", want)
+		}
+	}
+}
+
+func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-enforcement.yml", &workflow)
+	checkout := workflowStepByName(t, workflow.Jobs, "enforce", "Checkout")
+	if checkout.With["fetch-depth"] != "0" {
+		t.Fatal("feature flag enforcement checkout must fetch complete base history for stale PRs")
+	}
+	if checkout.With["persist-credentials"] != "false" {
+		t.Fatal("feature flag enforcement checkout must not persist credentials")
+	}
+	classify := workflowStepByName(t, workflow.Jobs, "enforce", "Classify PR")
+	if !strings.Contains(classify.Run, `grep -Eq '^(feat|preview)`) {
+		t.Fatal("feature flag enforcement must classify preview titles as feature PRs")
+	}
+	if !strings.Contains(classify.Run, `echo "preview_pr=true"`) {
+		t.Fatal("feature flag enforcement must expose preview PR classification")
+	}
+	for _, want := range []string{
+		`sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'`,
+		`printf '%s\n' "${pr_title}"`,
+	} {
+		if !strings.Contains(classify.Run, want) {
+			t.Fatalf("feature flag enforcement must classify the trimmed PR title using %q", want)
+		}
+	}
+
+	rejectOverrides := workflowStepByName(t, workflow.Jobs, "enforce", "Reject release overrides on preview PRs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "preview override condition", got: rejectOverrides.If, want: "${{ steps.classify_pr.outputs.preview_pr == 'true' }}"},
+		{label: "preview PR body", got: rejectOverrides.Env["PR_BODY"], want: "${{ github.event.pull_request.body }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, rejectOverrides, "preview release override guard", []string{
+		`release_directive_pattern='^(BREAKING[ -]CHANGE|Release-As):|(BEGIN|END)_(COMMIT_OVERRIDE|NESTED_COMMIT)'`,
+		`non_preview_entry_pattern='^(feat|feature|fix|bug|perf|docs|refactor|revert)`,
+		`printf '%s\n' "${PR_BODY}"`,
+		`grep -Eiq "${release_directive_pattern}" "${pr_body}"`,
+		`grep -Eiq "${non_preview_entry_pattern}" "${pr_body}"`,
+		`grep -Eiq "${release_directive_pattern}" "${commit_messages}"`,
+		`grep -Eiq "${non_preview_entry_pattern}" "${commit_messages}"`,
+		`merge_base="$(git merge-base "origin/${base_ref}" HEAD)"`,
+		`git log --format=%B "${merge_base}..HEAD"`,
+		`(BREAKING[ -]CHANGE|Release-As)`,
+		`(feat|feature|fix|bug|perf|docs|refactor|revert)`,
+		`?!:[[:space:]]+[^[:space:]]`,
+		`[^[:space:]]'`,
+	})
+	if got := strings.Count(rejectOverrides.Run, "exit 1"); got != 3 {
+		t.Fatalf("preview release override guard failure exits = %d, want 3", got)
+	}
+	if strings.Contains(rejectOverrides.Run, "commit_subjects") {
+		t.Fatal("preview release override guard must scan full commit messages instead of subjects only")
 	}
 }
 
@@ -3097,10 +3191,26 @@ func TestReleaseOrchestrationUsesStaticGHCRPreparationMatrix(t *testing.T) {
 		t.Fatalf("prepare-ghcr build tags = %q, want image_tags output", build.With["tags"])
 	}
 	publishImages := workflow.Jobs["publish-ghcr-images"]
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
 	if publishImages.If != "" {
 		t.Fatalf("publish-ghcr-images if = %q, want no override of failed-needs handling", publishImages.If)
 	}
+}
+
+func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-orchestration.yml", &workflow)
+
+	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
+
+	var rollingWorkflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &rollingWorkflow)
+
+	orchestrateRolling := workflowJobByName(t, rollingWorkflow.Jobs, "orchestrate-rolling")
+	assertWorkflowJobNeeds(t, orchestrateRolling, "orchestrate-rolling", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
 }
 
 func TestReleaseSourceCIRunsExactSourceGate(t *testing.T) {
@@ -3341,7 +3451,7 @@ func assertTrustedGHCRImagePublisher(t *testing.T, workflow workflowConfig, arch
 	t.Helper()
 
 	publishImages := workflowJobByName(t, workflow.Jobs, "publish-ghcr-images")
-	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"prepare-ghcr"})
+	assertWorkflowJobNeeds(t, publishImages, "publish-ghcr-images", workflowJobNeeds{"build-linux-windows", "build-darwin", "prepare-ghcr"})
 	assertWorkflowJobPermissions(t, publishImages, "publish-ghcr-images", map[string]string{"packages": "write"})
 	assertFreshGHCRPublisher(t, publishImages, "Log in to GHCR")
 	validation := workflowStepByName(t, workflow.Jobs, "publish-ghcr-images", "Validate OCI publication payloads")
