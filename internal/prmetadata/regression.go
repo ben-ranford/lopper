@@ -138,6 +138,9 @@ func parseRegressionDeclaration(value string) (RegressionDeclaration, error) {
 	}
 
 	packagePath := match[1]
+	if strings.Contains(packagePath, "...") {
+		return RegressionDeclaration{}, fmt.Errorf("regression-test package path must name exactly one package")
+	}
 	cleaned := path.Clean(strings.TrimPrefix(packagePath, "./"))
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return RegressionDeclaration{}, fmt.Errorf("regression-test package path must stay under the repository root")
