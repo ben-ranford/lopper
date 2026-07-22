@@ -39,8 +39,9 @@ const (
 )
 
 type goTestEvent struct {
-	Action string `json:"Action"`
-	Test   string `json:"Test"`
+	Action  string `json:"Action"`
+	Package string `json:"Package"`
+	Test    string `json:"Test"`
 }
 
 type confinedWriteRoot interface {
@@ -209,13 +210,24 @@ func (r *runner) prove(ctx context.Context, repoRoot, baseSHA string, declaratio
 	}
 
 	for _, declaration := range declarations {
+		basePackage, err := r.resolvePackage(ctx, worktreeRoot, declaration.PackagePath)
+		if err != nil {
+			return finish(err)
+		}
 		if err := r.compilePackage(ctx, worktreeRoot, declaration.PackagePath); err != nil {
 			return finish(fmt.Errorf("base regression test package %s must compile before proof: %w", declaration.PackagePath, err))
 		}
-		if err := r.expectFailure(ctx, worktreeRoot, declaration); err != nil {
+		if err := r.expectFailure(ctx, worktreeRoot, basePackage, declaration); err != nil {
 			return finish(err)
 		}
-		if err := r.expectPass(ctx, repoRoot, declaration); err != nil {
+		headPackage, err := r.resolvePackage(ctx, repoRoot, declaration.PackagePath)
+		if err != nil {
+			return finish(err)
+		}
+		if headPackage != basePackage {
+			return finish(fmt.Errorf("regression-test package identity changed between base and head: %s != %s", basePackage, headPackage))
+		}
+		if err := r.expectPass(ctx, repoRoot, headPackage, declaration); err != nil {
 			return finish(err)
 		}
 		if _, writeErr := fmt.Fprintf(stdout, "Regression proof verified: %s::%s\n", declaration.PackagePath, declaration.TestName); writeErr != nil {
@@ -333,6 +345,25 @@ func copyProofFiles(headRoot, baseRoot string, files []string) (returnErr error)
 	return nil
 }
 
+func (r *runner) resolvePackage(ctx context.Context, repoRoot, packagePath string) (string, error) {
+	args := []string{"list", buildVCSFlag, "-f", "{{.ImportPath}}", packagePath}
+	output, err := r.execCommand(ctx, "go", args, repoRoot, os.Environ())
+	if err != nil {
+		return "", fmt.Errorf("resolve regression-test package %s: %w", packagePath, err)
+	}
+
+	var packages []string
+	for _, line := range strings.Split(string(output), "\n") {
+		if importPath := strings.TrimSpace(line); importPath != "" {
+			packages = append(packages, importPath)
+		}
+	}
+	if len(packages) != 1 {
+		return "", fmt.Errorf("regression-test package path %s must resolve to exactly one package; got %d", packagePath, len(packages))
+	}
+	return packages[0], nil
+}
+
 func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath string) (returnErr error) {
 	testBinaryDir, err := os.MkdirTemp("", "lopper-regressionproof-test-*")
 	if err != nil {
@@ -349,8 +380,8 @@ func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath strin
 	return err
 }
 
-func (r *runner) expectFailure(ctx context.Context, repoRoot string, declaration prmetadata.RegressionDeclaration) error {
-	action, err := r.runDeclaredTest(ctx, repoRoot, declaration)
+func (r *runner) expectFailure(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) error {
+	action, err := r.runDeclaredTest(ctx, repoRoot, expectedPackage, declaration)
 	if err != nil {
 		return fmt.Errorf("run base regression test %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
 	}
@@ -365,8 +396,8 @@ func (r *runner) expectFailure(ctx context.Context, repoRoot string, declaration
 	return fmt.Errorf("base regression test finished without a recognized outcome: %s::%s", declaration.PackagePath, declaration.TestName)
 }
 
-func (r *runner) expectPass(ctx context.Context, repoRoot string, declaration prmetadata.RegressionDeclaration) error {
-	action, err := r.runDeclaredTest(ctx, repoRoot, declaration)
+func (r *runner) expectPass(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) error {
+	action, err := r.runDeclaredTest(ctx, repoRoot, expectedPackage, declaration)
 	if err != nil {
 		return fmt.Errorf("pull request regression test must pass on head for %s::%s: %w", declaration.PackagePath, declaration.TestName, err)
 	}
@@ -379,9 +410,9 @@ func (r *runner) expectPass(ctx context.Context, repoRoot string, declaration pr
 	return nil
 }
 
-func (r *runner) runDeclaredTest(ctx context.Context, repoRoot string, declaration prmetadata.RegressionDeclaration) (testAction, error) {
+func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) (testAction, error) {
 	output, err := r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-count=1", "-json", "-run", "^" + declaration.TestName + "$", declaration.PackagePath}, repoRoot, os.Environ())
-	action, parseErr := parseDeclaredTestAction(output, declaration.TestName)
+	action, parseErr := parseDeclaredTestAction(output, expectedPackage, declaration.TestName)
 	if parseErr != nil {
 		if err != nil {
 			return "", errors.Join(err, parseErr)
@@ -395,7 +426,7 @@ func (r *runner) runDeclaredTest(ctx context.Context, repoRoot string, declarati
 	return action, nil
 }
 
-func parseDeclaredTestAction(output []byte, testName string) (testAction, error) {
+func parseDeclaredTestAction(output []byte, expectedPackage, testName string) (testAction, error) {
 	var sawJSON bool
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
@@ -407,7 +438,7 @@ func parseDeclaredTestAction(output []byte, testName string) (testAction, error)
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			return "", fmt.Errorf("parse go test json for %s: %w", testName, err)
 		}
-		if event.Test != testName {
+		if event.Package != expectedPackage || event.Test != testName {
 			continue
 		}
 		switch event.Action {

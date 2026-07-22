@@ -38,6 +38,8 @@ func TestParseRegressionProofRejectsInvalidMetadata(t *testing.T) {
 	}{
 		{name: "malformed declaration", body: "Regression-Test: ./pkg::testLower", wantErr: "invalid Regression-Test declaration"},
 		{name: "traversal", body: "Regression-Test: ./pkg/../evil::TestTraversal", wantErr: "canonical"},
+		{name: "all packages pattern", body: "Regression-Test: ./...::TestOne", wantErr: "exactly one package"},
+		{name: "nested packages pattern", body: "Regression-Test: ./internal/...::TestOne", wantErr: "exactly one package"},
 		{name: "injection characters", body: "Regression-Test: ./pkg;rm-rf::TestInjection", wantErr: "invalid Regression-Test declaration"},
 		{name: "duplicate declaration", body: "Regression-Test: ./pkg::TestOne\nRegression-Test: ./pkg::TestOne", wantErr: "duplicate regression-test declaration"},
 		{name: "repeated exemption", body: "Regression-Test-Exemption: first reason\nRegression-Test-Exemption: second reason", wantErr: "at most once"},
@@ -73,6 +75,7 @@ func TestParseRegressionDeclarationDirectBranches(t *testing.T) {
 		{name: "root path", value: `./::TestOne`, wantErr: "invalid Regression-Test declaration"},
 		{name: "parent traversal", value: `./..::TestOne`, wantErr: "stay under the repository root"},
 		{name: "non canonical", value: `./pkg/../nested::TestOne`, wantErr: "canonical"},
+		{name: "package pattern", value: `./internal/...::TestOne`, wantErr: "exactly one package"},
 		{name: "valid", value: `./pkg/nested::TestOne`},
 	}
 
