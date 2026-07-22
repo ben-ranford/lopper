@@ -1,0 +1,540 @@
+name: feature flag comment publication
+
+on:
+  workflow_run:
+    workflows:
+      - feature flag enforcement
+    types:
+      - completed
+
+permissions: {}
+
+jobs:
+  publish-comments:
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Resolve triggering pull request and artifact
+        id: resolve_pr
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const expectedRepository = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+            const expectedHeadRepository = run.head_repository?.full_name?.toLowerCase();
+            if (!expectedHeadRepository) {
+              throw new Error('workflow_run did not provide a head repository');
+            }
+            const matchesRun = (pull) =>
+              pull.state === 'open' &&
+              pull.base.repo.full_name.toLowerCase() === expectedRepository &&
+              pull.head.sha === run.head_sha &&
+              pull.head.ref === run.head_branch &&
+              pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository;
+
+            let candidateNumbers;
+            if ((run.pull_requests ?? []).length > 0) {
+              candidateNumbers = [
+                ...new Set(run.pull_requests.map((candidate) => candidate.number)),
+              ];
+            } else {
+              const associatedPulls = await github.paginate(
+                github.rest.repos.listPullRequestsAssociatedWithCommit,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: run.head_sha,
+                  per_page: 100,
+                },
+              );
+              candidateNumbers = [
+                ...new Set(
+                  associatedPulls
+                    .filter(matchesRun)
+                    .map((candidate) => candidate.number),
+                ),
+              ];
+            }
+            if (
+              candidateNumbers.length !== 1 ||
+              !Number.isSafeInteger(candidateNumbers[0]) ||
+              candidateNumbers[0] < 1
+            ) {
+              throw new Error(
+                `expected exactly one pull request for the triggering workflow; found ${candidateNumbers.length}`,
+              );
+            }
+
+            const [prNumber] = candidateNumbers;
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            if (!matchesRun(pull)) {
+              throw new Error('resolved pull request does not match the triggering workflow');
+            }
+
+            const expectedArtifactName = `feature-flag-comment-inputs-${prNumber}`;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                name: expectedArtifactName,
+                per_page: 100,
+              },
+            );
+            const matches = artifacts.filter(
+              (candidate) => candidate.name === expectedArtifactName && !candidate.expired,
+            );
+            if (matches.length !== 1) {
+              throw new Error(`expected exactly one bounded comment artifact; found ${matches.length}`);
+            }
+
+            const [artifact] = matches;
+            const maxArtifactBytes = 2200000;
+            if (
+              !Number.isSafeInteger(artifact.id) ||
+              artifact.id < 1 ||
+              !Number.isSafeInteger(artifact.size_in_bytes) ||
+              artifact.size_in_bytes < 1 ||
+              artifact.size_in_bytes > maxArtifactBytes
+            ) {
+              throw new Error('bounded comment artifact metadata is invalid or oversized');
+            }
+
+            if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) {
+              throw new Error('workflow_run did not provide a valid attempt number');
+            }
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRunAttempt,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                attempt_number: run.run_attempt,
+                per_page: 100,
+              },
+            );
+            const enforcementSteps = jobs.flatMap((job) =>
+              (job.steps ?? []).filter(
+                (step) => step.name === 'Enforce feature flags on PRs',
+              ),
+            );
+            if (enforcementSteps.length !== 1) {
+              throw new Error(
+                `expected exactly one feature flag enforcement step; found ${enforcementSteps.length}`,
+              );
+            }
+            const [enforcementStep] = enforcementSteps;
+            if (!['success', 'failure', 'cancelled', 'skipped'].includes(enforcementStep.conclusion)) {
+              throw new Error('feature flag enforcement step has an invalid conclusion');
+            }
+
+            core.setOutput('artifact-id', String(artifact.id));
+            core.setOutput('artifact-size', String(artifact.size_in_bytes));
+            core.exportVariable('PR_NUMBER', String(prNumber));
+            core.exportVariable(
+              'ENFORCEMENT_FAILED',
+              String(enforcementStep.conclusion === 'failure'),
+            );
+            core.exportVariable(
+              'FEATURE_PR',
+              String(/^(feat|preview)(\([^)]+\))?(!)?:\s+\S/.test(pull.title.trim())),
+            );
+            core.exportVariable(
+              'RELEASE_PR',
+              String(pull.head.ref.startsWith('release-please--branches--')),
+            );
+
+      - name: Download bounded comment inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.resolve_pr.outputs.artifact-id }}
+          path: ${{ runner.temp }}/feature-flag-comment-archive
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          skip-decompress: "true"
+
+      - name: Extract bounded comment inputs
+        env:
+          ARCHIVE_DIR: ${{ runner.temp }}/feature-flag-comment-archive
+          COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
+          EXPECTED_ARTIFACT_SIZE: ${{ steps.resolve_pr.outputs.artifact-size }}
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import os
+          import pathlib
+          import stat
+          import zipfile
+
+          max_archive_bytes = 2_200_000
+          archive_dir = pathlib.Path(os.environ["ARCHIVE_DIR"])
+          comment_dir = pathlib.Path(os.environ["COMMENT_DIR"])
+          expected_size = int(os.environ["EXPECTED_ARTIFACT_SIZE"])
+
+          if archive_dir.is_symlink() or not archive_dir.is_dir():
+              raise SystemExit("downloaded artifact directory is missing or unsafe")
+          archive_entries = list(archive_dir.iterdir())
+          if (
+              len(archive_entries) != 1
+              or archive_entries[0].is_symlink()
+              or not archive_entries[0].is_file()
+          ):
+              raise SystemExit("download must contain exactly one regular archive")
+
+          archive_path = archive_entries[0]
+          actual_size = archive_path.stat().st_size
+          if (
+              expected_size < 1
+              or expected_size > max_archive_bytes
+              or actual_size != expected_size
+          ):
+              raise SystemExit("downloaded artifact size does not match bounded API metadata")
+          if comment_dir.exists() or comment_dir.is_symlink():
+              raise SystemExit("comment input directory already exists")
+          comment_dir.mkdir(mode=0o700)
+
+          limits = {
+              "payload-version.txt": 8,
+              "feature-flag-enforcement.md": 1_048_576,
+              "release-feature-flag-comment.md": 1_048_576,
+          }
+          with zipfile.ZipFile(archive_path) as archive:
+              members = archive.infolist()
+              if not 1 <= len(members) <= len(limits):
+                  raise SystemExit("artifact must contain one to three bounded files")
+
+              seen = set()
+              for member in members:
+                  file_type = (member.external_attr >> 16) & 0o170000
+                  if (
+                      member.filename not in limits
+                      or member.filename in seen
+                      or member.is_dir()
+                      or file_type not in (0, stat.S_IFREG)
+                      or member.flag_bits & 0x1
+                      or member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                      or member.file_size < 1
+                      or member.file_size > limits[member.filename]
+                  ):
+                      raise SystemExit(f"artifact member {member.filename!r} is unsafe or oversized")
+                  seen.add(member.filename)
+
+              if "payload-version.txt" not in seen:
+                  raise SystemExit("artifact is missing the payload version")
+
+              for member in members:
+                  limit = limits[member.filename]
+                  with archive.open(member) as source:
+                      contents = source.read(limit + 1)
+                      if len(contents) > limit or source.read(1):
+                          raise SystemExit(f"artifact member {member.filename!r} exceeds its bound")
+                  (comment_dir / member.filename).write_bytes(contents)
+          PY
+
+      - name: Validate bounded comment inputs
+        env:
+          COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          if find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 ! -type f -print -quit | grep -q .; then
+            echo "::error::Downloaded comment inputs contain a non-regular entry." >&2
+            exit 1
+          fi
+
+          file_count="$(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')"
+          if [ "${file_count}" -lt 1 ] || [ "${file_count}" -gt 3 ]; then
+            echo "::error::Downloaded comment inputs must contain the payload version plus up to two summaries." >&2
+            exit 1
+          fi
+
+          payload_version=""
+
+          while IFS= read -r path; do
+            case "$(basename "${path}")" in
+              payload-version.txt)
+                if [ ! -f "${path}" ] || [ -L "${path}" ] || [ ! -s "${path}" ]; then
+                  echo "::error::Comment payload version is missing or unsafe." >&2
+                  exit 1
+                fi
+                if [ "$(stat --format=%s "${path}")" -gt 8 ]; then
+                  echo "::error::Comment payload version exceeds the 8-byte bound." >&2
+                  exit 1
+                fi
+                payload_version="$(tr -d '[:space:]' < "${path}")"
+                case "${payload_version}" in
+                  1) ;;
+                  *)
+                    echo "::error::Unsupported comment payload version ${payload_version}." >&2
+                    exit 1
+                    ;;
+                esac
+                ;;
+              feature-flag-enforcement.md)
+                if [ ! -f "${path}" ] || [ -L "${path}" ] || [ ! -s "${path}" ]; then
+                  echo "::error::Feature enforcement summary is missing or unsafe." >&2
+                  exit 1
+                fi
+                if [ "$(stat --format=%s "${path}")" -gt 1048576 ]; then
+                  echo "::error::Feature enforcement summary exceeds the 1 MiB bound." >&2
+                  exit 1
+                fi
+                ;;
+              release-feature-flag-comment.md)
+                if [ ! -f "${path}" ] || [ -L "${path}" ] || [ ! -s "${path}" ]; then
+                  echo "::error::Release feature summary is missing or unsafe." >&2
+                  exit 1
+                fi
+                if [ "$(stat --format=%s "${path}")" -gt 1048576 ]; then
+                  echo "::error::Release feature summary exceeds the 1 MiB bound." >&2
+                  exit 1
+                fi
+                ;;
+              *)
+                echo "::error::Unexpected comment input ${path}." >&2
+                exit 1
+                ;;
+            esac
+          done < <(find -P "${COMMENT_DIR}" -mindepth 1 -maxdepth 1 -type f | sort)
+
+          : "${payload_version:?missing comment payload version}"
+
+      - name: Render inert comment bodies
+        env:
+          COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
+          RENDERED_DIR: ${{ runner.temp }}/feature-flag-comment-bodies
+          PATH: /usr/bin:/bin
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import html
+          import os
+          import pathlib
+          import unicodedata
+
+          max_source_bytes = 8_192
+          comment_dir = pathlib.Path(os.environ["COMMENT_DIR"])
+          rendered_dir = pathlib.Path(os.environ["RENDERED_DIR"])
+          if rendered_dir.exists() or rendered_dir.is_symlink():
+              raise SystemExit("rendered comment directory already exists")
+          rendered_dir.mkdir(mode=0o700)
+
+          def render(source_name, destination_name, marker, title):
+              source = comment_dir / source_name
+              if not source.exists():
+                  return
+              if source.is_symlink() or not source.is_file():
+                  raise SystemExit(f"comment source {source_name!r} is unsafe")
+
+              with source.open("rb") as handle:
+                  raw = handle.read(max_source_bytes + 1)
+              truncated = len(raw) > max_source_bytes
+              text = raw[:max_source_bytes].decode("utf-8", errors="replace")
+              text = text.replace("\r\n", "\n").replace("\r", "\n")
+              text = "".join(
+                  character
+                  for character in text
+                  if character in "\n\t" or not unicodedata.category(character).startswith("C")
+              )
+              text = text.replace("@", "@\u200b")
+              inert = html.escape(text, quote=True)
+              if not inert:
+                  inert = "[empty after sanitization]"
+              if truncated:
+                  inert += "\n\n[output truncated at 8192 bytes]"
+
+              body = "\n".join([
+                  marker,
+                  f"## {title}",
+                  "",
+                  "_The diagnostic below is inert, untrusted pull-request output._",
+                  "",
+                  "<pre>",
+                  inert,
+                  "</pre>",
+                  "",
+              ])
+              destination = rendered_dir / destination_name
+              with destination.open("x", encoding="utf-8", newline="\n") as handle:
+                  handle.write(body)
+
+          render(
+              "feature-flag-enforcement.md",
+              "feature-flag-enforcement.md",
+              "<!-- lopper-feature-flag-enforcement -->",
+              "Feature flag enforcement",
+          )
+          render(
+              "release-feature-flag-comment.md",
+              "release-feature-flag-comment.md",
+              "<!-- lopper-feature-flag-release-pr -->",
+              "Release feature flags",
+          )
+          PY
+
+      - name: Sync feature flag enforcement comment on PR
+        continue-on-error: true
+        env:
+          FEATURE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/feature-flag-enforcement.md
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const prNumber = Number.parseInt(process.env.PR_NUMBER || '', 10);
+            if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
+              throw new Error('workflow_run did not provide a valid pull request number');
+            }
+            const marker = '<!-- lopper-feature-flag-enforcement -->';
+            const bodyPath = process.env.FEATURE_COMMENT_BODY_PATH;
+            const fallbackBody = [
+              marker,
+              '## Feature flag enforcement',
+              '',
+              '❌ Feature flag enforcement summary was not produced.',
+              '',
+              'See the workflow logs for the failure details.',
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const existing = comments.filter(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            const shouldComment =
+              process.env.FEATURE_PR === 'true' ||
+              process.env.ENFORCEMENT_FAILED === 'true';
+            if (!shouldComment) {
+              for (const duplicate of existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+              return;
+            }
+
+            const body =
+              bodyPath && fs.existsSync(bodyPath)
+                ? fs.readFileSync(bodyPath, 'utf8').trim()
+                : fallbackBody;
+            if (existing.length > 0) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing[0].id,
+                body,
+              });
+              for (const duplicate of existing.slice(1)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+      - name: Sync release feature guidance comment on PR
+        continue-on-error: true
+        env:
+          RELEASE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/release-feature-flag-comment.md
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const prNumber = Number.parseInt(process.env.PR_NUMBER || '', 10);
+            if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
+              throw new Error('workflow_run did not provide a valid pull request number');
+            }
+            const marker = '<!-- lopper-feature-flag-release-pr -->';
+            const bodyPath = process.env.RELEASE_COMMENT_BODY_PATH;
+            const fallbackBody = [
+              marker,
+              '## Release feature flags',
+              '',
+              '❌ Release feature flag guidance was not produced.',
+              '',
+              'See the workflow logs for the failure details.',
+            ].join('\n');
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            const existing = comments.filter(
+              (comment) =>
+                comment.user?.type === 'Bot' &&
+                typeof comment.body === 'string' &&
+                comment.body.includes(marker),
+            );
+
+            if (process.env.RELEASE_PR !== 'true') {
+              for (const duplicate of existing) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+              return;
+            }
+
+            const body =
+              bodyPath && fs.existsSync(bodyPath)
+                ? fs.readFileSync(bodyPath, 'utf8').trim()
+                : fallbackBody;
+
+            if (existing.length > 0) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing[0].id,
+                body,
+              });
+              for (const duplicate of existing.slice(1)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: duplicate.id,
+                });
+              }
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }

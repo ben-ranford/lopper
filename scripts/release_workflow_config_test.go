@@ -106,6 +106,7 @@ func (n *workflowJobNeeds) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type workflowStepConfig struct {
+	ContinueOnError  bool              `yaml:"continue-on-error"`
 	Name             string            `yaml:"name"`
 	ID               string            `yaml:"id"`
 	If               string            `yaml:"if"`
@@ -220,12 +221,12 @@ func TestFeatureFlagEnforcementClassifiesPreviewPRs(t *testing.T) {
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/feature-flag-enforcement.yml", &workflow)
-	fetchBase := workflowStepByName(t, workflow.Jobs, "enforce", "Fetch PR base")
-	if strings.Contains(fetchBase.Run, "--depth") {
-		t.Fatal("feature flag enforcement must fetch complete base history for stale PRs")
+	checkout := workflowStepByName(t, workflow.Jobs, "enforce", "Checkout")
+	if checkout.With["fetch-depth"] != "0" {
+		t.Fatal("feature flag enforcement checkout must fetch complete base history for stale PRs")
 	}
-	if !strings.Contains(fetchBase.Run, `+refs/heads/${base_ref}:refs/remotes/origin/${base_ref}`) {
-		t.Fatal("feature flag enforcement must update the base remote-tracking ref")
+	if checkout.With["persist-credentials"] != "false" {
+		t.Fatal("feature flag enforcement checkout must not persist credentials")
 	}
 	classify := workflowStepByName(t, workflow.Jobs, "enforce", "Classify PR")
 	if !strings.Contains(classify.Run, `grep -Eq '^(feat|preview)`) {
