@@ -24,6 +24,7 @@ SYNC_KEY_PATTERN = re.compile(
     r"github:(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)"
 )
 LINEAR_TITLE_LIMIT = 255
+LINEAR_LABELS_MALFORMED = "Linear issue labels response is malformed"
 
 
 class SyncError(RuntimeError):
@@ -474,10 +475,10 @@ class LinearClient:
         current = connection
         while True:
             if not isinstance(current, dict):
-                raise SyncError("Linear issue labels response is malformed")
+                raise SyncError(LINEAR_LABELS_MALFORMED)
             nodes = current.get("nodes")
             if not isinstance(nodes, list):
-                raise SyncError("Linear issue labels response is malformed")
+                raise SyncError(LINEAR_LABELS_MALFORMED)
             label_ids.update(
                 str(label["id"])
                 for label in nodes
@@ -512,7 +513,7 @@ class LinearClient:
         )
         issue = data.get("issue")
         if not isinstance(issue, dict):
-            raise SyncError("Linear issue labels response is malformed")
+            raise SyncError(LINEAR_LABELS_MALFORMED)
         return issue.get("labels")
 
     def create_issue(self, values: dict[str, Any]) -> tuple[str, str]:
