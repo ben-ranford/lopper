@@ -86,7 +86,15 @@ function makeHarness(options = {}) {
           calls.comments.push({ number: input.issue_number, body: input.body });
         },
         updateComment: async (input) => {
-          calls.comments.push({ number: undefined, body: input.body });
+          for (const [number, issueComments] of comments) {
+            const existing = issueComments.find((comment) => comment.id === input.comment_id);
+            if (existing) {
+              existing.body = input.body;
+              calls.comments.push({ number, body: input.body });
+              return;
+            }
+          }
+          throw new Error(`unknown comment ${input.comment_id}`);
         },
       },
       pulls: {
@@ -183,7 +191,15 @@ function makeHarness(options = {}) {
       queueAppSlug: options.queueAppSlug,
     },
     calls,
+    pulls,
   };
+}
+
+function commentsFor(harness, number) {
+  return harness.calls.comments
+    .filter((comment) => comment.number === number)
+    .map((comment) => comment.body)
+    .at(-1) || '';
 }
 
 test('sortQueuedPulls uses deterministic ascending PR numbers', () => {
@@ -248,6 +264,29 @@ test('controller disables followers and arms only the oldest numbered pull reque
     harness.calls.comments.find((comment) => comment.number === 10).body,
     /Squash auto-merge is armed/,
   );
+});
+
+test('queue refresh updates a stale follower position after the leader advances', async () => {
+  const formerLeader = makePull(3);
+  const currentLeader = makePull(5);
+  const follower = makePull(8);
+  const harness = makeHarness({
+    pulls: [formerLeader, currentLeader, follower],
+    eventPull: follower,
+  });
+
+  await runController(harness.args);
+  assert.match(commentsFor(harness, 8), /Queued behind #3/);
+  assert.equal(commentsFor(harness, 5), '');
+
+  harness.pulls.splice(0, harness.pulls.length, currentLeader, follower);
+  harness.args.context.eventName = 'push';
+  harness.args.context.payload = {};
+
+  await runController(harness.args);
+
+  assert.match(commentsFor(harness, 8), /Queued behind #5/);
+  assert.doesNotMatch(commentsFor(harness, 8), /Queued behind #3/);
 });
 
 test('controller rebases a stale leader and merges it when repository rules are satisfied', async () => {
