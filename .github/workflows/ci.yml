@@ -29,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      pr_report_artifact_id: ${{ steps.upload_pr_report_inputs.outputs.artifact-id }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -172,12 +174,34 @@ jobs:
           LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
           LOPPER_DELTA_OUTCOME: ${{ steps.lopper_delta.outcome }}
         run: |
+          write_bounded_output() {
+            local dest="$1"
+            local limit_bytes="$2"
+            local value="$3"
+            printf '%s\n' "${value}" > "${dest}"
+            if [ "$(stat --format=%s "${dest}")" -gt "${limit_bytes}" ]; then
+              echo "PR report input exceeds the ${limit_bytes}-byte staging limit: $(basename "${dest}")" >&2
+              exit 1
+            fi
+          }
+
+          copy_bounded_report() {
+            local src="$1"
+            local dest="$2"
+            local limit_bytes="$3"
+            if [ "$(stat --format=%s "${src}")" -gt "${limit_bytes}" ]; then
+              echo "PR report input exceeds the ${limit_bytes}-byte staging limit: $(basename "${src}")" >&2
+              exit 1
+            fi
+            cp -- "${src}" "${dest}"
+          }
+
           report_root="${RUNNER_TEMP}/pr-report-inputs"
           rm -rf -- "${report_root}"
           mkdir -p -- "${report_root}"
 
-          printf '%s\n' "${LOPPER_BASE_OUTCOME}" > "${report_root}/lopper-base-outcome.txt"
-          printf '%s\n' "${LOPPER_DELTA_OUTCOME}" > "${report_root}/lopper-delta-outcome.txt"
+          write_bounded_output "${report_root}/lopper-base-outcome.txt" 64 "${LOPPER_BASE_OUTCOME}"
+          write_bounded_output "${report_root}/lopper-delta-outcome.txt" 64 "${LOPPER_DELTA_OUTCOME}"
 
           for report in \
             coverage-package-failures.txt \
@@ -189,11 +213,21 @@ jobs:
           do
             src=".artifacts/${report}"
             if [ -f "${src}" ] && [ ! -L "${src}" ]; then
-              cp -- "${src}" "${report_root}/${report}"
+              limit_bytes=1048576
+              case "${report}" in
+                coverage-package-failures.txt)
+                  limit_bytes=131072
+                  ;;
+                coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
+                  limit_bytes=64
+                  ;;
+              esac
+              copy_bounded_report "${src}" "${report_root}/${report}" "${limit_bytes}"
             fi
           done
 
       - name: Upload PR report inputs
+        id: upload_pr_report_inputs
         if: ${{ github.event_name == 'pull_request' && always() && !env.ACT }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -221,9 +255,10 @@ jobs:
 
   publish-pr-reports:
     needs: verify
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.pr_report_artifact_id != '' }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       issues: write
       pull-requests: write
@@ -232,8 +267,11 @@ jobs:
         if: ${{ !env.ACT }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: pr-report-inputs
+          artifact-ids: ${{ needs.verify.outputs.pr_report_artifact_id }}
+          github-token: ${{ github.token }}
           path: pr-report-inputs
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
 
       - name: Validate PR report inputs
         if: ${{ !env.ACT }}

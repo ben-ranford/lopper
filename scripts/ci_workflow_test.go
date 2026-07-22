@@ -17,6 +17,9 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, verify, "ci verify")
 	assertWorkflowStepOrder(t, verify, "Run coverage gate", "Stage PR report inputs", "Upload PR report inputs", "Upload binary artifact", "Fail workflow on coverage gate")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "ci verify trusted PR report output", got: verify.Outputs["pr_report_artifact_id"], want: "${{ steps.upload_pr_report_inputs.outputs.artifact-id }}"},
+	})
 
 	for _, check := range []struct {
 		jobName   string
@@ -104,13 +107,22 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	stageInputs := workflowStepByName(t, workflow.Jobs, "verify", "Stage PR report inputs")
 	assertWorkflowStepRunContainsAll(t, stageInputs, "ci PR report staging", []string{
+		`write_bounded_output() {`,
+		`copy_bounded_report() {`,
 		`report_root="${RUNNER_TEMP}/pr-report-inputs"`,
-		`printf '%s\n' "${LOPPER_BASE_OUTCOME}" > "${report_root}/lopper-base-outcome.txt"`,
-		`printf '%s\n' "${LOPPER_DELTA_OUTCOME}" > "${report_root}/lopper-delta-outcome.txt"`,
+		`write_bounded_output "${report_root}/lopper-base-outcome.txt" 64 "${LOPPER_BASE_OUTCOME}"`,
+		`write_bounded_output "${report_root}/lopper-delta-outcome.txt" 64 "${LOPPER_DELTA_OUTCOME}"`,
 		`src=".artifacts/${report}"`,
-		`cp -- "${src}" "${report_root}/${report}"`,
+		`limit_bytes=1048576`,
+		`coverage-package-failures.txt)`,
+		`limit_bytes=131072`,
+		`coverage-status.txt|coverage-total.txt|memory-bench-status.txt)`,
+		`copy_bounded_report "${src}" "${report_root}/${report}" "${limit_bytes}"`,
 	})
 	uploadInputs := workflowStepByName(t, workflow.Jobs, "verify", "Upload PR report inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "PR report upload step id", got: uploadInputs.ID, want: "upload_pr_report_inputs"},
+	})
 	assertCIArtifactAction(t, uploadInputs, "PR report upload", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", map[string]string{
 		"name":              "pr-report-inputs",
 		"path":              "${{ runner.temp }}/pr-report-inputs",
@@ -120,9 +132,13 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	publication := workflowJobByName(t, workflow.Jobs, "publish-pr-reports")
 	assertWorkflowJobNeeds(t, publication, "PR report publication", workflowJobNeeds{"verify"})
 	assertWorkflowJobPermissions(t, publication, "PR report publication", map[string]string{
+		"actions":       "read",
 		"contents":      "read",
 		"issues":        "write",
 		"pull-requests": "write",
+	})
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "PR report publication guard", got: publication.If, want: "${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.pr_report_artifact_id != '' }}"},
 	})
 	assertWorkflowJobEnvEmpty(t, publication, "PR report publication")
 	assertWorkflowJobOmitsCheckout(t, publication, "PR report publication")
@@ -142,10 +158,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	}
 
 	downloadInputs := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Download PR report inputs")
-	assertCIArtifactAction(t, downloadInputs, "PR report download", "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", map[string]string{
-		"name": "pr-report-inputs",
-		"path": "pr-report-inputs",
-	})
+	assertWorkflowArtifactDownloadByID(t, downloadInputs, "PR report download", "${{ needs.verify.outputs.pr_report_artifact_id }}", "pr-report-inputs", "${{ github.repository }}", "${{ github.run_id }}", "${{ github.token }}")
 
 	validateInputs := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Validate PR report inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{

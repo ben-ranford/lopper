@@ -786,13 +786,8 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	download := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Download bounded comment inputs")
+	assertWorkflowArtifactDownloadByID(t, download, "feature flag comment download", "${{ steps.resolve_pr.outputs.artifact-id }}", "${{ runner.temp }}/feature-flag-comment-archive", "${{ github.repository }}", "${{ github.event.workflow_run.id }}", "${{ github.token }}")
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "feature flag comment download action", got: download.Uses, want: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"},
-		{label: "feature flag comment download artifact ID", got: download.With["artifact-ids"], want: "${{ steps.resolve_pr.outputs.artifact-id }}"},
-		{label: "feature flag comment download path", got: download.With["path"], want: "${{ runner.temp }}/feature-flag-comment-archive"},
-		{label: "feature flag comment download token", got: download.With["github-token"], want: "${{ github.token }}"},
-		{label: "feature flag comment download repository", got: download.With["repository"], want: "${{ github.repository }}"},
-		{label: "feature flag comment download run ID", got: download.With["run-id"], want: "${{ github.event.workflow_run.id }}"},
 		{label: "feature flag comment download decompression", got: download.With["skip-decompress"], want: "true"},
 	})
 
