@@ -36,6 +36,7 @@ jobs:
   orchestrate-rolling:
     needs:
       - prepare-rolling
+      - build-darwin-amd64-rolling
     permissions:
       contents: read
       packages: write

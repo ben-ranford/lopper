@@ -357,7 +357,10 @@ jobs:
           path: ${{ runner.temp }}/ghcr-${{ matrix.architecture }}-publication
 
   publish-ghcr-images:
-    needs: prepare-ghcr
+    needs:
+      - build-linux-windows
+      - build-darwin
+      - prepare-ghcr
     outputs:
       amd64_digest: ${{ steps.publish_amd64.outputs.digest }}
       arm64_digest: ${{ steps.publish_arm64.outputs.digest }}
