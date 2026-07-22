@@ -59,7 +59,7 @@ func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
 
 	resolver := featureFlagCommentResolverScript(t)
 	pull := featureFlagPull(7, "open")
-	pull["title"] = "preview(cli): trial feature"
+	pull["title"] = " \tpreview(cli): trial feature  "
 	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
 		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
 		"pulls":           []map[string]any{pull},
@@ -781,7 +781,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		"enforcementSteps.length !== 1",
 		"core.exportVariable('PR_NUMBER', String(prNumber))",
 		"String(enforcementStep.conclusion === 'failure')",
-		"String(/^(feat|preview)(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title))",
+		"String(/^(feat|preview)(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title.trim()))",
 		"String(pull.head.ref.startsWith('release-please--branches--'))",
 	})
 
