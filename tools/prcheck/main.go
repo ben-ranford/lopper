@@ -8,6 +8,9 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/prmetadata"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 var titlePattern = regexp.MustCompile(`^(feat|preview|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
@@ -63,11 +66,16 @@ func main() {
 func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("prcheck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	exemptionLabelDefault := getenv("PR_REGRESSION_EXEMPT_LABEL")
+	if exemptionLabelDefault == "" {
+		exemptionLabelDefault = "false"
+	}
 	title := fs.String("title", strings.TrimSpace(getenv("PR_TITLE")), "pull request title")
 	headRef := fs.String("head-ref", strings.TrimSpace(getenv("PR_HEAD_REF")), "pull request head ref")
 	headRepositoryFullName := fs.String("head-repo-full-name", strings.TrimSpace(getenv("PR_HEAD_REPO_FULL_NAME")), "pull request head repository full name")
 	repositoryFullName := fs.String("repo-full-name", strings.TrimSpace(getenv("REPOSITORY_FULL_NAME")), "repository full name")
 	bodyFile := fs.String("body-file", "", "path to a file containing the pull request body")
+	exemptionLabel := fs.String("regression-exempt-label", exemptionLabelDefault, "whether the pull request has the maintainer-controlled regression-exempt label")
 	checkRepoPolicy := fs.Bool("check-repo-policy", false, "validate repository merge policy")
 	allowMergeCommit := fs.String("allow-merge-commit", strings.TrimSpace(getenv("REPO_ALLOW_MERGE_COMMIT")), "whether the repository allows merge commits")
 	allowRebaseMerge := fs.String("allow-rebase-merge", strings.TrimSpace(getenv("REPO_ALLOW_REBASE_MERGE")), "whether the repository allows rebase merges")
@@ -76,12 +84,16 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	hasExemptionLabel, err := prmetadata.ParseRegressionExemptionLabel(*exemptionLabel)
+	if err != nil {
+		return writeError(stderr, "%v\n", err)
+	}
 
 	body := strings.TrimSpace(getenv("PR_BODY"))
 	if *bodyFile != "" {
-		data, err := os.ReadFile(*bodyFile)
+		data, err := safeio.ReadFileLimit(*bodyFile, 1<<20)
 		if err != nil {
-			return writeRunError(stderr, "read PR body: %v\n", err)
+			return writeError(stderr, "read PR body: %v\n", err)
 		}
 		body = string(data)
 	}
@@ -91,8 +103,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		repositoryFullName:     *repositoryFullName,
 	}
 
-	if err := validate(*title, *headRef, body, releaseIdentity); err != nil {
-		return writeRunError(stderr, "%v\n", err)
+	if err := validate(*title, *headRef, body, releaseIdentity, hasExemptionLabel); err != nil {
+		return writeError(stderr, "%v\n", err)
 	}
 	if *checkRepoPolicy {
 		policy := repoMergePolicy{
@@ -102,24 +114,20 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			squashMergeCommitTitle: *squashMergeCommitTitle,
 		}
 		if err := validateRepoMergePolicy(policy); err != nil {
-			return writeRunError(stderr, "%v\n", err)
+			return writeError(stderr, "%v\n", err)
 		}
 	}
 	return 0
 }
 
-func writeRunError(stderr io.Writer, format string, args ...any) int {
-	writeErrorMessage(stderr, format, args...)
+func writeError(stderr io.Writer, format string, args ...any) int {
+	if _, err := fmt.Fprintf(stderr, format, args...); err != nil {
+		return 1
+	}
 	return 1
 }
 
-func writeErrorMessage(stderr io.Writer, format string, args ...any) {
-	if _, err := fmt.Fprintf(stderr, format, args...); err != nil {
-		return
-	}
-}
-
-func validate(title, headRef, body string, releaseIdentity releasePleaseIdentity) error {
+func validate(title, headRef, body string, releaseIdentity releasePleaseIdentity, hasExemptionLabel bool) error {
 	var failures []string
 	title = strings.TrimSpace(title)
 	if !titlePattern.MatchString(title) {
@@ -141,6 +149,9 @@ func validate(title, headRef, body string, releaseIdentity releasePleaseIdentity
 	failures = append(failures, incompleteSectionFailures(sections)...)
 	failures = append(failures, riskFieldFailures(sections)...)
 	failures = append(failures, checklistFailures(sections)...)
+	if err := prmetadata.ValidateRegressionRequirements(title, body, hasExemptionLabel); err != nil {
+		failures = append(failures, err.Error())
+	}
 
 	if len(failures) > 0 {
 		return errors.New(strings.Join(failures, "\n"))

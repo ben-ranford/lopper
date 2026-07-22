@@ -7,6 +7,21 @@ import (
 	"testing"
 )
 
+type pullRequestTriggerWorkflow struct {
+	On struct {
+		PullRequest struct {
+			Types []string `yaml:"types"`
+		} `yaml:"pull_request"`
+	} `yaml:"on"`
+}
+
+type workflowActionCheck struct {
+	jobName   string
+	stepName  string
+	wantUses  string
+	stepLabel string
+}
+
 func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	t.Parallel()
 
@@ -21,12 +36,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		{label: "ci verify trusted PR report output", got: verify.Outputs["pr_report_artifact_id"], want: "${{ steps.upload_pr_report_inputs.outputs.artifact-id }}"},
 	})
 
-	for _, check := range []struct {
-		jobName   string
-		stepName  string
-		wantUses  string
-		stepLabel string
-	}{
+	for _, check := range []workflowActionCheck{
 		{"verify", "Checkout", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "verify checkout"},
 		{"verify", "Setup Go", "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", "verify setup-go"},
 		{"verify", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},
@@ -190,4 +200,88 @@ func shellArrayValues(t *testing.T, script string, name string) []string {
 		}
 	}
 	return values
+}
+
+func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
+	t.Parallel()
+	assertPullRequestTriggerTypes(t, ".github/workflows/ci.yml")
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	expectedOrder := []string{
+		"Resolve PR base ref",
+		"Write PR body for regression proof",
+		"Fetch PR base",
+		"Run CI target",
+		"Prove regression tests for fix PRs",
+	}
+	assertWorkflowStepOrder(t, verify, expectedOrder...)
+
+	resolveBase := workflowStepByName(t, workflow.Jobs, "verify", "Resolve PR base ref")
+	assertWorkflowStepRunContainsAll(t, resolveBase, "resolve PR base ref", []string{
+		`printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"`,
+		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"`,
+	})
+
+	writeBody := workflowStepByName(t, workflow.Jobs, "verify", "Write PR body for regression proof")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "regression body writer action", got: writeBody.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
+		{label: "regression body writer condition", got: writeBody.If, want: "${{ github.event_name == 'pull_request' }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: writeBody.With["script"]}, "regression body writer", []string{
+		`const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-regression-body.md');`,
+		`core.exportVariable('PR_BODY_FILE', bodyPath);`,
+	})
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
+		`base_sha="${BASE_SHA:-}"`,
+		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
+		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+	})
+
+	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "regression proof condition", got: proof.If, want: "${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}"},
+		{label: "regression proof title env", got: proof.Env["PR_TITLE"], want: "${{ github.event.pull_request.title }}"},
+		{label: "regression proof base env", got: proof.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
+		{label: "regression proof exemption label env", got: proof.Env["PR_REGRESSION_EXEMPT_LABEL"], want: "${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, proof, "regression proof step", []string{
+		`go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+	})
+}
+
+func TestPRMetadataWorkflowPassesMaintainerExemptionLabel(t *testing.T) {
+	t.Parallel()
+	assertPullRequestTriggerTypes(t, ".github/workflows/pr-metadata.yml")
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/pr-metadata.yml", &workflow)
+	validation := workflowStepByName(t, workflow.Jobs, "validate", "Validate PR title and template")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "PR metadata exemption label env", got: validation.Env["PR_REGRESSION_EXEMPT_LABEL"], want: "${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, validation, "PR metadata validation", []string{
+		`--regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+	})
+}
+
+func assertPullRequestTriggerTypes(t *testing.T, workflowPath string) {
+	t.Helper()
+
+	var workflow pullRequestTriggerWorkflow
+	readYAMLConfig(t, workflowPath, &workflow)
+	want := []string{"opened", "edited", "synchronize", "reopened", "ready_for_review", "labeled", "unlabeled"}
+	got := workflow.On.PullRequest.Types
+	if len(got) != len(want) {
+		t.Fatalf("%s pull_request types = %v, want %v", workflowPath, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s pull_request types = %v, want %v", workflowPath, got, want)
+		}
+	}
 }
