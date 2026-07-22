@@ -22,6 +22,8 @@ on:
         type: boolean
 
 concurrency:
+  # Same-issue events serialize. Full runs can overlap safely because mirror issue IDs
+  # are deterministic and Linear attachment URLs are unique upsert keys.
   group: linear-release-sync-${{ github.event_name == 'issues' && format('issue-{0}', github.event.issue.number) || 'full' }}
   cancel-in-progress: false
 

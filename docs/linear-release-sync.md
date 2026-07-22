@@ -19,7 +19,7 @@ Candidate research remains Linear-only. Unmapped GitHub milestones, including `O
 
 Issue open, edit, close, reopen, label, and milestone events run a single-item reconciliation. A nightly run at 03:17 UTC reconciles every issue in the configured milestones plus every marked mirror already in the Linear project. This second set repairs missed demilestone or release-change events. `workflow_dispatch` provides the same full pass on demand and has a dry-run option.
 
-The workflow is serialized so overlapping events cannot race to create the same mirror. Linear URL attachments are the idempotency key. If one URL resolves to more than one Linear issue, the run fails without choosing a winner.
+Events for the same GitHub issue are serialized. A full reconciliation can overlap an event safely: mirror issues use a deterministic UUIDv4-shaped ID derived from the GitHub sync key, while Linear treats an attachment URL as a unique upsert key. The event payload only selects the issue number; the sync refetches the current GitHub issue before applying state. If one URL resolves to more than one Linear issue, the run fails without choosing a winner.
 
 If Linear creates an issue but its URL attachment fails, the next run scans marked mirrors in the project, recovers the issue by its sync key, and adds the missing attachment instead of creating a duplicate.
 

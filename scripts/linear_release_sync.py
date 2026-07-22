@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -534,6 +536,28 @@ class LinearClient:
             raise SyncError("Linear issueCreate did not return a successful issue")
         return str(issue["id"]), str(issue["identifier"])
 
+    def issue_identity(self, issue_id: str) -> tuple[str, str, str]:
+        data = self._graphql(
+            """
+            query MirrorIdentity($id: String!) {
+              issue(id: $id) { id identifier description }
+            }
+            """,
+            {"id": issue_id},
+        )
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise SyncError(f"Linear issue {issue_id} was not found")
+        identifier = issue.get("identifier")
+        description = issue.get("description")
+        if not isinstance(identifier, str):
+            raise SyncError(f"Linear issue {issue_id} identity is malformed")
+        return (
+            str(issue.get("id", issue_id)),
+            identifier,
+            description if isinstance(description, str) else "",
+        )
+
     def update_issue(self, issue_id: str, values: dict[str, Any]) -> None:
         data = self._graphql(
             """
@@ -574,6 +598,14 @@ class LinearClient:
 
 def _sync_marker(sync_key: str) -> str:
     return f"<!-- {SYNC_MARKER_PREFIX}:{sync_key} -->"
+
+
+def deterministic_issue_id(sync_key: str) -> str:
+    """Return a stable UUIDv4-shaped ID for one GitHub mirror."""
+    digest = hashlib.sha256(
+        f"{SYNC_MARKER_PREFIX}:{sync_key}".encode("utf-8")
+    ).digest()
+    return str(uuid.UUID(bytes=digest[:16], version=4))
 
 
 def is_automation_owned(description: str, sync_key: str) -> bool:
@@ -645,6 +677,7 @@ class SyncEngine:
         linear: LinearClient,
         dry_run: bool = False,
         project_issues: Iterable[LinearIssue] | None = None,
+        recover_unmapped_orphans: bool = True,
     ) -> None:
         self._config = config
         self._linear = linear
@@ -652,6 +685,7 @@ class SyncEngine:
         self._mirrors_by_key = (
             self._index_mirrors(project_issues) if project_issues is not None else None
         )
+        self._recover_unmapped_orphans = recover_unmapped_orphans
 
     def _index_mirrors(
         self, issues: Iterable[LinearIssue]
@@ -692,6 +726,8 @@ class SyncEngine:
             )
         mapping = self._config.milestones.get(issue.milestone or "")
         if not attached:
+            if mapping is None and not self._recover_unmapped_orphans:
+                return f"skip GH #{issue.number}: milestone is not mapped"
             orphaned = self._orphaned_mirrors(issue.sync_key)
             if len(orphaned) > 1:
                 identifiers = ", ".join(sorted(item.identifier for item in orphaned))
@@ -725,7 +761,9 @@ class SyncEngine:
 
     def _create(self, issue: GitHubIssue) -> str:
         desired = self._desired(issue)
+        expected_id = deterministic_issue_id(issue.sync_key)
         values = {
+            "id": expected_id,
             "teamId": self._config.team_id,
             "projectId": desired.project_id,
             "projectMilestoneId": desired.project_milestone_id,
@@ -736,8 +774,24 @@ class SyncEngine:
         }
         if self._dry_run:
             return f"dry-run create GH #{issue.number}"
-        issue_id, identifier = self._linear.create_issue(values)
+        joined_concurrent_create = False
+        try:
+            issue_id, identifier = self._linear.create_issue(values)
+        except SyncError as create_error:
+            try:
+                issue_id, identifier, description = self._linear.issue_identity(
+                    expected_id
+                )
+            except SyncError:
+                raise create_error
+            if issue_id != expected_id or not is_automation_owned(
+                description, issue.sync_key
+            ):
+                raise create_error
+            joined_concurrent_create = True
         self._linear.attach_url(issue_id, issue)
+        if joined_concurrent_create:
+            return f"joined concurrent create GH #{issue.number}: {identifier}"
         return f"created GH #{issue.number}: {identifier}"
 
     def _update(self, issue: GitHubIssue, current: LinearIssue) -> str:
@@ -771,7 +825,7 @@ class SyncEngine:
         return f"updated GH #{issue.number}: {current.identifier} ({', '.join(changes)})"
 
 
-def _read_event_issue(path: Path, repository: str) -> GitHubIssue:
+def _read_event_issue_number(path: Path, repository: str) -> int:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -783,7 +837,10 @@ def _read_event_issue(path: Path, repository: str) -> GitHubIssue:
     issue = payload.get("issue") if isinstance(payload, dict) else None
     if not isinstance(issue, dict):
         raise SyncError("issues event payload is missing issue")
-    return parse_github_issue(issue)
+    number = issue.get("number")
+    if not isinstance(number, int):
+        raise SyncError("issues event payload has an invalid issue number")
+    return number
 
 
 def collect_issues(
@@ -795,7 +852,8 @@ def collect_issues(
     if event_name == "issues":
         if event_path is None:
             raise SyncError("GITHUB_EVENT_PATH is required for issues events")
-        return [_read_event_issue(event_path, config.repository)]
+        number = _read_event_issue_number(event_path, config.repository)
+        return [github.issue(number)]
 
     milestone_numbers = github.configured_milestone_numbers(config.milestones)
     issues: dict[int, GitHubIssue] = {}
@@ -862,6 +920,7 @@ def run(argv: list[str] | None = None) -> int:
             linear,
             dry_run=args.dry_run,
             project_issues=project_issues,
+            recover_unmapped_orphans=event_name != "issues",
         )
         for issue in issues:
             print(engine.sync(issue))

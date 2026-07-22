@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError, URLError
@@ -89,6 +90,8 @@ class FakeLinear:
         self.created = []
         self.updated = []
         self.links = []
+        self.identity_lookups = []
+        self.identities = {}
 
     def issues_attached_to(self, url):
         self.last_lookup = url
@@ -101,6 +104,10 @@ class FakeLinear:
     def create_issue(self, values):
         self.created.append(values)
         return "new-id", "BEN-99"
+
+    def issue_identity(self, issue_id):
+        self.identity_lookups.append(issue_id)
+        return self.identities[issue_id]
 
     def update_issue(self, issue_id, values):
         self.updated.append((issue_id, values))
@@ -120,6 +127,8 @@ class SyncEngineTests(unittest.TestCase):
         self.assertEqual(linear.last_lookup, issue.url)
         self.assertEqual(linear.links, [("new-id", issue.url)])
         created = linear.created[0]
+        self.assertEqual(created["id"], sync.deterministic_issue_id(issue.sync_key))
+        self.assertEqual(uuid.UUID(created["id"]).version, 4)
         self.assertEqual(created["teamId"], "team")
         self.assertEqual(created["projectId"], "project")
         self.assertEqual(created["projectMilestoneId"], V2_MILESTONE)
@@ -128,6 +137,38 @@ class SyncEngineTests(unittest.TestCase):
             set(created["labelIds"]), {MIRROR_LABEL, FEATURE_LABEL, V2_LABEL}
         )
         self.assertIn(sync._sync_marker(issue.sync_key), created["description"])
+
+    def test_concurrent_create_reuses_deterministic_mirror(self):
+        issue = github_issue()
+        expected_id = sync.deterministic_issue_id(issue.sync_key)
+        linear = FakeLinear()
+        linear.create_issue = mock.Mock(
+            side_effect=sync.SyncError("Linear GraphQL error: duplicate id")
+        )
+        linear.identities[expected_id] = (
+            expected_id,
+            "BEN-99",
+            sync.render_description(issue),
+        )
+
+        result = sync.SyncEngine(test_config(), linear).sync(issue)
+
+        self.assertEqual(result, "joined concurrent create GH #42: BEN-99")
+        self.assertEqual(linear.identity_lookups, [expected_id])
+        self.assertEqual(linear.links, [(expected_id, issue.url)])
+
+    def test_create_error_is_preserved_when_deterministic_id_is_not_owned(self):
+        issue = github_issue()
+        expected_id = sync.deterministic_issue_id(issue.sync_key)
+        linear = FakeLinear()
+        linear.create_issue = mock.Mock(
+            side_effect=sync.SyncError("Linear GraphQL error: permission denied")
+        )
+        linear.identities[expected_id] = (expected_id, "BEN-99", "Human issue")
+
+        with self.assertRaisesRegex(sync.SyncError, "permission denied"):
+            sync.SyncEngine(test_config(), linear).sync(issue)
+        self.assertEqual(linear.links, [])
 
     def test_hand_authored_attached_issue_is_covered_but_untouched(self):
         issue = github_issue()
@@ -231,6 +272,17 @@ class SyncEngineTests(unittest.TestCase):
             set(changes["labelIds"]), {MIRROR_LABEL, FEATURE_LABEL, CUSTOM_LABEL}
         )
 
+    def test_unmapped_issue_event_skips_without_project_scan(self):
+        issue = github_issue(milestone=None)
+        linear = FakeLinear()
+
+        result = sync.SyncEngine(
+            test_config(), linear, recover_unmapped_orphans=False
+        ).sync(issue)
+
+        self.assertEqual(result, "skip GH #42: milestone is not mapped")
+        self.assertFalse(hasattr(linear, "last_project_lookup"))
+
     def test_duplicate_url_attachments_fail_without_mutation(self):
         issue = github_issue()
         first = linear_issue(issue)
@@ -327,15 +379,21 @@ class ClientAndCollectionTests(unittest.TestCase):
         self.assertIn(101, {issue.number for issue in issues})
         self.assertEqual(len(http.calls), 4)
 
-    def test_issue_event_reads_only_payload_issue(self):
-        payload = {"repository": {"full_name": REPOSITORY}, "issue": raw_github_issue()}
+    def test_issue_event_refetches_current_github_issue(self):
+        stale = raw_github_issue(milestone="v2.0.0")
+        current = github_issue(milestone="v3.0.0")
+        payload = {"repository": {"full_name": REPOSITORY}, "issue": stale}
+        github = mock.Mock(spec=sync.GitHubClient)
+        github.issue.return_value = current
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "event.json")
             path.write_text(json.dumps(payload), encoding="utf-8")
             issues = sync.collect_issues(
-                "issues", path, test_config(), mock.Mock(spec=sync.GitHubClient)
+                "issues", path, test_config(), github
             )
-        self.assertEqual([issue.number for issue in issues], [42])
+        self.assertEqual(issues, [current])
+        self.assertEqual(issues[0].milestone, "v3.0.0")
+        github.issue.assert_called_once_with(42)
 
     def test_issue_event_rejects_wrong_repository(self):
         payload = {"repository": {"full_name": "other/repo"}, "issue": raw_github_issue()}
@@ -398,6 +456,28 @@ class ClientAndCollectionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(sync.SyncError, "permission denied"):
             client.issues_attached_to("https://github.com/example/repo/issues/1")
+
+    def test_linear_issue_identity_recovers_a_concurrently_created_mirror(self):
+        issue = github_issue()
+        issue_id = sync.deterministic_issue_id(issue.sync_key)
+        http = mock.Mock()
+        http.request.return_value = {
+            "data": {
+                "issue": {
+                    "id": issue_id,
+                    "identifier": "BEN-99",
+                    "description": sync.render_description(issue),
+                }
+            }
+        }
+
+        identity = sync.LinearClient("key", http).issue_identity(issue_id)
+
+        self.assertEqual(
+            identity, (issue_id, "BEN-99", sync.render_description(issue))
+        )
+        variables = http.request.call_args.kwargs["payload"]["variables"]
+        self.assertEqual(variables, {"id": issue_id})
 
     def test_linear_url_lookup_deduplicates_multiple_attachments_on_same_issue(self):
         raw = {
