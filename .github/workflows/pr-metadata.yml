@@ -8,6 +8,8 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+      - labeled
+      - unlabeled
 
 jobs:
   validate:
@@ -56,5 +58,6 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
           REPOSITORY_FULL_NAME: ${{ github.repository }}
-        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --body-file "$PR_BODY_FILE"
+        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --body-file "$PR_BODY_FILE" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"

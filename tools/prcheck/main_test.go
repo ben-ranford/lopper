@@ -36,6 +36,33 @@ func TestRunAcceptsBodyFile(t *testing.T) {
 	}
 }
 
+func TestRunRequiresMaintainerLabelForRegressionExemption(t *testing.T) {
+	const declaration = "Regression-Test: ./tools/prcheck::TestValidateAcceptsCompletedTemplate"
+	const exemption = "Regression-Test-Exemption: no deterministic local reproducer"
+	body := strings.Replace(validBody(), declaration, exemption, 1)
+	values := map[string]string{
+		"PR_TITLE":               "fix(release): validate PR metadata",
+		"PR_HEAD_REF":            "bug/issue-000-pr-title-template-gate",
+		"PR_HEAD_REPO_FULL_NAME": "ben-ranford/lopper",
+		"PR_BODY":                body,
+		"REPOSITORY_FULL_NAME":   "ben-ranford/lopper",
+	}
+
+	var stderr bytes.Buffer
+	if code := run(nil, mapEnv(values), &stderr); code != 1 {
+		t.Fatalf("reason-only run exited with %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "maintainer-controlled regression-exempt label") {
+		t.Fatalf("reason-only stderr = %q", stderr.String())
+	}
+
+	stderr.Reset()
+	values["PR_REGRESSION_EXEMPT_LABEL"] = "true"
+	if code := run(nil, mapEnv(values), &stderr); code != 0 {
+		t.Fatalf("reason-and-label run exited with %d, stderr: %s", code, stderr.String())
+	}
+}
+
 func TestRunAcceptsValidRepoPolicy(t *testing.T) {
 	var stderr bytes.Buffer
 	base := map[string]string{
@@ -171,24 +198,25 @@ func TestRunHandlesValidationErrorWriteFailure(t *testing.T) {
 
 func TestValidateAcceptsCompletedTemplate(t *testing.T) {
 	body := validBody()
-	if err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}); err != nil {
+	if err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}, false); err != nil {
 		t.Fatalf("validate returned error: %v", err)
 	}
 }
 
 func TestValidateAcceptsPreviewTitle(t *testing.T) {
-	if err := validate("preview(runtime): add opt-in capture", "feat/preview-runtime-capture", validBody(), releasePleaseIdentity{}); err != nil {
+	body := strings.Replace(validBody(), "\nRegression-Test: ./tools/prcheck::TestValidateAcceptsCompletedTemplate\n", "\n", 1)
+	if err := validate("preview(runtime): add opt-in capture", "feat/preview-runtime-capture", body, releasePleaseIdentity{}, false); err != nil {
 		t.Fatalf("validate returned error: %v", err)
 	}
 }
 
 func TestValidateRejectsBreakingPreviewTitle(t *testing.T) {
-	err := validate("preview(runtime)!: replace capture format", "feat/preview-runtime-capture", validBody(), releasePleaseIdentity{})
+	err := validate("preview(runtime)!: replace capture format", "feat/preview-runtime-capture", validBody(), releasePleaseIdentity{}, false)
 	expectValidationError(t, err, "Preview PR titles must not use a breaking-change marker")
 }
 
 func TestValidateRejectsBugTitle(t *testing.T) {
-	err := validate("bug: patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{})
+	err := validate("bug: patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{}, false)
 	if err == nil {
 		t.Fatal("validate succeeded for unsupported bug title")
 	}
@@ -198,70 +226,70 @@ func TestValidateRejectsBugTitle(t *testing.T) {
 }
 
 func TestValidateRejectsNonConventionalTitle(t *testing.T) {
-	err := validate("patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{})
+	err := validate("patch adapter parser", "bug/issue-123-parser", validBody(), releasePleaseIdentity{}, false)
 	if err == nil {
 		t.Fatal("validate succeeded for non-conventional title")
 	}
 }
 
 func TestValidateRequiresTemplateSections(t *testing.T) {
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", strings.Replace(validBody(), "## Validation", "## Verification", 1), releasePleaseIdentity{})
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", strings.Replace(validBody(), "## Validation", "## Verification", 1), releasePleaseIdentity{}, false)
 	expectValidationError(t, err, `missing required template section "Validation"`)
 }
 
 func TestValidateRejectsPlaceholderOnlySection(t *testing.T) {
 	body := strings.Replace(validBody(), "Stops release-please from missing patch fixes.", "Describe the problem and the intent of this change.", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}, false)
 	expectValidationError(t, err, `section "Summary" must be completed`)
 }
 
 func TestValidateRequiresRiskFields(t *testing.T) {
 	body := strings.Replace(validBody(), "- Performance impact: None\n", "", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}, false)
 	expectValidationError(t, err, `field "Performance impact"`)
 }
 
 func TestValidateRequiresCheckedChecklist(t *testing.T) {
 	body := strings.Replace(validBody(), "- [x] Ready for review", "- [ ] Ready for review", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}, false)
 	expectValidationError(t, err, `Checklist item "Ready for review"`)
 }
 
 func TestValidateRejectsBlankSectionWithCommentOnly(t *testing.T) {
 	body := strings.Replace(validBody(), "Stops release-please from missing patch fixes.", "<!-- TODO -->", 1)
-	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{})
+	err := validate("fix(release): validate PR metadata", "bug/issue-000-pr-title-template-gate", body, releasePleaseIdentity{}, false)
 	if err == nil {
 		t.Fatal("validate succeeded with comment-only Summary")
 	}
 }
 
 func TestValidateExemptsGeneratedReleasePleaseBody(t *testing.T) {
-	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity(), false)
 	if err != nil {
 		t.Fatalf("validate returned error: %v", err)
 	}
 }
 
 func TestValidateRejectsSpoofedReleasePleaseIdentity(t *testing.T) {
-	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", spoofedReleasePleaseIdentity())
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", spoofedReleasePleaseIdentity(), false)
 	expectValidationError(t, err, `missing required template section "Summary"`)
 }
 
 func TestValidateRejectsReleasePleasePrefixSpoof(t *testing.T) {
-	err := validate("chore(main): release 1.5.1", "release-please--branches--main-attacker", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main-attacker", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity(), false)
 	expectValidationError(t, err, `missing required template section "Summary"`)
 }
 
 func TestValidateAcceptsRepositoryOwnedReleasePRFromNonOwnerToken(t *testing.T) {
 	identity := trustedReleasePleaseIdentity()
-	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", identity)
+	err := validate("chore(main): release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", identity, false)
 	if err != nil {
 		t.Fatalf("validate returned error: %v", err)
 	}
 }
 
 func TestValidateReleasePleaseExemptionStillRequiresReleaseTitle(t *testing.T) {
-	err := validate("release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity())
+	err := validate("release 1.5.1", "release-please--branches--main", "## Changelog\n\n* fix: parser", trustedReleasePleaseIdentity(), false)
 	if err == nil {
 		t.Fatal("validate succeeded for generated release PR with non-conventional title")
 	}
@@ -287,6 +315,8 @@ go test ./tools/prcheck
 Additional manual validation:
 
 - Reviewed release-please title requirements.
+
+Regression-Test: ./tools/prcheck::TestValidateAcceptsCompletedTemplate
 
 ## Risk and compatibility
 

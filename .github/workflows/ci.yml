@@ -105,6 +105,15 @@ jobs:
             make ci
           fi
 
+      - name: Prove regression tests for fix PRs
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
+        run: |
+          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"
+
       - name: Fail on unapproved memory regression
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
         run: |

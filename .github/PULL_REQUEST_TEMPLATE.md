@@ -22,6 +22,8 @@ Additional manual validation:
 
 - 
 
+<!-- For fix(...) PRs, add one or more exact lines like `Regression-Test: ./package::TestName`. If no deterministic regression proof is possible, add exactly one line `Regression-Test-Exemption: <reason>` and ask a maintainer to apply the `regression-exempt` label; both the non-empty reason and maintainer-controlled label are required. -->
+
 ## Risk and compatibility
 
 - Breaking changes:
