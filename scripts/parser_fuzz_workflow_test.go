@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -32,5 +33,8 @@ func TestParserFuzzWorkflowContract(t *testing.T) {
 	}
 
 	assertWorkflowJobOmitsText(t, job, "secrets.", "parser fuzz discovery must be secretless")
+	if regexp.MustCompile(`\bsecrets\s*\[`).MatchString(workflowText) {
+		t.Fatal("parser fuzz discovery must be secretless")
+	}
 	assertWorkflowJobOmitsText(t, job, "github.token", "parser fuzz discovery must not use github.token")
 }
