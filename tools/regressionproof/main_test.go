@@ -825,17 +825,23 @@ func TestCopyProofFilesInjectedFailures(t *testing.T) {
 }
 
 func TestProveErrorBranchesAndWriteError(t *testing.T) {
+	testProveSetupErrors(t)
+	testProveExecutionErrors(t)
+
+	if got := writeError(&errWriter{}, "ignored"); got != 1 {
+		t.Fatalf("writeError = %d, want 1", got)
+	}
+}
+
+func testProveSetupErrors(t *testing.T) {
+	t.Helper()
 	gitPath, err := gitexec.ResolveBinaryPath()
 	if err != nil {
 		t.Fatalf("ResolveBinaryPath: %v", err)
 	}
 	originalResolve := resolveGitBinaryPath
-	originalOpenWriteRoot := openWriteRoot
 	resolveGitBinaryPath = func() (string, error) { return gitPath, nil }
-	defer func() {
-		resolveGitBinaryPath = originalResolve
-		openWriteRoot = originalOpenWriteRoot
-	}()
+	defer func() { resolveGitBinaryPath = originalResolve }()
 
 	r := &runner{stderr: &bytes.Buffer{}, execCommand: func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
 		if strings.Contains(strings.Join(args, " "), "merge-base") {
@@ -878,6 +884,22 @@ func TestProveErrorBranchesAndWriteError(t *testing.T) {
 	if err := r.prove(context.Background(), ".", "base", []prmetadata.RegressionDeclaration{{PackagePath: "./pkg", TestName: "TestThing"}}, &bytes.Buffer{}); err == nil {
 		t.Fatal("prove succeeded despite worktree creation failure")
 	}
+}
+
+func testProveExecutionErrors(t *testing.T) {
+	t.Helper()
+	originalOpenWriteRoot := openWriteRoot
+	defer func() { openWriteRoot = originalOpenWriteRoot }()
+
+	r := &runner{stderr: &bytes.Buffer{}}
+	declaration := []prmetadata.RegressionDeclaration{{PackagePath: "./pkg", TestName: "TestThing"}}
+	headRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(headRoot, "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir head pkg: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(headRoot, "pkg", "case_test.go"), []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatalf("write head file: %v", err)
+	}
 
 	r.execCommand = func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
 		joined := strings.Join(args, " ")
@@ -895,13 +917,6 @@ func TestProveErrorBranchesAndWriteError(t *testing.T) {
 		default:
 			return nil, errors.New("unexpected args")
 		}
-	}
-	headRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(headRoot, "pkg"), 0o755); err != nil {
-		t.Fatalf("mkdir head pkg: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(headRoot, "pkg", "case_test.go"), []byte("package pkg\n"), 0o644); err != nil {
-		t.Fatalf("write head file: %v", err)
 	}
 	if err := r.prove(context.Background(), headRoot, "base", []prmetadata.RegressionDeclaration{{PackagePath: "./pkg", TestName: "TestThing"}}, &bytes.Buffer{}); err == nil {
 		t.Fatal("prove succeeded despite cleanup failure")
@@ -923,10 +938,9 @@ func TestProveErrorBranchesAndWriteError(t *testing.T) {
 			return nil, errors.New("unexpected args")
 		}
 	}
-	if err := r.prove(context.Background(), headRoot, "base", []prmetadata.RegressionDeclaration{{PackagePath: "./pkg", TestName: "TestThing"}}, &bytes.Buffer{}); err == nil {
+	if err := r.prove(context.Background(), headRoot, "base", declaration, &bytes.Buffer{}); err == nil {
 		t.Fatal("prove succeeded despite copy failure")
 	}
-	openWriteRoot = originalOpenWriteRoot
 
 	r.execCommand = func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
 		joined := strings.Join(args, " ")
@@ -943,12 +957,8 @@ func TestProveErrorBranchesAndWriteError(t *testing.T) {
 			return nil, &exec.ExitError{}
 		}
 	}
-	if err := r.prove(context.Background(), headRoot, "base", []prmetadata.RegressionDeclaration{{PackagePath: "./pkg", TestName: "TestThing"}}, &bytes.Buffer{}); err == nil {
+	if err := r.prove(context.Background(), headRoot, "base", declaration, &bytes.Buffer{}); err == nil {
 		t.Fatal("prove succeeded despite compile failure")
-	}
-
-	if got := writeError(&errWriter{}, "ignored"); got != 1 {
-		t.Fatalf("writeError = %d, want 1", got)
 	}
 }
 

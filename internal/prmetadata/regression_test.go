@@ -78,20 +78,25 @@ func TestParseRegressionDeclarationDirectBranches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			declaration, err := parseRegressionDeclaration(tt.value)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("parseRegressionDeclaration returned error: %v", err)
-				}
-				if declaration.PackagePath != "./pkg/nested" || declaration.TestName != "TestOne" {
-					t.Fatalf("declaration = %#v", declaration)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("parseRegressionDeclaration error = %v, want %q", err, tt.wantErr)
-			}
+			assertRegressionDeclaration(t, tt.value, tt.wantErr)
 		})
+	}
+}
+
+func assertRegressionDeclaration(t *testing.T, value, wantErr string) {
+	t.Helper()
+	declaration, err := parseRegressionDeclaration(value)
+	if wantErr != "" {
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("parseRegressionDeclaration error = %v, want %q", err, wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("parseRegressionDeclaration returned error: %v", err)
+	}
+	if declaration.PackagePath != "./pkg/nested" || declaration.TestName != "TestOne" {
+		t.Fatalf("declaration = %#v", declaration)
 	}
 }
 
