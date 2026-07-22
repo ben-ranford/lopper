@@ -1,0 +1,53 @@
+name: linear release sync
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+      - closed
+      - reopened
+      - labeled
+      - unlabeled
+      - milestoned
+      - demilestoned
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report the reconciliation without changing Linear
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # Same-issue events serialize. Full runs can overlap safely because mirror issue IDs
+  # are deterministic and Linear attachment URLs are unique upsert keys.
+  group: linear-release-sync-${{ github.event_name == 'issues' && format('issue-{0}', github.event.issue.number) || 'full' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Reconcile GitHub release issues into Linear
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        run: |
+          args=()
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          python3 scripts/linear_release_sync.py "${args[@]}"

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "github": {
+    "repository": "ben-ranford/lopper"
+  },
+  "linear": {
+    "team_id": "4af26e54-ae61-4d4e-a9a8-886c46eb104d",
+    "project_id": "cecfe3a9-f1c0-4b1d-a666-e5b2fa40e421",
+    "states": {
+      "open": "29cbf255-9bfb-4d33-a1c4-fae1b6284d68",
+      "closed": "0d651b21-f0cf-4f3a-b0a6-6f8cb35c887f"
+    },
+    "labels": {
+      "github_mirror": "6f382964-c549-4520-842f-17ed70a0c276",
+      "default_type": "c2dd4bd0-325c-40c6-8f18-7e07d3c266f2"
+    },
+    "type_label_rules": [
+      {
+        "github_labels": [
+          "bug"
+        ],
+        "linear_label_id": "b8c0b377-9d42-4d7b-b211-3c3cb6a35c51"
+      },
+      {
+        "github_labels": [
+          "enhancement",
+          "feature"
+        ],
+        "linear_label_id": "e426b548-e352-46a4-a2cc-b3f421a471c5"
+      },
+      {
+        "github_labels": [
+          "performance",
+          "refactor",
+          "tech debt"
+        ],
+        "linear_label_id": "c2dd4bd0-325c-40c6-8f18-7e07d3c266f2"
+      }
+    ]
+  },
+  "milestones": {
+    "v2.0.0": {
+      "release_label_id": "cfcf0ca5-3297-42f3-82e9-40dc8ec661cb",
+      "project_milestone_id": "619c7f94-ecff-4737-92ea-8fe065047b6a"
+    },
+    "v3.0.0": {
+      "release_label_id": "14d2867a-3dc4-478c-b118-8ff6ba787647",
+      "project_milestone_id": "0262f659-18d2-4e7b-b62f-928b7cc6316c"
+    },
+    "v4.0.0": {
+      "release_label_id": "e975874c-5798-4f24-b6ea-cd654421ccfc",
+      "project_milestone_id": "0cb5120c-15f5-40bc-93be-e7976f7c24c7"
+    }
+  }
+}
