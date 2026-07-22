@@ -1,0 +1,242 @@
+{
+  "schemaVersion": "0.2.0",
+  "generatedAt": "<generatedAt>",
+  "repoPath": "<repo>",
+  "scope": {
+    "mode": "package",
+    "packages": [
+      "."
+    ]
+  },
+  "dependencies": [
+    {
+      "language": "js-ts",
+      "name": "lodash",
+      "usedExportsCount": 1,
+      "totalExportsCount": 1,
+      "usedPercent": 100,
+      "estimatedUnusedBytes": 0,
+      "topUsedSymbols": [
+        {
+          "name": "map",
+          "count": 1
+        }
+      ],
+      "usedImports": [
+        {
+          "name": "map",
+          "module": "lodash",
+          "locations": [
+            {
+              "file": "index.js",
+              "line": 1,
+              "column": 10
+            }
+          ]
+        }
+      ],
+      "reachabilityConfidence": {
+        "model": "reachability-v2",
+        "score": 93,
+        "summary": "no runtime trace; export inventory; precise imports",
+        "rationaleCodes": [
+          "runtime-evidence-absent",
+          "export-inventory-known",
+          "precise-static-imports",
+          "usage-uncertainty-clear",
+          "dependency-entrypoints-static",
+          "no-risk-cues"
+        ],
+        "signals": [
+          {
+            "code": "runtime-evidence-absent",
+            "score": 65,
+            "weight": 0.2,
+            "contribution": 13,
+            "rationale": "no runtime trace evidence was available for this dependency"
+          },
+          {
+            "code": "export-inventory-known",
+            "score": 100,
+            "weight": 0.3,
+            "contribution": 30,
+            "rationale": "export inventory is available for deterministic symbol coverage"
+          },
+          {
+            "code": "precise-static-imports",
+            "score": 100,
+            "weight": 0.2,
+            "contribution": 20,
+            "rationale": "explicit static imports provide precise symbol attribution"
+          },
+          {
+            "code": "usage-uncertainty-clear",
+            "score": 100,
+            "weight": 0.15,
+            "contribution": 15,
+            "rationale": "no unresolved dynamic import or require usage was observed"
+          },
+          {
+            "code": "dependency-entrypoints-static",
+            "score": 100,
+            "weight": 0.1,
+            "contribution": 10,
+            "rationale": "dependency entrypoints appear statically declared"
+          },
+          {
+            "code": "no-risk-cues",
+            "score": 100,
+            "weight": 0.05,
+            "contribution": 5,
+            "rationale": "no additional dependency risk cues reduced reachability confidence"
+          }
+        ]
+      },
+      "removalCandidate": {
+        "score": 18.6,
+        "usage": 0,
+        "impact": 0,
+        "confidence": 93,
+        "weights": {
+          "usage": 0.5,
+          "impact": 0.3,
+          "confidence": 0.2
+        },
+        "rationale": [
+          "no runtime trace evidence was available for this dependency",
+          "export inventory is available for deterministic symbol coverage",
+          "explicit static imports provide precise symbol attribution"
+        ]
+      },
+      "license": {
+        "source": "unknown",
+        "confidence": "low",
+        "unknown": true
+      },
+      "provenance": {
+        "source": "local-manifest",
+        "confidence": "medium",
+        "signals": [
+          "manifest:package.json",
+          "name:lodash"
+        ]
+      }
+    }
+  ],
+  "usageUncertainty": {
+    "confirmedImportUses": 1,
+    "uncertainImportUses": 0
+  },
+  "summary": {
+    "dependencyCount": 1,
+    "usedExportsCount": 1,
+    "totalExportsCount": 1,
+    "usedPercent": 100,
+    "knownLicenseCount": 0,
+    "unknownLicenseCount": 1,
+    "deniedLicenseCount": 0,
+    "reachability": {
+      "model": "reachability-v2",
+      "averageScore": 93,
+      "lowestScore": 93,
+      "highestScore": 93
+    }
+  },
+  "languageBreakdown": [
+    {
+      "language": "js-ts",
+      "dependencyCount": 1,
+      "usedExportsCount": 1,
+      "totalExportsCount": 1,
+      "usedPercent": 100
+    }
+  ],
+  "cache": {
+    "enabled": false,
+    "path": "<repo>/.lopper-cache",
+    "hits": 0,
+    "misses": 0,
+    "writes": 0
+  },
+  "effectiveThresholds": {
+    "failOnIncreasePercent": -1,
+    "lowConfidenceWarningPercent": 40,
+    "minUsagePercentForRecommendations": 40,
+    "maxUncertainImportCount": -1,
+    "reachableVulnerabilityPriority": "off"
+  },
+  "effectivePolicy": {
+    "sources": [
+      "defaults"
+    ],
+    "mergeTrace": [
+      {
+        "field": "thresholds.fail_on_increase_percent",
+        "source": "defaults"
+      },
+      {
+        "field": "thresholds.low_confidence_warning_percent",
+        "source": "defaults"
+      },
+      {
+        "field": "thresholds.min_usage_percent_for_recommendations",
+        "source": "defaults"
+      },
+      {
+        "field": "thresholds.max_uncertain_import_count",
+        "source": "defaults"
+      },
+      {
+        "field": "thresholds.reachable_vulnerability_priority",
+        "source": "defaults"
+      },
+      {
+        "field": "thresholds.lockfile_drift_policy",
+        "source": "defaults"
+      },
+      {
+        "field": "removal_candidate_weights.usage",
+        "source": "defaults"
+      },
+      {
+        "field": "removal_candidate_weights.impact",
+        "source": "defaults"
+      },
+      {
+        "field": "removal_candidate_weights.confidence",
+        "source": "defaults"
+      },
+      {
+        "field": "license.deny",
+        "source": "defaults"
+      },
+      {
+        "field": "license.fail_on_deny",
+        "source": "defaults"
+      },
+      {
+        "field": "license.include_registry_provenance",
+        "source": "defaults"
+      }
+    ],
+    "thresholds": {
+      "failOnIncreasePercent": -1,
+      "lowConfidenceWarningPercent": 40,
+      "minUsagePercentForRecommendations": 40,
+      "maxUncertainImportCount": -1,
+      "reachableVulnerabilityPriority": "off"
+    },
+    "removalCandidateWeights": {
+      "usage": 0.5,
+      "impact": 0.3,
+      "confidence": 0.2
+    },
+    "license": {
+      "failOnDenied": false,
+      "includeRegistryProvenance": false
+    },
+    "vulnerabilities": {
+      "reachablePriorityThreshold": "off"
+    }
+  }
+}
