@@ -333,8 +333,19 @@ func copyProofFiles(headRoot, baseRoot string, files []string) (returnErr error)
 	return nil
 }
 
-func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath string) error {
-	_, err := r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-run", "^$", packagePath}, repoRoot, os.Environ())
+func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath string) (returnErr error) {
+	testBinaryDir, err := os.MkdirTemp("", "lopper-regressionproof-test-*")
+	if err != nil {
+		return fmt.Errorf("create compile output directory: %w", err)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(testBinaryDir); removeErr != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("remove compile output directory: %w", removeErr))
+		}
+	}()
+
+	testBinaryPath := filepath.Join(testBinaryDir, "test-binary")
+	_, err = r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-c", "-o", testBinaryPath, packagePath}, repoRoot, os.Environ())
 	return err
 }
 

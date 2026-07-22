@@ -942,6 +942,7 @@ func testProveExecutionErrors(t *testing.T) {
 		t.Fatal("prove succeeded despite copy failure")
 	}
 
+	openWriteRoot = originalOpenWriteRoot
 	r.execCommand = func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
 		joined := strings.Join(args, " ")
 		switch {
@@ -951,7 +952,7 @@ func testProveExecutionErrors(t *testing.T) {
 			return []byte("pkg/case_test.go\n"), nil
 		case strings.Contains(joined, "worktree add"), strings.Contains(joined, "worktree remove"):
 			return nil, nil
-		case strings.Contains(joined, " -run ^$ "):
+		case strings.Contains(joined, " -c "):
 			return nil, errors.New("compile failed")
 		default:
 			return nil, &exec.ExitError{}
