@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("#include <fmt/core.h>\n#include \"local/header.hpp\"\n#include_next <fmt/core.h>\n#include SOME_MACRO_HEADER\n#include <broken\n")

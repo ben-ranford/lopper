@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("binary \"https://example.com/FancyKit.json#sha256=abc123\" \"1.2.3\" # trailing comment\n")

@@ -1,0 +1,29 @@
+name: parser-fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 3'
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run bounded parser fuzzing
+        run: |
+          go test ./internal/lang/golang -run '^$' -fuzz '^FuzzParseModFile$' -fuzztime=20s -parallel=1
+          go test ./internal/lang/cpp -run '^$' -fuzz '^FuzzParseIncludes$' -fuzztime=20s -parallel=1
+          go test ./internal/lang/swift -run '^$' -fuzz '^FuzzParseCarthageDependencies$' -fuzztime=20s -parallel=1

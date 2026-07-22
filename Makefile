@@ -156,6 +156,12 @@ vuln-check:
 test:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./...
 
+.PHONY: fuzz-corpus-check
+fuzz-corpus-check:
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./scripts -run '^(TestParserFuzzCorpusContract|TestParserFuzzWorkflowContract)$$'
+
+ci: fuzz-corpus-check
+
 cyclonedx-schema-check:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/report -run '^TestCycloneDXSchema'
 
