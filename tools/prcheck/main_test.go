@@ -36,6 +36,18 @@ func TestRunAcceptsBodyFile(t *testing.T) {
 	}
 }
 
+func TestRunRejectsOversizedBodyFile(t *testing.T) {
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(bodyFile, []byte(strings.Repeat("x", 1<<20+1)), 0o600); err != nil {
+		t.Fatalf("write oversized body file: %v", err)
+	}
+	var stderr bytes.Buffer
+	code := run([]string{"--title", "fix(release): validate PR metadata", "--head-ref", "bug/issue-000-pr-title-template-gate", "--body-file", bodyFile}, mapEnv(nil), &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "read PR body") {
+		t.Fatalf("run exited with %d, stderr: %s", code, stderr.String())
+	}
+}
+
 func TestRunRequiresMaintainerLabelForRegressionExemption(t *testing.T) {
 	const declaration = "Regression-Test: ./tools/prcheck::TestValidateAcceptsCompletedTemplate"
 	const exemption = "Regression-Test-Exemption: no deterministic local reproducer"

@@ -627,7 +627,11 @@ func TestCreateBaseWorktreeFailureAndCleanup(t *testing.T) {
 
 func TestCopyProofFilesAndExpectHelpers(t *testing.T) {
 	t.Parallel()
+	testCopyProofFiles(t)
+	testExpectHelpers(t)
+}
 
+func testCopyProofFiles(t *testing.T) {
 	headRoot := t.TempDir()
 	baseRoot := t.TempDir()
 	sourcePath := filepath.Join(headRoot, "pkg", "case_test.go")
@@ -666,7 +670,10 @@ func TestCopyProofFilesAndExpectHelpers(t *testing.T) {
 	if err := copyProofFiles(headRoot, filepath.Join(baseRoot, "missing", "child"), []string{"pkg/case_test.go"}); err == nil {
 		t.Fatal("copyProofFiles succeeded for missing base root")
 	}
+}
 
+func testExpectHelpers(t *testing.T) {
+	t.Helper()
 	r := &runner{stderr: &bytes.Buffer{}, execCommand: func(context.Context, string, []string, string, []string) ([]byte, error) {
 		return nil, errors.New("boom")
 	}}

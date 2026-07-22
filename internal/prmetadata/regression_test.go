@@ -48,11 +48,16 @@ func TestParseRegressionProofRejectsInvalidMetadata(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseRegressionProof(tt.body)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("ParseRegressionProof error = %v, want %q", err, tt.wantErr)
-			}
+			assertRegressionProofError(t, tt.body, tt.wantErr)
 		})
+	}
+}
+
+func assertRegressionProofError(t *testing.T, body, wantErr string) {
+	t.Helper()
+	_, err := ParseRegressionProof(body)
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("ParseRegressionProof error = %v, want %q", err, wantErr)
 	}
 }
 

@@ -24,6 +24,14 @@ type RegressionMetadata struct {
 	ExemptionReason string
 }
 
+type regressionProofLineKind uint8
+
+const (
+	regressionProofLineIgnored regressionProofLineKind = iota
+	regressionProofLineDeclaration
+	regressionProofLineExemption
+)
+
 func IsFixTitle(title string) bool {
 	return fixTitlePattern.MatchString(strings.TrimSpace(title))
 }
@@ -50,31 +58,22 @@ func ParseRegressionProof(body string) (RegressionMetadata, error) {
 			continue
 		}
 
-		if match := regressionDeclarationLineRE.FindStringSubmatch(line); len(match) == 2 {
-			declaration, err := parseRegressionDeclaration(match[1])
-			if err != nil {
-				return RegressionMetadata{}, err
-			}
+		kind, declaration, exemptionReason, err := parseRegressionProofLine(line)
+		if err != nil {
+			return RegressionMetadata{}, err
+		}
+		switch kind {
+		case regressionProofLineDeclaration:
 			if _, ok := seen[declaration]; ok {
 				return RegressionMetadata{}, fmt.Errorf("duplicate regression-test declaration %q", declaration.PackagePath+"::"+declaration.TestName)
 			}
 			seen[declaration] = struct{}{}
 			metadata.Declarations = append(metadata.Declarations, declaration)
-			continue
-		}
-		if strings.HasPrefix(line, "Regression-Test:") {
-			return RegressionMetadata{}, fmt.Errorf("invalid Regression-Test declaration %q", line)
-		}
-
-		if match := regressionExemptionLineRE.FindStringSubmatch(line); len(match) == 2 {
+		case regressionProofLineExemption:
 			if metadata.ExemptionReason != "" {
 				return RegressionMetadata{}, fmt.Errorf("regression-test-exemption must be declared at most once")
 			}
-			metadata.ExemptionReason = strings.TrimSpace(match[1])
-			continue
-		}
-		if strings.HasPrefix(line, "Regression-Test-Exemption:") {
-			return RegressionMetadata{}, fmt.Errorf("regression-test-exemption must include a non-empty reason")
+			metadata.ExemptionReason = exemptionReason
 		}
 	}
 
@@ -83,6 +82,24 @@ func ParseRegressionProof(body string) (RegressionMetadata, error) {
 	}
 
 	return metadata, nil
+}
+
+func parseRegressionProofLine(line string) (regressionProofLineKind, RegressionDeclaration, string, error) {
+	if match := regressionDeclarationLineRE.FindStringSubmatch(line); len(match) == 2 {
+		declaration, err := parseRegressionDeclaration(match[1])
+		return regressionProofLineDeclaration, declaration, "", err
+	}
+	if strings.HasPrefix(line, "Regression-Test:") {
+		return regressionProofLineIgnored, RegressionDeclaration{}, "", fmt.Errorf("invalid Regression-Test declaration %q", line)
+	}
+
+	if match := regressionExemptionLineRE.FindStringSubmatch(line); len(match) == 2 {
+		return regressionProofLineExemption, RegressionDeclaration{}, strings.TrimSpace(match[1]), nil
+	}
+	if strings.HasPrefix(line, "Regression-Test-Exemption:") {
+		return regressionProofLineIgnored, RegressionDeclaration{}, "", fmt.Errorf("regression-test-exemption must include a non-empty reason")
+	}
+	return regressionProofLineIgnored, RegressionDeclaration{}, "", nil
 }
 
 func ValidateRegressionRequirements(title, body string, hasExemptionLabel bool) error {

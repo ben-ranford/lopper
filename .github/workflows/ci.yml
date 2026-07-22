@@ -2,6 +2,14 @@ name: ci
 
 on:
   pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+      - labeled
+      - unlabeled
 
 jobs:
   extension-changes:
@@ -80,14 +88,31 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
+          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
           printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+
+      - name: Write PR body for regression proof
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-regression-body.md');
+            fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
+            core.exportVariable('PR_BODY_FILE', bodyPath);
 
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
+          if [ -n "${base_sha}" ]; then
+            git fetch --no-tags --depth=1 origin "${base_sha}"
+          fi
           git fetch --no-tags --depth=1 origin "${base_ref}"
 
       - name: Run CI target

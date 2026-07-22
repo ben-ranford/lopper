@@ -15,6 +15,13 @@ type pullRequestTriggerWorkflow struct {
 	} `yaml:"on"`
 }
 
+type workflowActionCheck struct {
+	jobName   string
+	stepName  string
+	wantUses  string
+	stepLabel string
+}
+
 func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	t.Parallel()
 
@@ -29,12 +36,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		{label: "ci verify trusted PR report output", got: verify.Outputs["pr_report_artifact_id"], want: "${{ steps.upload_pr_report_inputs.outputs.artifact-id }}"},
 	})
 
-	for _, check := range []struct {
-		jobName   string
-		stepName  string
-		wantUses  string
-		stepLabel string
-	}{
+	for _, check := range []workflowActionCheck{
 		{"verify", "Checkout", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "verify checkout"},
 		{"verify", "Setup Go", "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", "verify setup-go"},
 		{"verify", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},

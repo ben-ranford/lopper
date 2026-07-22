@@ -424,7 +424,7 @@ func (r *runner) runGit(ctx context.Context, repoRoot string, args ...string) ([
 	if err != nil {
 		return nil, err
 	}
-	fullArgs := append([]string{"-C", repoRoot}, gitexec.SafeConfigArgs()...)
+	fullArgs := append(gitexec.SafeConfigArgs(), "-C", repoRoot)
 	fullArgs = append(fullArgs, args...)
 	return r.execCommand(ctx, gitPath, fullArgs, repoRoot, gitexec.SanitizedEnv())
 }

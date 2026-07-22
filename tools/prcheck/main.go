@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/prmetadata"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 var titlePattern = regexp.MustCompile(`^(feat|preview|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
@@ -90,7 +91,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 
 	body := strings.TrimSpace(getenv("PR_BODY"))
 	if *bodyFile != "" {
-		data, err := os.ReadFile(*bodyFile)
+		data, err := safeio.ReadFileLimit(*bodyFile, 1<<20)
 		if err != nil {
 			return writeError(stderr, "read PR body: %v\n", err)
 		}
