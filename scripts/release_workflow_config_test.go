@@ -49,7 +49,18 @@ type workflowDispatchConfig struct {
 	Inputs map[string]workflowInput `yaml:"inputs"`
 }
 
+type workflowCallConfig struct {
+	Inputs map[string]workflowCallInput `yaml:"inputs"`
+}
+
+type workflowCallInput struct {
+	Default  any    `yaml:"default"`
+	Required bool   `yaml:"required"`
+	Type     string `yaml:"type"`
+}
+
 type workflowOnConfig struct {
+	WorkflowCall     workflowCallConfig     `yaml:"workflow_call"`
 	WorkflowDispatch workflowDispatchConfig `yaml:"workflow_dispatch"`
 }
 
@@ -68,6 +79,8 @@ type workflowJobConfig struct {
 	RunsOn          string               `yaml:"runs-on"`
 	Steps           []workflowStepConfig `yaml:"steps"`
 	Strategy        workflowStrategy     `yaml:"strategy"`
+	Uses            string               `yaml:"uses"`
+	With            map[string]string    `yaml:"with"`
 }
 
 type workflowStrategy struct {
@@ -639,7 +652,7 @@ func TestReleaseWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	reportPreparation := workflowJobByName(t, workflow.Jobs, "prepare-release-feature-report")
-	assertWorkflowJobNeeds(t, reportPreparation, "release feature report preparation", workflowJobNeeds{"prepare-release"})
+	assertWorkflowJobNeeds(t, reportPreparation, "release feature report preparation", workflowJobNeeds{"prepare-release", "verify-release-source-ci"})
 	assertWorkflowJobPermissions(t, reportPreparation, "release feature report preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, reportPreparation, "release feature report preparation")
 	assertWorkflowJobOmitsText(t, reportPreparation, "secrets.", "release feature report preparation must not receive secrets")
@@ -915,7 +928,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	assertWorkflowJobPermissions(t, darwinProducer, "rolling Darwin amd64 producer", map[string]string{"contents": "read"})
 
 	notesPreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-release-notes")
-	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling"})
+	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
 	assertWorkflowJobPermissions(t, notesPreparation, "rolling release note preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, notesPreparation, "rolling release note preparation")
 	assertWorkflowJobOmitsText(t, notesPreparation, "secrets.", "rolling release note preparation must not receive secrets")
@@ -965,7 +978,7 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 	})
 
 	archivePreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-source-archive")
-	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling"})
+	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
 	assertWorkflowJobPermissions(t, archivePreparation, "rolling source archive preparation", map[string]string{"contents": "read"})
 	assertWorkflowJobEnvEmpty(t, archivePreparation, "rolling source archive preparation")
 	assertWorkflowJobOmitsText(t, archivePreparation, "secrets.", "rolling source archive preparation must not receive secrets")
@@ -1227,6 +1240,7 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 		"jobs.build-vscode-extension.steps.Setup Node#1.uses",
 		"jobs.build-vscode-extension.steps.Upload VS Code extension artifact#1.uses",
 		"jobs.orchestrate-release.uses",
+		"jobs.verify-release-source-ci.uses",
 		"jobs.prepare-feature-release-history-push.steps.Download feature history patch#1.uses",
 		"jobs.prepare-feature-release-history-push.steps.Upload prepared trusted feature history worktree#1.uses",
 		"jobs.prepare-feature-release-history.steps.Checkout trusted main tooling#1.uses",
@@ -2839,6 +2853,7 @@ func TestReleaseWorkflowsUsePortableCommands(t *testing.T) {
 	}
 	paths := []string{
 		".github/workflows/release-orchestration.yml",
+		".github/workflows/release-source-ci.yml",
 		".github/workflows/release.yml",
 		".github/workflows/rolling.yml",
 	}
@@ -3195,7 +3210,174 @@ func TestReleaseOrchestrationGatesGHCRPublicationOnValidatedArtifactProducers(t 
 	readYAMLConfig(t, ".github/workflows/rolling.yml", &rollingWorkflow)
 
 	orchestrateRolling := workflowJobByName(t, rollingWorkflow.Jobs, "orchestrate-rolling")
-	assertWorkflowJobNeeds(t, orchestrateRolling, "orchestrate-rolling", workflowJobNeeds{"prepare-rolling", "build-darwin-amd64-rolling"})
+	assertWorkflowJobNeeds(t, orchestrateRolling, "orchestrate-rolling", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
+}
+
+func TestReleaseSourceCIRunsExactSourceGate(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-source-ci.yml", &workflow)
+	source, ok := workflow.On.WorkflowCall.Inputs["source_sha"]
+	if !ok {
+		t.Fatal("release source CI must define a source_sha input")
+	}
+	if !source.Required || source.Type != "string" || source.Default != nil {
+		t.Fatalf("source_sha input = %#v, want required string without a default", source)
+	}
+
+	verification := workflowJobByName(t, workflow.Jobs, "verify-source-ci")
+	assertWorkflowJobPermissions(t, verification, "source CI verification", map[string]string{"contents": "read"})
+	assertWorkflowJobOmitsText(t, verification, "secrets.", "source CI verification must not receive secrets")
+	assertWorkflowJobStepRunsOmitAllFold(t, verification, "source CI verification", []string{"gh api", "curl "})
+	assertWorkflowStepOrder(t, verification, "Checkout exact release source", "Verify exact release source", "Setup Go", "Install shellcheck", "Resolve gosec version", "Install Go tooling", "Run exact source CI gate", "Verify demo assets")
+
+	checkout := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Checkout exact release source")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "source CI checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
+		{label: "source CI checkout ref", got: checkout.With["ref"], want: "${{ inputs.source_sha }}"},
+		{label: "source CI checkout persist-credentials", got: checkout.With["persist-credentials"], want: "false"},
+		{label: "source CI checkout fetch-depth", got: checkout.With["fetch-depth"], want: "2"},
+	})
+
+	verifySource := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Verify exact release source")
+	assertWorkflowStepEnv(t, verifySource, "source CI verification", map[string]string{
+		"PATH":       "/usr/bin:/bin",
+		"SOURCE_SHA": "${{ inputs.source_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, verifySource, "source CI verification", []string{
+		`[[ ! "${source_sha}" =~ ^[0-9a-f]{40}$ ]]`,
+		`echo "::error::Release source SHA must be a lowercase full 40-character commit SHA." >&2`,
+		`printf 'Rejected release source SHA: %q\n' "${source_sha}" >&2`,
+		`checked_out_sha="$(git rev-parse HEAD)"`,
+		`[ "${checked_out_sha}" != "${source_sha}" ]`,
+	})
+	assertWorkflowStepRunOmitsAll(t, verifySource, "source CI verification", []string{
+		`::error::Release source SHA must be a lowercase full 40-character commit SHA; got ${source_sha}.`,
+	})
+
+	setupGo := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Setup Go")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "source CI setup-go action", got: setupGo.Uses, want: "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c"},
+		{label: "source CI Go version source", got: setupGo.With["go-version-file"], want: "go.mod"},
+	})
+
+	ciGate := workflowStepByName(t, workflow.Jobs, "verify-source-ci", "Run exact source CI gate")
+	assertWorkflowStepEnv(t, ciGate, "exact source CI gate", map[string]string{
+		"BUILD_CHANNEL":        "${{ inputs.build_channel }}",
+		"MEMORY_BENCH_ENFORCE": "${{ inputs.memory_approved && '0' || '1' }}",
+		"SOURCE_SHA":           "${{ inputs.source_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, ciGate, "exact source CI gate", []string{
+		`parent_sha="$(git rev-parse "${SOURCE_SHA}^")"`,
+		`export MEMORY_BENCH_BASE="${parent_sha}"`,
+		`export DUPLICATION_BASE="${parent_sha}"`,
+		`export SUPPRESSION_BASE="${parent_sha}"`,
+		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
+	})
+}
+
+func TestReleaseCallersPassMemoryApprovalToSourceCI(t *testing.T) {
+	t.Parallel()
+
+	var reusable workflowConfig
+	readYAMLConfig(t, ".github/workflows/release-source-ci.yml", &reusable)
+	approval, ok := reusable.On.WorkflowCall.Inputs["memory_approved"]
+	if !ok {
+		t.Fatal("release source CI must define a memory_approved input")
+	}
+	if approval.Required || approval.Type != "boolean" || approval.Default != false {
+		t.Fatalf("memory_approved input = %#v, want optional boolean defaulting to false", approval)
+	}
+
+	var rolling workflowConfig
+	readYAMLConfig(t, ".github/workflows/rolling.yml", &rolling)
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling memory approval",
+		got:   rolling.Jobs["verify-rolling-source-ci"].With["memory_approved"],
+		want:  "${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}",
+	}})
+
+	var release workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &release)
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "release memory approval",
+		got:   release.Jobs["verify-release-source-ci"].With["memory_approved"],
+		want:  "false",
+	}})
+}
+
+func TestReleaseCallersWaitForExactSourceCIBeforeProducingArtifacts(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		path          string
+		preparation   string
+		gate          string
+		orchestrator  string
+		sourceSHA     string
+		buildChannel  string
+		producerNeeds workflowJobNeeds
+		producers     []string
+	}{
+		{
+			path:          ".github/workflows/release.yml",
+			preparation:   "prepare-release",
+			gate:          "verify-release-source-ci",
+			orchestrator:  "orchestrate-release",
+			sourceSHA:     "${{ needs.prepare-release.outputs.sha }}",
+			buildChannel:  "release",
+			producerNeeds: workflowJobNeeds{"prepare-release", "verify-release-source-ci"},
+			producers: []string{
+				"build-vscode-extension",
+				"build-darwin-amd64",
+				"prepare-release-feature-report",
+			},
+		},
+		{
+			path:          ".github/workflows/rolling.yml",
+			preparation:   "prepare-rolling",
+			gate:          "verify-rolling-source-ci",
+			orchestrator:  "orchestrate-rolling",
+			sourceSHA:     "${{ needs.prepare-rolling.outputs.source_sha }}",
+			buildChannel:  "rolling",
+			producerNeeds: workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"},
+			producers: []string{
+				"build-darwin-amd64-rolling",
+				"prepare-rolling-release-notes",
+				"prepare-rolling-source-archive",
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.path, func(t *testing.T) {
+			t.Parallel()
+
+			var workflow workflowConfig
+			readYAMLConfig(t, testCase.path, &workflow)
+
+			gate := workflowJobByName(t, workflow.Jobs, testCase.gate)
+			assertWorkflowJobNeeds(t, gate, testCase.gate, workflowJobNeeds{testCase.preparation})
+			assertWorkflowJobPermissions(t, gate, testCase.gate, map[string]string{"contents": "read"})
+			assertWorkflowStringValues(t, []workflowStringValue{
+				{label: testCase.gate + " reusable workflow", got: gate.Uses, want: "./.github/workflows/release-source-ci.yml"},
+				{label: testCase.gate + " source SHA", got: gate.With["source_sha"], want: testCase.sourceSHA},
+				{label: testCase.gate + " build channel", got: gate.With["build_channel"], want: testCase.buildChannel},
+			})
+
+			orchestrator := workflowJobByName(t, workflow.Jobs, testCase.orchestrator)
+			assertWorkflowJobNeeds(t, orchestrator, testCase.orchestrator, workflowJobNeeds{testCase.preparation, testCase.gate})
+			if orchestrator.Uses != "./.github/workflows/release-orchestration.yml" {
+				t.Fatalf("%s uses = %q", testCase.orchestrator, orchestrator.Uses)
+			}
+			for _, producer := range testCase.producers {
+				job := workflowJobByName(t, workflow.Jobs, producer)
+				assertWorkflowJobNeeds(t, job, producer, testCase.producerNeeds)
+			}
+		})
+	}
 }
 
 func TestReleaseOrchestrationUsesFreshTrustedGHCRPublicationJobs(t *testing.T) {

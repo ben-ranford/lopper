@@ -9,6 +9,7 @@ This repository includes these GitHub Actions workflows:
   - Darwin artifact from macOS (native arch)
   - GHCR multi-arch image (`linux/amd64`, `linux/arm64`) tagged with the release tag and `latest`
 - `.github/workflows/release-orchestration.yml`: reusable workflow invoked by `release.yml` and `rolling.yml` to build release artifacts and publish GHCR images
+- `.github/workflows/release-source-ci.yml`: read-only reusable workflow that validates the exact promoted source before stable or rolling artifact production starts
 - `.github/workflows/rolling.yml`: on merge to `main`, publishes a rolling prerelease with Linux/Windows/Darwin build artifacts plus source bundle assets, updates GHCR `rolling`, and updates Homebrew tap formula `lopper-rolling`
 - `.github/workflows/docker-ghcr.yml`: manual-only fallback to build/push the GHCR image on demand
 - `.github/workflows/memory-profiles.yml`: scheduled/manual alloc-space profiling for the watched hotspot packages (`dotnet`, `rust`, `analysis`, `golang`) with uploaded artifacts and a workflow summary

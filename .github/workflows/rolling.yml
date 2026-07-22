@@ -33,10 +33,21 @@ jobs:
             echo "source_sha=${source_sha}"
           } >> "$GITHUB_OUTPUT"
 
+  verify-rolling-source-ci:
+    needs:
+      - prepare-rolling
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-source-ci.yml
+    with:
+      source_sha: ${{ needs.prepare-rolling.outputs.source_sha }}
+      build_channel: rolling
+      memory_approved: ${{ contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
+
   orchestrate-rolling:
     needs:
       - prepare-rolling
-      - build-darwin-amd64-rolling
+      - verify-rolling-source-ci
     permissions:
       contents: read
       packages: write
@@ -53,6 +64,7 @@ jobs:
   build-darwin-amd64-rolling:
     needs:
       - prepare-rolling
+      - verify-rolling-source-ci
     runs-on: macos-26-intel
     permissions:
       contents: read
@@ -154,6 +166,7 @@ jobs:
   prepare-rolling-release-notes:
     needs:
       - prepare-rolling
+      - verify-rolling-source-ci
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -277,6 +290,7 @@ jobs:
   prepare-rolling-source-archive:
     needs:
       - prepare-rolling
+      - verify-rolling-source-ci
     runs-on: ubuntu-latest
     permissions:
       contents: read
