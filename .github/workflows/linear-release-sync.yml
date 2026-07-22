@@ -44,7 +44,7 @@ jobs:
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
         run: |
-          args=(--config .github/linear-release-sync.json)
+          args=()
           if [[ "${DRY_RUN}" == "true" ]]; then
             args+=(--dry-run)
           fi

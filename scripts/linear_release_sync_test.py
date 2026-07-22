@@ -220,9 +220,10 @@ class SyncEngineTests(unittest.TestCase):
         first = linear_issue(issue)
         second = sync.LinearIssue(**{**first.__dict__, "id": "other", "identifier": "BEN-43"})
         linear = FakeLinear([first, second])
+        engine = sync.SyncEngine(test_config(), linear)
 
         with self.assertRaisesRegex(sync.SyncError, "multiple Linear issues"):
-            sync.SyncEngine(test_config(), linear).sync(issue)
+            engine.sync(issue)
         self.assertEqual(linear.created, [])
         self.assertEqual(linear.updated, [])
 
@@ -325,10 +326,10 @@ class ClientAndCollectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "event.json")
             path.write_text(json.dumps(payload), encoding="utf-8")
+            config = test_config()
+            github = mock.Mock(spec=sync.GitHubClient)
             with self.assertRaisesRegex(sync.SyncError, "does not match"):
-                sync.collect_issues(
-                    "issues", path, test_config(), mock.Mock(spec=sync.GitHubClient)
-                )
+                sync.collect_issues("issues", path, config, github)
 
     def test_full_reconcile_includes_marked_mirror_no_longer_in_release(self):
         mapped = github_issue(number=10)
@@ -424,6 +425,7 @@ class ClientAndCollectionTests(unittest.TestCase):
         self.assertEqual(http.request.call_count, 2)
 
     def test_http_and_network_failures_have_actionable_messages(self):
+        client = sync.JsonHttpClient()
         error = HTTPError(
             "https://api.example.test",
             503,
@@ -433,11 +435,11 @@ class ClientAndCollectionTests(unittest.TestCase):
         )
         with mock.patch.object(sync, "urlopen", side_effect=error):
             with self.assertRaisesRegex(sync.SyncError, "HTTP 503: try later"):
-                sync.JsonHttpClient().request("GET", "https://api.example.test")
+                client.request("GET", "https://api.example.test")
 
         with mock.patch.object(sync, "urlopen", side_effect=URLError("offline")):
             with self.assertRaisesRegex(sync.SyncError, "offline"):
-                sync.JsonHttpClient().request("GET", "https://api.example.test")
+                client.request("GET", "https://api.example.test")
 
     def test_checked_in_config_loads_expected_release_targets(self):
         config = sync.load_config(Path(".github/linear-release-sync.json"))
@@ -448,12 +450,17 @@ class ClientAndCollectionTests(unittest.TestCase):
             "619c7f94-ecff-4737-92ea-8fe065047b6a",
         )
 
+    def test_config_path_cannot_escape_workspace(self):
+        outside = Path("/etc/hosts")
+        with self.assertRaisesRegex(sync.SyncError, "must stay within workspace"):
+            sync.load_config(outside)
+
 
 class RunTests(unittest.TestCase):
     def test_missing_credentials_fail_before_network_access(self):
         with mock.patch.dict(sync.os.environ, {}, clear=True):
             with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
-                result = sync.run(["--config", ".github/linear-release-sync.json"])
+                result = sync.run([])
         self.assertEqual(result, 1)
         self.assertIn("GITHUB_TOKEN is required", stderr.getvalue())
 

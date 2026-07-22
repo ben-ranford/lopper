@@ -18,9 +18,10 @@ from urllib.request import Request, urlopen
 
 LINEAR_GRAPHQL_URL = "https://api.linear.app/graphql"
 GITHUB_API_URL = "https://api.github.com"
+DEFAULT_CONFIG_PATH = Path(".github/linear-release-sync.json")
 SYNC_MARKER_PREFIX = "github-linear-release-sync"
 SYNC_KEY_PATTERN = re.compile(
-    r"github:(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>[0-9]+)"
+    r"github:(?P<repository>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?P<number>\d+)"
 )
 LINEAR_TITLE_LIMIT = 255
 
@@ -107,45 +108,67 @@ def _required_string(container: dict[str, Any], key: str, context: str) -> str:
     return value
 
 
-def load_config(path: Path) -> SyncConfig:
+def _required_object(container: dict[str, Any], key: str, context: str) -> dict[str, Any]:
+    value = container.get(key)
+    if not isinstance(value, dict):
+        raise SyncError(f"{context}.{key} must be an object")
+    return value
+
+
+def _read_config(path: Path) -> dict[str, Any]:
+    workspace = Path.cwd().resolve()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        resolved = path.resolve(strict=True)
     except OSError as error:
-        raise SyncError(f"cannot read config {path}: {error}") from error
+        raise SyncError(f"cannot resolve config {path}: {error}") from error
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as error:
+        raise SyncError(f"config path must stay within workspace {workspace}") from error
+    if not resolved.is_file():
+        raise SyncError(f"config {resolved} must be a regular file")
+
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except OSError as error:
+        raise SyncError(f"cannot read config {resolved}: {error}") from error
+    try:
+        raw = json.loads(content)
     except json.JSONDecodeError as error:
-        raise SyncError(f"config {path} is not valid JSON: {error}") from error
+        raise SyncError(f"config {resolved} is not valid JSON: {error}") from error
     if not isinstance(raw, dict):
         raise SyncError("config root must be an object")
     if raw.get("version") != 1:
         raise SyncError("config.version must be 1")
+    return raw
 
-    github = raw.get("github")
-    linear = raw.get("linear")
-    milestones = raw.get("milestones")
-    if not isinstance(github, dict) or not isinstance(linear, dict):
-        raise SyncError("config must contain github and linear objects")
-    if not isinstance(milestones, dict) or not milestones:
-        raise SyncError("config.milestones must contain at least one mapping")
 
-    states = linear.get("states")
-    labels = linear.get("labels")
+def _parse_type_rules(linear: dict[str, Any]) -> tuple[tuple[frozenset[str], str], ...]:
     rules = linear.get("type_label_rules")
-    if not isinstance(states, dict) or not isinstance(labels, dict):
-        raise SyncError("config.linear must contain states and labels objects")
     if not isinstance(rules, list):
         raise SyncError("config.linear.type_label_rules must be an array")
 
-    type_rules: list[tuple[frozenset[str], str]] = []
+    parsed: list[tuple[frozenset[str], str]] = []
     for index, rule in enumerate(rules):
         context = f"linear.type_label_rules[{index}]"
-        if not isinstance(rule, dict) or not isinstance(rule.get("github_labels"), list):
-            raise SyncError(f"{context} must contain a github_labels array")
+        if not isinstance(rule, dict):
+            raise SyncError(f"{context} must be an object")
+        github_labels = rule.get("github_labels")
+        if not isinstance(github_labels, list):
+            raise SyncError(f"{context}.github_labels must be an array")
         names = frozenset(
-            str(name).casefold() for name in rule["github_labels"] if str(name).strip()
+            str(name).casefold() for name in github_labels if str(name).strip()
         )
         if not names:
             raise SyncError(f"{context}.github_labels must not be empty")
-        type_rules.append((names, _required_string(rule, "linear_label_id", context)))
+        parsed.append((names, _required_string(rule, "linear_label_id", context)))
+    return tuple(parsed)
+
+
+def _parse_milestones(raw: dict[str, Any]) -> dict[str, MilestoneMapping]:
+    milestones = raw.get("milestones")
+    if not isinstance(milestones, dict) or not milestones:
+        raise SyncError("config.milestones must contain at least one mapping")
 
     mappings: dict[str, MilestoneMapping] = {}
     for title, mapping in milestones.items():
@@ -156,6 +179,15 @@ def load_config(path: Path) -> SyncConfig:
             release_label_id=_required_string(mapping, "release_label_id", context),
             project_milestone_id=_required_string(mapping, "project_milestone_id", context),
         )
+    return mappings
+
+
+def load_config(path: Path) -> SyncConfig:
+    raw = _read_config(path)
+    github = _required_object(raw, "github", "config")
+    linear = _required_object(raw, "linear", "config")
+    states = _required_object(linear, "states", "linear")
+    labels = _required_object(linear, "labels", "linear")
 
     return SyncConfig(
         repository=_required_string(github, "repository", "github"),
@@ -167,8 +199,8 @@ def load_config(path: Path) -> SyncConfig:
         default_type_label_id=_required_string(
             labels, "default_type", "linear.labels"
         ),
-        type_label_rules=tuple(type_rules),
-        milestones=mappings,
+        type_label_rules=_parse_type_rules(linear),
+        milestones=_parse_milestones(raw),
     )
 
 
@@ -734,20 +766,14 @@ def include_managed_mirror_issues(
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path(".github/linear-release-sync.json"),
-        help="path to the checked-in sync configuration",
-    )
     parser.add_argument("--dry-run", action="store_true", help="report mutations without applying them")
     return parser.parse_args(argv)
 
 
 def run(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv or sys.argv[1:])
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        config = load_config(args.config)
+        config = load_config(DEFAULT_CONFIG_PATH)
         github_token = os.environ.get("GITHUB_TOKEN", "").strip()
         linear_api_key = os.environ.get("LINEAR_API_KEY", "").strip()
         if not github_token:
