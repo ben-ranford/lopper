@@ -231,6 +231,7 @@ jobs:
           path: ${{ runner.temp }}/feature-flag-comment-inputs
           if-no-files-found: error
           compression-level: "0"
+          overwrite: "true"
 
       - name: Fail on feature flag enforcement errors
         if: ${{ always() && steps.enforce_flags.outcome == 'failure' }}

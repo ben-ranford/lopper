@@ -146,7 +146,7 @@ jobs:
             );
             core.exportVariable(
               'FEATURE_PR',
-              String(/^feat(\([^)]+\))?(!)?:\s+\S/.test(pull.title)),
+              String(/^(feat|preview)(\([^)]+\))?(!)?:\s+\S/.test(pull.title)),
             );
             core.exportVariable(
               'RELEASE_PR',

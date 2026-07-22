@@ -54,6 +54,28 @@ func TestFeatureFlagCommentResolverUsesTrustedPullIdentity(t *testing.T) {
 	}
 }
 
+func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	pull := featureFlagPull(7, "open")
+	pull["title"] = "preview(cli): trial feature"
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+		"pulls":           []map[string]any{pull},
+		"associatedPulls": []map[string]any{},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected preview pull request: %s", result.Error)
+	}
+	if got := result.Exported["FEATURE_PR"]; got != "true" {
+		t.Fatalf("FEATURE_PR = %q, want true", got)
+	}
+}
+
 func TestFeatureFlagCommentResolverRejectsAmbiguousAssociatedPullRequests(t *testing.T) {
 	t.Parallel()
 
@@ -693,6 +715,7 @@ func assertReadOnlyFeatureFlagEnforcementWorkflow(t *testing.T, enforcementWorkf
 		{label: "feature flag comment upload path", got: upload.With["path"], want: "${{ runner.temp }}/feature-flag-comment-inputs"},
 		{label: "feature flag comment upload missing-file behavior", got: upload.With["if-no-files-found"], want: "error"},
 		{label: "feature flag comment upload compression level", got: upload.With["compression-level"], want: "0"},
+		{label: "feature flag comment upload rerun behavior", got: upload.With["overwrite"], want: "true"},
 	})
 
 	enforcementText := readConfig(t, ".github/workflows/feature-flag-enforcement.yml")
@@ -758,7 +781,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		"enforcementSteps.length !== 1",
 		"core.exportVariable('PR_NUMBER', String(prNumber))",
 		"String(enforcementStep.conclusion === 'failure')",
-		"String(/^feat(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title))",
+		"String(/^(feat|preview)(\\([^)]+\\))?(!)?:\\s+\\S/.test(pull.title))",
 		"String(pull.head.ref.startsWith('release-please--branches--'))",
 	})
 
