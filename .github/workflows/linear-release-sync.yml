@@ -22,7 +22,7 @@ on:
         type: boolean
 
 concurrency:
-  group: linear-release-sync
+  group: linear-release-sync-${{ github.event_name == 'issues' && format('issue-{0}', github.event.issue.number) || 'full' }}
   cancel-in-progress: false
 
 permissions:

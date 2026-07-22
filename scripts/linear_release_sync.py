@@ -374,7 +374,10 @@ class LinearClient:
                     state { id }
                     project { id }
                     projectMilestone { id }
-                    labels { nodes { id } }
+                    labels(first: 50) {
+                      nodes { id }
+                      pageInfo { hasNextPage endCursor }
+                    }
                   }
                 }
               }
@@ -413,7 +416,10 @@ class LinearClient:
                         state { id }
                         project { id }
                         projectMilestone { id }
-                        labels { nodes { id } }
+                        labels(first: 50) {
+                          nodes { id }
+                          pageInfo { hasNextPage endCursor }
+                        }
                       }
                       pageInfo { hasNextPage endCursor }
                     }
@@ -437,8 +443,7 @@ class LinearClient:
             if not isinstance(after, str) or not after:
                 raise SyncError("Linear project issues pagination is missing endCursor")
 
-    @staticmethod
-    def _parse_issue(raw: dict[str, Any]) -> LinearIssue:
+    def _parse_issue(self, raw: dict[str, Any]) -> LinearIssue:
         try:
             issue_id = raw["id"]
             identifier = raw["identifier"]
@@ -449,7 +454,6 @@ class LinearClient:
         project = raw.get("project")
         milestone = raw.get("projectMilestone")
         labels = raw.get("labels")
-        label_nodes = labels.get("nodes", []) if isinstance(labels, dict) else []
         return LinearIssue(
             id=str(issue_id),
             identifier=str(identifier),
@@ -462,12 +466,54 @@ class LinearClient:
                 if isinstance(milestone, dict) and milestone.get("id")
                 else None
             ),
-            label_ids=frozenset(
-                str(label["id"])
-                for label in label_nodes
-                if isinstance(label, dict) and label.get("id")
-            ),
+            label_ids=self._all_label_ids(str(issue_id), labels),
         )
+
+    def _all_label_ids(self, issue_id: str, connection: Any) -> frozenset[str]:
+        label_ids: set[str] = set()
+        current = connection
+        while True:
+            if not isinstance(current, dict):
+                raise SyncError("Linear issue labels response is malformed")
+            nodes = current.get("nodes")
+            if not isinstance(nodes, list):
+                raise SyncError("Linear issue labels response is malformed")
+            label_ids.update(
+                str(label["id"])
+                for label in nodes
+                if isinstance(label, dict) and label.get("id")
+            )
+
+            page_info = current.get("pageInfo")
+            if page_info is None:
+                return frozenset(label_ids)
+            if not isinstance(page_info, dict):
+                raise SyncError("Linear issue labels pagination is malformed")
+            if page_info.get("hasNextPage") is not True:
+                return frozenset(label_ids)
+            after = page_info.get("endCursor")
+            if not isinstance(after, str) or not after:
+                raise SyncError("Linear issue labels pagination is missing endCursor")
+            current = self._label_page(issue_id, after)
+
+    def _label_page(self, issue_id: str, after: str) -> Any:
+        data = self._graphql(
+            """
+            query IssueLabels($id: String!, $after: String!) {
+              issue(id: $id) {
+                labels(first: 50, after: $after) {
+                  nodes { id }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+            """,
+            {"id": issue_id, "after": after},
+        )
+        issue = data.get("issue")
+        if not isinstance(issue, dict):
+            raise SyncError("Linear issue labels response is malformed")
+        return issue.get("labels")
 
     def create_issue(self, values: dict[str, Any]) -> tuple[str, str]:
         data = self._graphql(
@@ -541,6 +587,15 @@ def description_sync_key(description: str) -> str | None:
     return match.group(0) if match else None
 
 
+def is_recoverable_mirror(
+    issue: LinearIssue, sync_key: str, mirror_label_id: str
+) -> bool:
+    return (
+        _sync_marker(sync_key) in issue.description
+        or mirror_label_id in issue.label_ids
+    )
+
+
 def render_description(issue: GitHubIssue) -> str:
     release = issue.milestone or "Unassigned"
     body = issue.body.strip() or "_No GitHub issue description provided._"
@@ -597,12 +652,15 @@ class SyncEngine:
             self._index_mirrors(project_issues) if project_issues is not None else None
         )
 
-    @staticmethod
-    def _index_mirrors(issues: Iterable[LinearIssue]) -> dict[str, list[LinearIssue]]:
+    def _index_mirrors(
+        self, issues: Iterable[LinearIssue]
+    ) -> dict[str, list[LinearIssue]]:
         mirrors: dict[str, list[LinearIssue]] = {}
         for issue in issues:
             key = description_sync_key(issue.description)
-            if key is not None:
+            if key is not None and is_recoverable_mirror(
+                issue, key, self._config.mirror_label_id
+            ):
                 mirrors.setdefault(key, []).append(issue)
         return mirrors
 
@@ -757,6 +815,10 @@ def include_managed_mirror_issues(
         sync_key = description_sync_key(linear_issue.description)
         match = SYNC_KEY_PATTERN.fullmatch(sync_key or "")
         if match is None or match.group("repository") != config.repository:
+            continue
+        if not is_recoverable_mirror(
+            linear_issue, match.group(0), config.mirror_label_id
+        ):
             continue
         number = int(match.group("number"))
         if number not in collected:

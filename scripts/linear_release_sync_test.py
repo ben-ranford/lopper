@@ -151,6 +151,22 @@ class SyncEngineTests(unittest.TestCase):
         self.assertEqual(linear.links, [("linear-id", issue.url)])
         self.assertEqual(linear.created, [])
 
+    def test_orphan_recovery_ignores_copied_key_without_ownership_marker(self):
+        issue = github_issue()
+        copied_key = f"**Sync key:** `{issue.sync_key}`"
+        planning_issue = linear_issue(
+            issue,
+            description=copied_key,
+            labels={FEATURE_LABEL},
+        )
+        linear = FakeLinear(project_issues=[planning_issue])
+
+        result = sync.SyncEngine(test_config(), linear).sync(issue)
+
+        self.assertEqual(result, "created GH #42: BEN-99")
+        self.assertEqual(linear.updated, [])
+        self.assertEqual(linear.links, [("new-id", issue.url)])
+
     def test_legacy_sync_key_marks_existing_mirror_as_owned(self):
         issue = github_issue(title="New title")
         legacy = f"**Sync key:** `{issue.sync_key}`"
@@ -358,6 +374,23 @@ class ClientAndCollectionTests(unittest.TestCase):
         self.assertEqual(issues, [issue])
         github.issue.assert_not_called()
 
+    def test_full_reconcile_ignores_copied_key_without_ownership_marker(self):
+        issue = github_issue()
+        copied_key = f"**Sync key:** `{issue.sync_key}`"
+        planning_issue = linear_issue(
+            issue,
+            description=copied_key,
+            labels={FEATURE_LABEL},
+        )
+        github = mock.Mock(spec=sync.GitHubClient)
+
+        issues = sync.include_managed_mirror_issues(
+            [], [planning_issue], test_config(), github
+        )
+
+        self.assertEqual(issues, [])
+        github.issue.assert_not_called()
+
     def test_linear_graphql_errors_are_fatal_even_on_http_success(self):
         http = mock.Mock()
         http.request.return_value = {"errors": [{"message": "permission denied"}]}
@@ -388,6 +421,105 @@ class ClientAndCollectionTests(unittest.TestCase):
 
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0].identifier, "BEN-1")
+
+    def test_linear_url_lookup_paginates_all_issue_labels(self):
+        raw = {
+            "id": "id",
+            "identifier": "BEN-1",
+            "title": "Title",
+            "description": "Description",
+            "state": {"id": "backlog"},
+            "project": {"id": "project"},
+            "projectMilestone": None,
+            "labels": {
+                "nodes": [{"id": "first-label"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "labels-next"},
+            },
+        }
+
+        def response(*_args, **kwargs):
+            query = kwargs["payload"]["query"]
+            if "query IssuesAttachedToURL" in query:
+                return {
+                    "data": {"attachmentsForURL": {"nodes": [{"issue": raw}]}}
+                }
+            self.assertIn("query IssueLabels", query)
+            self.assertEqual(kwargs["payload"]["variables"]["after"], "labels-next")
+            return {
+                "data": {
+                    "issue": {
+                        "labels": {
+                            "nodes": [{"id": "last-label"}],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+
+        http = mock.Mock()
+        http.request.side_effect = response
+
+        issues = sync.LinearClient("key", http).issues_attached_to(
+            "https://example.test"
+        )
+
+        self.assertEqual(
+            issues[0].label_ids, frozenset({"first-label", "last-label"})
+        )
+        self.assertEqual(http.request.call_count, 2)
+
+    def test_linear_project_lookup_paginates_all_issue_labels(self):
+        raw = {
+            "id": "id",
+            "identifier": "BEN-1",
+            "title": "Title",
+            "description": "Description",
+            "state": {"id": "backlog"},
+            "project": {"id": "project"},
+            "projectMilestone": None,
+            "labels": {
+                "nodes": [{"id": "first-label"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "labels-next"},
+            },
+        }
+
+        def response(*_args, **kwargs):
+            query = kwargs["payload"]["query"]
+            if "query ProjectIssues" in query:
+                return {
+                    "data": {
+                        "project": {
+                            "issues": {
+                                "nodes": [raw],
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                            }
+                        }
+                    }
+                }
+            self.assertIn("query IssueLabels", query)
+            return {
+                "data": {
+                    "issue": {
+                        "labels": {
+                            "nodes": [{"id": "last-label"}],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+
+        http = mock.Mock()
+        http.request.side_effect = response
+
+        issues = sync.LinearClient("key", http).project_issues("project")
+
+        self.assertEqual(
+            issues[0].label_ids, frozenset({"first-label", "last-label"})
+        )
+        self.assertEqual(http.request.call_count, 2)
 
     def test_linear_project_issue_pagination_recovers_all_pages(self):
         def response(*_args, **kwargs):
