@@ -21,6 +21,15 @@ func assertOutputContains(t *testing.T, output string, values ...string) {
 	}
 }
 
+func assertOutputNotContains(t *testing.T, output string, values ...string) {
+	t.Helper()
+	for _, value := range values {
+		if strings.Contains(output, value) {
+			t.Fatalf("expected output not to contain %q", value)
+		}
+	}
+}
+
 func sampleEffectivePolicy(source string, failOnIncrease, lowConfidence, minUsage int, usageWeight, impactWeight, confidenceWeight float64) *EffectivePolicy {
 	return &EffectivePolicy{
 		Sources: []string{source},
@@ -282,7 +291,7 @@ func TestFormatPRCommentZeroDeltasAreUnsigned(t *testing.T) {
 	}
 }
 
-func TestFormatPRCommentEscapesDependencyNameNewlines(t *testing.T) {
+func TestFormatPRCommentSanitizesDependencyAndLanguageMarkdown(t *testing.T) {
 	reportData := Report{
 		BaselineComparison: &BaselineComparison{
 			SummaryDelta: SummaryDelta{
@@ -292,22 +301,94 @@ func TestFormatPRCommentEscapesDependencyNameNewlines(t *testing.T) {
 			Dependencies: []DependencyDelta{
 				{
 					Kind:                  DependencyDeltaAdded,
-					Name:                  "safe`name\nwith`new-line",
-					Language:              "js-ts",
+					Name:                  "safe`name\nwith|new-line\t<img src=x>\x1b[31m[link](https://example.com)",
+					Language:              "js-ts\r\n<script>alert(1)</script>\t![img](https://example.com/img.png)",
 					UsedPercentDelta:      0.1,
 					UsedExportsCountDelta: 0,
+				},
+			},
+			NewDeniedLicenses: []DeniedLicenseDelta{
+				{
+					Name:     "deny|dep",
+					Language: "lang\x07",
+					SPDX:     "GPL-3.0\n![badge](https://example.com/badge.svg)",
+				},
+			},
+			RuntimeRegressions: []DependencyDelta{
+				{
+					Kind:     DependencyDeltaChanged,
+					Name:     "runtime<dep>",
+					Language: "lang[rt]",
+					RuntimeDelta: &RuntimeDelta{
+						Comparable:            true,
+						BaselinePresent:       true,
+						CurrentPresent:        true,
+						RuntimeOnlyRegression: true,
+					},
 				},
 			},
 		},
 	}
 	output, err := NewFormatter().Format(reportData, FormatPRComment)
 	if err != nil {
-		t.Fatalf("format pr-comment escapes newlines: %v", err)
+		t.Fatalf("format pr-comment sanitizes dependency and language markdown: %v", err)
 	}
 
-	assertOutputContains(t, output, "`safe'name\\nwith'new-line`")
-	if strings.Contains(output, "`safe'name\nwith'new-line`") {
-		t.Fatalf("expected dependency name newline to be escaped as literal")
+	expectedContains := []string{
+		"`safe'name\\nwith\\|new-line\\t<img src=x>\\x1b[31m[link](https://example.com)`",
+		"js-ts\\n&lt;script&gt;alert(1)&lt;/script&gt;\\t!\\[img\\](https://example.com/img.png)",
+		"| 1 | added | `safe'name\\nwith\\|new-line\\t<img src=x>\\x1b[31m[link](https://example.com)` | js-ts\\n&lt;script&gt;alert(1)&lt;/script&gt;\\t!\\[img\\](https://example.com/img.png) |",
+		"| 1 | `deny\\|dep` | lang\\x07 | GPL-3.0\\n!\\[badge\\](https://example.com/badge.svg) |",
+		"| 1 | `runtime<dep>` | lang\\[rt\\] | runtime-only regression |",
+	}
+	assertOutputContains(t, output, expectedContains...)
+	assertOutputNotContains(t, output, "<script>", "![img](https://example.com/img.png)", "\x1b[31m", "safe'name\nwith")
+}
+
+func TestFormatPRCommentSanitizesAdvisoryMarkdownFields(t *testing.T) {
+	reportData := Report{
+		BaselineComparison: &BaselineComparison{
+			SummaryDelta: SummaryDelta{},
+			NewReachableVulnerabilities: []VulnerabilityDelta{
+				{
+					Language:      "go|lang",
+					Name:          "example.com/lib",
+					AdvisoryID:    "GHSA-1234\n[click](https://example.com)",
+					Severity:      "high<script>alert(1)</script>",
+					FixedVersion:  "1.2.3\t![badge](https://example.com/badge.svg)",
+					Source:        "repo<details>boom</details>\x1f",
+					Priority:      "critical",
+					PriorityScore: 9.7,
+				},
+			},
+		},
+	}
+	output, err := NewFormatter().Format(reportData, FormatPRComment)
+	if err != nil {
+		t.Fatalf("format pr-comment sanitizes advisory fields: %v", err)
+	}
+
+	expectedContains := []string{
+		"| 1 | `example.com/lib` | GHSA-1234\\n\\[click\\](https://example.com) | high&lt;script&gt;alert(1)&lt;/script&gt; | critical (9.7) | 1.2.3\\t!\\[badge\\](https://example.com/badge.svg) | repo&lt;details&gt;boom&lt;/details&gt;\\x1f |",
+	}
+	assertOutputContains(t, output, expectedContains...)
+	assertOutputNotContains(t, output, "[click](https://example.com)", "![badge](https://example.com/badge.svg)", "<script>", "<details>", "\x1f")
+}
+
+func TestMarkdownCellsPreserveReadableContentAndRenderEmptyValues(t *testing.T) {
+	t.Parallel()
+
+	if got := markdownCodeCell(""); got != "-" {
+		t.Fatalf("empty Markdown code cell = %q, want dash", got)
+	}
+	if got := escapeMarkdownTable(" \t "); got != "-" {
+		t.Fatalf("blank Markdown table cell = %q, want dash", got)
+	}
+	if got := markdownCodeCell("lang[rt] <script> (9.7)"); got != "`lang[rt] <script> (9.7)`" {
+		t.Fatalf("readable Markdown code cell = %q", got)
+	}
+	if got := escapeMarkdownTable("critical (9.7)"); got != "critical (9.7)" {
+		t.Fatalf("readable Markdown table cell = %q", got)
 	}
 }
 
