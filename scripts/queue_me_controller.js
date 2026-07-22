@@ -83,7 +83,14 @@ function assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid)
   }
 }
 
-async function syncStatusComment(github, owner, repo, number, body) {
+async function syncStatusComment(
+  github,
+  owner,
+  repo,
+  number,
+  body,
+  { createIfMissing = true } = {},
+) {
   const comments = await github.paginate(github.rest.issues.listComments, {
     owner,
     repo,
@@ -107,6 +114,9 @@ async function syncStatusComment(github, owner, repo, number, body) {
       comment_id: existing.id,
       body: nextBody,
     });
+    return;
+  }
+  if (!createIfMissing) {
     return;
   }
   await github.rest.issues.createComment({
@@ -347,21 +357,19 @@ async function runController({
     core.notice(`Ignoring the queue App's auto-merge event for leader #${leader.number}.`);
     return;
   }
+  const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
   for (const follower of queued.slice(1)) {
     await disableAutoMerge(github, owner, repo, follower.number);
-  }
-  const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
-  if (
-    eventQueueEntry &&
-    eventQueueEntry.number !== leader.number &&
-    context.payload.action === 'labeled'
-  ) {
     await syncStatusComment(
       github,
       owner,
       repo,
-      eventQueueEntry.number,
+      follower.number,
       `## Queue status\n\nQueued behind #${leader.number}. Pull requests advance in ascending number order.`,
+      {
+        createIfMissing:
+          eventQueueEntry?.number === follower.number && context.payload.action === 'labeled',
+      },
     );
   }
   await disableAutoMerge(github, owner, repo, leader.number);
