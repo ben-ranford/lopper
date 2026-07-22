@@ -238,6 +238,20 @@ bench-gate:
 	fi; \
 	exit "$$status"
 
+.PHONY: benchdelta-cov
+benchdelta-cov:
+	@mkdir -p .artifacts
+	@GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./tools/benchdelta -covermode=atomic -coverprofile=".artifacts/benchdelta-coverage.out"
+	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
+		-coverprofile=".artifacts/benchdelta-coverage.out" \
+		-min=97.0 \
+		-package-min=97.0 \
+		-total-out=".artifacts/benchdelta-coverage-total.txt" \
+		-packages-out=".artifacts/benchdelta-coverage-packages.txt" \
+		-package-failures-out=".artifacts/benchdelta-coverage-package-failures.txt"
+
+ci: benchdelta-cov
+
 cov:
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \

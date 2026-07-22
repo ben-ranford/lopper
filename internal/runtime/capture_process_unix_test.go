@@ -12,6 +12,53 @@ import (
 	"testing"
 )
 
+func TestConfigureRuntimeCommandCancelPropagatesSignalErrors(t *testing.T) {
+	originalSignal := runtimeProcessSignal
+	originalKill := runtimeKillProcessGroup
+	t.Cleanup(func() {
+		runtimeProcessSignal = originalSignal
+		runtimeKillProcessGroup = originalKill
+	})
+
+	expected := syscall.EPERM
+	runtimeProcessSignal = func(*os.Process, syscall.Signal) error {
+		return expected
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	cmd.Process = &os.Process{Pid: 42}
+	configureRuntimeCommand(cmd)
+
+	if err := cmd.Cancel(); !errors.Is(err, expected) {
+		t.Fatalf("expected signal error %v, got %v", expected, err)
+	}
+}
+
+func TestConfigureRuntimeCommandCancelPropagatesKillErrors(t *testing.T) {
+	originalSignal := runtimeProcessSignal
+	originalKill := runtimeKillProcessGroup
+	t.Cleanup(func() {
+		runtimeProcessSignal = originalSignal
+		runtimeKillProcessGroup = originalKill
+	})
+
+	expected := syscall.EPERM
+	runtimeProcessSignal = func(*os.Process, syscall.Signal) error {
+		return nil
+	}
+	runtimeKillProcessGroup = func(int, syscall.Signal) error {
+		return expected
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	cmd.Process = &os.Process{Pid: 42}
+	configureRuntimeCommand(cmd)
+
+	if err := cmd.Cancel(); !errors.Is(err, expected) {
+		t.Fatalf("expected kill error %v, got %v", expected, err)
+	}
+}
+
 func TestConfigureRuntimeCommand(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
 	configureRuntimeCommand(cmd)

@@ -577,6 +577,43 @@ func TestScanRepoNoDeclaredDependencyWarningAndUnresolvedWarning(t *testing.T) {
 	}
 }
 
+func TestScanRepoSkipsNestedComposerPackagesAndTracksDynamicUsage(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, "src", "root.php"), helpersPHPHeader+
+		"use Vendor\\Lib\\{Client};\n"+
+		"class_exists(Client::class);\n"+
+		"$client = new Client();\n")
+	writeFile(t, filepath.Join(repo, "packages", "nested", helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorPkgDependency))
+	writeFile(t, filepath.Join(repo, "packages", "nested", "src", "nested.php"), helpersPHPHeader+
+		"use Vendor\\Pkg\\Nested;\n"+
+		"$nested = new Nested();\n")
+
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency, "Vendor\\Pkg": helpersVendorPkgDependency},
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if len(scan.Files) != 1 || scan.Files[0].Path != filepath.Join("src", "root.php") {
+		t.Fatalf("expected only root PHP file to be scanned, got %#v", scan.Files)
+	}
+	if scan.DynamicUsageByDependency[helpersVendorLibDependency] != 1 {
+		t.Fatalf("expected dynamic usage count for %q, got %#v", helpersVendorLibDependency, scan.DynamicUsageByDependency)
+	}
+	if scan.GroupedImportsByDependency[helpersVendorLibDependency] != 1 {
+		t.Fatalf("expected grouped import count for %q, got %#v", helpersVendorLibDependency, scan.GroupedImportsByDependency)
+	}
+	if !containsWarning(scan.Warnings, "skipped 1 nested composer package directory") {
+		t.Fatalf("expected nested package skip warning, got %#v", scan.Warnings)
+	}
+	if !containsWarning(scan.Warnings, "dynamic loading/reflection patterns detected") {
+		t.Fatalf("expected dynamic usage warning, got %#v", scan.Warnings)
+	}
+}
+
 func TestReadComposerManifestAndLockMappingsErrorFromFileRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root-file")
 	writeFile(t, root, "x")

@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/csv"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -246,6 +247,32 @@ func TestFormatCSVIncludesIdentityColumnsWhenPresent(t *testing.T) {
 		"identity_evidence":       "go.mod|go.sum",
 		"identity_conflicts":      "v1.2.2 from vendored metadata",
 	})
+}
+
+type failCSVRowWriter struct {
+	call   int
+	failOn int
+}
+
+func (f *failCSVRowWriter) Write(_ []string) error {
+	f.call++
+	if f.call == f.failOn {
+		return errors.New("csv write failed")
+	}
+	return nil
+}
+
+func TestWriteCSVRowsPropagatesHeaderAndRowErrors(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{{Language: "go", Name: "alpha"}},
+	}
+
+	if err := writeCSVRows((&failCSVRowWriter{failOn: 1}).Write, reportData); err == nil || !strings.Contains(err.Error(), "csv write failed") {
+		t.Fatalf("expected header write error, got %v", err)
+	}
+	if err := writeCSVRows((&failCSVRowWriter{failOn: 2}).Write, reportData); err == nil || !strings.Contains(err.Error(), "csv write failed") {
+		t.Fatalf("expected row write error, got %v", err)
+	}
 }
 
 func TestFormatCSVOmitsExceptionSuppressedVulnerabilities(t *testing.T) {

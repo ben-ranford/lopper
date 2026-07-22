@@ -12,6 +12,12 @@ import (
 
 const runtimeCommandWaitDelay = 100 * time.Millisecond
 
+var runtimeProcessSignal = func(process *os.Process, signal syscall.Signal) error {
+	return process.Signal(signal)
+}
+
+var runtimeKillProcessGroup = syscall.Kill
+
 func configureRuntimeCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = runtimeCommandWaitDelay
@@ -19,13 +25,13 @@ func configureRuntimeCommand(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		if err := runtimeProcessSignal(cmd.Process, syscall.Signal(0)); err != nil {
 			if errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone
 			}
 			return err
 		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		if err := runtimeKillProcessGroup(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 			if errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone
 			}
