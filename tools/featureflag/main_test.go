@@ -1703,6 +1703,41 @@ func TestMainUsesExitFuncOnError(t *testing.T) {
 	}
 }
 
+func TestMainUsesExitFuncOnUnknownCommand(t *testing.T) {
+	oldExit := exitFunc
+	oldArgs := os.Args
+	oldStderr := os.Stderr
+	defer func() {
+		exitFunc = oldExit
+		os.Args = oldArgs
+		os.Stderr = oldStderr
+	}()
+
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stderr pipe: %v", err)
+	}
+	os.Stderr = errW
+	code := 0
+	exitFunc = func(c int) { code = c }
+	os.Args = []string{"featureflag", "definitely-missing"}
+
+	main()
+	if err := errW.Close(); err != nil {
+		t.Fatalf("close stderr writer: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(errR); err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if !strings.Contains(buf.String(), "unknown featureflag command") {
+		t.Fatalf("expected unknown-command error on stderr, got %q", buf.String())
+	}
+}
+
 func testRegistry(t *testing.T) *featureflags.Registry {
 	t.Helper()
 	registry, err := featureflags.NewRegistry([]featureflags.Flag{

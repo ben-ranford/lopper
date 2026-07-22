@@ -76,29 +76,35 @@ func formatCSV(reportData Report) (string, error) {
 	var buffer bytes.Buffer
 	writer := csv.NewWriter(&buffer)
 
+	if err := writeCSVRows(writer.Write, reportData); err != nil {
+		return "", err
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return "", err
+	}
+	return buffer.String(), nil
+}
+
+func writeCSVRows(writeRow func([]string) error, reportData Report) error {
 	includeIdentity := hasCSVIdentity(reportData.Dependencies)
 	header := append([]string{}, analyseCSVHeader...)
 	if includeIdentity {
 		header = append(header, analyseCSVIdentityHeader...)
 	}
-	if err := writer.Write(header); err != nil {
-		return "", err
+	if err := writeRow(header); err != nil {
+		return err
 	}
 	for _, dep := range sortedDependenciesForCSV(reportData.Dependencies) {
 		row := formatDependencyCSVRow(reportData, dep)
 		if includeIdentity {
 			row = append(row, formatDependencyIdentityCSVRow(dep.Identity)...)
 		}
-		if err := writer.Write(csvsanitize.EscapeLeadingFormulaRow(row)); err != nil {
-			return "", err
+		if err := writeRow(csvsanitize.EscapeLeadingFormulaRow(row)); err != nil {
+			return err
 		}
 	}
-
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		return "", err
-	}
-	return buffer.String(), nil
+	return nil
 }
 
 func hasCSVIdentity(dependencies []DependencyReport) bool {

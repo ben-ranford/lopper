@@ -3040,6 +3040,44 @@ func TestMakefileReleasePackagesRuntimeHooks(t *testing.T) {
 	}
 }
 
+func TestMakefileBenchdeltaCoverageRatchet(t *testing.T) {
+	t.Parallel()
+
+	makefile := readConfig(t, "Makefile")
+	targetPattern := regexp.MustCompile(`(?m)^benchdelta-cov:\n(?:\t.*\n)+`)
+	target := targetPattern.FindString(makefile)
+	if target == "" {
+		t.Fatal("Makefile must define the benchdelta-cov target")
+	}
+
+	for _, want := range []string{
+		`./tools/benchdelta -covermode=atomic -coverprofile=".artifacts/benchdelta-coverage.out"`,
+		`$(GO_CMD) run ./tools/coveragegate`,
+		`-min=97.0`,
+		`-package-min=97.0`,
+		`-total-out=".artifacts/benchdelta-coverage-total.txt"`,
+		`-packages-out=".artifacts/benchdelta-coverage-packages.txt"`,
+		`-package-failures-out=".artifacts/benchdelta-coverage-package-failures.txt"`,
+	} {
+		if !strings.Contains(target, want) {
+			t.Fatalf("benchdelta-cov target must contain %q", want)
+		}
+	}
+
+	ciPattern := regexp.MustCompile(`(?m)^ci:.*\bbenchdelta-cov\b`)
+	if !ciPattern.MatchString(makefile) {
+		t.Fatal("ci target must depend on benchdelta-cov")
+	}
+	for _, want := range []string{
+		`COVERAGE_MIN ?= 98`,
+		`COVERAGE_PACKAGE_MIN ?= $(COVERAGE_MIN)`,
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Fatalf("global coverage gate must retain %q", want)
+		}
+	}
+}
+
 func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
 	t.Parallel()
 
