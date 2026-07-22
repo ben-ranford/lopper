@@ -7,12 +7,16 @@ import (
 	"testing"
 )
 
+type pullRequestTrigger struct {
+	Types []string `yaml:"types"`
+}
+
+type pullRequestWorkflowOn struct {
+	PullRequest pullRequestTrigger `yaml:"pull_request"`
+}
+
 type pullRequestTriggerWorkflow struct {
-	On struct {
-		PullRequest struct {
-			Types []string `yaml:"types"`
-		} `yaml:"pull_request"`
-	} `yaml:"on"`
+	On pullRequestWorkflowOn `yaml:"on"`
 }
 
 type workflowActionCheck struct {
