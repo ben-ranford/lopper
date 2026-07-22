@@ -1,0 +1,22 @@
+{
+  "targets": [
+    {
+      "name": "FuzzParseModFile",
+      "source": "internal/lang/golang/fuzz_test.go",
+      "corpus": "internal/lang/golang/testdata/fuzz/FuzzParseModFile",
+      "min_seed_files": 3
+    },
+    {
+      "name": "FuzzParseIncludes",
+      "source": "internal/lang/cpp/fuzz_test.go",
+      "corpus": "internal/lang/cpp/testdata/fuzz/FuzzParseIncludes",
+      "min_seed_files": 2
+    },
+    {
+      "name": "FuzzParseCarthageDependencies",
+      "source": "internal/lang/swift/fuzz_test.go",
+      "corpus": "internal/lang/swift/testdata/fuzz/FuzzParseCarthageDependencies",
+      "min_seed_files": 2
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("module example.com/root\nrequire ( github.com/acme/dep v1.2.3 )\nrequire github.com/acme/other v1.4.0\nreplace example.com/old => github.com/fork/old v1.2.4\n")
