@@ -170,7 +170,9 @@ jobs:
 
       - name: Stage PR report inputs
         if: ${{ github.event_name == 'pull_request' && always() }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
         env:
+          PATH: /usr/bin:/bin
           LOPPER_BASE_OUTCOME: ${{ steps.lopper_base.outcome }}
           LOPPER_DELTA_OUTCOME: ${{ steps.lopper_delta.outcome }}
         run: |

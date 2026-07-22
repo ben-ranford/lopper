@@ -784,7 +784,10 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	download := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Download bounded comment inputs")
-	assertWorkflowArtifactDownloadByID(t, download, "feature flag comment download", "${{ steps.resolve_pr.outputs.artifact-id }}", "${{ runner.temp }}/feature-flag-comment-archive", "${{ github.repository }}", "${{ github.event.workflow_run.id }}", "${{ github.token }}")
+	assertWorkflowArtifactDownloadByID(t, download, workflowArtifactDownloadExpectation{
+		label: "feature flag comment download", wantID: "${{ steps.resolve_pr.outputs.artifact-id }}", wantPath: "${{ runner.temp }}/feature-flag-comment-archive",
+		wantRepo: "${{ github.repository }}", wantRunID: "${{ github.event.workflow_run.id }}", wantToken: "${{ github.token }}",
+	})
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment download decompression", got: download.With["skip-decompress"], want: "true"},
 	})

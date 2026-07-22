@@ -61,6 +61,14 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	stageInputs := workflowStepByName(t, workflow.Jobs, "verify", "Stage PR report inputs")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "PR report staging shell", got: stageInputs.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, stageInputs, "PR report staging", map[string]string{
+		"LOPPER_BASE_OUTCOME":  "${{ steps.lopper_base.outcome }}",
+		"LOPPER_DELTA_OUTCOME": "${{ steps.lopper_delta.outcome }}",
+		"PATH":                 "/usr/bin:/bin",
+	})
 	assertWorkflowStepRunContainsAll(t, stageInputs, "ci PR report staging", []string{
 		`write_bounded_output() {`,
 		`copy_bounded_report() {`,
@@ -113,7 +121,10 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	}
 
 	downloadInputs := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Download PR report inputs")
-	assertWorkflowArtifactDownloadByID(t, downloadInputs, "PR report download", "${{ needs.verify.outputs.pr_report_artifact_id }}", "pr-report-inputs", "${{ github.repository }}", "${{ github.run_id }}", "${{ github.token }}")
+	assertWorkflowArtifactDownloadByID(t, downloadInputs, workflowArtifactDownloadExpectation{
+		label: "PR report download", wantID: "${{ needs.verify.outputs.pr_report_artifact_id }}", wantPath: "pr-report-inputs",
+		wantRepo: "${{ github.repository }}", wantRunID: "${{ github.run_id }}", wantToken: "${{ github.token }}",
+	})
 
 	validateInputs := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Validate PR report inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
