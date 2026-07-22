@@ -27,3 +27,11 @@ jobs:
           go test ./internal/lang/golang -run '^$' -fuzz '^FuzzParseModFile$' -fuzztime=20s -parallel=1
           go test ./internal/lang/cpp -run '^$' -fuzz '^FuzzParseIncludes$' -fuzztime=20s -parallel=1
           go test ./internal/lang/swift -run '^$' -fuzz '^FuzzParseCarthageDependencies$' -fuzztime=20s -parallel=1
+
+      - name: Upload discovered parser fuzz regressions
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: parser-fuzz-regressions
+          path: internal/lang/*/testdata/fuzz/**
+          if-no-files-found: warn
