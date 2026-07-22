@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/version"
 )
 
 const (
@@ -54,7 +56,6 @@ func TestAnalyseBinaryHermeticE2E(t *testing.T) {
 	cmd.Dir = workspaceRoot
 	cmd.Env = []string{
 		"HOME=" + homePath,
-		"PATH=" + os.Getenv("PATH"),
 		"TMPDIR=" + workspaceRoot,
 		"TMP=" + workspaceRoot,
 		"TEMP=" + workspaceRoot,
@@ -92,7 +93,7 @@ func TestAnalyseBinaryHermeticE2E(t *testing.T) {
 	assertGeneratedAtUTC(t, got)
 	normalizeReport(t, got)
 
-	goldenPath := filepath.Join(moduleRoot, "testdata", "cli", "analyse_binary_e2e.golden.json")
+	goldenPath := filepath.Join(moduleRoot, "testdata", "cli", expectedGoldenReportName())
 	goldenReport, err := os.ReadFile(goldenPath)
 	if err != nil {
 		t.Fatalf("read golden report: %v", err)
@@ -113,9 +114,18 @@ func buildBinary(t *testing.T, moduleRoot string, binaryPath string) {
 	ctx, cancel := context.WithTimeout(context.Background(), binaryBuildTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-buildvcs=false", "-o", binaryPath, "./cmd/lopper")
+	args := []string{
+		"build",
+		"-trimpath",
+		"-buildvcs=false",
+		"-ldflags",
+		"-X github.com/ben-ranford/lopper/internal/version.buildChannel=" + version.Current().BuildChannel,
+		"-o",
+		binaryPath,
+		"./cmd/lopper",
+	}
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = moduleRoot
-	cmd.Env = append(os.Environ(), "GOFLAGS=-buildvcs=false")
 
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
@@ -193,4 +203,11 @@ func normalizeReport(t *testing.T, payload map[string]any) {
 		t.Fatalf("expected cache object, got %#v", payload["cache"])
 	}
 	cacheValue["path"] = "<repo>/.lopper-cache"
+}
+
+func expectedGoldenReportName() string {
+	if version.Current().BuildChannel == "rolling" {
+		return "analyse_binary_e2e.rolling.golden.json"
+	}
+	return "analyse_binary_e2e.golden.json"
 }
