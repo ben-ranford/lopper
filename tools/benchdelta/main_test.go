@@ -128,17 +128,7 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 		return
 	}
 
-	dir := t.TempDir()
-	basePath := filepath.Join(dir, "base.txt")
-	headPath := filepath.Join(dir, "head.txt")
-	writeBenchmarkFixture(t, basePath, []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
-	writeBenchmarkFixture(t, headPath, []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
+	dir, basePath, headPath := writeMatchingBenchmarkFixtures(t)
 
 	tests := []struct {
 		name       string
@@ -179,26 +169,9 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0], "-test.run=TestMainExitCodesAndErrorPaths", "--")
-			cmd.Args = append(cmd.Args, tc.args...)
-			cmd.Env = append(os.Environ(), "GO_WANT_BENCHDELTA_HELPER=1")
-			output, err := cmd.CombinedOutput()
-			if tc.wantCode == 0 {
-				if err != nil {
-					t.Fatalf("expected success, got %v\n%s", err, output)
-				}
-			} else {
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) {
-					t.Fatalf("expected exit error for code %d, got %v\n%s", tc.wantCode, err, output)
-				}
-				if exitErr.ExitCode() != tc.wantCode {
-					t.Fatalf("exit code = %d, want %d\n%s", exitErr.ExitCode(), tc.wantCode, output)
-				}
-			}
-			if !strings.Contains(string(output), tc.wantOutput) {
-				t.Fatalf("expected output to contain %q, got %q", tc.wantOutput, string(output))
-			}
+			output, exitCode := runBenchdeltaHelper(t, "TestMainExitCodesAndErrorPaths", tc.args...)
+			assertBenchdeltaHelperExit(t, output, exitCode, tc.wantCode)
+			assertBenchdeltaHelperOutput(t, output, tc.wantOutput)
 		})
 	}
 }
@@ -208,36 +181,16 @@ func TestMainSummaryWriteErrorExit(t *testing.T) {
 		return
 	}
 
-	dir := t.TempDir()
-	basePath := filepath.Join(dir, "base.txt")
-	headPath := filepath.Join(dir, "head.txt")
-	writeBenchmarkFixture(t, basePath, []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
-	writeBenchmarkFixture(t, headPath, []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
+	dir, basePath, headPath := writeMatchingBenchmarkFixtures(t)
 
 	blocker := filepath.Join(dir, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write blocker: %v", err)
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestMainSummaryWriteErrorExit", "--", "-base", basePath, "-head", headPath, "-summary-out", filepath.Join(blocker, "summary.md"))
-	cmd.Env = append(os.Environ(), "GO_WANT_BENCHDELTA_HELPER=1")
-	output, err := cmd.CombinedOutput()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected summary write exit error, got %v\n%s", err, output)
-	}
-	if exitErr.ExitCode() != 2 {
-		t.Fatalf("exit code = %d, want 2\n%s", exitErr.ExitCode(), output)
-	}
-	if !strings.Contains(string(output), "write summary") {
-		t.Fatalf("expected summary write error, got %q", string(output))
-	}
+	output, exitCode := runBenchdeltaHelper(t, "TestMainSummaryWriteErrorExit", "-base", basePath, "-head", headPath, "-summary-out", filepath.Join(blocker, "summary.md"))
+	assertBenchdeltaHelperExit(t, output, exitCode, 2)
+	assertBenchdeltaHelperOutput(t, output, "write summary")
 }
 
 func runBenchdeltaMainIfRequested(t *testing.T) bool {
@@ -263,5 +216,52 @@ func writeBenchmarkFixture(t *testing.T, path string, lines []string) {
 	content := append([]string{"goos: darwin"}, lines...)
 	if err := os.WriteFile(path, []byte(strings.Join(content, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write benchmark fixture: %v", err)
+	}
+}
+
+func writeMatchingBenchmarkFixtures(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.txt")
+	headPath := filepath.Join(dir, "head.txt")
+	lines := []string{
+		"pkg: github.com/ben-ranford/lopper/internal/report",
+		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
+	}
+	writeBenchmarkFixture(t, basePath, lines)
+	writeBenchmarkFixture(t, headPath, lines)
+	return dir, basePath, headPath
+}
+
+func runBenchdeltaHelper(t *testing.T, testName string, args ...string) ([]byte, int) {
+	t.Helper()
+
+	cmd := exec.Command(os.Args[0], "-test.run="+testName, "--")
+	cmd.Args = append(cmd.Args, args...)
+	cmd.Env = append(os.Environ(), "GO_WANT_BENCHDELTA_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return output, 0
+	}
+
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected subprocess exit error or success, got %v\n%s", err, output)
+	}
+	return output, exitErr.ExitCode()
+}
+
+func assertBenchdeltaHelperExit(t *testing.T, output []byte, gotCode, wantCode int) {
+	t.Helper()
+	if gotCode != wantCode {
+		t.Fatalf("exit code = %d, want %d\n%s", gotCode, wantCode, output)
+	}
+}
+
+func assertBenchdeltaHelperOutput(t *testing.T, output []byte, want string) {
+	t.Helper()
+	if !strings.Contains(string(output), want) {
+		t.Fatalf("expected output to contain %q, got %q", want, string(output))
 	}
 }

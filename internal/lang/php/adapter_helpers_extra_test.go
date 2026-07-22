@@ -600,10 +600,10 @@ func TestScanRepoSkipsNestedComposerPackagesAndTracksDynamicUsage(t *testing.T) 
 	if len(scan.Files) != 1 || scan.Files[0].Path != filepath.Join("src", "root.php") {
 		t.Fatalf("expected only root PHP file to be scanned, got %#v", scan.Files)
 	}
-	if got := scan.DynamicUsageByDependency[helpersVendorLibDependency]; got != 1 {
+	if scan.DynamicUsageByDependency[helpersVendorLibDependency] != 1 {
 		t.Fatalf("expected dynamic usage count for %q, got %#v", helpersVendorLibDependency, scan.DynamicUsageByDependency)
 	}
-	if got := scan.GroupedImportsByDependency[helpersVendorLibDependency]; got != 1 {
+	if scan.GroupedImportsByDependency[helpersVendorLibDependency] != 1 {
 		t.Fatalf("expected grouped import count for %q, got %#v", helpersVendorLibDependency, scan.GroupedImportsByDependency)
 	}
 	if !containsWarning(scan.Warnings, "skipped 1 nested composer package directory") {
