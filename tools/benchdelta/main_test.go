@@ -239,7 +239,14 @@ func runBenchdeltaHelper(t *testing.T, testName string, args ...string) ([]byte,
 
 	cmd := exec.Command(os.Args[0], "-test.run="+testName, "--")
 	cmd.Args = append(cmd.Args, args...)
-	cmd.Env = append(os.Environ(), "GO_WANT_BENCHDELTA_HELPER=1")
+	cmd.Env = make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "GO_WANT_BENCHDELTA_HELPER=") {
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	cmd.Env = append(cmd.Env, "GO_WANT_BENCHDELTA_HELPER=1")
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return output, 0
