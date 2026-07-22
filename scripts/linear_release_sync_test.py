@@ -139,9 +139,27 @@ class SyncEngineTests(unittest.TestCase):
         self.assertIn(sync._sync_marker(issue.sync_key), created["description"])
 
     def test_concurrent_create_reuses_deterministic_mirror(self):
-        issue = github_issue()
+        issue = github_issue(
+            title="Current title",
+            state="closed",
+            milestone="v3.0.0",
+        )
+        stale_source = github_issue(title="Stale title", milestone="v2.0.0")
         expected_id = sync.deterministic_issue_id(issue.sync_key)
+        stale_mirror = linear_issue(
+            stale_source,
+            milestone_id=V2_MILESTONE,
+            labels={MIRROR_LABEL, FEATURE_LABEL, V2_LABEL},
+        )
+        stale_mirror = sync.LinearIssue(
+            **{
+                **stale_mirror.__dict__,
+                "id": expected_id,
+                "identifier": "BEN-99",
+            }
+        )
         linear = FakeLinear()
+        linear.issues_attached_to = mock.Mock(side_effect=[[], [stale_mirror]])
         linear.create_issue = mock.Mock(
             side_effect=sync.SyncError("Linear GraphQL error: duplicate id")
         )
@@ -153,9 +171,19 @@ class SyncEngineTests(unittest.TestCase):
 
         result = sync.SyncEngine(test_config(), linear).sync(issue)
 
-        self.assertEqual(result, "joined concurrent create GH #42: BEN-99")
+        self.assertIn("joined concurrent create GH #42: BEN-99", result)
+        self.assertIn("updated GH #42: BEN-99", result)
         self.assertEqual(linear.identity_lookups, [expected_id])
         self.assertEqual(linear.links, [(expected_id, issue.url)])
+        self.assertEqual(linear.updated[0][1]["title"], "GH #42 — Current title")
+        self.assertEqual(linear.updated[0][1]["stateId"], "done")
+        self.assertEqual(
+            linear.updated[0][1]["projectMilestoneId"], V3_MILESTONE
+        )
+        self.assertEqual(
+            set(linear.updated[0][1]["labelIds"]),
+            {MIRROR_LABEL, FEATURE_LABEL, V3_LABEL},
+        )
 
     def test_create_error_is_preserved_when_deterministic_id_is_not_owned(self):
         issue = github_issue()

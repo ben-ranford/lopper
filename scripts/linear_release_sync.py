@@ -791,7 +791,16 @@ class SyncEngine:
             joined_concurrent_create = True
         self._linear.attach_url(issue_id, issue)
         if joined_concurrent_create:
-            return f"joined concurrent create GH #{issue.number}: {identifier}"
+            attached = self._linear.issues_attached_to(issue.url)
+            if len(attached) != 1 or attached[0].id != expected_id:
+                raise SyncError(
+                    f"{issue.url} did not resolve to the concurrently created Linear mirror"
+                )
+            update_result = self._update(issue, attached[0])
+            return (
+                f"joined concurrent create GH #{issue.number}: {identifier}; "
+                f"{update_result}"
+            )
         return f"created GH #{issue.number}: {identifier}"
 
     def _update(self, issue: GitHubIssue, current: LinearIssue) -> str:
