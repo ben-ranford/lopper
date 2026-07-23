@@ -239,7 +239,7 @@ func TestFeatureFlagCommentArchiveExtraction(t *testing.T) {
 	}
 }
 
-func TestFeatureFlagTrustedCommentRenderingNeutralizesUntrustedMarkdown(t *testing.T) {
+func TestFeatureFlagTrustedCommentRenderingRendersSanitizedMarkdown(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
@@ -277,8 +277,11 @@ func writeUntrustedCommentSources(t *testing.T, commentDir string, tests []trust
 		t.Fatalf("create comment source directory: %v", err)
 	}
 	for _, tt := range tests {
-		malicious := tt.marker + "\r\n</pre><script>alert(1)</script>\n" +
-			"[link](https://example.invalid) ![image](https://example.invalid/x) @org/team\x00\u202e\n" +
+		malicious := tt.marker + "\r\n## " + tt.title + "\r\n\r\n" +
+			"### Stable by default\r\n\r\n- `LOP-FEAT-TEST` `test-flag`\r\n" +
+			"</pre><script>alert(1)</script>\n" +
+			"[link](https://example.invalid) ![image](https://example.invalid/x) " +
+			"@org/team www.example.invalid\x00\u202e\n" +
 			strings.Repeat("'", 9_000)
 		if err := os.WriteFile(filepath.Join(commentDir, tt.source), []byte(malicious), 0o600); err != nil {
 			t.Fatalf("write untrusted %s: %v", tt.source, err)
@@ -309,7 +312,7 @@ func assertTrustedCommentBody(t *testing.T, renderedDir string, tt trustedCommen
 	}
 	body := string(bodyBytes)
 	assertTrustedCommentIdentity(t, body, tt)
-	assertTrustedCommentEscaping(t, body, tt.source)
+	assertTrustedCommentSanitization(t, body, tt.source)
 	if len(bodyBytes) > 60_000 {
 		t.Fatalf("rendered %s body is oversized: %d bytes", tt.source, len(bodyBytes))
 	}
@@ -324,24 +327,41 @@ func assertTrustedCommentIdentity(t *testing.T, body string, tt trustedCommentRe
 	if strings.Count(body, tt.marker) != 1 {
 		t.Fatalf("rendered %s contains an untrusted marker", tt.source)
 	}
+	for _, want := range []string{"### Stable by default", "- `LOP-FEAT-TEST` `test-flag`"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered %s is missing rendered Markdown %q", tt.source, want)
+		}
+	}
 }
 
-func assertTrustedCommentEscaping(t *testing.T, body, source string) {
+func assertTrustedCommentSanitization(t *testing.T, body, source string) {
 	t.Helper()
 
 	for _, want := range []string{
-		"<pre>",
-		"</pre>",
-		"&lt;!--",
+		"_Untrusted pull-request output is sanitized before Markdown rendering._",
 		"&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
+		"&#91;link](https:\u200b//example.invalid)",
+		"!&#91;image](https:\u200b//example.invalid/x)",
 		"@\u200borg/team",
+		"www.\u200bexample.invalid",
 		"[output truncated at 8192 bytes]",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("rendered %s is missing %q", source, want)
 		}
 	}
-	for _, forbidden := range []string{"</pre><script>", "<script>", "@org/team", "\x00", "\u202e"} {
+	for _, forbidden := range []string{
+		"<pre>",
+		"</pre>",
+		"<script>",
+		"[link](",
+		"![image](",
+		"://",
+		"www.example.invalid",
+		"@org/team",
+		"\x00",
+		"\u202e",
+	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("rendered %s contains active untrusted content %q", source, forbidden)
 		}
@@ -842,10 +862,12 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		`max_source_bytes = 8_192`,
 		`raw = handle.read(max_source_bytes + 1)`,
 		`unicodedata.category(character).startswith("C")`,
+		`text = strip_trusted_preamble(text, marker, title)`,
 		`text = text.replace("@", "@\u200b")`,
-		`inert = html.escape(text, quote=True)`,
-		`"<pre>"`,
-		`"</pre>"`,
+		`sanitized = html.escape(text, quote=True)`,
+		`sanitized = sanitized.replace("[", "&#91;")`,
+		`sanitized = sanitized.replace("://", ":\u200b//")`,
+		`sanitized = sanitized.replace("www.", "www.\u200b")`,
 		`destination.open("x", encoding="utf-8", newline="\n")`,
 	})
 

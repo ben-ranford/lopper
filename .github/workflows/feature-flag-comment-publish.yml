@@ -330,6 +330,20 @@ jobs:
               raise SystemExit("rendered comment directory already exists")
           rendered_dir.mkdir(mode=0o700)
 
+          def strip_trusted_preamble(text, marker, title):
+              lines = text.split("\n")
+              if not lines or lines[0] != marker:
+                  return text
+
+              lines = lines[1:]
+              while lines and not lines[0]:
+                  lines = lines[1:]
+              if lines and lines[0] == f"## {title}":
+                  lines = lines[1:]
+                  while lines and not lines[0]:
+                      lines = lines[1:]
+              return "\n".join(lines)
+
           def render(source_name, destination_name, marker, title):
               source = comment_dir / source_name
               if not source.exists():
@@ -347,22 +361,24 @@ jobs:
                   for character in text
                   if character in "\n\t" or not unicodedata.category(character).startswith("C")
               )
+              text = strip_trusted_preamble(text, marker, title)
               text = text.replace("@", "@\u200b")
-              inert = html.escape(text, quote=True)
-              if not inert:
-                  inert = "[empty after sanitization]"
+              sanitized = html.escape(text, quote=True)
+              sanitized = sanitized.replace("[", "&#91;")
+              sanitized = sanitized.replace("://", ":\u200b//")
+              sanitized = sanitized.replace("www.", "www.\u200b")
+              if not sanitized:
+                  sanitized = "[empty after sanitization]"
               if truncated:
-                  inert += "\n\n[output truncated at 8192 bytes]"
+                  sanitized += "\n\n[output truncated at 8192 bytes]"
 
               body = "\n".join([
                   marker,
                   f"## {title}",
                   "",
-                  "_The diagnostic below is inert, untrusted pull-request output._",
+                  "_Untrusted pull-request output is sanitized before Markdown rendering._",
                   "",
-                  "<pre>",
-                  inert,
-                  "</pre>",
+                  sanitized,
                   "",
               ])
               destination = rendered_dir / destination_name
