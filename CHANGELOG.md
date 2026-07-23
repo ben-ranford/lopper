@@ -2,6 +2,30 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.3](https://github.com/ben-ranford/lopper/compare/v1.8.2...v1.8.3) (2026-07-23)
+
+
+### Preview Features
+
+* **v1.9:** add dependency review workflows ([#1192](https://github.com/ben-ranford/lopper/issues/1192)) ([ab99688](https://github.com/ben-ranford/lopper/commit/ab996882a72f32f7bc6b23013839a833a6d684fd))
+
+
+### Bug Fixes
+
+* **ci:** bind regression proof to exact package ([#1400](https://github.com/ben-ranford/lopper/issues/1400)) ([50608eb](https://github.com/ben-ranford/lopper/commit/50608eb75ba37e53c3791c4a09af00bd3e5c5683))
+* **ci:** isolate feature-flag workflow tokens ([#1302](https://github.com/ben-ranford/lopper/issues/1302)) ([3e6075b](https://github.com/ben-ranford/lopper/commit/3e6075b521fb8a942c5a6b302d9fce994de59066))
+* **ci:** isolate PR report publication credentials ([#1308](https://github.com/ben-ranford/lopper/issues/1308)) ([1883dd5](https://github.com/ben-ranford/lopper/commit/1883dd5b1bda1e5fb74134b1be60989aa09560a0))
+* **ci:** pin privileged PR workflow actions ([#1306](https://github.com/ben-ranford/lopper/issues/1306)) ([a738c19](https://github.com/ben-ranford/lopper/commit/a738c199f836f9314a0e57f6e6c5602c77e41e8a))
+* **ci:** pin Sonar review action ([#1305](https://github.com/ben-ranford/lopper/issues/1305)) ([6b8c0b7](https://github.com/ben-ranford/lopper/commit/6b8c0b7faf05eec81da4fcae0a4707cf17cd299d))
+* **ci:** refresh stale queue follower status ([#1330](https://github.com/ben-ranford/lopper/issues/1330)) ([3608889](https://github.com/ben-ranford/lopper/commit/3608889b917b58cd9678b8e337fc828efae91af5))
+* **ci:** render sanitized feature flag markdown ([#1407](https://github.com/ben-ranford/lopper/issues/1407)) ([4971b2f](https://github.com/ben-ranford/lopper/commit/4971b2f2796a4ca16dda91d3b08293a7f9e93dce))
+* **ci:** revalidate queue base before merge ([#1300](https://github.com/ben-ranford/lopper/issues/1300)) ([c99b196](https://github.com/ben-ranford/lopper/commit/c99b1961ba677428893cd0723a7a278edce8f6ca))
+* **pr-metadata:** require trusted release-please identity ([#1301](https://github.com/ben-ranford/lopper/issues/1301)) ([b966b02](https://github.com/ben-ranford/lopper/commit/b966b021201adf2a983e5e9372d5344c212aea48))
+* **release:** gate rolling ghcr publication ([#1303](https://github.com/ben-ranford/lopper/issues/1303)) ([3a958f8](https://github.com/ben-ranford/lopper/commit/3a958f8d44a7bf676f719aa6b061b65a99940a13))
+* **release:** run source CI before publish ([#1304](https://github.com/ben-ranford/lopper/issues/1304)) ([9475263](https://github.com/ben-ranford/lopper/commit/947526370f1b360768f5339279766d3a612153c1))
+* **report:** preserve highest OSV duplicate severity ([#1353](https://github.com/ben-ranford/lopper/issues/1353)) ([42919c7](https://github.com/ben-ranford/lopper/commit/42919c72226f65c3f80aef866b9b486a2304d8f1))
+* **report:** sanitize PR comment markdown ([#1307](https://github.com/ben-ranford/lopper/issues/1307)) ([9064e31](https://github.com/ben-ranford/lopper/commit/9064e31fd3b8093c5ea36288b360cecc7ea42072))
+
 ## [1.8.2](https://github.com/ben-ranford/lopper/compare/v1.8.1...v1.8.2) (2026-07-20)
 
 
