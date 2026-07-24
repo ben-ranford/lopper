@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.3 (2026-07-22)
+
+- Updated the bundled `tar` dependency to 7.5.21.
+
 ## 1.8.2 (2026-07-20)
 
 - Rejected workspace-local symlink binaries in untrusted workspaces, even when their targets resolve outside the workspace root.
