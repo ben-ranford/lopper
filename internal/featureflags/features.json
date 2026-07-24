@@ -188,48 +188,56 @@
     "code": "LOP-FEAT-0021",
     "name": "dependency-identity-preview",
     "description": "Enable preview dependency identity enrichment with local version, ecosystem, and package URL evidence.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0022",
     "name": "advisory-osv-sync-preview",
     "description": "Enable explicit cached OSV advisory synchronization and cache status workflows.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0023",
     "name": "vulnerability-exceptions-vex-preview",
     "description": "Enable scoped vulnerability exceptions and CycloneDX VEX export previews.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0024",
     "name": "spdx-sbom-export-preview",
     "description": "Enable preview SPDX 2.3 JSON SBOM exports.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0025",
     "name": "dashboard-cyclonedx-portfolio-preview",
     "description": "Enable preview portfolio-wide CycloneDX dashboard SBOM exports.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0026",
     "name": "remediation-routing-summaries-preview",
     "description": "Enable preview remediation ownership routing and Slack/Teams summary outputs.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0027",
     "name": "action-dashboard-mode-preview",
     "description": "Enable preview GitHub Action dashboard mode inputs and execution.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   },
   {
     "code": "LOP-FEAT-0028",
     "name": "dependency-surface-pr-review-preview",
     "description": "Enable preview base/head dependency-surface pull request review reports.",
-    "lifecycle": "preview"
+    "lifecycle": "preview",
+    "firstStableRelease": "v1.8.3"
   }
 ]
