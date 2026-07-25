@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -195,7 +196,7 @@ func manifestDescription(rule lockfileRule) string {
 func pyprojectSectionMatcher(section string) func(repoPath, dir string) (bool, error) {
 	needle := pyprojectSectionNeedle(section)
 	return func(repoPath, dir string) (bool, error) {
-		content, err := readFileUnderFn(repoPath, filepath.Join(dir, pyprojectManifestName))
+		content, err := safeio.ReadFileUnder(repoPath, filepath.Join(dir, pyprojectManifestName))
 		if err != nil {
 			return false, fmt.Errorf("read %s for %s lockfile drift detection: %w", pyprojectManifestName, section, err)
 		}

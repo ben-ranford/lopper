@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
@@ -9,6 +11,12 @@ import (
 )
 
 var normalizeRepoPathFn = workspace.NormalizeRepoPath
+
+type lockfileDriftResult struct {
+	findings        []string
+	orderedWarnings []string
+	err             error
+}
 
 func evaluateLockfileDriftPolicy(ctx context.Context, repoPath, policy string) ([]string, error) {
 	return evaluateLockfileDriftPolicyWithFeatures(ctx, repoPath, policy, featureflags.Set{})
@@ -20,14 +28,21 @@ func evaluateLockfileDriftPolicyWithFeatures(ctx context.Context, repoPath, poli
 		return nil, nil
 	}
 	failMode := normalizedPolicy == "fail"
-	driftWarnings, err := detectLockfileDriftWithFeatures(ctx, repoPath, failMode, features)
-	if err != nil || len(driftWarnings) == 0 {
-		return driftWarnings, err
+	result := detectLockfileDriftDetailed(ctx, repoPath, failMode, features)
+	if result.err != nil && !failMode && isPureLockfileManifestReadSizeError(result.err) {
+		return result.orderedWarnings, nil
+	}
+	if result.err != nil || len(result.findings) == 0 {
+		return result.findings, result.err
 	}
 	if failMode {
-		return driftWarnings, formatLockfileDriftError(driftWarnings)
+		return result.findings, formatLockfileDriftError(result.findings)
 	}
-	return driftWarnings, nil
+	return result.findings, nil
+}
+
+func oversizedLockfileDriftWarning(err error) string {
+	return fmt.Sprintf("%sunable to safely inspect manifest during lockfile drift analysis: %v", lockfileDriftWarningPrefix, err)
 }
 
 func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool) ([]string, error) {
@@ -35,17 +50,38 @@ func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool)
 }
 
 func detectLockfileDriftWithFeatures(ctx context.Context, repoPath string, stopOnFirst bool, features featureflags.Set) ([]string, error) {
+	result := detectLockfileDriftDetailed(ctx, repoPath, stopOnFirst, features)
+	return result.findings, result.err
+}
+
+func detectLockfileDriftDetailed(ctx context.Context, repoPath string, stopOnFirst bool, features featureflags.Set) lockfileDriftResult {
 	normalizedPath, err := normalizeRepoPathFn(repoPath)
 	if err != nil {
-		return nil, err
+		return lockfileDriftResult{err: err}
 	}
 	rules := activeLockfileRules(features)
 	if stopOnFirst {
-		return scanLockfileDriftStopOnFirst(ctx, normalizedPath, rules)
+		findings, scanErr := scanLockfileDriftStopOnFirst(ctx, normalizedPath, rules)
+		return lockfileDriftResult{
+			findings:        findings,
+			orderedWarnings: findings,
+			err:             scanErr,
+		}
 	}
-	gitContext, err := collectLockfileGitContextFn(ctx, normalizedPath, rules)
-	if err != nil {
-		return nil, err
+	gitContext, candidateErr := collectLockfileGitContextFn(ctx, normalizedPath, rules)
+	if candidateErr != nil && !isPureLockfileManifestReadSizeError(candidateErr) {
+		return lockfileDriftResult{err: candidateErr}
 	}
-	return scanLockfileDrift(ctx, normalizedPath, gitContext, false, rules)
+
+	result := scanLockfileDriftDetailed(ctx, normalizedPath, gitContext, false, rules)
+	if gitContext.preparedScan != nil {
+		return result
+	}
+	if candidateErr != nil {
+		// Injected collectors cannot provide source coordinates; production Git
+		// collection returns a prepared scan and emits the error during replay.
+		result.orderedWarnings = append(result.orderedWarnings, oversizedLockfileDriftWarning(candidateErr))
+		result.err = errors.Join(candidateErr, result.err)
+	}
+	return result
 }

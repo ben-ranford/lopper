@@ -35,6 +35,7 @@ const (
 type lockfileGitContext struct {
 	changedFiles  map[string]struct{}
 	hasGitContext bool
+	preparedScan  *lockfilePreparedScan
 }
 
 type gitFilterPathDriver struct {
@@ -63,11 +64,16 @@ func collectLockfileGitContext(ctx context.Context, repoPath string, rules []loc
 		return lockfileGitContext{}, nil
 	}
 
-	candidatePaths, err := collectLockfileManifestChangeCandidatePaths(ctx, repoPath, rules)
-	if err != nil {
-		return lockfileGitContext{}, err
+	prepared, candidatePaths, candidateErr := prepareLockfileManifestChangeCandidates(ctx, repoPath, rules)
+	if candidateErr != nil && !isRecoverableLockfileManifestReadError(candidateErr) {
+		return lockfileGitContext{}, candidateErr
 	}
-	return collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
+	gitContext, gitErr := collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
+	if gitErr != nil {
+		return lockfileGitContext{}, errors.Join(candidateErr, gitErr)
+	}
+	gitContext.preparedScan = prepared
+	return gitContext, candidateErr
 }
 
 func collectLockfileGitContextForPaths(ctx context.Context, repoPath string, candidatePaths []string) (lockfileGitContext, error) {

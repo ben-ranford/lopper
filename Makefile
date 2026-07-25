@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test cyclonedx-schema-check test-leaks test-race bench-mem bench-delta bench-gate cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-lockfiledrift-head cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -13,8 +13,12 @@ BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 BUILD_CHANNEL ?= dev
 RELEASE_BUILD_CHANNEL ?= release
 COVERAGE_FILE ?= .artifacts/coverage.out
+COVERAGE_DEFAULT_FILE ?= .artifacts/coverage-default.out
+COVERAGE_LOCKFILEDRIFT_HEAD_FILE ?= .artifacts/coverage-lockfiledrift-head.out
 COVERAGE_MIN ?= 98
 COVERAGE_PACKAGE_MIN ?= $(COVERAGE_MIN)
+LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
+LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.5
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
@@ -154,7 +158,12 @@ vuln-check:
 	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 test:
-	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./...
+	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
+		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs
+	@$(MAKE) test-lockfiledrift-head
+
+test-lockfiledrift-head:
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
 .PHONY: fuzz-corpus-check
 fuzz-corpus-check:
@@ -166,10 +175,20 @@ cyclonedx-schema-check:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/report -run '^TestCycloneDXSchema'
 
 test-leaks:
-	GOLEAK=1 $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./...
+	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
+		GOLEAK=1 $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs
+	@$(MAKE) test-leaks-lockfiledrift-head
+
+test-leaks-lockfiledrift-head:
+	GOLEAK=1 $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
 test-race:
-	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race ./...
+	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
+		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race $$pkgs
+	@$(MAKE) test-race-lockfiledrift-head
+
+test-race-lockfiledrift-head:
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
 bench-mem:
 	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
@@ -261,9 +280,17 @@ benchdelta-cov:
 ci: benchdelta-cov
 
 cov:
+	@mkdir -p $$(dirname "$(COVERAGE_DEFAULT_FILE)")
+	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \
+		GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_DEFAULT_FILE)"
+	@$(MAKE) cov-lockfiledrift-head
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
-	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \
-		GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
+	@{ \
+		sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"; \
+		sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"; \
+		sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
+	} > "$(COVERAGE_FILE)"
+	@mkdir -p .artifacts
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
 		-coverprofile="$(COVERAGE_FILE)" \
 		-min="$(COVERAGE_MIN)" \
@@ -271,6 +298,10 @@ cov:
 		-total-out=".artifacts/coverage-total.txt" \
 		-packages-out=".artifacts/coverage-packages.txt" \
 		-package-failures-out=".artifacts/coverage-package-failures.txt"
+
+cov-lockfiledrift-head:
+	@mkdir -p $$(dirname "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)")
+	GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE) -covermode=atomic -coverprofile="$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"
 
 build:
 	mkdir -p $(BIN_DIR)
