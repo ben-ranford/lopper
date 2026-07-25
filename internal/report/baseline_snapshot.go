@@ -18,6 +18,7 @@ var ErrBaselineKeyMismatch = errors.New("baseline snapshot key does not match re
 type BaselineSnapshot = baselineutil.Snapshot[Report]
 
 var baselineSnapshots = baselineutil.SnapshotStore[Report]{
+	Repair:            repairSnapshotReport,
 	Normalize:         normalizeSnapshotReport,
 	UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
 	ValidateKey:       ValidateBaselineSnapshotKey,
@@ -63,16 +64,22 @@ func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot
 func normalizeSnapshotReport(rep Report) Report {
 	normalized := rep
 	normalized.Dependencies = baselineutil.SortedCopyByStrings(rep.Dependencies, func(dependency DependencyReport) string { return dependency.Language }, func(dependency DependencyReport) string { return dependency.Name })
-	if normalized.Summary == nil {
-		normalized.Summary = ComputeSummary(normalized.Dependencies)
-	}
-	if len(normalized.LanguageBreakdown) == 0 {
-		normalized.LanguageBreakdown = ComputeLanguageBreakdown(normalized.Dependencies)
-	}
+	normalized = repairSnapshotReport(normalized)
 	if strings.TrimSpace(normalized.SchemaVersion) == "" {
 		normalized.SchemaVersion = SchemaVersion
 	}
 	return normalized
+}
+
+func repairSnapshotReport(rep Report) Report {
+	repaired := rep
+	if repaired.Summary == nil {
+		repaired.Summary = ComputeSummary(repaired.Dependencies)
+	}
+	if len(repaired.LanguageBreakdown) == 0 {
+		repaired.LanguageBreakdown = ComputeLanguageBreakdown(repaired.Dependencies)
+	}
+	return repaired
 }
 
 func unsupportedBaselineSnapshotSchemaError(version string) error {

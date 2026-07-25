@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -291,31 +292,44 @@ func TestSaveSnapshotRejectsSymlinkedStoreDir(t *testing.T) {
 	}
 }
 
-func TestSaveSnapshotSortsDependenciesDeterministically(t *testing.T) {
+func TestSaveSnapshotCanonicalizesReport(t *testing.T) {
 	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
 	reportData := Report{
 		Dependencies: []DependencyReport{
-			{Name: "zeta", Language: "python"},
-			{Name: "alpha", Language: "go"},
-			{Name: "beta", Language: "go"},
+			{Name: "zeta", Language: "python", TotalExportsCount: 1},
+			{Name: "alpha", Language: "go", TotalExportsCount: 1},
+			{Name: "beta", Language: "go", TotalExportsCount: 1},
 		},
 	}
 	path, err := SaveSnapshot(t.TempDir(), "label:sorted", reportData, now)
 	if err != nil {
 		t.Fatalf("save snapshot: %v", err)
 	}
-	rep, _, err := LoadWithKey(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("load snapshot: %v", err)
+		t.Fatalf("read snapshot: %v", err)
+	}
+	var snapshot BaselineSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
 	}
 	gotOrder := []string{
-		rep.Dependencies[0].Language + "/" + rep.Dependencies[0].Name,
-		rep.Dependencies[1].Language + "/" + rep.Dependencies[1].Name,
-		rep.Dependencies[2].Language + "/" + rep.Dependencies[2].Name,
+		snapshot.Report.Dependencies[0].Language + "/" + snapshot.Report.Dependencies[0].Name,
+		snapshot.Report.Dependencies[1].Language + "/" + snapshot.Report.Dependencies[1].Name,
+		snapshot.Report.Dependencies[2].Language + "/" + snapshot.Report.Dependencies[2].Name,
 	}
 	wantOrder := []string{"go/alpha", "go/beta", "python/zeta"}
 	if !slices.Equal(gotOrder, wantOrder) {
 		t.Fatalf("unexpected dependency order: got=%v want=%v", gotOrder, wantOrder)
+	}
+	if snapshot.Report.SchemaVersion != SchemaVersion {
+		t.Fatalf("saved schema version = %q, want %q", snapshot.Report.SchemaVersion, SchemaVersion)
+	}
+	if snapshot.Report.Summary == nil || snapshot.Report.Summary.DependencyCount != 3 {
+		t.Fatalf("saved summary = %#v, want computed dependency count", snapshot.Report.Summary)
+	}
+	if len(snapshot.Report.LanguageBreakdown) != 2 || snapshot.Report.LanguageBreakdown[0].Language != "go" || snapshot.Report.LanguageBreakdown[1].Language != "python" {
+		t.Fatalf("saved language breakdown = %#v, want canonical languages", snapshot.Report.LanguageBreakdown)
 	}
 }
 
@@ -339,5 +353,74 @@ func TestLoadWithKeySnapshotComputesMissingFields(t *testing.T) {
 	}
 	if len(rep.LanguageBreakdown) != 1 || rep.LanguageBreakdown[0].Language != "js-ts" {
 		t.Fatalf("expected computed language breakdown, got %#v", rep.LanguageBreakdown)
+	}
+}
+
+func assertLoadWithKeyPreservesReportData(t *testing.T, content, wantKey string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "baseline.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+	rep, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("LoadWithKey() error = %v", err)
+	}
+	if key != wantKey {
+		t.Fatalf("LoadWithKey() key = %q, want %q", key, wantKey)
+	}
+	if len(rep.Dependencies) != 3 {
+		t.Fatalf("LoadWithKey() dependencies = %#v, want three supplied values", rep.Dependencies)
+	}
+	gotDependencies := []string{
+		rep.Dependencies[0].Language + "/" + rep.Dependencies[0].Name,
+		rep.Dependencies[1].Language + "/" + rep.Dependencies[1].Name,
+		rep.Dependencies[2].Language + "/" + rep.Dependencies[2].Name,
+	}
+	wantDependencies := []string{"python/zeta", "go/alpha", "go/alpha"}
+	if !slices.Equal(gotDependencies, wantDependencies) {
+		t.Fatalf("LoadWithKey() dependencies = %v, want %v", gotDependencies, wantDependencies)
+	}
+	if rep.SchemaVersion != "" {
+		t.Fatalf("LoadWithKey() schema version = %q, want preserved empty value", rep.SchemaVersion)
+	}
+	if rep.Summary == nil || rep.Summary.DependencyCount != 99 {
+		t.Fatalf("LoadWithKey() summary = %#v, want supplied summary", rep.Summary)
+	}
+	if len(rep.LanguageBreakdown) != 1 || rep.LanguageBreakdown[0].Language != "preserved" || rep.LanguageBreakdown[0].DependencyCount != 77 {
+		t.Fatalf("LoadWithKey() language breakdown = %#v, want supplied value", rep.LanguageBreakdown)
+	}
+	if !slices.Equal(rep.Warnings, []string{" first ", "first"}) {
+		t.Fatalf("LoadWithKey() warnings = %q, want supplied values", rep.Warnings)
+	}
+}
+
+func TestLoadWithKeyPreservesReportData(t *testing.T) {
+	t.Parallel()
+
+	const reportJSON = `{"generatedAt":"2026-01-01T00:00:00Z","repoPath":"preserved","dependencies":[{"language":"python","name":"zeta"},{"language":"go","name":"alpha"},{"language":"go","name":"alpha"}],"summary":{"dependencyCount":99},"languageBreakdown":[{"language":"preserved","dependencyCount":77}],"warnings":[" first ","first"]}`
+	tests := []struct {
+		name    string
+		content string
+		wantKey string
+	}{
+		{
+			name:    "envelope",
+			content: `{"baselineSchemaVersion":"1.0.0","key":" label:preserved ","savedAt":"2026-01-02T00:00:00Z","report":` + reportJSON + `}`,
+			wantKey: "label:preserved",
+		},
+		{
+			name:    "legacy",
+			content: reportJSON,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertLoadWithKeyPreservesReportData(t, tc.content, tc.wantKey)
+		})
 	}
 }

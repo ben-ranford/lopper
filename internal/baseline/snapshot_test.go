@@ -88,7 +88,7 @@ func normalizeTestSnapshotReport(report testSnapshotReport) testSnapshotReport {
 func normalizedSnapshotDecodeOptions() SnapshotDecodeOptions[testSnapshotReport] {
 	return SnapshotDecodeOptions[testSnapshotReport]{
 		DecodeLegacy: decodeTestSnapshotReport,
-		Normalize:    normalizeTestSnapshotReport,
+		Repair:       normalizeTestSnapshotReport,
 	}
 }
 
@@ -366,7 +366,12 @@ func TestValidateSnapshotKeyWrapsCustomMismatchError(t *testing.T) {
 func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	t.Parallel()
 
+	repair := func(report testSnapshotReport) testSnapshotReport {
+		report.Value = "repaired:" + report.Value
+		return report
+	}
 	store := SnapshotStore[testSnapshotReport]{
+		Repair:            repair,
 		Normalize:         normalizeTestSnapshotReport,
 		UnsupportedSchema: func(version string) error { return fmt.Errorf("unsupported configured schema version: %s", version) },
 		ValidateKey: func(requestedKey, storedKey string) error {
@@ -391,7 +396,7 @@ func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfiguredSnapshot() error = %v", err)
 	}
-	if key != "label:configured" || got.Value != "OK" {
+	if key != "label:configured" || got.Value != "repaired:OK" {
 		t.Fatalf("LoadConfiguredSnapshot() = key=%q report=%#v", key, got)
 	}
 
@@ -404,7 +409,7 @@ func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeConfiguredSnapshot() error = %v", err)
 	}
-	if decodedKey != "label:configured" || decoded.Value != "OK" {
+	if decodedKey != "label:configured" || decoded.Value != "repaired:OK" {
 		t.Fatalf("DecodeConfiguredSnapshot() = key=%q report=%#v", decodedKey, decoded)
 	}
 
@@ -412,7 +417,7 @@ func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfiguredStoreSnapshot() error = %v", err)
 	}
-	if resolvedPath != path || loadedKey != "label:configured" || loaded.Value != "OK" {
+	if resolvedPath != path || loadedKey != "label:configured" || loaded.Value != "repaired:OK" {
 		t.Fatalf("LoadConfiguredStoreSnapshot() = path=%q key=%q report=%#v", resolvedPath, loadedKey, loaded)
 	}
 }

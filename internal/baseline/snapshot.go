@@ -22,11 +22,12 @@ type Snapshot[T any] struct {
 
 type SnapshotDecodeOptions[T any] struct {
 	DecodeLegacy      func([]byte) (T, error)
-	Normalize         func(T) T
+	Repair            func(T) T
 	UnsupportedSchema func(string) error
 }
 
 type SnapshotStore[T any] struct {
+	Repair            func(T) T
 	Normalize         func(T) T
 	UnsupportedSchema func(string) error
 	ValidateKey       func(string, string) error
@@ -80,8 +81,8 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 			return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
 		}
 		v := snapshot.Report
-		if options.Normalize != nil {
-			v = options.Normalize(v)
+		if options.Repair != nil {
+			v = options.Repair(v)
 		}
 		return v, strings.TrimSpace(snapshot.Key), nil
 	}
@@ -91,8 +92,8 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 		var zero T
 		return zero, "", err
 	}
-	if options.Normalize != nil {
-		v = options.Normalize(v)
+	if options.Repair != nil {
+		v = options.Repair(v)
 	}
 	return v, "", nil
 }
@@ -153,7 +154,7 @@ func ValidateSnapshotKey(requestedKey, storedKey string, mismatchErr error) erro
 
 func snapshotDecodeOptions[T any](store SnapshotStore[T]) SnapshotDecodeOptions[T] {
 	return SnapshotDecodeOptions[T]{
-		Normalize:         store.Normalize,
+		Repair:            store.Repair,
 		UnsupportedSchema: store.UnsupportedSchema,
 	}
 }

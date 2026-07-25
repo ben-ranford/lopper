@@ -19,6 +19,7 @@ var ErrBaselineKeyMismatch = errors.New("dashboard baseline snapshot key does no
 type BaselineSnapshot = baselineutil.Snapshot[Report]
 
 var baselineSnapshots = baselineutil.SnapshotStore[Report]{
+	Repair:            repairSnapshotReport,
 	Normalize:         normalizeSnapshotReport,
 	UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
 	ValidateKey:       validateBaselineSnapshotKey,
@@ -252,8 +253,13 @@ func normalizeSnapshotReport(rep Report) Report {
 	normalized := rep
 	normalized.Repos = baselineutil.SortedCopyByStrings(rep.Repos, func(repo RepoResult) string { return repo.Name }, func(repo RepoResult) string { return repo.Path })
 	normalized.RemediationItems = dedupeAndSortRemediationItems(rep.RemediationItems)
-	if normalized.Summary == (Summary{}) {
-		normalized.Summary = computeSummary(normalized)
+	return repairSnapshotReport(normalized)
+}
+
+func repairSnapshotReport(rep Report) Report {
+	repaired := rep
+	if repaired.Summary == (Summary{}) {
+		repaired.Summary = computeSummary(repaired)
 	}
-	return normalized
+	return repaired
 }
