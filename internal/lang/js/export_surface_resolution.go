@@ -17,7 +17,7 @@ type entrypointCandidates struct {
 var openEntrypointRoot = openConstrainedRoot
 
 func loadPackageJSONForSurface(rootPath, depPath string) (pkg packageJSON, warnings []string, err error) {
-	validatedDepRoot, err := validateDirectoryPathNoFollow(depPath)
+	validatedDepRoot, err := resolvePinnedRootPath(depPath)
 	if err != nil {
 		return packageJSON{}, packageReadWarnings(depPath), err
 	}
@@ -28,11 +28,7 @@ func loadPackageJSONForSurface(rootPath, depPath string) (pkg packageJSON, warni
 	if err != nil {
 		return packageJSON{}, packageReadWarnings(validatedDepRoot), err
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}()
+	defer closeReadCloserPreserveErr(root, &err)
 	pkgPath := filepath.Join(validatedDepRoot, jsPackageFile)
 	relPkgPath, err := relativePathWithinRoot(validatedRootPath, pkgPath)
 	if err != nil {
@@ -153,8 +149,7 @@ func resolveEntrypoints(rootPath, depPath string, candidates entrypointCandidate
 		return nil
 	}
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			surface.Warnings = append(surface.Warnings, "failed to close dependency root after entrypoint resolution")
+		if closeRootAppendWarning(root, &surface.Warnings, "failed to close dependency root after entrypoint resolution") {
 			resolved = nil
 		}
 	}()
@@ -188,11 +183,7 @@ func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *Ex
 		}
 		return
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			surface.Warnings = append(surface.Warnings, "failed to close dependency root after entrypoint parsing")
-		}
-	}()
+	defer closeRootAppendWarning(root, &surface.Warnings, "failed to close dependency root after entrypoint parsing")
 	parser := newSourceParser()
 	seenEntries := make(map[string]struct{})
 	for _, entry := range resolved {

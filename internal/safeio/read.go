@@ -6,10 +6,15 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
 var ErrNonRegularFile = errors.New("path is not a regular file")
+
+var readFileTargetReadyFn = func() error { return nil }
 
 type rootedReadCloser struct {
 	file File
@@ -48,11 +53,15 @@ func OpenFileWithinRoot(root Root, targetPath string) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRegularPathWithinRoot(root, targetRel, targetPath); err != nil {
+	expectedPathInfo, expectedOpenedInfo, err := preflightPinnedReadTargetWithinRoot(root, targetRel, targetPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := readFileTargetReadyFn(); err != nil {
 		return nil, err
 	}
 
-	file, err := OpenPinnedFile(root, targetRel)
+	file, err := openPinnedReadTargetWithinRoot(root, ".", targetRel, targetPath, expectedPathInfo, expectedOpenedInfo)
 	if err != nil {
 		return nil, translateOpenNotExist(err, targetPath)
 	}
@@ -92,11 +101,15 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	if err := validateRegularPathWithinRoot(root, target.rel, targetPath); err != nil {
+	resolvedTarget, err := resolveReadTargetWithinRoot(root, target)
+	if err != nil {
+		return nil, err
+	}
+	if err := readFileTargetReadyFn(); err != nil {
 		return nil, err
 	}
 
-	file, err := OpenPinnedFile(root, target.rel)
+	file, err := openResolvedReadTargetWithinRoot(root, target.rootAbs, resolvedTarget)
 	if err != nil {
 		return nil, translateOpenNotExist(err, targetPath)
 	}
@@ -215,6 +228,162 @@ func validateRegularPathWithinRoot(root Root, targetRel, targetPath string) erro
 		return ErrNonRegularFile
 	}
 	return nil
+}
+
+func preflightPinnedReadTargetWithinRoot(root Root, targetRel, targetPath string) (pathInfo fs.FileInfo, openedInfo fs.FileInfo, err error) {
+	pathInfo, err = root.Lstat(targetRel)
+	if err != nil {
+		return nil, nil, translateOpenNotExist(err, targetPath)
+	}
+	if pathInfo.Mode()&fs.ModeSymlink == 0 {
+		if !pathInfo.Mode().IsRegular() {
+			return nil, nil, ErrNonRegularFile
+		}
+		return pathInfo, pathInfo, nil
+	}
+
+	file, err := root.Open(targetRel)
+	if err != nil {
+		return nil, nil, translateOpenNotExist(err, targetPath)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	openedInfo, err = file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, nil, ErrNonRegularFile
+	}
+	return pathInfo, openedInfo, nil
+}
+
+type resolvedReadTarget struct {
+	rel                 string
+	abs                 string
+	requirePinnedRewalk bool
+}
+
+func resolveReadTargetWithinRoot(root Root, target rootedTarget) (resolvedReadTarget, error) {
+	info, err := root.Lstat(target.rel)
+	if err != nil {
+		return resolvedReadTarget{}, translateOpenNotExist(err, target.abs)
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		if !info.Mode().IsRegular() {
+			return resolvedReadTarget{}, ErrNonRegularFile
+		}
+		return resolvedReadTarget{rel: target.rel, abs: target.abs}, nil
+	}
+
+	resolvedAbs, err := filepath.EvalSymlinks(target.abs)
+	if err != nil {
+		return resolvedReadTarget{}, translateOpenNotExist(err, target.abs)
+	}
+	canonicalRootAbs, err := filepath.EvalSymlinks(target.rootAbs)
+	if err != nil {
+		return resolvedReadTarget{}, err
+	}
+	resolvedRel, err := resolveRelativeTargetWithinRoot(canonicalRootAbs, resolvedAbs)
+	if err != nil {
+		return resolvedReadTarget{}, ErrNonRegularFile
+	}
+	if err := validateRegularPathWithinRoot(root, resolvedRel, resolvedAbs); err != nil {
+		return resolvedReadTarget{}, err
+	}
+	return resolvedReadTarget{rel: resolvedRel, abs: resolvedAbs, requirePinnedRewalk: true}, nil
+}
+
+func openResolvedReadTargetWithinRoot(root Root, rootAbs string, target resolvedReadTarget) (_ File, err error) {
+	if !target.requirePinnedRewalk {
+		return root.Open(target.rel)
+	}
+
+	expectedInfo, err := os.Stat(target.abs)
+	if err != nil {
+		return nil, translateOpenNotExist(err, target.abs)
+	}
+	if !expectedInfo.Mode().IsRegular() {
+		return nil, ErrNonRegularFile
+	}
+
+	return openPinnedReadTargetWithinRoot(root, rootAbs, target.rel, target.abs, expectedInfo, expectedInfo)
+}
+
+func openPinnedReadTargetWithinRoot(root Root, rootAbs, targetRel, targetPath string, expectedPathInfo, expectedOpenedInfo fs.FileInfo) (_ File, err error) {
+	parent, closeParent, err := openReadTargetParentNoFollow(root, rootAbs, filepath.Dir(targetRel))
+	if err != nil {
+		return nil, err
+	}
+	if closeParent {
+		defer func() {
+			if closeErr := parent.Close(); closeErr != nil {
+				err = errors.Join(err, closeErr)
+			}
+		}()
+	}
+
+	name := filepath.Base(targetRel)
+	pathInfo, err := parent.Lstat(name)
+	if err != nil {
+		return nil, translateOpenNotExist(err, targetPath)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != expectedPathInfo.Mode()&os.ModeSymlink || !os.SameFile(expectedPathInfo, pathInfo) {
+		return nil, ErrNonRegularFile
+	}
+
+	file, err := parent.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, closeFilePreservingPrimary(file, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(expectedOpenedInfo, openedInfo) {
+		return nil, closeFilePreservingPrimary(file, ErrNonRegularFile)
+	}
+	return file, nil
+}
+
+func openReadTargetParentNoFollow(root Root, rootAbs, parentRel string) (Root, bool, error) {
+	if parentRel == "." {
+		return root, false, nil
+	}
+
+	current := root
+	currentOwned := false
+	currentAbs := rootAbs
+	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		partAbs := filepath.Join(currentAbs, part)
+		next, err := openRootChildNoFollow(current, part, partAbs)
+		if err != nil {
+			return nil, false, closeOpenedReadRootWithError(current, currentOwned, ErrNonRegularFile)
+		}
+		if currentOwned {
+			if err := current.Close(); err != nil {
+				return nil, false, closeRootWithError(next, err)
+			}
+		}
+		current = next
+		currentOwned = true
+		currentAbs = partAbs
+	}
+	return current, currentOwned, nil
+}
+
+func closeOpenedReadRootWithError(root Root, owned bool, err error) error {
+	if !owned {
+		return err
+	}
+	return closeRootWithError(root, err)
 }
 
 func readOpenedFile(file File, maxBytes int64) ([]byte, error) {

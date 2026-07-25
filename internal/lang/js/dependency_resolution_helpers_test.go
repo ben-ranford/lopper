@@ -494,6 +494,29 @@ func TestDependencyConfinementOperationFailures(t *testing.T) {
 	})
 
 	operationErr := errors.New("path operation failed")
+	t.Run("absolute path failures are treated as missing", func(t *testing.T) {
+		assertDependencyResolutionAbsFailures(t, operationErr)
+	})
+	t.Run("canonicalization failures propagate", func(t *testing.T) {
+		assertDependencyResolutionCanonicalizationFailures(t, operationErr)
+	})
+	t.Run("validated root reopen failure propagates", func(t *testing.T) {
+		evaluateDependencySymlinks = filepath.EvalSymlinks
+		openDependencyRootNoFollow = func(string) (safeio.Root, error) {
+			return nil, operationErr
+		}
+		if _, _, err := openValidatedRootNoFollow(t.TempDir()); !errors.Is(err, operationErr) {
+			t.Fatalf("expected validated-root reopen failure, got %v", err)
+		}
+	})
+	t.Run("relative path helper failures propagate", func(t *testing.T) {
+		assertDependencyResolutionRelativePathFailures(t, operationErr)
+	})
+}
+
+func assertDependencyResolutionAbsFailures(t *testing.T, operationErr error) {
+	t.Helper()
+
 	absoluteDependencyPath = func(path string) (string, error) {
 		if path == "repo" {
 			return "", operationErr
@@ -513,6 +536,10 @@ func TestDependencyConfinementOperationFailures(t *testing.T) {
 	if _, status := resolveDependencyRootFromDirDetailed(t.TempDir(), "start", "pkg"); status != dependencyRootMissing {
 		t.Fatalf("expected start absolute-path failure to be missing, got %v", status)
 	}
+}
+
+func assertDependencyResolutionCanonicalizationFailures(t *testing.T, operationErr error) {
+	t.Helper()
 
 	absoluteDependencyPath = func(string) (string, error) {
 		return "", operationErr
@@ -528,20 +555,24 @@ func TestDependencyConfinementOperationFailures(t *testing.T) {
 	if _, err := canonicalizeNoFollowParentPath(filepath.Join(t.TempDir(), "child")); !errors.Is(err, operationErr) {
 		t.Fatalf("expected parent canonicalization failure, got %v", err)
 	}
-	if _, err := openConstrainedRoot(filepath.Join(t.TempDir(), "child")); !errors.Is(err, operationErr) {
-		t.Fatalf("expected plain-root canonicalization failure, got %v", err)
+	for _, testCase := range []struct {
+		name string
+		path string
+	}{
+		{name: "plain root", path: filepath.Join(t.TempDir(), "child")},
+		{name: "dependency base", path: filepath.Join(t.TempDir(), "node_modules", "pkg")},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := openConstrainedRoot(testCase.path); !errors.Is(err, operationErr) {
+				t.Fatalf("expected canonicalization failure, got %v", err)
+			}
+		})
 	}
-	if _, err := openConstrainedRoot(filepath.Join(t.TempDir(), "node_modules", "pkg")); !errors.Is(err, operationErr) {
-		t.Fatalf("expected dependency-base canonicalization failure, got %v", err)
-	}
+}
 
-	evaluateDependencySymlinks = filepath.EvalSymlinks
-	openDependencyRootNoFollow = func(string) (safeio.Root, error) {
-		return nil, operationErr
-	}
-	if _, _, err := openValidatedRootNoFollow(t.TempDir()); !errors.Is(err, operationErr) {
-		t.Fatalf("expected validated-root reopen failure, got %v", err)
-	}
+func assertDependencyResolutionRelativePathFailures(t *testing.T, operationErr error) {
+	t.Helper()
 
 	rootPath := filepath.Join(t.TempDir(), "root")
 	if err := os.Mkdir(rootPath, 0o755); err != nil {

@@ -460,13 +460,20 @@ func resolvePinnedDependencyComponent(path string, allowedRoot string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		if !info.IsDir() {
-			return "", fmt.Errorf("path is not a directory: %s", path)
-		}
-		return path, nil
+	if info.Mode()&os.ModeSymlink != 0 {
+		return resolvePinnedSymlinkDependencyComponent(path, allowedRoot)
 	}
+	return requirePinnedDependencyDirectory(path, info)
+}
 
+func requirePinnedDependencyDirectory(path string, info os.FileInfo) (string, error) {
+	if !info.IsDir() {
+		return "", fmt.Errorf("path is not a directory: %s", path)
+	}
+	return path, nil
+}
+
+func resolvePinnedSymlinkDependencyComponent(path string, allowedRoot string) (string, error) {
 	resolvedPath, err := evaluateDependencySymlinks(path)
 	if err != nil {
 		return "", err

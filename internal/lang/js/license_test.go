@@ -401,9 +401,60 @@ func TestFindLicenseFilesWithinRootContinuesPastUnreadableChild(t *testing.T) {
 		},
 	}
 
-	files := findLicenseFilesWithinRoot(root, depRoot)
+	files, warnings := findLicenseFilesWithinRoot(root, depRoot)
 	if len(files) != 1 || files[0] != licensePath {
 		t.Fatalf("expected best-effort license walk to keep later readable license, got %#v", files)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected child subtree failure to continue without warnings, got %#v", warnings)
+	}
+}
+
+func TestDetectLicenseAndProvenanceWarnsOnUnreadableLicenseRoot(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"1.0.0"}`)
+
+	pkgInfo, err := os.Lstat(filepath.Join(depRoot, licenseTestPackageJSONFileName))
+	if err != nil {
+		t.Fatalf("lstat package.json: %v", err)
+	}
+	root := &fakeJSRoot{
+		open: func(name string) (safeio.File, error) {
+			switch name {
+			case jsPackageFile:
+				return os.Open(filepath.Join(depRoot, jsPackageFile))
+			case ".":
+				return nil, errors.New("open root failed")
+			default:
+				return nil, errors.New("unexpected open path")
+			}
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != jsPackageFile {
+				return nil, errors.New("unexpected lstat path")
+			}
+			return pkgInfo, nil
+		},
+	}
+
+	originalOpen := openLicenseValidatedRoot
+	openLicenseValidatedRoot = func(string) (safeio.Root, string, error) {
+		return root, depRoot, nil
+	}
+	t.Cleanup(func() {
+		openLicenseValidatedRoot = originalOpen
+	})
+
+	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	if license == nil || !license.Unknown || license.Source != "unknown" {
+		t.Fatalf("expected unknown license when root walk fails, got %#v", license)
+	}
+	if provenance == nil || provenance.Source != "local-manifest" {
+		t.Fatalf("expected manifest provenance to survive unreadable license root, got %#v", provenance)
+	}
+	wantWarning := "unable to inspect dependency license files: " + depRoot
+	if len(warnings) != 1 || warnings[0] != wantWarning {
+		t.Fatalf("expected exact root-walk warning %q, got %#v", wantWarning, warnings)
 	}
 }
 

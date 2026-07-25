@@ -225,37 +225,43 @@ func TestWorkspaceManifestReaders(t *testing.T) {
 		}
 	})
 
-	t.Run("pnpm reader skips oversized manifest", func(t *testing.T) {
-		t.Parallel()
+	oversizedManifestCases := []struct {
+		name        string
+		fileName    string
+		content     string
+		readWarning func(string) (bool, string)
+	}{
+		{
+			name:        "pnpm reader skips oversized manifest",
+			fileName:    jsPnpmWorkspaceFile,
+			content:     "packages:\n  - \"" + strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes)) + "\"\n",
+			readWarning: readPnpmWorkspaceManifestWarning,
+		},
+		{
+			name:        "yarn reader skips oversized manifest",
+			fileName:    jsYarnRCFile,
+			content:     "catalog:\n  dep: \"" + strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes)) + "\"\n",
+			readWarning: readYarnCatalogManifestWarning,
+		},
+	}
+	for _, testCase := range oversizedManifestCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, jsPnpmWorkspaceFile), "packages:\n  - \""+strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes))+"\"\n")
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, testCase.fileName), testCase.content)
 
-		_, found, warning := readPnpmWorkspaceManifest(repo)
-		if found {
-			t.Fatalf("expected oversized pnpm manifest to be skipped")
-		}
-		want := "skipped " + jsPnpmWorkspaceFile + " above"
-		if !strings.Contains(warning, want) {
-			t.Fatalf("expected oversized pnpm warning containing %q, got %q", want, warning)
-		}
-	})
-
-	t.Run("yarn reader skips oversized manifest", func(t *testing.T) {
-		t.Parallel()
-
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, jsYarnRCFile), "catalog:\n  dep: \""+strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes))+"\"\n")
-
-		_, found, warning := readYarnCatalogManifest(repo)
-		if found {
-			t.Fatalf("expected oversized yarn manifest to be skipped")
-		}
-		want := "skipped " + jsYarnRCFile + " above"
-		if !strings.Contains(warning, want) {
-			t.Fatalf("expected oversized yarn warning containing %q, got %q", want, warning)
-		}
-	})
+			found, warning := testCase.readWarning(repo)
+			if found {
+				t.Fatalf("expected oversized %s to be skipped", testCase.fileName)
+			}
+			want := "skipped " + testCase.fileName + " above"
+			if !strings.Contains(warning, want) {
+				t.Fatalf("expected oversized %s warning containing %q, got %q", testCase.fileName, want, warning)
+			}
+		})
+	}
 
 }
 
@@ -757,18 +763,13 @@ func TestResolveDependencyRootAtDirAndIsPathWithin(t *testing.T) {
 	repo := t.TempDir()
 	installWorkspaceCatalogDependencies(t, repo, "react")
 
-	root, ok := resolveDependencyRootAtDir(repo, "react")
-	if !ok || root != filepath.Join(repo, "node_modules", "react") {
-		t.Fatalf("unexpected resolved root: root=%q ok=%v", root, ok)
-	}
+	assertResolvedDependencyRootAtDir(t, repo, "react", filepath.Join(repo, "node_modules", "react"))
 
 	badRoot := filepath.Join(repo, "node_modules", "bad", testPackageJSONName)
 	if err := os.MkdirAll(badRoot, 0o755); err != nil {
 		t.Fatalf("mkdir bad root: %v", err)
 	}
-	if _, ok := resolveDependencyRootAtDir(repo, "bad"); ok {
-		t.Fatalf("expected directory package.json to be rejected")
-	}
+	assertRejectedDependencyRootAtDir(t, repo, "bad", "directory package.json")
 
 	symlinkTarget := filepath.Join(repo, "outside-react")
 	if err := os.MkdirAll(symlinkTarget, 0o755); err != nil {
@@ -779,18 +780,39 @@ func TestResolveDependencyRootAtDirAndIsPathWithin(t *testing.T) {
 	if err := os.Symlink(symlinkTarget, symlinkPath); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if root, ok := resolveDependencyRootAtDir(repo, "linked"); !ok || root != symlinkPath {
-		t.Fatalf("expected in-repo symlinked dependency root to stay resolvable, got root=%q ok=%v", root, ok)
-	}
+	assertResolvedDependencyRootAtDir(t, repo, "linked", symlinkPath)
 
-	if !isPathWithin(filepath.Join(repo, "packages", "web"), repo) {
-		t.Fatalf("expected descendant path to be within repo")
+	for _, testCase := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "descendant path", path: filepath.Join(repo, "packages", "web"), want: true},
+		{name: "parent path", path: filepath.Dir(repo), want: false},
+		{name: "relative path", path: "packages/web", want: false},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := isPathWithin(testCase.path, repo); got != testCase.want {
+				t.Fatalf("isPathWithin(%q, %q) = %v, want %v", testCase.path, repo, got, testCase.want)
+			}
+		})
 	}
-	if isPathWithin(filepath.Dir(repo), repo) {
-		t.Fatalf("expected parent path to be outside repo")
+}
+
+func assertResolvedDependencyRootAtDir(t *testing.T, repo, dependency, want string) {
+	t.Helper()
+
+	if root, ok := resolveDependencyRootAtDir(repo, dependency); !ok || root != want {
+		t.Fatalf("unexpected resolved root for %q: root=%q ok=%v want=%q", dependency, root, ok, want)
 	}
-	if isPathWithin("packages/web", repo) {
-		t.Fatalf("expected relative path comparison against absolute root to fail")
+}
+
+func assertRejectedDependencyRootAtDir(t *testing.T, repo, dependency, context string) {
+	t.Helper()
+
+	if root, ok := resolveDependencyRootAtDir(repo, dependency); ok || root != "" {
+		t.Fatalf("expected %s to be rejected, got root=%q ok=%v", context, root, ok)
 	}
 }
 
@@ -805,27 +827,62 @@ func TestDependencyRootValidationHelpers(t *testing.T) {
 
 	filePath := filepath.Join(repo, "README.md")
 	testutil.MustWriteFile(t, filePath, "root\n")
-	if _, err := validateDirectoryPathNoFollow(filePath); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("expected file path to be rejected as directory, got %v", err)
-	}
-	if _, err := validateDirectoryPathNoFollow(""); err == nil || !strings.Contains(err.Error(), "path is empty") {
-		t.Fatalf("expected blank path to be rejected, got %v", err)
-	}
-	if _, err := validateDirectoryPathNoFollow(filepath.Join(repo, "missing-dir")); err == nil {
-		t.Fatal("expected missing directory path to be rejected")
-	}
 
 	pkgPath := filepath.Join(repo, testPackageJSONName)
 	testutil.MustWriteFile(t, pkgPath, "{}\n")
+	assertDirectoryValidationCases(t, repo, filePath)
+	assertRegularFileValidationCases(t, repo, nodeModules, pkgPath)
+	assertSymlinkValidationCases(t, repo, nodeModules, pkgPath)
+	assertValidatedDependencyRootCases(t, repo, nodeModules, filePath)
+	if got := resolveDependencyRootFromDir(repo, filepath.Join(repo, "packages"), ""); got != "" {
+		t.Fatalf("expected blank dependency to resolve to empty root, got %q", got)
+	}
+}
+
+func assertDirectoryValidationCases(t *testing.T, repo, filePath string) {
+	t.Helper()
+
+	for _, testCase := range []struct {
+		name          string
+		path          string
+		wantSubstring string
+	}{
+		{name: "file path rejected", path: filePath, wantSubstring: "not a directory"},
+		{name: "blank path rejected", path: "", wantSubstring: "path is empty"},
+		{name: "missing directory rejected", path: filepath.Join(repo, "missing-dir")},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := validateDirectoryPathNoFollow(testCase.path)
+			assertValidationError(t, err, testCase.wantSubstring, "directory path")
+		})
+	}
+}
+
+func assertRegularFileValidationCases(t *testing.T, repo, nodeModules, pkgPath string) {
+	t.Helper()
+
 	if err := validateRegularFileNoFollow(pkgPath); err != nil {
 		t.Fatalf("expected regular package file to validate, got %v", err)
 	}
-	if err := validateRegularFileNoFollow(nodeModules); err == nil || !strings.Contains(err.Error(), "not a regular file") {
-		t.Fatalf("expected directory to be rejected as regular file, got %v", err)
+	for _, testCase := range []struct {
+		name          string
+		path          string
+		wantSubstring string
+	}{
+		{name: "directory rejected", path: nodeModules, wantSubstring: "not a regular file"},
+		{name: "missing file rejected", path: filepath.Join(repo, "missing.json")},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateRegularFileNoFollow(testCase.path)
+			assertValidationError(t, err, testCase.wantSubstring, "regular file")
+		})
 	}
-	if err := validateRegularFileNoFollow(filepath.Join(repo, "missing.json")); err == nil {
-		t.Fatal("expected missing file to be rejected")
-	}
+}
+
+func assertSymlinkValidationCases(t *testing.T, repo, nodeModules, pkgPath string) {
+	t.Helper()
 
 	linkedDirTarget := filepath.Join(repo, "outside-linked")
 	if err := os.MkdirAll(linkedDirTarget, 0o755); err != nil {
@@ -835,12 +892,12 @@ func TestDependencyRootValidationHelpers(t *testing.T) {
 	if err := os.Symlink(linkedDirTarget, linkedDir); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := validateDirectoryPathNoFollow(linkedDir); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
-		t.Fatalf("expected symlinked directory path to be rejected, got %v", err)
-	}
 	linkedFile := filepath.Join(repo, "linked-package.json")
 	if err := os.Symlink(pkgPath, linkedFile); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := validateDirectoryPathNoFollow(linkedDir); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+		t.Fatalf("expected symlinked directory path to be rejected, got %v", err)
 	}
 	if err := validateRegularFileNoFollow(linkedFile); err == nil || !strings.Contains(err.Error(), "symlinked file path") {
 		t.Fatalf("expected symlinked file path to be rejected, got %v", err)
@@ -851,6 +908,10 @@ func TestDependencyRootValidationHelpers(t *testing.T) {
 	if got, err := validateDirectoryPathNoFollowFromBase(repo, ".", "node_modules"); err != nil || got != nodeModules {
 		t.Fatalf("expected dot path component to be ignored, got path=%q err=%v", got, err)
 	}
+}
+
+func assertValidatedDependencyRootCases(t *testing.T, repo, nodeModules, filePath string) {
+	t.Helper()
 
 	scopedDir := filepath.Join(nodeModules, "@scope")
 	if err := os.MkdirAll(scopedDir, 0o755); err != nil {
@@ -867,14 +928,31 @@ func TestDependencyRootValidationHelpers(t *testing.T) {
 	if got, err := validatedDependencyRootAtDir(repo, "@scope/pkg"); err != nil || got != filepath.Join(scopedDir, "pkg") {
 		t.Fatalf("expected scoped dependency symlink inside repo to resolve safely, got path=%q err=%v", got, err)
 	}
-	if _, err := validatedDependencyRootAtDir(repo, ""); err == nil {
-		t.Fatalf("expected blank dependency name to be rejected")
+	for _, testCase := range []struct {
+		name          string
+		repo          string
+		dependency    string
+		wantSubstring string
+	}{
+		{name: "blank dependency rejected", repo: repo, dependency: ""},
+		{name: "file repo rejected", repo: filePath, dependency: "pkg", wantSubstring: "not a directory"},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := validatedDependencyRootAtDir(testCase.repo, testCase.dependency)
+			assertValidationError(t, err, testCase.wantSubstring, "validated dependency root")
+		})
 	}
-	if _, err := validatedDependencyRootAtDir(filePath, "pkg"); err == nil || !strings.Contains(err.Error(), "not a directory") {
-		t.Fatalf("expected file root dir to be rejected, got %v", err)
+}
+
+func assertValidationError(t *testing.T, err error, wantSubstring, context string) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("expected %s validation error", context)
 	}
-	if got := resolveDependencyRootFromDir(repo, filepath.Join(repo, "packages"), ""); got != "" {
-		t.Fatalf("expected blank dependency to resolve to empty root, got %q", got)
+	if wantSubstring != "" && !strings.Contains(err.Error(), wantSubstring) {
+		t.Fatalf("expected %s validation error containing %q, got %v", context, wantSubstring, err)
 	}
 }
 

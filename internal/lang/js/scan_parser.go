@@ -2,9 +2,7 @@ package js
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"path/filepath"
 	"strings"
 
@@ -17,7 +15,6 @@ import (
 
 var (
 	readRepoSourceUnderLimit = safeio.ReadFileUnderLimit
-	openRepoSourceRoot       = openValidatedRootNoFollow
 )
 
 type sourceParser struct {
@@ -69,15 +66,6 @@ func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string
 		content, readErr = safeio.ReadFileLimit(path, jsSourceReadMaxBytes)
 	} else {
 		content, readErr = readRepoSourceUnderLimit(repoPath, path, jsSourceReadMaxBytes)
-		if readErr != nil && (isPureNonRegularReadError(readErr) || strings.Contains(readErr.Error(), "path escapes from parent")) {
-			fallbackContent, fallbackErr := readRepoSourceThroughInRootSymlink(repoPath, path)
-			switch {
-			case fallbackErr == nil:
-				content, readErr = fallbackContent, nil
-			case strings.Contains(readErr.Error(), "path escapes from parent"):
-				readErr = fallbackErr
-			}
-		}
 	}
 	if readErr != nil {
 		return nil, nil, "", readErr
@@ -99,43 +87,4 @@ func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string
 func isSupportedFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return supportedExtensions[ext]
-}
-
-func readRepoSourceThroughInRootSymlink(repoPath, path string) (_ []byte, err error) {
-	if strings.TrimSpace(repoPath) == "" || strings.TrimSpace(path) == "" {
-		return nil, safeio.ErrNonRegularFile
-	}
-
-	root, validatedRepoPath, err := openRepoSourceRoot(repoPath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
-	}()
-
-	linkRel, err := relativePathWithinRoot(validatedRepoPath, path)
-	if err != nil {
-		return nil, err
-	}
-	info, err := root.Lstat(linkRel)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&fs.ModeSymlink == 0 {
-		return nil, safeio.ErrNonRegularFile
-	}
-
-	resolvedPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return nil, err
-	}
-	resolvedRel, err := relativePathWithinRoot(validatedRepoPath, resolvedPath)
-	if err != nil {
-		return nil, safeio.ErrNonRegularFile
-	}
-
-	return safeio.ReadFileWithinRootLimit(root, resolvedRel, jsSourceReadMaxBytes)
 }

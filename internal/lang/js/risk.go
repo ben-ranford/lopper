@@ -28,11 +28,7 @@ func assessRiskCues(repoPath string, dependency string, dependencyRootPath strin
 	if err != nil {
 		return nil, []string{fmt.Sprintf("unable to assess risk cues for %q: %v", dependency, err)}
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			warnings = append(warnings, fmt.Sprintf("failed to close dependency root after risk analysis for %q", dependency))
-		}
-	}()
+	defer closeRootAppendWarning(root, &warnings, fmt.Sprintf("failed to close dependency root after risk analysis for %q", dependency))
 
 	pkg, warnings := loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
 	aggregator := newRiskCueAggregator(repoPath, dependency, validatedDepRoot, root, pkg, warnings)
@@ -89,11 +85,7 @@ func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency s
 		warnings = append(warnings, fmt.Sprintf("dynamic loader scan failed for %q: %v", dependency, err))
 		return cues, warnings
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			resultWarnings = append(resultWarnings, fmt.Sprintf("failed to close dependency root after dynamic loader scan for %q", dependency))
-		}
-	}()
+	defer closeRootAppendWarning(root, &resultWarnings, fmt.Sprintf("failed to close dependency root after dynamic loader scan for %q", dependency))
 	return appendDynamicRiskCueWithinRoot(cues, warnings, dependency, root, validatedDepRoot, entrypoints)
 }
 
@@ -116,11 +108,7 @@ func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency st
 		warnings = append(warnings, fmt.Sprintf("native module scan failed for %q: %v", dependency, err))
 		return cues, warnings
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			resultWarnings = append(resultWarnings, fmt.Sprintf("failed to close dependency root after native module scan for %q", dependency))
-		}
-	}()
+	defer closeRootAppendWarning(root, &resultWarnings, fmt.Sprintf("failed to close dependency root after native module scan for %q", dependency))
 	return appendNativeRiskCueWithinRoot(cues, warnings, dependency, root, validatedDepRoot, pkg)
 }
 

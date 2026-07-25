@@ -13,40 +13,20 @@ func TestLaterReadersRejectParentSwapAfterDependencyRootResolution(t *testing.T)
 	repo, resolvedRoot := installResolvedDependencyRoot(t)
 	swapDependencyParentToSymlink(t, repo)
 
-	t.Run("export package json reader", func(t *testing.T) {
-		_, warnings, err := loadPackageJSONForSurface(resolvedRoot, resolvedRoot)
-		if err == nil {
-			t.Fatal("expected swapped parent symlink to break package.json read")
-		}
-		if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read") {
-			t.Fatalf("expected stable read warning after parent swap, got %#v", warnings)
-		}
-	})
-
-	t.Run("entrypoint resolver", func(t *testing.T) {
-		if path, ok := resolveEntrypointUnderRoot(resolvedRoot, resolvedRoot, "index.js"); ok || path != "" {
-			t.Fatalf("expected swapped parent symlink to break entrypoint resolution, got path=%q ok=%v", path, ok)
-		}
-	})
-
-	t.Run("codemod subpath resolver", func(t *testing.T) {
-		if hasResolvableSubpathFile(resolvedRoot, "map") {
-			t.Fatal("expected swapped parent symlink to break subpath file resolution")
-		}
-	})
-
-	t.Run("license reader", func(t *testing.T) {
-		license, provenance, warnings := detectLicenseAndProvenance(resolvedRoot, false)
-		if license == nil || !license.Unknown || license.Source != "unknown" {
-			t.Fatalf("expected unknown license after parent swap, got %#v", license)
-		}
-		if provenance == nil || provenance.Source != "unknown" {
-			t.Fatalf("expected unknown provenance after parent swap, got %#v", provenance)
-		}
-		if len(warnings) != 1 || !strings.Contains(warnings[0], dependencyRootOpaqueLayoutWarning) {
-			t.Fatalf("expected stable root-resolution warning after parent swap, got %#v", warnings)
-		}
-	})
+	for _, testCase := range []struct {
+		name string
+		run  func(*testing.T, string)
+	}{
+		{name: "export package json reader", run: assertParentSwapBreaksPackageJSONRead},
+		{name: "entrypoint resolver", run: assertParentSwapBreaksEntrypointResolution},
+		{name: "codemod subpath resolver", run: assertParentSwapBreaksSubpathResolution},
+		{name: "license reader", run: assertParentSwapFallsBackToUnknownLicense},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			testCase.run(t, resolvedRoot)
+		})
+	}
 }
 
 func installResolvedDependencyRoot(t *testing.T) (string, string) {
@@ -90,5 +70,52 @@ func swapDependencyParentToSymlink(t *testing.T, repo string) {
 
 	if err := os.Symlink(outsideNodeModules, originalNodeModules); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
+	}
+}
+
+func assertParentSwapBreaksPackageJSONRead(t *testing.T, resolvedRoot string) {
+	t.Helper()
+
+	_, warnings, err := loadPackageJSONForSurface(resolvedRoot, resolvedRoot)
+	if err == nil {
+		t.Fatal("expected swapped parent symlink to break package.json read")
+	}
+	assertSingleWarningContains(t, warnings, "unable to read", "stable read warning after parent swap")
+}
+
+func assertParentSwapBreaksEntrypointResolution(t *testing.T, resolvedRoot string) {
+	t.Helper()
+
+	if path, ok := resolveEntrypointUnderRoot(resolvedRoot, resolvedRoot, "index.js"); ok || path != "" {
+		t.Fatalf("expected swapped parent symlink to break entrypoint resolution, got path=%q ok=%v", path, ok)
+	}
+}
+
+func assertParentSwapBreaksSubpathResolution(t *testing.T, resolvedRoot string) {
+	t.Helper()
+
+	if hasResolvableSubpathFile(resolvedRoot, "map") {
+		t.Fatal("expected swapped parent symlink to break subpath file resolution")
+	}
+}
+
+func assertParentSwapFallsBackToUnknownLicense(t *testing.T, resolvedRoot string) {
+	t.Helper()
+
+	license, provenance, warnings := detectLicenseAndProvenance(resolvedRoot, false)
+	if license == nil || !license.Unknown || license.Source != "unknown" {
+		t.Fatalf("expected unknown license after parent swap, got %#v", license)
+	}
+	if provenance == nil || provenance.Source != "unknown" {
+		t.Fatalf("expected unknown provenance after parent swap, got %#v", provenance)
+	}
+	assertSingleWarningContains(t, warnings, dependencyRootOpaqueLayoutWarning, "stable root-resolution warning after parent swap")
+}
+
+func assertSingleWarningContains(t *testing.T, warnings []string, wantSubstring string, context string) {
+	t.Helper()
+
+	if len(warnings) != 1 || !strings.Contains(warnings[0], wantSubstring) {
+		t.Fatalf("expected %s, got %#v", context, warnings)
 	}
 }

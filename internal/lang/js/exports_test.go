@@ -147,6 +147,44 @@ func TestResolveDependencyExportsRejectsSymlinkedDependencyRoot(t *testing.T) {
 	}
 }
 
+func TestResolveDependencyExportsAcceptsPinnedInRepoSymlinkedDependencyRoot(t *testing.T) {
+	repo := t.TempDir()
+	pkgRoot := filepath.Join(repo, "packages", "linked")
+	if err := os.MkdirAll(pkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir package root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgRoot, "package.json"), []byte("{\n  \"exports\": {\n    \".\": \"./index.js\"\n  }\n}\n"), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgRoot, "index.js"), []byte("export const linked = 1\n"), 0o644); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "node_modules", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.Symlink(pkgRoot, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	resolvedRoot, ok := resolveDependencyRootAtDir(repo, "linked")
+	if !ok || resolvedRoot != linkPath {
+		t.Fatalf("expected dependency root validator to return symlink path, got root=%q ok=%v", resolvedRoot, ok)
+	}
+
+	surface, err := resolveDependencyExports(dependencyExportRequest{dependencyRootPath: resolvedRoot})
+	if err != nil {
+		t.Fatalf("resolve exports through validated symlink root: %v", err)
+	}
+	if _, ok := surface.Names["linked"]; !ok {
+		t.Fatalf("expected export from pinned symlink root, got %#v", surface.Names)
+	}
+	if strings.Contains(strings.Join(surface.Warnings, "\n"), "unable to read") {
+		t.Fatalf("did not expect read warning for pinned in-repo symlink root, got %#v", surface.Warnings)
+	}
+}
+
 func writeDependencyFixture(t *testing.T, repoPath string, depName string, packageJSON string, entrypoint string) {
 	t.Helper()
 	depDir := filepath.Join(repoPath, "node_modules", depName)

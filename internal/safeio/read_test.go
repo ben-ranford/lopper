@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -520,6 +521,95 @@ func (f *readAncestorReplacementFixture) replace() {
 	}
 }
 
+func TestReadFileWithinRootRejectsIntermediateParentSwapAfterValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	alternateParent := filepath.Join(rootDir, "alternate")
+	if err := os.MkdirAll(originalParent, 0o755); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+	if err := os.MkdirAll(alternateParent, 0o755); err != nil {
+		t.Fatalf("mkdir alternate parent: %v", err)
+	}
+
+	originalTarget := filepath.Join(originalParent, "result.txt")
+	alternateTarget := filepath.Join(alternateParent, "result.txt")
+	if err := os.WriteFile(originalTarget, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed original target: %v", err)
+	}
+	if err := os.WriteFile(alternateTarget, []byte("alternate"), 0o600); err != nil {
+		t.Fatalf("seed alternate target: %v", err)
+	}
+
+	root := openTestRoot(t, rootDir)
+	originalReady := readFileTargetReadyFn
+	readFileTargetReadyFn = func() error {
+		if err := os.Rename(originalParent, relocatedParent); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Base(alternateParent), originalParent)
+	}
+	t.Cleanup(func() {
+		readFileTargetReadyFn = originalReady
+	})
+
+	data, err := ReadFileWithinRoot(root, filepath.Join("reports", "result.txt"))
+	if err == nil {
+		t.Fatal("expected swapped parent to be rejected")
+	}
+	if len(data) != 0 {
+		t.Fatalf("expected no data on parent swap, got %q", string(data))
+	}
+	assertFileContent(t, filepath.Join(relocatedParent, "result.txt"), "original")
+	assertFileContent(t, alternateTarget, "alternate")
+}
+
+func TestReadFileWithinRootRejectsLeafSwapAfterValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("atomic file replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	parentDir := filepath.Join(rootDir, "reports")
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	targetRel := filepath.Join("reports", "result.txt")
+	targetPath := filepath.Join(rootDir, targetRel)
+	relocatedPath := filepath.Join(parentDir, "result-old.txt")
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed original target: %v", err)
+	}
+
+	root := openTestRoot(t, rootDir)
+	originalReady := readFileTargetReadyFn
+	readFileTargetReadyFn = func() error {
+		if err := os.Rename(targetPath, relocatedPath); err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, []byte("alternate"), 0o600)
+	}
+	t.Cleanup(func() {
+		readFileTargetReadyFn = originalReady
+	})
+
+	data, err := ReadFileWithinRoot(root, targetRel)
+	if err == nil {
+		t.Fatal("expected swapped leaf to be rejected")
+	}
+	if len(data) != 0 {
+		t.Fatalf("expected no data on leaf swap, got %q", string(data))
+	}
+	assertFileContent(t, relocatedPath, "original")
+	assertFileContent(t, targetPath, "alternate")
+}
+
 func TestReadFileLimitReadsFile(t *testing.T) {
 	rootDir := canonicalTempDir(t)
 	targetPath := filepath.Join(rootDir, writeTestFileName)
@@ -792,6 +882,82 @@ func TestReadFileUnderAllowsInRootSymlinkToRegularFile(t *testing.T) {
 	if string(data) != "hello" {
 		t.Fatalf(unexpectedContentFmt, string(data))
 	}
+}
+
+func TestReadFileUnderAllowsAbsoluteInRootSymlinkToRegularFile(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "src", "real.txt")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	linkPath := filepath.Join(rootDir, "linked.txt")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	data, err := ReadFileUnder(rootDir, linkPath)
+	if err != nil {
+		t.Fatalf("ReadFileUnder absolute symlink returned error: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf(unexpectedContentFmt, string(data))
+	}
+}
+
+func TestReadFileUnderRejectsIntermediateParentSwapAfterSymlinkResolution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	alternateParent := filepath.Join(rootDir, "alternate")
+	if err := os.MkdirAll(originalParent, 0o755); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+	if err := os.MkdirAll(alternateParent, 0o755); err != nil {
+		t.Fatalf("mkdir alternate parent: %v", err)
+	}
+
+	originalTarget := filepath.Join(originalParent, "result.txt")
+	alternateTarget := filepath.Join(alternateParent, "result.txt")
+	if err := os.WriteFile(originalTarget, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed original target: %v", err)
+	}
+	if err := os.WriteFile(alternateTarget, []byte("alternate"), 0o600); err != nil {
+		t.Fatalf("seed alternate target: %v", err)
+	}
+
+	linkPath := filepath.Join(rootDir, "linked.txt")
+	if err := os.Symlink(filepath.Join("reports", "result.txt"), linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	originalReady := readFileTargetReadyFn
+	readFileTargetReadyFn = func() error {
+		if err := os.Rename(originalParent, relocatedParent); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Base(alternateParent), originalParent)
+	}
+	t.Cleanup(func() {
+		readFileTargetReadyFn = originalReady
+	})
+
+	data, err := ReadFileUnder(rootDir, linkPath)
+	if err == nil {
+		t.Fatal("expected swapped parent to be rejected")
+	}
+	if len(data) != 0 {
+		t.Fatalf("expected no data on parent swap, got %q", string(data))
+	}
+	assertFileContent(t, filepath.Join(relocatedParent, "result.txt"), "original")
+	assertFileContent(t, alternateTarget, "alternate")
 }
 
 func TestReadFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
@@ -1310,6 +1476,7 @@ func TestPathLimitReadersPropagatePostPreflightOpenError(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
 			withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
 				return &fakeRoot{

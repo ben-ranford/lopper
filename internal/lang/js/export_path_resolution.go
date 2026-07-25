@@ -110,12 +110,7 @@ func resolveEntrypointUnderRoot(rootPath, depPath, entry string) (resolved strin
 	if err != nil {
 		return "", false
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			resolved = ""
-			ok = false
-		}
-	}()
+	defer closeRootResetResolution(root, &resolved, &ok)
 
 	return resolveEntrypointWithinRoot(root, rootPath, depPath, entry)
 }

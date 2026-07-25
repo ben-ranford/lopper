@@ -97,6 +97,14 @@ func resolveRootedTarget(rootDir, targetPath string, policy rootedTargetPolicy) 
 	return rootedTarget{rootAbs: rootAbs, rel: rel, abs: targetAbs}, nil
 }
 
+func resolveRelativeTargetWithinRoot(rootAbs, targetAbs string) (string, error) {
+	rel, err := fileSystem.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return "", fmt.Errorf("compute relative path: %w", err)
+	}
+	return normalizeRootedTarget(targetAbs, rel, allowRootTarget)
+}
+
 func resolveExactFileTarget(targetPath string) (exactFileTarget, error) {
 	targetAbs, err := resolveAbsolutePath("target", targetPath)
 	if err != nil {

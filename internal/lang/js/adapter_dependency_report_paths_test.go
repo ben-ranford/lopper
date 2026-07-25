@@ -241,33 +241,20 @@ func testJSResolveDependencyRootFailures(t *testing.T, repo string) {
 func testJSAnalyseRejectsSymlinkedDependencyRoot(t *testing.T) {
 	t.Helper()
 
-	repo := t.TempDir()
-	outside := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, testIndexJS), "import { map } from \"lodash\"\nmap([1], Boolean)\n")
-
-	outsideDepRoot := filepath.Join(outside, "node_modules", "lodash")
-	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
-		t.Fatalf("mkdir outside dependency root: %v", err)
-	}
-	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), `{
+	dependencyPackageJSON := `{
   "name": "outside-lodash",
   "version": "9.9.9",
   "license": "GPL-3.0-only",
   "exports": {
     "./map": "./map.js"
   }
-}`)
-	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "index.js"), "export const escaped = 1\n")
-	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "map.js"), "export default function map() {}\n")
-	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "LICENSE"), "GNU GENERAL PUBLIC LICENSE\n")
-
-	nodeModules := filepath.Join(repo, "node_modules")
-	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
-		t.Fatalf("mkdir node_modules: %v", err)
+}`
+	dependencyFiles := map[string]string{
+		"index.js": "export const escaped = 1\n",
+		"map.js":   "export default function map() {}\n",
+		"LICENSE":  "GNU GENERAL PUBLIC LICENSE\n",
 	}
-	if err := os.Symlink(outsideDepRoot, filepath.Join(nodeModules, "lodash")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
+	repo := installSymlinkedDependencyRootFixture(t, dependencyPackageJSON, dependencyFiles)
 
 	result, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath:   repo,
@@ -290,17 +277,12 @@ func testJSAnalyseRejectsSymlinkedDependencyRoot(t *testing.T) {
 	if dep.Provenance == nil || dep.Provenance.Source != "unknown" {
 		t.Fatalf("expected unknown provenance for symlinked dependency root, got %#v", dep.Provenance)
 	}
-	joinedSignals := strings.Join(dep.Provenance.Signals, "\n")
-	if strings.Contains(joinedSignals, "outside-lodash") || strings.Contains(joinedSignals, "9.9.9") {
-		t.Fatalf("expected outside provenance signals to be ignored, got %#v", dep.Provenance)
-	}
+	assertOutsideMetadataExcluded(t, strings.Join(dep.Provenance.Signals, "\n"), "provenance signals", dep.Provenance)
 	joinedWarnings := strings.Join(result.Warnings, "\n")
 	if !strings.Contains(joinedWarnings, dependencyRootOpaqueLayoutWarning) {
 		t.Fatalf("expected symlink root warning, got %#v", result.Warnings)
 	}
-	if strings.Contains(joinedWarnings, "outside-lodash") || strings.Contains(joinedWarnings, "9.9.9") {
-		t.Fatalf("expected warnings to avoid outside metadata, got %#v", result.Warnings)
-	}
+	assertOutsideMetadataExcluded(t, joinedWarnings, "warnings", result.Warnings)
 }
 
 func testJSSuggestOnlyRejectsSymlinkedDependencyRoot(t *testing.T) {
@@ -352,5 +334,41 @@ func testJSSuggestOnlyRejectsSymlinkedDependencyRoot(t *testing.T) {
 	}
 	if dep.Codemod.Skips[0].ReasonCode != codemodReasonNoSubpathTarget {
 		t.Fatalf("expected no-subpath-target skip, got %#v", dep.Codemod.Skips)
+	}
+}
+
+func installSymlinkedDependencyRootFixture(t *testing.T, packageJSON string, files map[string]string) string {
+	t.Helper()
+
+	repo := t.TempDir()
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testIndexJS), "import { map } from \"lodash\"\nmap([1], Boolean)\n")
+
+	outsideDepRoot := filepath.Join(outside, "node_modules", "lodash")
+	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), packageJSON)
+	for relPath, contents := range files {
+		testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, relPath), contents)
+	}
+
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.Symlink(outsideDepRoot, filepath.Join(nodeModules, "lodash")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	return repo
+}
+
+func assertOutsideMetadataExcluded(t *testing.T, joined string, field string, got any) {
+	t.Helper()
+
+	for _, forbidden := range []string{"outside-lodash", "9.9.9"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("expected %s to avoid outside metadata, got %#v", field, got)
+		}
 	}
 }

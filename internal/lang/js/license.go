@@ -17,6 +17,7 @@ const licenseFileReadMaxBytes = jsPackageJSONReadMaxBytes
 var openLicenseValidatedRoot = openValidatedRootNoFollow
 
 const dependencyRootOpaqueLayoutWarning = "skipped dependency-root metadata reads because the node_modules layout could not be safely pinned (symlinked or opaque layout)"
+const dependencyLicenseWalkWarningFormat = "unable to inspect dependency license files: %s"
 
 func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) (license *report.DependencyLicense, provenance *report.DependencyProvenance, warnings []string) {
 	if strings.TrimSpace(depRoot) == "" {
@@ -26,11 +27,7 @@ func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) 
 	if err != nil {
 		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{dependencyRootOpaqueLayoutWarning}
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			warnings = append(warnings, "failed to close dependency root after license/provenance detection")
-		}
-	}()
+	defer closeRootAppendWarning(root, &warnings, "failed to close dependency root after license/provenance detection")
 
 	pkg, warnings := loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
 	var licenseWarnings []string
@@ -186,11 +183,7 @@ func detectLicenseFromFiles(depRoot string) (license *report.DependencyLicense) 
 	if err != nil {
 		return nil
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			license = nil
-		}
-	}()
+	defer closeRootResetLicense(root, &license)
 	license, _ = detectLicenseFromFilesWithinRoot(root, validatedDepRoot)
 	return license
 }
@@ -208,17 +201,15 @@ func probeLicenseFiles(depRoot string) (probe *licenseFileProbe) {
 	if err != nil {
 		return nil
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			probe = nil
-		}
-	}()
+	defer closeRootResetProbe(root, &probe)
 	probe, _ = probeLicenseFilesWithinRoot(root, validatedDepRoot)
 	return probe
 }
 
 func probeLicenseFilesWithinRoot(root safeio.Root, depRoot string) (*licenseFileProbe, []string) {
-	return probeLicenseCandidatesWithinRoot(root, depRoot, findLicenseFilesWithinRoot(root, depRoot))
+	candidates, warnings := findLicenseFilesWithinRoot(root, depRoot)
+	probe, probeWarnings := probeLicenseCandidatesWithinRoot(root, depRoot, candidates)
+	return probe, append(warnings, probeWarnings...)
 }
 
 func probeLicenseCandidates(depRoot string, candidates []string) (probe *licenseFileProbe) {
@@ -226,11 +217,7 @@ func probeLicenseCandidates(depRoot string, candidates []string) (probe *license
 	if err != nil {
 		return nil
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			probe = nil
-		}
-	}()
+	defer closeRootResetProbe(root, &probe)
 	probe, _ = probeLicenseCandidatesWithinRoot(root, validatedDepRoot, candidates)
 	return probe
 }
@@ -254,11 +241,7 @@ func probeLicenseCandidate(depRoot, candidate string) (probe *licenseFileProbe) 
 	if err != nil {
 		return nil
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			probe = nil
-		}
-	}()
+	defer closeRootResetProbe(root, &probe)
 	probe, _ = probeLicenseCandidateWithinRoot(root, validatedDepRoot, candidate)
 	return probe
 }
@@ -304,20 +287,17 @@ func findLicenseFiles(depRoot string) (files []string) {
 	if err != nil {
 		return nil
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			files = nil
-		}
-	}()
-	return findLicenseFilesWithinRoot(root, validatedDepRoot)
+	defer closeRootResetSlice(root, &files)
+	files, _ = findLicenseFilesWithinRoot(root, validatedDepRoot)
+	return files
 }
 
-func findLicenseFilesWithinRoot(root safeio.Root, depRoot string) []string {
+func findLicenseFilesWithinRoot(root safeio.Root, depRoot string) ([]string, []string) {
 	files := make([]string, 0, 4)
 	if err := walkRootNoFollowBestEffort(root, licenseWalkFunc(depRoot, &files)); err != nil {
-		return files
+		return files, []string{fmt.Sprintf(dependencyLicenseWalkWarningFormat, depRoot)}
 	}
-	return files
+	return files, nil
 }
 
 func licenseWalkFunc(depRoot string, files *[]string) rootWalkFunc {
@@ -431,9 +411,8 @@ func loadDependencyPackageJSON(depRoot string) (pkg packageJSON, warnings []stri
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
+		if closeRootAppendWarning(root, &warnings, fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(validatedDepRoot, jsPackageFile))) {
 			pkg = packageJSON{}
-			warnings = []string{fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(validatedDepRoot, jsPackageFile))}
 		}
 	}()
 	return loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
