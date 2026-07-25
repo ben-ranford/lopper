@@ -86,7 +86,7 @@ func looksLikeFilesystemPath(value string) bool {
 	if base == "" || strings.HasPrefix(base, ".") {
 		return true
 	}
-	if ext := pathLikeExtension(base); ext != "" {
+	if pathLikeExtension(base) != "" {
 		return true
 	}
 	return false
@@ -120,7 +120,7 @@ func resolveRuntimeContextPath(value string) string {
 	return filepath.Clean(value)
 }
 
-func runtimeContextRepoRelative(repoRoot string, value string) (string, bool) {
+func runtimeContextRepoRelative(repoRoot, value string) (string, bool) {
 	rel, err := filepath.Rel(repoRoot, value)
 	if err != nil {
 		return "", false

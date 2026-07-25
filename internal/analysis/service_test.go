@@ -573,79 +573,17 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 }
 
 func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
-	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
-	tracePath := filepath.Join(repo, ".artifacts", "python-runtime.ndjson")
-	mainPath := filepath.Join(repo, "main.py")
-	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\""+mainPath+"\",\"entrypoint\":\""+mainPath+"\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\""+mainPath+"\",\"entrypoint\":\""+mainPath+"\"}\n")
-
+	repo, tracePath := writePythonRuntimeTraceFixture(t)
 	service := NewService()
-	disabledFeature, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, false),
-	})
-	if err != nil {
-		t.Fatalf("analyse python runtime with feature disabled: %v", err)
-	}
-	if dep := dependencyByLanguageName(t, disabledFeature.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
-		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
-	}
+	disabledFeature := analysePythonRuntimeTrace(t, service, repo, tracePath, mustResolvePythonRuntimeTraceFeatureSet(t, false), "feature disabled")
+	assertPythonRuntimeUsageAbsent(t, disabledFeature.Dependencies, "requests", "did not expect Python runtime usage with feature disabled, got %#v")
 
-	captureWithTraceDisabled, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse Python runtime with trace disabled: %v", err)
-	}
-	if requests := dependencyByLanguageName(t, captureWithTraceDisabled.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
-		t.Fatalf("did not expect an explicit Python trace to bypass the disabled trace feature, got %#v", requests.RuntimeUsage)
-	}
+	captureWithTraceDisabled := analysePythonRuntimeTrace(t, service, repo, tracePath, mustResolvePythonRuntimeCaptureWithTraceDisabled(t), "trace disabled")
+	assertPythonRuntimeUsageAbsent(t, captureWithTraceDisabled.Dependencies, "requests", "did not expect an explicit Python trace to bypass the disabled trace feature, got %#v")
 
-	stableDefault, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolveStableDefaultsFeatureSet(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse python runtime with stable defaults: %v", err)
-	}
-
-	requests := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "requests")
-	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
-		t.Fatalf("expected Python requests overlap correlation, got %#v", requests.RuntimeUsage)
-	}
-	if requests.RuntimeUsage.LoadCount != 1 {
-		t.Fatalf("expected one Python requests runtime load, got %#v", requests.RuntimeUsage)
-	}
-	if len(requests.RuntimeUsage.Modules) != 1 || requests.RuntimeUsage.Modules[0].Module != "requests.sessions" {
-		t.Fatalf("expected Python runtime module detail, got %#v", requests.RuntimeUsage.Modules)
-	}
-	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "main.py" {
-		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
-	}
-	if len(requests.RuntimeUsage.Entrypoints) != 1 || requests.RuntimeUsage.Entrypoints[0].Module != "main.py" {
-		t.Fatalf("expected Python runtime entrypoint detail, got %#v", requests.RuntimeUsage.Entrypoints)
-	}
-	for _, usage := range append(append([]report.RuntimeModuleUsage{}, requests.RuntimeUsage.ParentModules...), requests.RuntimeUsage.Entrypoints...) {
-		if strings.Contains(usage.Module, repo) || strings.Contains(usage.Module, "file://") {
-			t.Fatalf("expected Python runtime context to remain repo-relative, got %#v", requests.RuntimeUsage)
-		}
-	}
-
-	httpx := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "httpx")
-	if httpx.RuntimeUsage == nil || httpx.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly || !httpx.RuntimeUsage.RuntimeOnly {
-		t.Fatalf("expected Python httpx runtime-only row, got %#v", httpx.RuntimeUsage)
-	}
+	stableDefault := analysePythonRuntimeTrace(t, service, repo, tracePath, mustResolveStableDefaultsFeatureSet(t), "stable defaults")
+	assertPythonRequestsRuntimeUsage(t, stableDefault.Dependencies, repo)
+	assertPythonRuntimeOnlyDependency(t, stableDefault.Dependencies, "httpx")
 }
 
 func TestServiceAnalyseJSTraceIgnoresPythonLanguageEvents(t *testing.T) {
@@ -711,6 +649,92 @@ func dependencyByLanguageName(t *testing.T, dependencies []report.DependencyRepo
 	}
 	t.Fatalf("dependency %s/%s not found in %#v", languageID, name, dependencies)
 	return report.DependencyReport{}
+}
+
+func writePythonRuntimeTraceFixture(t *testing.T) (string, string) {
+	t.Helper()
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
+	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
+
+	tracePath := filepath.Join(repo, ".artifacts", "python-runtime.ndjson")
+	mainPath := filepath.Join(repo, "main.py")
+	traceContent := "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\"" + mainPath + "\",\"entrypoint\":\"" + mainPath + "\"}\n" +
+		"{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\"" + mainPath + "\",\"entrypoint\":\"" + mainPath + "\"}\n"
+	writeFile(t, tracePath, traceContent)
+
+	return repo, tracePath
+}
+
+func analysePythonRuntimeTrace(t *testing.T, service *Service, repo, tracePath string, features featureflags.Set, mode string) report.Report {
+	t.Helper()
+
+	reportData, err := service.Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "python",
+		RuntimeTracePath: tracePath,
+		Features:         features,
+	})
+	if err != nil {
+		t.Fatalf("analyse python runtime with %s: %v", mode, err)
+	}
+
+	return reportData
+}
+
+func assertPythonRuntimeUsageAbsent(t *testing.T, dependencies []report.DependencyReport, name string, message string) {
+	t.Helper()
+
+	dependency := dependencyByLanguageName(t, dependencies, "python", name)
+	if dependency.RuntimeUsage != nil {
+		t.Fatalf(message, dependency.RuntimeUsage)
+	}
+}
+
+func assertPythonRequestsRuntimeUsage(t *testing.T, dependencies []report.DependencyReport, repo string) {
+	t.Helper()
+
+	requests := dependencyByLanguageName(t, dependencies, "python", "requests")
+	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected Python requests overlap correlation, got %#v", requests.RuntimeUsage)
+	}
+	if requests.RuntimeUsage.LoadCount != 1 {
+		t.Fatalf("expected one Python requests runtime load, got %#v", requests.RuntimeUsage)
+	}
+	if len(requests.RuntimeUsage.Modules) != 1 || requests.RuntimeUsage.Modules[0].Module != "requests.sessions" {
+		t.Fatalf("expected Python runtime module detail, got %#v", requests.RuntimeUsage.Modules)
+	}
+	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "main.py" {
+		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
+	}
+	if len(requests.RuntimeUsage.Entrypoints) != 1 || requests.RuntimeUsage.Entrypoints[0].Module != "main.py" {
+		t.Fatalf("expected Python runtime entrypoint detail, got %#v", requests.RuntimeUsage.Entrypoints)
+	}
+
+	assertRuntimeUsageStaysRepoRelative(t, requests.RuntimeUsage, repo)
+}
+
+func assertRuntimeUsageStaysRepoRelative(t *testing.T, usage *report.RuntimeUsage, repo string) {
+	t.Helper()
+
+	contexts := append([]report.RuntimeModuleUsage{}, usage.ParentModules...)
+	contexts = append(contexts, usage.Entrypoints...)
+	for _, moduleUsage := range contexts {
+		if strings.Contains(moduleUsage.Module, repo) || strings.Contains(moduleUsage.Module, "file://") {
+			t.Fatalf("expected Python runtime context to remain repo-relative, got %#v", usage)
+		}
+	}
+}
+
+func assertPythonRuntimeOnlyDependency(t *testing.T, dependencies []report.DependencyReport, name string) {
+	t.Helper()
+
+	dependency := dependencyByLanguageName(t, dependencies, "python", name)
+	if dependency.RuntimeUsage == nil || dependency.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly || !dependency.RuntimeUsage.RuntimeOnly {
+		t.Fatalf("expected Python %s runtime-only row, got %#v", name, dependency.RuntimeUsage)
+	}
 }
 
 func TestMergeRecommendationsPriorityOrder(t *testing.T) {

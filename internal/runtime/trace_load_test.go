@@ -161,7 +161,7 @@ func TestLoadTraceRedactsContextOutsideRepoBoundary(t *testing.T) {
 	if got := trace.DependencyParents["lodash"]; len(got) != 0 {
 		t.Fatalf("expected outside parent to be redacted, got %#v", got)
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 1 {
+	if trace.DependencyEntrypoints["lodash"]["src/main.js"] != 1 {
 		t.Fatalf("expected repo-relative entrypoint, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 }
@@ -208,7 +208,7 @@ func TestLoadTraceRedactsEmbeddedRelativeTraversal(t *testing.T) {
 	if got := trace.DependencyParents["lodash"]; len(got) != 0 {
 		t.Fatalf("expected embedded traversal parent to be redacted, got %#v", got)
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 1 {
+	if trace.DependencyEntrypoints["lodash"]["src/main.js"] != 1 {
 		t.Fatalf("expected normal repo-relative entrypoint to be preserved, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 }
@@ -218,10 +218,10 @@ func TestLoadTracePreservesPackageStyleLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
-	if got := trace.DependencyParents["lodash"]["node:internal/modules/cjs/loader"]; got != 1 {
+	if trace.DependencyParents["lodash"]["node:internal/modules/cjs/loader"] != 1 {
 		t.Fatalf("expected package-style parent label to be preserved, got %#v", trace.DependencyParents["lodash"])
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["lodash/map"]; got != 1 {
+	if trace.DependencyEntrypoints["lodash"]["lodash/map"] != 1 {
 		t.Fatalf("expected package-style entrypoint label to be preserved, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 }

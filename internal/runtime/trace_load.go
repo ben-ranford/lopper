@@ -17,7 +17,7 @@ func Load(path string) (Trace, error) {
 	return load(path, traceLoadOptions{})
 }
 
-func LoadForRepo(path string, repoPath string) (Trace, error) {
+func LoadForRepo(path, repoPath string) (Trace, error) {
 	return load(path, traceLoadOptions{repoRoot: repoPath})
 }
 
