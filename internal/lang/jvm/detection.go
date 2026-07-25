@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -27,7 +28,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if err != nil {
 			return err
 		}
-		return walkJVMDetectionEntry(path, entry, roots, &detection, &visited, maxFiles)
+		return walkJVMDetectionEntry(repoPath, path, entry, roots, &detection, &visited, maxFiles)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
@@ -36,7 +37,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func walkJVMDetectionEntry(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
+func walkJVMDetectionEntry(repoPath, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection, visited *int, maxFiles int) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
@@ -47,12 +48,35 @@ func walkJVMDetectionEntry(path string, entry fs.DirEntry, roots map[string]stru
 	if *visited > maxFiles {
 		return fs.SkipAll
 	}
+	if !shared.IsPathWithin(repoPath, path) {
+		return nil
+	}
 	updateJVMDetection(path, entry, roots, detection)
 	return nil
 }
 
 func applyJVMRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
-	return shared.ApplyRootSignals(repoPath, jvmRootSignals, detection, roots)
+	for _, signal := range jvmRootSignals {
+		path := filepath.Join(repoPath, signal.Name)
+		info, err := os.Stat(path)
+		if err == nil {
+			if info.IsDir() || !shared.IsPathWithin(repoPath, path) {
+				continue
+			}
+			if detection != nil {
+				detection.Matched = true
+				detection.Confidence += signal.Confidence
+			}
+			if roots != nil {
+				roots[repoPath] = struct{}{}
+			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 var jvmRootSignals = []shared.RootSignal{

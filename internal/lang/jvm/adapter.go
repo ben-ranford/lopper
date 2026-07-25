@@ -14,9 +14,11 @@ type Adapter struct {
 }
 
 const (
-	pomXMLName         = "pom.xml"
-	buildGradleName    = "build.gradle"
-	buildGradleKTSName = "build.gradle.kts"
+	pomXMLName                = "pom.xml"
+	buildGradleName           = "build.gradle"
+	buildGradleKTSName        = "build.gradle.kts"
+	maxScannableJVMBuildFile  = shared.GradleManifestByteLimit
+	maxScannableJVMSourceFile = 2 * 1024 * 1024
 )
 
 var jvmSkippedDirectories = map[string]bool{

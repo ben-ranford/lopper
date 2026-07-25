@@ -265,6 +265,34 @@ dependencies {
 	}
 }
 
+func TestJVMParseGradleDependenciesWarnsOnOversizedKTSBuildFile(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), strings.Repeat("a", maxScannableJVMBuildFile+1))
+
+	descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
+	if len(descriptors) != 0 {
+		t.Fatalf("expected no gradle descriptors from oversized build.gradle.kts, got %#v", descriptors)
+	}
+	warningText := strings.Join(warnings, "\n")
+	if !strings.Contains(warningText, "unable to read "+buildGradleKTSName+": file exceeds size limit") {
+		t.Fatalf("expected oversized build.gradle.kts warning, got %#v", warnings)
+	}
+}
+
+func TestJVMParseGradleDependenciesWarnsOnOversizedBuildGradleFile(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), strings.Repeat("a", maxScannableJVMBuildFile+1))
+
+	descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
+	if len(descriptors) != 0 {
+		t.Fatalf("expected no gradle descriptors from oversized build.gradle, got %#v", descriptors)
+	}
+	warningText := strings.Join(warnings, "\n")
+	if !strings.Contains(warningText, "unable to read "+buildGradleName+": file exceeds size limit") {
+		t.Fatalf("expected oversized build.gradle warning, got %#v", warnings)
+	}
+}
+
 func TestJVMParsePomDependenciesIncludesManagedAndBOMEntries(t *testing.T) {
 	repo := t.TempDir()
 	properties := `
@@ -508,7 +536,7 @@ func TestJVMDetectAndWalkBranches(t *testing.T) {
 		visited := 1
 		roots := map[string]struct{}{}
 		detect := &language.Detection{}
-		err := walkJVMDetectionEntry(filepath.Join(repo, entry.Name()), entry, roots, detect, &visited, 1)
+		err := walkJVMDetectionEntry(repo, filepath.Join(repo, entry.Name()), entry, roots, detect, &visited, 1)
 		if !errors.Is(err, fs.SkipAll) {
 			t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
 		}

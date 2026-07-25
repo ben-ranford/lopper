@@ -470,7 +470,7 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 		return nil
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableJVMBuildFile)
 	if err != nil {
 		return nil
 	}
@@ -507,7 +507,7 @@ func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err er
 	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
 		return nil
 	}
-	content, readErr := safeio.ReadFileUnder(c.repoPath, path)
+	content, readErr := safeio.ReadFileUnderLimit(c.repoPath, path, maxScannableJVMBuildFile)
 	if readErr != nil {
 		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
 		return nil

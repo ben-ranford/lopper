@@ -16,6 +16,7 @@ import (
 const gradleCatalogScopeKeySeparator = "\x00"
 
 const (
+	GradleManifestByteLimit                 = 2 * 1024 * 1024
 	defaultGradleCatalogFileName            = "libs.versions.toml"
 	gradleCatalogReadWarningFormat          = "unable to read %s: %v"
 	unsupportedGradleCatalogLibraryFormat   = "unsupported Gradle version catalog library %q in %s"
@@ -155,7 +156,7 @@ func maybeSkipGradleCatalogDirectory(entry fs.DirEntry) error {
 }
 
 func (r *gradleCatalogRegistry) loadSettingsFile(path string) {
-	content, readErr := safeio.ReadFileUnder(r.repoPath, path)
+	content, readErr := safeio.ReadFileUnderLimit(r.repoPath, path, GradleManifestByteLimit)
 	if readErr != nil {
 		r.warnings = append(r.warnings, formatGradleCatalogReadWarning(r.repoPath, path, readErr))
 		return
@@ -244,7 +245,7 @@ func (r *gradleCatalogRegistry) sortedScopes() []gradleCatalogScope {
 }
 
 func (r *gradleCatalogRegistry) loadSource(source gradleCatalogSource) {
-	content, readErr := safeio.ReadFileUnder(r.repoPath, source.path)
+	content, readErr := safeio.ReadFileUnderLimit(r.repoPath, source.path, GradleManifestByteLimit)
 	if readErr != nil {
 		r.warnings = append(r.warnings, formatGradleCatalogReadWarning(r.repoPath, source.path, readErr))
 		return

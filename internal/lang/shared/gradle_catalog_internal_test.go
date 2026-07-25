@@ -512,6 +512,9 @@ func TestGradleCatalogPathAndWarningHelpers(t *testing.T) {
 	if got := formatGradleCatalogReadWarning(testRepoRoot, testRepoCatalogPath, fs.ErrPermission); got != fmt.Sprintf("unable to read %s: %v", gradleDefaultCatalogPath, fs.ErrPermission) {
 		t.Fatalf("expected read warning to be repo-relative, got %q", got)
 	}
+	if GradleManifestByteLimit != 2*1024*1024 {
+		t.Fatalf("expected shared Gradle manifest limit to remain explicit and stable, got %d", GradleManifestByteLimit)
+	}
 
 	if warnings := DedupeWarnings(nil); len(warnings) != 0 {
 		t.Fatalf("expected nil warning slice to stay nil, got %#v", warnings)

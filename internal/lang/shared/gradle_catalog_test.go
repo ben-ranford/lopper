@@ -96,6 +96,34 @@ dependencies {
 	}
 }
 
+func TestGradleCatalogResolverSkipsOversizedManifestInputs(t *testing.T) {
+	t.Run("settings.gradle.kts", func(t *testing.T) {
+		repo := t.TempDir()
+		writeGradleCatalogTestFile(t, filepath.Join(repo, "settings.gradle.kts"), strings.Repeat("a", GradleManifestByteLimit+1))
+
+		resolver, warnings := LoadGradleCatalogResolver(repo)
+		if len(resolver.scopes) != 0 {
+			t.Fatalf("expected oversized settings file to skip catalog loading, got %#v", resolver)
+		}
+		if joined := strings.Join(warnings, "\n"); !strings.Contains(joined, "unable to read settings.gradle.kts: file exceeds size limit") {
+			t.Fatalf("expected oversized settings warning, got %#v", warnings)
+		}
+	})
+
+	t.Run("gradle/libs.versions.toml", func(t *testing.T) {
+		repo := t.TempDir()
+		writeGradleCatalogTestFile(t, filepath.Join(repo, "gradle", testGradleCatalogFileName), strings.Repeat("a", GradleManifestByteLimit+1))
+
+		resolver, warnings := LoadGradleCatalogResolver(repo)
+		if len(resolver.scopes) != 0 {
+			t.Fatalf("expected oversized catalog file to skip catalog loading, got %#v", resolver)
+		}
+		if joined := strings.Join(warnings, "\n"); !strings.Contains(joined, "unable to read gradle/libs.versions.toml: file exceeds size limit") {
+			t.Fatalf("expected oversized catalog warning, got %#v", warnings)
+		}
+	})
+}
+
 func TestIsGradleVersionCatalogFile(t *testing.T) {
 	if !IsGradleVersionCatalogFile(testGradleCatalogFileName) {
 		t.Fatalf("expected %s to be treated as a cache-relevant Gradle catalog", testGradleCatalogFileName)

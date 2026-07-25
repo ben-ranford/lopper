@@ -62,7 +62,7 @@ func testJVMMissingDetectionPathAndSkippedDirHelper(t *testing.T) {
 	if dirEntry == nil {
 		t.Fatalf("expected .gradle entry")
 	}
-	if err := walkJVMDetectionEntry(skipDir, dirEntry, map[string]struct{}{}, &language.Detection{}, new(int), 8); !errors.Is(err, filepath.SkipDir) {
+	if err := walkJVMDetectionEntry(repo, skipDir, dirEntry, map[string]struct{}{}, &language.Detection{}, new(int), 8); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected detection walker to skip .gradle, got %v", err)
 	}
 	if _, err := scanRepo(context.Background(), repo, nil, nil); err != nil {
