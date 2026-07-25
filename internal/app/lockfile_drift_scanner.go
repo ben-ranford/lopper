@@ -551,13 +551,13 @@ func shouldSkipMissingLockfileForManifest(snapshot lockfileDirSnapshot, rule loc
 }
 
 func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, error) {
-	content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
-	if err != nil {
-		return false, err
-	}
 	sectionNeedle := manifestMatcherNeedle(rule)
 	switch {
 	case sectionNeedle != "":
+		content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
+		if err != nil {
+			return false, err
+		}
 		if !pyprojectSectionNeedleMatchesContent(sectionNeedle, content) {
 			return true, nil
 		}
@@ -569,6 +569,14 @@ func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot,
 		if !matched {
 			return true, nil
 		}
+	default:
+		if !manifestNeedsContentInspection(manifestName) {
+			return false, nil
+		}
+	}
+	content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
+	if err != nil {
+		return false, err
 	}
 	text := string(content)
 	switch manifestName {
@@ -587,6 +595,15 @@ func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot,
 		return !strings.Contains(text, "[[bin]]"), nil
 	}
 	return false, nil
+}
+
+func manifestNeedsContentInspection(manifestName string) bool {
+	switch manifestName {
+	case "go.mod", "Cargo.toml":
+		return true
+	default:
+		return false
+	}
 }
 
 func evaluateLockfileDir(snapshot lockfileDirSnapshot, gitContext lockfileGitContext) ([]lockfileDriftFinding, error) {

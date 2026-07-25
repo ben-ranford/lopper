@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -21,6 +24,9 @@ func evaluateLockfileDriftPolicyWithFeatures(ctx context.Context, repoPath, poli
 	}
 	failMode := normalizedPolicy == "fail"
 	driftWarnings, err := detectLockfileDriftWithFeatures(ctx, repoPath, failMode, features)
+	if err != nil && !failMode && errors.Is(err, safeio.ErrFileTooLarge) {
+		return append(driftWarnings, oversizedLockfileDriftWarning(err)), nil
+	}
 	if err != nil || len(driftWarnings) == 0 {
 		return driftWarnings, err
 	}
@@ -28,6 +34,10 @@ func evaluateLockfileDriftPolicyWithFeatures(ctx context.Context, repoPath, poli
 		return driftWarnings, formatLockfileDriftError(driftWarnings)
 	}
 	return driftWarnings, nil
+}
+
+func oversizedLockfileDriftWarning(err error) string {
+	return fmt.Sprintf("%sunable to safely inspect manifest during lockfile drift analysis: %v", lockfileDriftWarningPrefix, err)
 }
 
 func detectLockfileDrift(ctx context.Context, repoPath string, stopOnFirst bool) ([]string, error) {

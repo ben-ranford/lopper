@@ -2111,20 +2111,33 @@ func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *te
 	}
 }
 
-func TestDetectLockfileDriftRejectsOversizedNonWhitelistedManifest(t *testing.T) {
+func TestDetectLockfileDriftSkipsPresenceOnlyManifestReads(t *testing.T) {
 	repo := t.TempDir()
 	manifestBody := `{"padding":"` + strings.Repeat("x", int(lockfileDriftManifestReadLimit)) + `"}`
 	writeFile(t, filepath.Join(repo, manifestFileName), manifestBody)
 
-	_, err := detectLockfileDrift(context.Background(), repo, false)
-	if err == nil {
-		t.Fatal("expected oversized package.json read to fail")
+	originalReadFileUnderLimit := readFileUnderLimitFn
+	t.Cleanup(func() {
+		readFileUnderLimitFn = originalReadFileUnderLimit
+	})
+
+	reads := 0
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
+		if filepath.Base(targetPath) == manifestFileName {
+			reads++
+		}
+		return safeio.ReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
-	if !strings.Contains(err.Error(), "read package.json for lockfile drift detection") {
-		t.Fatalf("expected package.json read error context, got %v", err)
+
+	warnings, err := detectLockfileDrift(context.Background(), repo, false)
+	if err != nil {
+		t.Fatalf(detectLockfileDriftFmt, err)
 	}
-	if !errors.Is(err, safeio.ErrFileTooLarge) {
-		t.Fatalf("expected ErrFileTooLarge for package.json, got %v", err)
+	if reads != 0 {
+		t.Fatalf("expected package.json presence-only rule to avoid manifest reads, got %d", reads)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], manifestFileName) || !strings.Contains(warnings[0], "package-lock.json") {
+		t.Fatalf("expected missing lockfile warning for oversized package.json without reading it, got %#v", warnings)
 	}
 }
 
