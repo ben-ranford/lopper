@@ -89,6 +89,31 @@ func TestExecuteAnalyseAnalyzerError(t *testing.T) {
 	}
 }
 
+func TestExecuteAnalyseRejectsCachePathOutsideRepoWithoutWrites(t *testing.T) {
+	repo := t.TempDir()
+	outsideCache := filepath.Join(t.TempDir(), "cache")
+	analyzer := &fakeAnalyzer{}
+	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Dependency = "lodash"
+	req.Analyse.CacheEnabled = true
+	req.Analyse.CachePath = outsideCache
+
+	_, err := application.Execute(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
+		t.Fatalf("expected outside cache rejection, got %v", err)
+	}
+	if analyzer.called {
+		t.Fatalf("expected analyzer to remain uncalled")
+	}
+	if _, statErr := os.Stat(outsideCache); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no outside cache writes, stat err=%v", statErr)
+	}
+}
+
 func TestExecuteAnalyseOutputFile(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{

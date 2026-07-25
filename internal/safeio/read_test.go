@@ -388,6 +388,19 @@ func TestReadFileWithinRootLimitPreservesNestedMissingTargetAndAncestorCloseErro
 	}
 }
 
+func TestReadFileWithinRootLimitTranslatesMissingOpenError(t *testing.T) {
+	root := &fakeRoot{
+		open: func(string) (File, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+
+	_, err := ReadFileWithinRootLimit(root, writeTestFileName, 1)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing file error, got %v", err)
+	}
+}
+
 func TestReadFileWithinRootLimitRejectsFileReplacementBetweenLstatAndOpen(t *testing.T) {
 	rootDir := canonicalTempDir(t)
 	targetName := "swap.txt"

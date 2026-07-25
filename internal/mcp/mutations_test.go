@@ -442,6 +442,7 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 	}{
 		{"bad repo", mutationAnalysisArguments{RepoPath: filepath.Join(repo, "missing"), Dependency: "dep"}, "stat repoPath"},
 		{"missing dependency", mutationAnalysisArguments{RepoPath: repo}, "dependency"},
+		{"cache path escape", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", CacheEnabled: boolPtr(true), CachePath: filepath.Join(t.TempDir(), "cache")}, "cachePath must stay within repoPath"},
 		{"bad scope", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", ScopeMode: "bad"}, "scopeMode"},
 		{"bad threshold", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", LowConfidenceWarningPercent: intPtr(101)}, "low_confidence"},
 		{"unknown feature", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", EnableFeatures: []string{"missing"}}, "unknown feature"},

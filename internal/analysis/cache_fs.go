@@ -95,10 +95,18 @@ func writeHexDigest(w io.Writer, digest [sha256.Size]byte) error {
 	return err
 }
 
-func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+func writeFileAtomic(rootPath, targetPath string, data []byte) error {
+	rootPath = filepath.Clean(rootPath)
+	targetPath = filepath.Clean(targetPath)
+	root, rel, err := openConfinedWriteRootUnder(rootPath, targetPath)
+	if err != nil {
 		return err
 	}
-	return safeio.WriteFileReplacingUnder(dir, path, data, 0o600)
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	if writeErr := root.WriteFileReplacingParents(rel, data, 0o600, 0o750); writeErr != nil {
+		err = writeErr
+	}
+	return err
 }

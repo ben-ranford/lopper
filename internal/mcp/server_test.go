@@ -397,6 +397,55 @@ func TestCallToolTimeoutCancelsAnalysis(t *testing.T) {
 	}
 }
 
+func TestCallAnalyseDependencyRejectsCachePathOutsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	outsideCache := filepath.Join(t.TempDir(), "cache")
+	fake := &fakeAnalyser{report: sampleReport(repo)}
+	server := NewServer(Options{Analyzer: fake})
+
+	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"cachePath":    outsideCache,
+		"cacheEnabled": true,
+	})
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "cachePath must stay within repoPath") {
+		t.Fatalf("expected outside cache rejection, got %#v", result)
+	}
+	if fake.called {
+		t.Fatalf("expected analyser to remain uncalled")
+	}
+	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
+		t.Fatalf("expected no outside cache writes, stat err=%v", err)
+	}
+}
+
+func TestCallAnalyseDependencyRejectsSymlinkedCachePathEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	fake := &fakeAnalyser{report: sampleReport(repo)}
+	server := NewServer(Options{Analyzer: fake})
+	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"cachePath":    filepath.Join("tmp", "cache"),
+		"cacheEnabled": true,
+	})
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "cachePath must stay within repoPath") {
+		t.Fatalf("expected symlink escape rejection, got %#v", result)
+	}
+	if fake.called {
+		t.Fatalf("expected analyser to remain uncalled")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "cache")); !os.IsNotExist(err) {
+		t.Fatalf("expected no outside cache writes, stat err=%v", err)
+	}
+}
+
 func TestListLanguagesReturnsAdapterAndConfigMetadata(t *testing.T) {
 	registry := language.NewRegistry()
 	if err := registry.Register(newTestAdapter("js-ts", "javascript", "typescript")); err != nil {

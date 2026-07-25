@@ -39,6 +39,10 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 	if err != nil {
 		return nil, err
 	}
+	req.Cache, err = ResolveTrustedCacheOptions(repoPath, req.Cache)
+	if err != nil {
+		return nil, err
+	}
 
 	req.ScopeMode = normalizeScopeMode(req.ScopeMode)
 	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScope(repoPath, req.IncludePatterns, req.ExcludePatterns)

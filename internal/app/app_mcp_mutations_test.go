@@ -9,12 +9,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
+	"github.com/ben-ranford/lopper/internal/mcp"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
+	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
 const (
@@ -237,6 +241,62 @@ func TestExecuteMCPMutationRejectsDirtyWorktree(t *testing.T) {
 	}
 	if got := readTextFile(t, sourcePath); got != mcpMapSource {
 		t.Fatalf("expected source to remain unchanged, got %q", got)
+	}
+}
+
+func TestMCPMutationPinnedCachePathSurvivesSymlinkRetargetBeforeFirstWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo, _ := setupMCPGitLodashFixture(t)
+	allowedTarget := filepath.Join(repo, "allowed-target")
+	redirectedTarget := t.TempDir()
+	if err := os.MkdirAll(allowedTarget, 0o755); err != nil {
+		t.Fatalf("mkdir allowed target: %v", err)
+	}
+	linkPath := filepath.Join(repo, "allowed-link")
+	if err := os.Symlink(filepath.Base(allowedTarget), linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	cacheOptions, err := analysis.ResolveTrustedCacheOptions(repo, &analysis.CacheOptions{
+		Enabled: true,
+		Path:    filepath.Join("allowed-link", "cache"),
+	})
+	if err != nil {
+		t.Fatalf("resolve trusted cache options: %v", err)
+	}
+	req := newMCPAnalyseRequest(mcp.AnalysisMutationRequest{
+		RepoPath:        repo,
+		Dependency:      "lodash",
+		Language:        "js-ts",
+		CacheEnabled:    cacheOptions.Enabled,
+		CachePath:       cacheOptions.Path,
+		CachePinnedPath: cacheOptions.PinnedPath,
+		CacheReadOnly:   cacheOptions.ReadOnly,
+	})
+	req.Analyse.Thresholds = thresholds.Defaults()
+
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatalf("remove original symlink: %v", err)
+	}
+	if err := os.Symlink(redirectedTarget, linkPath); err != nil {
+		t.Fatalf("retarget cache symlink: %v", err)
+	}
+
+	application := &App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}
+	if _, err := application.executeAnalyse(context.Background(), req); err != nil {
+		t.Fatalf("execute analyse with pinned cache path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(allowedTarget, "cache", "keys")); err != nil {
+		t.Fatalf("expected pinned keys dir in original target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(allowedTarget, "cache", "objects")); err != nil {
+		t.Fatalf("expected pinned objects dir in original target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(redirectedTarget, "cache")); !os.IsNotExist(err) {
+		t.Fatalf("expected retargeted outside cache root to remain absent, got err=%v", err)
 	}
 }
 

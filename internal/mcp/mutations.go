@@ -36,6 +36,7 @@ type AnalysisMutationRequest struct {
 	ExcludePatterns   []string
 	CacheEnabled      bool
 	CachePath         string
+	CachePinnedPath   string
 	CacheReadOnly     bool
 	RuntimeProfile    string
 	RuntimeTracePath  string
@@ -328,6 +329,10 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
+	cacheOptions, err := resolveMCPAnalysisCacheOptions(repoPath, cacheEnabled(args.CacheEnabled), args.CachePath, args.CacheReadOnly)
+	if err != nil {
+		return AnalysisMutationRequest{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return AnalysisMutationRequest{}, err
 	}
@@ -341,9 +346,10 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 		ConfigPath:       strings.TrimSpace(loadResult.ConfigPath),
 		IncludePatterns:  mergeStringOptions(loadResult.Scope.Include, args.Include),
 		ExcludePatterns:  mergeStringOptions(loadResult.Scope.Exclude, args.Exclude),
-		CacheEnabled:     cacheEnabled(args.CacheEnabled),
-		CachePath:        strings.TrimSpace(args.CachePath),
-		CacheReadOnly:    args.CacheReadOnly,
+		CacheEnabled:     cacheOptions.Enabled,
+		CachePath:        cacheOptions.Path,
+		CachePinnedPath:  cacheOptions.PinnedPath,
+		CacheReadOnly:    cacheOptions.ReadOnly,
 		RuntimeProfile:   runtimeProfileOrDefault(args.RuntimeProfile),
 		RuntimeTracePath: strings.TrimSpace(args.RuntimeTracePath),
 		Features:         features,

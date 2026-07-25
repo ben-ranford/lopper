@@ -68,3 +68,20 @@ func TestScopedCandidateRootsUsesExplicitChangedFilesWithoutWorkspaceFallback(t 
 		t.Fatalf("expected explicit changed files to select package b only, got %#v", roots)
 	}
 }
+
+func TestScopeMetadataIncludesRepoRootAsDot(t *testing.T) {
+	repoRoot := t.TempDir()
+	metadata := scopeMetadata("unexpected", repoRoot, []string{
+		filepath.Join(repoRoot, "packages", "b"),
+		repoRoot,
+	})
+	if metadata == nil {
+		t.Fatalf("expected scope metadata")
+	}
+	if metadata.Mode != ScopeModePackage {
+		t.Fatalf("expected scope mode normalization to package, got %q", metadata.Mode)
+	}
+	if len(metadata.Packages) != 2 || metadata.Packages[0] != "." || metadata.Packages[1] != "packages/b" {
+		t.Fatalf("expected repo root package to map to dot, got %#v", metadata.Packages)
+	}
+}

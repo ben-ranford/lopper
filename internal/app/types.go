@@ -52,6 +52,7 @@ type AnalyseRequest struct {
 	Language                string
 	CacheEnabled            bool
 	CachePath               string
+	CachePinnedPath         string
 	CacheReadOnly           bool
 	RuntimeProfile          string
 	BaselinePath            string

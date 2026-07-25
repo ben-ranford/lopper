@@ -97,6 +97,7 @@ func newMCPAnalyseRequest(req mcp.AnalysisMutationRequest) Request {
 	appReq.Analyse.Language = req.Language
 	appReq.Analyse.CacheEnabled = req.CacheEnabled
 	appReq.Analyse.CachePath = req.CachePath
+	appReq.Analyse.CachePinnedPath = req.CachePinnedPath
 	appReq.Analyse.CacheReadOnly = req.CacheReadOnly
 	appReq.Analyse.RuntimeProfile = req.RuntimeProfile
 	appReq.Analyse.RuntimeTracePath = req.RuntimeTracePath

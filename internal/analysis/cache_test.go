@@ -517,7 +517,7 @@ func TestHashFileOrMissingScenarios(t *testing.T) {
 func TestWriteFileAtomicSuccessAndFallbackError(t *testing.T) {
 	repo := t.TempDir()
 	target := filepath.Join(repo, "dir", "file.json")
-	if err := writeFileAtomic(target, []byte(`{"x":1}`)); err != nil {
+	if err := writeFileAtomic(repo, target, []byte(`{"x":1}`)); err != nil {
 		t.Fatalf("write file atomic success: %v", err)
 	}
 	content, err := os.ReadFile(target)
@@ -532,7 +532,7 @@ func TestWriteFileAtomicSuccessAndFallbackError(t *testing.T) {
 	if err := os.MkdirAll(dirTarget, 0o755); err != nil {
 		t.Fatalf("mkdir dirTarget: %v", err)
 	}
-	if writeFileAtomic(dirTarget, []byte("x")) == nil {
+	if writeFileAtomic(repo, dirTarget, []byte("x")) == nil {
 		t.Fatalf("expected error when target path is an existing directory")
 	}
 }
@@ -544,7 +544,7 @@ func TestWriteFileAtomicOverwritesExistingFilePreservingMode(t *testing.T) {
 		t.Fatalf("seed target file: %v", err)
 	}
 
-	if err := writeFileAtomic(target, []byte("after")); err != nil {
+	if err := writeFileAtomic(repo, target, []byte("after")); err != nil {
 		t.Fatalf("overwrite existing cache file: %v", err)
 	}
 

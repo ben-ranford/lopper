@@ -294,6 +294,10 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
+	cacheOptions, err := resolveMCPAnalysisCacheOptions(repoPath, cacheEnabled(args.CacheEnabled), args.CachePath, args.CacheReadOnly)
+	if err != nil {
+		return resolvedToolRequest{}, err
+	}
 	analysisReq := newAnalysisRequest(args, analysisRequestContext{
 		repoPath:   repoPath,
 		dependency: dependency,
@@ -302,6 +306,7 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 		loadResult: loadResult,
 		thresholds: thresholdsValue,
 		featureSet: features,
+		cache:      cacheOptions,
 	})
 
 	baselinePath, baselineKey, currentKey, err := resolveBaselineComparison(repoPath, args)
@@ -333,6 +338,7 @@ type analysisRequestContext struct {
 	loadResult thresholds.LoadResult
 	thresholds thresholds.Values
 	featureSet featureflags.Set
+	cache      *analysis.CacheOptions
 }
 
 func resolveAnalysisTarget(args analysisToolArguments, kind analysisToolKind) (string, int, error) {
@@ -391,11 +397,7 @@ func newAnalysisRequest(args analysisToolArguments, req analysisRequestContext) 
 		RemovalCandidateWeights:           &weights,
 		LicenseDenyList:                   append([]string{}, req.thresholds.LicenseDenyList...),
 		IncludeRegistryProvenance:         req.thresholds.LicenseIncludeRegistryProvenance,
-		Cache: &analysis.CacheOptions{
-			Enabled:  cacheEnabled(args.CacheEnabled),
-			Path:     strings.TrimSpace(args.CachePath),
-			ReadOnly: args.CacheReadOnly,
-		},
+		Cache:                             req.cache,
 	}
 }
 
@@ -823,6 +825,14 @@ func cacheEnabled(value *bool) bool {
 		return true
 	}
 	return *value
+}
+
+func resolveMCPAnalysisCacheOptions(repoPath string, enabled bool, rawPath string, readOnly bool) (*analysis.CacheOptions, error) {
+	return analysis.ResolveTrustedCacheOptions(repoPath, &analysis.CacheOptions{
+		Enabled:  enabled,
+		Path:     rawPath,
+		ReadOnly: readOnly,
+	})
 }
 
 func mergeStringOptions(configValues, argumentValues []string) []string {

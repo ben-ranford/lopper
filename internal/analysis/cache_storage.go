@@ -22,8 +22,9 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return report.Report{}, false, nil
 	}
-	pointerPath := filepath.Join(c.options.Path, "keys", entry.KeyDigest+".json")
-	pointerData, err := safeio.ReadFileUnder(c.options.Path, pointerPath)
+	writePath := c.options.writePath()
+	pointerPath := filepath.Join(writePath, "keys", entry.KeyDigest+".json")
+	pointerData, err := safeio.ReadFileUnder(writePath, pointerPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.metadata.Misses++
@@ -43,8 +44,8 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, nil
 	}
 
-	objectPath := filepath.Join(c.options.Path, "objects", pointer.ObjectDigest+".json")
-	objectData, err := safeio.ReadFileUnder(c.options.Path, objectPath)
+	objectPath := filepath.Join(writePath, "objects", pointer.ObjectDigest+".json")
+	objectData, err := safeio.ReadFileUnder(writePath, objectPath)
 	if err != nil {
 		c.metadata.Misses++
 		reason := "object-read-error"
@@ -75,12 +76,13 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 		return err
 	}
 	objectDigest := sha256Hex(serializedPayload)
-	objectPath := filepath.Join(c.options.Path, "objects", objectDigest+".json")
+	writePath := c.options.writePath()
+	objectPath := filepath.Join(writePath, "objects", objectDigest+".json")
 	if _, err := os.Stat(objectPath); err != nil {
 		if !os.IsNotExist(err) {
 			return err
 		}
-		if err := writeFileAtomic(objectPath, serializedPayload); err != nil {
+		if err := writeFileAtomic(writePath, objectPath, serializedPayload); err != nil {
 			return err
 		}
 	}
@@ -90,8 +92,8 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	if err != nil {
 		return err
 	}
-	pointerPath := filepath.Join(c.options.Path, "keys", entry.KeyDigest+".json")
-	if err := writeFileAtomic(pointerPath, serializedPointer); err != nil {
+	pointerPath := filepath.Join(writePath, "keys", entry.KeyDigest+".json")
+	if err := writeFileAtomic(writePath, pointerPath, serializedPointer); err != nil {
 		return err
 	}
 	c.metadata.Writes++

@@ -72,7 +72,7 @@ func TestAnalysisCacheAdditionalAtomicWriteErrors(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write blocker: %v", err)
 	}
-	if writeFileAtomic(filepath.Join(blocker, "child.json"), []byte("x")) == nil {
+	if writeFileAtomic(blocker, filepath.Join(blocker, "child.json"), []byte("x")) == nil {
 		t.Fatalf("expected atomic write to fail when parent path is a file")
 	}
 	if entries, err := os.ReadDir(dir); err != nil {
@@ -94,7 +94,7 @@ func TestAnalysisCacheAdditionalAtomicWriteErrors(t *testing.T) {
 			t.Fatalf("restore readonly dir perms: %v", err)
 		}
 	})
-	if writeFileAtomic(filepath.Join(readOnlyDir, "child.json"), []byte("x")) == nil {
+	if writeFileAtomic(readOnlyDir, filepath.Join(readOnlyDir, "child.json"), []byte("x")) == nil {
 		t.Fatalf("expected atomic write to fail when temp file cannot be created")
 	}
 }

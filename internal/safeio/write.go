@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+type canonicalTargetKind int
+
+const (
+	canonicalTargetDirectory canonicalTargetKind = iota
+	canonicalTargetFile
+)
+
 // WriteRoot pins a filesystem root for path-confined atomic writes.
 type WriteRoot struct {
 	root    Root
@@ -39,6 +46,18 @@ func OpenCanonicalWriteRoot(rootDir string) (*WriteRoot, error) {
 	return &WriteRoot{root: root, rootAbs: rootAbs}, nil
 }
 
+// OpenExistingCanonicalWriteRoot opens the deepest existing ancestor needed to
+// create or update targetPath without following symlinks during ancestor
+// discovery. It returns the pinned ancestor root and the remaining relative
+// suffix under that root.
+func OpenExistingCanonicalWriteRoot(targetPath string, isDir bool) (*WriteRoot, string, error) {
+	kind := canonicalTargetFile
+	if isDir {
+		kind = canonicalTargetDirectory
+	}
+	return openExistingCanonicalWriteRoot(targetPath, kind)
+}
+
 func openWriteRoot(rootAbs string) (*WriteRoot, error) {
 	root, err := fileSystem.OpenRoot(rootAbs)
 	if err != nil {
@@ -52,6 +71,32 @@ func (r *WriteRoot) Close() error {
 	return r.root.Close()
 }
 
+// EnsureDir creates targetPath as a directory under the pinned root, creating
+// missing parent directories without following symlinks.
+func (r *WriteRoot) EnsureDir(targetPath string, perm os.FileMode) (returnErr error) {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	parent, closeParent, err := r.openTargetParent(target, true, perm)
+	if err != nil {
+		return err
+	}
+	if closeParent {
+		defer func() {
+			if closeErr := parent.Close(); closeErr != nil {
+				returnErr = errors.Join(returnErr, closeErr)
+			}
+		}()
+	}
+	name := filepath.Base(target.rel)
+	child, err := openTargetParentChild(parent, name, target.abs, true, perm)
+	if err != nil {
+		return err
+	}
+	return child.Close()
+}
+
 // WriteFileCreatingParents atomically writes a root-relative file, creating
 // missing parent directories inside the pinned root.
 func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
@@ -59,7 +104,19 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return r.writeFileAtTarget(target, data, perm, true, parentPerm)
+	return r.writeFileAtTarget(target, data, perm, true, parentPerm, false)
+}
+
+// WriteFileReplacingParents atomically writes a root-relative file, creating
+// missing parent directories inside the pinned root. Existing regular targets
+// retain their permission bits, and Windows keeps the established fallback
+// behavior for replace-existing failures on the final file.
+func (r *WriteRoot) WriteFileReplacingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.writeFileAtTarget(target, data, perm, true, parentPerm, true)
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
@@ -73,7 +130,92 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	return rootedTarget{rootAbs: r.rootAbs, rel: rel, abs: filepath.Join(r.rootAbs, rel)}, nil
 }
 
-func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
+func openExistingCanonicalWriteRoot(targetPath string, kind canonicalTargetKind) (_ *WriteRoot, rel string, err error) {
+	targetAbs, err := resolveAbsolutePath("target", targetPath)
+	if err != nil {
+		return nil, "", err
+	}
+	searchAbs, targetRelParts := canonicalWriteTargetPlan(targetAbs, kind)
+
+	volumeRoot := filepath.VolumeName(searchAbs) + string(os.PathSeparator)
+	root, err := fileSystem.OpenRootNoFollow(volumeRoot)
+	if err != nil {
+		return nil, "", fmt.Errorf("open canonical root: %w", err)
+	}
+
+	current := root
+	currentAbs := volumeRoot
+	currentOwned := true
+	defer func() {
+		if err == nil {
+			return
+		}
+		if closeErr := closeOwnedRoot(current, currentOwned); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
+	relToSearch, err := filepath.Rel(volumeRoot, searchAbs)
+	if err != nil {
+		return nil, "", err
+	}
+	if relToSearch == "." {
+		return &WriteRoot{root: current, rootAbs: currentAbs}, joinCanonicalRelative(targetRelParts), nil
+	}
+	searchParts := strings.Split(relToSearch, string(os.PathSeparator))
+	for i, part := range searchParts {
+		if part == "" || part == "." {
+			continue
+		}
+		partAbs := filepath.Join(currentAbs, part)
+		next, nextErr := openTargetParentChild(current, part, partAbs, false, 0)
+		if os.IsNotExist(nextErr) {
+			targetRelParts = append(searchParts[i:], targetRelParts...)
+			return &WriteRoot{root: current, rootAbs: currentAbs}, joinCanonicalRelative(targetRelParts), nil
+		}
+		if nextErr != nil {
+			return nil, "", nextErr
+		}
+		if currentOwned {
+			if closeErr := current.Close(); closeErr != nil {
+				if nextCloseErr := next.Close(); nextCloseErr != nil {
+					return nil, "", errors.Join(closeErr, nextCloseErr)
+				}
+				return nil, "", closeErr
+			}
+		}
+		current = next
+		currentAbs = partAbs
+		currentOwned = true
+	}
+	return &WriteRoot{root: current, rootAbs: currentAbs}, joinCanonicalRelative(targetRelParts), nil
+}
+
+func canonicalWriteTargetPlan(targetAbs string, kind canonicalTargetKind) (string, []string) {
+	searchAbs := filepath.Clean(targetAbs)
+	targetRelParts := make([]string, 0, 8)
+	if kind == canonicalTargetFile {
+		targetRelParts = append(targetRelParts, filepath.Base(searchAbs))
+		searchAbs = filepath.Dir(searchAbs)
+	}
+	return searchAbs, targetRelParts
+}
+
+func joinCanonicalRelative(parts []string) string {
+	if len(parts) == 0 {
+		return "."
+	}
+	return filepath.Join(parts...)
+}
+
+func closeOwnedRoot(root Root, owned bool) error {
+	if !owned {
+		return nil
+	}
+	return root.Close()
+}
+
+func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, replacing bool) (returnErr error) {
 	parent, closeParent, err := r.openTargetParent(target, createParents, parentPerm)
 	if err != nil {
 		return err
@@ -88,8 +230,12 @@ func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.
 	if err := writeFileParentReadyFn(); err != nil {
 		return err
 	}
+	parentTargetRel := filepath.Base(target.rel)
+	if replacing {
+		return WriteFileReplacingWithinRoot(parent, parentTargetRel, data, perm)
+	}
 	parentTarget := target
-	parentTarget.rel = filepath.Base(target.rel)
+	parentTarget.rel = parentTargetRel
 	return writeFileAtRoot(parent, parentTarget, data, perm)
 }
 
@@ -202,7 +348,7 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
-	return root.writeFileAtTarget(target, data, perm, false, 0)
+	return root.writeFileAtTarget(target, data, perm, false, 0, false)
 }
 
 func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {

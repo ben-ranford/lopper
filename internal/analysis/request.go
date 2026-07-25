@@ -12,9 +12,10 @@ const (
 )
 
 type CacheOptions struct {
-	Enabled  bool
-	Path     string
-	ReadOnly bool
+	Enabled    bool
+	Path       string
+	ReadOnly   bool
+	PinnedPath string
 }
 
 type Request struct {
