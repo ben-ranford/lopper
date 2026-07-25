@@ -448,10 +448,13 @@ func TestParseRuntimeTraceStateValidation(t *testing.T) {
 	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"wrong","command":"npm test"}`)); ok {
 		t.Fatalf("expected wrong runtime trace schema to be rejected")
 	}
-	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"  ","provider":"node"}`)); ok {
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"npm test","provider":"node"}`)); ok {
+		t.Fatalf("expected legacy runtime trace schema to be rejected")
+	}
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v3","command":"  ","provider":"node"}`)); ok {
 		t.Fatalf("expected blank runtime trace command to be rejected")
 	}
-	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"npm test","provider":"ruby"}`)); ok {
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v3","command":"npm test","provider":"ruby"}`)); ok {
 		t.Fatalf("expected unsupported runtime trace provider to be rejected")
 	}
 }
@@ -465,6 +468,52 @@ func TestWriteRuntimeTraceStateAndReuseChecks(t *testing.T) {
 	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, true)
 	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderPython, false)
 	assertRuntimeReuseResult(t, tracePath, "npm run test", CaptureProviderNode, false)
+}
+
+func TestCaptureReuseIfUnchangedInvalidatesLegacyV2State(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	counterPath := filepath.Join(repo, "counter.txt")
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"))
+	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace parent: %v", err)
+	}
+	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+	if err := os.WriteFile(runtimeTraceStatePath(tracePath), []byte(`{"schema":"v2","command":"npm test","provider":"node"}`), 0o600); err != nil {
+		t.Fatalf("write legacy trace state: %v", err)
+	}
+
+	req := CaptureRequest{
+		RepoPath:         repo,
+		TracePath:        tracePath,
+		Command:          npmTestCommand,
+		Provider:         CaptureProviderNode,
+		ReuseIfUnchanged: true,
+	}
+	if err := Capture(context.Background(), req); err != nil {
+		t.Fatalf("capture with legacy state: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 1 {
+		t.Fatalf("expected legacy v2 state to force recapture, got %d executions", got)
+	}
+	stateData, err := os.ReadFile(runtimeTraceStatePath(tracePath))
+	if err != nil {
+		t.Fatalf("read rewritten runtime trace state: %v", err)
+	}
+	if _, ok := parseRuntimeTraceState(stateData); !ok {
+		t.Fatalf("expected recapture to rewrite runtime trace state with current schema")
+	}
+
+	if err := Capture(context.Background(), req); err != nil {
+		t.Fatalf("capture after recapture: %v", err)
+	}
+	if got := readCaptureCounter(t, counterPath); got != 1 {
+		t.Fatalf("expected rewritten v3 state to reuse trace, got %d executions", got)
+	}
 }
 
 func TestWriteRuntimeTraceStateFailsWhenParentMissing(t *testing.T) {

@@ -48,6 +48,20 @@ func TestNormalizeRuntimeContextLabelReturnsEmptyForDotRelativePaths(t *testing.
 	}
 }
 
+func TestNormalizeRuntimeContextLabelReturnsEmptyForWhitespaceAndControlCharacters(t *testing.T) {
+	for _, value := range []string{
+		"lodash map",
+		"lodash/map\nsecret",
+		"lodash/map\tsecret",
+		"lodash/map\x00secret",
+		" node:fs",
+	} {
+		if got := normalizeRuntimeContextLabel(value); got != "" {
+			t.Fatalf("expected whitespace/control label %q to be redacted, got %q", value, got)
+		}
+	}
+}
+
 func TestLooksLikePackageStyleRuntimeContextLabel(t *testing.T) {
 	tests := []struct {
 		value string
@@ -80,8 +94,12 @@ func TestLooksLikePackageStyleRuntimeContextLabel(t *testing.T) {
 		{value: "pkg/~/.ssh/id_rsa", want: false},
 		{value: "@scope", want: false},
 		{value: "pkg//index.js", want: false},
+		{value: "pkg/\nsecret.js", want: false},
+		{value: "pkg/\x00secret.js", want: false},
+		{value: "pkg/with space.js", want: false},
 		{value: "node:fs", want: true},
 		{value: "node:fs/promises", want: true},
+		{value: "node:fs/promises\t", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.value, func(t *testing.T) {
@@ -231,9 +249,13 @@ func TestNormalizeRuntimeContextValueParsesFileURLs(t *testing.T) {
 		{name: "encoded traversal", value: strings.TrimSuffix(repoURL, "/") + "/src%2F..%2F..%2FUsers/alice/main.js", want: ""},
 		{name: "malformed escape", value: strings.TrimSuffix(repoURL, "/") + "/src/bad%ZZ.js", want: ""},
 		{name: "node package label", value: "node:internal/modules/cjs/loader", want: "node:internal/modules/cjs/loader"},
+		{name: "reject leading whitespace around node package label", value: " node:internal/modules/cjs/loader", want: ""},
+		{name: "reject trailing whitespace around node package label", value: "node:internal/modules/cjs/loader ", want: ""},
 		{name: "package subpath label", value: "lodash/map", want: "lodash/map"},
 		{name: "package file label", value: "lodash/fp.js", want: "lodash/fp.js"},
 		{name: "scoped package file label", value: "@scope/pkg/index.js", want: "@scope/pkg/index.js"},
+		{name: "reject outer whitespace around scoped package file label", value: " @scope/pkg/index.js ", want: ""},
+		{name: "preserve outer whitespace around repo path", value: " src/hello world.js ", want: "src/hello world.js"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

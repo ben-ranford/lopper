@@ -116,9 +116,6 @@ function normalizeRuntimeModuleValue(value, resolved, repoRoot, realpath = fs.re
   if (identifier) {
     return identifier;
   }
-  if (looksLikeContextReference(value)) {
-    return normalizeContextValue(resolved || value, repoRoot, realpath);
-  }
   return "";
 }
 
@@ -162,18 +159,19 @@ function isUnsafeModuleSegment(part) {
 }
 
 function sanitizeNodeModulesResolvedPath(value) {
-  if (!value.startsWith("node_modules/")) {
+  const parts = value.split("/");
+  const nodeModulesIndex = parts.lastIndexOf("node_modules");
+  if (nodeModulesIndex === -1) {
     return value;
   }
-  const suffix = value.slice("node_modules/".length);
-  if (!suffix) {
+  const suffixParts = parts.slice(nodeModulesIndex + 1);
+  if (suffixParts.length === 0) {
     return "";
   }
-  const parts = suffix.split("/");
-  if (parts.some(isUnsafeModuleSegment)) {
+  if (suffixParts.some(isUnsafeModuleSegment)) {
     return "";
   }
-  if (parts[0].startsWith("@") && parts.length < 2) {
+  if (suffixParts[0].startsWith("@") && suffixParts.length < 2) {
     return "";
   }
   return value;

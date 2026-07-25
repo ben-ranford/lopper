@@ -48,6 +48,7 @@ test("CommonJS hook persists only sanitized artifact values", (t) => {
     events.filter((event) => event.parent === "main.cjs" && event.module === "" && event.resolved === "").length,
     5,
   );
+  assert.deepEqual(findModuleEvents(events, ["main.cjs", "local.cjs"]), []);
 });
 
 test("ESM loader persists only sanitized artifact values", (t) => {
@@ -89,6 +90,7 @@ test("ESM loader persists only sanitized artifact values", (t) => {
     events.filter((event) => event.parent === "main.mjs" && event.module === "" && event.resolved === "").length,
     5,
   );
+  assert.deepEqual(findModuleEvents(events, ["main.mjs", "local.mjs"]), []);
 });
 
 function createNodeFixture(t, format) {
@@ -100,6 +102,7 @@ function createNodeFixture(t, format) {
   const extension = format === "esm" ? "mjs" : "cjs";
   const entrypoint = path.join(repoRoot, `main.${extension}`);
   const outsidePath = path.join(fixtureRoot, `outside.${extension}`);
+  const localPath = path.join(repoRoot, `local.${extension}`);
   const tracePath = path.join(fixtureRoot, `${format}.ndjson`);
 
   fs.mkdirSync(packageRoot, { recursive: true });
@@ -136,10 +139,12 @@ function createNodeFixture(t, format) {
     format === "esm" ? "export default 5;\n" : "module.exports = 5;\n",
   );
   fs.writeFileSync(outsidePath, format === "esm" ? "export default 1;\n" : "module.exports = 1;\n");
+  fs.writeFileSync(localPath, format === "esm" ? "export default 6;\n" : "module.exports = 6;\n");
   fs.writeFileSync(
     entrypoint,
     format === "esm"
       ? [
+          'import "./local.mjs";',
           'import "fixture-dep";',
           'import "fixture-dep/C:/Users/alice/private.mjs";',
           'import "fixture-dep/https:/secret.mjs";',
@@ -149,6 +154,7 @@ function createNodeFixture(t, format) {
           "",
         ].join("\n")
       : [
+          'require("./local.cjs");',
           'require("fixture-dep");',
           'require("fixture-dep/C:/Users/alice/private.cjs");',
           'require("fixture-dep/https:/secret.cjs");',
@@ -181,6 +187,10 @@ function readEvents(tracePath) {
 
 function findResolvedEvents(events, resolvedValues) {
   return events.filter((event) => resolvedValues.includes(event.resolved));
+}
+
+function findModuleEvents(events, moduleValues) {
+  return events.filter((event) => moduleValues.includes(event.module));
 }
 
 function assertArtifactPrivacy(events, fixture) {

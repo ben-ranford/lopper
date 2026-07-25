@@ -187,15 +187,31 @@ test("sanitizes runtime module and resolved artifact values", () => {
   const repoSrcDir = path.join(repoRoot, "src");
   const repoEntryPath = path.join(repoSrcDir, "main.mjs");
   const repoDepPath = path.join(repoRoot, "node_modules", "lodash", "map.js");
+  const nestedRepoDepPath = path.join(repoRoot, "packages", "web", "node_modules", "lodash", "map.js");
+  const nestedHybridDepPath = path.join(
+    repoRoot,
+    "packages",
+    "web",
+    "node_modules",
+    "fixture-dep",
+    "C:",
+    "Users",
+    "alice",
+    "private.mjs",
+  );
   const hiddenRepoDepPath = path.join(repoRoot, "node_modules", "fixture-dep", ".env", "private.mjs");
   const tildeRepoDepPath = path.join(repoRoot, "node_modules", "fixture-dep", "~", ".ssh", "id_rsa.mjs");
   const foreignPath = path.join(testRoot, "foreign.js");
   fs.mkdirSync(path.dirname(repoDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nestedRepoDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nestedHybridDepPath), { recursive: true });
   fs.mkdirSync(path.dirname(hiddenRepoDepPath), { recursive: true });
   fs.mkdirSync(path.dirname(tildeRepoDepPath), { recursive: true });
   fs.mkdirSync(repoSrcDir, { recursive: true });
   fs.writeFileSync(repoEntryPath, "export {};\n", "utf8");
   fs.writeFileSync(repoDepPath, "export default function map() {}\n", "utf8");
+  fs.writeFileSync(nestedRepoDepPath, "export default function nestedMap() {}\n", "utf8");
+  fs.writeFileSync(nestedHybridDepPath, "export default 7;\n", "utf8");
   fs.writeFileSync(hiddenRepoDepPath, "export default 2;\n", "utf8");
   fs.writeFileSync(tildeRepoDepPath, "export default 3;\n", "utf8");
   fs.writeFileSync(foreignPath, "export {};\n", "utf8");
@@ -212,17 +228,36 @@ test("sanitizes runtime module and resolved artifact values", () => {
       repoRoot,
       realpath,
     ),
-    "src/main.mjs",
+    "",
   );
   assert.equal(
     normalizeRuntimeResolvedValue(pathToFileURL(repoDepPath).href, repoRoot, realpath),
     "node_modules/lodash/map.js",
   );
+  assert.equal(
+    normalizeRuntimeResolvedValue(nestedRepoDepPath, repoRoot, realpath),
+    "packages/web/node_modules/lodash/map.js",
+  );
   assert.equal(normalizeRuntimeResolvedValue(pathToFileURL(hiddenRepoDepPath).href, repoRoot, realpath), "");
   assert.equal(normalizeRuntimeResolvedValue(pathToFileURL(tildeRepoDepPath).href, repoRoot, realpath), "");
+  assert.equal(
+    normalizeRuntimeResolvedValue(
+      nestedHybridDepPath,
+      repoRoot,
+      realpath,
+    ),
+    "",
+  );
   for (const value of ["lodash/fp.js", "@scope/pkg/index.js", "node:fs", "node:fs/promises"]) {
     assert.equal(normalizeRuntimeModuleValue(value, "", repoRoot, realpath), value);
     assert.equal(normalizeRuntimeResolvedValue(value, repoRoot, realpath), value);
+  }
+  for (const value of [
+    pathToFileURL(repoEntryPath).href,
+    "./src/main.mjs",
+    "../main.mjs",
+  ]) {
+    assert.equal(normalizeRuntimeModuleValue(value, value, repoRoot, realpath), "");
   }
   for (const value of [
     foreignPath,

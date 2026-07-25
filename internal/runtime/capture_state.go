@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const runtimeTraceStateSchema = "v2"
+const runtimeTraceStateSchema = "v3"
 const runtimeTraceStateSuffix = ".state.json"
 
 type runtimeTraceState struct {

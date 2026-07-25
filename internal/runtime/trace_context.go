@@ -4,6 +4,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type traceLoadOptions struct {
@@ -15,15 +17,22 @@ type traceLoadOptions struct {
 }
 
 func normalizeRuntimeContextValue(value string, opts traceLoadOptions) string {
-	rawValue := strings.TrimSpace(value)
-	if rawValue == "" {
+	rawValue := value
+	trimmedValue := strings.TrimSpace(rawValue)
+	if trimmedValue == "" {
 		return ""
 	}
-	if cached, ok := traceLoadContextCacheLookup(opts.contextCache, rawValue); ok {
+	if normalized, ok := normalizeRuntimeContextValueWithOuterWhitespace(rawValue, trimmedValue, opts); ok {
+		if normalized != "" {
+			traceLoadContextCacheStore(opts.contextCache, trimmedValue, normalized)
+		}
+		return normalized
+	}
+	if cached, ok := traceLoadContextCacheLookup(opts.contextCache, trimmedValue); ok {
 		return cached
 	}
-	normalized := normalizeRuntimeContextValueUncached(rawValue, opts)
-	traceLoadContextCacheStore(opts.contextCache, rawValue, normalized)
+	normalized := normalizeRuntimeContextValueUncached(trimmedValue, opts)
+	traceLoadContextCacheStore(opts.contextCache, trimmedValue, normalized)
 	return normalized
 }
 
@@ -34,6 +43,32 @@ func normalizeRuntimeContextValueUncached(value string, opts traceLoadOptions) s
 		}
 	}
 	return normalizeRuntimeContextLabel(value)
+}
+
+func normalizeRuntimeContextValueWithOuterWhitespace(rawValue, trimmedValue string, opts traceLoadOptions) (string, bool) {
+	if rawValue == trimmedValue || !runtimeContextHasOuterWhitespaceOrControl(rawValue) {
+		return "", false
+	}
+	if normalized, ok := normalizeRuntimeContextPath(trimmedValue, opts); ok && normalized != "" {
+		return normalized, true
+	}
+	if looksLikePackageStyleRuntimeContextLabel(trimmedValue) {
+		return "", true
+	}
+	return "", false
+}
+
+func runtimeContextHasOuterWhitespaceOrControl(value string) bool {
+	if value == "" {
+		return false
+	}
+	first, _ := utf8.DecodeRuneInString(value)
+	last, _ := utf8.DecodeLastRuneInString(value)
+	return runtimeContextIsOuterWhitespaceOrControl(first) || runtimeContextIsOuterWhitespaceOrControl(last)
+}
+
+func runtimeContextIsOuterWhitespaceOrControl(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsControl(r)
 }
 
 func normalizeRuntimeContextPath(value string, opts traceLoadOptions) (string, bool) {
@@ -153,6 +188,9 @@ func normalizeRuntimeContextLabel(value string) string {
 	if rejectsRuntimeContextScheme(value) || strings.Contains(value, "://") {
 		return ""
 	}
+	if runtimeLabelContainsWhitespaceOrControl(value) {
+		return ""
+	}
 	if strings.Contains(value, "\\") {
 		return ""
 	}
@@ -170,7 +208,7 @@ func normalizeRuntimeContextLabel(value string) string {
 }
 
 func looksLikePackageStyleRuntimeContextLabel(value string) bool {
-	return looksLikeSafeNodeBuiltinContextLabel(strings.TrimSpace(value)) || len(safeRuntimePackageSegments(value, false, 2)) != 0
+	return looksLikeSafeNodeBuiltinContextLabel(value) || len(safeRuntimePackageSegments(value, false, 2)) != 0
 }
 
 func rejectsRuntimeContextScheme(value string) bool {

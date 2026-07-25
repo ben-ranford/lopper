@@ -492,6 +492,26 @@ func TestLoadForRepoRedactsForeignAbsoluteRuntimeContexts(t *testing.T) {
 	}
 }
 
+func TestLoadForRepoRejectsOuterWhitespaceForPackageStyleContextsBeforeCacheLookup(t *testing.T) {
+	repo := t.TempDir()
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"node:fs","entrypoint":"@scope/pkg/index.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":" node:fs","entrypoint":" @scope/pkg/index.js "}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"node:fs ","entrypoint":"@scope/pkg/index.js\t"}` + "\n"
+
+	tracePath := testutil.WriteTempFile(t, filepath.Join("runtime", "trace.ndjson"), content)
+	trace, err := LoadForRepo(tracePath, repo)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; got["node:fs"] != 1 || len(got) != 1 {
+		t.Fatalf("expected only clean node builtin parent label to survive, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]; got["@scope/pkg/index.js"] != 1 || len(got) != 1 {
+		t.Fatalf("expected only clean scoped package entrypoint label to survive, got %#v", got)
+	}
+}
+
 func TestLoadForRepoSkipsUnsafeNodeModulesHybridResolvedPaths(t *testing.T) {
 	repo := t.TempDir()
 	traceContent :=
@@ -499,7 +519,8 @@ func TestLoadForRepoSkipsUnsafeNodeModulesHybridResolvedPaths(t *testing.T) {
 			`{"resolved":"node_modules/fixture-dep/C:/Users/alice/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
 			`{"resolved":"node_modules/fixture-dep/https:/secret.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
 			`{"resolved":"node_modules/fixture-dep/.env/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
-			`{"resolved":"node_modules/fixture-dep/~/.ssh/id_rsa","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n"
+			`{"resolved":"node_modules/fixture-dep/~/.ssh/id_rsa","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"packages/web/node_modules/fixture-dep/C:/Users/alice/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n"
 
 	trace, err := loadTraceFromContentInRepo(t, repo, traceContent)
 	if err != nil {

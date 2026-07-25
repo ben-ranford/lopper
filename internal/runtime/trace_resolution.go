@@ -198,8 +198,7 @@ func looksLikeSafeNodeBuiltinContextLabel(value string) bool {
 }
 
 func safeRuntimePackageSegments(value string, allowNodeBuiltin bool, minParts int) []string {
-	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || strings.TrimSpace(value) != value || runtimeLabelContainsWhitespaceOrControl(value) {
 		return nil
 	}
 	if allowNodeBuiltin && looksLikeSafeNodeBuiltinContextLabel(value) {
@@ -228,6 +227,15 @@ func safeRuntimePackageSegments(value string, allowNodeBuiltin bool, minParts in
 		return nil
 	}
 	return parts
+}
+
+func runtimeLabelContainsWhitespaceOrControl(value string) bool {
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func isSafeRuntimePackageSegment(part string) bool {
