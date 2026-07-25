@@ -420,6 +420,9 @@ func formatCSVVulnerabilities(findings []VulnerabilityFinding) string {
 		if finding.Reachable {
 			parts = append(parts, "reachable")
 		}
+		if strings.TrimSpace(finding.VersionStatus) != "" {
+			parts = append(parts, "version_status="+finding.VersionStatus)
+		}
 		if strings.TrimSpace(finding.FixedVersion) != "" {
 			parts = append(parts, "fixed="+finding.FixedVersion)
 		}

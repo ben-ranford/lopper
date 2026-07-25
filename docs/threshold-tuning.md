@@ -180,7 +180,10 @@ lopper analyse --top 20 --repo . --language all --format json | jq '.effectivePo
 - If `reachable_vulnerability_priority` is not `off`, CI exits non-zero when
   reachable advisory findings meet or exceed that priority. With a baseline,
   only `baselineComparison.newReachableVulnerabilities` are gated; without a
-  baseline, current reachable findings are gated.
+  baseline, current reachable findings are gated. Matches marked
+  `versionStatus: "unevaluable"` are an explicit fail-closed exception here:
+  they regress for every non-`off` threshold because Lopper could not confirm
+  the installed version is safe.
 - You can use immutable keyed snapshots instead of a raw file path:
   - Save baseline: `--baseline-store DIR --save-baseline` (defaults key to `commit:<sha>`)
   - Save labeled baseline: add `--baseline-label LABEL`

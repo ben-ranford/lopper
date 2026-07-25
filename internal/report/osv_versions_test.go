@@ -1,6 +1,7 @@
 package report
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -208,6 +209,9 @@ func TestAdvisoryVersionMatchEvaluatesOSVMetadata(t *testing.T) {
 		},
 		{name: "blank installed version is unevaluable", advisory: osvVersionAdvisory(lowerBounded), installed: "", want: versionUnevaluable},
 		{name: "invalid installed version is unevaluable", advisory: osvVersionAdvisory(lowerBounded), installed: "release", want: versionUnevaluable},
+		{name: "legacy fixed version with blank installed version is unevaluable", advisory: VulnerabilityAdvisory{FixedVersion: "2.0.0"}, installed: "", want: versionUnevaluable},
+		{name: "legacy fixed version with invalid installed version is unevaluable", advisory: VulnerabilityAdvisory{FixedVersion: "2.0.0"}, installed: "release", want: versionUnevaluable},
+		{name: "legacy malformed fixed version stays unevaluable", advisory: VulnerabilityAdvisory{FixedVersion: "broken"}, installed: "1.0.0", want: versionUnevaluable},
 		{
 			name:      "invalid event is unevaluable",
 			advisory:  osvVersionAdvisory(semanticVersionRange(VulnerabilityVersionEvent{Introduced: "0", Fixed: "2.0.0"})),
@@ -238,6 +242,29 @@ func TestAdvisoryVersionMatchEvaluatesOSVMetadata(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := advisoryVersionMatch(test.advisory, test.installed); got != test.want {
 				t.Fatalf("advisoryVersionMatch(%q) = %v, want %v", test.installed, got, test.want)
+			}
+		})
+	}
+}
+
+func TestFixedVersionMatchEvaluatesLegacyMetadata(t *testing.T) {
+	tests := []struct {
+		name             string
+		fixedVersion     string
+		installedVersion string
+		want             vulnerabilityVersionMatch
+	}{
+		{name: "empty fixed version is unevaluable", fixedVersion: "", installedVersion: "1.0.0", want: versionUnevaluable},
+		{name: "malformed fixed version is unevaluable", fixedVersion: "broken", installedVersion: "1.0.0", want: versionUnevaluable},
+		{name: "version before fixed is affected", fixedVersion: "2.0.0", installedVersion: "1.9.9", want: versionAffected},
+		{name: "version at fixed is unaffected", fixedVersion: "2.0.0", installedVersion: "2.0.0", want: versionUnaffected},
+		{name: "version after fixed is unaffected", fixedVersion: "2.0.0", installedVersion: "2.0.1", want: versionUnaffected},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := fixedVersionMatch(test.fixedVersion, test.installedVersion); got != test.want {
+				t.Fatalf("fixedVersionMatch(%q, %q) = %v, want %v", test.fixedVersion, test.installedVersion, got, test.want)
 			}
 		})
 	}
@@ -301,7 +328,10 @@ func TestAnnotateVulnerabilitiesKeepsUnevaluableOSVPackageMatchesActionable(t *t
 		reportData.Dependencies[0].Vulnerabilities[0],
 		reportData.Dependencies[1].Vulnerabilities[0],
 	} {
-		if !slices.Contains(finding.Evidence, "osv_version_match: package matched but installed version could not be evaluated") {
+		if finding.VersionStatus != vulnerabilityVersionUnknown {
+			t.Fatalf("expected unevaluable version status, got %#v", finding)
+		}
+		if !slices.Contains(finding.Evidence, "version_match: package matched but installed version could not be evaluated") {
 			t.Fatalf("expected unevaluable OSV evidence, got %#v", finding.Evidence)
 		}
 	}
@@ -339,6 +369,60 @@ func TestAnnotateVulnerabilitiesSkipsConfirmedUnaffectedOSVPackageMatches(t *tes
 	}
 	if !slices.Equal(reportData.Warnings, []string{"existing warning"}) {
 		t.Fatalf("expected unaffected version not to add warnings, got %#v", reportData.Warnings)
+	}
+}
+
+func TestAnnotateVulnerabilitiesMarksLegacyFixedVersionFailuresUnevaluable(t *testing.T) {
+	tests := []struct {
+		name             string
+		fixedVersion     string
+		installedVersion string
+	}{
+		{name: "nonsemantic installed version", fixedVersion: "1.2.3", installedVersion: "release"},
+		{name: "blank fixed version", installedVersion: "1.0.0"},
+		{name: "nonsemantic fixed version", fixedVersion: "release", installedVersion: "1.0.0"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reportData := Report{
+				Dependencies: []DependencyReport{{
+					Name:              "example-lib",
+					Language:          "js-ts",
+					Identity:          &DependencyIdentity{Ecosystem: "npm", Name: "example-lib", Version: test.installedVersion},
+					UsedExportsCount:  1,
+					TotalExportsCount: 1,
+					UsedPercent:       100,
+					UsedImports:       []ImportUse{{Name: "default", Module: "example-lib"}},
+				}},
+			}
+
+			AnnotateVulnerabilities(&reportData, []VulnerabilityAdvisory{{
+				ID:           "GHSA-legacy",
+				Package:      "example-lib",
+				Ecosystem:    "npm",
+				Severity:     "high",
+				FixedVersion: test.fixedVersion,
+				Source:       "local:security-team",
+			}})
+
+			if len(reportData.Dependencies[0].Vulnerabilities) != 1 {
+				t.Fatalf("expected one actionable legacy vulnerability finding, got %#v", reportData.Dependencies[0].Vulnerabilities)
+			}
+			finding := reportData.Dependencies[0].Vulnerabilities[0]
+			if finding.VersionStatus != vulnerabilityVersionUnknown || finding.FixedVersion != test.fixedVersion {
+				t.Fatalf("expected legacy fixed-version finding to remain unevaluable, got %#v", finding)
+			}
+			if !slices.Contains(finding.Evidence, "version_match: package matched but installed version could not be evaluated") {
+				t.Fatalf("expected unevaluable legacy evidence, got %#v", finding.Evidence)
+			}
+			wantWarnings := []string{
+				fmt.Sprintf("unable to evaluate advisory version metadata for GHSA-legacy on npm/example-lib@%s", test.installedVersion),
+			}
+			if !slices.Equal(reportData.Warnings, wantWarnings) {
+				t.Fatalf("unexpected local advisory evaluation warnings: got %#v, want %#v", reportData.Warnings, wantWarnings)
+			}
+		})
 	}
 }
 

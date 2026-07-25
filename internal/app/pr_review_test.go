@@ -53,6 +53,7 @@ func TestBuildPRReviewArtifactSeparatesSections(t *testing.T) {
 		Severity:      report.VulnerabilityPriorityHigh,
 		Priority:      report.VulnerabilityPriorityCritical,
 		PriorityScore: 95,
+		VersionStatus: "affected",
 		Reachable:     true,
 		Evidence:      []string{"imported by app"},
 	}}
@@ -98,8 +99,11 @@ func TestBuildPRReviewArtifactSeparatesSections(t *testing.T) {
 		"Downgraded Dependencies",
 		"Version Changed Dependencies",
 		"Newly Reachable Vulnerabilities",
+		"| Dependency | Language | Base | Head | Waste Δ | Used % Δ | Confidence | Advisory | Priority | Version status | Evidence |",
 		"GHSA-test",
 		"critical",
+		"| `lib` | js-ts | - | 1.2.0 | 0 | 0.0 | high | GHSA-test | critical | affected |",
+		"version status: affected",
 		"version ordering was not inferred",
 		"static dependency-surface analysis",
 	})
@@ -109,6 +113,7 @@ func TestBuildPRReviewArtifactSeparatesSections(t *testing.T) {
 		t.Fatalf("format pr-review json: %v", err)
 	}
 	assertContainsAll(t, jsonOutput, []string{prReviewSchemaVersion, "GHSA-test", prReviewCategoryMateriallyWorsened})
+	assertContainsAll(t, jsonOutput, []string{`"versionStatus": "affected"`})
 }
 
 func TestBuildPRReviewArtifactAppliesReachableVulnerabilityPriorityThreshold(t *testing.T) {
@@ -154,6 +159,78 @@ func TestBuildPRReviewArtifactAppliesReachableVulnerabilityPriorityThreshold(t *
 	}
 	if artifact.Summary.NewlyReachable != 2 || artifact.Summary.RegressionCount != 1 {
 		t.Fatalf("unexpected thresholded pr-review summary: %#v", artifact.Summary)
+	}
+}
+
+func TestBuildPRReviewArtifactTreatsUnevaluableReachableFindingsAsRegressionsUnlessOff(t *testing.T) {
+	baseDependency := prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)
+	headDependency := baseDependency
+	headDependency.Vulnerabilities = []report.VulnerabilityFinding{{
+		AdvisoryID:    "GHSA-unevaluable",
+		Package:       "lib",
+		Severity:      report.VulnerabilityPriorityLow,
+		Priority:      report.VulnerabilityPriorityLow,
+		Reachable:     true,
+		VersionStatus: "unevaluable",
+	}}
+
+	for _, tc := range []struct {
+		threshold       string
+		wantRegression  bool
+		wantRegressions int
+	}{
+		{threshold: report.VulnerabilityPriorityLow, wantRegression: true, wantRegressions: 1},
+		{threshold: report.VulnerabilityPriorityMedium, wantRegression: true, wantRegressions: 1},
+		{threshold: report.VulnerabilityPriorityHigh, wantRegression: true, wantRegressions: 1},
+		{threshold: report.VulnerabilityPriorityCritical, wantRegression: true, wantRegressions: 1},
+		{threshold: report.VulnerabilityPriorityOff, wantRegression: false, wantRegressions: 0},
+	} {
+		req := PRReviewRequest{}
+		req.Thresholds.ReachableVulnerabilityPriority = tc.threshold
+		artifact := buildPRReviewArtifact(prReviewArtifactInput{
+			baseReport: report.Report{Dependencies: []report.DependencyReport{baseDependency}},
+			headReport: report.Report{Dependencies: []report.DependencyReport{headDependency}},
+			req:        req,
+		})
+		rows := prReviewTestSectionRows(t, artifact, prReviewCategoryNewlyReachable)
+		if len(rows) != 1 {
+			t.Fatalf("threshold %q expected one newly reachable row, got %#v", tc.threshold, rows)
+		}
+		if rows[0].Regression != tc.wantRegression {
+			t.Fatalf("threshold %q regression = %t, want %t", tc.threshold, rows[0].Regression, tc.wantRegression)
+		}
+		if artifact.Summary.RegressionCount != tc.wantRegressions {
+			t.Fatalf("threshold %q regression count = %d, want %d", tc.threshold, artifact.Summary.RegressionCount, tc.wantRegressions)
+		}
+	}
+}
+
+func TestPRReviewArtifactVersionStatusOmittedWhenAbsent(t *testing.T) {
+	artifact := prReviewArtifact{
+		Sections: []prReviewSection{{
+			ID:    prReviewCategoryNewlyReachable,
+			Title: "Newly Reachable Vulnerabilities",
+			Rows: []prReviewRow{{
+				Category:   prReviewCategoryNewlyReachable,
+				Dependency: "lib",
+				AdvisoryID: "GHSA-test",
+				Priority:   report.VulnerabilityPriorityHigh,
+				Evidence:   []string{"new reachable vulnerability introduced"},
+			}},
+		}},
+	}
+
+	jsonOutput, err := formatPRReviewArtifact(artifact, prReviewFormatJSON, 10)
+	if err != nil {
+		t.Fatalf("format pr-review json without version status: %v", err)
+	}
+	if strings.Contains(jsonOutput, "versionStatus") {
+		t.Fatalf("expected empty versionStatus to be omitted from JSON artifact, got %s", jsonOutput)
+	}
+
+	markdown := formatPRReviewMarkdown(artifact, 10)
+	if !strings.Contains(markdown, "| `lib` |  | - | - | 0 | 0.0 |  | GHSA-test | high | - | new reachable vulnerability introduced |") {
+		t.Fatalf("expected markdown to render a placeholder version status column, got %s", markdown)
 	}
 }
 
@@ -420,9 +497,9 @@ func TestFormatPRReviewMarkdownOverflowAndWarnings(t *testing.T) {
 
 	markdown := formatPRReviewMarkdown(artifact, 1)
 	assertContainsAll(t, markdown, []string{
-		"| Advisory | Priority |",
+		"| Advisory | Priority | Version status | Evidence |",
 		"`pipe\\|dep`",
-		"| high | GHSA\\|pipe | medium | lock\\|file |",
+		"| high | GHSA\\|pipe | medium | - | lock\\|file |",
 		"+12",
 		"+1.2",
 		"1 additional rows omitted",
@@ -858,7 +935,7 @@ func TestAnalysePRReviewScopeHandlesNonDirectoryAndInspectionErrors(t *testing.T
 func TestExecutePRReviewAllowsPreviewGatedPolicyPathsAndAppliesPolicies(t *testing.T) {
 	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
 	advisoryPath := filepath.Join(t.TempDir(), "advisories.json")
-	testutil.MustWriteFile(t, advisoryPath, `{"advisories":[{"id":"GHSA-lib","package":"lib","ecosystem":"npm","severity":"high","source":"fixture"}]}`)
+	testutil.MustWriteFile(t, advisoryPath, `{"advisories":[{"id":"GHSA-lib","package":"lib","ecosystem":"npm","severity":"high","fixedVersion":"2.0.0","source":"fixture"}]}`)
 	requiredFeatures := []string{
 		report.DependencySurfacePRReviewPreviewFeature,
 		report.ReachabilityVulnerabilityPrioritizationPreviewFeature,
@@ -880,7 +957,7 @@ func TestExecutePRReviewAllowsPreviewGatedPolicyPathsAndAppliesPolicies(t *testi
 	req.PRReview.VulnerabilityExceptions = []report.VulnerabilityException{{
 		VulnerabilityID: "GHSA-lib",
 		Package:         "lib",
-		Status:          "not_affected",
+		Status:          "not-affected",
 	}}
 
 	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
@@ -896,7 +973,7 @@ func TestExecutePRReviewAllowsPreviewGatedPolicyPathsAndAppliesPolicies(t *testi
 func TestExecutePRReviewUsesCallerRepositoryForRepositoryScopedVulnerabilityExceptions(t *testing.T) {
 	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
 	advisoryPath := filepath.Join(t.TempDir(), "advisories.json")
-	testutil.MustWriteFile(t, advisoryPath, `{"advisories":[{"id":"GHSA-lib","package":"lib","ecosystem":"npm","severity":"high","source":"fixture"}]}`)
+	testutil.MustWriteFile(t, advisoryPath, `{"advisories":[{"id":"GHSA-lib","package":"lib","ecosystem":"npm","severity":"high","fixedVersion":"2.0.0","source":"fixture"}]}`)
 	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature, report.VulnerabilityExceptionsVEXPreviewFeature)
 	analyzer := &pathAwarePRReviewAnalyzer{
 		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
@@ -923,7 +1000,7 @@ func TestExecutePRReviewUsesCallerRepositoryForRepositoryScopedVulnerabilityExce
 		Repository:      repoPath,
 		Path:            "src",
 		PURL:            "pkg:npm/lib@1.1.0",
-		Status:          "not_affected",
+		Status:          "not-affected",
 	}}
 
 	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)

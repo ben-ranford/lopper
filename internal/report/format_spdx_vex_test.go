@@ -410,6 +410,66 @@ func TestFormatCycloneDXVEXJSONMapsDecisionStatesAndResponses(t *testing.T) {
 	}
 }
 
+func TestFormatCycloneDXVEXJSONTreatsUnevaluableMatchesAsInTriage(t *testing.T) {
+	blockCycloneDXSchemaNetwork(t)
+	schema := loadCycloneDXSchema(t)
+
+	output, err := formatCycloneDXVEXJSON(Report{
+		Dependencies: []DependencyReport{{
+			Name:     "lib",
+			Language: "go",
+			Vulnerabilities: []VulnerabilityFinding{{
+				AdvisoryID:    "GHSA-unevaluable",
+				Package:       "lib",
+				Severity:      "high",
+				Priority:      "critical",
+				PriorityScore: 95,
+				Reachable:     true,
+				VersionStatus: vulnerabilityVersionUnknown,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("format unevaluable VEX JSON: %v", err)
+	}
+	if err := validateCycloneDXSchema(schema, output); err != nil {
+		t.Fatalf("unevaluable VEX output failed official 1.6 schema validation: %v", err)
+	}
+
+	var bom struct {
+		Vulnerabilities []struct {
+			ID         string              `json:"id"`
+			Properties []cycloneDXProperty `json:"properties"`
+			Analysis   struct {
+				State         string   `json:"state"`
+				Justification string   `json:"justification,omitempty"`
+				Response      []string `json:"response,omitempty"`
+				Detail        string   `json:"detail"`
+			} `json:"analysis"`
+		} `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal([]byte(output), &bom); err != nil {
+		t.Fatalf("parse unevaluable VEX JSON: %v", err)
+	}
+	if len(bom.Vulnerabilities) != 1 {
+		t.Fatalf("expected one unevaluable VEX vulnerability, got %#v", bom.Vulnerabilities)
+	}
+	got := bom.Vulnerabilities[0]
+	if got.ID != "GHSA-unevaluable" || got.Analysis.State != "in_triage" {
+		t.Fatalf("unexpected unevaluable VEX state: %#v", got)
+	}
+	if got.Analysis.Justification != "" {
+		t.Fatalf("expected unevaluable VEX justification to be omitted, got %#v", got)
+	}
+	if strings.Join(got.Analysis.Response, ",") != "update" {
+		t.Fatalf("expected unevaluable VEX response to stay actionable, got %#v", got)
+	}
+	if got.Analysis.Detail != "reachable=true; version_status=unevaluable" {
+		t.Fatalf("unexpected unevaluable VEX detail: %#v", got)
+	}
+	requireCycloneDXProperty(t, got.Properties, "lopper:vulnerability:version-status", vulnerabilityVersionUnknown)
+}
+
 func TestFormatCycloneDXVEXJSONValidatesAgainstPinnedSchema(t *testing.T) {
 	blockCycloneDXSchemaNetwork(t)
 	schema := loadCycloneDXSchema(t)

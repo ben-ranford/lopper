@@ -255,7 +255,7 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 	}
 	if len(comparison.NewReachableVulnerabilities) > 0 {
 		for _, finding := range topVulnerabilityDeltas(comparison.NewReachableVulnerabilities, 5) {
-			writef(buffer, "  new reachable vulnerability %s/%s %s %s priority=%s score=%.1f\n", finding.Language, finding.Name, finding.AdvisoryID, finding.Severity, finding.Priority, finding.PriorityScore)
+			writef(buffer, "  new reachable vulnerability %s/%s %s %s priority=%s score=%.1f%s\n", finding.Language, finding.Name, finding.AdvisoryID, finding.Severity, finding.Priority, finding.PriorityScore, formatVulnerabilityVersionStatusKV(finding.VersionStatus))
 		}
 	}
 
@@ -272,6 +272,14 @@ func appendBaselineComparison(buffer *bytes.Buffer, comparison *BaselineComparis
 		writef(buffer, "  runtime improvement %s/%s %s\n", delta.Language, delta.Name, formatRuntimeDelta(delta.RuntimeDelta))
 	}
 	buffer.WriteString("\n")
+}
+
+func formatVulnerabilityVersionStatusKV(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return " version_status=" + value
 }
 
 func appendCodemodApply(buffer *bytes.Buffer, dependencies []DependencyReport) {

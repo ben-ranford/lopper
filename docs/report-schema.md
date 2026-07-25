@@ -135,9 +135,9 @@ CycloneDX characteristics:
 - `dependencies[].license`: normalized per-dependency license detection (`spdx`, `source`, `confidence`, `unknown`, `denied`).
 - `dependencies[].provenance`: per-dependency provenance signals (`source`, `confidence`, `signals`).
 - `dependencies[].vulnerabilities`: local advisory findings with `advisoryId`,
-  `package`, `severity`, `fixedVersion`, `source`, reachability-weighted
-  `priority`, numeric `priorityScore`, `reachable`, optional VEX `decision`,
-  and evidence strings.
+  `package`, `severity`, optional `versionStatus` (`affected` or `unevaluable`),
+  `fixedVersion`, `source`, reachability-weighted `priority`, numeric
+  `priorityScore`, `reachable`, optional VEX `decision`, and evidence strings.
 - `dependencies[].riskCues`: heuristic risk signals.
 - `dependencies[].recommendations`: actionable follow-up suggestions.
 - `dependencies[].codemod`: optional language-neutral codemod/remediation preview/apply data, including `language`, `dependency`, `targetFile`, deterministic `patch` previews, `safetyReasonCodes`, unsafe-transform skip reason codes, and apply summaries with rollback artifact paths. Python codemod suggestions are stable under `python-codemod-suggestions` and remain explicitly disableable for rollback.
@@ -146,6 +146,9 @@ CycloneDX characteristics:
 - `summary.reachability`: repo-level v2 confidence rollup (`model`, `averageScore`, `lowestScore`, `highestScore`).
 - `wasteIncreasePercent`: present when `--baseline` was supplied and compared.
 - `baselineComparison`: deterministic dependency-level deltas between baseline and current run, including `summaryDelta`, `dependencies`, `added`, `removed`, `regressions`, `progressions`, `runtimeRegressions`, `runtimeImprovements`, `newDeniedLicenses`, and `newReachableVulnerabilities`.
+- `baselineComparison.newReachableVulnerabilities[]`: newly reachable vulnerability
+  deltas with the finding identity, priority, and evidence fields plus optional
+  `versionStatus` (`affected` or `unevaluable`).
 - `baselineComparison.dependencies[].runtimeDelta`: runtime trace comparison for dependencies present in both baseline and current reports when at least one side has runtime data. Comparable deltas include load-count changes, correlation transitions, new/removed runtime loads, runtime-only regressions/improvements, and module/parent/entrypoint changes.
 
 ## Notes
@@ -167,6 +170,14 @@ CycloneDX characteristics:
 - `summary.vulnerabilities.reachableFindings` counts advisory findings with
   reachability evidence. Baseline comparison reports newly introduced reachable
   findings under `baselineComparison.newReachableVulnerabilities`.
+- `versionStatus` is optional for compatibility with reports produced before
+  version evaluation status was exposed. `affected` means the available advisory
+  metadata confirms the installed version is affected; `unevaluable` means the
+  package matched but blank, malformed, or unsupported version metadata prevented
+  a reliable comparison.
+- Unevaluable findings and newly reachable vulnerability deltas remain actionable
+  and fail closed for every non-`off` reachable-vulnerability threshold. The
+  `off` threshold continues to disable that gate.
 - Stored reports or baselines created before the mutually exclusive license-bucket summary should be regenerated, or consumers should recompute `summary` from `dependencies`, before comparing license deltas.
 - `schemaVersion` is currently pinned to `0.2.0`.
 - Legacy `0.1.0` reports remain baseline-load/compare compatible; consumers that

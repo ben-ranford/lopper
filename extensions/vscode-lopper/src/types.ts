@@ -143,6 +143,7 @@ export interface LopperVulnerabilityFinding {
   advisoryId: string;
   package: string;
   severity: string;
+  versionStatus?: "affected" | "unevaluable";
   fixedVersion?: string;
   source: string;
   priority: LopperVulnerabilityPriority;
@@ -391,6 +392,7 @@ export interface LopperVulnerabilityDelta {
   advisoryId: string;
   package: string;
   severity: string;
+  versionStatus?: "affected" | "unevaluable";
   fixedVersion?: string;
   source: string;
   priority: LopperVulnerabilityPriority;

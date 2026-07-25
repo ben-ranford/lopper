@@ -31,6 +31,26 @@ func TestReportJSONContractRoundTrip(t *testing.T) {
 	}
 }
 
+func TestVulnerabilityVersionStatusJSONFieldsAreOptional(t *testing.T) {
+	payload, err := json.Marshal(struct {
+		Finding VulnerabilityFinding `json:"finding"`
+		Delta   VulnerabilityDelta   `json:"delta"`
+	}{})
+	if err != nil {
+		t.Fatalf("marshal empty vulnerability contracts: %v", err)
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(payload, &root); err != nil {
+		t.Fatalf("unmarshal empty vulnerability contracts: %v", err)
+	}
+	for _, key := range []string{"finding", "delta"} {
+		if _, ok := jsonObject(t, root, key)["versionStatus"]; ok {
+			t.Fatalf("expected %s.versionStatus to be optional, got %s", key, payload)
+		}
+	}
+}
+
 func TestReportJSONContractShape(t *testing.T) {
 	source := representativeReport()
 	payload, err := json.Marshal(source)
@@ -85,8 +105,15 @@ func TestReportJSONContractShape(t *testing.T) {
 		"usedExportsCount",
 		"usedImports",
 		"usedPercent",
+		"vulnerabilities",
 	}
 	assertKeys(t, dependency, dependencyKeys...)
+	vulnerabilities := jsonArray(t, dependency, "vulnerabilities")
+	if len(vulnerabilities) != 1 {
+		t.Fatalf("vulnerabilities length = %d, want 1", len(vulnerabilities))
+	}
+	vulnerability := jsonObjectValue(t, vulnerabilities[0], "dependencies[0].vulnerabilities[0]")
+	assertKeys(t, vulnerability, "advisoryId", "decision", "evidence", "fixedVersion", "package", "priority", "priorityScore", "reachable", "severity", "source", "versionStatus")
 
 	summary := jsonObject(t, root, "summary")
 	summaryKeys := []string{
@@ -107,6 +134,7 @@ func TestReportJSONContractShape(t *testing.T) {
 		"currentKey",
 		"dependencies",
 		"newDeniedLicenses",
+		"newReachableVulnerabilities",
 		"regressions",
 		"runtimeRegressions",
 		"summaryDelta",
@@ -118,6 +146,12 @@ func TestReportJSONContractShape(t *testing.T) {
 	assertKeys(t, dependencyDelta, "deniedIntroduced", "estimatedUnusedBytesDelta", "kind", "language", "name", "runtimeDelta", "totalExportsCountDelta", "usedExportsCountDelta", "usedPercentDelta", "wastePercentDelta")
 	runtimeDelta := jsonObject(t, dependencyDelta, "runtimeDelta")
 	assertKeys(t, runtimeDelta, "baselineCorrelation", "baselineLoadCount", "baselinePresent", "changeTypes", "comparable", "currentCorrelation", "currentLoadCount", "currentPresent", "loadCountDelta", "modulesAdded", "newRuntimeLoads", "runtimeOnlyRegression")
+	reachableVulnerabilityDeltas := jsonArray(t, baselineComparison, "newReachableVulnerabilities")
+	if len(reachableVulnerabilityDeltas) != 1 {
+		t.Fatalf("newReachableVulnerabilities length = %d, want 1", len(reachableVulnerabilityDeltas))
+	}
+	reachableVulnerabilityDelta := jsonObjectValue(t, reachableVulnerabilityDeltas[0], "baselineComparison.newReachableVulnerabilities[0]")
+	assertKeys(t, reachableVulnerabilityDelta, "advisoryId", "evidence", "fixedVersion", "language", "name", "package", "priority", "priorityScore", "severity", "source", "versionStatus")
 
 	reachability := jsonObject(t, dependency, "reachabilityConfidence")
 	assertKeys(t, reachability, "model", "rationaleCodes", "score", "signals", "summary")
@@ -319,6 +353,23 @@ func representativeReport() Report {
 					Confidence: "high",
 					Signals:    []string{"lockfile"},
 				},
+				Vulnerabilities: []VulnerabilityFinding{{
+					AdvisoryID:    "GHSA-example",
+					Package:       "lodash",
+					Severity:      "high",
+					VersionStatus: "unevaluable",
+					FixedVersion:  "4.17.22",
+					Source:        "security-team",
+					Priority:      "critical",
+					PriorityScore: 95,
+					Reachable:     true,
+					Decision: &VulnerabilityExceptionDecision{
+						Status:        "under-investigation",
+						Justification: "requires_configuration",
+						Reason:        "triage pending",
+					},
+					Evidence: []string{"version_match: package matched but installed version could not be evaluated"},
+				}},
 			},
 		},
 		UsageUncertainty: &UsageUncertainty{
@@ -377,7 +428,20 @@ func representativeReport() Report {
 			Regressions:        []DependencyDelta{delta},
 			RuntimeRegressions: []DependencyDelta{delta},
 			NewDeniedLicenses:  []DeniedLicenseDelta{{Language: "js", Name: "lodash", SPDX: "MIT"}},
-			UnchangedRows:      1,
+			NewReachableVulnerabilities: []VulnerabilityDelta{{
+				Language:      "js",
+				Name:          "lodash",
+				AdvisoryID:    "GHSA-example",
+				Package:       "lodash",
+				Severity:      "high",
+				VersionStatus: "unevaluable",
+				FixedVersion:  "4.17.22",
+				Source:        "security-team",
+				Priority:      "critical",
+				PriorityScore: 95,
+				Evidence:      []string{"version_match: package matched but installed version could not be evaluated"},
+			}},
+			UnchangedRows: 1,
 		},
 	}
 }
