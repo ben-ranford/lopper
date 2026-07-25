@@ -88,6 +88,19 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "localmod.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
 		t.Fatalf("write local module: %v", err)
 	}
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil {
+		t.Fatalf("runtime python hook directory: %v", err)
+	}
+	hookPycache := filepath.Join(hookDir, "__pycache__")
+	if err := os.RemoveAll(hookPycache); err != nil {
+		t.Fatalf("remove runtime hook pycache: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(hookPycache); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove runtime hook pycache: %v", err)
+		}
+	})
 
 	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
 	t.Setenv("PYTHONPATH", sitePackages)
@@ -126,6 +139,12 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	key := DependencyKey{Language: runtimeLanguagePython, Name: "thirdparty"}
 	if trace.DependencyLoadsByLanguage[key] == 0 {
 		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "__pycache__")); !os.IsNotExist(err) {
+		t.Fatalf("expected capture repo to avoid __pycache__ artifacts, stat err = %v", err)
+	}
+	if _, err := os.Stat(hookPycache); !os.IsNotExist(err) {
+		t.Fatalf("expected runtime hook capture to avoid hook __pycache__ artifacts, stat err = %v", err)
 	}
 }
 

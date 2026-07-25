@@ -23,6 +23,7 @@ SITE_MARKERS = ("/site-packages/", "/dist-packages/")
 WRITE_LOCK = threading.Lock()
 STATE = threading.local()
 PACKAGE_DISTRIBUTIONS = None
+TRUSTED_REPO_ROOTS = ()
 
 
 def _entrypoint() -> str:
@@ -180,21 +181,64 @@ def _slash_path(path: str) -> str:
     return _abs_path(path).replace(os.sep, "/")
 
 
+def _lexical_path(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    except Exception:
+        return ""
+
+
+def _lexical_candidate_path(path: str, repo_root: str) -> str:
+    if not path:
+        return ""
+    if os.path.isabs(path) or _is_native_windows_absolute(path):
+        return _lexical_path(path)
+    return _lexical_path(os.path.join(repo_root, path))
+
+
+def _trusted_repo_roots(repo_root: str):
+    original = _lexical_path(repo_root)
+    if not original:
+        return ()
+    try:
+        resolved = _real_path(original)
+    except Exception:
+        resolved = ""
+    return tuple(dict.fromkeys(root for root in (original, resolved) if root))
+
+
+def _repo_relative_under_trusted_roots(path: str) -> str:
+    for root in TRUSTED_REPO_ROOTS:
+        try:
+            relative = os.path.relpath(path, root)
+        except (OSError, ValueError):
+            continue
+        if not _repo_relative_starts_outside(relative):
+            return relative
+    return ""
+
+
 def _normalize_repo_context(path: str) -> str:
     candidate = (path or "").strip()
     if not candidate:
         return ""
-    if not REPO_ROOT:
+    if not TRUSTED_REPO_ROOTS:
         return ""
     if _rejects_non_native_path(candidate):
         return ""
+    lexical_candidate = _lexical_candidate_path(candidate, TRUSTED_REPO_ROOTS[0])
+    if not lexical_candidate:
+        return ""
+    if not _repo_relative_under_trusted_roots(lexical_candidate):
+        return ""
     try:
-        root = _real_path(REPO_ROOT)
-        resolved = _real_path(candidate)
-        relative = os.path.relpath(resolved, root)
+        resolved = _real_path(lexical_candidate)
     except Exception:
         return ""
-    if relative in {".", ".."} or relative.startswith(".." + os.sep):
+    relative = _repo_relative_under_trusted_roots(resolved)
+    if not relative:
         return ""
     return relative.replace(os.sep, "/")
 
@@ -233,6 +277,10 @@ def _has_unc_prefix(value: str) -> bool:
     return len(value) >= 2 and value[0] in "\\/" and value[1] in "\\/"
 
 
+def _repo_relative_starts_outside(value: str) -> bool:
+    return value in {".", ".."} or value.startswith(".." + os.sep)
+
+
 def _chain_project_sitecustomize() -> None:
     hook_dir = _real_path(os.path.dirname(__file__))
     search_path = [entry for entry in sys.path if _real_path(entry) != hook_dir]
@@ -248,6 +296,9 @@ def _chain_project_sitecustomize() -> None:
 def _real_path(path: str) -> str:
     candidate = path or os.getcwd()
     return os.path.normcase(os.path.realpath(os.path.abspath(candidate)))
+
+
+TRUSTED_REPO_ROOTS = _trusted_repo_roots(REPO_ROOT)
 
 
 if TRACE_PATH:

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -10,9 +9,9 @@ import (
 type traceLoadOptions struct {
 	repoRoot         string
 	resolvedRepoRoot string
+	resolveRepoRoot  func(string) string
+	evalSymlinks     func(string) (string, error)
 }
-
-var resolveTraceRepoRoot = resolvedRuntimeRepoRoot
 
 func normalizeRuntimeContextValue(value string, opts traceLoadOptions) string {
 	value = strings.TrimSpace(value)
@@ -45,24 +44,33 @@ func normalizeRuntimeContextPath(value string, opts traceLoadOptions) (string, b
 	}
 	repoRoot := opts.resolvedRepoRoot
 	if strings.TrimSpace(repoRoot) == "" {
-		repoRoot = resolveTraceRepoRoot(opts.repoRoot)
+		repoRoot = opts.resolveRepoRootFunc()(opts.repoRoot)
 	}
 	if strings.TrimSpace(repoRoot) == "" {
 		return "", true
 	}
-	pathValue := filepath.FromSlash(value)
-	if !filepath.IsAbs(pathValue) {
+	pathValue := filepath.Clean(filepath.FromSlash(value))
+	if filepath.IsAbs(pathValue) {
+		if !runtimeContextWithinTrustedRoots(pathValue, opts.repoRoot, repoRoot) {
+			return "", true
+		}
+	} else {
 		pathValue = filepath.Join(repoRoot, pathValue)
+		if !runtimeContextLexicallyWithinRepo(repoRoot, pathValue) {
+			return "", true
+		}
 	}
-	resolvedPath := resolveRuntimeContextPath(pathValue)
+	resolvedPath := resolveRuntimeContextPath(pathValue, opts.evalSymlinksFunc())
 	if resolvedPath == "" {
 		return "", true
 	}
-	rel, ok := runtimeContextRepoRelative(repoRoot, resolvedPath)
-	if !ok {
-		return "", true
+	for _, trustedRoot := range []string{repoRoot, opts.repoRoot} {
+		rel, ok := runtimeContextRepoRelative(trustedRoot, resolvedPath)
+		if ok {
+			return rel, true
+		}
 	}
-	return rel, true
+	return "", true
 }
 
 func runtimeContextFileURLPath(value string) (string, bool) {
@@ -217,18 +225,54 @@ func pathLikeExtension(base string) string {
 	return ext
 }
 
-func resolveRuntimeContextPath(value string) string {
+func (o *traceLoadOptions) resolveRepoRootFunc() func(string) string {
+	if o != nil && o.resolveRepoRoot != nil {
+		return o.resolveRepoRoot
+	}
+	return resolvedRuntimeRepoRoot
+}
+
+func (o *traceLoadOptions) evalSymlinksFunc() func(string) (string, error) {
+	if o != nil && o.evalSymlinks != nil {
+		return o.evalSymlinks
+	}
+	return filepath.EvalSymlinks
+}
+
+func resolveRuntimeContextPath(value string, evalSymlinks func(string) (string, error)) string {
 	if strings.TrimSpace(value) == "" {
 		return ""
 	}
-	resolved, err := filepath.EvalSymlinks(value)
+	if evalSymlinks == nil {
+		evalSymlinks = filepath.EvalSymlinks
+	}
+	resolved, err := evalSymlinks(value)
 	if err == nil && strings.TrimSpace(resolved) != "" {
 		return filepath.Clean(resolved)
 	}
-	if info, statErr := os.Stat(value); statErr == nil && !info.IsDir() {
-		return filepath.Clean(value)
+	return ""
+}
+
+func runtimeContextWithinTrustedRoots(pathValue string, roots ...string) bool {
+	for _, root := range roots {
+		if runtimeContextLexicallyWithinRepo(root, pathValue) {
+			return true
+		}
 	}
-	return filepath.Clean(value)
+	return false
+}
+
+func runtimeContextLexicallyWithinRepo(repoRoot, value string) bool {
+	repoRoot = strings.TrimSpace(repoRoot)
+	value = strings.TrimSpace(value)
+	if repoRoot == "" || value == "" {
+		return false
+	}
+	rel, err := filepath.Rel(repoRoot, value)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func runtimeContextRepoRelative(repoRoot, value string) (string, bool) {

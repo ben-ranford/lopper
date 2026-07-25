@@ -5152,6 +5152,35 @@ type runtimeProofModule struct {
 	Module string `json:"module"`
 }
 
+type runtimeProofTraceFixtureRow struct {
+	parent     string
+	entrypoint string
+}
+
+func runtimeProofTraceFixtureContent(t *testing.T, repoURL string, rows []runtimeProofTraceFixtureRow) string {
+	t.Helper()
+	var content strings.Builder
+	for _, row := range rows {
+		payload, err := json.Marshal(struct {
+			Module     string `json:"module"`
+			Resolved   string `json:"resolved"`
+			Parent     string `json:"parent"`
+			Entrypoint string `json:"entrypoint"`
+		}{
+			Module:     "",
+			Resolved:   "node_modules/lodash/map.js",
+			Parent:     strings.ReplaceAll(row.parent, "{repo}", repoURL),
+			Entrypoint: row.entrypoint,
+		})
+		if err != nil {
+			t.Fatalf("marshal runtime proof fixture row: %v", err)
+		}
+		content.Write(payload)
+		content.WriteByte('\n')
+	}
+	return content.String()
+}
+
 func TestRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
 	repo := t.TempDir()
 	mainPath := filepath.Join(repo, "src", "main.js")
@@ -5168,24 +5197,28 @@ func TestRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), "runtime.ndjson")
 	mainURL := fileURLForRuntimeProof(mainPath, "")
 	localhostSpaceURL := fileURLForRuntimeProof(spacePath, "LOCALHOST")
-	repoURL := fileURLForRuntimeProof(repo, "")
-	content := `{"module":"","resolved":"node_modules/lodash/map.js","parent":"C:\\Users\\alice\\project\\main.js","entrypoint":"` + mainURL + `"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"` + localhostSpaceURL + `","entrypoint":"\\\\server\\share\\project\\main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"//server/share/project/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"\\/server/share/project/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"/\\server/share/project/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"file://localhost/C:/Users/alice/project/main.js","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"file://server/share/project/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src/bad%ZZ.js","entrypoint":"file://localhost/%43%3A%2FUsers/alice/project/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src%2F..%2F..%2FUsers/alice/main.js","entrypoint":"file://localhost/%2F%2Fserver/share/project/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"x:private-token","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"a:foo/bar.js","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"C:Users/alice/private.js","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"data:text/plain,secret","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"mailto:test@example.com","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"https:foo","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"https:/foo","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}` + "\n"
+	content := runtimeProofTraceFixtureContent(t, strings.TrimSuffix(fileURLForRuntimeProof(repo, ""), "/"), []runtimeProofTraceFixtureRow{
+		{parent: "src/main.js", entrypoint: "https:/foo"},
+		{parent: "mailto:test@example.com", entrypoint: "src/main.js"},
+		{parent: "C:Users/alice/private.js", entrypoint: "src/main.js"},
+		{parent: "src/main.js", entrypoint: "file://server/share/project/main.js"},
+		{parent: "https:foo", entrypoint: "src/main.js"},
+		{parent: "data:text/plain,secret", entrypoint: "src/main.js"},
+		{parent: "x:private-token", entrypoint: "src/main.js"},
+		{parent: localhostSpaceURL, entrypoint: `\\server\share\project\main.js`},
+		{parent: "src/main.js", entrypoint: `\/server/share/project/main.js`},
+		{parent: "C:\\Users\\alice\\project\\main.js", entrypoint: mainURL},
+		{parent: "a:foo/bar.js", entrypoint: "src/main.js"},
+		{parent: "src/main.js", entrypoint: `//server/share/project/main.js`},
+		{parent: "{repo}/src/bad%ZZ.js", entrypoint: "file://localhost/%43%3A%2FUsers/alice/project/main.js"},
+		{parent: "src/main.js", entrypoint: `/\server/share/project/main.js`},
+		{parent: "file://localhost/C:/Users/alice/project/main.js", entrypoint: "src/main.js"},
+		{parent: "{repo}/src%2F..%2F..%2FUsers/alice/main.js", entrypoint: "file://localhost/%2F%2Fserver/share/project/main.js"},
+		{parent: "node:internal/modules/cjs/loader", entrypoint: "lodash/map"},
+	})
+	if !strings.Contains(localhostSpaceURL, "%20") || !strings.Contains(content, localhostSpaceURL) {
+		t.Fatalf("expected runtime proof fixture to retain percent-encoded file URL, got %q in %q", localhostSpaceURL, content)
+	}
 	if err := os.WriteFile(tracePath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write runtime trace: %v", err)
 	}
@@ -5220,33 +5253,28 @@ func TestRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
 }
 
 func fileURLForRuntimeProof(pathValue, host string) string {
-	pathValue = filepath.ToSlash(pathValue)
-	if !strings.HasPrefix(pathValue, "/") {
-		pathValue = "/" + pathValue
+	urlPath := filepath.ToSlash(pathValue)
+	if !strings.HasPrefix(urlPath, "/") {
+		urlPath = "/" + urlPath
 	}
-	return (&url.URL{Scheme: "file", Host: host, Path: pathValue}).String()
+	return (&url.URL{Scheme: "file", Host: host, Path: urlPath}).String()
 }
 
 func runtimeProofHasExactModules(got []runtimeProofModule, want ...string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	modules := make(map[string]struct{}, len(got))
+	gotModules := make([]string, 0, len(got))
 	for _, item := range got {
-		modules[item.Module] = struct{}{}
+		gotModules = append(gotModules, item.Module)
 	}
-	for _, module := range want {
-		if _, ok := modules[module]; !ok {
-			return false
-		}
-	}
-	return true
+	wantModules := append([]string(nil), want...)
+	slices.Sort(gotModules)
+	slices.Sort(wantModules)
+	return slices.Equal(gotModules, wantModules)
 }
 
 func assertTarValidatorRejects(t *testing.T, validator string, archivePath string, want string) {
 	t.Helper()
 
-	cmd := exec.Command("python3", "-", archivePath)
+	cmd := pythonNoBytecodeCommand("python3", "-", archivePath)
 	cmd.Stdin = strings.NewReader(validator)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -5260,11 +5288,17 @@ func assertTarValidatorRejects(t *testing.T, validator string, archivePath strin
 func assertTarValidatorAccepts(t *testing.T, validator string, archivePath string) {
 	t.Helper()
 
-	cmd := exec.Command("python3", "-", archivePath)
+	cmd := pythonNoBytecodeCommand("python3", "-", archivePath)
 	cmd.Stdin = strings.NewReader(validator)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("tar validator rejected trusted archive %s: %v\n%s", archivePath, err, output)
 	}
+}
+
+func pythonNoBytecodeCommand(name string, arg ...string) *exec.Cmd {
+	cmd := exec.Command(name, arg...)
+	cmd.Env = append(os.Environ(), "PYTHONDONTWRITEBYTECODE=1")
+	return cmd
 }
 
 func repoRoot(t *testing.T) string {

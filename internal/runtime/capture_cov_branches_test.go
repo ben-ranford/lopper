@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 )
@@ -49,29 +48,22 @@ func TestTrustedSearchDirsSkipsNonDirectories(t *testing.T) {
 }
 
 func TestRuntimeHookErrorsPropagate(t *testing.T) {
-	restoreRuntimeHookState(t)
 	sentinel := errors.New("hook lookup failed")
+	resolver := newFakeRuntimeHookPathResolver(func() (string, error) { return "", nil }, func(skip int) (uintptr, string, int, bool) { return 0, "", 0, false })
+	resolver.hookPaths.err = sentinel
+	resolver.hookPathsOnce.Do(func() {})
 
-	runtimeHookPathsOnce = sync.Once{}
-	runtimeHookPathsOnce.Do(func() {
-		runtimeRequireHookPath = ""
-		runtimeLoaderHookPath = ""
-		runtimeHookPathsErr = sentinel
-	})
-
-	if _, err := runtimeNodeHookOptions(); !errors.Is(err, sentinel) {
+	if _, err := resolver.runtimeNodeHookOptions(); !errors.Is(err, sentinel) {
 		t.Fatalf("expected runtime hook options error %v, got %v", sentinel, err)
 	}
 
-	_, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, "/tmp/runtime.ndjson", CaptureProviderNode, "/repo")
+	_, err := withRuntimeTraceEnvForResolver([]string{"PATH=/usr/bin"}, "/tmp/runtime.ndjson", CaptureProviderNode, "/repo", resolver)
 	if err == nil || !strings.Contains(err.Error(), "resolve runtime node hooks") {
 		t.Fatalf("expected wrapped runtime hook error, got %v", err)
 	}
 
-	err = Capture(context.Background(), CaptureRequest{
-		RepoPath: t.TempDir(),
-		Command:  "make test",
-	})
+	req := CaptureRequest{RepoPath: t.TempDir(), Command: "make test"}
+	err = captureWithRuntimeHookPathResolver(context.Background(), req, resolver)
 	if err == nil || !strings.Contains(err.Error(), "resolve runtime node hooks") {
 		t.Fatalf("expected capture to surface hook resolution error, got %v", err)
 	}
@@ -119,23 +111,6 @@ func TestConfigureRuntimeCommandCancelBranches(t *testing.T) {
 		if !errors.Is(err, os.ErrProcessDone) {
 			t.Fatalf("expected process-done error after exit, got %v", err)
 		}
-	})
-}
-
-func restoreRuntimeHookState(t *testing.T) {
-	t.Helper()
-
-	originalRequire := runtimeRequireHookPath
-	originalLoader := runtimeLoaderHookPath
-	originalErr := runtimeHookPathsErr
-
-	t.Cleanup(func() {
-		runtimeHookPathsOnce = sync.Once{}
-		runtimeHookPathsOnce.Do(func() {
-			runtimeRequireHookPath = originalRequire
-			runtimeLoaderHookPath = originalLoader
-			runtimeHookPathsErr = originalErr
-		})
 	})
 }
 

@@ -39,6 +39,10 @@ func DefaultTracePath(repoPath string) string {
 }
 
 func Capture(ctx context.Context, req CaptureRequest) error {
+	return captureWithRuntimeHookPathResolver(ctx, req, defaultRuntimeHookPathResolver)
+}
+
+func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest, resolver *runtimeHookPathResolver) error {
 	plan, err := resolveCapturePlan(req)
 	if err != nil {
 		return err
@@ -64,7 +68,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 		return err
 	}
 	cmd.Dir = plan.repoPath
-	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath, plan.provider, plan.repoPath)
+	cmd.Env, err = withRuntimeTraceEnvForResolver(os.Environ(), plan.tracePath, plan.provider, plan.repoPath, resolver)
 	if err != nil {
 		return err
 	}

@@ -286,19 +286,9 @@ func pythonModuleFromResolvedPath(value, dependency string) string {
 	value = strings.TrimPrefix(value, fileURLPrefix)
 	value = filepath.ToSlash(value)
 	for _, marker := range []string{"/site-packages/", "/dist-packages/"} {
-		pos := strings.LastIndex(value, marker)
-		if pos < 0 {
+		module := pythonModuleFromPackageMarker(value, marker)
+		if module == "" {
 			continue
-		}
-		rest := strings.TrimPrefix(value[pos+len(marker):], "/")
-		if rest == "" {
-			return ""
-		}
-		module := strings.TrimSuffix(strings.Split(rest, "/")[0], ".py")
-		module = strings.TrimSuffix(module, ".pyc")
-		module = strings.TrimSuffix(module, ".pyo")
-		if module == "__pycache__" || strings.HasSuffix(module, ".dist-info") || strings.HasSuffix(module, ".egg-info") {
-			return ""
 		}
 		if dependency != "" && dependencyFromPythonModule(module) != dependency {
 			return ""
@@ -306,6 +296,25 @@ func pythonModuleFromResolvedPath(value, dependency string) string {
 		return module
 	}
 	return ""
+}
+
+func pythonModuleFromPackageMarker(value, marker string) string {
+	pos := strings.LastIndex(value, marker)
+	if pos < 0 {
+		return ""
+	}
+	rest := strings.TrimPrefix(value[pos+len(marker):], "/")
+	if rest == "" {
+		return ""
+	}
+	module := strings.Split(rest, "/")[0]
+	for _, suffix := range []string{".py", ".pyc", ".pyo"} {
+		module = strings.TrimSuffix(module, suffix)
+	}
+	if module == "__pycache__" || strings.HasSuffix(module, ".dist-info") || strings.HasSuffix(module, ".egg-info") {
+		return ""
+	}
+	return module
 }
 
 func sanitizedPythonModuleIdentifier(value string) string {

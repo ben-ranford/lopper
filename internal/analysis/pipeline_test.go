@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -274,23 +275,25 @@ func TestAnnotateRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
 	mainURL := fileURLForAnalysisTest(mainPath, "")
 	localhostSpaceURL := fileURLForAnalysisTest(spacePath, "localhost")
 	repoURL := fileURLForAnalysisTest(repo, "")
-	content := `{"module":"lodash/map","parent":"C:\\Users\\alice\\project\\main.js","entrypoint":"` + mainURL + `"}` + "\n" +
-		`{"module":"lodash/map","parent":"` + localhostSpaceURL + `","entrypoint":"\\\\server\\share\\project\\main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"//server/share/project/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"\\/server/share/project/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"/\\server/share/project/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"file://localhost/C:/Users/alice/project/main.js","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"file://server/share/project/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src/bad%ZZ.js","entrypoint":"file://localhost/%43%3A%2FUsers/alice/project/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src%2F..%2F..%2FUsers/alice/main.js","entrypoint":"file://localhost/%2F%2Fserver/share/project/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"x:private-token","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"a:foo/bar.js","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"C:Users/alice/private.js","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"data:text/plain,secret","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"mailto:test@example.com","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"https:foo","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"https:/foo","entrypoint":"src/main.js"}` + "\n" +
-		`{"module":"lodash/map","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}` + "\n"
+	content := analysisRuntimeTraceFixtureContent(t, []analysisRuntimeTraceFixtureRow{
+		{parent: "C:\\Users\\alice\\project\\main.js", entrypoint: mainURL},
+		{parent: localhostSpaceURL, entrypoint: `\\server\share\project\main.js`},
+		{parent: "src/main.js", entrypoint: "//server/share/project/main.js"},
+		{parent: "src/main.js", entrypoint: `\/server/share/project/main.js`},
+		{parent: "src/main.js", entrypoint: `/\server/share/project/main.js`},
+		{parent: "file://localhost/C:/Users/alice/project/main.js", entrypoint: "src/main.js"},
+		{parent: "src/main.js", entrypoint: "file://server/share/project/main.js"},
+		{parent: strings.TrimSuffix(repoURL, "/") + "/src/bad%ZZ.js", entrypoint: "file://localhost/%43%3A%2FUsers/alice/project/main.js"},
+		{parent: strings.TrimSuffix(repoURL, "/") + "/src%2F..%2F..%2FUsers/alice/main.js", entrypoint: "file://localhost/%2F%2Fserver/share/project/main.js"},
+		{parent: "x:private-token", entrypoint: "src/main.js"},
+		{parent: "a:foo/bar.js", entrypoint: "src/main.js"},
+		{parent: "C:Users/alice/private.js", entrypoint: "src/main.js"},
+		{parent: "data:text/plain,secret", entrypoint: "src/main.js"},
+		{parent: "mailto:test@example.com", entrypoint: "src/main.js"},
+		{parent: "https:foo", entrypoint: "src/main.js"},
+		{parent: "https:/foo", entrypoint: "src/main.js"},
+		{parent: "node:internal/modules/cjs/loader", entrypoint: "lodash/map"},
+	})
 	if err := os.WriteFile(tracePath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write trace: %v", err)
 	}
@@ -311,12 +314,41 @@ func TestAnnotateRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
 	}
 }
 
-func fileURLForAnalysisTest(pathValue, host string) string {
-	pathValue = filepath.ToSlash(pathValue)
-	if !strings.HasPrefix(pathValue, "/") {
-		pathValue = "/" + pathValue
+type analysisRuntimeTraceFixtureRow struct {
+	parent     string
+	entrypoint string
+}
+
+func analysisRuntimeTraceFixtureContent(t *testing.T, rows []analysisRuntimeTraceFixtureRow) string {
+	t.Helper()
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		payload, err := json.Marshal(struct {
+			Module     string `json:"module"`
+			Parent     string `json:"parent"`
+			Entrypoint string `json:"entrypoint"`
+		}{
+			Module:     "lodash/map",
+			Parent:     row.parent,
+			Entrypoint: row.entrypoint,
+		})
+		if err != nil {
+			t.Fatalf("marshal runtime trace fixture row: %v", err)
+		}
+		lines = append(lines, string(payload))
 	}
-	return (&url.URL{Scheme: "file", Host: host, Path: pathValue}).String()
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func fileURLForAnalysisTest(pathValue, host string) string {
+	slashedPath := filepath.ToSlash(pathValue)
+	fileURL := url.URL{Scheme: "file", Host: host}
+	if strings.HasPrefix(slashedPath, "/") {
+		fileURL.Path = slashedPath
+	} else {
+		fileURL.Path = "/" + slashedPath
+	}
+	return fileURL.String()
 }
 
 func runtimeUsageHasExactModules(got []report.RuntimeModuleUsage, want ...string) bool {

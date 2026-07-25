@@ -2,16 +2,35 @@ package runtime
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestLoadTrace(t *testing.T) {
-	trace, err := loadTraceFromContentInRepo(t, "/repo", `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js","parent":"file:///repo/src/index.js","entrypoint":"file:///repo/src/main.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js","parent":"/repo/src/index.cjs","entrypoint":"/repo/src/start.cjs"}`+"\n")
+	repo := t.TempDir()
+	for _, path := range []string{
+		filepath.Join(repo, "src", "index.js"),
+		filepath.Join(repo, "src", "main.js"),
+		filepath.Join(repo, "src", "index.cjs"),
+		filepath.Join(repo, "src", "start.cjs"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir trace fixture parent: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("module.exports = 1\n"), 0o600); err != nil {
+			t.Fatalf("write trace fixture %q: %v", path, err)
+		}
+	}
+
+	traceContent := `{"kind":"resolve","module":"` + lodashMapModule + `","resolved":"file:///repo/node_modules/lodash/map.js","parent":"` + fileURLForRuntimeTest(filepath.Join(repo, "src", "index.js"), "") + `","entrypoint":"` + fileURLForRuntimeTest(filepath.Join(repo, "src", "main.js"), "") + `"}` + "\n" +
+		`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js","parent":"` + filepath.Join(repo, "src", "index.cjs") + `","entrypoint":"` + filepath.Join(repo, "src", "start.cjs") + `"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, repo, traceContent)
 
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
@@ -37,7 +56,15 @@ func TestLoadTrace(t *testing.T) {
 }
 
 func TestLoadTracePythonLanguageEvents(t *testing.T) {
-	trace, err := loadTraceFromContentInRepo(t, "/repo", `{"language":"python","module":"requests.sessions","parent":"/repo/app.py","entrypoint":"/repo/app.py"}`+"\n"+`{"language":"python","dependency":"python-dateutil","module":"dateutil.parser","resolved":"/repo/.venv/lib/python3.12/site-packages/dateutil/parser.py"}`+"\n")
+	repo := t.TempDir()
+	appPath := filepath.Join(repo, "app.py")
+	if err := os.WriteFile(appPath, []byte("print('ok')\n"), 0o600); err != nil {
+		t.Fatalf("write python app fixture: %v", err)
+	}
+
+	traceContent := `{"language":"python","module":"requests.sessions","parent":"` + appPath + `","entrypoint":"` + appPath + `"}` + "\n" +
+		`{"language":"python","dependency":"python-dateutil","module":"dateutil.parser","resolved":"/repo/.venv/lib/python3.12/site-packages/dateutil/parser.py"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, repo, traceContent)
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
@@ -108,6 +135,63 @@ func TestLoadTraceOversizedFile(t *testing.T) {
 	_, err := loadTraceFromContent(t, oversizedRuntimeTraceContent())
 	if !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized trace to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderReturnsZeroForEmptyDestination(t *testing.T) {
+	reader := &runtimeTraceByteLimitReader{reader: strings.NewReader("trace"), remaining: 4}
+
+	n, err := reader.Read(nil)
+	if n != 0 || err != nil {
+		t.Fatalf("expected empty destination read to return (0, nil), got (%d, %v)", n, err)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderRejectsReadsAfterBudgetExhaustion(t *testing.T) {
+	reader := &runtimeTraceByteLimitReader{reader: strings.NewReader("trace"), remaining: 0}
+
+	buf := make([]byte, 8)
+	n, err := reader.Read(buf)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected exhausted reader to fail with ErrFileTooLarge, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected exhausted reader to return zero bytes, got %d", n)
+	}
+	if reader.remaining != 0 {
+		t.Fatalf("expected exhausted reader budget to remain zero, got %d", reader.remaining)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderClampsNegativeRemainingBudget(t *testing.T) {
+	reader := &runtimeTraceByteLimitReader{reader: strings.NewReader("x"), remaining: -1}
+
+	buf := make([]byte, 1)
+	n, err := reader.Read(buf)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected negative remaining budget to fail with ErrFileTooLarge, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected negative remaining budget to return zero bytes, got %d", n)
+	}
+	if reader.remaining != 0 {
+		t.Fatalf("expected negative remaining budget to clamp to zero, got %d", reader.remaining)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderReturnsUnderlyingReadWhenWithinBudget(t *testing.T) {
+	reader := &runtimeTraceByteLimitReader{reader: strings.NewReader("ok"), remaining: 4}
+
+	buf := make([]byte, 4)
+	n, err := reader.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("expected within-budget read to preserve underlying result, got %v", err)
+	}
+	if got := string(buf[:n]); got != "ok" {
+		t.Fatalf("expected within-budget read to return payload, got %q", got)
+	}
+	if reader.remaining != 2 {
+		t.Fatalf("expected remaining budget 2 after read, got %d", reader.remaining)
 	}
 }
 
@@ -275,30 +359,27 @@ func TestLoadTraceCanonicalizesRepoRootOncePerLoad(t *testing.T) {
 		t.Fatalf("write repo file: %v", err)
 	}
 
-	original := resolveTraceRepoRoot
 	calls := 0
-	resolveTraceRepoRoot = func(repoPath string) string {
+	resolveRepoRoot := func(repoPath string) string {
 		calls++
-		return original(repoPath)
+		return resolvedRuntimeRepoRoot(repoPath)
 	}
-	defer func() {
-		resolveTraceRepoRoot = original
-	}()
 
 	content :=
 		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
 			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n"
-	trace, err := loadTraceFromContentInRepo(t, repo, content)
+	tracePath := testutil.WriteTempFile(t, filepath.Join("runtime", "trace.ndjson"), content)
+	trace, err := load(tracePath, traceLoadOptions{repoRoot: repo, resolveRepoRoot: resolveRepoRoot})
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
 	if calls != 1 {
 		t.Fatalf("expected repo root to resolve once per load, got %d", calls)
 	}
-	if got := trace.DependencyParents["lodash"]["src/main.js"]; got != 2 {
+	if trace.DependencyParents["lodash"]["src/main.js"] != 2 {
 		t.Fatalf("expected both parent samples to be counted, got %#v", trace.DependencyParents["lodash"])
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 2 {
+	if trace.DependencyEntrypoints["lodash"]["src/main.js"] != 2 {
 		t.Fatalf("expected both entrypoint samples to be counted, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 }

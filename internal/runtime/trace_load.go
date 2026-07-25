@@ -33,7 +33,7 @@ func load(path string, opts traceLoadOptions) (_ Trace, err error) {
 	}()
 
 	if strings.TrimSpace(opts.repoRoot) != "" {
-		opts.resolvedRepoRoot = resolveTraceRepoRoot(opts.repoRoot)
+		opts.resolvedRepoRoot = opts.resolveRepoRootFunc()(opts.repoRoot)
 	}
 
 	trace := newTrace()

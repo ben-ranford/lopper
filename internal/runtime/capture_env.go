@@ -14,33 +14,63 @@ const runtimeLoaderHookRelPath = "scripts/runtime/loader.mjs"
 const runtimePythonHookRelPath = "scripts/runtime/sitecustomize.py"
 const runtimeRepoRootEnvKey = "LOPPER_RUNTIME_REPO_ROOT"
 
-var (
-	runtimeHookPathsOnce   sync.Once
-	runtimeRequireHookPath string
-	runtimeLoaderHookPath  string
-	runtimeHookPathsErr    error
+type runtimeExecutablePathFunc func() (string, error)
+type runtimeCallerFunc func(skip int) (uintptr, string, int, bool)
 
-	runtimePythonHookDirOnce sync.Once
-	runtimePythonHookDirPath string
-	runtimePythonHookDirErr  error
-)
+type runtimeHookPathResolver struct {
+	executablePath runtimeExecutablePathFunc
+	caller         runtimeCallerFunc
 
-var runtimeExecutablePath = os.Executable
-var runtimeCaller = goruntime.Caller
+	hookPathsOnce sync.Once
+	hookPaths     struct {
+		requirePath string
+		loaderPath  string
+		err         error
+	}
+
+	pythonHookDirOnce sync.Once
+	pythonHookDir     struct {
+		path string
+		err  error
+	}
+}
+
+var defaultRuntimeHookPathResolver = newRuntimeHookPathResolver(os.Executable, goruntime.Caller)
+
+func newRuntimeHookPathResolver(executablePath runtimeExecutablePathFunc, caller runtimeCallerFunc) *runtimeHookPathResolver {
+	if executablePath == nil {
+		executablePath = os.Executable
+	}
+	if caller == nil {
+		caller = goruntime.Caller
+	}
+	return &runtimeHookPathResolver{
+		executablePath: executablePath,
+		caller:         caller,
+	}
+}
 
 func withRuntimeTraceEnv(base []string, tracePath string, provider CaptureProvider, repoPath string) ([]string, error) {
+	return withRuntimeTraceEnvForResolver(base, tracePath, provider, repoPath, defaultRuntimeHookPathResolver)
+}
+
+func withRuntimeTraceEnvForResolver(base []string, tracePath string, provider CaptureProvider, repoPath string, resolver *runtimeHookPathResolver) ([]string, error) {
 	switch normalizeCaptureProvider(provider) {
 	case CaptureProviderNode:
-		return withNodeRuntimeTraceEnv(base, tracePath, repoPath)
+		return withNodeRuntimeTraceEnvForResolver(base, tracePath, repoPath, resolver)
 	case CaptureProviderPython:
-		return withPythonRuntimeTraceEnv(base, tracePath, repoPath)
+		return withPythonRuntimeTraceEnvForResolver(base, tracePath, repoPath, resolver)
 	default:
 		return nil, fmt.Errorf("unsupported runtime capture provider %q", provider)
 	}
 }
 
 func withNodeRuntimeTraceEnv(base []string, tracePath string, repoPath string) ([]string, error) {
-	required, err := runtimeNodeHookOptions()
+	return withNodeRuntimeTraceEnvForResolver(base, tracePath, repoPath, defaultRuntimeHookPathResolver)
+}
+
+func withNodeRuntimeTraceEnvForResolver(base []string, tracePath string, repoPath string, resolver *runtimeHookPathResolver) ([]string, error) {
+	required, err := resolver.runtimeNodeHookOptions()
 	if err != nil {
 		return nil, fmt.Errorf("resolve runtime node hooks: %w", err)
 	}
@@ -48,7 +78,7 @@ func withNodeRuntimeTraceEnv(base []string, tracePath string, repoPath string) (
 	existing := readEnvValue(base, "NODE_OPTIONS")
 	updates := map[string]string{
 		"LOPPER_RUNTIME_TRACE": tracePath,
-		runtimeRepoRootEnvKey:  resolvedRuntimeRepoRoot(repoPath),
+		runtimeRepoRootEnvKey:  lexicalRuntimeRepoRoot(repoPath),
 	}
 	nodeOptions := strings.TrimSpace(existing)
 	if nodeOptions == "" {
@@ -60,7 +90,11 @@ func withNodeRuntimeTraceEnv(base []string, tracePath string, repoPath string) (
 }
 
 func withPythonRuntimeTraceEnv(base []string, tracePath string, repoPath string) ([]string, error) {
-	hookDir, err := runtimePythonHookDirectory()
+	return withPythonRuntimeTraceEnvForResolver(base, tracePath, repoPath, defaultRuntimeHookPathResolver)
+}
+
+func withPythonRuntimeTraceEnvForResolver(base []string, tracePath string, repoPath string, resolver *runtimeHookPathResolver) ([]string, error) {
+	hookDir, err := resolver.runtimePythonHookDirectory()
 	if err != nil {
 		return nil, fmt.Errorf("resolve runtime python hook: %w", err)
 	}
@@ -70,10 +104,23 @@ func withPythonRuntimeTraceEnv(base []string, tracePath string, repoPath string)
 		pythonPath += string(os.PathListSeparator) + existing
 	}
 	return mergeEnv(base, map[string]string{
-		"LOPPER_RUNTIME_TRACE": tracePath,
-		runtimeRepoRootEnvKey:  resolvedRuntimeRepoRoot(repoPath),
-		"PYTHONPATH":           pythonPath,
+		"LOPPER_RUNTIME_TRACE":    tracePath,
+		runtimeRepoRootEnvKey:     lexicalRuntimeRepoRoot(repoPath),
+		"PYTHONDONTWRITEBYTECODE": "1",
+		"PYTHONPATH":              pythonPath,
 	}), nil
+}
+
+func lexicalRuntimeRepoRoot(repoPath string) string {
+	trimmed := strings.TrimSpace(repoPath)
+	if trimmed == "" {
+		return ""
+	}
+	absPath, err := filepath.Abs(trimmed)
+	if err == nil && strings.TrimSpace(absPath) != "" {
+		return filepath.Clean(absPath)
+	}
+	return filepath.Clean(trimmed)
 }
 
 func resolvedRuntimeRepoRoot(repoPath string) string {
@@ -124,14 +171,6 @@ func readEnvValue(env []string, key string) string {
 	return ""
 }
 
-func runtimeNodeHookOptions() (string, error) {
-	requirePath, loaderPath, err := runtimeHookPaths()
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("--require=%s --loader=%s", quoteNodeOptionPath(requirePath), quoteNodeOptionPath(loaderPath)), nil
-}
-
 func quoteNodeOptionPath(path string) string {
 	if !strings.ContainsAny(path, " \t\r\n\"") {
 		return path
@@ -143,25 +182,19 @@ func quoteNodeOptionPath(path string) string {
 }
 
 func runtimeHookPaths() (string, string, error) {
-	runtimeHookPathsOnce.Do(func() {
-		runtimeRequireHookPath, runtimeLoaderHookPath, runtimeHookPathsErr = locateRuntimeHookPaths()
-	})
-	return runtimeRequireHookPath, runtimeLoaderHookPath, runtimeHookPathsErr
+	return defaultRuntimeHookPathResolver.runtimeHookPaths()
 }
 
 func runtimePythonHookDirectory() (string, error) {
-	runtimePythonHookDirOnce.Do(func() {
-		runtimePythonHookDirPath, runtimePythonHookDirErr = locateRuntimePythonHookDirectory()
-	})
-	return runtimePythonHookDirPath, runtimePythonHookDirErr
+	return defaultRuntimeHookPathResolver.runtimePythonHookDirectory()
 }
 
 func locateRuntimeHookPaths() (string, string, error) {
-	return locateRuntimeHookPathsInRoots(runtimeHookSearchRoots())
+	return locateRuntimeHookPathsInRoots(defaultRuntimeHookPathResolver.runtimeHookSearchRoots())
 }
 
 func locateRuntimePythonHookDirectory() (string, error) {
-	return locateRuntimePythonHookDirectoryInRoots(runtimeHookSearchRoots())
+	return locateRuntimePythonHookDirectoryInRoots(defaultRuntimeHookPathResolver.runtimeHookSearchRoots())
 }
 
 func locateRuntimeHookPathsInRoots(roots []string) (string, string, error) {
@@ -190,6 +223,32 @@ func locateRuntimePythonHookDirectoryInRoots(roots []string) (string, error) {
 }
 
 func runtimeHookSearchRoots() []string {
+	return defaultRuntimeHookPathResolver.runtimeHookSearchRoots()
+}
+
+func (r *runtimeHookPathResolver) runtimeNodeHookOptions() (string, error) {
+	requirePath, loaderPath, err := r.runtimeHookPaths()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("--require=%s --loader=%s", quoteNodeOptionPath(requirePath), quoteNodeOptionPath(loaderPath)), nil
+}
+
+func (r *runtimeHookPathResolver) runtimeHookPaths() (string, string, error) {
+	r.hookPathsOnce.Do(func() {
+		r.hookPaths.requirePath, r.hookPaths.loaderPath, r.hookPaths.err = locateRuntimeHookPathsInRoots(r.runtimeHookSearchRoots())
+	})
+	return r.hookPaths.requirePath, r.hookPaths.loaderPath, r.hookPaths.err
+}
+
+func (r *runtimeHookPathResolver) runtimePythonHookDirectory() (string, error) {
+	r.pythonHookDirOnce.Do(func() {
+		r.pythonHookDir.path, r.pythonHookDir.err = locateRuntimePythonHookDirectoryInRoots(r.runtimeHookSearchRoots())
+	})
+	return r.pythonHookDir.path, r.pythonHookDir.err
+}
+
+func (r *runtimeHookPathResolver) runtimeHookSearchRoots() []string {
 	seen := make(map[string]struct{})
 	roots := make([]string, 0)
 	addSearchPath := func(path string) {
@@ -211,12 +270,12 @@ func runtimeHookSearchRoots() []string {
 		roots = append(roots, dir)
 	}
 
-	if executablePath, err := runtimeExecutablePath(); err == nil {
+	if executablePath, err := r.executablePath(); err == nil {
 		executableDir := filepath.Dir(executablePath)
 		addSearchPath(filepath.Join(executableDir, "share", "lopper"))
 		addSearchPath(filepath.Join(executableDir, "..", "share", "lopper"))
 	}
-	if _, filename, _, ok := runtimeCaller(0); ok {
+	if _, filename, _, ok := r.caller(0); ok {
 		addSearchPath(filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..")))
 	}
 

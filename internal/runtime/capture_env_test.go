@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -23,7 +23,7 @@ func TestWithRuntimeTraceEnv(t *testing.T) {
 	}
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
-	assertEnvEntryValue(t, env, runtimeRepoRootEnvKey, resolvedRuntimeRepoRoot("/repo"))
+	assertEnvEntryValue(t, env, runtimeRepoRootEnvKey, lexicalRuntimeRepoRoot("/repo"))
 	assertNodeOptionsEntry(t, env, requirePath, loaderPath)
 }
 
@@ -34,13 +34,14 @@ func TestWithPythonRuntimeTraceEnv(t *testing.T) {
 		t.Fatalf("runtime python hook directory: %v", err)
 	}
 
-	env, err := withRuntimeTraceEnv([]string{"PYTHONPATH=/existing/path", "NODE_OPTIONS=--max-old-space-size=4096"}, tracePath, CaptureProviderPython, "/repo")
+	env, err := withRuntimeTraceEnv([]string{"PYTHONDONTWRITEBYTECODE=0", "PYTHONPATH=/existing/path", "NODE_OPTIONS=--max-old-space-size=4096"}, tracePath, CaptureProviderPython, "/repo")
 	if err != nil {
 		t.Fatalf("with python runtime trace env: %v", err)
 	}
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
-	assertEnvEntryValue(t, env, runtimeRepoRootEnvKey, resolvedRuntimeRepoRoot("/repo"))
+	assertEnvEntryValue(t, env, runtimeRepoRootEnvKey, lexicalRuntimeRepoRoot("/repo"))
+	assertEnvEntryValue(t, env, "PYTHONDONTWRITEBYTECODE", "1")
 	pythonPath, ok := lookupEnvEntry(env, "PYTHONPATH")
 	if !ok {
 		t.Fatalf("expected PYTHONPATH to be set")
@@ -67,8 +68,46 @@ func TestWithPythonRuntimeTraceEnvWithoutExistingPythonPath(t *testing.T) {
 	}
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
+	assertEnvEntryValue(t, env, "PYTHONDONTWRITEBYTECODE", "1")
 	assertEnvEntryValue(t, env, "PYTHONPATH", hookDir)
-	assertEnvEntryValue(t, env, runtimeRepoRootEnvKey, resolvedRuntimeRepoRoot("/repo"))
+	assertEnvEntryValue(t, env, runtimeRepoRootEnvKey, lexicalRuntimeRepoRoot("/repo"))
+}
+
+func TestLexicalRuntimeRepoRootPreservesAlias(t *testing.T) {
+	if got := lexicalRuntimeRepoRoot(" \t "); got != "" {
+		t.Fatalf("expected blank repo root to remain blank, got %q", got)
+	}
+
+	root := t.TempDir()
+	realRepo := filepath.Join(root, "repo-real")
+	aliasRepo := filepath.Join(root, "repo-alias")
+	if err := os.MkdirAll(realRepo, 0o750); err != nil {
+		t.Fatalf("mkdir real repo: %v", err)
+	}
+	if err := os.Symlink(realRepo, aliasRepo); err != nil {
+		t.Skipf("repo symlinks unavailable: %v", err)
+	}
+	if got := lexicalRuntimeRepoRoot(aliasRepo); got != aliasRepo {
+		t.Fatalf("expected lexical repo alias %q, got %q", aliasRepo, got)
+	}
+	if got := lexicalRuntimeRepoRoot(aliasRepo); got == resolvedRuntimeRepoRoot(aliasRepo) {
+		t.Fatalf("expected lexical repo alias to differ from resolved root, got %q", got)
+	}
+}
+
+func TestResolvedRuntimeRepoRootFallsBackToAbsolutePathWhenSymlinkResolutionFails(t *testing.T) {
+	root := t.TempDir()
+	missingPath := filepath.Join(root, "missing", "..", "repo")
+
+	got := resolvedRuntimeRepoRoot(missingPath)
+	want, err := filepath.Abs(missingPath)
+	if err != nil {
+		t.Fatalf("abs missing repo path: %v", err)
+	}
+	want = filepath.Clean(want)
+	if got != want {
+		t.Fatalf("expected resolved repo root %q, got %q", want, got)
+	}
 }
 
 func TestRuntimeCaptureProviderValidationBranches(t *testing.T) {
@@ -87,6 +126,22 @@ func TestRuntimeCaptureProviderValidationBranches(t *testing.T) {
 	}
 	if _, err := resolveCapturePlan(CaptureRequest{RepoPath: t.TempDir(), Command: "npm test", Provider: "ruby"}); err == nil || !strings.Contains(err.Error(), "unsupported runtime capture provider") {
 		t.Fatalf("expected unsupported provider plan error, got %v", err)
+	}
+}
+
+func TestRuntimeHookResolverProductionWrappers(t *testing.T) {
+	resolver := newRuntimeHookPathResolver(nil, nil)
+	if _, err := resolver.runtimeNodeHookOptions(); err != nil {
+		t.Fatalf("runtime node hook options with default constructor: %v", err)
+	}
+	if _, _, err := locateRuntimeHookPaths(); err != nil {
+		t.Fatalf("locate runtime hook paths: %v", err)
+	}
+	if _, err := locateRuntimePythonHookDirectory(); err != nil {
+		t.Fatalf("locate runtime python hook directory: %v", err)
+	}
+	if len(runtimeHookSearchRoots()) == 0 {
+		t.Fatalf("expected runtime hook search roots from production wrapper")
 	}
 }
 
@@ -177,16 +232,12 @@ func TestRuntimeSearchDirsDefault(t *testing.T) {
 }
 
 func TestRuntimeHookSearchRootsAreAnchored(t *testing.T) {
-	restoreRuntimeHookPathProviders(t)
-
-	runtimeExecutablePath = func() (string, error) {
-		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
-	}
-	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+	executablePath := func() (string, error) { return filepath.Join("/tmp", "plant", "bin", "lopper"), nil }
+	caller := func(skip int) (uintptr, string, int, bool) {
 		return 0, filepath.Join("/tmp", "source", "internal", "runtime", "capture_env.go"), 0, true
 	}
-
-	roots := runtimeHookSearchRoots()
+	resolver := newFakeRuntimeHookPathResolver(executablePath, caller)
+	roots := resolver.runtimeHookSearchRoots()
 	want := []string{
 		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "share", "lopper")),
 		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
@@ -198,16 +249,10 @@ func TestRuntimeHookSearchRootsAreAnchored(t *testing.T) {
 }
 
 func TestRuntimeHookSearchRootsResolveRelativeCallerPaths(t *testing.T) {
-	restoreRuntimeHookPathProviders(t)
-
-	runtimeExecutablePath = func() (string, error) {
-		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
-	}
-	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
-		return 0, "capture_env.go", 0, true
-	}
-
-	roots := runtimeHookSearchRoots()
+	executablePath := func() (string, error) { return filepath.Join("/tmp", "plant", "bin", "lopper"), nil }
+	caller := func(skip int) (uintptr, string, int, bool) { return 0, "capture_env.go", 0, true }
+	resolver := newFakeRuntimeHookPathResolver(executablePath, caller)
+	roots := resolver.runtimeHookSearchRoots()
 	wantRepoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("abs repo root: %v", err)
@@ -237,54 +282,36 @@ func TestMergeEnvAndReadEnvValue(t *testing.T) {
 }
 
 func TestRuntimeNodeHookOptionsReturnsCachedError(t *testing.T) {
-	oldRequire := runtimeRequireHookPath
-	oldLoader := runtimeLoaderHookPath
-	oldErr := runtimeHookPathsErr
-	defer func() {
-		runtimeHookPathsOnce = sync.Once{}
-		runtimeHookPathsOnce.Do(func() {
-			runtimeRequireHookPath = oldRequire
-			runtimeLoaderHookPath = oldLoader
-			runtimeHookPathsErr = oldErr
-		})
-	}()
+	sentinel := errors.New("boom")
+	resolver := newFakeRuntimeHookPathResolver(func() (string, error) { return "", nil }, func(skip int) (uintptr, string, int, bool) { return 0, "", 0, false })
+	resolver.hookPaths.err = sentinel
+	resolver.hookPathsOnce.Do(func() {})
 
-	runtimeHookPathsOnce = sync.Once{}
-	runtimeHookPathsOnce.Do(func() {
-		runtimeRequireHookPath = ""
-		runtimeLoaderHookPath = ""
-		runtimeHookPathsErr = errors.New("boom")
-	})
-
-	_, err := runtimeNodeHookOptions()
+	_, err := resolver.runtimeNodeHookOptions()
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected cached runtime hook error, got %v", err)
 	}
 }
 
-func restoreRuntimeHookPathProviders(t *testing.T) {
-	t.Helper()
+func TestWithPythonRuntimeTraceEnvForResolverPropagatesError(t *testing.T) {
+	sentinel := errors.New("python hook lookup failed")
+	resolver := newFakeRuntimeHookPathResolver(func() (string, error) { return "", nil }, func(skip int) (uintptr, string, int, bool) { return 0, "", 0, false })
+	resolver.pythonHookDir.err = sentinel
+	resolver.pythonHookDirOnce.Do(func() {})
 
-	originalExecutable := runtimeExecutablePath
-	originalCaller := runtimeCaller
-
-	t.Cleanup(func() {
-		runtimeExecutablePath = originalExecutable
-		runtimeCaller = originalCaller
-	})
+	_, err := withPythonRuntimeTraceEnvForResolver([]string{"PATH=/usr/bin"}, "/tmp/python-runtime.ndjson", "/repo", resolver)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected python hook resolver error %v, got %v", sentinel, err)
+	}
 }
 
 func TestRuntimeNodeHookOptionsQuotesPathsWithSpaces(t *testing.T) {
-	restoreRuntimeHookState(t)
+	resolver := newFakeRuntimeHookPathResolver(func() (string, error) { return "", nil }, func(skip int) (uintptr, string, int, bool) { return 0, "", 0, false })
+	resolver.hookPaths.requirePath = "/tmp/hooks/require hook.cjs"
+	resolver.hookPaths.loaderPath = "/tmp/hooks/loader hook.mjs"
+	resolver.hookPathsOnce.Do(func() {})
 
-	runtimeHookPathsOnce = sync.Once{}
-	runtimeHookPathsOnce.Do(func() {
-		runtimeRequireHookPath = "/tmp/hooks/require hook.cjs"
-		runtimeLoaderHookPath = "/tmp/hooks/loader hook.mjs"
-		runtimeHookPathsErr = nil
-	})
-
-	got, err := runtimeNodeHookOptions()
+	got, err := resolver.runtimeNodeHookOptions()
 	if err != nil {
 		t.Fatalf("runtime node hook options: %v", err)
 	}
@@ -294,6 +321,49 @@ func TestRuntimeNodeHookOptionsQuotesPathsWithSpaces(t *testing.T) {
 	if !strings.Contains(got, `--loader="/tmp/hooks/loader hook.mjs"`) {
 		t.Fatalf("expected quoted loader path, got %q", got)
 	}
+}
+
+func TestRuntimeHookPathResolverCachesHookLookupsPerInstance(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	shareRoot := filepath.Join(root, "share", "lopper")
+	requirePath := filepath.Join(shareRoot, runtimeRequireHookRelPath)
+	loaderPath := filepath.Join(shareRoot, runtimeLoaderHookRelPath)
+	if err := os.MkdirAll(filepath.Dir(requirePath), 0o750); err != nil {
+		t.Fatalf("mkdir hook dir: %v", err)
+	}
+	if err := os.WriteFile(requirePath, []byte("module.exports = {};\n"), 0o600); err != nil {
+		t.Fatalf("write require hook: %v", err)
+	}
+	if err := os.WriteFile(loaderPath, []byte("export {};\n"), 0o600); err != nil {
+		t.Fatalf("write loader hook: %v", err)
+	}
+
+	var executableCalls atomic.Int32
+	executablePath := func() (string, error) {
+		executableCalls.Add(1)
+		return filepath.Join(root, "bin", "lopper"), nil
+	}
+	caller := func(skip int) (uintptr, string, int, bool) { return 0, "", 0, false }
+	resolver := newFakeRuntimeHookPathResolver(executablePath, caller)
+
+	for i := 0; i < 3; i++ {
+		gotRequire, gotLoader, err := resolver.runtimeHookPaths()
+		if err != nil {
+			t.Fatalf("runtime hook paths call %d: %v", i+1, err)
+		}
+		if gotRequire != requirePath || gotLoader != loaderPath {
+			t.Fatalf("unexpected cached hook paths on call %d: %q %q", i+1, gotRequire, gotLoader)
+		}
+	}
+	if executableCalls.Load() != 1 {
+		t.Fatalf("expected per-instance hook lookup cache to resolve once, got %d calls", executableCalls.Load())
+	}
+}
+
+func newFakeRuntimeHookPathResolver(executablePath runtimeExecutablePathFunc, caller runtimeCallerFunc) *runtimeHookPathResolver {
+	return newRuntimeHookPathResolver(executablePath, caller)
 }
 
 func TestQuoteNodeOptionPath(t *testing.T) {
