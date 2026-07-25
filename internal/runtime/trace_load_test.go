@@ -234,21 +234,31 @@ func TestLoadTraceObjectFieldLimit(t *testing.T) {
 	}
 }
 
-func TestLoadTraceDependencyNameLimit(t *testing.T) {
-	dependency := strings.Repeat("d", maxRuntimeTraceNameBytes+1)
-	content := "{\"language\":\"python\",\"dependency\":\"" + dependency + "\",\"module\":\"pkg.mod\"}\n"
-	_, err := loadTraceFromContent(t, content)
-	if err == nil || !strings.Contains(err.Error(), "dependency name exceeds") {
-		t.Fatalf("expected dependency name limit error, got %v", err)
+func TestLoadTraceNameLimits(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "dependency",
+			content: "{\"language\":\"python\",\"dependency\":\"" + strings.Repeat("d", maxRuntimeTraceNameBytes+1) + "\",\"module\":\"pkg.mod\"}\n",
+			want:    "dependency name exceeds",
+		},
+		{
+			name:    "module",
+			content: "{\"language\":\"python\",\"dependency\":\"pkg\",\"module\":\"" + strings.Repeat("m", maxRuntimeTraceNameBytes+1) + "\"}\n",
+			want:    "module name exceeds",
+		},
 	}
-}
 
-func TestLoadTraceModuleNameLimit(t *testing.T) {
-	module := strings.Repeat("m", maxRuntimeTraceNameBytes+1)
-	content := "{\"language\":\"python\",\"dependency\":\"pkg\",\"module\":\"" + module + "\"}\n"
-	_, err := loadTraceFromContent(t, content)
-	if err == nil || !strings.Contains(err.Error(), "module name exceeds") {
-		t.Fatalf("expected module name limit error, got %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadTraceFromContent(t, tc.content)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected name limit error containing %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -315,31 +325,25 @@ func TestParseRuntimeTraceEventCanceledContextBeforeDecode(t *testing.T) {
 func TestParseRuntimeTraceEventRejectsInvalidFieldTypes(t *testing.T) {
 	t.Parallel()
 
-	testCases := []struct {
-		name      string
-		field     string
-		wantField string
-	}{
-		{name: "language", field: "language", wantField: "language"},
-		{name: "dependency", field: "dependency", wantField: "dependency"},
-		{name: "module", field: "module", wantField: "module"},
-		{name: "resolved", field: "resolved", wantField: "resolved"},
-		{name: "kind", field: "kind", wantField: "kind"},
-		{name: "parent", field: "parent", wantField: "parent"},
-		{name: "entrypoint", field: "entrypoint", wantField: "entrypoint"},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	for _, field := range []string{
+		"language",
+		"dependency",
+		"module",
+		"resolved",
+		"kind",
+		"parent",
+		"entrypoint",
+	} {
+		field := field
+		t.Run(field, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := parseRuntimeTraceEvent(context.Background(), []byte("{\""+tc.field+"\":{}}"))
+			_, err := parseRuntimeTraceEvent(context.Background(), []byte("{\""+field+"\":{}}"))
 			if err == nil {
 				t.Fatal("expected decode error")
 			}
-			if !strings.Contains(err.Error(), "decode "+tc.wantField) {
-				t.Fatalf("expected decode error for %s, got %v", tc.wantField, err)
+			if !strings.Contains(err.Error(), "decode "+field) {
+				t.Fatalf("expected decode error for %s, got %v", field, err)
 			}
 		})
 	}
