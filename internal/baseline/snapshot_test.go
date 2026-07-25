@@ -14,14 +14,28 @@ type testSnapshotReport struct {
 	Value string `json:"value"`
 }
 
+func decodeTestSnapshotReport(data []byte) (testSnapshotReport, error) {
+	var report testSnapshotReport
+	return report, json.Unmarshal(data, &report)
+}
+
+func normalizeTestSnapshotReport(report testSnapshotReport) testSnapshotReport {
+	report.Value = strings.ToUpper(report.Value)
+	return report
+}
+
+func normalizedSnapshotDecodeOptions() SnapshotDecodeOptions[testSnapshotReport] {
+	return SnapshotDecodeOptions[testSnapshotReport]{
+		DecodeLegacy: decodeTestSnapshotReport,
+		Normalize:    normalizeTestSnapshotReport,
+	}
+}
+
 func TestSaveSnapshotWritesEnvelopeWithUTCTimestamp(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 12, 8, 30, 0, 0, time.FixedZone("AEST", 10*60*60))
-	path, err := SaveSnapshot(t.TempDir(), " label:weekly ", now, testSnapshotReport{Value: "ok"}, nil, func(report testSnapshotReport) testSnapshotReport {
-		report.Value = strings.ToUpper(report.Value)
-		return report
-	})
+	path, err := SaveSnapshot(t.TempDir(), " label:weekly ", now, testSnapshotReport{Value: "ok"}, nil, normalizeTestSnapshotReport)
 	if err != nil {
 		t.Fatalf("SaveSnapshot() error = %v", err)
 	}
@@ -53,16 +67,7 @@ func TestDecodeSnapshotSupportsEnvelopeAndLegacyFallback(t *testing.T) {
 	t.Parallel()
 
 	snapshotData := []byte(`{"baselineSchemaVersion":"1.0.0","key":" label:test ","savedAt":"2026-07-12T00:00:00Z","report":{"value":"snapshot"}}`)
-	reportData, key, err := DecodeSnapshot(snapshotData, SnapshotDecodeOptions[testSnapshotReport]{
-		DecodeLegacy: func(data []byte) (testSnapshotReport, error) {
-			var report testSnapshotReport
-			return report, json.Unmarshal(data, &report)
-		},
-		Normalize: func(report testSnapshotReport) testSnapshotReport {
-			report.Value = strings.ToUpper(report.Value)
-			return report
-		},
-	})
+	reportData, key, err := DecodeSnapshot(snapshotData, normalizedSnapshotDecodeOptions())
 	if err != nil {
 		t.Fatalf("DecodeSnapshot(snapshot) error = %v", err)
 	}
@@ -71,16 +76,7 @@ func TestDecodeSnapshotSupportsEnvelopeAndLegacyFallback(t *testing.T) {
 	}
 
 	legacyData := []byte(`{"value":"legacy"}`)
-	legacyReport, legacyKey, err := DecodeSnapshot(legacyData, SnapshotDecodeOptions[testSnapshotReport]{
-		DecodeLegacy: func(data []byte) (testSnapshotReport, error) {
-			var report testSnapshotReport
-			return report, json.Unmarshal(data, &report)
-		},
-		Normalize: func(report testSnapshotReport) testSnapshotReport {
-			report.Value = strings.ToUpper(report.Value)
-			return report
-		},
-	})
+	legacyReport, legacyKey, err := DecodeSnapshot(legacyData, normalizedSnapshotDecodeOptions())
 	if err != nil {
 		t.Fatalf("DecodeSnapshot(legacy) error = %v", err)
 	}
@@ -93,10 +89,7 @@ func TestDecodeSnapshotRejectsUnsupportedSchemaWithCustomError(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := DecodeSnapshot([]byte(`{"baselineSchemaVersion":"9.9.9","key":"label:bad","report":{"value":"x"}}`), SnapshotDecodeOptions[testSnapshotReport]{
-		DecodeLegacy: func(data []byte) (testSnapshotReport, error) {
-			var report testSnapshotReport
-			return report, json.Unmarshal(data, &report)
-		},
+		DecodeLegacy: decodeTestSnapshotReport,
 		UnsupportedSchema: func(version string) error {
 			return fmt.Errorf("unsupported custom baseline schema version: %s", version)
 		},
@@ -166,12 +159,7 @@ func TestLoadStoreSnapshotReadsResolvedPathAndValidatesKey(t *testing.T) {
 	}
 
 	decode := func(data []byte) (testSnapshotReport, string, error) {
-		return DecodeSnapshot(data, SnapshotDecodeOptions[testSnapshotReport]{
-			DecodeLegacy: func(data []byte) (testSnapshotReport, error) {
-				var report testSnapshotReport
-				return report, json.Unmarshal(data, &report)
-			},
-		})
+		return DecodeSnapshot(data, SnapshotDecodeOptions[testSnapshotReport]{DecodeLegacy: decodeTestSnapshotReport})
 	}
 	validate := func(requestedKey, storedKey string) error {
 		return ValidateSnapshotKey(requestedKey, storedKey, errors.New("snapshot key mismatch"))
