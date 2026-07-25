@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,19 @@ import (
 
 type testSnapshotReport struct {
 	Value string `json:"value"`
+}
+
+type testSortedSnapshotItem struct {
+	Group string
+	Name  string
+}
+
+func sortedSnapshotGroup(item testSortedSnapshotItem) string {
+	return item.Group
+}
+
+func sortedSnapshotName(item testSortedSnapshotItem) string {
+	return item.Name
 }
 
 func decodeTestSnapshotReport(data []byte) (testSnapshotReport, error) {
@@ -239,5 +253,89 @@ func TestValidateSnapshotKeyWrapsCustomMismatchError(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), `requested "label:a", stored "label:b"`) {
 		t.Fatalf("expected detailed mismatch error, got %v", err)
+	}
+}
+
+func TestSortedCopyByStringsReturnsEmptyResultWhenInputIsNil(t *testing.T) {
+	t.Parallel()
+
+	got := SortedCopyByStrings[testSortedSnapshotItem](nil, sortedSnapshotGroup, sortedSnapshotName)
+
+	if len(got) != 0 {
+		t.Fatalf("SortedCopyByStrings(nil) length = %d, want 0", len(got))
+	}
+}
+
+func TestSortedCopyByStringsReturnsEmptyResultWhenInputIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	got := SortedCopyByStrings([]testSortedSnapshotItem{}, sortedSnapshotGroup, sortedSnapshotName)
+
+	if len(got) != 0 {
+		t.Fatalf("SortedCopyByStrings(empty) length = %d, want 0", len(got))
+	}
+}
+
+func TestSortedCopyByStringsOrdersItemsByPrimaryKey(t *testing.T) {
+	t.Parallel()
+
+	items := []testSortedSnapshotItem{
+		{Group: "charlie", Name: "three"},
+		{Group: "alpha", Name: "one"},
+		{Group: "bravo", Name: "two"},
+	}
+
+	got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
+
+	want := []testSortedSnapshotItem{
+		{Group: "alpha", Name: "one"},
+		{Group: "bravo", Name: "two"},
+		{Group: "charlie", Name: "three"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SortedCopyByStrings() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSortedCopyByStringsUsesSecondaryKeyToBreakPrimaryTies(t *testing.T) {
+	t.Parallel()
+
+	items := []testSortedSnapshotItem{
+		{Group: "alpha", Name: "gamma"},
+		{Group: "alpha", Name: "beta"},
+		{Group: "alpha", Name: "alpha"},
+	}
+
+	got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
+
+	want := []testSortedSnapshotItem{
+		{Group: "alpha", Name: "alpha"},
+		{Group: "alpha", Name: "beta"},
+		{Group: "alpha", Name: "gamma"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("SortedCopyByStrings() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSortedCopyByStringsDoesNotMutateInputSlice(t *testing.T) {
+	t.Parallel()
+
+	items := []testSortedSnapshotItem{
+		{Group: "bravo", Name: "two"},
+		{Group: "alpha", Name: "one"},
+	}
+	original := append([]testSortedSnapshotItem(nil), items...)
+
+	got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
+
+	if !slices.Equal(items, original) {
+		t.Fatalf("input mutated: got %#v, want %#v", items, original)
+	}
+	if len(got) != len(items) {
+		t.Fatalf("sorted copy length = %d, want %d", len(got), len(items))
+	}
+	if len(got) > 0 && &got[0] == &items[0] {
+		t.Fatal("SortedCopyByStrings() reused input backing array")
 	}
 }

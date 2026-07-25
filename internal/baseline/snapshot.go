@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -41,6 +42,17 @@ func SaveSnapshot[T any](dir, key string, now time.Time, report T, existsErr err
 	return SaveJSON(dir, key, existsErr, func(trimmedKey string) Snapshot[T] {
 		return NewSnapshot(trimmedKey, report, now, normalize)
 	})
+}
+
+func SortedCopyByStrings[T any](items []T, primaryKey func(T) string, secondaryKey func(T) string) []T {
+	copied := append([]T(nil), items...)
+	slices.SortFunc(copied, func(left, right T) int {
+		if diff := strings.Compare(primaryKey(left), primaryKey(right)); diff != 0 {
+			return diff
+		}
+		return strings.Compare(secondaryKey(left), secondaryKey(right))
+	})
+	return copied
 }
 
 func LoadSnapshotFile[T any](path string, options SnapshotDecodeOptions[T]) (T, string, error) {

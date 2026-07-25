@@ -3,7 +3,6 @@ package report
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -66,13 +65,7 @@ func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot
 
 func normalizeSnapshotReport(rep Report) Report {
 	normalized := rep
-	normalized.Dependencies = append([]DependencyReport(nil), rep.Dependencies...)
-	sort.Slice(normalized.Dependencies, func(i, j int) bool {
-		if normalized.Dependencies[i].Language != normalized.Dependencies[j].Language {
-			return normalized.Dependencies[i].Language < normalized.Dependencies[j].Language
-		}
-		return normalized.Dependencies[i].Name < normalized.Dependencies[j].Name
-	})
+	normalized.Dependencies = baselineutil.SortedCopyByStrings(rep.Dependencies, func(dependency DependencyReport) string { return dependency.Language }, func(dependency DependencyReport) string { return dependency.Name })
 	if normalized.Summary == nil {
 		normalized.Summary = ComputeSummary(normalized.Dependencies)
 	}

@@ -253,14 +253,8 @@ func unsupportedBaselineSnapshotSchemaError(version string) error {
 
 func normalizeSnapshotReport(rep Report) Report {
 	normalized := rep
-	normalized.Repos = append([]RepoResult(nil), rep.Repos...)
+	normalized.Repos = baselineutil.SortedCopyByStrings(rep.Repos, func(repo RepoResult) string { return repo.Name }, func(repo RepoResult) string { return repo.Path })
 	normalized.RemediationItems = dedupeAndSortRemediationItems(rep.RemediationItems)
-	sort.Slice(normalized.Repos, func(i, j int) bool {
-		if normalized.Repos[i].Name != normalized.Repos[j].Name {
-			return normalized.Repos[i].Name < normalized.Repos[j].Name
-		}
-		return normalized.Repos[i].Path < normalized.Repos[j].Path
-	})
 	if normalized.Summary == (Summary{}) {
 		normalized.Summary = computeSummary(normalized)
 	}
