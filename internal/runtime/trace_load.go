@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -14,7 +13,15 @@ import (
 
 const maxRuntimeTraceBytes int64 = 8 * 1024 * 1024
 
-func Load(path string) (_ Trace, err error) {
+func Load(path string) (Trace, error) {
+	return load(path, traceLoadOptions{})
+}
+
+func LoadForRepo(path string, repoPath string) (Trace, error) {
+	return load(path, traceLoadOptions{repoRoot: repoPath})
+}
+
+func load(path string, opts traceLoadOptions) (_ Trace, err error) {
 	file, err := safeio.OpenFile(path)
 	if err != nil {
 		return Trace{}, err
@@ -48,7 +55,7 @@ func Load(path string) (_ Trace, err error) {
 		}
 		module := runtimeModuleFromEventForLanguage(event, language, dep)
 		symbol := runtimeSymbolFromModuleForLanguage(module, language, dep)
-		addRuntimeEvent(&trace, language, dep, module, runtimeContextValue(event.Parent), runtimeContextValue(event.Entrypoint), symbol)
+		addRuntimeEvent(&trace, language, dep, module, runtimeContextValue(event.Parent, opts), runtimeContextValue(event.Entrypoint, opts), symbol)
 	}
 	if err := scanner.Err(); err != nil {
 		return Trace{}, err
@@ -172,11 +179,6 @@ func addSymbolCountByKey(target map[DependencyKey]map[string]int, key Dependency
 	items[module+"\x00"+symbol]++
 }
 
-func runtimeContextValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	value = strings.TrimPrefix(value, fileURLPrefix)
-	return filepath.ToSlash(value)
+func runtimeContextValue(value string, opts traceLoadOptions) string {
+	return normalizeRuntimeContextValue(value, opts)
 }

@@ -8,7 +8,7 @@ import (
 
 func TestRuntimeAdditionalHelperBranches(t *testing.T) {
 	tracePath := "/tmp/runtime.ndjson"
-	env, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, tracePath, CaptureProviderNode)
+	env, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, tracePath, CaptureProviderNode, "/repo")
 	if err != nil {
 		t.Fatalf("with runtime trace env: %v", err)
 	}

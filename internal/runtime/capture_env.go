@@ -12,6 +12,7 @@ import (
 const runtimeRequireHookRelPath = "scripts/runtime/require-hook.cjs"
 const runtimeLoaderHookRelPath = "scripts/runtime/loader.mjs"
 const runtimePythonHookRelPath = "scripts/runtime/sitecustomize.py"
+const runtimeRepoRootEnvKey = "LOPPER_RUNTIME_REPO_ROOT"
 
 var (
 	runtimeHookPathsOnce   sync.Once
@@ -27,18 +28,18 @@ var (
 var runtimeExecutablePath = os.Executable
 var runtimeCaller = goruntime.Caller
 
-func withRuntimeTraceEnv(base []string, tracePath string, provider CaptureProvider) ([]string, error) {
+func withRuntimeTraceEnv(base []string, tracePath string, provider CaptureProvider, repoPath string) ([]string, error) {
 	switch normalizeCaptureProvider(provider) {
 	case CaptureProviderNode:
-		return withNodeRuntimeTraceEnv(base, tracePath)
+		return withNodeRuntimeTraceEnv(base, tracePath, repoPath)
 	case CaptureProviderPython:
-		return withPythonRuntimeTraceEnv(base, tracePath)
+		return withPythonRuntimeTraceEnv(base, tracePath, repoPath)
 	default:
 		return nil, fmt.Errorf("unsupported runtime capture provider %q", provider)
 	}
 }
 
-func withNodeRuntimeTraceEnv(base []string, tracePath string) ([]string, error) {
+func withNodeRuntimeTraceEnv(base []string, tracePath string, repoPath string) ([]string, error) {
 	required, err := runtimeNodeHookOptions()
 	if err != nil {
 		return nil, fmt.Errorf("resolve runtime node hooks: %w", err)
@@ -47,6 +48,7 @@ func withNodeRuntimeTraceEnv(base []string, tracePath string) ([]string, error) 
 	existing := readEnvValue(base, "NODE_OPTIONS")
 	updates := map[string]string{
 		"LOPPER_RUNTIME_TRACE": tracePath,
+		runtimeRepoRootEnvKey:  resolvedRuntimeRepoRoot(repoPath),
 	}
 	nodeOptions := strings.TrimSpace(existing)
 	if nodeOptions == "" {
@@ -57,7 +59,7 @@ func withNodeRuntimeTraceEnv(base []string, tracePath string) ([]string, error) 
 	return mergeEnv(base, updates), nil
 }
 
-func withPythonRuntimeTraceEnv(base []string, tracePath string) ([]string, error) {
+func withPythonRuntimeTraceEnv(base []string, tracePath string, repoPath string) ([]string, error) {
 	hookDir, err := runtimePythonHookDirectory()
 	if err != nil {
 		return nil, fmt.Errorf("resolve runtime python hook: %w", err)
@@ -69,8 +71,25 @@ func withPythonRuntimeTraceEnv(base []string, tracePath string) ([]string, error
 	}
 	return mergeEnv(base, map[string]string{
 		"LOPPER_RUNTIME_TRACE": tracePath,
+		runtimeRepoRootEnvKey:  resolvedRuntimeRepoRoot(repoPath),
 		"PYTHONPATH":           pythonPath,
 	}), nil
+}
+
+func resolvedRuntimeRepoRoot(repoPath string) string {
+	trimmed := strings.TrimSpace(repoPath)
+	if trimmed == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(trimmed)
+	if err == nil && strings.TrimSpace(resolved) != "" {
+		return filepath.Clean(resolved)
+	}
+	absPath, err := filepath.Abs(trimmed)
+	if err == nil && strings.TrimSpace(absPath) != "" {
+		return filepath.Clean(absPath)
+	}
+	return filepath.Clean(trimmed)
 }
 
 func mergeEnv(base []string, updates map[string]string) []string {

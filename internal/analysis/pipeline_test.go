@@ -197,7 +197,7 @@ func TestAnnotateRuntimeTraceInvalidFileFails(t *testing.T) {
 		t.Fatalf("write invalid trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}, false); err == nil {
+	if _, err := annotateRuntimeTraceIfPresent(tracePath, "", "js-ts", report.Report{}, false); err == nil {
 		t.Fatalf("expected invalid runtime trace to fail")
 	}
 }
@@ -208,7 +208,7 @@ func TestAnnotateRuntimeTraceOversizedFileFails(t *testing.T) {
 		t.Fatalf("write oversized trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}, false); !errors.Is(err, safeio.ErrFileTooLarge) {
+	if _, err := annotateRuntimeTraceIfPresent(tracePath, "", "js-ts", report.Report{}, false); !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized runtime trace to fail with ErrFileTooLarge, got %v", err)
 	}
 }
@@ -219,7 +219,7 @@ func TestAnnotateRuntimeTraceSkipsUnsupportedLanguageBeforeReadingTrace(t *testi
 		t.Fatalf("write invalid trace: %v", err)
 	}
 
-	annotated, err := annotateRuntimeTraceIfPresent(tracePath, "python", report.Report{}, false)
+	annotated, err := annotateRuntimeTraceIfPresent(tracePath, "", "python", report.Report{}, false)
 	if err != nil {
 		t.Fatalf("expected disabled Python runtime trace to skip invalid file, got %v", err)
 	}
@@ -228,8 +228,38 @@ func TestAnnotateRuntimeTraceSkipsUnsupportedLanguageBeforeReadingTrace(t *testi
 	}
 }
 
+func TestAnnotateRuntimeTraceRedactsEmbeddedRelativeTraversal(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	if err := os.WriteFile(tracePath, []byte(`{"module":"lodash/map","parent":"src/../../Users/name/file.js","entrypoint":"src/main.js"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	annotated, err := annotateRuntimeTraceIfPresent(tracePath, repo, "js-ts", report.Report{}, false)
+	if err != nil {
+		t.Fatalf("annotate runtime trace: %v", err)
+	}
+	if len(annotated.Dependencies) != 1 || annotated.Dependencies[0].RuntimeUsage == nil {
+		t.Fatalf("expected runtime-only dependency row, got %#v", annotated.Dependencies)
+	}
+	usage := annotated.Dependencies[0].RuntimeUsage
+	if len(usage.ParentModules) != 0 {
+		t.Fatalf("expected embedded traversal parent to be redacted, got %#v", usage.ParentModules)
+	}
+	if len(usage.Entrypoints) != 1 || usage.Entrypoints[0].Module != "src/main.js" {
+		t.Fatalf("expected repo-relative entrypoint to be preserved, got %#v", usage.Entrypoints)
+	}
+}
+
 func oversizedRuntimeTraceContentForAnalysisTest() string {
 	const maxRuntimeTraceBytes = 8 * 1024 * 1024
+
 	line := "{\"module\":\"lodash/map\"}\n"
 	repeat := maxRuntimeTraceBytes/len(line) + 1
 	return strings.Repeat(line, repeat)

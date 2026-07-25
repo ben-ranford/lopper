@@ -64,7 +64,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 		return err
 	}
 	cmd.Dir = plan.repoPath
-	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath, plan.provider)
+	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath, plan.provider, plan.repoPath)
 	if err != nil {
 		return err
 	}

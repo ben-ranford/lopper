@@ -11,7 +11,7 @@ import (
 )
 
 func TestLoadTrace(t *testing.T) {
-	trace, err := loadTraceFromContent(t, `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js","parent":"file:///repo/src/index.js","entrypoint":"file:///repo/src/main.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js","parent":"/repo/src/index.cjs","entrypoint":"/repo/src/start.cjs"}`+"\n")
+	trace, err := loadTraceFromContentInRepo(t, "/repo", `{"kind":"resolve","module":"`+lodashMapModule+`","resolved":"file:///repo/node_modules/lodash/map.js","parent":"file:///repo/src/index.js","entrypoint":"file:///repo/src/main.js"}`+"\n"+`{"kind":"require","module":"@scope/pkg/lib","resolved":"/repo/node_modules/@scope/pkg/lib/index.js","parent":"/repo/src/index.cjs","entrypoint":"/repo/src/start.cjs"}`+"\n")
 
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
@@ -25,10 +25,10 @@ func TestLoadTrace(t *testing.T) {
 	if got := trace.DependencyModules["lodash"][lodashMapModule]; got != 1 {
 		t.Fatalf("expected lodash module count 1, got %d", got)
 	}
-	if got := trace.DependencyParents["lodash"]["/repo/src/index.js"]; got != 1 {
+	if got := trace.DependencyParents["lodash"]["src/index.js"]; got != 1 {
 		t.Fatalf("expected lodash parent count 1, got %d", got)
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["/repo/src/main.js"]; got != 1 {
+	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 1 {
 		t.Fatalf("expected lodash entrypoint count 1, got %d", got)
 	}
 	if got := trace.DependencySymbols["lodash"][lodashMapModule+"\x00map"]; got != 1 {
@@ -37,7 +37,7 @@ func TestLoadTrace(t *testing.T) {
 }
 
 func TestLoadTracePythonLanguageEvents(t *testing.T) {
-	trace, err := loadTraceFromContent(t, `{"language":"python","module":"requests.sessions","parent":"/repo/app.py","entrypoint":"/repo/app.py"}`+"\n"+`{"language":"python","dependency":"python-dateutil","module":"dateutil.parser","resolved":"/repo/.venv/lib/python3.12/site-packages/dateutil/parser.py"}`+"\n")
+	trace, err := loadTraceFromContentInRepo(t, "/repo", `{"language":"python","module":"requests.sessions","parent":"/repo/app.py","entrypoint":"/repo/app.py"}`+"\n"+`{"language":"python","dependency":"python-dateutil","module":"dateutil.parser","resolved":"/repo/.venv/lib/python3.12/site-packages/dateutil/parser.py"}`+"\n")
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
@@ -52,7 +52,7 @@ func TestLoadTracePythonLanguageEvents(t *testing.T) {
 	if got := trace.DependencyModulesByLanguage[requestsKey]["requests.sessions"]; got != 1 {
 		t.Fatalf("expected python module count 1, got %d", got)
 	}
-	if got := trace.DependencyParentsByLanguage[requestsKey]["/repo/app.py"]; got != 1 {
+	if got := trace.DependencyParentsByLanguage[requestsKey]["app.py"]; got != 1 {
 		t.Fatalf("expected python parent count 1, got %d", got)
 	}
 	if got := trace.DependencySymbolsByLanguage[requestsKey]["requests.sessions\x00sessions"]; got != 1 {
@@ -138,6 +138,91 @@ func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
 	}
 	if len(trace.DependencyLoads) != 0 || len(trace.DependencyModules) != 0 || len(trace.DependencySymbols) != 0 {
 		t.Fatalf("expected dependency-free events to be ignored, got %#v", trace)
+	}
+}
+
+func TestLoadTraceRedactsContextOutsideRepoBoundary(t *testing.T) {
+	repo := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	if err := os.WriteFile(outside, []byte("console.log('y')\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	trace, err := loadTraceFromContentInRepo(t, repo, `{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"`+outside+`","entrypoint":"file://`+filepath.ToSlash(filepath.Join(repo, "src", "main.js"))+`"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; len(got) != 0 {
+		t.Fatalf("expected outside parent to be redacted, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 1 {
+		t.Fatalf("expected repo-relative entrypoint, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+}
+
+func TestLoadTraceRejectsSymlinkEscapes(t *testing.T) {
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.js"), []byte("module.exports = 1\n"), 0o600); err != nil {
+		t.Fatalf("write outside secret: %v", err)
+	}
+	linkPath := filepath.Join(repo, "src", "linked.js")
+	if err := os.Symlink(filepath.Join(outsideDir, "secret.js"), linkPath); err != nil {
+		t.Fatalf("symlink escape: %v", err)
+	}
+
+	trace, err := loadTraceFromContentInRepo(t, repo, `{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"`+linkPath+`","entrypoint":"`+linkPath+`"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; len(got) != 0 {
+		t.Fatalf("expected symlink-escaped parent to be redacted, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]; len(got) != 0 {
+		t.Fatalf("expected symlink-escaped entrypoint to be redacted, got %#v", got)
+	}
+}
+
+func TestLoadTraceRedactsEmbeddedRelativeTraversal(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+
+	trace, err := loadTraceFromContentInRepo(t, repo, `{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/../../Users/name/file.js","entrypoint":"src/main.js"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; len(got) != 0 {
+		t.Fatalf("expected embedded traversal parent to be redacted, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 1 {
+		t.Fatalf("expected normal repo-relative entrypoint to be preserved, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+}
+
+func TestLoadTracePreservesPackageStyleLabels(t *testing.T) {
+	trace, err := loadTraceFromContentInRepo(t, t.TempDir(), `{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]["node:internal/modules/cjs/loader"]; got != 1 {
+		t.Fatalf("expected package-style parent label to be preserved, got %#v", trace.DependencyParents["lodash"])
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["lodash/map"]; got != 1 {
+		t.Fatalf("expected package-style entrypoint label to be preserved, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 }
 

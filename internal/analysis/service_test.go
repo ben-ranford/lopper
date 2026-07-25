@@ -577,7 +577,8 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
 	tracePath := filepath.Join(repo, ".artifacts", "python-runtime.ndjson")
-	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n")
+	mainPath := filepath.Join(repo, "main.py")
+	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\""+mainPath+"\",\"entrypoint\":\""+mainPath+"\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\""+mainPath+"\",\"entrypoint\":\""+mainPath+"\"}\n")
 
 	service := NewService()
 	disabledFeature, err := service.Analyse(context.Background(), Request{
@@ -629,8 +630,16 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	if len(requests.RuntimeUsage.Modules) != 1 || requests.RuntimeUsage.Modules[0].Module != "requests.sessions" {
 		t.Fatalf("expected Python runtime module detail, got %#v", requests.RuntimeUsage.Modules)
 	}
-	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "/repo/main.py" {
+	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "main.py" {
 		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
+	}
+	if len(requests.RuntimeUsage.Entrypoints) != 1 || requests.RuntimeUsage.Entrypoints[0].Module != "main.py" {
+		t.Fatalf("expected Python runtime entrypoint detail, got %#v", requests.RuntimeUsage.Entrypoints)
+	}
+	for _, usage := range append(append([]report.RuntimeModuleUsage{}, requests.RuntimeUsage.ParentModules...), requests.RuntimeUsage.Entrypoints...) {
+		if strings.Contains(usage.Module, repo) || strings.Contains(usage.Module, "file://") {
+			t.Fatalf("expected Python runtime context to remain repo-relative, got %#v", requests.RuntimeUsage)
+		}
 	}
 
 	httpx := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "httpx")

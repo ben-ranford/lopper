@@ -63,7 +63,7 @@ func TestRuntimeHookErrorsPropagate(t *testing.T) {
 		t.Fatalf("expected runtime hook options error %v, got %v", sentinel, err)
 	}
 
-	_, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, "/tmp/runtime.ndjson", CaptureProviderNode)
+	_, err := withRuntimeTraceEnv([]string{"PATH=/usr/bin"}, "/tmp/runtime.ndjson", CaptureProviderNode, "/repo")
 	if err == nil || !strings.Contains(err.Error(), "resolve runtime node hooks") {
 		t.Fatalf("expected wrapped runtime hook error, got %v", err)
 	}

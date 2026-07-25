@@ -172,6 +172,32 @@ func TestSARIFDependencyPropertiesIncludePerInstanceMetadataAndExtras(t *testing
 	}
 }
 
+func TestFormatSARIFRuntimeContextDoesNotLeakAbsolutePaths(t *testing.T) {
+	reportData := Report{
+		Dependencies: []DependencyReport{
+			{
+				Language: "js-ts",
+				Name:     "lib",
+				RuntimeUsage: &RuntimeUsage{
+					LoadCount:     1,
+					Correlation:   RuntimeCorrelationOverlap,
+					ParentModules: []RuntimeModuleUsage{{Module: "src/app.ts", Count: 1}},
+					Entrypoints:   []RuntimeModuleUsage{{Module: "src/main.ts", Count: 1}},
+				},
+				Recommendations: []Recommendation{{Code: "keep", Priority: "low", Message: "ok"}},
+			},
+		},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatSARIF)
+	if err != nil {
+		t.Fatalf("format sarif privacy: %v", err)
+	}
+	if strings.Contains(output, "/Users/") || strings.Contains(output, "file://") {
+		t.Fatalf("expected sarif runtime context to avoid absolute paths and file urls, got %s", output)
+	}
+}
+
 func TestSARIFPropertyBagsReturnNilForEmptyInputs(t *testing.T) {
 	if got := runtimeModulePropertyBag(nil); len(got) != 0 {
 		t.Fatalf("expected nil runtime module bag for nil input, got %#v", got)

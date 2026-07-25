@@ -125,7 +125,7 @@ func finalizeReport(req Request, repoPath string, identityRepoPath string, analy
 	var err error
 	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
 		(req.PythonRuntimeTraceCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
-	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData, pythonRuntimeTraceEnabled)
+	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, repoPath, req.Language, reportData, pythonRuntimeTraceEnabled)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -328,7 +328,7 @@ func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []strin
 	return uniqueSorted(remapped)
 }
 
-func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
+func annotateRuntimeTraceIfPresent(runtimeTracePath string, repoPath string, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
 	if runtimeTracePath == "" {
 		return reportData, nil
 	}
@@ -336,7 +336,7 @@ func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, r
 	if len(supportedLanguages) == 0 {
 		return reportData, nil
 	}
-	traceData, err := runtime.Load(runtimeTracePath)
+	traceData, err := runtime.LoadForRepo(runtimeTracePath, repoPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			reportData.Warnings = append(reportData.Warnings, "runtime trace file not found; continuing with static analysis")

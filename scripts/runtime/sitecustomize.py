@@ -17,6 +17,7 @@ except Exception:
 
 
 TRACE_PATH = os.environ.get("LOPPER_RUNTIME_TRACE", "").strip()
+REPO_ROOT = os.environ.get("LOPPER_RUNTIME_REPO_ROOT", "").strip()
 ORIGINAL_IMPORT = builtins.__import__
 SITE_MARKERS = ("/site-packages/", "/dist-packages/")
 WRITE_LOCK = threading.Lock()
@@ -30,7 +31,7 @@ def _entrypoint() -> str:
     entry = sys.argv[0]
     if not entry:
         return ""
-    return _abs_path(entry)
+    return _normalize_repo_context(entry)
 
 
 def _patched_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -120,7 +121,7 @@ def _parent_from_frame(frame) -> str:
         return ""
     filename = frame.f_globals.get("__file__", "")
     if filename:
-        return _abs_path(str(filename))
+        return _normalize_repo_context(str(filename))
     module_name = frame.f_globals.get("__name__", "")
     return str(module_name or "")
 
@@ -158,6 +159,23 @@ def _abs_path(path: str) -> str:
 
 def _slash_path(path: str) -> str:
     return _abs_path(path).replace(os.sep, "/")
+
+
+def _normalize_repo_context(path: str) -> str:
+    candidate = (path or "").strip()
+    if not candidate:
+        return ""
+    if not REPO_ROOT:
+        return ""
+    try:
+        root = _real_path(REPO_ROOT)
+        resolved = _real_path(candidate)
+        relative = os.path.relpath(resolved, root)
+    except Exception:
+        return ""
+    if relative in {".", ".."} or relative.startswith(".." + os.sep):
+        return ""
+    return relative.replace(os.sep, "/")
 
 
 def _chain_project_sitecustomize() -> None:

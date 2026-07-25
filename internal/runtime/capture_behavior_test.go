@@ -113,6 +113,9 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	if strings.Contains(string(content), "localmod") {
 		t.Fatalf("expected local module import to be filtered, got %s", content)
 	}
+	if strings.Contains(string(content), repo) || strings.Contains(string(content), "file://") {
+		t.Fatalf("expected python runtime trace context to avoid absolute paths and file urls, got %s", content)
+	}
 
 	trace, err := Load(tracePath)
 	if err != nil {
@@ -121,6 +124,60 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	key := DependencyKey{Language: runtimeLanguagePython, Name: "thirdparty"}
 	if trace.DependencyLoadsByLanguage[key] == 0 {
 		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
+	}
+}
+
+func TestCaptureNodeRuntimeContextPrivacy(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not available")
+	}
+
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules", "left-pad"), 0o755); err != nil {
+		t.Fatalf("mkdir node module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "left-pad", "index.js"), []byte("module.exports = (s) => s;\n"), 0o600); err != nil {
+		t.Fatalf("write dependency: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte("{\"name\":\"privacy-test\",\"private\":true}\n"), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	entrypoint := filepath.Join(repo, "main.js")
+	if err := os.WriteFile(entrypoint, []byte("require('left-pad');\n"), 0o600); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
+	}
+
+	env, err := withNodeRuntimeTraceEnv(os.Environ(), tracePath, repo)
+	if err != nil {
+		t.Fatalf("node runtime env: %v", err)
+	}
+	cmd := exec.Command(nodePath, entrypoint)
+	cmd.Dir = repo
+	cmd.Env = env
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run node hook capture: %v: %s", err, output)
+	}
+
+	content, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read node runtime trace: %v", err)
+	}
+	text := string(content)
+	for _, forbidden := range []string{
+		`"parent":"` + repo,
+		`"entrypoint":"` + repo,
+		`"parent":"file://`,
+		`"entrypoint":"file://`,
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("expected node runtime context to avoid absolute paths and file urls, got %s", text)
+		}
+	}
+	if !strings.Contains(text, `"parent":"main.js"`) || !strings.Contains(text, `"entrypoint":"main.js"`) {
+		t.Fatalf("expected repo-relative runtime context in trace, got %s", text)
 	}
 }
 
