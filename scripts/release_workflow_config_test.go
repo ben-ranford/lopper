@@ -3112,6 +3112,72 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 }
 
+func TestMakefileLockfiledriftHeadContract(t *testing.T) {
+	t.Parallel()
+
+	makefile := readConfig(t, "Makefile")
+	for _, want := range []string{
+		`LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head`,
+		`LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app`,
+		`COVERAGE_LOCKFILEDRIFT_HEAD_FILE ?= .artifacts/coverage-lockfiledrift-head.out`,
+		`COVERAGE_DEFAULT_FILE ?= .artifacts/coverage-default.out`,
+		`@$(MAKE) test-lockfiledrift-head`,
+		`@$(MAKE) test-leaks-lockfiledrift-head`,
+		`@$(MAKE) test-race-lockfiledrift-head`,
+		`@$(MAKE) cov-lockfiledrift-head`,
+	} {
+		if !strings.Contains(makefile, want) {
+			t.Fatalf("lockfiledrift head contract must retain %q", want)
+		}
+	}
+
+	for name, want := range map[string][]string{
+		"test-lockfiledrift-head": {
+			`$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)`,
+		},
+		"test-leaks-lockfiledrift-head": {
+			`GOLEAK=1 $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)`,
+		},
+		"test-race-lockfiledrift-head": {
+			`$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)`,
+		},
+		"cov-lockfiledrift-head": {
+			`GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE) -covermode=atomic -coverprofile="$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
+		},
+	} {
+		targetPattern := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(name) + `:\n(?:\t.*\n)+`)
+		target := targetPattern.FindString(makefile)
+		if target == "" {
+			t.Fatalf("Makefile must define the %s target", name)
+		}
+		for _, snippet := range want {
+			if !strings.Contains(target, snippet) {
+				t.Fatalf("%s target must contain %q", name, snippet)
+			}
+		}
+	}
+
+	covPattern := regexp.MustCompile(`(?m)^cov:\n(?:\t.*\n)+`)
+	covTarget := covPattern.FindString(makefile)
+	if covTarget == "" {
+		t.Fatal("Makefile must define the cov target")
+	}
+	for _, want := range []string{
+		`grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'`,
+		`-coverprofile="$(COVERAGE_DEFAULT_FILE)"`,
+		`sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"`,
+		`sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"`,
+		`sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
+		`} > "$(COVERAGE_FILE)"`,
+		`-coverprofile="$(COVERAGE_FILE)"`,
+		`-package-min="$(COVERAGE_PACKAGE_MIN)"`,
+	} {
+		if !strings.Contains(covTarget, want) {
+			t.Fatalf("cov target must contain %q", want)
+		}
+	}
+}
+
 func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
 	t.Parallel()
 

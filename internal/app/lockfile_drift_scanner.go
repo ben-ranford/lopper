@@ -172,10 +172,6 @@ func lockfileManifestIOFromContext(ctx context.Context) lockfileManifestIO {
 	return lockfileManifestIOWithDefaults(io)
 }
 
-func withLockfileManifestIO(ctx context.Context, io lockfileManifestIO) context.Context {
-	return context.WithValue(ctx, lockfileManifestIOContextKey{}, lockfileManifestIOWithDefaults(io))
-}
-
 func (r *lockfileDriftResult) appendEvaluation(evaluation lockfileDirEvaluation) {
 	for _, event := range evaluation.events {
 		if event.hasFinding {
