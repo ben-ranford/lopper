@@ -12,6 +12,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+type cacheAtomicWriteRoot interface {
+	WriteFileReplacingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error
+	Close() error
+}
+
 func writeFileDigest(w io.Writer, path string) error {
 	digest, err := hashFileDigest(path)
 	if err != nil {
@@ -95,18 +100,19 @@ func writeHexDigest(w io.Writer, digest [sha256.Size]byte) error {
 	return err
 }
 
-func writeFileAtomic(rootPath, targetPath string, data []byte) error {
+func writeFileAtomic(rootPath, targetPath string, data []byte) (err error) {
 	rootPath = filepath.Clean(rootPath)
 	targetPath = filepath.Clean(targetPath)
 	root, rel, err := openConfinedWriteRootUnder(rootPath, targetPath)
 	if err != nil {
 		return err
 	}
+	return writeFileAtomicWithRoot(root, rel, data)
+}
+
+func writeFileAtomicWithRoot(root cacheAtomicWriteRoot, rel string, data []byte) (err error) {
 	defer func() {
 		err = errors.Join(err, root.Close())
 	}()
-	if writeErr := root.WriteFileReplacingParents(rel, data, 0o600, 0o750); writeErr != nil {
-		err = writeErr
-	}
-	return err
+	return root.WriteFileReplacingParents(rel, data, 0o600, 0o750)
 }

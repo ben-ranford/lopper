@@ -747,6 +747,36 @@ func TestOpenExistingCanonicalWriteRootJoinsOwnedAndNextCloseErrors(t *testing.T
 	}
 }
 
+func TestOpenExistingCanonicalWriteRootReturnsOwnedCloseError(t *testing.T) {
+	dirInfo := statTestPath(t, t.TempDir())
+	closeErr := errors.New("owned close failure")
+	next := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		close: closeWithoutError,
+	}
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		openRoot: func(string) (Root, error) {
+			return next, nil
+		},
+		close: func() error { return closeErr },
+	}
+	withFileSystem(t, &fakeFileSystem{
+		abs: func(path string) (string, error) { return filepath.Clean(path), nil },
+		openRootNoFollow: func(string) (Root, error) {
+			return root, nil
+		},
+	})
+
+	opened, rel, err := OpenExistingCanonicalWriteRoot(filepath.Join(string(os.PathSeparator), "repo", "file.txt"), false)
+	if opened != nil || rel != "" {
+		t.Fatalf("expected nil root and empty rel on close failure, got root=%v rel=%q", opened, rel)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected owned close error, got %v", err)
+	}
+}
+
 func TestOpenExistingCanonicalWriteRootRejectsSymlinkAncestor(t *testing.T) {
 	rootDir := t.TempDir()
 	outside := t.TempDir()
@@ -766,6 +796,70 @@ func TestOpenExistingCanonicalWriteRootRejectsSymlinkAncestor(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "nested", writeTestFileName)); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no outside file writes, stat err=%v", statErr)
+	}
+}
+
+func TestOpenExistingCanonicalWriteRootReturnsVolumeRelativeFileAtRoot(t *testing.T) {
+	volumeRoot := filepath.VolumeName(t.TempDir()) + string(os.PathSeparator)
+	targetPath := filepath.Join(volumeRoot, writeTestFileName)
+
+	root, rel, err := OpenExistingCanonicalWriteRoot(targetPath, false)
+	if err != nil {
+		t.Fatalf("OpenExistingCanonicalWriteRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close canonical write root: %v", closeErr)
+		}
+	})
+
+	if rel != writeTestFileName {
+		t.Fatalf("expected root-relative file name %q, got %q", writeTestFileName, rel)
+	}
+}
+
+func TestWriteRootLstatUsesRootRelativePath(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed target file: %v", err)
+	}
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	info, err := root.Lstat(writeTestFileName)
+	if err != nil {
+		t.Fatalf("WriteRoot.Lstat returned error: %v", err)
+	}
+	if info.Name() != writeTestFileName {
+		t.Fatalf("expected file info for %q, got %q", writeTestFileName, info.Name())
+	}
+}
+
+func TestWriteRootLstatRejectsEscapingPath(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+
+	info, err := root.Lstat(filepath.Join("..", writeTestFileName))
+	if info != nil {
+		t.Fatalf("expected no file info for escaping path, got %v", info)
+	}
+	if err == nil || !strings.Contains(err.Error(), "path escapes root") {
+		t.Fatalf("expected root escape rejection, got %v", err)
+	}
+}
+
+func TestWriteRootReadFileReadsRootRelativeFile(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootDir, writeTestFileName), []byte("root-relative"), 0o600); err != nil {
+		t.Fatalf("seed target file: %v", err)
+	}
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	data, err := root.ReadFile(writeTestFileName)
+	if err != nil {
+		t.Fatalf("WriteRoot.ReadFile returned error: %v", err)
+	}
+	if string(data) != "root-relative" {
+		t.Fatalf("unexpected root-relative file contents: %q", string(data))
 	}
 }
 

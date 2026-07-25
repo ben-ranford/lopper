@@ -2,11 +2,17 @@ package analysis
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
+)
+
+var (
+	cacheStoreBeforeRootOpenFn = func() error { return nil }
+	cacheLookupBeforeReadFn    = func() error { return nil }
 )
 
 type cachePointer struct {
@@ -18,13 +24,20 @@ type cachedPayload struct {
 	Report report.Report `json:"report"`
 }
 
-func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool, error) {
+func (c *analysisCache) lookup(entry cacheEntryDescriptor) (_ report.Report, hit bool, err error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return report.Report{}, false, nil
 	}
-	writePath := c.options.writePath()
-	pointerPath := filepath.Join(writePath, "keys", entry.KeyDigest+".json")
-	pointerData, err := safeio.ReadFileUnder(writePath, pointerPath)
+	root, err := c.openPinnedWriteRoot()
+	if err != nil {
+		return report.Report{}, false, err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+
+	pointerPath := filepath.Join("keys", entry.KeyDigest+".json")
+	pointerData, err := c.readCacheFile(root, pointerPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			c.metadata.Misses++
@@ -44,8 +57,8 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, nil
 	}
 
-	objectPath := filepath.Join(writePath, "objects", pointer.ObjectDigest+".json")
-	objectData, err := safeio.ReadFileUnder(writePath, objectPath)
+	objectPath := filepath.Join("objects", pointer.ObjectDigest+".json")
+	objectData, err := c.readCacheFile(root, objectPath)
 	if err != nil {
 		c.metadata.Misses++
 		reason := "object-read-error"
@@ -66,7 +79,7 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	return payload.Report, true, nil
 }
 
-func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) error {
+func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (err error) {
 	if c == nil || !c.options.Enabled || !c.cacheable || c.options.ReadOnly {
 		return nil
 	}
@@ -76,13 +89,20 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 		return err
 	}
 	objectDigest := sha256Hex(serializedPayload)
-	writePath := c.options.writePath()
-	objectPath := filepath.Join(writePath, "objects", objectDigest+".json")
-	if _, err := os.Stat(objectPath); err != nil {
+	root, err := c.openStoreWriteRoot()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+
+	objectPath := filepath.Join("objects", objectDigest+".json")
+	if _, err := root.Lstat(objectPath); err != nil {
 		if !os.IsNotExist(err) {
 			return err
 		}
-		if err := writeFileAtomic(writePath, objectPath, serializedPayload); err != nil {
+		if err := root.WriteFileReplacingParents(objectPath, serializedPayload, 0o600, 0o750); err != nil {
 			return err
 		}
 	}
@@ -92,10 +112,68 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	if err != nil {
 		return err
 	}
-	pointerPath := filepath.Join(writePath, "keys", entry.KeyDigest+".json")
-	if err := writeFileAtomic(writePath, pointerPath, serializedPointer); err != nil {
+	pointerPath := filepath.Join("keys", entry.KeyDigest+".json")
+	if err := root.WriteFileReplacingParents(pointerPath, serializedPointer, 0o600, 0o750); err != nil {
 		return err
 	}
 	c.metadata.Writes++
 	return nil
+}
+
+func (c *analysisCache) openStoreWriteRoot() (*safeio.WriteRoot, error) {
+	if err := c.validateWriteRoot(); err != nil {
+		return nil, err
+	}
+	if err := cacheStoreBeforeRootOpenFn(); err != nil {
+		return nil, err
+	}
+	return c.openPinnedWriteRoot()
+}
+
+func (c *analysisCache) openPinnedWriteRoot() (_ *safeio.WriteRoot, err error) {
+	rootPath := c.pinnedWritePath()
+	if c == nil || c.writeRootInfo == nil {
+		rootPath, err = resolvePathWithinExistingTree(rootPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	root, err := safeio.OpenCanonicalWriteRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.validateOpenedWriteRoot(root); err != nil {
+		if closeErr := root.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
+		return nil, err
+	}
+	return root, nil
+}
+
+func (c *analysisCache) validateOpenedWriteRoot(root *safeio.WriteRoot) error {
+	if c == nil || c.writeRootInfo == nil {
+		return nil
+	}
+	info, err := root.Lstat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(c.writeRootInfo, info) {
+		return errors.New("cache root changed while pinned")
+	}
+	return nil
+}
+
+func (c *analysisCache) readCacheFile(root *safeio.WriteRoot, path string) ([]byte, error) {
+	if err := cacheLookupBeforeReadFn(); err != nil {
+		return nil, err
+	}
+	if err := c.validateWriteRoot(); err != nil {
+		return nil, err
+	}
+	if err := c.validateOpenedWriteRoot(root); err != nil {
+		return nil, err
+	}
+	return root.ReadFile(path)
 }

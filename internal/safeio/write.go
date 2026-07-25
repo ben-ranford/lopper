@@ -71,6 +71,20 @@ func (r *WriteRoot) Close() error {
 	return r.root.Close()
 }
 
+// Lstat reports metadata for a root-relative path under the pinned root.
+func (r *WriteRoot) Lstat(targetPath string) (fs.FileInfo, error) {
+	targetRel, err := resolveRelativeTarget(targetPath, allowRootTarget)
+	if err != nil {
+		return nil, err
+	}
+	return r.root.Lstat(targetRel)
+}
+
+// ReadFile reads a root-relative file under the pinned root.
+func (r *WriteRoot) ReadFile(targetPath string) ([]byte, error) {
+	return ReadFileWithinRoot(r.root, targetPath)
+}
+
 // EnsureDir creates targetPath as a directory under the pinned root, creating
 // missing parent directories without following symlinks.
 func (r *WriteRoot) EnsureDir(targetPath string, perm os.FileMode) (returnErr error) {
@@ -143,14 +157,12 @@ func openExistingCanonicalWriteRoot(targetPath string, kind canonicalTargetKind)
 		return nil, "", fmt.Errorf("open canonical root: %w", err)
 	}
 
-	current := root
-	currentAbs := volumeRoot
-	currentOwned := true
+	cursor := canonicalWriteRootCursor{root: root, rootAbs: volumeRoot, owned: true}
 	defer func() {
 		if err == nil {
 			return
 		}
-		if closeErr := closeOwnedRoot(current, currentOwned); closeErr != nil {
+		if closeErr := cursor.closeIfOwned(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
@@ -160,35 +172,13 @@ func openExistingCanonicalWriteRoot(targetPath string, kind canonicalTargetKind)
 		return nil, "", err
 	}
 	if relToSearch == "." {
-		return &WriteRoot{root: current, rootAbs: currentAbs}, joinCanonicalRelative(targetRelParts), nil
+		return cursor.writeRoot(), joinCanonicalRelative(targetRelParts), nil
 	}
-	searchParts := strings.Split(relToSearch, string(os.PathSeparator))
-	for i, part := range searchParts {
-		if part == "" || part == "." {
-			continue
-		}
-		partAbs := filepath.Join(currentAbs, part)
-		next, nextErr := openTargetParentChild(current, part, partAbs, false, 0)
-		if os.IsNotExist(nextErr) {
-			targetRelParts = append(searchParts[i:], targetRelParts...)
-			return &WriteRoot{root: current, rootAbs: currentAbs}, joinCanonicalRelative(targetRelParts), nil
-		}
-		if nextErr != nil {
-			return nil, "", nextErr
-		}
-		if currentOwned {
-			if closeErr := current.Close(); closeErr != nil {
-				if nextCloseErr := next.Close(); nextCloseErr != nil {
-					return nil, "", errors.Join(closeErr, nextCloseErr)
-				}
-				return nil, "", closeErr
-			}
-		}
-		current = next
-		currentAbs = partAbs
-		currentOwned = true
+	targetRelParts, err = cursor.descendSearchPath(strings.Split(relToSearch, string(os.PathSeparator)), targetRelParts)
+	if err != nil {
+		return nil, "", err
 	}
-	return &WriteRoot{root: current, rootAbs: currentAbs}, joinCanonicalRelative(targetRelParts), nil
+	return cursor.writeRoot(), joinCanonicalRelative(targetRelParts), nil
 }
 
 func canonicalWriteTargetPlan(targetAbs string, kind canonicalTargetKind) (string, []string) {
@@ -213,6 +203,57 @@ func closeOwnedRoot(root Root, owned bool) error {
 		return nil
 	}
 	return root.Close()
+}
+
+type canonicalWriteRootCursor struct {
+	root    Root
+	rootAbs string
+	owned   bool
+}
+
+func (c *canonicalWriteRootCursor) writeRoot() *WriteRoot {
+	return &WriteRoot{root: c.root, rootAbs: c.rootAbs}
+}
+
+func (c *canonicalWriteRootCursor) closeIfOwned() error {
+	return closeOwnedRoot(c.root, c.owned)
+}
+
+func (c *canonicalWriteRootCursor) descendSearchPath(searchParts, targetRelParts []string) ([]string, error) {
+	for i, part := range searchParts {
+		if part == "" || part == "." {
+			continue
+		}
+
+		partAbs := filepath.Join(c.rootAbs, part)
+		next, err := openTargetParentChild(c.root, part, partAbs, false, 0)
+		if os.IsNotExist(err) {
+			return append(searchParts[i:], targetRelParts...), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := c.replace(next, partAbs); err != nil {
+			return nil, err
+		}
+	}
+	return targetRelParts, nil
+}
+
+func (c *canonicalWriteRootCursor) replace(next Root, nextAbs string) error {
+	if c.owned {
+		if closeErr := c.root.Close(); closeErr != nil {
+			if nextCloseErr := next.Close(); nextCloseErr != nil {
+				return errors.Join(closeErr, nextCloseErr)
+			}
+			return closeErr
+		}
+	}
+
+	c.root = next
+	c.rootAbs = nextAbs
+	c.owned = true
+	return nil
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, replacing bool) (returnErr error) {

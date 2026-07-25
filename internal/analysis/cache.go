@@ -3,6 +3,7 @@ package analysis
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,8 @@ type analysisCache struct {
 	warnings        []string
 	cacheable       bool
 	inputDigestMemo map[cacheInputDigestMemoKey]string
+	writeRootPath   string
+	writeRootInfo   fs.FileInfo
 }
 
 func newAnalysisCache(req Request, repoPath string) *analysisCache {
@@ -67,6 +70,14 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		cache.warn("analysis cache unavailable: " + err.Error())
 		return cache
 	}
+	writeRootPath, writeRootInfo, err := pinWriteRoot(writePath)
+	if err != nil {
+		cache.cacheable = false
+		cache.warn("analysis cache unavailable: " + err.Error())
+		return cache
+	}
+	cache.writeRootPath = writeRootPath
+	cache.writeRootInfo = writeRootInfo
 	cache.cacheable = true
 	return cache
 }
@@ -189,6 +200,43 @@ func ensureConfinedDirectory(rootPath, name string, perm os.FileMode) (returnErr
 	return root.EnsureDir(rel, perm)
 }
 
+func pinWriteRoot(rootPath string) (string, fs.FileInfo, error) {
+	pinnedPath, err := resolvePathWithinExistingTree(rootPath)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := os.Lstat(pinnedPath)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, fmt.Errorf("cache root is not pinned to existing directory: %s", rootPath)
+	}
+	return pinnedPath, info, nil
+}
+
+func (c *analysisCache) pinnedWritePath() string {
+	if strings.TrimSpace(c.writeRootPath) != "" {
+		return c.writeRootPath
+	}
+	return c.options.writePath()
+}
+
+func (c *analysisCache) validateWriteRoot() error {
+	if c == nil || c.writeRootInfo == nil {
+		return nil
+	}
+	writePath := c.pinnedWritePath()
+	info, err := os.Lstat(writePath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !os.SameFile(c.writeRootInfo, info) {
+		return fmt.Errorf("cache root changed while pinned: %s", writePath)
+	}
+	return nil
+}
+
 func pinTrustedCachePath(repoPath, cachePath, field string) (string, error) {
 	if err := validateTrustedCachePath(repoPath, cachePath, field); err != nil {
 		return "", err
@@ -280,16 +328,26 @@ func validateNoSymlinkEscape(repoPath, candidatePath, field string) error {
 	if err != nil {
 		resolvedRepoPath = cleanRepoPath
 	}
-	walkRoot := cleanRepoPath
-	walkTarget := cleanCandidatePath
-	if !pathWithinDir(walkRoot, walkTarget) {
-		resolvedCandidatePath, resolveErr := resolvePathWithinExistingTree(cleanCandidatePath)
-		if resolveErr != nil || !pathWithinDir(resolvedRepoPath, resolvedCandidatePath) {
-			return fmt.Errorf("%s must stay within repoPath", field)
-		}
-		walkRoot = resolvedRepoPath
-		walkTarget = resolvedCandidatePath
+	walkRoot, walkTarget, err := resolveTrustedWalkPaths(cleanRepoPath, cleanCandidatePath, resolvedRepoPath, field)
+	if err != nil {
+		return err
 	}
+	return validateWalkedPathSegments(walkRoot, walkTarget, resolvedRepoPath, field)
+}
+
+func resolveTrustedWalkPaths(cleanRepoPath, cleanCandidatePath, resolvedRepoPath, field string) (string, string, error) {
+	if pathWithinDir(cleanRepoPath, cleanCandidatePath) {
+		return cleanRepoPath, cleanCandidatePath, nil
+	}
+
+	resolvedCandidatePath, err := resolvePathWithinExistingTree(cleanCandidatePath)
+	if err != nil || !pathWithinDir(resolvedRepoPath, resolvedCandidatePath) {
+		return "", "", fmt.Errorf("%s must stay within repoPath", field)
+	}
+	return resolvedRepoPath, resolvedCandidatePath, nil
+}
+
+func validateWalkedPathSegments(walkRoot, walkTarget, resolvedRepoPath, field string) error {
 	relativePath, err := filepath.Rel(walkRoot, walkTarget)
 	if err != nil {
 		return fmt.Errorf("%s must stay within repoPath", field)
@@ -297,25 +355,35 @@ func validateNoSymlinkEscape(repoPath, candidatePath, field string) error {
 	if relativePath == "." {
 		return nil
 	}
+
 	currentPath := walkRoot
 	for _, segment := range strings.Split(relativePath, string(filepath.Separator)) {
 		currentPath = filepath.Join(currentPath, segment)
-		info, statErr := os.Lstat(currentPath)
-		if errors.Is(statErr, os.ErrNotExist) {
-			return nil
-		}
-		if statErr != nil {
-			return fmt.Errorf("stat %s: %w", field, statErr)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		resolvedPath, resolveErr := filepath.EvalSymlinks(currentPath)
-		if resolveErr != nil || !pathWithinDir(resolvedRepoPath, resolvedPath) {
-			return fmt.Errorf("%s must stay within repoPath", field)
+		done, err := validateWalkedPathSegment(currentPath, resolvedRepoPath, field)
+		if done || err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func validateWalkedPathSegment(currentPath, resolvedRepoPath, field string) (bool, error) {
+	info, err := os.Lstat(currentPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", field, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(currentPath)
+	if err != nil || !pathWithinDir(resolvedRepoPath, resolvedPath) {
+		return false, fmt.Errorf("%s must stay within repoPath", field)
+	}
+	return false, nil
 }
 
 func pathWithinDir(root, child string) bool {

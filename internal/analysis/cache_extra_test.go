@@ -437,6 +437,100 @@ func TestPinnedTrustedCachePathPreventsSymlinkRetargetRaceBeforeFirstWrite(t *te
 	}
 }
 
+func TestAnalysisCacheRejectsCacheRootSwapBeforeStoreWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "cache-root")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cache to be usable before root swap, warnings=%#v", cache.takeWarnings())
+	}
+
+	redirectedCachePath := t.TempDir()
+	originalCachePath := filepath.Join(repo, "cache-root-original")
+	withCacheStoreBeforeRootOpenHook(t, func() error {
+		if err := os.Rename(cachePath, originalCachePath); err != nil {
+			return err
+		}
+		return os.Symlink(redirectedCachePath, cachePath)
+	})
+
+	entry := cacheEntryDescriptor{KeyDigest: "swapped-root", InputDigest: "input"}
+	storeErr := cache.store(entry, report.Report{RepoPath: repo})
+	if storeErr == nil || !containsAny(storeErr.Error(), "cache root changed while pinned", "open canonical root") {
+		t.Fatalf("expected swapped cache root rejection, got %v", storeErr)
+	}
+	if _, err := os.Stat(filepath.Join(redirectedCachePath, "objects")); !os.IsNotExist(err) {
+		t.Fatalf("expected redirected cache root to remain untouched, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(originalCachePath, "objects")); err != nil {
+		t.Fatalf("expected original cache root contents to remain present, got %v", err)
+	}
+}
+
+func TestAnalysisCacheLookupRejectsCacheRootSwapBeforeReads(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	for _, tc := range []struct {
+		name         string
+		swapOnRead   int
+		outsideRepo  string
+		outsideObjID string
+	}{
+		{name: "before pointer read", swapOnRead: 1, outsideRepo: "outside-pointer", outsideObjID: "outside-pointer"},
+		{name: "before object read", swapOnRead: 2, outsideRepo: "outside-object", outsideObjID: "outside-object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			cachePath := filepath.Join(repo, "cache-root")
+			cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+			if !cache.cacheable {
+				t.Fatalf("expected cache to be usable before root swap, warnings=%#v", cache.takeWarnings())
+			}
+
+			entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "key", InputDigest: "input"}
+			mustWriteCachedObject(t, cachePath, "inside-object", report.Report{RepoPath: "inside"})
+			mustWritePointer(t, filepath.Join(cachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
+				InputDigest:  entry.InputDigest,
+				ObjectDigest: "inside-object",
+			})
+
+			redirectedCachePath := t.TempDir()
+			mustWriteCachedObject(t, redirectedCachePath, tc.outsideObjID, report.Report{RepoPath: tc.outsideRepo})
+			mustWritePointer(t, filepath.Join(redirectedCachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
+				InputDigest:  entry.InputDigest,
+				ObjectDigest: tc.outsideObjID,
+			})
+
+			originalCachePath := filepath.Join(repo, "cache-root-original")
+			readCount := 0
+			withCacheLookupBeforeReadHook(t, func() error {
+				readCount++
+				if readCount != tc.swapOnRead {
+					return nil
+				}
+				if err := os.Rename(cachePath, originalCachePath); err != nil {
+					return err
+				}
+				return os.Symlink(redirectedCachePath, cachePath)
+			})
+
+			got, hit, err := cache.lookup(entry)
+			if hit || got.RepoPath != "" {
+				t.Fatalf("expected swapped lookup to return no cached report, got report=%#v hit=%v", got, hit)
+			}
+			if err != nil && !strings.Contains(err.Error(), "cache root changed while pinned") {
+				t.Fatalf("expected lookup to fail closed without outside read, got err=%v", err)
+			}
+		})
+	}
+}
+
 func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {
 	t.Helper()
 
@@ -459,6 +553,33 @@ func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, descri
 	if _, err := os.Stat(filepath.Join(outside, cacheObjectsDirName)); !os.IsNotExist(err) {
 		t.Fatalf("expected no objects dir to be created outside repo, stat err=%v", err)
 	}
+}
+
+func withCacheStoreBeforeRootOpenHook(t *testing.T, hook func() error) {
+	t.Helper()
+	previous := cacheStoreBeforeRootOpenFn
+	cacheStoreBeforeRootOpenFn = hook
+	t.Cleanup(func() {
+		cacheStoreBeforeRootOpenFn = previous
+	})
+}
+
+func withCacheLookupBeforeReadHook(t *testing.T, hook func() error) {
+	t.Helper()
+	previous := cacheLookupBeforeReadFn
+	cacheLookupBeforeReadFn = hook
+	t.Cleanup(func() {
+		cacheLookupBeforeReadFn = previous
+	})
+}
+
+func containsAny(got string, parts ...string) bool {
+	for _, part := range parts {
+		if strings.Contains(got, part) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
