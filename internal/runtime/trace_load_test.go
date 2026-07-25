@@ -142,7 +142,9 @@ func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
 }
 
 func oversizedRuntimeTraceContent() string {
+	const maxRuntimeTraceBytesForTest = 8 * 1024 * 1024
+
 	line := "{\"module\":\"" + leftPadModule + "\"}\n"
-	repeat := int(maxRuntimeTraceBytes/int64(len(line))) + 1
+	repeat := maxRuntimeTraceBytesForTest/len(line) + 1
 	return strings.Repeat(line, repeat)
 }
