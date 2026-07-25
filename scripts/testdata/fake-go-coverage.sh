@@ -29,6 +29,9 @@ case "$cmd" in
 				-coverprofile=*)
 					coverprofile="${arg#-coverprofile=}"
 					;;
+				*)
+					:
+					;;
 			esac
 		done
 		if [ -z "$coverprofile" ]; then
@@ -62,6 +65,9 @@ case "$cmd" in
 						exit 92
 					fi
 					: > "$output"
+					;;
+				*)
+					:
 					;;
 			esac
 		done
