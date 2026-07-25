@@ -44,6 +44,40 @@ func TestValidateExplicitCachePathRejectsTrailingDotSpaceAliases(t *testing.T) {
 	}
 }
 
+func TestValidateExplicitCachePathHandlesUnqualifiedRelativeComponents(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "trailing space leaf", path: `cache `, want: "trailing dot or space aliases"},
+		{name: "trailing dot nested", path: `cache.\child`, want: "trailing dot or space aliases"},
+		{name: "trailing space nested", path: `sub\cache \child`, want: "trailing dot or space aliases"},
+		{name: "reserved con leaf", path: `CON`, want: "reserved DOS device names"},
+		{name: "reserved nul nested", path: `sub\NUL.txt`, want: "reserved DOS device names"},
+		{name: "ordinary leaf", path: `cache`},
+		{name: "ordinary nested", path: `cache\child`},
+		{name: "dotted component", path: `cache.dir\child`},
+		{name: "spaced component", path: `cache dir\child`},
+		{name: "benign device prefix", path: `sub\COM10.txt`},
+		{name: "current directory", path: `.`},
+		{name: "parent directory", path: `..\cache`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateExplicitCachePath(tc.path)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("expected valid relative path, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q rejection, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestResolveCacheStorageRootRejectsUnsupportedWindowsExplicitPaths(t *testing.T) {
 	repo := t.TempDir()
 	canonicalRepo := repo
@@ -55,6 +89,8 @@ func TestResolveCacheStorageRootRejectsUnsupportedWindowsExplicitPaths(t *testin
 	}{
 		{name: "drive relative", path: `C:cache`, want: "drive-relative"},
 		{name: "rooted without drive", path: `\cache`, want: "include a drive or UNC share"},
+		{name: "rooted without drive forward slash", path: `/cache`, want: "include a drive or UNC share"},
+		{name: "rooted child without drive forward slash", path: `/repo/child`, want: "include a drive or UNC share"},
 		{name: "verbatim drive", path: `\\?\C:\cache`, want: "device or namespace forms"},
 		{name: "local device", path: `\\.\C:\cache`, want: "device or namespace forms"},
 		{name: "object manager", path: `\??\C:\cache`, want: "device or namespace forms"},
@@ -68,6 +104,10 @@ func TestResolveCacheStorageRootRejectsUnsupportedWindowsExplicitPaths(t *testin
 		{name: "drive reserved con", path: `C:\cache\sub\con `, want: "reserved DOS device names"},
 		{name: "unc reserved aux", path: `\\server\share\AUX.cfg`, want: "reserved DOS device names"},
 		{name: "unc reserved lpt9", path: `\\server\share\dir\LPT9...`, want: "reserved DOS device names"},
+		{name: "relative trailing space alias", path: `cache `, want: "trailing dot or space aliases"},
+		{name: "relative trailing dot alias nested", path: `cache.\child`, want: "trailing dot or space aliases"},
+		{name: "relative reserved con", path: `CON`, want: "reserved DOS device names"},
+		{name: "relative reserved nul nested", path: `sub\NUL.txt`, want: "reserved DOS device names"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			options := resolvedCacheOptions{
@@ -118,6 +158,8 @@ func TestNewAnalysisCacheRejectsUnsupportedWindowsExplicitPath(t *testing.T) {
 		want string
 	}{
 		{name: "namespace", path: `\\?\GLOBALROOT\Device\HarddiskVolume1\cache`, want: "device or namespace forms"},
+		{name: "rooted without drive forward slash", path: `/cache`, want: "include a drive or UNC share"},
+		{name: "rooted child without drive forward slash", path: `/repo/child`, want: "include a drive or UNC share"},
 		{name: "drive trailing space alias", path: `C:\cache `, want: "trailing dot or space aliases"},
 		{name: "drive trailing dot alias", path: `C:\cache.`, want: "trailing dot or space aliases"},
 		{name: "unc trailing space alias", path: `\\server\share\dir `, want: "trailing dot or space aliases"},

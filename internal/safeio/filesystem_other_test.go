@@ -24,7 +24,18 @@ func TestOpenCanonicalWriteRootAcceptsUnixPathsThatLookWindowsLike(t *testing.T)
 		t.Fatalf("chdir workdir: %v", err)
 	}
 
-	for _, rawPath := range []string{`C:cache`, `\cache`, `\\server`, `C:\cache.`, `C:\cache `, `\\server\share\dir `} {
+	for _, rawPath := range []string{
+		`C:cache`,
+		`\cache`,
+		`\\server`,
+		`C:\cache.`,
+		`C:\cache `,
+		`\\server\share\dir `,
+		`cache `,
+		`cache.\child`,
+		`CON`,
+		`sub\NUL.txt`,
+	} {
 		if err := os.Mkdir(rawPath, 0o750); err != nil {
 			t.Fatalf("mkdir %q: %v", rawPath, err)
 		}

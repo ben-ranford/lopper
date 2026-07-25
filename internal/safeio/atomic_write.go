@@ -20,6 +20,11 @@ type truncatingFile interface {
 	Truncate(size int64) error
 }
 
+type atomicReplacementOptions struct {
+	forceReplacementPerm bool
+	allowInPlaceFallback bool
+}
+
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
 	if err != nil {
@@ -32,16 +37,6 @@ func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atom
 		tempRel:   tempRel,
 		tempFile:  tempFile,
 	}, nil
-}
-
-func (s *atomicWriteSession) writeAndClose(data []byte, perm os.FileMode) error {
-	if _, err := s.tempFile.Write(data); err != nil {
-		return err
-	}
-	if err := s.tempFile.Chmod(perm); err != nil {
-		return err
-	}
-	return s.closeTempFile()
 }
 
 func (s *atomicWriteSession) writeAndCommit(data []byte, perm os.FileMode) error {
@@ -64,14 +59,6 @@ func (s *atomicWriteSession) writeAndCommit(data []byte, perm os.FileMode) error
 	return syncRootDirectory(s.root)
 }
 
-func (s *atomicWriteSession) commit() error {
-	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
-		return err
-	}
-	s.tempRel = ""
-	return nil
-}
-
 func (s *atomicWriteSession) closeTempFile() error {
 	if s.tempFile == nil {
 		return nil
@@ -87,16 +74,38 @@ func (s *atomicWriteSession) cleanup() error {
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
 
-func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) (returnErr error) {
-	replacementFile, closeReplacementFile, err := openPinnedReplacementTargetIfNeeded(root, targetRel, replacementInfo)
+func writeAtomicReplacement(root Root, target rootedTarget, data []byte, perm os.FileMode, replacementInfo fs.FileInfo, options atomicReplacementOptions) (returnErr error) {
+	targetRel, err := resolveRelativeTarget(target.rel, rejectRootTarget)
 	if err != nil {
 		return err
+	}
+	parent, closeParent, err := openDirectoryWithinRoot(root, target.rootAbs, filepath.Dir(targetRel), false, 0)
+	if err != nil {
+		return err
+	}
+	if closeParent {
+		defer func() {
+			returnErr = errors.Join(returnErr, parent.Close())
+		}()
+	}
+	return writeAtomicReplacementInParent(parent, filepath.Base(targetRel), data, perm, replacementInfo, options)
+}
+
+func writeAtomicReplacementInParent(root Root, targetName string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo, options atomicReplacementOptions) (returnErr error) {
+	var replacementFile File
+	closeReplacementFile := func() error { return nil }
+	if options.allowInPlaceFallback {
+		var err error
+		replacementFile, closeReplacementFile, err = openPinnedReplacementTargetIfNeeded(root, targetName, replacementInfo)
+		if err != nil {
+			return err
+		}
 	}
 	defer func() {
 		returnErr = errors.Join(returnErr, closeReplacementFile())
 	}()
 
-	session, err := newAtomicWriteSession(root, targetRel, perm)
+	session, err := newAtomicWriteSession(root, targetName, perm)
 	if err != nil {
 		return err
 	}
@@ -104,11 +113,14 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 		returnErr = errors.Join(returnErr, session.cleanup())
 	}()
 
-	if err := session.writeAndClose(data, perm); err != nil {
-		return err
-	}
-	if err := session.commit(); err != nil {
-		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
+	if err := session.writeAndCommit(data, perm); err != nil {
+		if session.tempRel == "" || session.tempFile != nil {
+			return err
+		}
+		if !options.allowInPlaceFallback {
+			return err
+		}
+		return fallbackAtomicReplacement(root, session.tempRel, targetName, replacementFile, data, perm, options.forceReplacementPerm, err)
 	}
 	return nil
 }
@@ -174,15 +186,4 @@ func closeFilePreservingPrimary(file File, primaryErr error) error {
 		return primaryErr
 	}
 	return closeErr
-}
-
-func syncRootDirectory(root Root) (returnErr error) {
-	dir, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, dir.Close())
-	}()
-	return dir.Sync()
 }

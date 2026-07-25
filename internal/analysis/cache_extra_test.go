@@ -615,7 +615,7 @@ func TestResolveAuthKeyAndPointerHelpersAdditionalBranches(t *testing.T) {
 func TestAuthKeyHelpersAdditionalBranches(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -815,7 +815,7 @@ func assertWindowsPathAtOrBelowCases(t *testing.T) {
 		{name: "same drive inside root true", path: `C:\Users\test\AppData\Local\lopper`, root: `C:\Users\test\AppData\Local`, want: true},
 		{name: "same drive exact root true", path: `C:\Users\test\AppData\Local`, root: `C:\Users\test\AppData\Local`, want: true},
 		{name: "case-insensitive drive and path true", path: `C:\Users\Test\AppData\LOCAL\Lopper`, root: `c:\users\test\appdata\local`, want: true},
-		{name: "traversal-like relative output rejected", path: `C:\repo\root\..\outside\auth`, root: `C:\repo\root`, want: false},
+		{name: "traversal component normalizes outside root", path: `C:\repo\root\..\outside\auth`, root: `C:\repo\root`, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := pathAtOrBelow(tc.path, tc.root); got != tc.want {
@@ -872,10 +872,13 @@ func assertCanonicalUserCacheDirRejectsNonDirectoryAncestor(t *testing.T) {
 func assertCanonicalUserCacheCreationSyncsParent(t *testing.T, userCacheDir string) {
 	t.Helper()
 	missing := filepath.Join(userCacheDir, "nested")
-	originalSync := analysisCacheAuthSyncDirFn
+	originalSync := analysisCacheAuthMkdirAllDurableFn
 	syncCalls := 0
-	analysisCacheAuthSyncDirFn = func(root *safeio.WriteRoot) error { syncCalls++; return root.Sync() }
-	t.Cleanup(func() { analysisCacheAuthSyncDirFn = originalSync })
+	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
+		syncCalls++
+		return root.MkdirAllDurable(path, perm)
+	}
+	t.Cleanup(func() { analysisCacheAuthMkdirAllDurableFn = originalSync })
 	resolved, err := canonicalUserCacheDir(missing, false)
 	if err != nil {
 		t.Fatalf("canonicalUserCacheDir(create): %v", err)
@@ -891,6 +894,9 @@ func assertCanonicalUserCacheCreationSyncsParent(t *testing.T, userCacheDir stri
 func assertOpenAuthStoreCreatesDirectory(t *testing.T, repoRoot, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "cache")
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache path: %v", err)
+	}
 	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath, ExplicitPath: true}, repoRoot: repoRoot, storageRoot: cachePath}
 	authRoot, keyName, err := cache.openAuthStore()
 	if err != nil {
@@ -912,7 +918,7 @@ func assertOpenAuthStoreCreatesDirectory(t *testing.T, repoRoot, userCacheDir st
 func assertCreateOrRotatePublishesMissingKey(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -933,7 +939,7 @@ func assertCreateOrRotatePublishesMissingKey(t *testing.T, userCacheDir string) 
 func assertRotateInvalidKeyInstallsReplacement(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "rotate-cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -977,7 +983,7 @@ func assertOpenAuthStoreRejectsRepoControlledLocation(t *testing.T, repoRoot str
 func assertReadAuthKeyFlagsInvalidPayload(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "invalid-read-cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -993,7 +999,7 @@ func assertReadAuthKeyFlagsInvalidPayload(t *testing.T, userCacheDir string) {
 func assertPublishMissingAuthKeyLeavesWinnerIntact(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "publish-existing-cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -1017,7 +1023,7 @@ func assertPublishMissingAuthKeyLeavesWinnerIntact(t *testing.T, userCacheDir st
 func assertCreateOrRotateReplacesInvalidKey(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "replace-invalid-cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -1037,10 +1043,10 @@ func assertCreateOrRotateReplacesInvalidKey(t *testing.T, userCacheDir string) {
 func assertResolveAuthKeyReadonlyInvalidKey(t *testing.T, userCacheDir, repoRoot string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "readonly-invalid-cache")
-	if err := os.MkdirAll(filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)), 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
-	if err := os.WriteFile(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath), []byte("invalid"), 0o600); err != nil {
+	if err := os.WriteFile(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath), []byte("invalid"), 0o600); err != nil {
 		t.Fatalf("write invalid key: %v", err)
 	}
 	cache := &analysisCache{options: resolvedCacheOptions{ReadOnly: true}, repoRoot: repoRoot, storageRoot: cachePath}
@@ -1068,6 +1074,9 @@ func assertPointerTrustedRejectsMissingSignature(t *testing.T) {
 func assertResolveAuthKeyCreatesAndReusesWritableKey(t *testing.T, repoRoot string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "cache")
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache path: %v", err)
+	}
 	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath, ExplicitPath: true}, repoRoot: repoRoot, storageRoot: cachePath}
 	key, err := cache.resolveAuthKey()
 	if err != nil {
@@ -1085,7 +1094,7 @@ func assertResolveAuthKeyCreatesAndReusesWritableKey(t *testing.T, repoRoot stri
 func assertResolveAuthKeyRotatesInvalidWritableKey(t *testing.T, userCacheDir, repoRoot string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "rotate-invalid")
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -1105,7 +1114,7 @@ func assertResolveAuthKeyRotatesInvalidWritableKey(t *testing.T, userCacheDir, r
 func assertCreateOrRotateReturnsInvalidKeyErrorWithoutReplacement(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "invalid-no-replace")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -1121,7 +1130,7 @@ func assertCreateOrRotateReturnsInvalidKeyErrorWithoutReplacement(t *testing.T, 
 func assertWriteAuthKeyCandidatePersistsAndRemoves(t *testing.T, userCacheDir string) {
 	t.Helper()
 	cachePath := filepath.Join(t.TempDir(), "candidate-cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -1270,7 +1279,7 @@ func assertReadAnalysisCacheAuthKeyReportsMissingKey(t *testing.T) {
 	t.Helper()
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -1409,7 +1418,11 @@ func setTestAnalysisCacheUserCachePath(t *testing.T, userCacheDir string) {
 	})
 }
 
-func testAnalysisCacheAuthKeyPath(userCacheDir, cachePath string) string {
+func testAnalysisCacheAuthKeyPath(t *testing.T, userCacheDir, cachePath string) string {
+	t.Helper()
+	if err := os.MkdirAll(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir test cache path: %v", err)
+	}
 	canonicalUserCacheDir, err := filepath.EvalSymlinks(userCacheDir)
 	if err != nil {
 		canonicalUserCacheDir = filepath.Clean(userCacheDir)
@@ -1423,12 +1436,20 @@ func testAnalysisCacheAuthKeyPath(userCacheDir, cachePath string) string {
 			canonicalCachePath = filepath.Clean(cachePath)
 		}
 	}
-	return filepath.Join(canonicalUserCacheDir, "lopper", analysisCacheAuthDirName, analysisCacheAuthKeyName(canonicalCachePath))
+	storageInfo, err := os.Stat(canonicalCachePath)
+	if err != nil {
+		t.Fatalf("stat test cache path: %v", err)
+	}
+	keyName, err := analysisCacheAuthKeyName(canonicalCachePath, storageInfo)
+	if err != nil {
+		t.Fatalf("derive test cache auth-key identity: %v", err)
+	}
+	return filepath.Join(canonicalUserCacheDir, "lopper", analysisCacheAuthDirName, keyName)
 }
 
 func openTestAnalysisCacheAuthRoot(t *testing.T, userCacheDir, cachePath string) (*safeio.WriteRoot, string) {
 	t.Helper()
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	root, err := safeio.OpenCanonicalWriteRoot(filepath.Dir(keyPath))
 	if err != nil {
 		t.Fatalf("open test auth root: %v", err)

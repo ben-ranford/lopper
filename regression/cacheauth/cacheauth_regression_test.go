@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
@@ -52,6 +54,120 @@ func TestDefaultRepoLocalCacheForgedEntryMisses(t *testing.T) {
 	if len(got.Cache.Invalidations) == 0 || got.Cache.Invalidations[0].Reason != "pointer-untrusted" {
 		t.Fatalf("expected pointer-untrusted invalidation, got %#v", got.Cache.Invalidations)
 	}
+}
+
+func TestDefaultRepoLocalCacheTrustedEntryHitsOnPOSIXPaths(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+
+	svc := analysis.NewService()
+	first, err := svc.Analyse(context.Background(), analysis.Request{
+		RepoPath: repo,
+		Language: "js",
+		TopN:     1,
+	})
+	if err != nil {
+		t.Fatalf("first analyse repository with default cache: %v", err)
+	}
+	if first.Cache == nil || first.Cache.Hits != 0 || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
+		t.Fatalf("expected first run to populate cache, got %#v", first.Cache)
+	}
+
+	second, err := svc.Analyse(context.Background(), analysis.Request{
+		RepoPath: repo,
+		Language: "js",
+		TopN:     1,
+	})
+	if err != nil {
+		t.Fatalf("second analyse repository with default cache: %v", err)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 || second.Cache.Writes != 0 {
+		t.Fatalf("expected trusted default cache hit on POSIX paths, got %#v", second.Cache)
+	}
+}
+
+func TestOversizedPermissiveAuthKeyRotatesToPrivateValidKey(t *testing.T) {
+	cacheEnvRoot := t.TempDir()
+	t.Setenv("HOME", cacheEnvRoot)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(cacheEnvRoot, "xdg-cache"))
+	t.Setenv("LocalAppData", filepath.Join(cacheEnvRoot, "local-app-data"))
+
+	userCacheDir, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("resolve isolated user cache dir: %v", err)
+	}
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+
+	svc := analysis.NewService()
+	req := analysis.Request{
+		RepoPath: repo,
+		Language: "js",
+		TopN:     1,
+	}
+	if _, err := svc.Analyse(context.Background(), req); err != nil {
+		t.Fatalf("seed cache auth key: %v", err)
+	}
+
+	authDir := filepath.Join(userCacheDir, "lopper", "analysis-cache-auth")
+	keyPath := singleAuthKeyPath(t, authDir)
+	oversizedKey := []byte(strings.Repeat("f", 256))
+	if err := os.WriteFile(keyPath, oversizedKey, 0o644); err != nil {
+		t.Fatalf("seed oversized auth key: %v", err)
+	}
+	if err := os.Chmod(keyPath, 0o644); err != nil {
+		t.Fatalf("set oversized auth key mode: %v", err)
+	}
+
+	if _, err := svc.Analyse(context.Background(), req); err != nil {
+		t.Fatalf("analyse repository with oversized auth key: %v", err)
+	}
+
+	encodedKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read rotated auth key: %v", err)
+	}
+	if len(encodedKey) != sha256.Size*2 {
+		t.Fatalf("expected %d-byte encoded auth key, got %d bytes", sha256.Size*2, len(encodedKey))
+	}
+	decodedKey, err := hex.DecodeString(string(encodedKey))
+	if err != nil {
+		t.Fatalf("decode rotated auth key: %v", err)
+	}
+	if len(decodedKey) != sha256.Size {
+		t.Fatalf("expected %d-byte auth key, got %d bytes", sha256.Size, len(decodedKey))
+	}
+
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat rotated auth key: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected rotated auth key mode 0600, got %#o", info.Mode().Perm())
+	}
+}
+
+func singleAuthKeyPath(t *testing.T, authDir string) string {
+	t.Helper()
+	authEntries, err := os.ReadDir(authDir)
+	if err != nil {
+		t.Fatalf("read auth store: %v", err)
+	}
+	var keyPath string
+	for _, entry := range authEntries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".key") {
+			if keyPath != "" {
+				t.Fatalf("expected one cache auth key, found at least %q and %q", filepath.Base(keyPath), entry.Name())
+			}
+			keyPath = filepath.Join(authDir, entry.Name())
+		}
+	}
+	if keyPath == "" {
+		t.Fatal("expected cache warmup to create an auth key")
+	}
+	return keyPath
 }
 
 type cachePointer struct {

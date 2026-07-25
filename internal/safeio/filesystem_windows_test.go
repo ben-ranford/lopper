@@ -33,6 +33,40 @@ func TestRejectUnsupportedWindowsRootRejectsTrailingDotSpaceAliases(t *testing.T
 	}
 }
 
+func TestRejectUnsupportedWindowsRootHandlesUnqualifiedRelativeComponents(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "trailing space leaf", path: `cache `, want: "trailing dot or space aliases"},
+		{name: "trailing dot nested", path: `cache.\child`, want: "trailing dot or space aliases"},
+		{name: "trailing space nested", path: `sub\cache \child`, want: "trailing dot or space aliases"},
+		{name: "reserved con leaf", path: `CON`, want: "reserved DOS device names"},
+		{name: "reserved nul nested", path: `sub\NUL.txt`, want: "reserved DOS device names"},
+		{name: "ordinary leaf", path: `cache`},
+		{name: "ordinary nested", path: `cache\child`},
+		{name: "dotted component", path: `cache.dir\child`},
+		{name: "spaced component", path: `cache dir\child`},
+		{name: "benign device prefix", path: `sub\COM10.txt`},
+		{name: "current directory", path: `.`},
+		{name: "parent directory", path: `..\cache`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectUnsupportedWindowsRoot(tc.path)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("expected valid relative root, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q rejection, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
 func TestOpenRootNoFollowRejectsUnsupportedWindowsRoots(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -41,6 +75,7 @@ func TestOpenRootNoFollowRejectsUnsupportedWindowsRoots(t *testing.T) {
 	}{
 		{name: "drive relative", path: `C:cache`, want: "drive-relative"},
 		{name: "rooted without drive", path: `\cache`, want: "include a drive or UNC share"},
+		{name: "rooted without drive forward slash", path: `/cache`, want: "include a drive or UNC share"},
 		{name: "verbatim drive", path: `\\?\C:\cache`, want: "device or namespace forms"},
 		{name: "local device", path: `\\.\C:\cache`, want: "device or namespace forms"},
 		{name: "object manager", path: `\??\C:\cache`, want: "device or namespace forms"},
@@ -53,6 +88,10 @@ func TestOpenRootNoFollowRejectsUnsupportedWindowsRoots(t *testing.T) {
 		{name: "drive reserved clock", path: `C:\cache\CLOCK$...`, want: "reserved DOS device names"},
 		{name: "unc reserved con", path: `\\server\share\dir\CON.log`, want: "reserved DOS device names"},
 		{name: "unc reserved lpt9", path: `\\server\share\LPT9 `, want: "reserved DOS device names"},
+		{name: "relative trailing space alias", path: `cache `, want: "trailing dot or space aliases"},
+		{name: "relative trailing dot alias nested", path: `cache.\child`, want: "trailing dot or space aliases"},
+		{name: "relative reserved con", path: `CON`, want: "reserved DOS device names"},
+		{name: "relative reserved nul nested", path: `sub\NUL.txt`, want: "reserved DOS device names"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, err := (&osFileSystem{}).OpenRootNoFollow(tc.path)
@@ -70,17 +109,7 @@ func TestOpenRootNoFollowRejectsUnsupportedWindowsRoots(t *testing.T) {
 }
 
 func TestOpenCanonicalWriteRootRejectsRawUnsupportedWindowsRootsBeforeAbs(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		path string
-		want string
-	}{
-		{name: "drive relative", path: `C:cache`, want: "drive-relative"},
-		{name: "rooted without drive", path: `\cache`, want: "include a drive or UNC share"},
-		{name: "drive trailing dot alias", path: `C:\cache.`, want: "trailing dot or space aliases"},
-		{name: "drive trailing space alias", path: `C:\cache `, want: "trailing dot or space aliases"},
-		{name: "drive reserved name", path: `C:\cache\NUL.txt`, want: "reserved DOS device names"},
-	} {
+	for _, tc := range windowsRawPathRejectionCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			assertOpenCanonicalWriteRootRejectsRawUnsupportedWindowsRoot(t, tc.path, tc.want)
 		})

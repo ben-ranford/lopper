@@ -1,12 +1,15 @@
 package analysis
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -93,6 +96,50 @@ func TestOpenPinnedStorageRootReturnsRootForMatchingBaseline(t *testing.T) {
 	}
 	if err := root.Close(); err != nil {
 		t.Fatalf("close pinned root: %v", err)
+	}
+}
+
+func TestStoreSkipsPayloadLargerThanLookupLimit(t *testing.T) {
+	cacheDir := t.TempDir()
+	rootInfo, err := os.Stat(cacheDir)
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+	cache := &analysisCache{
+		options:         resolvedCacheOptions{Enabled: true, Path: cacheDir, ExplicitPath: true},
+		cacheable:       true,
+		authKey:         []byte("0123456789abcdef0123456789abcdef"),
+		storageRoot:     cacheDir,
+		storageRootInfo: rootInfo,
+	}
+	reportData := report.Report{RepoPath: strings.Repeat("r", analysisCacheObjectMaxBytes)}
+	serializedPayload, err := json.Marshal(cachedPayload{Report: reportData})
+	if err != nil {
+		t.Fatalf("marshal oversized payload: %v", err)
+	}
+	if len(serializedPayload) <= analysisCacheObjectMaxBytes {
+		t.Fatalf("expected regression payload larger than %d bytes, got %d", analysisCacheObjectMaxBytes, len(serializedPayload))
+	}
+
+	originalWrite := analysisCacheWriteFileFn
+	writeCalls := 0
+	analysisCacheWriteFileFn = func(*safeio.WriteRoot, string, []byte, os.FileMode, os.FileMode) error {
+		writeCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		analysisCacheWriteFileFn = originalWrite
+	})
+
+	err = cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, reportData)
+	if err != nil {
+		t.Fatalf("store oversized payload: %v", err)
+	}
+	if writeCalls != 0 {
+		t.Fatalf("expected oversized payload to be skipped before object or pointer writes, got %d writes", writeCalls)
+	}
+	if cache.metadata.Writes != 0 {
+		t.Fatalf("expected skipped payload not to increment write metadata, got %d", cache.metadata.Writes)
 	}
 }
 
@@ -213,5 +260,109 @@ func TestOpenPinnedStorageRootReturnsPinnedRootLstatError(t *testing.T) {
 			}
 		}
 		t.Fatalf("expected pinned-root lstat failure, got root=%v err=%v", root, err)
+	}
+}
+
+func TestLookupPropagatesStorageRootCloseFailure(t *testing.T) {
+	prevCloseRoot := analysisCacheCloseRootFn
+	closeErr := errors.New("close root failed")
+	analysisCacheCloseRootFn = func(root *safeio.WriteRoot) error {
+		return errors.Join(closeErr, root.Close())
+	}
+	t.Cleanup(func() {
+		analysisCacheCloseRootFn = prevCloseRoot
+	})
+
+	cacheDir := t.TempDir()
+	mustMkdirCacheLayout(t, cacheDir)
+	entry := cacheEntryDescriptor{KeyLabel: "cache-key", KeyDigest: "key", InputDigest: "input"}
+	payload := []byte(`{"report":{"repoPath":"repo"}}`)
+	objectDigest := sha256Hex(payload)
+	authKey := []byte("0123456789abcdef0123456789abcdef")
+	signature, err := pointerSignature(authKey, entry, objectDigest)
+	if err != nil {
+		t.Fatalf("pointerSignature: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(cacheDir, cacheKeysDirName, entry.KeyDigest+".json"), []byte(`{"inputDigest":"input","objectDigest":"`+objectDigest+`","signature":"`+signature+`"}`))
+	mustWriteFile(t, filepath.Join(cacheDir, cacheObjectsDirName, objectDigest+".json"), payload)
+
+	rootInfo, err := os.Stat(cacheDir)
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+	cache := &analysisCache{
+		options:         resolvedCacheOptions{Enabled: true, Path: cacheDir, ExplicitPath: true},
+		cacheable:       true,
+		authKey:         authKey,
+		storageRoot:     cacheDir,
+		storageRootInfo: rootInfo,
+	}
+
+	got, hit, err := cache.lookup(entry)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected close failure from lookup, got %v", err)
+	}
+	if hit {
+		t.Fatal("expected close failure to fail closed without a cache hit")
+	}
+	if !reflect.DeepEqual(got, report.Report{}) {
+		t.Fatalf("expected close failure to clear cached payload, got %#v", got)
+	}
+	if cache.metadata.Hits != 0 {
+		t.Fatalf("expected close failure not to increment hit count, got %d", cache.metadata.Hits)
+	}
+}
+
+func TestLookupJoinsPrimaryAndStorageRootCloseFailure(t *testing.T) {
+	prevCloseRoot := analysisCacheCloseRootFn
+	prevUserCacheDir := analysisCacheUserCacheDirFn
+	closeErr := errors.New("close root failed")
+	primaryErr := errors.New("user-cache lookup failed")
+	analysisCacheCloseRootFn = func(root *safeio.WriteRoot) error {
+		return errors.Join(closeErr, root.Close())
+	}
+	analysisCacheUserCacheDirFn = func() (string, error) {
+		return "", primaryErr
+	}
+	t.Cleanup(func() {
+		analysisCacheCloseRootFn = prevCloseRoot
+		analysisCacheUserCacheDirFn = prevUserCacheDir
+	})
+
+	cacheDir := t.TempDir()
+	mustMkdirCacheLayout(t, cacheDir)
+	entry := cacheEntryDescriptor{KeyLabel: "cache-key", KeyDigest: "key", InputDigest: "input"}
+	payload := []byte(`{"report":{"repoPath":"repo"}}`)
+	objectDigest := sha256Hex(payload)
+	signature, err := pointerSignature([]byte("0123456789abcdef0123456789abcdef"), entry, objectDigest)
+	if err != nil {
+		t.Fatalf("pointerSignature: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(cacheDir, cacheKeysDirName, entry.KeyDigest+".json"), []byte(`{"inputDigest":"input","objectDigest":"`+objectDigest+`","signature":"`+signature+`"}`))
+	mustWriteFile(t, filepath.Join(cacheDir, cacheObjectsDirName, objectDigest+".json"), payload)
+
+	rootInfo, err := os.Stat(cacheDir)
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+	cache := &analysisCache{
+		options:         resolvedCacheOptions{Enabled: true, Path: cacheDir, ExplicitPath: true},
+		cacheable:       true,
+		storageRoot:     cacheDir,
+		storageRootInfo: rootInfo,
+	}
+
+	got, hit, err := cache.lookup(entry)
+	if !errors.Is(err, primaryErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined primary and close failures, got %v", err)
+	}
+	if hit {
+		t.Fatal("expected joined failure to fail closed without a cache hit")
+	}
+	if !reflect.DeepEqual(got, report.Report{}) {
+		t.Fatalf("expected joined failure to clear cached payload, got %#v", got)
+	}
+	if cache.metadata.Hits != 0 {
+		t.Fatalf("expected joined failure not to increment hit count, got %d", cache.metadata.Hits)
 	}
 }

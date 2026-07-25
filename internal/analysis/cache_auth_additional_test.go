@@ -21,6 +21,19 @@ func TestPathAtOrBelowWindowsReturnsNotApplicableForNonWindowsRoot(t *testing.T)
 	}
 }
 
+func TestPathAtOrBelowWindowsReturnsNotApplicableForPOSIXAbsolutePaths(t *testing.T) {
+	got, ok := pathAtOrBelowWindows("/private/var/cache/child", "/private/var/cache")
+	if ok {
+		t.Fatal("expected POSIX absolute paths to fall through to host ancestry checks")
+	}
+	if got {
+		t.Fatal("expected non-applicable POSIX comparison to return false")
+	}
+	if !pathAtOrBelow("/private/var/cache/child", "/private/var/cache") {
+		t.Fatal("expected POSIX ancestry to be evaluated by filepath.Rel")
+	}
+}
+
 func TestPathAtOrBelowWindowsFailsClosedForAmbiguousPath(t *testing.T) {
 	got, ok := pathAtOrBelowWindows(`\\?\GLOBALROOT\Device\HarddiskVolume1\repo`, `C:\repo`)
 	if !ok {
@@ -41,13 +54,48 @@ func TestPathAtOrBelowWindowsFailsClosedForReservedDOSName(t *testing.T) {
 	}
 }
 
-func TestPathAtOrBelowWindowsFailsClosedForDriveRelativeRoot(t *testing.T) {
-	got, ok := pathAtOrBelowWindows(`C:\repo\cache`, `C:repo`)
-	if !ok {
-		t.Fatal("expected drive-relative root to be classified")
+func TestPathAtOrBelowWindowsFailsClosedForTrimmedComponentAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		root string
+		want bool
+	}{
+		{name: "candidate trailing dot leaf", path: `C:\outside.`, root: `C:\repo`, want: true},
+		{name: "candidate trailing space leaf", path: `C:\outside `, root: `C:\repo`, want: true},
+		{name: "candidate trailing dot nested", path: `C:\outside\nested.\cache`, root: `C:\repo`, want: true},
+		{name: "candidate trailing space nested", path: `C:\outside\nested \cache`, root: `C:\repo`, want: true},
+		{name: "root trailing dot leaf", path: `C:\outside`, root: `C:\repo.`, want: true},
+		{name: "root trailing space leaf", path: `C:\outside`, root: `C:\repo `, want: true},
+		{name: "root trailing dot nested", path: `C:\outside`, root: `C:\repo\nested.`, want: true},
+		{name: "root trailing space nested", path: `C:\outside`, root: `C:\repo\nested `, want: true},
+		{name: "canonical dotted candidate", path: `C:\outside.dir\cache`, root: `C:\repo`, want: false},
+		{name: "canonical spaced candidate", path: `C:\outside dir\cache`, root: `C:\repo`, want: false},
+		{name: "canonical dotted root", path: `C:\outside`, root: `C:\repo.dir`, want: false},
+		{name: "canonical spaced root", path: `C:\outside`, root: `C:\repo dir\nested`, want: false},
+		{name: "canonical descendant", path: `C:\repo.dir\nested space\cache`, root: `C:\repo.dir\nested space`, want: true},
 	}
-	if !got {
-		t.Fatal("expected drive-relative root to fail closed as protected")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := pathAtOrBelowWindows(tt.path, tt.root)
+			if !ok {
+				t.Fatal("expected Windows path comparison to apply")
+			}
+			if got != tt.want {
+				t.Fatalf("pathAtOrBelowWindows(%q, %q) = %v, want %v", tt.path, tt.root, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPathAtOrBelowWindowsReturnsNotApplicableForDriveRelativeRoot(t *testing.T) {
+	got, ok := pathAtOrBelowWindows(`C:\repo\cache`, `C:repo`)
+	if ok {
+		t.Fatal("expected drive-relative root to skip Windows-specific comparison")
+	}
+	if got {
+		t.Fatal("expected non-applicable drive-relative comparison to return false")
 	}
 }
 
@@ -74,7 +122,7 @@ func TestPathAtOrBelowWindowsTreatsDriveRootAsAncestor(t *testing.T) {
 func TestReadAnalysisCacheAuthKeyRepairsPermissiveModeWhenRequested(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -173,7 +221,7 @@ func TestCanonicalUserCacheDirReturnsMkdirAllErrorForBlockedDescendant(t *testin
 func TestInvalidAuthKeyGenerationReturnsStableHashForOversizedRegularFile(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -194,7 +242,7 @@ func TestInvalidAuthKeyGenerationReturnsStableHashForOversizedRegularFile(t *tes
 func TestInvalidAuthKeyGenerationReturnsStableHashForInvalidRegularFile(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}

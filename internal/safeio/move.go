@@ -39,6 +39,14 @@ func MoveFileUnder(rootDir, sourcePath, targetPath string, dirPerm, filePerm os.
 // It preserves atomic final placement by renaming within root, and falls back to copy-then-rename
 // only when the direct rename fails with EXDEV.
 func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePerm os.FileMode) (returnErr error) {
+	sourceRel, err := resolveRelativeTarget(sourceRel, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	targetRel, err = resolveRelativeTarget(targetRel, rejectRootTarget)
+	if err != nil {
+		return err
+	}
 	if err := root.MkdirAll(filepath.Dir(targetRel), dirPerm); err != nil {
 		return err
 	}

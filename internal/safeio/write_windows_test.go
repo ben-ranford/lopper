@@ -77,6 +77,7 @@ func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *t
 
 	targetOpened := 0
 	targetClosed := 0
+	targetSynced := 0
 	targetData := []byte("before")
 	targetFile := &truncatingFakeFile{
 		fakeFile: &fakeFile{
@@ -84,6 +85,10 @@ func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *t
 			write: func(p []byte) (int, error) {
 				targetData = append(targetData, p...)
 				return len(p), nil
+			},
+			sync: func() error {
+				targetSynced++
+				return nil
 			},
 			close: func() error {
 				targetClosed++
@@ -136,9 +141,205 @@ func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *t
 	if targetClosed != 1 {
 		t.Fatalf("expected pinned target to close once, got %d closes", targetClosed)
 	}
+	if targetSynced != 1 {
+		t.Fatalf("expected pinned target to sync once, got %d syncs", targetSynced)
+	}
 	if string(targetData) != "after" {
 		t.Fatalf("expected fallback overwrite data, got %q", string(targetData))
 	}
+}
+
+func TestWriteFileReplacingWithExactPermissionsForcesModeDuringWindowsFallback(t *testing.T) {
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, targetInfoPath)
+	target := &windowsFallbackTarget{data: []byte("before")}
+	targetFile := target.file(t, info)
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		openFile: windowsFallbackOpenFile(target, targetFile),
+		rename:   windowsReplaceExistingError,
+		remove:   func(string) error { return nil },
+	}
+	writeRoot := &WriteRoot{root: root, rootAbs: filepath.Dir(targetInfoPath)}
+
+	if err := writeRoot.WriteFileReplacingWithExactPermissions(writeTestFileName, []byte("after"), 0o600); err != nil {
+		t.Fatalf("WriteFileReplacingWithExactPermissions returned error: %v", err)
+	}
+	if target.chmodCalls != 1 {
+		t.Fatalf("expected pinned target mode to be forced once, got %d calls", target.chmodCalls)
+	}
+	if target.chmodPerm != 0o600 {
+		t.Fatalf("expected pinned target mode 0600, got %#o", target.chmodPerm)
+	}
+	if target.syncCalls != 1 {
+		t.Fatalf("expected pinned target to sync after chmod, got %d calls", target.syncCalls)
+	}
+	if string(target.data) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(target.data))
+	}
+}
+
+type windowsStrictAtomicFailureFixture struct {
+	t                    *testing.T
+	rootAbs              string
+	info                 fs.FileInfo
+	partialWriteErr      error
+	renameErr            error
+	targetData           []byte
+	targetTruncateCalls  int
+	targetWriteCalls     int
+	candidatePath        string
+	renamedCandidate     string
+	candidateData        []byte
+	candidateChmodCalls  int
+	candidatePerm        os.FileMode
+	candidateSyncCalls   int
+	removeCalls          int
+	removedCandidatePath string
+}
+
+func newWindowsStrictAtomicFailureFixture(t *testing.T) *windowsStrictAtomicFailureFixture {
+	t.Helper()
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	const oldKey = "old-invalid-auth-key"
+	if err := os.WriteFile(targetInfoPath, []byte(oldKey), 0o600); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	return &windowsStrictAtomicFailureFixture{
+		t:               t,
+		rootAbs:         filepath.Dir(targetInfoPath),
+		info:            statTestPath(t, targetInfoPath),
+		partialWriteErr: errors.New("injected partial live-key write"),
+		targetData:      []byte(oldKey),
+	}
+}
+
+func (f *windowsStrictAtomicFailureFixture) targetFile() File {
+	return &truncatingFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return f.info, nil },
+			write: func(p []byte) (int, error) {
+				f.targetWriteCalls++
+				f.targetData = append(f.targetData, p[:2]...)
+				return 2, f.partialWriteErr
+			},
+			chmod: chmodWithoutError,
+			sync:  func() error { return nil },
+			close: closeWithoutError,
+		},
+		truncate: func(size int64) error {
+			if size != 0 {
+				f.t.Fatalf("unexpected truncate size: %d", size)
+			}
+			f.targetTruncateCalls++
+			f.targetData = f.targetData[:0]
+			return nil
+		},
+	}
+}
+
+func (f *windowsStrictAtomicFailureFixture) candidateFile(name string) File {
+	if f.candidatePath != "" {
+		f.t.Fatalf("created multiple replacement candidates: %q then %q", f.candidatePath, name)
+	}
+	f.candidatePath = name
+	return &fakeFile{
+		write: func(p []byte) (int, error) {
+			f.candidateData = append(f.candidateData, p...)
+			return len(p), nil
+		},
+		chmod: func(perm os.FileMode) error {
+			f.candidateChmodCalls++
+			f.candidatePerm = perm
+			return nil
+		},
+		sync: func() error {
+			f.candidateSyncCalls++
+			return nil
+		},
+		close: closeWithoutError,
+	}
+}
+
+func (f *windowsStrictAtomicFailureFixture) writeRoot() *WriteRoot {
+	targetFile := f.targetFile()
+	return &WriteRoot{
+		rootAbs: f.rootAbs,
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name == writeTestFileName {
+					return f.info, nil
+				}
+				return nil, os.ErrNotExist
+			},
+			openFile: func(name string, _ int, _ os.FileMode) (File, error) {
+				if name == writeTestFileName {
+					return targetFile, nil
+				}
+				return f.candidateFile(name), nil
+			},
+			rename: func(oldName, newName string) error {
+				f.renamedCandidate = oldName
+				f.renameErr = windowsReplaceExistingError(oldName, newName)
+				return f.renameErr
+			},
+			remove: func(name string) error {
+				f.removeCalls++
+				if name == writeTestFileName {
+					f.t.Fatal("cleanup attempted to remove the live target")
+				}
+				f.removedCandidatePath = name
+				return nil
+			},
+		},
+	}
+}
+
+func (f *windowsStrictAtomicFailureFixture) assertPreserved(t *testing.T, err error) {
+	t.Helper()
+	const replacement = "complete-replacement-key"
+	if !errors.Is(err, f.renameErr) {
+		t.Fatalf("expected atomic rename error, got %v", err)
+	}
+	if errors.Is(err, f.partialWriteErr) {
+		t.Fatalf("strict atomic replacement reached in-place fallback: %v", err)
+	}
+	if string(f.targetData) != "old-invalid-auth-key" {
+		t.Fatalf("expected old live key to remain intact, got %q", string(f.targetData))
+	}
+	if f.targetTruncateCalls != 0 || f.targetWriteCalls != 0 {
+		t.Fatalf("expected no live-key mutation, truncate=%d write=%d", f.targetTruncateCalls, f.targetWriteCalls)
+	}
+	if string(f.candidateData) != replacement || f.candidateSyncCalls != 1 {
+		t.Fatalf("expected complete synced candidate before rename, data=%q syncs=%d", string(f.candidateData), f.candidateSyncCalls)
+	}
+	if f.candidateChmodCalls != 1 || f.candidatePerm != 0o600 {
+		t.Fatalf("expected exact candidate mode 0600, chmods=%d mode=%#o", f.candidateChmodCalls, f.candidatePerm)
+	}
+	if f.removeCalls != 1 || f.candidatePath == "" || f.renamedCandidate != f.candidatePath || f.removedCandidatePath != f.candidatePath {
+		t.Fatalf(
+			"expected one candidate cleanup after rename failure, calls=%d candidate=%q renamed=%q removed=%q",
+			f.removeCalls,
+			f.candidatePath,
+			f.renamedCandidate,
+			f.removedCandidatePath,
+		)
+	}
+}
+
+func TestWriteFileReplacingAtomicallyWithExactPermissionsPreservesOldTargetOnWindowsRenameFailure(t *testing.T) {
+	fixture := newWindowsStrictAtomicFailureFixture(t)
+	const replacement = "complete-replacement-key"
+	err := fixture.writeRoot().WriteFileReplacingAtomicallyWithExactPermissions(writeTestFileName, []byte(replacement), 0o600)
+	fixture.assertPreserved(t, err)
 }
 
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
@@ -203,6 +404,38 @@ func TestWriteFileReplacingWithinRootJoinsLatePinnedCloseAndCleanupErrors(t *tes
 	}
 }
 
+func TestWriteFileReplacingWithinRootReturnsPinnedSyncErrorAfterWindowsFallback(t *testing.T) {
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	syncErr := errors.New("pinned target sync failure")
+	target := &windowsFallbackTarget{
+		data:    []byte("before"),
+		syncErr: syncErr,
+	}
+	root, rootState := newAppearingWindowsFallbackRoot(
+		t,
+		statTestPath(t, targetInfoPath),
+		target,
+		nil,
+	)
+
+	err := WriteFileReplacingWithinRoot(root, writeTestFileName, []byte("after"), 0o600)
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("expected pinned target sync error, got %v", err)
+	}
+	if rootState.removeCalls != 1 {
+		t.Fatalf("expected one temp cleanup remove, got %d", rootState.removeCalls)
+	}
+	if target.syncCalls != 1 {
+		t.Fatalf("expected one pinned target sync, got %d", target.syncCalls)
+	}
+	if string(target.data) != "after" {
+		t.Fatalf("expected fallback overwrite to happen before sync error, got %q", string(target.data))
+	}
+}
+
 func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *testing.T) {
 	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
@@ -210,23 +443,7 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 	}
 	info := statTestPath(t, infoPath)
 
-	tests := []struct {
-		name string
-		info fs.FileInfo
-		want string
-	}{
-		{
-			name: "symlink",
-			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeSymlink | 0o777},
-			want: "became a symlink",
-		},
-		{
-			name: "non-regular",
-			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeDir | 0o755},
-			want: "not a regular file",
-		},
-	}
-	for _, tt := range tests {
+	for _, tt := range unsafeReplacementPathCases(info) {
 		t.Run(tt.name, func(t *testing.T) {
 			targetOpened := false
 			root := &fakeRoot{
@@ -238,7 +455,7 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 			}
 			renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr)
+			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), 0o600, false, renameErr)
 			if !errors.Is(err, renameErr) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected joined rename and %q rejection, got %v", tt.want, err)
 			}
@@ -290,10 +507,15 @@ func TestFallbackAtomicReplacementRejectsTargetChangedAfterLatePin(t *testing.T)
 type windowsFallbackTarget struct {
 	data          []byte
 	closeErr      error
+	chmodErr      error
+	syncErr       error
 	openCalls     int
 	closeCalls    int
+	chmodCalls    int
+	syncCalls     int
 	truncateCalls int
 	writeCalls    int
+	chmodPerm     os.FileMode
 }
 
 func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
@@ -305,6 +527,15 @@ func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
 				s.writeCalls++
 				s.data = append(s.data, p...)
 				return len(p), nil
+			},
+			chmod: func(perm os.FileMode) error {
+				s.chmodCalls++
+				s.chmodPerm = perm
+				return s.chmodErr
+			},
+			sync: func() error {
+				s.syncCalls++
+				return s.syncErr
 			},
 			close: func() error {
 				s.closeCalls++
@@ -319,6 +550,20 @@ func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
 			s.data = s.data[:0]
 			return nil
 		},
+	}
+}
+
+func windowsFallbackOpenFile(target *windowsFallbackTarget, targetFile File) func(string, int, os.FileMode) (File, error) {
+	return func(name string, _ int, _ os.FileMode) (File, error) {
+		if name == writeTestFileName {
+			target.openCalls++
+			return targetFile, nil
+		}
+		return &fakeFile{
+			write: func(p []byte) (int, error) { return len(p), nil },
+			chmod: chmodWithoutError,
+			close: closeWithoutError,
+		}, nil
 	}
 }
 
@@ -348,17 +593,7 @@ func newAppearingWindowsFallbackRoot(
 			}
 			return info, nil
 		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name == writeTestFileName {
-				target.openCalls++
-				return targetFile, nil
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
+		openFile: windowsFallbackOpenFile(target, targetFile),
 		rename: func(oldName, newName string) error {
 			state.renameAttempted = true
 			return &os.LinkError{
@@ -403,7 +638,7 @@ func assertWindowsFallbackRejectsAfterLatePin(
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr)
+	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), 0o600, false, renameErr)
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("expected original rename error, got %v", err)
 	}
@@ -498,5 +733,21 @@ func TestWindowsReplaceExistingRenameFallbackMatchesOnlyExpectedShape(t *testing
 				t.Fatalf("unexpected fallback decision: got %t want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSyncRootDirectoryWindowsIsNoOp(t *testing.T) {
+	openCalls := 0
+	err := syncRootDirectory(&fakeRoot{
+		open: func(string) (File, error) {
+			openCalls++
+			return nil, syscall.ERROR_ACCESS_DENIED
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected Windows directory sync to be a no-op, got %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected no directory handle open for Windows sync, got %d calls", openCalls)
 	}
 }

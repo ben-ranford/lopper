@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error) (returnErr error) {
+func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, perm os.FileMode, forceReplacementPerm bool, renameErr error) (returnErr error) {
 	if !windowsReplaceExistingRenameFallback(renameErr, oldName, newName) {
 		return renameErr
 	}
@@ -27,6 +27,14 @@ func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFi
 	fallbackErr := overwritePinnedFile(root, newName, replacementFile, data, nil)
 	if fallbackErr != nil {
 		return errors.Join(renameErr, fallbackErr)
+	}
+	if forceReplacementPerm {
+		if err := replacementFile.Chmod(perm); err != nil {
+			return errors.Join(renameErr, err)
+		}
+	}
+	if err := replacementFile.Sync(); err != nil {
+		return errors.Join(renameErr, err)
 	}
 	return nil
 }
@@ -62,7 +70,7 @@ func windowsReplaceExistingRenameFallback(err error, oldName, newName string) bo
 		linkErr.New != newName {
 		return false
 	}
-	errno, ok := linkErr.Err.(syscall.Errno)
-	return ok &&
+	var errno syscall.Errno
+	return errors.As(linkErr.Err, &errno) &&
 		(errno == syscall.ERROR_ALREADY_EXISTS || errno == syscall.ERROR_FILE_EXISTS)
 }

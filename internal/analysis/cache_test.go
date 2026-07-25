@@ -295,8 +295,8 @@ func TestAnalysisCacheCanonicalStorageAliasesShareTrustedHits(t *testing.T) {
 	if adapter.calls != 1 || first.Cache == nil || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
 		t.Fatalf("expected real-path cache warmup, calls=%d cache=%#v", adapter.calls, first.Cache)
 	}
-	realKeyPath := testAnalysisCacheAuthKeyPath(userCacheDir, realCachePath)
-	aliasKeyPath := testAnalysisCacheAuthKeyPath(userCacheDir, aliasCachePath)
+	realKeyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, realCachePath)
+	aliasKeyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, aliasCachePath)
 	if realKeyPath != aliasKeyPath {
 		t.Fatalf("expected canonical aliases to share auth identity, real=%s alias=%s", realKeyPath, aliasKeyPath)
 	}
@@ -363,7 +363,7 @@ func TestAnalysisCacheExplicitLegacyUnsignedPointerMissesOnceThenRepopulates(t *
 	if len(first.Cache.Invalidations) == 0 || first.Cache.Invalidations[0].Reason != "pointer-untrusted" {
 		t.Fatalf("expected explicit legacy unsigned pointer invalidation, got %#v", first.Cache.Invalidations)
 	}
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	keyBefore, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatalf("read explicit cache auth key: %v", err)
@@ -453,7 +453,14 @@ func assertAnalysisCacheRejectsSymlinkedAuthPathAndForgedHit(t *testing.T, tc an
 	if err := os.MkdirAll(controlledRoot, 0o750); err != nil {
 		t.Fatalf("mkdir repo-controlled auth root: %v", err)
 	}
-	keyName := analysisCacheAuthKeyName(canonicalCachePath)
+	storageInfo, err := os.Stat(canonicalCachePath)
+	if err != nil {
+		t.Fatalf("stat canonical cache path: %v", err)
+	}
+	keyName, err := analysisCacheAuthKeyName(canonicalCachePath, storageInfo)
+	if err != nil {
+		t.Fatalf("derive cache auth-key identity: %v", err)
+	}
 	attackerKeyHex := strings.Repeat("42", analysisCacheAuthKeyLength)
 	tc.setup(t, controlledRoot, keyName, attackerKeyHex)
 	controlledKeyPath := analysisCacheControlledKeyPath(tc.name, controlledRoot, keyName)
@@ -668,7 +675,7 @@ func TestAnalysisCacheConcurrentFirstRunIgnoresLegacyStaleLock(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "stale-lock-cache")
 	req := newCacheRequest(repo, cachePath, false)
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o750); err != nil {
 		t.Fatalf("mkdir auth key dir: %v", err)
 	}
@@ -728,7 +735,7 @@ func TestAnalysisCacheConcurrentCorruptKeyRecoveryUsesPublishedCandidate(t *test
 		t.Fatalf("expected seed cache to be cacheable, warnings=%#v", seed.takeWarnings())
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
 		t.Fatalf("corrupt auth key: %v", err)
 	}
@@ -784,7 +791,7 @@ func TestAnalysisCacheAuthPublishSyncFailureFailsClosed(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "sync-failure-cache")
 	req := newCacheRequest(repo, cachePath, false)
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth store dir: %v", err)
 	}
@@ -819,17 +826,17 @@ func TestAnalysisCacheAuthPublishSyncFailureFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAnalysisCacheAuthRotationSyncFailureReturnsAfterRename(t *testing.T) {
+func TestAnalysisCacheAuthRotationDoesNotRunRedundantDirectorySync(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "rotation-sync-failure-cache")
+	cachePath := filepath.Join(repo, "rotation-writer-owned-sync-cache")
 	req := newCacheRequest(repo, cachePath, false)
 	seed := newAnalysisCache(req, repo)
 	if !seed.cacheable {
 		t.Fatalf("expected seed cache to be cacheable, warnings=%#v", seed.takeWarnings())
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
 		t.Fatalf("corrupt auth key: %v", err)
 	}
@@ -847,22 +854,28 @@ func TestAnalysisCacheAuthRotationSyncFailureReturnsAfterRename(t *testing.T) {
 		t.Fatalf("read rotation candidate: %v", err)
 	}
 
-	syncErr := errors.New("injected rotation directory sync failure")
+	syncCalls := 0
 	originalSync := analysisCacheAuthSyncDirFn
-	analysisCacheAuthSyncDirFn = func(*safeio.WriteRoot) error { return syncErr }
+	analysisCacheAuthSyncDirFn = func(*safeio.WriteRoot) error {
+		syncCalls++
+		return errors.New("unexpected redundant rotation directory sync")
+	}
 	t.Cleanup(func() {
 		analysisCacheAuthSyncDirFn = originalSync
 	})
 	err = rotateInvalidAuthKey(authRoot, keyName)
-	if !errors.Is(err, syncErr) || !strings.Contains(err.Error(), "after rotation") {
-		t.Fatalf("expected post-rename sync error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected writer-owned commit sync to avoid a false rotation failure, got %v", err)
+	}
+	if syncCalls != 0 {
+		t.Fatalf("expected no redundant analysis-layer directory sync, got %d calls", syncCalls)
 	}
 	persistedKey, err := readAnalysisCacheAuthKey(authRoot, keyName, true)
 	if err != nil {
 		t.Fatalf("read renamed auth key: %v", err)
 	}
 	if string(persistedKey) != string(expectedKey) {
-		t.Fatalf("expected rotation rename to install immutable candidate before sync error")
+		t.Fatalf("expected rotation writer to install the complete immutable candidate")
 	}
 }
 
@@ -872,12 +885,15 @@ func TestAnalysisCacheAuthStoreCreationSyncFailureFailsClosed(t *testing.T) {
 	cachePath := filepath.Join(repo, "auth-store-sync-failure-cache")
 	req := newCacheRequest(repo, cachePath, false)
 	syncErr := errors.New("auth-store parent sync failure")
-	originalSync := analysisCacheAuthSyncDirFn
-	analysisCacheAuthSyncDirFn = func(root *safeio.WriteRoot) error {
+	originalSync := analysisCacheAuthMkdirAllDurableFn
+	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
+		if err := root.MkdirAll(path, perm); err != nil {
+			return err
+		}
 		return syncErr
 	}
 	t.Cleanup(func() {
-		analysisCacheAuthSyncDirFn = originalSync
+		analysisCacheAuthMkdirAllDurableFn = originalSync
 	})
 
 	cache := newAnalysisCache(req, repo)
@@ -903,12 +919,15 @@ func TestAnalysisCacheUserCacheParentSyncFailureFailsClosed(t *testing.T) {
 	userCacheDir := filepath.Join(t.TempDir(), "missing", "user-cache")
 	setTestAnalysisCacheUserCachePath(t, userCacheDir)
 	syncErr := errors.New("user-cache parent sync failure")
-	originalSync := analysisCacheAuthSyncDirFn
-	analysisCacheAuthSyncDirFn = func(root *safeio.WriteRoot) error {
+	originalSync := analysisCacheAuthMkdirAllDurableFn
+	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
+		if err := root.MkdirAll(path, perm); err != nil {
+			return err
+		}
 		return syncErr
 	}
 	t.Cleanup(func() {
-		analysisCacheAuthSyncDirFn = originalSync
+		analysisCacheAuthMkdirAllDurableFn = originalSync
 	})
 
 	cache := newAnalysisCache(req, repo)
@@ -1005,8 +1024,9 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses == 0 {
 		t.Fatalf("expected readonly run miss metadata, got %#v", second.Cache)
 	}
-	if _, err := os.Stat(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)); !os.IsNotExist(err) {
-		t.Fatalf("expected readonly mode to leave auth key untouched, stat err=%v", err)
+	authStorePath := filepath.Join(userCacheDir, "lopper", analysisCacheAuthDirName)
+	if _, err := os.Stat(authStorePath); !os.IsNotExist(err) {
+		t.Fatalf("expected readonly mode not to create the auth store, stat err=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cachePath, cacheKeysDirName)); !os.IsNotExist(err) {
 		t.Fatalf("expected readonly mode not to create keys dir, stat err=%v", err)
@@ -1057,7 +1077,7 @@ func TestAnalysisCacheReadOnlyWithCorruptAuthKeyFailsClosedWithoutMutation(t *te
 		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
 		t.Fatalf("corrupt auth key: %v", err)
 	}
@@ -1098,7 +1118,7 @@ func TestAnalysisCacheReadOnlyWithOversizedAuthKeyFailsClosedWithoutMutation(t *
 		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	oversized := strings.Repeat("a", analysisCacheAuthKeyMaxBytes+1)
 	if err := os.WriteFile(keyPath, []byte(oversized), 0o600); err != nil {
 		t.Fatalf("write oversized auth key: %v", err)
@@ -1138,7 +1158,7 @@ func TestAnalysisCacheWritableCorruptAuthKeyRotatesAndRepopulates(t *testing.T) 
 		t.Fatalf("seed writable analyse: %v", err)
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
 		t.Fatalf("corrupt auth key: %v", err)
 	}
@@ -1185,7 +1205,7 @@ func TestAnalysisCacheWritableOversizedAuthKeyRotatesAndRepopulates(t *testing.T
 		t.Fatalf("seed writable analyse: %v", err)
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.WriteFile(keyPath, []byte(strings.Repeat("a", analysisCacheAuthKeyMaxBytes+1)), 0o600); err != nil {
 		t.Fatalf("write oversized auth key: %v", err)
 	}
@@ -1218,7 +1238,7 @@ func TestAnalysisCacheReadOnlyRejectsPermissiveAuthKeyModesWithoutMutation(t *te
 	if _, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, false)); err != nil {
 		t.Fatalf("seed writable analyse: %v", err)
 	}
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.Chmod(keyPath, 0o644); err != nil {
 		t.Fatalf("chmod auth key: %v", err)
 	}
@@ -1254,7 +1274,7 @@ func TestAnalysisCacheWritableRepairsPermissiveAuthKeyModesAndPreservesHits(t *t
 	if _, err := svc.Analyse(context.Background(), req); err != nil {
 		t.Fatalf("seed writable analyse: %v", err)
 	}
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	if err := os.Chmod(keyPath, 0o646); err != nil {
 		t.Fatalf("chmod auth key: %v", err)
 	}
@@ -1291,7 +1311,7 @@ func TestAnalysisCacheWritableKeyRotationInvalidatesPointersAndRepopulates(t *te
 		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
 	}
 
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, cachePath)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
 	rotatedKey := strings.Repeat("ab", analysisCacheAuthKeyLength)
 	if err := os.WriteFile(keyPath, []byte(rotatedKey), 0o600); err != nil {
 		t.Fatalf("rotate auth key: %v", err)

@@ -51,7 +51,7 @@ func Classify(value string) Classification {
 			Path:   value[2:],
 		}
 	}
-	if value[0] == '\\' {
+	if isPathSeparator(value[0]) {
 		return Classification{
 			Kind: KindRootedWithoutDrive,
 			Path: value[1:],
@@ -71,6 +71,9 @@ func HasReservedDOSNameComponent(value string) bool {
 
 func HasTrimmedComponentAlias(value string) bool {
 	return hasWindowsPathComponent(value, func(component string) bool {
+		if component == "." || component == ".." {
+			return false
+		}
 		return component != strings.TrimRight(component, " .")
 	})
 }
@@ -80,15 +83,16 @@ func IsReservedDOSName(component string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if dot := strings.IndexByte(trimmed, '.'); dot >= 0 {
-		trimmed = trimmed[:dot]
+	if separator := strings.IndexAny(trimmed, ".:"); separator >= 0 {
+		trimmed = trimmed[:separator]
 	}
 	trimmed = strings.TrimRight(trimmed, " .")
 	if trimmed == "" {
 		return false
 	}
-	switch strings.ToUpper(trimmed) {
+	switch normalizeReservedDOSName(trimmed) {
 	case "CON", "PRN", "AUX", "NUL", "CLOCK$",
+		"CONIN$", "CONOUT$",
 		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
 		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
 		return true
@@ -98,17 +102,17 @@ func IsReservedDOSName(component string) bool {
 }
 
 func classifyNamespacePath(value string) (Classification, bool) {
+	normalized := strings.ReplaceAll(value, "/", `\`)
 	switch {
-	case strings.HasPrefix(value, `\\?\`),
-		strings.HasPrefix(value, `\\.\`),
-		strings.HasPrefix(value, `\??\`),
-		strings.HasPrefix(value, `\\??\`),
-		strings.HasPrefix(value, `\\?\GLOBALROOT`),
-		strings.HasPrefix(value, `\\.\GLOBALROOT`),
-		strings.HasPrefix(value, `\GLOBALROOT\`),
-		strings.HasPrefix(value, `\Device\`),
-		strings.HasPrefix(value, `\\.\pipe\`),
-		strings.HasPrefix(value, `\\.\pipe/`):
+	case strings.HasPrefix(normalized, `\\?\`),
+		strings.HasPrefix(normalized, `\\.\`),
+		strings.HasPrefix(normalized, `\??\`),
+		strings.HasPrefix(normalized, `\\??\`),
+		strings.HasPrefix(normalized, `\\?\GLOBALROOT`),
+		strings.HasPrefix(normalized, `\\.\GLOBALROOT`),
+		strings.HasPrefix(normalized, `\GLOBALROOT\`),
+		strings.HasPrefix(normalized, `\Device\`),
+		strings.HasPrefix(normalized, `\\.\pipe\`):
 		return Classification{Kind: KindAmbiguous}, true
 	default:
 		return Classification{}, false
@@ -140,6 +144,11 @@ func isASCIIAlpha(b byte) bool {
 	return ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
 }
 
+func normalizeReservedDOSName(value string) string {
+	replacer := strings.NewReplacer("¹", "1", "²", "2", "³", "3")
+	return strings.ToUpper(replacer.Replace(value))
+}
+
 func splitWindowsPathComponents(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool {
 		return r == '\\' || r == '/'
@@ -148,12 +157,17 @@ func splitWindowsPathComponents(value string) []string {
 
 func hasWindowsPathComponent(value string, predicate func(string) bool) bool {
 	info := Classify(value)
+	componentPath := info.Path
 	switch info.Kind {
+	case KindNone:
+		componentPath = value
 	case KindDriveAbsolute, KindDriveRelative, KindRootedWithoutDrive, KindUNCAbsolute:
-		for _, component := range splitWindowsPathComponents(info.Path) {
-			if predicate(component) {
-				return true
-			}
+	default:
+		return false
+	}
+	for _, component := range splitWindowsPathComponents(componentPath) {
+		if predicate(component) {
+			return true
 		}
 	}
 	return false

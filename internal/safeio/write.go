@@ -61,12 +61,20 @@ func (r *WriteRoot) Close() error {
 
 // Lstat returns info for a root-relative path within the pinned root.
 func (r *WriteRoot) Lstat(name string) (fs.FileInfo, error) {
-	return r.root.Lstat(name)
+	targetRel, err := resolveRelativeTarget(name, allowRootTarget)
+	if err != nil {
+		return nil, err
+	}
+	return r.root.Lstat(targetRel)
 }
 
 // Chmod updates a root-relative path's permissions within the pinned root.
 func (r *WriteRoot) Chmod(name string, perm os.FileMode) error {
-	return r.root.Chmod(name, perm)
+	targetRel, err := resolveRelativeTarget(name, allowRootTarget)
+	if err != nil {
+		return err
+	}
+	return r.root.Chmod(targetRel, perm)
 }
 
 // WriteFileCreatingParents atomically writes a root-relative file, creating
@@ -93,6 +101,16 @@ func (r *WriteRoot) MkdirAll(dirPath string, perm os.FileMode) error {
 		return dir.Close()
 	}
 	return nil
+}
+
+// MkdirAllDurable creates a root-relative directory tree without following
+// symlinks and syncs each parent directory for every newly created level.
+func (r *WriteRoot) MkdirAllDurable(dirPath string, perm os.FileMode) error {
+	dirRel, err := resolveRelativeTarget(dirPath, allowRootTarget)
+	if err != nil {
+		return err
+	}
+	return mkdirAllDurable(r.root, r.rootAbs, dirRel, perm)
 }
 
 // ReadRegularFile reads a root-relative regular file without following a
@@ -208,10 +226,7 @@ func (r *WriteRoot) Sync() (returnErr error) {
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
-	if filepath.IsAbs(targetPath) {
-		return rootedTarget{}, fmt.Errorf("target path must be relative to root: %s", targetPath)
-	}
-	rel, err := normalizeRootedTarget(targetPath, filepath.Clean(targetPath), rejectRootTarget)
+	rel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
 	if err != nil {
 		return rootedTarget{}, err
 	}
@@ -244,13 +259,17 @@ func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.F
 }
 
 func (r *WriteRoot) openDirectory(dirRel string, create bool, perm os.FileMode) (Root, bool, error) {
+	return openDirectoryWithinRoot(r.root, r.rootAbs, dirRel, create, perm)
+}
+
+func openDirectoryWithinRoot(root Root, rootAbs, dirRel string, create bool, perm os.FileMode) (Root, bool, error) {
 	if dirRel == "." {
-		return r.root, false, nil
+		return root, false, nil
 	}
 
-	current := r.root
+	current := root
 	currentOwned := false
-	currentAbs := r.rootAbs
+	currentAbs := rootAbs
 	for _, part := range strings.Split(dirRel, string(os.PathSeparator)) {
 		if part == "" || part == "." {
 			continue
@@ -277,13 +296,27 @@ func openTargetParentChild(root Root, name, path string, create bool, perm os.Fi
 	if err != nil {
 		return nil, err
 	}
+	return openInspectedDirectory(root, name, path, info)
+}
+
+func openInspectedDirectory(root Root, name, path string, info fs.FileInfo) (Root, error) {
+	if err := validateInspectedDirectory(path, info); err != nil {
+		return nil, err
+	}
+	return openVerifiedDirectory(root, name, path, info)
+}
+
+func validateInspectedDirectory(path string, info fs.FileInfo) error {
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("output parent contains symlink: %s", path)
+		return fmt.Errorf("output parent contains symlink: %s", path)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("output parent is not a directory: %s", path)
+		return fmt.Errorf("output parent is not a directory: %s", path)
 	}
+	return nil
+}
 
+func openVerifiedDirectory(root Root, name, path string, info fs.FileInfo) (Root, error) {
 	next, err := root.OpenRoot(name)
 	if err != nil {
 		return nil, err
@@ -307,6 +340,72 @@ func lstatOrCreateDirectory(root Root, name string, create bool, perm os.FileMod
 		return nil, mkdirErr
 	}
 	return root.Lstat(name)
+}
+
+func mkdirAllDurable(root Root, rootAbs, dirRel string, perm os.FileMode) (returnErr error) {
+	if dirRel == "." {
+		return nil
+	}
+
+	current := root
+	currentOwned := false
+	currentAbs := rootAbs
+	for _, part := range strings.Split(dirRel, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+
+		partAbs := filepath.Join(currentAbs, part)
+		next, err := openDurableDirectoryChild(current, part, partAbs, perm)
+		if err != nil {
+			return closeOwnedRootWithError(current, currentOwned, err)
+		}
+		if currentOwned {
+			if err := current.Close(); err != nil {
+				return closeRootWithError(next, err)
+			}
+		}
+		current = next
+		currentOwned = true
+		currentAbs = partAbs
+	}
+
+	if currentOwned {
+		return current.Close()
+	}
+	return nil
+}
+
+func openDurableDirectoryChild(root Root, name, path string, perm os.FileMode) (Root, error) {
+	info, created, err := lstatOrCreateDirectoryTracked(root, name, perm)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateInspectedDirectory(path, info); err != nil {
+		return nil, err
+	}
+	if created {
+		if err := syncRootDirectory(root); err != nil {
+			return nil, err
+		}
+	}
+	return openVerifiedDirectory(root, name, path, info)
+}
+
+func lstatOrCreateDirectoryTracked(root Root, name string, perm os.FileMode) (fs.FileInfo, bool, error) {
+	info, err := root.Lstat(name)
+	if !os.IsNotExist(err) {
+		return info, false, err
+	}
+	if mkdirErr := root.Mkdir(name, perm); mkdirErr != nil {
+		if !errors.Is(mkdirErr, fs.ErrExist) {
+			return nil, false, mkdirErr
+		}
+		info, err = root.Lstat(name)
+		return info, false, err
+	}
+	info, err = root.Lstat(name)
+	return info, true, err
 }
 
 func closeOwnedRootWithError(root Root, owned bool, err error) error {
@@ -368,7 +467,9 @@ func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMo
 			return err
 		}
 	}
-	return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+	return writeAtomicReplacement(root, target, data, writePerm, existingInfo, atomicReplacementOptions{
+		allowInPlaceFallback: true,
+	})
 }
 
 func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {
@@ -396,7 +497,9 @@ func WriteFileWithinRoot(root Root, targetPath string, data []byte, perm os.File
 	if err != nil {
 		return err
 	}
-	return writeAtomicReplacement(root, targetRel, data, perm, nil)
+	return writeAtomicReplacement(root, rootedTarget{rel: targetRel}, data, perm, nil, atomicReplacementOptions{
+		allowInPlaceFallback: true,
+	})
 }
 
 // WriteFileReplacingUnder atomically writes targetPath only if it resolves
@@ -434,29 +537,112 @@ func WriteFileReplacingWithinRoot(root Root, targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return writeAtomicReplacement(root, target.rel, data, writePerm, existingInfo)
+	return writeAtomicReplacement(root, target, data, writePerm, existingInfo, atomicReplacementOptions{
+		allowInPlaceFallback: true,
+	})
+}
+
+// WriteFileReplacing atomically writes targetPath using an already-open confined
+// write root. Existing regular targets retain their permission bits. On
+// Windows only, writes may fall back to in-place overwrite when the filesystem
+// rejects replace-existing rename semantics for an existing file.
+func (r *WriteRoot) WriteFileReplacing(targetPath string, data []byte, perm os.FileMode) error {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	target := rootedTarget{
+		rootAbs: r.rootAbs,
+		rel:     targetRel,
+		abs:     filepath.Join(r.rootAbs, targetRel),
+	}
+	writePerm, existingInfo, err := resolvedWriteFilePerm(r.root, target, perm)
+	if err != nil {
+		return err
+	}
+	return writeAtomicReplacement(r.root, target, data, writePerm, existingInfo, atomicReplacementOptions{
+		allowInPlaceFallback: true,
+	})
+}
+
+// WriteFileReplacingWithExactPermissions atomically writes targetPath using an
+// already-open confined write root and applies perm even when replacing an
+// existing regular file. On Windows only, writes may fall back to a pinned
+// in-place overwrite when replace-existing rename semantics are unavailable.
+func (r *WriteRoot) WriteFileReplacingWithExactPermissions(targetPath string, data []byte, perm os.FileMode) error {
+	return r.writeFileReplacingWithExactPermissions(targetPath, data, perm, true)
+}
+
+// WriteFileReplacingAtomicallyWithExactPermissions replaces targetPath with a
+// complete, synced temporary file and applies perm to the replacement. It never
+// falls back to mutating an existing target in place when rename cannot commit.
+func (r *WriteRoot) WriteFileReplacingAtomicallyWithExactPermissions(targetPath string, data []byte, perm os.FileMode) error {
+	return r.writeFileReplacingWithExactPermissions(targetPath, data, perm, false)
+}
+
+func (r *WriteRoot) writeFileReplacingWithExactPermissions(targetPath string, data []byte, perm os.FileMode, allowInPlaceFallback bool) error {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	target := rootedTarget{
+		rootAbs: r.rootAbs,
+		rel:     targetRel,
+		abs:     filepath.Join(r.rootAbs, targetRel),
+	}
+	_, existingInfo, err := resolvedWriteFilePerm(r.root, target, perm)
+	if err != nil {
+		return err
+	}
+	return writeAtomicReplacement(r.root, target, data, perm, existingInfo, atomicReplacementOptions{
+		forceReplacementPerm: true,
+		allowInPlaceFallback: allowInPlaceFallback,
+	})
 }
 
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
-	var cleanupErr error
-	if tempFile != nil {
-		if err := tempFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-			cleanupErr = err
-		}
+	closeErr := closeAtomicTempFile(tempFile)
+	removeErr := removeAtomicTempFile(root, tempRel)
+	if closeErr == nil {
+		return removeErr
 	}
-	if tempRel != "" {
-		if err := root.Remove(tempRel); err != nil && !errors.Is(err, os.ErrNotExist) {
-			if cleanupErr == nil {
-				return err
-			}
-			return errors.Join(cleanupErr, err)
-		}
+	if removeErr == nil {
+		return closeErr
 	}
-	return cleanupErr
+	return errors.Join(closeErr, removeErr)
+}
+
+func closeAtomicTempFile(tempFile File) error {
+	if tempFile == nil {
+		return nil
+	}
+	err := tempFile.Close()
+	if errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
+}
+
+func removeAtomicTempFile(root Root, tempRel string) error {
+	if tempRel == "" {
+		return nil
+	}
+	resolvedTempRel, err := resolveRelativeTarget(tempRel, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	err = root.Remove(resolvedTempRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {
-	tempDir := filepath.Clean(dir)
+	tempDir, err := resolveRelativeTarget(dir, allowRootTarget)
+	if err != nil {
+		return "", nil, err
+	}
 	if tempDir == "." {
 		tempDir = ""
 	}

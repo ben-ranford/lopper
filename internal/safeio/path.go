@@ -69,6 +69,9 @@ func pathEscapesRootInvariant(path string) bool {
 }
 
 func resolveRelativeTarget(targetPath string, policy rootedTargetPolicy) (string, error) {
+	if err := rejectUnsupportedWindowsRelativePath(targetPath); err != nil {
+		return "", err
+	}
 	if filepath.IsAbs(targetPath) {
 		return "", newPathEscapesRootError(targetPath)
 	}
@@ -110,6 +113,9 @@ func resolveExactFileTarget(targetPath string) (exactFileTarget, error) {
 }
 
 func resolveAbsolutePath(kind, path string) (string, error) {
+	if err := rejectUnsupportedWindowsPath(kind, path); err != nil {
+		return "", err
+	}
 	absPath, err := fileSystem.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s path: %w", kind, err)

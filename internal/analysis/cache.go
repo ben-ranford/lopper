@@ -18,6 +18,7 @@ var (
 	analysisCacheEvalSymlinksFn = filepath.EvalSymlinks
 	analysisCacheStatFn         = os.Stat
 	analysisCacheOpenRootFn     = safeio.OpenCanonicalWriteRoot
+	analysisCacheCloseRootFn    = func(root *safeio.WriteRoot) error { return root.Close() }
 	analysisCacheRootLstatFn    = func(root *safeio.WriteRoot, path string) (fs.FileInfo, error) {
 		return root.Lstat(path)
 	}
@@ -27,6 +28,7 @@ var (
 type resolvedCacheOptions struct {
 	Enabled      bool
 	Path         string
+	RawPath      string
 	ReadOnly     bool
 	ExplicitPath bool
 }
@@ -65,6 +67,10 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 			cache.warn("analysis cache unavailable: cache path escapes repository root")
 			return cache
 		}
+	} else if err := validateExplicitCachePath(options.rawExplicitPath()); err != nil {
+		cache.cacheable = false
+		cache.warn("analysis cache unavailable: " + err.Error())
+		return cache
 	}
 	if err := cache.initializeStorage(repoPath); err != nil {
 		cache.cacheable = false
@@ -129,7 +135,7 @@ func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRe
 }
 
 func resolveExplicitCacheStorageRoot(options resolvedCacheOptions) (string, error) {
-	if err := validateExplicitCachePath(options.Path); err != nil {
+	if err := validateExplicitCachePath(options.rawExplicitPath()); err != nil {
 		return "", err
 	}
 	cacheRoot, err := analysisCacheAbsFn(options.Path)
@@ -229,11 +235,19 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 	}
 	options.Enabled = req.Enabled
 	if strings.TrimSpace(req.Path) != "" {
+		options.RawPath = req.Path
 		options.Path = strings.TrimSpace(req.Path)
 		options.ExplicitPath = true
 	}
 	options.ReadOnly = req.ReadOnly
 	return options
+}
+
+func (o *resolvedCacheOptions) rawExplicitPath() string {
+	if strings.TrimSpace(o.RawPath) != "" {
+		return o.RawPath
+	}
+	return o.Path
 }
 
 func (c *analysisCache) warn(message string) {

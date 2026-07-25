@@ -30,7 +30,7 @@ type cachedPayload struct {
 	Report report.Report `json:"report"`
 }
 
-func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool, error) {
+func (c *analysisCache) lookup(entry cacheEntryDescriptor) (result report.Report, hit bool, returnErr error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return report.Report{}, false, nil
 	}
@@ -45,10 +45,19 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	if err != nil {
 		return report.Report{}, false, err
 	}
+	var pendingResult report.Report
+	var pendingHit bool
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil && err == nil {
-			err = closeErr
+		closeErr := analysisCacheCloseRootFn(root)
+		if closeErr == nil && pendingHit && returnErr == nil {
+			c.metadata.Hits++
+			result = pendingResult
+			hit = true
+		} else {
+			result = report.Report{}
+			hit = false
 		}
+		returnErr = errors.Join(returnErr, closeErr)
 	}()
 
 	pointer, err := c.readTrustedPointer(root, entry)
@@ -59,8 +68,9 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	if err != nil || payload == nil {
 		return report.Report{}, false, err
 	}
-	c.metadata.Hits++
-	return payload.Report, true, nil
+	pendingResult = payload.Report
+	pendingHit = true
+	return report.Report{}, false, nil
 }
 
 func (c *analysisCache) lookupStorageRoot() (string, error) {
@@ -189,6 +199,9 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	serializedPayload, err := json.Marshal(payload)
 	if err != nil {
 		return err
+	}
+	if len(serializedPayload) > analysisCacheObjectMaxBytes {
+		return nil
 	}
 	objectDigest := sha256Hex(serializedPayload)
 

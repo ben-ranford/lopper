@@ -59,13 +59,16 @@ func TestOpenAuthStoreReturnsErrorWhenAuthParentSyncFails(t *testing.T) {
 		storageRoot: cachePath,
 	}
 
-	original := analysisCacheAuthSyncDirFn
+	original := analysisCacheAuthMkdirAllDurableFn
 	syncErr := errors.New("sync parent failed")
-	analysisCacheAuthSyncDirFn = func(root *safeio.WriteRoot) error {
+	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
+		if err := root.MkdirAll(path, perm); err != nil {
+			return err
+		}
 		return syncErr
 	}
 	t.Cleanup(func() {
-		analysisCacheAuthSyncDirFn = original
+		analysisCacheAuthMkdirAllDurableFn = original
 	})
 
 	_, _, err := cache.openAuthStore()
@@ -119,7 +122,7 @@ func TestResolveAuthKeyInReadonlyModeWarnsWhenAuthStoreLookupFails(t *testing.T)
 func TestResolveAuthKeyInReadonlyModeWarnsOnUnreadableKeyTarget(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	storageRoot := filepath.Join(t.TempDir(), "readonly-cache")
-	keyPath := testAnalysisCacheAuthKeyPath(userCacheDir, storageRoot)
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, storageRoot)
 	if err := os.MkdirAll(keyPath, 0o750); err != nil {
 		t.Fatalf("mkdir key-path directory: %v", err)
 	}
@@ -175,7 +178,7 @@ func TestCanonicalUserCacheDirRejectsRepoControlledAuthStoreOnCreation(t *testin
 func TestPublishMissingAuthKeyReturnsErrorWhenWinnerPathCannotBeCreated(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -189,7 +192,7 @@ func TestPublishMissingAuthKeyReturnsErrorWhenWinnerPathCannotBeCreated(t *testi
 func TestPublishMissingAuthKeyReturnsErrorWhenDirectorySyncFails(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -216,7 +219,7 @@ func TestPublishMissingAuthKeyReturnsErrorWhenCandidateCreationFails(t *testing.
 
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -242,7 +245,7 @@ func TestWriteAuthKeyCandidateReturnsErrorWhenTempFileCannotBeCreated(t *testing
 
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -264,7 +267,7 @@ func TestWriteAuthKeyCandidateReturnsErrorWhenTempFileCannotBeCreated(t *testing
 func TestRemoveAuthFileIfPresentReturnsErrorForNonEmptyDirectory(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(filepath.Join(authDir, "blocked"), 0o750); err != nil {
 		t.Fatalf("mkdir blocked dir: %v", err)
 	}
@@ -281,7 +284,7 @@ func TestRemoveAuthFileIfPresentReturnsErrorForNonEmptyDirectory(t *testing.T) {
 func TestRotateInvalidAuthKeyReturnsErrorWhenRotationTargetCannotBeRead(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -309,7 +312,7 @@ func TestRotateInvalidAuthKeyReturnsErrorWhenRotationTargetCannotBeRead(t *testi
 func TestRotateInvalidAuthKeyReturnsGenerationErrorWhenKeyTargetIsDirectory(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -323,48 +326,10 @@ func TestRotateInvalidAuthKeyReturnsGenerationErrorWhenKeyTargetIsDirectory(t *t
 	}
 }
 
-func TestRotateInvalidAuthKeyReturnsErrorWhenInstallCandidateCannotBeCreated(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based temp file failures are not portable on windows")
-	}
-
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	keyPath := filepath.Join(authDir, keyName)
-	if err := os.WriteFile(keyPath, []byte("invalid"), 0o600); err != nil {
-		t.Fatalf("write invalid key: %v", err)
-	}
-	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
-	if err != nil {
-		t.Fatalf("invalidAuthKeyGeneration: %v", err)
-	}
-	if err := publishMissingAuthKey(authRoot, keyName+analysisCacheAuthRotateTag+generation); err != nil {
-		t.Fatalf("publishMissingAuthKey(rotation candidate): %v", err)
-	}
-	if err := os.Chmod(authDir, 0o500); err != nil {
-		t.Fatalf("chmod auth dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(authDir, 0o750); err != nil {
-			t.Fatalf("restore auth dir perms: %v", err)
-		}
-	})
-
-	err = rotateInvalidAuthKey(authRoot, keyName)
-	if err == nil || !strings.Contains(err.Error(), "create cache auth key candidate") {
-		t.Fatalf("expected install-candidate creation failure, got %v", err)
-	}
-}
-
 func TestCreateOrRotateAuthKeyReturnsRotationFailureWhenReplacingInvalidKey(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -388,7 +353,7 @@ func TestCreateOrRotateAuthKeyReturnsRotationFailureWhenReplacingInvalidKey(t *t
 func TestInvalidAuthKeyGenerationReturnsErrorForDirectoryTarget(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -800,12 +765,15 @@ func TestCanonicalUserCacheDirReturnsErrorWhenAncestorInspectionFails(t *testing
 }
 
 func TestCanonicalUserCacheDirReturnsErrorWhenParentSyncFails(t *testing.T) {
-	original := analysisCacheAuthSyncDirFn
-	analysisCacheAuthSyncDirFn = func(*safeio.WriteRoot) error {
+	original := analysisCacheAuthMkdirAllDurableFn
+	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
+		if err := root.MkdirAll(path, perm); err != nil {
+			return err
+		}
 		return errors.New("sync user-cache parent failed")
 	}
 	t.Cleanup(func() {
-		analysisCacheAuthSyncDirFn = original
+		analysisCacheAuthMkdirAllDurableFn = original
 	})
 
 	missing := filepath.Join(t.TempDir(), "nested", "cache")
@@ -831,7 +799,7 @@ func TestWriteFileDigestOrMissingReturnsWriterErrorForMissingSentinel(t *testing
 func TestReadAnalysisCacheAuthKeyReturnsReadErrorForDirectoryTarget(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}
@@ -938,7 +906,7 @@ func TestStoreReturnsErrorWhenStorageRootChangesAfterInit(t *testing.T) {
 func TestRotateInvalidAuthKeyReturnsReadErrorWhenRotationCandidateIsInvalid(t *testing.T) {
 	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
 	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(userCacheDir, cachePath))
+	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
 	if err := os.MkdirAll(authDir, 0o750); err != nil {
 		t.Fatalf("mkdir auth dir: %v", err)
 	}

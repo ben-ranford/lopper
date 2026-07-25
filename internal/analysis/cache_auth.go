@@ -35,6 +35,12 @@ var (
 	analysisCacheAuthSyncDirFn  = func(root *safeio.WriteRoot) error {
 		return root.Sync()
 	}
+	analysisCacheAuthAbsFn             = filepath.Abs
+	analysisCacheAuthOpenRootFn        = safeio.OpenCanonicalWriteRoot
+	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
+		return root.MkdirAllDurable(path, perm)
+	}
+	analysisCacheStorageIdentityFn       = storageDirectoryIdentity
 	analysisCacheReadAuthKeyFn           = readAnalysisCacheAuthKey
 	analysisCachePublishMissingAuthKeyFn = publishMissingAuthKey
 	analysisCacheRotateInvalidAuthKeyFn  = rotateInvalidAuthKey
@@ -93,7 +99,7 @@ func (c *analysisCache) openAuthStore() (*safeio.WriteRoot, string, error) {
 		return nil, "", err
 	}
 
-	authRoot, err := safeio.OpenCanonicalWriteRoot(authRootPath)
+	authRoot, err := analysisCacheAuthOpenRootFn(authRootPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("open canonical cache auth store: %w", err)
 	}
@@ -101,7 +107,11 @@ func (c *analysisCache) openAuthStore() (*safeio.WriteRoot, string, error) {
 	if err != nil {
 		return nil, "", errors.Join(err, authRoot.Close())
 	}
-	return authRoot, analysisCacheAuthKeyName(storageRoot), nil
+	keyName, err := c.authKeyName(storageRoot)
+	if err != nil {
+		return nil, "", errors.Join(err, authRoot.Close())
+	}
+	return authRoot, keyName, nil
 }
 
 func (c *analysisCache) cachedAuthKey() []byte {
@@ -197,27 +207,27 @@ func authStoreMissing(authRootPath string) (bool, error) {
 }
 
 func createAuthStorePath(canonicalUserCacheDir, authRelativePath string, authStoreMissing bool) (returnErr error) {
-	userRoot, err := safeio.OpenCanonicalWriteRoot(canonicalUserCacheDir)
+	userRoot, err := analysisCacheAuthOpenRootFn(canonicalUserCacheDir)
 	if err != nil {
 		return fmt.Errorf("open canonical user cache root: %w", err)
 	}
 	defer func() {
 		returnErr = errors.Join(returnErr, userRoot.Close())
 	}()
-	if err := userRoot.MkdirAll(authRelativePath, 0o750); err != nil {
+	if err := analysisCacheAuthMkdirAllDurableFn(userRoot, authRelativePath, 0o750); err != nil {
+		if authStoreMissing {
+			return fmt.Errorf("sync cache auth store parent after creation: %w", err)
+		}
 		return fmt.Errorf("create cache auth store: %w", err)
-	}
-	if !authStoreMissing {
-		return nil
-	}
-	if err := analysisCacheAuthSyncDirFn(userRoot); err != nil {
-		return fmt.Errorf("sync cache auth store parent after creation: %w", err)
 	}
 	return nil
 }
 
 func canonicalUserCacheDir(userCacheDir string, readOnly bool, forbiddenRoots ...string) (canonicalDir string, returnErr error) {
-	cacheDir, err := filepath.Abs(userCacheDir)
+	if err := validateRawUserCacheDir(userCacheDir); err != nil {
+		return "", err
+	}
+	cacheDir, err := analysisCacheAuthAbsFn(userCacheDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve user cache dir: %w", err)
 	}
@@ -257,7 +267,7 @@ func canonicalMissingUserCacheDir(cacheDir string, forbiddenRoots ...string) (ca
 	if err != nil {
 		return "", fmt.Errorf("resolve canonical user cache ancestor: %w", err)
 	}
-	ancestorRoot, err := safeio.OpenCanonicalWriteRoot(canonicalAncestor)
+	ancestorRoot, err := analysisCacheAuthOpenRootFn(canonicalAncestor)
 	if err != nil {
 		return "", fmt.Errorf("open canonical user cache ancestor: %w", err)
 	}
@@ -270,10 +280,7 @@ func canonicalMissingUserCacheDir(cacheDir string, forbiddenRoots ...string) (ca
 	if err := validateAuthRootPath(authRootPath, forbiddenRoots...); err != nil {
 		return "", err
 	}
-	if err := ancestorRoot.MkdirAll(missingPath, 0o700); err != nil {
-		return "", fmt.Errorf("create user cache dir: %w", err)
-	}
-	if err := analysisCacheAuthSyncDirFn(ancestorRoot); err != nil {
+	if err := analysisCacheAuthMkdirAllDurableFn(ancestorRoot, missingPath, 0o700); err != nil {
 		return "", fmt.Errorf("sync user cache parent after creation: %w", err)
 	}
 	return canonicalDir, nil
@@ -333,16 +340,16 @@ func pathAtOrBelowWindows(path, root string) (bool, bool) {
 
 	pathInfo := windowspath.Classify(path)
 	rootInfo := windowspath.Classify(root)
-	if pathInfo.Kind == windowspath.KindNone && rootInfo.Kind == windowspath.KindNone {
-		return false, false
-	}
-	if rootInfo.Kind == windowspath.KindNone {
+	if !isWindowsAbsoluteRoot(rootInfo) {
 		return false, false
 	}
 	if pathInfo.Kind == windowspath.KindAmbiguous || rootInfo.Kind == windowspath.KindAmbiguous {
 		return true, true
 	}
 	if windowspath.HasReservedDOSNameComponent(path) || windowspath.HasReservedDOSNameComponent(root) {
+		return true, true
+	}
+	if windowspath.HasTrimmedComponentAlias(path) || windowspath.HasTrimmedComponentAlias(root) {
 		return true, true
 	}
 	if !rootInfo.IsAbsolute() {
@@ -362,15 +369,35 @@ func pathAtOrBelowWindows(path, root string) (bool, bool) {
 	return cleanRoot == "/" || cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+"/"), true
 }
 
-func analysisCacheAuthKeyName(storageRoot string) string {
-	return sha256Hex([]byte(filepath.Clean(storageRoot))) + ".key"
+func isWindowsAbsoluteRoot(info windowspath.Classification) bool {
+	return info.Kind == windowspath.KindDriveAbsolute || info.Kind == windowspath.KindUNCAbsolute
+}
+
+func (c *analysisCache) authKeyName(storageRoot string) (string, error) {
+	storageRootInfo := c.storageRootInfo
+	if storageRootInfo == nil {
+		var err error
+		storageRootInfo, err = analysisCacheStatFn(storageRoot)
+		if err != nil {
+			return "", fmt.Errorf("inspect cache storage directory identity: %w", err)
+		}
+	}
+	return analysisCacheAuthKeyName(storageRoot, storageRootInfo)
+}
+
+func analysisCacheAuthKeyName(storageRoot string, storageRootInfo fs.FileInfo) (string, error) {
+	identity, err := analysisCacheStorageIdentityFn(storageRoot, storageRootInfo)
+	if err != nil {
+		return "", fmt.Errorf("identify cache storage directory: %w", err)
+	}
+	return sha256Hex([]byte(identity)) + ".key", nil
 }
 
 func readAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, repairPerms bool) ([]byte, error) {
 	keyHex, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
 	switch {
 	case err == nil:
-		if info.Mode().Perm()&0o077 != 0 {
+		if authKeyFileModeTooPermissive(info.Mode()) {
 			if !repairPerms {
 				return nil, fmt.Errorf("%w: permissive mode %o", errAnalysisCacheAuthKeyInvalid, info.Mode().Perm())
 			}
@@ -444,7 +471,7 @@ func publishMissingAuthKey(root *safeio.WriteRoot, keyName string) (returnErr er
 	return nil
 }
 
-func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) (returnErr error) {
+func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) error {
 	generation, err := analysisCacheInvalidKeyGenerationFn(root, keyName)
 	if err != nil {
 		return err
@@ -474,19 +501,8 @@ func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) (returnErr err
 	if currentGeneration != generation {
 		return errAnalysisCacheAuthKeyChanged
 	}
-
-	installPath, err := writeAuthKeyCandidate(root, encodedKey)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, removeAuthFileIfPresent(root, installPath))
-	}()
-	if err := root.Rename(installPath, keyName); err != nil {
+	if err := root.WriteFileReplacingAtomicallyWithExactPermissions(keyName, encodedKey, analysisCacheAuthKeyPerm); err != nil {
 		return fmt.Errorf("install rotated cache auth key: %w", err)
-	}
-	if err := analysisCacheAuthSyncDirFn(root); err != nil {
-		return fmt.Errorf("sync cache auth key directory after rotation: %w", err)
 	}
 	return nil
 }
