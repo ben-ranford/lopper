@@ -64,6 +64,16 @@ type comparisonOutcome struct {
 	diagnostics []string
 }
 
+type comparisonSummary struct {
+	rows          []comparisonRow
+	baseCount     int
+	headCount     int
+	headOnlyNames []string
+	baseOnlyNames []string
+	limits        deltaThresholds
+	outcome       comparisonOutcome
+}
+
 func main() {
 	basePath := flag.String("base", "", "path to base benchmark output")
 	headPath := flag.String("head", "", "path to head benchmark output")
@@ -227,7 +237,15 @@ func compareBenchmarks(baseInput, headInput benchmarkInput, limits deltaThreshol
 	outcome := classifyComparisonOutcome(baseInput, headInput, mismatchDiagnostics, matchedNames, headOnlyNames, baseOnlyNames, hasRegression)
 
 	var buf bytes.Buffer
-	writeComparisonSummary(&buf, rows, len(baseInput.data), len(headInput.data), headOnlyNames, baseOnlyNames, limits, outcome)
+	writeComparisonSummary(&buf, comparisonSummary{
+		rows:          rows,
+		baseCount:     len(baseInput.data),
+		headCount:     len(headInput.data),
+		headOnlyNames: headOnlyNames,
+		baseOnlyNames: baseOnlyNames,
+		limits:        limits,
+		outcome:       outcome,
+	})
 
 	return buf.String(), outcome.exitCode
 }
@@ -266,30 +284,30 @@ func newComparisonRow(name string, baseSample, headSample samples, limits deltaT
 	}
 }
 
-func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, baseCount, headCount int, headOnlyNames, baseOnlyNames []string, limits deltaThresholds, outcome comparisonOutcome) {
+func writeComparisonSummary(buf *bytes.Buffer, summary comparisonSummary) {
 	buf.WriteString("## Memory Benchmarks\n\n")
-	fmt.Fprintf(buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", limits.bytesPct, limits.allocsPct)
-	fmt.Fprintf(buf, "Base benchmarks: %s\n", benchmarkCountLabel(baseCount))
-	fmt.Fprintf(buf, "Head benchmarks: %s\n\n", benchmarkCountLabel(headCount))
+	fmt.Fprintf(buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", summary.limits.bytesPct, summary.limits.allocsPct)
+	fmt.Fprintf(buf, "Base benchmarks: %s\n", benchmarkCountLabel(summary.baseCount))
+	fmt.Fprintf(buf, "Head benchmarks: %s\n\n", benchmarkCountLabel(summary.headCount))
 
-	showInvalidOnlySections := outcome.status != "incomplete"
-	writeComparisonTable(buf, rows, showInvalidOnlySections)
+	showInvalidOnlySections := summary.outcome.status != "incomplete"
+	writeComparisonTable(buf, summary.rows, showInvalidOnlySections)
 	if showInvalidOnlySections {
-		writeList(buf, "Head-only benchmarks (missing on base):", headOnlyNames, func(item string) string {
+		writeList(buf, "Head-only benchmarks (missing on base):", summary.headOnlyNames, func(item string) string {
 			return fmt.Sprintf("`%s`", item)
 		})
-		writeList(buf, "Base-only benchmarks (missing on head):", baseOnlyNames, func(item string) string {
+		writeList(buf, "Base-only benchmarks (missing on head):", summary.baseOnlyNames, func(item string) string {
 			return fmt.Sprintf("`%s`", item)
 		})
 	}
-	writeList(buf, "Incomplete benchmark samples:", outcome.diagnostics, func(item string) string {
+	writeList(buf, "Incomplete benchmark samples:", summary.outcome.diagnostics, func(item string) string {
 		return item
 	})
 
-	switch outcome.status {
+	switch summary.outcome.status {
 	case "incomplete", "invalid":
-		fmt.Fprintf(buf, "Comparison status: %s\n", outcome.status)
-		fmt.Fprintf(buf, "%s\n", outcome.result)
+		fmt.Fprintf(buf, "Comparison status: %s\n", summary.outcome.status)
+		fmt.Fprintf(buf, "%s\n", summary.outcome.result)
 	case "regression":
 		buf.WriteString("Result: memory benchmark regression detected.\n")
 	default:
