@@ -76,39 +76,14 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 		t.Skip("python3 not available")
 	}
 
-	repo := t.TempDir()
-	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
-	sitePackages := filepath.Join(t.TempDir(), "lib", "python3.12", "site-packages")
-	if err := os.MkdirAll(filepath.Join(sitePackages, "thirdparty"), 0o750); err != nil {
-		t.Fatalf("mkdir thirdparty package: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(sitePackages, "thirdparty", "__init__.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
-		t.Fatalf("write thirdparty package: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "localmod.py"), []byte("VALUE = 1\n"), 0o600); err != nil {
-		t.Fatalf("write local module: %v", err)
-	}
-	hookDir, err := runtimePythonHookDirectory()
-	if err != nil {
-		t.Fatalf("runtime python hook directory: %v", err)
-	}
-	hookPycache := filepath.Join(hookDir, "__pycache__")
-	if err := os.RemoveAll(hookPycache); err != nil {
-		t.Fatalf("remove runtime hook pycache: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(hookPycache); err != nil && !os.IsNotExist(err) {
-			t.Errorf("remove runtime hook pycache: %v", err)
-		}
-	})
-
+	fixture := newCapturePythonRuntimeFixture(t)
 	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
-	t.Setenv("PYTHONPATH", sitePackages)
+	t.Setenv("PYTHONPATH", fixture.sitePackages)
 	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import thirdparty; import localmod'\n"))
 
 	err = Capture(context.Background(), CaptureRequest{
-		RepoPath:  repo,
-		TracePath: tracePath,
+		RepoPath:  fixture.repo,
+		TracePath: fixture.tracePath,
 		Command:   "pytest",
 		Provider:  CaptureProviderPython,
 	})
@@ -116,23 +91,13 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 		t.Fatalf("capture python runtime trace: %v", err)
 	}
 
-	content, err := os.ReadFile(tracePath)
+	content, err := os.ReadFile(fixture.tracePath)
 	if err != nil {
 		t.Fatalf("read python runtime trace: %v", err)
 	}
-	if !strings.Contains(string(content), `"language":"python"`) || !strings.Contains(string(content), `"module":"thirdparty"`) {
-		t.Fatalf("expected third-party python import event, got %s", content)
-	}
-	if strings.Contains(string(content), "localmod") {
-		t.Fatalf("expected local module import to be filtered, got %s", content)
-	}
-	for _, forbidden := range []string{repo, sitePackages, filepath.Dir(sitePackages), "site-packages", "file://"} {
-		if strings.Contains(string(content), forbidden) {
-			t.Fatalf("expected python runtime trace artifact to avoid %q, got %s", forbidden, content)
-		}
-	}
+	assertCapturedPythonImportArtifact(t, string(content), fixture)
 
-	trace, err := Load(tracePath)
+	trace, err := Load(fixture.tracePath)
 	if err != nil {
 		t.Fatalf("load captured python runtime trace: %v", err)
 	}
@@ -140,12 +105,11 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	if trace.DependencyLoadsByLanguage[key] == 0 {
 		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
 	}
-	if _, err := os.Stat(filepath.Join(repo, "__pycache__")); !os.IsNotExist(err) {
-		t.Fatalf("expected capture repo to avoid __pycache__ artifacts, stat err = %v", err)
+	pycachePaths := []string{
+		filepath.Join(fixture.repo, "__pycache__"),
+		fixture.hookPycache,
 	}
-	if _, err := os.Stat(hookPycache); !os.IsNotExist(err) {
-		t.Fatalf("expected runtime hook capture to avoid hook __pycache__ artifacts, stat err = %v", err)
-	}
+	assertPathsDoNotExist(t, pycachePaths, "expected python runtime capture to avoid __pycache__ artifacts")
 }
 
 func TestCaptureNodeRuntimeContextPrivacy(t *testing.T) {
@@ -615,4 +579,82 @@ func readCaptureCounter(t *testing.T, counterPath string) int {
 		t.Fatalf("parse capture counter: %v", err)
 	}
 	return value
+}
+
+type capturePythonRuntimeFixture struct {
+	repo         string
+	tracePath    string
+	sitePackages string
+	hookPycache  string
+}
+
+func newCapturePythonRuntimeFixture(t *testing.T) capturePythonRuntimeFixture {
+	t.Helper()
+
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	sitePackages := filepath.Join(t.TempDir(), "lib", "python3.12", "site-packages")
+	writeRuntimeAliasFile(t, filepath.Join(sitePackages, "thirdparty", "__init__.py"), "VALUE = 1\n")
+	writeRuntimeAliasFile(t, filepath.Join(repo, "localmod.py"), "VALUE = 1\n")
+
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil {
+		t.Fatalf("runtime python hook directory: %v", err)
+	}
+	hookPycache := filepath.Join(hookDir, "__pycache__")
+	if err := os.RemoveAll(hookPycache); err != nil {
+		t.Fatalf("remove runtime hook pycache: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(hookPycache); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove runtime hook pycache: %v", err)
+		}
+	})
+
+	return capturePythonRuntimeFixture{
+		repo:         repo,
+		tracePath:    tracePath,
+		sitePackages: sitePackages,
+		hookPycache:  hookPycache,
+	}
+}
+
+func assertCapturedPythonImportArtifact(t *testing.T, artifact string, fixture capturePythonRuntimeFixture) {
+	t.Helper()
+
+	requiredFragments := []string{`"language":"python"`, `"module":"thirdparty"`}
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(artifact, fragment) {
+			t.Fatalf("expected python runtime trace artifact to contain %q, got %s", fragment, artifact)
+		}
+	}
+	forbiddenFragments := []string{
+		"localmod",
+		fixture.repo,
+		fixture.sitePackages,
+		filepath.Dir(fixture.sitePackages),
+		"site-packages",
+		"file://",
+	}
+	assertArtifactExcludesStrings(t, artifact, forbiddenFragments, "python runtime trace artifact")
+}
+
+func assertArtifactExcludesStrings(t *testing.T, artifact string, forbidden []string, label string) {
+	t.Helper()
+
+	for _, fragment := range forbidden {
+		if strings.Contains(artifact, fragment) {
+			t.Fatalf("expected %s to avoid %q, got %s", label, fragment, artifact)
+		}
+	}
+}
+
+func assertPathsDoNotExist(t *testing.T, paths []string, message string) {
+	t.Helper()
+
+	for _, path := range paths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s, stat %q err = %v", message, path, err)
+		}
+	}
 }

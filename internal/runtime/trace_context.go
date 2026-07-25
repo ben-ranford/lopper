@@ -25,52 +25,77 @@ func normalizeRuntimeContextValue(value string, opts traceLoadOptions) string {
 }
 
 func normalizeRuntimeContextPath(value string, opts traceLoadOptions) (string, bool) {
-	if filePath, isFileURL := runtimeContextFileURLPath(value); isFileURL {
-		if filePath == "" {
-			return "", true
-		}
-		value = filePath
-	} else if rejectsRuntimeContextScheme(value) || strings.Contains(value, "://") {
-		return "", true
-	}
-	if !looksLikeFilesystemPath(value) {
+	value, ok := runtimeContextFilesystemCandidate(value)
+	if !ok {
 		return "", false
 	}
-	if strings.TrimSpace(opts.repoRoot) == "" {
+	if value == "" {
 		return "", true
 	}
-	if looksLikeWindowsAbsoluteContextPath(value) && filepath.Separator != '\\' {
+	repoRoot, resolvedRepoRoot, ok := runtimeContextTrustedRepoRoots(opts)
+	if !ok || shouldRedactRuntimeContextPath(value) {
 		return "", true
 	}
-	repoRoot := opts.resolvedRepoRoot
-	if strings.TrimSpace(repoRoot) == "" {
-		repoRoot = opts.resolveRepoRootFunc()(opts.repoRoot)
-	}
-	if strings.TrimSpace(repoRoot) == "" {
+	pathValue, ok := runtimeContextTrustedCandidatePath(value, repoRoot, resolvedRepoRoot)
+	if !ok {
 		return "", true
-	}
-	pathValue := filepath.Clean(filepath.FromSlash(value))
-	if filepath.IsAbs(pathValue) {
-		if !runtimeContextWithinTrustedRoots(pathValue, opts.repoRoot, repoRoot) {
-			return "", true
-		}
-	} else {
-		pathValue = filepath.Join(repoRoot, pathValue)
-		if !runtimeContextLexicallyWithinRepo(repoRoot, pathValue) {
-			return "", true
-		}
 	}
 	resolvedPath := resolveRuntimeContextPath(pathValue, opts.evalSymlinksFunc())
 	if resolvedPath == "" {
 		return "", true
 	}
-	for _, trustedRoot := range []string{repoRoot, opts.repoRoot} {
+	return runtimeContextTrustedRelativePath(resolvedPath, resolvedRepoRoot, opts.repoRoot), true
+}
+
+func runtimeContextFilesystemCandidate(value string) (string, bool) {
+	if filePath, isFileURL := runtimeContextFileURLPath(value); isFileURL {
+		return filePath, true
+	}
+	if rejectsRuntimeContextScheme(value) || strings.Contains(value, "://") {
+		return "", true
+	}
+	if !looksLikeFilesystemPath(value) {
+		return "", false
+	}
+	return value, true
+}
+
+func runtimeContextTrustedRepoRoots(opts traceLoadOptions) (string, string, bool) {
+	lexicalRepoRoot := strings.TrimSpace(opts.repoRoot)
+	if lexicalRepoRoot == "" {
+		return "", "", false
+	}
+	resolvedRepoRoot := strings.TrimSpace(opts.resolvedRepoRoot)
+	if resolvedRepoRoot == "" {
+		resolvedRepoRoot = opts.resolveRepoRootFunc()(lexicalRepoRoot)
+	}
+	if strings.TrimSpace(resolvedRepoRoot) == "" {
+		return "", "", false
+	}
+	return lexicalRepoRoot, resolvedRepoRoot, true
+}
+
+func shouldRedactRuntimeContextPath(value string) bool {
+	return looksLikeWindowsAbsoluteContextPath(value) && filepath.Separator != '\\'
+}
+
+func runtimeContextTrustedCandidatePath(value, lexicalRepoRoot, resolvedRepoRoot string) (string, bool) {
+	pathValue := filepath.Clean(filepath.FromSlash(value))
+	if filepath.IsAbs(pathValue) {
+		return pathValue, runtimeContextWithinTrustedRoots(pathValue, lexicalRepoRoot, resolvedRepoRoot)
+	}
+	pathValue = filepath.Join(resolvedRepoRoot, pathValue)
+	return pathValue, runtimeContextLexicallyWithinRepo(resolvedRepoRoot, pathValue)
+}
+
+func runtimeContextTrustedRelativePath(resolvedPath string, trustedRoots ...string) string {
+	for _, trustedRoot := range trustedRoots {
 		rel, ok := runtimeContextRepoRelative(trustedRoot, resolvedPath)
 		if ok {
-			return rel, true
+			return rel
 		}
 	}
-	return "", true
+	return ""
 }
 
 func runtimeContextFileURLPath(value string) (string, bool) {

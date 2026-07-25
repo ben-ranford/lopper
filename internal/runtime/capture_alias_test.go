@@ -83,28 +83,11 @@ func TestCapturePythonPreservesSymlinkAliasAttributionAndRedactsEscapes(t *testi
 		t.Skip("python3 not available")
 	}
 
-	fixture := newRuntimeRepoAliasFixture(t)
-	sitePackages := filepath.Join(fixture.fixtureRoot, "python", "site-packages")
-	for _, dependency := range []string{"validdep", "outsidedep", "escapeddep"} {
-		dependencyInit := filepath.Join(sitePackages, dependency, "__init__.py")
-		writeRuntimeAliasFile(t, dependencyInit, "VALUE = 1\n")
-	}
-
-	outsideModules := filepath.Join(fixture.fixtureRoot, "outside-modules")
-	writeRuntimeAliasFile(t, filepath.Join(outsideModules, "outside_caller.py"), "import outsidedep\n")
-	escapedTarget := filepath.Join(outsideModules, "escaped_target.py")
-	writeRuntimeAliasFile(t, escapedTarget, "import escapeddep\n")
-	if err := os.Symlink(escapedTarget, filepath.Join(fixture.realRepo, "escaped_caller.py")); err != nil {
-		t.Fatalf("symlink python escape: %v", err)
-	}
-
-	entrypoint := filepath.Join(fixture.aliasRepo, "main.py")
-	pythonSource := "import validdep\nimport outside_caller\nimport escaped_caller\n"
-	writeRuntimeAliasFile(t, filepath.Join(fixture.realRepo, "main.py"), pythonSource)
+	fixture, pythonEnv := newRuntimePythonAliasFixture(t)
 
 	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
-	t.Setenv("LOPPER_TEST_PYTHON_ENTRY", entrypoint)
-	t.Setenv("PYTHONPATH", strings.Join([]string{sitePackages, outsideModules}, string(os.PathListSeparator)))
+	t.Setenv("LOPPER_TEST_PYTHON_ENTRY", pythonEnv.entrypoint)
+	t.Setenv("PYTHONPATH", pythonEnv.pythonPath)
 	pythonRunnerDir := setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" \"$LOPPER_TEST_PYTHON_ENTRY\"\n")
 	t.Setenv(runtimeBinDirsEnvKey, pythonRunnerDir)
 
@@ -126,28 +109,8 @@ func TestCapturePythonPreservesSymlinkAliasAttributionAndRedactsEscapes(t *testi
 	if validEvent.Parent != "main.py" || validEvent.Entrypoint != "main.py" {
 		t.Fatalf("expected alias-relative python attribution, got %#v", *validEvent)
 	}
-	for _, dependency := range []string{"outsidedep", "escapeddep"} {
-		event := findRuntimeAliasEvent(events, dependency)
-		if event == nil {
-			t.Fatalf("expected %s event, got %#v", dependency, events)
-		}
-		if event.Parent != "" {
-			t.Fatalf("expected %s escape parent to be redacted, got %#v", dependency, *event)
-		}
-	}
-	for _, root := range []string{fixture.realRepo, fixture.fixtureRoot} {
-		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() && entry.Name() == "__pycache__" {
-				t.Errorf("capture created Python cache directory %q", path)
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("scan for Python cache artifacts: %v", err)
-		}
-	}
+	assertRuntimeAliasParentsRedacted(t, events, []string{"outsidedep", "escapeddep"})
+	assertNoPythonCacheDirs(t, []string{fixture.realRepo, fixture.fixtureRoot})
 }
 
 type runtimeRepoAliasFixture struct {
@@ -253,4 +216,66 @@ func hasRedactedRuntimeAliasEvent(events []Event, parent string) bool {
 		}
 	}
 	return false
+}
+
+type runtimePythonAliasEnv struct {
+	entrypoint string
+	pythonPath string
+}
+
+func newRuntimePythonAliasFixture(t *testing.T) (runtimeRepoAliasFixture, runtimePythonAliasEnv) {
+	t.Helper()
+
+	fixture := newRuntimeRepoAliasFixture(t)
+	sitePackages := filepath.Join(fixture.fixtureRoot, "python", "site-packages")
+	for _, dependency := range []string{"validdep", "outsidedep", "escapeddep"} {
+		writeRuntimeAliasFile(t, filepath.Join(sitePackages, dependency, "__init__.py"), "VALUE = 1\n")
+	}
+
+	outsideModules := filepath.Join(fixture.fixtureRoot, "outside-modules")
+	writeRuntimeAliasFile(t, filepath.Join(outsideModules, "outside_caller.py"), "import outsidedep\n")
+	escapedTarget := filepath.Join(outsideModules, "escaped_target.py")
+	writeRuntimeAliasFile(t, escapedTarget, "import escapeddep\n")
+	if err := os.Symlink(escapedTarget, filepath.Join(fixture.realRepo, "escaped_caller.py")); err != nil {
+		t.Fatalf("symlink python escape: %v", err)
+	}
+
+	entrypoint := filepath.Join(fixture.aliasRepo, "main.py")
+	writeRuntimeAliasFile(t, filepath.Join(fixture.realRepo, "main.py"), "import validdep\nimport outside_caller\nimport escaped_caller\n")
+	return fixture, runtimePythonAliasEnv{
+		entrypoint: entrypoint,
+		pythonPath: strings.Join([]string{sitePackages, outsideModules}, string(os.PathListSeparator)),
+	}
+}
+
+func assertRuntimeAliasParentsRedacted(t *testing.T, events []Event, modules []string) {
+	t.Helper()
+
+	for _, module := range modules {
+		event := findRuntimeAliasEvent(events, module)
+		if event == nil {
+			t.Fatalf("expected %s event, got %#v", module, events)
+		}
+		if event.Parent != "" {
+			t.Fatalf("expected %s escape parent to be redacted, got %#v", module, *event)
+		}
+	}
+}
+
+func assertNoPythonCacheDirs(t *testing.T, roots []string) {
+	t.Helper()
+
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() && entry.Name() == "__pycache__" {
+				t.Errorf("capture created Python cache directory %q", path)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("scan for Python cache artifacts: %v", err)
+		}
+	}
 }
