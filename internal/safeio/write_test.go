@@ -1344,57 +1344,7 @@ func TestWriteRootOpenDirectoryReturnsPinnedRootWhenDirIsRoot(t *testing.T) {
 }
 
 func TestWriteRootOpenDirectorySkipsDotComponents(t *testing.T) {
-	firstInfo := statTestPath(t, t.TempDir())
-	secondInfo := statTestPath(t, t.TempDir())
-
-	secondRootClosed := false
-	root := &WriteRoot{
-		rootAbs: "/root",
-		root: &fakeRoot{
-			lstat: func(name string) (fs.FileInfo, error) {
-				if name != "first" {
-					t.Fatalf("unexpected root lstat for %q", name)
-				}
-				return firstInfo, nil
-			},
-			openRoot: func(name string) (Root, error) {
-				if name != "first" {
-					t.Fatalf("unexpected root open for %q", name)
-				}
-				return &fakeRoot{
-					lstat: func(name string) (fs.FileInfo, error) {
-						switch name {
-						case ".":
-							return firstInfo, nil
-						case "second":
-							return secondInfo, nil
-						default:
-							t.Fatalf("unexpected child lstat for %q", name)
-							return nil, nil
-						}
-					},
-					openRoot: func(name string) (Root, error) {
-						if name != "second" {
-							t.Fatalf("unexpected child open for %q", name)
-						}
-						return &fakeRoot{
-							lstat: func(name string) (fs.FileInfo, error) {
-								if name != "." {
-									t.Fatalf("unexpected opened grandchild lstat for %q", name)
-								}
-								return secondInfo, nil
-							},
-							close: closeWithoutError,
-						}, nil
-					},
-					close: func() error {
-						secondRootClosed = true
-						return nil
-					},
-				}, nil
-			},
-		},
-	}
+	root, secondRootClosed := newDotComponentTestWriteRoot(t, closeWithoutError, nil)
 
 	dir, owned, err := root.openDirectory("first/./second//", false, 0o755)
 	if err != nil {
@@ -1406,7 +1356,7 @@ func TestWriteRootOpenDirectorySkipsDotComponents(t *testing.T) {
 	if !owned {
 		t.Fatal("expected nested root to be owned")
 	}
-	if !secondRootClosed {
+	if !*secondRootClosed {
 		t.Fatal("expected intermediate root to be closed after opening nested directory")
 	}
 	if closeErr := dir.Close(); closeErr != nil {
@@ -1415,12 +1365,36 @@ func TestWriteRootOpenDirectorySkipsDotComponents(t *testing.T) {
 }
 
 func TestWriteRootOpenDirectoryJoinsIntermediateAndChildCloseErrors(t *testing.T) {
-	firstInfo := statTestPath(t, t.TempDir())
-	secondInfo := statTestPath(t, t.TempDir())
 	intermediateCloseErr := errors.New("intermediate close failure")
 	childCloseErr := errors.New("child close failure")
+	root, _ := newDotComponentTestWriteRoot(t, func() error { return childCloseErr }, func() error { return intermediateCloseErr })
 
-	root := &WriteRoot{
+	dir, owned, err := root.openDirectory(filepath.Join("first", "second"), false, 0o755)
+	if dir != nil {
+		t.Fatal("expected returned directory to be nil on close failure")
+	}
+	if owned {
+		t.Fatal("expected owned to be false on failure")
+	}
+	if !errors.Is(err, intermediateCloseErr) || !errors.Is(err, childCloseErr) {
+		t.Fatalf("expected joined intermediate and child close errors, got %v", err)
+	}
+}
+
+func newDotComponentTestWriteRoot(t *testing.T, childClose func() error, intermediateClose func() error) (*WriteRoot, *bool) {
+	t.Helper()
+
+	firstInfo := statTestPath(t, t.TempDir())
+	secondInfo := statTestPath(t, t.TempDir())
+	intermediateClosed := false
+	if intermediateClose == nil {
+		intermediateClose = func() error {
+			intermediateClosed = true
+			return nil
+		}
+	}
+
+	return &WriteRoot{
 		rootAbs: "/root",
 		root: &fakeRoot{
 			lstat: func(name string) (fs.FileInfo, error) {
@@ -1433,47 +1407,42 @@ func TestWriteRootOpenDirectoryJoinsIntermediateAndChildCloseErrors(t *testing.T
 				if name != "first" {
 					t.Fatalf("unexpected root open for %q", name)
 				}
-				return &fakeRoot{
-					lstat: func(name string) (fs.FileInfo, error) {
-						switch name {
-						case ".":
-							return firstInfo, nil
-						case "second":
-							return secondInfo, nil
-						default:
-							t.Fatalf("unexpected child lstat for %q", name)
-							return nil, nil
-						}
-					},
-					openRoot: func(name string) (Root, error) {
-						if name != "second" {
-							t.Fatalf("unexpected child open for %q", name)
-						}
-						return &fakeRoot{
-							lstat: func(name string) (fs.FileInfo, error) {
-								if name != "." {
-									t.Fatalf("unexpected opened grandchild lstat for %q", name)
-								}
-								return secondInfo, nil
-							},
-							close: func() error { return childCloseErr },
-						}, nil
-					},
-					close: func() error { return intermediateCloseErr },
-				}, nil
+				return newDotComponentIntermediateRoot(t, firstInfo, secondInfo, childClose, intermediateClose), nil
 			},
 		},
-	}
+	}, &intermediateClosed
+}
 
-	dir, owned, err := root.openDirectory(filepath.Join("first", "second"), false, 0o755)
-	if dir != nil {
-		t.Fatal("expected returned directory to be nil on close failure")
-	}
-	if owned {
-		t.Fatal("expected owned to be false on failure")
-	}
-	if !errors.Is(err, intermediateCloseErr) || !errors.Is(err, childCloseErr) {
-		t.Fatalf("expected joined intermediate and child close errors, got %v", err)
+func newDotComponentIntermediateRoot(t *testing.T, firstInfo, secondInfo fs.FileInfo, childClose func() error, intermediateClose func() error) Root {
+	t.Helper()
+
+	return &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case ".":
+				return firstInfo, nil
+			case "second":
+				return secondInfo, nil
+			default:
+				t.Fatalf("unexpected child lstat for %q", name)
+				return nil, nil
+			}
+		},
+		openRoot: func(name string) (Root, error) {
+			if name != "second" {
+				t.Fatalf("unexpected child open for %q", name)
+			}
+			return &fakeRoot{
+				lstat: func(name string) (fs.FileInfo, error) {
+					if name != "." {
+						t.Fatalf("unexpected opened grandchild lstat for %q", name)
+					}
+					return secondInfo, nil
+				},
+				close: childClose,
+			}, nil
+		},
+		close: intermediateClose,
 	}
 }
 

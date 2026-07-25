@@ -29,6 +29,11 @@ type countingAdapter struct {
 	calls int
 }
 
+type analysisCacheAuthAttackCase struct {
+	name  string
+	setup func(*testing.T, string, string, string)
+}
+
 func (a *countingAdapter) ID() string { return a.id }
 func (a *countingAdapter) Aliases() []string {
 	return nil
@@ -175,40 +180,7 @@ func TestAnalysisCacheDefaultRepoLocalPathWritesAndHits(t *testing.T) {
 func TestAnalysisCacheDefaultStoreRejectsDescendantSymlinkEscapes(t *testing.T) {
 	for _, childDir := range []string{cacheKeysDirName, cacheObjectsDirName} {
 		t.Run(childDir, func(t *testing.T) {
-			useTestAnalysisCacheUserCacheDir(t)
-			repo := t.TempDir()
-			cache := newAnalysisCache(Request{}, repo)
-			if !cache.cacheable {
-				t.Fatalf("expected initialized default cache, warnings=%#v", cache.takeWarnings())
-			}
-
-			childPath := filepath.Join(repo, cacheDirName, childDir)
-			if err := os.Remove(childPath); err != nil {
-				t.Fatalf("remove initialized %s directory: %v", childDir, err)
-			}
-			outside := t.TempDir()
-			if err := os.Symlink(outside, childPath); err != nil {
-				t.Skipf("symlink not supported: %v", err)
-			}
-
-			entry := cacheEntryDescriptor{
-				KeyDigest:   "symlink-" + childDir,
-				InputDigest: "input",
-			}
-			err := cache.store(entry, report.Report{RepoPath: "trusted"})
-			if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
-				t.Fatalf("expected confined %s write to reject symlink, got %v", childDir, err)
-			}
-			entries, err := os.ReadDir(outside)
-			if err != nil {
-				t.Fatalf("read outside directory: %v", err)
-			}
-			if len(entries) != 0 {
-				t.Fatalf("expected no external writes through %s symlink, got %#v", childDir, entries)
-			}
-			if cache.metadata.Writes != 0 {
-				t.Fatalf("expected rejected store not to count a write, metadata=%#v", cache.metadata)
-			}
+			assertAnalysisCacheDefaultStoreRejectsDescendantSymlinkEscape(t, childDir)
 		})
 	}
 }
@@ -260,129 +232,14 @@ func TestAnalysisCacheDefaultRepoLocalForgedEntryMissesAndDoesNotBypassAdapter(t
 }
 
 func TestAnalysisCacheRejectsSymlinkedAuthPathsAndForgedHits(t *testing.T) {
-	for _, attack := range []string{"user-cache-root", "auth-parent", "auth-store", "key-file"} {
-		t.Run(attack, func(t *testing.T) {
-			repo := t.TempDir()
-			testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-			cachePath := filepath.Join(repo, cacheDirName)
-			mustMkdirCacheLayout(t, cachePath)
-			canonicalCachePath, err := filepath.EvalSymlinks(cachePath)
-			if err != nil {
-				t.Fatalf("resolve canonical cache path: %v", err)
-			}
-
-			controlledRoot := filepath.Join(repo, "repo-controlled-auth")
-			if err := os.MkdirAll(controlledRoot, 0o750); err != nil {
-				t.Fatalf("mkdir repo-controlled auth root: %v", err)
-			}
-			keyName := analysisCacheAuthKeyName(canonicalCachePath)
-			attackerKeyHex := strings.Repeat("42", analysisCacheAuthKeyLength)
-			attackerKey, err := decodeAuthKey(attackerKeyHex)
-			if err != nil {
-				t.Fatalf("decode attacker key: %v", err)
-			}
-
-			var controlledKeyPath string
-			switch attack {
-			case "user-cache-root":
-				controlledKeyPath = filepath.Join(controlledRoot, "lopper", analysisCacheAuthDirName, keyName)
-				mustWriteFile(t, controlledKeyPath, []byte(attackerKeyHex))
-				configuredUserCacheDir := filepath.Join(t.TempDir(), "user-cache-link")
-				if err := os.Symlink(controlledRoot, configuredUserCacheDir); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-				setTestAnalysisCacheUserCachePath(t, configuredUserCacheDir)
-			case "auth-parent":
-				controlledKeyPath = filepath.Join(controlledRoot, analysisCacheAuthDirName, keyName)
-				mustWriteFile(t, controlledKeyPath, []byte(attackerKeyHex))
-				userCacheDir := t.TempDir()
-				if err := os.Symlink(controlledRoot, filepath.Join(userCacheDir, "lopper")); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-				setTestAnalysisCacheUserCachePath(t, userCacheDir)
-			case "auth-store":
-				controlledKeyPath = filepath.Join(controlledRoot, keyName)
-				mustWriteFile(t, controlledKeyPath, []byte(attackerKeyHex))
-				userCacheDir := t.TempDir()
-				lopperDir := filepath.Join(userCacheDir, "lopper")
-				if err := os.Mkdir(lopperDir, 0o750); err != nil {
-					t.Fatalf("mkdir auth parent: %v", err)
-				}
-				if err := os.Symlink(controlledRoot, filepath.Join(lopperDir, analysisCacheAuthDirName)); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-				setTestAnalysisCacheUserCachePath(t, userCacheDir)
-			case "key-file":
-				controlledKeyPath = filepath.Join(controlledRoot, "attacker.key")
-				mustWriteFile(t, controlledKeyPath, []byte(attackerKeyHex))
-				userCacheDir := t.TempDir()
-				authDir := filepath.Join(userCacheDir, "lopper", analysisCacheAuthDirName)
-				if err := os.MkdirAll(authDir, 0o750); err != nil {
-					t.Fatalf("mkdir auth dir: %v", err)
-				}
-				if err := os.Symlink(controlledKeyPath, filepath.Join(authDir, keyName)); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-				setTestAnalysisCacheUserCachePath(t, userCacheDir)
-			default:
-				t.Fatalf("unsupported auth attack %q", attack)
-			}
-
-			svc, adapter := newCacheTestService(t)
-			req := Request{RepoPath: repo, Language: "cachelang", TopN: 1}
-			entryCache := &analysisCache{
-				options:     resolvedCacheOptions{Enabled: true, Path: cachePath},
-				cacheable:   true,
-				storageRoot: canonicalCachePath,
-			}
-			entry, err := entryCache.prepareEntry(req, adapter.ID(), repo)
-			if err != nil {
-				t.Fatalf("prepare forged cache entry: %v", err)
-			}
-			objectDigest := mustWriteCachedObject(t, cachePath, report.Report{
-				Dependencies: []report.DependencyReport{{Name: "forged-dep", UsedExportsCount: 9, TotalExportsCount: 9, UsedPercent: 100}},
-			})
-			signature, err := pointerSignature(attackerKey, entry, objectDigest)
-			if err != nil {
-				t.Fatalf("sign forged pointer: %v", err)
-			}
-			mustWritePointer(t, filepath.Join(cachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
-				InputDigest:  entry.InputDigest,
-				ObjectDigest: objectDigest,
-				Signature:    signature,
-			})
-			keyBefore, err := os.ReadFile(controlledKeyPath)
-			if err != nil {
-				t.Fatalf("read controlled key before analysis: %v", err)
-			}
-			entriesBefore := countTestTreeEntries(t, controlledRoot)
-
-			got, err := svc.Analyse(context.Background(), req)
-			if err != nil {
-				t.Fatalf("analyse with symlinked auth path: %v", err)
-			}
-			if adapter.calls != 1 {
-				t.Fatalf("expected forged cache to be rejected, adapter calls=%d", adapter.calls)
-			}
-			if len(got.Dependencies) != 1 || got.Dependencies[0].Name != "dep" {
-				t.Fatalf("expected live adapter result, got %#v", got.Dependencies)
-			}
-			if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Writes != 0 {
-				t.Fatalf("expected unavailable auth store to prevent cache hits and writes, got %#v", got.Cache)
-			}
-			if !strings.Contains(strings.Join(got.Warnings, "\n"), "analysis cache unavailable") {
-				t.Fatalf("expected auth-store rejection warning, got %#v", got.Warnings)
-			}
-			keyAfter, err := os.ReadFile(controlledKeyPath)
-			if err != nil {
-				t.Fatalf("read controlled key after analysis: %v", err)
-			}
-			if string(keyAfter) != string(keyBefore) {
-				t.Fatalf("expected repo-controlled key not to be mutated")
-			}
-			if entriesAfter := countTestTreeEntries(t, controlledRoot); entriesAfter != entriesBefore {
-				t.Fatalf("expected no files to be placed in repo-controlled auth storage, before=%d after=%d", entriesBefore, entriesAfter)
-			}
+	for _, tc := range []analysisCacheAuthAttackCase{
+		{name: "user-cache-root", setup: setupUserCacheRootAttack},
+		{name: "auth-parent", setup: setupAuthParentAttack},
+		{name: "auth-store", setup: setupAuthStoreAttack},
+		{name: "key-file", setup: setupKeyFileAttack},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertAnalysisCacheRejectsSymlinkedAuthPathAndForgedHit(t, tc)
 		})
 	}
 }
@@ -541,61 +398,267 @@ func TestAnalysisCacheConcurrentAuthKeyInitializationUsesPersistedWinner(t *test
 		workers    = 24
 	)
 	for iteration := 0; iteration < iterations; iteration++ {
-		cachePath := filepath.Join(repo, "race-cache-"+strconv.Itoa(iteration))
-		req := newCacheRequest(repo, cachePath, false)
-		caches := make([]*analysisCache, workers)
-		start := make(chan struct{})
-		errCh := make(chan error, workers)
-		var wg sync.WaitGroup
-		initializeCache := func(index int) {
-			defer wg.Done()
-			<-start
-			cache := newAnalysisCache(req, repo)
-			if !cache.cacheable {
-				errCh <- os.ErrInvalid
-				return
-			}
-			caches[index] = cache
-		}
-		for i := 0; i < workers; i++ {
-			wg.Add(1)
-			go initializeCache(i)
-		}
-		close(start)
-		wg.Wait()
-		close(errCh)
-		for err := range errCh {
-			if err != nil {
-				t.Fatalf("expected concurrent cache init to remain cacheable, got %v", err)
-			}
-		}
+		assertAnalysisCacheConcurrentAuthKeyInitializationIteration(t, repo, workers, iteration)
+	}
+}
 
-		keys := make(map[string]struct{}, workers)
-		for _, cache := range caches {
-			if cache == nil || len(cache.authKey) != analysisCacheAuthKeyLength {
-				t.Fatalf("expected initialized auth key for all caches, cache=%#v", cache)
-			}
-			keys[string(cache.authKey)] = struct{}{}
-		}
-		if len(keys) != 1 {
-			t.Fatalf("expected single persisted auth key winner, got %d distinct keys", len(keys))
-		}
+func assertAnalysisCacheDefaultStoreRejectsDescendantSymlinkEscape(t *testing.T, childDir string) {
+	t.Helper()
 
-		entry, err := caches[0].prepareEntry(req, "cachelang", repo)
+	useTestAnalysisCacheUserCacheDir(t)
+	repo := t.TempDir()
+	cache := newAnalysisCache(Request{}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected initialized default cache, warnings=%#v", cache.takeWarnings())
+	}
+
+	childPath := filepath.Join(repo, cacheDirName, childDir)
+	if err := os.Remove(childPath); err != nil {
+		t.Fatalf("remove initialized %s directory: %v", childDir, err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, childPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "symlink-" + childDir, InputDigest: "input"}, report.Report{RepoPath: "trusted"})
+	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
+		t.Fatalf("expected confined %s write to reject symlink, got %v", childDir, err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("read outside directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no external writes through %s symlink, got %#v", childDir, entries)
+	}
+	if cache.metadata.Writes != 0 {
+		t.Fatalf("expected rejected store not to count a write, metadata=%#v", cache.metadata)
+	}
+}
+
+func assertAnalysisCacheRejectsSymlinkedAuthPathAndForgedHit(t *testing.T, tc analysisCacheAuthAttackCase) {
+	t.Helper()
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	canonicalCachePath, err := filepath.EvalSymlinks(cachePath)
+	if err != nil {
+		t.Fatalf("resolve canonical cache path: %v", err)
+	}
+
+	controlledRoot := filepath.Join(repo, "repo-controlled-auth")
+	if err := os.MkdirAll(controlledRoot, 0o750); err != nil {
+		t.Fatalf("mkdir repo-controlled auth root: %v", err)
+	}
+	keyName := analysisCacheAuthKeyName(canonicalCachePath)
+	attackerKeyHex := strings.Repeat("42", analysisCacheAuthKeyLength)
+	tc.setup(t, controlledRoot, keyName, attackerKeyHex)
+	controlledKeyPath := analysisCacheControlledKeyPath(tc.name, controlledRoot, keyName)
+	attackerKey, err := decodeAuthKey(attackerKeyHex)
+	if err != nil {
+		t.Fatalf("decode attacker key: %v", err)
+	}
+
+	svc, adapter := newCacheTestService(t)
+	req := Request{RepoPath: repo, Language: "cachelang", TopN: 1}
+	entryCache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, cacheable: true, storageRoot: canonicalCachePath}
+	entry, err := entryCache.prepareEntry(req, adapter.ID(), repo)
+	if err != nil {
+		t.Fatalf("prepare forged cache entry: %v", err)
+	}
+	objectDigest := mustWriteCachedObject(t, cachePath, report.Report{
+		Dependencies: []report.DependencyReport{{Name: "forged-dep", UsedExportsCount: 9, TotalExportsCount: 9, UsedPercent: 100}},
+	})
+	signature, err := pointerSignature(attackerKey, entry, objectDigest)
+	if err != nil {
+		t.Fatalf("sign forged pointer: %v", err)
+	}
+	mustWritePointer(t, filepath.Join(cachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
+		InputDigest:  entry.InputDigest,
+		ObjectDigest: objectDigest,
+		Signature:    signature,
+	})
+	assertAnalysisCacheForgedHitRejected(t, svc, adapter, req, controlledRoot, controlledKeyPath)
+}
+
+func assertAnalysisCacheForgedHitRejected(t *testing.T, svc *Service, adapter *countingAdapter, req Request, controlledRoot, controlledKeyPath string) {
+	t.Helper()
+
+	keyBefore, err := os.ReadFile(controlledKeyPath)
+	if err != nil {
+		t.Fatalf("read controlled key before analysis: %v", err)
+	}
+	entriesBefore := countTestTreeEntries(t, controlledRoot)
+
+	got, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse with symlinked auth path: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected forged cache to be rejected, adapter calls=%d", adapter.calls)
+	}
+	if len(got.Dependencies) != 1 || got.Dependencies[0].Name != "dep" {
+		t.Fatalf("expected live adapter result, got %#v", got.Dependencies)
+	}
+	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Writes != 0 {
+		t.Fatalf("expected unavailable auth store to prevent cache hits and writes, got %#v", got.Cache)
+	}
+	if !strings.Contains(strings.Join(got.Warnings, "\n"), "analysis cache unavailable") {
+		t.Fatalf("expected auth-store rejection warning, got %#v", got.Warnings)
+	}
+	keyAfter, err := os.ReadFile(controlledKeyPath)
+	if err != nil {
+		t.Fatalf("read controlled key after analysis: %v", err)
+	}
+	if string(keyAfter) != string(keyBefore) {
+		t.Fatalf("expected repo-controlled key not to be mutated")
+	}
+	if entriesAfter := countTestTreeEntries(t, controlledRoot); entriesAfter != entriesBefore {
+		t.Fatalf("expected no files to be placed in repo-controlled auth storage, before=%d after=%d", entriesBefore, entriesAfter)
+	}
+}
+
+func setupUserCacheRootAttack(t *testing.T, controlledRoot, keyName, attackerKeyHex string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(controlledRoot, "lopper", analysisCacheAuthDirName, keyName), []byte(attackerKeyHex))
+	configuredUserCacheDir := filepath.Join(t.TempDir(), "user-cache-link")
+	if err := os.Symlink(controlledRoot, configuredUserCacheDir); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	setTestAnalysisCacheUserCachePath(t, configuredUserCacheDir)
+}
+
+func setupAuthParentAttack(t *testing.T, controlledRoot, keyName, attackerKeyHex string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(controlledRoot, analysisCacheAuthDirName, keyName), []byte(attackerKeyHex))
+	userCacheDir := t.TempDir()
+	if err := os.Symlink(controlledRoot, filepath.Join(userCacheDir, "lopper")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	setTestAnalysisCacheUserCachePath(t, userCacheDir)
+}
+
+func setupAuthStoreAttack(t *testing.T, controlledRoot, keyName, attackerKeyHex string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(controlledRoot, keyName), []byte(attackerKeyHex))
+	userCacheDir := t.TempDir()
+	lopperDir := filepath.Join(userCacheDir, "lopper")
+	if err := os.Mkdir(lopperDir, 0o750); err != nil {
+		t.Fatalf("mkdir auth parent: %v", err)
+	}
+	if err := os.Symlink(controlledRoot, filepath.Join(lopperDir, analysisCacheAuthDirName)); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	setTestAnalysisCacheUserCachePath(t, userCacheDir)
+}
+
+func setupKeyFileAttack(t *testing.T, controlledRoot, keyName, attackerKeyHex string) {
+	t.Helper()
+	controlledKeyPath := filepath.Join(controlledRoot, "attacker.key")
+	mustWriteFile(t, controlledKeyPath, []byte(attackerKeyHex))
+	userCacheDir := t.TempDir()
+	authDir := filepath.Join(userCacheDir, "lopper", analysisCacheAuthDirName)
+	if err := os.MkdirAll(authDir, 0o750); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	if err := os.Symlink(controlledKeyPath, filepath.Join(authDir, keyName)); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	setTestAnalysisCacheUserCachePath(t, userCacheDir)
+}
+
+func analysisCacheControlledKeyPath(attack, controlledRoot, keyName string) string {
+	switch attack {
+	case "user-cache-root":
+		return filepath.Join(controlledRoot, "lopper", analysisCacheAuthDirName, keyName)
+	case "auth-parent":
+		return filepath.Join(controlledRoot, analysisCacheAuthDirName, keyName)
+	case "auth-store":
+		return filepath.Join(controlledRoot, keyName)
+	case "key-file":
+		return filepath.Join(controlledRoot, "attacker.key")
+	default:
+		return ""
+	}
+}
+
+func assertAnalysisCacheConcurrentAuthKeyInitializationIteration(t *testing.T, repo string, workers, iteration int) {
+	t.Helper()
+
+	cachePath := filepath.Join(repo, "race-cache-"+strconv.Itoa(iteration))
+	req := newCacheRequest(repo, cachePath, false)
+	caches := runConcurrentAnalysisCacheInitialization(t, req, repo, workers)
+	assertAnalysisCacheConcurrentAuthKeyWinner(t, caches)
+	assertAnalysisCacheConcurrentAuthKeyLookup(t, caches, req, repo)
+}
+
+func runConcurrentAnalysisCacheInitialization(t *testing.T, req Request, repo string, workers int) []*analysisCache {
+	t.Helper()
+
+	caches := make([]*analysisCache, workers)
+	start := make(chan struct{})
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	initializeCache := func(index int) {
+		defer wg.Done()
+		<-start
+		cache := newAnalysisCache(req, repo)
+		if !cache.cacheable {
+			errCh <- os.ErrInvalid
+			return
+		}
+		caches[index] = cache
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go initializeCache(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
 		if err != nil {
-			t.Fatalf("prepare concurrent cache entry: %v", err)
+			t.Fatalf("expected concurrent cache init to remain cacheable, got %v", err)
 		}
-		if err := caches[0].store(entry, report.Report{RepoPath: "repo"}); err != nil {
-			t.Fatalf("store concurrent cache entry: %v", err)
+	}
+	return caches
+}
+
+func assertAnalysisCacheConcurrentAuthKeyWinner(t *testing.T, caches []*analysisCache) {
+	t.Helper()
+
+	keys := make(map[string]struct{}, len(caches))
+	for _, cache := range caches {
+		if cache == nil || len(cache.authKey) != analysisCacheAuthKeyLength {
+			t.Fatalf("expected initialized auth key for all caches, cache=%#v", cache)
 		}
-		for i, cache := range caches {
-			got, hit, err := cache.lookup(entry)
-			if err != nil {
-				t.Fatalf("lookup from concurrent cache %d: %v", i, err)
-			}
-			if !hit || got.RepoPath != "repo" {
-				t.Fatalf("expected concurrent cache %d to trust persisted winner pointer, hit=%v report=%#v", i, hit, got)
-			}
+		keys[string(cache.authKey)] = struct{}{}
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected single persisted auth key winner, got %d distinct keys", len(keys))
+	}
+}
+
+func assertAnalysisCacheConcurrentAuthKeyLookup(t *testing.T, caches []*analysisCache, req Request, repo string) {
+	t.Helper()
+
+	entry, err := caches[0].prepareEntry(req, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare concurrent cache entry: %v", err)
+	}
+	if err := caches[0].store(entry, report.Report{RepoPath: "repo"}); err != nil {
+		t.Fatalf("store concurrent cache entry: %v", err)
+	}
+	for i, cache := range caches {
+		got, hit, err := cache.lookup(entry)
+		if err != nil {
+			t.Fatalf("lookup from concurrent cache %d: %v", i, err)
+		}
+		if !hit || got.RepoPath != "repo" {
+			t.Fatalf("expected concurrent cache %d to trust persisted winner pointer, hit=%v report=%#v", i, hit, got)
 		}
 	}
 }

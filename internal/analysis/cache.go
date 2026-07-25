@@ -123,28 +123,26 @@ func (c *analysisCache) initializeStorage(repoPath string) (returnErr error) {
 
 func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRepo string) (string, error) {
 	if options.ExplicitPath {
-		if err := validateExplicitCachePath(options.Path); err != nil {
-			return "", err
-		}
-		cacheRoot, err := analysisCacheAbsFn(options.Path)
-		if err != nil {
-			return "", fmt.Errorf("resolve cache root: %w", err)
-		}
-		if !options.ReadOnly {
-			if err := analysisCacheMkdirAllFn(cacheRoot, 0o750); err != nil {
-				return "", err
-			}
-		}
-		canonicalRoot, err := analysisCacheEvalSymlinksFn(cacheRoot)
-		if err == nil {
-			return canonicalRoot, nil
-		}
-		if options.ReadOnly && os.IsNotExist(err) {
-			return cacheRoot, nil
-		}
+		return resolveExplicitCacheStorageRoot(options)
+	}
+	return resolveRepoLocalCacheStorageRoot(options, repoPath, canonicalRepo)
+}
+
+func resolveExplicitCacheStorageRoot(options resolvedCacheOptions) (string, error) {
+	if err := validateExplicitCachePath(options.Path); err != nil {
 		return "", err
 	}
+	cacheRoot, err := analysisCacheAbsFn(options.Path)
+	if err != nil {
+		return "", fmt.Errorf("resolve cache root: %w", err)
+	}
+	if err := ensureCacheStorageRoot(cacheRoot, options.ReadOnly); err != nil {
+		return "", err
+	}
+	return canonicalizeExplicitCacheStorageRoot(cacheRoot, options.ReadOnly)
+}
 
+func resolveRepoLocalCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRepo string) (string, error) {
 	relativeCachePath, err := filepath.Rel(filepath.Clean(repoPath), filepath.Clean(options.Path))
 	if err != nil {
 		return "", fmt.Errorf("resolve cache path relative to repository: %w", err)
@@ -153,12 +151,28 @@ func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRe
 		return "", fmt.Errorf("cache path escapes repository root")
 	}
 	cacheRoot := filepath.Join(canonicalRepo, relativeCachePath)
-	if !options.ReadOnly {
-		if err := analysisCacheMkdirAllFn(cacheRoot, 0o750); err != nil {
-			return "", err
-		}
+	if err := ensureCacheStorageRoot(cacheRoot, options.ReadOnly); err != nil {
+		return "", err
 	}
 	return cacheRoot, nil
+}
+
+func ensureCacheStorageRoot(cacheRoot string, readOnly bool) error {
+	if readOnly {
+		return nil
+	}
+	return analysisCacheMkdirAllFn(cacheRoot, 0o750)
+}
+
+func canonicalizeExplicitCacheStorageRoot(cacheRoot string, readOnly bool) (string, error) {
+	canonicalRoot, err := analysisCacheEvalSymlinksFn(cacheRoot)
+	if err == nil {
+		return canonicalRoot, nil
+	}
+	if readOnly && os.IsNotExist(err) {
+		return cacheRoot, nil
+	}
+	return "", err
 }
 
 func (c *analysisCache) canonicalStorageRoot() (string, error) {

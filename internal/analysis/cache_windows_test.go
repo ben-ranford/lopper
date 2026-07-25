@@ -126,43 +126,49 @@ func TestNewAnalysisCacheRejectsUnsupportedWindowsExplicitPath(t *testing.T) {
 		{name: "unc reserved con", path: `\\server\share\dir\CON.log`, want: "reserved DOS device names"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			absCalls := 0
-			mkdirAllCalls := 0
-			evalCalls := 0
-			withTestAnalysisCachePathFuncs(t,
-				func(path string) (string, error) {
-					absCalls++
-					return filepath.Abs(path)
-				},
-				func(path string, perm os.FileMode) error {
-					mkdirAllCalls++
-					return os.MkdirAll(path, perm)
-				},
-				func(path string) (string, error) {
-					evalCalls++
-					return "", errors.New("unexpected EvalSymlinks call")
-				},
-			)
-			cache := newAnalysisCache(Request{Cache: &CacheOptions{
-				Enabled: true,
-				Path:    tc.path,
-			}}, repo)
-			if cache.cacheable {
-				t.Fatal("expected cache to fail closed for unsupported Windows explicit path")
-			}
-			warnings := cache.takeWarnings()
-			if len(warnings) != 1 || !strings.Contains(warnings[0], tc.want) {
-				t.Fatalf("expected %q warning, got %#v", tc.want, warnings)
-			}
-			if absCalls != 0 {
-				t.Fatalf("expected raw alias rejection before Abs, got %d calls", absCalls)
-			}
-			if mkdirAllCalls != 0 {
-				t.Fatalf("expected raw alias rejection before MkdirAll, got %d calls", mkdirAllCalls)
-			}
-			if evalCalls != 0 {
-				t.Fatalf("expected raw alias rejection before EvalSymlinks, got %d calls", evalCalls)
-			}
+			assertNewAnalysisCacheRejectsUnsupportedWindowsExplicitPath(t, repo, tc.path, tc.want)
 		})
+	}
+}
+
+func assertNewAnalysisCacheRejectsUnsupportedWindowsExplicitPath(t *testing.T, repo, rawPath, want string) {
+	t.Helper()
+
+	absCalls := 0
+	mkdirAllCalls := 0
+	evalCalls := 0
+	withTestAnalysisCachePathFuncs(t,
+		func(path string) (string, error) {
+			absCalls++
+			return filepath.Abs(path)
+		},
+		func(path string, perm os.FileMode) error {
+			mkdirAllCalls++
+			return os.MkdirAll(path, perm)
+		},
+		func(path string) (string, error) {
+			evalCalls++
+			return "", errors.New("unexpected EvalSymlinks call")
+		},
+	)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{
+		Enabled: true,
+		Path:    rawPath,
+	}}, repo)
+	if cache.cacheable {
+		t.Fatal("expected cache to fail closed for unsupported Windows explicit path")
+	}
+	warnings := cache.takeWarnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], want) {
+		t.Fatalf("expected %q warning, got %#v", want, warnings)
+	}
+	if absCalls != 0 {
+		t.Fatalf("expected raw alias rejection before Abs, got %d calls", absCalls)
+	}
+	if mkdirAllCalls != 0 {
+		t.Fatalf("expected raw alias rejection before MkdirAll, got %d calls", mkdirAllCalls)
+	}
+	if evalCalls != 0 {
+		t.Fatalf("expected raw alias rejection before EvalSymlinks, got %d calls", evalCalls)
 	}
 }

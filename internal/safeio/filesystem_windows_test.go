@@ -82,35 +82,41 @@ func TestOpenCanonicalWriteRootRejectsRawUnsupportedWindowsRootsBeforeAbs(t *tes
 		{name: "drive reserved name", path: `C:\cache\NUL.txt`, want: "reserved DOS device names"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			absCalls := 0
-			openCalls := 0
-			withFileSystem(t, &fakeFileSystem{
-				abs: func(string) (string, error) {
-					absCalls++
-					return `C:\normalized`, nil
-				},
-				openRootNoFollow: func(string) (Root, error) {
-					openCalls++
-					return &fakeRoot{close: closeWithoutError}, nil
-				},
-			})
-
-			root, err := OpenCanonicalWriteRoot(tc.path)
-			if root != nil {
-				if closeErr := root.Close(); closeErr != nil {
-					t.Fatalf("close unexpected write root: %v", closeErr)
-				}
-				t.Fatal("expected canonical write root to remain nil")
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected %q error, got %v", tc.want, err)
-			}
-			if absCalls != 0 {
-				t.Fatalf("expected raw validation before Abs, got %d calls", absCalls)
-			}
-			if openCalls != 0 {
-				t.Fatalf("expected raw validation before OpenRootNoFollow, got %d calls", openCalls)
-			}
+			assertOpenCanonicalWriteRootRejectsRawUnsupportedWindowsRoot(t, tc.path, tc.want)
 		})
+	}
+}
+
+func assertOpenCanonicalWriteRootRejectsRawUnsupportedWindowsRoot(t *testing.T, rawPath, want string) {
+	t.Helper()
+
+	absCalls := 0
+	openCalls := 0
+	withFileSystem(t, &fakeFileSystem{
+		abs: func(string) (string, error) {
+			absCalls++
+			return `C:\normalized`, nil
+		},
+		openRootNoFollow: func(string) (Root, error) {
+			openCalls++
+			return &fakeRoot{close: closeWithoutError}, nil
+		},
+	})
+
+	root, err := OpenCanonicalWriteRoot(rawPath)
+	if root != nil {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected write root: %v", closeErr)
+		}
+		t.Fatal("expected canonical write root to remain nil")
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected %q error, got %v", want, err)
+	}
+	if absCalls != 0 {
+		t.Fatalf("expected raw validation before Abs, got %d calls", absCalls)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected raw validation before OpenRootNoFollow, got %d calls", openCalls)
 	}
 }

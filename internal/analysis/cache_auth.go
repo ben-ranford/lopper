@@ -64,94 +64,33 @@ func (c *analysisCache) resolveAuthKey() (key []byte, returnErr error) {
 	if c == nil {
 		return nil, fmt.Errorf("resolve cache auth key: cache is nil")
 	}
-	if len(c.authKey) == analysisCacheAuthKeyLength {
-		return append([]byte(nil), c.authKey...), nil
+	if cachedKey := c.cachedAuthKey(); len(cachedKey) != 0 {
+		return cachedKey, nil
 	}
 	authRoot, keyName, err := c.openAuthStore()
 	if err != nil {
-		if c.options.ReadOnly {
-			if !os.IsNotExist(err) {
-				c.warn("analysis cache auth store unavailable; treating cache as cold in read-only mode")
-			}
-			return nil, nil
-		}
-		return nil, err
+		return c.handleOpenAuthStoreError(err)
 	}
 	defer func() {
 		returnErr = errors.Join(returnErr, authRoot.Close())
 	}()
 
 	key, err = analysisCacheReadAuthKeyFn(authRoot, keyName, !c.options.ReadOnly)
-	switch {
-	case err == nil:
-		c.authKey = append(c.authKey[:0], key...)
-		return append([]byte(nil), c.authKey...), nil
-	case errors.Is(err, errAnalysisCacheAuthKeyMissing):
-		if c.options.ReadOnly {
-			return nil, nil
-		}
-		return c.createOrRotateAuthKey(authRoot, keyName, false)
-	case errors.Is(err, errAnalysisCacheAuthKeyInvalid):
-		if c.options.ReadOnly {
-			c.warn("analysis cache auth key invalid; treating cache as cold in read-only mode")
-			return nil, nil
-		}
-		c.warn("analysis cache auth key invalid; rotating key and treating prior pointers as untrusted")
-		return c.createOrRotateAuthKey(authRoot, keyName, true)
-	case errors.Is(err, errAnalysisCacheAuthKeyChanged):
-		if c.options.ReadOnly {
-			return nil, nil
-		}
-		return c.createOrRotateAuthKey(authRoot, keyName, true)
-	default:
-		if c.options.ReadOnly {
-			c.warn("analysis cache auth key unavailable; treating cache as cold in read-only mode")
-			return nil, nil
-		}
-		return nil, err
-	}
+	return c.finishResolvedAuthKey(key, err, authRoot, keyName)
 }
 
 func (c *analysisCache) openAuthStore() (*safeio.WriteRoot, string, error) {
-	userCacheDir, err := analysisCacheUserCacheDirFn()
+	canonicalUserCacheDir, err := c.resolveCanonicalUserCacheDir()
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve user cache dir: %w", err)
 	}
-	if strings.TrimSpace(userCacheDir) == "" {
-		return nil, "", fmt.Errorf("resolve user cache dir: empty path")
-	}
-
-	canonicalUserCacheDir, err := canonicalUserCacheDir(userCacheDir, c.options.ReadOnly, c.repoRoot, c.storageRoot)
-	if err != nil {
-		return nil, "", err
-	}
 	authRelativePath := filepath.Join("lopper", analysisCacheAuthDirName)
 	authRootPath := filepath.Join(canonicalUserCacheDir, authRelativePath)
-	if pathAtOrBelow(authRootPath, c.repoRoot) || pathAtOrBelow(authRootPath, c.storageRoot) {
+	if c.authRootInControlledStorage(authRootPath) {
 		return nil, "", fmt.Errorf("cache auth store resolves inside repository-controlled storage: %s", authRootPath)
 	}
-
-	if !c.options.ReadOnly {
-		_, statErr := os.Lstat(authRootPath)
-		authStoreMissing := os.IsNotExist(statErr)
-		if statErr != nil && !authStoreMissing {
-			return nil, "", fmt.Errorf("inspect cache auth store: %w", statErr)
-		}
-		userRoot, err := safeio.OpenCanonicalWriteRoot(canonicalUserCacheDir)
-		if err != nil {
-			return nil, "", fmt.Errorf("open canonical user cache root: %w", err)
-		}
-		if err := userRoot.MkdirAll(authRelativePath, 0o750); err != nil {
-			return nil, "", errors.Join(fmt.Errorf("create cache auth store: %w", err), userRoot.Close())
-		}
-		if authStoreMissing {
-			if err := analysisCacheAuthSyncDirFn(userRoot); err != nil {
-				return nil, "", errors.Join(fmt.Errorf("sync cache auth store parent after creation: %w", err), userRoot.Close())
-			}
-		}
-		if err := userRoot.Close(); err != nil {
-			return nil, "", fmt.Errorf("close canonical user cache root: %w", err)
-		}
+	if err := c.ensureAuthStorePath(canonicalUserCacheDir, authRelativePath, authRootPath); err != nil {
+		return nil, "", err
 	}
 
 	authRoot, err := safeio.OpenCanonicalWriteRoot(authRootPath)
@@ -165,6 +104,118 @@ func (c *analysisCache) openAuthStore() (*safeio.WriteRoot, string, error) {
 	return authRoot, analysisCacheAuthKeyName(storageRoot), nil
 }
 
+func (c *analysisCache) cachedAuthKey() []byte {
+	if len(c.authKey) != analysisCacheAuthKeyLength {
+		return nil
+	}
+	return append([]byte(nil), c.authKey...)
+}
+
+func (c *analysisCache) handleOpenAuthStoreError(err error) ([]byte, error) {
+	if !c.options.ReadOnly {
+		return nil, err
+	}
+	if !os.IsNotExist(err) {
+		c.warn("analysis cache auth store unavailable; treating cache as cold in read-only mode")
+	}
+	return nil, nil
+}
+
+func (c *analysisCache) finishResolvedAuthKey(key []byte, err error, authRoot *safeio.WriteRoot, keyName string) ([]byte, error) {
+	if err == nil {
+		c.authKey = append(c.authKey[:0], key...)
+		return append([]byte(nil), c.authKey...), nil
+	}
+	if c.options.ReadOnly {
+		return c.finishReadOnlyResolvedAuthKey(err)
+	}
+	return c.finishWritableResolvedAuthKey(authRoot, keyName, err)
+}
+
+func (c *analysisCache) finishReadOnlyResolvedAuthKey(err error) ([]byte, error) {
+	switch {
+	case errors.Is(err, errAnalysisCacheAuthKeyMissing), errors.Is(err, errAnalysisCacheAuthKeyChanged):
+		return nil, nil
+	case errors.Is(err, errAnalysisCacheAuthKeyInvalid):
+		c.warn("analysis cache auth key invalid; treating cache as cold in read-only mode")
+		return nil, nil
+	default:
+		c.warn("analysis cache auth key unavailable; treating cache as cold in read-only mode")
+		return nil, nil
+	}
+}
+
+func (c *analysisCache) finishWritableResolvedAuthKey(authRoot *safeio.WriteRoot, keyName string, err error) ([]byte, error) {
+	switch {
+	case errors.Is(err, errAnalysisCacheAuthKeyMissing):
+		return c.createOrRotateAuthKey(authRoot, keyName, false)
+	case errors.Is(err, errAnalysisCacheAuthKeyInvalid):
+		c.warn("analysis cache auth key invalid; rotating key and treating prior pointers as untrusted")
+		return c.createOrRotateAuthKey(authRoot, keyName, true)
+	case errors.Is(err, errAnalysisCacheAuthKeyChanged):
+		return c.createOrRotateAuthKey(authRoot, keyName, true)
+	default:
+		return nil, err
+	}
+}
+
+func (c *analysisCache) resolveCanonicalUserCacheDir() (string, error) {
+	userCacheDir, err := analysisCacheUserCacheDirFn()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(userCacheDir) == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	return canonicalUserCacheDir(userCacheDir, c.options.ReadOnly, c.repoRoot, c.storageRoot)
+}
+
+func (c *analysisCache) authRootInControlledStorage(authRootPath string) bool {
+	return pathAtOrBelow(authRootPath, c.repoRoot) || pathAtOrBelow(authRootPath, c.storageRoot)
+}
+
+func (c *analysisCache) ensureAuthStorePath(canonicalUserCacheDir, authRelativePath, authRootPath string) error {
+	if c.options.ReadOnly {
+		return nil
+	}
+	authStoreMissing, err := authStoreMissing(authRootPath)
+	if err != nil {
+		return err
+	}
+	return createAuthStorePath(canonicalUserCacheDir, authRelativePath, authStoreMissing)
+}
+
+func authStoreMissing(authRootPath string) (bool, error) {
+	_, statErr := os.Lstat(authRootPath)
+	if statErr == nil {
+		return false, nil
+	}
+	if os.IsNotExist(statErr) {
+		return true, nil
+	}
+	return false, fmt.Errorf("inspect cache auth store: %w", statErr)
+}
+
+func createAuthStorePath(canonicalUserCacheDir, authRelativePath string, authStoreMissing bool) (returnErr error) {
+	userRoot, err := safeio.OpenCanonicalWriteRoot(canonicalUserCacheDir)
+	if err != nil {
+		return fmt.Errorf("open canonical user cache root: %w", err)
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, userRoot.Close())
+	}()
+	if err := userRoot.MkdirAll(authRelativePath, 0o750); err != nil {
+		return fmt.Errorf("create cache auth store: %w", err)
+	}
+	if !authStoreMissing {
+		return nil
+	}
+	if err := analysisCacheAuthSyncDirFn(userRoot); err != nil {
+		return fmt.Errorf("sync cache auth store parent after creation: %w", err)
+	}
+	return nil
+}
+
 func canonicalUserCacheDir(userCacheDir string, readOnly bool, forbiddenRoots ...string) (canonicalDir string, returnErr error) {
 	cacheDir, err := filepath.Abs(userCacheDir)
 	if err != nil {
@@ -173,44 +224,35 @@ func canonicalUserCacheDir(userCacheDir string, readOnly bool, forbiddenRoots ..
 	info, err := os.Lstat(cacheDir)
 	switch {
 	case err == nil:
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("user cache dir is a symlink: %s", cacheDir)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("user cache path is not a directory: %s", cacheDir)
-		}
-		canonicalDir, err = filepath.EvalSymlinks(cacheDir)
-		if err != nil {
-			return "", fmt.Errorf("resolve canonical user cache dir: %w", err)
-		}
-		return canonicalDir, nil
+		return canonicalExistingUserCacheDir(cacheDir, info)
 	case !os.IsNotExist(err):
 		return "", fmt.Errorf("inspect user cache dir: %w", err)
 	case readOnly:
 		return "", fmt.Errorf("user cache dir missing: %w", os.ErrNotExist)
+	default:
+		return canonicalMissingUserCacheDir(cacheDir, forbiddenRoots...)
 	}
+}
 
-	current := cacheDir
-	missingParts := make([]string, 0, 2)
-	for {
-		info, err = os.Lstat(current)
-		if err == nil {
-			if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-				return "", fmt.Errorf("user cache ancestor is not a directory: %s", current)
-			}
-			break
-		}
-		if !os.IsNotExist(err) {
-			return "", fmt.Errorf("inspect user cache ancestor: %w", err)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("resolve existing user cache ancestor: %w", os.ErrNotExist)
-		}
-		missingParts = append([]string{filepath.Base(current)}, missingParts...)
-		current = parent
+func canonicalExistingUserCacheDir(cacheDir string, info fs.FileInfo) (string, error) {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("user cache dir is a symlink: %s", cacheDir)
 	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("user cache path is not a directory: %s", cacheDir)
+	}
+	canonicalDir, err := filepath.EvalSymlinks(cacheDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve canonical user cache dir: %w", err)
+	}
+	return canonicalDir, nil
+}
 
+func canonicalMissingUserCacheDir(cacheDir string, forbiddenRoots ...string) (canonicalDir string, returnErr error) {
+	current, missingParts, err := findUserCacheAncestor(cacheDir)
+	if err != nil {
+		return "", err
+	}
 	canonicalAncestor, err := filepath.EvalSymlinks(current)
 	if err != nil {
 		return "", fmt.Errorf("resolve canonical user cache ancestor: %w", err)
@@ -225,10 +267,8 @@ func canonicalUserCacheDir(userCacheDir string, readOnly bool, forbiddenRoots ..
 	missingPath := filepath.Join(missingParts...)
 	canonicalDir = filepath.Join(canonicalAncestor, missingPath)
 	authRootPath := filepath.Join(canonicalDir, "lopper", analysisCacheAuthDirName)
-	for _, forbiddenRoot := range forbiddenRoots {
-		if pathAtOrBelow(authRootPath, forbiddenRoot) {
-			return "", fmt.Errorf("cache auth store resolves inside repository-controlled storage: %s", authRootPath)
-		}
+	if err := validateAuthRootPath(authRootPath, forbiddenRoots...); err != nil {
+		return "", err
 	}
 	if err := ancestorRoot.MkdirAll(missingPath, 0o700); err != nil {
 		return "", fmt.Errorf("create user cache dir: %w", err)
@@ -237,6 +277,38 @@ func canonicalUserCacheDir(userCacheDir string, readOnly bool, forbiddenRoots ..
 		return "", fmt.Errorf("sync user cache parent after creation: %w", err)
 	}
 	return canonicalDir, nil
+}
+
+func findUserCacheAncestor(cacheDir string) (string, []string, error) {
+	current := cacheDir
+	missingParts := make([]string, 0, 2)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				return "", nil, fmt.Errorf("user cache ancestor is not a directory: %s", current)
+			}
+			return current, missingParts, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", nil, fmt.Errorf("inspect user cache ancestor: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", nil, fmt.Errorf("resolve existing user cache ancestor: %w", os.ErrNotExist)
+		}
+		missingParts = append([]string{filepath.Base(current)}, missingParts...)
+		current = parent
+	}
+}
+
+func validateAuthRootPath(authRootPath string, forbiddenRoots ...string) error {
+	for _, forbiddenRoot := range forbiddenRoots {
+		if pathAtOrBelow(authRootPath, forbiddenRoot) {
+			return fmt.Errorf("cache auth store resolves inside repository-controlled storage: %s", authRootPath)
+		}
+	}
+	return nil
 }
 
 func pathAtOrBelow(path, root string) bool {
@@ -426,35 +498,45 @@ func invalidAuthKeyGeneration(root *safeio.WriteRoot, keyName string) (string, e
 func invalidAuthKeyGenerationWith(root authKeyReadRoot, keyName string) (string, error) {
 	data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", errAnalysisCacheAuthKeyChanged
-		}
-		if errors.Is(err, safeio.ErrFileChanged) {
-			return "", errAnalysisCacheAuthKeyChanged
-		}
-		if errors.Is(err, safeio.ErrFileTooLarge) {
-			info, statErr := root.Lstat(keyName)
-			if statErr != nil {
-				if os.IsNotExist(statErr) || errors.Is(statErr, safeio.ErrFileChanged) {
-					return "", errAnalysisCacheAuthKeyChanged
-				}
-				return "", fmt.Errorf("read invalid cache auth key: %w", statErr)
-			}
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-				return "", fmt.Errorf("read invalid cache auth key: %w", err)
-			}
-			state := fmt.Appendf(nil, "oversized:%d:%d", info.Size(), info.ModTime().UnixNano())
-			return sha256Hex(state), nil
-		}
-		return "", fmt.Errorf("read invalid cache auth key: %w", err)
+		return invalidAuthKeyGenerationReadError(root, keyName, err)
 	}
 	if _, err := decodeAuthKey(strings.TrimSpace(string(data))); err == nil {
 		return "", errAnalysisCacheAuthKeyChanged
 	}
+	return invalidAuthKeyStateDigest(data, info), nil
+}
+
+func invalidAuthKeyGenerationReadError(root authKeyReadRoot, keyName string, err error) (string, error) {
+	switch {
+	case os.IsNotExist(err), errors.Is(err, safeio.ErrFileChanged):
+		return "", errAnalysisCacheAuthKeyChanged
+	case errors.Is(err, safeio.ErrFileTooLarge):
+		return oversizedInvalidAuthKeyGeneration(root, keyName, err)
+	default:
+		return "", fmt.Errorf("read invalid cache auth key: %w", err)
+	}
+}
+
+func oversizedInvalidAuthKeyGeneration(root authKeyReadRoot, keyName string, readErr error) (string, error) {
+	info, statErr := root.Lstat(keyName)
+	if statErr != nil {
+		if os.IsNotExist(statErr) || errors.Is(statErr, safeio.ErrFileChanged) {
+			return "", errAnalysisCacheAuthKeyChanged
+		}
+		return "", fmt.Errorf("read invalid cache auth key: %w", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("read invalid cache auth key: %w", readErr)
+	}
+	state := fmt.Appendf(nil, "oversized:%d:%d", info.Size(), info.ModTime().UnixNano())
+	return sha256Hex(state), nil
+}
+
+func invalidAuthKeyStateDigest(data []byte, info fs.FileInfo) string {
 	state := append([]byte(nil), data...)
 	state = append(state, 0)
 	state = fmt.Appendf(state, "%d:%d", info.Size(), info.ModTime().UnixNano())
-	return sha256Hex(state), nil
+	return sha256Hex(state)
 }
 
 func writeAuthKeyCandidate(root *safeio.WriteRoot, encodedKey []byte) (candidatePath string, returnErr error) {
