@@ -389,7 +389,74 @@ affected:
 	assertReachableVulnerabilityThresholdFromAdvisory(t, "osv-multi.yml", advisorySource, "GHSA-multi-affected", "high")
 }
 
+func TestExecuteAnalyseReachableVulnerabilityThresholdFailsClosedForUnevaluableOSVMatches(t *testing.T) {
+	tests := []struct {
+		name           string
+		fileName       string
+		advisorySource string
+		version        string
+		wantID         string
+	}{
+		{
+			name:     "blank installed version",
+			fileName: "osv-blank-version.yml",
+			advisorySource: `id: GHSA-osv-blank
+affected:
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+    versions:
+      - "1.0.0"
+`,
+			version: "",
+			wantID:  "GHSA-osv-blank",
+		},
+		{
+			name:     "unsupported range type",
+			fileName: "osv-unsupported-range.yml",
+			advisorySource: `id: GHSA-osv-unsupported
+affected:
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+    ranges:
+      - type: GIT
+        events:
+          - introduced: abc123
+`,
+			version: "1.0.0",
+			wantID:  "GHSA-osv-unsupported",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertReachableVulnerabilityThresholdFromAdvisoryVersion(t, tc.fileName, tc.advisorySource, tc.version, tc.wantID, "unknown", true)
+		})
+	}
+}
+
+func TestExecuteAnalyseReachableVulnerabilityThresholdSkipsConfirmedUnaffectedOSVMatch(t *testing.T) {
+	advisorySource := `id: GHSA-osv-safe
+affected:
+  - package:
+      ecosystem: npm
+      name: reachable-lib
+    ranges:
+      - type: ECOSYSTEM
+        events:
+          - introduced: "0"
+          - fixed: "1.0.0"
+`
+	assertReachableVulnerabilityThresholdFromAdvisoryVersion(t, "osv-safe.yml", advisorySource, "1.0.0", "GHSA-osv-safe", "low", false)
+}
+
 func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName string, advisorySource string, wantID string, wantSeverity string) {
+	t.Helper()
+	assertReachableVulnerabilityThresholdFromAdvisoryVersion(t, fileName, advisorySource, "1.0.0", wantID, wantSeverity, true)
+}
+
+func assertReachableVulnerabilityThresholdFromAdvisoryVersion(t *testing.T, fileName string, advisorySource string, version string, wantID string, wantSeverity string, wantThresholdError bool) {
 	t.Helper()
 	tmp := t.TempDir()
 	advisoryPath := filepath.Join(tmp, fileName)
@@ -403,7 +470,7 @@ func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName st
 				{
 					Language:          "js-ts",
 					Name:              "reachable-lib",
-					Identity:          &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: "1.0.0"},
+					Identity:          &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: version},
 					UsedExportsCount:  1,
 					TotalExportsCount: 1,
 					UsedPercent:       100,
@@ -426,11 +493,20 @@ func assertReachableVulnerabilityThresholdFromAdvisory(t *testing.T, fileName st
 	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
 
 	output, err := application.Execute(context.Background(), req)
-	if !errors.Is(err, ErrReachableVulnerabilities) {
-		t.Fatalf("expected reachable vulnerabilities error, got %v output=%q", err, output)
+	if wantThresholdError {
+		if !errors.Is(err, ErrReachableVulnerabilities) {
+			t.Fatalf("expected reachable vulnerabilities error, got %v output=%q", err, output)
+		}
+		if !strings.Contains(output, `"`+wantID+`"`) || !strings.Contains(output, `"`+wantSeverity+`"`) {
+			t.Fatalf("expected advisory %q with severity %q in output, got %q", wantID, wantSeverity, output)
+		}
+		return
 	}
-	if !strings.Contains(output, `"`+wantID+`"`) || !strings.Contains(output, `"`+wantSeverity+`"`) {
-		t.Fatalf("expected advisory %q with severity %q in output, got %q", wantID, wantSeverity, output)
+	if err != nil {
+		t.Fatalf("expected no reachable vulnerability threshold error, got %v output=%q", err, output)
+	}
+	if strings.Contains(output, `"`+wantID+`"`) {
+		t.Fatalf("expected confirmed unaffected advisory %q to stay out of output, got %q", wantID, output)
 	}
 }
 

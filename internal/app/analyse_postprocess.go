@@ -288,7 +288,7 @@ func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold stri
 	}
 	if reportData.BaselineComparison != nil {
 		for _, finding := range reportData.BaselineComparison.NewReachableVulnerabilities {
-			if report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
+			if finding.VersionStatus == "unevaluable" || report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
 				return true
 			}
 		}
@@ -296,7 +296,10 @@ func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold stri
 	}
 	for _, dep := range reportData.Dependencies {
 		for _, finding := range dep.Vulnerabilities {
-			if finding.Reachable && !report.FindingSuppressedByException(finding) && report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
+			if !finding.Reachable || report.FindingSuppressedByException(finding) {
+				continue
+			}
+			if finding.VersionStatus == "unevaluable" || report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
 				return true
 			}
 		}

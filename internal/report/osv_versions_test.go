@@ -265,7 +265,7 @@ func TestNormalizeAdvisoriesPreservesUnionOfOSVVersionMetadata(t *testing.T) {
 	}
 }
 
-func TestAnnotateVulnerabilitiesWarnsWithoutReportingUnevaluableOSVRanges(t *testing.T) {
+func TestAnnotateVulnerabilitiesKeepsUnevaluableOSVPackageMatchesActionable(t *testing.T) {
 	reportData := Report{
 		Warnings: []string{"z existing warning", "a existing warning"},
 		Dependencies: []DependencyReport{
@@ -291,9 +291,18 @@ func TestAnnotateVulnerabilitiesWarnsWithoutReportingUnevaluableOSVRanges(t *tes
 	AnnotateVulnerabilities(&reportData, advisories)
 	AnnotateVulnerabilities(&reportData, advisories)
 
-	for _, dependency := range reportData.Dependencies {
-		if len(dependency.Vulnerabilities) != 0 {
-			t.Fatalf("expected unevaluable ranges not to create findings, got %#v", dependency.Vulnerabilities)
+	if got := len(reportData.Dependencies[0].Vulnerabilities); got != 1 {
+		t.Fatalf("expected unsupported package match to remain actionable, got %#v", reportData.Dependencies[0].Vulnerabilities)
+	}
+	if got := len(reportData.Dependencies[1].Vulnerabilities); got != 1 {
+		t.Fatalf("expected blank-version package match to remain actionable, got %#v", reportData.Dependencies[1].Vulnerabilities)
+	}
+	for _, finding := range []VulnerabilityFinding{
+		reportData.Dependencies[0].Vulnerabilities[0],
+		reportData.Dependencies[1].Vulnerabilities[0],
+	} {
+		if !slices.Contains(finding.Evidence, "osv_version_match: package matched but installed version could not be evaluated") {
+			t.Fatalf("expected unevaluable OSV evidence, got %#v", finding.Evidence)
 		}
 	}
 	wantWarnings := []string{
@@ -304,6 +313,32 @@ func TestAnnotateVulnerabilitiesWarnsWithoutReportingUnevaluableOSVRanges(t *tes
 	}
 	if !slices.Equal(reportData.Warnings, wantWarnings) {
 		t.Fatalf("unexpected OSV evaluation warnings: got %#v, want %#v", reportData.Warnings, wantWarnings)
+	}
+}
+
+func TestAnnotateVulnerabilitiesSkipsConfirmedUnaffectedOSVPackageMatches(t *testing.T) {
+	reportData := Report{
+		Warnings: []string{"existing warning"},
+		Dependencies: []DependencyReport{{
+			Name:     "example-lib",
+			Language: "js-ts",
+			Identity: &DependencyIdentity{Ecosystem: "npm", Name: "example-lib", Version: "2.32.0"},
+		}},
+	}
+	advisories := []VulnerabilityAdvisory{{
+		ID:            "OSV-unaffected",
+		Package:       "example-lib",
+		Ecosystem:     "npm",
+		VersionRanges: []VulnerabilityVersionRange{ecosystemVersionRange(VulnerabilityVersionEvent{Introduced: "0"}, VulnerabilityVersionEvent{Fixed: "2.32.0"})},
+	}}
+
+	AnnotateVulnerabilities(&reportData, advisories)
+
+	if len(reportData.Dependencies[0].Vulnerabilities) != 0 {
+		t.Fatalf("expected confirmed unaffected version not to create a finding, got %#v", reportData.Dependencies[0].Vulnerabilities)
+	}
+	if !slices.Equal(reportData.Warnings, []string{"existing warning"}) {
+		t.Fatalf("expected unaffected version not to add warnings, got %#v", reportData.Warnings)
 	}
 }
 
