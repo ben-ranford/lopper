@@ -2111,6 +2111,23 @@ func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *te
 	}
 }
 
+func TestDetectLockfileDriftRejectsOversizedNonWhitelistedManifest(t *testing.T) {
+	repo := t.TempDir()
+	manifestBody := `{"padding":"` + strings.Repeat("x", int(lockfileDriftManifestReadLimit)) + `"}`
+	writeFile(t, filepath.Join(repo, manifestFileName), manifestBody)
+
+	_, err := detectLockfileDrift(context.Background(), repo, false)
+	if err == nil {
+		t.Fatal("expected oversized package.json read to fail")
+	}
+	if !strings.Contains(err.Error(), "read package.json for lockfile drift detection") {
+		t.Fatalf("expected package.json read error context, got %v", err)
+	}
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge for package.json, got %v", err)
+	}
+}
+
 // assertLockfileWarning checks that warnings contains (or does not contain)
 // an entry mentioning lockfileHint, depending on wantWarning.
 func assertLockfileWarning(t *testing.T, warnings []string, lockfileHint string, wantWarning bool) {

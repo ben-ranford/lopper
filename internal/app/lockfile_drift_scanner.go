@@ -494,19 +494,7 @@ func newLockfileManifestCache(snapshot lockfileDirSnapshot) *lockfileManifestCac
 }
 
 func readLockfileManifest(rootDir, targetPath string) ([]byte, error) {
-	if isBoundedLockfileManifest(filepath.Base(targetPath)) {
-		return readFileUnderLimitFn(rootDir, targetPath, lockfileDriftManifestReadLimit)
-	}
-	return readFileUnderFn(rootDir, targetPath)
-}
-
-func isBoundedLockfileManifest(name string) bool {
-	switch strings.TrimSpace(name) {
-	case pyprojectManifestName, "go.mod", "Cargo.toml":
-		return true
-	default:
-		return false
-	}
+	return readFileUnderLimitFn(rootDir, targetPath, lockfileDriftManifestReadLimit)
 }
 
 func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error) {
