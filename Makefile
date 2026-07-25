@@ -280,10 +280,11 @@ benchdelta-cov:
 ci: benchdelta-cov
 
 cov:
-	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
+	@mkdir -p $$(dirname "$(COVERAGE_DEFAULT_FILE)")
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'); \
 		GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs -covermode=atomic -coverprofile="$(COVERAGE_DEFAULT_FILE)"
 	@$(MAKE) cov-lockfiledrift-head
+	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
 	@{ \
 		sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"; \
 		sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"; \
@@ -298,6 +299,7 @@ cov:
 		-package-failures-out=".artifacts/coverage-package-failures.txt"
 
 cov-lockfiledrift-head:
+	@mkdir -p $$(dirname "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)")
 	GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE) -covermode=atomic -coverprofile="$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"
 
 build:

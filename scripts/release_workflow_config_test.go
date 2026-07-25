@@ -3142,6 +3142,7 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 			`$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)`,
 		},
 		"cov-lockfiledrift-head": {
+			`mkdir -p $$(dirname "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)")`,
 			`GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE) -covermode=atomic -coverprofile="$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
 		},
 	} {
@@ -3164,7 +3165,9 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 	}
 	for _, want := range []string{
 		`grep -Ev '/internal/app$$|/internal/testutil$$|/internal/testsupport$$|/tools/benchdelta$$'`,
+		`mkdir -p $$(dirname "$(COVERAGE_DEFAULT_FILE)")`,
 		`-coverprofile="$(COVERAGE_DEFAULT_FILE)"`,
+		`mkdir -p $$(dirname "$(COVERAGE_FILE)")`,
 		`sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"`,
 		`sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"`,
 		`sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"`,
@@ -3176,6 +3179,54 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 			t.Fatalf("cov target must contain %q", want)
 		}
 	}
+}
+
+func TestMakefileCoverageTargetsCreateConfiguredParentDirectories(t *testing.T) {
+	t.Parallel()
+
+	fakeGo := newCoverageFakeGo(t)
+
+	t.Run("cov-lockfiledrift-head", func(t *testing.T) {
+		t.Parallel()
+
+		profilePath := filepath.Join(t.TempDir(), "nested", "head", "coverage.out")
+		assertPathAbsent(t, filepath.Dir(profilePath))
+
+		runMakeTarget(t, "cov-lockfiledrift-head", map[string]string{
+			"GO":                               fakeGo,
+			"GO_TOOLCHAIN":                     "local",
+			"COVERAGE_LOCKFILEDRIFT_HEAD_FILE": profilePath,
+		})
+
+		assertCoverageProfile(t, profilePath)
+	})
+
+	t.Run("cov", func(t *testing.T) {
+		t.Parallel()
+
+		root := t.TempDir()
+		defaultProfile := filepath.Join(root, "nested", "default", "coverage-default.out")
+		headProfile := filepath.Join(root, "nested", "head", "coverage-head.out")
+		mergedProfile := filepath.Join(root, "nested", "merged", "coverage.out")
+
+		assertPathAbsent(t, filepath.Dir(defaultProfile))
+		assertPathAbsent(t, filepath.Dir(headProfile))
+		assertPathAbsent(t, filepath.Dir(mergedProfile))
+
+		runMakeTarget(t, "cov", map[string]string{
+			"GO":                               fakeGo,
+			"GO_TOOLCHAIN":                     "local",
+			"COVERAGE_DEFAULT_FILE":            defaultProfile,
+			"COVERAGE_LOCKFILEDRIFT_HEAD_FILE": headProfile,
+			"COVERAGE_FILE":                    mergedProfile,
+			"COVERAGE_MIN":                     "0",
+			"COVERAGE_PACKAGE_MIN":             "0",
+		})
+
+		assertCoverageProfile(t, defaultProfile)
+		assertCoverageProfile(t, headProfile)
+		assertCoverageProfile(t, mergedProfile)
+	})
 }
 
 func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
@@ -4918,6 +4969,131 @@ func repoPath(t *testing.T, path string) string {
 		t.Fatal("resolve test file path")
 	}
 	return filepath.Join(filepath.Dir(filename), "..", path)
+}
+
+func runMakeTarget(t *testing.T, target string, vars map[string]string) string {
+	t.Helper()
+
+	args := []string{target}
+	for key, value := range vars {
+		args = append(args, key+"="+value)
+	}
+
+	cmd := exec.Command("make", args...)
+	cmd.Dir = repoPath(t, ".")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make %s failed: %v\n%s", target, err, output)
+	}
+	return string(output)
+}
+
+func newCoverageFakeGo(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "fake-go.sh")
+	script := `#!/bin/sh
+set -eu
+
+cmd="${1:-}"
+if [ -z "$cmd" ]; then
+	echo "missing command" >&2
+	exit 1
+fi
+shift
+
+case "$cmd" in
+	env)
+		case "${1:-}" in
+			GOOS) echo darwin ;;
+			GOARCH) echo arm64 ;;
+			*)
+				echo "unexpected env query: ${1:-}" >&2
+				exit 1
+				;;
+		esac
+		;;
+	list)
+		printf '%s\n' ./cmd/lopper ./internal/app ./internal/testutil ./internal/testsupport ./tools/benchdelta
+		;;
+	test)
+		coverprofile=
+		for arg in "$@"; do
+			case "$arg" in
+				-coverprofile=*)
+					coverprofile="${arg#-coverprofile=}"
+					;;
+			esac
+		done
+		if [ -z "$coverprofile" ]; then
+			echo "missing -coverprofile" >&2
+			exit 1
+		fi
+		parent=$(dirname "$coverprofile")
+		if [ ! -d "$parent" ]; then
+			echo "missing coverprofile parent: $parent" >&2
+			exit 91
+		fi
+		printf 'mode: atomic\npkg/file.go:1.1,1.2 1 1\n' > "$coverprofile"
+		;;
+	run)
+		if [ "${1:-}" != "./tools/coveragegate" ]; then
+			echo "unexpected go run target: ${1:-}" >&2
+			exit 1
+		fi
+		shift
+		coverprofile=
+		for arg in "$@"; do
+			case "$arg" in
+				-coverprofile=*)
+					coverprofile="${arg#-coverprofile=}"
+					;;
+				-total-out=*|-packages-out=*|-package-failures-out=*)
+					output="${arg#*=}"
+					parent=$(dirname "$output")
+					if [ ! -d "$parent" ]; then
+						echo "missing coveragegate output parent: $parent" >&2
+						exit 92
+					fi
+					: > "$output"
+					;;
+			esac
+		done
+		if [ -z "$coverprofile" ] || [ ! -f "$coverprofile" ]; then
+			echo "missing coverage profile for coveragegate: $coverprofile" >&2
+			exit 93
+		fi
+		;;
+	*)
+		echo "unexpected go command: $cmd" >&2
+		exit 1
+		;;
+esac
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake go: %v", err)
+	}
+	return path
+}
+
+func assertPathAbsent(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be absent before invocation, err=%v", path, err)
+	}
+}
+
+func assertCoverageProfile(t *testing.T, path string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read coverage profile %s: %v", path, err)
+	}
+	if !strings.HasPrefix(string(data), "mode: atomic\n") {
+		t.Fatalf("coverage profile %s must begin with mode header, got:\n%s", path, data)
+	}
 }
 
 func embeddedPythonScript(t *testing.T, run string, marker string) string {
