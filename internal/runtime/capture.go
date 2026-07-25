@@ -42,7 +42,7 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 	return captureWithRuntimeHookPathResolver(ctx, req, defaultRuntimeHookPathResolver)
 }
 
-func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest, resolver *runtimeHookPathResolver) error {
+func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest, resolver *runtimeHookPathResolver) (err error) {
 	plan, err := resolveCapturePlan(req)
 	if err != nil {
 		return err
@@ -68,9 +68,18 @@ func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest,
 		return err
 	}
 	cmd.Dir = plan.repoPath
-	cmd.Env, err = withRuntimeTraceEnvForResolver(os.Environ(), plan.tracePath, plan.provider, plan.repoPath, resolver)
+	env, cleanup, err := runtimeTraceEnvForCapture(os.Environ(), plan.tracePath, plan.provider, plan.repoPath, resolver)
 	if err != nil {
 		return err
+	}
+	cmd.Env = env
+	if cleanup != nil {
+		defer func() {
+			cleanupErr := cleanup()
+			if cleanupErr != nil && err == nil {
+				err = fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr)
+			}
+		}()
 	}
 
 	output := newRuntimeCommandOutput()

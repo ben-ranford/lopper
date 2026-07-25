@@ -4,7 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { createDirectoryLinkSync, createFileLinkSync, skipIfLinkUnsupported } from "./test-link-helpers.mjs";
 
 const hookDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -88,6 +90,29 @@ test("ESM loader persists only sanitized artifact values", (t) => {
     expectedRedactedMainParentCount: 8,
     redactedMessage: "outside-root import must be recorded without its path",
   });
+});
+
+test("runtime hooks redact symlink-escaped parent and entrypoint contexts", (t) => {
+  for (const format of ["cjs", "esm"]) {
+    const fixture = createNodeSymlinkEscapeFixture(t, format);
+    if (!fixture) {
+      return;
+    }
+    const events = captureNodeHookEvents(
+      fixture,
+      format === "cjs" ? "--require" : "--loader",
+      format === "cjs" ? "require-hook.cjs" : "loader.mjs",
+    );
+
+    assert.ok(
+      events.some((event) => event.parent === "" && event.module === "fixture-dep"),
+      `${format} dependency event should redact escaped parent context`,
+    );
+    assert.ok(
+      events.some((event) => event.entrypoint === "" && event.parent === "" && event.module === "" && event.resolved === ""),
+      `${format} main event should redact escaped entrypoint context`,
+    );
+  }
 });
 
 function createNodeFixture(t, format) {
@@ -189,6 +214,64 @@ function createNodeFixture(t, format) {
           "",
         ].join("\n"),
   );
+
+  return { entrypoint, fixtureRoot, repoRoot, tracePath };
+}
+
+function createNodeSymlinkEscapeFixture(t, format) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lopper-runtime-symlink-${format}-`));
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  const repoRoot = path.join(fixtureRoot, "repo");
+  const packageRoot = path.join(repoRoot, "node_modules", "fixture-dep");
+  const extension = format === "esm" ? "mjs" : "cjs";
+  const tracePath = path.join(fixtureRoot, `${format}.ndjson`);
+  const outsideNodeModules = path.join(fixtureRoot, "node_modules");
+  const parentTarget = path.join(fixtureRoot, `outside-parent.${extension}`);
+  const parentLink = path.join(repoRoot, `link-parent.${extension}`);
+  const entrypointTarget = path.join(fixtureRoot, `outside-entry.${extension}`);
+  const entrypoint = path.join(repoRoot, `run.${extension}`);
+
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    JSON.stringify({
+      name: "fixture-dep",
+      version: "1.0.0",
+      ...(format === "esm" ? { type: "module", main: "index.mjs" } : { main: "index.cjs" }),
+    }),
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, `index.${extension}`),
+    format === "esm" ? "export default 1;\n" : "module.exports = 1;\n",
+  );
+  try {
+    createDirectoryLinkSync(path.join(repoRoot, "node_modules"), outsideNodeModules);
+  } catch (error) {
+    if (skipIfLinkUnsupported(t, error)) {
+      return null;
+    }
+    throw error;
+  }
+  fs.writeFileSync(
+    parentTarget,
+    format === "esm" ? 'import "fixture-dep";\n' : 'require("fixture-dep");\n',
+  );
+  const parentSpecifier =
+    format === "esm" ? pathToFileURL(parentLink).href : JSON.stringify(parentLink);
+  fs.writeFileSync(
+    entrypointTarget,
+    format === "esm" ? `import ${JSON.stringify(parentSpecifier)};\n` : `require(${parentSpecifier});\n`,
+  );
+  try {
+    createFileLinkSync(parentTarget, parentLink);
+    createFileLinkSync(entrypointTarget, entrypoint);
+  } catch (error) {
+    if (skipIfLinkUnsupported(t, error)) {
+      return null;
+    }
+    throw error;
+  }
 
   return { entrypoint, fixtureRoot, repoRoot, tracePath };
 }

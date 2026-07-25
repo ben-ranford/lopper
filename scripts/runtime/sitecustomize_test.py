@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import errno
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,53 @@ import uuid
 
 
 HOOK_DIR = Path(__file__).resolve().parent
+
+
+def _is_skippable_symlink_error(error: OSError) -> bool:
+    return error.errno in {errno.EPERM, errno.EACCES} or getattr(error, "winerror", None) == 1314
+
+
+def _create_windows_directory_junction(link_path: Path, target_path: Path) -> None:
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link_path), str(target_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or f"exit status {result.returncode}"
+        raise OSError(f"failed to create junction {link_path} -> {target_path}: {detail}")
+
+
+def _remove_directory_alias(link_path: Path) -> None:
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "rmdir", str(link_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()
+            detail = stderr or stdout or f"exit status {result.returncode}"
+            raise OSError(f"failed to remove directory alias {link_path}: {detail}")
+        return
+    link_path.unlink()
+
+
+def _create_test_symlink(test_case: unittest.TestCase, link_path: Path, target_path: Path, *, is_dir: bool = False) -> None:
+    if is_dir and os.name == "nt":
+        _create_windows_directory_junction(link_path, target_path)
+        return
+    try:
+        link_path.symlink_to(target_path, target_is_directory=is_dir)
+    except OSError as error:
+        if _is_skippable_symlink_error(error):
+            test_case.skipTest("symlink creation requires elevated privileges or Developer Mode on this platform")
+        raise
 
 
 def load_sitecustomize_module(repo_root: Path):
@@ -44,6 +92,72 @@ def load_sitecustomize_module(repo_root: Path):
 
 
 class SitecustomizeArtifactPrivacyTest(unittest.TestCase):
+    def test_create_windows_directory_junction_uses_safe_argv(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows-only junction coverage")
+
+        captured: dict[str, object] = {}
+        original_run = subprocess.run
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        subprocess.run = fake_run
+        try:
+            _create_windows_directory_junction(Path(r"C:\repo-alias"), Path(r"C:\repo-real"))
+        finally:
+            subprocess.run = original_run
+
+        self.assertEqual(
+            captured["args"],
+            ["cmd.exe", "/d", "/c", "mklink", "/J", r"C:\repo-alias", r"C:\repo-real"],
+        )
+        self.assertEqual(
+            captured["kwargs"],
+            {"capture_output": True, "text": True, "check": False},
+        )
+
+    def test_remove_directory_alias_uses_safe_argv(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows-only junction coverage")
+
+        captured: dict[str, object] = {}
+        original_run = subprocess.run
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+            class Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Result()
+
+        subprocess.run = fake_run
+        try:
+            _remove_directory_alias(Path(r"C:\repo-alias"))
+        finally:
+            subprocess.run = original_run
+
+        self.assertEqual(
+            captured["args"],
+            ["cmd.exe", "/d", "/c", "rmdir", r"C:\repo-alias"],
+        )
+        self.assertEqual(
+            captured["kwargs"],
+            {"capture_output": True, "text": True, "check": False},
+        )
+
     def test_normalize_repo_context_rejects_hostile_paths_before_realpath(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lopper-runtime-python-") as fixture:
             fixture_root = Path(fixture)
@@ -109,8 +223,8 @@ class SitecustomizeArtifactPrivacyTest(unittest.TestCase):
             outside_root.mkdir()
             entrypoint.write_text("print('ok')\n", encoding="utf-8")
             escaped_target.write_text("print('private')\n", encoding="utf-8")
-            alias_root.symlink_to(repo_root, target_is_directory=True)
-            escaped_link.symlink_to(escaped_target)
+            _create_test_symlink(self, alias_root, repo_root, is_dir=True)
+            _create_test_symlink(self, escaped_link, escaped_target)
 
             module_name, module = load_sitecustomize_module(alias_root)
             self.addCleanup(sys.modules.pop, module_name, None)
@@ -125,8 +239,8 @@ class SitecustomizeArtifactPrivacyTest(unittest.TestCase):
             )
             self.assertEqual(module._normalize_repo_context(str(escaped_link)), "")
 
-            alias_root.unlink()
-            alias_root.symlink_to(outside_root, target_is_directory=True)
+            _remove_directory_alias(alias_root)
+            _create_test_symlink(self, alias_root, outside_root, is_dir=True)
             self.assertEqual(module._normalize_repo_context(str(alias_root / "private.py")), "")
 
     def test_persists_module_identifiers_without_host_paths(self) -> None:

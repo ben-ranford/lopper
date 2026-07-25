@@ -158,7 +158,7 @@ vuln-check:
 	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 test:
-	node --test scripts/runtime/context-helper_test.mjs scripts/runtime/hooks_test.mjs
+	node --test scripts/runtime/context-helper_test.mjs scripts/runtime/hooks_test.mjs scripts/runtime/test-link-helpers_test.mjs
 	PYTHONDONTWRITEBYTECODE=1 python3 scripts/runtime/sitecustomize_test.py
 	@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \
 		$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) $$pkgs

@@ -110,7 +110,6 @@ func TestCapturePythonPreservesSymlinkAliasAttributionAndRedactsEscapes(t *testi
 		t.Fatalf("expected alias-relative python attribution, got %#v", *validEvent)
 	}
 	assertRuntimeAliasParentsRedacted(t, events, []string{"outsidedep", "escapeddep"})
-	assertNoPythonCacheDirs(t, []string{fixture.realRepo, fixture.fixtureRoot})
 }
 
 type runtimeRepoAliasFixture struct {
@@ -258,24 +257,6 @@ func assertRuntimeAliasParentsRedacted(t *testing.T, events []Event, modules []s
 		}
 		if event.Parent != "" {
 			t.Fatalf("expected %s escape parent to be redacted, got %#v", module, *event)
-		}
-	}
-}
-
-func assertNoPythonCacheDirs(t *testing.T, roots []string) {
-	t.Helper()
-
-	for _, root := range roots {
-		if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() && entry.Name() == "__pycache__" {
-				t.Errorf("capture created Python cache directory %q", path)
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("scan for Python cache artifacts: %v", err)
 		}
 	}
 }

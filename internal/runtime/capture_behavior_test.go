@@ -105,11 +105,15 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	if trace.DependencyLoadsByLanguage[key] == 0 {
 		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
 	}
-	pycachePaths := []string{
-		filepath.Join(fixture.repo, "__pycache__"),
-		fixture.hookPycache,
-	}
-	assertPathsDoNotExist(t, pycachePaths, "expected python runtime capture to avoid __pycache__ artifacts")
+	assertPathsDoNotExist(t, []string{fixture.hookPycache}, "expected python runtime capture to avoid hook __pycache__ artifacts")
+}
+
+func TestCapturePythonRuntimePreservesDefaultBytecodeSemantics(t *testing.T) {
+	assertPythonRuntimeBytecodeSemantics(t, "")
+}
+
+func TestCapturePythonRuntimePreservesExplicitBytecodeOptIn(t *testing.T) {
+	assertPythonRuntimeBytecodeSemantics(t, "0")
 }
 
 func TestCaptureNodeRuntimeContextPrivacy(t *testing.T) {
@@ -265,6 +269,59 @@ func TestCaptureCommandFailureWithoutOutput(t *testing.T) {
 	if strings.Contains(err.Error(), "\n") {
 		t.Fatalf("expected silent failure without command output, got %v", err)
 	}
+}
+
+func TestCapturePythonHookCleanupErrors(t *testing.T) {
+	sentinel := errors.New("forced cleanup failure")
+	previousChmod := runtimeHookDirChmod
+	previousRemoveAll := runtimeHookDirRemoveAll
+	runtimeHookDirChmod = func(path string, mode os.FileMode) error {
+		return sentinel
+	}
+	runtimeHookDirRemoveAll = func(path string) error {
+		return nil
+	}
+	t.Cleanup(func() {
+		runtimeHookDirChmod = previousChmod
+		runtimeHookDirRemoveAll = previousRemoveAll
+	})
+
+	t.Run("surfaces cleanup error after successful capture", func(t *testing.T) {
+		repo := t.TempDir()
+		tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+		script := "#!/bin/sh\nprintf '{\"module\":\"thirdparty\",\"language\":\"python\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
+		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", script))
+
+		err := Capture(context.Background(), CaptureRequest{
+			RepoPath:  repo,
+			TracePath: tracePath,
+			Command:   "pytest",
+			Provider:  CaptureProviderPython,
+		})
+		if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "cleanup staged runtime python hook") {
+			t.Fatalf("expected staged hook cleanup error, got %v", err)
+		}
+	})
+
+	t.Run("preserves primary capture error", func(t *testing.T) {
+		repo := t.TempDir()
+		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexit 3\n"))
+
+		err := Capture(context.Background(), CaptureRequest{
+			RepoPath: repo,
+			Command:  "pytest",
+			Provider: CaptureProviderPython,
+		})
+		if err == nil {
+			t.Fatal("expected primary capture error")
+		}
+		if !strings.Contains(err.Error(), "runtime test command failed") {
+			t.Fatalf("expected primary capture error, got %v", err)
+		}
+		if strings.Contains(err.Error(), "cleanup staged runtime python hook") {
+			t.Fatalf("expected cleanup error to be suppressed when capture fails, got %v", err)
+		}
+	})
 }
 
 func TestCaptureHonorsContextCancellation(t *testing.T) {
@@ -706,4 +763,56 @@ func assertPathsDoNotExist(t *testing.T, paths []string, message string) {
 			t.Fatalf("%s, stat %q err = %v", message, path, err)
 		}
 	}
+}
+
+func assertPythonRuntimeBytecodeSemantics(t *testing.T, pyDontWriteBytecode string) {
+	t.Helper()
+
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	fixture := newCapturePythonRuntimeFixture(t)
+	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
+	t.Setenv("PYTHONPATH", fixture.sitePackages)
+	if pyDontWriteBytecode == "" {
+		previous, hadPrevious := os.LookupEnv("PYTHONDONTWRITEBYTECODE")
+		if err := os.Unsetenv("PYTHONDONTWRITEBYTECODE"); err != nil {
+			t.Fatalf("unset PYTHONDONTWRITEBYTECODE: %v", err)
+		}
+		t.Cleanup(func() {
+			if !hadPrevious {
+				if err := os.Unsetenv("PYTHONDONTWRITEBYTECODE"); err != nil {
+					t.Fatalf("cleanup PYTHONDONTWRITEBYTECODE: %v", err)
+				}
+				return
+			}
+			if err := os.Setenv("PYTHONDONTWRITEBYTECODE", previous); err != nil {
+				t.Fatalf("restore PYTHONDONTWRITEBYTECODE: %v", err)
+			}
+		})
+	} else {
+		t.Setenv("PYTHONDONTWRITEBYTECODE", pyDontWriteBytecode)
+	}
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import thirdparty; import localmod'\n"))
+
+	err = Capture(context.Background(), CaptureRequest{
+		RepoPath:  fixture.repo,
+		TracePath: fixture.tracePath,
+		Command:   "pytest",
+		Provider:  CaptureProviderPython,
+	})
+	if err != nil {
+		t.Fatalf("capture python runtime trace: %v", err)
+	}
+
+	localPycache, err := filepath.Glob(filepath.Join(fixture.repo, "__pycache__", "localmod*.pyc"))
+	if err != nil {
+		t.Fatalf("glob local module pycache: %v", err)
+	}
+	if len(localPycache) == 0 {
+		t.Fatalf("expected local module bytecode under normal python semantics, got none")
+	}
+	assertPathsDoNotExist(t, []string{fixture.hookPycache}, "expected runtime hook staging to avoid hook __pycache__ artifacts")
 }

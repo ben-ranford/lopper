@@ -112,6 +112,14 @@ function normalizeContextValue(value, repoRoot, realpath = fs.realpathSync.nativ
 }
 
 function normalizeRuntimeModuleValue(value, resolved, repoRoot, realpath = fs.realpathSync.native) {
+  const normalizedResolvedPath = normalizeContextValue(resolved, repoRoot, realpath);
+  if (normalizedResolvedPath) {
+    if (!looksLikeNodeModulesResolvedPath(normalizedResolvedPath)) {
+      return "";
+    }
+  } else if (looksLikeFilesystemContextValue(resolved) || (resolved && looksLikeFilesystemContextValue(value))) {
+    return "";
+  }
   const identifier = normalizeModuleIdentifier(value);
   if (identifier) {
     return identifier;
@@ -205,6 +213,22 @@ function looksLikeContextReference(value) {
   return value.startsWith(".") || hasNonFileScheme(value);
 }
 
+function looksLikeFilesystemContextValue(value) {
+  if (looksLikeContextReference(value)) {
+    return true;
+  }
+  if (!value || typeof value !== "string") return false;
+  value = value.trim();
+  if (!value || !value.includes("/")) {
+    return false;
+  }
+  const parts = value.split("/");
+  if (parts.some((part) => part === "." || part === "..")) {
+    return true;
+  }
+  return path.posix.extname(parts[parts.length - 1]) !== "";
+}
+
 function normalizeLexicalAbsolutePath(value) {
   try {
     return path.resolve(value);
@@ -243,6 +267,10 @@ function isSafeRepoRelativePath(value) {
     return false;
   }
   return !path.isAbsolute(value) && !looksLikeWindowsAbsolutePath(value);
+}
+
+function looksLikeNodeModulesResolvedPath(value) {
+  return value.split("/").includes("node_modules");
 }
 
 function isLexicallyConfinedToRepo(candidatePath, repoRoot) {

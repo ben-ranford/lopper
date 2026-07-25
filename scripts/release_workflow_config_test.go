@@ -3194,7 +3194,7 @@ func TestMakefileTestTargetRunsRuntimeHookSuites(t *testing.T) {
 		t.Fatal("Makefile must define the test target")
 	}
 	for _, want := range []string{
-		`node --test scripts/runtime/context-helper_test.mjs scripts/runtime/hooks_test.mjs`,
+		`node --test scripts/runtime/context-helper_test.mjs scripts/runtime/hooks_test.mjs scripts/runtime/test-link-helpers_test.mjs`,
 		`PYTHONDONTWRITEBYTECODE=1 python3 scripts/runtime/sitecustomize_test.py`,
 		`@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \`,
 		`@$(MAKE) test-lockfiledrift-head`,

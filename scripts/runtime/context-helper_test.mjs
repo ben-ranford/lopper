@@ -5,6 +5,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import helpers from "./context-helper.cjs";
+import { createDirectoryLinkSync, createFileLinkSync, removeDirectoryLinkSync, skipIfLinkUnsupported } from "./test-link-helpers.mjs";
 
 const {
   createRuntimeTraceHelpers,
@@ -22,10 +23,6 @@ function trackRealpathCalls() {
     return fs.realpathSync.native(value);
   };
   return { calls, realpath };
-}
-
-function symlinkType() {
-  return process.platform === "win32" ? "junction" : "dir";
 }
 
 test("rejects windows drive paths before repo-relative joining on any host", () => {
@@ -145,7 +142,7 @@ test("manual helpers fail closed without an explicit repo root", () => {
   }
 });
 
-test("preserves repo attribution for symlinked repo roots and redacts symlink escapes", () => {
+test("preserves repo attribution for symlinked repo roots and redacts symlink escapes", (t) => {
   const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
   const realRepoRoot = path.join(testRoot, "repo-real");
   const aliasRepoRoot = path.join(testRoot, "repo-alias");
@@ -159,8 +156,16 @@ test("preserves repo attribution for symlinked repo roots and redacts symlink es
   fs.writeFileSync(safeModulePath, "export {};\n", "utf8");
   fs.writeFileSync(escapedTargetPath, "export {};\n", "utf8");
   fs.writeFileSync(retargetedModulePath, "export {};\n", "utf8");
-  fs.symlinkSync(realRepoRoot, aliasRepoRoot, symlinkType());
-  fs.symlinkSync(escapedTargetPath, escapedLinkPath);
+  try {
+    createDirectoryLinkSync(realRepoRoot, aliasRepoRoot);
+    createFileLinkSync(escapedTargetPath, escapedLinkPath);
+  } catch (error) {
+    if (skipIfLinkUnsupported(t, error)) {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+      return;
+    }
+    throw error;
+  }
 
   const { calls, realpath } = trackRealpathCalls();
   const runtimeHelpers = createRuntimeTraceHelpers(
@@ -174,10 +179,41 @@ test("preserves repo attribution for symlinked repo roots and redacts symlink es
   assert.equal(runtimeHelpers.normalizeContext(path.join(aliasRepoRoot, "src", "escaped.js")), "");
   assert.equal(runtimeHelpers.normalizeResolved(pathToFileURL(escapedLinkPath).href), "");
 
-  fs.unlinkSync(aliasRepoRoot);
-  fs.symlinkSync(retargetedRepoRoot, aliasRepoRoot, symlinkType());
+  removeDirectoryLinkSync(aliasRepoRoot);
+  createDirectoryLinkSync(retargetedRepoRoot, aliasRepoRoot);
   assert.equal(runtimeHelpers.normalizeContext(path.join(aliasRepoRoot, "src", "private.js")), "");
   assert.ok(calls.length >= 5);
+
+  fs.rmSync(testRoot, { recursive: true, force: true });
+});
+
+test("redacts escaped repo-relative runtime module requests without demoting package subpaths", (t) => {
+  const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
+  const repoRoot = path.join(testRoot, "repo");
+  const repoSrcDir = path.join(repoRoot, "src");
+  const escapedTargetPath = path.join(testRoot, "private.js");
+  const escapedLinkPath = path.join(repoSrcDir, "escaped.js");
+  const packageResolvedPath = path.join(repoRoot, "node_modules", "fixture-dep", "lib", "index.js");
+  fs.mkdirSync(repoSrcDir, { recursive: true });
+  fs.mkdirSync(path.dirname(packageResolvedPath), { recursive: true });
+  fs.writeFileSync(escapedTargetPath, "export {};\n", "utf8");
+  fs.writeFileSync(packageResolvedPath, "export {};\n", "utf8");
+  try {
+    createFileLinkSync(escapedTargetPath, escapedLinkPath);
+  } catch (error) {
+    if (skipIfLinkUnsupported(t, error)) {
+      fs.rmSync(testRoot, { recursive: true, force: true });
+      return;
+    }
+    throw error;
+  }
+
+  const { realpath } = trackRealpathCalls();
+  assert.equal(normalizeRuntimeModuleValue("src/escaped.js", escapedLinkPath, repoRoot, realpath), "");
+  assert.equal(
+    normalizeRuntimeModuleValue("fixture-dep/lib/index.js", packageResolvedPath, repoRoot, realpath),
+    "fixture-dep/lib/index.js",
+  );
 
   fs.rmSync(testRoot, { recursive: true, force: true });
 });

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,6 +37,12 @@ type runtimeHookPathResolver struct {
 }
 
 var defaultRuntimeHookPathResolver = newRuntimeHookPathResolver(os.Executable, goruntime.Caller)
+var runtimeHookFileRead = os.ReadFile
+var runtimeHookFileWrite = os.WriteFile
+var runtimeHookDirMkdirTemp = os.MkdirTemp
+var runtimeHookDirSeal = os.Chmod
+var runtimeHookDirChmod = os.Chmod
+var runtimeHookDirRemoveAll = os.RemoveAll
 
 func newRuntimeHookPathResolver(executablePath runtimeExecutablePathFunc, caller runtimeCallerFunc) *runtimeHookPathResolver {
 	if executablePath == nil {
@@ -62,6 +69,18 @@ func withRuntimeTraceEnvForResolver(base []string, tracePath string, provider Ca
 		return withPythonRuntimeTraceEnvForResolver(base, tracePath, repoPath, resolver)
 	default:
 		return nil, fmt.Errorf("unsupported runtime capture provider %q", provider)
+	}
+}
+
+func runtimeTraceEnvForCapture(base []string, tracePath string, provider CaptureProvider, repoPath string, resolver *runtimeHookPathResolver) ([]string, func() error, error) {
+	switch normalizeCaptureProvider(provider) {
+	case CaptureProviderNode:
+		env, err := withNodeRuntimeTraceEnvForResolver(base, tracePath, repoPath, resolver)
+		return env, nil, err
+	case CaptureProviderPython:
+		return withPreparedPythonRuntimeTraceEnvForResolver(base, tracePath, repoPath, resolver)
+	default:
+		return nil, nil, fmt.Errorf("unsupported runtime capture provider %q", provider)
 	}
 }
 
@@ -99,16 +118,27 @@ func withPythonRuntimeTraceEnvForResolver(base []string, tracePath string, repoP
 		return nil, fmt.Errorf("resolve runtime python hook: %w", err)
 	}
 
+	return withPythonRuntimeTraceEnvForHookDir(base, tracePath, repoPath, hookDir), nil
+}
+
+func withPreparedPythonRuntimeTraceEnvForResolver(base []string, tracePath string, repoPath string, resolver *runtimeHookPathResolver) ([]string, func() error, error) {
+	hookDir, cleanup, err := stagePythonRuntimeHookDirectoryForResolver(resolver)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stage runtime python hook: %w", err)
+	}
+	return withPythonRuntimeTraceEnvForHookDir(base, tracePath, repoPath, hookDir), cleanup, nil
+}
+
+func withPythonRuntimeTraceEnvForHookDir(base []string, tracePath string, repoPath string, hookDir string) []string {
 	pythonPath := hookDir
 	if existing := strings.TrimSpace(readEnvValue(base, "PYTHONPATH")); existing != "" {
 		pythonPath += string(os.PathListSeparator) + existing
 	}
 	return mergeEnv(base, map[string]string{
-		"LOPPER_RUNTIME_TRACE":    tracePath,
-		runtimeRepoRootEnvKey:     lexicalRuntimeRepoRoot(repoPath),
-		"PYTHONDONTWRITEBYTECODE": "1",
-		"PYTHONPATH":              pythonPath,
-	}), nil
+		"LOPPER_RUNTIME_TRACE": tracePath,
+		runtimeRepoRootEnvKey:  lexicalRuntimeRepoRoot(repoPath),
+		"PYTHONPATH":           pythonPath,
+	})
 }
 
 func lexicalRuntimeRepoRoot(repoPath string) string {
@@ -189,6 +219,10 @@ func runtimePythonHookDirectory() (string, error) {
 	return defaultRuntimeHookPathResolver.runtimePythonHookDirectory()
 }
 
+func stagePythonRuntimeHookDirectory() (string, func() error, error) {
+	return stagePythonRuntimeHookDirectoryForResolver(defaultRuntimeHookPathResolver)
+}
+
 func locateRuntimeHookPaths() (string, string, error) {
 	return locateRuntimeHookPathsInRoots(defaultRuntimeHookPathResolver.runtimeHookSearchRoots())
 }
@@ -246,6 +280,116 @@ func (r *runtimeHookPathResolver) runtimePythonHookDirectory() (string, error) {
 		r.pythonHookDir.path, r.pythonHookDir.err = locateRuntimePythonHookDirectoryInRoots(r.runtimeHookSearchRoots())
 	})
 	return r.pythonHookDir.path, r.pythonHookDir.err
+}
+
+func stagePythonRuntimeHookDirectoryForResolver(resolver *runtimeHookPathResolver) (string, func() error, error) {
+	hookDir, err := resolver.runtimePythonHookDirectory()
+	if err != nil {
+		return "", nil, err
+	}
+	sourcePath := filepath.Join(hookDir, filepath.Base(runtimePythonHookRelPath))
+	content, err := runtimeHookFileRead(sourcePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("read runtime python hook: %w", sanitizeRuntimeHookStageError(err, sourcePath))
+	}
+	stagedDir, err := runtimeHookDirMkdirTemp("", "lopper-python-hook-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create runtime python hook dir: %w", sanitizeRuntimeHookStageTempDirError(err))
+	}
+	cleanup := func() error {
+		var cleanupErrs []error
+		if err := runtimeHookDirChmod(stagedDir, 0o700); err != nil && !os.IsNotExist(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("chmod staged runtime python hook dir: %w", sanitizeRuntimeHookStageError(err, stagedDir)))
+		}
+		if err := runtimeHookDirRemoveAll(stagedDir); err != nil && !os.IsNotExist(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove staged runtime python hook dir: %w", sanitizeRuntimeHookStageError(err, stagedDir)))
+		}
+		return errors.Join(cleanupErrs...)
+	}
+	stagedPath := filepath.Join(stagedDir, filepath.Base(runtimePythonHookRelPath))
+	if err := runtimeHookFileWrite(stagedPath, content, 0o444); err != nil {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			return "", nil, errors.Join(fmt.Errorf("write staged runtime python hook: %w", sanitizeRuntimeHookStageError(err, stagedPath)), fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr))
+		}
+		return "", nil, fmt.Errorf("write staged runtime python hook: %w", sanitizeRuntimeHookStageError(err, stagedPath))
+	}
+	if err := runtimeHookDirSeal(stagedDir, 0o555); err != nil {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			return "", nil, errors.Join(fmt.Errorf("seal staged runtime python hook dir: %w", sanitizeRuntimeHookStageError(err, stagedDir)), fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr))
+		}
+		return "", nil, fmt.Errorf("seal staged runtime python hook dir: %w", sanitizeRuntimeHookStageError(err, stagedDir))
+	}
+	return stagedDir, cleanup, nil
+}
+
+type runtimeHookStageSanitizedError struct {
+	message string
+	err     error
+}
+
+func (e *runtimeHookStageSanitizedError) Error() string {
+	return e.message
+}
+
+func (e *runtimeHookStageSanitizedError) Unwrap() error {
+	return e.err
+}
+
+func sanitizeRuntimeHookStageError(err error, sensitivePaths ...string) error {
+	if err == nil {
+		return nil
+	}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return &os.PathError{
+			Op:   pathErr.Op,
+			Path: sanitizeRuntimeHookStageText(pathErr.Path, sensitivePaths...),
+			Err:  sanitizeRuntimeHookStageError(pathErr.Err, sensitivePaths...),
+		}
+	}
+	message := sanitizeRuntimeHookStageText(err.Error(), sensitivePaths...)
+	if message == err.Error() {
+		return err
+	}
+	return &runtimeHookStageSanitizedError{message: message, err: err}
+}
+
+func sanitizeRuntimeHookStageTempDirError(err error) error {
+	if err == nil {
+		return nil
+	}
+	sensitivePaths := []string{os.TempDir()}
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) && pathErr.Path != "" {
+		sensitivePaths = append(sensitivePaths, pathErr.Path)
+	}
+	return sanitizeRuntimeHookStageError(err, sensitivePaths...)
+}
+
+func sanitizeRuntimeHookStageText(text string, sensitivePaths ...string) string {
+	sanitized := text
+	for _, sensitivePath := range sensitivePaths {
+		for _, candidate := range runtimeHookSensitivePathVariants(sensitivePath) {
+			sanitized = strings.ReplaceAll(sanitized, candidate, "<path>")
+		}
+	}
+	return sanitized
+}
+
+func runtimeHookSensitivePathVariants(path string) []string {
+	if path == "" {
+		return nil
+	}
+	variants := []string{path}
+	cleanPath := filepath.Clean(path)
+	if cleanPath != path {
+		variants = append(variants, cleanPath)
+	}
+	slashPath := filepath.ToSlash(path)
+	if slashPath != path && slashPath != cleanPath {
+		variants = append(variants, slashPath)
+	}
+	return variants
 }
 
 func (r *runtimeHookPathResolver) runtimeHookSearchRoots() []string {
