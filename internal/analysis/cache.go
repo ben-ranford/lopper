@@ -48,14 +48,9 @@ const defaultAnalysisCacheDirName = ".lopper-cache"
 
 func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
-	metadata := report.CacheMetadata{
-		Enabled:  options.Enabled,
-		Path:     options.Path,
-		ReadOnly: options.ReadOnly,
-	}
 	cache := &analysisCache{
 		options:          options,
-		metadata:         metadata,
+		metadata:         newAnalysisCacheMetadata(options),
 		warnings:         make([]string, 0),
 		analysisRootPath: filepath.Clean(repoPath),
 	}
@@ -63,35 +58,62 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		cache.cacheable = false
 		return cache
 	}
-	if req.Cache != nil && strings.TrimSpace(req.Cache.PinnedPath) != "" {
-		if strings.TrimSpace(req.RepoPath) != "" {
-			repoRootPath := filepath.Clean(req.RepoPath)
-			if repoRootPath != cache.analysisRootPath {
-				cache.stableKeyRepoPath = repoRootPath
-			}
-		}
-		if strings.TrimSpace(req.Cache.Path) == "" {
-			cache.metadata.Path = options.WritePath
-		}
-	}
-	writePath := options.writePath()
-	if req.Cache == nil || (strings.TrimSpace(req.Cache.Path) == "" && strings.TrimSpace(req.Cache.PinnedPath) == "") {
-		if cachePathEscapesRepo(writePath, repoPath) {
-			cache.cacheable = false
-			cache.warn(analysisCacheUnavailablePrefix + "cache path escapes repository root")
-			return cache
-		}
-	}
-	writeRootPath, writeRootInfo, err := ensurePinnedCacheLayout(writePath)
-	if err != nil {
-		cache.cacheable = false
-		cache.warn(analysisCacheUnavailablePrefix + err.Error())
+	cache.configureStablePaths(req)
+	if !cache.validateDefaultWritePath(req, repoPath) {
 		return cache
 	}
-	cache.writeRootPath = writeRootPath
-	cache.writeRootInfo = writeRootInfo
-	cache.cacheable = true
+	cache.initializeWriteRoot(options.writePath())
 	return cache
+}
+
+func newAnalysisCacheMetadata(options resolvedCacheOptions) report.CacheMetadata {
+	return report.CacheMetadata{
+		Enabled:  options.Enabled,
+		Path:     options.Path,
+		ReadOnly: options.ReadOnly,
+	}
+}
+
+func (c *analysisCache) configureStablePaths(req Request) {
+	if c == nil {
+		return
+	}
+	if repoRootPath := strings.TrimSpace(req.RepoPath); repoRootPath != "" {
+		repoRootPath = filepath.Clean(repoRootPath)
+		if repoRootPath != c.analysisRootPath {
+			c.stableKeyRepoPath = repoRootPath
+		}
+	}
+	if req.Cache != nil && strings.TrimSpace(req.Cache.PinnedPath) != "" && strings.TrimSpace(req.Cache.Path) == "" {
+		c.metadata.Path = c.options.WritePath
+	}
+}
+
+func (c *analysisCache) validateDefaultWritePath(req Request, repoPath string) bool {
+	if c == nil {
+		return false
+	}
+	if req.Cache != nil && (strings.TrimSpace(req.Cache.Path) != "" || strings.TrimSpace(req.Cache.PinnedPath) != "") {
+		return true
+	}
+	if cachePathEscapesRepo(c.options.writePath(), repoPath) {
+		c.cacheable = false
+		c.warn(analysisCacheUnavailablePrefix + "cache path escapes repository root")
+		return false
+	}
+	return true
+}
+
+func (c *analysisCache) initializeWriteRoot(writePath string) {
+	writeRootPath, writeRootInfo, err := ensurePinnedCacheLayout(writePath)
+	if err != nil {
+		c.cacheable = false
+		c.warn(analysisCacheUnavailablePrefix + err.Error())
+		return
+	}
+	c.writeRootPath = writeRootPath
+	c.writeRootInfo = writeRootInfo
+	c.cacheable = true
 }
 
 func (c *analysisCache) stableCacheRoot(normalizedRoot string) string {

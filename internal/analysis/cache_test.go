@@ -327,6 +327,47 @@ func TestAnalysisCachePrepareEntryIncludesRuntimeCaptureRequestScope(t *testing.
 	}
 }
 
+func TestAnalysisCachePrepareEntryIncludesNormalizedPathScopeIdentity(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	req := Request{
+		RepoPath: repo,
+		TopN:     1,
+		Cache: &CacheOptions{
+			Enabled:    true,
+			PinnedPath: filepath.Join(repo, cacheTestDirectoryName),
+		},
+	}
+	cache := newAnalysisCache(req, repo)
+
+	unscopedEntry, err := cache.prepareEntry(req, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare unscoped entry: %v", err)
+	}
+
+	scopedReq := req
+	scopedReq.IncludePatterns = []string{" src/** ", "src/**"}
+	scopedReq.ExcludePatterns = []string{"vendor/**", "vendor/**"}
+	scopedEntry, err := cache.prepareEntry(scopedReq, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare scoped entry: %v", err)
+	}
+	if unscopedEntry.KeyDigest == scopedEntry.KeyDigest {
+		t.Fatalf("expected scoped cache entry key to differ from unscoped key")
+	}
+
+	normalizedReq := req
+	normalizedReq.IncludePatterns = []string{"src/**"}
+	normalizedReq.ExcludePatterns = []string{"vendor/**"}
+	normalizedEntry, err := cache.prepareEntry(normalizedReq, "cachelang", repo)
+	if err != nil {
+		t.Fatalf("prepare normalized scoped entry: %v", err)
+	}
+	if scopedEntry.KeyDigest != normalizedEntry.KeyDigest {
+		t.Fatalf("expected normalized scope patterns to produce a stable cache key")
+	}
+}
+
 func TestAnalysisCachePrepareEntryMemoizesInputDigestForSameRootAndConfig(t *testing.T) {
 	repo := t.TempDir()
 	root := filepath.Join(repo, "root")

@@ -68,6 +68,9 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	if len(req.LicenseDenyList) > 0 {
 		baseKey["licenseDeny"] = req.LicenseDenyList
 	}
+	if scopeIdentity := normalizedScopeCacheIdentity(req); scopeIdentity != nil {
+		baseKey["pathScope"] = scopeIdentity
+	}
 	baseKey["includeRegistryProvenance"] = req.IncludeRegistryProvenance
 	baseDigest, err := hashJSON(baseKey)
 	if err != nil {
@@ -155,6 +158,22 @@ func cleanRuntimeTracePath(tracePath string) string {
 
 func normalizeCacheLanguage(languageID string) string {
 	return strings.ToLower(strings.TrimSpace(languageID))
+}
+
+type scopeCacheIdentity struct {
+	Include []string `json:"include,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
+}
+
+func normalizedScopeCacheIdentity(req Request) *scopeCacheIdentity {
+	identity := &scopeCacheIdentity{
+		Include: normalizePatterns(req.IncludePatterns),
+		Exclude: normalizePatterns(req.ExcludePatterns),
+	}
+	if len(identity.Include) == 0 && len(identity.Exclude) == 0 {
+		return nil
+	}
+	return identity
 }
 
 func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
@@ -29,11 +30,9 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 	}
 
 	runtimeTracePath, runtimeTracePathExplicit := prepareRuntimeTracePlan(req)
-	cacheOptions := &analysis.CacheOptions{
-		Enabled:    req.Analyse.CacheEnabled,
-		Path:       req.Analyse.CachePath,
-		ReadOnly:   req.Analyse.CacheReadOnly,
-		PinnedPath: req.Analyse.CachePinnedPath,
+	cacheOptions, err := prepareAnalyseCacheOptions(req.RepoPath, req.Analyse)
+	if err != nil {
+		return preparedAnalyseExecution{}, err
 	}
 	baseRequest := analysis.Request{
 		RepoPath:                 req.RepoPath,
@@ -112,4 +111,29 @@ func prepareRuntimeTrace(_ context.Context, req Request) ([]string, string) {
 func prepareRuntimeTracePlan(req Request) (string, bool) {
 	path := strings.TrimSpace(req.Analyse.RuntimeTracePath)
 	return path, path != ""
+}
+
+func prepareAnalyseCacheOptions(repoPath string, req AnalyseRequest) (*analysis.CacheOptions, error) {
+	cacheOptions := &analysis.CacheOptions{
+		Enabled:    req.CacheEnabled,
+		Path:       req.CachePath,
+		ReadOnly:   req.CacheReadOnly,
+		PinnedPath: req.CachePinnedPath,
+	}
+	if !cacheOptions.Enabled || strings.TrimSpace(cacheOptions.PinnedPath) != "" {
+		return cacheOptions, nil
+	}
+	cachePath := strings.TrimSpace(cacheOptions.Path)
+	if cachePath == "" || strings.TrimSpace(repoPath) == "" {
+		return cacheOptions, nil
+	}
+
+	trustedOptions, err := analysis.ResolveTrustedCacheOptions(repoPath, cacheOptions)
+	if err == nil {
+		return trustedOptions, nil
+	}
+	if filepath.IsAbs(cachePath) {
+		return cacheOptions, nil
+	}
+	return nil, err
 }

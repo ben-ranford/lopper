@@ -12,9 +12,7 @@ const maxScopeDiagnostics = 5
 
 var scopeWorkspaceCreatedFn = func(string) {}
 
-func noOpCleanup() {
-	// Intentionally empty: when no scope patterns are configured, there is no temporary workspace to clean up.
-}
+func noOpCleanup() { /* Intentionally empty: no scoped workspace was created. */ }
 
 type scopeStats struct {
 	includeMatches     map[string]int
@@ -110,7 +108,7 @@ func (w *scopeWalker) walk(currentPath string, entry fs.DirEntry, walkErr error)
 		return walkErr
 	}
 	if entry.IsDir() {
-		if entry.Name() == ".git" {
+		if shouldSkipScopeDir(w.repoPath, currentPath, entry.Name()) {
 			return filepath.SkipDir
 		}
 		return nil
@@ -161,4 +159,11 @@ func recordScopeSkipReason(stats *scopeStats, slashed string, reason string) {
 		return
 	}
 	stats.skippedDiagnostics = append(stats.skippedDiagnostics, slashed+" ("+reason+")")
+}
+
+func shouldSkipScopeDir(repoPath, currentPath, name string) bool {
+	if name == ".git" {
+		return true
+	}
+	return filepath.Clean(currentPath) == filepath.Join(filepath.Clean(repoPath), defaultAnalysisCacheDirName)
 }

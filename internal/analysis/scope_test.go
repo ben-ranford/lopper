@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -125,6 +126,64 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 	}
 	if !containsWarning(warnings, "analysis scope skipped file: src/linked.js (is symlink (not copied))") {
 		t.Fatalf("expected symlink skip diagnostic, got %#v", warnings)
+	}
+}
+
+func TestApplyPathScopeSkipsPinnedCacheDirAndToleratesConcurrentCacheWrites(t *testing.T) {
+	repo := t.TempDir()
+	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	writeScopeFile(t, filepath.Join(repo, defaultAnalysisCacheDirName, "objects", "seed.json"), "{\"cached\":true}\n")
+
+	stopWrites := make(chan struct{})
+	writeErrs := make(chan error, 1)
+	var writer sync.WaitGroup
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		for i := 0; i < 64; i++ {
+			select {
+			case <-stopWrites:
+				return
+			default:
+			}
+			path := filepath.Join(repo, defaultAnalysisCacheDirName, "objects", "concurrent", strings.Repeat("x", i%4+1)+".json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				select {
+				case writeErrs <- err:
+				default:
+				}
+				return
+			}
+			if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+				select {
+				case writeErrs <- err:
+				default:
+				}
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stopWrites)
+		writer.Wait()
+	}()
+
+	scopedPath, _, cleanup, err := applyPathScope(repo, []string{"**"}, nil)
+	if err != nil {
+		t.Fatalf("apply path scope with pinned cache dir present: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
+		t.Fatalf("expected in-scope file copied into scoped workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scopedPath, defaultAnalysisCacheDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected pinned cache dir to be excluded from scoped workspace, got err=%v", err)
+	}
+	select {
+	case err := <-writeErrs:
+		t.Fatalf("concurrent cache write failed: %v", err)
+	default:
 	}
 }
 

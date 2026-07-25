@@ -721,42 +721,15 @@ func TestServiceAnalyseAllowsAbsoluteCachePathOutsideRepo(t *testing.T) {
 }
 
 func TestServiceAnalyseScopedPinnedDefaultCacheWritesStayUnderRepoRoot(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-	writeFile(t, filepath.Join(repo, "src", indexJSFileName), lodashMapUsageJS)
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+	repo := writeScopedCacheFixture(t)
 
 	pinnedCachePath, err := ResolveTrustedDefaultCachePath(repo)
 	if err != nil {
 		t.Fatalf("resolve trusted default cache path: %v", err)
 	}
 
-	var scopedRoot string
-	previousScopeWorkspaceCreatedFn := scopeWorkspaceCreatedFn
-	scopeWorkspaceCreatedFn = func(path string) {
-		scopedRoot = path
-	}
-	t.Cleanup(func() {
-		scopeWorkspaceCreatedFn = previousScopeWorkspaceCreatedFn
-	})
-
-	previousCacheInitHook := cacheInitBeforeObjectsEnsureFn
-	cacheInitBeforeObjectsEnsureFn = func() error {
-		if scopedRoot == "" {
-			t.Fatalf("expected scoped workspace path before cache initialization")
-		}
-		if _, err := os.Stat(filepath.Join(scopedRoot, defaultAnalysisCacheDirName)); !os.IsNotExist(err) {
-			t.Fatalf("expected scoped workspace cache root to remain absent during cache init, stat err=%v", err)
-		}
-		if _, err := os.Stat(filepath.Join(repo, defaultAnalysisCacheDirName, cacheKeysDirName)); err != nil {
-			t.Fatalf("expected repo-root cache keys dir during cache init: %v", err)
-		}
-		return nil
-	}
-	t.Cleanup(func() {
-		cacheInitBeforeObjectsEnsureFn = previousCacheInitHook
-	})
+	scopedRoot := captureScopedWorkspacePath(t)
+	assertScopedCacheInitUsesRepoRoot(t, repo, scopedRoot)
 
 	req := Request{
 		RepoPath:        repo,
@@ -780,17 +753,8 @@ func TestServiceAnalyseScopedPinnedDefaultCacheWritesStayUnderRepoRoot(t *testin
 	if reportData.Cache == nil || reportData.Cache.Path != pinnedCachePath || reportData.Cache.Misses != 1 || reportData.Cache.Writes != 1 {
 		t.Fatalf("expected scoped cache metadata to report pinned repo-root path and first-run miss/write, got %#v", reportData.Cache)
 	}
-	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
-		if _, err := os.Stat(filepath.Join(repo, defaultAnalysisCacheDirName, dir)); err != nil {
-			t.Fatalf("expected %s dir in repo-root default cache: %v", dir, err)
-		}
-	}
-	if scopedRoot == "" {
-		t.Fatalf("expected scoped workspace to be created")
-	}
-	if _, err := os.Stat(filepath.Join(scopedRoot, defaultAnalysisCacheDirName)); !os.IsNotExist(err) {
-		t.Fatalf("expected scoped workspace cache root to remain absent after analysis, stat err=%v", err)
-	}
+	assertCacheDirsExist(t, filepath.Join(repo, defaultAnalysisCacheDirName))
+	assertScopedRootExcludesCacheDir(t, *scopedRoot, defaultAnalysisCacheDirName)
 
 	secondReport, err := NewService().Analyse(context.Background(), req)
 	if err != nil {
@@ -802,11 +766,7 @@ func TestServiceAnalyseScopedPinnedDefaultCacheWritesStayUnderRepoRoot(t *testin
 }
 
 func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRuns(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
-	writeFile(t, filepath.Join(repo, "src", indexJSFileName), lodashMapUsageJS)
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
-	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+	repo := writeScopedCacheFixture(t)
 
 	cacheOptions, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
 		Enabled: true,
@@ -819,14 +779,7 @@ func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRun
 		t.Fatalf("expected trusted cache options to pin explicit relative cache path")
 	}
 
-	var scopedRoot string
-	previousScopeWorkspaceCreatedFn := scopeWorkspaceCreatedFn
-	scopeWorkspaceCreatedFn = func(path string) {
-		scopedRoot = path
-	}
-	t.Cleanup(func() {
-		scopeWorkspaceCreatedFn = previousScopeWorkspaceCreatedFn
-	})
+	scopedRoot := captureScopedWorkspacePath(t)
 
 	req := Request{
 		RepoPath:        repo,
@@ -844,17 +797,8 @@ func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRun
 	if firstReport.Cache == nil || firstReport.Cache.Path != filepath.Join(".cache", "lopper") || firstReport.Cache.Misses != 1 || firstReport.Cache.Writes != 1 {
 		t.Fatalf("expected first scoped run to report explicit relative cache path with miss/write metadata, got %#v", firstReport.Cache)
 	}
-	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
-		if _, err := os.Stat(filepath.Join(repo, ".cache", "lopper", dir)); err != nil {
-			t.Fatalf("expected %s dir in repo-root explicit cache path: %v", dir, err)
-		}
-	}
-	if scopedRoot == "" {
-		t.Fatalf("expected scoped workspace to be created")
-	}
-	if _, err := os.Stat(filepath.Join(scopedRoot, ".cache", "lopper")); !os.IsNotExist(err) {
-		t.Fatalf("expected scoped workspace explicit cache root to remain absent after first run, stat err=%v", err)
-	}
+	assertCacheDirsExist(t, filepath.Join(repo, ".cache", "lopper"))
+	assertScopedRootExcludesCacheDir(t, *scopedRoot, filepath.Join(".cache", "lopper"))
 
 	secondReport, err := NewService().Analyse(context.Background(), req)
 	if err != nil {
@@ -862,6 +806,118 @@ func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRun
 	}
 	if secondReport.Cache == nil || secondReport.Cache.Path != filepath.Join(".cache", "lopper") || secondReport.Cache.Hits != 1 || secondReport.Cache.Misses != 0 {
 		t.Fatalf("expected second scoped run to hit repo-root explicit cache with truthful metadata, got %#v", secondReport.Cache)
+	}
+}
+
+func TestServiceAnalyseScopedAndUnscopedPinnedCacheEntriesDoNotCollide(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+	pinnedCachePath, err := ResolveTrustedDefaultCachePath(repo)
+	if err != nil {
+		t.Fatalf("resolve trusted default cache path: %v", err)
+	}
+
+	baseReq := Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+		Language:   "js-ts",
+		Cache: &CacheOptions{
+			Enabled:    true,
+			PinnedPath: pinnedCachePath,
+		},
+	}
+	scopedReq := baseReq
+	scopedReq.IncludePatterns = []string{"src/**"}
+
+	unscopedFirst, err := NewService().Analyse(context.Background(), baseReq)
+	if err != nil {
+		t.Fatalf("first unscoped analyse: %v", err)
+	}
+	if unscopedFirst.Cache == nil || unscopedFirst.Cache.Misses != 1 || unscopedFirst.Cache.Writes != 1 {
+		t.Fatalf("expected first unscoped run to miss and write, got %#v", unscopedFirst.Cache)
+	}
+
+	scopedFirst, err := NewService().Analyse(context.Background(), scopedReq)
+	if err != nil {
+		t.Fatalf("first scoped analyse: %v", err)
+	}
+	if scopedFirst.Cache == nil || scopedFirst.Cache.Misses != 1 || scopedFirst.Cache.Writes != 1 {
+		t.Fatalf("expected first scoped run to miss and write its own entry, got %#v", scopedFirst.Cache)
+	}
+
+	unscopedSecond, err := NewService().Analyse(context.Background(), baseReq)
+	if err != nil {
+		t.Fatalf("second unscoped analyse: %v", err)
+	}
+	if unscopedSecond.Cache == nil || unscopedSecond.Cache.Hits != 1 || unscopedSecond.Cache.Misses != 0 {
+		t.Fatalf("expected second unscoped run to hit its original entry, got %#v", unscopedSecond.Cache)
+	}
+
+	scopedSecond, err := NewService().Analyse(context.Background(), scopedReq)
+	if err != nil {
+		t.Fatalf("second scoped analyse: %v", err)
+	}
+	if scopedSecond.Cache == nil || scopedSecond.Cache.Hits != 1 || scopedSecond.Cache.Misses != 0 {
+		t.Fatalf("expected second scoped run to hit its scoped entry, got %#v", scopedSecond.Cache)
+	}
+}
+
+func writeScopedCacheFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, "src", indexJSFileName), lodashMapUsageJS)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+	return repo
+}
+
+func captureScopedWorkspacePath(t *testing.T) *string {
+	t.Helper()
+	scopedRoot := new(string)
+	previous := scopeWorkspaceCreatedFn
+	scopeWorkspaceCreatedFn = func(path string) {
+		*scopedRoot = path
+	}
+	t.Cleanup(func() {
+		scopeWorkspaceCreatedFn = previous
+	})
+	return scopedRoot
+}
+
+func assertScopedCacheInitUsesRepoRoot(t *testing.T, repo string, scopedRoot *string) {
+	t.Helper()
+	previous := cacheInitBeforeObjectsEnsureFn
+	cacheInitBeforeObjectsEnsureFn = func() error {
+		if *scopedRoot == "" {
+			t.Fatalf("expected scoped workspace path before cache initialization")
+		}
+		assertScopedRootExcludesCacheDir(t, *scopedRoot, defaultAnalysisCacheDirName)
+		if _, err := os.Stat(filepath.Join(repo, defaultAnalysisCacheDirName, cacheKeysDirName)); err != nil {
+			t.Fatalf("expected repo-root cache keys dir during cache init: %v", err)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		cacheInitBeforeObjectsEnsureFn = previous
+	})
+}
+
+func assertCacheDirsExist(t *testing.T, root string) {
+	t.Helper()
+	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
+		if _, err := os.Stat(filepath.Join(root, dir)); err != nil {
+			t.Fatalf("expected %s dir in %s: %v", dir, root, err)
+		}
+	}
+}
+
+func assertScopedRootExcludesCacheDir(t *testing.T, scopedRoot string, relativeCachePath string) {
+	t.Helper()
+	if scopedRoot == "" {
+		t.Fatalf("expected scoped workspace to be created")
+	}
+	if _, err := os.Stat(filepath.Join(scopedRoot, relativeCachePath)); !os.IsNotExist(err) {
+		t.Fatalf("expected scoped workspace cache root %q to remain absent, stat err=%v", relativeCachePath, err)
 	}
 }
 

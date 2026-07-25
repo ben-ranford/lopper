@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -116,6 +118,67 @@ func TestExecuteAnalysePreservesAbsoluteCachePathOutsideRepoForCLIRequests(t *te
 	}
 }
 
+func TestExecuteAnalysePinsScopedRelativeCachePathAndReusesRepoRoot(t *testing.T) {
+	repo := writeScopedCacheFixtureRepo(t)
+	application := &App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Dependency = "lodash"
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.CacheEnabled = true
+	req.Analyse.CachePath = filepath.Join(".cache", "lopper")
+	req.Analyse.IncludePatterns = []string{"src/**"}
+	req.Analyse.ExcludePatterns = []string{"vendor/**"}
+
+	first := executeAnalyseReport(t, application, req)
+	if first.Cache == nil || first.Cache.Path != filepath.Join(".cache", "lopper") || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
+		t.Fatalf("expected first scoped CLI run to write through the repo-root relative cache path, got %#v", first.Cache)
+	}
+	for _, dir := range []string{"keys", "objects"} {
+		if _, err := os.Stat(filepath.Join(repo, ".cache", "lopper", dir)); err != nil {
+			t.Fatalf("expected %s dir in repo-root scoped cache path: %v", dir, err)
+		}
+	}
+
+	second := executeAnalyseReport(t, application, req)
+	if second.Cache == nil || second.Cache.Path != filepath.Join(".cache", "lopper") || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
+		t.Fatalf("expected second scoped CLI run to reuse the repo-root relative cache path, got %#v", second.Cache)
+	}
+}
+
+func TestExecuteAnalyseScopedAbsoluteCachePathOutsideRepoReusesExternalPath(t *testing.T) {
+	repo := writeScopedCacheFixtureRepo(t)
+	outsideCache := filepath.Join(t.TempDir(), "cache")
+	application := &App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Dependency = "lodash"
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.CacheEnabled = true
+	req.Analyse.CachePath = outsideCache
+	req.Analyse.IncludePatterns = []string{"src/**"}
+	req.Analyse.ExcludePatterns = []string{"vendor/**"}
+
+	first := executeAnalyseReport(t, application, req)
+	if first.Cache == nil || first.Cache.Path != outsideCache || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
+		t.Fatalf("expected first scoped CLI run to use the external absolute cache path, got %#v", first.Cache)
+	}
+	for _, dir := range []string{"keys", "objects"} {
+		if _, err := os.Stat(filepath.Join(outsideCache, dir)); err != nil {
+			t.Fatalf("expected %s dir in external scoped cache path: %v", dir, err)
+		}
+	}
+
+	second := executeAnalyseReport(t, application, req)
+	if second.Cache == nil || second.Cache.Path != outsideCache || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
+		t.Fatalf("expected second scoped CLI run to reuse the external absolute cache path, got %#v", second.Cache)
+	}
+}
+
 func TestExecuteAnalyseOutputFile(t *testing.T) {
 	analyzer := &fakeAnalyzer{
 		report: report.Report{
@@ -148,6 +211,38 @@ func TestExecuteAnalyseOutputFile(t *testing.T) {
 	if !strings.Contains(string(data), `"name": "lodash"`) {
 		t.Fatalf("expected analyse JSON content, got %q", string(data))
 	}
+}
+
+func executeAnalyseReport(t *testing.T, application *App, req Request) report.Report {
+	t.Helper()
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf(executeAnalyseErrFmt, err)
+	}
+	var reportData report.Report
+	if err := json.Unmarshal([]byte(output), &reportData); err != nil {
+		t.Fatalf("decode analyse report: %v", err)
+	}
+	return reportData
+}
+
+func writeScopedCacheFixtureRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	writeFixture := func(relPath string, content string) {
+		path := filepath.Join(repo, relPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", relPath, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", relPath, err)
+		}
+	}
+	writeFixture("package.json", "{\n  \"name\": \"demo\"\n}\n")
+	writeFixture(filepath.Join("src", "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	writeFixture(filepath.Join("node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
+	writeFixture(filepath.Join("node_modules", "lodash", "index.js"), "export function map() {}\n")
+	return repo
 }
 
 func TestExecuteAnalyseRejectsAbsoluteOutputUnderRequestedRepoSymlinkOutsideWorkingDirectory(t *testing.T) {

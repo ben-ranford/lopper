@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -463,17 +464,14 @@ func TestCallAnalyseDependencyPinsDefaultCachePathForScopedRequest(t *testing.T)
 	if !fake.called {
 		t.Fatalf("expected analyser to be called")
 	}
-	expectedPinnedPath, err := analysis.ResolveTrustedDefaultCachePath(repo)
-	if err != nil {
-		t.Fatalf("resolve trusted default cache path: %v", err)
-	}
+	expectedPinnedPath := mustResolveDefaultPinnedCachePath(t, repo)
 	if fake.lastReq.Cache == nil || !fake.lastReq.Cache.Enabled {
 		t.Fatalf("expected enabled default cache options, got %#v", fake.lastReq.Cache)
 	}
 	if fake.lastReq.Cache.Path != "" {
 		t.Fatalf("expected default MCP cache path to remain implicit, got %#v", fake.lastReq.Cache)
 	}
-	if fake.lastReq.Cache.PinnedPath != expectedPinnedPath {
+	if pinnedPath := cachePinnedPathValue(fake.lastReq.Cache); pinnedPath != expectedPinnedPath {
 		t.Fatalf("expected pinned default cache path %q, got %#v", expectedPinnedPath, fake.lastReq.Cache)
 	}
 }
@@ -500,10 +498,7 @@ func TestCallAnalyseDependencyScopedRequestReusesPinnedDefaultCacheAndReportsCan
 	}
 
 	server := NewServer(Options{Analyzer: analysis.NewService()})
-	expectedPinnedPath, err := analysis.ResolveTrustedDefaultCachePath(repo)
-	if err != nil {
-		t.Fatalf("resolve trusted default cache path: %v", err)
-	}
+	expectedPinnedPath := mustResolveDefaultPinnedCachePath(t, repo)
 
 	first := callToolResult(t, server, toolAnalyseDependency, map[string]any{
 		"repoPath":   repo,
@@ -565,6 +560,31 @@ func TestListLanguagesReturnsAdapterAndConfigMetadata(t *testing.T) {
 	if payload.EffectiveThresholds.LowConfidenceWarningPercent == 0 {
 		t.Fatalf("expected threshold defaults in metadata")
 	}
+}
+
+func cachePinnedPathValue(cache any) string {
+	value := reflect.ValueOf(cache)
+	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() {
+		return ""
+	}
+	field := value.Elem().FieldByName("PinnedPath")
+	if !field.IsValid() || field.Kind() != reflect.String {
+		return ""
+	}
+	return field.String()
+}
+
+func mustResolveDefaultPinnedCachePath(t *testing.T, repo string) string {
+	t.Helper()
+	cachePath := filepath.Join(repo, ".lopper-cache")
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatalf("mkdir default pinned cache path: %v", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(cachePath)
+	if err != nil {
+		t.Fatalf("resolve default pinned cache path: %v", err)
+	}
+	return resolvedPath
 }
 
 func TestServeProcessesFramedInitialize(t *testing.T) {
