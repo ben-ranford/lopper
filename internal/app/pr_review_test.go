@@ -167,11 +167,11 @@ func TestBuildPRReviewArtifactTreatsUnevaluableReachableFindingsAsRegressionsUnl
 	baseDependency := prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)
 	headDependency := baseDependency
 	headDependency.Vulnerabilities = []report.VulnerabilityFinding{{
-		AdvisoryID:    "GHSA-unevaluable",
-		Package:       "lib",
-		Severity:      report.VulnerabilityPriorityLow,
-		Priority:      report.VulnerabilityPriorityLow,
-		Reachable:     true,
+		AdvisoryID: "GHSA-unevaluable",
+		Package:    "lib",
+		Severity:   report.VulnerabilityPriorityLow,
+		Priority:   report.VulnerabilityPriorityLow,
+		Reachable:  true,
 	}}
 	headDependency.Vulnerabilities[0] = prReviewTestVulnerabilityFindingWithVersionStatus(t, headDependency.Vulnerabilities[0], "unevaluable")
 
