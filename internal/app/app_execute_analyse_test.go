@@ -268,29 +268,7 @@ func TestExecuteAnalyseLockfileDriftWarnPolicy(t *testing.T) {
 }
 
 func TestExecuteAnalyseLockfileDriftWarnPolicyToleratesOversizedManifestInspection(t *testing.T) {
-	repo := t.TempDir()
-	body := "module example.com/demo\n\ngo 1.22\n\nrequire github.com/some/dep v1.0.0\n" + strings.Repeat("// filler\n", int(lockfileDriftManifestReadLimit/10)+1)
-	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(body), 0o600); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			RepoPath: ".",
-			Dependencies: []report.DependencyReport{
-				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
-			},
-		},
-	}
-	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
-
-	req := DefaultRequest()
-	req.Mode = ModeAnalyse
-	req.RepoPath = repo
-	req.Analyse.TopN = 1
-	req.Analyse.Format = report.FormatJSON
-	req.Analyse.Thresholds.LockfileDriftPolicy = "warn"
-
-	output, err := application.Execute(context.Background(), req)
+	output, analyzer, err := executeAnalyseWithOversizedManifestInspection(t, "warn")
 	if err != nil {
 		t.Fatalf("execute analyse with oversized lockfile drift warn: %v", err)
 	}
@@ -335,33 +313,50 @@ func TestExecuteAnalyseLockfileDriftFailPolicy(t *testing.T) {
 }
 
 func TestExecuteAnalyseLockfileDriftFailPolicyRejectsOversizedManifestInspection(t *testing.T) {
-	repo := t.TempDir()
-	body := "module example.com/demo\n\ngo 1.22\n\nrequire github.com/some/dep v1.0.0\n" + strings.Repeat("// filler\n", int(lockfileDriftManifestReadLimit/10)+1)
-	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(body), 0o600); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			Dependencies: []report.DependencyReport{
-				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
-			},
-		},
-	}
-	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
-
-	req := DefaultRequest()
-	req.Mode = ModeAnalyse
-	req.RepoPath = repo
-	req.Analyse.TopN = 1
-	req.Analyse.Thresholds.LockfileDriftPolicy = "fail"
-
-	_, err := application.Execute(context.Background(), req)
+	_, analyzer, err := executeAnalyseWithOversizedManifestInspection(t, "fail")
 	if !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized manifest inspection to remain fatal in fail mode, got %v", err)
 	}
 	if analyzer.called {
 		t.Fatalf("expected fail-mode oversized manifest inspection to stop before analyzer execution")
 	}
+}
+
+func executeAnalyseWithOversizedManifestInspection(t *testing.T, policy string) (string, *fakeAnalyzer, error) {
+	t.Helper()
+
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(oversizedGoModManifestBody()), 0o600); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	application, analyzer := newAnalyseLockfileDriftTestApp()
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Thresholds.LockfileDriftPolicy = policy
+
+	output, err := application.Execute(context.Background(), req)
+	return output, analyzer, err
+}
+
+func newAnalyseLockfileDriftTestApp() (*App, *fakeAnalyzer) {
+	analyzer := &fakeAnalyzer{
+		report: report.Report{
+			RepoPath: ".",
+			Dependencies: []report.DependencyReport{
+				{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50},
+			},
+		},
+	}
+	return &App{Analyzer: analyzer, Formatter: report.NewFormatter()}, analyzer
+}
+
+func oversizedGoModManifestBody() string {
+	return "module example.com/demo\n\ngo 1.22\n\nrequire github.com/some/dep v1.0.0\n" +
+		strings.Repeat("// filler\n", int(lockfileDriftManifestReadLimit/10)+1)
 }
 
 func TestExecuteAnalyseReturnsFormattedOutputWhenSaveBaselineValidationFails(t *testing.T) {

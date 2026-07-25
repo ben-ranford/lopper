@@ -2068,26 +2068,32 @@ func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *te
 	cases := []struct {
 		name         string
 		manifestName string
-		manifestBody string
+		manifestBody func() string
 		wantErr      string
 	}{
 		{
 			name:         "oversized pyproject.toml",
 			manifestName: "pyproject.toml",
-			manifestBody: "[tool.poetry]\nname = \"demo\"\n" + strings.Repeat("# filler\n", int(lockfileDriftManifestReadLimit/8)+1),
-			wantErr:      "read pyproject.toml for lockfile drift detection",
+			manifestBody: func() string {
+				return oversizedManifestBody("[tool.poetry]\nname = \"demo\"\n", "# filler\n", 8)
+			},
+			wantErr: "read pyproject.toml for lockfile drift detection",
 		},
 		{
 			name:         "oversized go.mod",
 			manifestName: "go.mod",
-			manifestBody: "module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n" + strings.Repeat("// filler\n", int(lockfileDriftManifestReadLimit/10)+1),
-			wantErr:      "read go.mod for lockfile drift detection",
+			manifestBody: func() string {
+				return oversizedManifestBody("module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n", "// filler\n", 10)
+			},
+			wantErr: "read go.mod for lockfile drift detection",
 		},
 		{
 			name:         "oversized Cargo.toml",
 			manifestName: "Cargo.toml",
-			manifestBody: "[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n" + strings.Repeat("# filler\n", int(lockfileDriftManifestReadLimit/8)+1),
-			wantErr:      "read Cargo.toml for lockfile drift detection",
+			manifestBody: func() string {
+				return oversizedManifestBody("[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n", "# filler\n", 8)
+			},
+			wantErr: "read Cargo.toml for lockfile drift detection",
 		},
 	}
 
@@ -2095,7 +2101,8 @@ func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *te
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
-			writeFile(t, filepath.Join(repo, tc.manifestName), tc.manifestBody)
+			writeFile(t, filepath.Join(repo, tc.manifestName), tc.manifestBody())
+			tracker := installManifestReadTracker(t, tc.manifestName)
 
 			_, err := detectLockfileDrift(context.Background(), repo, false)
 			if err == nil {
@@ -2107,38 +2114,61 @@ func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *te
 			if !errors.Is(err, safeio.ErrFileTooLarge) {
 				t.Fatalf("expected ErrFileTooLarge for %s, got %v", tc.manifestName, err)
 			}
+			if tracker.reads == 0 {
+				t.Fatalf("expected manifest content inspection for %s", tc.manifestName)
+			}
+			for _, limit := range tracker.limits {
+				if limit != lockfileDriftManifestReadLimit {
+					t.Fatalf("expected manifest reads for %s to use limit %d, got %d", tc.manifestName, lockfileDriftManifestReadLimit, limit)
+				}
+			}
 		})
 	}
 }
 
 func TestDetectLockfileDriftSkipsPresenceOnlyManifestReads(t *testing.T) {
 	repo := t.TempDir()
-	manifestBody := `{"padding":"` + strings.Repeat("x", int(lockfileDriftManifestReadLimit)) + `"}`
-	writeFile(t, filepath.Join(repo, manifestFileName), manifestBody)
-
-	originalReadFileUnderLimit := readFileUnderLimitFn
-	t.Cleanup(func() {
-		readFileUnderLimitFn = originalReadFileUnderLimit
-	})
-
-	reads := 0
-	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
-		if filepath.Base(targetPath) == manifestFileName {
-			reads++
-		}
-		return safeio.ReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
-	}
+	writeFile(t, filepath.Join(repo, manifestFileName), `{"padding":"`+strings.Repeat("x", int(lockfileDriftManifestReadLimit))+`"}`)
+	tracker := installManifestReadTracker(t, manifestFileName)
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
 		t.Fatalf(detectLockfileDriftFmt, err)
 	}
-	if reads != 0 {
-		t.Fatalf("expected package.json presence-only rule to avoid manifest reads, got %d", reads)
+	if tracker.reads != 0 {
+		t.Fatalf("expected package.json presence-only rule to avoid manifest reads, got %d", tracker.reads)
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], manifestFileName) || !strings.Contains(warnings[0], "package-lock.json") {
 		t.Fatalf("expected missing lockfile warning for oversized package.json without reading it, got %#v", warnings)
 	}
+}
+
+type manifestReadTracker struct {
+	reads  int
+	limits []int64
+}
+
+func installManifestReadTracker(t *testing.T, manifestName string) *manifestReadTracker {
+	t.Helper()
+
+	tracker := &manifestReadTracker{}
+	originalReadFileUnderLimit := readFileUnderLimitFn
+	readFileUnderLimitFn = func(rootDir, targetPath string, limit int64) ([]byte, error) {
+		if filepath.Base(targetPath) == manifestName {
+			tracker.reads++
+			tracker.limits = append(tracker.limits, limit)
+		}
+		return safeio.ReadFileUnderLimit(rootDir, targetPath, limit)
+	}
+	t.Cleanup(func() {
+		readFileUnderLimitFn = originalReadFileUnderLimit
+	})
+
+	return tracker
+}
+
+func oversizedManifestBody(prefix, filler string, divisor int) string {
+	return prefix + strings.Repeat(filler, int(lockfileDriftManifestReadLimit/int64(divisor))+1)
 }
 
 // assertLockfileWarning checks that warnings contains (or does not contain)
