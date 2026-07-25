@@ -1,9 +1,11 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,72 @@ func TestDashboardBaselineLoadLegacyRemoteFieldsEmpty(t *testing.T) {
 	}
 }
 
+func assertDashboardLoadPreservesReport(t *testing.T, payload any, want Report, wantKey string) {
+	t.Helper()
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal dashboard baseline: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "baseline.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write dashboard baseline: %v", err)
+	}
+	got, key, err := LoadWithKey(path)
+	if err != nil {
+		t.Fatalf("LoadWithKey() error = %v", err)
+	}
+	if key != wantKey {
+		t.Fatalf("LoadWithKey() key = %q, want %q", key, wantKey)
+	}
+	if !got.GeneratedAt.Equal(want.GeneratedAt) || !reflect.DeepEqual(got.Repos, want.Repos) {
+		t.Fatalf("LoadWithKey() repos = %#v, want %#v", got.Repos, want.Repos)
+	}
+	if got.Summary != want.Summary {
+		t.Fatalf("LoadWithKey() summary = %#v, want %#v", got.Summary, want.Summary)
+	}
+	if !reflect.DeepEqual(got.RemediationItems, want.RemediationItems) {
+		t.Fatalf("LoadWithKey() remediation items = %#v, want %#v", got.RemediationItems, want.RemediationItems)
+	}
+	if !reflect.DeepEqual(got.SourceWarnings, want.SourceWarnings) {
+		t.Fatalf("LoadWithKey() warnings = %#v, want %#v", got.SourceWarnings, want.SourceWarnings)
+	}
+}
+
+func TestDashboardLoadWithKeyPreservesReportData(t *testing.T) {
+	t.Parallel()
+
+	want := Report{
+		GeneratedAt: time.Date(2026, time.March, 10, 0, 0, 0, 0, time.UTC),
+		Repos: []RepoResult{
+			{Name: "zeta", Path: "./zeta", DependencyCount: 2},
+			{Name: "alpha", Path: "./alpha", DependencyCount: 1},
+		},
+		Summary: Summary{TotalRepos: 99, TotalDeps: 77},
+		RemediationItems: []RemediationItem{
+			{ID: " duplicate ", Repo: " zeta ", Category: " risk ", Priority: " LOW ", Evidence: []string{" first ", "first"}},
+			{ID: "duplicate", Repo: "alpha", Category: "risk", Priority: " High ", Evidence: []string{"second"}},
+		},
+		SourceWarnings: []string{" first ", "first"},
+	}
+
+	t.Run("envelope", func(t *testing.T) {
+		t.Parallel()
+		snapshot := BaselineSnapshot{
+			BaselineSchemaVersion: BaselineSnapshotSchemaVersion,
+			Key:                   " label:preserved ",
+			SavedAt:               time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC),
+			Report:                want,
+		}
+		assertDashboardLoadPreservesReport(t, snapshot, want, "label:preserved")
+	})
+
+	t.Run("legacy", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardLoadPreservesReport(t, want, want, "")
+	})
+}
+
 func TestDashboardLoadWithKeyPreservesOversizedExplicitBaselineCompatibility(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "oversized-explicit.json")
 	content := `{"generated_at":"2026-03-12T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":3}]}`
@@ -97,6 +165,68 @@ func TestDashboardBaselineLoadRejectsUnsupportedSchema(t *testing.T) {
 	if _, _, err := LoadWithKey(badPath); err == nil || !strings.Contains(err.Error(), "unsupported dashboard baseline schema version") {
 		t.Fatalf("expected unsupported schema error, got %v", err)
 	}
+}
+
+type dashboardSchemaCompatibilityCase struct {
+	content   string
+	wantKey   string
+	wantRepos int
+	wantErr   string
+}
+
+func assertDashboardSchemaCompatibility(t *testing.T, tc dashboardSchemaCompatibilityCase) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+		t.Fatalf("write dashboard snapshot: %v", err)
+	}
+
+	rep, key, err := LoadWithKey(path)
+	if tc.wantErr != "" {
+		if err == nil || err.Error() != tc.wantErr {
+			t.Fatalf("LoadWithKey() error = %v, want %q", err, tc.wantErr)
+		}
+		if len(rep.Repos) != 0 || rep.GeneratedAt != (time.Time{}) || key != "" {
+			t.Fatalf("LoadWithKey() error result = %#v, %q, want zero values", rep, key)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("LoadWithKey() error = %v", err)
+	}
+	if len(rep.Repos) != tc.wantRepos || key != tc.wantKey {
+		t.Fatalf("LoadWithKey() = repos=%d key=%q, want repos=%d key=%q", len(rep.Repos), key, tc.wantRepos, tc.wantKey)
+	}
+}
+
+func TestDashboardBaselineLoadSchemaVersionCompatibility(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exact version accepted", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardSchemaCompatibility(t, dashboardSchemaCompatibilityCase{
+			content:   `{"baselineSchemaVersion":"1.0.0","key":" label:exact ","savedAt":"2026-03-11T00:00:00Z","report":{"generated_at":"2026-03-10T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":2}]}}`,
+			wantKey:   "label:exact",
+			wantRepos: 1,
+		})
+	})
+
+	t.Run("padded version rejected with raw unsupported value", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardSchemaCompatibility(t, dashboardSchemaCompatibilityCase{
+			content: `{"baselineSchemaVersion":" 1.0.0 ","key":"label:padded","savedAt":"2026-03-11T00:00:00Z","report":{"generated_at":"2026-03-10T00:00:00Z","repos":[]}}`,
+			wantErr: "unsupported dashboard baseline schema version:  1.0.0 ",
+		})
+	})
+
+	t.Run("whitespace version matches missing legacy behavior", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardSchemaCompatibility(t, dashboardSchemaCompatibilityCase{
+			content:   `{"baselineSchemaVersion":"   ","generated_at":"2026-03-12T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":3}]}`,
+			wantRepos: 1,
+		})
+	})
 }
 
 func TestDashboardBaselineLoadReportsReadErrors(t *testing.T) {
@@ -189,7 +319,7 @@ func TestDashboardBaselineComparisonBranches(t *testing.T) {
 	}
 }
 
-func TestDashboardBaselineSnapshotSortsSameNameByPath(t *testing.T) {
+func TestDashboardSaveSnapshotCanonicalizesReport(t *testing.T) {
 	t.Parallel()
 
 	reportData := Report{
@@ -197,17 +327,42 @@ func TestDashboardBaselineSnapshotSortsSameNameByPath(t *testing.T) {
 			{Name: "api", Path: "./z"},
 			{Name: "api", Path: "./a"},
 		},
+		RemediationItems: []RemediationItem{
+			{ID: " duplicate ", Repo: " api ", Category: " risk ", Priority: " low ", Evidence: []string{" first ", "shared"}},
+			{ID: "alpha", Repo: " web ", Category: " risk ", Priority: " CRITICAL "},
+			{ID: "duplicate", Repo: "api", Category: "risk", Priority: " HIGH ", Evidence: []string{"shared", "second"}},
+		},
 	}
 	path, err := SaveSnapshot(t.TempDir(), "label:sorted", reportData, time.Date(2026, time.March, 11, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("SaveSnapshot() error = %v", err)
 	}
-	loaded, _, err := LoadWithKey(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("LoadWithKey() error = %v", err)
+		t.Fatalf("read dashboard snapshot: %v", err)
 	}
-	if len(loaded.Repos) != 2 || loaded.Repos[0].Path != "./a" || loaded.Repos[1].Path != "./z" {
-		t.Fatalf("expected repos sorted by name then path, got %#v", loaded.Repos)
+	var snapshot BaselineSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("unmarshal dashboard snapshot: %v", err)
+	}
+	if len(snapshot.Report.Repos) != 2 || snapshot.Report.Repos[0].Path != "./a" || snapshot.Report.Repos[1].Path != "./z" {
+		t.Fatalf("expected repos sorted by name then path, got %#v", snapshot.Report.Repos)
+	}
+	if snapshot.Report.Summary.TotalRepos != 2 {
+		t.Fatalf("saved summary = %#v, want computed repo count", snapshot.Report.Summary)
+	}
+	if len(snapshot.Report.RemediationItems) != 2 {
+		t.Fatalf("saved remediation items = %#v, want deduplicated items", snapshot.Report.RemediationItems)
+	}
+	if snapshot.Report.RemediationItems[0].ID != "alpha" || snapshot.Report.RemediationItems[0].Priority != "critical" {
+		t.Fatalf("first saved remediation item = %#v, want canonical critical item", snapshot.Report.RemediationItems[0])
+	}
+	duplicate := snapshot.Report.RemediationItems[1]
+	if duplicate.ID != "duplicate" || duplicate.Repo != "api" || duplicate.Category != "risk" || duplicate.Priority != "high" {
+		t.Fatalf("second saved remediation item = %#v, want normalized duplicate", duplicate)
+	}
+	if !reflect.DeepEqual(duplicate.Evidence, []string{"first", "shared", "second"}) {
+		t.Fatalf("saved duplicate evidence = %#v, want compact merged evidence", duplicate.Evidence)
 	}
 }
 
