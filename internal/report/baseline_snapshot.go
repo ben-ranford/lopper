@@ -17,6 +17,13 @@ var ErrBaselineKeyMismatch = errors.New("baseline snapshot key does not match re
 
 type BaselineSnapshot = baselineutil.Snapshot[Report]
 
+var baselineSnapshots = baselineutil.SnapshotStore[Report]{
+	Normalize:         normalizeSnapshotReport,
+	UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
+	ValidateKey:       ValidateBaselineSnapshotKey,
+	ExistsErr:         ErrBaselineAlreadyExists,
+}
+
 func Load(path string) (Report, error) {
 	rep, _, err := LoadWithKey(path)
 	if err != nil {
@@ -26,21 +33,11 @@ func Load(path string) (Report, error) {
 }
 
 func LoadWithKey(path string) (Report, string, error) {
-	return baselineutil.LoadSnapshotFile(path, baselineutil.SnapshotDecodeOptions[Report]{
-		Normalize:         normalizeSnapshotReport,
-		UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
-	})
-}
-
-func decodeBaselineSnapshot(data []byte) (Report, string, error) {
-	return baselineutil.DecodeSnapshot(data, baselineutil.SnapshotDecodeOptions[Report]{
-		Normalize:         normalizeSnapshotReport,
-		UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
-	})
+	return baselineutil.LoadConfiguredSnapshot(path, baselineSnapshots)
 }
 
 func LoadSnapshot(dir, key string) (Report, string, string, error) {
-	return baselineutil.LoadStoreSnapshot(dir, key, baselineutil.MaxSnapshotBytes, decodeBaselineSnapshot, ValidateBaselineSnapshotKey)
+	return baselineutil.LoadConfiguredStoreSnapshot(dir, key, baselineutil.MaxSnapshotBytes, baselineSnapshots)
 }
 
 func ValidateBaselineSnapshotKey(requestedKey, storedKey string) error {
@@ -48,7 +45,7 @@ func ValidateBaselineSnapshotKey(requestedKey, storedKey string) error {
 }
 
 func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
-	return baselineutil.SaveSnapshot(dir, key, now, rep, ErrBaselineAlreadyExists, normalizeSnapshotReport)
+	return baselineutil.SaveConfiguredSnapshot(dir, key, now, rep, baselineSnapshots)
 }
 
 func BaselineSnapshotPath(dir, key string) string {
@@ -60,7 +57,7 @@ func ResolveBaselineSnapshotPath(dir, key string) string {
 }
 
 func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot {
-	return baselineutil.NewSnapshot(key, rep, now, normalizeSnapshotReport)
+	return baselineutil.NewConfiguredSnapshot(key, rep, now, baselineSnapshots)
 }
 
 func normalizeSnapshotReport(rep Report) Report {

@@ -26,6 +26,13 @@ type SnapshotDecodeOptions[T any] struct {
 	UnsupportedSchema func(string) error
 }
 
+type SnapshotStore[T any] struct {
+	Normalize         func(T) T
+	UnsupportedSchema func(string) error
+	ValidateKey       func(string, string) error
+	ExistsErr         error
+}
+
 func NewSnapshot[T any](key string, report T, now time.Time, normalize func(T) T) Snapshot[T] {
 	if normalize != nil {
 		report = normalize(report)
@@ -90,6 +97,29 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 	return v, "", nil
 }
 
+func LoadConfiguredSnapshot[T any](path string, store SnapshotStore[T]) (T, string, error) {
+	return LoadSnapshotFile(path, snapshotDecodeOptions(store))
+}
+
+func DecodeConfiguredSnapshot[T any](data []byte, store SnapshotStore[T]) (T, string, error) {
+	return DecodeSnapshot(data, snapshotDecodeOptions(store))
+}
+
+func LoadConfiguredStoreSnapshot[T any](dir, key string, maxBytes int64, store SnapshotStore[T]) (T, string, string, error) {
+	decode := func(data []byte) (T, string, error) {
+		return DecodeConfiguredSnapshot(data, store)
+	}
+	return LoadStoreSnapshot(dir, key, maxBytes, decode, store.ValidateKey)
+}
+
+func SaveConfiguredSnapshot[T any](dir, key string, now time.Time, report T, store SnapshotStore[T]) (string, error) {
+	return SaveSnapshot(dir, key, now, report, store.ExistsErr, store.Normalize)
+}
+
+func NewConfiguredSnapshot[T any](key string, report T, now time.Time, store SnapshotStore[T]) Snapshot[T] {
+	return NewSnapshot(key, report, now, store.Normalize)
+}
+
 func LoadStoreSnapshot[T any](dir, key string, maxBytes int64, decode func([]byte) (T, string, error), validateKey func(string, string) error) (T, string, string, error) {
 	trimmedKey := strings.TrimSpace(key)
 	path := ResolveSnapshotPath(dir, trimmedKey)
@@ -119,6 +149,13 @@ func ValidateSnapshotKey(requestedKey, storedKey string, mismatchErr error) erro
 		return nil
 	}
 	return fmt.Errorf("%w: requested %q, stored %q", mismatchErr, requestedKey, storedKey)
+}
+
+func snapshotDecodeOptions[T any](store SnapshotStore[T]) SnapshotDecodeOptions[T] {
+	return SnapshotDecodeOptions[T]{
+		Normalize:         store.Normalize,
+		UnsupportedSchema: store.UnsupportedSchema,
+	}
 }
 
 func decodeLegacySnapshot[T any](data []byte, decodeLegacy func([]byte) (T, error)) (T, error) {

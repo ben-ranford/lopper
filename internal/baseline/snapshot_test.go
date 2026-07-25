@@ -303,6 +303,101 @@ func TestValidateSnapshotKeyWrapsCustomMismatchError(t *testing.T) {
 	}
 }
 
+func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := SnapshotStore[testSnapshotReport]{
+		Normalize:         normalizeTestSnapshotReport,
+		UnsupportedSchema: func(version string) error { return fmt.Errorf("unsupported configured schema version: %s", version) },
+		ValidateKey: func(requestedKey, storedKey string) error {
+			return ValidateSnapshotKey(requestedKey, storedKey, errors.New("configured key mismatch"))
+		},
+		ExistsErr: errors.New("configured snapshot already exists"),
+	}
+	dir := t.TempDir()
+	now := time.Date(2026, time.July, 12, 11, 15, 0, 0, time.FixedZone("AEST", 10*60*60))
+
+	wantSnapshot := NewConfiguredSnapshot(" label:configured ", testSnapshotReport{Value: "ok"}, now, store)
+	if wantSnapshot.Key != "label:configured" || wantSnapshot.Report.Value != "OK" || !wantSnapshot.SavedAt.Equal(now.UTC()) {
+		t.Fatalf("NewConfiguredSnapshot() = %#v", wantSnapshot)
+	}
+
+	path, err := SaveConfiguredSnapshot(dir, " label:configured ", now, testSnapshotReport{Value: "ok"}, store)
+	if err != nil {
+		t.Fatalf("SaveConfiguredSnapshot() error = %v", err)
+	}
+
+	got, key, err := LoadConfiguredSnapshot(path, store)
+	if err != nil {
+		t.Fatalf("LoadConfiguredSnapshot() error = %v", err)
+	}
+	if key != "label:configured" || got.Value != "OK" {
+		t.Fatalf("LoadConfiguredSnapshot() = key=%q report=%#v", key, got)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read configured snapshot: %v", err)
+	}
+
+	decoded, decodedKey, err := DecodeConfiguredSnapshot(data, store)
+	if err != nil {
+		t.Fatalf("DecodeConfiguredSnapshot() error = %v", err)
+	}
+	if decodedKey != "label:configured" || decoded.Value != "OK" {
+		t.Fatalf("DecodeConfiguredSnapshot() = key=%q report=%#v", decodedKey, decoded)
+	}
+
+	loaded, loadedKey, resolvedPath, err := LoadConfiguredStoreSnapshot(dir, " label:configured ", MaxSnapshotBytes, store)
+	if err != nil {
+		t.Fatalf("LoadConfiguredStoreSnapshot() error = %v", err)
+	}
+	if resolvedPath != path || loadedKey != "label:configured" || loaded.Value != "OK" {
+		t.Fatalf("LoadConfiguredStoreSnapshot() = path=%q key=%q report=%#v", resolvedPath, loadedKey, loaded)
+	}
+}
+
+func TestConfiguredSnapshotHelpersReturnCustomErrors(t *testing.T) {
+	t.Parallel()
+
+	unsupportedMarker := errors.New("unsupported configured schema")
+	validateMarker := errors.New("configured key mismatch")
+	existsMarker := errors.New("configured snapshot already exists")
+	store := SnapshotStore[testSnapshotReport]{
+		Normalize: normalizeTestSnapshotReport,
+		UnsupportedSchema: func(version string) error {
+			return fmt.Errorf("%w: %s", unsupportedMarker, version)
+		},
+		ValidateKey: func(string, string) error {
+			return validateMarker
+		},
+		ExistsErr: existsMarker,
+	}
+	dir := t.TempDir()
+	now := time.Date(2026, time.July, 12, 0, 0, 0, 0, time.UTC)
+
+	path, err := SaveConfiguredSnapshot(dir, "label:configured", now, testSnapshotReport{Value: "ok"}, store)
+	if err != nil {
+		t.Fatalf("SaveConfiguredSnapshot() initial save error = %v", err)
+	}
+
+	if _, err := SaveConfiguredSnapshot(dir, "label:configured", now, testSnapshotReport{Value: "again"}, store); !errors.Is(err, existsMarker) {
+		t.Fatalf("SaveConfiguredSnapshot() duplicate error = %v, want %v", err, existsMarker)
+	}
+
+	if _, _, err := DecodeConfiguredSnapshot([]byte(`{"baselineSchemaVersion":"9.9.9","key":"label:bad","report":{"value":"x"}}`), store); !errors.Is(err, unsupportedMarker) {
+		t.Fatalf("DecodeConfiguredSnapshot() unsupported schema error = %v, want %v", err, unsupportedMarker)
+	}
+
+	_, loadedKey, resolvedPath, err := LoadConfiguredStoreSnapshot(dir, "label:configured", MaxSnapshotBytes, store)
+	if !errors.Is(err, validateMarker) {
+		t.Fatalf("LoadConfiguredStoreSnapshot() validation error = %v, want %v", err, validateMarker)
+	}
+	if loadedKey != "label:configured" || resolvedPath != path {
+		t.Fatalf("LoadConfiguredStoreSnapshot() validation result = key=%q path=%q", loadedKey, resolvedPath)
+	}
+}
+
 func TestSortedCopyByStringsReturnsEmptyResultWhenInputIsNil(t *testing.T) {
 	t.Parallel()
 
