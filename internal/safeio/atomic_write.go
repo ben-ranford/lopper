@@ -67,50 +67,28 @@ func (s *atomicWriteSession) cleanup() error {
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
 
-func openPinnedReplacementTargetIfNeeded(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {
-	if expectedInfo == nil {
-		return nil, nil
-	}
-	return openPinnedReplacementTarget(root, targetRel, expectedInfo)
-}
-
 func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) (returnErr error) {
-	replacementFile, err := openPinnedReplacementTargetIfNeeded(root, targetRel, replacementInfo)
+	replacementFile, closeReplacementFile, err := openPinnedReplacementTargetIfNeeded(root, targetRel, replacementInfo)
 	if err != nil {
 		return err
 	}
-	if replacementFile != nil {
-		defer func() {
-			closeErr := replacementFile.Close()
-			if returnErr == nil {
-				returnErr = closeErr
-			}
-		}()
-	}
+	defer func() {
+		returnErr = errors.Join(returnErr, closeReplacementFile())
+	}()
 
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		cleanupErr := session.cleanup()
-		if returnErr == nil {
-			returnErr = cleanupErr
-		}
+		returnErr = errors.Join(returnErr, session.cleanup())
 	}()
 
 	if err := session.writeAndClose(data, perm); err != nil {
 		return err
 	}
 	if err := session.commit(); err != nil {
-		if replacementFile == nil ||
-			!windowsReplaceExistingRenameFallback(err, session.tempRel, targetRel) {
-			return err
-		}
-		fallbackErr := overwritePinnedFile(root, targetRel, replacementFile, data, nil)
-		if fallbackErr != nil {
-			return errors.Join(err, fallbackErr)
-		}
+		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 	}
 	return nil
 }

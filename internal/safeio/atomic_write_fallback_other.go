@@ -2,6 +2,6 @@
 
 package safeio
 
-func windowsReplaceExistingRenameFallback(error, string, string) bool {
-	return false
+func fallbackAtomicReplacement(_ Root, _ string, _ string, _ File, _ []byte, renameErr error) error {
+	return renameErr
 }

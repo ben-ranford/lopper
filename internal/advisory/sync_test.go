@@ -1509,6 +1509,8 @@ func TestUpdateManifestReturnsWriteError(t *testing.T) {
 
 func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testing.T) {
 	now := time.Date(2026, time.July, 13, 0, 0, 0, 0, time.UTC)
+	cleanupWriteErr := errors.New("write failure")
+	cleanupErr := errors.New("cleanup failure")
 	for _, tc := range []struct {
 		name   string
 		root   *advisoryFakeRoot
@@ -1576,17 +1578,17 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
 				openFile: func(string, int, os.FileMode) (safeio.File, error) {
 					return &advisoryFakeFile{
-						write: func([]byte) (int, error) { return 0, errors.New("write failure") },
+						write: func([]byte) (int, error) { return 0, cleanupWriteErr },
 						close: func() error { return nil },
 						chmod: func(os.FileMode) error { return nil },
 					}, nil
 				},
 				remove: func(string) error {
-					return errors.New("cleanup failure")
+					return cleanupErr
 				},
 			}),
 			expect: func(err error) bool {
-				return err != nil && strings.Contains(err.Error(), "write failure") && !strings.Contains(err.Error(), "cleanup failure")
+				return errors.Is(err, cleanupWriteErr) && errors.Is(err, cleanupErr)
 			},
 		},
 	} {

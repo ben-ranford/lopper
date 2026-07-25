@@ -1342,7 +1342,7 @@ func TestWriteFileUnderCloseRootError(t *testing.T) {
 	}
 }
 
-func TestWriteFileUnderKeepsPrimaryErrorWhenCleanupFails(t *testing.T) {
+func TestWriteFileUnderJoinsPrimaryErrorWithCleanupFailure(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 	writeErr := errors.New("write failure")
@@ -1367,12 +1367,12 @@ func TestWriteFileUnderKeepsPrimaryErrorWhenCleanupFails(t *testing.T) {
 	if !errors.Is(err, writeErr) {
 		t.Fatalf("expected write error, got %v", err)
 	}
-	if errors.Is(err, cleanupErr) {
-		t.Fatalf("expected cleanup error to stay secondary, got %v", err)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
 	}
 }
 
-func TestWriteFileReplacingWithinRootKeepsPrimaryRenameErrorWhenCleanupFails(t *testing.T) {
+func TestWriteFileReplacingWithinRootJoinsRenameErrorWithCleanupFailure(t *testing.T) {
 	renameErr := errors.New("rename failure")
 	cleanupErr := errors.New("cleanup failure")
 	root := &fakeRoot{
@@ -1402,8 +1402,8 @@ func TestWriteFileReplacingWithinRootKeepsPrimaryRenameErrorWhenCleanupFails(t *
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("expected rename error, got %v", err)
 	}
-	if errors.Is(err, cleanupErr) {
-		t.Fatalf("expected cleanup error to stay secondary, got %v", err)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
 	}
 }
 
@@ -1447,8 +1447,11 @@ func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutFallback(t *testin
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("expected rename error without fallback, got %v", err)
 	}
-	if !targetOpened {
-		t.Fatal("expected existing target writability probe")
+	if runtime.GOOS == "windows" && !targetOpened {
+		t.Fatal("expected existing target writability probe on Windows")
+	}
+	if runtime.GOOS != "windows" && targetOpened {
+		t.Fatal("expected non-Windows rename failure to skip pinned target probe")
 	}
 }
 
@@ -1479,8 +1482,14 @@ func TestWriteAtomicReplacementReturnsPinnedTargetCloseErrorAfterCommit(t *testi
 	}
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, info)
-	if !errors.Is(err, closeErr) {
-		t.Fatalf("expected pinned target close error, got %v", err)
+	if runtime.GOOS == "windows" {
+		if !errors.Is(err, closeErr) {
+			t.Fatalf("expected pinned target close error, got %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("expected non-Windows commit to succeed without pinned target close, got %v", err)
 	}
 }
 
@@ -1497,11 +1506,19 @@ func TestWriteAtomicReplacementReturnsPinnedTargetOpenError(t *testing.T) {
 				close: closeWithoutError,
 			}, nil
 		},
+		rename: func(string, string) error { return nil },
+		remove: func(string) error { return nil },
 	}
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected pinned target open error, got %v", err)
+	if runtime.GOOS == "windows" {
+		if !errors.Is(err, expectedErr) {
+			t.Fatalf("expected pinned target open error, got %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("expected non-Windows write to skip pinned target open, got %v", err)
 	}
 }
 

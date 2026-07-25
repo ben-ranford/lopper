@@ -3,12 +3,70 @@
 package safeio
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
+
+func TestOpenPinnedReplacementTargetIfNeededOpensPinnedTargetOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	openCalls := 0
+
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected pinned target path: %s", name)
+			}
+			if flag != os.O_WRONLY {
+				t.Fatalf("unexpected pinned target flag: %d", flag)
+			}
+			openCalls++
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return info, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+	}
+
+	file, closeFile, err := openPinnedReplacementTargetIfNeeded(root, writeTestFileName, info)
+	if err != nil {
+		t.Fatalf("openPinnedReplacementTargetIfNeeded returned error: %v", err)
+	}
+	if file == nil {
+		t.Fatal("expected pinned target file on Windows")
+	}
+	if openCalls != 1 {
+		t.Fatalf("expected one pinned target open, got %d", openCalls)
+	}
+	if err := closeFile(); err != nil {
+		t.Fatalf("close pinned target file: %v", err)
+	}
+}
+
+func TestOpenPinnedReplacementTargetIfNeededReturnsOpenErrorOnWindows(t *testing.T) {
+	expectedErr := errors.New("open pinned target failure")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, expectedErr
+		},
+	}
+
+	file, _, err := openPinnedReplacementTargetIfNeeded(root, writeTestFileName, statTestPath(t, t.TempDir()))
+	if file != nil {
+		t.Fatal("expected pinned target file to remain nil")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected open target error, got %v", err)
+	}
+}
 
 func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
@@ -80,6 +138,298 @@ func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *t
 	}
 	if string(targetData) != "after" {
 		t.Fatalf("expected fallback overwrite data, got %q", string(targetData))
+	}
+}
+
+func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, targetInfoPath)
+	target := &windowsFallbackTarget{data: []byte("before")}
+	root, rootState := newAppearingWindowsFallbackRoot(t, info, target, nil)
+
+	if err := WriteFileReplacingWithinRoot(root, writeTestFileName, []byte("after"), 0o600); err != nil {
+		t.Fatalf("WriteFileReplacingWithinRoot returned error: %v", err)
+	}
+	if rootState.lstatCalls != 3 {
+		t.Fatalf("expected initial, late-pin, and pre-overwrite lstat calls, got %d", rootState.lstatCalls)
+	}
+	if target.openCalls != 1 {
+		t.Fatalf("expected one late pinned target open, got %d", target.openCalls)
+	}
+	if target.closeCalls != 1 {
+		t.Fatalf("expected late pinned target to close once, got %d", target.closeCalls)
+	}
+	if string(target.data) != "after" {
+		t.Fatalf("expected late fallback overwrite data, got %q", string(target.data))
+	}
+}
+
+func TestWriteFileReplacingWithinRootJoinsLatePinnedCloseAndCleanupErrors(t *testing.T) {
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	closeErr := errors.New("late pinned target close failure")
+	cleanupErr := errors.New("temp cleanup remove failure")
+	target := &windowsFallbackTarget{
+		data:     []byte("before"),
+		closeErr: closeErr,
+	}
+	root, rootState := newAppearingWindowsFallbackRoot(
+		t,
+		statTestPath(t, targetInfoPath),
+		target,
+		cleanupErr,
+	)
+
+	err := WriteFileReplacingWithinRoot(root, writeTestFileName, []byte("after"), 0o600)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected late pinned close error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected temp cleanup remove error, got %v", err)
+	}
+	if rootState.removeCalls != 1 {
+		t.Fatalf("expected one temp cleanup remove, got %d", rootState.removeCalls)
+	}
+	if target.closeCalls != 1 {
+		t.Fatalf("expected late pinned target to close once, got %d", target.closeCalls)
+	}
+	if string(target.data) != "after" {
+		t.Fatalf("expected fallback overwrite to succeed, got %q", string(target.data))
+	}
+}
+
+func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+
+	tests := []struct {
+		name string
+		info fs.FileInfo
+		want string
+	}{
+		{
+			name: "symlink",
+			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeSymlink | 0o777},
+			want: "became a symlink",
+		},
+		{
+			name: "non-regular",
+			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeDir | 0o755},
+			want: "not a regular file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetOpened := false
+			root := &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) { return tt.info, nil },
+				openFile: func(string, int, os.FileMode) (File, error) {
+					targetOpened = true
+					return nil, nil
+				},
+			}
+			renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
+
+			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr)
+			if !errors.Is(err, renameErr) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected joined rename and %q rejection, got %v", tt.want, err)
+			}
+			if targetOpened {
+				t.Fatal("unsafe target was opened for fallback overwrite")
+			}
+		})
+	}
+}
+
+func TestFallbackAtomicReplacementRejectsTargetChangedAfterLatePin(t *testing.T) {
+	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
+	disappearedErr := errors.New("target disappeared")
+	closeErr := errors.New("late pinned target close failure")
+
+	tests := []struct {
+		name          string
+		revalidate    func() (fs.FileInfo, error)
+		closeErr      error
+		wantErr       error
+		wantSubstring string
+	}{
+		{
+			name:       "disappeared",
+			revalidate: func() (fs.FileInfo, error) { return nil, disappearedErr },
+			closeErr:   closeErr,
+			wantErr:    disappearedErr,
+		},
+		{
+			name:          "replaced",
+			revalidate:    func() (fs.FileInfo, error) { return changedInfo, nil },
+			wantSubstring: "target changed before replacement",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertWindowsFallbackRejectsAfterLatePin(
+				t,
+				originalInfo,
+				tt.revalidate,
+				tt.closeErr,
+				tt.wantErr,
+				tt.wantSubstring,
+			)
+		})
+	}
+}
+
+type windowsFallbackTarget struct {
+	data          []byte
+	closeErr      error
+	openCalls     int
+	closeCalls    int
+	truncateCalls int
+	writeCalls    int
+}
+
+func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
+	t.Helper()
+	return &truncatingFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return info, nil },
+			write: func(p []byte) (int, error) {
+				s.writeCalls++
+				s.data = append(s.data, p...)
+				return len(p), nil
+			},
+			close: func() error {
+				s.closeCalls++
+				return s.closeErr
+			},
+		},
+		truncate: func(size int64) error {
+			if size != 0 {
+				t.Fatalf("unexpected truncate size: %d", size)
+			}
+			s.truncateCalls++
+			s.data = s.data[:0]
+			return nil
+		},
+	}
+}
+
+type windowsFallbackRootState struct {
+	lstatCalls      int
+	removeCalls     int
+	renameAttempted bool
+}
+
+func newAppearingWindowsFallbackRoot(
+	t *testing.T,
+	info fs.FileInfo,
+	target *windowsFallbackTarget,
+	removeErr error,
+) (*fakeRoot, *windowsFallbackRootState) {
+	t.Helper()
+	state := &windowsFallbackRootState{}
+	targetFile := target.file(t, info)
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			state.lstatCalls++
+			if state.lstatCalls == 1 {
+				return nil, os.ErrNotExist
+			}
+			if !state.renameAttempted {
+				t.Fatal("target appeared before the rename attempt")
+			}
+			return info, nil
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name == writeTestFileName {
+				target.openCalls++
+				return targetFile, nil
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: closeWithoutError,
+			}, nil
+		},
+		rename: func(oldName, newName string) error {
+			state.renameAttempted = true
+			return &os.LinkError{
+				Op:  "renameat",
+				Old: oldName,
+				New: newName,
+				Err: syscall.ERROR_FILE_EXISTS,
+			}
+		},
+		remove: func(string) error {
+			state.removeCalls++
+			return removeErr
+		},
+	}
+	return root, state
+}
+
+func assertWindowsFallbackRejectsAfterLatePin(
+	t *testing.T,
+	originalInfo fs.FileInfo,
+	revalidate func() (fs.FileInfo, error),
+	closeErr error,
+	wantErr error,
+	wantSubstring string,
+) {
+	t.Helper()
+	target := &windowsFallbackTarget{closeErr: closeErr}
+	targetFile := target.file(t, originalInfo)
+	lstatCalls := 0
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			lstatCalls++
+			if lstatCalls == 1 {
+				return originalInfo, nil
+			}
+			return revalidate()
+		},
+		openFile: func(string, int, os.FileMode) (File, error) {
+			target.openCalls++
+			return targetFile, nil
+		},
+	}
+	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
+
+	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected original rename error, got %v", err)
+	}
+	if wantErr != nil && !errors.Is(err, wantErr) {
+		t.Fatalf("expected target race error %v, got %v", wantErr, err)
+	}
+	if closeErr != nil && !errors.Is(err, closeErr) {
+		t.Fatalf("expected late pinned close error %v, got %v", closeErr, err)
+	}
+	if wantSubstring != "" && !strings.Contains(err.Error(), wantSubstring) {
+		t.Fatalf("expected %q rejection, got %v", wantSubstring, err)
+	}
+	if target.truncateCalls != 0 || target.writeCalls != 0 {
+		t.Fatalf("target mutated before rejection: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
+	}
+	if target.closeCalls != 1 {
+		t.Fatalf("expected late pinned target to close once, got %d", target.closeCalls)
+	}
+}
+
+func windowsReplaceExistingError(oldName, newName string) error {
+	return &os.LinkError{
+		Op:  "renameat",
+		Old: oldName,
+		New: newName,
+		Err: syscall.ERROR_ALREADY_EXISTS,
 	}
 }
 
