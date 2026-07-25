@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const mainGoPath = "main.go"
@@ -178,6 +180,11 @@ func runSuppressionCheck(repoDir string) (string, error) {
 
 func runCommand(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
+
+	if name == "git" {
+		testutil.RunGit(t, dir, args...)
+		return ""
+	}
 
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir

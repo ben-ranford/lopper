@@ -24,6 +24,8 @@ var forcedGitConfigOverrides = []gitConfigOverride{
 	{key: "core.quotePath", value: "false"},
 	{key: "diff.external", value: ""},
 	{key: "interactive.diffFilter", value: ""},
+	// Keep git commit from detaching background maintenance into temp repos.
+	{key: "maintenance.auto", value: "false"},
 	{key: "core.pager", value: "cat"},
 }
 
