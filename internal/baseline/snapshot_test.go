@@ -146,6 +146,59 @@ func TestDecodeSnapshotSupportsEnvelopeAndLegacyFallback(t *testing.T) {
 	}
 }
 
+func TestDecodeSnapshotSchemaVersionCompatibility(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		data      string
+		wantKey   string
+		wantValue string
+		wantErr   string
+	}{
+		{
+			name:      "exact version accepted",
+			data:      `{"baselineSchemaVersion":"1.0.0","key":" label:test ","savedAt":"2026-07-12T00:00:00Z","report":{"value":"snapshot"}}`,
+			wantKey:   "label:test",
+			wantValue: "SNAPSHOT",
+		},
+		{
+			name:    "padded version rejected with raw value",
+			data:    `{"baselineSchemaVersion":" 1.0.0 ","key":"label:test","savedAt":"2026-07-12T00:00:00Z","report":{"value":"snapshot"}}`,
+			wantErr: "unsupported baseline schema version:  1.0.0 ",
+		},
+		{
+			name:      "whitespace version falls back to missing behavior",
+			data:      `{"baselineSchemaVersion":"   ","value":"legacy"}`,
+			wantValue: "LEGACY",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, key, err := DecodeSnapshot([]byte(tc.data), normalizedSnapshotDecodeOptions())
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("DecodeSnapshot() error = %v, want %q", err, tc.wantErr)
+				}
+				if got != (testSnapshotReport{}) || key != "" {
+					t.Fatalf("DecodeSnapshot() error result = %#v, %q, want zero values", got, key)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DecodeSnapshot() error = %v", err)
+			}
+			if got.Value != tc.wantValue || key != tc.wantKey {
+				t.Fatalf("DecodeSnapshot() = %#v, %q, want value=%q key=%q", got, key, tc.wantValue, tc.wantKey)
+			}
+		})
+	}
+}
+
 func TestDecodeSnapshotRejectsUnsupportedSchemaWithCustomError(t *testing.T) {
 	t.Parallel()
 

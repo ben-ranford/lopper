@@ -74,7 +74,7 @@ func LoadSnapshotFile[T any](path string, options SnapshotDecodeOptions[T]) (T, 
 func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, string, error) {
 	var snapshot Snapshot[T]
 	if err := json.Unmarshal(data, &snapshot); err == nil && strings.TrimSpace(snapshot.BaselineSchemaVersion) != "" {
-		version := strings.TrimSpace(snapshot.BaselineSchemaVersion)
+		version := snapshot.BaselineSchemaVersion
 		if version != SnapshotSchemaVersion {
 			var zero T
 			return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
