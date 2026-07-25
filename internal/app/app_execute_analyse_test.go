@@ -229,7 +229,7 @@ func executeAnalyseReport(t *testing.T, application *App, req Request) report.Re
 func writeScopedCacheFixtureRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
-	writeFixture := func(relPath string, content string) {
+	writeFixture := func(relPath, content string) {
 		path := filepath.Join(repo, relPath)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", relPath, err)

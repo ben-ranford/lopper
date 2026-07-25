@@ -10,9 +10,13 @@ import (
 
 const maxScopeDiagnostics = 5
 
-var scopeWorkspaceCreatedFn = func(string) {}
+var scopeWorkspaceCreatedFn = func(path string) {
+	_ = path // Default hook is intentionally inert outside tests.
+}
 
-func noOpCleanup() { /* Intentionally empty: no scoped workspace was created. */ }
+func noOpCleanup() {
+	// Intentionally empty: no scoped workspace was created.
+}
 
 type scopeStats struct {
 	includeMatches     map[string]int

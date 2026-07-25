@@ -471,7 +471,7 @@ func TestCallAnalyseDependencyPinsDefaultCachePathForScopedRequest(t *testing.T)
 	if fake.lastReq.Cache.Path != "" {
 		t.Fatalf("expected default MCP cache path to remain implicit, got %#v", fake.lastReq.Cache)
 	}
-	if pinnedPath := cachePinnedPathValue(fake.lastReq.Cache); pinnedPath != expectedPinnedPath {
+	if cachePinnedPathValue(fake.lastReq.Cache) != expectedPinnedPath {
 		t.Fatalf("expected pinned default cache path %q, got %#v", expectedPinnedPath, fake.lastReq.Cache)
 	}
 }
