@@ -21,6 +21,11 @@ type samples struct {
 
 type benchmarkData map[string]samples
 
+type benchmarkInput struct {
+	data       benchmarkData
+	incomplete []string
+}
+
 type deltaThresholds struct {
 	bytesPct  float64
 	allocsPct float64
@@ -38,6 +43,27 @@ type comparisonRow struct {
 	regressedAllocs bool
 }
 
+const (
+	exitCodePassed     = 0
+	exitCodeRegression = 1
+	exitCodeInvalid    = 2
+)
+
+type benchmarkLineStatus uint8
+
+const (
+	benchmarkLineIgnored benchmarkLineStatus = iota
+	benchmarkLineComplete
+	benchmarkLineIncomplete
+)
+
+type comparisonOutcome struct {
+	exitCode    int
+	status      string
+	result      string
+	diagnostics []string
+}
+
 func main() {
 	basePath := flag.String("base", "", "path to base benchmark output")
 	headPath := flag.String("head", "", "path to head benchmark output")
@@ -50,11 +76,11 @@ func main() {
 		exitErr(errors.New("both -base and -head are required"))
 	}
 
-	baseData, err := parseBenchmarkFile(*basePath)
+	baseInput, err := parseBenchmarkFile(*basePath)
 	if err != nil {
 		exitErr(fmt.Errorf("parse base benchmarks: %w", err))
 	}
-	headData, err := parseBenchmarkFile(*headPath)
+	headInput, err := parseBenchmarkFile(*headPath)
 	if err != nil {
 		exitErr(fmt.Errorf("parse head benchmarks: %w", err))
 	}
@@ -63,27 +89,27 @@ func main() {
 		bytesPct:  *maxBytesPct,
 		allocsPct: *maxAllocsPct,
 	}
-	summary, hasRegression := compareBenchmarks(baseData, headData, limits)
+	summary, statusCode := compareBenchmarks(baseInput, headInput, limits)
 	fmt.Print(summary)
 	if *summaryOut != "" {
 		if err := os.WriteFile(*summaryOut, []byte(summary), 0o600); err != nil {
 			exitErr(fmt.Errorf("write summary: %w", err))
 		}
 	}
-	if hasRegression {
-		os.Exit(1)
+	if statusCode != exitCodePassed {
+		os.Exit(statusCode)
 	}
 }
 
 func exitErr(err error) {
 	fmt.Fprintln(os.Stderr, err)
-	os.Exit(2)
+	os.Exit(exitCodeInvalid)
 }
 
-func parseBenchmarkFile(path string) (result benchmarkData, err error) {
+func parseBenchmarkFile(path string) (result benchmarkInput, err error) {
 	file, err := safeio.OpenFile(path)
 	if err != nil {
-		return nil, err
+		return benchmarkInput{}, err
 	}
 	defer func() {
 		closeErr := file.Close()
@@ -92,7 +118,7 @@ func parseBenchmarkFile(path string) (result benchmarkData, err error) {
 		}
 	}()
 
-	result = make(benchmarkData)
+	result = benchmarkInput{data: make(benchmarkData)}
 	currentPkg := ""
 
 	scanner := bufio.NewScanner(file)
@@ -102,27 +128,29 @@ func parseBenchmarkFile(path string) (result benchmarkData, err error) {
 		case strings.HasPrefix(line, "pkg: "):
 			currentPkg = strings.TrimSpace(strings.TrimPrefix(line, "pkg: "))
 		case strings.HasPrefix(line, "Benchmark"):
-			name, sample, ok := parseBenchmarkLine(currentPkg, line)
-			if !ok {
-				continue
+			name, sample, status, diagnostic := parseBenchmarkLine(currentPkg, line)
+			switch status {
+			case benchmarkLineComplete:
+				existing := result.data[name]
+				existing.bytesPerOp = append(existing.bytesPerOp, sample.bytesPerOp...)
+				existing.allocsPerOp = append(existing.allocsPerOp, sample.allocsPerOp...)
+				result.data[name] = existing
+			case benchmarkLineIncomplete:
+				result.incomplete = append(result.incomplete, diagnostic)
 			}
-			existing := result[name]
-			existing.bytesPerOp = append(existing.bytesPerOp, sample.bytesPerOp...)
-			existing.allocsPerOp = append(existing.allocsPerOp, sample.allocsPerOp...)
-			result[name] = existing
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return benchmarkInput{}, err
 	}
 	return result, nil
 }
 
-func parseBenchmarkLine(currentPkg, line string) (string, samples, bool) {
+func parseBenchmarkLine(currentPkg, line string) (string, samples, benchmarkLineStatus, string) {
 	fields := strings.Fields(line)
 	if len(fields) < 4 {
-		return "", samples{}, false
+		return "", samples{}, benchmarkLineIgnored, ""
 	}
 
 	benchmarkName := normalizeBenchmarkName(fields[0])
@@ -131,6 +159,8 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, bool) {
 	}
 	key := currentPkg + "/" + benchmarkName
 	var sample samples
+	var hasBytes bool
+	var hasAllocs bool
 
 	for i := 2; i+1 < len(fields); i += 2 {
 		value, err := strconv.ParseFloat(fields[i], 64)
@@ -139,16 +169,21 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, bool) {
 		}
 		switch fields[i+1] {
 		case "B/op":
+			hasBytes = true
 			sample.bytesPerOp = append(sample.bytesPerOp, value)
 		case "allocs/op":
+			hasAllocs = true
 			sample.allocsPerOp = append(sample.allocsPerOp, value)
 		}
 	}
 
-	if len(sample.bytesPerOp) == 0 && len(sample.allocsPerOp) == 0 {
-		return "", samples{}, false
+	if !hasBytes && !hasAllocs {
+		return "", samples{}, benchmarkLineIgnored, ""
 	}
-	return key, sample, true
+	if !hasBytes || !hasAllocs {
+		return key, samples{}, benchmarkLineIncomplete, incompleteSampleDiagnostic(key, !hasBytes, !hasAllocs)
+	}
+	return key, sample, benchmarkLineComplete, ""
 }
 
 func normalizeBenchmarkName(name string) string {
@@ -165,17 +200,29 @@ func normalizeBenchmarkName(name string) string {
 	return name[:idx]
 }
 
-func compareBenchmarks(baseData, headData benchmarkData, limits deltaThresholds) (string, bool) {
-	matchedNames := intersectKeys(baseData, headData)
-	newOnlyNames := differenceKeys(headData, baseData)
-	baseOnlyNames := differenceKeys(baseData, headData)
+func incompleteSampleDiagnostic(name string, missingBytes, missingAllocs bool) string {
+	missing := make([]string, 0, 2)
+	if missingBytes {
+		missing = append(missing, "B/op")
+	}
+	if missingAllocs {
+		missing = append(missing, "allocs/op")
+	}
+	return fmt.Sprintf("`%s` missing %s", name, strings.Join(missing, " and "))
+}
 
-	rows, hasRegression := buildComparisonRows(matchedNames, baseData, headData, limits)
+func compareBenchmarks(baseInput, headInput benchmarkInput, limits deltaThresholds) (string, int) {
+	matchedNames := intersectKeys(baseInput.data, headInput.data)
+	headOnlyNames := differenceKeys(headInput.data, baseInput.data)
+	baseOnlyNames := differenceKeys(baseInput.data, headInput.data)
+
+	rows, hasRegression := buildComparisonRows(matchedNames, baseInput.data, headInput.data, limits)
+	outcome := classifyComparisonOutcome(baseInput, headInput, matchedNames, headOnlyNames, baseOnlyNames, hasRegression)
 
 	var buf bytes.Buffer
-	writeComparisonSummary(&buf, rows, newOnlyNames, baseOnlyNames, limits, hasRegression)
+	writeComparisonSummary(&buf, rows, headOnlyNames, baseOnlyNames, limits, outcome)
 
-	return buf.String(), hasRegression
+	return buf.String(), outcome.exitCode
 }
 
 func buildComparisonRows(matchedNames []string, baseData, headData benchmarkData, limits deltaThresholds) ([]comparisonRow, bool) {
@@ -212,19 +259,32 @@ func newComparisonRow(name string, baseSample, headSample samples, limits deltaT
 	}
 }
 
-func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, newOnlyNames, baseOnlyNames []string, limits deltaThresholds, hasRegression bool) {
+func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, headOnlyNames, baseOnlyNames []string, limits deltaThresholds, outcome comparisonOutcome) {
 	buf.WriteString("## Memory Benchmarks\n\n")
 	fmt.Fprintf(buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", limits.bytesPct, limits.allocsPct)
+	fmt.Fprintf(buf, "Base benchmarks: %s\n", benchmarkCountLabel(len(rows)+len(baseOnlyNames)))
+	fmt.Fprintf(buf, "Head benchmarks: %s\n\n", benchmarkCountLabel(len(rows)+len(headOnlyNames)))
 
 	writeComparisonTable(buf, rows)
-	writeBenchmarkNameList(buf, "New-only benchmarks (reported, not gated until present on base):", newOnlyNames)
-	writeBenchmarkNameList(buf, "Base-only benchmarks (not compared on head):", baseOnlyNames)
+	writeList(buf, "Head-only benchmarks (missing on base):", headOnlyNames, func(item string) string {
+		return fmt.Sprintf("`%s`", item)
+	})
+	writeList(buf, "Base-only benchmarks (missing on head):", baseOnlyNames, func(item string) string {
+		return fmt.Sprintf("`%s`", item)
+	})
+	writeList(buf, "Incomplete benchmark samples:", outcome.diagnostics, func(item string) string {
+		return item
+	})
 
-	if hasRegression {
+	switch outcome.status {
+	case "incomplete", "invalid":
+		fmt.Fprintf(buf, "Comparison status: %s\n", outcome.status)
+		fmt.Fprintf(buf, "%s\n", outcome.result)
+	case "regression":
 		buf.WriteString("Result: memory benchmark regression detected.\n")
-		return
+	default:
+		buf.WriteString("Result: memory benchmark gate passed.\n")
 	}
-	buf.WriteString("Result: memory benchmark gate passed.\n")
 }
 
 func writeComparisonTable(buf *bytes.Buffer, rows []comparisonRow) {
@@ -241,17 +301,57 @@ func writeComparisonTable(buf *bytes.Buffer, rows []comparisonRow) {
 	buf.WriteString("\n")
 }
 
-func writeBenchmarkNameList(buf *bytes.Buffer, title string, names []string) {
-	if len(names) == 0 {
+func writeList(buf *bytes.Buffer, title string, items []string, formatItem func(string) string) {
+	if len(items) == 0 {
 		return
 	}
 
 	buf.WriteString(title)
 	buf.WriteString("\n")
-	for _, name := range names {
-		fmt.Fprintf(buf, "- `%s`\n", name)
+	for _, item := range items {
+		fmt.Fprintf(buf, "- %s\n", formatItem(item))
 	}
 	buf.WriteString("\n")
+}
+
+func benchmarkCountLabel(total int) string {
+	if total == 0 {
+		return "none"
+	}
+	return strconv.Itoa(total)
+}
+
+func classifyComparisonOutcome(baseInput, headInput benchmarkInput, matchedNames, headOnlyNames, baseOnlyNames []string, hasRegression bool) comparisonOutcome {
+	if diagnostics := incompleteDiagnostics(baseInput, headInput); len(diagnostics) > 0 {
+		return comparisonOutcome{
+			exitCode:    exitCodeInvalid,
+			status:      "incomplete",
+			result:      "Result: benchmark input contained incomplete memory samples; each benchmark line must include both B/op and allocs/op.",
+			diagnostics: diagnostics,
+		}
+	}
+	if len(baseInput.data) == 0 || len(headInput.data) == 0 || len(matchedNames) == 0 || len(headOnlyNames) > 0 || len(baseOnlyNames) > 0 {
+		return comparisonOutcome{
+			exitCode: exitCodeInvalid,
+			status:   "invalid",
+			result:   "Result: every selected benchmark must be present on both base and head.",
+		}
+	}
+	if hasRegression {
+		return comparisonOutcome{exitCode: exitCodeRegression, status: "regression"}
+	}
+	return comparisonOutcome{exitCode: exitCodePassed, status: "passed"}
+}
+
+func incompleteDiagnostics(baseInput, headInput benchmarkInput) []string {
+	diagnostics := make([]string, 0, len(baseInput.incomplete)+len(headInput.incomplete))
+	for _, diagnostic := range baseInput.incomplete {
+		diagnostics = append(diagnostics, "base: "+diagnostic)
+	}
+	for _, diagnostic := range headInput.incomplete {
+		diagnostics = append(diagnostics, "head: "+diagnostic)
+	}
+	return diagnostics
 }
 
 func comparisonStatus(row comparisonRow) string {
