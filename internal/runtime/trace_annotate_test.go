@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -301,6 +302,23 @@ func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
 	}
 }
 
+func TestAppendRuntimeOnlyDependenciesSkipsLegacyKeyWhenScopedJSLoadIsZero(t *testing.T) {
+	rep := report.Report{}
+	trace := Trace{
+		DependencyLoads: map[string]int{
+			"lodash": 2,
+		},
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			{Language: runtimeLanguageJSTS, Name: "lodash"}: 0,
+		},
+	}
+
+	appendRuntimeOnlyDependencies(&rep, trace, nil, map[string]struct{}{runtimeLanguageJSTS: {}})
+	if len(rep.Dependencies) != 0 {
+		t.Fatalf("expected zero scoped JS load to suppress legacy runtime-only row, got %#v", rep.Dependencies)
+	}
+}
+
 func TestRuntimeDependencyKeysSkipsZeroAndUnsupportedLanguages(t *testing.T) {
 	trace := Trace{
 		DependencyLoads: map[string]int{
@@ -320,5 +338,61 @@ func TestRuntimeDependencyKeysSkipsZeroAndUnsupportedLanguages(t *testing.T) {
 	}
 	if got := runtimeLoadCount(Trace{}, DependencyKey{Language: runtimeLanguagePython, Name: "missing"}); got != 0 {
 		t.Fatalf("expected missing non-JS runtime load count 0, got %d", got)
+	}
+}
+
+func TestSupportedRuntimeLanguagesNormalizesAndDefaultsToJSTS(t *testing.T) {
+	if got := supportedRuntimeLanguages(nil); !reflect.DeepEqual(got, map[string]struct{}{runtimeLanguageJSTS: {}}) {
+		t.Fatalf("expected default supported JS/TS language set, got %#v", got)
+	}
+
+	got := supportedRuntimeLanguages([]string{"", " Python ", "Ruby"})
+	want := map[string]struct{}{
+		runtimeLanguageJSTS:   {},
+		runtimeLanguagePython: {},
+		"ruby":                {},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected normalized supported language set %#v, got %#v", want, got)
+	}
+}
+
+func TestRuntimeDependencyKeysSortSupportedLegacyAndScopedLoads(t *testing.T) {
+	trace := Trace{
+		DependencyLoads: map[string]int{
+			"zod": 2,
+		},
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			{Language: runtimeLanguagePython, Name: "requests"}: 1,
+			{Language: runtimeLanguagePython, Name: "click"}:    3,
+		},
+	}
+
+	keys := runtimeDependencyKeys(trace, map[string]struct{}{
+		runtimeLanguageJSTS:   {},
+		runtimeLanguagePython: {},
+	})
+	want := []DependencyKey{
+		{Language: runtimeLanguageJSTS, Name: "zod"},
+		{Language: runtimeLanguagePython, Name: "click"},
+		{Language: runtimeLanguagePython, Name: "requests"},
+	}
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("expected sorted runtime dependency keys %#v, got %#v", want, keys)
+	}
+}
+
+func TestRuntimeCountsForKeyFallsBackToLegacyJSTSOnly(t *testing.T) {
+	trace := Trace{
+		DependencyModules: map[string]map[string]int{
+			"lodash": {"lodash/map.js": 2},
+		},
+	}
+
+	if got := runtimeCountsForKey(nil, trace.DependencyModules, DependencyKey{Language: runtimeLanguageJSTS, Name: "lodash"}); !reflect.DeepEqual(got, map[string]int{"lodash/map.js": 2}) {
+		t.Fatalf("expected JS legacy counts fallback, got %#v", got)
+	}
+	if got := runtimeCountsForKey(nil, trace.DependencyModules, DependencyKey{Language: runtimeLanguagePython, Name: "requests"}); got != nil {
+		t.Fatalf("expected non-JS counts without scoped data to stay nil, got %#v", got)
 	}
 }

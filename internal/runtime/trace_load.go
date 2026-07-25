@@ -27,6 +27,15 @@ func Load(path string) (_ Trace, err error) {
 	return loadRuntimeTrace(file)
 }
 
+// LoadValidatedTrace parses bytes retained from a stable, no-follow file snapshot.
+func LoadValidatedTrace(path string) (Trace, error) {
+	snapshot, err := stableRuntimeTraceFileSnapshot(path)
+	if err != nil {
+		return Trace{}, err
+	}
+	return loadRuntimeTrace(bytes.NewReader(snapshot.data))
+}
+
 // Load parses the exact bytes retained by a validated capture snapshot.
 func (s *ValidatedTraceSnapshot) Load() (Trace, error) {
 	if s == nil {

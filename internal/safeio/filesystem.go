@@ -58,8 +58,7 @@ func OpenRoot(name string) (Root, error) {
 	return fileSystem.OpenRoot(name)
 }
 
-// OpenRootNoFollow opens a confined filesystem root without following symlinks
-// in any component of name.
+// OpenRootNoFollow opens a confined filesystem root while rejecting symlinked path components.
 func OpenRootNoFollow(name string) (Root, error) {
 	return fileSystem.OpenRootNoFollow(name)
 }
@@ -72,7 +71,6 @@ func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, erro
 		return openRootChildPinnedWith(root, childName, requestedPath, fileSystem.OpenRootNoFollow, os.Stat, os.SameFile)
 	})
 }
-
 type osFileSystem struct{}
 
 func (*osFileSystem) Abs(path string) (string, error) {

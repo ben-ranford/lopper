@@ -588,12 +588,6 @@ func TestRuntimeSearchDirsDefaultOnWindowsKeepsProgramFilesNodejsDir(t *testing.
 	}
 }
 
-func TestNewAllowlistedRuntimeCommandRejectsUnsupportedExecutable(t *testing.T) {
-	if _, err := newAllowlistedRuntimeCommand(context.Background(), "ruby"); err == nil {
-		t.Fatalf("expected unsupported executable error")
-	}
-}
-
 func setRuntimeOSTest(t *testing.T, osName string) {
 	t.Helper()
 

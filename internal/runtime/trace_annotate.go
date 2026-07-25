@@ -83,9 +83,6 @@ func supportedRuntimeLanguages(languages []string) map[string]struct{} {
 	}
 	for _, language := range languages {
 		normalized := normalizeRuntimeLanguage(language)
-		if normalized == "" {
-			continue
-		}
 		supported[normalized] = struct{}{}
 	}
 	return supported

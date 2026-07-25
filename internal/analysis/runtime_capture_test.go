@@ -2,12 +2,13 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -73,7 +74,7 @@ func TestServicePythonRuntimeCaptureIndependentOfTraceFeature(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeCaptureReusesTraceOnCacheHit(t *testing.T) {
+func TestServiceRuntimeCaptureRerunsOnAnalysisCacheHit(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
@@ -107,11 +108,79 @@ func TestServiceRuntimeCaptureReusesTraceOnCacheHit(t *testing.T) {
 	if adapter.calls != 1 {
 		t.Fatalf("expected second run to be cache hit, adapter calls=%d", adapter.calls)
 	}
-	if got := readRuntimeCounter(t, counterPath); got != 1 {
-		t.Fatalf("expected runtime capture reuse on cache hit, got %d", got)
+	if got := readRuntimeCounter(t, counterPath); got != 2 {
+		t.Fatalf("expected runtime capture to rerun on analysis cache hit, got %d", got)
 	}
 	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
 		t.Fatalf("expected second run cache hit metadata, got %#v", second.Cache)
+	}
+}
+
+func TestServiceRuntimeCaptureReplacesTamperedTraceOnAnalysisCacheHit(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
+
+	counterPath := filepath.Join(repo, "runtime-counter.txt")
+	tracePath := runtime.DefaultTracePath(repo)
+	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
+
+	adapter := &countingAdapter{id: "js-ts"}
+	registry := language.NewRegistry()
+	if err := registry.Register(adapter); err != nil {
+		t.Fatalf("register JS adapter: %v", err)
+	}
+	svc := &Service{Registry: registry}
+	req := Request{
+		RepoPath:           repo,
+		Language:           "js-ts",
+		TopN:               10,
+		RuntimeTestCommand: "npm test",
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    filepath.Join(repo, cacheTestDirectoryName),
+		},
+	}
+
+	first, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first analyse with runtime capture: %v", err)
+	}
+	if first.Cache == nil || first.Cache.Misses != 1 {
+		t.Fatalf("expected first run cache miss, got %#v", first.Cache)
+	}
+	if got := readRuntimeCounter(t, counterPath); got != 1 {
+		t.Fatalf("expected first runtime capture invocation count 1, got %d", got)
+	}
+
+	testutil.MustWriteFile(t, tracePath, "{\"module\":\"chalk/index\"}\n")
+
+	second, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second analyse after tampering runtime trace: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected second run to remain analysis cache hit, adapter calls=%d", adapter.calls)
+	}
+	if got := readRuntimeCounter(t, counterPath); got != 2 {
+		t.Fatalf("expected tampered runtime trace to force recapture, got %d", got)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
+		t.Fatalf("expected second run cache hit metadata, got %#v", second.Cache)
+	}
+
+	var foundLodash bool
+	for _, dependency := range second.Dependencies {
+		if dependency.Language == "js-ts" && dependency.Name == "chalk" {
+			t.Fatalf("expected tampered trace to be ignored after refresh, got %#v", dependency)
+		}
+		if dependency.Language == "js-ts" && dependency.Name == "dep" && dependency.RuntimeUsage == nil {
+			foundLodash = true
+		}
+	}
+	if !foundLodash {
+		t.Fatalf("expected refreshed runtime trace to discard tampered runtime-only rows, got %#v", second.Dependencies)
 	}
 }
 
@@ -135,32 +204,7 @@ func TestServiceRuntimeCaptureConsumesValidatedTraceAcrossRenameSwapRenameBack(t
 	}
 	service := &Service{Registry: registry}
 
-	stage := 0
-	captureRuntimeTraceAfterValidatedLoadHook = func() {
-		if stage != 0 {
-			return
-		}
-		if err := os.Rename(tracePath, originalPath); err != nil {
-			t.Fatalf("rename validated trace aside: %v", err)
-		}
-		if err := os.Rename(swapPath, tracePath); err != nil {
-			t.Fatalf("swap trace into consumption path: %v", err)
-		}
-		stage = 1
-	}
-	restoreTracePath := func() error {
-		if stage != 1 {
-			return nil
-		}
-		if err := os.Rename(tracePath, swapPath); err != nil {
-			return err
-		}
-		if err := os.Rename(originalPath, tracePath); err != nil {
-			return err
-		}
-		stage = 2
-		return nil
-	}
+	stage, restoreTracePath := installRuntimeTraceSwapHook(t, tracePath, swapPath, originalPath, "rename validated trace aside", "swap trace into consumption path")
 	t.Cleanup(func() {
 		captureRuntimeTraceAfterValidatedLoadHook = nil
 		if err := restoreTracePath(); err != nil {
@@ -177,14 +221,14 @@ func TestServiceRuntimeCaptureConsumesValidatedTraceAcrossRenameSwapRenameBack(t
 	if err != nil {
 		t.Fatalf("analyse runtime trace across path swap: %v", err)
 	}
-	if stage != 1 {
-		t.Fatalf("expected deterministic path swap before final consumption, stage=%d", stage)
+	if *stage != 1 {
+		t.Fatalf("expected deterministic path swap before final consumption, stage=%d", *stage)
 	}
 	if err := restoreTracePath(); err != nil {
 		t.Fatalf("rename swapped trace aside and restore validated path: %v", err)
 	}
-	if stage != 2 {
-		t.Fatalf("expected rename/swap/rename-back fixture to complete, stage=%d", stage)
+	if *stage != 2 {
+		t.Fatalf("expected rename/swap/rename-back fixture to complete, stage=%d", *stage)
 	}
 
 	var foundLodash bool
@@ -201,118 +245,7 @@ func TestServiceRuntimeCaptureConsumesValidatedTraceAcrossRenameSwapRenameBack(t
 	}
 }
 
-func TestServiceRuntimeCaptureDoesNotReuseForgedTraceStateOnCacheHit(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
-
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	tracePath := runtime.DefaultTracePath(repo)
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
-
-	svc, adapter := newCacheTestService(t)
-	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
-	req.RuntimeTestCommand = "npm test"
-
-	first, err := svc.Analyse(context.Background(), req)
-	if err != nil {
-		t.Fatalf("first analyse with runtime capture: %v", err)
-	}
-	if first.Cache == nil || first.Cache.Misses != 1 {
-		t.Fatalf("expected first run cache miss, got %#v", first.Cache)
-	}
-	if got := readRuntimeCounter(t, counterPath); got != 1 {
-		t.Fatalf("expected first runtime capture invocation count 1, got %d", got)
-	}
-
-	testutil.MustWriteFile(t, tracePath, "{\"module\":\"chalk/index\"}\n")
-	testutil.MustWriteFile(t, tracePath+".state.json", `{"schema":"v3","command":"npm test","provider":"node","trustedInputHash":"forged","traceHash":"forged"}`)
-
-	second, err := svc.Analyse(context.Background(), req)
-	if err != nil {
-		t.Fatalf("second analyse with forged runtime trace state: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected second run to remain analysis cache hit, adapter calls=%d", adapter.calls)
-	}
-	if got := readRuntimeCounter(t, counterPath); got != 2 {
-		t.Fatalf("expected forged runtime trace/state to force recapture, got %d", got)
-	}
-	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
-		t.Fatalf("expected second run cache hit metadata, got %#v", second.Cache)
-	}
-}
-
-func TestServiceRuntimeCaptureInputDigestChangeForcesRefresh(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
-
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
-
-	svc, _ := newCacheTestService(t)
-	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
-	req.RuntimeTestCommand = "npm test"
-
-	if _, err := svc.Analyse(context.Background(), req); err != nil {
-		t.Fatalf("first analyse with runtime capture: %v", err)
-	}
-	if got := readRuntimeCounter(t, counterPath); got != 1 {
-		t.Fatalf("expected first runtime capture invocation count 1, got %d", got)
-	}
-
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('updated')\n")
-	if _, err := svc.Analyse(context.Background(), req); err != nil {
-		t.Fatalf("second analyse after input change: %v", err)
-	}
-	if got := readRuntimeCounter(t, counterPath); got != 2 {
-		t.Fatalf("expected changed inputs to force runtime recapture, got %d", got)
-	}
-}
-
-func TestCaptureRuntimeTraceIfNeededExcludedRuntimeInputChangeForcesRefresh(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", cacheTestJSIndexFileName), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "runtime-only.js"), "globalThis.RUNTIME_FLAG = 'a'\n")
-	scopedRepo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(scopedRepo, "src", cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
-
-	req := Request{RuntimeTestCommand: "npm test"}
-	firstCache := &analysisCache{}
-	warnings, tracePath, captured, _, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, scopedRepo, firstCache, nil)
-	if err != nil {
-		t.Fatalf("capture first runtime trace: %v", err)
-	}
-	if len(warnings) != 0 || tracePath == "" || captured {
-		t.Fatalf("expected successful first runtime capture, got warnings=%#v tracePath=%q captured=%v", warnings, tracePath, captured)
-	}
-	if got := readRuntimeCounter(t, counterPath); got != 1 {
-		t.Fatalf("expected first scoped runtime capture invocation count 1, got %d", got)
-	}
-
-	testutil.MustWriteFile(t, filepath.Join(repo, "runtime-only.js"), "globalThis.RUNTIME_FLAG = 'b'\n")
-
-	secondCache := &analysisCache{metadata: report.CacheMetadata{Enabled: true, Hits: 1}}
-	warnings, tracePath, captured, _, err = captureRuntimeTraceIfNeeded(context.Background(), req, repo, scopedRepo, secondCache, nil)
-	if err != nil {
-		t.Fatalf("capture refreshed runtime trace: %v", err)
-	}
-	if len(warnings) != 0 || tracePath == "" || captured {
-		t.Fatalf("expected successful reused-scope runtime capture, got warnings=%#v tracePath=%q captured=%v", warnings, tracePath, captured)
-	}
-	if got := readRuntimeCounter(t, counterPath); got != 2 {
-		t.Fatalf("expected excluded runtime-only input change to force recapture, got %d", got)
-	}
-}
-
-func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
+func TestCaptureRuntimeTraceIfNeededWarningAndNoCommandBranches(t *testing.T) {
 	repo := t.TempDir()
 	explicitTrace := filepath.Join(repo, "custom-trace.ndjson")
 
@@ -321,72 +254,392 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 		RuntimeTracePath:         explicitTrace,
 		RuntimeTracePathExplicit: true,
 	}
-	warnings, tracePath, captured, _, err := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, repo, nil, nil)
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil)
 	if err != nil {
 		t.Fatalf("capture explicit runtime trace: %v", err)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
-		t.Fatalf("expected explicit runtime capture warning, got %#v", warnings)
+	if len(outcome.warnings) != 2 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) || outcome.warnings[1] != runtimeTraceMissingWarning {
+		t.Fatalf("expected explicit runtime capture warning, got %#v", outcome.warnings)
 	}
-	if tracePath != explicitTrace {
-		t.Fatalf("expected explicit trace path to be preserved, got %q", tracePath)
+	wantExplicitTrace := filepath.Join(resolvedTestRepoPath(t, repo), filepath.Base(explicitTrace))
+	if outcome.tracePath != wantExplicitTrace {
+		t.Fatalf("expected canonical explicit trace path %q, got %q", wantExplicitTrace, outcome.tracePath)
 	}
-	if captured {
-		t.Fatal("expected failed explicit capture to report captured=false")
+	if !outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
+		t.Fatalf("expected handled failed explicit capture, got %#v", outcome)
 	}
 
 	implicitReq := Request{RuntimeTestCommand: "foobar test"}
-	warnings, tracePath, captured, _, err = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, repo, nil, nil)
+	outcome, err = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil)
 	if err != nil {
 		t.Fatalf("capture implicit runtime trace: %v", err)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
-		t.Fatalf("expected implicit runtime capture warning, got %#v", warnings)
+	if len(outcome.warnings) != 1 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected implicit runtime capture warning, got %#v", outcome.warnings)
 	}
-	if tracePath != "" {
-		t.Fatalf("expected implicit trace path to be cleared after failure, got %q", tracePath)
+	wantImplicitTrace := runtime.DefaultTracePath(resolvedTestRepoPath(t, repo))
+	if outcome.tracePath != wantImplicitTrace {
+		t.Fatalf("expected canonical implicit trace path %q, got %q", wantImplicitTrace, outcome.tracePath)
 	}
-	if captured {
-		t.Fatal("expected failed implicit capture to report captured=false")
+	if !outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
+		t.Fatalf("expected handled failed implicit capture, got %#v", outcome)
 	}
 
-	warnings, tracePath, captured, _, err = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, repo, nil, nil)
+	outcome, err = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil)
 	if err != nil {
 		t.Fatalf("skip empty runtime capture: %v", err)
 	}
-	if len(warnings) != 0 || tracePath != "" || captured {
-		t.Fatalf("expected empty runtime command to skip capture, got warnings=%#v tracePath=%q captured=%v", warnings, tracePath, captured)
-	}
-
-	reuseCases := []struct {
-		name  string
-		cache *analysisCache
-		want  bool
-	}{
-		{name: "nil cache", cache: nil, want: false},
-		{name: "disabled cache", cache: &analysisCache{metadata: report.CacheMetadata{}}, want: false},
-		{name: "cache miss", cache: &analysisCache{metadata: report.CacheMetadata{Enabled: true, Misses: 1}}, want: false},
-		{name: "cache hit", cache: &analysisCache{metadata: report.CacheMetadata{Enabled: true, Hits: 1}}, want: true},
-	}
-	for _, testCase := range reuseCases {
-		if got := shouldReuseRuntimeTrace(testCase.cache); got != testCase.want {
-			t.Fatalf("%s: expected shouldReuseRuntimeTrace=%v, got %v", testCase.name, testCase.want, got)
-		}
+	if len(outcome.warnings) != 0 || outcome.tracePath != "" || outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
+		t.Fatalf("expected empty runtime command to skip capture, got %#v", outcome)
 	}
 }
 
-func TestTrustedRuntimeTraceInputDigest(t *testing.T) {
+func TestMissingExplicitRuntimeFallbackRemainsHandledDuringFinalization(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-	cache := newAnalysisCache(Request{}, repo)
-	digest, ok := trustedRuntimeTraceInputDigest(cache, repo, "")
-	if !ok || strings.TrimSpace(digest) == "" {
-		t.Fatalf("expected trusted runtime trace input digest, got ok=%v digest=%q", ok, digest)
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	req := Request{
+		Language:                 "js-ts",
+		RuntimeTestCommand:       "foobar test",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
 	}
 
-	missing, ok := trustedRuntimeTraceInputDigest(cache, filepath.Join(repo, "missing"), "")
-	if ok || missing != "" {
-		t.Fatalf("expected missing repo digest lookup to fail closed, got ok=%v digest=%q", ok, missing)
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("capture missing explicit runtime fallback: %v", err)
+	}
+	wantTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected canonical missing explicit fallback path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
+		t.Fatalf("expected handled capture attempt without validated runtime data, got %#v", outcome)
+	}
+
+	req.RuntimeTracePath = outcome.tracePath
+	t.Run("missing warning remains single", func(t *testing.T) {
+		reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{
+			Warnings: append([]string(nil), outcome.warnings...),
+		})
+		if err != nil {
+			t.Fatalf("finalize handled missing runtime fallback: %v", err)
+		}
+		assertSingleRuntimeTraceMissingWarning(t, reportData.Warnings)
+	})
+
+	t.Run("file appearing later is ignored", func(t *testing.T) {
+		testutil.MustWriteFile(t, tracePath, "{\"module\":\"lodash/map\"}\n")
+		reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{
+			Warnings: append([]string(nil), outcome.warnings...),
+		})
+		if err != nil {
+			t.Fatalf("finalize after runtime trace appears: %v", err)
+		}
+		assertSingleRuntimeTraceMissingWarning(t, reportData.Warnings)
+		if len(reportData.Dependencies) != 0 {
+			t.Fatalf("expected late unvalidated runtime trace to be ignored, got %#v", reportData.Dependencies)
+		}
+	})
+}
+
+func TestCaptureRuntimeTraceIfNeededIgnoresRelativeCWDDecoy(t *testing.T) {
+	repo := t.TempDir()
+	decoyRoot := t.TempDir()
+	relativeTracePath := filepath.Join(".artifacts", "runtime.ndjson")
+	testutil.MustWriteFile(t, filepath.Join(decoyRoot, relativeTracePath), "{\"module\":\"lodash/map\"}\n")
+	testutil.Chdir(t, decoyRoot)
+
+	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(repo, "runtime-counter.txt"))
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeToolWithoutTrace(t))
+
+	req := Request{
+		Language:                 "js-ts",
+		RuntimeTestCommand:       "npm test",
+		RuntimeTracePath:         relativeTracePath,
+		RuntimeTracePathExplicit: true,
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("capture without runtime output: %v", err)
+	}
+	wantTracePath := filepath.Join(resolvedTestRepoPath(t, repo), relativeTracePath)
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected repo-resolved trace path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.captureAttempted || outcome.trace != nil {
+		t.Fatalf("expected handled capture without validated trace, got %#v", outcome)
+	}
+	assertSingleRuntimeTraceMissingWarning(t, outcome.warnings)
+}
+
+func TestCaptureRuntimeTraceIfNeededWithoutCommandIgnoresRelativeCWDDecoy(t *testing.T) {
+	repo := t.TempDir()
+	relativeTracePath := filepath.Join(".artifacts", "runtime.ndjson")
+	testutil.MustWriteFile(t, filepath.Join(repo, relativeTracePath), "{\"module\":\"lodash/map\"}\n")
+
+	decoyRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(decoyRoot, relativeTracePath), "{\"module\":\"chalk/index\"}\n")
+	testutil.Chdir(t, decoyRoot)
+
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), Request{Language: "js-ts", RuntimeTracePath: relativeTracePath, RuntimeTracePathExplicit: true}, repo, nil)
+	if err != nil {
+		t.Fatalf("validate explicit runtime trace without command: %v", err)
+	}
+	wantTracePath := filepath.Join(resolvedTestRepoPath(t, repo), relativeTracePath)
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected repo-confined trace path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.traceFinalized || outcome.captureAttempted || outcome.trace == nil {
+		t.Fatalf("expected finalized explicit runtime trace snapshot, got %#v", outcome)
+	}
+	if got := outcome.trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected repo trace snapshot to load lodash, got %#v", outcome.trace.DependencyLoads)
+	}
+	if got := outcome.trace.DependencyLoads["chalk"]; got != 0 {
+		t.Fatalf("did not expect cwd decoy trace to load chalk, got %#v", outcome.trace.DependencyLoads)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededWithoutCommandRejectsExternalAbsolutePath(t *testing.T) {
+	repo := t.TempDir()
+	outsideTracePath := filepath.Join(t.TempDir(), "runtime.ndjson")
+	testutil.MustWriteFile(t, outsideTracePath, "{\"module\":\"lodash/map\"}\n")
+
+	_, err := captureRuntimeTraceIfNeeded(context.Background(), Request{Language: "js-ts", RuntimeTracePath: outsideTracePath, RuntimeTracePathExplicit: true}, repo, nil)
+	if err == nil || !strings.Contains(err.Error(), "must stay within repo") {
+		t.Fatalf("expected external explicit trace rejection, got %v", err)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededWithoutCommandRejectsSymlinkedExplicitParentEscape(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("symlink parent regression is Unix-specific")
+	}
+
+	repo := t.TempDir()
+	outsideRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outsideRoot, "runtime.ndjson"), "{\"module\":\"lodash/map\"}\n")
+
+	linkPath := filepath.Join(repo, "trace-link")
+	if err := os.Symlink(outsideRoot, linkPath); err != nil {
+		t.Fatalf("symlink trace parent: %v", err)
+	}
+
+	_, err := captureRuntimeTraceIfNeeded(context.Background(), Request{Language: "js-ts", RuntimeTracePath: filepath.Join(linkPath, "runtime.ndjson"), RuntimeTracePathExplicit: true}, repo, nil)
+	if err == nil || !strings.Contains(err.Error(), "must stay within repo") {
+		t.Fatalf("expected symlinked explicit parent escape rejection, got %v", err)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededWithoutCommandUsesRealRepoPathForSymlinkedRepo(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("repo symlink regression is Unix-specific")
+	}
+
+	realRepo := t.TempDir()
+	relativeTracePath := filepath.Join(".artifacts", "runtime.ndjson")
+	testutil.MustWriteFile(t, filepath.Join(realRepo, relativeTracePath), "{\"module\":\"lodash/map\"}\n")
+
+	linkedRepo := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(realRepo, linkedRepo); err != nil {
+		t.Fatalf("symlink repo: %v", err)
+	}
+
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), Request{Language: "js-ts", RuntimeTracePath: relativeTracePath, RuntimeTracePathExplicit: true}, linkedRepo, nil)
+	if err != nil {
+		t.Fatalf("validate explicit runtime trace through symlinked repo: %v", err)
+	}
+	wantTracePath := filepath.Join(resolvedTestRepoPath(t, realRepo), relativeTracePath)
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected canonical symlinked repo trace path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.traceFinalized || outcome.trace == nil {
+		t.Fatalf("expected finalized explicit runtime trace snapshot, got %#v", outcome)
+	}
+	if got := outcome.trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected validated lodash trace, got %#v", outcome.trace.DependencyLoads)
+	}
+}
+
+func TestExplicitRuntimeTraceWithoutCommandUsesValidatedSnapshotAcrossPathSwap(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	swapPath := tracePath + ".swap"
+	originalPath := tracePath + ".validated"
+	testutil.MustWriteFile(t, tracePath, "{\"module\":\"lodash/map\"}\n")
+	testutil.MustWriteFile(t, swapPath, "{\"module\":\"chalk/index\"}\n")
+
+	stage, restoreTracePath := installRuntimeTraceSwapHook(t, tracePath, swapPath, originalPath, "rename validated explicit trace aside", "swap explicit trace into path")
+	t.Cleanup(func() {
+		captureRuntimeTraceAfterValidatedLoadHook = nil
+		if err := restoreTracePath(); err != nil {
+			t.Errorf("restore explicit runtime trace path: %v", err)
+		}
+	})
+
+	req := Request{
+		Language:                 "js-ts",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("validate explicit runtime trace without command: %v", err)
+	}
+	if *stage != 1 {
+		t.Fatalf("expected path swap after validated explicit load, stage=%d", *stage)
+	}
+	req.RuntimeTracePath = outcome.tracePath
+	reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{})
+	if err != nil {
+		t.Fatalf("finalize explicit runtime trace from validated snapshot: %v", err)
+	}
+	if err := restoreTracePath(); err != nil {
+		t.Fatalf("restore swapped explicit runtime trace path: %v", err)
+	}
+	if *stage != 2 {
+		t.Fatalf("expected explicit rename/swap/rename-back fixture to complete, stage=%d", *stage)
+	}
+
+	var foundLodash bool
+	for _, dependency := range reportData.Dependencies {
+		if dependency.Language == "js-ts" && dependency.Name == "lodash" && dependency.RuntimeUsage != nil {
+			foundLodash = true
+		}
+		if dependency.Language == "js-ts" && dependency.Name == "chalk" {
+			t.Fatalf("expected validated explicit snapshot to ignore swapped path, got %#v", dependency)
+		}
+	}
+	if !foundLodash {
+		t.Fatalf("expected validated explicit snapshot to preserve lodash runtime usage, got %#v", reportData.Dependencies)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededUsesRealDefaultForSymlinkedRepo(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("repo symlink regression is Unix-specific")
+	}
+
+	realRepo := t.TempDir()
+	linkedRepo := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(realRepo, linkedRepo); err != nil {
+		t.Fatalf("symlink repo: %v", err)
+	}
+	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(realRepo, "runtime-counter.txt"))
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
+
+	req := Request{
+		Language:           "js-ts",
+		RuntimeTestCommand: "npm test",
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, linkedRepo, nil)
+	if err != nil {
+		t.Fatalf("capture through symlinked repo: %v", err)
+	}
+	wantTracePath := runtime.DefaultTracePath(resolvedTestRepoPath(t, realRepo))
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected real default trace path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.captureAttempted || outcome.trace == nil {
+		t.Fatalf("expected validated trace from symlinked repo capture, got %#v", outcome)
+	}
+	if got := outcome.trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected validated lodash trace, got %#v", outcome.trace.DependencyLoads)
+	}
+}
+
+func TestSuccessfulCaptureWithoutOutputIgnoresLateTraceFile(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(repo, "runtime-counter.txt"))
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeToolWithoutTrace(t))
+
+	req := Request{
+		Language:           "js-ts",
+		RuntimeTestCommand: "npm test",
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("capture without runtime output: %v", err)
+	}
+	if !outcome.captureAttempted || outcome.trace != nil {
+		t.Fatalf("expected successful capture attempt without trace output, got %#v", outcome)
+	}
+	assertSingleRuntimeTraceMissingWarning(t, outcome.warnings)
+
+	testutil.MustWriteFile(t, outcome.tracePath, "{\"module\":\"lodash/map\"}\n")
+	req.RuntimeTracePath = outcome.tracePath
+	reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{
+		Warnings: append([]string(nil), outcome.warnings...),
+	})
+	if err != nil {
+		t.Fatalf("finalize after late runtime trace creation: %v", err)
+	}
+	assertSingleRuntimeTraceMissingWarning(t, reportData.Warnings)
+	if len(reportData.Dependencies) != 0 {
+		t.Fatalf("expected late unvalidated runtime trace to be ignored, got %#v", reportData.Dependencies)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededPropagatesContextTermination(t *testing.T) {
+	repo := t.TempDir()
+	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(repo, "runtime-counter.txt"))
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
+
+	contextCases := []struct {
+		name       string
+		newContext func() (context.Context, context.CancelFunc)
+		want       error
+	}{
+		{
+			name: "canceled",
+			newContext: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+			want: context.Canceled,
+		},
+		{
+			name: "deadline exceeded",
+			newContext: func() (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), time.Time{})
+			},
+			want: context.DeadlineExceeded,
+		},
+	}
+	requestCases := []struct {
+		name     string
+		explicit bool
+	}{
+		{name: "implicit trace"},
+		{name: "explicit trace", explicit: true},
+	}
+
+	for _, contextCase := range contextCases {
+		for _, requestCase := range requestCases {
+			t.Run(contextCase.name+"/"+requestCase.name, func(t *testing.T) {
+				tracePath := ""
+				if requestCase.explicit {
+					tracePath = filepath.Join(repo, strings.ReplaceAll(t.Name(), "/", "-")+".ndjson")
+					testutil.MustWriteFile(t, tracePath, "{\"module\":\"lodash/map\"}\n")
+				}
+				ctx, cancel := contextCase.newContext()
+				defer cancel()
+
+				req := Request{
+					RuntimeTestCommand:       "npm test",
+					RuntimeTracePath:         tracePath,
+					RuntimeTracePathExplicit: requestCase.explicit,
+				}
+				outcome, err := captureRuntimeTraceIfNeeded(ctx, req, repo, nil)
+				if !errors.Is(err, contextCase.want) {
+					t.Fatalf("expected %v, got outcome=%#v err=%v", contextCase.want, outcome, err)
+				}
+				if len(outcome.warnings) != 0 {
+					t.Fatalf("expected context termination without warnings, got %#v", outcome.warnings)
+				}
+			})
+		}
 	}
 }
 
@@ -486,26 +739,89 @@ func mustResolvePythonRuntimeCaptureFeatureSet(t *testing.T, enabled bool) featu
 }
 
 func setupFakeAnalysisRuntimeTool(t *testing.T) string {
-	t.Helper()
+	return setupFakeAnalysisRuntimeToolWithTraceMode(t, true)
+}
 
+func setupFakeAnalysisRuntimeToolWithoutTrace(t *testing.T) string {
+	t.Helper()
+	return setupFakeAnalysisRuntimeToolWithTraceMode(t, false)
+}
+
+func setupFakeAnalysisRuntimeToolWithTraceMode(t *testing.T, writeTrace bool) string {
+	t.Helper()
 	toolDir := t.TempDir()
 	npmPath := filepath.Join(toolDir, "npm")
-	script := "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
+	script := "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\n"
+	if writeTrace {
+		script += "printf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
+	}
 	if err := os.WriteFile(npmPath, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake npm runtime tool: %v", err)
+		if writeTrace {
+			t.Fatalf("write fake npm runtime tool: %v", err)
+		}
+		t.Fatalf("write fake npm runtime tool without trace output: %v", err)
 	}
 	return toolDir
 }
 
 func readRuntimeCounter(t *testing.T, path string) int {
 	t.Helper()
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read runtime counter: %v", err)
+	return testutil.MustReadTrimmedIntFile(t, path)
+}
+
+func assertSingleRuntimeTraceMissingWarning(t *testing.T, warnings []string) {
+	t.Helper()
+
+	count := 0
+	for _, warning := range warnings {
+		if warning == runtimeTraceMissingWarning {
+			count++
+		}
 	}
-	value, err := strconv.Atoi(strings.TrimSpace(string(content)))
-	if err != nil {
-		t.Fatalf("parse runtime counter: %v", err)
+	if count != 1 {
+		t.Fatalf("expected one runtime trace missing warning, got %d in %#v", count, warnings)
 	}
-	return value
+}
+
+func resolvedTestRepoPath(t *testing.T, repo string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve test repo path %q: %v", repo, err)
+	}
+	return resolved
+}
+
+func installRuntimeTraceSwapHook(t *testing.T, tracePath string, swapPath string, originalPath string, renameMsg string, swapMsg string) (*int, func() error) {
+	t.Helper()
+
+	stage := new(int)
+	captureRuntimeTraceAfterValidatedLoadHook = func() {
+		if *stage != 0 {
+			return
+		}
+		if err := os.Rename(tracePath, originalPath); err != nil {
+			t.Fatalf("%s: %v", renameMsg, err)
+		}
+		if err := os.Rename(swapPath, tracePath); err != nil {
+			t.Fatalf("%s: %v", swapMsg, err)
+		}
+		*stage = 1
+	}
+
+	restore := func() error {
+		if *stage != 1 {
+			return nil
+		}
+		if err := os.Rename(tracePath, swapPath); err != nil {
+			return err
+		}
+		if err := os.Rename(originalPath, tracePath); err != nil {
+			return err
+		}
+		*stage = 2
+		return nil
+	}
+
+	return stage, restore
 }

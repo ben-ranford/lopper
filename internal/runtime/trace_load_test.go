@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestLoadTrace(t *testing.T) {
@@ -133,6 +134,14 @@ func TestLoadTraceMissingFileError(t *testing.T) {
 	}
 }
 
+func TestLoadTraceRelativePathFailsWhenCWDRemoved(t *testing.T) {
+	testutil.ChdirRemovedDir(t)
+
+	if _, err := Load("runtime.ndjson"); err == nil {
+		t.Fatal("expected relative load path to fail when cwd is removed")
+	}
+}
+
 func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
 	trace, err := loadTraceFromContent(t, "{\"module\":\"./local\"}\n{\"resolved\":\"/repo/src/index.js\"}\n")
 	if err != nil {
@@ -149,12 +158,34 @@ func TestLoadTraceReadsFileFromPath(t *testing.T) {
 		t.Fatalf("write runtime trace: %v", err)
 	}
 
-	trace, err := Load(path)
-	if err != nil {
-		t.Fatalf(loadTraceErrFmt, err)
+	loaders := []struct {
+		name string
+		load func(string) (Trace, error)
+	}{
+		{name: "ordinary", load: Load},
+		{name: "validated", load: LoadValidatedTrace},
 	}
-	if got := trace.DependencyLoads["lodash"]; got != 1 {
-		t.Fatalf("expected lodash load count 1, got %d", got)
+	for _, loader := range loaders {
+		t.Run(loader.name, func(t *testing.T) {
+			trace, err := loader.load(path)
+			if err != nil {
+				t.Fatalf(loadTraceErrFmt, err)
+			}
+			if got := trace.DependencyLoads["lodash"]; got != 1 {
+				t.Fatalf("expected lodash load count 1, got %d", got)
+			}
+		})
+	}
+}
+
+func TestLoadValidatedTraceRejectsRenameSwapRenameBack(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	err := runWithRuntimeTraceRenameSwapRenameBack(t, tracePath, func() error {
+		_, err := LoadValidatedTrace(tracePath)
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed while opening") {
+		t.Fatalf("expected rename/swap/rename-back fallback trace rejection, got %v", err)
 	}
 }
 

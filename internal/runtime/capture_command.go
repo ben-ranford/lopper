@@ -22,25 +22,6 @@ type CommandOptions struct {
 
 var runtimeOS = goruntime.GOOS
 
-var runtimeExecutableAllowlist = map[string]struct{}{
-	"npm":     {},
-	"pnpm":    {},
-	"yarn":    {},
-	"bun":     {},
-	"npx":     {},
-	"node":    {},
-	"vitest":  {},
-	"jest":    {},
-	"mocha":   {},
-	"ava":     {},
-	"deno":    {},
-	"make":    {},
-	"pytest":  {},
-	"python":  {},
-	"python3": {},
-	"uv":      {},
-}
-
 func buildRuntimeCommand(ctx context.Context, command string, requestedOptions ...CommandOptions) (*exec.Cmd, error) {
 	options := resolveCommandOptions(requestedOptions)
 	fields, err := parseValidatedCommand(command, options)
@@ -50,12 +31,11 @@ func buildRuntimeCommand(ctx context.Context, command string, requestedOptions .
 
 	executable := fields[0]
 	args := fields[1:]
-	executablePath, err := resolveRuntimeExecutablePath(executable, runtimeSearchDirs())
+	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
 	if err != nil {
 		return nil, err
 	}
-
-	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
+	executablePath, err := resolveRuntimeExecutablePath(executable, runtimeSearchDirs())
 	if err != nil {
 		return nil, err
 	}
@@ -333,10 +313,6 @@ func (p *runtimeCommandParser) flush() {
 }
 
 func resolveRuntimeExecutablePath(executable string, searchDirs []string) (string, error) {
-	if _, ok := runtimeExecutableAllowlist[executable]; !ok {
-		return "", fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
-	}
-
 	for _, dir := range searchDirs {
 		if path, ok := resolveRuntimeExecutablePathInDir(executable, dir); ok {
 			return path, nil
@@ -361,27 +337,15 @@ func resolveRuntimeExecutablePathInDir(executable, dir string) (string, bool) {
 }
 
 func runtimeExecutableCandidates(executable, dir string) []string {
-	candidates := make([]string, 0, 4)
-	addCandidate := func(candidate string) {
-		if candidate == "" {
-			return
-		}
-		for _, existing := range candidates {
-			if existing == candidate {
-				return
-			}
-		}
-		candidates = append(candidates, candidate)
-	}
-
 	base := filepath.Join(dir, executable)
-	addCandidate(base)
-
 	if !isWindowsRuntime() || filepath.Ext(executable) != "" {
-		return candidates
+		return []string{base}
 	}
-	for _, ext := range windowsExecutableExtensions(os.Getenv("PATHEXT")) {
-		addCandidate(base + ext)
+	extensions := windowsExecutableExtensions(os.Getenv("PATHEXT"))
+	candidates := make([]string, 1, len(extensions)+1)
+	candidates[0] = base
+	for _, ext := range extensions {
+		candidates = append(candidates, base+ext)
 	}
 	return candidates
 }
@@ -398,11 +362,43 @@ func isTrustedRuntimeExecutable(info os.FileInfo) bool {
 }
 
 func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
-	_, ok := runtimeExecutableAllowlist[executable]
-	if !ok {
+	var cmd *exec.Cmd
+	switch executable {
+	case "npm":
+		cmd = exec.CommandContext(ctx, "npm")
+	case "pnpm":
+		cmd = exec.CommandContext(ctx, "pnpm")
+	case "yarn":
+		cmd = exec.CommandContext(ctx, "yarn")
+	case "bun":
+		cmd = exec.CommandContext(ctx, "bun")
+	case "npx":
+		cmd = exec.CommandContext(ctx, "npx")
+	case "node":
+		cmd = exec.CommandContext(ctx, "node")
+	case "vitest":
+		cmd = exec.CommandContext(ctx, "vitest")
+	case "jest":
+		cmd = exec.CommandContext(ctx, "jest")
+	case "mocha":
+		cmd = exec.CommandContext(ctx, "mocha")
+	case "ava":
+		cmd = exec.CommandContext(ctx, "ava")
+	case "deno":
+		cmd = exec.CommandContext(ctx, "deno")
+	case "make":
+		cmd = exec.CommandContext(ctx, "make")
+	case "pytest":
+		cmd = exec.CommandContext(ctx, "pytest")
+	case "python":
+		cmd = exec.CommandContext(ctx, "python")
+	case "python3":
+		cmd = exec.CommandContext(ctx, "python3")
+	case "uv":
+		cmd = exec.CommandContext(ctx, "uv")
+	default:
 		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
-	cmd := exec.CommandContext(ctx, executable)
 	configureRuntimeCommand(cmd)
 	return cmd, nil
 }

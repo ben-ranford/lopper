@@ -3,9 +3,11 @@ package testutil
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -142,6 +144,30 @@ func MustFirstFileEntry(t *testing.T, dir string) fs.DirEntry {
 	}
 	t.Fatalf("expected file entry in %s", dir)
 	return nil
+}
+
+func MustReadTrimmedIntFile(t *testing.T, path string) int {
+	t.Helper()
+	root, err := os.OpenRoot(filepath.Dir(filepath.Clean(path)))
+	if err != nil {
+		t.Fatalf("open root for %s: %v", path, err)
+	}
+	file, err := root.Open(filepath.Base(path))
+	if err != nil {
+		closeErr := root.Close()
+		t.Fatalf("open %s: %v (close root: %v)", path, err, closeErr)
+	}
+	content, readErr := io.ReadAll(file)
+	fileCloseErr := file.Close()
+	rootCloseErr := root.Close()
+	if readErr != nil || fileCloseErr != nil || rootCloseErr != nil {
+		t.Fatalf("read %s: %v (close file: %v; close root: %v)", path, readErr, fileCloseErr, rootCloseErr)
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(content)))
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return value
 }
 
 func RunGit(t *testing.T, repo string, args ...string) {

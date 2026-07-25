@@ -572,6 +572,42 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseRuntimeCorrelationUsesExplicitTraceAfterCaptureFailure(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
+	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nimport { pad } from \""+leftPadDependencyID+"\"\nmap([1], (x) => x)\n")
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", "lodash", indexJSFileName), mapExportJSContent)
+	writeFile(t, filepath.Join(repo, "node_modules", leftPadDependencyID, packageJSONFileName), nodeMainPackageJSON)
+	writeFile(t, filepath.Join(repo, "node_modules", leftPadDependencyID, indexJSFileName), "export function pad() {}\n")
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	writeFile(t, tracePath, "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:                 repo,
+		TopN:                     10,
+		Language:                 "js-ts",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
+		RuntimeTestCommand:       "foobar test",
+	})
+	if err != nil {
+		t.Fatalf("analyse explicit runtime trace after capture failure: %v", err)
+	}
+	if !hasWarningSubstring(reportData.Warnings, runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected runtime capture failure warning, got %#v", reportData.Warnings)
+	}
+
+	lodash := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "lodash")
+	if lodash.RuntimeUsage == nil || lodash.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
+		t.Fatalf("expected explicit runtime trace to keep lodash overlap correlation, got %#v", lodash.RuntimeUsage)
+	}
+	chalk := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "chalk")
+	if chalk.RuntimeUsage == nil || chalk.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected explicit runtime trace to keep chalk runtime-only correlation, got %#v", chalk.RuntimeUsage)
+	}
+}
+
 func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
@@ -804,6 +840,15 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func hasWarningSubstring(warnings []string, substring string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, substring) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLowConfidenceWarningThreshold(t *testing.T) {

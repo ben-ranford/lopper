@@ -21,18 +21,19 @@ const (
 )
 
 type analysisPipeline struct {
-	service          *Service
-	request          Request
-	repoPath         string
-	analysisRepoPath string
-	scopeWarnings    []string
-	cleanupFn        func()
-	candidates       []language.Candidate
-	cache            *analysisCache
-	reports          []report.Report
-	warnings         []string
-	analyzedRoots    []string
-	runtimeTrace     *runtime.Trace
+	service                *Service
+	request                Request
+	repoPath               string
+	analysisRepoPath       string
+	scopeWarnings          []string
+	cleanupFn              func()
+	candidates             []language.Candidate
+	cache                  *analysisCache
+	reports                []report.Report
+	warnings               []string
+	analyzedRoots          []string
+	runtimeTrace           *runtime.Trace
+	skipRuntimeTraceReload bool
 }
 
 func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analysisPipeline, error) {
@@ -75,17 +76,18 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtimeWarnings, runtimeTracePath, pythonRuntimeTraceCaptured, runtimeTrace, err := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.analysisRepoPath, p.cache, p.candidates)
+	runtimeOutcome, err := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.candidates)
 	if err != nil {
 		return err
 	}
 	p.reports = reports
-	warnings = append(warnings, runtimeWarnings...)
+	warnings = append(warnings, runtimeOutcome.warnings...)
 	p.warnings = warnings
 	p.analyzedRoots = analyzedRoots
-	p.request.RuntimeTracePath = runtimeTracePath
-	p.request.PythonRuntimeTraceCaptured = pythonRuntimeTraceCaptured
-	p.runtimeTrace = runtimeTrace
+	p.request.RuntimeTracePath = runtimeOutcome.tracePath
+	p.request.PythonRuntimeTraceCaptured = runtimeOutcome.pythonCaptured
+	p.runtimeTrace = runtimeOutcome.trace
+	p.skipRuntimeTraceReload = runtimeOutcome.captureAttempted || runtimeOutcome.traceFinalized
 	return nil
 }
 
@@ -97,13 +99,13 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 	}
 	if len(p.reports) == 0 {
 		reportData.Warnings = append(reportData.Warnings, "no language adapter produced results")
-		return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), p.runtimeTrace, reportData)
+		return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), p.runtimeTrace, p.skipRuntimeTraceReload, reportData)
 	}
 
 	merged := mergeReports(p.repoPath, p.reports)
 	merged.Warnings = append(merged.Warnings, reportData.Warnings...)
 	merged.Cache = reportData.Cache
-	return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), p.runtimeTrace, merged)
+	return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), p.runtimeTrace, p.skipRuntimeTraceReload, merged)
 }
 
 func (p *analysisPipeline) collectWarnings() []string {
@@ -126,12 +128,11 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 	return remapAnalyzedRoots(p.analyzedRoots, p.analysisRepoPath, p.repoPath)
 }
 
-func finalizeReport(req Request, repoPath string, identityRepoPath string, analyzedRoots []string, validatedRuntimeTrace *runtime.Trace, reportData report.Report) (report.Report, error) {
+func finalizeReport(req Request, repoPath string, identityRepoPath string, analyzedRoots []string, validatedRuntimeTrace *runtime.Trace, skipRuntimeTraceReload bool, reportData report.Report) (report.Report, error) {
 	var err error
 	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
 		(req.PythonRuntimeTraceCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
-	runtimeTestCommandProvided := strings.TrimSpace(req.RuntimeTestCommand) != ""
-	reportData, err = annotateRuntimeTrace(req.RuntimeTracePath, validatedRuntimeTrace, runtimeTestCommandProvided, req.Language, reportData, pythonRuntimeTraceEnabled)
+	reportData, err = annotateRuntimeTrace(req.RuntimeTracePath, validatedRuntimeTrace, skipRuntimeTraceReload, req.Language, reportData, pythonRuntimeTraceEnabled)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -338,7 +339,7 @@ func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, r
 	return annotateRuntimeTrace(runtimeTracePath, nil, false, languageID, reportData, pythonRuntimeTraceEnabled)
 }
 
-func annotateRuntimeTrace(runtimeTracePath string, validatedTrace *runtime.Trace, captureAttempted bool, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
+func annotateRuntimeTrace(runtimeTracePath string, validatedTrace *runtime.Trace, skipRuntimeTraceReload bool, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
 	if runtimeTracePath == "" && validatedTrace == nil {
 		return reportData, nil
 	}
@@ -351,7 +352,7 @@ func annotateRuntimeTrace(runtimeTracePath string, validatedTrace *runtime.Trace
 	if validatedTrace != nil {
 		traceData = *validatedTrace
 	} else {
-		if captureAttempted {
+		if skipRuntimeTraceReload {
 			return reportData, nil
 		}
 		var err error

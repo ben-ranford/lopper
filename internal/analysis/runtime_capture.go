@@ -15,59 +15,117 @@ const runtimeTraceMissingWarning = "runtime trace file not found; continuing wit
 
 var captureRuntimeTraceAfterValidatedLoadHook func()
 
-func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath string, analysisRepoPath string, cache *analysisCache, candidates []language.Candidate) ([]string, string, bool, *runtime.Trace, error) {
-	tracePath := strings.TrimSpace(req.RuntimeTracePath)
+type runtimeTraceCaptureOutcome struct {
+	warnings         []string
+	tracePath        string
+	captureAttempted bool
+	pythonCaptured   bool
+	trace            *runtime.Trace
+	traceFinalized   bool
+}
+
+func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath string, candidates []language.Candidate) (runtimeTraceCaptureOutcome, error) {
+	outcome := runtimeTraceCaptureOutcome{tracePath: strings.TrimSpace(req.RuntimeTracePath)}
 	command := strings.TrimSpace(req.RuntimeTestCommand)
-	if command == "" {
-		return nil, tracePath, false, nil, nil
+	if command == "" && !req.RuntimeTracePathExplicit {
+		return outcome, nil
 	}
-	if tracePath == "" {
-		tracePath = runtime.DefaultTracePath(repoPath)
+
+	resolvedTracePath, err := runtime.ResolveTracePathForRepo(repoPath, outcome.tracePath)
+	if err != nil {
+		return outcome, err
+	}
+	outcome.tracePath = resolvedTracePath
+
+	if command == "" {
+		traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
+		if err != nil {
+			return outcome, err
+		}
+		outcome.traceFinalized = true
+		if missing {
+			outcome.warnings = []string{runtimeTraceMissingWarning}
+			return outcome, nil
+		}
+		if captureRuntimeTraceAfterValidatedLoadHook != nil {
+			captureRuntimeTraceAfterValidatedLoadHook()
+		}
+		outcome.trace = traceData
+		return outcome, nil
+	}
+	outcome.captureAttempted = true
+	outcome.traceFinalized = true
+
+	var explicitTraceSnapshot *runtime.Trace
+	explicitTraceMissing := false
+	var explicitTraceErr error
+	if req.RuntimeTracePathExplicit {
+		explicitTraceSnapshot, explicitTraceMissing, explicitTraceErr = loadRuntimeTraceSnapshot(resolvedTracePath)
+		if explicitTraceErr != nil {
+			return outcome, explicitTraceErr
+		}
 	}
 
 	provider := captureProviderForRequest(req, command, candidates)
 	pythonRunnerProfiles := req.Features.Enabled(runtime.PythonRunnerProfilesFeature)
-	trustedInputDigest, _ := trustedRuntimeTraceInputDigest(cache, repoPath, req.ConfigPath)
-	validatedTrace, err := runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
+	captureResult, err := runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
 		RepoPath:             repoPath,
-		TracePath:            tracePath,
+		TracePath:            resolvedTracePath,
 		Command:              command,
 		Provider:             provider,
-		ReuseIfUnchanged:     shouldReuseRuntimeTrace(cache),
-		TrustedInputDigest:   trustedInputDigest,
 		PythonRunnerProfiles: pythonRunnerProfiles,
 	})
+	if captureResult.TracePath != "" {
+		outcome.tracePath = captureResult.TracePath
+	}
 	if err != nil {
-		warning := runtimeTraceCommandWarningPrefix + err.Error()
-		if req.RuntimeTracePathExplicit {
-			return []string{warning}, tracePath, false, nil, nil
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return outcome, err
 		}
-		return []string{warning}, "", false, nil, nil
+		if explicitTraceSnapshot != nil {
+			outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error()}
+			outcome.trace = explicitTraceSnapshot
+			return outcome, nil
+		}
+		if explicitTraceMissing {
+			outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error(), runtimeTraceMissingWarning}
+			return outcome, nil
+		}
+		outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error()}
+		return outcome, nil
 	}
 
-	pythonCaptured := provider == runtime.CaptureProviderPython
+	outcome.pythonCaptured = provider == runtime.CaptureProviderPython
 	pythonTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
-		(pythonCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
+		(outcome.pythonCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
 	if len(supportedRuntimeTraceLanguages(req.Language, pythonTraceEnabled)) == 0 {
-		return nil, tracePath, pythonCaptured, nil, nil
+		return outcome, nil
 	}
 
-	var traceData runtime.Trace
-	if validatedTrace == nil {
-		traceData, err = runtime.Load(tracePath)
-	} else {
-		traceData, err = validatedTrace.Load()
+	if !captureResult.TraceProduced {
+		outcome.warnings = []string{runtimeTraceMissingWarning}
+		return outcome, nil
 	}
+	traceData, err := captureResult.Snapshot.Load()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []string{runtimeTraceMissingWarning}, tracePath, pythonCaptured, nil, nil
-		}
-		return nil, tracePath, pythonCaptured, nil, err
+		return outcome, err
 	}
 	if captureRuntimeTraceAfterValidatedLoadHook != nil {
 		captureRuntimeTraceAfterValidatedLoadHook()
 	}
-	return nil, tracePath, pythonCaptured, &traceData, nil
+	outcome.trace = &traceData
+	return outcome, nil
+}
+
+func loadRuntimeTraceSnapshot(tracePath string) (*runtime.Trace, bool, error) {
+	traceData, err := runtime.LoadValidatedTrace(tracePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	return &traceData, false, nil
 }
 
 func captureProviderForRequest(req Request, command string, candidates []language.Candidate) runtime.CaptureProvider {
@@ -107,26 +165,4 @@ func isExplicitPythonLanguage(languageID string) bool {
 	default:
 		return false
 	}
-}
-
-func shouldReuseRuntimeTrace(cache *analysisCache) bool {
-	if cache == nil {
-		return false
-	}
-	metadata := cache.metadataSnapshot()
-	if metadata == nil {
-		return false
-	}
-	return metadata.Enabled && metadata.Hits > 0 && metadata.Misses == 0
-}
-
-func trustedRuntimeTraceInputDigest(cache *analysisCache, repoPath string, configPath string) (string, bool) {
-	if cache == nil || strings.TrimSpace(repoPath) == "" {
-		return "", false
-	}
-	digest, err := cache.memoizedInputDigest(repoPath, configPath)
-	if err != nil || strings.TrimSpace(digest) == "" {
-		return "", false
-	}
-	return digest, true
 }

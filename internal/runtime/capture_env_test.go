@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestWithRuntimeTraceEnv(t *testing.T) {
@@ -66,6 +68,20 @@ func TestWithPythonRuntimeTraceEnvWithoutExistingPythonPath(t *testing.T) {
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
 	assertEnvEntryValue(t, env, "PYTHONPATH", hookDir)
+}
+
+func TestWithPythonRuntimeTraceEnvSurfacesHookLookupError(t *testing.T) {
+	restoreRuntimePythonHookState(t)
+
+	runtimePythonHookDirOnce = sync.Once{}
+	runtimePythonHookDirOnce.Do(func() {
+		runtimePythonHookDirPath = ""
+		runtimePythonHookDirErr = errors.New("python hook lookup failed")
+	})
+
+	if _, err := withPythonRuntimeTraceEnv(nil, "/tmp/python-runtime.ndjson"); err == nil || !strings.Contains(err.Error(), "resolve runtime python hook") {
+		t.Fatalf("expected wrapped python hook lookup error, got %v", err)
+	}
 }
 
 func TestRuntimeCaptureProviderValidationBranches(t *testing.T) {
@@ -219,6 +235,90 @@ func TestRuntimeHookSearchRootsResolveRelativeCallerPaths(t *testing.T) {
 	}
 }
 
+func TestRuntimeHookSearchRootsSkipsEmptyAndRelativeAbsFailures(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return "", nil
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, "", 0, true
+	}
+
+	roots := runtimeHookSearchRoots()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	wantRepoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("abs repo root: %v", err)
+	}
+	want := []string{
+		filepath.Clean(filepath.Join(wd, "share", "lopper")),
+		filepath.Clean(filepath.Join(wd, "..", "share", "lopper")),
+		wantRepoRoot,
+	}
+	if !reflect.DeepEqual(roots, want) {
+		t.Fatalf("expected only rooted fallback hook paths %v, got %v", want, roots)
+	}
+}
+
+func TestRuntimeHookSearchRootsDeduplicatesCallerRoot(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	sharedRoot := filepath.Clean(filepath.Join("/tmp", "plant", "share", "lopper"))
+	runtimeExecutablePath = func() (string, error) {
+		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, filepath.Join(sharedRoot, "internal", "runtime", "capture_env.go"), 0, true
+	}
+
+	roots := runtimeHookSearchRoots()
+	if len(roots) != 2 {
+		t.Fatalf("expected deduplicated roots, got %v", roots)
+	}
+	if roots[0] != filepath.Clean(filepath.Join("/tmp", "plant", "bin", "share", "lopper")) || roots[1] != sharedRoot {
+		t.Fatalf("expected deduplicated shared root ordering, got %v", roots)
+	}
+}
+
+func TestRuntimeHookSearchRootsSkipsExecutableErrorAndMissingCaller(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return "", errors.New("no executable path")
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, "", 0, false
+	}
+
+	if roots := runtimeHookSearchRoots(); len(roots) != 0 {
+		t.Fatalf("expected no hook roots when executable and caller data are unavailable, got %v", roots)
+	}
+}
+
+func TestRuntimeHookSearchRootsUsesRelativeCallerWhenExecutableUnavailable(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+	testutil.ChdirRemovedDir(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return "", errors.New("no executable path")
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, "capture_env.go", 0, true
+	}
+
+	wantRepoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("abs repo root: %v", err)
+	}
+	if roots := runtimeHookSearchRoots(); !reflect.DeepEqual(roots, []string{wantRepoRoot}) {
+		t.Fatalf("expected caller-derived fallback root %q, got %v", wantRepoRoot, roots)
+	}
+}
+
 func TestMergeEnvAndReadEnvValue(t *testing.T) {
 	base := []string{"A=1", "BADENTRY", "NODE_OPTIONS=--max-old-space-size=2048"}
 	merged := mergeEnv(base, map[string]string{"A": "2", "B": "3"})
@@ -268,6 +368,21 @@ func restoreRuntimeHookPathProviders(t *testing.T) {
 	t.Cleanup(func() {
 		runtimeExecutablePath = originalExecutable
 		runtimeCaller = originalCaller
+	})
+}
+
+func restoreRuntimePythonHookState(t *testing.T) {
+	t.Helper()
+
+	originalPath := runtimePythonHookDirPath
+	originalErr := runtimePythonHookDirErr
+
+	t.Cleanup(func() {
+		runtimePythonHookDirOnce = sync.Once{}
+		runtimePythonHookDirOnce.Do(func() {
+			runtimePythonHookDirPath = originalPath
+			runtimePythonHookDirErr = originalErr
+		})
 	})
 }
 

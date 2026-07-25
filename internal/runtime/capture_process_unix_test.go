@@ -59,6 +59,30 @@ func TestConfigureRuntimeCommandCancelPropagatesKillErrors(t *testing.T) {
 	}
 }
 
+func TestConfigureRuntimeCommandCancelMapsKillESRCHToProcessDone(t *testing.T) {
+	originalSignal := runtimeProcessSignal
+	originalKill := runtimeKillProcessGroup
+	t.Cleanup(func() {
+		runtimeProcessSignal = originalSignal
+		runtimeKillProcessGroup = originalKill
+	})
+
+	runtimeProcessSignal = func(*os.Process, syscall.Signal) error {
+		return nil
+	}
+	runtimeKillProcessGroup = func(int, syscall.Signal) error {
+		return syscall.ESRCH
+	}
+
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	cmd.Process = &os.Process{Pid: 42}
+	configureRuntimeCommand(cmd)
+
+	if err := cmd.Cancel(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("expected kill ESRCH to map to os.ErrProcessDone, got %v", err)
+	}
+}
+
 func TestConfigureRuntimeCommand(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c", "exit 0")
 	configureRuntimeCommand(cmd)
