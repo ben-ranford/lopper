@@ -962,7 +962,7 @@ func TestDetectLockfileDriftStopOnFirstDoesNotPrewalkPastFinding(t *testing.T) {
 	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\n")
 	writeFile(t, filepath.Join(repo, "m-trigger", poetryLockName), "# lock\n")
 	initGitRepo(t, repo)
-	makeUnreadable(t, triggerManifest)
+	injectLockfileManifestReadError(t, triggerManifest, fs.ErrPermission)
 
 	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
 	if !errors.Is(err, ErrLockfileDrift) {
@@ -1127,7 +1127,7 @@ func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *te
 	initGitRepo(t, repo)
 	writeFile(t, earlyManifest, demoPackageJSONUpdated)
 	writeFile(t, triggerManifest, "[tool.poetry]\nname = \"trigger\"\nversion = \"0.2.0\"\n")
-	makeUnreadable(t, triggerManifest)
+	injectLockfileManifestReadError(t, triggerManifest, fs.ErrPermission)
 
 	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
 	if !errors.Is(err, ErrLockfileDrift) {
@@ -1164,7 +1164,7 @@ func TestDetectLockfileDriftStopOnFirstPropagatesFinalBatchEvaluationError(t *te
 	writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
 	initGitRepo(t, repo)
 	writeFile(t, manifest, "[tool.poetry]\nname = \"demo\"\nversion = \"0.2.0\"\n")
-	makeUnreadable(t, manifest)
+	injectLockfileManifestReadError(t, manifest, fs.ErrPermission)
 
 	_, err := detectLockfileDrift(context.Background(), repo, true)
 	if !errors.Is(err, fs.ErrPermission) {
@@ -1443,7 +1443,7 @@ func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
 	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n")
 	writeFile(t, filepath.Join(repo, poetryLockName), "metadata = {}\n")
 	initGitRepo(t, repo)
-	makeUnreadable(t, filepath.Join(repo, pyprojectManifestName))
+	injectLockfileManifestReadError(t, filepath.Join(repo, pyprojectManifestName), fs.ErrPermission)
 
 	for _, stopOnFirst := range []bool{false, true} {
 		_, err := detectLockfileDrift(context.Background(), repo, stopOnFirst)
@@ -2029,7 +2029,7 @@ func TestDetectLockfileDriftSkipsPresenceOnlyManifestReads(t *testing.T) {
 	repo := t.TempDir()
 	manifestPath := filepath.Join(repo, manifestFileName)
 	writeFile(t, manifestPath, "{}\n")
-	makeUnreadable(t, manifestPath)
+	injectLockfileManifestReadError(t, manifestPath, fs.ErrPermission)
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
 	if err != nil {
@@ -2044,11 +2044,19 @@ func oversizedManifestBody(prefix, filler string, divisor int) string {
 	return prefix + strings.Repeat(filler, oversizedLockfileDriftManifestBytes/max(1, len(filler))+divisor)
 }
 
-func makeUnreadable(t *testing.T, path string) {
+func injectLockfileManifestReadError(t *testing.T, path string, readErr error) {
 	t.Helper()
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatalf("chmod unreadable %s: %v", path, err)
+
+	originalReadFileUnderLimitFn := readFileUnderLimitFn
+	readFileUnderLimitFn = func(rootDir, targetPath string, limit int64) ([]byte, error) {
+		if filepath.Clean(targetPath) == filepath.Clean(path) {
+			return nil, readErr
+		}
+		return originalReadFileUnderLimitFn(rootDir, targetPath, limit)
 	}
+	t.Cleanup(func() {
+		readFileUnderLimitFn = originalReadFileUnderLimitFn
+	})
 }
 
 func assertOversizedManifestInspectionFailure(t *testing.T, manifestName, wantErr string, err error) {

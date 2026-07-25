@@ -65,7 +65,14 @@ func collectLockfileGitContext(ctx context.Context, repoPath string, rules []loc
 
 	candidatePaths, err := collectLockfileManifestChangeCandidatePaths(ctx, repoPath, rules)
 	if err != nil {
-		return lockfileGitContext{}, err
+		if len(candidatePaths) == 0 {
+			return lockfileGitContext{}, err
+		}
+		gitContext, gitErr := collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
+		if gitErr != nil {
+			return lockfileGitContext{}, errors.Join(err, gitErr)
+		}
+		return gitContext, err
 	}
 	return collectLockfileGitContextForPaths(ctx, repoPath, candidatePaths)
 }

@@ -54,8 +54,12 @@ func detectLockfileDriftWithFeatures(ctx context.Context, repoPath string, stopO
 		return scanLockfileDriftStopOnFirst(ctx, normalizedPath, rules)
 	}
 	gitContext, err := collectLockfileGitContextFn(ctx, normalizedPath, rules)
-	if err != nil {
+	if err != nil && (!errors.Is(err, safeio.ErrFileTooLarge) || !gitContext.hasGitContext || stopOnFirst) {
 		return nil, err
 	}
-	return scanLockfileDrift(ctx, normalizedPath, gitContext, false, rules)
+	warnings, scanErr := scanLockfileDrift(ctx, normalizedPath, gitContext, false, rules)
+	if err != nil {
+		return warnings, err
+	}
+	return warnings, scanErr
 }

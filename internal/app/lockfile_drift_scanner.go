@@ -123,10 +123,10 @@ func scanLockfileDrift(ctx context.Context, repoPath string, gitContext lockfile
 		repoPath: repoPath,
 		visit: func(snapshot lockfileDirSnapshot) error {
 			findings, err := evaluateLockfileDirWithRules(snapshot, gitContext, rules)
-			if err != nil {
-				return err
-			}
 			if len(findings) == 0 {
+				if err != nil {
+					return err
+				}
 				return nil
 			}
 			if stopOnFirst {
@@ -134,14 +134,14 @@ func scanLockfileDrift(ctx context.Context, repoPath string, gitContext lockfile
 				return fs.SkipAll
 			}
 			warnings = append(warnings, buildLockfileDriftWarnings(findings)...)
-			return nil
+			return err
 		},
 	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		return processLockfileDir(ctx, path, entry, walkErr, state)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return nil, err
+		return warnings, err
 	}
 	return warnings, nil
 }
@@ -347,18 +347,16 @@ func collectLockfileManifestChangeCandidatePaths(ctx context.Context, repoPath s
 		repoPath: repoPath,
 		visit: func(snapshot lockfileDirSnapshot) error {
 			paths, err := lockfileManifestChangeCandidatePaths(snapshot, rules)
-			if err != nil {
-				return err
-			}
 			candidates = appendUniqueLockfilePaths(candidates, seen, paths)
-			return nil
+			return err
 		},
 	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		return processLockfileDir(ctx, path, entry, walkErr, state)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return nil, err
+		sort.Strings(candidates)
+		return candidates, err
 	}
 	sort.Strings(candidates)
 	return candidates, nil
@@ -371,7 +369,8 @@ func lockfileManifestChangeCandidatePaths(snapshot lockfileDirSnapshot, rules []
 	for _, rule := range rules {
 		ruleCandidates, err := lockfileManifestChangeCandidatePathsForRule(snapshot, rule, manifestCache)
 		if err != nil {
-			return nil, err
+			sort.Strings(candidates)
+			return candidates, err
 		}
 		candidates = appendUniqueLockfilePaths(candidates, seen, ruleCandidates)
 	}
@@ -634,7 +633,7 @@ func evaluateLockfileDirWithRules(snapshot lockfileDirSnapshot, gitContext lockf
 	for _, rule := range rules {
 		finding, ok, err := evaluateLockfileRuleWithCache(snapshot, rule, gitContext, manifestCache)
 		if err != nil {
-			return nil, err
+			return findings, err
 		}
 		if !ok {
 			continue
@@ -890,7 +889,12 @@ func relativeDir(repoPath, dir string) string {
 }
 
 func relativeFilePath(repoPath, dir, name string) string {
-	return filepath.ToSlash(filepath.Join(relativeDir(repoPath, dir), name))
+	relativeDirPath := relativeDir(repoPath, dir)
+	relativePath := filepath.Join(relativeDirPath, name)
+	if relativeDirPath == "." {
+		relativePath = name
+	}
+	return filepath.ToSlash(relativePath)
 }
 
 func isPathChanged(changedFiles map[string]struct{}, path string) bool {

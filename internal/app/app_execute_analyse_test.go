@@ -283,6 +283,52 @@ func TestExecuteAnalyseLockfileDriftWarnPolicyToleratesOversizedManifestInspecti
 	}
 }
 
+func TestExecuteAnalyseLockfileDriftWarnPolicyPreservesEarlierDirectoryDriftBeforeOversizedManifestInspection(t *testing.T) {
+	output, analyzer, err := executeAnalyseWithLockfileDriftSetup(t, "warn", func(repo string) {
+		writeFile(t, filepath.Join(repo, "a-drift", manifestFileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, "a-drift", lockfileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, "z-oversized", pyprojectManifestName), oversizedManifestBody("[tool.poetry]\nname = \"demo\"\n", "# filler\n", 8))
+		writeFile(t, filepath.Join(repo, "z-oversized", poetryLockName), "# lock\n")
+		initGitRepo(t, repo)
+		writeFile(t, filepath.Join(repo, "a-drift", manifestFileName), demoPackageJSONUpdated)
+	})
+	if err != nil {
+		t.Fatalf("execute analyse with earlier drift plus oversized manifest warn: %v", err)
+	}
+	if !analyzer.called {
+		t.Fatalf("expected warn-mode analysis to continue after earlier drift plus oversized manifest inspection")
+	}
+	if !strings.Contains(output, "a-drift: package.json changed while no matching lockfile changed") {
+		t.Fatalf("expected earlier lockfile drift warning in output, got %q", output)
+	}
+	if !strings.Contains(output, "unable to safely inspect manifest during lockfile drift analysis") {
+		t.Fatalf("expected oversized manifest warning in output, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseLockfileDriftWarnPolicyPreservesSameDirectoryDriftBeforeOversizedManifestInspection(t *testing.T) {
+	output, analyzer, err := executeAnalyseWithLockfileDriftSetup(t, "warn", func(repo string) {
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, lockfileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, pyprojectManifestName), oversizedManifestBody("[tool.poetry]\nname = \"demo\"\n", "# filler\n", 8))
+		writeFile(t, filepath.Join(repo, poetryLockName), "# lock\n")
+		initGitRepo(t, repo)
+		writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSONUpdated)
+	})
+	if err != nil {
+		t.Fatalf("execute analyse with same-directory drift plus oversized manifest warn: %v", err)
+	}
+	if !analyzer.called {
+		t.Fatalf("expected warn-mode analysis to continue after same-directory drift plus oversized manifest inspection")
+	}
+	if !strings.Contains(output, "package.json changed while no matching lockfile changed") {
+		t.Fatalf("expected same-directory lockfile drift warning in output, got %q", output)
+	}
+	if !strings.Contains(output, "unable to safely inspect manifest during lockfile drift analysis") {
+		t.Fatalf("expected oversized manifest warning in output, got %q", output)
+	}
+}
+
 func TestExecuteAnalyseLockfileDriftFailPolicy(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n\nrequire github.com/some/dep v1.0.0\n"), 0o600); err != nil {
@@ -323,23 +369,11 @@ func TestExecuteAnalyseLockfileDriftFailPolicyRejectsOversizedManifestInspection
 }
 
 func executeAnalyseWithOversizedManifestInspection(t *testing.T, policy string) (string, *fakeAnalyzer, error) {
-	t.Helper()
-
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(oversizedGoModManifestBody()), 0o600); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	application, analyzer := newAnalyseLockfileDriftTestApp()
-
-	req := DefaultRequest()
-	req.Mode = ModeAnalyse
-	req.RepoPath = repo
-	req.Analyse.TopN = 1
-	req.Analyse.Format = report.FormatJSON
-	req.Analyse.Thresholds.LockfileDriftPolicy = policy
-
-	output, err := application.Execute(context.Background(), req)
-	return output, analyzer, err
+	return executeAnalyseWithLockfileDriftSetup(t, policy, func(repo string) {
+		if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte(oversizedGoModManifestBody()), 0o600); err != nil {
+			t.Fatalf("write go.mod: %v", err)
+		}
+	})
 }
 
 func newAnalyseLockfileDriftTestApp() (*App, *fakeAnalyzer) {
@@ -352,6 +386,24 @@ func newAnalyseLockfileDriftTestApp() (*App, *fakeAnalyzer) {
 		},
 	}
 	return &App{Analyzer: analyzer, Formatter: report.NewFormatter()}, analyzer
+}
+
+func executeAnalyseWithLockfileDriftSetup(t *testing.T, policy string, setup func(repo string)) (string, *fakeAnalyzer, error) {
+	t.Helper()
+
+	repo := t.TempDir()
+	setup(repo)
+	application, analyzer := newAnalyseLockfileDriftTestApp()
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.Thresholds.LockfileDriftPolicy = policy
+
+	output, err := application.Execute(context.Background(), req)
+	return output, analyzer, err
 }
 
 func oversizedGoModManifestBody() string {
