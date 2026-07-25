@@ -85,3 +85,13 @@ func TestScopeMetadataIncludesRepoRootAsDot(t *testing.T) {
 		t.Fatalf("expected repo root package to map to dot, got %#v", metadata.Packages)
 	}
 }
+
+func TestScopeMetadataDropsInvalidRepoPaths(t *testing.T) {
+	metadata := scopeMetadata(ScopeModePackage, string([]byte{0}), []string{"/repo/pkg"})
+	if metadata == nil {
+		t.Fatalf("expected scope metadata")
+	}
+	if len(metadata.Packages) != 0 {
+		t.Fatalf("expected invalid repo path to drop package entries, got %#v", metadata.Packages)
+	}
+}

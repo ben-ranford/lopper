@@ -32,6 +32,13 @@ type analysisCacheLookupCase struct {
 	wantRepoPath string
 }
 
+type cacheLookupRootSwapCase struct {
+	name         string
+	swapOnRead   int
+	outsideRepo  string
+	outsideObjID string
+}
+
 func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
 	cache := &analysisCache{
 		metadata: report.CacheMetadata{Invalidations: []report.CacheInvalidation{{Key: "k", Reason: "reason"}}},
@@ -353,6 +360,101 @@ func TestOpenConfinedWriteRootUnderRejectsInvalidRootPath(t *testing.T) {
 	}
 }
 
+func TestEnsureConfinedDirectoryCreatesChildWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := ensureConfinedDirectory(root, cacheKeysDirName, 0o750); err != nil {
+		t.Fatalf("ensure confined directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, cacheKeysDirName)); err != nil {
+		t.Fatalf("expected confined directory to be created: %v", err)
+	}
+}
+
+func TestEnsureConfinedDirectoryRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, cacheKeysDirName)); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if err := ensureConfinedDirectory(root, cacheKeysDirName, 0o750); err == nil {
+		t.Fatalf("expected symlinked confined directory target to be rejected")
+	}
+}
+
+func TestEnsureConfinedDirectoryRejectsInvalidRoot(t *testing.T) {
+	if err := ensureConfinedDirectory(string([]byte{0}), cacheKeysDirName, 0o750); err == nil {
+		t.Fatalf("expected invalid root path to be rejected")
+	}
+}
+
+func TestEnsurePinnedCacheLayoutPinsExistingRoot(t *testing.T) {
+	root := mustEvalSymlinks(t, t.TempDir())
+	pinnedPath, info, err := ensurePinnedCacheLayout(root)
+	if err != nil {
+		t.Fatalf("ensure pinned cache layout: %v", err)
+	}
+	if pinnedPath != root {
+		t.Fatalf("expected existing cache root to remain pinned, got %q want %q", pinnedPath, root)
+	}
+	if info == nil || !info.IsDir() {
+		t.Fatalf("expected pinned cache root info for directory, got %#v", info)
+	}
+	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
+		if _, err := os.Stat(filepath.Join(root, dir)); err != nil {
+			t.Fatalf("expected %s dir under pinned root: %v", dir, err)
+		}
+	}
+}
+
+func TestEnsurePinnedCacheLayoutCreatesMissingRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "cache-root")
+	pinnedPath, info, err := ensurePinnedCacheLayout(root)
+	if err != nil {
+		t.Fatalf("ensure pinned cache layout: %v", err)
+	}
+	expectedRoot := mustEvalSymlinks(t, root)
+	if pinnedPath != expectedRoot {
+		t.Fatalf("expected missing cache root to be created at %q, got %q", expectedRoot, pinnedPath)
+	}
+	if info == nil || !info.IsDir() {
+		t.Fatalf("expected created cache root info for directory, got %#v", info)
+	}
+	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
+		if _, err := os.Stat(filepath.Join(root, dir)); err != nil {
+			t.Fatalf("expected %s dir under created root: %v", dir, err)
+		}
+	}
+}
+
+func TestEnsurePinnedCacheLayoutPropagatesObjectsHookError(t *testing.T) {
+	expectedErr := errors.New("objects init blocked")
+	root := filepath.Join(t.TempDir(), "cache-root")
+	withCacheInitBeforeObjectsEnsureHook(t, func() error { return expectedErr })
+
+	pinnedPath, info, err := ensurePinnedCacheLayout(root)
+	if pinnedPath != "" || info != nil {
+		t.Fatalf("expected no pinned cache root on hook error, got path=%q info=%#v", pinnedPath, info)
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected objects hook error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, cacheKeysDirName)); statErr != nil {
+		t.Fatalf("expected keys dir to be created before hook failure: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, cacheObjectsDirName)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected objects dir to remain absent after hook failure, got err=%v", statErr)
+	}
+}
+
+func TestEnsurePinnedCacheLayoutRejectsInvalidRoot(t *testing.T) {
+	pinnedPath, info, err := ensurePinnedCacheLayout(string([]byte{0}))
+	if pinnedPath != "" || info != nil {
+		t.Fatalf("expected invalid root path to return no pinned cache root, got path=%q info=%#v", pinnedPath, info)
+	}
+	if err == nil {
+		t.Fatalf("expected invalid root path to be rejected")
+	}
+}
+
 func TestResolvePathWithinExistingTreeRejectsInvalidPath(t *testing.T) {
 	if _, err := resolvePathWithinExistingTree(string([]byte{0})); err == nil {
 		t.Fatalf("expected invalid path to be rejected")
@@ -437,6 +539,40 @@ func TestPinnedTrustedCachePathPreventsSymlinkRetargetRaceBeforeFirstWrite(t *te
 	}
 }
 
+func TestAnalysisCachePinnedRootPreventsSwapBetweenInitOperations(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "cache-root")
+	renamedCachePath := filepath.Join(repo, "cache-root-renamed")
+	redirectedCachePath := t.TempDir()
+
+	withCacheInitBeforeObjectsEnsureHook(t, func() error {
+		if err := os.Rename(cachePath, renamedCachePath); err != nil {
+			return err
+		}
+		return os.Symlink(redirectedCachePath, cachePath)
+	})
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cache to remain usable during init swap, warnings=%#v", cache.takeWarnings())
+	}
+	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
+		if _, err := os.Stat(filepath.Join(renamedCachePath, dir)); err != nil {
+			t.Fatalf("expected %s dir in original pinned cache root: %v", dir, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(redirectedCachePath, cacheKeysDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected redirected keys dir to remain absent, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(redirectedCachePath, cacheObjectsDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected redirected objects dir to remain absent, got err=%v", err)
+	}
+}
+
 func TestAnalysisCacheRejectsCacheRootSwapBeforeStoreWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory replacement semantics are covered on Unix")
@@ -476,58 +612,77 @@ func TestAnalysisCacheLookupRejectsCacheRootSwapBeforeReads(t *testing.T) {
 		t.Skip("directory replacement semantics are covered on Unix")
 	}
 
-	for _, tc := range []struct {
-		name         string
-		swapOnRead   int
-		outsideRepo  string
-		outsideObjID string
-	}{
+	for _, tc := range []cacheLookupRootSwapCase{
 		{name: "before pointer read", swapOnRead: 1, outsideRepo: "outside-pointer", outsideObjID: "outside-pointer"},
 		{name: "before object read", swapOnRead: 2, outsideRepo: "outside-object", outsideObjID: "outside-object"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			cachePath := filepath.Join(repo, "cache-root")
-			cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-			if !cache.cacheable {
-				t.Fatalf("expected cache to be usable before root swap, warnings=%#v", cache.takeWarnings())
-			}
-
-			entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "key", InputDigest: "input"}
-			mustWriteCachedObject(t, cachePath, "inside-object", report.Report{RepoPath: "inside"})
-			mustWritePointer(t, filepath.Join(cachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
-				InputDigest:  entry.InputDigest,
-				ObjectDigest: "inside-object",
-			})
-
-			redirectedCachePath := t.TempDir()
-			mustWriteCachedObject(t, redirectedCachePath, tc.outsideObjID, report.Report{RepoPath: tc.outsideRepo})
-			mustWritePointer(t, filepath.Join(redirectedCachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
-				InputDigest:  entry.InputDigest,
-				ObjectDigest: tc.outsideObjID,
-			})
-
-			originalCachePath := filepath.Join(repo, "cache-root-original")
-			readCount := 0
-			withCacheLookupBeforeReadHook(t, func() error {
-				readCount++
-				if readCount != tc.swapOnRead {
-					return nil
-				}
-				if err := os.Rename(cachePath, originalCachePath); err != nil {
-					return err
-				}
-				return os.Symlink(redirectedCachePath, cachePath)
-			})
-
-			got, hit, err := cache.lookup(entry)
-			if hit || got.RepoPath != "" {
-				t.Fatalf("expected swapped lookup to return no cached report, got report=%#v hit=%v", got, hit)
-			}
-			if err != nil && !strings.Contains(err.Error(), "cache root changed while pinned") {
-				t.Fatalf("expected lookup to fail closed without outside read, got err=%v", err)
-			}
+			runCacheLookupRootSwapCase(t, tc)
 		})
+	}
+}
+
+func withCacheInitBeforeObjectsEnsureHook(t *testing.T, hook func() error) {
+	t.Helper()
+	previous := cacheInitBeforeObjectsEnsureFn
+	cacheInitBeforeObjectsEnsureFn = hook
+	t.Cleanup(func() {
+		cacheInitBeforeObjectsEnsureFn = previous
+	})
+}
+
+func runCacheLookupRootSwapCase(t *testing.T, tc cacheLookupRootSwapCase) {
+	t.Helper()
+
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "cache-root")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cache to be usable before root swap, warnings=%#v", cache.takeWarnings())
+	}
+
+	entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "key", InputDigest: "input"}
+	seedLookupCachePaths(t, cachePath, entry, "inside-object", report.Report{RepoPath: "inside"})
+
+	redirectedCachePath := t.TempDir()
+	seedLookupCachePaths(t, redirectedCachePath, entry, tc.outsideObjID, report.Report{RepoPath: tc.outsideRepo})
+
+	installLookupSwapHook(t, cachePath, filepath.Join(repo, "cache-root-original"), redirectedCachePath, tc.swapOnRead)
+	got, hit, err := cache.lookup(entry)
+	assertLookupRootSwapResult(t, got, hit, err)
+}
+
+func seedLookupCachePaths(t *testing.T, cachePath string, entry cacheEntryDescriptor, objectID string, rep report.Report) {
+	t.Helper()
+	mustWriteCachedObject(t, cachePath, objectID, rep)
+	mustWritePointer(t, filepath.Join(cachePath, cacheKeysDirName, entry.KeyDigest+".json"), cachePointer{
+		InputDigest:  entry.InputDigest,
+		ObjectDigest: objectID,
+	})
+}
+
+func installLookupSwapHook(t *testing.T, cachePath, originalCachePath, redirectedCachePath string, swapOnRead int) {
+	t.Helper()
+	readCount := 0
+	withCacheLookupBeforeReadHook(t, func() error {
+		readCount++
+		if readCount != swapOnRead {
+			return nil
+		}
+		if err := os.Rename(cachePath, originalCachePath); err != nil {
+			return err
+		}
+		return os.Symlink(redirectedCachePath, cachePath)
+	})
+}
+
+func assertLookupRootSwapResult(t *testing.T, got report.Report, hit bool, err error) {
+	t.Helper()
+	if hit || got.RepoPath != "" {
+		t.Fatalf("expected swapped lookup to return no cached report, got report=%#v hit=%v", got, hit)
+	}
+	if err != nil && !strings.Contains(err.Error(), "cache root changed while pinned") {
+		t.Fatalf("expected lookup to fail closed without outside read, got err=%v", err)
 	}
 }
 

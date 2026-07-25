@@ -36,6 +36,12 @@ type analysisCache struct {
 	writeRootInfo   fs.FileInfo
 }
 
+const analysisCacheUnavailablePrefix = "analysis cache unavailable: "
+
+var (
+	cacheInitBeforeObjectsEnsureFn = func() error { return nil }
+)
+
 func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
 	metadata := report.CacheMetadata{
@@ -56,24 +62,14 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	if req.Cache == nil || strings.TrimSpace(req.Cache.Path) == "" {
 		if cachePathEscapesRepo(writePath, repoPath) {
 			cache.cacheable = false
-			cache.warn("analysis cache unavailable: cache path escapes repository root")
+			cache.warn(analysisCacheUnavailablePrefix + "cache path escapes repository root")
 			return cache
 		}
 	}
-	if err := ensureConfinedDirectory(writePath, "keys", 0o750); err != nil {
-		cache.cacheable = false
-		cache.warn("analysis cache unavailable: " + err.Error())
-		return cache
-	}
-	if err := ensureConfinedDirectory(writePath, "objects", 0o750); err != nil {
-		cache.cacheable = false
-		cache.warn("analysis cache unavailable: " + err.Error())
-		return cache
-	}
-	writeRootPath, writeRootInfo, err := pinWriteRoot(writePath)
+	writeRootPath, writeRootInfo, err := ensurePinnedCacheLayout(writePath)
 	if err != nil {
 		cache.cacheable = false
-		cache.warn("analysis cache unavailable: " + err.Error())
+		cache.warn(analysisCacheUnavailablePrefix + err.Error())
 		return cache
 	}
 	cache.writeRootPath = writeRootPath
@@ -200,17 +196,50 @@ func ensureConfinedDirectory(rootPath, name string, perm os.FileMode) (returnErr
 	return root.EnsureDir(rel, perm)
 }
 
-func pinWriteRoot(rootPath string) (string, fs.FileInfo, error) {
-	pinnedPath, err := resolvePathWithinExistingTree(rootPath)
+func ensurePinnedCacheLayout(rootPath string) (_ string, _ fs.FileInfo, returnErr error) {
+	canonicalRootPath, err := resolvePathWithinExistingTree(rootPath)
 	if err != nil {
 		return "", nil, err
 	}
-	info, err := os.Lstat(pinnedPath)
+	ancestorRoot, rootRel, err := safeio.OpenExistingCanonicalWriteRoot(canonicalRootPath, true)
 	if err != nil {
 		return "", nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", nil, fmt.Errorf("cache root is not pinned to existing directory: %s", rootPath)
+	defer func() {
+		if closeErr := ancestorRoot.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	if rootRel != "." {
+		if err := ancestorRoot.EnsureDir(rootRel, 0o750); err != nil {
+			return "", nil, err
+		}
+	}
+	pinnedPath := ancestorRoot.CanonicalPath()
+	if rootRel != "." {
+		pinnedPath = filepath.Join(pinnedPath, rootRel)
+	}
+	root, err := safeio.OpenCanonicalWriteRoot(pinnedPath)
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	if err := root.EnsureDir("keys", 0o750); err != nil {
+		return "", nil, err
+	}
+	if err := cacheInitBeforeObjectsEnsureFn(); err != nil {
+		return "", nil, err
+	}
+	if err := root.EnsureDir("objects", 0o750); err != nil {
+		return "", nil, err
+	}
+	info, err := root.Lstat(".")
+	if err != nil {
+		return "", nil, err
 	}
 	return pinnedPath, info, nil
 }

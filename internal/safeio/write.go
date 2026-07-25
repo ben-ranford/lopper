@@ -23,6 +23,11 @@ type WriteRoot struct {
 	rootAbs string
 }
 
+// CanonicalPath reports the canonical filesystem path pinned by this write root.
+func (r *WriteRoot) CanonicalPath() string {
+	return r.rootAbs
+}
+
 // OpenWriteRoot opens rootDir once for subsequent root-relative writes.
 func OpenWriteRoot(rootDir string) (*WriteRoot, error) {
 	rootAbs, err := resolveAbsolutePath("root", rootDir)

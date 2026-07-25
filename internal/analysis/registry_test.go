@@ -46,6 +46,22 @@ func TestRegisterAdaptersRejectsNilRegistry(t *testing.T) {
 	}
 }
 
+func TestRegisterAdaptersPropagatesRegistryErrors(t *testing.T) {
+	registry := language.NewRegistry()
+	factories := []adapterFactory{
+		func() language.Adapter {
+			return &testServiceAdapter{id: "dup", detect: language.Detection{Matched: true}}
+		},
+		func() language.Adapter {
+			return &testServiceAdapter{id: "dup", detect: language.Detection{Matched: true}}
+		},
+	}
+
+	if err := registerAdapters(registry, factories); err == nil {
+		t.Fatalf("expected duplicate adapter registration error")
+	}
+}
+
 func TestNewServiceRegistersPowerShellAdapter(t *testing.T) {
 	service := NewService()
 	if service.InitErr != nil {

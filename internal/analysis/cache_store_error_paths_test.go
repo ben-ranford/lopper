@@ -29,6 +29,16 @@ type cacheAtomicWriteRootStub struct {
 	closeErr error
 }
 
+type cachePinnedRootValidationCase struct {
+	name string
+	run  func(*testing.T)
+}
+
+type cacheReadCacheFileValidationCase struct {
+	name string
+	run  func(*testing.T, *safeio.WriteRoot, string)
+}
+
 func (r *cacheAtomicWriteRootStub) WriteFileReplacingParents(string, []byte, os.FileMode, os.FileMode) error {
 	return r.writeErr
 }
@@ -186,121 +196,20 @@ func TestAnalysisCacheAdditionalStoreBranches(t *testing.T) {
 }
 
 func TestAnalysisCachePinnedWriteRootValidationBranches(t *testing.T) {
-	t.Run("validateOpenedWriteRoot rejects changed pinned root", func(t *testing.T) {
-		expectedRoot := mustEvalSymlinks(t, t.TempDir())
-		openedRoot := mustEvalSymlinks(t, t.TempDir())
-
-		info, err := os.Lstat(expectedRoot)
-		if err != nil {
-			t.Fatalf("lstat expected root: %v", err)
-		}
-		root, err := safeio.OpenCanonicalWriteRoot(openedRoot)
-		if err != nil {
-			t.Fatalf("open canonical write root: %v", err)
-		}
-		t.Cleanup(func() {
-			if closeErr := root.Close(); closeErr != nil {
-				t.Errorf("close canonical write root: %v", closeErr)
-			}
+	for _, tc := range cachePinnedRootValidationCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.run(t)
 		})
-
-		cache := &analysisCache{writeRootInfo: info}
-		err = cache.validateOpenedWriteRoot(root)
-		if err == nil || !strings.Contains(err.Error(), "cache root changed while pinned") {
-			t.Fatalf("expected changed pinned root error, got %v", err)
-		}
-	})
-
-	t.Run("validateOpenedWriteRoot propagates pinned root lstat errors", func(t *testing.T) {
-		rootPath := mustEvalSymlinks(t, t.TempDir())
-		info, err := os.Lstat(rootPath)
-		if err != nil {
-			t.Fatalf("lstat root path: %v", err)
-		}
-		root, err := safeio.OpenCanonicalWriteRoot(rootPath)
-		if err != nil {
-			t.Fatalf("open canonical write root: %v", err)
-		}
-		if err := root.Close(); err != nil {
-			t.Fatalf("close canonical write root: %v", err)
-		}
-
-		cache := &analysisCache{writeRootInfo: info}
-		if err := cache.validateOpenedWriteRoot(root); err == nil {
-			t.Fatal("expected closed pinned root lstat error")
-		}
-	})
+	}
 }
 
 func TestAnalysisCacheReadCacheFileValidationBranches(t *testing.T) {
 	cachePath := mustEvalSymlinks(t, t.TempDir())
-	root, err := safeio.OpenCanonicalWriteRoot(cachePath)
-	if err != nil {
-		t.Fatalf("open canonical write root: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Errorf("close canonical write root: %v", closeErr)
-		}
-	})
-
-	t.Run("readCacheFile returns lookup hook error", func(t *testing.T) {
-		expectedErr := errors.New("lookup hook failure")
-		withCacheLookupBeforeReadHook(t, func() error { return expectedErr })
-
-		cache := &analysisCache{}
-		_, err := cache.readCacheFile(root, "keys/missing.json")
-		if !errors.Is(err, expectedErr) {
-			t.Fatalf("expected lookup hook error, got %v", err)
-		}
-	})
-
-	t.Run("readCacheFile returns validateWriteRoot error before read", func(t *testing.T) {
-		pinnedRoot := t.TempDir()
-		pinnedInfo, err := os.Lstat(pinnedRoot)
-		if err != nil {
-			t.Fatalf("lstat pinned root: %v", err)
-		}
-
-		cache := &analysisCache{
-			options:       resolvedCacheOptions{Path: filepath.Join(cachePath, "cache")},
-			writeRootPath: filepath.Join(cachePath, "missing-root"),
-			writeRootInfo: pinnedInfo,
-		}
-		_, err = cache.readCacheFile(root, "keys/missing.json")
-		if err == nil || !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("expected validateWriteRoot lstat error, got %v", err)
-		}
-	})
-
-	t.Run("readCacheFile returns validateOpenedWriteRoot error before read", func(t *testing.T) {
-		pinnedRoot := mustEvalSymlinks(t, t.TempDir())
-		openedRootPath := mustEvalSymlinks(t, t.TempDir())
-		pinnedInfo, err := os.Lstat(pinnedRoot)
-		if err != nil {
-			t.Fatalf("lstat pinned root: %v", err)
-		}
-
-		openedRoot, err := safeio.OpenCanonicalWriteRoot(openedRootPath)
-		if err != nil {
-			t.Fatalf("open canonical opened root: %v", err)
-		}
-		t.Cleanup(func() {
-			if closeErr := openedRoot.Close(); closeErr != nil {
-				t.Errorf("close canonical opened root: %v", closeErr)
-			}
+	for _, tc := range cacheReadCacheFileValidationCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.run(t, openCanonicalWriteRootForTest(t, cachePath), cachePath)
 		})
-
-		cache := &analysisCache{
-			options:       resolvedCacheOptions{Path: pinnedRoot},
-			writeRootPath: pinnedRoot,
-			writeRootInfo: pinnedInfo,
-		}
-		_, err = cache.readCacheFile(openedRoot, "keys/missing.json")
-		if err == nil || !strings.Contains(err.Error(), "cache root changed while pinned") {
-			t.Fatalf("expected changed pinned root error before read, got %v", err)
-		}
-	})
+	}
 }
 
 func TestAnalysisCacheOpenStoreWriteRootPropagatesHookError(t *testing.T) {
@@ -456,6 +365,115 @@ func storeTestAnalysisCache(cachePath, keyDigest string) error {
 	entry := cacheEntryDescriptor{KeyDigest: keyDigest, InputDigest: "input"}
 	rep := report.Report{RepoPath: "repo"}
 	return newTestAnalysisCache(cachePath).store(entry, rep)
+}
+
+func cachePinnedRootValidationCases() []cachePinnedRootValidationCase {
+	return []cachePinnedRootValidationCase{
+		{
+			name: "validateOpenedWriteRoot rejects changed pinned root",
+			run: func(t *testing.T) {
+				expectedRoot := mustEvalSymlinks(t, t.TempDir())
+				info := lstatForTest(t, expectedRoot, "expected root")
+				root := openCanonicalWriteRootForTest(t, mustEvalSymlinks(t, t.TempDir()))
+
+				cache := &analysisCache{writeRootInfo: info}
+				err := cache.validateOpenedWriteRoot(root)
+				if err == nil || !strings.Contains(err.Error(), "cache root changed while pinned") {
+					t.Fatalf("expected changed pinned root error, got %v", err)
+				}
+			},
+		},
+		{
+			name: "validateOpenedWriteRoot propagates pinned root lstat errors",
+			run: func(t *testing.T) {
+				rootPath := mustEvalSymlinks(t, t.TempDir())
+				info := lstatForTest(t, rootPath, "root path")
+				root, err := safeio.OpenCanonicalWriteRoot(rootPath)
+				if err != nil {
+					t.Fatalf("open canonical write root: %v", err)
+				}
+				if err := root.Close(); err != nil {
+					t.Fatalf("close canonical write root: %v", err)
+				}
+
+				cache := &analysisCache{writeRootInfo: info}
+				if err := cache.validateOpenedWriteRoot(root); err == nil {
+					t.Fatal("expected closed pinned root lstat error")
+				}
+			},
+		},
+	}
+}
+
+func cacheReadCacheFileValidationCases() []cacheReadCacheFileValidationCase {
+	return []cacheReadCacheFileValidationCase{
+		{
+			name: "readCacheFile returns lookup hook error",
+			run: func(t *testing.T, root *safeio.WriteRoot, _ string) {
+				expectedErr := errors.New("lookup hook failure")
+				withCacheLookupBeforeReadHook(t, func() error { return expectedErr })
+
+				cache := &analysisCache{}
+				_, err := cache.readCacheFile(root, "keys/missing.json")
+				if !errors.Is(err, expectedErr) {
+					t.Fatalf("expected lookup hook error, got %v", err)
+				}
+			},
+		},
+		{
+			name: "readCacheFile returns validateWriteRoot error before read",
+			run: func(t *testing.T, root *safeio.WriteRoot, cachePath string) {
+				pinnedRoot := t.TempDir()
+				cache := &analysisCache{
+					options:       resolvedCacheOptions{Path: filepath.Join(cachePath, "cache")},
+					writeRootPath: filepath.Join(cachePath, "missing-root"),
+					writeRootInfo: lstatForTest(t, pinnedRoot, "pinned root"),
+				}
+				_, err := cache.readCacheFile(root, "keys/missing.json")
+				if err == nil || !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("expected validateWriteRoot lstat error, got %v", err)
+				}
+			},
+		},
+		{
+			name: "readCacheFile returns validateOpenedWriteRoot error before read",
+			run: func(t *testing.T, _ *safeio.WriteRoot, _ string) {
+				pinnedRoot := mustEvalSymlinks(t, t.TempDir())
+				cache := &analysisCache{
+					options:       resolvedCacheOptions{Path: pinnedRoot},
+					writeRootPath: pinnedRoot,
+					writeRootInfo: lstatForTest(t, pinnedRoot, "pinned root"),
+				}
+				_, err := cache.readCacheFile(openCanonicalWriteRootForTest(t, mustEvalSymlinks(t, t.TempDir())), "keys/missing.json")
+				if err == nil || !strings.Contains(err.Error(), "cache root changed while pinned") {
+					t.Fatalf("expected changed pinned root error before read, got %v", err)
+				}
+			},
+		},
+	}
+}
+
+func openCanonicalWriteRootForTest(t *testing.T, path string) *safeio.WriteRoot {
+	t.Helper()
+	root, err := safeio.OpenCanonicalWriteRoot(path)
+	if err != nil {
+		t.Fatalf("open canonical write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close canonical write root: %v", closeErr)
+		}
+	})
+	return root
+}
+
+func lstatForTest(t *testing.T, path, label string) os.FileInfo {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", label, err)
+	}
+	return info
 }
 
 func newTestAnalysisCache(cachePath string) *analysisCache {

@@ -168,6 +168,36 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 	}
 }
 
+func TestCaptureRuntimeTraceIfNeededSuccessUsesDefaultTracePath(t *testing.T) {
+	repo := t.TempDir()
+	counterPath := filepath.Join(repo, "runtime-counter.txt")
+	cache := &analysisCache{metadata: report.CacheMetadata{Enabled: true, Hits: 1}}
+	req := Request{
+		RuntimeTestCommand: "npm test",
+		Features:           mustResolvePythonRuntimeCaptureFeatureSet(t, true),
+	}
+
+	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
+
+	warnings, tracePath, captured := captureRuntimeTraceIfNeeded(context.Background(), req, repo, cache, nil)
+	if len(warnings) != 0 {
+		t.Fatalf("expected successful runtime capture without warnings, got %#v", warnings)
+	}
+	if tracePath != runtime.DefaultTracePath(repo) {
+		t.Fatalf("expected default runtime trace path, got %q", tracePath)
+	}
+	if captured {
+		t.Fatal("expected node capture provider to report captured=false")
+	}
+	if got := readRuntimeCounter(t, counterPath); got != 1 {
+		t.Fatalf("expected runtime capture invocation count 1, got %d", got)
+	}
+	if _, err := os.Stat(tracePath); err != nil {
+		t.Fatalf("expected runtime trace output to be written: %v", err)
+	}
+}
+
 func TestCaptureProviderForPythonRuntimeRequests(t *testing.T) {
 	features := mustResolvePythonRuntimeCaptureFeatureSet(t, true)
 	runnerProfilesDisabled := mustResolvePythonRuntimeCaptureWithRunnerProfilesDisabled(t)
