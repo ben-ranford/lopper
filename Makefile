@@ -290,6 +290,7 @@ cov:
 		sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"; \
 		sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
 	} > "$(COVERAGE_FILE)"
+	@mkdir -p .artifacts
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
 		-coverprofile="$(COVERAGE_FILE)" \
 		-min="$(COVERAGE_MIN)" \
