@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestLoadTrace(t *testing.T) {
@@ -102,6 +104,13 @@ func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
 	}
 }
 
+func TestLoadTraceOversizedFile(t *testing.T) {
+	_, err := loadTraceFromContent(t, oversizedRuntimeTraceContent())
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized trace to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
 func TestLoadTraceSkipsBlankLines(t *testing.T) {
 	trace, err := loadTraceFromContent(t, "\n   \n{\"module\":\""+lodashMapModule+"\"}\n")
 	if err != nil {
@@ -130,4 +139,10 @@ func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
 	if len(trace.DependencyLoads) != 0 || len(trace.DependencyModules) != 0 || len(trace.DependencySymbols) != 0 {
 		t.Fatalf("expected dependency-free events to be ignored, got %#v", trace)
 	}
+}
+
+func oversizedRuntimeTraceContent() string {
+	line := "{\"module\":\"" + leftPadModule + "\"}\n"
+	repeat := int(maxRuntimeTraceBytes/int64(len(line))) + 1
+	return strings.Repeat(line, repeat)
 }
