@@ -75,6 +75,11 @@ func TestAnalysisCacheAdditionalAtomicWriteErrors(t *testing.T) {
 	if writeFileAtomic(filepath.Join(blocker, "child.json"), []byte("x")) == nil {
 		t.Fatalf("expected atomic write to fail when parent path is a file")
 	}
+	if entries, err := os.ReadDir(dir); err != nil {
+		t.Fatalf("read temp cleanup dir: %v", err)
+	} else if len(entries) != 1 || entries[0].Name() != "blocker" {
+		t.Fatalf("expected atomic write failure to clean temp files, got entries=%v", entries)
+	}
 
 	if runtime.GOOS == "windows" {
 		t.Skip("permission-based temp-file creation failures are not portable on windows")

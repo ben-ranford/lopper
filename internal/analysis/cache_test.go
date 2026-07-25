@@ -537,6 +537,34 @@ func TestWriteFileAtomicSuccessAndFallbackError(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtomicOverwritesExistingFilePreservingMode(t *testing.T) {
+	repo := t.TempDir()
+	target := filepath.Join(repo, "pointer.json")
+	if err := os.WriteFile(target, []byte("before"), 0o644); err != nil {
+		t.Fatalf("seed target file: %v", err)
+	}
+
+	if err := writeFileAtomic(target, []byte("after")); err != nil {
+		t.Fatalf("overwrite existing cache file: %v", err)
+	}
+
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read overwritten target: %v", err)
+	}
+	if string(content) != "after" {
+		t.Fatalf("unexpected overwritten content: %q", string(content))
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat overwritten target: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("expected cache writes to preserve mode 0644, got %#o", info.Mode().Perm())
+	}
+}
+
 func writePointerJSON(t *testing.T, keyPath, inputDigest, objectDigest string) {
 	t.Helper()
 	pointerBytes, err := json.Marshal(cachePointer{InputDigest: inputDigest, ObjectDigest: objectDigest})
@@ -637,32 +665,5 @@ func TestAnalysisCacheLookupBypassBranches(t *testing.T) {
 	got, hit, err = cache.lookup(cacheEntryDescriptor{})
 	if err != nil || hit || len(got.Dependencies) != 0 || got.RepoPath != "" {
 		t.Fatalf("expected disabled-cache lookup bypass, got=%#v hit=%v err=%v", got, hit, err)
-	}
-}
-
-func TestCacheCleanupHelpers(t *testing.T) {
-	if err := closeIfPresent(nil); err != nil {
-		t.Fatalf("closeIfPresent nil: %v", err)
-	}
-
-	tmp := t.TempDir()
-	filePath := filepath.Join(tmp, "file.tmp")
-	file, err := os.Create(filePath)
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatalf("close temp file: %v", err)
-	}
-	if err := closeIfPresent(file); err != nil {
-		t.Fatalf("closeIfPresent already-closed file: %v", err)
-	}
-
-	missing := filepath.Join(tmp, "missing.tmp")
-	if err := removeIfPresent(missing); err != nil {
-		t.Fatalf("removeIfPresent missing: %v", err)
-	}
-	if err := cleanupTempFile(nil, missing); err != nil {
-		t.Fatalf("cleanupTempFile nil+missing: %v", err)
 	}
 }

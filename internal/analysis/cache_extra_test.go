@@ -156,6 +156,15 @@ func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	}
 
 	targetPath := filepath.Join(dir, "nested", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+		t.Fatalf("mkdir target parent: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("before"), 0o644); err != nil {
+		t.Fatalf("seed target file: %v", err)
+	}
+	if err := os.Chmod(targetPath, 0o644); err != nil {
+		t.Fatalf("chmod target file: %v", err)
+	}
 	if err := writeFileAtomic(targetPath, []byte("hello")); err != nil {
 		t.Fatalf("write file atomic: %v", err)
 	}
@@ -165,6 +174,13 @@ func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	}
 	if digest == "" || digest == "missing" {
 		t.Fatalf("expected real digest for existing file, got %q", digest)
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat target file: %v", err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("expected existing file mode 0644 to be preserved, got %#o", info.Mode().Perm())
 	}
 }
 
@@ -315,6 +331,62 @@ func TestAnalysisCacheStoreAndFileCollectionBranches(t *testing.T) {
 	}
 }
 
+func TestAnalysisCacheStoreReplacesExistingFilesPreservingMode(t *testing.T) {
+	cacheDir := t.TempDir()
+	mustMkdirCacheLayout(t, cacheDir)
+
+	entry := cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}
+	rep := report.Report{RepoPath: "repo"}
+	payload := cachedPayload{Report: rep}
+	serializedPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal cached payload: %v", err)
+	}
+	objectDigest := sha256Hex(serializedPayload)
+	objectPath := filepath.Join(cacheDir, cacheObjectsDirName, objectDigest+".json")
+	pointerPath := filepath.Join(cacheDir, cacheKeysDirName, entry.KeyDigest+".json")
+
+	mustWriteFile(t, objectPath, []byte("old-object"))
+	mustWriteFile(t, pointerPath, []byte("old-pointer"))
+	if err := os.Chmod(objectPath, 0o644); err != nil {
+		t.Fatalf("chmod object path: %v", err)
+	}
+	if err := os.Chmod(pointerPath, 0o640); err != nil {
+		t.Fatalf("chmod pointer path: %v", err)
+	}
+
+	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cacheDir}, cacheable: true}
+	if err := cache.store(entry, rep); err != nil {
+		t.Fatalf("store cache entry: %v", err)
+	}
+
+	var pointer cachePointer
+	pointerData, err := os.ReadFile(pointerPath)
+	if err != nil {
+		t.Fatalf("read pointer file: %v", err)
+	}
+	if err := json.Unmarshal(pointerData, &pointer); err != nil {
+		t.Fatalf("unmarshal pointer file: %v", err)
+	}
+	if pointer.ObjectDigest != objectDigest {
+		t.Fatalf("unexpected object digest: got %q want %q", pointer.ObjectDigest, objectDigest)
+	}
+	objectInfo, err := os.Stat(objectPath)
+	if err != nil {
+		t.Fatalf("stat object path: %v", err)
+	}
+	if objectInfo.Mode().Perm() != 0o644 {
+		t.Fatalf("expected object mode 0644 to be preserved, got %#o", objectInfo.Mode().Perm())
+	}
+	pointerInfo, err := os.Stat(pointerPath)
+	if err != nil {
+		t.Fatalf("stat pointer path: %v", err)
+	}
+	if pointerInfo.Mode().Perm() != 0o640 {
+		t.Fatalf("expected pointer mode 0640 to be preserved, got %#o", pointerInfo.Mode().Perm())
+	}
+}
+
 func TestAnalysisCacheHelperErrorBranches(t *testing.T) {
 	t.Run("prepare entry and hash json error", testAnalysisCachePrepareEntryAndHashJSONError)
 	t.Run("write atomic and hash file errors", testAnalysisCacheWriteAtomicAndHashFileErrors)
@@ -436,50 +508,6 @@ func TestCacheServiceBranchWithNoRootSeen(t *testing.T) {
 		Cache:    &CacheOptions{Enabled: true, Path: filepath.Join(repo, "cache")},
 	}); err != nil {
 		t.Fatalf("analyse with cache branch: %v", err)
-	}
-}
-
-func TestCacheFileCleanupHelpers(t *testing.T) {
-	if err := closeIfPresent(nil); err != nil {
-		t.Fatalf("closeIfPresent(nil): %v", err)
-	}
-
-	f, err := os.CreateTemp(t.TempDir(), "close-if-present-*")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	if err := closeIfPresent(f); err != nil {
-		t.Fatalf("closeIfPresent(open): %v", err)
-	}
-	if err := closeIfPresent(f); err != nil {
-		t.Fatalf("closeIfPresent(closed): %v", err)
-	}
-
-	path := filepath.Join(t.TempDir(), "cleanup.txt")
-	cleanupFile, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create cleanup file: %v", err)
-	}
-	if err := cleanupTempFile(cleanupFile, path); err != nil {
-		t.Fatalf("cleanupTempFile: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("expected cleanupTempFile to remove file, stat err=%v", err)
-	}
-}
-
-func TestRemoveIfPresentErrorBranch(t *testing.T) {
-	dir := t.TempDir()
-	nonEmpty := filepath.Join(dir, "non-empty")
-	if err := os.MkdirAll(nonEmpty, 0o750); err != nil {
-		t.Fatalf("mkdir non-empty: %v", err)
-	}
-	mustWriteFile(t, filepath.Join(nonEmpty, "child.txt"), []byte("x"))
-	if removeIfPresent(nonEmpty) == nil {
-		t.Fatalf("expected removeIfPresent to fail for non-empty directory")
-	}
-	if err := removeIfPresent(filepath.Join(dir, "missing.txt")); err != nil {
-		t.Fatalf("removeIfPresent missing should be nil: %v", err)
 	}
 }
 

@@ -1,6 +1,9 @@
 package safeio
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -10,6 +13,11 @@ type atomicWriteSession struct {
 	targetRel string
 	tempRel   string
 	tempFile  File
+}
+
+type truncatingFile interface {
+	File
+	Truncate(size int64) error
 }
 
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
@@ -26,16 +34,17 @@ func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atom
 	}, nil
 }
 
-func (s *atomicWriteSession) writeAndCommit(data []byte, perm os.FileMode) error {
+func (s *atomicWriteSession) writeAndClose(data []byte, perm os.FileMode) error {
 	if _, err := s.tempFile.Write(data); err != nil {
 		return err
 	}
 	if err := s.tempFile.Chmod(perm); err != nil {
 		return err
 	}
-	if err := s.closeTempFile(); err != nil {
-		return err
-	}
+	return s.closeTempFile()
+}
+
+func (s *atomicWriteSession) commit() error {
 	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
 		return err
 	}
@@ -56,4 +65,110 @@ func (s *atomicWriteSession) closeTempFile() error {
 
 func (s *atomicWriteSession) cleanup() error {
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
+}
+
+func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) (returnErr error) {
+	var replacementFile File
+	if replacementInfo != nil {
+		var err error
+		replacementFile, err = openPinnedReplacementTarget(root, targetRel, replacementInfo)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			closeErr := replacementFile.Close()
+			if returnErr == nil {
+				returnErr = closeErr
+			}
+		}()
+	}
+
+	session, err := newAtomicWriteSession(root, targetRel, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanupErr := session.cleanup()
+		if returnErr == nil {
+			returnErr = cleanupErr
+		}
+	}()
+
+	if err := session.writeAndClose(data, perm); err != nil {
+		return err
+	}
+	if err := session.commit(); err != nil {
+		if replacementFile == nil ||
+			!windowsReplaceExistingRenameFallback(err, session.tempRel, targetRel) {
+			return err
+		}
+		fallbackErr := overwritePinnedFile(root, targetRel, replacementFile, data, nil)
+		if fallbackErr != nil {
+			return errors.Join(err, fallbackErr)
+		}
+	}
+	return nil
+}
+
+func openPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {
+	file, err := root.OpenFile(targetRel, os.O_WRONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, closeFilePreservingPrimary(file, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(expectedInfo, openedInfo) {
+		err := fmt.Errorf("target changed while opening for replacement: %s", targetRel)
+		return nil, closeFilePreservingPrimary(file, err)
+	}
+	return file, nil
+}
+
+func overwritePinnedFile(root Root, targetRel string, file File, data []byte, beforeRevalidate func() error) error {
+	if beforeRevalidate != nil {
+		if err := beforeRevalidate(); err != nil {
+			return err
+		}
+	}
+
+	pathInfo, err := root.Lstat(targetRel)
+	if err != nil {
+		return err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("target path became a symlink before replacement: %s", targetRel)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return fmt.Errorf("target path is not a regular file before replacement: %s", targetRel)
+	}
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return fmt.Errorf("target changed before replacement: %s", targetRel)
+	}
+
+	targetFile, ok := file.(truncatingFile)
+	if !ok {
+		return fmt.Errorf("target does not support truncation: %s", targetRel)
+	}
+	if err := targetFile.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func closeFilePreservingPrimary(file File, primaryErr error) error {
+	closeErr := file.Close()
+	if primaryErr != nil {
+		return primaryErr
+	}
+	return closeErr
 }
