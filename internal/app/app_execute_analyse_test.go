@@ -356,7 +356,7 @@ func newAnalyseLockfileDriftTestApp() (*App, *fakeAnalyzer) {
 
 func oversizedGoModManifestBody() string {
 	return "module example.com/demo\n\ngo 1.22\n\nrequire github.com/some/dep v1.0.0\n" +
-		strings.Repeat("// filler\n", int(lockfileDriftManifestReadLimit/10)+1)
+		strings.Repeat("// filler\n", oversizedLockfileDriftManifestBytes/10)
 }
 
 func TestExecuteAnalyseReturnsFormattedOutputWhenSaveBaselineValidationFails(t *testing.T) {
