@@ -16,6 +16,9 @@ import (
 )
 
 var readFileUnderFn = safeio.ReadFileUnder
+var readFileUnderLimitFn = safeio.ReadFileUnderLimit
+
+const lockfileDriftManifestReadLimit int64 = 1 << 20
 
 type lockfileDirSnapshot struct {
 	repoPath string
@@ -490,6 +493,22 @@ func newLockfileManifestCache(snapshot lockfileDirSnapshot) *lockfileManifestCac
 	}
 }
 
+func readLockfileManifest(rootDir, targetPath string) ([]byte, error) {
+	if isBoundedLockfileManifest(filepath.Base(targetPath)) {
+		return readFileUnderLimitFn(rootDir, targetPath, lockfileDriftManifestReadLimit)
+	}
+	return readFileUnderFn(rootDir, targetPath)
+}
+
+func isBoundedLockfileManifest(name string) bool {
+	switch strings.TrimSpace(name) {
+	case pyprojectManifestName, "go.mod", "Cargo.toml":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error) {
 	if c == nil {
 		return nil, errors.New("nil lockfile manifest cache")
@@ -500,7 +519,7 @@ func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error
 			return cached.content, cached.err
 		}
 	}
-	content, err := readFileUnderFn(c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
+	content, err := readLockfileManifest(c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
 	if c.reads == nil {
 		c.reads = make(map[string]cachedManifestRead)
 	}
@@ -519,7 +538,7 @@ func readManifestForLockfileDrift(snapshot lockfileDirSnapshot, manifestName, ma
 	if cache != nil {
 		content, err = cache.readManifest(manifestName)
 	} else {
-		content, err = readFileUnderFn(snapshot.repoPath, filepath.Join(snapshot.path, manifestName))
+		content, err = readLockfileManifest(snapshot.repoPath, filepath.Join(snapshot.path, manifestName))
 	}
 	if err != nil {
 		if strings.TrimSpace(matcherLabel) != "" {

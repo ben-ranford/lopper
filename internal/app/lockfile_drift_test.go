@@ -965,15 +965,19 @@ func TestDetectLockfileDriftStopOnFirstDoesNotPrewalkPastFinding(t *testing.T) {
 	initGitRepo(t, repo)
 
 	originalReadFileUnder := readFileUnderFn
-	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+	originalReadFileUnderLimit := readFileUnderLimitFn
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
 		if targetPath == triggerManifest {
 			if err := os.RemoveAll(laterDir); err != nil {
 				return nil, err
 			}
 		}
-		return originalReadFileUnder(rootDir, targetPath)
+		return originalReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
-	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+		readFileUnderLimitFn = originalReadFileUnderLimit
+	})
 
 	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
 	if !errors.Is(err, ErrLockfileDrift) {
@@ -1139,11 +1143,12 @@ func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *te
 	writeFile(t, earlyManifest, demoPackageJSONUpdated)
 
 	originalReadFileUnder := readFileUnderFn
+	originalReadFileUnderLimit := readFileUnderLimitFn
 	triggeredLaterWalkError := false
-	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
 		if targetPath == triggerManifest {
 			triggeredLaterWalkError = true
-			content, err := originalReadFileUnder(rootDir, targetPath)
+			content, err := originalReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -1152,9 +1157,12 @@ func TestDetectLockfileDriftStopOnFirstFlushesGitBatchBeforeLaterWalkError(t *te
 			}
 			return content, nil
 		}
-		return originalReadFileUnder(rootDir, targetPath)
+		return originalReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
-	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+		readFileUnderLimitFn = originalReadFileUnderLimit
+	})
 
 	warnings, err := evaluateLockfileDriftPolicy(context.Background(), repo, "fail")
 	if !errors.Is(err, ErrLockfileDrift) {
@@ -1192,18 +1200,22 @@ func TestDetectLockfileDriftStopOnFirstPropagatesFinalBatchEvaluationError(t *te
 	initGitRepo(t, repo)
 
 	originalReadFileUnder := readFileUnderFn
+	originalReadFileUnderLimit := readFileUnderLimitFn
 	forcedErr := errors.New("forced final batch evaluation failure")
 	manifestReads := 0
-	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
 		if targetPath == manifest {
 			manifestReads++
 			if manifestReads == 2 {
 				return nil, forcedErr
 			}
 		}
-		return originalReadFileUnder(rootDir, targetPath)
+		return originalReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
-	t.Cleanup(func() { readFileUnderFn = originalReadFileUnder })
+	t.Cleanup(func() {
+		readFileUnderFn = originalReadFileUnder
+		readFileUnderLimitFn = originalReadFileUnderLimit
+	})
 
 	_, err := detectLockfileDrift(context.Background(), repo, true)
 	if !errors.Is(err, forcedErr) {
@@ -1469,16 +1481,18 @@ func TestDetectLockfileDriftCachesPyprojectReadsAcrossPythonRules(t *testing.T) 
 	writeFile(t, filepath.Join(repo, pyprojectManifestName), "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[tool.uv]\n")
 
 	originalReadFileUnder := readFileUnderFn
+	originalReadFileUnderLimit := readFileUnderLimitFn
 	t.Cleanup(func() {
 		readFileUnderFn = originalReadFileUnder
+		readFileUnderLimitFn = originalReadFileUnderLimit
 	})
 
 	pyprojectReads := 0
-	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
 		if filepath.Base(targetPath) == pyprojectManifestName {
 			pyprojectReads++
 		}
-		return safeio.ReadFileUnder(rootDir, targetPath)
+		return safeio.ReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
 
 	warnings, err := detectLockfileDrift(context.Background(), repo, false)
@@ -1500,15 +1514,17 @@ func TestDetectLockfileDriftPythonMatcherReadError(t *testing.T) {
 	initGitRepo(t, repo)
 
 	originalReadFileUnder := readFileUnderFn
+	originalReadFileUnderLimit := readFileUnderLimitFn
 	t.Cleanup(func() {
 		readFileUnderFn = originalReadFileUnder
+		readFileUnderLimitFn = originalReadFileUnderLimit
 	})
 
-	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
 		if filepath.Base(targetPath) == pyprojectManifestName {
 			return nil, errors.New("forced read error")
 		}
-		return safeio.ReadFileUnder(rootDir, targetPath)
+		return safeio.ReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
 
 	for _, stopOnFirst := range []bool{false, true} {
@@ -1535,16 +1551,18 @@ func TestLockfileManifestCacheDirectBranches(t *testing.T) {
 	}
 
 	originalReadFileUnder := readFileUnderFn
+	originalReadFileUnderLimit := readFileUnderLimitFn
 	t.Cleanup(func() {
 		readFileUnderFn = originalReadFileUnder
+		readFileUnderLimitFn = originalReadFileUnderLimit
 	})
 
 	reads := 0
-	readFileUnderFn = func(rootDir, targetPath string) ([]byte, error) {
+	readFileUnderLimitFn = func(rootDir, targetPath string, _ int64) ([]byte, error) {
 		if filepath.Base(targetPath) == pyprojectManifestName {
 			reads++
 		}
-		return safeio.ReadFileUnder(rootDir, targetPath)
+		return safeio.ReadFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 	}
 
 	cache := newLockfileManifestCache(snapshot)
@@ -2042,6 +2060,53 @@ func TestShouldSkipMissingLockfile(t *testing.T) {
 				t.Fatalf(detectLockfileDriftFmt, err)
 			}
 			assertLockfileWarning(t, warnings, tc.lockfileHint, tc.wantWarning)
+		})
+	}
+}
+
+func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *testing.T) {
+	cases := []struct {
+		name         string
+		manifestName string
+		manifestBody string
+		wantErr      string
+	}{
+		{
+			name:         "oversized pyproject.toml",
+			manifestName: "pyproject.toml",
+			manifestBody: "[tool.poetry]\nname = \"demo\"\n" + strings.Repeat("# filler\n", int(lockfileDriftManifestReadLimit/8)+1),
+			wantErr:      "read pyproject.toml for lockfile drift detection",
+		},
+		{
+			name:         "oversized go.mod",
+			manifestName: "go.mod",
+			manifestBody: "module example.com/mymod\n\ngo 1.21\n\nrequire github.com/some/dep v1.0.0\n" + strings.Repeat("// filler\n", int(lockfileDriftManifestReadLimit/10)+1),
+			wantErr:      "read go.mod for lockfile drift detection",
+		},
+		{
+			name:         "oversized Cargo.toml",
+			manifestName: "Cargo.toml",
+			manifestBody: "[package]\nname = \"my-bin\"\nversion = \"0.1.0\"\n\n[[bin]]\nname = \"my-bin\"\npath = \"src/main.rs\"\n" + strings.Repeat("# filler\n", int(lockfileDriftManifestReadLimit/8)+1),
+			wantErr:      "read Cargo.toml for lockfile drift detection",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, tc.manifestName), tc.manifestBody)
+
+			_, err := detectLockfileDrift(context.Background(), repo, false)
+			if err == nil {
+				t.Fatalf("expected oversized manifest read to fail for %s", tc.manifestName)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+			if !errors.Is(err, safeio.ErrFileTooLarge) {
+				t.Fatalf("expected ErrFileTooLarge for %s, got %v", tc.manifestName, err)
+			}
 		})
 	}
 }
