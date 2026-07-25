@@ -10,19 +10,9 @@ const hookDir = path.dirname(fileURLToPath(import.meta.url));
 
 test("CommonJS hook persists only sanitized artifact values", (t) => {
   const fixture = createNodeFixture(t, "cjs");
-  const hookPath = path.join(hookDir, "require-hook.cjs");
-
-  execFileSync(process.execPath, [`--require=${hookPath}`, fixture.entrypoint], {
-    cwd: fixture.repoRoot,
-    env: runtimeEnv(fixture),
-    stdio: "pipe",
-  });
-
-  const events = readEvents(fixture.tracePath);
-  assertArtifactPrivacy(events, fixture);
-  assert.deepEqual(
-    events.find((event) => event.module === "fixture-dep"),
-    {
+  const events = captureNodeHookEvents(fixture, "--require", "require-hook.cjs");
+  assertSanitizedRuntimeArtifact(events, fixture, {
+    expectedDependencyEvent: {
       kind: "require",
       module: "fixture-dep",
       resolved: "node_modules/fixture-dep/index.cjs",
@@ -30,67 +20,39 @@ test("CommonJS hook persists only sanitized artifact values", (t) => {
       entrypoint: "",
       isMain: false,
     },
-  );
-  assert.ok(
-    events.some((event) => event.module === "" && event.resolved === ""),
-    "outside-root require must be recorded without its path",
-  );
-  assert.deepEqual(
-    findResolvedEvents(events, [
+    expectedMainParent: "main.cjs",
+    disallowedResolvedValues: [
       "node_modules/fixture-dep/C:/Users/alice/private.cjs",
       "node_modules/fixture-dep/https:/secret.cjs",
       "node_modules/fixture-dep/.env/private.cjs",
       "node_modules/fixture-dep/~/.ssh/id_rsa.cjs",
-    ]),
-    [],
-  );
-  assert.equal(
-    events.filter((event) => event.parent === "main.cjs" && event.module === "" && event.resolved === "").length,
-    5,
-  );
-  assert.deepEqual(findModuleEvents(events, ["main.cjs", "local.cjs"]), []);
+    ],
+    disallowedModuleValues: ["main.cjs", "local.cjs"],
+    redactedMessage: "outside-root require must be recorded without its path",
+  });
 });
 
 test("ESM loader persists only sanitized artifact values", (t) => {
   const fixture = createNodeFixture(t, "esm");
-  const hookPath = path.join(hookDir, "loader.mjs");
-
-  execFileSync(process.execPath, [`--loader=${hookPath}`, fixture.entrypoint], {
-    cwd: fixture.repoRoot,
-    env: runtimeEnv(fixture),
-    stdio: "pipe",
-  });
-
-  const events = readEvents(fixture.tracePath);
-  assertArtifactPrivacy(events, fixture);
-  assert.deepEqual(
-    events.find((event) => event.module === "fixture-dep"),
-    {
+  const events = captureNodeHookEvents(fixture, "--loader", "loader.mjs");
+  assertSanitizedRuntimeArtifact(events, fixture, {
+    expectedDependencyEvent: {
       kind: "resolve",
       module: "fixture-dep",
       resolved: "node_modules/fixture-dep/index.mjs",
       parent: "main.mjs",
       entrypoint: "",
     },
-  );
-  assert.ok(
-    events.some((event) => event.module === "" && event.resolved === ""),
-    "outside-root import must be recorded without its path",
-  );
-  assert.deepEqual(
-    findResolvedEvents(events, [
+    expectedMainParent: "main.mjs",
+    disallowedResolvedValues: [
       "node_modules/fixture-dep/C:/Users/alice/private.mjs",
       "node_modules/fixture-dep/https:/secret.mjs",
       "node_modules/fixture-dep/.env/private.mjs",
       "node_modules/fixture-dep/~/.ssh/id_rsa.mjs",
-    ]),
-    [],
-  );
-  assert.equal(
-    events.filter((event) => event.parent === "main.mjs" && event.module === "" && event.resolved === "").length,
-    5,
-  );
-  assert.deepEqual(findModuleEvents(events, ["main.mjs", "local.mjs"]), []);
+    ],
+    disallowedModuleValues: ["main.mjs", "local.mjs"],
+    redactedMessage: "outside-root import must be recorded without its path",
+  });
 });
 
 function createNodeFixture(t, format) {
@@ -176,6 +138,16 @@ function runtimeEnv(fixture) {
   return env;
 }
 
+function captureNodeHookEvents(fixture, flag, hookFile) {
+  const hookPath = path.join(hookDir, hookFile);
+  execFileSync(process.execPath, [`${flag}=${hookPath}`, fixture.entrypoint], {
+    cwd: fixture.repoRoot,
+    env: runtimeEnv(fixture),
+    stdio: "pipe",
+  });
+  return readEvents(fixture.tracePath);
+}
+
 function readEvents(tracePath) {
   return fs
     .readFileSync(tracePath, "utf8")
@@ -206,4 +178,20 @@ function assertArtifactPrivacy(events, fixture) {
       assert.equal(value === ".." || value.startsWith("../"), false, `artifact persisted traversal ${value}`);
     }
   }
+}
+
+function assertSanitizedRuntimeArtifact(events, fixture, expectations) {
+  assertArtifactPrivacy(events, fixture);
+  assert.deepEqual(events.find((event) => event.module === "fixture-dep"), expectations.expectedDependencyEvent);
+  assert.ok(
+    events.some((event) => event.module === "" && event.resolved === ""),
+    expectations.redactedMessage,
+  );
+  assert.deepEqual(findResolvedEvents(events, expectations.disallowedResolvedValues), []);
+  assert.equal(
+    events.filter((event) => event.parent === expectations.expectedMainParent && event.module === "" && event.resolved === "")
+      .length,
+    5,
+  );
+  assert.deepEqual(findModuleEvents(events, expectations.disallowedModuleValues), []);
 }
