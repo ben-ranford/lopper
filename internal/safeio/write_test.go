@@ -37,6 +37,55 @@ func (f *truncatingFakeFile) Truncate(size int64) error {
 	return f.truncate(size)
 }
 
+func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
+	t.Helper()
+	dir := t.TempDir()
+	originalPath := filepath.Join(dir, "original")
+	changedPath := filepath.Join(dir, "changed")
+	if err := os.WriteFile(originalPath, []byte("original"), 0o640); err != nil {
+		t.Fatalf("seed original target: %v", err)
+	}
+	if err := os.WriteFile(changedPath, []byte("changed"), 0o640); err != nil {
+		t.Fatalf("seed changed target: %v", err)
+	}
+	return statTestPath(t, originalPath), statTestPath(t, changedPath)
+}
+
+func assertOverwritePinnedFileRejectsBeforeMutation(t *testing.T, openedInfo fs.FileInfo, lstat func(*testing.T) func(string) (fs.FileInfo, error), beforeRevalidate func(*testing.T) func() error) {
+	t.Helper()
+
+	truncateCalls := 0
+	writeCalls := 0
+	target := &truncatingFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return openedInfo, nil },
+			write: func(p []byte) (int, error) {
+				writeCalls++
+				return len(p), nil
+			},
+			close: closeWithoutError,
+		},
+		truncate: func(int64) error {
+			truncateCalls++
+			return nil
+		},
+	}
+	root := &fakeRoot{
+		lstat: lstat(t),
+	}
+
+	err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), beforeRevalidate(t))
+	if err == nil {
+		t.Fatal("expected overwrite rejection before mutation")
+	}
+	if truncateCalls != 0 {
+		t.Fatalf("expected no truncation before rejection, got %d calls", truncateCalls)
+	}
+	if writeCalls != 0 {
+		t.Fatalf("expected no write before rejection, got %d calls", writeCalls)
+	}
+}
+
 func openTestWriteRoot(t *testing.T, rootDir string, open func(string) (*WriteRoot, error)) *WriteRoot {
 	t.Helper()
 	root, err := open(rootDir)
@@ -1613,17 +1662,7 @@ func TestOverwritePinnedFilePropagatesTargetLookupError(t *testing.T) {
 }
 
 func TestOverwritePinnedFileRejectsTargetSwapBeforeMutation(t *testing.T) {
-	dir := t.TempDir()
-	originalPath := filepath.Join(dir, "original")
-	swappedPath := filepath.Join(dir, "swapped")
-	if err := os.WriteFile(originalPath, []byte("original"), 0o640); err != nil {
-		t.Fatalf("seed original target: %v", err)
-	}
-	if err := os.WriteFile(swappedPath, []byte("swapped"), 0o640); err != nil {
-		t.Fatalf("seed swapped target: %v", err)
-	}
-	originalInfo := statTestPath(t, originalPath)
-	swappedInfo := statTestPath(t, swappedPath)
+	originalInfo, swappedInfo := writePinnedTargetInfoPair(t)
 
 	tests := []struct {
 		name        string
@@ -1634,46 +1673,26 @@ func TestOverwritePinnedFileRejectsTargetSwapBeforeMutation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			truncateCalls := 0
-			writeCalls := 0
-			target := &truncatingFakeFile{
-				fakeFile: &fakeFile{
-					stat: func() (fs.FileInfo, error) { return originalInfo, nil },
-					write: func(p []byte) (int, error) {
-						writeCalls++
-						return len(p), nil
-					},
-					close: closeWithoutError,
-				},
-				truncate: func(int64) error {
-					truncateCalls++
-					return nil
-				},
-			}
-
 			swapInjected := false
-			root := &fakeRoot{
-				lstat: func(string) (fs.FileInfo, error) {
+			lstatAfterSwap := func(t *testing.T) func(string) (fs.FileInfo, error) {
+				t.Helper()
+				return func(string) (fs.FileInfo, error) {
 					if !swapInjected {
 						t.Fatal("target revalidated before swap seam")
 					}
 					return tt.swappedInfo, nil
-				},
+				}
 			}
-			beforeRevalidate := func() error {
-				swapInjected = true
-				return nil
+			injectSwap := func(t *testing.T) func() error {
+				t.Helper()
+				return func() error {
+					swapInjected = true
+					return nil
+				}
 			}
-
-			err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), beforeRevalidate)
-			if err == nil {
-				t.Fatal("expected swapped target to be rejected")
-			}
-			if truncateCalls != 0 {
-				t.Fatalf("expected no truncation after target swap, got %d calls", truncateCalls)
-			}
-			if writeCalls != 0 {
-				t.Fatalf("expected no write after target swap, got %d calls", writeCalls)
+			assertOverwritePinnedFileRejectsBeforeMutation(t, originalInfo, lstatAfterSwap, injectSwap)
+			if !swapInjected {
+				t.Fatal("expected swap injection seam to run")
 			}
 		})
 	}

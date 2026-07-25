@@ -67,14 +67,19 @@ func (s *atomicWriteSession) cleanup() error {
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
 
+func openPinnedReplacementTargetIfNeeded(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {
+	if expectedInfo == nil {
+		return nil, nil
+	}
+	return openPinnedReplacementTarget(root, targetRel, expectedInfo)
+}
+
 func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) (returnErr error) {
-	var replacementFile File
-	if replacementInfo != nil {
-		var err error
-		replacementFile, err = openPinnedReplacementTarget(root, targetRel, replacementInfo)
-		if err != nil {
-			return err
-		}
+	replacementFile, err := openPinnedReplacementTargetIfNeeded(root, targetRel, replacementInfo)
+	if err != nil {
+		return err
+	}
+	if replacementFile != nil {
 		defer func() {
 			closeErr := replacementFile.Close()
 			if returnErr == nil {
