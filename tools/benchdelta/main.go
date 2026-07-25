@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -24,6 +25,7 @@ type benchmarkData map[string]samples
 type benchmarkInput struct {
 	data       benchmarkData
 	incomplete []string
+	invalid    []string
 }
 
 type deltaThresholds struct {
@@ -55,13 +57,15 @@ const (
 	benchmarkLineIgnored benchmarkLineStatus = iota
 	benchmarkLineComplete
 	benchmarkLineIncomplete
+	benchmarkLineInvalid
 )
 
 type comparisonOutcome struct {
-	exitCode    int
-	status      string
-	result      string
-	diagnostics []string
+	exitCode         int
+	status           string
+	result           string
+	diagnostics      []string
+	diagnosticsTitle string
 }
 
 type comparisonSummary struct {
@@ -147,6 +151,8 @@ func parseBenchmarkFile(path string) (result benchmarkInput, err error) {
 				result.data[name] = existing
 			case benchmarkLineIncomplete:
 				result.incomplete = append(result.incomplete, diagnostic)
+			case benchmarkLineInvalid:
+				result.invalid = append(result.invalid, diagnostic)
 			}
 		}
 	}
@@ -182,9 +188,15 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, benchmarkLine
 		case "ns/op":
 			hasNsPerOp = true
 		case "B/op":
+			if !isFinite(value) {
+				return key, samples{}, benchmarkLineInvalid, invalidSampleDiagnostic(key, "B/op", fields[i])
+			}
 			hasBytes = true
 			sample.bytesPerOp = append(sample.bytesPerOp, value)
 		case "allocs/op":
+			if !isFinite(value) {
+				return key, samples{}, benchmarkLineInvalid, invalidSampleDiagnostic(key, "allocs/op", fields[i])
+			}
 			hasAllocs = true
 			sample.allocsPerOp = append(sample.allocsPerOp, value)
 		}
@@ -225,6 +237,10 @@ func incompleteSampleDiagnostic(name string, missingBytes, missingAllocs bool) s
 		missing = append(missing, "allocs/op")
 	}
 	return fmt.Sprintf("`%s` missing %s", name, strings.Join(missing, " and "))
+}
+
+func invalidSampleDiagnostic(name, metric, value string) string {
+	return fmt.Sprintf("`%s` has non-finite %s value %q", name, metric, value)
 }
 
 func compareBenchmarks(baseInput, headInput benchmarkInput, limits deltaThresholds) (string, int) {
@@ -290,7 +306,7 @@ func writeComparisonSummary(buf *bytes.Buffer, summary comparisonSummary) {
 	fmt.Fprintf(buf, "Base benchmarks: %s\n", benchmarkCountLabel(summary.baseCount))
 	fmt.Fprintf(buf, "Head benchmarks: %s\n\n", benchmarkCountLabel(summary.headCount))
 
-	showInvalidOnlySections := summary.outcome.status != "incomplete"
+	showInvalidOnlySections := summary.outcome.diagnosticsTitle == ""
 	writeComparisonTable(buf, summary.rows, showInvalidOnlySections)
 	if showInvalidOnlySections {
 		writeList(buf, "Head-only benchmarks (missing on base):", summary.headOnlyNames, func(item string) string {
@@ -300,9 +316,7 @@ func writeComparisonSummary(buf *bytes.Buffer, summary comparisonSummary) {
 			return fmt.Sprintf("`%s`", item)
 		})
 	}
-	writeList(buf, "Incomplete benchmark samples:", summary.outcome.diagnostics, func(item string) string {
-		return item
-	})
+	writeList(buf, summary.outcome.diagnosticsTitle, summary.outcome.diagnostics, func(item string) string { return item })
 
 	switch summary.outcome.status {
 	case "incomplete", "invalid":
@@ -352,12 +366,22 @@ func benchmarkCountLabel(total int) string {
 }
 
 func classifyComparisonOutcome(baseInput, headInput benchmarkInput, mismatchDiagnostics, matchedNames, headOnlyNames, baseOnlyNames []string, hasRegression bool) comparisonOutcome {
+	if diagnostics := invalidDiagnostics(baseInput, headInput); len(diagnostics) > 0 {
+		return comparisonOutcome{
+			exitCode:         exitCodeInvalid,
+			status:           "invalid",
+			result:           "Result: benchmark input contained invalid memory samples; each B/op and allocs/op value must be finite.",
+			diagnostics:      diagnostics,
+			diagnosticsTitle: "Invalid benchmark samples:",
+		}
+	}
 	if diagnostics := incompleteDiagnostics(baseInput, headInput, mismatchDiagnostics); len(diagnostics) > 0 {
 		return comparisonOutcome{
-			exitCode:    exitCodeInvalid,
-			status:      "incomplete",
-			result:      "Result: benchmark input contained incomplete memory samples; each benchmark line must include both B/op and allocs/op.",
-			diagnostics: diagnostics,
+			exitCode:         exitCodeInvalid,
+			status:           "incomplete",
+			result:           "Result: benchmark input contained incomplete memory samples; each benchmark line must include both B/op and allocs/op.",
+			diagnostics:      diagnostics,
+			diagnosticsTitle: "Incomplete benchmark samples:",
 		}
 	}
 	if len(baseInput.data) == 0 || len(headInput.data) == 0 || len(matchedNames) == 0 || len(headOnlyNames) > 0 || len(baseOnlyNames) > 0 {
@@ -371,6 +395,17 @@ func classifyComparisonOutcome(baseInput, headInput benchmarkInput, mismatchDiag
 		return comparisonOutcome{exitCode: exitCodeRegression, status: "regression"}
 	}
 	return comparisonOutcome{exitCode: exitCodePassed, status: "passed"}
+}
+
+func invalidDiagnostics(baseInput, headInput benchmarkInput) []string {
+	diagnostics := make([]string, 0, len(baseInput.invalid)+len(headInput.invalid))
+	for _, diagnostic := range baseInput.invalid {
+		diagnostics = append(diagnostics, "base: "+diagnostic)
+	}
+	for _, diagnostic := range headInput.invalid {
+		diagnostics = append(diagnostics, "head: "+diagnostic)
+	}
+	return diagnostics
 }
 
 func incompleteDiagnostics(baseInput, headInput benchmarkInput, mismatchDiagnostics []string) []string {
@@ -446,6 +481,10 @@ func average(values []float64) float64 {
 		total += value
 	}
 	return total / float64(len(values))
+}
+
+func isFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func percentDelta(base, head, limit float64) (string, bool) {

@@ -2,10 +2,12 @@ package main
 
 import (
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -130,6 +132,83 @@ func TestParseBenchmarkLineRejectsIncompleteMetrics(t *testing.T) {
 				t.Fatalf("parseBenchmarkLine(%q) diagnostic = %q, want %q", tc.line, diagnostic, tc.wantDiagnostic)
 			}
 		})
+	}
+}
+
+func TestParseBenchmarkLineRejectsNonFiniteMemoryMetrics(t *testing.T) {
+	t.Parallel()
+
+	spellings := acceptedNonFiniteSpellings(t)
+	metrics := []struct {
+		name        string
+		metric      string
+		bytesValue  string
+		allocsValue string
+	}{
+		{
+			name:        "bytes",
+			metric:      "B/op",
+			allocsValue: "3",
+		},
+		{
+			name:       "allocs",
+			metric:     "allocs/op",
+			bytesValue: "128",
+		},
+	}
+
+	for _, metric := range metrics {
+		t.Run(metric.name, func(t *testing.T) {
+			for _, spelling := range spellings {
+				bytesValue, allocsValue := metric.bytesValue, metric.allocsValue
+				if metric.metric == "B/op" {
+					bytesValue = spelling
+				} else {
+					allocsValue = spelling
+				}
+				line := bytesAllocsBenchmark("NonFinite", bytesValue, allocsValue)
+
+				name, sample, status, diagnostic := parseBenchmarkLine("pkg", line)
+				if status != benchmarkLineInvalid {
+					t.Fatalf("parseBenchmarkLine(%q) status = %v, want invalid", line, status)
+				}
+				if name == "" || len(sample.bytesPerOp) != 0 || len(sample.allocsPerOp) != 0 {
+					t.Fatalf("parseBenchmarkLine(%q) returned unexpected sample %#v for %q", line, sample, name)
+				}
+				wantDiagnostic := invalidBenchmarkMetric("pkg", "NonFinite", metric.metric, spelling)
+				if diagnostic != wantDiagnostic {
+					t.Fatalf("parseBenchmarkLine(%q) diagnostic = %q, want %q", line, diagnostic, wantDiagnostic)
+				}
+			}
+		})
+	}
+}
+
+func TestAcceptedNonFiniteSpellings(t *testing.T) {
+	t.Parallel()
+
+	spellings := acceptedNonFiniteSpellings(t)
+	wantCount := (1 << len("nan")) + 3*(1<<len("inf")) + 3*(1<<len("infinity"))
+	if len(spellings) != wantCount {
+		t.Fatalf("acceptedNonFiniteSpellings() returned %d spellings, want %d", len(spellings), wantCount)
+	}
+
+	unique := make(map[string]struct{}, len(spellings))
+	for _, spelling := range spellings {
+		if _, exists := unique[spelling]; exists {
+			t.Fatalf("acceptedNonFiniteSpellings() returned duplicate %q", spelling)
+		}
+		unique[spelling] = struct{}{}
+	}
+	for _, representative := range []string{"nAn", "iNf", "+iNf", "-iNf", "iNfInItY", "+iNfInItY", "-iNfInItY"} {
+		if !slices.Contains(spellings, representative) {
+			t.Errorf("acceptedNonFiniteSpellings() omitted %q", representative)
+		}
+	}
+	for _, signedNaN := range []string{"+nAn", "-nAn"} {
+		if slices.Contains(spellings, signedNaN) {
+			t.Errorf("acceptedNonFiniteSpellings() unexpectedly included %q", signedNaN)
+		}
 	}
 }
 
@@ -342,7 +421,59 @@ func TestCompareBenchmarksRejectsIncompleteSamples(t *testing.T) {
 	}
 }
 
+func TestCompareBenchmarksRejectsInvalidSamples(t *testing.T) {
+	t.Parallel()
+
+	tests := []comparisonScenario{
+		{
+			name:      "base bytes nan is invalid",
+			baseLines: reportFixture(bytesAllocsBenchmark("Format", "NaN", "1")),
+			headLines: reportFixture(completeBenchmark("Format")),
+			wantContains: []string{
+				"Comparison status: invalid",
+				"base: " + invalidBenchmarkMetric(reportBenchmarkPkg, "Format", "B/op", "NaN"),
+				"Result: benchmark input contained invalid memory samples; each B/op and allocs/op value must be finite.",
+			},
+			wantOmit: incompleteInvalidDiagnostics(),
+		},
+		{
+			name:      "head allocs inf is invalid",
+			baseLines: reportFixture(completeBenchmark("Format")),
+			headLines: reportFixture(bytesAllocsBenchmark("Format", "100", "+Inf")),
+			wantContains: []string{
+				"Comparison status: invalid",
+				"head: " + invalidBenchmarkMetric(reportBenchmarkPkg, "Format", "allocs/op", "+Inf"),
+				"Result: benchmark input contained invalid memory samples; each B/op and allocs/op value must be finite.",
+			},
+			wantOmit: incompleteInvalidDiagnostics(),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertComparisonScenario(t, tc)
+		})
+	}
+}
+
 func TestParseBenchmarkFileBranches(t *testing.T) {
+	t.Run("records non-finite benchmark lines as invalid", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "bench.txt")
+		writeBenchmarkFixture(t, path, reportFixture(bytesAllocsBenchmark("Invalid", "nan", "1")))
+
+		input, err := parseBenchmarkFile(path)
+		if err != nil {
+			t.Fatalf("parse benchmark file: %v", err)
+		}
+		wantDiagnostic := invalidBenchmarkMetric(reportBenchmarkPkg, "Invalid", "B/op", "nan")
+		if !slices.Equal(input.invalid, []string{wantDiagnostic}) {
+			t.Fatalf("invalid diagnostics = %#v, want %#v", input.invalid, []string{wantDiagnostic})
+		}
+		if len(input.incomplete) != 0 || len(input.data) != 0 {
+			t.Fatalf("non-finite line classified outside invalid: data=%#v incomplete=%#v", input.data, input.incomplete)
+		}
+	})
+
 	t.Run("skips invalid benchmark lines in file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "bench.txt")
 		writeBenchmarkFixture(t, path, reportFixture(benchmarkFixtureLine("Ignored", "1000", "100", "ns/op"), completeBenchmark("Format")))
@@ -451,6 +582,18 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 			wantOmit:   incompleteInvalidDiagnostics(),
 		},
 		{
+			name:       "bytes nan invalid",
+			args:       []string{"-base", filepath.Join(dir, "base-bytes-nan.txt"), "-head", headPath},
+			wantCode:   exitCodeInvalid,
+			wantOutput: invalidBenchmarkMetric(reportBenchmarkPkg, "Format", "B/op", "NaN"),
+		},
+		{
+			name:       "allocs signed mixed-case infinity invalid",
+			args:       []string{"-base", basePath, "-head", filepath.Join(dir, "head-allocs-mixed-infinity.txt")},
+			wantCode:   exitCodeInvalid,
+			wantOutput: invalidBenchmarkMetric(reportBenchmarkPkg, "Format", "allocs/op", "-iNfInItY"),
+		},
+		{
 			name:       "missing args",
 			args:       nil,
 			wantCode:   exitCodeInvalid,
@@ -481,6 +624,8 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 	writeBenchmarkFixture(t, filepath.Join(dir, "base-ns-only.txt"), reportFixture(benchmarkFixtureLine("Format", "1000", "100", "ns/op")))
 	writeBenchmarkFixture(t, filepath.Join(dir, "count-mismatch-base.txt"), reportFixture(repeatedCompleteBenchmark("Format", 3)...))
 	writeBenchmarkFixture(t, filepath.Join(dir, "count-mismatch-head.txt"), reportFixture(completeBenchmark("Format")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "base-bytes-nan.txt"), reportFixture(bytesAllocsBenchmark("Format", "NaN", "1")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "head-allocs-mixed-infinity.txt"), reportFixture(bytesAllocsBenchmark("Format", "100", "-iNfInItY")))
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -718,6 +863,45 @@ func benchmarkRef(pkg, name string) string {
 
 func benchmarkMissingMetric(pkg, name, metric string) string {
 	return benchmarkRef(pkg, name) + " missing " + metric
+}
+
+func invalidBenchmarkMetric(pkg, name, metric, value string) string {
+	return benchmarkRef(pkg, name) + " has non-finite " + metric + " value " + strconv.Quote(value)
+}
+
+func acceptedNonFiniteSpellings(t *testing.T) []string {
+	t.Helper()
+
+	var accepted []string
+	for _, token := range []string{"nan", "inf", "infinity"} {
+		for _, permutation := range asciiCasePermutations(token) {
+			for _, sign := range []string{"", "+", "-"} {
+				candidate := sign + permutation
+				value, err := strconv.ParseFloat(candidate, 64)
+				if err == nil && (math.IsNaN(value) || math.IsInf(value, 0)) {
+					accepted = append(accepted, candidate)
+				}
+			}
+		}
+	}
+	if len(accepted) == 0 {
+		t.Fatal("strconv.ParseFloat accepted no non-finite spellings")
+	}
+	return accepted
+}
+
+func asciiCasePermutations(token string) []string {
+	permutations := make([]string, 0, 1<<len(token))
+	for mask := 0; mask < 1<<len(token); mask++ {
+		permutation := []byte(token)
+		for i := range permutation {
+			if mask&(1<<i) != 0 {
+				permutation[i] -= 'a' - 'A'
+			}
+		}
+		permutations = append(permutations, string(permutation))
+	}
+	return permutations
 }
 
 func completeBenchmarkSample() samples {
