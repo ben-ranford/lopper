@@ -20,12 +20,59 @@ type testSortedSnapshotItem struct {
 	Name  string
 }
 
+var (
+	testSortedSnapshotItemsUnorderedByPrimary = []testSortedSnapshotItem{
+		{Group: "charlie", Name: "three"},
+		{Group: "alpha", Name: "one"},
+		{Group: "bravo", Name: "two"},
+	}
+	testSortedSnapshotItemsOrderedByPrimary = []testSortedSnapshotItem{
+		{Group: "alpha", Name: "one"},
+		{Group: "bravo", Name: "two"},
+		{Group: "charlie", Name: "three"},
+	}
+	testSortedSnapshotItemsTiedOnPrimary = []testSortedSnapshotItem{
+		{Group: "alpha", Name: "gamma"},
+		{Group: "alpha", Name: "beta"},
+		{Group: "alpha", Name: "alpha"},
+	}
+	testSortedSnapshotItemsOrderedBySecondary = []testSortedSnapshotItem{
+		{Group: "alpha", Name: "alpha"},
+		{Group: "alpha", Name: "beta"},
+		{Group: "alpha", Name: "gamma"},
+	}
+)
+
 func sortedSnapshotGroup(item testSortedSnapshotItem) string {
 	return item.Group
 }
 
 func sortedSnapshotName(item testSortedSnapshotItem) string {
 	return item.Name
+}
+
+func assertSortedCopyByStringsReturnsEmptyResult(t *testing.T, name string, items []testSortedSnapshotItem) {
+	t.Helper()
+
+	t.Run(name, func(t *testing.T) {
+		t.Parallel()
+
+		got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
+
+		if len(got) != 0 {
+			t.Fatalf("SortedCopyByStrings(%s) length = %d, want 0", name, len(got))
+		}
+	})
+}
+
+func assertSortedCopyByStringsOrder(t *testing.T, items, want []testSortedSnapshotItem) {
+	t.Helper()
+
+	got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("SortedCopyByStrings() = %#v, want %#v", got, want)
+	}
 }
 
 func decodeTestSnapshotReport(data []byte) (testSnapshotReport, error) {
@@ -259,62 +306,41 @@ func TestValidateSnapshotKeyWrapsCustomMismatchError(t *testing.T) {
 func TestSortedCopyByStringsReturnsEmptyResultWhenInputIsNil(t *testing.T) {
 	t.Parallel()
 
-	got := SortedCopyByStrings[testSortedSnapshotItem](nil, sortedSnapshotGroup, sortedSnapshotName)
-
-	if len(got) != 0 {
-		t.Fatalf("SortedCopyByStrings(nil) length = %d, want 0", len(got))
-	}
+	assertSortedCopyByStringsReturnsEmptyResult(t, "nil", nil)
 }
 
 func TestSortedCopyByStringsReturnsEmptyResultWhenInputIsEmpty(t *testing.T) {
 	t.Parallel()
 
-	got := SortedCopyByStrings([]testSortedSnapshotItem{}, sortedSnapshotGroup, sortedSnapshotName)
-
-	if len(got) != 0 {
-		t.Fatalf("SortedCopyByStrings(empty) length = %d, want 0", len(got))
-	}
+	assertSortedCopyByStringsReturnsEmptyResult(t, "empty", []testSortedSnapshotItem{})
 }
 
-func TestSortedCopyByStringsOrdersItemsByPrimaryKey(t *testing.T) {
+func TestSortedCopyByStringsOrdersItemsByConfiguredKeys(t *testing.T) {
 	t.Parallel()
 
-	items := []testSortedSnapshotItem{
-		{Group: "charlie", Name: "three"},
-		{Group: "alpha", Name: "one"},
-		{Group: "bravo", Name: "two"},
+	cases := []struct {
+		name  string
+		items []testSortedSnapshotItem
+		want  []testSortedSnapshotItem
+	}{
+		{
+			name:  "orders items by primary key",
+			items: testSortedSnapshotItemsUnorderedByPrimary,
+			want:  testSortedSnapshotItemsOrderedByPrimary,
+		},
+		{
+			name:  "uses secondary key to break primary ties",
+			items: testSortedSnapshotItemsTiedOnPrimary,
+			want:  testSortedSnapshotItemsOrderedBySecondary,
+		},
 	}
 
-	got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
-
-	want := []testSortedSnapshotItem{
-		{Group: "alpha", Name: "one"},
-		{Group: "bravo", Name: "two"},
-		{Group: "charlie", Name: "three"},
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("SortedCopyByStrings() = %#v, want %#v", got, want)
-	}
-}
-
-func TestSortedCopyByStringsUsesSecondaryKeyToBreakPrimaryTies(t *testing.T) {
-	t.Parallel()
-
-	items := []testSortedSnapshotItem{
-		{Group: "alpha", Name: "gamma"},
-		{Group: "alpha", Name: "beta"},
-		{Group: "alpha", Name: "alpha"},
-	}
-
-	got := SortedCopyByStrings(items, sortedSnapshotGroup, sortedSnapshotName)
-
-	want := []testSortedSnapshotItem{
-		{Group: "alpha", Name: "alpha"},
-		{Group: "alpha", Name: "beta"},
-		{Group: "alpha", Name: "gamma"},
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("SortedCopyByStrings() = %#v, want %#v", got, want)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertSortedCopyByStringsOrder(t, tc.items, tc.want)
+		})
 	}
 }
 
