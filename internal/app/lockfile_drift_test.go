@@ -1375,6 +1375,100 @@ func TestDetectLockfileDriftGitJoinsCachedOversizedErrorWithReplayFatalError(t *
 	}
 }
 
+func TestDetectLockfileDriftDetailedGitPreservesReplayOversizedErrorOnLaterCancellation(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "a-replay-oversized", pyprojectManifestName)
+	writeFile(t, path, "[build-system]\nrequires = [\"setuptools\"]\n")
+	writeFile(t, filepath.Join(repo, "a-replay-oversized", poetryLockName), "# lock\n")
+	writeFile(t, filepath.Join(repo, "b-replay-canceled", pyprojectManifestName), "[build-system]\nrequires = [\"setuptools\"]\n")
+	writeFile(t, filepath.Join(repo, "b-replay-canceled", poetryLockName), "# lock\n")
+	initGitRepo(t, repo)
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	defaultIO := defaultLockfileManifestIO()
+	replayReads := 0
+	ctx := withLockfileManifestIO(baseCtx, lockfileManifestIO{
+		readFileUnder: defaultIO.readFileUnder,
+		readFileUnderLimit: func(rootDir, targetPath string, limit int64) ([]byte, error) {
+			if filepath.Clean(targetPath) == filepath.Clean(path) {
+				replayReads++
+				if replayReads == 2 {
+					cancel()
+					return nil, safeio.ErrFileTooLarge
+				}
+			}
+			return defaultIO.readFileUnderLimit(rootDir, targetPath, limit)
+		},
+	})
+
+	result := detectLockfileDriftDetailed(ctx, repo, false, featureflags.Set{})
+	if !errors.Is(result.err, safeio.ErrFileTooLarge) || !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("expected replay oversized-manifest and cancellation errors, got findings=%#v warnings=%#v err=%v", result.findings, result.orderedWarnings, result.err)
+	}
+	if replayReads != 2 {
+		t.Fatalf("expected first replay manifest to be read during prepare and replay, got %d reads", replayReads)
+	}
+	if len(result.findings) != 0 {
+		t.Fatalf("expected cancellation before later replay findings, got %#v", result.findings)
+	}
+	if len(result.orderedWarnings) != 1 {
+		t.Fatalf("expected preserved oversized warning before cancellation, got %#v", result.orderedWarnings)
+	}
+	if !strings.Contains(result.orderedWarnings[0], "unable to safely inspect manifest during lockfile drift analysis") {
+		t.Fatalf("expected oversized-manifest warning to be preserved, got %#v", result.orderedWarnings)
+	}
+	if leaves := countMatchingErrorLeaves(result.err, safeio.ErrFileTooLarge); leaves != 1 {
+		t.Fatalf("expected one oversized-manifest error leaf, got %d in %v", leaves, result.err)
+	}
+}
+
+func TestDetectLockfileDriftDetailedGitContinuesAfterReplayOversizedManifestError(t *testing.T) {
+	repo := t.TempDir()
+	replayManifest := filepath.Join(repo, "a-replay-growth", pyprojectManifestName)
+	writeFile(t, replayManifest, "[tool.poetry]\nname = \"demo\"\n")
+	writeFile(t, filepath.Join(repo, "z-drift", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "z-drift", lockfileName), "{}\n")
+	initGitRepo(t, repo)
+	writeFile(t, filepath.Join(repo, "z-drift", manifestFileName), demoPackageJSONUpdated)
+
+	defaultIO := defaultLockfileManifestIO()
+	replayReads := 0
+	ctx := withLockfileManifestIO(context.Background(), lockfileManifestIO{
+		readFileUnder: defaultIO.readFileUnder,
+		readFileUnderLimit: func(rootDir, targetPath string, limit int64) ([]byte, error) {
+			if filepath.Clean(targetPath) == filepath.Clean(replayManifest) {
+				replayReads++
+				if replayReads == 2 {
+					return nil, fmt.Errorf("replay manifest grew: %w", safeio.ErrFileTooLarge)
+				}
+			}
+			return defaultIO.readFileUnderLimit(rootDir, targetPath, limit)
+		},
+	})
+
+	result := detectLockfileDriftDetailed(ctx, repo, false, featureflags.Set{})
+	if !errors.Is(result.err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected replay oversized-manifest error to be retained, got findings=%#v warnings=%#v err=%v", result.findings, result.orderedWarnings, result.err)
+	}
+	if replayReads != 2 {
+		t.Fatalf("expected manifest to be read during prepare and replay, got %d reads", replayReads)
+	}
+	if len(result.findings) != 1 || !strings.Contains(result.findings[0], "z-drift: package.json changed while no matching lockfile changed") {
+		t.Fatalf("expected later replay finding to be retained, got %#v", result.findings)
+	}
+	if len(result.orderedWarnings) != 2 {
+		t.Fatalf("expected replay oversized warning plus later finding, got %#v", result.orderedWarnings)
+	}
+	if !strings.Contains(result.orderedWarnings[0], "unable to safely inspect manifest during lockfile drift analysis") {
+		t.Fatalf("expected deterministic oversized-manifest warning first, got %#v", result.orderedWarnings)
+	}
+	if !strings.Contains(result.orderedWarnings[1], "z-drift: package.json changed while no matching lockfile changed") {
+		t.Fatalf("expected later finding after replay oversized warning, got %#v", result.orderedWarnings)
+	}
+}
+
 func TestEvaluateLockfileDriftPolicyFailStopsAtOversizedManifestInNonGitRepo(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "a-oversized", pyprojectManifestName), oversizedManifestBody("[tool.poetry]\nname = \"demo\"\n", "# filler\n", 8))

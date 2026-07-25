@@ -197,6 +197,46 @@ func TestPrepareLockfileRuleAndReplayDetectStaleLockfileForNonMatchingManifest(t
 	}
 }
 
+func TestPrepareLockfileManifestChangeCandidatesDropsEmptyDirsAndRules(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "a-empty"), 0o755); err != nil {
+		t.Fatalf("mkdir empty dir: %v", err)
+	}
+	writeFile(t, filepath.Join(repo, "b-replay", pyprojectManifestName), "[build-system]\nrequires = [\"setuptools\"]\n")
+	writeFile(t, filepath.Join(repo, "b-replay", poetryLockName), "# lock\n")
+	writeFile(t, filepath.Join(repo, "c-candidate", manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(repo, "c-candidate", lockfileName), "{}\n")
+	writeFile(t, filepath.Join(repo, "d-oversized", pyprojectManifestName), oversizedManifestBody("[tool.poetry]\nname = \"demo\"\n", "# filler\n", 8))
+	writeFile(t, filepath.Join(repo, "d-oversized", poetryLockName), "# lock\n")
+
+	prepared, candidates, err := prepareLockfileManifestChangeCandidates(context.Background(), repo, []lockfileRule{
+		mustLockfileRule(t, "Poetry", pyprojectManifestName),
+		mustLockfileRule(t, "npm", manifestFileName),
+	})
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized manifest error, got %v", err)
+	}
+	assertCandidatePaths(t, candidates, []string{
+		filepath.ToSlash(filepath.Join("c-candidate", lockfileName)),
+		filepath.ToSlash(filepath.Join("c-candidate", manifestFileName)),
+	})
+	if prepared == nil {
+		t.Fatal("expected prepared scan")
+	}
+	if len(prepared.dirs) != 3 {
+		t.Fatalf("expected only retained prepared dirs, got %#v", prepared.dirs)
+	}
+	if prepared.dirs[0].relDir != "b-replay" || len(prepared.dirs[0].rules) != 1 || prepared.dirs[0].rules[0].replay == nil {
+		t.Fatalf("expected replay-only dir retention, got %#v", prepared.dirs[0])
+	}
+	if prepared.dirs[1].relDir != "c-candidate" || len(prepared.dirs[1].rules) != 1 || prepared.dirs[1].rules[0].manifestChange == nil {
+		t.Fatalf("expected candidate-only dir retention, got %#v", prepared.dirs[1])
+	}
+	if prepared.dirs[2].relDir != "d-oversized" || len(prepared.dirs[2].rules) != 1 || prepared.dirs[2].rules[0].manifestReadErr == nil {
+		t.Fatalf("expected read-error dir retention, got %#v", prepared.dirs[2])
+	}
+}
+
 func TestEvaluatePreparedReplayRuleReturnsNoFindingWithoutReplayInputs(t *testing.T) {
 	repo := t.TempDir()
 	snapshot := lockfileDirSnapshot{repoPath: repo, path: repo, relDir: "."}

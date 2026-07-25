@@ -330,17 +330,17 @@ func scanPreparedLockfileDrift(ctx context.Context, gitContext lockfileGitContex
 	for _, dir := range prepared.dirs {
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
-				result.err = errors.Join(prepared.readErrors.joined(), err)
+				result.err = errors.Join(prepared.readErrors.joined(), result.err, err)
 				return result
 			}
 		}
 		result.appendPreparedDir(dir, gitContext, manifestIO)
-		if result.err != nil {
+		if result.err != nil && !isRecoverableLockfileManifestReadError(result.err) {
 			result.err = errors.Join(prepared.readErrors.joined(), result.err)
 			return result
 		}
 	}
-	result.err = prepared.readErrors.joined()
+	result.err = errors.Join(prepared.readErrors.joined(), result.err)
 	return result
 }
 
@@ -556,7 +556,9 @@ func prepareLockfileManifestChangeCandidatesWithIO(ctx context.Context, repoPath
 		repoPath: repoPath,
 		visit: func(snapshot lockfileDirSnapshot) error {
 			dir, paths, err := prepareLockfileDir(snapshot, rules, manifestIO, &prepared.readErrors)
-			prepared.dirs = append(prepared.dirs, dir)
+			if len(dir.rules) > 0 {
+				prepared.dirs = append(prepared.dirs, dir)
+			}
 			candidates = appendUniqueLockfilePaths(candidates, seen, paths)
 			return err
 		},
@@ -916,6 +918,11 @@ func (r *lockfileDriftResult) appendPreparedDir(dir lockfilePreparedDir, gitCont
 		if rule.manifestChange == nil {
 			finding, found, err := evaluatePreparedReplayRule(dir, rule, gitContext, cache)
 			if err != nil {
+				if isRecoverableLockfileManifestReadError(err) {
+					r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(err))
+					r.err = errors.Join(r.err, err)
+					continue
+				}
 				r.err = errors.Join(r.err, err)
 				return
 			}
@@ -953,11 +960,17 @@ func prepareLockfileDir(snapshot lockfileDirSnapshot, rules []lockfileRule, mani
 			sort.Strings(candidates)
 			return dir, candidates, err
 		}
-		dir.rules = append(dir.rules, preparedRule)
+		if shouldRetainPreparedLockfileRule(preparedRule, ruleCandidates) {
+			dir.rules = append(dir.rules, preparedRule)
+		}
 		candidates = appendUniqueLockfilePaths(candidates, seen, ruleCandidates)
 	}
 	sort.Strings(candidates)
 	return dir, candidates, nil
+}
+
+func shouldRetainPreparedLockfileRule(rule lockfilePreparedRule, candidatePaths []string) bool {
+	return rule.replay != nil || rule.manifestChange != nil || rule.manifestReadErr != nil || len(candidatePaths) > 0
 }
 
 func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache *lockfileManifestCache, readErrors *lockfileManifestReadErrors) (lockfilePreparedRule, []string, error) {
