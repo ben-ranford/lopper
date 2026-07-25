@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -53,10 +54,10 @@ func TestBuildPRReviewArtifactSeparatesSections(t *testing.T) {
 		Severity:      report.VulnerabilityPriorityHigh,
 		Priority:      report.VulnerabilityPriorityCritical,
 		PriorityScore: 95,
-		VersionStatus: "affected",
 		Reachable:     true,
 		Evidence:      []string{"imported by app"},
 	}}
+	head.Dependencies[0].Vulnerabilities[0] = prReviewTestVulnerabilityFindingWithVersionStatus(t, head.Dependencies[0].Vulnerabilities[0], "affected")
 
 	baseSHA := strings.Repeat("a", 40)
 	headSHA := strings.Repeat("b", 40)
@@ -171,8 +172,8 @@ func TestBuildPRReviewArtifactTreatsUnevaluableReachableFindingsAsRegressionsUnl
 		Severity:      report.VulnerabilityPriorityLow,
 		Priority:      report.VulnerabilityPriorityLow,
 		Reachable:     true,
-		VersionStatus: "unevaluable",
 	}}
+	headDependency.Vulnerabilities[0] = prReviewTestVulnerabilityFindingWithVersionStatus(t, headDependency.Vulnerabilities[0], "unevaluable")
 
 	for _, tc := range []struct {
 		threshold       string
@@ -535,6 +536,43 @@ func TestExecutePRReviewValidationErrors(t *testing.T) {
 	if _, err := (&App{Analyzer: &fakeAnalyzer{}}).Execute(context.Background(), req); err == nil || !strings.Contains(err.Error(), "verify base commit") {
 		t.Fatalf("expected analyse revision error, got %v", err)
 	}
+}
+
+func prReviewTestVulnerabilityFindingWithVersionStatus(t *testing.T, finding report.VulnerabilityFinding, versionStatus string) report.VulnerabilityFinding {
+	t.Helper()
+
+	payload, err := json.Marshal(struct {
+		AdvisoryID    string   `json:"advisoryId"`
+		Package       string   `json:"package"`
+		Severity      string   `json:"severity"`
+		VersionStatus string   `json:"versionStatus,omitempty"`
+		FixedVersion  string   `json:"fixedVersion,omitempty"`
+		Source        string   `json:"source,omitempty"`
+		Priority      string   `json:"priority"`
+		PriorityScore float64  `json:"priorityScore"`
+		Reachable     bool     `json:"reachable"`
+		Evidence      []string `json:"evidence,omitempty"`
+	}{
+		AdvisoryID:    finding.AdvisoryID,
+		Package:       finding.Package,
+		Severity:      finding.Severity,
+		VersionStatus: versionStatus,
+		FixedVersion:  finding.FixedVersion,
+		Source:        finding.Source,
+		Priority:      finding.Priority,
+		PriorityScore: finding.PriorityScore,
+		Reachable:     finding.Reachable,
+		Evidence:      finding.Evidence,
+	})
+	if err != nil {
+		t.Fatalf("marshal vulnerability finding fixture: %v", err)
+	}
+
+	var decoded report.VulnerabilityFinding
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal vulnerability finding fixture: %v", err)
+	}
+	return decoded
 }
 
 func TestExecutePRReviewRejectsConfigDrivenAdvisoriesWithoutPreviewFeature(t *testing.T) {
