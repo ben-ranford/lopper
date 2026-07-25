@@ -455,7 +455,7 @@ func resolvePinnedDependencyChainBase(basePath string) (string, error) {
 	return current, nil
 }
 
-func resolvePinnedDependencyComponent(path string, allowedRoot string) (string, error) {
+func resolvePinnedDependencyComponent(path, allowedRoot string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return "", err
@@ -473,7 +473,7 @@ func requirePinnedDependencyDirectory(path string, info os.FileInfo) (string, er
 	return path, nil
 }
 
-func resolvePinnedSymlinkDependencyComponent(path string, allowedRoot string) (string, error) {
+func resolvePinnedSymlinkDependencyComponent(path, allowedRoot string) (string, error) {
 	resolvedPath, err := evaluateDependencySymlinks(path)
 	if err != nil {
 		return "", err

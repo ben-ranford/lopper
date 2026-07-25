@@ -1470,7 +1470,7 @@ func TestPathLimitReadersPropagatePostPreflightOpenError(t *testing.T) {
 		},
 		{
 			name: "exact",
-			read: func(_ string, targetPath string) ([]byte, error) {
+			read: func(_, targetPath string) ([]byte, error) {
 				return ReadFileLimit(targetPath, 1)
 			},
 		},
