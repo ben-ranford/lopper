@@ -1761,6 +1761,8 @@ export const __testing = {
   isRuntimeLanguageSupported,
   formatCodemodApplySummary,
   formatCodemodApplyNotification,
+  detailPanelVulnerabilities,
+  findingSuppressedByException,
   isDirtyWorktreeApplyError,
   isPathInsideWorkspace,
   renderBaselineHtml,
@@ -2602,13 +2604,14 @@ function renderDependencyDetailHtml(
   const selectedDependency = dependency.name === dependencyName ? dependency : report.dependencies.find((item) => item.name === dependencyName) ?? dependency;
   const baseline = report.baselineComparison;
   const baselineDependency = baseline?.dependencies?.find((item) => item.name === dependencyName);
+  const visibleVulnerabilities = detailPanelVulnerabilities(selectedDependency.vulnerabilities ?? []);
   const sections = [
     renderDependencyOverviewSection(selectedDependency),
     renderDependencyActionsSection(folder, dependencyName, hasSafeCodemodSuggestions(analysis, dependencyName)),
     renderDependencyContextSection(report, baseline, baselineDependency),
     renderDependencyMetadataSection(selectedDependency),
-    (selectedDependency.vulnerabilities?.length ?? 0) > 0
-      ? renderHtmlSection("Vulnerabilities", renderHtmlList((selectedDependency.vulnerabilities ?? []).map(renderVulnerabilityItem)))
+    visibleVulnerabilities.length > 0
+      ? renderHtmlSection("Vulnerabilities", renderHtmlList(visibleVulnerabilities.map(renderVulnerabilityItem)))
       : "",
     selectedDependency.runtimeUsage ? renderHtmlSection("Runtime usage", renderRuntimeUsage(selectedDependency.runtimeUsage)) : "",
     (selectedDependency.usedImports?.length ?? 0) > 0 ? renderHtmlSection("Used imports", renderImports(folder, selectedDependency.usedImports ?? [])) : "",
@@ -2810,6 +2813,20 @@ function renderVulnerabilityItem(item: LopperVulnerabilityFinding | LopperVulner
     parts.push(`fixed ${escapeHtml(item.fixedVersion)}`);
   }
   return renderListItem(parts.join(" • "));
+}
+
+function detailPanelVulnerabilities(
+  vulnerabilities: readonly LopperVulnerabilityFinding[],
+): LopperVulnerabilityFinding[] {
+  return vulnerabilities.filter((finding) => !findingSuppressedByException(finding));
+}
+
+function findingSuppressedByException(finding: Pick<LopperVulnerabilityFinding, "decision">): boolean {
+  const status = finding.decision?.status.trim().toLowerCase();
+  if (!status || finding.decision?.expired) {
+    return false;
+  }
+  return status === "accepted-risk" || status === "not-affected" || status === "resolved";
 }
 
 function renderStat(label: string, value: string): string {

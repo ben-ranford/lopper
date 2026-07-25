@@ -149,7 +149,19 @@ export interface LopperVulnerabilityFinding {
   priority: LopperVulnerabilityPriority;
   priorityScore: number;
   reachable: boolean;
+  decision?: LopperVulnerabilityExceptionDecision;
   evidence?: string[];
+}
+
+export interface LopperVulnerabilityExceptionDecision {
+  status: string;
+  justification?: string;
+  owner?: string;
+  reason?: string;
+  scope?: string;
+  expires?: string;
+  source?: string;
+  expired?: boolean;
 }
 
 export interface LopperDependencyLicense {
