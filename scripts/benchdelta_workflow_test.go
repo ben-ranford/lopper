@@ -20,103 +20,15 @@ func TestBenchdeltaRejectsInvalidAndIncompleteInputs(t *testing.T) {
 	binaryPath := buildBenchdeltaBinary(t, repoRoot, dir)
 
 	tests := []workflowComparisonCase{
-		{
-			name:     "empty comparison invalid",
-			baseID:   "empty",
-			headID:   "empty",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: invalid",
-				"No overlapping benchmark names were found between base and head.",
-			},
-		},
-		{
-			name:     "head only invalid",
-			baseID:   "shared",
-			headID:   "head-only",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: invalid",
-				"Head-only benchmarks (missing on base):",
-			},
-		},
-		{
-			name:     "base only invalid",
-			baseID:   "base-only",
-			headID:   "shared",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: invalid",
-				"Base-only benchmarks (missing on head):",
-			},
-		},
-		{
-			name:     "zero overlap invalid",
-			baseID:   "zero-overlap-base",
-			headID:   "zero-overlap-head",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: invalid",
-				"No overlapping benchmark names were found between base and head.",
-			},
-		},
-		{
-			name:     "base bytes only incomplete",
-			baseID:   "base-bytes-only",
-			headID:   "shared",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: incomplete",
-				"base: " + workflowMissingMetric("Format", "allocs/op"),
-			},
-			wantOmit: workflowIncompleteInvalidDiagnostics(),
-		},
-		{
-			name:     "head allocs only incomplete",
-			baseID:   "shared",
-			headID:   "head-allocs-only",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: incomplete",
-				"head: " + workflowMissingMetric("Format", "B/op"),
-			},
-			wantOmit: workflowIncompleteInvalidDiagnostics(),
-		},
-		{
-			name:     "base ns only incomplete",
-			baseID:   "base-ns-only",
-			headID:   "shared",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: incomplete",
-				"base: " + workflowMissingMetric("Format", "B/op and allocs/op"),
-			},
-			wantOmit: workflowIncompleteInvalidDiagnostics(),
-		},
-		{
-			name:     "sample count mismatch incomplete",
-			baseID:   "count-mismatch-base",
-			headID:   "count-mismatch-head",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: incomplete",
-				workflowSampleCountMismatch("Format", 3, 1),
-			},
-			wantOmit: workflowIncompleteInvalidDiagnostics(),
-		},
-		{
-			name:     "complete plus partial duplicates stay incomplete",
-			baseID:   "partial-base",
-			headID:   "partial-head",
-			wantCode: 2,
-			wantContains: []string{
-				"Comparison status: incomplete",
-				workflowOKRow("Format"),
-				"base: " + workflowMissingMetric("Format", "allocs/op"),
-				"head: " + workflowMissingMetric("Format", "B/op"),
-			},
-			wantOmit: workflowIncompleteInvalidDiagnostics(),
-		},
+		workflowInvalidCase("empty comparison invalid", "empty", "empty", "No overlapping benchmark names were found between base and head."),
+		workflowInvalidCase("head only invalid", "shared", "head-only", "Head-only benchmarks (missing on base):"),
+		workflowInvalidCase("base only invalid", "base-only", "shared", "Base-only benchmarks (missing on head):"),
+		workflowInvalidCase("zero overlap invalid", "zero-overlap-base", "zero-overlap-head", "No overlapping benchmark names were found between base and head."),
+		workflowIncompleteCase("base bytes only incomplete", "base-bytes-only", "shared", "base: "+workflowMissingMetric("Format", "allocs/op")),
+		workflowIncompleteCase("head allocs only incomplete", "shared", "head-allocs-only", "head: "+workflowMissingMetric("Format", "B/op")),
+		workflowIncompleteCase("base ns only incomplete", "base-ns-only", "shared", "base: "+workflowMissingMetric("Format", "B/op and allocs/op")),
+		workflowIncompleteCase("sample count mismatch incomplete", "count-mismatch-base", "count-mismatch-head", workflowSampleCountMismatch("Format", 3, 1)),
+		workflowIncompleteCase("complete plus partial duplicates stay incomplete", "partial-base", "partial-head", workflowOKRow("Format"), "base: "+workflowMissingMetric("Format", "allocs/op"), "head: "+workflowMissingMetric("Format", "B/op")),
 	}
 
 	for _, tc := range tests {
@@ -133,6 +45,27 @@ type workflowComparisonCase struct {
 	wantCode     int
 	wantContains []string
 	wantOmit     []string
+}
+
+func workflowInvalidCase(name, baseID, headID string, expected ...string) workflowComparisonCase {
+	return workflowComparisonCase{
+		name:         name,
+		baseID:       baseID,
+		headID:       headID,
+		wantCode:     2,
+		wantContains: append([]string{"Comparison status: invalid"}, expected...),
+	}
+}
+
+func workflowIncompleteCase(name, baseID, headID string, expected ...string) workflowComparisonCase {
+	return workflowComparisonCase{
+		name:         name,
+		baseID:       baseID,
+		headID:       headID,
+		wantCode:     2,
+		wantContains: append([]string{"Comparison status: incomplete"}, expected...),
+		wantOmit:     workflowIncompleteInvalidDiagnostics(),
+	}
 }
 
 func buildBenchdeltaBinary(t *testing.T, repoRoot, dir string) string {
@@ -210,33 +143,43 @@ func workflowFixtureLines(fixtureID string) []string {
 	switch fixtureID {
 	case "empty":
 		return workflowReportFixture()
-	case "shared":
-		return workflowReportFixture(workflowCompleteBenchmark("Format"))
+	case "shared", "count-mismatch-head":
+		return workflowCompleteFixture("Format")
 	case "head-only":
-		return workflowReportFixture(workflowCompleteBenchmark("Format"), workflowCompleteBenchmark("FormatHeadOnly"))
+		return workflowCompleteFixture("Format", "FormatHeadOnly")
 	case "base-only":
-		return workflowReportFixture(workflowCompleteBenchmark("Format"), workflowCompleteBenchmark("FormatBaseOnly"))
+		return workflowCompleteFixture("Format", "FormatBaseOnly")
 	case "zero-overlap-base":
-		return workflowReportFixture(workflowCompleteBenchmark("BaseOnly"))
+		return workflowCompleteFixture("BaseOnly")
 	case "zero-overlap-head":
-		return workflowReportFixture(workflowCompleteBenchmark("HeadOnly"))
+		return workflowCompleteFixture("HeadOnly")
 	case "base-bytes-only":
-		return workflowReportFixture(workflowBytesOnlyBenchmark("Format", "100"))
+		return workflowBenchmarkFixture(workflowBytesOnlyBenchmark("Format", "100"))
 	case "head-allocs-only":
-		return workflowReportFixture(workflowAllocsOnlyBenchmark("Format", "1"))
+		return workflowBenchmarkFixture(workflowAllocsOnlyBenchmark("Format", "1"))
 	case "base-ns-only":
-		return workflowReportFixture(workflowNsOnlyBenchmark("Format"))
+		return workflowBenchmarkFixture(workflowNsOnlyBenchmark("Format"))
 	case "partial-base":
-		return workflowReportFixture(workflowCompleteBenchmark("Format"), workflowBytesOnlyBenchmark("Format", "130"))
+		return workflowBenchmarkFixture(workflowCompleteBenchmark("Format"), workflowBytesOnlyBenchmark("Format", "130"))
 	case "partial-head":
-		return workflowReportFixture(workflowCompleteBenchmark("Format"), workflowAllocsOnlyBenchmark("Format", "4"))
+		return workflowBenchmarkFixture(workflowCompleteBenchmark("Format"), workflowAllocsOnlyBenchmark("Format", "4"))
 	case "count-mismatch-base":
 		return workflowReportFixture(workflowRepeatedCompleteBenchmarks("Format", 3)...)
-	case "count-mismatch-head":
-		return workflowReportFixture(workflowCompleteBenchmark("Format"))
 	default:
 		return nil
 	}
+}
+
+func workflowCompleteFixture(names ...string) []string {
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, workflowCompleteBenchmark(name))
+	}
+	return workflowBenchmarkFixture(lines...)
+}
+
+func workflowBenchmarkFixture(lines ...string) []string {
+	return workflowReportFixture(lines...)
 }
 
 func workflowReportFixture(lines ...string) []string {
