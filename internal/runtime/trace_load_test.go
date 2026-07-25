@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,10 +143,104 @@ func TestLoadTraceSkipsEventsWithoutDependencies(t *testing.T) {
 	}
 }
 
-func oversizedRuntimeTraceContent() string {
-	const maxRuntimeTraceBytesForTest = 8 * 1024 * 1024
+func TestLoadTraceReadsFileFromPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.ndjson")
+	if err := os.WriteFile(path, []byte("{\"module\":\""+lodashMapModule+"\"}\n"), 0o600); err != nil {
+		t.Fatalf("write runtime trace: %v", err)
+	}
 
+	trace, err := Load(path)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected lodash load count 1, got %d", got)
+	}
+}
+
+func TestValidatedTraceSnapshotLoadRejectsNilSnapshot(t *testing.T) {
+	var snapshot *ValidatedTraceSnapshot
+	if _, err := snapshot.Load(); err == nil {
+		t.Fatalf("expected nil validated snapshot load to fail")
+	}
+}
+
+func TestValidatedTraceSnapshotLoadParsesSnapshotData(t *testing.T) {
+	snapshot := &ValidatedTraceSnapshot{data: []byte("{\"module\":\"" + lodashMapModule + "\"}\n")}
+	trace, err := snapshot.Load()
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected lodash load count 1, got %d", got)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderAllowsEmptyRead(t *testing.T) {
+	reader := newRuntimeTraceByteLimitReader(bytes.NewBufferString("abc"), 2)
+	if n, err := reader.Read(nil); n != 0 || err != nil {
+		t.Fatalf("expected empty read to return 0,nil, got %d,%v", n, err)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderRejectsBytePastLimit(t *testing.T) {
+	reader := newRuntimeTraceByteLimitReader(bytes.NewBufferString("abcd"), 3)
+	buffer := make([]byte, 8)
+
+	n, err := reader.Read(buffer)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge, got %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("expected three allowed bytes, got %d", n)
+	}
+	if got := string(buffer[:n]); got != "abc" {
+		t.Fatalf("expected allowed bytes %q, got %q", "abc", got)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderPreservesUnderlyingErrorsWithinLimit(t *testing.T) {
+	source := &errorAfterReader{
+		data: []byte("ab"),
+		err:  io.EOF,
+	}
+	reader := newRuntimeTraceByteLimitReader(source, 4)
+	buffer := make([]byte, 8)
+
+	n, err := reader.Read(buffer)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF to pass through, got %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected two bytes, got %d", n)
+	}
+}
+
+func TestRuntimeTraceByteLimitReaderRejectsReadAfterLimitExhausted(t *testing.T) {
+	reader := newRuntimeTraceByteLimitReader(bytes.NewBufferString("a"), -1)
+	buffer := make([]byte, 2)
+
+	n, err := reader.Read(buffer)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge, got %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected no allowed bytes after exhaustion, got %d", n)
+	}
+}
+
+func oversizedRuntimeTraceContent() string {
 	line := "{\"module\":\"" + leftPadModule + "\"}\n"
-	repeat := maxRuntimeTraceBytesForTest/len(line) + 1
+	repeat := int(maxRuntimeTraceBytes)/len(line) + 1
 	return strings.Repeat(line, repeat)
+}
+
+type errorAfterReader struct {
+	data []byte
+	err  error
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	return n, r.err
 }

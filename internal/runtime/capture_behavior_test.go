@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestDefaultTracePath(t *testing.T) {
@@ -298,6 +302,7 @@ func TestCaptureReuseDoesNotBypassRunnerProfileGate(t *testing.T) {
 		TracePath:            tracePath,
 		Command:              "python -m unittest",
 		Provider:             CaptureProviderPython,
+		TrustedInputDigest:   "digest-a",
 		PythonRunnerProfiles: true,
 	}
 	if err := Capture(context.Background(), request); err != nil {
@@ -320,9 +325,10 @@ func TestCaptureReuseIfUnchangedSkipsRepeatedCommand(t *testing.T) {
 	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"))
 
 	first := CaptureRequest{
-		RepoPath:  repo,
-		TracePath: tracePath,
-		Command:   npmTestCommand,
+		RepoPath:           repo,
+		TracePath:          tracePath,
+		Command:            npmTestCommand,
+		TrustedInputDigest: "digest-a",
 	}
 	if err := Capture(context.Background(), first); err != nil {
 		t.Fatalf("capture first run: %v", err)
@@ -369,7 +375,7 @@ func TestCaptureReuseIfUnchangedSkipsRepeatedCommand(t *testing.T) {
 
 func TestReuseRuntimeTraceIfPossibleMissingTraceSkipsReuse(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
-	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, "digest-a", false)
 }
 
 func TestReuseRuntimeTraceIfPossibleDirectoryTraceSkipsReuse(t *testing.T) {
@@ -377,12 +383,12 @@ func TestReuseRuntimeTraceIfPossibleDirectoryTraceSkipsReuse(t *testing.T) {
 	if err := os.MkdirAll(tracePath, 0o750); err != nil {
 		t.Fatalf("mkdir trace path dir: %v", err)
 	}
-	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, "digest-a", false)
 }
 
 func TestReuseRuntimeTraceIfPossibleMissingStateSkipsReuse(t *testing.T) {
 	tracePath := writeTraceFixture(t)
-	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, "digest-a", false)
 }
 
 func TestReuseRuntimeTraceIfPossibleInvalidStateSkipsReuse(t *testing.T) {
@@ -390,41 +396,122 @@ func TestReuseRuntimeTraceIfPossibleInvalidStateSkipsReuse(t *testing.T) {
 	if err := os.WriteFile(runtimeTraceStatePath(tracePath), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid state file: %v", err)
 	}
-	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, false)
+	assertDefaultRuntimeReuseResult(t, tracePath, npmTestCommand, "digest-a", false)
 }
 
 func TestParseRuntimeTraceStateValidation(t *testing.T) {
 	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"wrong","command":"npm test"}`)); ok {
 		t.Fatalf("expected wrong runtime trace schema to be rejected")
 	}
-	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"  ","provider":"node"}`)); ok {
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v3","command":"npm test","provider":"node","traceHash":"abc"}`)); ok {
+		t.Fatalf("expected missing trusted input hash to be rejected")
+	}
+}
+
+func TestParseRuntimeTraceStateRejectsBlankCommand(t *testing.T) {
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v3","command":"  ","provider":"node","trustedInputHash":"digest-a","traceHash":"digest-b"}`)); ok {
 		t.Fatalf("expected blank runtime trace command to be rejected")
 	}
-	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v2","command":"npm test","provider":"ruby"}`)); ok {
+}
+
+func TestParseRuntimeTraceStateRejectsUnsupportedProvider(t *testing.T) {
+	if _, ok := parseRuntimeTraceState([]byte(`{"schema":"v3","command":"npm test","provider":"ruby","trustedInputHash":"digest-a","traceHash":"digest-b"}`)); ok {
 		t.Fatalf("expected unsupported runtime trace provider to be rejected")
+	}
+}
+
+func TestParseRuntimeTraceStateReturnsTrimmedValidState(t *testing.T) {
+	state, ok := parseRuntimeTraceState([]byte(`{"schema":" v3 ","command":" npm test ","provider":"node","trustedInputHash":" digest-a ","traceHash":" digest-b "}`))
+	if !ok {
+		t.Fatalf("expected valid runtime trace state to parse")
+	}
+	if strings.TrimSpace(state.Command) != npmTestCommand {
+		t.Fatalf("expected command to round-trip, got %q", state.Command)
+	}
+	if strings.TrimSpace(state.TrustedInputHash) != "digest-a" {
+		t.Fatalf("expected trusted input hash to round-trip, got %q", state.TrustedInputHash)
+	}
+	if strings.TrimSpace(state.TraceHash) != "digest-b" {
+		t.Fatalf("expected trace hash to round-trip, got %q", state.TraceHash)
 	}
 }
 
 func TestWriteRuntimeTraceStateAndReuseChecks(t *testing.T) {
 	tracePath := writeTraceFixture(t)
-	if err := writeRuntimeTraceState(tracePath, "  npm test  ", CaptureProviderNode); err != nil {
+	if err := writeRuntimeTraceState(tracePath, "  npm test  ", CaptureProviderNode, "digest-a"); err != nil {
 		t.Fatalf("write runtime trace state: %v", err)
 	}
 
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, true)
-	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderPython, false)
-	assertRuntimeReuseResult(t, tracePath, "npm run test", CaptureProviderNode, false)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, "digest-a", true)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderPython, "digest-a", false)
+	assertRuntimeReuseResult(t, tracePath, "npm run test", CaptureProviderNode, "digest-a", false)
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, "digest-b", false)
 }
 
-func TestWriteRuntimeTraceStateFailsWhenParentMissing(t *testing.T) {
+func TestWriteRuntimeTraceStateSkipsWhenTraceMissing(t *testing.T) {
 	missingParentTrace := filepath.Join(t.TempDir(), "missing", runtimeTraceNDJSON)
-	if err := writeRuntimeTraceState(missingParentTrace, npmTestCommand, CaptureProviderNode); err == nil {
-		t.Fatalf("expected writeRuntimeTraceState to fail when parent directory is missing")
+	if err := writeRuntimeTraceState(missingParentTrace, npmTestCommand, CaptureProviderNode, "digest-a"); err != nil {
+		t.Fatalf("expected missing trace to skip runtime trace state write, got %v", err)
+	}
+}
+
+func TestWriteRuntimeTraceStateAndSnapshotReturnsSnapshot(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	traceData := []byte("{\"module\":\"lodash/map\"}\n")
+	if err := os.WriteFile(tracePath, traceData, 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+
+	snapshot, err := writeRuntimeTraceStateAndSnapshot(tracePath, npmTestCommand, CaptureProviderNode, "digest-a")
+	if err != nil {
+		t.Fatalf("write runtime trace state and snapshot: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatalf("expected snapshot")
+	}
+	if string(snapshot.data) != string(traceData) {
+		t.Fatalf("expected snapshot data %q, got %q", traceData, snapshot.data)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(traceData))
+	if snapshot.digest != wantDigest {
+		t.Fatalf("expected digest %q, got %q", wantDigest, snapshot.digest)
+	}
+}
+
+func TestWriteRuntimeTraceStateAndSnapshotSkipsDirectoryTrace(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(tracePath, 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+
+	snapshot, err := writeRuntimeTraceStateAndSnapshot(tracePath, npmTestCommand, CaptureProviderNode, "digest-a")
+	if err != nil {
+		t.Fatalf("expected directory trace to be skipped, got %v", err)
+	}
+	if snapshot != nil {
+		t.Fatalf("expected no snapshot for directory trace")
+	}
+}
+
+func TestWriteRuntimeTraceStateAndSnapshotReturnsStateWriteError(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	if err := os.MkdirAll(runtimeTraceStatePath(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace state dir: %v", err)
+	}
+
+	if _, err := writeRuntimeTraceStateAndSnapshot(tracePath, npmTestCommand, CaptureProviderNode, "digest-a"); err == nil {
+		t.Fatalf("expected runtime trace state write error")
+	}
+}
+
+func TestWriteRuntimeTraceStateAndSnapshotSurfacesStatError(t *testing.T) {
+	if _, err := writeRuntimeTraceStateAndSnapshot(string([]byte{0}), npmTestCommand, CaptureProviderNode, "digest-a"); err == nil {
+		t.Fatalf("expected trace stat error")
 	}
 }
 
 func TestReuseRuntimeTraceIfPossibleSurfacesStatError(t *testing.T) {
-	reused, err := reuseRuntimeTraceIfPossible(string([]byte{0}), npmTestCommand, CaptureProviderNode)
+	reused, err := reuseRuntimeTraceIfPossible(string([]byte{0}), npmTestCommand, CaptureProviderNode, "digest-a")
 	if err == nil || reused {
 		t.Fatalf("expected invalid trace path stat error, reused=%v err=%v", reused, err)
 	}
@@ -436,9 +523,368 @@ func TestReuseRuntimeTraceIfPossibleSurfacesStateReadError(t *testing.T) {
 		t.Fatalf("mkdir trace state dir: %v", err)
 	}
 
-	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand, CaptureProviderNode)
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand, CaptureProviderNode, "digest-a")
 	if err == nil || reused {
 		t.Fatalf("expected runtime trace state read error, reused=%v err=%v", reused, err)
+	}
+}
+
+func TestReuseRuntimeTraceIfPossibleRequiresTrustedInputDigest(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	if err := writeRuntimeTraceState(tracePath, npmTestCommand, CaptureProviderNode, "digest-a"); err != nil {
+		t.Fatalf("write runtime trace state: %v", err)
+	}
+	assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, "", false)
+}
+
+func TestReuseRuntimeTraceIfPossibleSkipsTamperedTraceOrState(t *testing.T) {
+	t.Run("trace changed after trusted capture", func(t *testing.T) {
+		tracePath := writeTraceFixture(t)
+		if err := writeRuntimeTraceState(tracePath, npmTestCommand, CaptureProviderNode, "digest-a"); err != nil {
+			t.Fatalf("write runtime trace state: %v", err)
+		}
+		if err := os.WriteFile(tracePath, []byte("{\"module\":\"chalk/index\"}\n"), 0o600); err != nil {
+			t.Fatalf("tamper trace file: %v", err)
+		}
+		assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, "digest-a", false)
+	})
+
+	t.Run("forged trace and state without trusted binding", func(t *testing.T) {
+		tracePath := writeTraceFixture(t)
+		if err := os.WriteFile(tracePath, []byte("{\"module\":\"chalk/index\"}\n"), 0o600); err != nil {
+			t.Fatalf("write forged trace: %v", err)
+		}
+		state := `{"schema":"v3","command":"npm test","provider":"node","trustedInputHash":"forged","traceHash":"forged"}`
+		if err := os.WriteFile(runtimeTraceStatePath(tracePath), []byte(state), 0o600); err != nil {
+			t.Fatalf("write forged state: %v", err)
+		}
+		assertRuntimeReuseResult(t, tracePath, npmTestCommand, CaptureProviderNode, "digest-a", false)
+	})
+}
+
+func TestHashRuntimeTraceFileRejectsOversizedTrace(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+	line := "{\"module\":\"lodash/map\"}\n"
+	repeat := int(maxRuntimeTraceBytes)/len(line) + 1
+	if err := os.WriteFile(tracePath, []byte(strings.Repeat(line, repeat)), 0o600); err != nil {
+		t.Fatalf("write oversized trace: %v", err)
+	}
+
+	if _, err := hashRuntimeTraceFile(tracePath); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized trace hash to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestHashRuntimeTraceFileRejectsNonRegularTrace(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(tracePath, 0o750); err != nil {
+		t.Fatalf("mkdir non-regular trace path: %v", err)
+	}
+
+	if _, err := hashRuntimeTraceFile(tracePath); err == nil || !strings.Contains(err.Error(), "must be regular") {
+		t.Fatalf("expected non-regular trace hash rejection, got %v", err)
+	}
+}
+
+func TestHashRuntimeTraceFileRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.ndjson")
+	tracePath := filepath.Join(dir, "trace.ndjson")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, tracePath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := hashRuntimeTraceFile(tracePath); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink trace hash rejection, got %v", err)
+	}
+}
+
+func TestHashRuntimeTraceFileReturnsDigest(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	traceData := []byte("{\"module\":\"lodash/map\"}\n")
+	if err := os.WriteFile(tracePath, traceData, 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+
+	digest, err := hashRuntimeTraceFile(tracePath)
+	if err != nil {
+		t.Fatalf("hash runtime trace file: %v", err)
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(traceData))
+	if digest != wantDigest {
+		t.Fatalf("expected digest %q, got %q", wantDigest, digest)
+	}
+}
+
+func TestHashRuntimeTraceFileRejectsConcurrentSameInodeMutation(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+	original := []byte("trace-line-alpha\n")
+	mutated := []byte("trace-line-omega\n")
+	if len(original) != len(mutated) {
+		t.Fatalf("expected same-size mutation fixture")
+	}
+	if err := os.WriteFile(tracePath, original, 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+
+	setHashRuntimeTraceMutationHook(t, func() {
+		file, err := os.OpenFile(tracePath, os.O_WRONLY|os.O_TRUNC, 0)
+		if err != nil {
+			t.Fatalf("open trace for mutation: %v", err)
+		}
+		if _, err := file.Write(mutated); err != nil {
+			if closeErr := file.Close(); closeErr != nil {
+				t.Fatalf("close trace after failed mutation write: %v", closeErr)
+			}
+			t.Fatalf("mutate trace contents: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close mutated trace: %v", err)
+		}
+	})
+
+	if _, err := hashRuntimeTraceFile(tracePath); err == nil || !strings.Contains(err.Error(), "changed while hashing") {
+		t.Fatalf("expected same-inode mutation to be rejected, got %v", err)
+	}
+}
+
+func TestWriteRuntimeTraceStateRejectsConcurrentSameInodeMutation(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+	if err := os.WriteFile(tracePath, []byte("trace-line-alpha\n"), 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+
+	setHashRuntimeTraceMutationHook(t, func() {
+		if err := os.WriteFile(tracePath, []byte("trace-line-omega\n"), 0o600); err != nil {
+			t.Fatalf("mutate trace contents: %v", err)
+		}
+	})
+
+	if err := writeRuntimeTraceState(tracePath, npmTestCommand, CaptureProviderNode, "digest-a"); err == nil || !strings.Contains(err.Error(), "changed while hashing") {
+		t.Fatalf("expected concurrent mutation to reject runtime trace state write, got %v", err)
+	}
+	if _, err := os.Stat(runtimeTraceStatePath(tracePath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected rejected state write to leave no state file, got stat err %v", err)
+	}
+}
+
+func TestReuseRuntimeTraceIfPossibleRejectsConcurrentSameInodeMutation(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+	if err := os.WriteFile(tracePath, []byte("trace-line-alpha\n"), 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+	if err := writeRuntimeTraceState(tracePath, npmTestCommand, CaptureProviderNode, "digest-a"); err != nil {
+		t.Fatalf("write runtime trace state: %v", err)
+	}
+
+	setHashRuntimeTraceMutationHook(t, func() {
+		if err := os.WriteFile(tracePath, []byte("trace-line-omega\n"), 0o600); err != nil {
+			t.Fatalf("mutate trace contents: %v", err)
+		}
+	})
+
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand, CaptureProviderNode, "digest-a")
+	if err == nil || reused || !strings.Contains(err.Error(), "changed while hashing") {
+		t.Fatalf("expected concurrent mutation to reject runtime trace reuse, reused=%v err=%v", reused, err)
+	}
+}
+
+func TestReuseRuntimeTraceIfPossibleRejectsRenameSwapRenameBackDuringDescriptorOpen(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	if err := writeRuntimeTraceState(tracePath, npmTestCommand, CaptureProviderNode, "digest-a"); err != nil {
+		t.Fatalf("write runtime trace state: %v", err)
+	}
+
+	originalPath := tracePath + ".original"
+	swapPath := tracePath + ".swap"
+	if err := os.WriteFile(swapPath, []byte("{\"module\":\"chalk/index\"}\n"), 0o600); err != nil {
+		t.Fatalf("write swap trace: %v", err)
+	}
+
+	stage := 0
+	beforeOpenHook := func() {
+		if stage != 0 {
+			return
+		}
+		if err := os.Rename(tracePath, originalPath); err != nil {
+			t.Fatalf("rename original trace aside: %v", err)
+		}
+		if err := os.Rename(swapPath, tracePath); err != nil {
+			t.Fatalf("swap trace into path: %v", err)
+		}
+		stage = 1
+	}
+	afterOpenHook := func() {
+		if stage != 1 {
+			return
+		}
+		if err := os.Rename(tracePath, swapPath); err != nil {
+			t.Fatalf("rename swap trace aside: %v", err)
+		}
+		if err := os.Rename(originalPath, tracePath); err != nil {
+			t.Fatalf("restore original trace path: %v", err)
+		}
+		stage = 2
+	}
+	setRuntimeTraceSnapshotOpenHooks(t, beforeOpenHook, afterOpenHook)
+
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, npmTestCommand, CaptureProviderNode, "digest-a")
+	if err == nil || reused || !strings.Contains(err.Error(), "changed while opening") {
+		t.Fatalf("expected rename/swap/rename-back to reject runtime trace reuse, reused=%v err=%v", reused, err)
+	}
+	if stage != 2 {
+		t.Fatalf("expected deterministic swap fixture to complete, stage=%d", stage)
+	}
+}
+
+func TestStableRuntimeTraceFileSnapshotReturnsSnapshot(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	traceData := []byte("{\"module\":\"lodash/map\"}\n")
+	if err := os.WriteFile(tracePath, traceData, 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+
+	snapshot, err := stableRuntimeTraceFileSnapshot(tracePath)
+	if err != nil {
+		t.Fatalf("stable runtime trace file snapshot: %v", err)
+	}
+	if string(snapshot.data) != string(traceData) {
+		t.Fatalf("expected snapshot data %q, got %q", traceData, snapshot.data)
+	}
+}
+
+func TestStableRuntimeTraceFileSnapshotSurfacesSecondSnapshotError(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	setHashRuntimeTraceMutationHook(t, func() {
+		if err := os.Remove(tracePath); err != nil {
+			t.Fatalf("remove trace before second snapshot: %v", err)
+		}
+	})
+
+	if _, err := stableRuntimeTraceFileSnapshot(tracePath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected second snapshot error to surface, got %v", err)
+	}
+}
+
+func TestSnapshotRuntimeTraceFileSurfacesOpenErrorAfterPathSnapshot(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	removeTrace := func() {
+		if err := os.Remove(tracePath); err != nil {
+			t.Fatalf("remove trace before open: %v", err)
+		}
+	}
+	setRuntimeTraceSnapshotOpenHooks(t, removeTrace, nil)
+
+	if _, err := snapshotRuntimeTraceFile(tracePath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected trace open error to surface, got %v", err)
+	}
+}
+
+func TestSnapshotRuntimeTraceFileSurfacesTraceRootOpenError(t *testing.T) {
+	parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write parent file: %v", err)
+	}
+	tracePath := filepath.Join(parentFile, runtimeTraceNDJSON)
+
+	if _, err := snapshotRuntimeTraceFile(tracePath); err == nil {
+		t.Fatalf("expected trace root open error")
+	}
+}
+
+func TestSnapshotRuntimeTraceFileReturnsSnapshot(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	traceData := []byte("{\"module\":\"lodash/map\"}\n")
+	if err := os.WriteFile(tracePath, traceData, 0o600); err != nil {
+		t.Fatalf("write trace fixture: %v", err)
+	}
+
+	snapshot, err := snapshotRuntimeTraceFile(tracePath)
+	if err != nil {
+		t.Fatalf("snapshot runtime trace file: %v", err)
+	}
+	if string(snapshot.data) != string(traceData) {
+		t.Fatalf("expected snapshot data %q, got %q", traceData, snapshot.data)
+	}
+}
+
+func TestSnapshotRuntimeTraceFileSurfacesPathDisappearingAfterOpen(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	setRuntimeTraceSnapshotOpenHooks(t, nil, func() {
+		if err := os.Remove(tracePath); err != nil {
+			t.Fatalf("remove trace path after open: %v", err)
+		}
+	})
+
+	if _, err := snapshotRuntimeTraceFile(tracePath); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected current path stat error to surface, got %v", err)
+	}
+}
+
+func TestSnapshotRuntimeTraceFileRejectsOversizedDescriptorAfterOpen(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	line := "{\"module\":\"lodash/map\"}\n"
+	repeat := int(maxRuntimeTraceBytes)/len(line) + 1
+	setRuntimeTraceSnapshotOpenHooks(t, nil, func() {
+		if err := os.WriteFile(tracePath, []byte(strings.Repeat(line, repeat)), 0o600); err != nil {
+			t.Fatalf("grow trace path after open: %v", err)
+		}
+	})
+
+	if _, err := snapshotRuntimeTraceFile(tracePath); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized descriptor to be rejected, got %v", err)
+	}
+}
+
+func TestSnapshotRuntimeTraceFileRejectsCurrentPathDirectoryReplacement(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	relocatedPath := tracePath + ".relocated"
+	setRuntimeTraceSnapshotOpenHooks(t, nil, func() {
+		if err := os.Rename(tracePath, relocatedPath); err != nil {
+			t.Fatalf("relocate trace path after open: %v", err)
+		}
+		if err := os.Mkdir(tracePath, 0o750); err != nil {
+			t.Fatalf("replace trace path with directory: %v", err)
+		}
+	})
+
+	if _, err := snapshotRuntimeTraceFile(tracePath); err == nil || !strings.Contains(err.Error(), "must be regular") {
+		t.Fatalf("expected current path directory replacement to be rejected, got %v", err)
+	}
+}
+
+func TestSnapshotRuntimeTraceFileRejectsDescriptorPathMismatchAfterRead(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	replacementPath := tracePath + ".replacement"
+	if err := os.WriteFile(replacementPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write replacement trace: %v", err)
+	}
+	setRuntimeTraceSnapshotOpenHooks(t, nil, func() {
+		if err := os.Remove(tracePath); err != nil {
+			t.Fatalf("remove opened trace path: %v", err)
+		}
+		if err := os.Rename(replacementPath, tracePath); err != nil {
+			t.Fatalf("replace trace path with new file: %v", err)
+		}
+	})
+
+	if _, err := snapshotRuntimeTraceFile(tracePath); err == nil || !strings.Contains(err.Error(), "changed while hashing") {
+		t.Fatalf("expected descriptor/path mismatch to be rejected, got %v", err)
 	}
 }
 
@@ -499,16 +945,16 @@ func writeTraceFixture(t *testing.T) string {
 	return tracePath
 }
 
-func assertDefaultRuntimeReuseResult(t *testing.T, tracePath, command string, wantReused bool) {
+func assertDefaultRuntimeReuseResult(t *testing.T, tracePath, command string, trustedInputDigest string, wantReused bool) {
 	t.Helper()
 
-	assertRuntimeReuseResult(t, tracePath, command, CaptureProviderNode, wantReused)
+	assertRuntimeReuseResult(t, tracePath, command, CaptureProviderNode, trustedInputDigest, wantReused)
 }
 
-func assertRuntimeReuseResult(t *testing.T, tracePath, command string, provider CaptureProvider, wantReused bool) {
+func assertRuntimeReuseResult(t *testing.T, tracePath, command string, provider CaptureProvider, trustedInputDigest string, wantReused bool) {
 	t.Helper()
 
-	reused, err := reuseRuntimeTraceIfPossible(tracePath, command, provider)
+	reused, err := reuseRuntimeTraceIfPossible(tracePath, command, provider, trustedInputDigest)
 	if err != nil {
 		t.Fatalf("reuse runtime trace: %v", err)
 	}
@@ -528,4 +974,22 @@ func readCaptureCounter(t *testing.T, counterPath string) int {
 		t.Fatalf("parse capture counter: %v", err)
 	}
 	return value
+}
+
+func setHashRuntimeTraceMutationHook(t *testing.T, hook func()) {
+	t.Helper()
+	hashRuntimeTraceFileAfterFirstSnapshotHook = hook
+	t.Cleanup(func() {
+		hashRuntimeTraceFileAfterFirstSnapshotHook = nil
+	})
+}
+
+func setRuntimeTraceSnapshotOpenHooks(t *testing.T, afterPathSnapshot func(), afterOpen func()) {
+	t.Helper()
+	snapshotRuntimeTraceFileAfterPathSnapshotHook = afterPathSnapshot
+	snapshotRuntimeTraceFileAfterOpenHook = afterOpen
+	t.Cleanup(func() {
+		snapshotRuntimeTraceFileAfterPathSnapshotHook = nil
+		snapshotRuntimeTraceFileAfterOpenHook = nil
+	})
 }

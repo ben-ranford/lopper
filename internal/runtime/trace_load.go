@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,8 +12,6 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
-
-const maxRuntimeTraceBytes int64 = 8 * 1024 * 1024
 
 func Load(path string) (_ Trace, err error) {
 	file, err := safeio.OpenFile(path)
@@ -25,8 +24,20 @@ func Load(path string) (_ Trace, err error) {
 		}
 	}()
 
+	return loadRuntimeTrace(file)
+}
+
+// Load parses the exact bytes retained by a validated capture snapshot.
+func (s *ValidatedTraceSnapshot) Load() (Trace, error) {
+	if s == nil {
+		return Trace{}, errors.New("validated runtime trace snapshot is nil")
+	}
+	return loadRuntimeTrace(bytes.NewReader(s.data))
+}
+
+func loadRuntimeTrace(reader io.Reader) (Trace, error) {
 	trace := newTrace()
-	scanner := bufio.NewScanner(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes))
+	scanner := bufio.NewScanner(newRuntimeTraceByteLimitReader(reader, maxRuntimeTraceBytes))
 	line := 0
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {

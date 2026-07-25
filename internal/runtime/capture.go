@@ -16,7 +16,13 @@ type CaptureRequest struct {
 	Command              string
 	Provider             CaptureProvider
 	ReuseIfUnchanged     bool
+	TrustedInputDigest   string
 	PythonRunnerProfiles bool
+}
+
+// ValidatedTraceSnapshot contains the exact bounded bytes validated during capture.
+type ValidatedTraceSnapshot struct {
+	data []byte
 }
 
 type CaptureProvider string
@@ -39,34 +45,40 @@ func DefaultTracePath(repoPath string) string {
 }
 
 func Capture(ctx context.Context, req CaptureRequest) error {
+	_, err := CaptureValidatedTrace(ctx, req)
+	return err
+}
+
+// CaptureValidatedTrace captures or reuses a trace and returns its validated bytes.
+func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (*ValidatedTraceSnapshot, error) {
 	plan, err := resolveCapturePlan(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	commandOptions := CommandOptions{PythonRunnerProfiles: plan.pythonRunnerProfiles}
 	if err := ValidateCommand(plan.command, commandOptions); err != nil {
-		return err
+		return nil, err
 	}
 
 	if req.ReuseIfUnchanged {
-		reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command, plan.provider)
+		snapshot, reused, err := reusableRuntimeTraceSnapshot(plan.tracePath, plan.command, plan.provider, req.TrustedInputDigest)
 		if err == nil && reused {
-			return nil
+			return &ValidatedTraceSnapshot{data: snapshot.data}, nil
 		}
 	}
 
 	if err := prepareTracePath(plan.tracePath); err != nil {
-		return err
+		return nil, err
 	}
 
 	cmd, err := buildRuntimeCommand(ctx, plan.command, commandOptions)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cmd.Dir = plan.repoPath
 	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath, plan.provider)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	output := newRuntimeCommandOutput()
@@ -74,13 +86,16 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 	cmd.Stderr = output
 	err = cmd.Run()
 	if err != nil {
-		return formatRuntimeCommandError(err, output.diagnostic())
+		return nil, formatRuntimeCommandError(err, output.diagnostic())
 	}
-	if err := writeRuntimeTraceState(plan.tracePath, plan.command, plan.provider); err != nil {
-		return fmt.Errorf("write runtime trace state: %w", err)
+	snapshot, err := writeRuntimeTraceStateAndSnapshot(plan.tracePath, plan.command, plan.provider, req.TrustedInputDigest)
+	if err != nil {
+		return nil, fmt.Errorf("write runtime trace state: %w", err)
 	}
-
-	return nil
+	if snapshot == nil {
+		return nil, nil
+	}
+	return &ValidatedTraceSnapshot{data: snapshot.data}, nil
 }
 
 func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
