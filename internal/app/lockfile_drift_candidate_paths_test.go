@@ -5,6 +5,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func mustLockfileRule(t *testing.T, manager, manifest string) lockfileRule {
@@ -177,6 +179,26 @@ func TestCollectLockfileManifestChangeCandidatePathsHandlesWalkErrorsAndDistribu
 			dotnetCentralManifest,
 			filepath.ToSlash(filepath.Join("src", "App", dotnetProjectManifest)),
 			filepath.ToSlash(filepath.Join("src", "App", dotnetLockfileName)),
+		})
+	})
+
+	t.Run("oversized manifest does not suppress later candidates", func(t *testing.T) {
+		repo := t.TempDir()
+		writeFile(t, filepath.Join(repo, "a-oversized", pyprojectManifestName), oversizedManifestBody("[tool.poetry]\nname = \"demo\"\n", "# filler\n", 8))
+		writeFile(t, filepath.Join(repo, "a-oversized", poetryLockName), "# lock\n")
+		writeFile(t, filepath.Join(repo, "z-drift", manifestFileName), demoPackageJSON)
+		writeFile(t, filepath.Join(repo, "z-drift", lockfileName), "{}\n")
+
+		got, err := collectLockfileManifestChangeCandidatePaths(context.Background(), repo, []lockfileRule{
+			mustLockfileRule(t, "Poetry", pyprojectManifestName),
+			mustLockfileRule(t, "npm", manifestFileName),
+		})
+		if !errors.Is(err, safeio.ErrFileTooLarge) {
+			t.Fatalf("expected oversized manifest error, got %v", err)
+		}
+		assertCandidatePaths(t, got, []string{
+			filepath.ToSlash(filepath.Join("z-drift", lockfileName)),
+			filepath.ToSlash(filepath.Join("z-drift", manifestFileName)),
 		})
 	})
 }
