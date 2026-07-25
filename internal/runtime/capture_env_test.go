@@ -264,6 +264,37 @@ func TestRuntimeHookSearchRootsSkipsEmptyAndRelativeAbsFailures(t *testing.T) {
 	}
 }
 
+func TestRuntimeHookSearchRootsSkipsRelativeCallerWhenCWDRemoved(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, "capture_env.go", 0, true
+	}
+
+	testutil.ChdirRemovedDir(t)
+
+	roots := runtimeHookSearchRoots()
+	if len(roots) < 2 {
+		t.Fatalf("expected executable-derived fallback roots, got %v", roots)
+	}
+	wantPrefix := []string{
+		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "share", "lopper")),
+		filepath.Clean(filepath.Join("/tmp", "plant", "bin", "..", "share", "lopper")),
+	}
+	if !reflect.DeepEqual(roots[:2], wantPrefix) {
+		t.Fatalf("expected executable-derived fallback roots %v, got %v", wantPrefix, roots)
+	}
+	if len(roots) == 3 && !filepath.IsAbs(roots[2]) {
+		t.Fatalf("expected relative caller fallback to resolve to an absolute path, got %v", roots)
+	}
+	if len(roots) > 3 {
+		t.Fatalf("expected at most one caller-derived fallback root, got %v", roots)
+	}
+}
+
 func TestRuntimeHookSearchRootsDeduplicatesCallerRoot(t *testing.T) {
 	restoreRuntimeHookPathProviders(t)
 

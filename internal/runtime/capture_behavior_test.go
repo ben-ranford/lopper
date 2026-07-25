@@ -40,6 +40,85 @@ func TestCapture(t *testing.T) {
 	}
 }
 
+func TestCaptureValidatedTraceReturnsNoSnapshotWhenCommandProducesNoTrace(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	wantTracePath, err := ResolveTracePathForRepo(repo, tracePath)
+	if err != nil {
+		t.Fatalf("resolve canonical trace path: %v", err)
+	}
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\nexit 0\n"))
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   npmTestCommand,
+	})
+	if err != nil {
+		t.Fatalf("capture validated trace without output: %v", err)
+	}
+	if result.TracePath != wantTracePath {
+		t.Fatalf("expected capture result trace path %q, got %q", wantTracePath, result.TracePath)
+	}
+	if result.TraceProduced || result.Snapshot != nil {
+		t.Fatalf("expected successful command without runtime trace output, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Dir(tracePath)); err != nil {
+		t.Fatalf("expected trace directory to be prepared, stat err=%v", err)
+	}
+	if _, err := os.Stat(tracePath); !os.IsNotExist(err) {
+		t.Fatalf("expected missing runtime trace file after successful no-output command, stat err=%v", err)
+	}
+}
+
+func TestCaptureValidatedTraceReturnsResolvedTracePathOnCommandValidationError(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	wantTracePath, err := ResolveTracePathForRepo(repo, tracePath)
+	if err != nil {
+		t.Fatalf("resolve canonical trace path: %v", err)
+	}
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   "foobar test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported runtime test executable") {
+		t.Fatalf("expected validation error with resolved trace path, got result=%#v err=%v", result, err)
+	}
+	if result.TracePath != wantTracePath {
+		t.Fatalf("expected resolved trace path %q, got %q", wantTracePath, result.TracePath)
+	}
+	if result.TraceProduced || result.Snapshot != nil {
+		t.Fatalf("expected validation failure to return no runtime snapshot, got %#v", result)
+	}
+}
+
+func TestCaptureValidatedTraceReturnsResolvedTracePathOnCommandSyntaxValidationError(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	wantTracePath, err := ResolveTracePathForRepo(repo, tracePath)
+	if err != nil {
+		t.Fatalf("resolve canonical trace path: %v", err)
+	}
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   "npm test && echo bad",
+	})
+	if err == nil || !strings.Contains(err.Error(), "indirect command execution operators") {
+		t.Fatalf("expected syntax validation error with resolved trace path, got result=%#v err=%v", result, err)
+	}
+	if result.TracePath != wantTracePath {
+		t.Fatalf("expected resolved trace path %q, got %q", wantTracePath, result.TracePath)
+	}
+	if result.TraceProduced || result.Snapshot != nil {
+		t.Fatalf("expected validation failure to return no runtime snapshot, got %#v", result)
+	}
+}
+
 func TestCaptureUsesAbsoluteNodeHookPaths(t *testing.T) {
 	repo := t.TempDir()
 	nodeOptionsPath := filepath.Join(repo, "node-options.txt")
@@ -277,6 +356,30 @@ func TestResolveTracePathForRepoUsesRealRepoPathForRelativeTrace(t *testing.T) {
 	}
 }
 
+func TestResolveRealRepoPathResolvesSymlinkedRepo(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("repo symlink regression is Unix-specific")
+	}
+
+	realRepo := t.TempDir()
+	linkedRepo := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(realRepo, linkedRepo); err != nil {
+		t.Fatalf("symlink repo path: %v", err)
+	}
+
+	got, err := resolveRealRepoPath(linkedRepo)
+	if err != nil {
+		t.Fatalf("resolve symlinked repo path: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(realRepo)
+	if err != nil {
+		t.Fatalf("eval real repo path: %v", err)
+	}
+	if got != filepath.Clean(want) {
+		t.Fatalf("expected real repo path %q, got %q", filepath.Clean(want), got)
+	}
+}
+
 func TestResolveTracePathForRepoRejectsNonDirectoryRepoPath(t *testing.T) {
 	repoFile := filepath.Join(t.TempDir(), "repo-file")
 	testutil.MustWriteFile(t, repoFile, "not-a-dir\n")
@@ -292,6 +395,51 @@ func TestResolveTracePathForRepoRejectsExternalPath(t *testing.T) {
 
 	if _, err := ResolveTracePathForRepo(repo, outsideTrace); err == nil || !strings.Contains(err.Error(), "must stay within repo") {
 		t.Fatalf("expected external trace path rejection, got %v", err)
+	}
+}
+
+func TestResolveTracePathForRepoRejectsSymlinkLeafWithoutMutatingTarget(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("symlink regression is Unix-specific")
+	}
+
+	repo := t.TempDir()
+	targetPath := filepath.Join(repo, "package.json")
+	testutil.MustWriteFile(t, targetPath, "{\"name\":\"keep\"}\n")
+
+	traceDir := filepath.Join(repo, ".artifacts")
+	if err := os.MkdirAll(traceDir, 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+	tracePath := filepath.Join(traceDir, runtimeTraceNDJSON)
+	if err := os.Symlink("../package.json", tracePath); err != nil {
+		t.Fatalf("symlink trace path: %v", err)
+	}
+
+	before, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read target before resolve: %v", err)
+	}
+	if err := Capture(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   npmTestCommand,
+	}); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected symlink leaf rejection, got %v", err)
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read target after resolve: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("expected symlink target to remain unchanged, before=%q after=%q", before, after)
+	}
+	info, err := os.Lstat(tracePath)
+	if err != nil {
+		t.Fatalf("lstat trace symlink after rejection: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected trace path symlink to remain in place, mode=%v", info.Mode())
 	}
 }
 
@@ -378,6 +526,43 @@ func TestResolveExistingOrPlannedRuntimePath(t *testing.T) {
 	}
 }
 
+func TestResolveExistingOrPlannedRuntimePathPreservesExistingRegularFile(t *testing.T) {
+	tracePath := writeTraceFixture(t)
+	wantPath, err := filepath.EvalSymlinks(tracePath)
+	if err != nil {
+		t.Fatalf("eval existing runtime trace path: %v", err)
+	}
+
+	resolvedPath, err := resolveExistingOrPlannedRuntimePath(tracePath)
+	if err != nil {
+		t.Fatalf("resolve existing runtime trace path: %v", err)
+	}
+	if resolvedPath != filepath.Clean(wantPath) {
+		t.Fatalf("expected existing regular trace path %q, got %q", filepath.Clean(wantPath), resolvedPath)
+	}
+}
+
+func TestResolveExistingOrPlannedRuntimePathRejectsSymlinkLeaf(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("symlink regression is Unix-specific")
+	}
+
+	baseDir := t.TempDir()
+	targetPath := filepath.Join(baseDir, "package.json")
+	testutil.MustWriteFile(t, targetPath, "{\"name\":\"keep\"}\n")
+	tracePath := filepath.Join(baseDir, ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir trace dir: %v", err)
+	}
+	if err := os.Symlink("../package.json", tracePath); err != nil {
+		t.Fatalf("symlink trace path: %v", err)
+	}
+
+	if _, err := resolveExistingOrPlannedRuntimePath(tracePath); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("expected direct symlink leaf rejection, got %v", err)
+	}
+}
+
 func TestResolveExistingOrPlannedRuntimePathRejectsBrokenSymlinkAncestor(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("broken symlink regression is Unix-specific")
@@ -433,7 +618,7 @@ func TestResolveCapturePlanNormalizesRelativeTracePathUnderRealRepo(t *testing.T
 	if plan.repoPath != wantRepoPath {
 		t.Fatalf("expected canonical repo path %q, got %q", wantRepoPath, plan.repoPath)
 	}
-	wantTracePath := filepath.Join(plan.repoPath, ".artifacts", runtimeTraceNDJSON)
+	wantTracePath := filepath.Join(wantRepoPath, ".artifacts", runtimeTraceNDJSON)
 	if plan.tracePath != wantTracePath {
 		t.Fatalf("expected normalized trace path %q, got %q", wantTracePath, plan.tracePath)
 	}
@@ -737,6 +922,14 @@ func TestRuntimeTraceRootPath(t *testing.T) {
 
 func TestSnapshotRuntimeTraceFileReturnsSnapshot(t *testing.T) {
 	assertRuntimeTraceSnapshotData(t, snapshotRuntimeTraceFile, "snapshot runtime trace file")
+}
+
+func TestOpenRuntimeTraceRootSurfacesRelativePathFailureWhenCWDRemoved(t *testing.T) {
+	testutil.ChdirRemovedDir(t)
+
+	if _, _, err := openRuntimeTraceRoot("runtime.ndjson"); err == nil || !strings.Contains(err.Error(), "hash runtime trace") {
+		t.Fatalf("expected removed-cwd runtime trace root path failure, got %v", err)
+	}
 }
 
 func assertRuntimeTraceSnapshotData(t *testing.T, loadSnapshot func(string) (runtimeTraceSnapshot, error), operation string) {

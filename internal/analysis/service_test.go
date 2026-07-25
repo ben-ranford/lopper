@@ -581,7 +581,11 @@ func TestServiceAnalyseRuntimeCorrelationUsesExplicitTraceAfterCaptureFailure(t 
 	writeFile(t, filepath.Join(repo, "node_modules", leftPadDependencyID, packageJSONFileName), nodeMainPackageJSON)
 	writeFile(t, filepath.Join(repo, "node_modules", leftPadDependencyID, indexJSFileName), "export function pad() {}\n")
 	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
-	writeFile(t, tracePath, "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo path %q: %v", repo, err)
+	}
+	writeFile(t, filepath.Join(resolvedRepo, ".artifacts", "runtime.ndjson"), "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
 
 	reportData, err := NewService().Analyse(context.Background(), Request{
 		RepoPath:                 repo,

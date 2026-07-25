@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 
@@ -10,7 +11,7 @@ import (
 
 const (
 	analysisRuntimeHelperModeEnv = "LOPPER_ANALYSIS_RUNTIME_HELPER_MODE"
-	analysisRuntimeReadyPathEnv  = "LOPPER_RUNTIME_STARTED"
+	analysisRuntimeReadyAddrEnv  = "LOPPER_RUNTIME_READY_ADDR"
 )
 
 func runAnalysisRuntimeToolHelper() bool {
@@ -31,12 +32,20 @@ func runAnalysisRuntimeToolHelper() bool {
 		testutil.MustIncrementRuntimeHelperCounterFromEnv()
 		os.Exit(0)
 	case "ready-block":
-		readyPath := os.Getenv(analysisRuntimeReadyPathEnv)
-		if readyPath == "" {
-			fmt.Fprintln(os.Stderr, "missing readiness path")
+		readyAddr := os.Getenv(analysisRuntimeReadyAddrEnv)
+		if readyAddr == "" {
+			fmt.Fprintln(os.Stderr, "missing readiness address")
 			os.Exit(2)
 		}
-		testutil.MustWriteRuntimeHelperFile(readyPath, "started")
+		conn, err := net.Dial("tcp", readyAddr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := conn.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		select {}
 	case "python-import-requests":
 		pythonPath := os.Getenv("LOPPER_TEST_PYTHON")

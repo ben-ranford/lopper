@@ -207,6 +207,15 @@ func resolveExistingOrPlannedRuntimePath(targetPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if len(missingParts) == 0 {
+		info, err := os.Lstat(targetPath)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("runtime trace path must not be a symlink: %s", targetPath)
+		}
+	}
 	resolvedAncestorPath, err := filepath.EvalSymlinks(ancestorPath)
 	if err != nil {
 		return "", err

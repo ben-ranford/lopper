@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -30,6 +31,9 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 	if command == "" && !req.RuntimeTracePathExplicit {
 		return outcome, nil
 	}
+	if req.RuntimeTracePathExplicit && !shouldProcessRuntimeTrace(req, command, candidates) {
+		return outcome, nil
+	}
 
 	resolvedTracePath, err := runtime.ResolveTracePathForRepo(repoPath, outcome.tracePath)
 	if err != nil {
@@ -43,10 +47,7 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 
 	outcome.captureAttempted = true
 	outcome.traceFinalized = true
-	fallback, err := loadExplicitRuntimeTraceFallback(req.RuntimeTracePathExplicit, resolvedTracePath)
-	if err != nil {
-		return outcome, err
-	}
+	preloadedFallback := preloadExplicitRuntimeTraceFallback(req.RuntimeTracePathExplicit, resolvedTracePath)
 
 	provider := captureProviderForRequest(req, command, candidates)
 	captureResult, err := runRuntimeTraceCapture(ctx, req, repoPath, resolvedTracePath, command, provider)
@@ -54,7 +55,7 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 		outcome.tracePath = captureResult.TracePath
 	}
 	if err != nil {
-		return handleRuntimeTraceCaptureError(outcome, fallback, err)
+		return handleRuntimeTraceCaptureError(outcome, preloadedFallback, req.RuntimeTracePathExplicit, resolvedTracePath, err)
 	}
 
 	outcome.pythonCaptured = provider == runtime.CaptureProviderPython
@@ -103,6 +104,17 @@ func loadExplicitRuntimeTraceFallback(explicit bool, resolvedTracePath string) (
 	return explicitRuntimeTraceFallback{trace: traceData, missing: missing}, nil
 }
 
+func preloadExplicitRuntimeTraceFallback(explicit bool, resolvedTracePath string) explicitRuntimeTraceFallback {
+	if !explicit {
+		return explicitRuntimeTraceFallback{}
+	}
+	traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
+	if err != nil || missing {
+		return explicitRuntimeTraceFallback{}
+	}
+	return explicitRuntimeTraceFallback{trace: traceData}
+}
+
 func runRuntimeTraceCapture(ctx context.Context, req Request, repoPath string, resolvedTracePath string, command string, provider runtime.CaptureProvider) (runtime.CaptureResult, error) {
 	return runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
 		RepoPath:             repoPath,
@@ -113,14 +125,23 @@ func runRuntimeTraceCapture(ctx context.Context, req Request, repoPath string, r
 	})
 }
 
-func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, fallback explicitRuntimeTraceFallback, err error) (runtimeTraceCaptureOutcome, error) {
+func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, preloadedFallback explicitRuntimeTraceFallback, explicit bool, resolvedTracePath string, err error) (runtimeTraceCaptureOutcome, error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return outcome, err
 	}
 	warnings := []string{runtimeTraceCommandWarningPrefix + err.Error()}
+	fallback, fallbackErr := loadExplicitRuntimeTraceFallback(explicit, resolvedTracePath)
+	if fallbackErr != nil {
+		return outcome, errors.Join(fmt.Errorf("%s%s", runtimeTraceCommandWarningPrefix, err.Error()), fallbackErr)
+	}
 	if fallback.trace != nil {
 		outcome.warnings = warnings
 		outcome.trace = fallback.trace
+		return outcome, nil
+	}
+	if fallback.missing && preloadedFallback.trace != nil {
+		outcome.warnings = warnings
+		outcome.trace = preloadedFallback.trace
 		return outcome, nil
 	}
 	if fallback.missing {
@@ -151,6 +172,14 @@ func supportsCapturedRuntimeTrace(req Request, pythonCaptured bool) bool {
 	pythonTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
 		(pythonCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
 	return len(supportedRuntimeTraceLanguages(req.Language, pythonTraceEnabled)) > 0
+}
+
+func shouldProcessRuntimeTrace(req Request, command string, candidates []language.Candidate) bool {
+	if strings.TrimSpace(command) == "" {
+		return len(supportedRuntimeTraceLanguages(req.Language, req.Features.Enabled(pythonRuntimeTraceFeature))) > 0
+	}
+	provider := captureProviderForRequest(req, command, candidates)
+	return supportsCapturedRuntimeTrace(req, provider == runtime.CaptureProviderPython)
 }
 
 func runRuntimeTraceValidatedLoadHook() {

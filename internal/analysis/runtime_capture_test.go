@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,6 +302,138 @@ func TestMissingExplicitRuntimeFallbackRemainsHandledDuringFinalization(t *testi
 	})
 }
 
+func TestCaptureRuntimeTraceIfNeededRecapturesOverMalformedExplicitStaleTrace(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
+	if err := os.MkdirAll(filepath.Dir(canonicalTracePath), 0o750); err != nil {
+		t.Fatalf("mkdir explicit trace dir: %v", err)
+	}
+	testutil.MustWriteFile(t, canonicalTracePath, "{not-json}\n")
+
+	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(repo, "runtime-counter.txt"))
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
+
+	req := Request{
+		Language:                 "js-ts",
+		RuntimeTestCommand:       "npm test",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("recapture over malformed explicit runtime trace: %v", err)
+	}
+	wantTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected canonical explicit trace path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.captureAttempted || outcome.trace == nil {
+		t.Fatalf("expected malformed explicit trace to be replaced by recapture, got %#v", outcome)
+	}
+	if len(outcome.warnings) != 0 {
+		t.Fatalf("expected successful recapture without warnings, got %#v", outcome.warnings)
+	}
+	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "lodash", 1, "expected recaptured validated trace to load lodash")
+	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "chalk", 0, "did not expect malformed stale trace rows to survive recapture")
+	assertRuntimeCounter(t, filepath.Join(repo, "runtime-counter.txt"), 1, "expected runtime capture command to execute once")
+}
+
+func TestCaptureRuntimeTraceIfNeededUsesExplicitTraceAfterCaptureFailure(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
+	testutil.MustWriteFile(t, canonicalTracePath, "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
+	if _, err := runtime.LoadValidatedTrace(canonicalTracePath); err != nil {
+		t.Fatalf("precondition explicit runtime trace loads: %v", err)
+	}
+
+	req := Request{
+		Language:                 "js-ts",
+		RuntimeTestCommand:       "foobar test",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("use explicit runtime trace after capture failure: %v", err)
+	}
+	if !outcome.captureAttempted || outcome.trace == nil {
+		t.Fatalf("expected capture failure to fall back to explicit runtime trace, got %#v", outcome)
+	}
+	if len(outcome.warnings) != 1 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected single capture warning with explicit fallback trace, got %#v", outcome.warnings)
+	}
+	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "lodash", 1, "expected explicit fallback trace to load lodash")
+	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "chalk", 1, "expected explicit fallback trace to load chalk")
+}
+
+func TestHandleRuntimeTraceCaptureErrorSurfacesInvalidExplicitTraceFallback(t *testing.T) {
+	repo := t.TempDir()
+	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
+	if err := os.MkdirAll(canonicalTracePath, 0o750); err != nil {
+		t.Fatalf("mkdir invalid explicit trace path: %v", err)
+	}
+
+	captureOutcome := runtimeTraceCaptureOutcome{captureAttempted: true, traceFinalized: true}
+	captureErr := errors.New(`unsupported runtime test executable "foobar"; use a direct command like 'npm test'`)
+	outcome, err := handleRuntimeTraceCaptureError(captureOutcome, explicitRuntimeTraceFallback{}, true, canonicalTracePath, captureErr)
+	if err == nil {
+		t.Fatal("expected invalid explicit runtime trace to surface when recapture fails")
+	}
+	if len(outcome.warnings) != 0 || outcome.trace != nil {
+		t.Fatalf("expected failing recapture to avoid fallback warnings/trace output, got %#v", outcome)
+	}
+	if !outcome.captureAttempted || !outcome.traceFinalized {
+		t.Fatalf("expected failing recapture attempt to be recorded, got %#v", outcome)
+	}
+	if !strings.Contains(err.Error(), runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected capture warning prefix in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unsupported runtime test executable") {
+		t.Fatalf("expected capture command validation failure in error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "must be regular") {
+		t.Fatalf("expected invalid explicit trace validation failure in error, got %v", err)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededSkipsUnsupportedExplicitMalformedTraceBeforeValidation(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir explicit trace dir: %v", err)
+	}
+	testutil.MustWriteFile(t, tracePath, "{not-json}\n")
+
+	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(repo, "runtime-counter.txt"))
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
+
+	req := Request{
+		Language:                 "python",
+		RuntimeTestCommand:       "npm test",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
+		Features:                 mustResolvePythonRuntimeCaptureAndTraceDisabled(t),
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("skip unsupported malformed explicit runtime trace: %v", err)
+	}
+	if outcome.tracePath != tracePath && outcome.tracePath != "" {
+		t.Fatalf("expected skipped unsupported trace to avoid canonicalized validation path, got %q", outcome.tracePath)
+	}
+	if outcome.captureAttempted || outcome.traceFinalized || outcome.trace != nil {
+		t.Fatalf("expected unsupported runtime trace request to be skipped, got %#v", outcome)
+	}
+	if len(outcome.warnings) != 0 {
+		t.Fatalf("expected unsupported runtime trace skip without warnings, got %#v", outcome.warnings)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "runtime-counter.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected runtime capture command not to run for unsupported tracing, stat err=%v", err)
+	}
+}
+
 func TestCaptureRuntimeTraceIfNeededIgnoresRelativeCWDDecoy(t *testing.T) {
 	repo := t.TempDir()
 	decoyRoot := t.TempDir()
@@ -584,10 +717,11 @@ func TestCaptureRuntimeTraceIfNeededPropagatesContextTermination(t *testing.T) {
 
 func TestCaptureRuntimeTraceIfNeededPropagatesInFlightCancellation(t *testing.T) {
 	repo := t.TempDir()
-	startedPath := filepath.Join(repo, "runtime-started.txt")
 	t.Setenv("LOPPER_RUNTIME_COUNTER", filepath.Join(repo, "runtime-counter.txt"))
 	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeToolReadyBlock(t))
-	t.Setenv("LOPPER_RUNTIME_STARTED", startedPath)
+
+	readyListener := mustListenRuntimeHelperReady(t)
+	t.Setenv(analysisRuntimeReadyAddrEnv, readyListener.Addr().String())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -602,7 +736,7 @@ func TestCaptureRuntimeTraceIfNeededPropagatesInFlightCancellation(t *testing.T)
 		done <- result{outcome: outcome, err: err}
 	}()
 
-	waitForFile(t, startedPath)
+	waitForRuntimeHelperReady(t, readyListener)
 	cancel()
 
 	select {
@@ -791,18 +925,41 @@ func readRuntimeCounter(t *testing.T, path string) int {
 	return testutil.MustReadTrimmedIntFile(t, path)
 }
 
-func waitForFile(t *testing.T, path string) {
+func mustListenRuntimeHelperReady(t *testing.T) net.Listener {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		} else if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("stat wait file %q: %v", path, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for runtime helper readiness: %v", err)
 	}
-	t.Fatalf("timed out waiting for file %q", path)
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("close runtime helper readiness listener: %v", err)
+		}
+	})
+	return listener
+}
+
+func waitForRuntimeHelperReady(t *testing.T, listener net.Listener) {
+	t.Helper()
+
+	acceptDone := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptDone <- err
+			return
+		}
+		acceptDone <- conn.Close()
+	}()
+
+	select {
+	case err := <-acceptDone:
+		if err != nil {
+			t.Fatalf("accept runtime helper readiness: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting for runtime helper readiness")
+	}
 }
 
 func assertRuntimeCounter(t *testing.T, path string, want int, message string) {
