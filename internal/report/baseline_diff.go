@@ -1478,6 +1478,7 @@ func vulnerabilityDeltaFromPair(pair DependencyInstancePair, finding Vulnerabili
 		AdvisoryID:     finding.AdvisoryID,
 		Package:        finding.Package,
 		Severity:       finding.Severity,
+		VersionStatus:  finding.VersionStatus,
 		FixedVersion:   finding.FixedVersion,
 		Source:         finding.Source,
 		Priority:       finding.Priority,

@@ -355,6 +355,7 @@ func TestFormatPRCommentSanitizesAdvisoryMarkdownFields(t *testing.T) {
 					Name:          "example.com/lib",
 					AdvisoryID:    "GHSA-1234\n[click](https://example.com)",
 					Severity:      "high<script>alert(1)</script>",
+					VersionStatus: vulnerabilityVersionUnknown,
 					FixedVersion:  "1.2.3\t![badge](https://example.com/badge.svg)",
 					Source:        "repo<details>boom</details>\x1f",
 					Priority:      "critical",
@@ -369,7 +370,7 @@ func TestFormatPRCommentSanitizesAdvisoryMarkdownFields(t *testing.T) {
 	}
 
 	expectedContains := []string{
-		"| 1 | `example.com/lib` | GHSA-1234\\n\\[click\\](https://example.com) | high&lt;script&gt;alert(1)&lt;/script&gt; | critical (9.7) | 1.2.3\\t!\\[badge\\](https://example.com/badge.svg) | repo&lt;details&gt;boom&lt;/details&gt;\\x1f |",
+		"| 1 | `example.com/lib` | GHSA-1234\\n\\[click\\](https://example.com) | high&lt;script&gt;alert(1)&lt;/script&gt; | critical (9.7) | unevaluable | 1.2.3\\t!\\[badge\\](https://example.com/badge.svg) | repo&lt;details&gt;boom&lt;/details&gt;\\x1f |",
 	}
 	assertOutputContains(t, output, expectedContains...)
 	assertOutputNotContains(t, output, "[click](https://example.com)", "![badge](https://example.com/badge.svg)", "<script>", "<details>", "\x1f")

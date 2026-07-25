@@ -72,6 +72,7 @@ type VulnerabilityDelta struct {
 	AdvisoryID     string   `json:"advisoryId"`
 	Package        string   `json:"package"`
 	Severity       string   `json:"severity"`
+	VersionStatus  string   `json:"versionStatus,omitempty"`
 	FixedVersion   string   `json:"fixedVersion,omitempty"`
 	Source         string   `json:"source"`
 	Priority       string   `json:"priority"`

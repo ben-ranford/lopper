@@ -204,9 +204,13 @@ lopper analyse --top 20 \
 ```
 
 Advisory ingestion is preview-gated and local-only. Lopper does not fetch a proprietary or network
-vulnerability database. The current preview matches package name and ecosystem but does not evaluate
-installed versions against OSV affected ranges, so use a curated local advisory snapshot and treat
-`fixedVersion` as informational. The priority score ranks triage using advisory severity plus
+vulnerability database. After package name and ecosystem match, Lopper evaluates supported OSV
+affected-version metadata and legacy `fixedVersion` values. A finding is `affected` when the
+installed version is confirmed vulnerable; it is `unevaluable` when blank, malformed, or unsupported
+installed or advisory version metadata prevents a reliable comparison. Confirmed unaffected matches
+are omitted, while `affected` and `unevaluable` findings remain actionable. Reachable `unevaluable`
+findings fail closed at every non-`off` reachable-vulnerability threshold regardless of computed
+priority; `off` disables that gate. The priority score ranks triage using advisory severity plus
 reachability, runtime, and static import evidence; it is not an exploitability claim.
 
 Generate an org-level dashboard across multiple repos:

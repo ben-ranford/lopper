@@ -249,6 +249,56 @@ func TestFormatCSVIncludesIdentityColumnsWhenPresent(t *testing.T) {
 	})
 }
 
+func TestFormatCSVIncludesVulnerabilityVersionStatusInFindings(t *testing.T) {
+	reportData := Report{
+		SchemaVersion: SchemaVersion,
+		Dependencies: []DependencyReport{{
+			Language: "go",
+			Name:     "github.com/acme/lib",
+			Vulnerabilities: []VulnerabilityFinding{
+				{
+					AdvisoryID:    "GHSA-affected",
+					Package:       "github.com/acme/lib",
+					Severity:      "high",
+					Priority:      VulnerabilityPriorityHigh,
+					PriorityScore: 80,
+					Reachable:     true,
+					VersionStatus: vulnerabilityVersionAffected,
+					Source:        "osv",
+				},
+				{
+					AdvisoryID:    "GHSA-unevaluable",
+					Package:       "github.com/acme/lib",
+					Severity:      "medium",
+					Priority:      VulnerabilityPriorityMedium,
+					PriorityScore: 60,
+					Reachable:     true,
+					VersionStatus: vulnerabilityVersionUnknown,
+					FixedVersion:  "1.2.3",
+					Source:        "osv",
+				},
+			},
+		}},
+	}
+
+	output, err := NewFormatter().Format(reportData, FormatCSV)
+	if err != nil {
+		t.Fatalf("format csv with vulnerability version statuses: %v", err)
+	}
+
+	rows := readCSVRows(t, output)
+	if len(rows) != 2 {
+		t.Fatalf("expected header and one dependency row, got %d rows", len(rows))
+	}
+	row := csvRowMap(rows[0], rows[1])
+	if !strings.Contains(row["vulnerability_findings"], "GHSA-affected:github.com/acme/lib:high:high:80.0:reachable:version_status=affected:source=osv") {
+		t.Fatalf("expected affected version status in vulnerability CSV output, got %q", row["vulnerability_findings"])
+	}
+	if !strings.Contains(row["vulnerability_findings"], "GHSA-unevaluable:github.com/acme/lib:medium:medium:60.0:reachable:version_status=unevaluable:fixed=1.2.3:source=osv") {
+		t.Fatalf("expected unevaluable version status in vulnerability CSV output, got %q", row["vulnerability_findings"])
+	}
+}
+
 type failCSVRowWriter struct {
 	call   int
 	failOn int

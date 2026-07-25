@@ -201,6 +201,7 @@ func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
 						AdvisoryID:    "GHSA-1234",
 						Package:       "reachable-lib",
 						Severity:      "high",
+						VersionStatus: vulnerabilityVersionUnknown,
 						FixedVersion:  "1.2.3",
 						Source:        "security-team",
 						Priority:      VulnerabilityPriorityCritical,
@@ -244,7 +245,7 @@ func TestFormatSARIFIncludesVulnerabilityFindings(t *testing.T) {
 	if !strings.Contains(finding.Message.Text, "reachability-weighted priority") || strings.Contains(strings.ToLower(finding.Message.Text), "exploit") {
 		t.Fatalf("unexpected vulnerability SARIF message: %q", finding.Message.Text)
 	}
-	if finding.Properties["advisoryId"] != "GHSA-1234" || finding.Properties["fixedVersion"] != "1.2.3" || finding.Properties["priority"] != VulnerabilityPriorityCritical || finding.Properties["reachable"] != true {
+	if finding.Properties["advisoryId"] != "GHSA-1234" || finding.Properties["fixedVersion"] != "1.2.3" || finding.Properties["priority"] != VulnerabilityPriorityCritical || finding.Properties["reachable"] != true || finding.Properties["versionStatus"] != vulnerabilityVersionUnknown {
 		t.Fatalf("expected vulnerability properties, got %#v", finding.Properties)
 	}
 }

@@ -62,8 +62,8 @@ func formatPRComment(report Report) string {
 
 	if len(comparison.NewReachableVulnerabilities) > 0 {
 		buffer.WriteString("\n### Newly reachable vulnerabilities\n\n")
-		buffer.WriteString("| # | Dependency | Advisory | Severity | Priority | Fixed version | Source |\n")
-		buffer.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
+		buffer.WriteString("| # | Dependency | Advisory | Severity | Priority | Version status | Fixed version | Source |\n")
+		buffer.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 		for i, finding := range topVulnerabilityDeltas(comparison.NewReachableVulnerabilities, 10) {
 			row := []string{
 				fmt.Sprintf("%d", i+1),
@@ -71,6 +71,7 @@ func formatPRComment(report Report) string {
 				escapeMarkdownTable(finding.AdvisoryID),
 				escapeMarkdownTable(finding.Severity),
 				escapeMarkdownTable(fmt.Sprintf("%s (%.1f)", finding.Priority, finding.PriorityScore)),
+				escapeMarkdownTable(emptyDash(strings.TrimSpace(finding.VersionStatus))),
 				escapeMarkdownTable(emptyDash(finding.FixedVersion)),
 				escapeMarkdownTable(finding.Source),
 			}

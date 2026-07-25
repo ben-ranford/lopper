@@ -287,19 +287,38 @@ func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold stri
 		return false
 	}
 	if reportData.BaselineComparison != nil {
-		for _, finding := range reportData.BaselineComparison.NewReachableVulnerabilities {
-			if report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
-				return true
-			}
-		}
-		return false
+		return baselineHasReachableVulnerabilityAtOrAbove(reportData.BaselineComparison.NewReachableVulnerabilities, threshold)
 	}
-	for _, dep := range reportData.Dependencies {
+	return dependencyHasReachableVulnerabilityAtOrAbove(reportData.Dependencies, threshold)
+}
+
+func baselineHasReachableVulnerabilityAtOrAbove(findings []report.VulnerabilityDelta, threshold string) bool {
+	for _, finding := range findings {
+		if vulnerabilityDeltaMeetsReachableThreshold(finding, threshold) {
+			return true
+		}
+	}
+	return false
+}
+
+func dependencyHasReachableVulnerabilityAtOrAbove(deps []report.DependencyReport, threshold string) bool {
+	for _, dep := range deps {
 		for _, finding := range dep.Vulnerabilities {
-			if finding.Reachable && !report.FindingSuppressedByException(finding) && report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold) {
+			if !finding.Reachable || report.FindingSuppressedByException(finding) {
+				continue
+			}
+			if vulnerabilityFindingMeetsReachableThreshold(finding, threshold) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func vulnerabilityDeltaMeetsReachableThreshold(finding report.VulnerabilityDelta, threshold string) bool {
+	return finding.VersionStatus == "unevaluable" || report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold)
+}
+
+func vulnerabilityFindingMeetsReachableThreshold(finding report.VulnerabilityFinding, threshold string) bool {
+	return finding.VersionStatus == "unevaluable" || report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold)
 }

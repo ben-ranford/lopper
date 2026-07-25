@@ -53,6 +53,7 @@ func formatVulnerabilities(findings []VulnerabilityFinding) string {
 	sortVulnerabilityFindings(sorted)
 	parts := make([]string, 0, len(sorted))
 	for _, finding := range sorted {
+		versionStatus := formatVulnerabilityVersionStatusLabel(finding.VersionStatus)
 		reachable := ""
 		if finding.Reachable {
 			reachable = " reachable"
@@ -61,9 +62,17 @@ func formatVulnerabilities(findings []VulnerabilityFinding) string {
 		if strings.TrimSpace(finding.FixedVersion) != "" {
 			fixed = " fixed " + finding.FixedVersion
 		}
-		parts = append(parts, fmt.Sprintf("%s %s/%s %.1f%s%s", finding.AdvisoryID, finding.Severity, finding.Priority, finding.PriorityScore, reachable, fixed))
+		parts = append(parts, fmt.Sprintf("%s %s/%s %.1f%s%s%s", finding.AdvisoryID, finding.Severity, finding.Priority, finding.PriorityScore, versionStatus, reachable, fixed))
 	}
 	return sanitizeTerminalString(strings.Join(parts, "; "))
+}
+
+func formatVulnerabilityVersionStatusLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return " version " + value
 }
 
 func formatRuntimeUsage(usage *RuntimeUsage) string {

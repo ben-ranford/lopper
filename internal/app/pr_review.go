@@ -96,6 +96,7 @@ type prReviewRow struct {
 	AdvisoryID         string   `json:"advisoryId,omitempty"`
 	Severity           string   `json:"severity,omitempty"`
 	Priority           string   `json:"priority,omitempty"`
+	VersionStatus      string   `json:"versionStatus,omitempty"`
 	Reachable          bool     `json:"reachable,omitempty"`
 	Regression         bool     `json:"regression,omitempty"`
 	Evidence           []string `json:"evidence,omitempty"`
@@ -585,12 +586,24 @@ func prReviewNewlyReachableRows(headReport report.Report, findings []report.Vuln
 		row.AdvisoryID = finding.AdvisoryID
 		row.Severity = finding.Severity
 		row.Priority = finding.Priority
+		row.VersionStatus = strings.TrimSpace(finding.VersionStatus)
 		row.Reachable = true
-		row.Regression = report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold)
-		row.Evidence = compactPRReviewEvidence(append([]string{"new reachable vulnerability introduced"}, finding.Evidence...))
+		row.Regression = prReviewVulnerabilityDeltaRegresses(finding, threshold)
+		evidence := []string{"new reachable vulnerability introduced"}
+		if row.VersionStatus != "" {
+			evidence = append(evidence, "version status: "+row.VersionStatus)
+		}
+		row.Evidence = compactPRReviewEvidence(append(evidence, finding.Evidence...))
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func prReviewVulnerabilityDeltaRegresses(finding report.VulnerabilityDelta, threshold string) bool {
+	if report.NormalizeVulnerabilityPriorityThreshold(threshold) == report.VulnerabilityPriorityOff {
+		return false
+	}
+	return finding.VersionStatus == "unevaluable" || report.VulnerabilityPriorityMeetsThreshold(finding.Priority, threshold)
 }
 
 func prReviewMaterialRows(baseReport, headReport report.Report, threshold int64) []prReviewRow {
@@ -714,8 +727,8 @@ func formatPRReviewMarkdown(artifact prReviewArtifact, maxRows int) string {
 		buffer.WriteString("\n### ")
 		buffer.WriteString(section.Title)
 		buffer.WriteString("\n\n")
-		buffer.WriteString("| Dependency | Language | Base | Head | Waste Δ | Used % Δ | Confidence | Advisory | Priority | Evidence |\n")
-		buffer.WriteString("| --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- |\n")
+		buffer.WriteString("| Dependency | Language | Base | Head | Waste Δ | Used % Δ | Confidence | Advisory | Priority | Version status | Evidence |\n")
+		buffer.WriteString("| --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- |\n")
 		rows := section.Rows
 		if len(rows) > maxRows {
 			rows = rows[:maxRows]
@@ -732,6 +745,7 @@ func formatPRReviewMarkdown(artifact prReviewArtifact, maxRows int) string {
 				escapePRReviewMarkdown(row.EvidenceConfidence),
 				escapePRReviewMarkdown(emptyPRReviewValue(row.AdvisoryID)),
 				escapePRReviewMarkdown(emptyPRReviewValue(row.Priority)),
+				escapePRReviewMarkdown(emptyPRReviewValue(row.VersionStatus)),
 				escapePRReviewMarkdown(strings.Join(row.Evidence, "; ")),
 			}
 			buffer.WriteString("| `" + cells[0] + "` | " + strings.Join(cells[1:], " | ") + " |\n")

@@ -44,6 +44,8 @@ import type {
   LopperRuntimeDelta,
   LopperRuntimeUsage,
   LopperScopeMode,
+  LopperVulnerabilityDelta,
+  LopperVulnerabilityFinding,
 } from "./types";
 
 type DiagnosticKind = "unused-import" | "codemod";
@@ -1759,8 +1761,12 @@ export const __testing = {
   isRuntimeLanguageSupported,
   formatCodemodApplySummary,
   formatCodemodApplyNotification,
+  detailPanelVulnerabilities,
+  findingSuppressedByException,
   isDirtyWorktreeApplyError,
   isPathInsideWorkspace,
+  renderBaselineHtml,
+  renderVulnerabilityItem,
   resolveWorkspaceFilePath,
 };
 
@@ -2598,11 +2604,15 @@ function renderDependencyDetailHtml(
   const selectedDependency = dependency.name === dependencyName ? dependency : report.dependencies.find((item) => item.name === dependencyName) ?? dependency;
   const baseline = report.baselineComparison;
   const baselineDependency = baseline?.dependencies?.find((item) => item.name === dependencyName);
+  const visibleVulnerabilities = detailPanelVulnerabilities(selectedDependency.vulnerabilities ?? []);
   const sections = [
     renderDependencyOverviewSection(selectedDependency),
     renderDependencyActionsSection(folder, dependencyName, hasSafeCodemodSuggestions(analysis, dependencyName)),
     renderDependencyContextSection(report, baseline, baselineDependency),
     renderDependencyMetadataSection(selectedDependency),
+    visibleVulnerabilities.length > 0
+      ? renderHtmlSection("Vulnerabilities", renderHtmlList(visibleVulnerabilities.map(renderVulnerabilityItem)))
+      : "",
     selectedDependency.runtimeUsage ? renderHtmlSection("Runtime usage", renderRuntimeUsage(selectedDependency.runtimeUsage)) : "",
     (selectedDependency.usedImports?.length ?? 0) > 0 ? renderHtmlSection("Used imports", renderImports(folder, selectedDependency.usedImports ?? [])) : "",
     (selectedDependency.unusedImports?.length ?? 0) > 0 ? renderHtmlSection("Unused imports", renderImports(folder, selectedDependency.unusedImports ?? [])) : "",
@@ -2789,6 +2799,36 @@ function renderRiskCueItem(item: { severity: string; message: string }): string 
   return renderListItem(`<strong>${escapeHtml(item.severity)}</strong> ${escapeHtml(item.message)}`);
 }
 
+function renderVulnerabilityItem(item: LopperVulnerabilityFinding | LopperVulnerabilityDelta): string {
+  const parts = [
+    `<strong>${escapeHtml(item.advisoryId)}</strong>`,
+    `<code>${escapeHtml(item.package)}</code>`,
+    `severity ${escapeHtml(item.severity)}`,
+    `priority ${escapeHtml(item.priority)}`,
+  ];
+  if (item.versionStatus) {
+    parts.push(`version ${escapeHtml(item.versionStatus)}`);
+  }
+  if (item.fixedVersion) {
+    parts.push(`fixed ${escapeHtml(item.fixedVersion)}`);
+  }
+  return renderListItem(parts.join(" • "));
+}
+
+function detailPanelVulnerabilities(
+  vulnerabilities: readonly LopperVulnerabilityFinding[],
+): LopperVulnerabilityFinding[] {
+  return vulnerabilities.filter((finding) => !findingSuppressedByException(finding));
+}
+
+function findingSuppressedByException(finding: Pick<LopperVulnerabilityFinding, "decision">): boolean {
+  const status = finding.decision?.status.trim().toLowerCase();
+  if (!status || finding.decision?.expired) {
+    return false;
+  }
+  return status === "accepted-risk" || status === "not-affected" || status === "resolved";
+}
+
 function renderStat(label: string, value: string): string {
   return `<div class="stat"><div class="label">${escapeHtml(label)}</div><div class="value">${escapeHtml(value)}</div></div>`;
 }
@@ -2819,6 +2859,12 @@ function renderBaselineHtml(baseline: LopperBaselineComparison, dependencyDelta?
     ]) : "",
     dependencyDelta?.runtimeDelta ? renderRuntimeDeltaHtml(dependencyDelta.runtimeDelta) : "",
     baseline.newDeniedLicenses?.length ? `<p><strong>New denied licenses:</strong> ${escapeHtml(baseline.newDeniedLicenses.map((item) => item.name).join(", "))}</p>` : "",
+    baseline.newReachableVulnerabilities?.length
+      ? renderHtmlSection(
+        "New reachable vulnerabilities",
+        renderHtmlList(baseline.newReachableVulnerabilities.map(renderVulnerabilityItem)),
+      )
+      : "",
   ];
   return lines.join("");
 }

@@ -233,7 +233,10 @@ workspace and requires
 fetch a network vulnerability database. When
 `threshold-reachable-vulnerability-priority` is set above `off`, Lopper fails on
 reachable advisory findings at or above that priority; in baseline mode it gates
-only on newly introduced reachable findings.
+only on newly introduced reachable findings. Version-unevaluable advisory matches
+also fail closed for every non-`off` reachable-vulnerability threshold so blank,
+malformed, or unsupported version metadata stays actionable instead of being
+treated as safe.
 
 ### SARIF code-scanning workflow
 

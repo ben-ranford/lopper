@@ -99,6 +99,9 @@ func appendVulnerabilityResults(results []sarifResult, rules *sarifRuleBuilder, 
 			"reachable":     finding.Reachable,
 			"evidence":      append([]string{}, finding.Evidence...),
 		})
+		if versionStatus := strings.TrimSpace(finding.VersionStatus); versionStatus != "" {
+			props["versionStatus"] = versionStatus
+		}
 		result := sarifResult{
 			RuleID:     ruleID,
 			Level:      vulnerabilitySARIFLevel(finding),

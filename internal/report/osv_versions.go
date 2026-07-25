@@ -43,12 +43,8 @@ type semanticVersionEvent struct {
 }
 
 func advisoryVersionMatch(advisory VulnerabilityAdvisory, installedVersion string) vulnerabilityVersionMatch {
-	hasOSVMetadata := len(advisory.AffectedVersions) > 0 || len(advisory.VersionRanges) > 0
-	if !hasOSVMetadata {
-		if advisoryAffectsInstalledVersion(advisory.FixedVersion, installedVersion) {
-			return versionAffected
-		}
-		return versionUnaffected
+	if !advisoryHasOSVVersionMetadata(advisory) {
+		return fixedVersionMatch(advisory.FixedVersion, installedVersion)
 	}
 
 	installedVersion = strings.TrimSpace(installedVersion)
@@ -72,6 +68,29 @@ func advisoryVersionMatch(advisory VulnerabilityAdvisory, installedVersion strin
 	}
 	if sawUnevaluableRange {
 		return versionUnevaluable
+	}
+	return versionUnaffected
+}
+
+func advisoryHasOSVVersionMetadata(advisory VulnerabilityAdvisory) bool {
+	return len(advisory.AffectedVersions) > 0 || len(advisory.VersionRanges) > 0
+}
+
+func fixedVersionMatch(fixedVersion, installedVersion string) vulnerabilityVersionMatch {
+	fixedVersion = strings.TrimSpace(fixedVersion)
+	installedVersion = strings.TrimSpace(installedVersion)
+	if fixedVersion == "" {
+		return versionUnevaluable
+	}
+	if installedVersion == "" {
+		return versionUnevaluable
+	}
+	cmp, ok := CompareSemanticVersions(installedVersion, fixedVersion)
+	if !ok {
+		return versionUnevaluable
+	}
+	if cmp < 0 {
+		return versionAffected
 	}
 	return versionUnaffected
 }

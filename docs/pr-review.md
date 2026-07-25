@@ -44,16 +44,23 @@ Version upgrade/downgrade rows are only emitted when dependency identity include
 known base and head versions. Unknown identity does not produce a version-change
 claim.
 
+Newly reachable vulnerability rows retain `versionStatus` when available.
+`affected` means supported advisory metadata confirms that the installed version
+is vulnerable. `unevaluable` means blank, malformed, or unsupported installed or
+advisory version metadata prevents a reliable comparison; these findings remain
+actionable rather than being mislabeled as affected.
+
 ## Regression Exit
 
 `--fail-on-regression` exits with the CI regression code only for newly
 introduced regression rows, such as downgraded dependencies, newly denied
-licenses, newly reachable vulnerabilities whose priority meets the effective
-`thresholds.reachable_vulnerability_priority`, or dependencies whose estimated
-unused bytes increased by at least `--material-waste-bytes`. The default
-reachable-vulnerability threshold is `off`, which keeps those rows visible but
-does not classify them as regressions. Pre-existing base findings do not fail
-the review by themselves.
+licenses, newly reachable affected vulnerabilities whose priority meets the
+effective `thresholds.reachable_vulnerability_priority`, or dependencies whose
+estimated unused bytes increased by at least `--material-waste-bytes`. Newly
+reachable `unevaluable` vulnerabilities fail closed as regressions at every
+non-`off` reachable-vulnerability threshold regardless of computed priority.
+The default threshold is `off`; it keeps vulnerability rows visible but disables
+this gate. Pre-existing base findings do not fail the review by themselves.
 
 ## GitHub Action
 

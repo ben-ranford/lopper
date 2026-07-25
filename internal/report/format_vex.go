@@ -130,6 +130,10 @@ func cycloneDXVulnerabilityAnalysisForFinding(finding VulnerabilityFinding) *cyc
 	justification := ""
 	response := []string{"update"}
 	detail := "reachable=" + strings.ToLower(strings.TrimSpace(boolString(finding.Reachable)))
+	if finding.VersionStatus == vulnerabilityVersionUnknown {
+		state = "in_triage"
+		detail += "; version_status=" + finding.VersionStatus
+	}
 	if finding.Decision != nil && !finding.Decision.Expired {
 		state = cycloneDXVEXState(finding.Decision.Status)
 		justification = cycloneDXVEXJustification(finding.Decision.Justification)
@@ -181,6 +185,7 @@ func cycloneDXVulnerabilityProperties(finding VulnerabilityFinding, dep Dependen
 	appendCycloneDXProperty(&props, "lopper:vulnerability:package", finding.Package)
 	appendCycloneDXProperty(&props, "lopper:vulnerability:priority", finding.Priority)
 	appendCycloneDXProperty(&props, "lopper:vulnerability:reachable", boolString(finding.Reachable))
+	appendCycloneDXProperty(&props, "lopper:vulnerability:version-status", finding.VersionStatus)
 	appendCycloneDXProperty(&props, "lopper:vulnerability:fixed-version", finding.FixedVersion)
 	if dep.Identity != nil {
 		appendCycloneDXProperty(&props, "lopper:dependency:purl", dep.Identity.PURL)
