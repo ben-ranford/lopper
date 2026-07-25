@@ -15,9 +15,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-var readFileUnderFn = safeio.ReadFileUnder
-var readFileUnderLimitFn = safeio.ReadFileUnderLimit
-
 const lockfileDriftManifestReadLimit int64 = 1 << 20
 
 type lockfileDirSnapshot struct {
@@ -27,6 +24,13 @@ type lockfileDirSnapshot struct {
 	files    map[string]fs.FileInfo
 }
 
+type lockfileManifestIO struct {
+	readFileUnder      func(rootDir, targetPath string) ([]byte, error)
+	readFileUnderLimit func(rootDir, targetPath string, limit int64) ([]byte, error)
+}
+
+type lockfileManifestIOContextKey struct{}
+
 type cachedManifestRead struct {
 	content []byte
 	err     error
@@ -34,12 +38,44 @@ type cachedManifestRead struct {
 
 type lockfileManifestCache struct {
 	snapshot lockfileDirSnapshot
+	io       lockfileManifestIO
 	reads    map[string]cachedManifestRead
 }
 
+type lockfilePreparedManifestRef struct {
+	name    string
+	relPath string
+}
+
+type lockfilePreparedLockfileRef struct {
+	name    string
+	relPath string
+}
+
+type lockfilePreparedManifestChange struct {
+	rule      lockfileRule
+	relDir    string
+	manifests []lockfilePreparedManifestRef
+	lockfiles []lockfilePreparedLockfileRef
+}
+
+type lockfilePreparedRuleReplay struct {
+	rule      lockfileRule
+	manifests []string
+	lockfiles []string
+}
+
+type lockfilePreparedRule struct {
+	replay          *lockfilePreparedRuleReplay
+	manifestChange  *lockfilePreparedManifestChange
+	manifestReadErr error
+}
+
 type lockfilePreparedDir struct {
-	snapshot      lockfileDirSnapshot
-	manifestCache *lockfileManifestCache
+	repoPath string
+	path     string
+	relDir   string
+	rules    []lockfilePreparedRule
 }
 
 type lockfilePreparedScan struct {
@@ -110,6 +146,36 @@ func lockfileManifestReadErrorKey(snapshot lockfileDirSnapshot, rule lockfileRul
 	return filepath.Clean(filepath.Join(snapshot.path, manifestName))
 }
 
+func defaultLockfileManifestIO() lockfileManifestIO {
+	return lockfileManifestIO{
+		readFileUnder:      safeio.ReadFileUnder,
+		readFileUnderLimit: safeio.ReadFileUnderLimit,
+	}
+}
+
+func lockfileManifestIOWithDefaults(io lockfileManifestIO) lockfileManifestIO {
+	defaults := defaultLockfileManifestIO()
+	if io.readFileUnder == nil {
+		io.readFileUnder = defaults.readFileUnder
+	}
+	if io.readFileUnderLimit == nil {
+		io.readFileUnderLimit = defaults.readFileUnderLimit
+	}
+	return io
+}
+
+func lockfileManifestIOFromContext(ctx context.Context) lockfileManifestIO {
+	if ctx == nil {
+		return defaultLockfileManifestIO()
+	}
+	io, _ := ctx.Value(lockfileManifestIOContextKey{}).(lockfileManifestIO)
+	return lockfileManifestIOWithDefaults(io)
+}
+
+func withLockfileManifestIO(ctx context.Context, io lockfileManifestIO) context.Context {
+	return context.WithValue(ctx, lockfileManifestIOContextKey{}, lockfileManifestIOWithDefaults(io))
+}
+
 func (r *lockfileDriftResult) appendEvaluation(evaluation lockfileDirEvaluation) {
 	for _, event := range evaluation.events {
 		if event.hasFinding {
@@ -155,10 +221,11 @@ type lockfileGitSnapshotBatch struct {
 }
 
 type lockfileFailFastBatchScanner struct {
-	repoPath string
-	rules    []lockfileRule
-	warnings []string
-	batch    lockfileGitSnapshotBatch
+	repoPath   string
+	rules      []lockfileRule
+	warnings   []string
+	batch      lockfileGitSnapshotBatch
+	manifestIO lockfileManifestIO
 }
 
 func (b *lockfileGitSnapshotBatch) wouldOverflow(candidatePaths []string) bool {
@@ -213,6 +280,7 @@ func scanLockfileDriftDetailed(ctx context.Context, repoPath string, gitContext 
 	if gitContext.preparedScan != nil && !stopOnFirst {
 		return scanPreparedLockfileDrift(ctx, gitContext, rules)
 	}
+	manifestIO := lockfileManifestIOFromContext(ctx)
 
 	result := lockfileDriftResult{
 		findings:        make([]string, 0, len(rules)),
@@ -235,7 +303,7 @@ func scanLockfileDriftDetailed(ctx context.Context, repoPath string, gitContext 
 				return fs.SkipAll
 			}
 
-			evaluation := evaluateLockfileDirWithRulesAndCache(snapshot, gitContext, rules, newLockfileManifestCache(snapshot))
+			evaluation := evaluateLockfileDirWithRulesAndCache(snapshot, gitContext, rules, newLockfileManifestCacheWithIO(snapshot, manifestIO))
 			result.appendEvaluation(evaluation)
 			readErrors.merge(evaluation.readErrors)
 			return evaluation.fatalErr
@@ -254,31 +322,25 @@ func scanLockfileDriftDetailed(ctx context.Context, repoPath string, gitContext 
 
 func scanPreparedLockfileDrift(ctx context.Context, gitContext lockfileGitContext, rules []lockfileRule) lockfileDriftResult {
 	prepared := gitContext.preparedScan
+	manifestIO := lockfileManifestIOFromContext(ctx)
 	result := lockfileDriftResult{
 		findings:        make([]string, 0, len(rules)),
 		orderedWarnings: make([]string, 0, len(rules)),
 	}
-	var readErrors lockfileManifestReadErrors
 	for _, dir := range prepared.dirs {
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
-				readErrors.merge(prepared.readErrors)
-				result.err = errors.Join(readErrors.joined(), err)
+				result.err = errors.Join(prepared.readErrors.joined(), err)
 				return result
 			}
 		}
-
-		evaluation := evaluateLockfileDirWithRulesAndCache(dir.snapshot, gitContext, rules, dir.manifestCache)
-		result.appendEvaluation(evaluation)
-		readErrors.merge(evaluation.readErrors)
-		if evaluation.fatalErr != nil {
-			readErrors.merge(prepared.readErrors)
-			result.err = errors.Join(readErrors.joined(), evaluation.fatalErr)
+		result.appendPreparedDir(dir, gitContext, manifestIO)
+		if result.err != nil {
+			result.err = errors.Join(prepared.readErrors.joined(), result.err)
 			return result
 		}
 	}
-	readErrors.merge(prepared.readErrors)
-	result.err = readErrors.joined()
+	result.err = prepared.readErrors.joined()
 	return result
 }
 
@@ -293,9 +355,10 @@ func scanLockfileDriftStopOnFirst(ctx context.Context, repoPath string, rules []
 	}
 
 	scanner := lockfileFailFastBatchScanner{
-		repoPath: repoPath,
-		rules:    rules,
-		warnings: warnings,
+		repoPath:   repoPath,
+		rules:      rules,
+		warnings:   warnings,
+		manifestIO: lockfileManifestIOFromContext(ctx),
 	}
 	return scanner.scan(ctx)
 }
@@ -314,7 +377,7 @@ func (s *lockfileFailFastBatchScanner) scan(ctx context.Context) ([]string, erro
 }
 
 func (s *lockfileFailFastBatchScanner) visit(ctx context.Context, snapshot lockfileDirSnapshot) error {
-	manifestCache := newLockfileManifestCache(snapshot)
+	manifestCache := newLockfileManifestCacheWithIO(snapshot, s.manifestIO)
 	warning, findingRuleIndex, found, err := firstLockfileDriftWarningWithRuleIndex(snapshot, lockfileGitContext{}, s.rules, manifestCache)
 	if err != nil {
 		// Empty Git context can miss an earlier manifest-change drift in the same
@@ -398,7 +461,7 @@ func (s *lockfileFailFastBatchScanner) flushSnapshotsInOrder(ctx context.Context
 }
 
 func (s *lockfileFailFastBatchScanner) recordFirstSnapshotRuleByRule(ctx context.Context, snapshot lockfileDirSnapshot) error {
-	manifestCache := newLockfileManifestCache(snapshot)
+	manifestCache := newLockfileManifestCacheWithIO(snapshot, s.manifestIO)
 	for _, rule := range s.rules {
 		candidatePaths, err := lockfileManifestChangeCandidatePathsForRule(snapshot, rule, manifestCache)
 		if err != nil {
@@ -480,6 +543,10 @@ func collectLockfileManifestChangeCandidatePaths(ctx context.Context, repoPath s
 }
 
 func prepareLockfileManifestChangeCandidates(ctx context.Context, repoPath string, rules []lockfileRule) (*lockfilePreparedScan, []string, error) {
+	return prepareLockfileManifestChangeCandidatesWithIO(ctx, repoPath, rules, lockfileManifestIOFromContext(ctx))
+}
+
+func prepareLockfileManifestChangeCandidatesWithIO(ctx context.Context, repoPath string, rules []lockfileRule, manifestIO lockfileManifestIO) (*lockfilePreparedScan, []string, error) {
 	prepared := &lockfilePreparedScan{
 		dirs: make([]lockfilePreparedDir, 0),
 	}
@@ -488,12 +555,8 @@ func prepareLockfileManifestChangeCandidates(ctx context.Context, repoPath strin
 	state := lockfileWalkState{
 		repoPath: repoPath,
 		visit: func(snapshot lockfileDirSnapshot) error {
-			manifestCache := newLockfileManifestCache(snapshot)
-			prepared.dirs = append(prepared.dirs, lockfilePreparedDir{
-				snapshot:      snapshot,
-				manifestCache: manifestCache,
-			})
-			paths, err := lockfileManifestChangeCandidatePathsWithReadErrors(snapshot, rules, manifestCache, &prepared.readErrors)
+			dir, paths, err := prepareLockfileDir(snapshot, rules, manifestIO, &prepared.readErrors)
+			prepared.dirs = append(prepared.dirs, dir)
 			candidates = appendUniqueLockfilePaths(candidates, seen, paths)
 			return err
 		},
@@ -648,11 +711,23 @@ func readLockfileDirSnapshot(repoPath, dir string) (lockfileDirSnapshot, error) 
 func newLockfileManifestCache(snapshot lockfileDirSnapshot) *lockfileManifestCache {
 	return &lockfileManifestCache{
 		snapshot: snapshot,
+		io:       defaultLockfileManifestIO(),
 	}
 }
 
 func readLockfileManifest(rootDir, targetPath string) ([]byte, error) {
-	return readFileUnderLimitFn(rootDir, targetPath, lockfileDriftManifestReadLimit)
+	return readLockfileManifestWithIO(defaultLockfileManifestIO(), rootDir, targetPath)
+}
+
+func newLockfileManifestCacheWithIO(snapshot lockfileDirSnapshot, io lockfileManifestIO) *lockfileManifestCache {
+	return &lockfileManifestCache{
+		snapshot: snapshot,
+		io:       lockfileManifestIOWithDefaults(io),
+	}
+}
+
+func readLockfileManifestWithIO(io lockfileManifestIO, rootDir, targetPath string) ([]byte, error) {
+	return lockfileManifestIOWithDefaults(io).readFileUnderLimit(rootDir, targetPath, lockfileDriftManifestReadLimit)
 }
 
 func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error) {
@@ -665,7 +740,7 @@ func (c *lockfileManifestCache) readManifest(manifestName string) ([]byte, error
 			return cached.content, cached.err
 		}
 	}
-	content, err := readLockfileManifest(c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
+	content, err := readLockfileManifestWithIO(c.io, c.snapshot.repoPath, filepath.Join(c.snapshot.path, manifestName))
 	if c.reads == nil {
 		c.reads = make(map[string]cachedManifestRead)
 	}
@@ -824,6 +899,232 @@ func evaluateLockfileDirWithRulesAndCache(snapshot lockfileDirSnapshot, gitConte
 		})
 	}
 	return evaluation
+}
+
+func (r *lockfileDriftResult) appendPreparedDir(dir lockfilePreparedDir, gitContext lockfileGitContext, manifestIO lockfileManifestIO) {
+	snapshot := lockfileDirSnapshot{
+		repoPath: dir.repoPath,
+		path:     dir.path,
+		relDir:   dir.relDir,
+	}
+	cache := newLockfileManifestCacheWithIO(snapshot, manifestIO)
+	for _, rule := range dir.rules {
+		if rule.manifestReadErr != nil {
+			r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(rule.manifestReadErr))
+			continue
+		}
+		if rule.manifestChange == nil {
+			finding, found, err := evaluatePreparedReplayRule(dir, rule, gitContext, cache)
+			if err != nil {
+				r.err = errors.Join(r.err, err)
+				return
+			}
+			if !found {
+				continue
+			}
+			warning := buildLockfileDriftWarning(finding)
+			r.findings = append(r.findings, warning)
+			r.orderedWarnings = append(r.orderedWarnings, warning)
+			continue
+		}
+		finding, found := evaluatePreparedManifestChange(*rule.manifestChange, gitContext)
+		if !found {
+			continue
+		}
+		warning := buildLockfileDriftWarning(finding)
+		r.findings = append(r.findings, warning)
+		r.orderedWarnings = append(r.orderedWarnings, warning)
+	}
+}
+
+func prepareLockfileDir(snapshot lockfileDirSnapshot, rules []lockfileRule, manifestIO lockfileManifestIO, readErrors *lockfileManifestReadErrors) (lockfilePreparedDir, []string, error) {
+	dir := lockfilePreparedDir{
+		repoPath: snapshot.repoPath,
+		path:     snapshot.path,
+		relDir:   snapshot.relDir,
+		rules:    make([]lockfilePreparedRule, 0, len(rules)),
+	}
+	cache := newLockfileManifestCacheWithIO(snapshot, manifestIO)
+	candidates := make([]string, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		preparedRule, ruleCandidates, err := prepareLockfileRule(snapshot, rule, cache, readErrors)
+		if err != nil {
+			sort.Strings(candidates)
+			return dir, candidates, err
+		}
+		dir.rules = append(dir.rules, preparedRule)
+		candidates = appendUniqueLockfilePaths(candidates, seen, ruleCandidates)
+	}
+	sort.Strings(candidates)
+	return dir, candidates, nil
+}
+
+func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache *lockfileManifestCache, readErrors *lockfileManifestReadErrors) (lockfilePreparedRule, []string, error) {
+	manifests := findRuleManifests(snapshot.files, rule)
+	hasManifest := len(manifests) > 0
+	manifestName := rule.manifest
+	if hasManifest {
+		manifestName = manifests[0]
+	}
+	lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
+	lockfiles, err := findDistributedRuleLockfiles(snapshot, rule, manifests, lockfiles)
+	if err != nil {
+		return lockfilePreparedRule{}, nil, err
+	}
+
+	_, handled, err := evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, lockfiles, cache)
+	if err != nil {
+		if isRecoverableLockfileManifestReadError(err) {
+			prepared := lockfilePreparedRule{}
+			if readErrors != nil && readErrors.add(snapshot, rule, err) {
+				prepared.manifestReadErr = err
+			}
+			return prepared, nil, nil
+		}
+		return lockfilePreparedRule{}, nil, err
+	}
+	if handled {
+		return lockfilePreparedRule{
+			replay: &lockfilePreparedRuleReplay{
+				rule:      rule,
+				manifests: append([]string(nil), manifests...),
+				lockfiles: preparedLockfileNames(lockfiles),
+			},
+		}, nil, nil
+	}
+	if !hasManifest && len(lockfiles) == 0 {
+		return lockfilePreparedRule{}, nil, nil
+	}
+
+	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifestName, cache)
+	if err != nil {
+		if isRecoverableLockfileManifestReadError(err) {
+			prepared := lockfilePreparedRule{}
+			if readErrors != nil && readErrors.add(snapshot, rule, err) {
+				prepared.manifestReadErr = err
+			}
+			return prepared, nil, nil
+		}
+		return lockfilePreparedRule{}, nil, err
+	}
+	if !matchesManifest && len(lockfiles) > 0 {
+		return lockfilePreparedRule{
+			replay: &lockfilePreparedRuleReplay{
+				rule:      rule,
+				manifests: append([]string(nil), manifests...),
+				lockfiles: preparedLockfileNames(lockfiles),
+			},
+		}, nil, nil
+	}
+	if !hasManifest || len(lockfiles) == 0 || !matchesManifest {
+		return lockfilePreparedRule{}, nil, nil
+	}
+
+	return lockfilePreparedRule{
+		manifestChange: prepareManifestChange(snapshot, rule, manifests, lockfiles),
+	}, relativeLockfileCandidatePaths(snapshot, manifests, lockfiles), nil
+}
+
+func prepareManifestChange(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, lockfiles []presentLockfile) *lockfilePreparedManifestChange {
+	prepared := &lockfilePreparedManifestChange{
+		rule:      rule,
+		relDir:    snapshot.relDir,
+		manifests: make([]lockfilePreparedManifestRef, 0, len(manifests)),
+		lockfiles: make([]lockfilePreparedLockfileRef, 0, len(lockfiles)),
+	}
+	for _, manifest := range manifests {
+		prepared.manifests = append(prepared.manifests, lockfilePreparedManifestRef{
+			name:    manifest,
+			relPath: relativeFilePath(snapshot.repoPath, snapshot.path, manifest),
+		})
+	}
+	for _, lockfile := range lockfiles {
+		prepared.lockfiles = append(prepared.lockfiles, lockfilePreparedLockfileRef{
+			name:    lockfile.name,
+			relPath: relativeFilePath(snapshot.repoPath, snapshot.path, lockfile.name),
+		})
+	}
+	return prepared
+}
+
+func preparedLockfileNames(lockfiles []presentLockfile) []string {
+	names := make([]string, 0, len(lockfiles))
+	for _, lockfile := range lockfiles {
+		names = append(names, lockfile.name)
+	}
+	return names
+}
+
+func evaluatePreparedManifestChange(prepared lockfilePreparedManifestChange, gitContext lockfileGitContext) (lockfileDriftFinding, bool) {
+	if !gitContext.hasGitContext || len(gitContext.changedFiles) == 0 {
+		return lockfileDriftFinding{}, false
+	}
+	changedManifest := ""
+	for _, manifest := range prepared.manifests {
+		if isPathChanged(gitContext.changedFiles, manifest.relPath) {
+			changedManifest = manifest.name
+			break
+		}
+	}
+	if changedManifest == "" {
+		return lockfileDriftFinding{}, false
+	}
+	lockfiles := make([]presentLockfile, 0, len(prepared.lockfiles))
+	for _, lockfile := range prepared.lockfiles {
+		if isPathChanged(gitContext.changedFiles, lockfile.relPath) {
+			return lockfileDriftFinding{}, false
+		}
+		lockfiles = append(lockfiles, presentLockfile{name: lockfile.name})
+	}
+	return lockfileDriftFinding{
+		kind:      lockfileDriftManifestChange,
+		rule:      prepared.rule,
+		manifest:  changedManifest,
+		relDir:    prepared.relDir,
+		lockfiles: lockfiles,
+	}, true
+}
+
+func evaluatePreparedReplayRule(dir lockfilePreparedDir, rule lockfilePreparedRule, gitContext lockfileGitContext, cache *lockfileManifestCache) (lockfileDriftFinding, bool, error) {
+	if rule.replay == nil {
+		return lockfileDriftFinding{}, false, nil
+	}
+	snapshot := lockfileDirSnapshot{
+		repoPath: dir.repoPath,
+		path:     dir.path,
+		relDir:   dir.relDir,
+	}
+	replay := rule.replay
+	hasManifest := len(replay.manifests) > 0
+	manifestName := replay.rule.manifest
+	if hasManifest {
+		manifestName = replay.manifests[0]
+	}
+	lockfiles := preparedPresentLockfiles(replay.lockfiles)
+	finding, handled, err := evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, replay.rule, hasManifest, manifestName, lockfiles, cache)
+	if handled || err != nil {
+		return finding, handled, err
+	}
+	if !hasManifest && len(lockfiles) == 0 {
+		return lockfileDriftFinding{}, false, nil
+	}
+	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, replay.rule, manifestName, cache)
+	if err != nil {
+		return lockfileDriftFinding{}, false, err
+	}
+	if !matchesManifest && len(lockfiles) > 0 {
+		return staleLockfileFinding(snapshot, replay.rule, lockfiles), true, nil
+	}
+	return lockfileDriftFinding{}, false, nil
+}
+
+func preparedPresentLockfiles(names []string) []presentLockfile {
+	lockfiles := make([]presentLockfile, 0, len(names))
+	for _, name := range names {
+		lockfiles = append(lockfiles, presentLockfile{name: name})
+	}
+	return lockfiles
 }
 
 func isRecoverableLockfileManifestReadError(err error) bool {
