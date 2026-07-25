@@ -206,11 +206,11 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 }
 
 func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
-	writePerm, existingRegular, err := resolvedWriteFilePerm(root, target, perm)
+	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
-	if existingRegular {
+	if existingInfo != nil {
 		file, err := root.OpenFile(target.rel, os.O_WRONLY, 0)
 		if err != nil {
 			return err
@@ -219,36 +219,24 @@ func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMo
 			return err
 		}
 	}
-
-	session, err := newAtomicWriteSession(root, target.rel, writePerm)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		cleanupErr := session.cleanup()
-		if returnErr == nil {
-			returnErr = cleanupErr
-		}
-	}()
-
-	return session.writeAndCommit(data, writePerm)
+	return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
 }
 
-func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, bool, error) {
+func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {
 	info, err := root.Lstat(target.rel)
 	switch {
 	case err == nil:
 		if info.Mode()&os.ModeSymlink != 0 {
-			return 0, false, fmt.Errorf("target path is a symlink: %s", target.abs)
+			return 0, nil, fmt.Errorf("target path is a symlink: %s", target.abs)
 		}
 		if !info.Mode().IsRegular() {
-			return 0, false, fmt.Errorf("target path is not a regular file: %s", target.abs)
+			return 0, nil, fmt.Errorf("target path is not a regular file: %s", target.abs)
 		}
-		return info.Mode().Perm(), true, nil
+		return info.Mode().Perm(), info, nil
 	case os.IsNotExist(err):
-		return requestedPerm, false, nil
+		return requestedPerm, nil, nil
 	default:
-		return 0, false, err
+		return 0, nil, err
 	}
 }
 
@@ -259,19 +247,45 @@ func WriteFileWithinRoot(root Root, targetPath string, data []byte, perm os.File
 	if err != nil {
 		return err
 	}
+	return writeAtomicReplacement(root, targetRel, data, perm, nil)
+}
 
-	session, err := newAtomicWriteSession(root, targetRel, perm)
+// WriteFileReplacingUnder atomically writes targetPath only if it resolves
+// under rootDir. Existing regular targets retain their permission bits.
+// On Windows only, writes may fall back to in-place overwrite when the
+// filesystem rejects replace-existing rename semantics for an existing file.
+func WriteFileReplacingUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
+	target, err := resolveRootedTarget(rootDir, targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	root, err := openWriteRoot(target.rootAbs)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		cleanupErr := session.cleanup()
-		if returnErr == nil {
-			returnErr = cleanupErr
+		if closeErr := root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
+	return WriteFileReplacingWithinRoot(root.root, target.rel, data, perm)
+}
 
-	return session.writeAndCommit(data, perm)
+// WriteFileReplacingWithinRoot atomically writes targetPath using an already-open
+// confined root. Existing regular targets retain their permission bits. On
+// Windows only, writes may fall back to in-place overwrite when the filesystem
+// rejects replace-existing rename semantics for an existing file.
+func WriteFileReplacingWithinRoot(root Root, targetPath string, data []byte, perm os.FileMode) error {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	target := rootedTarget{rel: targetRel}
+	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
+	if err != nil {
+		return err
+	}
+	return writeAtomicReplacement(root, target.rel, data, writePerm, existingInfo)
 }
 
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {

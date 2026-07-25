@@ -100,45 +100,5 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write(data); err != nil {
-		return errors.Join(err, cleanupTempFile(tmpFile, tmpPath))
-	}
-	if err := tmpFile.Close(); err != nil {
-		return errors.Join(err, removeIfPresent(tmpPath))
-	}
-	renameErr := os.Rename(tmpPath, path)
-	if renameErr == nil {
-		return nil
-	}
-	if err := removeIfPresent(tmpPath); err != nil {
-		return err
-	}
-	// Windows cannot atomically rename over existing files; fall back to overwrite.
-	return os.WriteFile(path, data, 0o600)
-}
-
-func cleanupTempFile(tmpFile *os.File, tmpPath string) error {
-	return errors.Join(closeIfPresent(tmpFile), removeIfPresent(tmpPath))
-}
-
-func closeIfPresent(tmpFile *os.File) error {
-	if tmpFile == nil {
-		return nil
-	}
-	if err := tmpFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-		return err
-	}
-	return nil
-}
-
-func removeIfPresent(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return safeio.WriteFileReplacingUnder(dir, path, data, 0o600)
 }
