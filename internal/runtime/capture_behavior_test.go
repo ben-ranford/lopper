@@ -416,6 +416,10 @@ func TestRuntimePathWithinRoot(t *testing.T) {
 
 func TestResolveCapturePlanNormalizesRelativeTracePathUnderRealRepo(t *testing.T) {
 	repo := t.TempDir()
+	wantRepoPath, err := resolveRealRepoPath(repo)
+	if err != nil {
+		t.Fatalf("resolve real repo path: %v", err)
+	}
 
 	plan, err := resolveCapturePlan(CaptureRequest{
 		RepoPath:  repo,
@@ -426,8 +430,8 @@ func TestResolveCapturePlanNormalizesRelativeTracePathUnderRealRepo(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve capture plan: %v", err)
 	}
-	if plan.repoPath == repo || !filepath.IsAbs(plan.repoPath) {
-		t.Fatalf("expected canonical repo path, got %q", plan.repoPath)
+	if plan.repoPath != wantRepoPath {
+		t.Fatalf("expected canonical repo path %q, got %q", wantRepoPath, plan.repoPath)
 	}
 	wantTracePath := filepath.Join(plan.repoPath, ".artifacts", runtimeTraceNDJSON)
 	if plan.tracePath != wantTracePath {
@@ -555,8 +559,8 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected capture cancellation error")
 			}
-			if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "signal: killed") {
-				t.Fatalf("expected context cancellation error, got %v", err)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected deadline exceeded error, got %v", err)
 			}
 			if elapsed := time.Since(start); elapsed >= time.Second {
 				t.Fatalf("expected cancelled command to stop quickly, took %v", elapsed)
@@ -726,48 +730,9 @@ func TestAllowsSystemRuntimeTraceRootAliasExactRoots(t *testing.T) {
 }
 
 func TestRuntimeTraceRootPath(t *testing.T) {
-	t.Run("returns cleaned stable path", func(t *testing.T) {
-		dir := t.TempDir()
-		got, err := runtimeTraceRootPath(dir)
-		if err != nil {
-			t.Fatalf("runtime trace root path: %v", err)
-		}
-		want := filepath.Clean(dir)
-		if goruntime.GOOS == "darwin" {
-			if resolved, resolveErr := filepath.EvalSymlinks(want); resolveErr == nil && allowsSystemRuntimeTraceRootAlias(want, resolved) {
-				want = resolved
-			}
-		}
-		if got != want {
-			t.Fatalf("expected runtime trace root path %q, got %q", want, got)
-		}
-	})
-
-	t.Run("rejects symlinked parent", func(t *testing.T) {
-		if os.PathSeparator == '\\' {
-			t.Skip("symlink regression is Unix-specific")
-		}
-
-		baseDir := t.TempDir()
-		realDir := filepath.Join(baseDir, "real")
-		if err := os.MkdirAll(realDir, 0o750); err != nil {
-			t.Fatalf("mkdir real root: %v", err)
-		}
-		linkDir := filepath.Join(baseDir, "linked")
-		if err := os.Symlink(realDir, linkDir); err != nil {
-			t.Fatalf("symlink runtime root: %v", err)
-		}
-		if _, err := runtimeTraceRootPath(linkDir); err == nil || !strings.Contains(err.Error(), "symlink") {
-			t.Fatalf("expected symlinked runtime root rejection, got %v", err)
-		}
-	})
-
-	t.Run("surfaces missing path error", func(t *testing.T) {
-		missingDir := filepath.Join(t.TempDir(), "missing")
-		if _, err := runtimeTraceRootPath(missingDir); err == nil || !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("expected missing runtime root error, got %v", err)
-		}
-	})
+	t.Run("returns cleaned stable path", testRuntimeTraceRootPathReturnsCleanedStablePath)
+	t.Run("rejects symlinked parent", testRuntimeTraceRootPathRejectsSymlinkedParent)
+	t.Run("surfaces missing path error", testRuntimeTraceRootPathSurfacesMissingPathError)
 }
 
 func TestSnapshotRuntimeTraceFileReturnsSnapshot(t *testing.T) {
@@ -789,6 +754,55 @@ func assertRuntimeTraceSnapshotData(t *testing.T, loadSnapshot func(string) (run
 	}
 	if string(snapshot.data) != string(traceData) {
 		t.Fatalf("expected snapshot data %q, got %q", traceData, snapshot.data)
+	}
+}
+
+func testRuntimeTraceRootPathReturnsCleanedStablePath(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	got, err := runtimeTraceRootPath(dir)
+	if err != nil {
+		t.Fatalf("runtime trace root path: %v", err)
+	}
+	want := filepath.Clean(dir)
+	if goruntime.GOOS == "darwin" {
+		if resolved, resolveErr := filepath.EvalSymlinks(want); resolveErr == nil && allowsSystemRuntimeTraceRootAlias(want, resolved) {
+			want = resolved
+		}
+	}
+	if got != want {
+		t.Fatalf("expected runtime trace root path %q, got %q", want, got)
+	}
+}
+
+func testRuntimeTraceRootPathRejectsSymlinkedParent(t *testing.T) {
+	t.Helper()
+
+	if os.PathSeparator == '\\' {
+		t.Skip("symlink regression is Unix-specific")
+	}
+
+	baseDir := t.TempDir()
+	realDir := filepath.Join(baseDir, "real")
+	if err := os.MkdirAll(realDir, 0o750); err != nil {
+		t.Fatalf("mkdir real root: %v", err)
+	}
+	linkDir := filepath.Join(baseDir, "linked")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("symlink runtime root: %v", err)
+	}
+	if _, err := runtimeTraceRootPath(linkDir); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlinked runtime root rejection, got %v", err)
+	}
+}
+
+func testRuntimeTraceRootPathSurfacesMissingPathError(t *testing.T) {
+	t.Helper()
+
+	missingDir := filepath.Join(t.TempDir(), "missing")
+	if _, err := runtimeTraceRootPath(missingDir); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing runtime root error, got %v", err)
 	}
 }
 
@@ -1071,6 +1085,51 @@ func TestOpenPreparedTraceRootSurfacesOpenRootFailureForFileAncestor(t *testing.
 	}
 }
 
+func assertOpenPreparedTraceRootChildCreatesDirectory(t *testing.T, root safeio.Root, rootDir string) {
+	t.Helper()
+
+	childRoot, err := openPreparedTraceRootChild(root, "created", 0o750)
+	if err != nil {
+		t.Fatalf("open prepared trace root child: %v", err)
+	}
+	if err := childRoot.Close(); err != nil {
+		t.Fatalf("close created child root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "created")); err != nil {
+		t.Fatalf("expected child directory to exist, stat err=%v", err)
+	}
+}
+
+func assertOpenPreparedTraceRootChildRejectsSymlink(t *testing.T, root safeio.Root, rootDir string) {
+	t.Helper()
+
+	if os.PathSeparator == '\\' {
+		t.Skip("symlink child regression is Unix-specific")
+	}
+	target := filepath.Join(rootDir, "target")
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatalf("mkdir symlink target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(rootDir, "linked")); err != nil {
+		t.Fatalf("symlink child: %v", err)
+	}
+	if _, err := openPreparedTraceRootChild(root, "linked", 0o750); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink child rejection, got %v", err)
+	}
+}
+
+func assertOpenPreparedTraceRootChildRejectsFile(t *testing.T, root safeio.Root, rootDir string) {
+	t.Helper()
+
+	filePath := filepath.Join(rootDir, "file")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write child file: %v", err)
+	}
+	if _, err := openPreparedTraceRootChild(root, "file", 0o750); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected file child rejection, got %v", err)
+	}
+}
+
 func TestOpenPreparedTraceRootChild(t *testing.T) {
 	rootDir := t.TempDir()
 	rootPath, err := runtimeTraceRootPath(rootDir)
@@ -1088,42 +1147,13 @@ func TestOpenPreparedTraceRootChild(t *testing.T) {
 	}()
 
 	t.Run("creates missing child directory", func(t *testing.T) {
-		childRoot, err := openPreparedTraceRootChild(root, "created", 0o750)
-		if err != nil {
-			t.Fatalf("open prepared trace root child: %v", err)
-		}
-		if err := childRoot.Close(); err != nil {
-			t.Fatalf("close created child root: %v", err)
-		}
-		if _, err := os.Stat(filepath.Join(rootDir, "created")); err != nil {
-			t.Fatalf("expected child directory to exist, stat err=%v", err)
-		}
+		assertOpenPreparedTraceRootChildCreatesDirectory(t, root, rootDir)
 	})
-
 	t.Run("rejects symlink child", func(t *testing.T) {
-		if os.PathSeparator == '\\' {
-			t.Skip("symlink child regression is Unix-specific")
-		}
-		target := filepath.Join(rootDir, "target")
-		if err := os.MkdirAll(target, 0o750); err != nil {
-			t.Fatalf("mkdir symlink target: %v", err)
-		}
-		if err := os.Symlink(target, filepath.Join(rootDir, "linked")); err != nil {
-			t.Fatalf("symlink child: %v", err)
-		}
-		if _, err := openPreparedTraceRootChild(root, "linked", 0o750); err == nil || !strings.Contains(err.Error(), "symlink") {
-			t.Fatalf("expected symlink child rejection, got %v", err)
-		}
+		assertOpenPreparedTraceRootChildRejectsSymlink(t, root, rootDir)
 	})
-
 	t.Run("rejects non-directory child", func(t *testing.T) {
-		filePath := filepath.Join(rootDir, "file")
-		if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
-			t.Fatalf("write child file: %v", err)
-		}
-		if _, err := openPreparedTraceRootChild(root, "file", 0o750); err == nil || !strings.Contains(err.Error(), "not a directory") {
-			t.Fatalf("expected file child rejection, got %v", err)
-		}
+		assertOpenPreparedTraceRootChildRejectsFile(t, root, rootDir)
 	})
 }
 

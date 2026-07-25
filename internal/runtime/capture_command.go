@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,8 @@ import (
 	goruntime "runtime"
 	"strings"
 	"unicode"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const runtimeBinDirsEnvKey = "LOPPER_RUNTIME_BIN_DIRS"
@@ -31,18 +34,14 @@ func buildRuntimeCommand(ctx context.Context, command string, requestedOptions .
 
 	executable := fields[0]
 	args := fields[1:]
-	cmd, err := newAllowlistedRuntimeCommand(ctx, executable)
-	if err != nil {
+	if err := validateRuntimeExecutable(executable); err != nil {
 		return nil, err
 	}
 	executablePath, err := resolveRuntimeExecutablePath(executable, runtimeSearchDirs())
 	if err != nil {
 		return nil, err
 	}
-	cmd.Path = executablePath
-	cmd.Err = nil
-	cmd.Args = append([]string{executablePath}, args...)
-	return cmd, nil
+	return newTrustedRuntimeCommand(ctx, executablePath, args), nil
 }
 
 func ValidateCommand(command string, requestedOptions ...CommandOptions) error {
@@ -322,18 +321,86 @@ func resolveRuntimeExecutablePath(executable string, searchDirs []string) (strin
 	return "", fmt.Errorf("runtime test executable %q not found in trusted runtime directories", executable)
 }
 
-func resolveRuntimeExecutablePathInDir(executable, dir string) (string, bool) {
+func resolveRuntimeExecutablePathInDir(executable, dir string) (path string, ok bool) {
+	root, err := openTrustedRuntimeSearchRoot(dir)
+	if err != nil {
+		return "", false
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			path = ""
+			ok = false
+		}
+	}()
+
 	for _, candidate := range runtimeExecutableCandidates(executable, dir) {
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() {
-			continue
+		if validateTrustedRuntimeExecutable(root, filepath.Base(candidate)) {
+			return candidate, true
 		}
-		if !isTrustedRuntimeExecutable(info) {
-			continue
-		}
-		return candidate, true
 	}
 	return "", false
+}
+
+func openTrustedRuntimeSearchRoot(dir string) (safeio.Root, error) {
+	rootPath, err := runtimeTraceRootPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	root, err := safeio.OpenRootNoFollow(rootPath)
+	if err != nil {
+		return nil, err
+	}
+
+	info, err := root.Lstat(".")
+	if err != nil {
+		return nil, closeRuntimeSearchRootWithError(root, err)
+	}
+	if !info.IsDir() {
+		return nil, closeRuntimeSearchRootWithError(root, fmt.Errorf("runtime search path is not a directory: %s", dir))
+	}
+	if !isTrustedRuntimeSearchDirInfo(info) {
+		return nil, closeRuntimeSearchRootWithError(root, fmt.Errorf("runtime search path is not trusted: %s", dir))
+	}
+	return root, nil
+}
+
+func closeRuntimeSearchRootWithError(root safeio.Root, err error) error {
+	if closeErr := root.Close(); closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	return err
+}
+
+func validateTrustedRuntimeExecutable(root safeio.Root, name string) (trusted bool) {
+	pathInfo, err := root.Lstat(name)
+	if err != nil || pathInfo.IsDir() {
+		return false
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if !isTrustedRuntimeExecutable(pathInfo) {
+		return false
+	}
+
+	file, err := root.Open(name)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			trusted = false
+		}
+	}()
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	if !isTrustedRuntimeExecutable(openedInfo) {
+		return false
+	}
+	return os.SameFile(pathInfo, openedInfo)
 }
 
 func runtimeExecutableCandidates(executable, dir string) []string {
@@ -361,46 +428,47 @@ func isTrustedRuntimeExecutable(info os.FileInfo) bool {
 	return permissions&0o111 != 0 && permissions&0o022 == 0
 }
 
-func newAllowlistedRuntimeCommand(ctx context.Context, executable string) (*exec.Cmd, error) {
-	var cmd *exec.Cmd
+func isTrustedRuntimeSearchDirInfo(info os.FileInfo) bool {
+	if !info.IsDir() {
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if isWindowsRuntime() {
+		return true
+	}
+	return info.Mode().Perm()&0o022 == 0
+}
+
+func validateRuntimeExecutable(executable string) error {
 	switch executable {
 	case "npm":
-		cmd = exec.CommandContext(ctx, "npm")
 	case "pnpm":
-		cmd = exec.CommandContext(ctx, "pnpm")
 	case "yarn":
-		cmd = exec.CommandContext(ctx, "yarn")
 	case "bun":
-		cmd = exec.CommandContext(ctx, "bun")
 	case "npx":
-		cmd = exec.CommandContext(ctx, "npx")
 	case "node":
-		cmd = exec.CommandContext(ctx, "node")
 	case "vitest":
-		cmd = exec.CommandContext(ctx, "vitest")
 	case "jest":
-		cmd = exec.CommandContext(ctx, "jest")
 	case "mocha":
-		cmd = exec.CommandContext(ctx, "mocha")
 	case "ava":
-		cmd = exec.CommandContext(ctx, "ava")
 	case "deno":
-		cmd = exec.CommandContext(ctx, "deno")
 	case "make":
-		cmd = exec.CommandContext(ctx, "make")
 	case "pytest":
-		cmd = exec.CommandContext(ctx, "pytest")
 	case "python":
-		cmd = exec.CommandContext(ctx, "python")
 	case "python3":
-		cmd = exec.CommandContext(ctx, "python3")
 	case "uv":
-		cmd = exec.CommandContext(ctx, "uv")
 	default:
-		return nil, fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
+		return fmt.Errorf("unsupported runtime test executable %q; use a direct command like 'npm test'", executable)
 	}
+	return nil
+}
+
+func newTrustedRuntimeCommand(ctx context.Context, executablePath string, args []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, executablePath, args...)
 	configureRuntimeCommand(cmd)
-	return cmd, nil
+	return cmd
 }
 
 func runtimeSearchDirs() []string {
@@ -488,12 +556,11 @@ func trustedSearchDirs(dirListValue string) []string {
 			continue
 		}
 
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
+		root, err := openTrustedRuntimeSearchRoot(dir)
+		if err != nil {
 			continue
 		}
-		// Reject group/other-writable runtime search entries on Unix-like systems.
-		if !isWindowsRuntime() && info.Mode().Perm()&0o022 != 0 {
+		if err := root.Close(); err != nil {
 			continue
 		}
 

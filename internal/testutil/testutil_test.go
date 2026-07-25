@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
@@ -219,6 +220,60 @@ func TestRunGit(t *testing.T) {
 	}
 }
 
+func TestMustIncrementRuntimeHelperCounter(t *testing.T) {
+	counterPath := filepath.Join(t.TempDir(), "runtime-counter.txt")
+
+	MustIncrementRuntimeHelperCounter(counterPath)
+	if got := MustReadTrimmedIntFile(t, counterPath); got != 1 {
+		t.Fatalf("expected first counter value 1, got %d", got)
+	}
+
+	MustIncrementRuntimeHelperCounter(counterPath)
+	if got := MustReadTrimmedIntFile(t, counterPath); got != 2 {
+		t.Fatalf("expected second counter value 2, got %d", got)
+	}
+
+	if err := os.WriteFile(counterPath, []byte("not-a-number"), 0o600); err != nil {
+		t.Fatalf("seed malformed counter file: %v", err)
+	}
+	MustIncrementRuntimeHelperCounter(counterPath)
+	if got := MustReadTrimmedIntFile(t, counterPath); got != 1 {
+		t.Fatalf("expected malformed counter file to reset to 1, got %d", got)
+	}
+}
+
+func TestInstallSelfExecutable(t *testing.T) {
+	dir := t.TempDir()
+	name := "helper"
+	targetPath := InstallSelfExecutable(t, dir, name)
+
+	if goruntime.GOOS == "windows" && filepath.Ext(targetPath) != ".exe" {
+		t.Fatalf("expected Windows helper extension .exe, got %s", targetPath)
+	}
+	if filepath.Dir(targetPath) != dir {
+		t.Fatalf("expected helper dir %s, got %s", dir, filepath.Dir(targetPath))
+	}
+
+	sourcePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		t.Fatalf("stat source executable: %v", err)
+	}
+	targetInfo, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat installed executable: %v", err)
+	}
+	if targetInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("expected installed executable mode 0700, got %o", targetInfo.Mode().Perm())
+	}
+	if targetInfo.Size() != sourceInfo.Size() {
+		t.Fatalf("expected installed executable size %d, got %d", sourceInfo.Size(), targetInfo.Size())
+	}
+}
+
 func TestFatalPathsViaHelperProcess(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []string{
@@ -226,6 +281,7 @@ func TestFatalPathsViaHelperProcess(t *testing.T) {
 		"write-failure",
 		"chdir-failure",
 		"first-file-none",
+		"runtime-counter-env-missing",
 	} {
 		t.Run(tc, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=TestHelperFatalPath", "--", tc)
@@ -270,6 +326,11 @@ func TestHelperFatalPath(t *testing.T) {
 			t.Fatalf("setup subdir: %v", err)
 		}
 		_ = MustFirstFileEntry(t, dir)
+	case "runtime-counter-env-missing":
+		if err := os.Unsetenv("LOPPER_RUNTIME_COUNTER"); err != nil {
+			t.Fatalf("unset runtime counter env: %v", err)
+		}
+		MustIncrementRuntimeHelperCounterFromEnv()
 	default:
 		t.Fatalf("unknown helper scenario %q", scenario)
 	}

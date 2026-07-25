@@ -405,6 +405,115 @@ func TestResolveRuntimeExecutablePathSkipsWritableCandidate(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeExecutablePathRejectsSymlinkCandidate(t *testing.T) {
+	trustedDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := runtimeToolPathForTest(t, outsideDir, "npm")
+	if err := os.WriteFile(outsidePath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write outside tool: %v", err)
+	}
+
+	symlinkPath := filepath.Join(trustedDir, "npm")
+	if err := os.Symlink(outsidePath, symlinkPath); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	_, err := resolveRuntimeExecutablePath("npm", []string{trustedDir})
+	if err == nil {
+		t.Fatal("expected symlink candidate to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not found in trusted runtime directories") {
+		t.Fatalf("expected trusted-dir rejection for symlink candidate, got %v", err)
+	}
+}
+
+func TestTrustedSearchDirsRejectsSymlinkDirectoryEntries(t *testing.T) {
+	realDir := t.TempDir()
+	linkedDir := filepath.Join(t.TempDir(), "trusted-link")
+	if err := os.Symlink(realDir, linkedDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	got := trustedSearchDirs(linkedDir)
+	if len(got) != 0 {
+		t.Fatalf("expected symlinked search dir to be rejected, got %v", got)
+	}
+}
+
+func TestResolveRuntimeExecutablePathRejectsSymlinkTrustedSearchDir(t *testing.T) {
+	realDir := t.TempDir()
+	outsideDir := t.TempDir()
+	linkedDir := filepath.Join(t.TempDir(), "trusted-link")
+	if err := os.Symlink(realDir, linkedDir); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	outsidePath := runtimeToolPathForTest(t, outsideDir, "npm")
+	if err := os.WriteFile(outsidePath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write outside tool: %v", err)
+	}
+	linkedCandidatePath := runtimeToolPathForTest(t, linkedDir, "npm")
+	if err := os.Symlink(outsidePath, linkedCandidatePath); err != nil {
+		t.Skipf("candidate symlink creation unavailable: %v", err)
+	}
+
+	searchDirs := trustedSearchDirs(linkedDir)
+	if len(searchDirs) != 0 {
+		t.Fatalf("expected symlinked search dir to be filtered before lookup, got %v", searchDirs)
+	}
+	if _, err := resolveRuntimeExecutablePath("npm", searchDirs); err == nil || !strings.Contains(err.Error(), "not found in trusted runtime directories") {
+		t.Fatalf("expected trusted-dir rejection for symlinked search dir, got %v", err)
+	}
+}
+
+func TestTrustedSearchDirsRejectsAncestorSymlinkDirectoryEntries(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("ancestor symlink regression is Unix-specific")
+	}
+
+	rootDir := t.TempDir()
+	realParent := filepath.Join(rootDir, "real")
+	aliasParent := filepath.Join(rootDir, "alias")
+	searchDir := filepath.Join(aliasParent, "bin")
+	if err := os.MkdirAll(filepath.Join(realParent, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir real search dir: %v", err)
+	}
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	got := trustedSearchDirs(searchDir)
+	if len(got) != 0 {
+		t.Fatalf("expected ancestor-symlink search dir to be rejected, got %v", got)
+	}
+}
+
+func TestResolveRuntimeExecutablePathRejectsAncestorSymlinkTrustedSearchDir(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("ancestor symlink regression is Unix-specific")
+	}
+
+	rootDir := t.TempDir()
+	realParent := filepath.Join(rootDir, "real")
+	aliasParent := filepath.Join(rootDir, "alias")
+	searchDir := filepath.Join(aliasParent, "bin")
+	if err := os.MkdirAll(filepath.Join(realParent, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir real search dir: %v", err)
+	}
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	toolPath := runtimeToolPathForTest(t, filepath.Join(realParent, "bin"), "npm")
+	if err := os.WriteFile(toolPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write tool in real search dir: %v", err)
+	}
+
+	if _, ok := resolveRuntimeExecutablePathInDir("npm", searchDir); ok {
+		t.Fatal("expected direct lookup to reject ancestor-symlink trusted search dir")
+	}
+}
+
 func TestRuntimeSearchDirsPrefersTrustedPATHSelection(t *testing.T) {
 	if isWindowsRuntime() {
 		t.Skip("Unix PATH trust checks are covered here")
@@ -596,4 +705,12 @@ func setRuntimeOSTest(t *testing.T, osName string) {
 	t.Cleanup(func() {
 		runtimeOS = originalOS
 	})
+}
+
+func runtimeToolPathForTest(t *testing.T, dir string, name string) string {
+	t.Helper()
+	if isWindowsRuntime() {
+		return filepath.Join(dir, name+".exe")
+	}
+	return filepath.Join(dir, name)
 }

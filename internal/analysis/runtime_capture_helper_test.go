@@ -1,0 +1,61 @@
+package analysis
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
+)
+
+const (
+	analysisRuntimeHelperModeEnv = "LOPPER_ANALYSIS_RUNTIME_HELPER_MODE"
+	analysisRuntimeReadyPathEnv  = "LOPPER_RUNTIME_STARTED"
+)
+
+func runAnalysisRuntimeToolHelper() bool {
+	mode := os.Getenv(analysisRuntimeHelperModeEnv)
+	if mode == "" {
+		return false
+	}
+
+	switch mode {
+	case "count-trace":
+		testutil.MustIncrementRuntimeHelperCounterFromEnv()
+		tracePath := os.Getenv("LOPPER_RUNTIME_TRACE")
+		if tracePath != "" {
+			testutil.MustWriteRuntimeHelperFile(tracePath, "{\"module\":\"lodash/map\"}\n")
+		}
+		os.Exit(0)
+	case "count-only":
+		testutil.MustIncrementRuntimeHelperCounterFromEnv()
+		os.Exit(0)
+	case "ready-block":
+		readyPath := os.Getenv(analysisRuntimeReadyPathEnv)
+		if readyPath == "" {
+			fmt.Fprintln(os.Stderr, "missing readiness path")
+			os.Exit(2)
+		}
+		testutil.MustWriteRuntimeHelperFile(readyPath, "started")
+		select {}
+	case "python-import-requests":
+		pythonPath := os.Getenv("LOPPER_TEST_PYTHON")
+		if pythonPath == "" {
+			fmt.Fprintln(os.Stderr, "missing test python path")
+			os.Exit(2)
+		}
+		cmd := exec.Command(pythonPath, "-c", "import requests")
+		cmd.Env = os.Environ()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown runtime helper mode %q\n", mode)
+		os.Exit(2)
+	}
+	return true
+}

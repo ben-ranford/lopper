@@ -2,16 +2,19 @@ package testutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func CanceledContext() context.Context {
@@ -168,6 +171,99 @@ func MustReadTrimmedIntFile(t *testing.T, path string) int {
 		t.Fatalf("parse %s: %v", path, err)
 	}
 	return value
+}
+
+func MustWriteRuntimeHelperFile(path string, content string) {
+	parentDir := filepath.Dir(path)
+	if err := os.MkdirAll(parentDir, 0o750); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	root, err := safeio.OpenWriteRoot(parentDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := root.WriteFileCreatingParents(filepath.Base(path), []byte(content), 0o600, 0o750); err != nil {
+		closeErr := root.Close()
+		fmt.Fprintln(os.Stderr, errors.Join(err, closeErr))
+		os.Exit(1)
+	}
+	if err := root.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func MustIncrementRuntimeHelperCounter(counterPath string) {
+	count := 1
+	if content, err := safeio.ReadFile(counterPath); err == nil {
+		var parsed int
+		if _, scanErr := fmt.Sscanf(string(content), "%d", &parsed); scanErr == nil {
+			count = parsed + 1
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	MustWriteRuntimeHelperFile(counterPath, fmt.Sprintf("%d", count))
+}
+
+func MustIncrementRuntimeHelperCounterFromEnv() {
+	counterPath := os.Getenv("LOPPER_RUNTIME_COUNTER")
+	if counterPath == "" {
+		fmt.Fprintln(os.Stderr, "missing runtime counter path")
+		os.Exit(2)
+	}
+	MustIncrementRuntimeHelperCounter(counterPath)
+}
+
+func InstallSelfExecutable(t *testing.T, dir string, name string) string {
+	t.Helper()
+
+	sourcePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	if goruntime.GOOS == "windows" && filepath.Ext(name) == "" {
+		name += ".exe"
+	}
+	targetPath := filepath.Join(dir, name)
+
+	sourceFile, err := safeio.OpenFile(sourcePath)
+	if err != nil {
+		t.Fatalf("open test executable %s: %v", sourcePath, err)
+	}
+	targetRoot, err := safeio.OpenRoot(dir)
+	if err != nil {
+		closeErr := sourceFile.Close()
+		t.Fatalf("open helper dir %s: %v (close source: %v)", dir, err, closeErr)
+	}
+	targetFile, err := targetRoot.OpenFile(filepath.Base(targetPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
+	if err != nil {
+		sourceCloseErr := sourceFile.Close()
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("create helper executable %s: %v (close source: %v; close root: %v)", targetPath, err, sourceCloseErr, rootCloseErr)
+	}
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		sourceCloseErr := sourceFile.Close()
+		targetCloseErr := targetFile.Close()
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("copy helper executable %s: %v (close source: %v; close target: %v; close root: %v)", targetPath, err, sourceCloseErr, targetCloseErr, rootCloseErr)
+	}
+	if err := sourceFile.Close(); err != nil {
+		targetCloseErr := targetFile.Close()
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("close source executable %s: %v (close target: %v; close root: %v)", sourcePath, err, targetCloseErr, rootCloseErr)
+	}
+	if err := targetFile.Close(); err != nil {
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("close helper executable %s: %v (close root: %v)", targetPath, err, rootCloseErr)
+	}
+	if err := targetRoot.Close(); err != nil {
+		t.Fatalf("close helper root %s: %v", dir, err)
+	}
+	return targetPath
 }
 
 func RunGit(t *testing.T, repo string, args ...string) {

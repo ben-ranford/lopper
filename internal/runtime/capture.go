@@ -88,6 +88,9 @@ func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (CaptureResu
 	cmd.Stderr = output
 	err = cmd.Run()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, ctxErr
+		}
 		return result, formatRuntimeCommandError(err, output.diagnostic())
 	}
 	snapshot, err := stableRuntimeTraceFileSnapshot(plan.tracePath)

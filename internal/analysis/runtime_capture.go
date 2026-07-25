@@ -38,83 +38,27 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 	outcome.tracePath = resolvedTracePath
 
 	if command == "" {
-		traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
-		if err != nil {
-			return outcome, err
-		}
-		outcome.traceFinalized = true
-		if missing {
-			outcome.warnings = []string{runtimeTraceMissingWarning}
-			return outcome, nil
-		}
-		if captureRuntimeTraceAfterValidatedLoadHook != nil {
-			captureRuntimeTraceAfterValidatedLoadHook()
-		}
-		outcome.trace = traceData
-		return outcome, nil
+		return finalizeRuntimeTraceWithoutCommand(outcome, resolvedTracePath)
 	}
+
 	outcome.captureAttempted = true
 	outcome.traceFinalized = true
-
-	var explicitTraceSnapshot *runtime.Trace
-	explicitTraceMissing := false
-	var explicitTraceErr error
-	if req.RuntimeTracePathExplicit {
-		explicitTraceSnapshot, explicitTraceMissing, explicitTraceErr = loadRuntimeTraceSnapshot(resolvedTracePath)
-		if explicitTraceErr != nil {
-			return outcome, explicitTraceErr
-		}
+	fallback, err := loadExplicitRuntimeTraceFallback(req.RuntimeTracePathExplicit, resolvedTracePath)
+	if err != nil {
+		return outcome, err
 	}
 
 	provider := captureProviderForRequest(req, command, candidates)
-	pythonRunnerProfiles := req.Features.Enabled(runtime.PythonRunnerProfilesFeature)
-	captureResult, err := runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
-		RepoPath:             repoPath,
-		TracePath:            resolvedTracePath,
-		Command:              command,
-		Provider:             provider,
-		PythonRunnerProfiles: pythonRunnerProfiles,
-	})
+	captureResult, err := runRuntimeTraceCapture(ctx, req, repoPath, resolvedTracePath, command, provider)
 	if captureResult.TracePath != "" {
 		outcome.tracePath = captureResult.TracePath
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return outcome, err
-		}
-		if explicitTraceSnapshot != nil {
-			outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error()}
-			outcome.trace = explicitTraceSnapshot
-			return outcome, nil
-		}
-		if explicitTraceMissing {
-			outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error(), runtimeTraceMissingWarning}
-			return outcome, nil
-		}
-		outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error()}
-		return outcome, nil
+		return handleRuntimeTraceCaptureError(outcome, fallback, err)
 	}
 
 	outcome.pythonCaptured = provider == runtime.CaptureProviderPython
-	pythonTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
-		(outcome.pythonCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
-	if len(supportedRuntimeTraceLanguages(req.Language, pythonTraceEnabled)) == 0 {
-		return outcome, nil
-	}
-
-	if !captureResult.TraceProduced {
-		outcome.warnings = []string{runtimeTraceMissingWarning}
-		return outcome, nil
-	}
-	traceData, err := captureResult.Snapshot.Load()
-	if err != nil {
-		return outcome, err
-	}
-	if captureRuntimeTraceAfterValidatedLoadHook != nil {
-		captureRuntimeTraceAfterValidatedLoadHook()
-	}
-	outcome.trace = &traceData
-	return outcome, nil
+	return finalizeCapturedRuntimeTrace(outcome, req, captureResult)
 }
 
 func loadRuntimeTraceSnapshot(tracePath string) (*runtime.Trace, bool, error) {
@@ -126,6 +70,93 @@ func loadRuntimeTraceSnapshot(tracePath string) (*runtime.Trace, bool, error) {
 		return nil, false, err
 	}
 	return &traceData, false, nil
+}
+
+type explicitRuntimeTraceFallback struct {
+	trace   *runtime.Trace
+	missing bool
+}
+
+func finalizeRuntimeTraceWithoutCommand(outcome runtimeTraceCaptureOutcome, resolvedTracePath string) (runtimeTraceCaptureOutcome, error) {
+	traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
+	if err != nil {
+		return outcome, err
+	}
+	outcome.traceFinalized = true
+	if missing {
+		outcome.warnings = []string{runtimeTraceMissingWarning}
+		return outcome, nil
+	}
+	runRuntimeTraceValidatedLoadHook()
+	outcome.trace = traceData
+	return outcome, nil
+}
+
+func loadExplicitRuntimeTraceFallback(explicit bool, resolvedTracePath string) (explicitRuntimeTraceFallback, error) {
+	if !explicit {
+		return explicitRuntimeTraceFallback{}, nil
+	}
+	traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
+	if err != nil {
+		return explicitRuntimeTraceFallback{}, err
+	}
+	return explicitRuntimeTraceFallback{trace: traceData, missing: missing}, nil
+}
+
+func runRuntimeTraceCapture(ctx context.Context, req Request, repoPath string, resolvedTracePath string, command string, provider runtime.CaptureProvider) (runtime.CaptureResult, error) {
+	return runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
+		RepoPath:             repoPath,
+		TracePath:            resolvedTracePath,
+		Command:              command,
+		Provider:             provider,
+		PythonRunnerProfiles: req.Features.Enabled(runtime.PythonRunnerProfilesFeature),
+	})
+}
+
+func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, fallback explicitRuntimeTraceFallback, err error) (runtimeTraceCaptureOutcome, error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return outcome, err
+	}
+	warnings := []string{runtimeTraceCommandWarningPrefix + err.Error()}
+	if fallback.trace != nil {
+		outcome.warnings = warnings
+		outcome.trace = fallback.trace
+		return outcome, nil
+	}
+	if fallback.missing {
+		warnings = append(warnings, runtimeTraceMissingWarning)
+	}
+	outcome.warnings = warnings
+	return outcome, nil
+}
+
+func finalizeCapturedRuntimeTrace(outcome runtimeTraceCaptureOutcome, req Request, captureResult runtime.CaptureResult) (runtimeTraceCaptureOutcome, error) {
+	if !supportsCapturedRuntimeTrace(req, outcome.pythonCaptured) {
+		return outcome, nil
+	}
+	if !captureResult.TraceProduced {
+		outcome.warnings = []string{runtimeTraceMissingWarning}
+		return outcome, nil
+	}
+	traceData, err := captureResult.Snapshot.Load()
+	if err != nil {
+		return outcome, err
+	}
+	runRuntimeTraceValidatedLoadHook()
+	outcome.trace = &traceData
+	return outcome, nil
+}
+
+func supportsCapturedRuntimeTrace(req Request, pythonCaptured bool) bool {
+	pythonTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
+		(pythonCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
+	return len(supportedRuntimeTraceLanguages(req.Language, pythonTraceEnabled)) > 0
+}
+
+func runRuntimeTraceValidatedLoadHook() {
+	if captureRuntimeTraceAfterValidatedLoadHook != nil {
+		captureRuntimeTraceAfterValidatedLoadHook()
+	}
 }
 
 func captureProviderForRequest(req Request, command string, candidates []language.Candidate) runtime.CaptureProvider {

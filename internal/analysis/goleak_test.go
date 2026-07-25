@@ -7,5 +7,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if runAnalysisRuntimeToolHelper() {
+		return
+	}
 	testsupport.RunOptionalLeakMain(m)
 }

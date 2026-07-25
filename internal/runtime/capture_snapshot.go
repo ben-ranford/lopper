@@ -42,17 +42,9 @@ type runtimeTraceSnapshot struct {
 }
 
 func snapshotRuntimeTraceFile(tracePath string) (_ runtimeTraceSnapshot, err error) {
-	absolutePath, err := filepath.Abs(tracePath)
+	root, fileName, err := openRuntimeTraceRoot(tracePath)
 	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
-	}
-	traceRootPath, err := runtimeTraceRootPath(filepath.Dir(absolutePath))
-	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: open trace root: %w", err)
-	}
-	root, err := safeio.OpenRootNoFollow(traceRootPath)
-	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: open trace root: %w", err)
+		return runtimeTraceSnapshot{}, err
 	}
 	defer func() {
 		if closeErr := root.Close(); closeErr != nil {
@@ -60,65 +52,23 @@ func snapshotRuntimeTraceFile(tracePath string) (_ runtimeTraceSnapshot, err err
 		}
 	}()
 
-	fileName := filepath.Base(absolutePath)
-	pathInfo, err := root.Lstat(fileName)
+	_, file, openedInfo, err := openRuntimeTraceFile(root, fileName, tracePath)
 	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
-	}
-	if err := validateRuntimeTraceFileInfo(pathInfo, tracePath); err != nil {
 		return runtimeTraceSnapshot{}, err
-	}
-	if snapshotRuntimeTraceFileAfterPathSnapshotHook != nil {
-		snapshotRuntimeTraceFileAfterPathSnapshotHook()
-	}
-
-	file, err := root.Open(fileName)
-	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
 	}
 	defer func() {
 		if closeErr := file.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	if snapshotRuntimeTraceFileAfterOpenHook != nil {
-		snapshotRuntimeTraceFileAfterOpenHook()
-	}
-
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
-	}
-	if err := validateRuntimeTraceFileInfo(openedInfo, tracePath); err != nil {
-		return runtimeTraceSnapshot{}, err
-	}
-	if !os.SameFile(pathInfo, openedInfo) || !sameRuntimeTraceMetadata(pathInfo, openedInfo) {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: trace file changed while opening: %s", tracePath)
-	}
 
 	data, err := io.ReadAll(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes))
 	if err != nil {
 		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
 	}
-	descriptorInfo, err := file.Stat()
+	descriptorInfo, err := validateRuntimeTraceRead(root, file, fileName, tracePath, openedInfo)
 	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
-	}
-	if err := validateRuntimeTraceFileInfo(descriptorInfo, tracePath); err != nil {
 		return runtimeTraceSnapshot{}, err
-	}
-	currentPathInfo, err := root.Lstat(fileName)
-	if err != nil {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: %w", err)
-	}
-	if err := validateRuntimeTraceFileInfo(currentPathInfo, tracePath); err != nil {
-		return runtimeTraceSnapshot{}, err
-	}
-	if !os.SameFile(openedInfo, descriptorInfo) ||
-		!sameRuntimeTraceMetadata(openedInfo, descriptorInfo) ||
-		!os.SameFile(descriptorInfo, currentPathInfo) ||
-		!sameRuntimeTraceMetadata(descriptorInfo, currentPathInfo) {
-		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: trace file changed while hashing: %s", tracePath)
 	}
 
 	digest := sha256.Sum256(data)
@@ -127,6 +77,98 @@ func snapshotRuntimeTraceFile(tracePath string) (_ runtimeTraceSnapshot, err err
 		data:   data,
 		digest: fmt.Sprintf("%x", digest),
 	}, nil
+}
+
+func openRuntimeTraceRoot(tracePath string) (safeio.Root, string, error) {
+	absolutePath, err := filepath.Abs(tracePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("hash runtime trace: %w", err)
+	}
+	traceRootPath, err := runtimeTraceRootPath(filepath.Dir(absolutePath))
+	if err != nil {
+		return nil, "", fmt.Errorf("hash runtime trace: open trace root: %w", err)
+	}
+	root, err := safeio.OpenRootNoFollow(traceRootPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("hash runtime trace: open trace root: %w", err)
+	}
+	return root, filepath.Base(absolutePath), nil
+}
+
+func openRuntimeTraceFile(root safeio.Root, fileName string, tracePath string) (os.FileInfo, safeio.File, os.FileInfo, error) {
+	pathInfo, err := validatedRuntimeTracePathInfo(root, fileName, tracePath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if snapshotRuntimeTraceFileAfterPathSnapshotHook != nil {
+		snapshotRuntimeTraceFileAfterPathSnapshotHook()
+	}
+
+	file, err := root.Open(fileName)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("hash runtime trace: %w", err)
+	}
+	if snapshotRuntimeTraceFileAfterOpenHook != nil {
+		snapshotRuntimeTraceFileAfterOpenHook()
+	}
+
+	openedInfo, err := validatedRuntimeTraceFileStat(file, tracePath)
+	if err != nil {
+		closeErr := file.Close()
+		return nil, nil, nil, errors.Join(err, closeErr)
+	}
+	if err := ensureSameRuntimeTraceFile(pathInfo, openedInfo, tracePath, "opening"); err != nil {
+		closeErr := file.Close()
+		return nil, nil, nil, errors.Join(err, closeErr)
+	}
+	return pathInfo, file, openedInfo, nil
+}
+
+func validateRuntimeTraceRead(root safeio.Root, file safeio.File, fileName string, tracePath string, openedInfo os.FileInfo) (os.FileInfo, error) {
+	descriptorInfo, err := validatedRuntimeTraceFileStat(file, tracePath)
+	if err != nil {
+		return nil, err
+	}
+	currentPathInfo, err := validatedRuntimeTracePathInfo(root, fileName, tracePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureSameRuntimeTraceFile(openedInfo, descriptorInfo, tracePath, "hashing"); err != nil {
+		return nil, err
+	}
+	if err := ensureSameRuntimeTraceFile(descriptorInfo, currentPathInfo, tracePath, "hashing"); err != nil {
+		return nil, err
+	}
+	return descriptorInfo, nil
+}
+
+func validatedRuntimeTracePathInfo(root safeio.Root, fileName string, tracePath string) (os.FileInfo, error) {
+	info, err := root.Lstat(fileName)
+	if err != nil {
+		return nil, fmt.Errorf("hash runtime trace: %w", err)
+	}
+	if err := validateRuntimeTraceFileInfo(info, tracePath); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func validatedRuntimeTraceFileStat(file safeio.File, tracePath string) (os.FileInfo, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("hash runtime trace: %w", err)
+	}
+	if err := validateRuntimeTraceFileInfo(info, tracePath); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func ensureSameRuntimeTraceFile(expected os.FileInfo, actual os.FileInfo, tracePath string, stage string) error {
+	if os.SameFile(expected, actual) && sameRuntimeTraceMetadata(expected, actual) {
+		return nil
+	}
+	return fmt.Errorf("hash runtime trace: trace file changed while %s: %s", stage, tracePath)
 }
 
 func runtimeTraceRootPath(path string) (string, error) {

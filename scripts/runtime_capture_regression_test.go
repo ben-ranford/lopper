@@ -9,77 +9,34 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	reportmodel "github.com/ben-ranford/lopper/internal/report/model"
 	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestRuntimeCaptureRefreshesTamperedTraceOnCacheHit(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	fixture := newRuntimeCaptureRegressionFixture(t)
 
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	tracePath := runtime.DefaultTracePath(repo)
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupRuntimeCaptureRegressionTool(t))
-
-	service := analysis.NewService()
-	req := analysis.Request{
-		RepoPath:           repo,
-		Language:           "js-ts",
-		TopN:               10,
-		RuntimeTestCommand: "npm test",
-		Cache: &analysis.CacheOptions{
-			Enabled: true,
-			Path:    filepath.Join(repo, "analysis-cache"),
-		},
-	}
-
-	first, err := service.Analyse(context.Background(), req)
+	first, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("first analyse with runtime capture: %v", err)
 	}
 	if first.Cache == nil || first.Cache.Misses != 1 {
 		t.Fatalf("expected first run cache miss, got %#v", first.Cache)
 	}
-	if got := readRuntimeCaptureRegressionCounter(t, counterPath); got != 1 {
-		t.Fatalf("expected first runtime capture invocation count 1, got %d", got)
-	}
+	assertRuntimeCaptureRegressionCounter(t, fixture.counterPath, 1, "expected first runtime capture invocation count 1")
 
-	testutil.MustWriteFile(t, tracePath, "{\"module\":\"chalk/index\"}\n")
+	testutil.MustWriteFile(t, fixture.tracePath, "{\"module\":\"chalk/index\"}\n")
 
-	second, err := service.Analyse(context.Background(), req)
+	second, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("second analyse after tampering runtime trace: %v", err)
 	}
 	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
 		t.Fatalf("expected second run cache hit metadata, got %#v", second.Cache)
 	}
-	if got := readRuntimeCaptureRegressionCounter(t, counterPath); got != 2 {
-		t.Fatalf("expected tampered runtime trace to force recapture, got %d", got)
-	}
-
-	var lodashRuntime *report.RuntimeUsage
-	for _, dependency := range second.Dependencies {
-		if dependency.Language == "js-ts" && dependency.Name == "chalk" {
-			t.Fatalf("expected tampered trace to be ignored after refresh, got %#v", dependency)
-		}
-		if dependency.Language == "js-ts" && dependency.Name == "lodash" {
-			lodashRuntime = dependency.RuntimeUsage
-		}
-	}
-	if lodashRuntime == nil || lodashRuntime.LoadCount != 1 || lodashRuntime.Correlation != report.RuntimeCorrelationRuntimeOnly {
-		t.Fatalf("expected refreshed lodash runtime annotation, got %#v from %#v", lodashRuntime, second.Dependencies)
-	}
-	var foundLodashMap bool
-	for _, module := range lodashRuntime.Modules {
-		if module.Module == "lodash/map" && module.Count == 1 {
-			foundLodashMap = true
-		}
-	}
-	if !foundLodashMap {
-		t.Fatalf("expected refreshed lodash/map runtime evidence, got %#v", lodashRuntime.Modules)
-	}
+	assertRuntimeCaptureRegressionCounter(t, fixture.counterPath, 2, "expected tampered runtime trace to force recapture")
+	assertRuntimeCaptureDependencyRefresh(t, second.Dependencies)
 }
 
 func TestRuntimeCaptureRejectsImplicitDefaultArtifactsSymlinkWithoutExternalMutation(t *testing.T) {
@@ -204,13 +161,83 @@ func setupRuntimeCaptureRegressionTool(t *testing.T) string {
 	t.Helper()
 
 	toolDir := t.TempDir()
-	npmPath := filepath.Join(toolDir, "npm")
-	script := "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
-	testutil.MustWriteFileMode(t, npmPath, script, 0o700)
+	testutil.InstallSelfExecutable(t, toolDir, "npm")
+	t.Setenv(scriptsRuntimeHelperModeEnv, "count-trace")
 	return toolDir
 }
 
 func readRuntimeCaptureRegressionCounter(t *testing.T, path string) int {
 	t.Helper()
 	return testutil.MustReadTrimmedIntFile(t, path)
+}
+
+type runtimeCaptureRegressionFixture struct {
+	service     *analysis.Service
+	request     analysis.Request
+	counterPath string
+	tracePath   string
+}
+
+func newRuntimeCaptureRegressionFixture(t *testing.T) runtimeCaptureRegressionFixture {
+	t.Helper()
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+
+	counterPath := filepath.Join(repo, "runtime-counter.txt")
+	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupRuntimeCaptureRegressionTool(t))
+
+	return runtimeCaptureRegressionFixture{
+		service: analysis.NewService(),
+		request: analysis.Request{
+			RepoPath:           repo,
+			Language:           "js-ts",
+			TopN:               10,
+			RuntimeTestCommand: "npm test",
+			Cache: &analysis.CacheOptions{
+				Enabled: true,
+				Path:    filepath.Join(repo, "analysis-cache"),
+			},
+		},
+		counterPath: counterPath,
+		tracePath:   runtime.DefaultTracePath(repo),
+	}
+}
+
+func assertRuntimeCaptureRegressionCounter(t *testing.T, path string, want int, message string) {
+	t.Helper()
+	if got := readRuntimeCaptureRegressionCounter(t, path); got != want {
+		t.Fatalf("%s, got %d", message, got)
+	}
+}
+
+func assertRuntimeCaptureDependencyRefresh(t *testing.T, dependencies []reportmodel.DependencyReport) {
+	t.Helper()
+
+	lodashRuntime := findRuntimeCaptureDependencyUsage(t, dependencies, "lodash")
+	if lodashRuntime == nil || lodashRuntime.LoadCount != 1 || lodashRuntime.Correlation != report.RuntimeCorrelationRuntimeOnly {
+		t.Fatalf("expected refreshed lodash runtime annotation, got %#v from %#v", lodashRuntime, dependencies)
+	}
+	for _, module := range lodashRuntime.Modules {
+		if module.Module == "lodash/map" && module.Count == 1 {
+			return
+		}
+	}
+	t.Fatalf("expected refreshed lodash/map runtime evidence, got %#v", lodashRuntime.Modules)
+}
+
+func findRuntimeCaptureDependencyUsage(t *testing.T, dependencies []reportmodel.DependencyReport, dependencyName string) *report.RuntimeUsage {
+	t.Helper()
+
+	for _, dependency := range dependencies {
+		if dependency.Language == "js-ts" && dependency.Name == "chalk" {
+			t.Fatalf("expected tampered trace to be ignored after refresh, got %#v", dependency)
+		}
+		if dependency.Language == "js-ts" && dependency.Name == dependencyName {
+			return dependency.RuntimeUsage
+		}
+	}
+	return nil
 }

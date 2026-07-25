@@ -301,7 +301,17 @@ func TestRuntimeHookSearchRootsSkipsExecutableErrorAndMissingCaller(t *testing.T
 
 func TestRuntimeHookSearchRootsUsesRelativeCallerWhenExecutableUnavailable(t *testing.T) {
 	restoreRuntimeHookPathProviders(t)
-	testutil.ChdirRemovedDir(t)
+
+	repo := t.TempDir()
+	packageDir := filepath.Join(repo, "internal", "runtime")
+	if err := os.MkdirAll(packageDir, 0o750); err != nil {
+		t.Fatalf("mkdir package dir: %v", err)
+	}
+	testutil.Chdir(t, packageDir)
+	wantRepoRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("eval repo root symlink: %v", err)
+	}
 
 	runtimeExecutablePath = func() (string, error) {
 		return "", errors.New("no executable path")
@@ -310,10 +320,6 @@ func TestRuntimeHookSearchRootsUsesRelativeCallerWhenExecutableUnavailable(t *te
 		return 0, "capture_env.go", 0, true
 	}
 
-	wantRepoRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatalf("abs repo root: %v", err)
-	}
 	if roots := runtimeHookSearchRoots(); !reflect.DeepEqual(roots, []string{wantRepoRoot}) {
 		t.Fatalf("expected caller-derived fallback root %q, got %v", wantRepoRoot, roots)
 	}
