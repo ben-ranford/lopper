@@ -3078,7 +3078,7 @@ func TestMakefileBenchdeltaCoverageRatchet(t *testing.T) {
 	}
 }
 
-func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
+func TestMakefileBenchGateFailsClosedAndPreservesInvalidExitCodes(t *testing.T) {
 	t.Parallel()
 
 	makefile := readConfig(t, "Makefile")
@@ -3089,12 +3089,33 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		`run_go_tool_failure_file=$$(mktemp); \`,
+		`run_go_tool() {`,
+		`: > "$$run_go_tool_failure_file"; \`,
+		`printf "%s" "memory benchmark helper $$tool_path build failed; comparison could not be evaluated" > "$$run_go_tool_failure_file"; \`,
+		`printf "%s" "memory benchmark helper $$tool_path launch failed; comparison could not be evaluated" > "$$run_go_tool_failure_file"; \`,
+		`ensure_benchgate_artifact_dir() { \`,
+		`chmod 0750 "$$dir_path"; \`,
+		`write_benchgate_summary_file() { \`,
+		`write_benchgate_status_file() { \`,
+		`chmod 0600 "$$summary_path"; \`,
+		`chmod 0600 "$$status_path"; \`,
+		`write_benchgate_failure_artifacts() {`,
+		`run_go_tool ./tools/benchgate -base-ref "$$requested_base_ref" -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)"`,
+		`run_go_tool ./tools/benchgate -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)" -failure-message "$$message"`,
+		`run_go_tool_failure_message=$$(cat "$$run_go_tool_failure_file"); \`,
+		`if [ -n "$$run_go_tool_failure_message" ]; then \`,
+		`write_benchgate_summary_file "$$summary_path" "$$message" || summary_status=$$?; \`,
+		`write_benchgate_status_file "$$status_path" || status_status=$$?; \`,
+		`write_benchgate_failure_artifacts "$(MEMORY_BENCH_SUMMARY)" "$(MEMORY_BENCH_STATUS)" "$$run_go_tool_failure_message"; \`,
 		`benchdelta_bin="$$bench_dir/benchdelta"`,
 		`$(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta`,
 		`"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)"`,
 		`printf "%s\n" "$$status" > "$(MEMORY_BENCH_STATUS)"`,
+		`if [ "$$base_status" -ne 0 ]; then \`,
 		`if [ "$(MEMORY_BENCH_ENFORCE)" = "0" ]; then`,
 		`if [ "$$status" -eq 1 ]; then`,
+		`echo "Running memory benchmark delta against $$requested_base_ref."`,
 		`exit "$$status"`,
 	} {
 		if !strings.Contains(target, want) {
@@ -3102,12 +3123,17 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		}
 	}
 
-	for _, omit := range []string{
+	for _, forbidden := range []string{
+		`$(GO_CMD) run ./tools/benchgate`,
 		`$(GO_CMD) run ./tools/benchdelta`,
 		`if [ "$$status" -eq 2 ]; then`,
+		`falling back to 'HEAD~1'`,
+		`skipping memory benchmark gate`,
+		`printf "0\n" > "$(MEMORY_BENCH_STATUS)"`,
+		`exit 1;`,
 	} {
-		if strings.Contains(target, omit) {
-			t.Fatalf("bench-gate target must not contain %q", omit)
+		if strings.Contains(target, forbidden) {
+			t.Fatalf("bench-gate target must not contain %q", forbidden)
 		}
 	}
 }

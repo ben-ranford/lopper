@@ -207,47 +207,155 @@ bench-delta:
 bench-gate:
 	@set -eu; \
 	requested_base_ref="$(MEMORY_BENCH_BASE)"; \
-	base_ref="$$requested_base_ref"; \
-	used_fallback=0; \
-	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
-		echo "Warning: memory benchmark base ref '$$base_ref' not found; falling back to 'HEAD~1'."; \
-		base_ref="HEAD~1"; \
-		used_fallback=1; \
-	fi; \
 	mkdir -p $$(dirname "$(BENCH_BASE_OUTPUT)"); \
-	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
-		echo "No valid memory benchmark base ref found; skipping memory benchmark gate."; \
-		printf "## Memory Benchmarks\n\nNo valid base ref found; skipping memory benchmark gate.\n" > "$(MEMORY_BENCH_SUMMARY)"; \
-		printf "0\n" > "$(MEMORY_BENCH_STATUS)"; \
-		exit 0; \
-	fi; \
-	if ! base_commit=$$(git merge-base "$$base_ref" HEAD 2>/dev/null); then \
-		echo "Base ref '$$base_ref' is not related to HEAD; skipping memory benchmark gate."; \
-		printf "## Memory Benchmarks\n\nBase ref '%s' is not related to HEAD; skipping memory benchmark gate.\n" "$$base_ref" > "$(MEMORY_BENCH_SUMMARY)"; \
-		printf "0\n" > "$(MEMORY_BENCH_STATUS)"; \
-		exit 0; \
+	run_go_tool_failure_file=$$(mktemp); \
+	run_go_tool() { \
+		: > "$$run_go_tool_failure_file"; \
+		tool_path="$$1"; \
+		shift; \
+		tool_dir=$$(mktemp -d); \
+		tool_bin="$$tool_dir/$$(basename "$$tool_path")"; \
+		GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$tool_bin" "$$tool_path" || { \
+			build_status=$$?; \
+			printf "%s" "memory benchmark helper $$tool_path build failed; comparison could not be evaluated" > "$$run_go_tool_failure_file"; \
+			rm -rf "$$tool_dir"; \
+			return "$$build_status"; \
+		}; \
+		tool_status=0; \
+		"$$tool_bin" "$$@" || tool_status=$$?; \
+		if [ "$$tool_status" -ge 126 ]; then \
+			printf "%s" "memory benchmark helper $$tool_path launch failed; comparison could not be evaluated" > "$$run_go_tool_failure_file"; \
+		fi; \
+		rm -rf "$$tool_dir"; \
+		return "$$tool_status"; \
+	}; \
+	run_sanitized_git() { \
+		env -i \
+			PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+			TMPDIR="$${TMPDIR:-/tmp}" \
+			GIT_CONFIG_NOSYSTEM=1 \
+			GIT_CONFIG_GLOBAL=/dev/null \
+			GIT_TERMINAL_PROMPT=0 \
+			GIT_CONFIG_COUNT=6 \
+			GIT_CONFIG_KEY_0=core.fsmonitor \
+			GIT_CONFIG_VALUE_0=false \
+			GIT_CONFIG_KEY_1=core.quotePath \
+			GIT_CONFIG_VALUE_1=false \
+			GIT_CONFIG_KEY_2=diff.external \
+			GIT_CONFIG_VALUE_2= \
+			GIT_CONFIG_KEY_3=interactive.diffFilter \
+			GIT_CONFIG_VALUE_3= \
+			GIT_CONFIG_KEY_4=maintenance.auto \
+			GIT_CONFIG_VALUE_4=false \
+			GIT_CONFIG_KEY_5=core.pager \
+			GIT_CONFIG_VALUE_5=cat \
+			git "$$@"; \
+	}; \
+	ensure_benchgate_artifact_dir() { \
+		dir_path="$$1"; \
+		mkdir -p "$$dir_path"; \
+		chmod 0750 "$$dir_path"; \
+	}; \
+	write_benchgate_summary_file() { \
+		summary_path="$$1"; \
+		message="$$2"; \
+		ensure_benchgate_artifact_dir "$$(dirname "$$summary_path")"; \
+		umask 077; \
+		: > "$$summary_path"; \
+		chmod 0600 "$$summary_path"; \
+		printf "## Memory Benchmarks\n\nComparison could not be evaluated.\n\n%s\n" "$$message" > "$$summary_path"; \
+		chmod 0600 "$$summary_path"; \
+	}; \
+	write_benchgate_status_file() { \
+		status_path="$$1"; \
+		ensure_benchgate_artifact_dir "$$(dirname "$$status_path")"; \
+		umask 077; \
+		: > "$$status_path"; \
+		chmod 0600 "$$status_path"; \
+		printf "2\n" > "$$status_path"; \
+		chmod 0600 "$$status_path"; \
+	}; \
+	write_benchgate_failure_artifacts() { \
+		( \
+			summary_path="$$1"; \
+			status_path="$$2"; \
+			message="$$3"; \
+			artifact_failure=0; \
+			summary_status=0; \
+			status_status=0; \
+			set +e; \
+			write_benchgate_summary_file "$$summary_path" "$$message" || summary_status=$$?; \
+			write_benchgate_status_file "$$status_path" || status_status=$$?; \
+			if [ "$$summary_status" -ne 0 ]; then \
+				echo "benchgate summary artifact write failed: $$summary_path" >&2; \
+				artifact_failure=1; \
+			fi; \
+			if [ "$$status_status" -ne 0 ]; then \
+				echo "benchgate status artifact write failed: $$status_path" >&2; \
+				artifact_failure=1; \
+			fi; \
+			exit "$$artifact_failure"; \
+		); \
+	}; \
+	benchgate_failure() { \
+		bench_output_path="$$1"; \
+		phase="$$2"; \
+		cat "$$bench_output_path"; \
+		message="memory benchmark $$phase execution failed; comparison could not be evaluated"; \
+		set +e; \
+		run_go_tool ./tools/benchgate -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)" -failure-message "$$message"; \
+		artifact_status=$$?; \
+		run_go_tool_failure_message=$$(cat "$$run_go_tool_failure_file"); \
+		set -e; \
+		if [ -n "$$run_go_tool_failure_message" ]; then \
+			set +e; \
+			write_benchgate_failure_artifacts "$(MEMORY_BENCH_SUMMARY)" "$(MEMORY_BENCH_STATUS)" "$$run_go_tool_failure_message"; \
+			fallback_artifact_status=$$?; \
+			set -e; \
+			if [ "$$fallback_artifact_status" -ne 0 ]; then \
+				echo "benchgate failure artifact fallback encountered write errors" >&2; \
+			fi; \
+			artifact_status=2; \
+		elif [ "$$artifact_status" -ne 2 ]; then \
+			echo "memory benchmark failure artifacts exited with status $$artifact_status" >&2; \
+		fi; \
+		exit 2; \
+	}; \
+	set +e; \
+	base_commit=$$(run_go_tool ./tools/benchgate -base-ref "$$requested_base_ref" -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)"); \
+	base_status=$$?; \
+	run_go_tool_failure_message=$$(cat "$$run_go_tool_failure_file"); \
+	set -e; \
+	if [ "$$base_status" -ne 0 ]; then \
+		if [ -n "$$run_go_tool_failure_message" ]; then \
+			set +e; \
+			write_benchgate_failure_artifacts "$(MEMORY_BENCH_SUMMARY)" "$(MEMORY_BENCH_STATUS)" "$$run_go_tool_failure_message"; \
+			fallback_artifact_status=$$?; \
+			set -e; \
+			if [ "$$fallback_artifact_status" -ne 0 ]; then \
+				echo "benchgate failure artifact fallback encountered write errors" >&2; \
+			fi; \
+			rm -f "$$run_go_tool_failure_file"; \
+			exit 2; \
+		fi; \
+		rm -f "$$run_go_tool_failure_file"; \
+		exit "$$base_status"; \
 	fi; \
 	bench_dir=$$(mktemp -d); \
 	base_tree="$$bench_dir/base"; \
 	base_output_tmp=$$(mktemp); \
 	head_output_tmp=$$(mktemp); \
-	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
+	cleanup() { (run_sanitized_git -C "$$PWD" worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp" "$$run_go_tool_failure_file"; }; \
 	trap cleanup EXIT INT TERM; \
-	if [ "$$used_fallback" -eq 1 ]; then \
-		echo "Running memory benchmark delta against fallback base $$base_ref (requested $$requested_base_ref)."; \
-	else \
-		echo "Running memory benchmark delta against $$base_ref."; \
-	fi; \
-	(unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); \
+	echo "Running memory benchmark delta against $$requested_base_ref."; \
+	run_sanitized_git -C "$$PWD" worktree add --detach "$$base_tree" "$$base_commit" >/dev/null; \
 	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
-		cat "$$base_output_tmp"; \
-		exit 1; \
+		benchgate_failure "$$base_output_tmp" base; \
 	fi; \
 	cat "$$base_output_tmp"; \
 	cp "$$base_output_tmp" "$(BENCH_BASE_OUTPUT)"; \
 	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$head_output_tmp" 2>&1; then \
-		cat "$$head_output_tmp"; \
-		exit 1; \
+		benchgate_failure "$$head_output_tmp" head; \
 	fi; \
 	cat "$$head_output_tmp"; \
 	cp "$$head_output_tmp" "$(BENCH_HEAD_OUTPUT)"; \

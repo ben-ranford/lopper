@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -159,4 +160,73 @@ func RunGit(t *testing.T, repo string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
 	}
+}
+
+type testGitConfigOverride struct {
+	key   string
+	value string
+}
+
+var isolatedGitConfigOverrides = []testGitConfigOverride{
+	{key: "core.fsmonitor", value: "false"},
+	{key: "core.quotePath", value: "false"},
+	{key: "diff.external", value: ""},
+	{key: "interactive.diffFilter", value: ""},
+	{key: "maintenance.auto", value: "false"},
+	{key: "core.pager", value: "cat"},
+}
+
+func IsolatedGitEnv(t *testing.T) []string {
+	t.Helper()
+
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0o750); err != nil {
+		t.Fatalf("mkdir isolated home: %v", err)
+	}
+	xdgConfigHome := filepath.Join(homeDir, ".config")
+	if err := os.MkdirAll(xdgConfigHome, 0o750); err != nil {
+		t.Fatalf("mkdir isolated xdg config: %v", err)
+	}
+
+	env := make([]string, 0, len(os.Environ())+10+len(isolatedGitConfigOverrides)*2)
+	for _, entry := range os.Environ() {
+		key, _, hasKey := strings.Cut(entry, "=")
+		if !hasKey || shouldStripIsolatedGitEnvKey(key) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	env = append(env, []string{
+		"HOME=" + homeDir,
+		"XDG_CONFIG_HOME=" + xdgConfigHome,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	}...)
+	env = append(env, isolatedGitConfigEnvEntries()...)
+	return env
+}
+
+func shouldStripIsolatedGitEnvKey(key string) bool {
+	if strings.HasPrefix(key, "GIT_") || strings.HasPrefix(key, "LD_") || strings.HasPrefix(key, "DYLD_") {
+		return true
+	}
+	switch key {
+	case "HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "PAGER", "EDITOR", "VISUAL":
+		return true
+	default:
+		return false
+	}
+}
+
+func isolatedGitConfigEnvEntries() []string {
+	entries := make([]string, 0, 1+len(isolatedGitConfigOverrides)*2)
+	entries = append(entries, "GIT_CONFIG_COUNT="+strconv.Itoa(len(isolatedGitConfigOverrides)))
+	for index, override := range isolatedGitConfigOverrides {
+		entries = append(entries, []string{
+			"GIT_CONFIG_KEY_" + strconv.Itoa(index) + "=" + override.key,
+			"GIT_CONFIG_VALUE_" + strconv.Itoa(index) + "=" + override.value,
+		}...)
+	}
+	return entries
 }

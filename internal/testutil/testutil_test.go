@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
@@ -219,6 +220,54 @@ func TestRunGit(t *testing.T) {
 	}
 }
 
+func TestIsolatedGitEnv(t *testing.T) {
+	t.Setenv("KEEP_ME", "1")
+	t.Setenv("GIT_DIR", "/tmp/attacker-git")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/attacker-global")
+	t.Setenv("LD_PRELOAD", "/tmp/attacker.so")
+	t.Setenv("DYLD_INSERT_LIBRARIES", "/tmp/attacker.dylib")
+	t.Setenv("HOME", "/tmp/attacker-home")
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/attacker-xdg")
+	t.Setenv("PAGER", "more")
+
+	env := IsolatedGitEnv(t)
+	envText := strings.Join(env, "\n")
+
+	for _, blockedEnvEntry := range []string{
+		"GIT_DIR=",
+		"GIT_CONFIG_GLOBAL=/tmp/attacker-global",
+		"LD_PRELOAD=",
+		"DYLD_INSERT_LIBRARIES=",
+		"HOME=/tmp/attacker-home",
+		"XDG_CONFIG_HOME=/tmp/attacker-xdg",
+		"PAGER=more",
+	} {
+		if strings.Contains(envText, blockedEnvEntry) {
+			t.Fatalf("expected %q to be stripped from %#v", blockedEnvEntry, env)
+		}
+	}
+	for _, expected := range []string{
+		"KEEP_ME=1",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_COUNT=6",
+		"GIT_CONFIG_KEY_0=core.fsmonitor",
+		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_5=core.pager",
+		"GIT_CONFIG_VALUE_5=cat",
+	} {
+		if !strings.Contains(envText, expected) {
+			t.Fatalf("expected %q in %#v", expected, env)
+		}
+	}
+	if homeIndex := indexEnv(env, "HOME="); homeIndex < 0 {
+		t.Fatalf("expected isolated HOME in %#v", env)
+	} else if xdgIndex := indexEnv(env, "XDG_CONFIG_HOME="); xdgIndex != homeIndex+1 {
+		t.Fatalf("expected XDG_CONFIG_HOME immediately after HOME in %#v", env)
+	}
+}
+
 func TestFatalPathsViaHelperProcess(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []string{
@@ -240,6 +289,15 @@ func TestFatalPathsViaHelperProcess(t *testing.T) {
 			}
 		})
 	}
+}
+
+func indexEnv(env []string, prefix string) int {
+	for index, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestHelperFatalPath(t *testing.T) {
