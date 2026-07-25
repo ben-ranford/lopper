@@ -1660,30 +1660,9 @@ func TestEvaluateLockfileDriftPolicyWarnSizeOnlyClassifierMatrix(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			original := collectLockfileGitContextFn
-			collectLockfileGitContextFn = func(context.Context, string, []lockfileRule) (lockfileGitContext, error) {
-				return lockfileGitContext{}, tc.err
-			}
-			t.Cleanup(func() {
-				collectLockfileGitContextFn = original
-			})
-
+			stubCollectLockfileGitContextError(t, tc.err)
 			warnings, err := evaluateLockfileDriftPolicy(context.Background(), t.TempDir(), "warn")
-			if tc.pure {
-				if err != nil {
-					t.Fatalf("expected size-only tree to become a warning, got warnings=%#v err=%v", warnings, err)
-				}
-				if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to safely inspect manifest") {
-					t.Fatalf("expected one oversized-manifest warning, got %#v", warnings)
-				}
-				return
-			}
-			if !errors.Is(err, fs.ErrPermission) {
-				t.Fatalf("expected mixed tree to remain fatal, got warnings=%#v err=%v", warnings, err)
-			}
-			if len(warnings) != 0 {
-				t.Fatalf("expected fatal mixed tree to suppress warnings, got %#v", warnings)
-			}
+			assertWarnSizeOnlyClassifierResult(t, tc.pure, warnings, err)
 		})
 	}
 }
@@ -2676,6 +2655,50 @@ func countMatchingErrorLeaves(err, target error) int {
 		}
 	}
 	return count
+}
+
+func stubCollectLockfileGitContextError(t *testing.T, err error) {
+	t.Helper()
+
+	original := collectLockfileGitContextFn
+	collectLockfileGitContextFn = func(context.Context, string, []lockfileRule) (lockfileGitContext, error) {
+		return lockfileGitContext{}, err
+	}
+	t.Cleanup(func() {
+		collectLockfileGitContextFn = original
+	})
+}
+
+func assertWarnSizeOnlyClassifierResult(t *testing.T, pure bool, warnings []string, err error) {
+	t.Helper()
+
+	if pure {
+		assertWarnSizeOnlyClassifierWarning(t, warnings, err)
+		return
+	}
+	assertWarnSizeOnlyClassifierFatal(t, warnings, err)
+}
+
+func assertWarnSizeOnlyClassifierWarning(t *testing.T, warnings []string, err error) {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("expected size-only tree to become a warning, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to safely inspect manifest") {
+		t.Fatalf("expected one oversized-manifest warning, got %#v", warnings)
+	}
+}
+
+func assertWarnSizeOnlyClassifierFatal(t *testing.T, warnings []string, err error) {
+	t.Helper()
+
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("expected mixed tree to remain fatal, got warnings=%#v err=%v", warnings, err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected fatal mixed tree to suppress warnings, got %#v", warnings)
+	}
 }
 
 func assertOversizedManifestInspectionFailure(t *testing.T, manifestName, wantErr string, err error) {
