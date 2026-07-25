@@ -27,6 +27,10 @@ func TestRuntimeModuleFromResolvedPathBranches(t *testing.T) {
 		{name: "scoped root", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: scopePkgDependency, want: scopePkgDependency + "/index.js"},
 		{name: "scoped mismatch", resolved: "/repo/node_modules/@scope/pkg/index.js", dependency: "@scope/other", want: ""},
 		{name: "simple root", resolved: "/repo/node_modules/lodash/index.js", dependency: "lodash", want: "lodash/index.js"},
+		{name: "reject drive hybrid suffix", resolved: "node_modules/fixture-dep/C:/Users/alice/private.mjs", dependency: "fixture-dep", want: ""},
+		{name: "reject scheme hybrid suffix", resolved: "node_modules/fixture-dep/https:/secret.mjs", dependency: "fixture-dep", want: ""},
+		{name: "reject hidden hybrid suffix", resolved: "node_modules/fixture-dep/.env/private.mjs", dependency: "fixture-dep", want: ""},
+		{name: "reject home hybrid suffix", resolved: "node_modules/fixture-dep/~/.ssh/id_rsa", dependency: "fixture-dep", want: ""},
 	}
 	for _, tc := range cases {
 		if got := runtimeModuleFromResolvedPath(tc.resolved, tc.dependency); got != tc.want {

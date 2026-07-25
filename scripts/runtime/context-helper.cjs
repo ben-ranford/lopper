@@ -9,7 +9,11 @@ const schemePattern = /^[A-Za-z][A-Za-z\d+.-]*:/;
 function createRuntimeTraceHelpers(env = process.env, options = {}) {
   const outPath = env.LOPPER_RUNTIME_TRACE;
   const realpath = typeof options.realpath === "function" ? options.realpath : fs.realpathSync.native;
-  const repoRoot = normalizeRoot(env.LOPPER_RUNTIME_REPO_ROOT || process.cwd(), realpath);
+  const repoRootValue =
+    typeof options.repoRoot === "string" && options.repoRoot.trim()
+      ? options.repoRoot
+      : env.LOPPER_RUNTIME_REPO_ROOT || "";
+  const repoRoot = normalizeRoot(repoRootValue, realpath);
 
   return {
     append(event) {
@@ -112,11 +116,18 @@ function normalizeRuntimeModuleValue(value, resolved, repoRoot, realpath = fs.re
   if (identifier) {
     return identifier;
   }
-  return normalizeContextValue(resolved || value, repoRoot, realpath);
+  if (looksLikeContextReference(value)) {
+    return normalizeContextValue(resolved || value, repoRoot, realpath);
+  }
+  return "";
 }
 
 function normalizeRuntimeResolvedValue(value, repoRoot, realpath = fs.realpathSync.native) {
-  return normalizeContextValue(value, repoRoot, realpath) || normalizeModuleIdentifier(value);
+  const normalizedPath = normalizeContextValue(value, repoRoot, realpath);
+  if (normalizedPath) {
+    return sanitizeNodeModulesResolvedPath(normalizedPath);
+  }
+  return normalizeModuleIdentifier(value);
 }
 
 function normalizeModuleIdentifier(value) {
@@ -134,10 +145,32 @@ function normalizeModuleIdentifier(value) {
 
   const label = value.startsWith("node:") ? value.slice("node:".length) : value;
   const parts = label.split("/");
-  if (
-    !label ||
-    parts.some((part) => !part || part === "." || part === ".." || /[\0-\x20\x7f%]/.test(part))
-  ) {
+  if (!label || parts.some(isUnsafeModuleSegment)) {
+    return "";
+  }
+  if (parts[0].startsWith("@") && parts.length < 2) {
+    return "";
+  }
+  return value;
+}
+
+function isUnsafeModuleSegment(part) {
+  if (!part || part === "." || part === ".." || /[\0-\x20\x7f%]/.test(part)) {
+    return true;
+  }
+  return part.startsWith(".") || part.startsWith("~") || part.includes(":");
+}
+
+function sanitizeNodeModulesResolvedPath(value) {
+  if (!value.startsWith("node_modules/")) {
+    return value;
+  }
+  const suffix = value.slice("node_modules/".length);
+  if (!suffix) {
+    return "";
+  }
+  const parts = suffix.split("/");
+  if (parts.some(isUnsafeModuleSegment)) {
     return "";
   }
   if (parts[0].startsWith("@") && parts.length < 2) {
@@ -163,6 +196,15 @@ function resolveContextPath(value) {
     return "";
   }
   return normalizeLexicalAbsolutePath(value);
+}
+
+function looksLikeContextReference(value) {
+  if (!value || typeof value !== "string") return false;
+  value = value.trim();
+  if (!value) return false;
+  if (value.startsWith("file://")) return true;
+  if (path.isAbsolute(value) || looksLikeWindowsAbsolutePath(value)) return true;
+  return value.startsWith(".") || hasNonFileScheme(value);
 }
 
 function normalizeLexicalAbsolutePath(value) {

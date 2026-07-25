@@ -50,11 +50,10 @@ func runtimeModuleFromSpecifier(specifier, dependency string) string {
 }
 
 func runtimeModuleFromResolvedPath(value, dependency string) string {
-	rest := nodeModulesResolvedSuffix(value)
-	if rest == "" {
+	parts := nodeModulesResolvedParts(value)
+	if len(parts) == 0 {
 		return ""
 	}
-	parts := strings.Split(rest, "/")
 	if strings.HasPrefix(parts[0], "@") {
 		if len(parts) < 2 {
 			return ""
@@ -154,11 +153,10 @@ func dependencyFromSpecifier(specifier string) string {
 }
 
 func dependencyFromResolvedPath(value string) string {
-	rest := nodeModulesResolvedSuffix(value)
-	if rest == "" {
+	parts := nodeModulesResolvedParts(value)
+	if len(parts) == 0 {
 		return ""
 	}
-	parts := strings.Split(rest, "/")
 	if strings.HasPrefix(parts[0], "@") {
 		if len(parts) < 2 {
 			return ""
@@ -178,6 +176,68 @@ func nodeModulesResolvedSuffix(value string) string {
 		return value[pos+len(marker):]
 	}
 	return ""
+}
+
+func nodeModulesResolvedParts(value string) []string {
+	rest := nodeModulesResolvedSuffix(value)
+	if rest == "" || !looksLikeSafeNodeModulesPackagePath(rest) {
+		return nil
+	}
+	return strings.Split(rest, "/")
+}
+
+func looksLikeSafeNodeModulesPackagePath(value string) bool {
+	return len(safeRuntimePackageSegments(value, false, 1)) != 0
+}
+
+func looksLikeSafeNodeBuiltinContextLabel(value string) bool {
+	if !strings.HasPrefix(value, "node:") {
+		return false
+	}
+	return len(safeRuntimePackageSegments(strings.TrimPrefix(value, "node:"), false, 1)) != 0
+}
+
+func safeRuntimePackageSegments(value string, allowNodeBuiltin bool, minParts int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if allowNodeBuiltin && looksLikeSafeNodeBuiltinContextLabel(value) {
+		return []string{value}
+	}
+	// This path-derived fallback is privacy-sensitive: reject suffixes that look like paths, URLs, or traversal payloads.
+	if strings.ContainsAny(value, `\:%?#|`) ||
+		strings.HasPrefix(value, "/") ||
+		strings.HasPrefix(value, "~") ||
+		strings.HasPrefix(value, "./") ||
+		strings.HasPrefix(value, "../") ||
+		looksLikeWindowsAbsoluteContextPath(value) ||
+		filepath.IsAbs(filepath.FromSlash(value)) {
+		return nil
+	}
+	parts := strings.Split(filepath.ToSlash(value), "/")
+	if len(parts) < minParts {
+		return nil
+	}
+	for _, part := range parts {
+		if !isSafeRuntimePackageSegment(part) {
+			return nil
+		}
+	}
+	if strings.HasPrefix(parts[0], "@") && (parts[0] == "@" || len(parts) < 2) {
+		return nil
+	}
+	return parts
+}
+
+func isSafeRuntimePackageSegment(part string) bool {
+	if part == "" || part == "." || part == ".." {
+		return false
+	}
+	if strings.HasPrefix(part, ".") || strings.HasPrefix(part, "~") {
+		return false
+	}
+	return !strings.ContainsAny(part, `\:%?#|`)
 }
 
 func normalizeRuntimeLanguage(language string) string {

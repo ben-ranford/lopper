@@ -124,6 +124,26 @@ test("createRuntimeTraceHelpers accepts injected realpath without global monkeyp
   fs.rmSync(testRoot, { recursive: true, force: true });
 });
 
+test("manual helpers fail closed without an explicit repo root", () => {
+  const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
+  const repoRoot = path.join(testRoot, "repo");
+  const nestedRoot = path.join(repoRoot, "packages", "nested");
+  const modulePath = path.join(nestedRoot, "src", "main.js");
+  fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+  fs.writeFileSync(modulePath, "export {};\n", "utf8");
+
+  const previousCwd = process.cwd();
+  process.chdir(nestedRoot);
+  try {
+    const runtimeHelpers = createRuntimeTraceHelpers({ LOPPER_RUNTIME_TRACE: "" });
+    assert.equal(runtimeHelpers.normalizeContext(modulePath), "");
+    assert.equal(runtimeHelpers.normalizeResolved(pathToFileURL(modulePath).href), "");
+  } finally {
+    process.chdir(previousCwd);
+    fs.rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("preserves repo attribution for symlinked repo roots and redacts symlink escapes", () => {
   const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
   const realRepoRoot = path.join(testRoot, "repo-real");
@@ -167,11 +187,17 @@ test("sanitizes runtime module and resolved artifact values", () => {
   const repoSrcDir = path.join(repoRoot, "src");
   const repoEntryPath = path.join(repoSrcDir, "main.mjs");
   const repoDepPath = path.join(repoRoot, "node_modules", "lodash", "map.js");
+  const hiddenRepoDepPath = path.join(repoRoot, "node_modules", "fixture-dep", ".env", "private.mjs");
+  const tildeRepoDepPath = path.join(repoRoot, "node_modules", "fixture-dep", "~", ".ssh", "id_rsa.mjs");
   const foreignPath = path.join(testRoot, "foreign.js");
   fs.mkdirSync(path.dirname(repoDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(hiddenRepoDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(tildeRepoDepPath), { recursive: true });
   fs.mkdirSync(repoSrcDir, { recursive: true });
   fs.writeFileSync(repoEntryPath, "export {};\n", "utf8");
   fs.writeFileSync(repoDepPath, "export default function map() {}\n", "utf8");
+  fs.writeFileSync(hiddenRepoDepPath, "export default 2;\n", "utf8");
+  fs.writeFileSync(tildeRepoDepPath, "export default 3;\n", "utf8");
   fs.writeFileSync(foreignPath, "export {};\n", "utf8");
   const { realpath } = trackRealpathCalls();
 
@@ -192,6 +218,12 @@ test("sanitizes runtime module and resolved artifact values", () => {
     normalizeRuntimeResolvedValue(pathToFileURL(repoDepPath).href, repoRoot, realpath),
     "node_modules/lodash/map.js",
   );
+  assert.equal(normalizeRuntimeResolvedValue(pathToFileURL(hiddenRepoDepPath).href, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeResolvedValue(pathToFileURL(tildeRepoDepPath).href, repoRoot, realpath), "");
+  for (const value of ["lodash/fp.js", "@scope/pkg/index.js", "node:fs", "node:fs/promises"]) {
+    assert.equal(normalizeRuntimeModuleValue(value, "", repoRoot, realpath), value);
+    assert.equal(normalizeRuntimeResolvedValue(value, repoRoot, realpath), value);
+  }
   for (const value of [
     foreignPath,
     pathToFileURL(foreignPath).href,
@@ -200,6 +232,11 @@ test("sanitizes runtime module and resolved artifact values", () => {
     String.raw`\\server\share\private.js`,
     "x:private-token",
     "../private.js",
+    "fixture-dep/C:/Users/alice/private.cjs",
+    "pkg/https:/secret",
+    "pkg/~/.ssh/id_rsa",
+    "pkg/./secret",
+    "pkg/../secret",
   ]) {
     assert.equal(normalizeRuntimeModuleValue(value, value, repoRoot, realpath), "");
     assert.equal(normalizeRuntimeResolvedValue(value, repoRoot, realpath), "");

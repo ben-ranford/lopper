@@ -341,12 +341,14 @@ Capture a runtime trace:
 
 ```bash
 export LOPPER_RUNTIME_TRACE=.artifacts/lopper-runtime.ndjson
+export LOPPER_RUNTIME_REPO_ROOT="$(pwd)"
 export LOPPER_ROOT=/path/to/lopper
 export NODE_OPTIONS="--require ${LOPPER_ROOT}/scripts/runtime/require-hook.cjs --loader ${LOPPER_ROOT}/scripts/runtime/loader.mjs"
 npm test
 ```
 
 Use the hook files from the lopper checkout or install tree. Relative hook paths resolve from the repo running `npm test`, not from lopper itself.
+Manual hook setup must also export `LOPPER_RUNTIME_REPO_ROOT` to the intended capture root. Without it, JS/TS hooks fail closed and redact repo-local path context instead of guessing from the current working directory, which avoids ambiguous nested-workspace traces.
 
 Or let Lopper run the test command and capture the trace automatically:
 

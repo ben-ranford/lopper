@@ -37,6 +37,11 @@ func TestDependencyFromSpecifierAndResolvedPathEdgeCases(t *testing.T) {
 		{name: "empty node_modules suffix", got: dependencyFromResolvedPath("file:///repo/node_modules/"), want: ""},
 		{name: "malformed scoped resolved path", got: dependencyFromResolvedPath("file:///repo/node_modules/@scope"), want: ""},
 		{name: "package with subpath", got: dependencyFromResolvedPath("file:///repo/node_modules/pkg/sub/index.js"), want: "pkg"},
+		{name: "reject drive hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/C:/Users/alice/private.mjs"), want: ""},
+		{name: "reject scheme hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/https:/secret.mjs"), want: ""},
+		{name: "reject traversal hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/../secret.mjs"), want: ""},
+		{name: "reject hidden hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/.env/private.mjs"), want: ""},
+		{name: "reject home hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/~/.ssh/id_rsa"), want: ""},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

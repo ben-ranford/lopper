@@ -11,15 +11,27 @@ type traceLoadOptions struct {
 	resolvedRepoRoot string
 	resolveRepoRoot  func(string) string
 	evalSymlinks     func(string) (string, error)
+	contextCache     map[string]string
 }
 
 func normalizeRuntimeContextValue(value string, opts traceLoadOptions) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
+	rawValue := strings.TrimSpace(value)
+	if rawValue == "" {
 		return ""
 	}
+	if cached, ok := traceLoadContextCacheLookup(opts.contextCache, rawValue); ok {
+		return cached
+	}
+	normalized := normalizeRuntimeContextValueUncached(rawValue, opts)
+	traceLoadContextCacheStore(opts.contextCache, rawValue, normalized)
+	return normalized
+}
+
+func normalizeRuntimeContextValueUncached(value string, opts traceLoadOptions) string {
 	if normalized, ok := normalizeRuntimeContextPath(value, opts); ok {
-		return normalized
+		if normalized != "" || !looksLikePackageStyleRuntimeContextLabel(value) {
+			return normalized
+		}
 	}
 	return normalizeRuntimeContextLabel(value)
 }
@@ -151,7 +163,14 @@ func normalizeRuntimeContextLabel(value string) string {
 	if strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") {
 		return ""
 	}
+	if strings.Contains(value, "/") && !looksLikePackageStyleRuntimeContextLabel(value) {
+		return ""
+	}
 	return value
+}
+
+func looksLikePackageStyleRuntimeContextLabel(value string) bool {
+	return looksLikeSafeNodeBuiltinContextLabel(strings.TrimSpace(value)) || len(safeRuntimePackageSegments(value, false, 2)) != 0
 }
 
 func rejectsRuntimeContextScheme(value string) bool {
@@ -262,6 +281,21 @@ func (o *traceLoadOptions) evalSymlinksFunc() func(string) (string, error) {
 		return o.evalSymlinks
 	}
 	return filepath.EvalSymlinks
+}
+
+func traceLoadContextCacheLookup(cache map[string]string, value string) (string, bool) {
+	if cache == nil {
+		return "", false
+	}
+	normalized, ok := cache[value]
+	return normalized, ok
+}
+
+func traceLoadContextCacheStore(cache map[string]string, value string, normalized string) {
+	if cache == nil {
+		return
+	}
+	cache[value] = normalized
 }
 
 func resolveRuntimeContextPath(value string, evalSymlinks func(string) (string, error)) string {

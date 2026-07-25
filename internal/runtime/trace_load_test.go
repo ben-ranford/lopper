@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -406,7 +407,10 @@ func TestLoadTraceRedactsEmbeddedRelativeTraversal(t *testing.T) {
 }
 
 func TestLoadTracePreservesPackageStyleLabels(t *testing.T) {
-	trace, err := loadTraceFromContentInRepo(t, t.TempDir(), `{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}`+"\n")
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"lodash/fp.js","entrypoint":"@scope/pkg/index.js"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, t.TempDir(), content)
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
@@ -415,6 +419,156 @@ func TestLoadTracePreservesPackageStyleLabels(t *testing.T) {
 	}
 	if trace.DependencyEntrypoints["lodash"]["lodash/map"] != 1 {
 		t.Fatalf("expected package-style entrypoint label to be preserved, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+	if trace.DependencyParents["lodash"]["lodash/fp.js"] != 1 {
+		t.Fatalf("expected file-like package parent label to be preserved, got %#v", trace.DependencyParents["lodash"])
+	}
+	if trace.DependencyEntrypoints["lodash"]["@scope/pkg/index.js"] != 1 {
+		t.Fatalf("expected scoped file-like package entrypoint label to be preserved, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+}
+
+func TestLoadForRepoRedactsForeignAbsoluteRuntimeContexts(t *testing.T) {
+	repo := t.TempDir()
+	contexts := []string{
+		"C:/Users/alice/private.js",
+		`C:\Users\alice\private.js`,
+		"C:Users/alice/private.js",
+		"//server/share/alice/private.js",
+		`\\server\share\alice\private.js`,
+		"//./C:/Users/alice/private.js",
+		`\\.\C:\Users\alice\private.js`,
+		"//?/C:/Users/alice/private.js",
+		`\\?\C:\Users\alice\private.js`,
+		"//?/UNC/server/share/alice/private.js",
+		`\\?\UNC\server\share\alice\private.js`,
+		"/??/C:/Users/alice/private.js",
+		`\??\C:\Users\alice\private.js`,
+		"/Device/HarddiskVolume1/Users/alice/private.js",
+		`\Device\HarddiskVolume1\Users\alice\private.js`,
+		"https:/example.com/private.js",
+		"src/../../Users/alice/private.js",
+		"~/private/main.js",
+		"pkg/.env/private.js",
+		"pkg/~/.ssh/id_rsa",
+	}
+
+	var content strings.Builder
+	for _, context := range contexts {
+		line, err := json.Marshal(Event{
+			Module:     lodashMapModule,
+			Resolved:   "file:///repo/node_modules/lodash/map.js",
+			Parent:     context,
+			Entrypoint: context,
+		})
+		if err != nil {
+			t.Fatalf("marshal runtime event for %q: %v", context, err)
+		}
+		content.Write(line)
+		content.WriteByte('\n')
+	}
+	for _, event := range []Event{
+		{Module: lodashMapModule, Parent: "lodash/fp.js", Entrypoint: "@scope/pkg/index.js"},
+		{Module: lodashMapModule, Parent: "@scope/pkg/index.js", Entrypoint: "lodash/fp.js"},
+	} {
+		line, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal package-label runtime event: %v", err)
+		}
+		content.Write(line)
+		content.WriteByte('\n')
+	}
+
+	tracePath := testutil.WriteTempFile(t, filepath.Join("runtime", "trace.ndjson"), content.String())
+	trace, err := LoadForRepo(tracePath, repo)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; got["lodash/fp.js"] != 1 || got["@scope/pkg/index.js"] != 1 || len(got) != 2 {
+		t.Fatalf("expected only package-style parent labels, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]; got["lodash/fp.js"] != 1 || got["@scope/pkg/index.js"] != 1 || len(got) != 2 {
+		t.Fatalf("expected only package-style entrypoint labels, got %#v", got)
+	}
+}
+
+func TestLoadForRepoSkipsUnsafeNodeModulesHybridResolvedPaths(t *testing.T) {
+	repo := t.TempDir()
+	traceContent :=
+		`{"resolved":"node_modules/fixture-dep/index.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/C:/Users/alice/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/https:/secret.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/.env/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/~/.ssh/id_rsa","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n"
+
+	trace, err := loadTraceFromContentInRepo(t, repo, traceContent)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyLoads["fixture-dep"]; got != 1 {
+		t.Fatalf("expected only safe fixture-dep load to survive, got %d from %#v", got, trace.DependencyLoads)
+	}
+	if got := trace.DependencyModules["fixture-dep"]; len(got) != 1 || got["fixture-dep/index.js"] != 1 {
+		t.Fatalf("expected only safe runtime module, got %#v", got)
+	}
+	if got := trace.DependencySymbols["fixture-dep"]; len(got) != 1 || got["fixture-dep/index.js\x00index"] != 1 {
+		t.Fatalf("expected only safe runtime symbol, got %#v", got)
+	}
+}
+
+func TestLoadTraceCachesRuntimeContextNormalizationPerRawValue(t *testing.T) {
+	repo := t.TempDir()
+	mainPath := filepath.Join(repo, "src", "main.js")
+	workerPath := filepath.Join(repo, "src", "worker.js")
+	for _, path := range []string{mainPath, workerPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir repo src: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("console.log('x')\n"), 0o600); err != nil {
+			t.Fatalf("write repo file %q: %v", path, err)
+		}
+	}
+
+	var calls []string
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"src/worker.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/worker.js","entrypoint":"src/main.js"}` + "\n"
+	tracePath := testutil.WriteTempFile(t, filepath.Join("runtime", "trace.ndjson"), content)
+
+	trace, err := load(tracePath, traceLoadOptions{
+		repoRoot:         repo,
+		resolvedRepoRoot: resolvedRuntimeRepoRoot(repo),
+		evalSymlinks: func(path string) (string, error) {
+			calls = append(calls, filepath.Clean(path))
+			return filepath.EvalSymlinks(path)
+		},
+	})
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]["src/main.js"]; got != 2 {
+		t.Fatalf("expected cached parent normalization to preserve both main.js counts, got %#v", trace.DependencyParents["lodash"])
+	}
+	if got := trace.DependencyParents["lodash"]["src/worker.js"]; got != 1 {
+		t.Fatalf("expected cached parent normalization to preserve worker.js count, got %#v", trace.DependencyParents["lodash"])
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 2 {
+		t.Fatalf("expected cached entrypoint normalization to preserve main.js counts, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["src/worker.js"]; got != 1 {
+		t.Fatalf("expected cached entrypoint normalization to preserve worker.js count, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+	resolvedMainPath, err := filepath.EvalSymlinks(mainPath)
+	if err != nil {
+		t.Fatalf("resolve main path symlinks: %v", err)
+	}
+	resolvedWorkerPath, err := filepath.EvalSymlinks(workerPath)
+	if err != nil {
+		t.Fatalf("resolve worker path symlinks: %v", err)
+	}
+	if want := []string{filepath.Clean(resolvedMainPath), filepath.Clean(resolvedWorkerPath)}; len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("expected one filesystem probe per distinct raw context, got %#v want %#v", calls, want)
 	}
 }
 

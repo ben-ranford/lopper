@@ -314,6 +314,41 @@ func TestAnnotateRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
 	}
 }
 
+func TestAnnotateRuntimeTraceSkipsUnsafeNodeModulesHybridResolvedPaths(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	content :=
+		`{"resolved":"node_modules/fixture-dep/index.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/C:/Users/alice/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/https:/secret.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/.env/private.mjs","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"resolved":"node_modules/fixture-dep/~/.ssh/id_rsa","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n"
+	if err := os.WriteFile(tracePath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	annotated, err := annotateRuntimeTraceIfPresent(tracePath, repo, "js-ts", report.Report{}, false)
+	if err != nil {
+		t.Fatalf("annotate runtime trace: %v", err)
+	}
+	if len(annotated.Dependencies) != 1 || annotated.Dependencies[0].RuntimeUsage == nil {
+		t.Fatalf("expected runtime-only dependency row, got %#v", annotated.Dependencies)
+	}
+	usage := annotated.Dependencies[0].RuntimeUsage
+	if !runtimeUsageHasExactModules(usage.Modules, "fixture-dep/index.js") {
+		t.Fatalf("expected only safe runtime module in report usage, got %#v", usage.Modules)
+	}
+	if len(usage.TopSymbols) != 1 || usage.TopSymbols[0].Module != "fixture-dep/index.js" || usage.TopSymbols[0].Symbol != "index" {
+		t.Fatalf("expected only safe runtime symbol in report usage, got %#v", usage.TopSymbols)
+	}
+}
+
 type analysisRuntimeTraceFixtureRow struct {
 	parent     string
 	entrypoint string
