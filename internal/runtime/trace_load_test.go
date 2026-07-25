@@ -547,16 +547,16 @@ func TestLoadTraceCachesRuntimeContextNormalizationPerRawValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
-	if got := trace.DependencyParents["lodash"]["src/main.js"]; got != 2 {
+	if trace.DependencyParents["lodash"]["src/main.js"] != 2 {
 		t.Fatalf("expected cached parent normalization to preserve both main.js counts, got %#v", trace.DependencyParents["lodash"])
 	}
-	if got := trace.DependencyParents["lodash"]["src/worker.js"]; got != 1 {
+	if trace.DependencyParents["lodash"]["src/worker.js"] != 1 {
 		t.Fatalf("expected cached parent normalization to preserve worker.js count, got %#v", trace.DependencyParents["lodash"])
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 2 {
+	if trace.DependencyEntrypoints["lodash"]["src/main.js"] != 2 {
 		t.Fatalf("expected cached entrypoint normalization to preserve main.js counts, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
-	if got := trace.DependencyEntrypoints["lodash"]["src/worker.js"]; got != 1 {
+	if trace.DependencyEntrypoints["lodash"]["src/worker.js"] != 1 {
 		t.Fatalf("expected cached entrypoint normalization to preserve worker.js count, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 	resolvedMainPath, err := filepath.EvalSymlinks(mainPath)
