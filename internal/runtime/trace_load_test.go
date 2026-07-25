@@ -330,6 +330,20 @@ func TestLoadTraceObjectFieldLimit(t *testing.T) {
 	}
 }
 
+func TestLoadTraceObjectFieldLimitCountsDuplicateMembers(t *testing.T) {
+	fields := make([]string, 0, maxRuntimeTraceObjectFields+1)
+	for i := 0; i < maxRuntimeTraceObjectFields; i++ {
+		fields = append(fields, "\"extra"+strconv.Itoa(i)+"\":\"x\"")
+	}
+	fields = append(fields, "\"extra0\":\"duplicate\"")
+	content := "{" + strings.Join(fields, ",") + "}\n"
+
+	_, err := loadTraceFromContent(t, content)
+	if err == nil || !strings.Contains(err.Error(), "maximum object entries") {
+		t.Fatalf("expected duplicate member to still count toward the object field limit, got %v", err)
+	}
+}
+
 func TestLoadTraceNameLimits(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -443,6 +457,47 @@ func TestParseRuntimeTraceEventRejectsInvalidFieldTypes(t *testing.T) {
 				t.Fatalf("expected decode error for %s, got %v", field, err)
 			}
 		})
+	}
+}
+
+func TestParseRuntimeTraceEventRejectsDuplicateFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "duplicate known field",
+			content: "{\"module\":\"left-pad\",\"module\":\"lodash/map\"}",
+			want:    `duplicate field "module"`,
+		},
+		{
+			name:    "duplicate unknown field",
+			content: "{\"extra\":\"left-pad\",\"extra\":\"lodash/map\"}",
+			want:    `duplicate field "extra"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := parseRuntimeTraceEvent(context.Background(), []byte(tc.content))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected duplicate-field rejection containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestParseRuntimeTraceEventRejectsTrailingJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseRuntimeTraceEvent(context.Background(), []byte("{\"module\":\""+lodashMapModule+"\"} {}"))
+	if err == nil || !strings.Contains(err.Error(), "exactly one JSON object") {
+		t.Fatalf("expected trailing JSON rejection, got %v", err)
 	}
 }
 

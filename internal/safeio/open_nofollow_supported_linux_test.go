@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -15,7 +16,7 @@ import (
 
 func TestOpenFileNoFollowSupportedTrueOnLinux(t *testing.T) {
 	if !OpenFileNoFollowSupported() {
-		t.Fatal("expected linux no-follow support to remain enabled via per-open fallback")
+		t.Fatal("expected linux no-follow support probe to succeed on this platform")
 	}
 }
 
@@ -65,6 +66,43 @@ func TestOpenFileNoFollowSupportedTrueImpliesOpenAndReadWorks(t *testing.T) {
 	}
 }
 
+func TestOpenFileNoFollowSupportedDoesNotDependOnTMPDIRWrites(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	probePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	resolvedProbePath, err := filepath.EvalSymlinks(probePath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", probePath, err)
+	}
+	openNoFollowProbePath = func() (string, error) { return resolvedProbePath, nil }
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing-tmpdir"))
+
+	if !OpenFileNoFollowSupported() {
+		t.Fatal("expected support probe to succeed without TMPDIR writes")
+	}
+}
+
+func TestOpenFileNoFollowSupportedFailsWhenRootFDExtractionUnavailable(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	rootFDProbeErr := errors.New("root fd probe failed")
+	osRootFDResolver = func(*os.Root) (int, error) {
+		return 0, rootFDProbeErr
+	}
+	openNoFollowProbePath = func() (string, error) {
+		return mustRealExecutablePath(t), nil
+	}
+
+	if OpenFileNoFollowSupported() {
+		t.Fatal("expected support probe to fail when root fd extraction is unavailable")
+	}
+}
+
 func TestOpenFileNoFollowNormalizesUnavailableRootFDExtraction(t *testing.T) {
 	restore := stubOpenFileNoFollowSupportProbes(t)
 	t.Cleanup(restore)
@@ -91,38 +129,31 @@ func TestOpenFileNoFollowNormalizesUnavailableRootFDExtraction(t *testing.T) {
 	if !errors.Is(err, ErrOpenFileNoFollowUnsupported) {
 		t.Fatalf("expected unsupported sentinel, got %v", err)
 	}
+	if !errors.Is(err, rootFDProbeErr) {
+		t.Fatalf("expected root fd extraction identity to remain recoverable, got %v", err)
+	}
 	if !strings.Contains(err.Error(), rootFDProbeErr.Error()) {
 		t.Fatalf("expected root fd diagnostic to remain available, got %v", err)
 	}
 }
 
-func TestOpenFileNoFollowNormalizesUnavailableProcSelfFD(t *testing.T) {
+func TestOpenFileNoFollowSupportedFailsWhenProcSelfFDUnavailable(t *testing.T) {
 	restore := stubOpenFileNoFollowSupportProbes(t)
 	t.Cleanup(restore)
 
-	rootDir := t.TempDir()
-	rootDirFile, err := os.Open(rootDir)
-	if err != nil {
-		t.Fatalf("open root dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := rootDirFile.Close(); closeErr != nil {
-			t.Fatalf("close root dir: %v", closeErr)
-		}
-	})
-	osRootFDResolver = func(*os.Root) (int, error) {
-		return int(rootDirFile.Fd()), nil
+	probePath := mustRealExecutablePath(t)
+	openNoFollowProbePath = func() (string, error) {
+		return probePath, nil
 	}
 	procSelfFDReopen = func(string, int, uint32) (int, error) {
 		return -1, unix.ENOENT
 	}
 
-	tracePath := filepath.Join(rootDir, "trace.ndjson")
-	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
-		t.Fatalf("write trace: %v", err)
+	if OpenFileNoFollowSupported() {
+		t.Fatal("expected support probe to fail when /proc/self/fd reopen is unavailable")
 	}
 
-	file, err := OpenFileNoFollow(tracePath)
+	file, err := OpenFileNoFollow(probePath)
 	if file != nil {
 		_ = file.Close()
 		t.Fatal("expected unavailable /proc/self/fd to return no file")
@@ -131,7 +162,7 @@ func TestOpenFileNoFollowNormalizesUnavailableProcSelfFD(t *testing.T) {
 		t.Fatalf("expected unsupported sentinel, got %v", err)
 	}
 	if !errors.Is(err, unix.ENOENT) {
-		t.Fatalf("expected original /proc/self/fd errno, got %v", err)
+		t.Fatalf("expected original /proc/self/fd ENOENT identity, got %v", err)
 	}
 }
 
@@ -143,6 +174,10 @@ func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 	originalProcOpen := procSelfFDReopen
 	originalCloseFD := closeNoFollowFD
 	originalRootFD := osRootFDResolver
+	originalProbe := openNoFollowProbe
+	originalProbePath := openNoFollowProbePath
+
+	resetOpenFileNoFollowSupportCache()
 
 	closeNoFollowFD = func(fd int) error {
 		if fd < 0 {
@@ -157,7 +192,15 @@ func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 		procSelfFDReopen = originalProcOpen
 		closeNoFollowFD = originalCloseFD
 		osRootFDResolver = originalRootFD
+		openNoFollowProbe = originalProbe
+		openNoFollowProbePath = originalProbePath
+		resetOpenFileNoFollowSupportCache()
 	}
+}
+
+func resetOpenFileNoFollowSupportCache() {
+	openNoFollowSupportOnce = sync.Once{}
+	openNoFollowSupported = false
 }
 
 func TestOpenFileNoFollowFallsBackWhenOpenat2IsBlocked(t *testing.T) {
@@ -181,4 +224,18 @@ func TestOpenFileNoFollowFallsBackWhenOpenat2IsBlocked(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatalf("close file: %v", err)
 	}
+}
+
+func mustRealExecutablePath(t *testing.T) string {
+	t.Helper()
+
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", path, err)
+	}
+	return path
 }

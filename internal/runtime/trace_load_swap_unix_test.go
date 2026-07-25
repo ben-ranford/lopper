@@ -20,73 +20,83 @@ type traceSwapMutationCase struct {
 }
 
 func TestLoadTraceRejectsLeafSwapsBeforeOpen(t *testing.T) {
-	tests := []traceSwapMutationCase{
-		{
-			name: "symlinked fifo",
-			mutate: func(t *testing.T, tracePath string) {
-				fifoPath := filepath.Join(filepath.Dir(tracePath), "trace.fifo")
-				if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
-					t.Fatalf("mkfifo trace: %v", err)
-				}
-				if err := os.Remove(tracePath); err != nil {
-					t.Fatalf("remove original trace: %v", err)
-				}
-				if err := os.Symlink(filepath.Base(fifoPath), tracePath); err != nil {
-					t.Fatalf("swap trace to fifo symlink: %v", err)
-				}
-			},
-		},
-		{
-			name: "symlinked regular file",
-			mutate: func(t *testing.T, tracePath string) {
-				altTracePath := filepath.Join(filepath.Dir(tracePath), "trace-alt.ndjson")
-				if err := os.WriteFile(altTracePath, []byte("{\"module\":\"left-pad\"}\n"), 0o600); err != nil {
-					t.Fatalf("write alternate trace: %v", err)
-				}
-				if err := os.Remove(tracePath); err != nil {
-					t.Fatalf("remove original trace: %v", err)
-				}
-				if err := os.Symlink(filepath.Base(altTracePath), tracePath); err != nil {
-					t.Fatalf("swap trace to regular-file symlink: %v", err)
-				}
-			},
-		},
-		{
-			name: "direct fifo",
-			mutate: func(t *testing.T, tracePath string) {
-				fifoPath := filepath.Join(filepath.Dir(tracePath), "trace.fifo")
-				if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
-					t.Fatalf("mkfifo trace: %v", err)
-				}
-				if err := os.Remove(tracePath); err != nil {
-					t.Fatalf("remove original trace: %v", err)
-				}
-				if err := os.Rename(fifoPath, tracePath); err != nil {
-					t.Fatalf("swap trace directly to fifo: %v", err)
-				}
-			},
-		},
-		{
-			name: "direct socket",
-			mutate: func(t *testing.T, tracePath string) {
-				if err := os.Remove(tracePath); err != nil {
-					t.Fatalf("remove original trace: %v", err)
-				}
-				listener, err := net.Listen("unix", tracePath)
-				if err != nil {
-					t.Fatalf("swap trace directly to socket: %v", err)
-				}
-				t.Cleanup(func() {
-					_ = listener.Close()
-				})
-			},
-		},
-	}
-
-	for _, tc := range tests {
+	for _, tc := range traceSwapMutationCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			assertTraceLeafSwapRejectedBeforeOpen(t, tc)
 		})
+	}
+}
+
+func traceSwapMutationCases() []traceSwapMutationCase {
+	return []traceSwapMutationCase{
+		{name: "symlinked fifo", mutate: mutateTraceToSymlinkedFIFO},
+		{name: "symlinked regular file", mutate: mutateTraceToSymlinkedRegularFile},
+		{name: "direct fifo", mutate: mutateTraceToDirectFIFO},
+		{name: "direct socket", mutate: mutateTraceToDirectSocket},
+	}
+}
+
+func mutateTraceToSymlinkedFIFO(t *testing.T, tracePath string) {
+	t.Helper()
+
+	fifoPath := filepath.Join(filepath.Dir(tracePath), "trace.fifo")
+	createTraceFIFO(t, fifoPath)
+	removeOriginalTrace(t, tracePath)
+	if err := os.Symlink(filepath.Base(fifoPath), tracePath); err != nil {
+		t.Fatalf("swap trace to fifo symlink: %v", err)
+	}
+}
+
+func mutateTraceToSymlinkedRegularFile(t *testing.T, tracePath string) {
+	t.Helper()
+
+	altTracePath := filepath.Join(filepath.Dir(tracePath), "trace-alt.ndjson")
+	if err := os.WriteFile(altTracePath, []byte("{\"module\":\"left-pad\"}\n"), 0o600); err != nil {
+		t.Fatalf("write alternate trace: %v", err)
+	}
+	removeOriginalTrace(t, tracePath)
+	if err := os.Symlink(filepath.Base(altTracePath), tracePath); err != nil {
+		t.Fatalf("swap trace to regular-file symlink: %v", err)
+	}
+}
+
+func mutateTraceToDirectFIFO(t *testing.T, tracePath string) {
+	t.Helper()
+
+	fifoPath := filepath.Join(filepath.Dir(tracePath), "trace.fifo")
+	createTraceFIFO(t, fifoPath)
+	removeOriginalTrace(t, tracePath)
+	if err := os.Rename(fifoPath, tracePath); err != nil {
+		t.Fatalf("swap trace directly to fifo: %v", err)
+	}
+}
+
+func mutateTraceToDirectSocket(t *testing.T, tracePath string) {
+	t.Helper()
+
+	removeOriginalTrace(t, tracePath)
+	listener, err := net.Listen("unix", tracePath)
+	if err != nil {
+		t.Fatalf("swap trace directly to socket: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+}
+
+func createTraceFIFO(t *testing.T, fifoPath string) {
+	t.Helper()
+
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Fatalf("mkfifo trace: %v", err)
+	}
+}
+
+func removeOriginalTrace(t *testing.T, tracePath string) {
+	t.Helper()
+
+	if err := os.Remove(tracePath); err != nil {
+		t.Fatalf("remove original trace: %v", err)
 	}
 }
 

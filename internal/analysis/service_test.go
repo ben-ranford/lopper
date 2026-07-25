@@ -660,12 +660,7 @@ func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 		Language:         "js-ts",
 		RuntimeTracePath: filepath.Join(repo, ".artifacts", "missing.ndjson"),
 	})
-	if assertExpectedUnsupportedRuntimeTraceError(t, err, "runtime trace open") {
-		return
-	}
-	if len(reportData.Warnings) == 0 {
-		t.Fatalf("expected warning for missing runtime trace")
-	}
+	assertMissingRuntimeTraceFallback(t, reportData, err)
 }
 
 func dependencyByLanguageName(t *testing.T, dependencies []report.DependencyReport, languageID, name string) report.DependencyReport {

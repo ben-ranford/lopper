@@ -5,18 +5,18 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/runtime"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
-	analyseFailedErrMsg = "analyse failed"
-	registerAdapterFmt  = "register adapter: %v"
+	analyseFailedErrMsg                = "analyse failed"
+	registerAdapterFmt                 = "register adapter: %v"
+	missingRuntimeTraceFallbackWarning = "runtime trace file not found; continuing with static analysis"
 )
 
 type testServiceAdapter struct {
@@ -119,18 +119,7 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 		TopN:             1,
 		RuntimeTracePath: filepath.Join(t.TempDir(), "missing.ndjson"),
 	})
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
-		}
-		return
-	}
-	if err != nil {
-		t.Fatalf("expected runtime trace fallback warning, got %v", err)
-	}
-	if len(rep.Warnings) == 0 {
-		t.Fatalf("expected missing runtime trace warning")
-	}
+	assertMissingRuntimeTraceFallback(t, rep, err)
 }
 
 func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
@@ -201,17 +190,17 @@ func TestMergeReportsAndTopSymbolsBranches(t *testing.T) {
 
 func TestAnnotateRuntimeTraceHelperMissingFileFallback(t *testing.T) {
 	annotated, err := annotateRuntimeTraceIfPresent(context.Background(), filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", report.Report{}, false)
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
-		}
-		return
-	}
+	assertMissingRuntimeTraceFallback(t, annotated, err)
+}
+
+func assertMissingRuntimeTraceFallback(t *testing.T, reportData report.Report, err error) {
+	t.Helper()
+
 	if err != nil {
 		t.Fatalf("expected missing runtime trace fallback, got %v", err)
 	}
-	if len(annotated.Warnings) == 0 {
-		t.Fatalf("expected missing runtime trace warning")
+	if !slices.Contains(reportData.Warnings, missingRuntimeTraceFallbackWarning) {
+		t.Fatalf("expected exact missing runtime trace fallback warning member, got %#v", reportData.Warnings)
 	}
 }
 

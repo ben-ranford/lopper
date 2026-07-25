@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,16 +28,6 @@ const (
 const runtimeTraceOpenUnsupportedMessage = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable"
 
 var ErrTraceOpenUnsupported = errors.New(runtimeTraceOpenUnsupportedMessage)
-
-var runtimeTraceFieldNames = []string{
-	"dependency",
-	"entrypoint",
-	"kind",
-	"language",
-	"module",
-	"parent",
-	"resolved",
-}
 
 var runtimeTraceEventParseHook func(string)
 
@@ -355,59 +346,146 @@ func parseRuntimeTraceEvent(ctx context.Context, data []byte) (Event, error) {
 	if err := ctx.Err(); err != nil {
 		return Event{}, err
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := requireRuntimeTraceObjectStart(decoder); err != nil {
 		return Event{}, err
 	}
-	if len(raw) > maxRuntimeTraceObjectFields {
-		return Event{}, fmt.Errorf("runtime trace event exceeds maximum object entries of %d", maxRuntimeTraceObjectFields)
-	}
 
-	var event Event
-	for _, field := range runtimeTraceFieldNames {
-		if err := ctx.Err(); err != nil {
-			return Event{}, err
-		}
-		if runtimeTraceEventParseHook != nil {
-			runtimeTraceEventParseHook(field)
-			if err := ctx.Err(); err != nil {
-				return Event{}, err
-			}
-		}
-		value, ok := raw[field]
-		if !ok {
-			continue
-		}
-		if err := decodeRuntimeTraceField(field, value, &event); err != nil {
-			return Event{}, err
-		}
+	eventDecoder := newRuntimeTraceObjectDecoder()
+	if err := eventDecoder.decodeFields(ctx, decoder); err != nil {
+		return Event{}, err
 	}
-	return event, nil
+	if err := requireRuntimeTraceObjectEnd(decoder); err != nil {
+		return Event{}, err
+	}
+	return eventDecoder.event, nil
 }
 
-func decodeRuntimeTraceField(field string, value json.RawMessage, event *Event) error {
-	switch field {
-	case "language":
-		return decodeRuntimeTraceStringField(field, value, &event.Language)
-	case "dependency":
-		return decodeRuntimeTraceStringField(field, value, &event.Dependency)
-	case "module":
-		return decodeRuntimeTraceStringField(field, value, &event.Module)
-	case "resolved":
-		return decodeRuntimeTraceStringField(field, value, &event.Resolved)
-	case "kind":
-		return decodeRuntimeTraceStringField(field, value, &event.Kind)
-	case "parent":
-		return decodeRuntimeTraceStringField(field, value, &event.Parent)
-	case "entrypoint":
-		return decodeRuntimeTraceStringField(field, value, &event.Entrypoint)
-	default:
+type runtimeTraceObjectDecoder struct {
+	event      Event
+	seenFields map[string]struct{}
+	fieldCount int
+}
+
+func newRuntimeTraceObjectDecoder() *runtimeTraceObjectDecoder {
+	return &runtimeTraceObjectDecoder{
+		seenFields: make(map[string]struct{}, maxRuntimeTraceObjectFields),
+	}
+}
+
+func (d *runtimeTraceObjectDecoder) decodeFields(ctx context.Context, decoder *json.Decoder) error {
+	for decoder.More() {
+		if err := d.decodeField(ctx, decoder); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *runtimeTraceObjectDecoder) decodeField(ctx context.Context, decoder *json.Decoder) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	field, err := readRuntimeTraceFieldName(decoder)
+	if err != nil {
+		return err
+	}
+	if err := d.recordField(field); err != nil {
+		return err
+	}
+	if err := runRuntimeTraceEventParseHook(ctx, field); err != nil {
+		return err
+	}
+	return decodeRuntimeTraceFieldFromDecoder(field, decoder, &d.event)
+}
+
+func (d *runtimeTraceObjectDecoder) recordField(field string) error {
+	d.fieldCount++
+	if d.fieldCount > maxRuntimeTraceObjectFields {
+		return fmt.Errorf("runtime trace event exceeds maximum object entries of %d", maxRuntimeTraceObjectFields)
+	}
+	if _, duplicate := d.seenFields[field]; duplicate {
+		return fmt.Errorf("runtime trace event contains duplicate field %q", field)
+	}
+	d.seenFields[field] = struct{}{}
+	return nil
+}
+
+func requireRuntimeTraceObjectStart(decoder *json.Decoder) error {
+	start, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := start.(json.Delim)
+	if !ok || delimiter != '{' {
+		return fmt.Errorf("runtime trace event must be a JSON object")
+	}
+	return nil
+}
+
+func readRuntimeTraceFieldName(decoder *json.Decoder) (string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return "", err
+	}
+	field, ok := token.(string)
+	if !ok {
+		return "", fmt.Errorf("runtime trace event field name is not a string")
+	}
+	return field, nil
+}
+
+func runRuntimeTraceEventParseHook(ctx context.Context, field string) error {
+	if runtimeTraceEventParseHook != nil {
+		runtimeTraceEventParseHook(field)
+	}
+	return ctx.Err()
+}
+
+func requireRuntimeTraceObjectEnd(decoder *json.Decoder) error {
+	end, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := end.(json.Delim)
+	if !ok || delimiter != '}' {
+		return fmt.Errorf("runtime trace event must end with a JSON object")
+	}
+
+	_, err = decoder.Token()
+	if errors.Is(err, io.EOF) {
 		return nil
 	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("runtime trace event must contain exactly one JSON object")
 }
 
-func decodeRuntimeTraceStringField(field string, value json.RawMessage, target *string) error {
-	if err := json.Unmarshal(value, target); err != nil {
+func decodeRuntimeTraceFieldFromDecoder(field string, decoder *json.Decoder, event *Event) error {
+	switch field {
+	case "language":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Language)
+	case "dependency":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Dependency)
+	case "module":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Module)
+	case "resolved":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Resolved)
+	case "kind":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Kind)
+	case "parent":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Parent)
+	case "entrypoint":
+		return decodeRuntimeTraceStringField(field, decoder, &event.Entrypoint)
+	default:
+		var discard json.RawMessage
+		return decoder.Decode(&discard)
+	}
+}
+
+func decodeRuntimeTraceStringField(field string, decoder *json.Decoder, target *string) error {
+	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("decode %s: %w", field, err)
 	}
 	return nil

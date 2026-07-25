@@ -3,5 +3,8 @@
 package safeio
 
 func OpenFileNoFollowSupported() bool {
-	return true
+	openNoFollowSupportOnce.Do(func() {
+		openNoFollowSupported = openNoFollowProbe()
+	})
+	return openNoFollowSupported
 }

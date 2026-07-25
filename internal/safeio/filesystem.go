@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -278,6 +279,10 @@ func closeRootWithError(root Root, err error) error {
 
 type osRoot struct {
 	root *os.Root
+
+	// Raw descriptor operations bypass os.Root's internal operation refcount.
+	rawDescriptorMu     sync.RWMutex
+	rawDescriptorClosed bool
 }
 
 func OpenPinnedFile(root Root, name string) (_ File, err error) {
@@ -456,12 +461,43 @@ func closeFileWithError(file File, err error) error {
 	return err
 }
 
+var openNoFollowDescriptorOperationHook func()
+
 func (r *osRoot) Open(name string) (File, error) {
 	return r.root.Open(name)
 }
 
 func (r *osRoot) OpenNoFollow(name string) (File, error) {
-	return openRootFileNoFollow(r.root, name)
+	r.rawDescriptorMu.RLock()
+	defer r.rawDescriptorMu.RUnlock()
+
+	if r.rawDescriptorClosed {
+		return nil, &os.PathError{Op: "openat", Path: name, Err: os.ErrClosed}
+	}
+	if err := validateOpenNoFollowName(name); err != nil {
+		return nil, err
+	}
+	if openNoFollowDescriptorOperationHook != nil {
+		openNoFollowDescriptorOperationHook()
+	}
+	file, err := openRootFileNoFollow(r.root, name)
+	if file == nil {
+		return nil, err
+	}
+	return file, err
+}
+
+func validateOpenNoFollowName(name string) error {
+	if name == "" ||
+		name == "." ||
+		name == ".." ||
+		filepath.IsAbs(name) ||
+		filepath.VolumeName(name) != "" ||
+		filepath.Dir(name) != "." ||
+		filepath.Base(name) != name {
+		return &os.PathError{Op: "openat", Path: name, Err: os.ErrInvalid}
+	}
+	return nil
 }
 
 func (r *osRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
@@ -505,5 +541,10 @@ func (r *osRoot) Remove(name string) error {
 }
 
 func (r *osRoot) Close() error {
-	return r.root.Close()
+	r.rawDescriptorMu.Lock()
+	defer r.rawDescriptorMu.Unlock()
+
+	err := r.root.Close()
+	r.rawDescriptorClosed = true
+	return err
 }

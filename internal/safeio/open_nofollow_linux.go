@@ -6,26 +6,70 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 var (
-	openat2NoFollowProbe = unix.Openat2
-	openatNoFollowProbe  = unix.Openat
-	procSelfFDReopen     = unix.Open
-	closeNoFollowFD      = unix.Close
-	osRootFDResolver     = osRootFD
+	openat2NoFollowProbe  = unix.Openat2
+	openatNoFollowProbe   = unix.Openat
+	procSelfFDReopen      = unix.Open
+	closeNoFollowFD       = unix.Close
+	osRootFDResolver      = osRootFD
+	openNoFollowProbe     = probeOpenFileNoFollowSupport
+	openNoFollowProbePath = defaultOpenNoFollowProbePath
+
+	openNoFollowSupportOnce sync.Once
+	openNoFollowSupported   bool
 )
 
 func openRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
 	rootFD, err := osRootFDResolver(root)
 	if err != nil {
-		return nil, fmt.Errorf("%w on linux: root fd extraction is unavailable: %v", ErrOpenFileNoFollowUnsupported, err)
+		return nil, fmt.Errorf("%w on linux: root fd extraction is unavailable: %w", ErrOpenFileNoFollowUnsupported, err)
 	}
 
 	return openRegularFileNoFollowFromRootFD(rootFD, name)
+}
+
+func probeOpenFileNoFollowSupport() bool {
+	probePath, err := openNoFollowProbePath()
+	if err != nil {
+		return false
+	}
+
+	root, err := os.OpenRoot(filepath.Dir(probePath))
+	if err != nil {
+		return false
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+
+	rootFD, err := osRootFDResolver(root)
+	if err != nil {
+		return false
+	}
+
+	file, err := openRegularFileNoFollowFromRootFD(rootFD, filepath.Base(probePath))
+	if err != nil {
+		return false
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		return false
+	}
+	return true
+}
+
+func defaultOpenNoFollowProbePath() (string, error) {
+	probePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(probePath)
 }
 
 func openRegularFileNoFollowFromRootFD(rootFD int, name string) (*os.File, error) {
@@ -56,6 +100,10 @@ func openPinnedNoFollowHandle(rootFD int, name string) (int, unix.Stat_t, error)
 }
 
 func openPinnedNoFollowHandleFallback(rootFD int, name string) (int, unix.Stat_t, error) {
+	if err := validateOpenNoFollowName(name); err != nil {
+		return -1, unix.Stat_t{}, err
+	}
+
 	pinnedFD, err := openatNoFollowProbe(rootFD, name, unix.O_PATH|syscall.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, unix.Stat_t{}, normalizeNoFollowLeafOpenError("openat", name, err)

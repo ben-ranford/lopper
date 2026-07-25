@@ -369,18 +369,7 @@ func TestAnnotateRuntimeTraceMissingFileFallsBackWithWarning(t *testing.T) {
 		Dependencies: []report.DependencyReport{{Name: "lodash", Language: "js-ts"}},
 	}
 	annotated, err := annotateRuntimeTraceIfPresent(context.Background(), filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", rep, false)
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
-		}
-		return
-	}
-	if err != nil {
-		t.Fatalf("expected missing runtime trace to be non-fatal: %v", err)
-	}
-	if len(annotated.Warnings) == 0 {
-		t.Fatalf("expected warning for missing runtime trace")
-	}
+	assertMissingRuntimeTraceFallback(t, annotated, err)
 }
 
 func TestServiceAnalyseErrorBranches(t *testing.T) {
