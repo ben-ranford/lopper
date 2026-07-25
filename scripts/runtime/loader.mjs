@@ -1,53 +1,8 @@
-import fs from "node:fs";
-import path from "node:path";
+import { createRequire } from "node:module";
 
-const outPath = process.env.LOPPER_RUNTIME_TRACE;
-const repoRoot = normalizeRoot(process.env.LOPPER_RUNTIME_REPO_ROOT || process.cwd());
-
-function append(event) {
-  if (!outPath) return;
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.appendFileSync(outPath, `${JSON.stringify(event)}\n`, "utf8");
-}
-
-function normalizeRoot(value) {
-  if (!value) return "";
-  try {
-    return fs.realpathSync.native(value);
-  } catch {
-    return path.resolve(value);
-  }
-}
-
-function normalizeContext(value) {
-  if (!value || typeof value !== "string") return "";
-  if (value.startsWith("file://")) {
-    try {
-      value = new URL(value);
-      value = value.pathname;
-    } catch {
-      value = value.slice("file://".length);
-    }
-  }
-  if (!path.isAbsolute(value)) {
-    return "";
-  }
-  let resolved;
-  try {
-    resolved = fs.realpathSync.native(value);
-  } catch {
-    try {
-      resolved = path.resolve(value);
-    } catch {
-      return "";
-    }
-  }
-  const rel = path.relative(repoRoot, resolved);
-  if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`)) {
-    return "";
-  }
-  return rel.split(path.sep).join("/");
-}
+const require = createRequire(import.meta.url);
+const { createRuntimeTraceHelpers } = require("./context-helper.cjs");
+const { append, normalizeContext } = createRuntimeTraceHelpers(process.env);
 
 export async function resolve(specifier, context, nextResolve) {
   const resolved = await nextResolve(specifier, context);

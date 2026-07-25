@@ -3030,6 +3030,7 @@ func TestMakefileReleasePackagesRuntimeHooks(t *testing.T) {
 	}
 
 	for _, path := range []string{
+		"scripts/runtime/context-helper.cjs",
 		"scripts/runtime/require-hook.cjs",
 		"scripts/runtime/loader.mjs",
 		"scripts/runtime/sitecustomize.py",

@@ -105,84 +105,62 @@ func TestFormatTable(t *testing.T) {
 }
 
 func TestFormatTableRuntimeUsageIncludesModuleContext(t *testing.T) {
-	reportData := Report{
-		Dependencies: []DependencyReport{
-			{
-				Language: "js-ts",
-				Name:     "lodash",
-				RuntimeUsage: &RuntimeUsage{
-					LoadCount:   2,
-					Correlation: RuntimeCorrelationOverlap,
-					ParentModules: []RuntimeModuleUsage{
-						{Module: "src/app.ts", Count: 2},
-					},
-					Entrypoints: []RuntimeModuleUsage{
-						{Module: "src/main.ts", Count: 1},
-					},
-				},
-			},
+	output := formatTestTableRuntimeOutput(t, &RuntimeUsage{
+		LoadCount:   2,
+		Correlation: RuntimeCorrelationOverlap,
+		ParentModules: []RuntimeModuleUsage{
+			{Module: "src/app.ts", Count: 2},
 		},
-	}
-
-	output, err := NewFormatter().Format(reportData, FormatTable)
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+		Entrypoints: []RuntimeModuleUsage{
+			{Module: "src/main.ts", Count: 1},
+		},
+	})
 	assertOutputContains(t, output, "overlap (2 loads); parents: src/app.ts (2); entrypoints: src/main.ts")
 }
 
 func TestFormatTableRuntimeUsageDoesNotLeakAbsoluteRuntimeContext(t *testing.T) {
-	reportData := Report{
-		Dependencies: []DependencyReport{
-			{
-				Language: "js-ts",
-				Name:     "lodash",
-				RuntimeUsage: &RuntimeUsage{
-					LoadCount:   2,
-					Correlation: RuntimeCorrelationOverlap,
-					ParentModules: []RuntimeModuleUsage{
-						{Module: "src/app.ts", Count: 2},
-					},
-					Entrypoints: []RuntimeModuleUsage{
-						{Module: "src/main.ts", Count: 1},
-					},
-				},
-			},
+	output := formatTestTableRuntimeOutput(t, &RuntimeUsage{
+		LoadCount:   2,
+		Correlation: RuntimeCorrelationOverlap,
+		ParentModules: []RuntimeModuleUsage{
+			{Module: "src/app.ts", Count: 2},
 		},
-	}
-
-	output, err := NewFormatter().Format(reportData, FormatTable)
-	if err != nil {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+		Entrypoints: []RuntimeModuleUsage{
+			{Module: "src/main.ts", Count: 1},
+		},
+	})
 	if strings.Contains(output, "/Users/") || strings.Contains(output, "file://") {
 		t.Fatalf("expected runtime table output to avoid absolute paths and file urls, got %s", output)
 	}
 }
 
 func TestFormatTableRuntimeUsagePreservesRepoRelativeAndRedactsTraversal(t *testing.T) {
-	reportData := Report{
-		Dependencies: []DependencyReport{
-			{
-				Language: "js-ts",
-				Name:     "lodash",
-				RuntimeUsage: &RuntimeUsage{
-					LoadCount:   1,
-					Correlation: RuntimeCorrelationRuntimeOnly,
-					ParentModules: []RuntimeModuleUsage{
-						{Module: "src/main.js", Count: 1},
-					},
-				},
-			},
+	output := formatTestTableRuntimeOutput(t, &RuntimeUsage{
+		LoadCount:   1,
+		Correlation: RuntimeCorrelationRuntimeOnly,
+		ParentModules: []RuntimeModuleUsage{
+			{Module: "src/main.js", Count: 1},
 		},
-	}
+	})
+	assertOutputContains(t, output, "parents: src/main.js")
+	assertOutputNotContains(t, output, "src/../../Users/name/file.js", "../")
+}
 
+func formatTestTableRuntimeOutput(t *testing.T, usage *RuntimeUsage) string {
+	t.Helper()
+
+	reportData := Report{
+		Dependencies: []DependencyReport{{
+			Language:     "js-ts",
+			Name:         "lodash",
+			RuntimeUsage: usage,
+		}},
+	}
 	output, err := NewFormatter().Format(reportData, FormatTable)
 	if err != nil {
 		t.Fatalf(unexpectedErrFmt, err)
 	}
-	assertOutputContains(t, output, "parents: src/main.js")
-	assertOutputNotContains(t, output, "src/../../Users/name/file.js", "../")
+	return output
 }
 
 func TestFormatJSON(t *testing.T) {
