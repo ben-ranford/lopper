@@ -34,10 +34,11 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	}
 	adapterID = strings.TrimSpace(adapterID)
 	normalizedRoot = filepath.Clean(normalizedRoot)
+	stableRoot := c.stableCacheRoot(normalizedRoot)
 	baseKey := map[string]any{
 		"schema":         analysisCacheSchemaVersion,
 		"adapter":        adapterID,
-		"root":           normalizedRoot,
+		"root":           stableRoot,
 		"dependency":     req.Dependency,
 		"language":       normalizeCacheLanguage(req.Language),
 		"topN":           req.TopN,
@@ -77,7 +78,7 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 		return cacheEntryDescriptor{}, err
 	}
 	return cacheEntryDescriptor{
-		KeyLabel:    adapterID + ":" + normalizedRoot,
+		KeyLabel:    adapterID + ":" + stableRoot,
 		KeyDigest:   baseDigest,
 		InputDigest: inputDigest,
 	}, nil

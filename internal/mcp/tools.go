@@ -828,6 +828,18 @@ func cacheEnabled(value *bool) bool {
 }
 
 func resolveMCPAnalysisCacheOptions(repoPath string, enabled bool, rawPath string, readOnly bool) (*analysis.CacheOptions, error) {
+	if enabled && strings.TrimSpace(rawPath) == "" {
+		pinnedPath, err := analysis.ResolveTrustedDefaultCachePath(repoPath)
+		if err != nil {
+			return nil, err
+		}
+		return &analysis.CacheOptions{
+			Enabled:    true,
+			Path:       "",
+			ReadOnly:   readOnly,
+			PinnedPath: filepath.Clean(pinnedPath),
+		}, nil
+	}
 	return analysis.ResolveTrustedCacheOptions(repoPath, &analysis.CacheOptions{
 		Enabled:  enabled,
 		Path:     rawPath,

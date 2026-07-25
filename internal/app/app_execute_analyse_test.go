@@ -89,7 +89,7 @@ func TestExecuteAnalyseAnalyzerError(t *testing.T) {
 	}
 }
 
-func TestExecuteAnalyseRejectsCachePathOutsideRepoWithoutWrites(t *testing.T) {
+func TestExecuteAnalysePreservesAbsoluteCachePathOutsideRepoForCLIRequests(t *testing.T) {
 	repo := t.TempDir()
 	outsideCache := filepath.Join(t.TempDir(), "cache")
 	analyzer := &fakeAnalyzer{}
@@ -102,15 +102,17 @@ func TestExecuteAnalyseRejectsCachePathOutsideRepoWithoutWrites(t *testing.T) {
 	req.Analyse.CacheEnabled = true
 	req.Analyse.CachePath = outsideCache
 
-	_, err := application.Execute(context.Background(), req)
-	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
-		t.Fatalf("expected outside cache rejection, got %v", err)
+	if _, err := application.Execute(context.Background(), req); err != nil {
+		t.Fatalf("expected CLI cache path compatibility, got %v", err)
 	}
-	if analyzer.called {
-		t.Fatalf("expected analyzer to remain uncalled")
+	if !analyzer.called {
+		t.Fatalf("expected analyzer to be called")
 	}
-	if _, statErr := os.Stat(outsideCache); !os.IsNotExist(statErr) {
-		t.Fatalf("expected no outside cache writes, stat err=%v", statErr)
+	if analyzer.lastReq.Cache == nil {
+		t.Fatalf("expected cache options to be forwarded")
+	}
+	if analyzer.lastReq.Cache.Path != outsideCache || analyzer.lastReq.Cache.PinnedPath != "" {
+		t.Fatalf("expected absolute CLI cache path to remain unchanged, got %#v", analyzer.lastReq.Cache)
 	}
 }
 

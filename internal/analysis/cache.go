@@ -27,13 +27,15 @@ func (o *resolvedCacheOptions) writePath() string {
 }
 
 type analysisCache struct {
-	options         resolvedCacheOptions
-	metadata        report.CacheMetadata
-	warnings        []string
-	cacheable       bool
-	inputDigestMemo map[cacheInputDigestMemoKey]string
-	writeRootPath   string
-	writeRootInfo   fs.FileInfo
+	options           resolvedCacheOptions
+	metadata          report.CacheMetadata
+	warnings          []string
+	cacheable         bool
+	inputDigestMemo   map[cacheInputDigestMemoKey]string
+	analysisRootPath  string
+	stableKeyRepoPath string
+	writeRootPath     string
+	writeRootInfo     fs.FileInfo
 }
 
 const analysisCacheUnavailablePrefix = "analysis cache unavailable: "
@@ -41,6 +43,8 @@ const analysisCacheUnavailablePrefix = "analysis cache unavailable: "
 var (
 	cacheInitBeforeObjectsEnsureFn = func() error { return nil }
 )
+
+const defaultAnalysisCacheDirName = ".lopper-cache"
 
 func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
@@ -50,16 +54,28 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		ReadOnly: options.ReadOnly,
 	}
 	cache := &analysisCache{
-		options:  options,
-		metadata: metadata,
-		warnings: make([]string, 0),
+		options:          options,
+		metadata:         metadata,
+		warnings:         make([]string, 0),
+		analysisRootPath: filepath.Clean(repoPath),
 	}
 	if !options.Enabled {
 		cache.cacheable = false
 		return cache
 	}
+	if req.Cache != nil && strings.TrimSpace(req.Cache.PinnedPath) != "" {
+		if strings.TrimSpace(req.RepoPath) != "" {
+			repoRootPath := filepath.Clean(req.RepoPath)
+			if repoRootPath != cache.analysisRootPath {
+				cache.stableKeyRepoPath = repoRootPath
+			}
+		}
+		if strings.TrimSpace(req.Cache.Path) == "" {
+			cache.metadata.Path = options.WritePath
+		}
+	}
 	writePath := options.writePath()
-	if req.Cache == nil || strings.TrimSpace(req.Cache.Path) == "" {
+	if req.Cache == nil || (strings.TrimSpace(req.Cache.Path) == "" && strings.TrimSpace(req.Cache.PinnedPath) == "") {
 		if cachePathEscapesRepo(writePath, repoPath) {
 			cache.cacheable = false
 			cache.warn(analysisCacheUnavailablePrefix + "cache path escapes repository root")
@@ -76,6 +92,23 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	cache.writeRootInfo = writeRootInfo
 	cache.cacheable = true
 	return cache
+}
+
+func (c *analysisCache) stableCacheRoot(normalizedRoot string) string {
+	if c == nil || c.stableKeyRepoPath == "" {
+		return normalizedRoot
+	}
+	rel, err := filepath.Rel(c.analysisRootPath, normalizedRoot)
+	if err != nil {
+		return normalizedRoot
+	}
+	if rel == "." {
+		return c.stableKeyRepoPath
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return normalizedRoot
+	}
+	return filepath.Join(c.stableKeyRepoPath, rel)
 }
 
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
@@ -100,14 +133,19 @@ func cachePathEscapesRepo(cachePath, repoPath string) bool {
 func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOptions {
 	options := resolvedCacheOptions{
 		Enabled:   true,
-		Path:      filepath.Join(repoPath, ".lopper-cache"),
-		WritePath: filepath.Join(repoPath, ".lopper-cache"),
+		Path:      filepath.Join(repoPath, defaultAnalysisCacheDirName),
+		WritePath: filepath.Join(repoPath, defaultAnalysisCacheDirName),
 		ReadOnly:  false,
 	}
 	if req == nil {
 		return options
 	}
 	options.Enabled = req.Enabled
+	if strings.TrimSpace(req.PinnedPath) != "" {
+		pinnedPath := filepath.Clean(strings.TrimSpace(req.PinnedPath))
+		options.Path = pinnedPath
+		options.WritePath = pinnedPath
+	}
 	if strings.TrimSpace(req.Path) != "" {
 		options.Path = strings.TrimSpace(req.Path)
 		switch {
@@ -123,6 +161,10 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 	return options
 }
 
+func ResolveTrustedDefaultCachePath(repoPath string) (string, error) {
+	return pinTrustedCachePath(repoPath, filepath.Join(repoPath, defaultAnalysisCacheDirName), "cachePath")
+}
+
 // ResolveTrustedCacheOptions normalizes enabled cache options so writes stay
 // within the trusted repository root. Empty paths are left empty so callers can
 // preserve default cache-path behavior.
@@ -132,14 +174,18 @@ func ResolveTrustedCacheOptions(repoPath string, req *CacheOptions) (*CacheOptio
 	}
 	options := *req
 	options.Path = strings.TrimSpace(options.Path)
-	if !options.Enabled || options.Path == "" {
+	options.PinnedPath = strings.TrimSpace(options.PinnedPath)
+	if !options.Enabled {
 		return &options, nil
 	}
-	if strings.TrimSpace(options.PinnedPath) != "" {
-		options.PinnedPath = filepath.Clean(strings.TrimSpace(options.PinnedPath))
+	if options.PinnedPath != "" {
+		options.PinnedPath = filepath.Clean(options.PinnedPath)
 		if err := validateTrustedCachePath(repoPath, options.PinnedPath, "cachePath"); err != nil {
 			return nil, err
 		}
+		return &options, nil
+	}
+	if options.Path == "" {
 		return &options, nil
 	}
 	cachePath := options.Path
@@ -219,25 +265,22 @@ func ensurePinnedCacheLayout(rootPath string) (_ string, _ fs.FileInfo, returnEr
 	if rootRel != "." {
 		pinnedPath = filepath.Join(pinnedPath, rootRel)
 	}
-	root, err := safeio.OpenCanonicalWriteRoot(pinnedPath)
-	if err != nil {
-		return "", nil, err
+	keysRel := filepath.Join(rootRel, "keys")
+	objectsRel := filepath.Join(rootRel, "objects")
+	if rootRel == "." {
+		keysRel = "keys"
+		objectsRel = "objects"
 	}
-	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
-			returnErr = errors.Join(returnErr, closeErr)
-		}
-	}()
-	if err := root.EnsureDir("keys", 0o750); err != nil {
+	if err := ancestorRoot.EnsureDir(keysRel, 0o750); err != nil {
 		return "", nil, err
 	}
 	if err := cacheInitBeforeObjectsEnsureFn(); err != nil {
 		return "", nil, err
 	}
-	if err := root.EnsureDir("objects", 0o750); err != nil {
+	if err := ancestorRoot.EnsureDir(objectsRel, 0o750); err != nil {
 		return "", nil, err
 	}
-	info, err := root.Lstat(".")
+	info, err := ancestorRoot.Lstat(rootRel)
 	if err != nil {
 		return "", nil, err
 	}

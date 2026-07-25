@@ -29,14 +29,11 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 	}
 
 	runtimeTracePath, runtimeTracePathExplicit := prepareRuntimeTracePlan(req)
-	cacheOptions, err := analysis.ResolveTrustedCacheOptions(req.RepoPath, &analysis.CacheOptions{
+	cacheOptions := &analysis.CacheOptions{
 		Enabled:    req.Analyse.CacheEnabled,
 		Path:       req.Analyse.CachePath,
 		ReadOnly:   req.Analyse.CacheReadOnly,
 		PinnedPath: req.Analyse.CachePinnedPath,
-	})
-	if err != nil {
-		return preparedAnalyseExecution{}, err
 	}
 	baseRequest := analysis.Request{
 		RepoPath:                 req.RepoPath,

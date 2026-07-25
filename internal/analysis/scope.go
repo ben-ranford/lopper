@@ -10,6 +10,8 @@ import (
 
 const maxScopeDiagnostics = 5
 
+var scopeWorkspaceCreatedFn = func(string) {}
+
 func noOpCleanup() {
 	// Intentionally empty: when no scope patterns are configured, there is no temporary workspace to clean up.
 }
@@ -64,6 +66,7 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("create analysis scope workspace: %w", err)
 	}
+	scopeWorkspaceCreatedFn(scopedRoot)
 	cleanup := func() {
 		if err := os.RemoveAll(scopedRoot); err != nil {
 			fmt.Fprintf(os.Stderr, "cleanup scoped workspace %s: %v\n", scopedRoot, err)

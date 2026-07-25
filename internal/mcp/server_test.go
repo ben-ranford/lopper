@@ -446,6 +446,100 @@ func TestCallAnalyseDependencyRejectsSymlinkedCachePathEscape(t *testing.T) {
 	}
 }
 
+func TestCallAnalyseDependencyPinsDefaultCachePathForScopedRequest(t *testing.T) {
+	repo := t.TempDir()
+	fake := &fakeAnalyser{report: sampleReport(repo)}
+	server := NewServer(Options{Analyzer: fake})
+
+	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":   repo,
+		"dependency": "lodash",
+		"include":    []string{"src/**"},
+		"exclude":    []string{"vendor/**"},
+	})
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	if !fake.called {
+		t.Fatalf("expected analyser to be called")
+	}
+	expectedPinnedPath, err := analysis.ResolveTrustedDefaultCachePath(repo)
+	if err != nil {
+		t.Fatalf("resolve trusted default cache path: %v", err)
+	}
+	if fake.lastReq.Cache == nil || !fake.lastReq.Cache.Enabled {
+		t.Fatalf("expected enabled default cache options, got %#v", fake.lastReq.Cache)
+	}
+	if fake.lastReq.Cache.Path != "" {
+		t.Fatalf("expected default MCP cache path to remain implicit, got %#v", fake.lastReq.Cache)
+	}
+	if fake.lastReq.Cache.PinnedPath != expectedPinnedPath {
+		t.Fatalf("expected pinned default cache path %q, got %#v", expectedPinnedPath, fake.lastReq.Cache)
+	}
+}
+
+func TestCallAnalyseDependencyScopedRequestReusesPinnedDefaultCacheAndReportsCanonicalPath(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o750); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules", "lodash"), 0o750); err != nil {
+		t.Fatalf("mkdir lodash fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte("{\n  \"name\": \"demo\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "index.js"), []byte("import { map } from \"lodash\"\nmap([1], (x) => x)\n"), 0o600); err != nil {
+		t.Fatalf("write source fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "lodash", "package.json"), []byte("{\n  \"main\": \"index.js\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("write lodash package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "lodash", "index.js"), []byte("export function map() {}\n"), 0o600); err != nil {
+		t.Fatalf("write lodash index.js: %v", err)
+	}
+
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+	expectedPinnedPath, err := analysis.ResolveTrustedDefaultCachePath(repo)
+	if err != nil {
+		t.Fatalf("resolve trusted default cache path: %v", err)
+	}
+
+	first := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":   repo,
+		"dependency": "lodash",
+		"include":    []string{"src/**"},
+		"exclude":    []string{"vendor/**"},
+	})
+	if first.IsError {
+		t.Fatalf("unexpected first tool error: %#v", first)
+	}
+	firstPayload, ok := first.StructuredContent.(analysisPayload)
+	if !ok {
+		t.Fatalf("expected first analysis payload, got %#v", first.StructuredContent)
+	}
+	if firstPayload.Report.Cache == nil || firstPayload.Report.Cache.Path != expectedPinnedPath || firstPayload.Report.Cache.Misses != 1 || firstPayload.Report.Cache.Writes != 1 {
+		t.Fatalf("expected first scoped MCP run to report canonical pinned cache path and miss/write metadata, got %#v", firstPayload.Report.Cache)
+	}
+
+	second := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":   repo,
+		"dependency": "lodash",
+		"include":    []string{"src/**"},
+		"exclude":    []string{"vendor/**"},
+	})
+	if second.IsError {
+		t.Fatalf("unexpected second tool error: %#v", second)
+	}
+	secondPayload, ok := second.StructuredContent.(analysisPayload)
+	if !ok {
+		t.Fatalf("expected second analysis payload, got %#v", second.StructuredContent)
+	}
+	if secondPayload.Report.Cache == nil || secondPayload.Report.Cache.Path != expectedPinnedPath || secondPayload.Report.Cache.Hits != 1 || secondPayload.Report.Cache.Misses != 0 {
+		t.Fatalf("expected second scoped MCP run to reuse canonical pinned cache path, got %#v", secondPayload.Report.Cache)
+	}
+}
+
 func TestListLanguagesReturnsAdapterAndConfigMetadata(t *testing.T) {
 	registry := language.NewRegistry()
 	if err := registry.Register(newTestAdapter("js-ts", "javascript", "typescript")); err != nil {

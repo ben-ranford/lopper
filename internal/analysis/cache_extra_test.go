@@ -275,6 +275,26 @@ func TestResolveTrustedCacheOptionsRejectsSuppliedPinnedPathOutsideRepo(t *testi
 	}
 }
 
+func TestResolveTrustedCacheOptionsRejectsPinnedOnlyPathOutsideRepoBeforeMutation(t *testing.T) {
+	repo := t.TempDir()
+	outsideRoot := t.TempDir()
+	outside := filepath.Join(outsideRoot, "missing", "cache")
+
+	cacheOptions, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
+		Enabled:    true,
+		PinnedPath: outside,
+	})
+	if cacheOptions != nil {
+		t.Fatalf("expected pinned-only outside path rejection, got %#v", cacheOptions)
+	}
+	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
+		t.Fatalf("expected pinned-only outside path rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outsideRoot, "missing")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no filesystem mutation for rejected pinned path, stat err=%v", statErr)
+	}
+}
+
 func TestCachePathEscapesRepoReturnsFalseForMissingPath(t *testing.T) {
 	repo := t.TempDir()
 	if cachePathEscapesRepo(filepath.Join(repo, cacheDirName), repo) {
@@ -539,7 +559,7 @@ func TestPinnedTrustedCachePathPreventsSymlinkRetargetRaceBeforeFirstWrite(t *te
 	}
 }
 
-func TestAnalysisCachePinnedRootPreventsSwapBetweenInitOperations(t *testing.T) {
+func TestEnsurePinnedCacheLayoutRejectsCacheRootSwapBetweenInitOperations(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory replacement semantics are covered on Unix")
 	}
@@ -556,14 +576,14 @@ func TestAnalysisCachePinnedRootPreventsSwapBetweenInitOperations(t *testing.T) 
 		return os.Symlink(redirectedCachePath, cachePath)
 	})
 
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if !cache.cacheable {
-		t.Fatalf("expected cache to remain usable during init swap, warnings=%#v", cache.takeWarnings())
+	if _, _, err := ensurePinnedCacheLayout(cachePath); err == nil {
+		t.Fatalf("expected cache root replacement during init to fail closed")
 	}
-	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
-		if _, err := os.Stat(filepath.Join(renamedCachePath, dir)); err != nil {
-			t.Fatalf("expected %s dir in original pinned cache root: %v", dir, err)
-		}
+	if _, err := os.Stat(filepath.Join(renamedCachePath, cacheKeysDirName)); err != nil {
+		t.Fatalf("expected keys dir created before replacement to remain in original root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(renamedCachePath, cacheObjectsDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected objects dir creation to stop after replacement, got err=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(redirectedCachePath, cacheKeysDirName)); !os.IsNotExist(err) {
 		t.Fatalf("expected redirected keys dir to remain absent, got err=%v", err)
