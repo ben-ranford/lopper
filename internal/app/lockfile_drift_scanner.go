@@ -551,33 +551,51 @@ func shouldSkipMissingLockfileForManifest(snapshot lockfileDirSnapshot, rule loc
 }
 
 func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, error) {
-	sectionNeedle := manifestMatcherNeedle(rule)
-	switch {
-	case sectionNeedle != "":
-		content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
-		if err != nil {
-			return false, err
-		}
-		if !pyprojectSectionNeedleMatchesContent(sectionNeedle, content) {
-			return true, nil
-		}
-	case rule.manifestMatcher != nil:
-		matched, matchErr := rule.manifestMatcher(snapshot.repoPath, snapshot.path)
-		if matchErr != nil {
-			return false, matchErr
-		}
-		if !matched {
-			return true, nil
-		}
-	default:
-		if !manifestNeedsContentInspection(manifestName) {
-			return false, nil
-		}
+	skip, decided, err := shouldSkipMissingLockfileBeforeManifestContentInspection(snapshot, rule, manifestName, cache)
+	if err != nil || decided {
+		return skip, err
 	}
+
 	content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
 	if err != nil {
 		return false, err
 	}
+
+	return shouldSkipMissingLockfileFromManifestContent(manifestName, content), nil
+}
+
+func shouldSkipMissingLockfileBeforeManifestContentInspection(snapshot lockfileDirSnapshot, rule lockfileRule, manifestName string, cache *lockfileManifestCache) (bool, bool, error) {
+	sectionNeedle := manifestMatcherNeedle(rule)
+	if sectionNeedle != "" {
+		content, err := readManifestForLockfileDrift(snapshot, manifestName, "", cache)
+		if err != nil {
+			return false, false, err
+		}
+		if !pyprojectSectionNeedleMatchesContent(sectionNeedle, content) {
+			return true, true, nil
+		}
+		return false, false, nil
+	}
+
+	if rule.manifestMatcher != nil {
+		matched, err := rule.manifestMatcher(snapshot.repoPath, snapshot.path)
+		if err != nil {
+			return false, false, err
+		}
+		if !matched {
+			return true, true, nil
+		}
+		return false, false, nil
+	}
+
+	if !manifestNeedsContentInspection(manifestName) {
+		return false, true, nil
+	}
+
+	return false, false, nil
+}
+
+func shouldSkipMissingLockfileFromManifestContent(manifestName string, content []byte) bool {
 	text := string(content)
 	switch manifestName {
 	case "go.mod":
@@ -585,16 +603,16 @@ func shouldSkipMissingLockfileForManifestWithCache(snapshot lockfileDirSnapshot,
 		// A stdlib-only module has go.mod but no go.sum and that is valid.
 		for _, line := range strings.Split(text, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), "require") {
-				return false, nil
+				return false
 			}
 		}
-		return true, nil
+		return true
 	case "Cargo.toml":
 		// Library crates conventionally omit Cargo.lock from version control.
 		// Only warn for binary crates (those with a [[bin]] section).
-		return !strings.Contains(text, "[[bin]]"), nil
+		return !strings.Contains(text, "[[bin]]")
 	}
-	return false, nil
+	return false
 }
 
 func manifestNeedsContentInspection(manifestName string) bool {

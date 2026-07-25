@@ -2105,23 +2105,7 @@ func TestDetectLockfileDriftRejectsOversizedManifestsForManifestInspection(t *te
 			tracker := installManifestReadTracker(t, tc.manifestName)
 
 			_, err := detectLockfileDrift(context.Background(), repo, false)
-			if err == nil {
-				t.Fatalf("expected oversized manifest read to fail for %s", tc.manifestName)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-			}
-			if !errors.Is(err, safeio.ErrFileTooLarge) {
-				t.Fatalf("expected ErrFileTooLarge for %s, got %v", tc.manifestName, err)
-			}
-			if tracker.reads == 0 {
-				t.Fatalf("expected manifest content inspection for %s", tc.manifestName)
-			}
-			for _, limit := range tracker.limits {
-				if limit != lockfileDriftManifestReadLimit {
-					t.Fatalf("expected manifest reads for %s to use limit %d, got %d", tc.manifestName, lockfileDriftManifestReadLimit, limit)
-				}
-			}
+			assertOversizedManifestInspectionFailure(t, tc.manifestName, tc.wantErr, tracker, err)
 		})
 	}
 }
@@ -2169,6 +2153,28 @@ func installManifestReadTracker(t *testing.T, manifestName string) *manifestRead
 
 func oversizedManifestBody(prefix, filler string, divisor int) string {
 	return prefix + strings.Repeat(filler, int(lockfileDriftManifestReadLimit/int64(divisor))+1)
+}
+
+func assertOversizedManifestInspectionFailure(t *testing.T, manifestName, wantErr string, tracker *manifestReadTracker, err error) {
+	t.Helper()
+
+	if err == nil {
+		t.Fatalf("expected oversized manifest read to fail for %s", manifestName)
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("expected error containing %q, got %v", wantErr, err)
+	}
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge for %s, got %v", manifestName, err)
+	}
+	if tracker.reads == 0 {
+		t.Fatalf("expected manifest content inspection for %s", manifestName)
+	}
+	for _, limit := range tracker.limits {
+		if limit != lockfileDriftManifestReadLimit {
+			t.Fatalf("expected manifest reads for %s to use limit %d, got %d", manifestName, lockfileDriftManifestReadLimit, limit)
+		}
+	}
 }
 
 // assertLockfileWarning checks that warnings contains (or does not contain)
