@@ -533,6 +533,27 @@ func TestJVMDetectAndWalkBranches(t *testing.T) {
 			t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
 		}
 	})
+
+	t.Run("escaping symlinks do not consume file budget", func(t *testing.T) {
+		repo := t.TempDir()
+		outsideSource := filepath.Join(t.TempDir(), "Outside.java")
+		testutil.MustWriteFile(t, outsideSource, "class Outside {}\n")
+		for index := 0; index < 1024; index++ {
+			linkPath := filepath.Join(repo, fmt.Sprintf("a-%04d.java", index))
+			if err := os.Symlink(outsideSource, linkPath); err != nil {
+				t.Skipf("symlink not supported: %v", err)
+			}
+		}
+		testutil.MustWriteFile(t, filepath.Join(repo, "z-module", "src", "main", "java", "Main.java"), "class Main {}\n")
+
+		detection, err := adapter.DetectWithConfidence(context.Background(), repo)
+		if err != nil {
+			t.Fatalf("detect with confidence after escaping symlink flood: %v", err)
+		}
+		if !detection.Matched {
+			t.Fatalf("expected legitimate later JVM file to remain detectable, got %#v", detection)
+		}
+	})
 }
 
 func TestJVMParseHelpersEdgeBranches(t *testing.T) {

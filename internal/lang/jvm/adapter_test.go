@@ -11,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -95,28 +96,16 @@ func TestAdapterAnalyseDependencyFromMavenDependencyManagement(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "test", "java", "ManagedExampleTest.java"), `
 import org.junit.jupiter.api.Test;
 
-class ManagedExampleTest {
-  @Test
-  void runs() {}
-}
-`)
+	class ManagedExampleTest {
+	  @Test
+	  void runs() {}
+	}
+	`)
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: "junit-jupiter-api",
-	})
-	if err != nil {
-		t.Fatalf(errAnalyseFmt, err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-	}
-	if reportData.Dependencies[0].UsedExportsCount == 0 {
-		t.Fatalf("expected managed Maven dependency usage to be recorded")
-	}
-	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to resolve managed Maven version") {
-		t.Fatalf("did not expect managed-version warning, got %#v", reportData.Warnings)
-	}
+	req := language.Request{RepoPath: repo, Dependency: "junit-jupiter-api"}
+	unexpectedWarning := "unable to resolve managed Maven version"
+	usageFailure := "expected managed Maven dependency usage to be recorded"
+	assertSingleUsedDependencyReportWithoutWarning(t, req, unexpectedWarning, usageFailure)
 }
 
 func TestAdapterAnalyseTopN(t *testing.T) {
@@ -169,27 +158,15 @@ dependencies {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
 import okhttp3.OkHttpClient
 
-fun run() {
-  OkHttpClient()
-}
-`)
+	fun run() {
+	  OkHttpClient()
+	}
+	`)
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: "okhttp",
-	})
-	if err != nil {
-		t.Fatalf(errAnalyseFmt, err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
-	}
-	if reportData.Dependencies[0].UsedExportsCount == 0 {
-		t.Fatalf("expected catalog-backed dependency usage to be recorded")
-	}
-	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to resolve Gradle version catalog") {
-		t.Fatalf("did not expect unresolved catalog warning, got %#v", reportData.Warnings)
-	}
+	req := language.Request{RepoPath: repo, Dependency: "okhttp"}
+	unexpectedWarning := "unable to resolve Gradle version catalog"
+	usageFailure := "expected catalog-backed dependency usage to be recorded"
+	assertSingleUsedDependencyReportWithoutWarning(t, req, unexpectedWarning, usageFailure)
 }
 
 func TestAdapterMetadataAndDetect(t *testing.T) {
@@ -296,55 +273,42 @@ func TestAdapterAnalyseSkipsOversizedGradleManifest(t *testing.T) {
 }
 
 func TestAdapterAnalyseSkipsOversizedGradleCatalogInputs(t *testing.T) {
-	t.Run("oversized settings.gradle.kts", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), `
+	for _, tc := range []struct {
+		name        string
+		oversized   string
+		warningText string
+	}{
+		{
+			name:        "oversized settings.gradle.kts",
+			oversized:   "settings.gradle.kts",
+			warningText: "unable to read settings.gradle.kts: file exceeds size limit",
+		},
+		{
+			name:        "oversized gradle/libs.versions.toml",
+			oversized:   filepath.Join("gradle", "libs.versions.toml"),
+			warningText: "unable to read gradle/libs.versions.toml: file exceeds size limit",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), `
 dependencies {
   implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 `)
-		testutil.MustWriteFile(t, filepath.Join(repo, "settings.gradle.kts"), strings.Repeat("a", shared.GradleManifestByteLimit+1))
-		testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
+			testutil.MustWriteFile(t, filepath.Join(repo, tc.oversized), strings.Repeat("a", shared.GradleManifestByteLimit+1))
+			testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
 import okhttp3.OkHttpClient
 fun runClient() { OkHttpClient() }
 `)
 
-		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 5})
-		if err != nil {
-			t.Fatalf(errAnalyseFmt, err)
-		}
-		if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to read settings.gradle.kts: file exceeds size limit") {
-			t.Fatalf("expected oversized settings warning, got %#v", reportData.Warnings)
-		}
-		if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "okhttp" || reportData.Dependencies[0].UsedExportsCount == 0 {
-			t.Fatalf("expected direct Gradle dependency analysis to continue, got %#v", reportData.Dependencies)
-		}
-	})
-
-	t.Run("oversized gradle/libs.versions.toml", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), `
-dependencies {
-  implementation("com.squareup.okhttp3:okhttp:4.12.0")
-}
-`)
-		testutil.MustWriteFile(t, filepath.Join(repo, "gradle", "libs.versions.toml"), strings.Repeat("a", shared.GradleManifestByteLimit+1))
-		testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
-import okhttp3.OkHttpClient
-fun runClient() { OkHttpClient() }
-`)
-
-		reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 5})
-		if err != nil {
-			t.Fatalf(errAnalyseFmt, err)
-		}
-		if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "unable to read gradle/libs.versions.toml: file exceeds size limit") {
-			t.Fatalf("expected oversized catalog warning, got %#v", reportData.Warnings)
-		}
-		if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "okhttp" || reportData.Dependencies[0].UsedExportsCount == 0 {
-			t.Fatalf("expected direct Gradle dependency analysis to continue, got %#v", reportData.Dependencies)
-		}
-	})
+			reportData := analyseJVMReport(t, language.Request{RepoPath: repo, TopN: 5})
+			if !strings.Contains(strings.Join(reportData.Warnings, "\n"), tc.warningText) {
+				t.Fatalf("expected oversized manifest warning, got %#v", reportData.Warnings)
+			}
+			assertSingleDependencyUsage(t, reportData.Dependencies, "okhttp", "expected direct Gradle dependency analysis to continue")
+		})
+	}
 }
 
 func safeReadTooLargeMessage() string {
@@ -418,17 +382,7 @@ class Outside { void use() { SecretApi.call(); } }
 	}
 
 	adapter := NewAdapter()
-	first, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse first pass: %v", err)
-	}
-	second, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse second pass: %v", err)
-	}
-	if !reflect.DeepEqual(first.Dependencies, second.Dependencies) {
-		t.Fatalf("expected stable dependency reporting across runs")
-	}
+	first := analyseJVMReportTwiceAndRequireStableDependencies(t, adapter, language.Request{RepoPath: repo, TopN: 10})
 
 	warnings := strings.Join(first.Warnings, "\n")
 	if !strings.Contains(warnings, "skipped JVM source symlink src/main/java/Outside.java") {
@@ -485,18 +439,7 @@ fun runClient() { Client() }
 `)
 
 	adapter := NewAdapter()
-	first, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse first pass: %v", err)
-	}
-	second, err := adapter.Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 10})
-	if err != nil {
-		t.Fatalf("analyse second pass: %v", err)
-	}
-
-	if !reflect.DeepEqual(first.Dependencies, second.Dependencies) {
-		t.Fatalf("expected stable dependency reporting across runs")
-	}
+	first := analyseJVMReportTwiceAndRequireStableDependencies(t, adapter, language.Request{RepoPath: repo, TopN: 10})
 	names := make([]string, 0, len(first.Dependencies))
 	okhttpUsed := false
 	for _, dependency := range first.Dependencies {
@@ -524,5 +467,53 @@ func TestSourceLayoutModuleRootUsesInnermostSourceLayout(t *testing.T) {
 	want := filepath.Join(string(filepath.Separator), "tmp", "src", "workspace", "repo", "module")
 	if got := sourceLayoutModuleRoot(path); got != want {
 		t.Fatalf("unexpected source layout root: got %q want %q", got, want)
+	}
+}
+
+func analyseJVMReport(t *testing.T, req language.Request) report.Result {
+	t.Helper()
+
+	reportData, err := NewAdapter().Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf(errAnalyseFmt, err)
+	}
+	return reportData
+}
+
+func analyseJVMReportTwiceAndRequireStableDependencies(t *testing.T, adapter *Adapter, req language.Request) report.Result {
+	t.Helper()
+
+	first, err := adapter.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse first pass: %v", err)
+	}
+	second, err := adapter.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse second pass: %v", err)
+	}
+	if !reflect.DeepEqual(first.Dependencies, second.Dependencies) {
+		t.Fatalf("expected stable dependency reporting across runs")
+	}
+	return first
+}
+
+func assertSingleUsedDependencyReportWithoutWarning(t *testing.T, req language.Request, unexpectedWarning, usageFailure string) {
+	t.Helper()
+
+	reportData := analyseJVMReport(t, req)
+	assertSingleDependencyUsage(t, reportData.Dependencies, req.Dependency, usageFailure)
+	if strings.Contains(strings.Join(reportData.Warnings, "\n"), unexpectedWarning) {
+		t.Fatalf("did not expect %q warning, got %#v", unexpectedWarning, reportData.Warnings)
+	}
+}
+
+func assertSingleDependencyUsage(t *testing.T, dependencies []report.DependencyReport, wantName, failureMessage string) {
+	t.Helper()
+
+	if len(dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(dependencies))
+	}
+	if dependencies[0].Name != wantName || dependencies[0].UsedExportsCount == 0 {
+		t.Fatalf("%s, got %#v", failureMessage, dependencies)
 	}
 }

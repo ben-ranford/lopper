@@ -44,12 +44,12 @@ func walkJVMDetectionEntry(repoPath, path string, entry fs.DirEntry, roots map[s
 		}
 		return nil
 	}
+	if !shared.IsPathWithin(repoPath, path) {
+		return nil
+	}
 	(*visited)++
 	if *visited > maxFiles {
 		return fs.SkipAll
-	}
-	if !shared.IsPathWithin(repoPath, path) {
-		return nil
 	}
 	updateJVMDetection(path, entry, roots, detection)
 	return nil

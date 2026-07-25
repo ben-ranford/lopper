@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -157,6 +158,8 @@ func describeExpectedJVMSourceReadError(err error) (string, bool) {
 		return "target missing", true
 	case errors.Is(err, fs.ErrPermission):
 		return "target unreadable", true
+	case isJVMSourceSymlinkLoopError(err):
+		return "target loops through symlinks", true
 	case isJVMSourceRepoRootEscapeError(err):
 		return "target escapes repo root", true
 	default:
@@ -173,6 +176,16 @@ func isJVMSourceRepoRootEscapeError(err error) bool {
 	return errors.As(err, &pathErr) &&
 		pathErr.Err != nil &&
 		pathErr.Err.Error() == "path escapes from parent"
+}
+
+func isJVMSourceSymlinkLoopError(err error) bool {
+	if errors.Is(err, syscall.ELOOP) {
+		return true
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "too many levels of symbolic links") ||
+		strings.Contains(message, "too many symlinks")
 }
 
 func isSourceFile(path string) bool {
