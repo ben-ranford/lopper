@@ -911,37 +911,50 @@ func (r *lockfileDriftResult) appendPreparedDir(dir lockfilePreparedDir, gitCont
 	}
 	cache := newLockfileManifestCacheWithIO(snapshot, manifestIO)
 	for _, rule := range dir.rules {
-		if rule.manifestReadErr != nil {
-			r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(rule.manifestReadErr))
-			continue
+		if !r.appendPreparedRule(dir, rule, gitContext, cache) {
+			return
 		}
-		if rule.manifestChange == nil {
-			finding, found, err := evaluatePreparedReplayRule(dir, rule, gitContext, cache)
-			if err != nil {
-				if isRecoverableLockfileManifestReadError(err) {
-					r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(err))
-					r.err = errors.Join(r.err, err)
-					continue
-				}
-				r.err = errors.Join(r.err, err)
-				return
-			}
-			if !found {
-				continue
-			}
-			warning := buildLockfileDriftWarning(finding)
-			r.findings = append(r.findings, warning)
-			r.orderedWarnings = append(r.orderedWarnings, warning)
-			continue
-		}
-		finding, found := evaluatePreparedManifestChange(*rule.manifestChange, gitContext)
-		if !found {
-			continue
-		}
-		warning := buildLockfileDriftWarning(finding)
-		r.findings = append(r.findings, warning)
-		r.orderedWarnings = append(r.orderedWarnings, warning)
 	}
+}
+
+func (r *lockfileDriftResult) appendPreparedRule(dir lockfilePreparedDir, rule lockfilePreparedRule, gitContext lockfileGitContext, cache *lockfileManifestCache) bool {
+	if rule.manifestReadErr != nil {
+		r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(rule.manifestReadErr))
+		return true
+	}
+	if rule.manifestChange == nil {
+		return r.appendPreparedReplayRule(dir, rule, gitContext, cache)
+	}
+	finding, found := evaluatePreparedManifestChange(*rule.manifestChange, gitContext)
+	if !found {
+		return true
+	}
+	r.appendPreparedFinding(finding)
+	return true
+}
+
+func (r *lockfileDriftResult) appendPreparedReplayRule(dir lockfilePreparedDir, rule lockfilePreparedRule, gitContext lockfileGitContext, cache *lockfileManifestCache) bool {
+	finding, found, err := evaluatePreparedReplayRule(dir, rule, gitContext, cache)
+	if err != nil {
+		if isRecoverableLockfileManifestReadError(err) {
+			r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(err))
+			r.err = errors.Join(r.err, err)
+			return true
+		}
+		r.err = errors.Join(r.err, err)
+		return false
+	}
+	if !found {
+		return true
+	}
+	r.appendPreparedFinding(finding)
+	return true
+}
+
+func (r *lockfileDriftResult) appendPreparedFinding(finding lockfileDriftFinding) {
+	warning := buildLockfileDriftWarning(finding)
+	r.findings = append(r.findings, warning)
+	r.orderedWarnings = append(r.orderedWarnings, warning)
 }
 
 func prepareLockfileDir(snapshot lockfileDirSnapshot, rules []lockfileRule, manifestIO lockfileManifestIO, readErrors *lockfileManifestReadErrors) (lockfilePreparedDir, []string, error) {
