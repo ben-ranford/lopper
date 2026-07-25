@@ -99,62 +99,66 @@ func TestDashboardBaselineLoadRejectsUnsupportedSchema(t *testing.T) {
 	}
 }
 
+type dashboardSchemaCompatibilityCase struct {
+	content   string
+	wantKey   string
+	wantRepos int
+	wantErr   string
+}
+
+func assertDashboardSchemaCompatibility(t *testing.T, tc dashboardSchemaCompatibilityCase) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+		t.Fatalf("write dashboard snapshot: %v", err)
+	}
+
+	rep, key, err := LoadWithKey(path)
+	if tc.wantErr != "" {
+		if err == nil || err.Error() != tc.wantErr {
+			t.Fatalf("LoadWithKey() error = %v, want %q", err, tc.wantErr)
+		}
+		if len(rep.Repos) != 0 || rep.GeneratedAt != (time.Time{}) || key != "" {
+			t.Fatalf("LoadWithKey() error result = %#v, %q, want zero values", rep, key)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("LoadWithKey() error = %v", err)
+	}
+	if len(rep.Repos) != tc.wantRepos || key != tc.wantKey {
+		t.Fatalf("LoadWithKey() = repos=%d key=%q, want repos=%d key=%q", len(rep.Repos), key, tc.wantRepos, tc.wantKey)
+	}
+}
+
 func TestDashboardBaselineLoadSchemaVersionCompatibility(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name      string
-		content   string
-		wantKey   string
-		wantRepos int
-		wantErr   string
-	}{
-		{
-			name:      "exact version accepted",
+	t.Run("exact version accepted", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardSchemaCompatibility(t, dashboardSchemaCompatibilityCase{
 			content:   `{"baselineSchemaVersion":"1.0.0","key":" label:exact ","savedAt":"2026-03-11T00:00:00Z","report":{"generated_at":"2026-03-10T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":2}]}}`,
 			wantKey:   "label:exact",
 			wantRepos: 1,
-		},
-		{
-			name:    "padded version rejected with raw unsupported value",
+		})
+	})
+
+	t.Run("padded version rejected with raw unsupported value", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardSchemaCompatibility(t, dashboardSchemaCompatibilityCase{
 			content: `{"baselineSchemaVersion":" 1.0.0 ","key":"label:padded","savedAt":"2026-03-11T00:00:00Z","report":{"generated_at":"2026-03-10T00:00:00Z","repos":[]}}`,
 			wantErr: "unsupported dashboard baseline schema version:  1.0.0 ",
-		},
-		{
-			name:      "whitespace version matches missing legacy behavior",
+		})
+	})
+
+	t.Run("whitespace version matches missing legacy behavior", func(t *testing.T) {
+		t.Parallel()
+		assertDashboardSchemaCompatibility(t, dashboardSchemaCompatibilityCase{
 			content:   `{"baselineSchemaVersion":"   ","generated_at":"2026-03-12T00:00:00Z","repos":[{"name":"api","path":"./api","dependency_count":3}]}`,
 			wantRepos: 1,
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			path := filepath.Join(t.TempDir(), "snapshot.json")
-			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
-				t.Fatalf("write dashboard snapshot: %v", err)
-			}
-
-			rep, key, err := LoadWithKey(path)
-			if tc.wantErr != "" {
-				if err == nil || err.Error() != tc.wantErr {
-					t.Fatalf("LoadWithKey() error = %v, want %q", err, tc.wantErr)
-				}
-				if len(rep.Repos) != 0 || rep.GeneratedAt != (time.Time{}) || key != "" {
-					t.Fatalf("LoadWithKey() error result = %#v, %q, want zero values", rep, key)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("LoadWithKey() error = %v", err)
-			}
-			if len(rep.Repos) != tc.wantRepos || key != tc.wantKey {
-				t.Fatalf("LoadWithKey() = repos=%d key=%q, want repos=%d key=%q", len(rep.Repos), key, tc.wantRepos, tc.wantKey)
-			}
 		})
-	}
+	})
 }
 
 func TestDashboardBaselineLoadReportsReadErrors(t *testing.T) {

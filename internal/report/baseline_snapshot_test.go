@@ -152,16 +152,44 @@ func TestLoadWithKeyUnsupportedSnapshotSchema(t *testing.T) {
 	}
 }
 
+type loadWithKeyCompatibilityCase struct {
+	name     string
+	content  string
+	wantKey  string
+	wantRepo string
+	wantErr  string
+}
+
+func assertLoadWithKeyCompatibility(t *testing.T, tc loadWithKeyCompatibilityCase) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	rep, key, err := LoadWithKey(path)
+	if tc.wantErr != "" {
+		if err == nil || err.Error() != tc.wantErr {
+			t.Fatalf("LoadWithKey() error = %v, want %q", err, tc.wantErr)
+		}
+		if rep.RepoPath != "" || rep.SchemaVersion != "" || len(rep.Dependencies) != 0 || key != "" {
+			t.Fatalf("LoadWithKey() error result = %#v, %q, want zero values", rep, key)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("LoadWithKey() error = %v", err)
+	}
+	if rep.RepoPath != tc.wantRepo || key != tc.wantKey {
+		t.Fatalf("LoadWithKey() = repo=%q key=%q, want repo=%q key=%q", rep.RepoPath, key, tc.wantRepo, tc.wantKey)
+	}
+}
+
 func TestLoadWithKeySnapshotSchemaVersionCompatibility(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		content  string
-		wantKey  string
-		wantRepo string
-		wantErr  string
-	}{
+	tests := []loadWithKeyCompatibilityCase{
 		{
 			name:     "exact version accepted",
 			content:  `{"baselineSchemaVersion":"1.0.0","key":" label:exact ","savedAt":"2026-01-01T00:00:00Z","report":{"schemaVersion":"0.1.0","generatedAt":"2026-01-01T00:00:00Z","repoPath":".","dependencies":[]}}` + "\n",
@@ -184,28 +212,7 @@ func TestLoadWithKeySnapshotSchemaVersionCompatibility(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			path := filepath.Join(t.TempDir(), "snapshot.json")
-			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
-				t.Fatalf("write snapshot: %v", err)
-			}
-
-			rep, key, err := LoadWithKey(path)
-			if tc.wantErr != "" {
-				if err == nil || err.Error() != tc.wantErr {
-					t.Fatalf("LoadWithKey() error = %v, want %q", err, tc.wantErr)
-				}
-				if rep.RepoPath != "" || rep.SchemaVersion != "" || len(rep.Dependencies) != 0 || key != "" {
-					t.Fatalf("LoadWithKey() error result = %#v, %q, want zero values", rep, key)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("LoadWithKey() error = %v", err)
-			}
-			if rep.RepoPath != tc.wantRepo || key != tc.wantKey {
-				t.Fatalf("LoadWithKey() = repo=%q key=%q, want repo=%q key=%q", rep.RepoPath, key, tc.wantRepo, tc.wantKey)
-			}
+			assertLoadWithKeyCompatibility(t, tc)
 		})
 	}
 }
