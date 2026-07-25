@@ -291,10 +291,10 @@ func TestAnnotateVulnerabilitiesKeepsUnevaluableOSVPackageMatchesActionable(t *t
 	AnnotateVulnerabilities(&reportData, advisories)
 	AnnotateVulnerabilities(&reportData, advisories)
 
-	if got := len(reportData.Dependencies[0].Vulnerabilities); got != 1 {
+	if len(reportData.Dependencies[0].Vulnerabilities) != 1 {
 		t.Fatalf("expected unsupported package match to remain actionable, got %#v", reportData.Dependencies[0].Vulnerabilities)
 	}
-	if got := len(reportData.Dependencies[1].Vulnerabilities); got != 1 {
+	if len(reportData.Dependencies[1].Vulnerabilities) != 1 {
 		t.Fatalf("expected blank-version package match to remain actionable, got %#v", reportData.Dependencies[1].Vulnerabilities)
 	}
 	for _, finding := range []VulnerabilityFinding{
