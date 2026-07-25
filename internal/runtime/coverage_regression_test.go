@@ -113,6 +113,28 @@ func TestValidateTrustedRuntimeExecutableRejectsDescriptorTrustMismatch(t *testi
 	}
 }
 
+func TestValidateTrustedRuntimeExecutableRejectsStatFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "npm")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o500); err != nil {
+		t.Fatalf("write runtime executable: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat runtime executable: %v", err)
+	}
+
+	root := &trustedExecutableRootStub{
+		lstatInfo: map[string]fs.FileInfo{"npm": info},
+		files: map[string]safeio.File{
+			"npm": &trustedExecutableFileStub{statErr: errors.New("stat failed")},
+		},
+	}
+
+	if validateTrustedRuntimeExecutable(root, "npm") {
+		t.Fatal("expected stat failure to reject trusted runtime executable")
+	}
+}
+
 func TestOpenTrustedRuntimeSearchRootRejectsNonDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "npm")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -161,6 +183,75 @@ func TestOpenTrustedRuntimeSearchRootRejectsOpenedNonDirectory(t *testing.T) {
 	_, err = openTrustedRuntimeSearchRoot(dir)
 	if err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("expected opened non-directory runtime root to be rejected, got %v", err)
+	}
+}
+
+func TestOpenTrustedRuntimeSearchRootPropagatesLstatFailure(t *testing.T) {
+	wantErr := errors.New("lstat failed")
+
+	withSafeioFileSystemTest(t, &safeioFileSystemStub{
+		openRootNoFollow: func(name string) (safeio.Root, error) {
+			return &stubRoot{lstatErr: map[string]error{".": wantErr}}, nil
+		},
+	})
+
+	_, err := openTrustedRuntimeSearchRoot(t.TempDir())
+	if err == nil {
+		t.Fatal("expected lstat failure")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected lstat error %v, got %v", wantErr, err)
+	}
+}
+
+func TestValidateTrustedRuntimeExecutableRejectsOpenedDirectory(t *testing.T) {
+	dirInfo := dirInfoFromTempDir(t)
+	root := &trustedExecutableRootStub{
+		lstatInfo: map[string]fs.FileInfo{"npm": dirInfo},
+	}
+
+	if validateTrustedRuntimeExecutable(root, "npm") {
+		t.Fatal("expected directory candidate to be rejected")
+	}
+}
+
+func TestIsTrustedRuntimeSearchDirInfoRejectsNonDirectory(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file path: %v", err)
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("stat file path: %v", err)
+	}
+	if isTrustedRuntimeSearchDirInfo(info) {
+		t.Fatal("expected non-directory runtime search info to be rejected")
+	}
+}
+
+func TestTrustedSearchDirsSkipsCloseFailure(t *testing.T) {
+	dir := t.TempDir()
+
+	withSafeioFileSystemTest(t, &safeioFileSystemStub{
+		openRootNoFollow: func(name string) (safeio.Root, error) {
+			return &trustedExecutableRootStub{
+				lstatInfo: map[string]fs.FileInfo{".": dirInfoFromTempDir(t)},
+				closeErr:  errors.New("close failed"),
+			}, nil
+		},
+	})
+
+	if got := trustedSearchDirs(dir); len(got) != 0 {
+		t.Fatalf("expected close failure to drop trusted search dir, got %v", got)
+	}
+}
+
+func TestRuntimePathWithinRootPropagatesRelError(t *testing.T) {
+	if _, err := runtimePathWithinRoot(string([]byte{0}), "/tmp"); err == nil {
+		t.Fatal("expected invalid root path to fail")
+	}
+	if _, err := runtimePathWithinRoot("/tmp", string([]byte{0})); err == nil {
+		t.Fatal("expected invalid target path to fail")
 	}
 }
 

@@ -15,6 +15,7 @@ const runtimeTraceCommandWarningPrefix = "runtime trace command failed; continui
 const runtimeTraceMissingWarning = "runtime trace file not found; continuing with static analysis"
 
 var captureRuntimeTraceAfterValidatedLoadHook func()
+var captureRuntimeTraceAfterExplicitFallbackPreloadHook func()
 
 type runtimeTraceCaptureOutcome struct {
 	warnings         []string
@@ -112,6 +113,9 @@ func preloadExplicitRuntimeTraceFallback(explicit bool, resolvedTracePath string
 	if err != nil || missing {
 		return explicitRuntimeTraceFallback{}
 	}
+	if captureRuntimeTraceAfterExplicitFallbackPreloadHook != nil {
+		captureRuntimeTraceAfterExplicitFallbackPreloadHook()
+	}
 	return explicitRuntimeTraceFallback{trace: traceData}
 }
 
@@ -119,6 +123,7 @@ func runRuntimeTraceCapture(ctx context.Context, req Request, repoPath string, r
 	return runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
 		RepoPath:             repoPath,
 		TracePath:            resolvedTracePath,
+		TracePathExplicit:    req.RuntimeTracePathExplicit,
 		Command:              command,
 		Provider:             provider,
 		PythonRunnerProfiles: req.Features.Enabled(runtime.PythonRunnerProfilesFeature),
@@ -130,6 +135,11 @@ func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, preloade
 		return outcome, err
 	}
 	warnings := []string{runtimeTraceCommandWarningPrefix + err.Error()}
+	if preloadedFallback.trace != nil {
+		outcome.warnings = warnings
+		outcome.trace = preloadedFallback.trace
+		return outcome, nil
+	}
 	fallback, fallbackErr := loadExplicitRuntimeTraceFallback(explicit, resolvedTracePath)
 	if fallbackErr != nil {
 		return outcome, errors.Join(fmt.Errorf("%s%s", runtimeTraceCommandWarningPrefix, err.Error()), fallbackErr)
@@ -137,11 +147,6 @@ func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, preloade
 	if fallback.trace != nil {
 		outcome.warnings = warnings
 		outcome.trace = fallback.trace
-		return outcome, nil
-	}
-	if fallback.missing && preloadedFallback.trace != nil {
-		outcome.warnings = warnings
-		outcome.trace = preloadedFallback.trace
 		return outcome, nil
 	}
 	if fallback.missing {

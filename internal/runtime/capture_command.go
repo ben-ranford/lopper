@@ -327,7 +327,7 @@ func resolveRuntimeExecutablePathInDir(executable, dir string) (path string, ok 
 		return "", false
 	}
 	defer func() {
-		if closeErr := root.Close(); closeErr != nil {
+		if root.Close() != nil {
 			path = ""
 			ok = false
 		}
@@ -388,7 +388,7 @@ func validateTrustedRuntimeExecutable(root safeio.Root, name string) (trusted bo
 		return false
 	}
 	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
+		if file.Close() != nil {
 			trusted = false
 		}
 	}()

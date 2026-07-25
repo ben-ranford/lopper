@@ -44,34 +44,15 @@ func TestRuntimeCaptureRejectsImplicitDefaultArtifactsSymlinkWithoutExternalMuta
 		t.Skip("symlink parent regression is Unix-specific")
 	}
 
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-
-	outside := t.TempDir()
-	tracePath := filepath.Join(outside, "lopper-runtime.ndjson")
-	sentinelPath := filepath.Join(outside, "sentinel.txt")
-	testutil.MustWriteFile(t, tracePath, "outside-trace\n")
-	testutil.MustWriteFile(t, sentinelPath, "keep\n")
+	repo, outside := newRuntimeCaptureRepoAndOutsideFixture(t)
+	tracePath, sentinelPath, traceBefore, sentinelBefore := newRuntimeCaptureExternalFilesFixture(t, outside, "lopper-runtime.ndjson")
 	if err := os.Symlink(outside, filepath.Join(repo, ".artifacts")); err != nil {
 		t.Fatalf("symlink implicit artifacts dir: %v", err)
 	}
-
-	traceBefore, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatalf("read outside trace before analyse: %v", err)
-	}
-	sentinelBefore, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatalf("read outside sentinel before analyse: %v", err)
-	}
-
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupRuntimeCaptureRegressionTool(t))
+	counterPath := setupRuntimeCaptureRegressionEnv(t, repo)
 
 	service := analysis.NewService()
-	_, err = service.Analyse(context.Background(), analysis.Request{
+	_, err := service.Analyse(context.Background(), analysis.Request{
 		RepoPath:           repo,
 		Language:           "js-ts",
 		TopN:               10,
@@ -83,51 +64,19 @@ func TestRuntimeCaptureRejectsImplicitDefaultArtifactsSymlinkWithoutExternalMuta
 	if _, statErr := os.Stat(counterPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected runtime command not to start, stat err=%v", statErr)
 	}
-	traceAfter, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatalf("read outside trace after analyse: %v", err)
-	}
-	if string(traceAfter) != string(traceBefore) {
-		t.Fatalf("expected outside trace to remain unchanged, before=%q after=%q", traceBefore, traceAfter)
-	}
-	sentinelAfter, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatalf("read outside sentinel after analyse: %v", err)
-	}
-	if string(sentinelAfter) != string(sentinelBefore) {
-		t.Fatalf("expected outside sentinel to remain unchanged, before=%q after=%q", sentinelBefore, sentinelAfter)
-	}
+	assertRuntimeCaptureExternalFilesUnchanged(t, tracePath, traceBefore, sentinelPath, sentinelBefore)
 	if _, statErr := os.Stat(runtime.DefaultTracePath(repo)); statErr != nil {
 		t.Fatalf("expected symlinked implicit default trace lookup to keep external file reachable, stat err=%v", statErr)
 	}
 }
 
 func TestRuntimeCaptureRejectsExplicitExternalTracePathWithoutExternalMutation(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-
-	outside := t.TempDir()
-	tracePath := filepath.Join(outside, "external-runtime.ndjson")
-	sentinelPath := filepath.Join(outside, "sentinel.txt")
-	testutil.MustWriteFile(t, tracePath, "outside-trace\n")
-	testutil.MustWriteFile(t, sentinelPath, "keep\n")
-
-	traceBefore, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatalf("read outside trace before analyse: %v", err)
-	}
-	sentinelBefore, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatalf("read outside sentinel before analyse: %v", err)
-	}
-
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupRuntimeCaptureRegressionTool(t))
+	repo, outside := newRuntimeCaptureRepoAndOutsideFixture(t)
+	tracePath, sentinelPath, traceBefore, sentinelBefore := newRuntimeCaptureExternalFilesFixture(t, outside, "external-runtime.ndjson")
+	counterPath := setupRuntimeCaptureRegressionEnv(t, repo)
 
 	service := analysis.NewService()
-	_, err = service.Analyse(context.Background(), analysis.Request{
+	_, err := service.Analyse(context.Background(), analysis.Request{
 		RepoPath:                 repo,
 		Language:                 "js-ts",
 		TopN:                     10,
@@ -141,20 +90,7 @@ func TestRuntimeCaptureRejectsExplicitExternalTracePathWithoutExternalMutation(t
 	if _, statErr := os.Stat(counterPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected runtime command not to start, stat err=%v", statErr)
 	}
-	traceAfter, err := os.ReadFile(tracePath)
-	if err != nil {
-		t.Fatalf("read outside trace after analyse: %v", err)
-	}
-	if string(traceAfter) != string(traceBefore) {
-		t.Fatalf("expected outside trace to remain unchanged, before=%q after=%q", traceBefore, traceAfter)
-	}
-	sentinelAfter, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatalf("read outside sentinel after analyse: %v", err)
-	}
-	if string(sentinelAfter) != string(sentinelBefore) {
-		t.Fatalf("expected outside sentinel to remain unchanged, before=%q after=%q", sentinelBefore, sentinelAfter)
-	}
+	assertRuntimeCaptureExternalFilesUnchanged(t, tracePath, traceBefore, sentinelPath, sentinelBefore)
 }
 
 func setupRuntimeCaptureRegressionTool(t *testing.T) string {
@@ -181,13 +117,8 @@ type runtimeCaptureRegressionFixture struct {
 func newRuntimeCaptureRegressionFixture(t *testing.T) runtimeCaptureRegressionFixture {
 	t.Helper()
 
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
-
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
-	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
-	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupRuntimeCaptureRegressionTool(t))
+	repo, _ := newRuntimeCaptureRepoAndOutsideFixture(t)
+	counterPath := setupRuntimeCaptureRegressionEnv(t, repo)
 
 	return runtimeCaptureRegressionFixture{
 		service: analysis.NewService(),
@@ -204,6 +135,57 @@ func newRuntimeCaptureRegressionFixture(t *testing.T) runtimeCaptureRegressionFi
 		counterPath: counterPath,
 		tracePath:   runtime.DefaultTracePath(repo),
 	}
+}
+
+func newRuntimeCaptureRepoAndOutsideFixture(t *testing.T) (repo string, outside string) {
+	t.Helper()
+
+	repo = t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "console.log('hello')\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	return repo, t.TempDir()
+}
+
+func newRuntimeCaptureExternalFilesFixture(t *testing.T, outside string, traceName string) (tracePath string, sentinelPath string, traceBefore string, sentinelBefore string) {
+	t.Helper()
+
+	tracePath = filepath.Join(outside, traceName)
+	sentinelPath = filepath.Join(outside, "sentinel.txt")
+	testutil.MustWriteFile(t, tracePath, "outside-trace\n")
+	testutil.MustWriteFile(t, sentinelPath, "keep\n")
+	traceBefore = mustReadRuntimeCaptureFile(t, tracePath, "read outside trace before analyse")
+	sentinelBefore = mustReadRuntimeCaptureFile(t, sentinelPath, "read outside sentinel before analyse")
+	return tracePath, sentinelPath, traceBefore, sentinelBefore
+}
+
+func setupRuntimeCaptureRegressionEnv(t *testing.T, repo string) string {
+	t.Helper()
+
+	counterPath := filepath.Join(repo, "runtime-counter.txt")
+	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupRuntimeCaptureRegressionTool(t))
+	return counterPath
+}
+
+func assertRuntimeCaptureExternalFilesUnchanged(t *testing.T, tracePath string, traceBefore string, sentinelPath string, sentinelBefore string) {
+	t.Helper()
+
+	if traceAfter := mustReadRuntimeCaptureFile(t, tracePath, "read outside trace after analyse"); traceAfter != traceBefore {
+		t.Fatalf("expected outside trace to remain unchanged, before=%q after=%q", traceBefore, traceAfter)
+	}
+	if sentinelAfter := mustReadRuntimeCaptureFile(t, sentinelPath, "read outside sentinel after analyse"); sentinelAfter != sentinelBefore {
+		t.Fatalf("expected outside sentinel to remain unchanged, before=%q after=%q", sentinelBefore, sentinelAfter)
+	}
+}
+
+func mustReadRuntimeCaptureFile(t *testing.T, path string, action string) string {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s: %v", action, err)
+	}
+	return string(content)
 }
 
 func assertRuntimeCaptureRegressionCounter(t *testing.T, path string, want int, message string) {

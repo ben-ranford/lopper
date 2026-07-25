@@ -173,7 +173,7 @@ func MustReadTrimmedIntFile(t *testing.T, path string) int {
 	return value
 }
 
-func MustWriteRuntimeHelperFile(path string, content string) {
+func MustWriteRuntimeHelperFile(path, content string) {
 	parentDir := filepath.Dir(path)
 	if err := os.MkdirAll(parentDir, 0o750); err != nil {
 		fmt.Fprintln(os.Stderr, err)

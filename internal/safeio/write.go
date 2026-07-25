@@ -250,6 +250,34 @@ func WriteFileWithinRoot(root Root, targetPath string, data []byte, perm os.File
 	return writeAtomicReplacement(root, targetRel, data, perm, nil)
 }
 
+// PublishFileWithinRoot publishes targetPath by staging a temp file inside the
+// already-open confined root and attempting a single rename-only commit.
+// Existing targets are replaced only on platforms/filesystems whose rename
+// contract permits that replacement. When the commit rename fails, publish
+// returns the rename error, cleans up the staged temp file, and never falls
+// back to reopening or overwriting targetPath in place.
+func PublishFileWithinRoot(root Root, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+
+	session, err := newAtomicWriteSession(root, targetRel, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cleanupErr := session.cleanup(); cleanupErr != nil {
+			returnErr = errors.Join(returnErr, cleanupErr)
+		}
+	}()
+
+	if err := session.writeAndClose(data, perm); err != nil {
+		return err
+	}
+	return session.commit()
+}
+
 // WriteFileReplacingUnder atomically writes targetPath only if it resolves
 // under rootDir. Existing regular targets retain their permission bits.
 // On Windows only, writes may fall back to in-place overwrite when the

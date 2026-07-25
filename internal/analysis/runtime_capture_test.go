@@ -343,7 +343,8 @@ func TestCaptureRuntimeTraceIfNeededUsesExplicitTraceAfterCaptureFailure(t *test
 	repo := t.TempDir()
 	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
 	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
-	testutil.MustWriteFile(t, canonicalTracePath, "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n")
+	before := "{\"module\":\"lodash/map\"}\n{\"module\":\"chalk/index\"}\n"
+	testutil.MustWriteFile(t, canonicalTracePath, before)
 	if _, err := runtime.LoadValidatedTrace(canonicalTracePath); err != nil {
 		t.Fatalf("precondition explicit runtime trace loads: %v", err)
 	}
@@ -366,6 +367,58 @@ func TestCaptureRuntimeTraceIfNeededUsesExplicitTraceAfterCaptureFailure(t *test
 	}
 	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "lodash", 1, "expected explicit fallback trace to load lodash")
 	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "chalk", 1, "expected explicit fallback trace to load chalk")
+	after, err := os.ReadFile(canonicalTracePath)
+	if err != nil {
+		t.Fatalf("read explicit runtime trace after capture failure: %v", err)
+	}
+	if string(after) != before {
+		t.Fatalf("expected explicit runtime trace to remain unchanged after capture failure, before=%q after=%q", before, after)
+	}
+}
+
+func TestCaptureRuntimeTraceIfNeededUsesPreloadedExplicitSnapshotAfterCaptureFailureAcrossPathSwap(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
+	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
+	testutil.MustWriteFile(t, canonicalTracePath, "{\"module\":\"lodash/map\"}\n")
+	swapPath := canonicalTracePath + ".swap"
+	testutil.MustWriteFile(t, swapPath, "{\"module\":\"chalk/index\"}\n")
+
+	captureRuntimeTraceAfterExplicitFallbackPreloadHook = func() {
+		if err := os.Rename(canonicalTracePath, canonicalTracePath+".validated"); err != nil {
+			t.Fatalf("rename validated explicit runtime trace aside: %v", err)
+		}
+		if err := os.Rename(swapPath, canonicalTracePath); err != nil {
+			t.Fatalf("swap explicit runtime trace into capture path: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		captureRuntimeTraceAfterExplicitFallbackPreloadHook = nil
+		if _, err := os.Stat(canonicalTracePath + ".validated"); err == nil {
+			if renameErr := os.Rename(canonicalTracePath, swapPath); renameErr != nil {
+				t.Fatalf("restore swapped explicit runtime trace aside: %v", renameErr)
+			}
+			if renameErr := os.Rename(canonicalTracePath+".validated", canonicalTracePath); renameErr != nil {
+				t.Fatalf("restore validated explicit runtime trace path: %v", renameErr)
+			}
+		}
+	})
+
+	req := Request{
+		Language:                 "js-ts",
+		RuntimeTestCommand:       "foobar test",
+		RuntimeTracePath:         tracePath,
+		RuntimeTracePathExplicit: true,
+	}
+	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
+	if err != nil {
+		t.Fatalf("use preloaded explicit runtime trace after capture failure across path swap: %v", err)
+	}
+	if !outcome.captureAttempted || outcome.trace == nil {
+		t.Fatalf("expected capture failure to fall back to preloaded explicit runtime trace, got %#v", outcome)
+	}
+	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "lodash", 1, "expected preloaded explicit snapshot to preserve original lodash trace")
+	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "chalk", 0, "expected preloaded explicit snapshot to ignore swapped trace path")
 }
 
 func TestHandleRuntimeTraceCaptureErrorSurfacesInvalidExplicitTraceFallback(t *testing.T) {

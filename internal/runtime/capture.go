@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ const defaultTraceRelPath = ".artifacts/lopper-runtime.ndjson"
 type CaptureRequest struct {
 	RepoPath             string
 	TracePath            string
+	TracePathExplicit    bool
 	Command              string
 	Provider             CaptureProvider
 	PythonRunnerProfiles bool
@@ -43,10 +45,23 @@ const (
 type capturePlan struct {
 	repoPath             string
 	tracePath            string
+	tracePathExplicit    bool
 	command              string
 	provider             CaptureProvider
 	pythonRunnerProfiles bool
 }
+
+type explicitTraceCaptureStage struct {
+	root     safeio.Root
+	target   string
+	tempRel  string
+	tempPath string
+}
+
+var runtimeTraceEnvBuilder = withRuntimeTraceEnv
+var explicitTraceTempFileCreator = safeio.CreateTempFileWithinRoot
+var explicitTraceTempFileCloseHook = closeExplicitTracePublishFile
+var explicitTracePublishWriteHook = safeio.PublishFileWithinRoot
 
 func DefaultTracePath(repoPath string) string {
 	return filepath.Join(repoPath, defaultTraceRelPath)
@@ -58,18 +73,30 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 }
 
 // CaptureValidatedTrace captures a trace and returns the exact validated bytes, if any.
-func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (CaptureResult, error) {
+func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (result CaptureResult, err error) {
 	plan, err := resolveCapturePlan(req)
 	if err != nil {
 		return CaptureResult{}, err
 	}
-	result := CaptureResult{TracePath: plan.tracePath}
+	result = CaptureResult{TracePath: plan.tracePath}
 	commandOptions := CommandOptions{PythonRunnerProfiles: plan.pythonRunnerProfiles}
 	if err := ValidateCommand(plan.command, commandOptions); err != nil {
 		return result, err
 	}
 
-	if err := prepareTracePath(plan.tracePath); err != nil {
+	capturePath := plan.tracePath
+	explicitStage, err := prepareExplicitTraceCaptureStage(plan)
+	if err != nil {
+		return result, err
+	}
+	if explicitStage != nil {
+		defer func() {
+			if cleanupErr := explicitStage.cleanup(); cleanupErr != nil {
+				err = errors.Join(err, cleanupErr)
+			}
+		}()
+		capturePath = explicitStage.tempPath
+	} else if err := prepareTracePath(plan.tracePath); err != nil {
 		return result, err
 	}
 
@@ -78,7 +105,7 @@ func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (CaptureResu
 		return result, err
 	}
 	cmd.Dir = plan.repoPath
-	cmd.Env, err = withRuntimeTraceEnv(os.Environ(), plan.tracePath, plan.provider)
+	cmd.Env, err = runtimeTraceEnvBuilder(os.Environ(), capturePath, plan.provider)
 	if err != nil {
 		return result, err
 	}
@@ -93,15 +120,27 @@ func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (CaptureResu
 		}
 		return result, formatRuntimeCommandError(err, output.diagnostic())
 	}
-	snapshot, err := stableRuntimeTraceFileSnapshot(plan.tracePath)
+	snapshot, err := stableRuntimeTraceFileSnapshot(capturePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return result, nil
 		}
 		return result, fmt.Errorf("validate runtime trace: %w", err)
 	}
+	if len(bytes.TrimSpace(snapshot.data)) == 0 {
+		return result, nil
+	}
+	validatedSnapshot := &ValidatedTraceSnapshot{data: snapshot.data}
+	if _, err := validatedSnapshot.Load(); err != nil {
+		return result, fmt.Errorf("validate runtime trace: %w", err)
+	}
+	if explicitStage != nil {
+		if err := explicitStage.publish(validatedSnapshot.data); err != nil {
+			return result, fmt.Errorf("publish runtime trace: %w", err)
+		}
+	}
 	result.TraceProduced = true
-	result.Snapshot = &ValidatedTraceSnapshot{data: snapshot.data}
+	result.Snapshot = validatedSnapshot
 	return result, nil
 }
 
@@ -109,6 +148,7 @@ func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
 	plan := capturePlan{
 		repoPath:             strings.TrimSpace(req.RepoPath),
 		tracePath:            strings.TrimSpace(req.TracePath),
+		tracePathExplicit:    req.TracePathExplicit,
 		command:              strings.TrimSpace(req.Command),
 		provider:             normalizeCaptureProvider(req.Provider),
 		pythonRunnerProfiles: req.PythonRunnerProfiles,
@@ -132,6 +172,62 @@ func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
 		return capturePlan{}, fmt.Errorf("unsupported runtime capture provider %q", req.Provider)
 	}
 	return plan, nil
+}
+
+func prepareExplicitTraceCaptureStage(plan capturePlan) (*explicitTraceCaptureStage, error) {
+	if !plan.tracePathExplicit {
+		return nil, nil
+	}
+	traceDir := filepath.Dir(plan.tracePath)
+	root, err := openPreparedTraceRoot(traceDir)
+	if err != nil {
+		return nil, fmt.Errorf("create runtime trace directory: %w", err)
+	}
+	tempRel, tempFile, err := explicitTraceTempFileCreator(root, ".", 0o600)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("create runtime trace temp file: %w", err), root.Close())
+	}
+	if err := explicitTraceTempFileCloseHook(tempFile); err != nil {
+		return nil, errors.Join(fmt.Errorf("close runtime trace temp file: %w", err), safeio.CleanupTempFileWithinRoot(root, tempRel, tempFile), root.Close())
+	}
+	return &explicitTraceCaptureStage{
+		root:     root,
+		target:   filepath.Base(plan.tracePath),
+		tempRel:  tempRel,
+		tempPath: filepath.Join(traceDir, tempRel),
+	}, nil
+}
+
+func (s *explicitTraceCaptureStage) publish(validatedData []byte) error {
+	if s == nil || s.tempRel == "" {
+		return nil
+	}
+	if len(validatedData) == 0 {
+		return errors.Join(fmt.Errorf("validated runtime trace is empty"), s.cleanupTempOnly())
+	}
+	// Publish validated bytes with safeio's rename-only, fail-closed commit.
+	return errors.Join(explicitTracePublishWriteHook(s.root, s.target, validatedData, 0o600), s.cleanupTempOnly())
+}
+
+func (s *explicitTraceCaptureStage) cleanup() error {
+	if s == nil {
+		return nil
+	}
+	return errors.Join(s.cleanupTempOnly(), s.root.Close())
+}
+
+func (s *explicitTraceCaptureStage) cleanupTempOnly() error {
+	if s == nil || s.tempRel == "" {
+		return nil
+	}
+	tempRel := s.tempRel
+	s.tempRel = ""
+	s.tempPath = ""
+	return safeio.CleanupTempFileWithinRoot(s.root, tempRel, nil)
+}
+
+func closeExplicitTracePublishFile(file safeio.File) error {
+	return file.Close()
 }
 
 // ResolveTracePathForRepo returns the real, repo-confined trace path used for runtime capture.

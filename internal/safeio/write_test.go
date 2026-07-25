@@ -344,6 +344,117 @@ func TestWriteFileWithinRootReturnsTempCreationError(t *testing.T) {
 	}
 }
 
+func TestPublishFileWithinRootWritesRelativeFile(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestRoot(t, rootDir)
+
+	if err := PublishFileWithinRoot(root, writeTestFileName, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("PublishFileWithinRoot returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(rootDir, writeTestFileName))
+	if err != nil {
+		t.Fatalf("read published file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("unexpected published content: got %q", string(data))
+	}
+}
+
+func TestPublishFileWithinRootRejectsAbsolutePath(t *testing.T) {
+	assertWriteWithinRootRejectsAbsolutePath(t, PublishFileWithinRoot)
+}
+
+func TestPublishFileWithinRootReturnsTempCreationError(t *testing.T) {
+	expectedErr := errors.New("open temp failure")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) { return nil, expectedErr },
+	}
+
+	err := PublishFileWithinRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if err == nil || !errors.Is(err, expectedErr) {
+		t.Fatalf("expected temp creation error, got %v", err)
+	}
+}
+
+func TestPublishFileWithinRootJoinsWriteErrorWithCleanupFailure(t *testing.T) {
+	writeErr := errors.New("write failure")
+	cleanupErr := errors.New("cleanup failure")
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected temp open path %q", name)
+			}
+			return &fakeFile{
+				write: func([]byte) (int, error) { return 0, writeErr },
+				close: closeWithoutError,
+			}, nil
+		},
+		remove: func(name string) error {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected cleanup path %q", name)
+			}
+			return cleanupErr
+		},
+	}
+
+	err := PublishFileWithinRoot(root, writeTestFileName, []byte("after"), 0o640)
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected write error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
+	}
+}
+
+func TestPublishFileWithinRootReturnsRenameErrorWithoutFallback(t *testing.T) {
+	renameErr := &os.LinkError{
+		Op:  "renameat",
+		Old: atomicTempPrefix + "temp",
+		New: writeTestFileName,
+		Err: fs.ErrExist,
+	}
+	targetOpened := false
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if strings.HasPrefix(name, atomicTempPrefix) {
+				return &fakeFile{
+					write: func(p []byte) (int, error) { return len(p), nil },
+					chmod: chmodWithoutError,
+					close: closeWithoutError,
+				}, nil
+			}
+			if name == writeTestFileName {
+				targetOpened = true
+			}
+			return nil, errors.New("unexpected target reopen")
+		},
+		rename: func(oldName, newName string) error {
+			if !strings.HasPrefix(oldName, atomicTempPrefix) || newName != writeTestFileName {
+				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			}
+			return renameErr
+		},
+		remove: func(name string) error {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected cleanup path %q", name)
+			}
+			return nil
+		},
+	}
+
+	err := PublishFileWithinRoot(root, writeTestFileName, []byte("after"), 0o640)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error without fallback, got %v", err)
+	}
+	if targetOpened {
+		t.Fatal("expected rename-only publish to avoid reopening the target")
+	}
+}
+
 func TestWriteFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	assertWriteUnderRejectsPathTraversalOutsideRoot(t, func(rootDir, targetPath string, data []byte) error {
 		return WriteFileUnder(rootDir, targetPath, data, 0o600)

@@ -40,6 +40,32 @@ func TestCapture(t *testing.T) {
 	}
 }
 
+func assertCaptureValidatedTraceResolvedPathError(t *testing.T, command string, wantErrContains string) {
+	t.Helper()
+
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	wantTracePath, err := ResolveTracePathForRepo(repo, tracePath)
+	if err != nil {
+		t.Fatalf("resolve canonical trace path: %v", err)
+	}
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:  repo,
+		TracePath: tracePath,
+		Command:   command,
+	})
+	if err == nil || !strings.Contains(err.Error(), wantErrContains) {
+		t.Fatalf("expected validation error containing %q with resolved trace path, got result=%#v err=%v", wantErrContains, result, err)
+	}
+	if result.TracePath != wantTracePath {
+		t.Fatalf("expected resolved trace path %q, got %q", wantTracePath, result.TracePath)
+	}
+	if result.TraceProduced || result.Snapshot != nil {
+		t.Fatalf("expected validation failure to return no runtime snapshot, got %#v", result)
+	}
+}
+
 func TestCaptureValidatedTraceReturnsNoSnapshotWhenCommandProducesNoTrace(t *testing.T) {
 	repo := t.TempDir()
 	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
@@ -72,50 +98,124 @@ func TestCaptureValidatedTraceReturnsNoSnapshotWhenCommandProducesNoTrace(t *tes
 }
 
 func TestCaptureValidatedTraceReturnsResolvedTracePathOnCommandValidationError(t *testing.T) {
-	repo := t.TempDir()
-	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
-	wantTracePath, err := ResolveTracePathForRepo(repo, tracePath)
-	if err != nil {
-		t.Fatalf("resolve canonical trace path: %v", err)
-	}
-
-	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
-		RepoPath:  repo,
-		TracePath: tracePath,
-		Command:   "foobar test",
-	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported runtime test executable") {
-		t.Fatalf("expected validation error with resolved trace path, got result=%#v err=%v", result, err)
-	}
-	if result.TracePath != wantTracePath {
-		t.Fatalf("expected resolved trace path %q, got %q", wantTracePath, result.TracePath)
-	}
-	if result.TraceProduced || result.Snapshot != nil {
-		t.Fatalf("expected validation failure to return no runtime snapshot, got %#v", result)
-	}
+	assertCaptureValidatedTraceResolvedPathError(t, "foobar test", "unsupported runtime test executable")
 }
 
 func TestCaptureValidatedTraceReturnsResolvedTracePathOnCommandSyntaxValidationError(t *testing.T) {
+	assertCaptureValidatedTraceResolvedPathError(t, "npm test && echo bad", "indirect command execution operators")
+}
+
+func TestCaptureValidatedTraceExplicitPreservesOriginalTraceOnCommandConstructionFailure(t *testing.T) {
 	repo := t.TempDir()
-	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
-	wantTracePath, err := ResolveTracePathForRepo(repo, tracePath)
-	if err != nil {
-		t.Fatalf("resolve canonical trace path: %v", err)
-	}
+	tracePath, before := writeExplicitTraceFixture(t, repo)
 
 	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
-		RepoPath:  repo,
-		TracePath: tracePath,
-		Command:   "npm test && echo bad",
+		RepoPath:             repo,
+		TracePath:            tracePath,
+		TracePathExplicit:    true,
+		Command:              "foobar test",
+		Provider:             CaptureProviderNode,
+		PythonRunnerProfiles: false,
 	})
-	if err == nil || !strings.Contains(err.Error(), "indirect command execution operators") {
-		t.Fatalf("expected syntax validation error with resolved trace path, got result=%#v err=%v", result, err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported runtime test executable") {
+		t.Fatalf("expected explicit trace construction failure, got result=%#v err=%v", result, err)
 	}
-	if result.TracePath != wantTracePath {
-		t.Fatalf("expected resolved trace path %q, got %q", wantTracePath, result.TracePath)
+	assertExplicitTracePreserved(t, tracePath, before)
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestCaptureValidatedTraceExplicitPreservesOriginalTraceOnExecutableResolutionFailure(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	t.Setenv(runtimeBinDirsEnvKey, t.TempDir())
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:          repo,
+		TracePath:         tracePath,
+		TracePathExplicit: true,
+		Command:           npmTestCommand,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found in trusted runtime directories") {
+		t.Fatalf("expected explicit trace executable resolution failure, got result=%#v err=%v", result, err)
 	}
-	if result.TraceProduced || result.Snapshot != nil {
-		t.Fatalf("expected validation failure to return no runtime snapshot, got %#v", result)
+	assertExplicitTracePreserved(t, tracePath, before)
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestCaptureValidatedTraceExplicitPreservesOriginalTraceOnEnvSetupFailure(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\nexit 0\n"))
+
+	runtimeTraceEnvBuilder = func(base []string, tracePath string, provider CaptureProvider) ([]string, error) {
+		return nil, errors.New("env setup failed")
+	}
+	t.Cleanup(func() {
+		runtimeTraceEnvBuilder = withRuntimeTraceEnv
+	})
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:          repo,
+		TracePath:         tracePath,
+		TracePathExplicit: true,
+		Command:           npmTestCommand,
+	})
+	if err == nil || !strings.Contains(err.Error(), "env setup failed") {
+		t.Fatalf("expected explicit trace env setup failure, got result=%#v err=%v", result, err)
+	}
+	assertExplicitTracePreserved(t, tracePath, before)
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestCaptureValidatedTraceExplicitPreservesOriginalTraceAcrossOutputOutcomes(t *testing.T) {
+	testCases := []struct {
+		name            string
+		script          string
+		wantErrContains string
+	}{
+		{
+			name:            "command failure",
+			script:          "#!/bin/sh\nexit 3\n",
+			wantErrContains: "runtime test command failed",
+		},
+		{
+			name:   "missing output",
+			script: "#!/bin/sh\nexit 0\n",
+		},
+		{
+			name:            "validation failure",
+			script:          "#!/bin/sh\nprintf '{not-json}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n",
+			wantErrContains: "validate runtime trace",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			tracePath, before := writeExplicitTraceFixture(t, repo)
+			t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", tc.script))
+
+			result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+				RepoPath:          repo,
+				TracePath:         tracePath,
+				TracePathExplicit: true,
+				Command:           npmTestCommand,
+			})
+			if tc.wantErrContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Fatalf("expected explicit trace error containing %q, got result=%#v err=%v", tc.wantErrContains, result, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("capture explicit trace without output: %v", err)
+				}
+				if result.TraceProduced || result.Snapshot != nil {
+					t.Fatalf("expected explicit trace without output to skip publishing, got %#v", result)
+				}
+			}
+			assertExplicitTracePreserved(t, tracePath, before)
+			assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+		})
 	}
 }
 
@@ -719,9 +819,11 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 		command              string
 		provider             CaptureProvider
 		pythonRunnerProfiles bool
+		explicitTrace        bool
 	}{
 		{name: "existing command", tool: "make", command: "make test"},
 		{name: "enabled uv runner profile", tool: "uv", command: "uv run pytest", provider: CaptureProviderPython, pythonRunnerProfiles: true},
+		{name: "explicit trace", tool: "npm", command: npmTestCommand, explicitTrace: true},
 	}
 
 	for _, tc := range testCases {
@@ -730,6 +832,13 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 			markerPath := filepath.Join(repo, "started.txt")
 			t.Setenv("LOPPER_CAPTURE_MARKER", markerPath)
 			t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, tc.tool, "#!/bin/sh\nsleep 5\nprintf started > \"$LOPPER_CAPTURE_MARKER\"\n"))
+			tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+			traceBefore := ""
+			if tc.explicitTrace {
+				var before string
+				tracePath, before = writeExplicitTraceFixture(t, repo)
+				traceBefore = before
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
@@ -737,6 +846,8 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 			start := time.Now()
 			err := Capture(ctx, CaptureRequest{
 				RepoPath:             repo,
+				TracePath:            tracePath,
+				TracePathExplicit:    tc.explicitTrace,
 				Command:              tc.command,
 				Provider:             tc.provider,
 				PythonRunnerProfiles: tc.pythonRunnerProfiles,
@@ -752,6 +863,10 @@ func TestCaptureHonorsContextCancellation(t *testing.T) {
 			}
 			if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
 				t.Fatalf("expected cancelled command to stop before creating marker, stat err = %v", statErr)
+			}
+			if tc.explicitTrace {
+				assertExplicitTracePreserved(t, tracePath, traceBefore)
+				assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
 			}
 		})
 	}
@@ -782,6 +897,342 @@ func TestCaptureRunnerProfileUsesRepoWorkingDirectory(t *testing.T) {
 	if wantErr != nil || gotErr != nil || !os.SameFile(wantInfo, gotInfo) {
 		t.Fatalf("expected runner profile working directory %q, got %q (want err=%v, got err=%v)", repo, got, wantErr, gotErr)
 	}
+}
+
+func TestCaptureValidatedTraceExplicitPreservesOriginalTraceOnPublishFailures(t *testing.T) {
+	testCases := []struct {
+		name      string
+		configure func()
+		want      string
+	}{
+		{
+			name: "write failure",
+			configure: func() {
+				explicitTracePublishWriteHook = func(root safeio.Root, targetPath string, data []byte, perm os.FileMode) error {
+					return errors.New("write failed")
+				}
+			},
+			want: "write failed",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			tracePath, before := writeExplicitTraceFixture(t, repo)
+			t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"))
+			explicitTracePublishWriteHook = safeio.PublishFileWithinRoot
+			tc.configure()
+			t.Cleanup(func() {
+				explicitTracePublishWriteHook = safeio.PublishFileWithinRoot
+			})
+
+			result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+				RepoPath:          repo,
+				TracePath:         tracePath,
+				TracePathExplicit: true,
+				Command:           npmTestCommand,
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected explicit publish failure %q, got result=%#v err=%v", tc.want, result, err)
+			}
+			assertExplicitTracePreserved(t, tracePath, before)
+			assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+		})
+	}
+}
+
+func TestCaptureValidatedTraceExplicitPublishesValidatedBytesAcrossSwap(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	trustedBytes := []byte("{\"module\":\"lodash/map\"}\n")
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"))
+
+	var stagedTempPath string
+	explicitTraceTempFileCreator = func(root safeio.Root, dir string, perm os.FileMode) (string, safeio.File, error) {
+		tempRel, tempFile, err := safeio.CreateTempFileWithinRoot(root, dir, perm)
+		if err == nil && stagedTempPath == "" {
+			stagedTempPath = filepath.Join(filepath.Dir(tracePath), tempRel)
+		}
+		return tempRel, tempFile, err
+	}
+	swapPath := tracePath + ".swap"
+	if err := os.WriteFile(swapPath, []byte("{\"module\":\"chalk/index\"}\n"), 0o600); err != nil {
+		t.Fatalf("write swap trace: %v", err)
+	}
+	stagedValidatedPath := tracePath + ".validated"
+	explicitTracePublishWriteHook = func(root safeio.Root, targetPath string, data []byte, perm os.FileMode) error {
+		if stagedTempPath == "" {
+			t.Fatal("expected staged temp path before publication")
+		}
+		if err := os.Rename(stagedTempPath, stagedValidatedPath); err != nil {
+			return err
+		}
+		if err := os.Rename(swapPath, stagedTempPath); err != nil {
+			return err
+		}
+		return safeio.PublishFileWithinRoot(root, targetPath, data, perm)
+	}
+	t.Cleanup(func() {
+		explicitTraceTempFileCreator = safeio.CreateTempFileWithinRoot
+		explicitTracePublishWriteHook = safeio.PublishFileWithinRoot
+		if _, err := os.Stat(stagedTempPath); err == nil {
+			if err := os.Rename(stagedTempPath, swapPath); err != nil {
+				t.Fatalf("restore swapped explicit trace temp path: %v", err)
+			}
+		}
+		if _, err := os.Stat(stagedValidatedPath); err == nil {
+			if err := os.Rename(stagedValidatedPath, stagedTempPath); err != nil {
+				t.Fatalf("restore validated explicit trace temp path: %v", err)
+			}
+		}
+	})
+
+	result, err := CaptureValidatedTrace(context.Background(), CaptureRequest{
+		RepoPath:          repo,
+		TracePath:         tracePath,
+		TracePathExplicit: true,
+		Command:           npmTestCommand,
+	})
+	if err != nil {
+		t.Fatalf("capture validated explicit trace across publish swap: %v", err)
+	}
+	if !result.TraceProduced || result.Snapshot == nil {
+		t.Fatalf("expected validated explicit trace snapshot, got %#v", result)
+	}
+
+	after, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read explicit trace after swapped publish: %v", err)
+	}
+	if string(after) != string(trustedBytes) {
+		t.Fatalf("expected published explicit trace to equal trusted bytes %q, got %q", trustedBytes, after)
+	}
+	if string(after) == before {
+		t.Fatalf("expected validated explicit trace to replace original content, still %q", after)
+	}
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestPrepareExplicitTraceCaptureStageSkipsImplicitTracePaths(t *testing.T) {
+	stage, err := prepareExplicitTraceCaptureStage(capturePlan{
+		tracePath:         filepath.Join(t.TempDir(), ".artifacts", runtimeTraceNDJSON),
+		tracePathExplicit: false,
+	})
+	if err != nil {
+		t.Fatalf("prepare implicit trace stage: %v", err)
+	}
+	if stage != nil {
+		t.Fatalf("expected implicit trace stage to be skipped, got %#v", stage)
+	}
+}
+
+func TestPrepareExplicitTraceCaptureStagePropagatesTempCreateAndCloseFailures(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	plan := capturePlan{
+		tracePath:         tracePath,
+		tracePathExplicit: true,
+	}
+
+	t.Run("create temp failure", func(t *testing.T) {
+		explicitTraceTempFileCreator = func(root safeio.Root, dir string, perm os.FileMode) (string, safeio.File, error) {
+			return "", nil, errors.New("create temp failed")
+		}
+		t.Cleanup(func() {
+			explicitTraceTempFileCreator = safeio.CreateTempFileWithinRoot
+		})
+
+		stage, err := prepareExplicitTraceCaptureStage(plan)
+		if err == nil || !strings.Contains(err.Error(), "create runtime trace temp file") {
+			t.Fatalf("expected temp creation failure, got stage=%#v err=%v", stage, err)
+		}
+		assertExplicitTracePreserved(t, tracePath, before)
+		assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+	})
+
+	t.Run("close temp failure", func(t *testing.T) {
+		explicitTraceTempFileCloseHook = func(file safeio.File) error {
+			return errors.New("close temp failed")
+		}
+		t.Cleanup(func() {
+			explicitTraceTempFileCloseHook = closeExplicitTracePublishFile
+		})
+
+		stage, err := prepareExplicitTraceCaptureStage(plan)
+		if err == nil || !strings.Contains(err.Error(), "close runtime trace temp file") {
+			t.Fatalf("expected temp close failure, got stage=%#v err=%v", stage, err)
+		}
+		assertExplicitTracePreserved(t, tracePath, before)
+		assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+	})
+}
+
+func TestExplicitTraceCaptureStagePublishReplacesTraceOnSuccessfulRenameCommit(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	validatedData := []byte("{\"module\":\"lodash/map\"}\n")
+	stage, err := prepareExplicitTraceCaptureStage(capturePlan{
+		tracePath:         tracePath,
+		tracePathExplicit: true,
+	})
+	if err != nil {
+		t.Fatalf("prepare explicit trace stage: %v", err)
+	}
+	if err := os.WriteFile(stage.tempPath, []byte("{\"module\":\"lodash/map\"}\n"), 0o600); err != nil {
+		t.Fatalf("write staged explicit trace: %v", err)
+	}
+	if err := stage.publish(validatedData); err != nil {
+		t.Fatalf("publish explicit trace stage: %v", err)
+	}
+	if err := stage.cleanup(); err != nil {
+		t.Fatalf("cleanup explicit trace stage: %v", err)
+	}
+
+	after, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read published explicit trace: %v", err)
+	}
+	if string(after) == before {
+		t.Fatalf("expected explicit trace publish to replace original content, still %q", after)
+	}
+	if string(after) != string(validatedData) {
+		t.Fatalf("expected published explicit trace content, got %q", after)
+	}
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestExplicitTraceCaptureStagePublishUsesValidatedBytesAcrossRenameSwap(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	validatedData := []byte("{\"module\":\"lodash/map\"}\n")
+	stage, err := prepareExplicitTraceCaptureStage(capturePlan{
+		tracePath:         tracePath,
+		tracePathExplicit: true,
+	})
+	if err != nil {
+		t.Fatalf("prepare explicit trace stage: %v", err)
+	}
+	if err := os.WriteFile(stage.tempPath, validatedData, 0o600); err != nil {
+		t.Fatalf("write staged explicit trace: %v", err)
+	}
+	swapPath := tracePath + ".swap"
+	if err := os.WriteFile(swapPath, []byte("{\"module\":\"chalk/index\"}\n"), 0o600); err != nil {
+		t.Fatalf("write swap trace: %v", err)
+	}
+	renamedValidatedPath := tracePath + ".validated"
+	restoreSwap := installExplicitTracePublishSwapHook(t, stage, swapPath, renamedValidatedPath)
+	defer func() {
+		if err := restoreSwap(); err != nil {
+			t.Fatalf("restore explicit trace after publish swap: %v", err)
+		}
+	}()
+
+	if err := stage.publish(validatedData); err != nil {
+		t.Fatalf("publish explicit trace stage with swapped temp path: %v", err)
+	}
+	if err := stage.cleanup(); err != nil {
+		t.Fatalf("cleanup explicit trace stage: %v", err)
+	}
+
+	after, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read published explicit trace: %v", err)
+	}
+	if string(after) != string(validatedData) {
+		t.Fatalf("expected published explicit trace to equal validated bytes %q, got %q", validatedData, after)
+	}
+	if string(after) == before {
+		t.Fatalf("expected validated explicit trace to replace original content, still %q", after)
+	}
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestExplicitTraceCaptureStageCleanupRemovesStagedTempFile(t *testing.T) {
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	stage, err := prepareExplicitTraceCaptureStage(capturePlan{
+		tracePath:         tracePath,
+		tracePathExplicit: true,
+	})
+	if err != nil {
+		t.Fatalf("prepare explicit trace stage: %v", err)
+	}
+	if _, err := os.Stat(stage.tempPath); err != nil {
+		t.Fatalf("stat staged explicit temp file: %v", err)
+	}
+	if err := stage.cleanup(); err != nil {
+		t.Fatalf("cleanup explicit trace stage: %v", err)
+	}
+	if _, err := os.Stat(stage.tempPath); !os.IsNotExist(err) {
+		t.Fatalf("expected staged explicit temp file cleanup, stat err=%v", err)
+	}
+	assertExplicitTracePreserved(t, tracePath, before)
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
+}
+
+func TestCloseExplicitTracePublishFile(t *testing.T) {
+	file := &runtimePublishFileStub{closeErr: errors.New("close failed")}
+	if err := closeExplicitTracePublishFile(file); !errors.Is(err, file.closeErr) {
+		t.Fatalf("expected close helper error %v, got %v", file.closeErr, err)
+	}
+}
+
+func TestExplicitTraceCaptureStagePublishOpenFailureAndNoop(t *testing.T) {
+	var nilStage *explicitTraceCaptureStage
+	if err := nilStage.publish([]byte("{}\n")); err != nil {
+		t.Fatalf("expected nil publish stage to no-op, got %v", err)
+	}
+	stage := &explicitTraceCaptureStage{}
+	if err := stage.publish([]byte("{}\n")); err != nil {
+		t.Fatalf("expected empty publish stage to no-op, got %v", err)
+	}
+
+	stage = &explicitTraceCaptureStage{
+		root:     &stubRoot{},
+		target:   "trace.ndjson",
+		tempRel:  "temp.ndjson",
+		tempPath: "temp.ndjson",
+	}
+	explicitTracePublishWriteHook = func(root safeio.Root, targetPath string, data []byte, perm os.FileMode) error {
+		return errors.New("write failed")
+	}
+	t.Cleanup(func() {
+		explicitTracePublishWriteHook = safeio.PublishFileWithinRoot
+	})
+	if err := stage.publish([]byte("{}\n")); err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("expected staged publish open failure, got %v", err)
+	}
+	if stage.tempRel != "" || stage.tempPath != "" {
+		t.Fatalf("expected staged publish open failure cleanup, got %#v", stage)
+	}
+}
+
+func TestExplicitTraceCaptureStagePublishRejectsEmptyValidatedBytesAndCleanupNilNoop(t *testing.T) {
+	if err := (*explicitTraceCaptureStage)(nil).cleanup(); err != nil {
+		t.Fatalf("expected nil cleanup to no-op, got %v", err)
+	}
+	if err := (*explicitTraceCaptureStage)(nil).cleanupTempOnly(); err != nil {
+		t.Fatalf("expected nil temp cleanup to no-op, got %v", err)
+	}
+
+	repo := t.TempDir()
+	tracePath, before := writeExplicitTraceFixture(t, repo)
+	stage, err := prepareExplicitTraceCaptureStage(capturePlan{
+		tracePath:         tracePath,
+		tracePathExplicit: true,
+	})
+	if err != nil {
+		t.Fatalf("prepare explicit trace stage: %v", err)
+	}
+	if err := stage.publish(nil); err == nil || !strings.Contains(err.Error(), "validated runtime trace is empty") {
+		t.Fatalf("expected empty validated data rejection, got %v", err)
+	}
+	if stage.tempRel != "" || stage.tempPath != "" {
+		t.Fatalf("expected empty validated data cleanup, got %#v", stage)
+	}
+	assertExplicitTracePreserved(t, tracePath, before)
+	assertNoRuntimeTempLeaks(t, filepath.Dir(tracePath))
 }
 
 func TestStableRuntimeTraceFileSnapshotReturnsSnapshot(t *testing.T) {
@@ -1685,6 +2136,94 @@ func writeTraceFixture(t *testing.T) string {
 	}
 	return tracePath
 }
+
+func writeExplicitTraceFixture(t *testing.T, repo string) (string, string) {
+	t.Helper()
+
+	tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o750); err != nil {
+		t.Fatalf("mkdir explicit trace parent: %v", err)
+	}
+	before := "{\"module\":\"chalk/index\"}\n"
+	if err := os.WriteFile(tracePath, []byte(before), 0o600); err != nil {
+		t.Fatalf("write explicit trace fixture: %v", err)
+	}
+	return tracePath, before
+}
+
+func assertExplicitTracePreserved(t *testing.T, tracePath string, before string) {
+	t.Helper()
+
+	after, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read explicit trace after capture: %v", err)
+	}
+	if string(after) != before {
+		t.Fatalf("expected explicit trace to remain unchanged, before=%q after=%q", before, after)
+	}
+}
+
+func assertNoRuntimeTempLeaks(t *testing.T, dir string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read runtime trace dir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".safeio-atomic-") {
+			t.Fatalf("expected staged runtime trace temp cleanup, found %q", entry.Name())
+		}
+	}
+}
+
+func installExplicitTracePublishSwapHook(t *testing.T, stage *explicitTraceCaptureStage, swapPath string, displacedPath string) func() error {
+	t.Helper()
+
+	originalWriteHook := explicitTracePublishWriteHook
+	tempPath := stage.tempPath
+	swapped := false
+	explicitTracePublishWriteHook = func(root safeio.Root, targetPath string, data []byte, perm os.FileMode) error {
+		if !swapped {
+			if err := os.Rename(tempPath, displacedPath); err != nil {
+				return err
+			}
+			if err := os.Rename(swapPath, tempPath); err != nil {
+				return err
+			}
+			swapped = true
+		}
+		return originalWriteHook(root, targetPath, data, perm)
+	}
+
+	return func() error {
+		explicitTracePublishWriteHook = originalWriteHook
+		if !swapped {
+			return nil
+		}
+		if _, err := os.Stat(tempPath); err == nil {
+			if renameErr := os.Rename(tempPath, swapPath); renameErr != nil {
+				return renameErr
+			}
+		}
+		if _, err := os.Stat(displacedPath); err == nil {
+			if renameErr := os.Rename(displacedPath, tempPath); renameErr != nil {
+				return renameErr
+			}
+		}
+		return nil
+	}
+}
+
+type runtimePublishFileStub struct {
+	closeErr error
+}
+
+func (f *runtimePublishFileStub) Read(p []byte) (int, error)  { return 0, nil }
+func (f *runtimePublishFileStub) Write(p []byte) (int, error) { return len(p), nil }
+func (f *runtimePublishFileStub) Close() error                { return f.closeErr }
+func (f *runtimePublishFileStub) Stat() (fs.FileInfo, error)  { return nil, nil }
+func (f *runtimePublishFileStub) Chmod(os.FileMode) error     { return nil }
 
 func setHashRuntimeTraceMutationHook(t *testing.T, hook func()) {
 	t.Helper()
