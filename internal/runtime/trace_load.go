@@ -69,59 +69,17 @@ func LoadContext(ctx context.Context, path string) (_ Trace, err error) {
 
 	trace := newTrace()
 	reader := bufio.NewReaderSize(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes), maxRuntimeTraceLineBytes+1)
-	line := 0
-	eventCount := 0
+	state := runtimeTraceLoadState{trace: &trace}
 	for {
 		if err := ctx.Err(); err != nil {
 			return Trace{}, err
 		}
-		text, err := readRuntimeTraceLine(reader)
-		switch {
-		case errors.Is(err, safeio.ErrFileTooLarge):
-			return Trace{}, safeio.ErrFileTooLarge
-		case errors.Is(err, bufio.ErrTooLong):
-			return Trace{}, bufio.ErrTooLong
-		case errors.Is(err, io.EOF):
-			if text == "" {
-				return trace, nil
-			}
-		case err != nil:
+		text, readErr := readRuntimeTraceLine(reader)
+		done, err := state.consumeLine(ctx, text, readErr)
+		if err != nil {
 			return Trace{}, err
 		}
-		line++
-		if line > maxRuntimeTraceLines {
-			return Trace{}, fmt.Errorf("runtime trace exceeds maximum line count of %d", maxRuntimeTraceLines)
-		}
-		text = strings.TrimSpace(text)
-		if text == "" {
-			if errors.Is(err, io.EOF) {
-				return trace, nil
-			}
-			continue
-		}
-		eventCount++
-		if eventCount > maxRuntimeTraceEvents {
-			return Trace{}, fmt.Errorf("runtime trace exceeds maximum event count of %d", maxRuntimeTraceEvents)
-		}
-		event, err := parseRuntimeTraceEvent(ctx, []byte(text))
-		if err != nil {
-			return Trace{}, fmt.Errorf("parse runtime trace line %d: %w", line, err)
-		}
-		language := normalizeRuntimeLanguage(event.Language)
-		dep := dependencyFromEventForLanguage(event, language)
-		if dep == "" {
-			continue
-		}
-		if len(dep) > maxRuntimeTraceNameBytes {
-			return Trace{}, fmt.Errorf("runtime trace dependency name exceeds %d bytes", maxRuntimeTraceNameBytes)
-		}
-		module := runtimeModuleFromEventForLanguage(event, language, dep)
-		if len(module) > maxRuntimeTraceNameBytes {
-			return Trace{}, fmt.Errorf("runtime trace module name exceeds %d bytes", maxRuntimeTraceNameBytes)
-		}
-		symbol := runtimeSymbolFromModuleForLanguage(module, language, dep)
-		addRuntimeEvent(&trace, language, dep, module, runtimeContextValue(event.Parent), runtimeContextValue(event.Entrypoint), symbol)
-		if errors.Is(err, io.EOF) {
+		if done {
 			return trace, nil
 		}
 	}
@@ -135,13 +93,92 @@ func readRuntimeTraceLine(reader *bufio.Reader) (string, error) {
 	return string(line), err
 }
 
-func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
-	if !runtimeTraceOpenFileNoFollowOK() {
-		return nil, ErrTraceOpenUnsupported
+type runtimeTraceLoadState struct {
+	trace      *Trace
+	line       int
+	eventCount int
+}
+
+func (s *runtimeTraceLoadState) consumeLine(ctx context.Context, text string, readErr error) (bool, error) {
+	done, err := runtimeTraceReadStatus(text, readErr)
+	if err != nil {
+		return false, err
 	}
+	if done && text == "" {
+		return true, nil
+	}
+
+	s.line++
+	if s.line > maxRuntimeTraceLines {
+		return false, fmt.Errorf("runtime trace exceeds maximum line count of %d", maxRuntimeTraceLines)
+	}
+
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return done, nil
+	}
+
+	s.eventCount++
+	if s.eventCount > maxRuntimeTraceEvents {
+		return false, fmt.Errorf("runtime trace exceeds maximum event count of %d", maxRuntimeTraceEvents)
+	}
+
+	if err := s.addEvent(ctx, []byte(text)); err != nil {
+		return false, err
+	}
+
+	return done, nil
+}
+
+func runtimeTraceReadStatus(text string, err error) (bool, error) {
+	switch {
+	case errors.Is(err, safeio.ErrFileTooLarge):
+		return false, safeio.ErrFileTooLarge
+	case errors.Is(err, bufio.ErrTooLong):
+		return false, bufio.ErrTooLong
+	case errors.Is(err, io.EOF):
+		return text == "", nil
+	case err != nil:
+		return false, err
+	default:
+		return false, nil
+	}
+}
+
+func (s *runtimeTraceLoadState) addEvent(ctx context.Context, data []byte) error {
+	event, err := parseRuntimeTraceEvent(ctx, data)
+	if err != nil {
+		return fmt.Errorf("parse runtime trace line %d: %w", s.line, err)
+	}
+
+	language := normalizeRuntimeLanguage(event.Language)
+	dependency := dependencyFromEventForLanguage(event, language)
+	if dependency == "" {
+		return nil
+	}
+	if len(dependency) > maxRuntimeTraceNameBytes {
+		return fmt.Errorf("runtime trace dependency name exceeds %d bytes", maxRuntimeTraceNameBytes)
+	}
+
+	module := runtimeModuleFromEventForLanguage(event, language, dependency)
+	if len(module) > maxRuntimeTraceNameBytes {
+		return fmt.Errorf("runtime trace module name exceeds %d bytes", maxRuntimeTraceNameBytes)
+	}
+
+	parent := runtimeContextValue(event.Parent)
+	entrypoint := runtimeContextValue(event.Entrypoint)
+	symbol := runtimeSymbolFromModuleForLanguage(module, language, dependency)
+	addRuntimeEvent(s.trace, language, dependency, module, parent, entrypoint, symbol)
+	return nil
+}
+
+func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
 	info, err := runtimeTraceLstat(path)
 	if err != nil {
 		return nil, err
+	}
+	if !runtimeTraceOpenFileNoFollowOK() {
+		return nil, ErrTraceOpenUnsupported
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("runtime trace path is a symlink: %s", path)
@@ -155,27 +192,30 @@ func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
 
 	file, err := runtimeTraceOpenFileNoFollow(path)
 	if err != nil {
+		if errors.Is(err, safeio.ErrOpenFileNoFollowUnsupported) {
+			return nil, ErrTraceOpenUnsupported
+		}
 		return nil, err
 	}
 	statFile, ok := file.(statReadCloser)
 	if !ok {
-		closeErr := file.Close()
-		return nil, errors.Join(errors.New("runtime trace file does not support stat"), closeErr)
+		return nil, closeRuntimeTraceFileWithError(file, errors.New("runtime trace file does not support stat"))
 	}
 	openedInfo, err := fileInfo(statFile)
 	if err != nil {
-		closeErr := file.Close()
-		return nil, errors.Join(err, closeErr)
+		return nil, closeRuntimeTraceFileWithError(file, err)
 	}
 	if !openedInfo.Mode().IsRegular() {
-		closeErr := file.Close()
-		return nil, errors.Join(fmt.Errorf("runtime trace path is not a regular file: %s", path), closeErr)
+		return nil, closeRuntimeTraceFileWithError(file, fmt.Errorf("runtime trace path is not a regular file: %s", path))
 	}
 	if !runtimeTraceSameFile(info, openedInfo) {
-		closeErr := file.Close()
-		return nil, errors.Join(fmt.Errorf("runtime trace path changed while opening: %s", path), closeErr)
+		return nil, closeRuntimeTraceFileWithError(file, fmt.Errorf("runtime trace path changed while opening: %s", path))
 	}
 	return file, nil
+}
+
+func closeRuntimeTraceFileWithError(file io.Closer, err error) error {
+	return errors.Join(err, file.Close())
 }
 
 type statReadCloser interface {
@@ -338,36 +378,37 @@ func parseRuntimeTraceEvent(ctx context.Context, data []byte) (Event, error) {
 		if !ok {
 			continue
 		}
-		switch field {
-		case "language":
-			if err := json.Unmarshal(value, &event.Language); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
-		case "dependency":
-			if err := json.Unmarshal(value, &event.Dependency); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
-		case "module":
-			if err := json.Unmarshal(value, &event.Module); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
-		case "resolved":
-			if err := json.Unmarshal(value, &event.Resolved); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
-		case "kind":
-			if err := json.Unmarshal(value, &event.Kind); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
-		case "parent":
-			if err := json.Unmarshal(value, &event.Parent); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
-		case "entrypoint":
-			if err := json.Unmarshal(value, &event.Entrypoint); err != nil {
-				return Event{}, fmt.Errorf("decode %s: %w", field, err)
-			}
+		if err := decodeRuntimeTraceField(field, value, &event); err != nil {
+			return Event{}, err
 		}
 	}
 	return event, nil
+}
+
+func decodeRuntimeTraceField(field string, value json.RawMessage, event *Event) error {
+	switch field {
+	case "language":
+		return decodeRuntimeTraceStringField(field, value, &event.Language)
+	case "dependency":
+		return decodeRuntimeTraceStringField(field, value, &event.Dependency)
+	case "module":
+		return decodeRuntimeTraceStringField(field, value, &event.Module)
+	case "resolved":
+		return decodeRuntimeTraceStringField(field, value, &event.Resolved)
+	case "kind":
+		return decodeRuntimeTraceStringField(field, value, &event.Kind)
+	case "parent":
+		return decodeRuntimeTraceStringField(field, value, &event.Parent)
+	case "entrypoint":
+		return decodeRuntimeTraceStringField(field, value, &event.Entrypoint)
+	default:
+		return nil
+	}
+}
+
+func decodeRuntimeTraceStringField(field string, value json.RawMessage, target *string) error {
+	if err := json.Unmarshal(value, target); err != nil {
+		return fmt.Errorf("decode %s: %w", field, err)
+	}
+	return nil
 }

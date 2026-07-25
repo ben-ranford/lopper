@@ -9,6 +9,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 type fakeRunner struct {
@@ -275,6 +276,24 @@ func TestRunGenericRunnerError(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "boom") {
 		t.Fatalf("expected runner error output")
+	}
+}
+
+func TestRunReportsLateRuntimeTraceUnsupported(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	c := New(&fakeRunner{err: runtime.ErrTraceOpenUnsupported}, &out, &errOut)
+
+	code := c.Run(context.Background(), []string{"analyse", "lodash"})
+	if code != 1 {
+		t.Fatalf("expected late unsupported error exit code 1, got %d", code)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no stdout for late unsupported error, got %q", out.String())
+	}
+	wantErr := runtime.ErrTraceOpenUnsupported.Error() + "\n"
+	if errOut.String() != wantErr {
+		t.Fatalf("unexpected late unsupported stderr: got %q want %q", errOut.String(), wantErr)
 	}
 }
 

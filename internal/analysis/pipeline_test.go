@@ -22,6 +22,21 @@ func TestAnalysisPipelineFinalReportMergedPath(t *testing.T) {
 	assertMergedFinalReportSummary(t, got)
 }
 
+func TestAnnotateRuntimeTracePropagatesLateUnsupported(t *testing.T) {
+	previousLoader := loadRuntimeTraceContext
+	loadRuntimeTraceContext = func(context.Context, string) (runtime.Trace, error) {
+		return runtime.Trace{}, runtime.ErrTraceOpenUnsupported
+	}
+	t.Cleanup(func() {
+		loadRuntimeTraceContext = previousLoader
+	})
+
+	_, err := annotateRuntimeTraceIfPresent(context.Background(), "trace.ndjson", "js-ts", report.Report{}, false)
+	if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+		t.Fatalf("expected late unsupported runtime trace error, got %v", err)
+	}
+}
+
 func runMergedFinalReport(t *testing.T) report.Report {
 	t.Helper()
 

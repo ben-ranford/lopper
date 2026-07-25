@@ -159,12 +159,6 @@ func TestLoadTraceSkipsBlankLines(t *testing.T) {
 
 func TestLoadTraceMissingFileError(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.ndjson"))
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, ErrTraceOpenUnsupported) {
-			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
-		}
-		return
-	}
 	if err == nil {
 		t.Fatalf("expected missing-file error")
 	}
@@ -299,6 +293,23 @@ func TestLoadTraceLineCountLimit(t *testing.T) {
 	}
 }
 
+func TestLoadTraceBlankLineCountLimitAllowsExactMaximum(t *testing.T) {
+	trace, err := loadTraceFromContent(t, strings.Repeat("\n", maxRuntimeTraceLines))
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if len(trace.DependencyLoads) != 0 {
+		t.Fatalf("expected blank-line trace to produce no dependency loads, got %#v", trace.DependencyLoads)
+	}
+}
+
+func TestLoadTraceBlankLineCountLimitRejectsMaximumPlusOne(t *testing.T) {
+	_, err := loadTraceFromContent(t, strings.Repeat("\n", maxRuntimeTraceLines+1))
+	if err == nil || !strings.Contains(err.Error(), "maximum line count") {
+		t.Fatalf("expected blank-line count limit error, got %v", err)
+	}
+}
+
 func TestLoadTraceEventCountLimit(t *testing.T) {
 	line := "{}\n"
 	_, err := loadTraceFromContent(t, strings.Repeat(line, maxRuntimeTraceEvents+1))
@@ -349,6 +360,7 @@ func TestLoadTraceNameLimits(t *testing.T) {
 
 func TestLoadTraceContextCanceledDuringParsing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	t.Cleanup(func() {
 		runtimeTraceEventParseHook = nil
 	})
@@ -590,8 +602,78 @@ func TestOpenRuntimeTraceFileFailsClosedWhenNoFollowUnsupported(t *testing.T) {
 	if !errors.Is(err, ErrTraceOpenUnsupported) {
 		t.Fatalf("expected stable unsupported runtime trace open error, got %v", err)
 	}
-	if lstatCalled {
-		t.Fatal("expected unsupported runtime trace path opening to fail before lstat")
+	if !lstatCalled {
+		t.Fatal("expected missing-file detection to run before unsupported capability rejection")
+	}
+}
+
+func TestOpenRuntimeTraceFileNormalizesLateNoFollowUnsupported(t *testing.T) {
+	lstat := func(string) (fs.FileInfo, error) {
+		return &fakeFileInfo{name: "trace.ndjson", mode: 0o600}, nil
+	}
+	openNoFollow := func(string) (io.ReadCloser, error) {
+		return nil, fmt.Errorf("%w: /proc/self/fd unavailable", safeio.ErrOpenFileNoFollowUnsupported)
+	}
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return true }, nil)
+	t.Cleanup(restore)
+
+	_, err := openRuntimeTraceFile("trace.ndjson")
+	if !errors.Is(err, ErrTraceOpenUnsupported) {
+		t.Fatalf("expected stable unsupported runtime trace error, got %v", err)
+	}
+}
+
+func TestOpenRuntimeTraceFilePreservesLateOperationalOpenError(t *testing.T) {
+	lstat := func(string) (fs.FileInfo, error) {
+		return &fakeFileInfo{name: "trace.ndjson", mode: 0o600}, nil
+	}
+	operationalErr := &os.PathError{Op: "open pinned regular file", Path: "trace.ndjson", Err: os.ErrPermission}
+	openNoFollow := func(string) (io.ReadCloser, error) {
+		return nil, operationalErr
+	}
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return true }, nil)
+	t.Cleanup(restore)
+
+	_, err := openRuntimeTraceFile("trace.ndjson")
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected operational open error, got %v", err)
+	}
+	if errors.Is(err, ErrTraceOpenUnsupported) {
+		t.Fatalf("expected operational error to remain distinct from unsupported capability, got %v", err)
+	}
+}
+
+func TestOpenRuntimeTraceFileReturnsMissingFileBeforeUnsupportedCapability(t *testing.T) {
+	lstat := func(string) (fs.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+	openNoFollow := func(string) (io.ReadCloser, error) {
+		t.Fatal("expected missing runtime trace to fail before open")
+		return nil, nil
+	}
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return false }, nil)
+	t.Cleanup(restore)
+
+	_, err := openRuntimeTraceFile("missing.ndjson")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing file error before unsupported capability, got %v", err)
+	}
+}
+
+func TestOpenRuntimeTraceFileRejectsNonRegularBeforeLateUnsupported(t *testing.T) {
+	lstat := func(string) (fs.FileInfo, error) {
+		return &fakeFileInfo{name: "trace.ndjson", mode: os.ModeDir | 0o755}, nil
+	}
+	openNoFollow := func(string) (io.ReadCloser, error) {
+		t.Fatal("expected non-regular file rejection before no-follow open")
+		return nil, safeio.ErrOpenFileNoFollowUnsupported
+	}
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return true }, nil)
+	t.Cleanup(restore)
+
+	_, err := openRuntimeTraceFile("trace.ndjson")
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected non-regular file error before unsupported capability, got %v", err)
 	}
 }
 

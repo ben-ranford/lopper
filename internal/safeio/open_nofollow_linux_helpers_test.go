@@ -12,16 +12,40 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestOpenPinnedNoFollowHandleFailsWhenOpenat2Unavailable(t *testing.T) {
+func TestOpenPinnedNoFollowHandleFallsBackWhenOpenat2Unavailable(t *testing.T) {
 	restore := stubOpenFileNoFollowSupportProbes(t)
 	t.Cleanup(restore)
 	openat2NoFollowProbe = func(int, string, *unix.OpenHow) (int, error) {
 		return -1, unix.ENOSYS
 	}
 
-	_, _, err := openPinnedNoFollowHandle(unix.AT_FDCWD, "trace.ndjson")
-	if err == nil || !strings.Contains(err.Error(), "kernel openat2 support is required") {
-		t.Fatalf("expected ENOSYS unsupported error, got %v", err)
+	rootDir := t.TempDir()
+	tracePath := filepath.Join(rootDir, "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	}()
+
+	rootFD, err := osRootFD(root)
+	if err != nil {
+		t.Fatalf("resolve root fd: %v", err)
+	}
+
+	fd, _, err := openPinnedNoFollowHandle(rootFD, filepath.Base(tracePath))
+	if err != nil {
+		t.Fatalf("expected ENOSYS fallback to succeed, got %v", err)
+	}
+	if err := closeNoFollowFD(fd); err != nil {
+		t.Fatalf("close pinned fd: %v", err)
 	}
 }
 
@@ -196,6 +220,12 @@ func TestReopenPinnedRegularFileFailsWhenProcSelfFDMissing(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "/proc/self/fd is required") {
 		t.Fatalf("expected missing /proc/self/fd error, got %v", err)
 	}
+	if !errors.Is(err, ErrOpenFileNoFollowUnsupported) {
+		t.Fatalf("expected unsupported sentinel, got %v", err)
+	}
+	if !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("expected original /proc/self/fd errno, got %v", err)
+	}
 }
 
 func TestReopenPinnedRegularFileReturnsPathErrorForReopenFailure(t *testing.T) {
@@ -236,6 +266,12 @@ func TestReopenPinnedRegularFileReturnsPathErrorForReopenFailure(t *testing.T) {
 	var pathErr *os.PathError
 	if !errors.As(err, &pathErr) || pathErr.Op != "open pinned regular file" {
 		t.Fatalf("expected reopen PathError, got %v", err)
+	}
+	if !errors.Is(err, unix.EACCES) {
+		t.Fatalf("expected original operational error, got %v", err)
+	}
+	if errors.Is(err, ErrOpenFileNoFollowUnsupported) {
+		t.Fatalf("expected operational error to remain distinct from unsupported capability, got %v", err)
 	}
 }
 

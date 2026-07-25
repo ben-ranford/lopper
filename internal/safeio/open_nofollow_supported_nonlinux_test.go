@@ -1,11 +1,11 @@
-//go:build !linux
+//go:build !(linux || darwin || windows)
 
 package safeio
 
 import "testing"
 
-func TestOpenFileNoFollowSupportedFailsClosedOnNonLinux(t *testing.T) {
+func TestOpenFileNoFollowSupportedFailsClosedOnUnsupportedPlatforms(t *testing.T) {
 	if OpenFileNoFollowSupported() {
-		t.Fatal("expected non-linux no-follow support probe to fail closed")
+		t.Fatal("expected unsupported platform no-follow support to fail closed")
 	}
 }

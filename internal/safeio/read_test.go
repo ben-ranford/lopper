@@ -210,6 +210,21 @@ func TestNormalizeOpenParentRootNoFollowError(t *testing.T) {
 	}
 }
 
+func TestPathContainsSymlinkErrorWithoutCauseUnwrapsSentinel(t *testing.T) {
+	pathErr := &PathContainsSymlinkError{Path: filepath.Join(string(filepath.Separator), "tmp", "link")}
+	if !errors.Is(pathErr, ErrPathContainsSymlink) {
+		t.Fatalf("expected error to match ErrPathContainsSymlink, got %v", pathErr)
+	}
+
+	unwrapped := pathErr.Unwrap()
+	if len(unwrapped) != 1 {
+		t.Fatalf("unexpected unwrapped errors: %v", unwrapped)
+	}
+	if !errors.Is(unwrapped[0], ErrPathContainsSymlink) {
+		t.Fatalf("expected unwrapped sentinel, got %v", unwrapped[0])
+	}
+}
+
 func TestOpenParentRootNoFollowOpensVolumeRoot(t *testing.T) {
 	rootPath := string(filepath.Separator)
 	root, err := openParentRootNoFollow(rootPath)

@@ -13,7 +13,6 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -549,14 +548,8 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 		Language:         "js-ts",
 		RuntimeTracePath: tracePath,
 	})
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected fail-closed unsupported runtime trace error, got %v", err)
-		}
+	if assertExpectedUnsupportedRuntimeTraceError(t, err, "runtime correlation") {
 		return
-	}
-	if err != nil {
-		t.Fatalf("analyse runtime correlation: %v", err)
 	}
 
 	dependencies := make(map[string]report.DependencyReport, len(reportData.Dependencies))
@@ -588,51 +581,18 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	tracePath := filepath.Join(repo, ".artifacts", "python-runtime.ndjson")
 	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n")
 
-	service := NewService()
-	disabledFeature, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, false),
-	})
-	if err != nil {
-		t.Fatalf("analyse python runtime with feature disabled: %v", err)
-	}
-	if dep := dependencyByLanguageName(t, disabledFeature.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
-		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
-	}
-
-	captureWithTraceDisabled, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse Python runtime with trace disabled: %v", err)
-	}
-	if requests := dependencyByLanguageName(t, captureWithTraceDisabled.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
-		t.Fatalf("did not expect an explicit Python trace to bypass the disabled trace feature, got %#v", requests.RuntimeUsage)
-	}
-
-	stableDefault, err := service.Analyse(context.Background(), Request{
+	stableDefault, err := NewService().Analyse(context.Background(), Request{
 		RepoPath:         repo,
 		TopN:             10,
 		Language:         "python",
 		RuntimeTracePath: tracePath,
 		Features:         mustResolveStableDefaultsFeatureSet(t),
 	})
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected fail-closed unsupported python runtime trace error, got %v", err)
-		}
+	if assertExpectedUnsupportedRuntimeTraceError(t, err, "python runtime trace") {
 		return
 	}
-	if err != nil {
-		t.Fatalf("analyse python runtime with stable defaults: %v", err)
-	}
+	assertAnalysePythonRuntimeFeatureDisabled(t, repo, tracePath)
+	assertAnalysePythonRuntimeTraceDisabled(t, repo, tracePath)
 
 	requests := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "requests")
 	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
@@ -672,14 +632,8 @@ func TestServiceAnalyseJSTraceIgnoresPythonLanguageEvents(t *testing.T) {
 		RuntimeTracePath: tracePath,
 		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, true),
 	})
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected fail-closed unsupported js runtime trace error, got %v", err)
-		}
+	if assertExpectedUnsupportedRuntimeTraceError(t, err, "js runtime trace") {
 		return
-	}
-	if err != nil {
-		t.Fatalf("analyse js runtime with python event: %v", err)
 	}
 
 	lodash := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "lodash")
@@ -706,14 +660,8 @@ func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 		Language:         "js-ts",
 		RuntimeTracePath: filepath.Join(repo, ".artifacts", "missing.ndjson"),
 	})
-	if !safeio.OpenFileNoFollowSupported() {
-		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
-			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
-		}
+	if assertExpectedUnsupportedRuntimeTraceError(t, err, "runtime trace open") {
 		return
-	}
-	if err != nil {
-		t.Fatalf("expected runtime missing trace fallback: %v", err)
 	}
 	if len(reportData.Warnings) == 0 {
 		t.Fatalf("expected warning for missing runtime trace")
@@ -729,6 +677,53 @@ func dependencyByLanguageName(t *testing.T, dependencies []report.DependencyRepo
 	}
 	t.Fatalf("dependency %s/%s not found in %#v", languageID, name, dependencies)
 	return report.DependencyReport{}
+}
+
+func assertExpectedUnsupportedRuntimeTraceError(t *testing.T, err error, label string) bool {
+	t.Helper()
+	if errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+		return true
+	}
+	if err != nil {
+		t.Fatalf("analyse %s: %v", label, err)
+	}
+	return false
+}
+
+func assertAnalysePythonRuntimeFeatureDisabled(t *testing.T, repo string, tracePath string) {
+	t.Helper()
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "python",
+		RuntimeTracePath: tracePath,
+		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, false),
+	})
+	if err != nil {
+		t.Fatalf("analyse python runtime with feature disabled: %v", err)
+	}
+	if dep := dependencyByLanguageName(t, reportData.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
+		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
+	}
+}
+
+func assertAnalysePythonRuntimeTraceDisabled(t *testing.T, repo string, tracePath string) {
+	t.Helper()
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:         repo,
+		TopN:             10,
+		Language:         "python",
+		RuntimeTracePath: tracePath,
+		Features:         mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
+	})
+	if err != nil {
+		t.Fatalf("analyse Python runtime with trace disabled: %v", err)
+	}
+	if requests := dependencyByLanguageName(t, reportData.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
+		t.Fatalf("did not expect an explicit Python trace to bypass the disabled trace feature, got %#v", requests.RuntimeUsage)
+	}
 }
 
 func TestMergeRecommendationsPriorityOrder(t *testing.T) {

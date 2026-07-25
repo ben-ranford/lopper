@@ -20,6 +20,8 @@ const (
 	pythonRuntimeCaptureFeature = "python-runtime-capture"
 )
 
+var loadRuntimeTraceContext = runtime.LoadContext
+
 type analysisPipeline struct {
 	service          *Service
 	request          Request
@@ -336,7 +338,7 @@ func annotateRuntimeTraceIfPresent(ctx context.Context, runtimeTracePath string,
 	if len(supportedLanguages) == 0 {
 		return reportData, nil
 	}
-	traceData, err := runtime.LoadContext(ctx, runtimeTracePath)
+	traceData, err := loadRuntimeTraceContext(ctx, runtimeTracePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			reportData.Warnings = append(reportData.Warnings, "runtime trace file not found; continuing with static analysis")

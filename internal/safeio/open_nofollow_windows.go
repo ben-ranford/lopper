@@ -2,11 +2,12 @@
 
 package safeio
 
-import (
-	"fmt"
-	"os"
-)
+import "os"
 
-func openRootFileNoFollow(_ *os.Root, _ string) (*os.File, error) {
-	return nil, fmt.Errorf("no-follow file open unsupported on windows: fail closed rather than follow a final-component reparse point")
+func openRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
+	file, err := openFileNoFollowByVerification(&osRoot{root: root}, name)
+	if err != nil {
+		return nil, err
+	}
+	return requireOpenedNoFollowOSFile(file, "windows")
 }

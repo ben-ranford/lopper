@@ -1,11 +1,19 @@
+//go:build !(linux || darwin || windows)
+
 package safeio
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestOpenFileNoFollowFailsClosedWithUnsupportedSentinel(t *testing.T) {
+	assertOpenFileNoFollowFailsClosed(t, runtime.GOOS)
+}
 
 func assertOpenFileNoFollowFailsClosed(t *testing.T, platform string) {
 	t.Helper()
@@ -23,5 +31,8 @@ func assertOpenFileNoFollowFailsClosed(t *testing.T, platform string) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "no-follow file open unsupported on "+platform) {
 		t.Fatalf("expected fail-closed unsupported error, got %v", err)
+	}
+	if !errors.Is(err, ErrOpenFileNoFollowUnsupported) {
+		t.Fatalf("expected unsupported sentinel, got %v", err)
 	}
 }

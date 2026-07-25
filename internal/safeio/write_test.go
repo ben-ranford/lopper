@@ -2005,6 +2005,39 @@ func TestOpenPinnedReplacementTargetKeepsStatErrorWhenCloseAlsoFails(t *testing.
 	}
 }
 
+func TestOpenPinnedReplacementTargetReturnsVerifiedHandle(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	expectedInfo := statTestPath(t, targetPath)
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected target name: %q", name)
+			}
+			if flag != os.O_WRONLY {
+				t.Fatalf("unexpected open flags: %d", flag)
+			}
+			if perm != 0 {
+				t.Fatalf("unexpected open permissions: %v", perm)
+			}
+			return os.OpenFile(targetPath, flag, perm)
+		},
+	}
+
+	file, err := openPinnedReplacementTarget(root, writeTestFileName, expectedInfo)
+	if err != nil {
+		t.Fatalf("openPinnedReplacementTarget returned error: %v", err)
+	}
+	if file == nil {
+		t.Fatal("expected verified pinned target handle")
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close pinned target: %v", err)
+	}
+}
+
 func TestOpenPinnedReplacementTargetRejectsChangedTarget(t *testing.T) {
 	dir := t.TempDir()
 	originalPath := filepath.Join(dir, "original")

@@ -23,21 +23,16 @@ const (
 	binaryRunTimeout   = 30 * time.Second
 )
 
+type hermeticAnalyseFixture struct {
+	moduleRoot    string
+	workspaceRoot string
+	repoPath      string
+	binaryPath    string
+}
+
 func TestAnalyseBinaryHermeticE2E(t *testing.T) {
-	moduleRoot := mustModuleRoot(t)
-	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
-	workspaceRoot := t.TempDir()
-	repoPath := filepath.Join(workspaceRoot, "repo")
-	copyDir(t, fixtureRepo, repoPath)
-
-	binDir := filepath.Join(workspaceRoot, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin dir: %v", err)
-	}
-	binaryPath := filepath.Join(binDir, "lopper")
-	buildBinary(t, moduleRoot, binaryPath)
-
-	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, "")
+	fixture := prepareHermeticAnalyseFixture(t)
+	stdout, stderr, exitCode := runHermeticAnalyse(t, fixture.workspaceRoot, fixture.binaryPath, fixture.repoPath, "")
 	if exitCode != 0 {
 		t.Fatalf("lopper analyse failed with exit code %d stderr=%q stdout=%q", exitCode, stderr, stdout)
 	}
@@ -49,7 +44,7 @@ func TestAnalyseBinaryHermeticE2E(t *testing.T) {
 	assertGeneratedAtUTC(t, got)
 	normalizeReport(t, got)
 
-	goldenPath := filepath.Join(moduleRoot, "testdata", "cli", expectedGoldenReportName())
+	goldenPath := filepath.Join(fixture.moduleRoot, "testdata", "cli", expectedGoldenReportName())
 	goldenReport, err := os.ReadFile(goldenPath)
 	if err != nil {
 		t.Fatalf("read golden report: %v", err)
@@ -65,36 +60,21 @@ func TestAnalyseBinaryHermeticE2E(t *testing.T) {
 }
 
 func TestAnalyseBinaryRuntimeTraceWorkBoundsE2E(t *testing.T) {
-	if !safeio.OpenFileNoFollowSupported() {
-		t.Skip("runtime trace no-follow support unavailable on this platform")
-	}
-
-	moduleRoot := mustModuleRoot(t)
-	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
-	workspaceRoot := t.TempDir()
-	repoPath := filepath.Join(workspaceRoot, "repo")
-	copyDir(t, fixtureRepo, repoPath)
-
-	binDir := filepath.Join(workspaceRoot, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin dir: %v", err)
-	}
-	binaryPath := filepath.Join(binDir, "lopper")
-	buildBinary(t, moduleRoot, binaryPath)
-
-	tracePath := filepath.Join(workspaceRoot, "trace.ndjson")
+	fixture := prepareHermeticAnalyseFixture(t)
+	tracePath := filepath.Join(fixture.workspaceRoot, "trace.ndjson")
 	writeWorkAmplifyingRuntimeTrace(t, tracePath)
 
-	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, tracePath)
+	stdout, stderr, exitCode := runHermeticAnalyse(t, fixture.workspaceRoot, fixture.binaryPath, fixture.repoPath, tracePath)
 	if exitCode != 1 {
 		t.Fatalf("expected bounded runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
 	}
 	if stdout != "" {
 		t.Fatalf("expected fail-closed runtime trace rejection with no stdout, got %q", stdout)
 	}
-	const wantStderr = "runtime trace exceeds maximum line count of 600000\n"
-	if stderr != wantStderr {
-		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+	const lineLimitError = "runtime trace exceeds maximum line count of 600000\n"
+	const unsupportedError = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n"
+	if stderr != lineLimitError && stderr != unsupportedError {
+		t.Fatalf("unexpected runtime trace failure stderr: %q", stderr)
 	}
 }
 
@@ -103,33 +83,11 @@ func TestAnalyseBinaryRuntimeTraceWorkBoundsWithoutNoFollowSupportE2E(t *testing
 		t.Skip("runtime trace no-follow support available on this platform")
 	}
 
-	moduleRoot := mustModuleRoot(t)
-	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
-	workspaceRoot := t.TempDir()
-	repoPath := filepath.Join(workspaceRoot, "repo")
-	copyDir(t, fixtureRepo, repoPath)
-
-	binDir := filepath.Join(workspaceRoot, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin dir: %v", err)
-	}
-	binaryPath := filepath.Join(binDir, "lopper")
-	buildBinary(t, moduleRoot, binaryPath)
-
-	tracePath := filepath.Join(workspaceRoot, "trace.ndjson")
+	fixture := prepareHermeticAnalyseFixture(t)
+	tracePath := filepath.Join(fixture.workspaceRoot, "trace.ndjson")
 	writeWorkAmplifyingRuntimeTrace(t, tracePath)
 
-	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, tracePath)
-	if exitCode != 1 {
-		t.Fatalf("expected unsupported runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
-	}
-	if stdout != "" {
-		t.Fatalf("expected unsupported runtime trace rejection with no stdout, got %q", stdout)
-	}
-	const wantStderr = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n"
-	if stderr != wantStderr {
-		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
-	}
+	assertHermeticAnalyseFailure(t, fixture, tracePath, "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n", "")
 }
 
 func TestAnalyseBinaryRejectsRuntimeTraceSymlinkedParentE2E(t *testing.T) {
@@ -137,42 +95,9 @@ func TestAnalyseBinaryRejectsRuntimeTraceSymlinkedParentE2E(t *testing.T) {
 		t.Skip("runtime trace no-follow support unavailable on this platform")
 	}
 
-	moduleRoot := mustModuleRoot(t)
-	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
-	workspaceRoot := t.TempDir()
-	repoPath := filepath.Join(workspaceRoot, "repo")
-	copyDir(t, fixtureRepo, repoPath)
-
-	binDir := filepath.Join(workspaceRoot, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin dir: %v", err)
-	}
-	binaryPath := filepath.Join(binDir, "lopper")
-	buildBinary(t, moduleRoot, binaryPath)
-
-	traceTargetDir := filepath.Join(workspaceRoot, "runtime-trace-target")
-	if err := os.MkdirAll(traceTargetDir, 0o755); err != nil {
-		t.Fatalf("mkdir trace target dir: %v", err)
-	}
-	traceTargetPath := filepath.Join(traceTargetDir, "trace.ndjson")
-	if err := os.WriteFile(traceTargetPath, []byte("{\"module\":\"lodash/map\"}\n"), 0o600); err != nil {
-		t.Fatalf("write runtime trace: %v", err)
-	}
-	traceLinkDir := filepath.Join(workspaceRoot, "runtime-trace-link")
-	if err := os.Symlink(traceTargetDir, traceLinkDir); err != nil {
-		t.Skipf("symlink unsupported: %v", err)
-	}
-
-	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, filepath.Join(traceLinkDir, "trace.ndjson"))
-	if exitCode != 1 {
-		t.Fatalf("expected symlinked runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
-	}
-	if stdout != "" {
-		t.Fatalf("expected fail-closed runtime trace symlink rejection with no stdout, got %q", stdout)
-	}
-	if !strings.Contains(stderr, "path contains symlink") {
-		t.Fatalf("expected symlinked parent rejection in stderr, got %q", stderr)
-	}
+	fixture := prepareHermeticAnalyseFixture(t)
+	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "runtime-trace-target"))
+	assertHermeticAnalyseFailure(t, fixture, tracePath, "", "path contains symlink")
 }
 
 func TestAnalyseBinaryRejectsSuffixPreservingRuntimeTraceSymlinkedParentE2E(t *testing.T) {
@@ -180,6 +105,15 @@ func TestAnalyseBinaryRejectsSuffixPreservingRuntimeTraceSymlinkedParentE2E(t *t
 		t.Skip("runtime trace no-follow support unavailable on this platform")
 	}
 
+	fixture := prepareHermeticAnalyseFixture(t)
+	suffixPath := strings.TrimPrefix(filepath.Clean(fixture.workspaceRoot), string(filepath.Separator))
+	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "pivot", suffixPath, "runtime-trace-link"))
+	assertHermeticAnalyseFailure(t, fixture, tracePath, "", "path contains symlink")
+}
+
+func prepareHermeticAnalyseFixture(t *testing.T) hermeticAnalyseFixture {
+	t.Helper()
+
 	moduleRoot := mustModuleRoot(t)
 	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
 	workspaceRoot := t.TempDir()
@@ -193,30 +127,47 @@ func TestAnalyseBinaryRejectsSuffixPreservingRuntimeTraceSymlinkedParentE2E(t *t
 	binaryPath := filepath.Join(binDir, "lopper")
 	buildBinary(t, moduleRoot, binaryPath)
 
-	suffixPath := strings.TrimPrefix(filepath.Clean(workspaceRoot), string(filepath.Separator))
-	traceTargetDir := filepath.Join(workspaceRoot, "pivot", suffixPath, "runtime-trace-link")
-	if err := os.MkdirAll(traceTargetDir, 0o755); err != nil {
-		t.Fatalf("mkdir crafted trace target dir: %v", err)
+	return hermeticAnalyseFixture{
+		moduleRoot:    moduleRoot,
+		workspaceRoot: workspaceRoot,
+		repoPath:      repoPath,
+		binaryPath:    binaryPath,
 	}
-	traceTargetPath := filepath.Join(traceTargetDir, "trace.ndjson")
+}
+
+func assertHermeticAnalyseFailure(t *testing.T, fixture hermeticAnalyseFixture, runtimeTracePath string, wantStderr string, wantStderrSubstring string) {
+	t.Helper()
+
+	stdout, stderr, exitCode := runHermeticAnalyse(t, fixture.workspaceRoot, fixture.binaryPath, fixture.repoPath, runtimeTracePath)
+	if exitCode != 1 {
+		t.Fatalf("expected runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("expected runtime trace rejection with no stdout, got %q", stdout)
+	}
+	if wantStderr != "" && stderr != wantStderr {
+		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+	}
+	if wantStderrSubstring != "" && !strings.Contains(stderr, wantStderrSubstring) {
+		t.Fatalf("expected stderr to contain %q, got %q", wantStderrSubstring, stderr)
+	}
+}
+
+func writeSymlinkedRuntimeTrace(t *testing.T, workspaceRoot string, targetDir string) string {
+	t.Helper()
+
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir trace target dir: %v", err)
+	}
+	traceTargetPath := filepath.Join(targetDir, "trace.ndjson")
 	if err := os.WriteFile(traceTargetPath, []byte("{\"module\":\"lodash/map\"}\n"), 0o600); err != nil {
 		t.Fatalf("write runtime trace: %v", err)
 	}
 	traceLinkDir := filepath.Join(workspaceRoot, "runtime-trace-link")
-	if err := os.Symlink(traceTargetDir, traceLinkDir); err != nil {
+	if err := os.Symlink(targetDir, traceLinkDir); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
-
-	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, filepath.Join(traceLinkDir, "trace.ndjson"))
-	if exitCode != 1 {
-		t.Fatalf("expected crafted symlinked runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
-	}
-	if stdout != "" {
-		t.Fatalf("expected fail-closed runtime trace rejection with no stdout, got %q", stdout)
-	}
-	if !strings.Contains(stderr, "path contains symlink") {
-		t.Fatalf("expected suffix-preserving symlinked parent rejection in stderr, got %q", stderr)
-	}
+	return filepath.Join(traceLinkDir, "trace.ndjson")
 }
 
 func buildBinary(t *testing.T, moduleRoot string, binaryPath string) {

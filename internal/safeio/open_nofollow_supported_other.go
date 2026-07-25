@@ -1,7 +1,7 @@
-//go:build !linux
+//go:build darwin || windows
 
 package safeio
 
 func OpenFileNoFollowSupported() bool {
-	return false
+	return true
 }

@@ -1,6 +1,17 @@
 package safeio
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrOpenFileNoFollowUnsupported reports that the current environment cannot
+// provide the guarantees required by OpenFileNoFollow.
+var ErrOpenFileNoFollowUnsupported = errors.New("no-follow file open unsupported")
+
+func openFileNoFollowUnsupportedError(platform string) error {
+	return fmt.Errorf("%w on %s: cannot prove a pinned readable regular-file handle", ErrOpenFileNoFollowUnsupported, platform)
+}
 
 // ErrNoFollowFinalComponent reports that a no-follow open rejected the final
 // path component because it was not the exact regular file that was requested.
