@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -22,30 +24,89 @@ func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
 	}
 }
 
+func TestSafeConfigEnvEntriesReturnsIndependentSlice(t *testing.T) {
+	entries := SafeConfigEnvEntries()
+	if len(entries) == 0 {
+		t.Fatal("expected hardened git config env entries")
+	}
+
+	mutated := SafeConfigEnvEntries()
+	mutated[0] = "GIT_CONFIG_COUNT=0"
+	mutated = append(mutated, "GIT_CONFIG_KEY_99=attacker.override")
+	if got, want := len(mutated), len(entries)+1; got != want {
+		t.Fatalf("extended safe config env entries len = %d, want %d", got, want)
+	}
+
+	fresh := SafeConfigEnvEntries()
+	if fresh[0] != entries[0] {
+		t.Fatalf("fresh safe config env entries changed after caller mutation: got %q want %q", fresh[0], entries[0])
+	}
+	if containsEnv(fresh, "GIT_CONFIG_KEY_99=attacker.override") {
+		t.Fatalf("fresh safe config env entries leaked caller append: %#v", fresh)
+	}
+}
+
+func TestSafeConfigArgsAndEnvEntriesStaySynchronized(t *testing.T) {
+	args := SafeConfigArgs()
+	entries := SafeConfigEnvEntries()
+	if len(entries) == 0 {
+		t.Fatal("expected git config env entries")
+	}
+	if len(args)%2 != 0 {
+		t.Fatalf("safe config args must be flag-value pairs: %#v", args)
+	}
+
+	wantCount := len(args) / 2
+	wantCountEntry := "GIT_CONFIG_COUNT=" + strconv.Itoa(wantCount)
+	if entries[0] != wantCountEntry {
+		t.Fatalf("safe config env count = %q, want %q", entries[0], wantCountEntry)
+	}
+
+	for i := 0; i < wantCount; i++ {
+		if args[i*2] != "-c" {
+			t.Fatalf("safe config arg %d flag = %q, want -c", i, args[i*2])
+		}
+		pair := strings.SplitN(args[i*2+1], "=", 2)
+		if len(pair) != 2 {
+			t.Fatalf("safe config arg %d payload = %q, want key=value", i, args[i*2+1])
+		}
+		wantKey := "GIT_CONFIG_KEY_" + strconv.Itoa(i) + "=" + pair[0]
+		wantValue := "GIT_CONFIG_VALUE_" + strconv.Itoa(i) + "=" + pair[1]
+		if entries[1+i*2] != wantKey {
+			t.Fatalf("safe config env key %d = %q, want %q", i, entries[1+i*2], wantKey)
+		}
+		if entries[2+i*2] != wantValue {
+			t.Fatalf("safe config env value %d = %q, want %q", i, entries[2+i*2], wantValue)
+		}
+	}
+}
+
 func TestResolveBinaryPath(t *testing.T) {
 	path, err := ResolveBinaryPath()
 	if err != nil {
 		t.Skip("git binary not available")
 	}
-	if path != ExecutablePrimary && path != ExecutableFallback {
-		t.Fatalf("expected known git path, got %q", path)
+	if !slices.Contains(TrustedExecutablePaths(), path) {
+		t.Fatalf("expected trusted git path, got %q", path)
 	}
 }
 
 func TestResolveBinaryPathBranches(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		want string
+		name       string
+		candidates []string
+		available  string
+		want       string
 	}{
-		{name: "prefers primary", want: "primary"},
-		{name: "falls back", want: "fallback"},
+		{name: "prefers first available", candidates: []string{"primary", "fallback"}, available: "primary", want: "primary"},
+		{name: "falls back to later candidate", candidates: []string{"primary", "fallback"}, available: "fallback", want: "fallback"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path, err := resolveBinaryPath("primary", "fallback", func(path string) bool {
-				return path == tc.want
+			path, err := resolveBinaryPath(tc.candidates, func(path string) bool {
+				return path == tc.available
 			})
 			if err != nil {
-				t.Fatalf("resolve %s: %v", tc.want, err)
+				t.Fatalf("resolve %s: %v", tc.available, err)
 			}
 			if path != tc.want {
 				t.Fatalf("expected %s path, got %q", tc.want, path)
@@ -54,10 +115,22 @@ func TestResolveBinaryPathBranches(t *testing.T) {
 	}
 
 	t.Run("returns error when unavailable", func(t *testing.T) {
-		if _, err := resolveBinaryPath("primary", "fallback", func(string) bool { return false }); err == nil {
+		if _, err := resolveBinaryPath([]string{"primary", "fallback"}, func(string) bool { return false }); err == nil {
 			t.Fatal("expected missing git executable error")
 		}
 	})
+}
+
+func TestTrustedExecutablePathsReturnsIndependentSlice(t *testing.T) {
+	paths := TrustedExecutablePaths()
+	if len(paths) == 0 {
+		t.Fatal("expected trusted git paths")
+	}
+	mutated := TrustedExecutablePaths()
+	mutated[0] = "/tmp/hijacked-git"
+	if got := TrustedExecutablePaths()[0]; got != paths[0] {
+		t.Fatalf("trusted git paths changed after caller mutation: got %q want %q", got, paths[0])
+	}
 }
 
 func TestSanitizedEnv(t *testing.T) {
@@ -231,7 +304,7 @@ func containsEnvPrefix(env []string, prefix string) bool {
 func testKnownGitPaths(t *testing.T, build func(string) (*exec.Cmd, error)) {
 	t.Helper()
 
-	for _, gitPath := range []string{ExecutablePrimary, ExecutableFallback} {
+	for _, gitPath := range TrustedExecutablePaths() {
 		t.Run(gitPath, func(t *testing.T) {
 			command, err := build(gitPath)
 			if err != nil {

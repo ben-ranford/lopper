@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -146,16 +148,28 @@ func TestMakefileBenchGateMissingBaseRefFailsClosedEvenWhenEnforcementDisabled(t
 	}
 }
 
-func TestMakefileBenchGateHelperBuildFailureWritesArtifactsAndFailsClosed(t *testing.T) {
+func TestMakefileBenchGateHelperBuildFailureRejectsSymlinkArtifactDirWithoutTouchingOutsideFiles(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-dependent on Windows")
+	}
 
 	repo := initBenchGateFixtureRepo(t, benchGateFixture{
 		baseBenchmarkSource: passingBenchmarkSource(),
 		headBenchmarkSource: passingNamedBenchmarkSource("BenchmarkHeadFixture"),
 	})
-	summaryPath := filepath.Join(repo, ".artifacts", "memory-bench-summary.md")
-	statusPath := filepath.Join(repo, ".artifacts", "memory-bench-status.txt")
-	mustPrecreateBenchGateArtifacts(t, summaryPath, statusPath)
+	realArtifactDir := filepath.Join(benchgateCanonicalTempDir(t), "outside-artifacts")
+	if err := os.MkdirAll(realArtifactDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside artifact dir: %v", err)
+	}
+	outsideSummaryPath := filepath.Join(realArtifactDir, "memory-bench-summary.md")
+	outsideStatusPath := filepath.Join(realArtifactDir, "memory-bench-status.txt")
+	writeBenchGateFile(t, outsideSummaryPath, "outside summary\n")
+	writeBenchGateFile(t, outsideStatusPath, "outside status\n")
+	linkArtifactDir := filepath.Join(repo, ".artifacts")
+	if err := os.Symlink(realArtifactDir, linkArtifactDir); err != nil {
+		t.Fatalf("symlink artifact dir: %v", err)
+	}
 	before := gitWorktreeListOutput(t, repo)
 	extraEnv := map[string]string{
 		"GO":                    "false",
@@ -170,8 +184,12 @@ func TestMakefileBenchGateHelperBuildFailureWritesArtifactsAndFailsClosed(t *tes
 	if exitCode != 2 {
 		t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
 	}
-	assertBenchGateFailureArtifacts(t, summaryPath, statusPath, "memory benchmark helper ./tools/benchgate build failed")
-	assertBenchGateArtifactPermissions(t, filepath.Dir(summaryPath), summaryPath, statusPath)
+	if !strings.Contains(output, "memory benchmark helper ./tools/benchgate build failed") {
+		t.Fatalf("output = %q, want helper build failure", output)
+	}
+	assertBenchGateFileContent(t, outsideSummaryPath, "outside summary\n")
+	assertBenchGateFileContent(t, outsideStatusPath, "outside status\n")
+	assertBenchGatePathIsSymlink(t, linkArtifactDir)
 
 	after := gitWorktreeListOutput(t, repo)
 	if after != before {
@@ -179,8 +197,11 @@ func TestMakefileBenchGateHelperBuildFailureWritesArtifactsAndFailsClosed(t *tes
 	}
 }
 
-func TestMakefileBenchGateHelperLaunchFailureWritesArtifactsAndFailsClosed(t *testing.T) {
+func TestMakefileBenchGateHelperLaunchFailureRejectsSymlinkArtifactTargetWithoutTouchingOutsideFiles(t *testing.T) {
 	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-dependent on Windows")
+	}
 
 	repo := initBenchGateFixtureRepo(t, benchGateFixture{
 		baseBenchmarkSource: passingBenchmarkSource(),
@@ -188,9 +209,16 @@ func TestMakefileBenchGateHelperLaunchFailureWritesArtifactsAndFailsClosed(t *te
 	})
 	summaryPath := filepath.Join(repo, ".artifacts", "memory-bench-summary.md")
 	statusPath := filepath.Join(repo, ".artifacts", "memory-bench-status.txt")
-	mustPrecreateBenchGateArtifacts(t, summaryPath, statusPath)
+	if err := os.MkdirAll(filepath.Dir(summaryPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo artifact dir: %v", err)
+	}
+	outsideSummaryPath := filepath.Join(benchgateCanonicalTempDir(t), "outside-summary.md")
+	writeBenchGateFile(t, outsideSummaryPath, "outside summary\n")
+	if err := os.Symlink(outsideSummaryPath, summaryPath); err != nil {
+		t.Fatalf("symlink summary target: %v", err)
+	}
 	before := gitWorktreeListOutput(t, repo)
-	fakeGo := filepath.Join(t.TempDir(), "fake-go")
+	fakeGo := filepath.Join(benchgateCanonicalTempDir(t), "fake-go")
 	writeBenchGateFile(t, fakeGo, "#!/bin/sh\nset -eu\nif [ \"$1\" = \"build\" ]; then\n\tshift\n\toutput=\n\twhile [ \"$#\" -gt 0 ]; do\n\t\tif [ \"$1\" = \"-o\" ]; then\n\t\t\toutput=\"$2\"\n\t\t\tshift 2\n\t\t\tcontinue\n\t\tfi\n\t\tshift\n\tdone\n\tprintf 'not-a-binary\\n' > \"$output\"\n\tchmod 755 \"$output\"\n\texit 0\nfi\nprintf 'unexpected fake-go invocation: %s\\n' \"$*\" >&2\nexit 1\n")
 	if err := os.Chmod(fakeGo, 0o755); err != nil {
 		t.Fatalf("chmod fake go: %v", err)
@@ -208,8 +236,11 @@ func TestMakefileBenchGateHelperLaunchFailureWritesArtifactsAndFailsClosed(t *te
 	if exitCode != 2 {
 		t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
 	}
-	assertBenchGateFailureArtifacts(t, summaryPath, statusPath, "memory benchmark helper ./tools/benchgate launch failed")
-	assertBenchGateArtifactPermissions(t, filepath.Dir(summaryPath), summaryPath, statusPath)
+	if !strings.Contains(output, "memory benchmark helper ./tools/benchgate launch failed") {
+		t.Fatalf("output = %q, want helper launch failure", output)
+	}
+	assertBenchGateFileContent(t, outsideSummaryPath, "outside summary\n")
+	assertBenchGatePathAbsent(t, statusPath)
 
 	after := gitWorktreeListOutput(t, repo)
 	if after != before {
@@ -217,14 +248,14 @@ func TestMakefileBenchGateHelperLaunchFailureWritesArtifactsAndFailsClosed(t *te
 	}
 }
 
-func TestMakefileBenchGateHelperFailureStillWritesStatusWhenSummaryPathIsBlocked(t *testing.T) {
+func TestMakefileBenchGateHelperSetupFailureSkipsShellArtifactFallback(t *testing.T) {
 	t.Parallel()
 
 	repo := initBenchGateFixtureRepo(t, benchGateFixture{
 		baseBenchmarkSource: passingBenchmarkSource(),
 		headBenchmarkSource: passingNamedBenchmarkSource("BenchmarkHeadFixture"),
 	})
-	blocker := filepath.Join(t.TempDir(), "summary-blocker")
+	blocker := filepath.Join(benchgateCanonicalTempDir(t), "summary-blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write summary blocker: %v", err)
 	}
@@ -245,56 +276,109 @@ func TestMakefileBenchGateHelperFailureStillWritesStatusWhenSummaryPathIsBlocked
 	if exitCode != 2 {
 		t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
 	}
-	if !strings.Contains(output, "benchgate summary artifact write failed") {
-		t.Fatalf("output = %q, want summary artifact write failure", output)
+	if !strings.Contains(output, "memory benchmark helper ./tools/benchgate build failed") {
+		t.Fatalf("output = %q, want helper build failure", output)
 	}
-	if !strings.Contains(output, "benchgate failure artifact fallback encountered write errors") {
-		t.Fatalf("output = %q, want fallback artifact write warning", output)
+	if strings.Contains(output, "benchgate failure artifact fallback") {
+		t.Fatalf("output = %q, want no shell fallback warning", output)
 	}
-	status, err := os.ReadFile(statusPath)
-	if err != nil {
-		t.Fatalf("read status: %v", err)
-	}
-	if string(status) != "2\n" {
-		t.Fatalf("status = %q, want %q", status, "2\n")
-	}
+	assertBenchGatePathAbsent(t, statusPath)
 }
 
 func TestMakefileBenchGateIgnoresPollutedGitEnvironmentForBenchgateAndWorktreeGit(t *testing.T) {
 	t.Parallel()
 
 	repo := initBenchGateFixtureRepo(t, benchGateFixture{
-		baseBenchmarkSource: passingBenchmarkSource(),
-		headBenchmarkSource: passingBenchmarkSourceWithComment("head fixture"),
+		baseBenchmarkSource: passingNamedBenchmarkSource("BenchmarkBaseFixture"),
+		headBenchmarkSource: passingNamedBenchmarkSource("BenchmarkHeadFixture"),
 	})
 	attackerRepo := initBenchGateFixtureRepo(t, benchGateFixture{
 		baseBenchmarkSource: passingBenchmarkSource(),
 		headBenchmarkSource: passingBenchmarkSourceWithComment("attacker fixture"),
 	})
+	runGitCommand(t, attackerRepo, "reset", "--hard", "HEAD~1")
 	attackerWorktreesBefore := gitWorktreeListOutput(t, attackerRepo)
+	attackerHeadBefore := gitRevParseOutput(t, attackerRepo, "HEAD")
+	summaryPath := filepath.Join(repo, ".artifacts", "memory-bench-summary.md")
+	statusPath := filepath.Join(repo, ".artifacts", "memory-bench-status.txt")
 
 	output, exitCode := runBenchGateMake(t, repo, map[string]string{
 		"GIT_DIR":                          filepath.Join(attackerRepo, ".git"),
 		"GIT_WORK_TREE":                    attackerRepo,
-		"GIT_INDEX_FILE":                   filepath.Join(t.TempDir(), "attacker.index"),
-		"GIT_OBJECT_DIRECTORY":             filepath.Join(t.TempDir(), "attacker.objects"),
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES": filepath.Join(t.TempDir(), "attacker.alternates"),
-		"GIT_COMMON_DIR":                   filepath.Join(t.TempDir(), "attacker.common"),
+		"GIT_INDEX_FILE":                   filepath.Join(benchgateCanonicalTempDir(t), "attacker.index"),
+		"GIT_OBJECT_DIRECTORY":             filepath.Join(benchgateCanonicalTempDir(t), "attacker.objects"),
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES": filepath.Join(benchgateCanonicalTempDir(t), "attacker.alternates"),
+		"GIT_COMMON_DIR":                   filepath.Join(benchgateCanonicalTempDir(t), "attacker.common"),
 		"GIT_NAMESPACE":                    "attacker",
 		"MEMORY_BENCH_BASE":                "HEAD~1",
 		"MEMORY_BENCH_PACKAGES":            "./benchfixture",
 		"BENCH_COUNT":                      "1",
 		"BENCH_TIME":                       "1x",
+		"MEMORY_BENCH_ENFORCE":             "0",
 	})
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0\n%s", exitCode, output)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
 	}
 	if !strings.Contains(output, "Running memory benchmark delta against HEAD~1.") {
 		t.Fatalf("output = %q, want normal bench-gate execution", output)
 	}
+	if !strings.Contains(output, "Comparison status: invalid") {
+		t.Fatalf("output = %q, want deterministic invalid comparison from target repo", output)
+	}
+	if strings.Contains(output, "does not resolve to a commit") {
+		t.Fatalf("output = %q, want target repo HEAD~1 resolution instead of attacker repo single-commit failure", output)
+	}
 	if after := gitWorktreeListOutput(t, attackerRepo); after != attackerWorktreesBefore {
 		t.Fatalf("attacker repo worktree list changed\nbefore:\n%s\nafter:\n%s", attackerWorktreesBefore, after)
 	}
+	if attackerHeadAfter := gitRevParseOutput(t, attackerRepo, "HEAD"); attackerHeadAfter != attackerHeadBefore {
+		t.Fatalf("attacker repo HEAD changed\nbefore: %s\nafter:  %s", attackerHeadBefore, attackerHeadAfter)
+	}
+	assertBenchGateFailureArtifacts(t, summaryPath, statusPath, "No overlapping benchmark names were found between base and head.")
+}
+
+func TestMakefileBenchGateRejectsPATHHijackedGitBeforeDuringAndAfterBenchgate(t *testing.T) {
+	wrapperDir := filepath.Join(benchgateCanonicalTempDir(t), "custom-bin")
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		t.Fatalf("mkdir wrapper dir: %v", err)
+	}
+	logPath := filepath.Join(wrapperDir, "git.log")
+	wrapperPath := filepath.Join(wrapperDir, "git")
+	wrapper := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexit 99\n", logPath)
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o700); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("PATH", wrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	repo := initBenchGateFixtureRepo(t, benchGateFixture{
+		baseBenchmarkSource: passingNamedBenchmarkSource("BenchmarkBaseFixture"),
+		headBenchmarkSource: passingNamedBenchmarkSource("BenchmarkHeadFixture"),
+	})
+	assertPathHijackGitNotInvoked(t, logPath, "fixture setup")
+
+	before := gitWorktreeListOutput(t, repo)
+	assertPathHijackGitNotInvoked(t, logPath, "pre-benchgate worktree assertion")
+
+	output, exitCode := runBenchGateMake(t, repo, map[string]string{
+		"MEMORY_BENCH_BASE":     "HEAD~1",
+		"MEMORY_BENCH_PACKAGES": "./benchfixture",
+		"BENCH_COUNT":           "1",
+		"BENCH_TIME":            "1x",
+		"MEMORY_BENCH_ENFORCE":  "0",
+	})
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
+	}
+	if !strings.Contains(output, "Comparison status: invalid") {
+		t.Fatalf("output = %q, want deterministic invalid comparison", output)
+	}
+	assertPathHijackGitNotInvoked(t, logPath, "benchgate execution")
+
+	after := gitWorktreeListOutput(t, repo)
+	if after != before {
+		t.Fatalf("git worktree list changed after cleanup\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	assertPathHijackGitNotInvoked(t, logPath, "post-benchgate worktree assertion")
 }
 
 func TestMakefileBenchGateMalformedBenchmarkOutputFailsClosed(t *testing.T) {
@@ -371,15 +455,282 @@ func TestMakefileBenchGateThresholdRegressionCanBeNonEnforced(t *testing.T) {
 	}
 }
 
+func TestMakefileBenchGateRejectsSymlinkedArtifactDirAcrossPublishOutcomes(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-dependent on Windows")
+	}
+
+	for _, scenario := range benchGatePublishScenarios() {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := initBenchGateFixtureRepo(t, scenario.fixture)
+			outsideDir := filepath.Join(benchgateCanonicalTempDir(t), "outside-artifacts")
+			if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+				t.Fatalf("mkdir outside artifacts: %v", err)
+			}
+			expected := benchGateOutsideArtifactSentinels(t, outsideDir)
+			artifactDir := filepath.Join(repo, ".artifacts")
+			if err := os.Symlink(outsideDir, artifactDir); err != nil {
+				t.Fatalf("symlink artifact dir: %v", err)
+			}
+
+			output, exitCode := runBenchGateMake(t, repo, scenario.extraEnv)
+			if exitCode != 2 {
+				t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
+			}
+			if !strings.Contains(output, scenario.outputSubstring) {
+				t.Fatalf("output = %q, want %q", output, scenario.outputSubstring)
+			}
+			for path, want := range expected {
+				assertBenchGateFileContent(t, path, want)
+			}
+			assertBenchGatePathIsSymlink(t, artifactDir)
+		})
+	}
+}
+
+func TestMakefileBenchGateRejectsSymlinkedArtifactTargetsAcrossPublishOutcomes(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-dependent on Windows")
+	}
+
+	for _, scenario := range benchGatePublishScenarios() {
+		scenario := scenario
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, target := range benchGateArtifactTargets() {
+				target := target
+				t.Run(target.fileName, func(t *testing.T) {
+					t.Parallel()
+
+					repo := initBenchGateFixtureRepo(t, scenario.fixture)
+					artifactDir := filepath.Join(repo, ".artifacts")
+					if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+						t.Fatalf("mkdir artifact dir: %v", err)
+					}
+					outsidePath := filepath.Join(benchgateCanonicalTempDir(t), "outside-"+target.fileName)
+					writeBenchGateFile(t, outsidePath, "outside "+target.fileName+"\n")
+					targetPath := filepath.Join(artifactDir, target.fileName)
+					if err := os.Symlink(outsidePath, targetPath); err != nil {
+						t.Fatalf("symlink %s: %v", target.fileName, err)
+					}
+
+					output, exitCode := runBenchGateMake(t, repo, scenario.extraEnv)
+					if exitCode != 2 {
+						t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
+					}
+					if !strings.Contains(output, scenario.outputSubstring) {
+						t.Fatalf("output = %q, want %q", output, scenario.outputSubstring)
+					}
+					assertBenchGateFileContent(t, outsidePath, "outside "+target.fileName+"\n")
+					assertBenchGatePathIsSymlink(t, targetPath)
+					for _, other := range benchGateArtifactTargets() {
+						otherPath := filepath.Join(artifactDir, other.fileName)
+						if other.fileName == target.fileName {
+							continue
+						}
+						assertBenchGatePathAbsent(t, otherPath)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestBenchgateToolFailureArtifactsRejectSymlinkAncestorPathWithoutOutsideWrites(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-dependent on Windows")
+	}
+
+	repo := initBenchGateFixtureRepo(t, benchGateFixture{
+		baseBenchmarkSource: passingBenchmarkSource(),
+		headBenchmarkSource: passingBenchmarkSourceWithComment("head fixture"),
+	})
+	outsideDir := filepath.Join(benchgateCanonicalTempDir(t), "outside")
+	outsideExistingDir := filepath.Join(outsideDir, "existing")
+	if err := os.MkdirAll(outsideExistingDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside existing dir: %v", err)
+	}
+	summaryPath := filepath.Join(repo, "link", "existing", "memory-bench-summary.md")
+	statusPath := filepath.Join(repo, "link", "existing", "memory-bench-status.txt")
+	outsideSummaryPath := filepath.Join(outsideExistingDir, "memory-bench-summary.md")
+	outsideStatusPath := filepath.Join(outsideExistingDir, "memory-bench-status.txt")
+	writeBenchGateFile(t, outsideSummaryPath, "outside summary\n")
+	writeBenchGateFile(t, outsideStatusPath, "outside status\n")
+	if err := os.Symlink(outsideDir, filepath.Join(repo, "link")); err != nil {
+		t.Fatalf("symlink link ancestor: %v", err)
+	}
+
+	output, exitCode := runBenchGateTool(t, repo, "-failure-message", "synthetic failure", "-summary-out", summaryPath, "-status-out", statusPath)
+	if exitCode != 2 {
+		t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
+	}
+	if !strings.Contains(output, "artifact parent contains symlink") {
+		t.Fatalf("output = %q, want symlink rejection", output)
+	}
+	assertBenchGateFileContent(t, outsideSummaryPath, "outside summary\n")
+	assertBenchGateFileContent(t, outsideStatusPath, "outside status\n")
+}
+
+func TestBenchgateToolPublishRejectsSymlinkAncestorPathAcrossOutcomes(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is environment-dependent on Windows")
+	}
+
+	for _, scenario := range benchGatePublishScenarios() {
+		scenario := scenario
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := initBenchGateFixtureRepo(t, scenario.fixture)
+			inputDir := filepath.Join(repo, "inputs")
+			outsideDir := filepath.Join(benchgateCanonicalTempDir(t), "outside")
+			outsideExistingDir := filepath.Join(outsideDir, "existing")
+			if err := os.MkdirAll(outsideExistingDir, 0o755); err != nil {
+				t.Fatalf("mkdir outside existing dir: %v", err)
+			}
+			writeBenchGateFile(t, filepath.Join(inputDir, "bench-base.out"), "base "+scenario.name+"\n")
+			writeBenchGateFile(t, filepath.Join(inputDir, "bench-head.out"), "head "+scenario.name+"\n")
+			writeBenchGateFile(t, filepath.Join(inputDir, "memory-bench-summary.md"), "summary "+scenario.name+"\n")
+			expected := benchGateOutsideArtifactSentinels(t, outsideExistingDir)
+			if err := os.Symlink(outsideDir, filepath.Join(repo, "link")); err != nil {
+				t.Fatalf("symlink link ancestor: %v", err)
+			}
+
+			args := []string{
+				"-bench-base-input", filepath.Join(inputDir, "bench-base.out"),
+				"-bench-base-out", filepath.Join(repo, "link", "existing", "bench-base.out"),
+				"-bench-head-input", filepath.Join(inputDir, "bench-head.out"),
+				"-bench-head-out", filepath.Join(repo, "link", "existing", "bench-head.out"),
+				"-summary-input", filepath.Join(inputDir, "memory-bench-summary.md"),
+				"-summary-out", filepath.Join(repo, "link", "existing", "memory-bench-summary.md"),
+				"-status-code", fmt.Sprintf("%d", benchGateStatusCodeForScenario(scenario.name)),
+				"-status-out", filepath.Join(repo, "link", "existing", "memory-bench-status.txt"),
+			}
+			output, exitCode := runBenchGateTool(t, repo, args...)
+			if exitCode != 2 {
+				t.Fatalf("exit code = %d, want 2\n%s", exitCode, output)
+			}
+			if !strings.Contains(output, "artifact parent contains symlink") {
+				t.Fatalf("output = %q, want symlink rejection", output)
+			}
+			for path, want := range expected {
+				assertBenchGateFileContent(t, path, want)
+			}
+		})
+	}
+}
+
 type benchGateFixture struct {
 	baseBenchmarkSource string
 	headBenchmarkSource string
 }
 
+type benchGatePublishScenario struct {
+	name            string
+	fixture         benchGateFixture
+	extraEnv        map[string]string
+	outputSubstring string
+}
+
+type benchGateArtifactTarget struct {
+	fileName string
+}
+
+func benchGatePublishScenarios() []benchGatePublishScenario {
+	return []benchGatePublishScenario{
+		{
+			name: "pass",
+			fixture: benchGateFixture{
+				baseBenchmarkSource: passingBenchmarkSource(),
+				headBenchmarkSource: passingBenchmarkSourceWithComment("head fixture"),
+			},
+			extraEnv: map[string]string{
+				"MEMORY_BENCH_BASE":     "HEAD~1",
+				"MEMORY_BENCH_PACKAGES": "./benchfixture",
+				"BENCH_COUNT":           "1",
+				"BENCH_TIME":            "1x",
+			},
+			outputSubstring: "Result: memory benchmark gate passed.",
+		},
+		{
+			name: "regression",
+			fixture: benchGateFixture{
+				baseBenchmarkSource: allocationBenchmarkSource(1),
+				headBenchmarkSource: allocationBenchmarkSource(1024),
+			},
+			extraEnv: map[string]string{
+				"MEMORY_BENCH_BASE":     "HEAD~1",
+				"MEMORY_BENCH_PACKAGES": "./benchfixture",
+				"BENCH_COUNT":           "1",
+				"BENCH_TIME":            "1x",
+				"MEMORY_BENCH_ENFORCE":  "0",
+			},
+			outputSubstring: "Result: memory benchmark regression detected.",
+		},
+		{
+			name: "invalid",
+			fixture: benchGateFixture{
+				baseBenchmarkSource: passingNamedBenchmarkSource("BenchmarkBaseFixture"),
+				headBenchmarkSource: passingNamedBenchmarkSource("BenchmarkHeadFixture"),
+			},
+			extraEnv: map[string]string{
+				"MEMORY_BENCH_BASE":     "HEAD~1",
+				"MEMORY_BENCH_PACKAGES": "./benchfixture",
+				"BENCH_COUNT":           "1",
+				"BENCH_TIME":            "1x",
+				"MEMORY_BENCH_ENFORCE":  "0",
+			},
+			outputSubstring: "Comparison status: invalid",
+		},
+	}
+}
+
+func benchGateArtifactTargets() []benchGateArtifactTarget {
+	return []benchGateArtifactTarget{
+		{fileName: "bench-base.out"},
+		{fileName: "bench-head.out"},
+		{fileName: "memory-bench-summary.md"},
+		{fileName: "memory-bench-status.txt"},
+	}
+}
+
+func benchGateOutsideArtifactSentinels(t *testing.T, dir string) map[string]string {
+	t.Helper()
+
+	expected := make(map[string]string, len(benchGateArtifactTargets()))
+	for _, target := range benchGateArtifactTargets() {
+		path := filepath.Join(dir, target.fileName)
+		content := "outside " + target.fileName + "\n"
+		writeBenchGateFile(t, path, content)
+		expected[path] = content
+	}
+	return expected
+}
+
+func benchGateStatusCodeForScenario(name string) int {
+	switch name {
+	case "pass":
+		return 0
+	case "regression":
+		return 1
+	case "invalid":
+		return 2
+	default:
+		return 2
+	}
+}
+
 func initBenchGateFixtureRepo(t *testing.T, fixture benchGateFixture) string {
 	t.Helper()
 
-	repo := t.TempDir()
+	repo := benchgateCanonicalTempDir(t)
 	copyFile(t, repoPath(t, "Makefile"), filepath.Join(repo, "Makefile"))
 	copyDir(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools/benchdelta"))
 	copyDir(t, repoPath(t, "tools/benchgate"), filepath.Join(repo, "tools/benchgate"))
@@ -400,6 +751,17 @@ func initBenchGateFixtureRepo(t *testing.T, fixture benchGateFixture) string {
 	runGitCommand(t, repo, "commit", "-m", "head benchmark fixture")
 
 	return repo
+}
+
+func benchgateCanonicalTempDir(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	canonicalDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("canonicalize temp dir %s: %v", dir, err)
+	}
+	return canonicalDir
 }
 
 func failingBenchmarkSource(message string) string {
@@ -440,7 +802,20 @@ func runBenchGateMakeWithUmask(t *testing.T, repo string, extraEnv map[string]st
 	return runBenchGateCommand(t, cmd, repo, extraEnv)
 }
 
-func runBenchGateCommand(t *testing.T, cmd *exec.Cmd, repo string, extraEnv map[string]string) (string, int) {
+func runBenchGateTool(t *testing.T, repo string, args ...string) (string, int) {
+	t.Helper()
+
+	binaryPath := filepath.Join(benchgateCanonicalTempDir(t), "benchgate")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, "./tools/benchgate")
+	buildOutput, err := runBenchGateCommandOutput(t, buildCmd, repo, nil)
+	if err != nil {
+		t.Fatalf("build benchgate helper: %v\n%s", err, buildOutput)
+	}
+	cmd := exec.Command(binaryPath, args...)
+	return runBenchGateCommand(t, cmd, repo, nil)
+}
+
+func runBenchGateCommandOutput(t *testing.T, cmd *exec.Cmd, repo string, extraEnv map[string]string) ([]byte, error) {
 	t.Helper()
 
 	cmd.Dir = repo
@@ -448,7 +823,13 @@ func runBenchGateCommand(t *testing.T, cmd *exec.Cmd, repo string, extraEnv map[
 	for key, value := range extraEnv {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	output, err := cmd.CombinedOutput()
+	return cmd.CombinedOutput()
+}
+
+func runBenchGateCommand(t *testing.T, cmd *exec.Cmd, repo string, extraEnv map[string]string) (string, int) {
+	t.Helper()
+
+	output, err := runBenchGateCommandOutput(t, cmd, repo, extraEnv)
 	if err == nil {
 		return string(output), 0
 	}
@@ -494,35 +875,94 @@ func assertBenchGateStatus(t *testing.T, statusPath, want string) {
 	}
 }
 
+func assertBenchGateFileContent(t *testing.T, path, want string) {
+	t.Helper()
+
+	got := benchGateFileContent(t, path)
+	if got != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+func assertBenchGatePathAbsent(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to remain absent, got err=%v", path, err)
+	}
+}
+
+func assertBenchGatePathIsSymlink(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected %s to remain a symlink", path)
+	}
+}
+
 func gitWorktreeListOutput(t *testing.T, repo string) string {
 	t.Helper()
 
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	cmd.Dir = repo
-	cmd.Env = benchGateCommandEnv(t)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git worktree list: %v\n%s", err, output)
-	}
-	return string(output)
+	return runBenchGateGitOutput(t, repo, "worktree", "list", "--porcelain")
 }
 
 func runGitCommand(t *testing.T, repo string, args ...string) {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repo
-	cmd.Env = benchGateCommandEnv(t)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
-	}
+	runBenchGateGit(t, repo, args...)
 }
 
 func benchGateCommandEnv(t *testing.T) []string {
 	t.Helper()
 
 	return testutil.IsolatedGitEnv(t)
+}
+
+func gitRevParseOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+
+	return strings.TrimSpace(runBenchGateGitOutput(t, repo, append([]string{"rev-parse"}, args...)...))
+}
+
+func runBenchGateGitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+
+	gitPath, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve git path: %v", err)
+	}
+	command, err := gitexec.CommandContext(context.Background(), gitPath, append([]string{"-C", repo}, args...)...)
+	if err != nil {
+		t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
+	}
+	command.Env = benchGateCommandEnv(t)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func runBenchGateGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+
+	_ = runBenchGateGitOutput(t, repo, args...)
+}
+
+func assertPathHijackGitNotInvoked(t *testing.T, logPath, phase string) {
+	t.Helper()
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("read git wrapper log for %s: %v", phase, err)
+	}
+	if len(logData) != 0 {
+		t.Fatalf("PATH-hijacked git wrapper executed during %s: %q", phase, string(logData))
+	}
 }
 
 func copyFile(t *testing.T, sourcePath, targetPath string) {
@@ -566,58 +1006,15 @@ func copyDir(t *testing.T, sourceDir, targetDir string) {
 func writeBenchGateFile(t *testing.T, path, contents string) {
 	t.Helper()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	writeFileMode(t, path, contents, 0o600)
 }
 
-func mustPrecreateBenchGateArtifacts(t *testing.T, summaryPath, statusPath string) {
+func benchGateFileContent(t *testing.T, path string) string {
 	t.Helper()
 
-	artifactDir := filepath.Dir(summaryPath)
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
-		t.Fatalf("mkdir artifact dir: %v", err)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
 	}
-	if runtime.GOOS != "windows" {
-		if err := os.Chmod(artifactDir, 0o777); err != nil {
-			t.Fatalf("chmod artifact dir: %v", err)
-		}
-	}
-	for _, artifactPath := range []string{summaryPath, statusPath} {
-		if err := os.WriteFile(artifactPath, []byte("old\n"), 0o666); err != nil {
-			t.Fatalf("precreate artifact %s: %v", artifactPath, err)
-		}
-		if runtime.GOOS != "windows" {
-			if err := os.Chmod(artifactPath, 0o666); err != nil {
-				t.Fatalf("chmod artifact %s: %v", artifactPath, err)
-			}
-		}
-	}
-}
-
-func assertBenchGateArtifactPermissions(t *testing.T, artifactDir string, paths ...string) {
-	t.Helper()
-
-	if runtime.GOOS == "windows" {
-		t.Skip("exact chmod semantics are not stable on Windows")
-	}
-
-	if info, err := os.Stat(artifactDir); err != nil {
-		t.Fatalf("stat artifact dir: %v", err)
-	} else if got := info.Mode().Perm(); got != 0o750 {
-		t.Fatalf("artifact dir perms = %o, want 750", got)
-	}
-
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatalf("stat artifact %s: %v", path, err)
-		}
-		if got := info.Mode().Perm(); got != 0o600 {
-			t.Fatalf("artifact perms for %s = %o, want 600", path, got)
-		}
-	}
+	return string(data)
 }

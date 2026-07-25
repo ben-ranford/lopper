@@ -5,14 +5,22 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
 const SafeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
-const ExecutablePrimary = "/usr/bin/git"
-const ExecutableFallback = "/bin/git"
 const safeGitNoSystemConfig = "GIT_CONFIG_NOSYSTEM=1"
 const safeGitGlobalConfig = "GIT_CONFIG_GLOBAL=/dev/null"
+const ExecutablePrimary = "/usr/bin/git"
+const ExecutableFallback = "/bin/git"
+
+var trustedExecutablePaths = []string{
+	ExecutablePrimary,
+	ExecutableFallback,
+	"/usr/local/bin/git",
+	"/opt/homebrew/bin/git",
+}
 
 type gitConfigOverride struct {
 	key   string
@@ -33,41 +41,43 @@ func SafeConfigArgs() []string {
 	return configArgs(forcedGitConfigOverrides)
 }
 
-func ResolveBinaryPath() (string, error) {
-	return resolveBinaryPath(ExecutablePrimary, ExecutableFallback, ExecutableAvailable)
+func SafeConfigEnvEntries() []string {
+	return gitConfigEnvEntries(forcedGitConfigOverrides)
 }
 
-func resolveBinaryPath(primary, fallback string, available func(string) bool) (string, error) {
-	switch {
-	case available(primary):
-		return primary, nil
-	case available(fallback):
-		return fallback, nil
-	default:
-		return "", fmt.Errorf("git executable not found")
+func ResolveBinaryPath() (string, error) {
+	return resolveBinaryPath(trustedExecutablePaths, ExecutableAvailable)
+}
+
+func TrustedExecutablePaths() []string {
+	return slices.Clone(trustedExecutablePaths)
+}
+
+func resolveBinaryPath(candidates []string, available func(string) bool) (string, error) {
+	for _, candidate := range candidates {
+		if available(candidate) {
+			return candidate, nil
+		}
 	}
+	return "", fmt.Errorf("git executable not found in trusted locations")
+}
+
+func isTrustedBinaryPath(path string) bool {
+	return slices.Contains(trustedExecutablePaths, path)
 }
 
 func Command(path string, args ...string) (*exec.Cmd, error) {
-	switch path {
-	case ExecutablePrimary:
-		return exec.Command(ExecutablePrimary, args...), nil
-	case ExecutableFallback:
-		return exec.Command(ExecutableFallback, args...), nil
-	default:
+	if !isTrustedBinaryPath(path) {
 		return nil, fmt.Errorf("unsupported git executable path: %q", path)
 	}
+	return exec.Command(path, args...), nil
 }
 
 func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd, error) {
-	switch path {
-	case ExecutablePrimary:
-		return exec.CommandContext(ctx, ExecutablePrimary, args...), nil
-	case ExecutableFallback:
-		return exec.CommandContext(ctx, ExecutableFallback, args...), nil
-	default:
+	if !isTrustedBinaryPath(path) {
 		return nil, fmt.Errorf("unsupported git executable path: %q", path)
 	}
+	return exec.CommandContext(ctx, path, args...), nil
 }
 
 func SanitizedEnv() []string {
@@ -108,7 +118,7 @@ func shouldStripGitEnvKey(key string) bool {
 }
 
 func safeGitConfigEnvEntries() []string {
-	return gitConfigEnvEntries(forcedGitConfigOverrides)
+	return SafeConfigEnvEntries()
 }
 
 func configArgs(overrides []gitConfigOverride) []string {

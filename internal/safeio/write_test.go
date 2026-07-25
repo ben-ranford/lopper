@@ -515,6 +515,49 @@ func TestOpenCanonicalWriteRootWrapsOpenError(t *testing.T) {
 	}
 }
 
+func TestOpenCanonicalRootNormalizesRelativePath(t *testing.T) {
+	wd := t.TempDir()
+	withWorkingDir(t, wd)
+	want, err := filepath.Abs(filepath.Join("nested", "artifacts"))
+	if err != nil {
+		t.Fatalf("resolve expected canonical path: %v", err)
+	}
+
+	var opened string
+	withFileSystem(t, &fakeFileSystem{
+		openRootNoFollow: func(name string) (Root, error) {
+			opened = name
+			return &fakeRoot{close: func() error { return nil }}, nil
+		},
+	})
+
+	root, err := OpenCanonicalRoot(filepath.Join("nested", "artifacts"))
+	if err != nil {
+		t.Fatalf("OpenCanonicalRoot returned error: %v", err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close canonical root: %v", err)
+	}
+	if opened != want {
+		t.Fatalf("opened root = %q, want %q", opened, want)
+	}
+}
+
+func TestOpenCanonicalRootPropagatesResolutionError(t *testing.T) {
+	expectedErr := errors.New("canonical root abs failure")
+	withFileSystem(t, &fakeFileSystem{abs: func(string) (string, error) {
+		return "", expectedErr
+	}})
+
+	root, err := OpenCanonicalRoot(".")
+	if root != nil {
+		t.Fatal("expected canonical root to remain nil")
+	}
+	if !errors.Is(err, expectedErr) || !strings.Contains(err.Error(), "resolve root") {
+		t.Fatalf("expected wrapped canonical root resolution error, got %v", err)
+	}
+}
+
 func TestOpenRootNoFollowOpensVolumeRoot(t *testing.T) {
 	volumeRoot := filepath.VolumeName(t.TempDir()) + string(os.PathSeparator)
 	root, err := (&osFileSystem{}).OpenRootNoFollow(volumeRoot)

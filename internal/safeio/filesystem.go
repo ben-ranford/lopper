@@ -73,6 +73,16 @@ func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, erro
 	})
 }
 
+// OpenCanonicalRoot opens a confined filesystem root without following
+// symlinks in any component of name.
+func OpenCanonicalRoot(name string) (Root, error) {
+	rootAbs, err := fileSystem.Abs(name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve root: %w", err)
+	}
+	return fileSystem.OpenRootNoFollow(rootAbs)
+}
+
 type osFileSystem struct{}
 
 func (*osFileSystem) Abs(path string) (string, error) {

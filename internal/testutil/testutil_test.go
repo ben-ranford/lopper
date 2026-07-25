@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -14,6 +16,132 @@ import (
 )
 
 const testutilGetwdErrFmt = "getwd: %v"
+
+type fakeTB struct {
+	t        *testing.T
+	tempDir  string
+	cleanups []func()
+	fatalMsg string
+}
+
+func newFakeTB(t *testing.T) *fakeTB {
+	t.Helper()
+	return &fakeTB{
+		t:       t,
+		tempDir: t.TempDir(),
+	}
+}
+
+func (tb *fakeTB) Helper() {}
+
+func (tb *fakeTB) Fatalf(format string, args ...any) {
+	tb.fatalMsg = fmt.Sprintf(format, args...)
+	runtime.Goexit()
+}
+
+func (tb *fakeTB) Cleanup(fn func()) {
+	tb.cleanups = append(tb.cleanups, fn)
+}
+
+func (tb *fakeTB) TempDir() string {
+	return tb.tempDir
+}
+
+func (tb *fakeTB) runCleanups() {
+	for i := len(tb.cleanups) - 1; i >= 0; i-- {
+		tb.cleanups[i]()
+	}
+}
+
+type stubRoot struct {
+	openFunc     func(name string) (rootFile, error)
+	openFileFunc func(name string, flag int, perm os.FileMode) (rootFile, error)
+	closeFunc    func() error
+}
+
+func (r *stubRoot) Open(name string) (rootFile, error) {
+	return r.openFunc(name)
+}
+
+func (r *stubRoot) OpenFile(name string, flag int, perm os.FileMode) (rootFile, error) {
+	return r.openFileFunc(name, flag, perm)
+}
+
+func (r *stubRoot) Close() error {
+	return r.closeFunc()
+}
+
+type stubRootFile struct {
+	readFunc        func(p []byte) (int, error)
+	writeStringFunc func(s string) (int, error)
+	closeFunc       func() error
+}
+
+func (f *stubRootFile) Read(p []byte) (int, error) {
+	return f.readFunc(p)
+}
+
+func (f *stubRootFile) WriteString(s string) (int, error) {
+	return f.writeStringFunc(s)
+}
+
+func (f *stubRootFile) Close() error {
+	return f.closeFunc()
+}
+
+func expectFatal(t *testing.T, want string, fn func(tb *fakeTB)) {
+	t.Helper()
+	tb := newFakeTB(t)
+	expectFatalWithTB(t, tb, want, func() {
+		fn(tb)
+	})
+}
+
+func expectFatalWithTB(t *testing.T, tb *fakeTB, want string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	<-done
+	if tb.fatalMsg == "" {
+		t.Fatalf("expected fatal containing %q", want)
+	}
+	if !strings.Contains(tb.fatalMsg, want) {
+		t.Fatalf("fatal %q does not contain %q", tb.fatalMsg, want)
+	}
+}
+
+func patchTestutilSeams(t *testing.T) {
+	t.Helper()
+
+	origMkdirAll := mkdirAll
+	origWriteFile := writeFile
+	origOpenRoot := openRoot
+	origReadDir := readDir
+	origGetwd := getwd
+	origChdir := chdir
+	origRemoveAll := removeAll
+	origResolveGitBinary := resolveGitBinary
+	origCommandContext := commandContext
+	origSanitizedGitEnv := sanitizedGitEnv
+	origCurrentEnviron := currentEnviron
+
+	t.Cleanup(func() {
+		mkdirAll = origMkdirAll
+		writeFile = origWriteFile
+		openRoot = origOpenRoot
+		readDir = origReadDir
+		getwd = origGetwd
+		chdir = origChdir
+		removeAll = origRemoveAll
+		resolveGitBinary = origResolveGitBinary
+		commandContext = origCommandContext
+		sanitizedGitEnv = origSanitizedGitEnv
+		currentEnviron = origCurrentEnviron
+	})
+}
 
 func TestCanceledContextIsDone(t *testing.T) {
 	ctx := CanceledContext()
@@ -228,6 +356,7 @@ func TestIsolatedGitEnv(t *testing.T) {
 	t.Setenv("DYLD_INSERT_LIBRARIES", "/tmp/attacker.dylib")
 	t.Setenv("HOME", "/tmp/attacker-home")
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/attacker-xdg")
+	t.Setenv("PATH", "/tmp/custom-bin:"+os.Getenv("PATH"))
 	t.Setenv("PAGER", "more")
 
 	env := IsolatedGitEnv(t)
@@ -251,43 +380,23 @@ func TestIsolatedGitEnv(t *testing.T) {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
-		"GIT_CONFIG_COUNT=6",
-		"GIT_CONFIG_KEY_0=core.fsmonitor",
-		"GIT_CONFIG_VALUE_0=false",
-		"GIT_CONFIG_KEY_5=core.pager",
-		"GIT_CONFIG_VALUE_5=cat",
 	} {
 		if !strings.Contains(envText, expected) {
 			t.Fatalf("expected %q in %#v", expected, env)
 		}
 	}
+	for _, expected := range gitexec.SafeConfigEnvEntries() {
+		if !strings.Contains(envText, expected) {
+			t.Fatalf("expected shared git hardening entry %q in %#v", expected, env)
+		}
+	}
+	if !strings.Contains(envText, "PATH=/tmp/custom-bin:") {
+		t.Fatalf("expected caller PATH to be preserved in %#v", env)
+	}
 	if homeIndex := indexEnv(env, "HOME="); homeIndex < 0 {
 		t.Fatalf("expected isolated HOME in %#v", env)
 	} else if xdgIndex := indexEnv(env, "XDG_CONFIG_HOME="); xdgIndex != homeIndex+1 {
 		t.Fatalf("expected XDG_CONFIG_HOME immediately after HOME in %#v", env)
-	}
-}
-
-func TestFatalPathsViaHelperProcess(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []string{
-		"mkdir-failure",
-		"write-failure",
-		"chdir-failure",
-		"first-file-none",
-	} {
-		t.Run(tc, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0], "-test.run=TestHelperFatalPath", "--", tc)
-			cmd.Env = append(os.Environ(), "TESTUTIL_FATAL_HELPER=1")
-			err := cmd.Run()
-			if err == nil {
-				t.Fatalf("expected helper to fail for scenario %s", tc)
-			}
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) {
-				t.Fatalf("expected ExitError, got %T: %v", err, err)
-			}
-		})
 	}
 }
 
@@ -300,35 +409,381 @@ func indexEnv(env []string, prefix string) int {
 	return -1
 }
 
-func TestHelperFatalPath(t *testing.T) {
-	if os.Getenv("TESTUTIL_FATAL_HELPER") != "1" {
-		return
+func TestMustWriteFileModeReportsMkdirFailures(t *testing.T) {
+	dir := t.TempDir()
+	parentFile := filepath.Join(dir, "parent")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("setup parent file: %v", err)
 	}
-	if len(os.Args) < 2 {
-		t.Fatal("missing helper scenario")
-	}
-	scenario := os.Args[len(os.Args)-1]
 
-	switch scenario {
-	case "mkdir-failure":
-		dir := t.TempDir()
-		parentFile := filepath.Join(dir, "parent")
-		if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
-			t.Fatalf("setup parent file: %v", err)
+	expectFatal(t, "mkdir", func(tb *fakeTB) {
+		mustWriteFileMode(tb, filepath.Join(parentFile, "child.txt"), "x", 0o600)
+	})
+}
+
+func TestMustWriteFileModeReportsWriteFailures(t *testing.T) {
+	dir := t.TempDir()
+
+	expectFatal(t, "write", func(tb *fakeTB) {
+		mustWriteFileMode(tb, dir, "x", 0o600)
+	})
+}
+
+func TestMustWritePaddedFileLeavesContentUnchangedWhenAlreadyLargeEnough(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.txt")
+
+	MustWritePaddedFile(t, path, "already-long", 4)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read padded file: %v", err)
+	}
+	if string(data) != "already-long" {
+		t.Fatalf("padded file = %q, want %q", string(data), "already-long")
+	}
+}
+
+func TestOpenOSRootReportsErrors(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	if _, err := openOSRoot(file); err == nil {
+		t.Fatal("expected openOSRoot to fail for file path")
+	}
+}
+
+func TestMustWritePaddedFileReportsMkdirFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	mkdirAll = func(path string, perm os.FileMode) error {
+		return errors.New("mkdir failed")
+	}
+
+	expectFatal(t, "mkdir", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, filepath.Join(t.TempDir(), "nested", "file.txt"), "x", 1)
+	})
+}
+
+func TestMustWritePaddedFileReportsOpenRootFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	openRoot = func(name string) (rootHandle, error) {
+		return nil, errors.New("boom")
+	}
+
+	expectFatal(t, "open root", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, filepath.Join(t.TempDir(), "nested", "file.txt"), "x", 1)
+	})
+}
+
+func TestMustWritePaddedFileReportsOpenFailures(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "target")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("setup target dir: %v", err)
+	}
+
+	expectFatal(t, "open", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, targetDir, "x", 2)
+	})
+}
+
+func TestMustWritePaddedFileReportsInitialShortWrites(t *testing.T) {
+	patchTestutilSeams(t)
+	openRoot = func(name string) (rootHandle, error) {
+		return &stubRoot{
+			openFunc: func(name string) (rootFile, error) { return nil, errors.New("unexpected open") },
+			openFileFunc: func(name string, flag int, perm os.FileMode) (rootFile, error) {
+				return &stubRootFile{
+					readFunc:        func([]byte) (int, error) { return 0, io.EOF },
+					writeStringFunc: func(s string) (int, error) { return len(s) - 1, nil },
+					closeFunc:       func() error { return nil },
+				}, nil
+			},
+			closeFunc: func() error { return nil },
+		}, nil
+	}
+
+	expectFatal(t, "wrote 4 of 5 bytes", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, filepath.Join(t.TempDir(), "seed.txt"), "hello", 8)
+	})
+}
+
+func TestMustWritePaddedFileReportsPaddingWriteFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	writeCalls := 0
+	openRoot = func(name string) (rootHandle, error) {
+		return &stubRoot{
+			openFunc: func(name string) (rootFile, error) { return nil, errors.New("unexpected open") },
+			openFileFunc: func(name string, flag int, perm os.FileMode) (rootFile, error) {
+				return &stubRootFile{
+					readFunc: func([]byte) (int, error) { return 0, io.EOF },
+					writeStringFunc: func(s string) (int, error) {
+						writeCalls++
+						if writeCalls == 1 {
+							return len(s), nil
+						}
+						return 0, errors.New("pad failed")
+					},
+					closeFunc: func() error { return nil },
+				}, nil
+			},
+			closeFunc: func() error { return nil },
+		}, nil
+	}
+
+	expectFatal(t, "pad", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, filepath.Join(t.TempDir(), "seed.txt"), "x", 2)
+	})
+}
+
+func TestMustWritePaddedFileReportsCloseFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	openRoot = func(name string) (rootHandle, error) {
+		return &stubRoot{
+			openFunc: func(name string) (rootFile, error) { return nil, errors.New("unexpected open") },
+			openFileFunc: func(name string, flag int, perm os.FileMode) (rootFile, error) {
+				return &stubRootFile{
+					readFunc:        func([]byte) (int, error) { return 0, io.EOF },
+					writeStringFunc: func(s string) (int, error) { return len(s), nil },
+					closeFunc:       func() error { return errors.New("close failed") },
+				}, nil
+			},
+			closeFunc: func() error { return nil },
+		}, nil
+	}
+
+	expectFatal(t, "close", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, filepath.Join(t.TempDir(), "seed.txt"), "x", 1)
+	})
+}
+
+func TestMustWritePaddedFileReportsRootCloseFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	openRoot = func(name string) (rootHandle, error) {
+		return &stubRoot{
+			openFunc: func(name string) (rootFile, error) { return nil, errors.New("unexpected open") },
+			openFileFunc: func(name string, flag int, perm os.FileMode) (rootFile, error) {
+				return &stubRootFile{
+					readFunc:        func([]byte) (int, error) { return 0, io.EOF },
+					writeStringFunc: func(s string) (int, error) { return len(s), nil },
+					closeFunc:       func() error { return nil },
+				}, nil
+			},
+			closeFunc: func() error { return errors.New("root close failed") },
+		}, nil
+	}
+
+	expectFatal(t, "close root", func(tb *fakeTB) {
+		mustWritePaddedFile(tb, filepath.Join(t.TempDir(), "seed.txt"), "x", 1)
+	})
+}
+
+func TestChdirReportsMissingDirectories(t *testing.T) {
+	expectFatal(t, "chdir", func(tb *fakeTB) {
+		changeDir(tb, filepath.Join(t.TempDir(), "missing"))
+	})
+}
+
+func TestChdirReportsGetwdFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	getwd = func() (string, error) {
+		return "", errors.New("getwd failed")
+	}
+
+	expectFatal(t, "getwd", func(tb *fakeTB) {
+		changeDir(tb, t.TempDir())
+	})
+}
+
+func TestChdirReportsRestoreFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	tb := newFakeTB(t)
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf(testutilGetwdErrFmt, err)
+	}
+
+	changeDir(tb, t.TempDir())
+	chdir = func(path string) error {
+		if path == originalWD {
+			return errors.New("restore failed")
 		}
-		MustWriteFileMode(t, filepath.Join(parentFile, "child.txt"), "x", 0o600)
-	case "write-failure":
-		dir := t.TempDir()
-		MustWriteFileMode(t, dir, "x", 0o600)
-	case "chdir-failure":
-		Chdir(t, filepath.Join(t.TempDir(), "missing"))
-	case "first-file-none":
-		dir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o755); err != nil {
-			t.Fatalf("setup subdir: %v", err)
+		return os.Chdir(path)
+	}
+	defer func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore cwd after test: %v", err)
 		}
-		_ = MustFirstFileEntry(t, dir)
-	default:
-		t.Fatalf("unknown helper scenario %q", scenario)
+	}()
+
+	expectFatalWithTB(t, tb, "restore wd", tb.runCleanups)
+}
+
+func TestChdirRemovedDirReportsGetwdFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	getwd = func() (string, error) {
+		return "", errors.New("getwd failed")
+	}
+
+	expectFatal(t, "getwd", func(tb *fakeTB) {
+		changeToRemovedDir(tb)
+	})
+}
+
+func TestChdirRemovedDirReportsMkdirFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	mkdirAll = func(path string, perm os.FileMode) error {
+		return errors.New("mkdir failed")
+	}
+
+	expectFatal(t, "mkdir dead dir", func(tb *fakeTB) {
+		changeToRemovedDir(tb)
+	})
+}
+
+func TestChdirRemovedDirReportsChdirFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	chdir = func(path string) error {
+		if strings.HasSuffix(path, "dead") {
+			return errors.New("chdir failed")
+		}
+		return os.Chdir(path)
+	}
+
+	expectFatal(t, "chdir dead dir", func(tb *fakeTB) {
+		changeToRemovedDir(tb)
+	})
+}
+
+func TestChdirRemovedDirReportsRemoveFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf(testutilGetwdErrFmt, err)
+	}
+	removeAll = func(path string) error {
+		return errors.New("remove failed")
+	}
+	defer func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore cwd after test: %v", err)
+		}
+	}()
+
+	expectFatal(t, "remove dead dir", func(tb *fakeTB) {
+		changeToRemovedDir(tb)
+	})
+}
+
+func TestChdirRemovedDirReportsRestoreFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	tb := newFakeTB(t)
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf(testutilGetwdErrFmt, err)
+	}
+
+	changeToRemovedDir(tb)
+	chdir = func(path string) error {
+		if path == originalWD {
+			return errors.New("restore failed")
+		}
+		return os.Chdir(path)
+	}
+	defer func() {
+		if err := os.Chdir(originalWD); err != nil {
+			t.Fatalf("restore cwd after test: %v", err)
+		}
+	}()
+
+	expectFatalWithTB(t, tb, "restore wd", tb.runCleanups)
+}
+
+func TestMustFirstFileEntryReportsReadDirFailures(t *testing.T) {
+	expectFatal(t, "readdir", func(tb *fakeTB) {
+		_ = mustFirstFileEntry(tb, filepath.Join(t.TempDir(), "missing"))
+	})
+}
+
+func TestMustFirstFileEntryReportsMissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o755); err != nil {
+		t.Fatalf("setup subdir: %v", err)
+	}
+
+	expectFatal(t, "expected file entry", func(tb *fakeTB) {
+		_ = mustFirstFileEntry(tb, dir)
+	})
+}
+
+func TestRunGitReportsResolveFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	resolveGitBinary = func() (string, error) {
+		return "", errors.New("missing git")
+	}
+
+	expectFatal(t, "resolve git path", func(tb *fakeTB) {
+		runGit(tb, t.TempDir(), "status")
+	})
+}
+
+func TestRunGitReportsCommandConstructionFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	commandContext = func(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+		return nil, errors.New("command failed")
+	}
+
+	expectFatal(t, "construct git", func(tb *fakeTB) {
+		runGit(tb, t.TempDir(), "status")
+	})
+}
+
+func TestRunGitReportsExecutionFailures(t *testing.T) {
+	expectFatal(t, "git status --short", func(tb *fakeTB) {
+		runGit(tb, t.TempDir(), "status", "--short")
+	})
+}
+
+func TestIsolatedGitEnvReportsHomeDirectoryFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	mkdirAll = func(path string, perm os.FileMode) error {
+		if strings.HasSuffix(path, "home") {
+			return errors.New("mkdir failed")
+		}
+		return os.MkdirAll(path, perm)
+	}
+
+	expectFatal(t, "mkdir isolated home", func(tb *fakeTB) {
+		_ = isolatedGitEnv(tb)
+	})
+}
+
+func TestIsolatedGitEnvReportsXDGDirectoryFailures(t *testing.T) {
+	patchTestutilSeams(t)
+	mkdirAll = func(path string, perm os.FileMode) error {
+		if strings.HasSuffix(path, ".config") {
+			return errors.New("mkdir failed")
+		}
+		return os.MkdirAll(path, perm)
+	}
+
+	expectFatal(t, "mkdir isolated xdg config", func(tb *fakeTB) {
+		_ = isolatedGitEnv(tb)
+	})
+}
+
+func TestIsolatedGitEnvSkipsMalformedEnvironmentEntries(t *testing.T) {
+	patchTestutilSeams(t)
+	currentEnviron = func() []string {
+		return []string{"BROKEN", "KEEP=1"}
+	}
+
+	env := isolatedGitEnv(newFakeTB(t))
+	if strings.Join(env, "\n") == "" {
+		t.Fatal("expected environment entries")
+	}
+	if strings.Contains(strings.Join(env, "\n"), "BROKEN") {
+		t.Fatalf("expected malformed environment entry to be skipped: %#v", env)
 	}
 }

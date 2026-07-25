@@ -2,7 +2,6 @@ package testutil
 
 import (
 	"io"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -16,13 +15,17 @@ type ByteFuzzSeed struct {
 }
 
 func LoadByteFuzzCorpus(tb testing.TB, dir string) []ByteFuzzSeed {
+	return loadByteFuzzCorpus(tb, dir)
+}
+
+func loadByteFuzzCorpus(tb helperTB, dir string) []ByteFuzzSeed {
 	tb.Helper()
 
-	entries, err := os.ReadDir(dir)
+	entries, err := readDir(dir)
 	if err != nil {
 		tb.Fatalf("read fuzz corpus %s: %v", dir, err)
 	}
-	root, err := os.OpenRoot(dir)
+	root, err := openRoot(dir)
 	if err != nil {
 		tb.Fatalf("open fuzz corpus root %s: %v", dir, err)
 	}
@@ -52,7 +55,7 @@ func LoadByteFuzzCorpus(tb testing.TB, dir string) []ByteFuzzSeed {
 	return seeds
 }
 
-func readRootedFuzzSeed(tb testing.TB, root *os.Root, dir string, name string) string {
+func readRootedFuzzSeed(tb helperTB, root rootHandle, dir string, name string) string {
 	tb.Helper()
 
 	file, err := root.Open(name)
@@ -72,7 +75,7 @@ func readRootedFuzzSeed(tb testing.TB, root *os.Root, dir string, name string) s
 	return string(body)
 }
 
-func parseByteFuzzSeed(tb testing.TB, path string, raw string) []byte {
+func parseByteFuzzSeed(tb helperTB, path string, raw string) []byte {
 	tb.Helper()
 
 	header, body, ok := strings.Cut(raw, "\n")
