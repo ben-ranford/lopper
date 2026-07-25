@@ -160,11 +160,11 @@ function isUnsafeModuleSegment(part) {
 
 function sanitizeNodeModulesResolvedPath(value) {
   const parts = value.split("/");
-  const nodeModulesIndex = parts.lastIndexOf("node_modules");
-  if (nodeModulesIndex === -1) {
+  const firstNodeModulesIndex = parts.indexOf("node_modules");
+  if (firstNodeModulesIndex === -1) {
     return value;
   }
-  const suffixParts = parts.slice(nodeModulesIndex + 1);
+  const suffixParts = parts.slice(firstNodeModulesIndex + 1);
   if (suffixParts.length === 0) {
     return "";
   }
@@ -260,4 +260,5 @@ module.exports = {
   normalizeRuntimeModuleValue,
   normalizeRuntimeResolvedValue,
   resolveContextPath,
+  sanitizeNodeModulesResolvedPath,
 };

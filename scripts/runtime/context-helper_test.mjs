@@ -12,6 +12,7 @@ const {
   normalizeContextValue,
   normalizeRuntimeModuleValue,
   normalizeRuntimeResolvedValue,
+  sanitizeNodeModulesResolvedPath,
 } = helpers;
 
 function trackRealpathCalls() {
@@ -188,6 +189,15 @@ test("sanitizes runtime module and resolved artifact values", () => {
   const repoEntryPath = path.join(repoSrcDir, "main.mjs");
   const repoDepPath = path.join(repoRoot, "node_modules", "lodash", "map.js");
   const nestedRepoDepPath = path.join(repoRoot, "packages", "web", "node_modules", "lodash", "map.js");
+  const nestedValidDepPath = path.join(
+    repoRoot,
+    "node_modules",
+    "fixture-dep",
+    "lib",
+    "node_modules",
+    "child",
+    "index.mjs",
+  );
   const nestedHybridDepPath = path.join(
     repoRoot,
     "packages",
@@ -199,19 +209,57 @@ test("sanitizes runtime module and resolved artifact values", () => {
     "alice",
     "private.mjs",
   );
+  const nestedHiddenDepPath = path.join(
+    repoRoot,
+    "node_modules",
+    "fixture-dep",
+    ".env",
+    "node_modules",
+    "child",
+    "index.mjs",
+  );
+  const nestedTildeDepPath = path.join(
+    repoRoot,
+    "node_modules",
+    "fixture-dep",
+    "~",
+    ".ssh",
+    "node_modules",
+    "child",
+    "index.mjs",
+  );
+  const nestedDriveLikeDepPath = path.join(
+    repoRoot,
+    "node_modules",
+    "fixture-dep",
+    "C:",
+    "Users",
+    "alice",
+    "node_modules",
+    "child",
+    "index.mjs",
+  );
   const hiddenRepoDepPath = path.join(repoRoot, "node_modules", "fixture-dep", ".env", "private.mjs");
   const tildeRepoDepPath = path.join(repoRoot, "node_modules", "fixture-dep", "~", ".ssh", "id_rsa.mjs");
   const foreignPath = path.join(testRoot, "foreign.js");
   fs.mkdirSync(path.dirname(repoDepPath), { recursive: true });
   fs.mkdirSync(path.dirname(nestedRepoDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nestedValidDepPath), { recursive: true });
   fs.mkdirSync(path.dirname(nestedHybridDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nestedHiddenDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nestedTildeDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nestedDriveLikeDepPath), { recursive: true });
   fs.mkdirSync(path.dirname(hiddenRepoDepPath), { recursive: true });
   fs.mkdirSync(path.dirname(tildeRepoDepPath), { recursive: true });
   fs.mkdirSync(repoSrcDir, { recursive: true });
   fs.writeFileSync(repoEntryPath, "export {};\n", "utf8");
   fs.writeFileSync(repoDepPath, "export default function map() {}\n", "utf8");
   fs.writeFileSync(nestedRepoDepPath, "export default function nestedMap() {}\n", "utf8");
+  fs.writeFileSync(nestedValidDepPath, "export default 11;\n", "utf8");
   fs.writeFileSync(nestedHybridDepPath, "export default 7;\n", "utf8");
+  fs.writeFileSync(nestedHiddenDepPath, "export default 12;\n", "utf8");
+  fs.writeFileSync(nestedTildeDepPath, "export default 13;\n", "utf8");
+  fs.writeFileSync(nestedDriveLikeDepPath, "export default 14;\n", "utf8");
   fs.writeFileSync(hiddenRepoDepPath, "export default 2;\n", "utf8");
   fs.writeFileSync(tildeRepoDepPath, "export default 3;\n", "utf8");
   fs.writeFileSync(foreignPath, "export {};\n", "utf8");
@@ -238,6 +286,10 @@ test("sanitizes runtime module and resolved artifact values", () => {
     normalizeRuntimeResolvedValue(nestedRepoDepPath, repoRoot, realpath),
     "packages/web/node_modules/lodash/map.js",
   );
+  assert.equal(
+    normalizeRuntimeResolvedValue(nestedValidDepPath, repoRoot, realpath),
+    "node_modules/fixture-dep/lib/node_modules/child/index.mjs",
+  );
   assert.equal(normalizeRuntimeResolvedValue(pathToFileURL(hiddenRepoDepPath).href, repoRoot, realpath), "");
   assert.equal(normalizeRuntimeResolvedValue(pathToFileURL(tildeRepoDepPath).href, repoRoot, realpath), "");
   assert.equal(
@@ -248,6 +300,9 @@ test("sanitizes runtime module and resolved artifact values", () => {
     ),
     "",
   );
+  assert.equal(normalizeRuntimeResolvedValue(nestedHiddenDepPath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeResolvedValue(nestedTildeDepPath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeResolvedValue(nestedDriveLikeDepPath, repoRoot, realpath), "");
   for (const value of ["lodash/fp.js", "@scope/pkg/index.js", "node:fs", "node:fs/promises"]) {
     assert.equal(normalizeRuntimeModuleValue(value, "", repoRoot, realpath), value);
     assert.equal(normalizeRuntimeResolvedValue(value, repoRoot, realpath), value);
@@ -278,4 +333,19 @@ test("sanitizes runtime module and resolved artifact values", () => {
   }
 
   fs.rmSync(testRoot, { recursive: true, force: true });
+});
+
+test("sanitizes nested node_modules suffixes from the first marker onward", () => {
+  const validNestedPath = "node_modules/pkg/lib/node_modules/child/index.js";
+  assert.equal(sanitizeNodeModulesResolvedPath(validNestedPath), validNestedPath);
+
+  for (const value of [
+    "node_modules/pkg/.env/node_modules/child/index.js",
+    "node_modules/pkg/~/.ssh/node_modules/child/index.js",
+    "node_modules/pkg/C:/Users/alice/node_modules/child/index.js",
+    "node_modules/pkg/../node_modules/child/index.js",
+    `node_modules/pkg/\u0001private/node_modules/child/index.js`,
+  ]) {
+    assert.equal(sanitizeNodeModulesResolvedPath(value), "");
+  }
 });

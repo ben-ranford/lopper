@@ -20,14 +20,32 @@ test("CommonJS hook persists only sanitized artifact values", (t) => {
       entrypoint: "",
       isMain: false,
     },
+    expectedNestedDependencyEvent: {
+      kind: "require",
+      module: "fixture-dep/safe/node_modules/child/index.cjs",
+      resolved: "node_modules/fixture-dep/safe/node_modules/child/index.cjs",
+      parent: "main.cjs",
+      entrypoint: "",
+      isMain: false,
+    },
     expectedMainParent: "main.cjs",
     disallowedResolvedValues: [
       "node_modules/fixture-dep/C:/Users/alice/private.cjs",
       "node_modules/fixture-dep/https:/secret.cjs",
       "node_modules/fixture-dep/.env/private.cjs",
       "node_modules/fixture-dep/~/.ssh/id_rsa.cjs",
+      "node_modules/fixture-dep/C:/Users/alice/node_modules/child/index.cjs",
+      "node_modules/fixture-dep/.env/node_modules/child/index.cjs",
+      "node_modules/fixture-dep/~/.ssh/node_modules/child/index.cjs",
     ],
-    disallowedModuleValues: ["main.cjs", "local.cjs"],
+    disallowedModuleValues: [
+      "main.cjs",
+      "local.cjs",
+      "fixture-dep/C:/Users/alice/node_modules/child/index.cjs",
+      "fixture-dep/.env/node_modules/child/index.cjs",
+      "fixture-dep/~/.ssh/node_modules/child/index.cjs",
+    ],
+    expectedRedactedMainParentCount: 8,
     redactedMessage: "outside-root require must be recorded without its path",
   });
 });
@@ -43,14 +61,31 @@ test("ESM loader persists only sanitized artifact values", (t) => {
       parent: "main.mjs",
       entrypoint: "",
     },
+    expectedNestedDependencyEvent: {
+      kind: "resolve",
+      module: "fixture-dep/safe/node_modules/child/index.mjs",
+      resolved: "node_modules/fixture-dep/safe/node_modules/child/index.mjs",
+      parent: "main.mjs",
+      entrypoint: "",
+    },
     expectedMainParent: "main.mjs",
     disallowedResolvedValues: [
       "node_modules/fixture-dep/C:/Users/alice/private.mjs",
       "node_modules/fixture-dep/https:/secret.mjs",
       "node_modules/fixture-dep/.env/private.mjs",
       "node_modules/fixture-dep/~/.ssh/id_rsa.mjs",
+      "node_modules/fixture-dep/C:/Users/alice/node_modules/child/index.mjs",
+      "node_modules/fixture-dep/.env/node_modules/child/index.mjs",
+      "node_modules/fixture-dep/~/.ssh/node_modules/child/index.mjs",
     ],
-    disallowedModuleValues: ["main.mjs", "local.mjs"],
+    disallowedModuleValues: [
+      "main.mjs",
+      "local.mjs",
+      "fixture-dep/C:/Users/alice/node_modules/child/index.mjs",
+      "fixture-dep/.env/node_modules/child/index.mjs",
+      "fixture-dep/~/.ssh/node_modules/child/index.mjs",
+    ],
+    expectedRedactedMainParentCount: 8,
     redactedMessage: "outside-root import must be recorded without its path",
   });
 });
@@ -81,12 +116,20 @@ function createNodeFixture(t, format) {
     format === "esm" ? "export default 1;\n" : "module.exports = 1;\n",
   );
   fs.mkdirSync(path.join(packageRoot, "C:", "Users", "alice"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "C:", "Users", "alice", "node_modules", "child"), { recursive: true });
   fs.mkdirSync(path.join(packageRoot, "https:"), { recursive: true });
   fs.mkdirSync(path.join(packageRoot, ".env"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, ".env", "node_modules", "child"), { recursive: true });
   fs.mkdirSync(path.join(packageRoot, "~", ".ssh"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "~", ".ssh", "node_modules", "child"), { recursive: true });
+  fs.mkdirSync(path.join(packageRoot, "safe", "node_modules", "child"), { recursive: true });
   fs.writeFileSync(
     path.join(packageRoot, "C:", "Users", "alice", `private.${extension}`),
     format === "esm" ? "export default 2;\n" : "module.exports = 2;\n",
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, "C:", "Users", "alice", "node_modules", "child", `index.${extension}`),
+    format === "esm" ? "export default 7;\n" : "module.exports = 7;\n",
   );
   fs.writeFileSync(
     path.join(packageRoot, "https:", `secret.${extension}`),
@@ -97,8 +140,20 @@ function createNodeFixture(t, format) {
     format === "esm" ? "export default 4;\n" : "module.exports = 4;\n",
   );
   fs.writeFileSync(
+    path.join(packageRoot, ".env", "node_modules", "child", `index.${extension}`),
+    format === "esm" ? "export default 8;\n" : "module.exports = 8;\n",
+  );
+  fs.writeFileSync(
     path.join(packageRoot, "~", ".ssh", `id_rsa.${extension}`),
     format === "esm" ? "export default 5;\n" : "module.exports = 5;\n",
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, "~", ".ssh", "node_modules", "child", `index.${extension}`),
+    format === "esm" ? "export default 9;\n" : "module.exports = 9;\n",
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, "safe", "node_modules", "child", `index.${extension}`),
+    format === "esm" ? "export default 10;\n" : "module.exports = 10;\n",
   );
   fs.writeFileSync(outsidePath, format === "esm" ? "export default 1;\n" : "module.exports = 1;\n");
   fs.writeFileSync(localPath, format === "esm" ? "export default 6;\n" : "module.exports = 6;\n");
@@ -112,6 +167,10 @@ function createNodeFixture(t, format) {
           'import "fixture-dep/https:/secret.mjs";',
           'import "fixture-dep/.env/private.mjs";',
           'import "fixture-dep/~/.ssh/id_rsa.mjs";',
+          'import "fixture-dep/safe/node_modules/child/index.mjs";',
+          'import "fixture-dep/C:/Users/alice/node_modules/child/index.mjs";',
+          'import "fixture-dep/.env/node_modules/child/index.mjs";',
+          'import "fixture-dep/~/.ssh/node_modules/child/index.mjs";',
           'import "../outside.mjs";',
           "",
         ].join("\n")
@@ -122,6 +181,10 @@ function createNodeFixture(t, format) {
           'require("fixture-dep/https:/secret.cjs");',
           'require("fixture-dep/.env/private.cjs");',
           'require("fixture-dep/~/.ssh/id_rsa.cjs");',
+          'require("fixture-dep/safe/node_modules/child/index.cjs");',
+          'require("fixture-dep/C:/Users/alice/node_modules/child/index.cjs");',
+          'require("fixture-dep/.env/node_modules/child/index.cjs");',
+          'require("fixture-dep/~/.ssh/node_modules/child/index.cjs");',
           'require("../outside.cjs");',
           "",
         ].join("\n"),
@@ -183,6 +246,10 @@ function assertArtifactPrivacy(events, fixture) {
 function assertSanitizedRuntimeArtifact(events, fixture, expectations) {
   assertArtifactPrivacy(events, fixture);
   assert.deepEqual(events.find((event) => event.module === "fixture-dep"), expectations.expectedDependencyEvent);
+  assert.deepEqual(
+    events.find((event) => event.module === expectations.expectedNestedDependencyEvent.module),
+    expectations.expectedNestedDependencyEvent,
+  );
   assert.ok(
     events.some((event) => event.module === "" && event.resolved === ""),
     expectations.redactedMessage,
@@ -191,7 +258,7 @@ function assertSanitizedRuntimeArtifact(events, fixture, expectations) {
   assert.equal(
     events.filter((event) => event.parent === expectations.expectedMainParent && event.module === "" && event.resolved === "")
       .length,
-    5,
+    expectations.expectedRedactedMainParentCount,
   );
   assert.deepEqual(findModuleEvents(events, expectations.disallowedModuleValues), []);
 }
