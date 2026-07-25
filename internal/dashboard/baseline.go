@@ -1,30 +1,22 @@
 package dashboard
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	baselineutil "github.com/ben-ranford/lopper/internal/baseline"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-const BaselineSnapshotSchemaVersion = "1.0.0"
+const BaselineSnapshotSchemaVersion = baselineutil.SnapshotSchemaVersion
 
 var ErrBaselineAlreadyExists = errors.New("dashboard baseline snapshot already exists")
 
 var ErrBaselineKeyMismatch = errors.New("dashboard baseline snapshot key does not match requested key")
 
-type BaselineSnapshot struct {
-	BaselineSchemaVersion string    `json:"baselineSchemaVersion"`
-	Key                   string    `json:"key"`
-	SavedAt               time.Time `json:"savedAt"`
-	Report                Report    `json:"report"`
-}
+type BaselineSnapshot = baselineutil.Snapshot[Report]
 
 func Load(path string) (Report, error) {
 	rep, _, err := LoadWithKey(path)
@@ -35,56 +27,25 @@ func Load(path string) (Report, error) {
 }
 
 func LoadWithKey(path string) (Report, string, error) {
-	data, err := safeio.ReadFile(path)
-	if err != nil {
-		return Report{}, "", err
-	}
-	return decodeBaselineSnapshot(data)
+	return baselineutil.LoadSnapshotFile(path, baselineutil.SnapshotDecodeOptions[Report]{
+		Normalize:         normalizeSnapshotReport,
+		UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
+	})
 }
 
 func decodeBaselineSnapshot(data []byte) (Report, string, error) {
-	var snapshot BaselineSnapshot
-	if err := json.Unmarshal(data, &snapshot); err == nil && strings.TrimSpace(snapshot.BaselineSchemaVersion) != "" {
-		if snapshot.BaselineSchemaVersion != BaselineSnapshotSchemaVersion {
-			return Report{}, "", fmt.Errorf("unsupported dashboard baseline schema version: %s", snapshot.BaselineSchemaVersion)
-		}
-		if snapshot.Report.Summary == (Summary{}) {
-			snapshot.Report.Summary = computeSummary(snapshot.Report)
-		}
-		return snapshot.Report, strings.TrimSpace(snapshot.Key), nil
-	}
-
-	var rep Report
-	if err := json.Unmarshal(data, &rep); err != nil {
-		return Report{}, "", err
-	}
-	if rep.Summary == (Summary{}) {
-		rep.Summary = computeSummary(rep)
-	}
-	return rep, "", nil
+	return baselineutil.DecodeSnapshot(data, baselineutil.SnapshotDecodeOptions[Report]{
+		Normalize:         normalizeSnapshotReport,
+		UnsupportedSchema: unsupportedBaselineSnapshotSchemaError,
+	})
 }
 
 func LoadSnapshot(dir, key string) (Report, string, string, error) {
-	trimmedKey := strings.TrimSpace(key)
-	path := ResolveBaselineSnapshotPath(dir, trimmedKey)
-	data, err := baselineutil.ReadStoreEntry(dir, filepath.Base(path), baselineutil.MaxSnapshotBytes)
-	if err != nil {
-		return Report{}, "", path, err
-	}
-	rep, loadedKey, err := decodeBaselineSnapshot(data)
-	if err != nil {
-		return Report{}, "", path, err
-	}
-	if loadedKey != trimmedKey || trimmedKey == "" {
-		return Report{}, loadedKey, path, fmt.Errorf("%w: requested %q, stored %q", ErrBaselineKeyMismatch, trimmedKey, loadedKey)
-	}
-	return rep, loadedKey, path, nil
+	return baselineutil.LoadStoreSnapshot(dir, key, baselineutil.MaxSnapshotBytes, decodeBaselineSnapshot, validateBaselineSnapshotKey)
 }
 
 func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
-	return baselineutil.SaveJSON(dir, key, ErrBaselineAlreadyExists, func(trimmedKey string) BaselineSnapshot {
-		return newBaselineSnapshot(trimmedKey, rep, now)
-	})
+	return baselineutil.SaveSnapshot(dir, key, now, rep, ErrBaselineAlreadyExists, normalizeSnapshotReport)
 }
 
 func BaselineSnapshotPath(dir, key string) string {
@@ -282,13 +243,12 @@ func countRepoField(repos []RepoResult, selector func(RepoResult) bool) int {
 	return total
 }
 
-func newBaselineSnapshot(key string, rep Report, now time.Time) BaselineSnapshot {
-	return BaselineSnapshot{
-		BaselineSchemaVersion: BaselineSnapshotSchemaVersion,
-		Key:                   key,
-		SavedAt:               now.UTC(),
-		Report:                normalizeSnapshotReport(rep),
-	}
+func validateBaselineSnapshotKey(requestedKey, storedKey string) error {
+	return baselineutil.ValidateSnapshotKey(requestedKey, storedKey, ErrBaselineKeyMismatch)
+}
+
+func unsupportedBaselineSnapshotSchemaError(version string) error {
+	return fmt.Errorf("unsupported dashboard baseline schema version: %s", version)
 }
 
 func normalizeSnapshotReport(rep Report) Report {
