@@ -125,7 +125,9 @@ func appendNativeRiskCueWithinRoot(cues []report.RiskCue, warnings []string, dep
 }
 
 func appendDepthRiskCue(cues []report.RiskCue, warnings []string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
-	cue := buildTransitiveDepthRiskCue(repoPath, depRoot, pkg)
+	depth, depthWarnings := estimateTransitiveDepth(repoPath, depRoot, pkg)
+	warnings = append(warnings, depthWarnings...)
+	cue := buildTransitiveDepthRiskCueForDepth(depth)
 	if cue != nil {
 		cues = append(cues, *cue)
 	}

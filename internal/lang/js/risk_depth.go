@@ -9,8 +9,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func buildTransitiveDepthRiskCue(repoPath string, depRoot string, pkg packageJSON) *report.RiskCue {
-	depth := estimateTransitiveDepth(repoPath, depRoot, pkg)
+func buildTransitiveDepthRiskCueForDepth(depth int) *report.RiskCue {
 	if depth < 4 {
 		return nil
 	}
@@ -27,64 +26,94 @@ func buildTransitiveDepthRiskCue(repoPath string, depRoot string, pkg packageJSO
 	}
 }
 
-func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) int {
-	memo := make(map[string]int)
-	visiting := make(map[string]struct{})
-	return transitiveDepth(repoPath, depRoot, pkg, memo, visiting, 512)
+type depthEvaluation struct {
+	depth    int
+	warnings []string
 }
 
-func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]int, visiting map[string]struct{}, budget int) int {
+func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) (int, []string) {
+	visiting := make(map[string]struct{})
+	result := transitiveDepth(repoPath, depRoot, pkg, map[string]depthEvaluation{}, visiting, 512)
+	return result.depth, dedupeStrings(result.warnings)
+}
+
+func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]depthEvaluation, visiting map[string]struct{}, budget int) depthEvaluation {
 	if cached, ok := memo[pkgRoot]; ok {
 		return cached
 	}
 	if budget <= 0 {
-		return 1
+		return depthEvaluation{depth: 1}
 	}
 	if _, ok := visiting[pkgRoot]; ok {
-		return 1
+		return depthEvaluation{depth: 1}
 	}
 	visiting[pkgRoot] = struct{}{}
 	defer delete(visiting, pkgRoot)
 
 	deps := collectDependencyNames(pkg)
 	if len(deps) == 0 {
-		memo[pkgRoot] = 1
-		return 1
+		result := depthEvaluation{depth: 1}
+		memo[pkgRoot] = result
+		return result
 	}
 
 	maxChild := 0
+	warnings := make([]string, 0)
 	for _, depName := range deps {
 		childRoot, ok := resolveInstalledDependencyRoot(repoPath, pkgRoot, depName)
 		if !ok {
 			continue
 		}
-		childPkg, childWarnings := loadDependencyPackageJSON(childRoot)
+		childPkg, childWarnings := loadDependencyPackageJSONWithinBoundary(childRoot, repoPath)
 		if len(childWarnings) > 0 {
+			warnings = append(warnings, transitiveDepthWarnings(childWarnings)...)
 			continue
 		}
 		childDepth := transitiveDepth(repoPath, childRoot, childPkg, memo, visiting, budget-1)
-		if childDepth > maxChild {
-			maxChild = childDepth
+		warnings = append(warnings, childDepth.warnings...)
+		if childDepth.depth > maxChild {
+			maxChild = childDepth.depth
 		}
 	}
 
-	total := 1 + maxChild
-	memo[pkgRoot] = total
-	return total
+	result := depthEvaluation{
+		depth:    1 + maxChild,
+		warnings: dedupeStrings(warnings),
+	}
+	memo[pkgRoot] = result
+	return result
 }
 
 func resolveInstalledDependencyRoot(repoPath, currentPackageRoot, dependency string) (string, bool) {
 	if !isSafeDependencyName(dependency) {
 		return "", false
 	}
-
-	candidates := []string{currentPackageRoot, repoPath}
-	for _, rootDir := range candidates {
-		if root, ok := resolveDependencyRootAtDir(rootDir, dependency); ok {
-			return root, true
-		}
+	root, status := resolveDependencyRootFromDirDetailed(repoPath, currentPackageRoot, dependency)
+	if status == dependencyRootFound {
+		return root, true
 	}
 	return "", false
+}
+
+func transitiveDepthWarnings(childWarnings []string) []string {
+	warnings := make([]string, 0, len(childWarnings))
+	for _, warning := range childWarnings {
+		warnings = append(warnings, fmt.Sprintf("transitive dependency depth is incomplete: %s", warning))
+	}
+	return warnings
+}
+
+func loadDependencyPackageJSONWithinBoundary(depRoot, allowedRoot string) (pkg packageJSON, warnings []string) {
+	root, validatedDepRoot, err := openValidatedRootNoFollowWithinBoundary(depRoot, allowedRoot)
+	if err != nil {
+		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(depRoot, jsPackageFile))}
+	}
+	defer func() {
+		if closeRootAppendWarning(root, &warnings, fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(validatedDepRoot, jsPackageFile))) {
+			pkg = packageJSON{}
+		}
+	}()
+	return loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
 }
 
 func dependencyPath(dependency string) string {

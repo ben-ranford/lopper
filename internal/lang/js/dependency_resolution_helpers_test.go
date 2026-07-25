@@ -281,6 +281,68 @@ func TestValidatedDependencyRootAtDirRejectsNonRegularPackageJSON(t *testing.T) 
 	}
 }
 
+func TestValidatedDependencyRootAtDirPropagatesCloseFailure(t *testing.T) {
+	originalOpen := openDependencyRootNoFollow
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpen
+	})
+
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(depRoot, jsPackageFile), "{}\n")
+
+	closeErr := errors.New("close failed")
+	openDependencyRootNoFollow = func(string) (safeio.Root, error) {
+		return &fakeJSRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				return os.Lstat(filepath.Join(depRoot, name))
+			},
+			closeErr: closeErr,
+		}, nil
+	}
+
+	if _, err := validatedDependencyRootAtDir(repo, "pkg"); !errors.Is(err, closeErr) {
+		t.Fatalf("expected close failure to propagate, got %v", err)
+	}
+}
+
+func TestValidatedDependencyRootAtDirJoinsValidationAndCloseErrors(t *testing.T) {
+	originalOpen := openDependencyRootNoFollow
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpen
+	})
+
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(depRoot, jsPackageFile), 0o755); err != nil {
+		t.Fatalf("mkdir package.json dir: %v", err)
+	}
+
+	closeErr := errors.New("close failed")
+	openDependencyRootNoFollow = func(string) (safeio.Root, error) {
+		return &fakeJSRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				return os.Lstat(filepath.Join(depRoot, name))
+			},
+			closeErr: closeErr,
+		}, nil
+	}
+
+	_, err := validatedDependencyRootAtDir(repo, "pkg")
+	if err == nil {
+		t.Fatal("expected invalid package.json shape with close failure")
+	}
+	if !strings.Contains(err.Error(), "path is not a regular file") || !strings.Contains(err.Error(), closeErr.Error()) {
+		t.Fatalf("expected joined validation and close errors, got %v", err)
+	}
+}
+
 func TestOpenRootChildNoFollowBranches(t *testing.T) {
 	repo := t.TempDir()
 	root, err := openConstrainedRoot(repo)
@@ -639,8 +701,8 @@ func TestResolveEntrypointUnderRootDiscardsResultOnCloseFailure(t *testing.T) {
 		}, nil
 	}
 
-	if resolved, ok := resolveEntrypointUnderRoot(depRoot, depRoot, "index.js"); ok || resolved != "" {
-		t.Fatalf("expected close failure to discard entrypoint, got resolved=%q ok=%v", resolved, ok)
+	if resolved, ok, err := resolveEntrypointUnderRoot(depRoot, depRoot, "index.js"); ok || resolved != "" || !errors.Is(err, closeErr) || !strings.Contains(err.Error(), closeErr.Error()) {
+		t.Fatalf("expected close failure to discard entrypoint and surface error, got resolved=%q ok=%v err=%v", resolved, ok, err)
 	}
 }
 
@@ -680,6 +742,218 @@ func TestRootWalkHelpers(t *testing.T) {
 	if _, err := readRootDirEntries(root); err == nil || !strings.Contains(err.Error(), "close failed") {
 		t.Fatalf("expected close error after successful ReadDir, got %v", err)
 	}
+}
+
+func TestDependencyResolutionAdditionalErrorBranches(t *testing.T) {
+	t.Run("validateDirectoryPathNoFollowFromBase propagates canonicalization error", func(t *testing.T) {
+		originalAbs := absoluteDependencyPath
+		originalEval := evaluateDependencySymlinks
+		t.Cleanup(func() {
+			absoluteDependencyPath = originalAbs
+			evaluateDependencySymlinks = originalEval
+		})
+
+		baseDir := filepath.Join(t.TempDir(), "repo")
+		canonicalErr := errors.New("canonicalize failed")
+		evaluateDependencySymlinks = func(path string) (string, error) {
+			if path == filepath.Dir(baseDir) {
+				return "", canonicalErr
+			}
+			return originalEval(path)
+		}
+
+		if _, err := validateDirectoryPathNoFollowFromBase(baseDir, "node_modules"); !errors.Is(err, canonicalErr) {
+			t.Fatalf("expected canonicalization error, got %v", err)
+		}
+	})
+
+	t.Run("validateDirectoryPathNoFollowFromBase propagates absolute path error", func(t *testing.T) {
+		originalAbs := absoluteDependencyPath
+		t.Cleanup(func() {
+			absoluteDependencyPath = originalAbs
+		})
+
+		baseDir := filepath.Join(t.TempDir(), "repo")
+		absErr := errors.New("absolute path failed")
+		absoluteDependencyPath = func(path string) (string, error) {
+			if path == baseDir {
+				return "", absErr
+			}
+			return originalAbs(path)
+		}
+
+		if _, err := validateDirectoryPathNoFollowFromBase(baseDir, "node_modules"); !errors.Is(err, absErr) {
+			t.Fatalf("expected absolute path error, got %v", err)
+		}
+	})
+
+	t.Run("validateDirectoryPathNoFollowFromBase rejects symlink component", func(t *testing.T) {
+		repo := t.TempDir()
+		target := filepath.Join(repo, "target")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatalf("mkdir target: %v", err)
+		}
+		if err := os.Symlink(target, filepath.Join(repo, "linked")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		if _, err := validateDirectoryPathNoFollowFromBase(repo, "linked"); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+			t.Fatalf("expected symlink component rejection, got %v", err)
+		}
+	})
+
+	t.Run("validateDirectoryPathNoFollow propagates dependency base symlink error", func(t *testing.T) {
+		originalEval := evaluateDependencySymlinks
+		t.Cleanup(func() {
+			evaluateDependencySymlinks = originalEval
+		})
+
+		repo := filepath.Join(t.TempDir(), "repo")
+		baseErr := errors.New("base symlink resolution failed")
+		evaluateDependencySymlinks = func(path string) (string, error) {
+			if path == repo {
+				return "", baseErr
+			}
+			return originalEval(path)
+		}
+
+		path := filepath.Join(repo, "node_modules", "pkg")
+		if _, err := validateDirectoryPathNoFollow(path); !errors.Is(err, baseErr) {
+			t.Fatalf("expected dependency base symlink error, got %v", err)
+		}
+	})
+
+	t.Run("validateRegularFileNoFollow propagates canonicalization error", func(t *testing.T) {
+		originalAbs := absoluteDependencyPath
+		originalEval := evaluateDependencySymlinks
+		t.Cleanup(func() {
+			absoluteDependencyPath = originalAbs
+			evaluateDependencySymlinks = originalEval
+		})
+
+		filePath := filepath.Join(t.TempDir(), "package.json")
+		canonicalErr := errors.New("canonicalize failed")
+		evaluateDependencySymlinks = func(path string) (string, error) {
+			if path == filepath.Dir(filePath) {
+				return "", canonicalErr
+			}
+			return originalEval(path)
+		}
+
+		if err := validateRegularFileNoFollow(filePath); !errors.Is(err, canonicalErr) {
+			t.Fatalf("expected canonicalization error, got %v", err)
+		}
+	})
+
+	t.Run("validateRegularFileWithinRoot propagates lstat error", func(t *testing.T) {
+		lstatErr := errors.New("lstat failed")
+		root := &fakeJSRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				return nil, lstatErr
+			},
+		}
+
+		if err := validateRegularFileWithinRoot(root, t.TempDir(), jsPackageFile); !errors.Is(err, lstatErr) {
+			t.Fatalf("expected lstat error, got %v", err)
+		}
+	})
+
+	t.Run("resolvePinnedRootPathWithinBoundary propagates absolute path error", func(t *testing.T) {
+		originalAbs := absoluteDependencyPath
+		t.Cleanup(func() {
+			absoluteDependencyPath = originalAbs
+		})
+
+		absErr := errors.New("absolute path failed")
+		absoluteDependencyPath = func(string) (string, error) {
+			return "", absErr
+		}
+
+		if _, err := resolvePinnedRootPathWithinBoundary("ignored", ""); !errors.Is(err, absErr) {
+			t.Fatalf("expected absolute path error, got %v", err)
+		}
+	})
+
+	t.Run("resolvePinnedDependencyChainPath propagates allowed root resolution error", func(t *testing.T) {
+		repo := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(repo, "node_modules", "pkg"), 0o755); err != nil {
+			t.Fatalf("mkdir dependency root: %v", err)
+		}
+
+		_, err := resolvePinnedDependencyChainPath(repo, []string{"node_modules", "pkg"}, filepath.Join(repo, "missing", "boundary"))
+		if err == nil || !os.IsNotExist(err) {
+			t.Fatalf("expected allowed-root resolution failure, got %v", err)
+		}
+	})
+
+	t.Run("resolvePinnedDependencyChainPath skips empty and dot components", func(t *testing.T) {
+		repo := t.TempDir()
+		depRoot := filepath.Join(repo, "node_modules", "pkg")
+		if err := os.MkdirAll(depRoot, 0o755); err != nil {
+			t.Fatalf("mkdir dependency root: %v", err)
+		}
+
+		got, err := resolvePinnedDependencyChainPath(repo, []string{"", ".", "node_modules", ".", "pkg"}, "")
+		if err != nil {
+			t.Fatalf("resolve dependency chain with skipped components: %v", err)
+		}
+		want, err := filepath.EvalSymlinks(depRoot)
+		if err != nil {
+			t.Fatalf("canonicalize dependency root: %v", err)
+		}
+		if got != want {
+			t.Fatalf("expected resolved root %q, got %q", want, got)
+		}
+	})
+
+	t.Run("resolvePinnedDependencyChainBase propagates nested resolution error", func(t *testing.T) {
+		repo := t.TempDir()
+		basePath := filepath.Join(repo, "node_modules", "pkg")
+		if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+			t.Fatalf("mkdir node_modules parent: %v", err)
+		}
+		testutil.MustWriteFile(t, basePath, "not a directory\n")
+
+		if _, err := resolvePinnedDependencyChainBase(basePath); err == nil || !strings.Contains(err.Error(), "not a directory") {
+			t.Fatalf("expected nested resolution error, got %v", err)
+		}
+	})
+
+	t.Run("resolvePinnedSymlinkDependencyComponent propagates eval and stat errors", func(t *testing.T) {
+		originalEval := evaluateDependencySymlinks
+		t.Cleanup(func() {
+			evaluateDependencySymlinks = originalEval
+		})
+
+		repo := t.TempDir()
+		target := filepath.Join(repo, "target")
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatalf("mkdir target: %v", err)
+		}
+		link := filepath.Join(repo, "link")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+
+		evalErr := errors.New("eval failed")
+		evaluateDependencySymlinks = func(path string) (string, error) {
+			if path == link {
+				return "", evalErr
+			}
+			return originalEval(path)
+		}
+		if _, err := resolvePinnedSymlinkDependencyComponent(link, repo); !errors.Is(err, evalErr) {
+			t.Fatalf("expected eval error, got %v", err)
+		}
+
+		evaluateDependencySymlinks = originalEval
+		if err := os.RemoveAll(target); err != nil {
+			t.Fatalf("remove symlink target: %v", err)
+		}
+		if _, err := resolvePinnedSymlinkDependencyComponent(link, repo); err == nil || !os.IsNotExist(err) {
+			t.Fatalf("expected stat error after removing target, got %v", err)
+		}
+	})
 }
 
 type fakeFileWithoutReadDir struct{}

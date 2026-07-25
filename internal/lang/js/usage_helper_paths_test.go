@@ -29,7 +29,10 @@ func TestJSLicenseAndStringHelperAdditionalBranches(t *testing.T) {
 	}
 	testutil.MustWriteFile(t, filepath.Join(root, "COPYING"), "Mozilla Public License")
 
-	license := detectLicenseFromFiles(root)
+	license, warnings := detectLicenseFromFiles(root)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for fallback license detection, got %#v", warnings)
+	}
 	if license == nil || license.SPDX != "MPL-2.0" || license.Source != "license-file" {
 		t.Fatalf("expected license fallback to continue past unreadable candidate, got %#v", license)
 	}
@@ -273,7 +276,10 @@ func TestJSLicenseAndProvenanceAdditionalBranches(t *testing.T) {
 	}
 	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "Apache License Version 2.0")
 
-	license := detectLicenseFromFiles(root)
+	license, warnings := detectLicenseFromFiles(root)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for fallback license detection, got %#v", warnings)
+	}
 	if license == nil || license.SPDX != "APACHE-2.0" {
 		t.Fatalf("expected license detection to continue past unreadable candidate, got %#v", license)
 	}

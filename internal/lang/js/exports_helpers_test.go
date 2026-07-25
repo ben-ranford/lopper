@@ -69,14 +69,14 @@ func TestEntrypointAndPathHelpers(t *testing.T) {
 		t.Fatalf("write subdir index.js: %v", err)
 	}
 
-	if got, ok := resolveEntrypoint(depRoot, "index"); !ok || filepath.Base(got) != indexJSName {
-		t.Fatalf("expected index.js entrypoint resolution, got %q ok=%v", got, ok)
+	if got, ok, err := resolveEntrypoint(depRoot, "index"); err != nil || !ok || filepath.Base(got) != indexJSName {
+		t.Fatalf("expected index.js entrypoint resolution, got %q ok=%v err=%v", got, ok, err)
 	}
-	if got, ok := resolveEntrypoint(depRoot, "subdir"); !ok || filepath.Base(got) != indexJSName {
-		t.Fatalf("expected directory entrypoint resolution, got %q ok=%v", got, ok)
+	if got, ok, err := resolveEntrypoint(depRoot, "subdir"); err != nil || !ok || filepath.Base(got) != indexJSName {
+		t.Fatalf("expected directory entrypoint resolution, got %q ok=%v err=%v", got, ok, err)
 	}
-	if _, ok := resolveEntrypoint(depRoot, "missing"); ok {
-		t.Fatalf("expected missing entrypoint to fail")
+	if _, ok, err := resolveEntrypoint(depRoot, "missing"); err != nil || ok {
+		t.Fatalf("expected missing entrypoint to fail without error, got ok=%v err=%v", ok, err)
 	}
 
 	if _, err := dependencyRoot("", "pkg"); err == nil {
@@ -270,6 +270,70 @@ func TestLoadPackageJSONForSurfaceReturnsCloseFailureAfterSuccessfulRead(t *test
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("did not expect read/parse warning when close fails after success, got %#v", warnings)
+	}
+}
+
+func TestLoadPackageJSONForSurfaceJoinsParseAndCloseErrors(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"name":`)
+	closeErr := errors.New("close failed")
+
+	originalOpenDependencyRootNoFollow := openDependencyRootNoFollow
+	openDependencyRootNoFollow = func(path string) (safeio.Root, error) {
+		baseRoot, err := originalOpenDependencyRootNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: closeErr}, nil
+	}
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpenDependencyRootNoFollow
+	})
+
+	pkg, warnings, err := loadPackageJSONForSurface(depRoot, depRoot)
+	if err == nil || !errors.Is(err, closeErr) {
+		t.Fatalf("expected parse and close errors, got pkg=%#v warnings=%#v err=%v", pkg, warnings, err)
+	}
+	if pkg.Name != "" {
+		t.Fatalf("expected malformed package to remain empty, got %#v", pkg)
+	}
+	if len(warnings) != 1 || warnings[0] != "failed to parse dependency package.json" {
+		t.Fatalf("expected stable parse warning, got %#v", warnings)
+	}
+	if !strings.Contains(err.Error(), "unexpected end of JSON input") || !strings.Contains(err.Error(), closeErr.Error()) {
+		t.Fatalf("expected joined parse and close errors, got %v", err)
+	}
+}
+
+func TestLoadPackageJSONForSurfaceJoinsReadAndCloseErrors(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"name":"`+strings.Repeat("x", int(jsPackageJSONReadMaxBytes))+`"}`)
+	closeErr := errors.New("close failed")
+
+	originalOpenDependencyRootNoFollow := openDependencyRootNoFollow
+	openDependencyRootNoFollow = func(path string) (safeio.Root, error) {
+		baseRoot, err := originalOpenDependencyRootNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: closeErr}, nil
+	}
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpenDependencyRootNoFollow
+	})
+
+	pkg, warnings, err := loadPackageJSONForSurface(depRoot, depRoot)
+	if err == nil || !errors.Is(err, safeio.ErrFileTooLarge) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected read and close errors, got pkg=%#v warnings=%#v err=%v", pkg, warnings, err)
+	}
+	if pkg.Name != "" {
+		t.Fatalf("expected oversized package to remain empty, got %#v", pkg)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read") {
+		t.Fatalf("expected stable read warning, got %#v", warnings)
+	}
+	if !strings.Contains(err.Error(), closeErr.Error()) {
+		t.Fatalf("expected close error string to be preserved, got %v", err)
 	}
 }
 
@@ -546,8 +610,8 @@ func TestLoadPackageJSONForSurfaceRejectsDependencyOutsideRoot(t *testing.T) {
 
 func TestResolveEntrypointUnderRootReturnsFalseWhenRootCannotOpen(t *testing.T) {
 	missingRoot := filepath.Join(t.TempDir(), "missing")
-	if path, ok := resolveEntrypointUnderRoot(missingRoot, missingRoot, "index.js"); ok || path != "" {
-		t.Fatalf("expected missing root to fail, got path=%q ok=%v", path, ok)
+	if path, ok, err := resolveEntrypointUnderRoot(missingRoot, missingRoot, "index.js"); ok || path != "" || err == nil {
+		t.Fatalf("expected missing root to fail with error, got path=%q ok=%v err=%v", path, ok, err)
 	}
 }
 
@@ -650,7 +714,7 @@ func TestResolveEntrypointsClearsResultsWhenRootCloseFails(t *testing.T) {
 	if len(resolved) != 0 {
 		t.Fatalf("expected close failure to discard resolved entrypoints, got %#v", resolved)
 	}
-	if !strings.Contains(strings.Join(surface.Warnings, "\n"), "failed to close dependency root after entrypoint resolution") {
+	if !strings.Contains(strings.Join(surface.Warnings, "\n"), "failed to close dependency root after entrypoint resolution") || !strings.Contains(strings.Join(surface.Warnings, "\n"), "close failed") {
 		t.Fatalf("expected close warning, got %#v", surface.Warnings)
 	}
 }

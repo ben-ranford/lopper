@@ -178,14 +178,21 @@ type licenseFileProbe struct {
 	confidence string
 }
 
-func detectLicenseFromFiles(depRoot string) (license *report.DependencyLicense) {
+func detectLicenseFromFiles(depRoot string) (license *report.DependencyLicense, warnings []string) {
 	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	defer closeRootResetLicense(root, &license)
-	license, _ = detectLicenseFromFilesWithinRoot(root, validatedDepRoot)
-	return license
+	defer func() {
+		warnings = dedupeStrings(warnings)
+	}()
+	defer func() {
+		if closeErr := closeRootResetLicense(root, &license, "failed to close dependency root after license file detection"); closeErr != nil {
+			warnings = append(warnings, closeErr.Error())
+		}
+	}()
+	license, warnings = detectLicenseFromFilesWithinRoot(root, validatedDepRoot)
+	return license, warnings
 }
 
 func detectLicenseFromFilesWithinRoot(root safeio.Root, depRoot string) (*report.DependencyLicense, []string) {
@@ -196,14 +203,21 @@ func detectLicenseFromFilesWithinRoot(root safeio.Root, depRoot string) (*report
 	return synthesizeLicenseFromFileProbe(*probe), warnings
 }
 
-func probeLicenseFiles(depRoot string) (probe *licenseFileProbe) {
+func probeLicenseFiles(depRoot string) (probe *licenseFileProbe, warnings []string) {
 	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	defer closeRootResetProbe(root, &probe)
-	probe, _ = probeLicenseFilesWithinRoot(root, validatedDepRoot)
-	return probe
+	defer func() {
+		warnings = dedupeStrings(warnings)
+	}()
+	defer func() {
+		if closeErr := closeRootResetProbe(root, &probe, "failed to close dependency root after license file probing"); closeErr != nil {
+			warnings = append(warnings, closeErr.Error())
+		}
+	}()
+	probe, warnings = probeLicenseFilesWithinRoot(root, validatedDepRoot)
+	return probe, warnings
 }
 
 func probeLicenseFilesWithinRoot(root safeio.Root, depRoot string) (*licenseFileProbe, []string) {
@@ -212,14 +226,21 @@ func probeLicenseFilesWithinRoot(root safeio.Root, depRoot string) (*licenseFile
 	return probe, append(warnings, probeWarnings...)
 }
 
-func probeLicenseCandidates(depRoot string, candidates []string) (probe *licenseFileProbe) {
+func probeLicenseCandidates(depRoot string, candidates []string) (probe *licenseFileProbe, warnings []string) {
 	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	defer closeRootResetProbe(root, &probe)
-	probe, _ = probeLicenseCandidatesWithinRoot(root, validatedDepRoot, candidates)
-	return probe
+	defer func() {
+		warnings = dedupeStrings(warnings)
+	}()
+	defer func() {
+		if closeErr := closeRootResetProbe(root, &probe, "failed to close dependency root after license candidate probing"); closeErr != nil {
+			warnings = append(warnings, closeErr.Error())
+		}
+	}()
+	probe, warnings = probeLicenseCandidatesWithinRoot(root, validatedDepRoot, candidates)
+	return probe, warnings
 }
 
 func probeLicenseCandidatesWithinRoot(root safeio.Root, depRoot string, candidates []string) (*licenseFileProbe, []string) {
@@ -236,14 +257,24 @@ func probeLicenseCandidatesWithinRoot(root safeio.Root, depRoot string, candidat
 	return nil, warnings
 }
 
-func probeLicenseCandidate(depRoot, candidate string) (probe *licenseFileProbe) {
+func probeLicenseCandidate(depRoot, candidate string) (probe *licenseFileProbe, warnings []string) {
 	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	defer closeRootResetProbe(root, &probe)
-	probe, _ = probeLicenseCandidateWithinRoot(root, validatedDepRoot, candidate)
-	return probe
+	defer func() {
+		warnings = dedupeStrings(warnings)
+	}()
+	defer func() {
+		if closeErr := closeRootResetProbe(root, &probe, "failed to close dependency root after license candidate probing"); closeErr != nil {
+			warnings = append(warnings, closeErr.Error())
+		}
+	}()
+	probe, warning := probeLicenseCandidateWithinRoot(root, validatedDepRoot, candidate)
+	if warning != "" {
+		warnings = append(warnings, warning)
+	}
+	return probe, warnings
 }
 
 func probeLicenseCandidateWithinRoot(root safeio.Root, depRoot, candidate string) (*licenseFileProbe, string) {
@@ -278,18 +309,22 @@ func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLi
 	}
 }
 
-func findLicenseFiles(depRoot string) (files []string) {
+func findLicenseFiles(depRoot string) (files []string, warnings []string) {
 	validatedDepRoot, err := validateDirectoryPathNoFollow(depRoot)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	root, err := openConstrainedRoot(validatedDepRoot)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	defer closeRootResetSlice(root, &files)
-	files, _ = findLicenseFilesWithinRoot(root, validatedDepRoot)
-	return files
+	defer func() {
+		if closeErr := closeRootResetSlice(root, &files, "failed to close dependency root after license file discovery"); closeErr != nil {
+			warnings = append(warnings, closeErr.Error())
+		}
+	}()
+	files, warnings = findLicenseFilesWithinRoot(root, validatedDepRoot)
+	return files, warnings
 }
 
 func findLicenseFilesWithinRoot(root safeio.Root, depRoot string) ([]string, []string) {

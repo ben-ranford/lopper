@@ -101,18 +101,21 @@ func isLikelyCodeAsset(path string) bool {
 	}
 }
 
-func resolveEntrypoint(depPath, entry string) (string, bool) {
+func resolveEntrypoint(depPath, entry string) (string, bool, error) {
 	return resolveEntrypointUnderRoot(depPath, depPath, entry)
 }
 
-func resolveEntrypointUnderRoot(rootPath, depPath, entry string) (resolved string, ok bool) {
+func resolveEntrypointUnderRoot(rootPath, depPath, entry string) (resolved string, ok bool, err error) {
 	root, err := openConstrainedRoot(rootPath)
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
-	defer closeRootResetResolution(root, &resolved, &ok)
+	defer func() {
+		err = errors.Join(err, closeRootResetResolution(root, &resolved, &ok, "failed to close dependency root after entrypoint resolution"))
+	}()
 
-	return resolveEntrypointWithinRoot(root, rootPath, depPath, entry)
+	resolved, ok = resolveEntrypointWithinRoot(root, rootPath, depPath, entry)
+	return resolved, ok, err
 }
 
 func resolveEntrypointWithinRoot(root safeio.Root, rootPath, depPath, entry string) (string, bool) {

@@ -86,8 +86,8 @@ func assertParentSwapBreaksPackageJSONRead(t *testing.T, resolvedRoot string) {
 func assertParentSwapBreaksEntrypointResolution(t *testing.T, resolvedRoot string) {
 	t.Helper()
 
-	if path, ok := resolveEntrypointUnderRoot(resolvedRoot, resolvedRoot, "index.js"); ok || path != "" {
-		t.Fatalf("expected swapped parent symlink to break entrypoint resolution, got path=%q ok=%v", path, ok)
+	if path, ok, err := resolveEntrypointUnderRoot(resolvedRoot, resolvedRoot, "index.js"); ok || path != "" || err == nil {
+		t.Fatalf("expected swapped parent symlink to break entrypoint resolution, got path=%q ok=%v err=%v", path, ok, err)
 	}
 }
 
