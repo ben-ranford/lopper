@@ -2,25 +2,36 @@ package runtime
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func Load(path string) (Trace, error) {
-	content, err := safeio.ReadFile(path)
+const maxRuntimeTraceBytes int64 = 8 * 1024 * 1024
+
+func Load(path string) (_ Trace, err error) {
+	file, err := safeio.OpenFile(path)
 	if err != nil {
 		return Trace{}, err
 	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	trace := newTrace()
-	scanner := bufio.NewScanner(bytes.NewReader(content))
+	scanner := bufio.NewScanner(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes))
 	line := 0
 	for scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return Trace{}, err
+		}
 		line++
 		text := strings.TrimSpace(scanner.Text())
 		if text == "" {
@@ -44,6 +55,41 @@ func Load(path string) (Trace, error) {
 	}
 
 	return trace, nil
+}
+
+type runtimeTraceByteLimitReader struct {
+	reader    io.Reader
+	remaining int64
+}
+
+func newRuntimeTraceByteLimitReader(reader io.Reader, maxBytes int64) io.Reader {
+	return &runtimeTraceByteLimitReader{reader: reader, remaining: maxBytes}
+}
+
+func (r *runtimeTraceByteLimitReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	limit := r.remaining + 1
+	if limit <= 0 {
+		limit = 1
+	}
+	if int64(len(p)) > limit {
+		p = p[:limit]
+	}
+
+	n, err := r.reader.Read(p)
+	if int64(n) <= r.remaining {
+		r.remaining -= int64(n)
+		return n, err
+	}
+
+	allowed := int(r.remaining)
+	if allowed < 0 {
+		allowed = 0
+	}
+	r.remaining = 0
+	return allowed, safeio.ErrFileTooLarge
 }
 
 func newTrace() Trace {

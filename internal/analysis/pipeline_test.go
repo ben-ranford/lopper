@@ -1,12 +1,14 @@
 package analysis
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -200,6 +202,17 @@ func TestAnnotateRuntimeTraceInvalidFileFails(t *testing.T) {
 	}
 }
 
+func TestAnnotateRuntimeTraceOversizedFileFails(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte(oversizedRuntimeTraceContentForAnalysisTest()), 0o600); err != nil {
+		t.Fatalf("write oversized trace: %v", err)
+	}
+
+	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}, false); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized runtime trace to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
 func TestAnnotateRuntimeTraceSkipsUnsupportedLanguageBeforeReadingTrace(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
 	if err := os.WriteFile(tracePath, []byte("{not-json}\n"), 0o600); err != nil {
@@ -213,4 +226,11 @@ func TestAnnotateRuntimeTraceSkipsUnsupportedLanguageBeforeReadingTrace(t *testi
 	if len(annotated.Warnings) != 0 {
 		t.Fatalf("expected no warnings when unsupported trace is skipped, got %#v", annotated.Warnings)
 	}
+}
+
+func oversizedRuntimeTraceContentForAnalysisTest() string {
+	const maxRuntimeTraceBytes = 8 * 1024 * 1024
+	line := "{\"module\":\"lodash/map\"}\n"
+	repeat := maxRuntimeTraceBytes/len(line) + 1
+	return strings.Repeat(line, repeat)
 }
