@@ -10,6 +10,8 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -117,6 +119,12 @@ func TestAnalyseNoReportsAndRuntimeTraceErrorBranches(t *testing.T) {
 		TopN:             1,
 		RuntimeTracePath: filepath.Join(t.TempDir(), "missing.ndjson"),
 	})
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("expected runtime trace fallback warning, got %v", err)
 	}
@@ -193,6 +201,12 @@ func TestMergeReportsAndTopSymbolsBranches(t *testing.T) {
 
 func TestAnnotateRuntimeTraceHelperMissingFileFallback(t *testing.T) {
 	annotated, err := annotateRuntimeTraceIfPresent(context.Background(), filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", report.Report{}, false)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("expected missing runtime trace fallback, got %v", err)
 	}

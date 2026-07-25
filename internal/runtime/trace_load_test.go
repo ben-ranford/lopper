@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -100,6 +101,25 @@ func TestLoadTraceScannerErrTooLong(t *testing.T) {
 	}
 }
 
+func TestLoadTraceStopsReadingNearLineCap(t *testing.T) {
+	reader := &countingByteReader{}
+	restore := stubLoadRuntimeTraceFile(func(string) (io.ReadCloser, error) {
+		return &runtimeTraceReadCloser{Reader: reader}, nil
+	})
+	t.Cleanup(restore)
+
+	_, err := LoadContext(context.Background(), "ignored.ndjson")
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Fatalf("expected oversized line error, got %v", err)
+	}
+	if reader.totalRead > maxRuntimeTraceLineBytes+1 {
+		t.Fatalf("expected bounded reads near line cap, read %d bytes", reader.totalRead)
+	}
+	if reader.maxReadSize > maxRuntimeTraceLineBytes+1 {
+		t.Fatalf("expected bounded read size near line cap, max request %d", reader.maxReadSize)
+	}
+}
+
 func TestLoadTraceParseErrorIncludesLineNumber(t *testing.T) {
 	_, err := loadTraceFromContent(t, "{\"module\":\"ok\"}\n{not-json}\n")
 	if err == nil {
@@ -139,6 +159,12 @@ func TestLoadTraceSkipsBlankLines(t *testing.T) {
 
 func TestLoadTraceMissingFileError(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.ndjson"))
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err == nil {
 		t.Fatalf("expected missing-file error")
 	}
@@ -189,8 +215,61 @@ func TestLoadTraceRejectsSymlinkPath(t *testing.T) {
 	}
 
 	_, err := Load(linkPath)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), "runtime trace path is a symlink") {
 		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestLoadTraceRejectsSymlinkedParentPath(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
+	rootDir := t.TempDir()
+	targetDir := filepath.Join(rootDir, "target")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	tracePath := filepath.Join(targetDir, "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte("{\"module\":\""+lodashMapModule+"\"}\n"), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	linkDir := filepath.Join(rootDir, "linked")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	_, err := Load(filepath.Join(linkDir, "trace.ndjson"))
+	if err == nil || !strings.Contains(err.Error(), "path contains symlink") {
+		t.Fatalf("expected symlinked parent rejection, got %v", err)
+	}
+}
+
+func TestLoadTraceRejectsSuffixPreservingSymlinkedParentPath(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
+	rootDir := t.TempDir()
+	suffixPath := strings.TrimPrefix(filepath.Clean(rootDir), string(filepath.Separator))
+	targetDir := filepath.Join(rootDir, "pivot", suffixPath, "linked")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir crafted target dir: %v", err)
+	}
+	tracePath := filepath.Join(targetDir, "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte("{\"module\":\""+lodashMapModule+"\"}\n"), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	linkDir := filepath.Join(rootDir, "linked")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	_, err := Load(filepath.Join(linkDir, "trace.ndjson"))
+	if err == nil || !strings.Contains(err.Error(), "path contains symlink") {
+		t.Fatalf("expected suffix-preserving symlinked parent rejection, got %v", err)
 	}
 }
 
@@ -201,6 +280,12 @@ func TestLoadTraceRejectsDirectoryPath(t *testing.T) {
 	}
 
 	_, err := Load(traceDir)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), "runtime trace path is not a regular file") {
 		t.Fatalf("expected directory rejection, got %v", err)
 	}
@@ -416,7 +501,7 @@ func TestOpenRuntimeTraceFileRejectsFileHandleWithoutStat(t *testing.T) {
 		return &runtimeTraceReadCloser{}, nil
 	}
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -436,7 +521,7 @@ func TestOpenRuntimeTraceFileReturnsStatError(t *testing.T) {
 		}, nil
 	}
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -457,7 +542,7 @@ func TestOpenRuntimeTraceFileRejectsOpenedNonRegularFile(t *testing.T) {
 	}
 	sameFile := func(fs.FileInfo, fs.FileInfo) bool { return true }
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, sameFile)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, sameFile)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -478,12 +563,35 @@ func TestOpenRuntimeTraceFileRejectsPathChangeDuringOpen(t *testing.T) {
 	}
 	sameFile := func(fs.FileInfo, fs.FileInfo) bool { return false }
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, sameFile)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, sameFile)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
 	if err == nil || !strings.Contains(err.Error(), "changed while opening") {
 		t.Fatalf("expected path change error, got %v", err)
+	}
+}
+
+func TestOpenRuntimeTraceFileFailsClosedWhenNoFollowUnsupported(t *testing.T) {
+	lstatCalled := false
+	lstat := func(string) (fs.FileInfo, error) {
+		lstatCalled = true
+		return &fakeFileInfo{name: "trace.ndjson", mode: 0o600}, nil
+	}
+	noFollowOpen := func(string) (io.ReadCloser, error) {
+		t.Fatal("expected unsupported runtime trace path opening to fail before open")
+		return nil, nil
+	}
+
+	restore := stubRuntimeTraceFileOpenState(lstat, noFollowOpen, func() bool { return false }, nil)
+	t.Cleanup(restore)
+
+	_, err := openRuntimeTraceFile("trace.ndjson")
+	if !errors.Is(err, ErrTraceOpenUnsupported) {
+		t.Fatalf("expected stable unsupported runtime trace open error, got %v", err)
+	}
+	if lstatCalled {
+		t.Fatal("expected unsupported runtime trace path opening to fail before lstat")
 	}
 }
 
@@ -503,21 +611,26 @@ func stubLoadRuntimeTraceFile(stub func(string) (io.ReadCloser, error)) func() {
 	}
 }
 
-func stubRuntimeTraceFileOpenState(lstat func(string) (fs.FileInfo, error), open func(string) (io.ReadCloser, error), sameFile func(fs.FileInfo, fs.FileInfo) bool) func() {
+func stubRuntimeTraceFileOpenState(lstat func(string) (fs.FileInfo, error), openNoFollow func(string) (io.ReadCloser, error), noFollowSupported func() bool, sameFile func(fs.FileInfo, fs.FileInfo) bool) func() {
 	previousLstat := runtimeTraceLstat
-	previousOpen := runtimeTraceOpenFile
+	previousOpenNoFollow := runtimeTraceOpenFileNoFollow
+	previousNoFollowSupported := runtimeTraceOpenFileNoFollowOK
 	previousSameFile := runtimeTraceSameFile
+	previousBeforeOpen := runtimeTraceBeforeOpen
 
 	runtimeTraceLstat = lstat
-	runtimeTraceOpenFile = open
+	runtimeTraceOpenFileNoFollow = openNoFollow
+	runtimeTraceOpenFileNoFollowOK = noFollowSupported
 	if sameFile != nil {
 		runtimeTraceSameFile = sameFile
 	}
 
 	return func() {
 		runtimeTraceLstat = previousLstat
-		runtimeTraceOpenFile = previousOpen
+		runtimeTraceOpenFileNoFollow = previousOpenNoFollow
+		runtimeTraceOpenFileNoFollowOK = previousNoFollowSupported
 		runtimeTraceSameFile = previousSameFile
+		runtimeTraceBeforeOpen = previousBeforeOpen
 	}
 }
 
@@ -554,6 +667,22 @@ type errorReader struct {
 
 func (r *errorReader) Read([]byte) (int, error) {
 	return 0, r.err
+}
+
+type countingByteReader struct {
+	totalRead   int
+	maxReadSize int
+}
+
+func (r *countingByteReader) Read(p []byte) (int, error) {
+	if len(p) > r.maxReadSize {
+		r.maxReadSize = len(p)
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	r.totalRead += len(p)
+	return len(p), nil
 }
 
 type fakeFileInfo struct {

@@ -3817,17 +3817,18 @@ func (*errReadCloseCloser) Close() error {
 }
 
 type advisoryFakeRoot struct {
-	open     func(name string) (safeio.File, error)
-	openFile func(name string, flag int, perm os.FileMode) (safeio.File, error)
-	openRoot func(name string) (safeio.Root, error)
-	lstat    func(name string) (fs.FileInfo, error)
-	mkdir    func(name string, perm os.FileMode) error
-	chmod    func(name string, perm os.FileMode) error
-	mkdirAll func(name string, perm os.FileMode) error
-	link     func(oldName, newName string) error
-	rename   func(oldName, newName string) error
-	remove   func(name string) error
-	close    func() error
+	open         func(name string) (safeio.File, error)
+	openNoFollow func(name string) (safeio.File, error)
+	openFile     func(name string, flag int, perm os.FileMode) (safeio.File, error)
+	openRoot     func(name string) (safeio.Root, error)
+	lstat        func(name string) (fs.FileInfo, error)
+	mkdir        func(name string, perm os.FileMode) error
+	chmod        func(name string, perm os.FileMode) error
+	mkdirAll     func(name string, perm os.FileMode) error
+	link         func(oldName, newName string) error
+	rename       func(oldName, newName string) error
+	remove       func(name string) error
+	close        func() error
 }
 
 func (r *advisoryFakeRoot) Open(name string) (safeio.File, error) {
@@ -3835,6 +3836,16 @@ func (r *advisoryFakeRoot) Open(name string) (safeio.File, error) {
 		return r.open(name)
 	}
 	return nil, errors.New("unexpected open")
+}
+
+func (r *advisoryFakeRoot) OpenNoFollow(name string) (safeio.File, error) {
+	if r.openNoFollow != nil {
+		return r.openNoFollow(name)
+	}
+	if r.open != nil {
+		return r.open(name)
+	}
+	return nil, errors.New("unexpected open no follow")
 }
 
 func (r *advisoryFakeRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {

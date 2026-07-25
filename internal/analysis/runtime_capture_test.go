@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -50,6 +52,12 @@ func TestServicePythonRuntimeCaptureIndependentOfTraceFeature(t *testing.T) {
 		RuntimeTestCommand: "pytest",
 		Features:           mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
 	})
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported runtime capture error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("analyse successful Python capture with trace feature disabled: %v", err)
 	}

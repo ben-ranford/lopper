@@ -6,6 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"path/filepath"
+	"strings"
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
@@ -153,14 +155,42 @@ func ReadFile(targetPath string) (data []byte, err error) {
 
 // OpenFile opens the exact targetPath by opening its parent directory as a root.
 func OpenFile(targetPath string) (io.ReadCloser, error) {
+	return openExactFile(targetPath, fileSystem.OpenRoot, "open parent root")
+}
+
+// OpenFileNoFollow opens the exact targetPath while rejecting symlinks in any
+// parent path component.
+func OpenFileNoFollow(targetPath string) (io.ReadCloser, error) {
 	target, err := resolveExactFileTarget(targetPath)
 	if err != nil {
 		return nil, err
 	}
 
-	root, err := openReadRootNoFollow(target.parentDir, "parent")
+	root, err := openParentRootNoFollow(target.parentDir)
+	if err != nil {
+		return nil, fmt.Errorf("open canonical parent root: %w", normalizeOpenParentRootNoFollowError(err, target.parentDir))
+	}
+
+	file, err := root.OpenNoFollow(target.fileName)
+	if err != nil {
+		err = translateOpenNotExist(err, targetPath)
+		if closeErr := root.Close(); closeErr != nil {
+			return nil, errors.Join(err, closeErr)
+		}
+		return nil, err
+	}
+	return &rootedReadCloser{file: file, root: root}, nil
+}
+
+func openExactFile(targetPath string, openRoot func(string) (Root, error), openRootLabel string) (io.ReadCloser, error) {
+	target, err := resolveExactFileTarget(targetPath)
 	if err != nil {
 		return nil, err
+	}
+
+	root, err := openRoot(target.parentDir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", openRootLabel, err)
 	}
 
 	file, err := OpenPinnedFile(root, target.fileName)
@@ -180,6 +210,52 @@ func openReadRootNoFollow(rootDir, label string) (Root, error) {
 		return nil, fmt.Errorf("open %s root: %w", label, err)
 	}
 	return root, nil
+}
+
+func openParentRootNoFollow(parentDir string) (Root, error) {
+	volumeRoot := filepath.VolumeName(parentDir) + string(filepath.Separator)
+	rel, err := filepath.Rel(volumeRoot, parentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	root, err := fileSystem.OpenRoot(volumeRoot)
+	if err != nil {
+		return nil, err
+	}
+	if rel == "." {
+		return root, nil
+	}
+
+	current := root
+	currentPath := volumeRoot
+	parts := strings.Split(rel, string(filepath.Separator))
+	current, currentPath, parts, err = openParentRootNoFollowAlias(current, currentPath, parts)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, part := range nonDotPathParts(strings.Join(parts, string(filepath.Separator)), string(filepath.Separator)) {
+		partPath := filepath.Join(currentPath, part)
+		next, openErr := openRootChildNoFollow(current, part, partPath)
+		if openErr != nil {
+			return nil, closeRootWithError(current, openErr)
+		}
+		if err := current.Close(); err != nil {
+			return nil, closeRootWithError(next, err)
+		}
+		current = next
+		currentPath = partPath
+	}
+	return current, nil
+}
+
+func normalizeOpenParentRootNoFollowError(err error, parentDir string) error {
+	var symlinkErr *RootContainsSymlinkError
+	if errors.As(err, &symlinkErr) {
+		return &PathContainsSymlinkError{Path: parentDir, Err: err}
+	}
+	return err
 }
 
 func readOpenedFile(file File, maxBytes int64) ([]byte, error) {

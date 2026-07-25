@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"io"
+	"strings"
 	"testing"
 
-	"github.com/ben-ranford/lopper/internal/testutil"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -21,10 +23,25 @@ const (
 
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 	t.Helper()
-	return Load(testutil.WriteTempFile(t, "runtime.ndjson", content))
+	restore := stubLoadRuntimeTraceFile(func(string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(content)), nil
+	})
+	t.Cleanup(restore)
+	return Load("runtime.ndjson")
 }
 
 func loadTraceFromContentContext(ctx context.Context, t *testing.T, content string) (Trace, error) {
 	t.Helper()
-	return LoadContext(ctx, testutil.WriteTempFile(t, "runtime.ndjson", content))
+	restore := stubLoadRuntimeTraceFile(func(string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(content)), nil
+	})
+	t.Cleanup(restore)
+	return LoadContext(ctx, "runtime.ndjson")
+}
+
+func requireRuntimeTracePathOpenSupport(t *testing.T) {
+	t.Helper()
+	if !safeio.OpenFileNoFollowSupported() {
+		t.Skip("runtime trace path opening is fail-closed on this platform")
+	}
 }

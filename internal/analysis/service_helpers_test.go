@@ -9,6 +9,8 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -348,6 +350,12 @@ func TestAnnotateRuntimeTrace(t *testing.T) {
 		t.Fatalf("write runtime trace: %v", err)
 	}
 	annotated, err = annotateRuntimeTraceIfPresent(context.Background(), path, "js-ts", rep, false)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported runtime trace error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("annotate with trace: %v", err)
 	}
@@ -361,6 +369,12 @@ func TestAnnotateRuntimeTraceMissingFileFallsBackWithWarning(t *testing.T) {
 		Dependencies: []report.DependencyReport{{Name: "lodash", Language: "js-ts"}},
 	}
 	annotated, err := annotateRuntimeTraceIfPresent(context.Background(), filepath.Join(t.TempDir(), "missing.ndjson"), "js-ts", rep, false)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("expected missing runtime trace to be non-fatal: %v", err)
 	}

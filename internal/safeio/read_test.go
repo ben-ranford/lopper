@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -116,6 +117,110 @@ func TestRootedReadCloserReadAtRejectsUnsupportedFile(t *testing.T) {
 	}
 }
 
+func TestRootedReadCloserStatDelegatesToFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stat.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	want, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+
+	got, err := (&rootedReadCloser{file: &fakeFile{stat: func() (fs.FileInfo, error) {
+		return want, nil
+	}}}).Stat()
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+	if got.Name() != want.Name() || got.Size() != want.Size() {
+		t.Fatalf("unexpected stat result: got=%s/%d want=%s/%d", got.Name(), got.Size(), want.Name(), want.Size())
+	}
+}
+
+func TestPermittedRootAliasPartsDarwinMappings(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only alias behavior")
+	}
+
+	cases := []struct {
+		name  string
+		parts []string
+		want  []string
+	}{
+		{name: "empty", parts: nil, want: nil},
+		{name: "etc", parts: []string{"etc", "hosts"}, want: []string{"private", "etc"}},
+		{name: "tmp", parts: []string{"tmp", "trace.ndjson"}, want: []string{"private", "tmp"}},
+		{name: "var", parts: []string{"var", "log"}, want: []string{"private", "var"}},
+		{name: "other", parts: []string{"Users", "ben"}, want: nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := permittedRootAliasParts(tc.parts)
+			if strings.Join(got, "/") != strings.Join(tc.want, "/") {
+				t.Fatalf("permittedRootAliasParts(%v) = %v, want %v", tc.parts, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPermittedRootAliasPartsReturnsNilOutsideDarwin(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("non-darwin behavior")
+	}
+
+	if got := permittedRootAliasParts([]string{"tmp", "trace.ndjson"}); len(got) != 0 {
+		t.Fatalf("expected nil alias parts outside darwin, got %v", got)
+	}
+}
+
+func TestNonDotPathPartsFiltersEmptyAndDotSegments(t *testing.T) {
+	got := nonDotPathParts("alpha//./beta/./gamma", "/")
+	if strings.Join(got, "/") != "alpha/beta/gamma" {
+		t.Fatalf("unexpected filtered parts: %v", got)
+	}
+}
+
+func TestNormalizeOpenParentRootNoFollowError(t *testing.T) {
+	parentDir := filepath.Join(string(filepath.Separator), "tmp", "trace-parent")
+	closeErr := errors.New("close failed")
+	got := normalizeOpenParentRootNoFollowError(errors.Join(&RootContainsSymlinkError{Path: filepath.Join(string(filepath.Separator), "tmp", "link")}, closeErr), parentDir)
+	if got.Error() != "path contains symlink: "+parentDir {
+		t.Fatalf("unexpected normalized error: %v", got)
+	}
+	if !errors.Is(got, ErrPathContainsSymlink) {
+		t.Fatalf("expected normalized error to match ErrPathContainsSymlink, got %v", got)
+	}
+	if !errors.Is(got, closeErr) {
+		t.Fatalf("expected normalized error to retain joined close error, got %v", got)
+	}
+	var rootErr *RootContainsSymlinkError
+	if !errors.As(got, &rootErr) {
+		t.Fatalf("expected normalized error to retain root symlink cause, got %v", got)
+	}
+	if rootErr.Path != filepath.Join(string(filepath.Separator), "tmp", "link") {
+		t.Fatalf("unexpected root symlink cause path: %q", rootErr.Path)
+	}
+
+	unchanged := errors.New("permission denied")
+	if got := normalizeOpenParentRootNoFollowError(unchanged, parentDir); !errors.Is(got, unchanged) {
+		t.Fatalf("expected non-symlink error to remain unchanged, got %v", got)
+	}
+}
+
+func TestOpenParentRootNoFollowOpensVolumeRoot(t *testing.T) {
+	rootPath := string(filepath.Separator)
+	root, err := openParentRootNoFollow(rootPath)
+	if err != nil {
+		t.Fatalf("openParentRootNoFollow(%q): %v", rootPath, err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close root: %v", err)
+	}
+}
+
 func TestReadFileUnderLimitReadsFileInsideRoot(t *testing.T) {
 	rootDir := canonicalTempDir(t)
 	targetPath := filepath.Join(rootDir, "nested", writeTestFileName)
@@ -192,6 +297,19 @@ func TestReadFileWithinRootRejectsAbsolutePath(t *testing.T) {
 	_, err := ReadFileWithinRoot(root, filepath.Join(canonicalTempDir(t), writeTestFileName))
 	if err == nil || !strings.Contains(err.Error(), escapesRootErr) || !errors.Is(err, ErrPathEscapesRoot) {
 		t.Fatalf("expected absolute path rejection, got %v", err)
+	}
+}
+
+func TestReadFileWithinRootLimitReturnsNotExistForMissingFile(t *testing.T) {
+	root := &fakeRoot{
+		open: func(string) (File, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+
+	_, err := ReadFileWithinRootLimit(root, writeTestFileName, 1)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing file error, got %v", err)
 	}
 }
 
@@ -608,12 +726,195 @@ func TestReadFileLimitRejectsSymlinkedParentAncestor(t *testing.T) {
 	}
 }
 
+func TestOpenFileNoFollowRejectsSymlinkedParent(t *testing.T) {
+	rootDir := t.TempDir()
+	targetDir := filepath.Join(rootDir, "target")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	targetPath := filepath.Join(targetDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	linkDir := filepath.Join(rootDir, "linked")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	file, err := OpenFileNoFollow(filepath.Join(linkDir, writeTestFileName))
+	if err == nil || !strings.Contains(err.Error(), "path contains symlink") {
+		if file != nil {
+			if closeErr := file.Close(); closeErr != nil {
+				t.Fatalf("close unexpected file: %v", closeErr)
+			}
+		}
+		t.Fatalf("expected symlinked parent rejection, got file=%v err=%v", file, err)
+	}
+	if !errors.Is(err, ErrPathContainsSymlink) {
+		t.Fatalf("expected symlinked parent rejection to match ErrPathContainsSymlink, got %v", err)
+	}
+	var rootErr *RootContainsSymlinkError
+	if !errors.As(err, &rootErr) {
+		t.Fatalf("expected symlinked parent rejection to expose root symlink cause, got %v", err)
+	}
+}
+
+func TestOpenFileNoFollowRejectsSuffixPreservingSymlinkedParent(t *testing.T) {
+	rootDir := t.TempDir()
+	suffixPath := strings.TrimPrefix(filepath.Clean(rootDir), string(filepath.Separator))
+	targetDir := filepath.Join(rootDir, "pivot", suffixPath, "linked")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("create crafted target dir: %v", err)
+	}
+	targetPath := filepath.Join(targetDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	linkDir := filepath.Join(rootDir, "linked")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	file, err := OpenFileNoFollow(filepath.Join(linkDir, writeTestFileName))
+	if err == nil || !strings.Contains(err.Error(), "path contains symlink") {
+		if file != nil {
+			if closeErr := file.Close(); closeErr != nil {
+				t.Fatalf("close unexpected file: %v", closeErr)
+			}
+		}
+		t.Fatalf("expected suffix-preserving symlinked parent rejection, got file=%v err=%v", file, err)
+	}
+	if !errors.Is(err, ErrPathContainsSymlink) {
+		t.Fatalf("expected suffix-preserving symlink rejection to match ErrPathContainsSymlink, got %v", err)
+	}
+}
+
+func assertOpenTargetAbsFailureViaFileSystem(t *testing.T, targetPath string, marker string, open func(string) (io.ReadCloser, error)) {
+	t.Helper()
+
+	withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
+		if path == targetPath {
+			return "", errors.New(marker)
+		}
+		return (&osFileSystem{}).Abs(path)
+	}})
+
+	_, err := open(targetPath)
+	if err == nil {
+		t.Fatal("expected target path absolute resolution error")
+	}
+	if !strings.Contains(err.Error(), resolveTargetPathErr) {
+		t.Fatalf(unexpectedErrFmt, err)
+	}
+}
+
+func TestOpenFileNoFollowTargetAbsFailureViaFileSystem(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
+	assertOpenTargetAbsFailureViaFileSystem(t, targetPath, "openfilenofollow target abs failure", OpenFileNoFollow)
+}
+
+func TestOpenFileNoFollowOpenErrorClosesRoot(t *testing.T) {
+	dirInfo := statTestPath(t, t.TempDir())
+	openErr := errors.New("open nofollow failure")
+	closeErr := errors.New("nofollow root close failure")
+	childClosed := false
+
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		child := &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+			openNoFollow: func(string) (File, error) {
+				return nil, openErr
+			},
+			close: func() error {
+				childClosed = true
+				return closeErr
+			},
+		}
+		return &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+			openRoot: func(string) (Root, error) {
+				return child, nil
+			},
+			close: func() error { return nil },
+		}, nil
+	}})
+
+	_, err := OpenFileNoFollow(filepath.Join(string(filepath.Separator), "alpha", writeTestFileName))
+	if err == nil {
+		t.Fatal("expected OpenFileNoFollow to fail")
+	}
+	if !errors.Is(err, openErr) {
+		t.Fatalf("expected original open error, got %v", err)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf(rootCloseErrFmt, err)
+	}
+	if !childClosed {
+		t.Fatal("expected nofollow root to be closed on open failure")
+	}
+}
 func TestReadFileLimitRejectsMissingFile(t *testing.T) {
 	targetPath := filepath.Join(canonicalTempDir(t), "missing.txt")
 
 	_, err := ReadFileLimit(targetPath, 1)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing file error, got %v", err)
+	}
+}
+
+func TestOpenParentRootNoFollowReturnsRelErrorForInvalidPath(t *testing.T) {
+	_, err := openParentRootNoFollow(string([]byte{'/', 'b', 'a', 'd', 0}))
+	if err == nil {
+		t.Fatal("expected invalid path error")
+	}
+}
+
+func TestOpenParentRootNoFollowReturnsOpenRootError(t *testing.T) {
+	expectedErr := errors.New("open volume root failure")
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		return nil, expectedErr
+	}})
+
+	_, err := openParentRootNoFollow(filepath.Join(string(filepath.Separator), "alpha"))
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected open root error, got %v", err)
+	}
+}
+
+func TestOpenParentRootNoFollowClosesNextRootWhenParentCloseFails(t *testing.T) {
+	dirInfo := statTestPath(t, t.TempDir())
+	parentCloseErr := errors.New("parent close failure")
+	childClosed := false
+
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		child := &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+			close: func() error {
+				childClosed = true
+				return nil
+			},
+		}
+		return &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+			openRoot: func(string) (Root, error) {
+				return child, nil
+			},
+			close: func() error { return parentCloseErr },
+		}, nil
+	}})
+
+	root, err := openParentRootNoFollow(filepath.Join(string(filepath.Separator), "alpha"))
+	if root != nil {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected root: %v", closeErr)
+		}
+		t.Fatal("expected root open to fail when parent close fails")
+	}
+	if !errors.Is(err, parentCloseErr) {
+		t.Fatalf("expected parent close error, got %v", err)
+	}
+	if !childClosed {
+		t.Fatal("expected child root to be closed after parent close failure")
 	}
 }
 
@@ -1101,22 +1402,8 @@ func TestReadFileCloseError(t *testing.T) {
 }
 
 func TestOpenFileTargetAbsFailureViaFileSystem(t *testing.T) {
-	targetPath := filepath.Join(canonicalTempDir(t), writeTestFileName)
-
-	withFileSystem(t, &fakeFileSystem{abs: func(path string) (string, error) {
-		if path == targetPath {
-			return "", errors.New("openfile target abs failure")
-		}
-		return (&osFileSystem{}).Abs(path)
-	}})
-
-	_, err := OpenFile(targetPath)
-	if err == nil {
-		t.Fatal("expected target path absolute resolution error")
-	}
-	if !strings.Contains(err.Error(), resolveTargetPathErr) {
-		t.Fatalf(unexpectedErrFmt, err)
-	}
+	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
+	assertOpenTargetAbsFailureViaFileSystem(t, targetPath, "openfile target abs failure", OpenFile)
 }
 
 func TestOpenFileMissingFileCloseRootError(t *testing.T) {

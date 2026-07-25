@@ -1,14 +1,17 @@
-//go:build unix
+//go:build linux
 
 package runtime
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestLoadTraceRejectsFIFOPathBeforeOpen(t *testing.T) {
@@ -32,6 +35,12 @@ func TestLoadTraceRejectsFIFOPathBeforeOpen(t *testing.T) {
 
 	select {
 	case err := <-errCh:
+		if !safeio.OpenFileNoFollowSupported() {
+			if !errors.Is(err, ErrTraceOpenUnsupported) {
+				t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+			}
+			return
+		}
 		if err == nil || !strings.Contains(err.Error(), "runtime trace path is not a regular file") {
 			t.Fatalf("expected fifo rejection, got %v", err)
 		}

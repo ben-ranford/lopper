@@ -71,6 +71,8 @@ func TestCaptureUsesAbsoluteNodeHookPaths(t *testing.T) {
 }
 
 func TestCapturePythonRuntimeImports(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")

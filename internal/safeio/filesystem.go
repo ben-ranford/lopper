@@ -23,6 +23,7 @@ type FileSystem interface {
 // Root is a filesystem root used for path-confined operations.
 type Root interface {
 	Open(name string) (File, error)
+	OpenNoFollow(name string) (File, error)
 	OpenFile(name string, flag int, perm os.FileMode) (File, error)
 	OpenRoot(name string) (Root, error)
 	Lstat(name string) (fs.FileInfo, error)
@@ -115,10 +116,7 @@ func openRootNoFollowWith(name string, absFn func(string) (string, error), relFn
 	}
 
 	currentPath := volumeRoot
-	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
-		if part == "" || part == "." {
-			continue
-		}
+	for _, part := range nonDotPathParts(rel, string(os.PathSeparator)) {
 		requestedPath := filepath.Join(currentPath, part)
 		next, nextPath, err := openRootChildFn(root, part, requestedPath)
 		if err != nil {
@@ -195,7 +193,7 @@ func openRootChildNoFollow(root Root, name, path string) (Root, error) {
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("root contains symlink: %s", path)
+		return nil, &RootContainsSymlinkError{Path: path}
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("root is not a directory: %s", path)
@@ -460,6 +458,10 @@ func closeFileWithError(file File, err error) error {
 
 func (r *osRoot) Open(name string) (File, error) {
 	return r.root.Open(name)
+}
+
+func (r *osRoot) OpenNoFollow(name string) (File, error) {
+	return openRootFileNoFollow(r.root, name)
 }
 
 func (r *osRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {

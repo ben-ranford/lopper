@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/version"
 )
 
@@ -64,6 +65,10 @@ func TestAnalyseBinaryHermeticE2E(t *testing.T) {
 }
 
 func TestAnalyseBinaryRuntimeTraceWorkBoundsE2E(t *testing.T) {
+	if !safeio.OpenFileNoFollowSupported() {
+		t.Skip("runtime trace no-follow support unavailable on this platform")
+	}
+
 	moduleRoot := mustModuleRoot(t)
 	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
 	workspaceRoot := t.TempDir()
@@ -90,6 +95,127 @@ func TestAnalyseBinaryRuntimeTraceWorkBoundsE2E(t *testing.T) {
 	const wantStderr = "runtime trace exceeds maximum line count of 600000\n"
 	if stderr != wantStderr {
 		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+	}
+}
+
+func TestAnalyseBinaryRuntimeTraceWorkBoundsWithoutNoFollowSupportE2E(t *testing.T) {
+	if safeio.OpenFileNoFollowSupported() {
+		t.Skip("runtime trace no-follow support available on this platform")
+	}
+
+	moduleRoot := mustModuleRoot(t)
+	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
+	workspaceRoot := t.TempDir()
+	repoPath := filepath.Join(workspaceRoot, "repo")
+	copyDir(t, fixtureRepo, repoPath)
+
+	binDir := filepath.Join(workspaceRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	binaryPath := filepath.Join(binDir, "lopper")
+	buildBinary(t, moduleRoot, binaryPath)
+
+	tracePath := filepath.Join(workspaceRoot, "trace.ndjson")
+	writeWorkAmplifyingRuntimeTrace(t, tracePath)
+
+	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, tracePath)
+	if exitCode != 1 {
+		t.Fatalf("expected unsupported runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("expected unsupported runtime trace rejection with no stdout, got %q", stdout)
+	}
+	const wantStderr = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n"
+	if stderr != wantStderr {
+		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+	}
+}
+
+func TestAnalyseBinaryRejectsRuntimeTraceSymlinkedParentE2E(t *testing.T) {
+	if !safeio.OpenFileNoFollowSupported() {
+		t.Skip("runtime trace no-follow support unavailable on this platform")
+	}
+
+	moduleRoot := mustModuleRoot(t)
+	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
+	workspaceRoot := t.TempDir()
+	repoPath := filepath.Join(workspaceRoot, "repo")
+	copyDir(t, fixtureRepo, repoPath)
+
+	binDir := filepath.Join(workspaceRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	binaryPath := filepath.Join(binDir, "lopper")
+	buildBinary(t, moduleRoot, binaryPath)
+
+	traceTargetDir := filepath.Join(workspaceRoot, "runtime-trace-target")
+	if err := os.MkdirAll(traceTargetDir, 0o755); err != nil {
+		t.Fatalf("mkdir trace target dir: %v", err)
+	}
+	traceTargetPath := filepath.Join(traceTargetDir, "trace.ndjson")
+	if err := os.WriteFile(traceTargetPath, []byte("{\"module\":\"lodash/map\"}\n"), 0o600); err != nil {
+		t.Fatalf("write runtime trace: %v", err)
+	}
+	traceLinkDir := filepath.Join(workspaceRoot, "runtime-trace-link")
+	if err := os.Symlink(traceTargetDir, traceLinkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, filepath.Join(traceLinkDir, "trace.ndjson"))
+	if exitCode != 1 {
+		t.Fatalf("expected symlinked runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("expected fail-closed runtime trace symlink rejection with no stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "path contains symlink") {
+		t.Fatalf("expected symlinked parent rejection in stderr, got %q", stderr)
+	}
+}
+
+func TestAnalyseBinaryRejectsSuffixPreservingRuntimeTraceSymlinkedParentE2E(t *testing.T) {
+	if !safeio.OpenFileNoFollowSupported() {
+		t.Skip("runtime trace no-follow support unavailable on this platform")
+	}
+
+	moduleRoot := mustModuleRoot(t)
+	fixtureRepo := filepath.Join(moduleRoot, "testdata", "js", "esm")
+	workspaceRoot := t.TempDir()
+	repoPath := filepath.Join(workspaceRoot, "repo")
+	copyDir(t, fixtureRepo, repoPath)
+
+	binDir := filepath.Join(workspaceRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	binaryPath := filepath.Join(binDir, "lopper")
+	buildBinary(t, moduleRoot, binaryPath)
+
+	suffixPath := strings.TrimPrefix(filepath.Clean(workspaceRoot), string(filepath.Separator))
+	traceTargetDir := filepath.Join(workspaceRoot, "pivot", suffixPath, "runtime-trace-link")
+	if err := os.MkdirAll(traceTargetDir, 0o755); err != nil {
+		t.Fatalf("mkdir crafted trace target dir: %v", err)
+	}
+	traceTargetPath := filepath.Join(traceTargetDir, "trace.ndjson")
+	if err := os.WriteFile(traceTargetPath, []byte("{\"module\":\"lodash/map\"}\n"), 0o600); err != nil {
+		t.Fatalf("write runtime trace: %v", err)
+	}
+	traceLinkDir := filepath.Join(workspaceRoot, "runtime-trace-link")
+	if err := os.Symlink(traceTargetDir, traceLinkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	stdout, stderr, exitCode := runHermeticAnalyse(t, workspaceRoot, binaryPath, repoPath, filepath.Join(traceLinkDir, "trace.ndjson"))
+	if exitCode != 1 {
+		t.Fatalf("expected crafted symlinked runtime trace failure exit code 1, got %d stderr=%q stdout=%q", exitCode, stderr, stdout)
+	}
+	if stdout != "" {
+		t.Fatalf("expected fail-closed runtime trace rejection with no stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "path contains symlink") {
+		t.Fatalf("expected suffix-preserving symlinked parent rejection in stderr, got %q", stderr)
 	}
 }
 

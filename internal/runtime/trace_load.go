@@ -24,6 +24,10 @@ const (
 	maxRuntimeTraceLineBytes          = bufio.MaxScanTokenSize
 )
 
+const runtimeTraceOpenUnsupportedMessage = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable"
+
+var ErrTraceOpenUnsupported = errors.New(runtimeTraceOpenUnsupportedMessage)
+
 var runtimeTraceFieldNames = []string{
 	"dependency",
 	"entrypoint",
@@ -37,10 +41,12 @@ var runtimeTraceFieldNames = []string{
 var runtimeTraceEventParseHook func(string)
 
 var (
-	loadRuntimeTraceFile = openRuntimeTraceFile
-	runtimeTraceLstat    = os.Lstat
-	runtimeTraceOpenFile = safeio.OpenFile
-	runtimeTraceSameFile = os.SameFile
+	loadRuntimeTraceFile           = openRuntimeTraceFile
+	runtimeTraceLstat              = os.Lstat
+	runtimeTraceOpenFileNoFollow   = safeio.OpenFileNoFollow
+	runtimeTraceOpenFileNoFollowOK = safeio.OpenFileNoFollowSupported
+	runtimeTraceSameFile           = os.SameFile
+	runtimeTraceBeforeOpen         func()
 )
 
 func Load(path string) (_ Trace, err error) {
@@ -62,26 +68,25 @@ func LoadContext(ctx context.Context, path string) (_ Trace, err error) {
 	}()
 
 	trace := newTrace()
-	reader := bufio.NewReader(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes))
+	reader := bufio.NewReaderSize(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes), maxRuntimeTraceLineBytes+1)
 	line := 0
 	eventCount := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return Trace{}, err
 		}
-		text, err := reader.ReadString('\n')
+		text, err := readRuntimeTraceLine(reader)
 		switch {
 		case errors.Is(err, safeio.ErrFileTooLarge):
 			return Trace{}, safeio.ErrFileTooLarge
+		case errors.Is(err, bufio.ErrTooLong):
+			return Trace{}, bufio.ErrTooLong
 		case errors.Is(err, io.EOF):
 			if text == "" {
 				return trace, nil
 			}
 		case err != nil:
 			return Trace{}, err
-		}
-		if len(text) > maxRuntimeTraceLineBytes {
-			return Trace{}, bufio.ErrTooLong
 		}
 		line++
 		if line > maxRuntimeTraceLines {
@@ -122,7 +127,18 @@ func LoadContext(ctx context.Context, path string) (_ Trace, err error) {
 	}
 }
 
+func readRuntimeTraceLine(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return "", bufio.ErrTooLong
+	}
+	return string(line), err
+}
+
 func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
+	if !runtimeTraceOpenFileNoFollowOK() {
+		return nil, ErrTraceOpenUnsupported
+	}
 	info, err := runtimeTraceLstat(path)
 	if err != nil {
 		return nil, err
@@ -133,8 +149,11 @@ func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("runtime trace path is not a regular file: %s", path)
 	}
+	if runtimeTraceBeforeOpen != nil {
+		runtimeTraceBeforeOpen()
+	}
 
-	file, err := runtimeTraceOpenFile(path)
+	file, err := runtimeTraceOpenFileNoFollow(path)
 	if err != nil {
 		return nil, err
 	}

@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // WriteRoot pins a filesystem root for path-confined atomic writes.
@@ -102,10 +101,7 @@ func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.F
 	current := r.root
 	currentOwned := false
 	currentAbs := r.rootAbs
-	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
-		if part == "" || part == "." {
-			continue
-		}
+	for _, part := range nonDotPathParts(parentRel, string(os.PathSeparator)) {
 		partAbs := filepath.Join(currentAbs, part)
 		next, err := openTargetParentChild(current, part, partAbs, create, perm)
 		if err != nil {

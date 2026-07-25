@@ -10,6 +10,8 @@ import (
 )
 
 func TestCapturePythonRunnerProfilesMatchPytestDependencyTrace(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")
@@ -66,6 +68,8 @@ func TestCapturePythonRunnerProfilesMatchPytestDependencyTrace(t *testing.T) {
 }
 
 func TestCaptureUsesPATHSelectedPythonExecutable(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
 	if isWindowsRuntime() {
 		t.Skip("PATH-selected wrapper fixture uses a Unix shell script")
 	}
@@ -121,6 +125,8 @@ func TestCaptureUsesPATHSelectedPythonExecutable(t *testing.T) {
 }
 
 func TestCaptureChainsProjectSitecustomizeExactlyOnce(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
 	pythonPath, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")

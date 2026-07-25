@@ -190,17 +190,18 @@ func (f *fakeFileSystem) OpenRootNoFollow(name string) (Root, error) {
 
 type fakeRoot struct {
 	Root
-	chmod    func(name string, perm os.FileMode) error
-	mkdirAll func(name string, perm os.FileMode) error
-	open     func(name string) (File, error)
-	openFile func(name string, flag int, perm os.FileMode) (File, error)
-	openRoot func(name string) (Root, error)
-	lstat    func(name string) (fs.FileInfo, error)
-	mkdir    func(name string, perm os.FileMode) error
-	link     func(oldName, newName string) error
-	rename   func(oldName, newName string) error
-	remove   func(name string) error
-	close    func() error
+	chmod        func(name string, perm os.FileMode) error
+	mkdirAll     func(name string, perm os.FileMode) error
+	open         func(name string) (File, error)
+	openNoFollow func(name string) (File, error)
+	openFile     func(name string, flag int, perm os.FileMode) (File, error)
+	openRoot     func(name string) (Root, error)
+	lstat        func(name string) (fs.FileInfo, error)
+	mkdir        func(name string, perm os.FileMode) error
+	link         func(oldName, newName string) error
+	rename       func(oldName, newName string) error
+	remove       func(name string) error
+	close        func() error
 }
 
 func (r *fakeRoot) Open(name string) (File, error) {
@@ -208,6 +209,13 @@ func (r *fakeRoot) Open(name string) (File, error) {
 		return r.open(name)
 	}
 	return r.Root.Open(name)
+}
+
+func (r *fakeRoot) OpenNoFollow(name string) (File, error) {
+	if r.openNoFollow != nil {
+		return r.openNoFollow(name)
+	}
+	return r.Root.OpenNoFollow(name)
 }
 
 func (r *fakeRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {

@@ -11,6 +11,7 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/mod v0.38.0
+	golang.org/x/sys v0.38.0
 )
 
 require (

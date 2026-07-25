@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -546,6 +549,12 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 		Language:         "js-ts",
 		RuntimeTracePath: tracePath,
 	})
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported runtime trace error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("analyse runtime correlation: %v", err)
 	}
@@ -615,6 +624,12 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 		RuntimeTracePath: tracePath,
 		Features:         mustResolveStableDefaultsFeatureSet(t),
 	})
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported python runtime trace error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("analyse python runtime with stable defaults: %v", err)
 	}
@@ -657,6 +672,12 @@ func TestServiceAnalyseJSTraceIgnoresPythonLanguageEvents(t *testing.T) {
 		RuntimeTracePath: tracePath,
 		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, true),
 	})
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported js runtime trace error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("analyse js runtime with python event: %v", err)
 	}
@@ -685,6 +706,12 @@ func TestServiceAnalyseMissingRuntimeTraceFallsBack(t *testing.T) {
 		Language:         "js-ts",
 		RuntimeTracePath: filepath.Join(repo, ".artifacts", "missing.ndjson"),
 	})
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected unsupported runtime trace open error, got %v", err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("expected runtime missing trace fallback: %v", err)
 	}

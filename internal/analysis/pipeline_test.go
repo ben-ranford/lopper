@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -198,7 +199,14 @@ func TestAnnotateRuntimeTraceInvalidFileFails(t *testing.T) {
 		t.Fatalf("write invalid trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "js-ts", report.Report{}, false); err == nil {
+	_, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "js-ts", report.Report{}, false)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported runtime trace error, got %v", err)
+		}
+		return
+	}
+	if err == nil {
 		t.Fatalf("expected invalid runtime trace to fail")
 	}
 }
@@ -209,7 +217,14 @@ func TestAnnotateRuntimeTraceOversizedFileFails(t *testing.T) {
 		t.Fatalf("write oversized trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "js-ts", report.Report{}, false); !errors.Is(err, safeio.ErrFileTooLarge) {
+	_, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "js-ts", report.Report{}, false)
+	if !safeio.OpenFileNoFollowSupported() {
+		if !errors.Is(err, runtime.ErrTraceOpenUnsupported) {
+			t.Fatalf("expected fail-closed unsupported runtime trace error, got %v", err)
+		}
+		return
+	}
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized runtime trace to fail with ErrFileTooLarge, got %v", err)
 	}
 }

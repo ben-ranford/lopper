@@ -1354,6 +1354,29 @@ func TestWriteFileAtRootReturnsAtomicSessionCreationError(t *testing.T) {
 	}
 }
 
+func TestWriteFileAtRootReturnsExistingTargetOpenError(t *testing.T) {
+	expectedErr := errors.New("existing target open failure")
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed existing target: %v", err)
+	}
+
+	fileInfo := statTestPath(t, targetPath)
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return fileInfo, nil },
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, expectedErr
+		},
+	}
+	target := rootedTarget{rel: writeTestFileName, abs: targetPath}
+
+	err := writeFileAtRoot(root, target, []byte("after"), 0o600)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected existing target open error, got %v", err)
+	}
+}
+
 func TestResolvedWriteFilePermPropagatesLookupError(t *testing.T) {
 	expectedErr := errors.New("target lookup failure")
 	root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) {
