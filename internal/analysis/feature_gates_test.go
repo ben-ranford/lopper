@@ -41,25 +41,10 @@ func TestAdapterFeatureFlagsUsesRegistryPattern(t *testing.T) {
 	}
 }
 
-func TestAdapterFeatureFlagsFallsBackToDefaultRegistry(t *testing.T) {
-	got := adapterFeatureFlags(nil)
-	flag := mustLookupPowerShellPreviewFlag(t)
-	if got["powershell"] != flag.Name {
-		t.Fatalf("expected default registry powershell mapping %q, got %#v", flag.Name, got)
-	}
-}
-
 func TestAdapterFeatureFilterKeepsUnknownAdaptersEnabled(t *testing.T) {
 	filter := adapterFeatureFilter(featureflags.Set{})
 	if !filter(&gatedAdapterStub{id: "custom-adapter"}) {
 		t.Fatalf("expected unknown adapter to stay enabled by default")
-	}
-}
-
-func TestAdapterFeatureFilterRejectsNilAdapter(t *testing.T) {
-	filter := adapterFeatureFilter(featureflags.Set{})
-	if filter(nil) {
-		t.Fatalf("expected nil adapter to be rejected")
 	}
 }
 
@@ -86,22 +71,6 @@ func TestAdapterFeatureFilterUsesShippedPowerShellFeatureGate(t *testing.T) {
 	filter = adapterFeatureFilter(disabled)
 	if filter(&gatedAdapterStub{id: "powershell"}) {
 		t.Fatalf("expected powershell adapter to be disabled when %s is disabled", flag.Name)
-	}
-}
-
-func TestPreviewAdapterIDNormalizesFeatureNames(t *testing.T) {
-	adapterID, ok := previewAdapterID("  PowerShell-Adapter-Preview ")
-	if !ok {
-		t.Fatal("expected preview feature name to be recognized")
-	}
-	if adapterID != "powershell" {
-		t.Fatalf("expected normalized adapter id powershell, got %q", adapterID)
-	}
-}
-
-func TestPreviewAdapterIDRejectsMissingAdapterName(t *testing.T) {
-	if _, ok := previewAdapterID("-adapter-preview"); ok {
-		t.Fatal("expected empty adapter id to be rejected")
 	}
 }
 

@@ -671,6 +671,59 @@ func TestResolveCacheStorageRootAndCanonicalHelpers(t *testing.T) {
 			t.Fatal("expected outside path not to be treated as under repo")
 		}
 	})
+
+	t.Run("pathAtOrBelow evaluates windows paths by ancestry after volume checks", func(t *testing.T) {
+		testCases := []struct {
+			name string
+			path string
+			root string
+			want bool
+		}{
+			{
+				name: "different volumes false",
+				path: `D:\repo\cache`,
+				root: `C:\Users\test\AppData\Local`,
+				want: false,
+			},
+			{
+				name: "same drive outside root false",
+				path: `C:\Users\test\AppData\Roaming\lopper`,
+				root: `C:\Users\test\AppData\Local`,
+				want: false,
+			},
+			{
+				name: "same drive inside root true",
+				path: `C:\Users\test\AppData\Local\lopper`,
+				root: `C:\Users\test\AppData\Local`,
+				want: true,
+			},
+			{
+				name: "same drive exact root true",
+				path: `C:\Users\test\AppData\Local`,
+				root: `C:\Users\test\AppData\Local`,
+				want: true,
+			},
+			{
+				name: "case-insensitive drive and path true",
+				path: `C:\Users\Test\AppData\LOCAL\Lopper`,
+				root: `c:\users\test\appdata\local`,
+				want: true,
+			},
+			{
+				name: "traversal-like relative output rejected",
+				path: `C:\repo\root\..\outside\auth`,
+				root: `C:\repo\root`,
+				want: false,
+			},
+		}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := pathAtOrBelow(tc.path, tc.root); got != tc.want {
+					t.Fatalf("pathAtOrBelow(%q, %q) = %v, want %v", tc.path, tc.root, got, tc.want)
+				}
+			})
+		}
+	})
 }
 
 func TestCanonicalUserCacheDirAdditionalBranches(t *testing.T) {
@@ -1178,10 +1231,84 @@ func TestRemainingCacheHelperBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("initialize storage readonly returns stat error for blocked explicit path", func(t *testing.T) {
+		repo := t.TempDir()
+		blocker := filepath.Join(t.TempDir(), "blocked")
+		if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write blocker: %v", err)
+		}
+		cache := &analysisCache{
+			options: resolvedCacheOptions{
+				Enabled:      true,
+				Path:         filepath.Join(blocker, "cache"),
+				ReadOnly:     true,
+				ExplicitPath: true,
+			},
+		}
+		if err := cache.initializeStorage(repo); err == nil {
+			t.Fatal("expected readonly initializeStorage to fail when explicit path parent is not a directory")
+		}
+	})
+
 	t.Run("canonical storage root returns missing-path error", func(t *testing.T) {
 		cache := &analysisCache{options: resolvedCacheOptions{Path: filepath.Join(t.TempDir(), "missing-cache")}}
 		if _, err := cache.canonicalStorageRoot(); err == nil {
 			t.Fatal("expected canonicalStorageRoot to fail for missing path")
+		}
+	})
+
+	t.Run("canonical storage root returns raw readonly missing storage root", func(t *testing.T) {
+		prevEvalSymlinks := analysisCacheEvalSymlinksFn
+		analysisCacheEvalSymlinksFn = func(path string) (string, error) {
+			return "", os.ErrNotExist
+		}
+		t.Cleanup(func() {
+			analysisCacheEvalSymlinksFn = prevEvalSymlinks
+		})
+
+		storageRoot := filepath.Join(t.TempDir(), "missing-parent", "missing-cache")
+		cache := &analysisCache{
+			options:     resolvedCacheOptions{ReadOnly: true},
+			storageRoot: storageRoot,
+		}
+		resolved, err := cache.canonicalStorageRoot()
+		if err != nil {
+			t.Fatalf("canonicalStorageRoot(readonly missing storage root): %v", err)
+		}
+		if resolved != storageRoot {
+			t.Fatalf("expected readonly missing storage root %q, got %q", storageRoot, resolved)
+		}
+	})
+
+	t.Run("resolve cache storage root returns explicit eval error after creation", func(t *testing.T) {
+		repo := t.TempDir()
+		prevAbs := analysisCacheAbsFn
+		prevMkdirAll := analysisCacheMkdirAllFn
+		prevEvalSymlinks := analysisCacheEvalSymlinksFn
+		analysisCacheAbsFn = func(path string) (string, error) {
+			return filepath.Join(t.TempDir(), "explicit-cache"), nil
+		}
+		analysisCacheMkdirAllFn = func(string, os.FileMode) error {
+			return nil
+		}
+		analysisCacheEvalSymlinksFn = func(path string) (string, error) {
+			if path == repo {
+				return repo, nil
+			}
+			return "", errors.New("eval cache root failed")
+		}
+		t.Cleanup(func() {
+			analysisCacheAbsFn = prevAbs
+			analysisCacheMkdirAllFn = prevMkdirAll
+			analysisCacheEvalSymlinksFn = prevEvalSymlinks
+		})
+
+		options := resolvedCacheOptions{
+			Path:         filepath.Join(t.TempDir(), "cache"),
+			ExplicitPath: true,
+		}
+		if _, err := resolveCacheStorageRoot(options, repo, repo); err == nil || !strings.Contains(err.Error(), "eval cache root failed") {
+			t.Fatalf("expected explicit cache-root eval failure, got %v", err)
 		}
 	})
 

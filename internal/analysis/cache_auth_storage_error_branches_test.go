@@ -814,7 +814,7 @@ func TestCanonicalUserCacheDirReturnsErrorWhenParentSyncFails(t *testing.T) {
 	}
 }
 
-func TestPathAtOrBelowReturnsTrueWhenRelativeComputationFails(t *testing.T) {
+func TestPathAtOrBelowReturnsTrueWhenRelativeComputationFailsForInvalidPath(t *testing.T) {
 	if !pathAtOrBelow("\x00", t.TempDir()) {
 		t.Fatal("expected invalid path to fail closed as under the protected root")
 	}

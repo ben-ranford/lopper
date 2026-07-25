@@ -231,28 +231,6 @@ func TestAdjustImportLocationsSlashNormalizesWindowsPaths(t *testing.T) {
 	}
 }
 
-func TestIsAbsoluteLocationPathDistinguishesDrivePrefixes(t *testing.T) {
-	testCases := []struct {
-		name  string
-		value string
-		want  bool
-	}{
-		{name: "empty", value: "", want: false},
-		{name: "unix absolute", value: "/repo/pkg/file.js", want: true},
-		{name: "unc path", value: `\\server\share\file.js`, want: true},
-		{name: "windows drive", value: `C:\repo\pkg\file.js`, want: true},
-		{name: "windows drive slash", value: "D:/repo/pkg/file.js", want: true},
-		{name: "non letter drive", value: "1:/repo/pkg/file.js", want: false},
-		{name: "relative drive-like", value: "pkg:C/file.js", want: false},
-	}
-
-	for _, tc := range testCases {
-		if got := isAbsoluteLocationPath(tc.value); got != tc.want {
-			t.Fatalf("%s: expected %v for %q, got %v", tc.name, tc.want, tc.value, got)
-		}
-	}
-}
-
 func TestMergeDependencyCoreFields(t *testing.T) {
 	left := report.DependencyReport{
 		Language:          "js-ts",

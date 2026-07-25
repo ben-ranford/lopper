@@ -93,6 +93,9 @@ func (*osFileSystem) OpenRoot(name string) (Root, error) {
 }
 
 func (f *osFileSystem) OpenRootNoFollow(name string) (Root, error) {
+	if err := rejectUnsupportedWindowsRoot(name); err != nil {
+		return nil, err
+	}
 	return openRootNoFollowWith(name, f.Abs, filepath.Rel, f.OpenRoot, f.openRootChildPinned)
 }
 

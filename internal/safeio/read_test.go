@@ -520,6 +520,15 @@ func (f *readAncestorReplacementFixture) replace() {
 	}
 }
 
+func TestReadFileWithinRootTranslatesMissingFile(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+
+	_, err := ReadFileWithinRoot(root, missingFileName)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing file error, got %v", err)
+	}
+}
+
 func TestReadFileLimitReadsFile(t *testing.T) {
 	rootDir := canonicalTempDir(t)
 	targetPath := filepath.Join(rootDir, writeTestFileName)

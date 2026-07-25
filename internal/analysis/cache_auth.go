@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/windowspath"
 )
 
 const (
@@ -33,6 +35,13 @@ var (
 	analysisCacheAuthSyncDirFn  = func(root *safeio.WriteRoot) error {
 		return root.Sync()
 	}
+	analysisCacheReadAuthKeyFn           = readAnalysisCacheAuthKey
+	analysisCachePublishMissingAuthKeyFn = publishMissingAuthKey
+	analysisCacheRotateInvalidAuthKeyFn  = rotateInvalidAuthKey
+	analysisCacheInvalidKeyGenerationFn  = invalidAuthKeyGeneration
+	analysisCacheSleepFn                 = time.Sleep
+	analysisCacheRandReadFn              = rand.Read
+	analysisCacheWritePointerSigPartsFn  = writePointerSignatureParts
 )
 
 var (
@@ -40,6 +49,16 @@ var (
 	errAnalysisCacheAuthKeyInvalid = errors.New("cache auth key invalid")
 	errAnalysisCacheAuthKeyChanged = errors.New("cache auth key changed")
 )
+
+type authKeyReadRoot interface {
+	ReadRegularFileUnderLimit(string, int64) ([]byte, fs.FileInfo, error)
+	Lstat(string) (fs.FileInfo, error)
+}
+
+type authKeyTempRoot interface {
+	CreateTempFile(os.FileMode) (string, safeio.File, error)
+	CleanupTempFile(string, safeio.File) error
+}
 
 func (c *analysisCache) resolveAuthKey() (key []byte, returnErr error) {
 	if c == nil {
@@ -62,7 +81,7 @@ func (c *analysisCache) resolveAuthKey() (key []byte, returnErr error) {
 		returnErr = errors.Join(returnErr, authRoot.Close())
 	}()
 
-	key, err = readAnalysisCacheAuthKey(authRoot, keyName, !c.options.ReadOnly)
+	key, err = analysisCacheReadAuthKeyFn(authRoot, keyName, !c.options.ReadOnly)
 	switch {
 	case err == nil:
 		c.authKey = append(c.authKey[:0], key...)
@@ -224,12 +243,51 @@ func pathAtOrBelow(path, root string) bool {
 	if strings.TrimSpace(root) == "" {
 		return false
 	}
+	if windowsComparison, ok := pathAtOrBelowWindows(path, root); ok {
+		return windowsComparison
+	}
 	relativePath, err := filepath.Rel(root, path)
 	if err != nil {
 		return true
 	}
 	return relativePath == "." ||
 		(relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator)))
+}
+
+func pathAtOrBelowWindows(path, root string) (bool, bool) {
+	if strings.ContainsRune(path, 0) || strings.ContainsRune(root, 0) {
+		return true, true
+	}
+
+	pathInfo := windowspath.Classify(path)
+	rootInfo := windowspath.Classify(root)
+	if pathInfo.Kind == windowspath.KindNone && rootInfo.Kind == windowspath.KindNone {
+		return false, false
+	}
+	if rootInfo.Kind == windowspath.KindNone {
+		return false, false
+	}
+	if pathInfo.Kind == windowspath.KindAmbiguous || rootInfo.Kind == windowspath.KindAmbiguous {
+		return true, true
+	}
+	if windowspath.HasReservedDOSNameComponent(path) || windowspath.HasReservedDOSNameComponent(root) {
+		return true, true
+	}
+	if !rootInfo.IsAbsolute() {
+		return true, true
+	}
+	if !pathInfo.IsAbsolute() {
+		return true, true
+	}
+	if pathInfo.Kind != rootInfo.Kind {
+		return false, true
+	}
+	if !strings.EqualFold(pathInfo.Volume, rootInfo.Volume) {
+		return false, true
+	}
+	cleanPath := strings.ToLower(windowspath.Clean(pathInfo.Path))
+	cleanRoot := strings.ToLower(windowspath.Clean(rootInfo.Path))
+	return cleanRoot == "/" || cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+"/"), true
 }
 
 func analysisCacheAuthKeyName(storageRoot string) string {
@@ -266,31 +324,31 @@ func readAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, repairPerm
 
 func (c *analysisCache) createOrRotateAuthKey(root *safeio.WriteRoot, keyName string, replaceInvalid bool) ([]byte, error) {
 	for attempt := 0; attempt < analysisCacheAuthRetryLimit; attempt++ {
-		key, err := readAnalysisCacheAuthKey(root, keyName, true)
+		key, err := analysisCacheReadAuthKeyFn(root, keyName, true)
 		switch {
 		case err == nil:
 			c.authKey = append(c.authKey[:0], key...)
 			return append([]byte(nil), c.authKey...), nil
 		case errors.Is(err, errAnalysisCacheAuthKeyMissing):
-			if err := publishMissingAuthKey(root, keyName); err != nil {
+			if err := analysisCachePublishMissingAuthKeyFn(root, keyName); err != nil {
 				return nil, err
 			}
 		case errors.Is(err, errAnalysisCacheAuthKeyInvalid) && replaceInvalid:
-			if err := rotateInvalidAuthKey(root, keyName); err != nil && !errors.Is(err, errAnalysisCacheAuthKeyChanged) {
+			if err := analysisCacheRotateInvalidAuthKeyFn(root, keyName); err != nil && !errors.Is(err, errAnalysisCacheAuthKeyChanged) {
 				return nil, err
 			}
 		case errors.Is(err, errAnalysisCacheAuthKeyChanged):
 		default:
 			return nil, err
 		}
-		time.Sleep(analysisCacheAuthRetryDelay)
+		analysisCacheSleepFn(analysisCacheAuthRetryDelay)
 	}
 	return nil, fmt.Errorf("initialize cache auth key: timed out waiting for persisted winner")
 }
 
 func publishMissingAuthKey(root *safeio.WriteRoot, keyName string) (returnErr error) {
 	key := make([]byte, analysisCacheAuthKeyLength)
-	if _, err := rand.Read(key); err != nil {
+	if _, err := analysisCacheRandReadFn(key); err != nil {
 		return fmt.Errorf("generate cache auth key: %w", err)
 	}
 	candidatePath, err := writeAuthKeyCandidate(root, []byte(hex.EncodeToString(key)))
@@ -315,15 +373,15 @@ func publishMissingAuthKey(root *safeio.WriteRoot, keyName string) (returnErr er
 }
 
 func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) (returnErr error) {
-	generation, err := invalidAuthKeyGeneration(root, keyName)
+	generation, err := analysisCacheInvalidKeyGenerationFn(root, keyName)
 	if err != nil {
 		return err
 	}
 	rotationPath := keyName + analysisCacheAuthRotateTag + generation
 	// The generation path is immutable so delayed contenders can only install
 	// the same replacement key, never a second in-memory winner.
-	if _, err := readAnalysisCacheAuthKey(root, rotationPath, true); errors.Is(err, errAnalysisCacheAuthKeyMissing) {
-		if err := publishMissingAuthKey(root, rotationPath); err != nil {
+	if _, err := analysisCacheReadAuthKeyFn(root, rotationPath, true); errors.Is(err, errAnalysisCacheAuthKeyMissing) {
+		if err := analysisCachePublishMissingAuthKeyFn(root, rotationPath); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -337,7 +395,7 @@ func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) (returnErr err
 	if _, err := decodeAuthKey(strings.TrimSpace(string(encodedKey))); err != nil {
 		return fmt.Errorf("validate cache auth key rotation candidate: %w", err)
 	}
-	currentGeneration, err := invalidAuthKeyGeneration(root, keyName)
+	currentGeneration, err := analysisCacheInvalidKeyGenerationFn(root, keyName)
 	if err != nil {
 		return err
 	}
@@ -362,6 +420,10 @@ func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) (returnErr err
 }
 
 func invalidAuthKeyGeneration(root *safeio.WriteRoot, keyName string) (string, error) {
+	return invalidAuthKeyGenerationWith(root, keyName)
+}
+
+func invalidAuthKeyGenerationWith(root authKeyReadRoot, keyName string) (string, error) {
 	data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -396,6 +458,10 @@ func invalidAuthKeyGeneration(root *safeio.WriteRoot, keyName string) (string, e
 }
 
 func writeAuthKeyCandidate(root *safeio.WriteRoot, encodedKey []byte) (candidatePath string, returnErr error) {
+	return writeAuthKeyCandidateWith(root, encodedKey)
+}
+
+func writeAuthKeyCandidateWith(root authKeyTempRoot, encodedKey []byte) (candidatePath string, returnErr error) {
 	candidatePath, candidate, err := root.CreateTempFile(0o600)
 	if err != nil {
 		return "", fmt.Errorf("create cache auth key candidate: %w", err)
@@ -448,18 +514,8 @@ func (c *analysisCache) signPointer(entry cacheEntryDescriptor, objectDigest str
 		return "", fmt.Errorf("cache auth key unavailable")
 	}
 	mac := hmac.New(sha256.New, key)
-	for _, part := range []string{
-		analysisCacheAuthSchemaV1,
-		entry.KeyDigest,
-		entry.InputDigest,
-		objectDigest,
-	} {
-		if _, err := mac.Write([]byte(part)); err != nil {
-			return "", err
-		}
-		if _, err := mac.Write([]byte{0}); err != nil {
-			return "", err
-		}
+	if err := analysisCacheWritePointerSigPartsFn(mac, entry, objectDigest); err != nil {
+		return "", err
 	}
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
@@ -484,18 +540,25 @@ func (c *analysisCache) pointerTrusted(entry cacheEntryDescriptor, pointer cache
 
 func pointerSignature(key []byte, entry cacheEntryDescriptor, objectDigest string) (string, error) {
 	mac := hmac.New(sha256.New, key)
+	if err := analysisCacheWritePointerSigPartsFn(mac, entry, objectDigest); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func writePointerSignatureParts(w io.Writer, entry cacheEntryDescriptor, objectDigest string) error {
 	for _, part := range []string{
 		analysisCacheAuthSchemaV1,
 		entry.KeyDigest,
 		entry.InputDigest,
 		objectDigest,
 	} {
-		if _, err := mac.Write([]byte(part)); err != nil {
-			return "", err
+		if _, err := w.Write([]byte(part)); err != nil {
+			return err
 		}
-		if _, err := mac.Write([]byte{0}); err != nil {
-			return "", err
+		if _, err := w.Write([]byte{0}); err != nil {
+			return err
 		}
 	}
-	return hex.EncodeToString(mac.Sum(nil)), nil
+	return nil
 }

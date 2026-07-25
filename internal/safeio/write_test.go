@@ -618,6 +618,21 @@ func TestWriteRootReadPinnedRegularFileUnderLimitReportsChangedRoot(t *testing.T
 	}
 }
 
+func TestWriteRootReadPinnedRegularFileUnderLimitRejectsNonRegularTarget(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(rootDir, "key"), 0o755); err != nil {
+		t.Fatalf("mkdir key: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	if _, _, err := root.ReadPinnedRegularFileUnderLimit("key", nil, 16); err == nil || !strings.Contains(err.Error(), "target path is not a regular file") {
+		t.Fatalf("expected non-regular target rejection, got %v", err)
+	}
+}
+
 func TestWriteRootRootRelativeFileOperationsAndSync(t *testing.T) {
 	rootDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -857,6 +872,38 @@ func TestOpenCanonicalWriteRootWrapsOpenError(t *testing.T) {
 	}
 }
 
+func TestOpenCanonicalWriteRootReturnsPinnedRoot(t *testing.T) {
+	expectedRoot := &fakeRoot{close: closeWithoutError}
+	withFileSystem(t, &fakeFileSystem{
+		abs: func(path string) (string, error) {
+			if path != "relative-root" {
+				t.Fatalf("Abs path = %q, want relative-root", path)
+			}
+			return "/resolved/root", nil
+		},
+		openRootNoFollow: func(path string) (Root, error) {
+			if path != "/resolved/root" {
+				t.Fatalf("OpenRootNoFollow path = %q, want /resolved/root", path)
+			}
+			return expectedRoot, nil
+		},
+	})
+
+	root, err := OpenCanonicalWriteRoot("relative-root")
+	if err != nil {
+		t.Fatalf("OpenCanonicalWriteRoot returned error: %v", err)
+	}
+	if root == nil {
+		t.Fatal("expected canonical write root")
+	}
+	if root.root != expectedRoot {
+		t.Fatal("expected returned WriteRoot to pin the opened root")
+	}
+	if root.rootAbs != "/resolved/root" {
+		t.Fatalf("rootAbs = %q, want /resolved/root", root.rootAbs)
+	}
+}
+
 func TestOpenRootNoFollowOpensVolumeRoot(t *testing.T) {
 	volumeRoot := filepath.VolumeName(t.TempDir()) + string(os.PathSeparator)
 	root, err := (&osFileSystem{}).OpenRootNoFollow(volumeRoot)
@@ -909,6 +956,31 @@ func TestOpenRootNoFollowDelegatesToConfiguredFileSystem(t *testing.T) {
 	}
 	if root != expected {
 		t.Fatalf("expected delegated root, got %#v", root)
+	}
+}
+
+func TestOpenRootNoFollowOpensNestedDirectory(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	nested := filepath.Join(parent, "child", "grandchild")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested root: %v", err)
+	}
+
+	root, err := (&osFileSystem{}).OpenRootNoFollow(nested)
+	if err != nil {
+		t.Fatalf("OpenRootNoFollow(%q): %v", nested, err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close nested root: %v", closeErr)
+		}
+	}()
+
+	if _, err := root.Lstat("."); err != nil {
+		t.Fatalf("Lstat nested root: %v", err)
 	}
 }
 
@@ -1252,6 +1324,181 @@ func TestOpenRootChildPinnedAllowsTrustedAliasTarget(t *testing.T) {
 	wantPath := filepath.Join(string(os.PathSeparator), "private", "tmp")
 	if openedPath != wantPath {
 		t.Fatalf("expected trusted alias target %q, got %q", wantPath, openedPath)
+	}
+}
+
+func TestWriteRootOpenDirectoryReturnsPinnedRootWhenDirIsRoot(t *testing.T) {
+	pinnedRoot := &fakeRoot{close: closeWithoutError}
+	root := &WriteRoot{root: pinnedRoot, rootAbs: "/root"}
+
+	dir, owned, err := root.openDirectory(".", false, 0o755)
+	if err != nil {
+		t.Fatalf("openDirectory returned error: %v", err)
+	}
+	if dir != pinnedRoot {
+		t.Fatal("expected pinned root to be reused for root directory")
+	}
+	if owned {
+		t.Fatal("expected pinned root to remain unowned")
+	}
+}
+
+func TestWriteRootOpenDirectorySkipsDotComponents(t *testing.T) {
+	firstInfo := statTestPath(t, t.TempDir())
+	secondInfo := statTestPath(t, t.TempDir())
+
+	secondRootClosed := false
+	root := &WriteRoot{
+		rootAbs: "/root",
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name != "first" {
+					t.Fatalf("unexpected root lstat for %q", name)
+				}
+				return firstInfo, nil
+			},
+			openRoot: func(name string) (Root, error) {
+				if name != "first" {
+					t.Fatalf("unexpected root open for %q", name)
+				}
+				return &fakeRoot{
+					lstat: func(name string) (fs.FileInfo, error) {
+						switch name {
+						case ".":
+							return firstInfo, nil
+						case "second":
+							return secondInfo, nil
+						default:
+							t.Fatalf("unexpected child lstat for %q", name)
+							return nil, nil
+						}
+					},
+					openRoot: func(name string) (Root, error) {
+						if name != "second" {
+							t.Fatalf("unexpected child open for %q", name)
+						}
+						return &fakeRoot{
+							lstat: func(name string) (fs.FileInfo, error) {
+								if name != "." {
+									t.Fatalf("unexpected opened grandchild lstat for %q", name)
+								}
+								return secondInfo, nil
+							},
+							close: closeWithoutError,
+						}, nil
+					},
+					close: func() error {
+						secondRootClosed = true
+						return nil
+					},
+				}, nil
+			},
+		},
+	}
+
+	dir, owned, err := root.openDirectory("first/./second//", false, 0o755)
+	if err != nil {
+		t.Fatalf("openDirectory returned error: %v", err)
+	}
+	if dir == nil {
+		t.Fatal("expected nested root")
+	}
+	if !owned {
+		t.Fatal("expected nested root to be owned")
+	}
+	if !secondRootClosed {
+		t.Fatal("expected intermediate root to be closed after opening nested directory")
+	}
+	if closeErr := dir.Close(); closeErr != nil {
+		t.Fatalf("close returned root: %v", closeErr)
+	}
+}
+
+func TestWriteRootOpenDirectoryJoinsIntermediateAndChildCloseErrors(t *testing.T) {
+	firstInfo := statTestPath(t, t.TempDir())
+	secondInfo := statTestPath(t, t.TempDir())
+	intermediateCloseErr := errors.New("intermediate close failure")
+	childCloseErr := errors.New("child close failure")
+
+	root := &WriteRoot{
+		rootAbs: "/root",
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name != "first" {
+					t.Fatalf("unexpected root lstat for %q", name)
+				}
+				return firstInfo, nil
+			},
+			openRoot: func(name string) (Root, error) {
+				if name != "first" {
+					t.Fatalf("unexpected root open for %q", name)
+				}
+				return &fakeRoot{
+					lstat: func(name string) (fs.FileInfo, error) {
+						switch name {
+						case ".":
+							return firstInfo, nil
+						case "second":
+							return secondInfo, nil
+						default:
+							t.Fatalf("unexpected child lstat for %q", name)
+							return nil, nil
+						}
+					},
+					openRoot: func(name string) (Root, error) {
+						if name != "second" {
+							t.Fatalf("unexpected child open for %q", name)
+						}
+						return &fakeRoot{
+							lstat: func(name string) (fs.FileInfo, error) {
+								if name != "." {
+									t.Fatalf("unexpected opened grandchild lstat for %q", name)
+								}
+								return secondInfo, nil
+							},
+							close: func() error { return childCloseErr },
+						}, nil
+					},
+					close: func() error { return intermediateCloseErr },
+				}, nil
+			},
+		},
+	}
+
+	dir, owned, err := root.openDirectory(filepath.Join("first", "second"), false, 0o755)
+	if dir != nil {
+		t.Fatal("expected returned directory to be nil on close failure")
+	}
+	if owned {
+		t.Fatal("expected owned to be false on failure")
+	}
+	if !errors.Is(err, intermediateCloseErr) || !errors.Is(err, childCloseErr) {
+		t.Fatalf("expected joined intermediate and child close errors, got %v", err)
+	}
+}
+
+func TestWriteRootChmodDelegatesToPinnedRoot(t *testing.T) {
+	called := false
+	root := &WriteRoot{
+		root: &fakeRoot{
+			chmod: func(name string, perm os.FileMode) error {
+				called = true
+				if name != "reports/output.txt" {
+					t.Fatalf("chmod name = %q, want reports/output.txt", name)
+				}
+				if perm != 0o640 {
+					t.Fatalf("chmod perm = %#o, want 0640", perm)
+				}
+				return nil
+			},
+		},
+	}
+
+	if err := root.Chmod("reports/output.txt", 0o640); err != nil {
+		t.Fatalf("WriteRoot.Chmod returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected WriteRoot.Chmod to delegate to pinned root")
 	}
 }
 
@@ -2113,6 +2360,136 @@ func TestAtomicWriteSessionReturnsDirectorySyncErrorAfterRename(t *testing.T) {
 	}
 	if session.tempRel != "" {
 		t.Fatalf("expected committed temp path cleared before directory sync error, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionReturnsTempWriteErrorBeforeFlushing(t *testing.T) {
+	writeErr := errors.New("temp write failure")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			rename: func(string, string) error {
+				t.Fatal("rename should not run after temp write failure")
+				return nil
+			},
+		},
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func([]byte) (int, error) { return 0, writeErr },
+			chmod: func(os.FileMode) error {
+				t.Fatal("chmod should not run after temp write failure")
+				return nil
+			},
+			sync: func() error {
+				t.Fatal("sync should not run after temp write failure")
+				return nil
+			},
+			close: func() error {
+				t.Fatal("close should not run after temp write failure")
+				return nil
+			},
+		},
+	}
+
+	err := session.writeAndCommit([]byte("data"), 0o600)
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected temp write error, got %v", err)
+	}
+	if session.tempRel != "temp.json" {
+		t.Fatalf("expected temp path to remain after write failure, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionReturnsTempChmodErrorBeforeSync(t *testing.T) {
+	chmodErr := errors.New("temp chmod failure")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			rename: func(string, string) error {
+				t.Fatal("rename should not run after chmod failure")
+				return nil
+			},
+		},
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func(data []byte) (int, error) { return len(data), nil },
+			chmod: func(os.FileMode) error { return chmodErr },
+			sync: func() error {
+				t.Fatal("sync should not run after chmod failure")
+				return nil
+			},
+			close: func() error {
+				t.Fatal("close should not run after chmod failure")
+				return nil
+			},
+		},
+	}
+
+	err := session.writeAndCommit([]byte("data"), 0o600)
+	if !errors.Is(err, chmodErr) {
+		t.Fatalf("expected temp chmod error, got %v", err)
+	}
+	if session.tempRel != "temp.json" {
+		t.Fatalf("expected temp path to remain after chmod failure, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionReturnsTempSyncErrorBeforeClose(t *testing.T) {
+	syncErr := errors.New("temp sync failure")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			rename: func(string, string) error {
+				t.Fatal("rename should not run after temp sync failure")
+				return nil
+			},
+		},
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func(data []byte) (int, error) { return len(data), nil },
+			chmod: chmodWithoutError,
+			sync:  func() error { return syncErr },
+			close: func() error {
+				t.Fatal("close should not run after temp sync failure")
+				return nil
+			},
+		},
+	}
+
+	err := session.writeAndCommit([]byte("data"), 0o600)
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("expected temp sync error, got %v", err)
+	}
+	if session.tempRel != "temp.json" {
+		t.Fatalf("expected temp path to remain after sync failure, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionReturnsTempCloseErrorBeforeRename(t *testing.T) {
+	closeErr := errors.New("temp close failure")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			rename: func(string, string) error {
+				t.Fatal("rename should not run after temp close failure")
+				return nil
+			},
+		},
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func(data []byte) (int, error) { return len(data), nil },
+			chmod: chmodWithoutError,
+			sync:  func() error { return nil },
+			close: func() error { return closeErr },
+		},
+	}
+
+	err := session.writeAndCommit([]byte("data"), 0o600)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected temp close error, got %v", err)
+	}
+	if session.tempRel != "temp.json" {
+		t.Fatalf("expected temp path to remain after close failure, got %q", session.tempRel)
 	}
 }
 

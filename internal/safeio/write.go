@@ -32,6 +32,9 @@ func OpenWriteRoot(rootDir string) (*WriteRoot, error) {
 // OpenCanonicalWriteRoot pins a canonical root without following symlinks in
 // any component of rootDir.
 func OpenCanonicalWriteRoot(rootDir string) (*WriteRoot, error) {
+	if err := rejectUnsupportedWindowsRoot(rootDir); err != nil {
+		return nil, err
+	}
 	rootAbs, err := resolveAbsolutePath("root", rootDir)
 	if err != nil {
 		return nil, err

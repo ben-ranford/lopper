@@ -133,18 +133,18 @@ func (c *analysisCache) openPinnedStorageRoot() (_ *safeio.WriteRoot, returnErr 
 	if err != nil {
 		return nil, err
 	}
-	root, err := safeio.OpenCanonicalWriteRoot(storageRoot)
+	root, err := analysisCacheOpenRootFn(storageRoot)
 	if err != nil {
 		return nil, err
 	}
 	if c.storageRootInfo == nil {
 		return root, nil
 	}
-	currentInfo, err := root.Lstat(".")
+	currentInfo, err := analysisCacheRootLstatFn(root, ".")
 	if err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
-	if !os.SameFile(c.storageRootInfo, currentInfo) {
+	if !analysisCacheSameFileFn(c.storageRootInfo, currentInfo) {
 		return nil, errors.Join(fmt.Errorf("%w: %s", safeio.ErrFileChanged, storageRoot), root.Close())
 	}
 	return root, nil

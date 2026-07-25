@@ -12,6 +12,18 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+var (
+	analysisCacheAbsFn          = filepath.Abs
+	analysisCacheMkdirAllFn     = os.MkdirAll
+	analysisCacheEvalSymlinksFn = filepath.EvalSymlinks
+	analysisCacheStatFn         = os.Stat
+	analysisCacheOpenRootFn     = safeio.OpenCanonicalWriteRoot
+	analysisCacheRootLstatFn    = func(root *safeio.WriteRoot, path string) (fs.FileInfo, error) {
+		return root.Lstat(path)
+	}
+	analysisCacheSameFileFn = os.SameFile
+)
+
 type resolvedCacheOptions struct {
 	Enabled      bool
 	Path         string
@@ -71,7 +83,7 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 }
 
 func (c *analysisCache) initializeStorage(repoPath string) (returnErr error) {
-	canonicalRepo, err := filepath.EvalSymlinks(repoPath)
+	canonicalRepo, err := analysisCacheEvalSymlinksFn(repoPath)
 	if err != nil {
 		return fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -82,20 +94,20 @@ func (c *analysisCache) initializeStorage(repoPath string) (returnErr error) {
 	}
 	c.storageRoot = storageRoot
 	if c.options.ReadOnly {
-		if _, err := os.Stat(storageRoot); os.IsNotExist(err) {
+		if _, err := analysisCacheStatFn(storageRoot); os.IsNotExist(err) {
 			return nil
 		} else if err != nil {
 			return err
 		}
 	}
-	root, err := safeio.OpenCanonicalWriteRoot(storageRoot)
+	root, err := analysisCacheOpenRootFn(storageRoot)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		returnErr = errors.Join(returnErr, root.Close())
 	}()
-	info, err := root.Lstat(".")
+	info, err := analysisCacheRootLstatFn(root, ".")
 	if err != nil {
 		return err
 	}
@@ -111,16 +123,19 @@ func (c *analysisCache) initializeStorage(repoPath string) (returnErr error) {
 
 func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRepo string) (string, error) {
 	if options.ExplicitPath {
-		cacheRoot, err := filepath.Abs(options.Path)
+		if err := validateExplicitCachePath(options.Path); err != nil {
+			return "", err
+		}
+		cacheRoot, err := analysisCacheAbsFn(options.Path)
 		if err != nil {
 			return "", fmt.Errorf("resolve cache root: %w", err)
 		}
 		if !options.ReadOnly {
-			if err := os.MkdirAll(cacheRoot, 0o750); err != nil {
+			if err := analysisCacheMkdirAllFn(cacheRoot, 0o750); err != nil {
 				return "", err
 			}
 		}
-		canonicalRoot, err := filepath.EvalSymlinks(cacheRoot)
+		canonicalRoot, err := analysisCacheEvalSymlinksFn(cacheRoot)
 		if err == nil {
 			return canonicalRoot, nil
 		}
@@ -139,7 +154,7 @@ func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRe
 	}
 	cacheRoot := filepath.Join(canonicalRepo, relativeCachePath)
 	if !options.ReadOnly {
-		if err := os.MkdirAll(cacheRoot, 0o750); err != nil {
+		if err := analysisCacheMkdirAllFn(cacheRoot, 0o750); err != nil {
 			return "", err
 		}
 	}
@@ -148,12 +163,12 @@ func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRe
 
 func (c *analysisCache) canonicalStorageRoot() (string, error) {
 	if strings.TrimSpace(c.storageRoot) != "" {
-		root, err := filepath.EvalSymlinks(c.storageRoot)
+		root, err := analysisCacheEvalSymlinksFn(c.storageRoot)
 		if err == nil {
 			return root, nil
 		}
 		if os.IsNotExist(err) {
-			canonicalParent, parentErr := filepath.EvalSymlinks(filepath.Dir(c.storageRoot))
+			canonicalParent, parentErr := analysisCacheEvalSymlinksFn(filepath.Dir(c.storageRoot))
 			if parentErr == nil {
 				return filepath.Join(canonicalParent, filepath.Base(c.storageRoot)), nil
 			}
@@ -163,7 +178,7 @@ func (c *analysisCache) canonicalStorageRoot() (string, error) {
 		}
 		return "", err
 	}
-	root, err := filepath.EvalSymlinks(c.options.Path)
+	root, err := analysisCacheEvalSymlinksFn(c.options.Path)
 	if err != nil {
 		return "", err
 	}
