@@ -7,16 +7,18 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
+	sitter "github.com/smacker/go-tree-sitter"
 )
 
 type scanRepoState struct {
-	parser            *sourceParser
-	repoPath          string
-	result            *ScanResult
-	skippedLargeFiles int
-	skippedSymlinks   int
-	parseErrorCount   int
-	parseErrorFiles   []string
+	parser                 *sourceParser
+	repoPath               string
+	result                 *ScanResult
+	readAndParseFile       func(context.Context, *sourceParser, string, string) ([]byte, *sitter.Tree, string, error)
+	skippedLargeFiles      int
+	skippedNonRegularFiles int
+	parseErrorCount        int
+	parseErrorFiles        []string
 }
 
 func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry fs.DirEntry) error {
@@ -30,14 +32,22 @@ func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry
 		return nil
 	}
 	if entry.Type()&fs.ModeSymlink != 0 {
-		state.skippedSymlinks++
+		state.skippedNonRegularFiles++
 		return nil
 	}
 
-	content, tree, relPath, err := readAndParseFile(ctx, state.parser, state.repoPath, path)
+	readAndParse := state.readAndParseFile
+	if readAndParse == nil {
+		readAndParse = readAndParseFile
+	}
+	content, tree, relPath, err := readAndParse(ctx, state.parser, state.repoPath, path)
 	if err != nil {
 		if errors.Is(err, safeio.ErrFileTooLarge) {
 			state.skippedLargeFiles++
+			return nil
+		}
+		if isPureNonRegularReadError(err) {
+			state.skippedNonRegularFiles++
 			return nil
 		}
 		return err
@@ -54,4 +64,38 @@ func appendParseErrorFile(parseErrorFiles *[]string, relPath string) {
 	if len(*parseErrorFiles) < 5 {
 		*parseErrorFiles = append(*parseErrorFiles, relPath)
 	}
+}
+
+type Unwrapper interface {
+	Unwrap() error
+}
+
+type UnwrapErrorser interface {
+	Unwrap() []error
+}
+
+func isPureNonRegularReadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(UnwrapErrorser); ok {
+		unwrapped := joined.Unwrap()
+		if len(unwrapped) == 0 {
+			return false
+		}
+		for _, innerErr := range unwrapped {
+			if !isPureNonRegularReadError(innerErr) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(Unwrapper); ok {
+		innerErr := wrapped.Unwrap()
+		if innerErr == nil {
+			return errors.Is(err, safeio.ErrNonRegularFile)
+		}
+		return isPureNonRegularReadError(innerErr)
+	}
+	return errors.Is(err, safeio.ErrNonRegularFile)
 }

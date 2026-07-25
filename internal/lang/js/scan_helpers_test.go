@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	sitter "github.com/smacker/go-tree-sitter"
 )
 
 const testJSSourceReadMaxBytes = 8 << 20
@@ -168,8 +169,172 @@ func TestReadAndParseFileRejectsEscapingSourceSymlink(t *testing.T) {
 	if containsModuleImport(result, "outside-dependency") {
 		t.Fatalf("expected outside symlink content not to be scanned")
 	}
-	if !strings.Contains(strings.Join(result.Warnings, "\n"), "skipped 1 symlinked JS/TS file(s)") {
-		t.Fatalf("expected symlink skip warning, got %#v", result.Warnings)
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "skipped 1 non-regular JS/TS file(s)") {
+		t.Fatalf("expected non-regular skip warning, got %#v", result.Warnings)
+	}
+}
+
+func TestScanRepoEntrySkipsNonRegularSourceWhenDirEntryTypeIsUnknown(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	outsidePath := filepath.Join(outside, "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("export const leaked = true\n"), 0o600); err != nil {
+		t.Fatalf("write outside.js: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "escape.js")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	entry, err := dirEntryAtPath(linkPath)
+	if err != nil {
+		t.Fatalf("dir entry for symlink: %v", err)
+	}
+
+	state := scanRepoState{
+		parser:   newSourceParser(),
+		repoPath: repo,
+		result:   &ScanResult{},
+	}
+	if err := scanRepoEntry(context.Background(), &state, linkPath, &zeroTypeDirEntry{DirEntry: entry}); err != nil {
+		t.Fatalf("scanRepoEntry returned error for unknown-type non-regular source: %v", err)
+	}
+	if state.skippedNonRegularFiles != 1 {
+		t.Fatalf("expected skippedNonRegularFiles=1, got %d", state.skippedNonRegularFiles)
+	}
+	if state.skippedLargeFiles != 0 {
+		t.Fatalf("expected no oversized-file skips, got %d", state.skippedLargeFiles)
+	}
+	if len(state.result.Files) != 0 {
+		t.Fatalf("expected unknown-type non-regular source to be skipped, got %#v", state.result.Files)
+	}
+}
+
+func TestScanRepoEntrySkipsSymlinkFromDirEntryMetadata(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	outsidePath := filepath.Join(outside, "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("export const leaked = true\n"), 0o600); err != nil {
+		t.Fatalf("write outside.js: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "escape.js")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	entry, err := dirEntryAtPath(linkPath)
+	if err != nil {
+		t.Fatalf("dir entry for symlink: %v", err)
+	}
+
+	state := scanRepoState{
+		parser:   newSourceParser(),
+		repoPath: repo,
+		result:   &ScanResult{},
+	}
+	if err := scanRepoEntry(context.Background(), &state, linkPath, entry); err != nil {
+		t.Fatalf("scanRepoEntry returned error for symlink metadata branch: %v", err)
+	}
+	if state.skippedNonRegularFiles != 1 {
+		t.Fatalf("expected skippedNonRegularFiles=1, got %d", state.skippedNonRegularFiles)
+	}
+}
+
+func TestScanRepoEntrySkipsUnsupportedFile(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "styles.css")
+	entry := mustDirEntryForFile(t, path, "body {}\n")
+
+	state := scanRepoState{
+		parser:   newSourceParser(),
+		repoPath: repo,
+		result:   &ScanResult{},
+	}
+	if err := scanRepoEntry(context.Background(), &state, path, entry); err != nil {
+		t.Fatalf("scanRepoEntry returned error for unsupported file: %v", err)
+	}
+	if state.skippedNonRegularFiles != 0 || state.skippedLargeFiles != 0 {
+		t.Fatalf("expected unsupported file not to affect skip counters, got nonRegular=%d large=%d", state.skippedNonRegularFiles, state.skippedLargeFiles)
+	}
+	if len(state.result.Files) != 0 {
+		t.Fatalf("expected unsupported file to be ignored, got %#v", state.result.Files)
+	}
+}
+
+func TestScanRepoEntrySkipsPureJoinedNonRegularError(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "app.js")
+	entry := mustDirEntryForFile(t, path, "export const value = 1\n")
+
+	state := scanRepoState{
+		parser:   newSourceParser(),
+		repoPath: repo,
+		readAndParseFile: func(context.Context, *sourceParser, string, string) ([]byte, *sitter.Tree, string, error) {
+			return nil, nil, "", errors.Join(safeio.ErrNonRegularFile)
+		},
+		result: &ScanResult{},
+	}
+	if err := scanRepoEntry(context.Background(), &state, path, entry); err != nil {
+		t.Fatalf("scanRepoEntry returned error for pure joined non-regular source: %v", err)
+	}
+	if state.skippedNonRegularFiles != 1 {
+		t.Fatalf("expected skippedNonRegularFiles=1, got %d", state.skippedNonRegularFiles)
+	}
+	if len(state.result.Files) != 0 {
+		t.Fatalf("expected pure joined non-regular source to be skipped, got %#v", state.result.Files)
+	}
+}
+
+func TestScanRepoEntryReturnsJoinedNonRegularAndCloseError(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "app.js")
+	entry := mustDirEntryForFile(t, path, "export const value = 1\n")
+	closeErr := errors.New("root close failed")
+
+	state := scanRepoState{
+		parser:   newSourceParser(),
+		repoPath: repo,
+		readAndParseFile: func(context.Context, *sourceParser, string, string) ([]byte, *sitter.Tree, string, error) {
+			return nil, nil, "", errors.Join(safeio.ErrNonRegularFile, closeErr)
+		},
+		result: &ScanResult{},
+	}
+	err := scanRepoEntry(context.Background(), &state, path, entry)
+	if !errors.Is(err, safeio.ErrNonRegularFile) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined non-regular and close error to surface, got %v", err)
+	}
+	if state.skippedNonRegularFiles != 0 {
+		t.Fatalf("expected joined non-regular and close error not to increment skipped count, got %d", state.skippedNonRegularFiles)
+	}
+}
+
+func TestIsPureNonRegularReadError(t *testing.T) {
+	t.Parallel()
+
+	otherErr := errors.New("close failed")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "plain non-regular", err: safeio.ErrNonRegularFile, want: true},
+		{name: "wrapped non-regular", err: &fs.PathError{Op: "open", Path: "app.js", Err: safeio.ErrNonRegularFile}, want: true},
+		{name: "joined pure non-regular", err: errors.Join(safeio.ErrNonRegularFile, &fs.PathError{Op: "open", Path: "app.js", Err: safeio.ErrNonRegularFile}), want: true},
+		{name: "joined mixed", err: errors.Join(safeio.ErrNonRegularFile, otherErr), want: false},
+		{name: "wrapped joined mixed", err: &fs.PathError{Op: "open", Path: "app.js", Err: errors.Join(safeio.ErrNonRegularFile, otherErr)}, want: false},
+		{name: "unwrap nil error", err: &nilUnwrapError{}, want: false},
+		{name: "other", err: otherErr, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPureNonRegularReadError(tt.err); got != tt.want {
+				t.Fatalf("isPureNonRegularReadError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -225,4 +390,48 @@ func TestScanRepoEntrySkipsDirectoriesAndContextCancel(t *testing.T) {
 	if err := scanRepoEntry(context.Background(), &state, filepath.Join(repo, ".next"), fs.FileInfoToDirEntry(nextEntry)); !errors.Is(err, fs.SkipDir) {
 		t.Fatalf("expected .next skip dir result, got %v", err)
 	}
+}
+
+type zeroTypeDirEntry struct {
+	fs.DirEntry
+}
+
+func (*zeroTypeDirEntry) Type() fs.FileMode {
+	return 0
+}
+
+func dirEntryAtPath(path string) (fs.DirEntry, error) {
+	dirEntries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range dirEntries {
+		if entry.Name() == filepath.Base(path) {
+			return entry, nil
+		}
+	}
+	return nil, fs.ErrNotExist
+}
+
+func mustDirEntryForFile(t *testing.T, path string, content string) fs.DirEntry {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write file %s: %v", path, err)
+	}
+	entry, err := dirEntryAtPath(path)
+	if err != nil {
+		t.Fatalf("dir entry for %s: %v", path, err)
+	}
+	return entry
+}
+
+type nilUnwrapError struct{}
+
+func (*nilUnwrapError) Error() string {
+	return "nil unwrap"
+}
+
+func (*nilUnwrapError) Unwrap() error {
+	return nil
 }

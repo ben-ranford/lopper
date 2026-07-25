@@ -103,8 +103,8 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 	if len(result.Files) == 0 {
 		result.Warnings = append(result.Warnings, "no JS/TS files found for analysis")
 	}
-	if state.skippedSymlinks > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d symlinked JS/TS file(s)", state.skippedSymlinks))
+	if state.skippedNonRegularFiles > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d non-regular JS/TS file(s)", state.skippedNonRegularFiles))
 	}
 	if state.skippedLargeFiles > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d JS/TS file(s) above %d bytes", state.skippedLargeFiles, jsSourceReadMaxBytes))
