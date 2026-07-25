@@ -975,23 +975,14 @@ func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache 
 
 	_, handled, err := evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, lockfiles, cache)
 	if err != nil {
-		if isRecoverableLockfileManifestReadError(err) {
-			prepared := lockfilePreparedRule{}
-			if readErrors != nil && readErrors.add(snapshot, rule, err) {
-				prepared.manifestReadErr = err
-			}
+		prepared, ok := recoverablePreparedLockfileRule(snapshot, rule, err, readErrors)
+		if ok {
 			return prepared, nil, nil
 		}
 		return lockfilePreparedRule{}, nil, err
 	}
 	if handled {
-		return lockfilePreparedRule{
-			replay: &lockfilePreparedRuleReplay{
-				rule:      rule,
-				manifests: append([]string(nil), manifests...),
-				lockfiles: preparedLockfileNames(lockfiles),
-			},
-		}, nil, nil
+		return preparedReplayLockfileRule(rule, manifests, lockfiles), nil, nil
 	}
 	if !hasManifest && len(lockfiles) == 0 {
 		return lockfilePreparedRule{}, nil, nil
@@ -999,23 +990,14 @@ func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache 
 
 	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifestName, cache)
 	if err != nil {
-		if isRecoverableLockfileManifestReadError(err) {
-			prepared := lockfilePreparedRule{}
-			if readErrors != nil && readErrors.add(snapshot, rule, err) {
-				prepared.manifestReadErr = err
-			}
+		prepared, ok := recoverablePreparedLockfileRule(snapshot, rule, err, readErrors)
+		if ok {
 			return prepared, nil, nil
 		}
 		return lockfilePreparedRule{}, nil, err
 	}
 	if !matchesManifest && len(lockfiles) > 0 {
-		return lockfilePreparedRule{
-			replay: &lockfilePreparedRuleReplay{
-				rule:      rule,
-				manifests: append([]string(nil), manifests...),
-				lockfiles: preparedLockfileNames(lockfiles),
-			},
-		}, nil, nil
+		return preparedReplayLockfileRule(rule, manifests, lockfiles), nil, nil
 	}
 	if !hasManifest || len(lockfiles) == 0 || !matchesManifest {
 		return lockfilePreparedRule{}, nil, nil
@@ -1024,6 +1006,27 @@ func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache 
 	return lockfilePreparedRule{
 		manifestChange: prepareManifestChange(snapshot, rule, manifests, lockfiles),
 	}, relativeLockfileCandidatePaths(snapshot, manifests, lockfiles), nil
+}
+
+func recoverablePreparedLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, err error, readErrors *lockfileManifestReadErrors) (lockfilePreparedRule, bool) {
+	if !isRecoverableLockfileManifestReadError(err) {
+		return lockfilePreparedRule{}, false
+	}
+	prepared := lockfilePreparedRule{}
+	if readErrors != nil && readErrors.add(snapshot, rule, err) {
+		prepared.manifestReadErr = err
+	}
+	return prepared, true
+}
+
+func preparedReplayLockfileRule(rule lockfileRule, manifests []string, lockfiles []presentLockfile) lockfilePreparedRule {
+	return lockfilePreparedRule{
+		replay: &lockfilePreparedRuleReplay{
+			rule:      rule,
+			manifests: append([]string(nil), manifests...),
+			lockfiles: preparedLockfileNames(lockfiles),
+		},
+	}
 }
 
 func prepareManifestChange(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, lockfiles []presentLockfile) *lockfilePreparedManifestChange {
