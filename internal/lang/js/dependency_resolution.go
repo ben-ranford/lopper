@@ -183,15 +183,21 @@ func validatedDependencyRootAtDir(rootDir, dependency string) (string, error) {
 		return "", fmt.Errorf("path is not a directory: %s", rootDir)
 	}
 
-	relParts := append([]string{"node_modules"}, strings.Split(filepath.ToSlash(dependencyPath(dependency)), "/")...)
-	validatedRoot, err := validateDirectoryPathNoFollowFromBase(rootDir, relParts...)
+	dependencyRootPath, err := dependencyRoot(rootDir, dependency)
 	if err != nil {
 		return "", err
 	}
-	if err := validateRegularFileNoFollow(filepath.Join(validatedRoot, "package.json")); err != nil {
+	root, _, err := openValidatedRootNoFollow(dependencyRootPath)
+	if err != nil {
 		return "", err
 	}
-	return validatedRoot, nil
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	if err := validateRegularFileWithinRoot(root, dependencyRootPath, jsPackageFile); err != nil {
+		return "", err
+	}
+	return dependencyRootPath, nil
 }
 
 func validateDirectoryPathNoFollowFromBase(baseDir string, relParts ...string) (string, error) {
@@ -273,6 +279,20 @@ func validateRegularFileNoFollow(path string) error {
 	return nil
 }
 
+func validateRegularFileWithinRoot(root safeio.Root, rootPath, relPath string) error {
+	info, err := root.Lstat(relPath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlinked file path: %s", filepath.Join(rootPath, relPath))
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("path is not a regular file: %s", filepath.Join(rootPath, relPath))
+	}
+	return nil
+}
+
 func canonicalizeNoFollowParentPath(path string) (string, error) {
 	absPath, err := absoluteDependencyPath(path)
 	if err != nil {
@@ -287,11 +307,11 @@ func canonicalizeNoFollowParentPath(path string) (string, error) {
 }
 
 func openValidatedRootNoFollow(path string) (safeio.Root, string, error) {
-	validatedPath, err := validateDirectoryPathNoFollow(path)
+	validatedPath, err := resolvePinnedRootPath(path)
 	if err != nil {
 		return nil, "", err
 	}
-	root, err := openConstrainedRoot(validatedPath)
+	root, err := openDependencyRootNoFollow(validatedPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -299,43 +319,11 @@ func openValidatedRootNoFollow(path string) (safeio.Root, string, error) {
 }
 
 func openConstrainedRoot(path string) (safeio.Root, error) {
-	basePath, relParts, ok := dependencyChainBase(path)
-	if !ok {
-		canonicalPath, err := canonicalizeNoFollowParentPath(path)
-		if err != nil {
-			return nil, err
-		}
-		return openDependencyRootNoFollow(canonicalPath)
-	}
-
-	canonicalBase, err := canonicalizeNoFollowParentPath(basePath)
+	validatedPath, err := resolvePinnedRootPath(path)
 	if err != nil {
 		return nil, err
 	}
-	root, err := openDependencyRootNoFollow(canonicalBase)
-	if err != nil {
-		return nil, err
-	}
-	current := root
-	currentPath := basePath
-	for _, part := range relParts {
-		currentPath = filepath.Join(currentPath, part)
-		next, err := openRootChildNoFollow(current, part, currentPath)
-		if err != nil {
-			if closeErr := current.Close(); closeErr != nil {
-				return nil, errors.Join(err, closeErr)
-			}
-			return nil, err
-		}
-		if closeErr := current.Close(); closeErr != nil {
-			if nextCloseErr := next.Close(); nextCloseErr != nil {
-				return nil, errors.Join(closeErr, nextCloseErr)
-			}
-			return nil, closeErr
-		}
-		current = next
-	}
-	return current, nil
+	return openDependencyRootNoFollow(validatedPath)
 }
 
 func dependencyChainBase(path string) (string, []string, bool) {
@@ -415,6 +403,85 @@ func openRootChildNoFollow(root safeio.Root, name, path string) (safeio.Root, er
 		return nil, err
 	}
 	return next, nil
+}
+
+func resolvePinnedRootPath(path string) (string, error) {
+	absPath, err := absoluteDependencyPath(path)
+	if err != nil {
+		return "", err
+	}
+	basePath, relParts, ok := dependencyChainBase(absPath)
+	if !ok {
+		if _, err := validateDirectoryPathNoFollow(absPath); err != nil {
+			return "", err
+		}
+		return canonicalizeNoFollowParentPath(absPath)
+	}
+	return resolvePinnedDependencyChainPath(basePath, relParts)
+}
+
+func resolvePinnedDependencyChainPath(basePath string, relParts []string) (string, error) {
+	current, err := resolvePinnedDependencyChainBase(basePath)
+	if err != nil {
+		return "", err
+	}
+	allowedRoot := current
+	for _, part := range relParts {
+		if part == "" || part == "." {
+			continue
+		}
+		nextPath := filepath.Join(current, part)
+		nextPath, err = resolvePinnedDependencyComponent(nextPath, allowedRoot)
+		if err != nil {
+			return "", err
+		}
+		current = nextPath
+	}
+	return current, nil
+}
+
+func resolvePinnedDependencyChainBase(basePath string) (string, error) {
+	baseRoot, baseParts, ok := dependencyChainBase(basePath)
+	if !ok {
+		if _, err := validateDirectoryPathNoFollow(basePath); err != nil {
+			return "", err
+		}
+		return canonicalizeNoFollowParentPath(basePath)
+	}
+	current, err := resolvePinnedDependencyChainPath(baseRoot, baseParts)
+	if err != nil {
+		return "", err
+	}
+	return current, nil
+}
+
+func resolvePinnedDependencyComponent(path string, allowedRoot string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		if !info.IsDir() {
+			return "", fmt.Errorf("path is not a directory: %s", path)
+		}
+		return path, nil
+	}
+
+	resolvedPath, err := evaluateDependencySymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if !isPathWithin(resolvedPath, allowedRoot) {
+		return "", fmt.Errorf("symlinked path component: %s", path)
+	}
+	resolvedInfo, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !resolvedInfo.IsDir() {
+		return "", fmt.Errorf("path is not a directory: %s", path)
+	}
+	return resolvedPath, nil
 }
 
 func relativePathWithinRoot(rootPath, targetPath string) (string, error) {

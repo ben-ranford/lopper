@@ -766,6 +766,34 @@ func TestReadOpenedFileContinuesWhenStatFails(t *testing.T) {
 	}
 }
 
+func TestReadFileUnderAllowsInRootSymlinkToRegularFile(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, "src", "real.txt")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+
+	linkPath := filepath.Join(rootDir, "linked.txt")
+	relTarget, err := filepath.Rel(filepath.Dir(linkPath), targetPath)
+	if err != nil {
+		t.Fatalf("relative symlink target: %v", err)
+	}
+	if err := os.Symlink(relTarget, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	data, err := ReadFileUnder(rootDir, linkPath)
+	if err != nil {
+		t.Fatalf("ReadFileUnder symlink returned error: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf(unexpectedContentFmt, string(data))
+	}
+}
+
 func TestReadFileUnderRejectsPathTraversalOutsideRoot(t *testing.T) {
 	parentDir := canonicalTempDir(t)
 	rootDir := filepath.Join(parentDir, "root")

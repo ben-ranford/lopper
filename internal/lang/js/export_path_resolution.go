@@ -121,25 +121,25 @@ func resolveEntrypointUnderRoot(rootPath, depPath, entry string) (resolved strin
 }
 
 func resolveEntrypointWithinRoot(root safeio.Root, rootPath, depPath, entry string) (string, bool) {
-	path := entry
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(depPath, entry)
+	entryPath := entry
+	if !filepath.IsAbs(entryPath) {
+		entryPath = filepath.Join(depPath, entry)
 	}
 
-	if info, ok := lstatWithinRoot(root, rootPath, path); ok {
+	if info, ok := lstatWithinRoot(root, rootPath, entryPath); ok {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return "", false
 		}
 		if info.IsDir() {
 			return resolveEntrypointWithinRoot(root, rootPath, depPath, filepath.Join(entry, "index"))
 		}
-		return path, true
+		return entryPath, true
 	}
 
-	if filepath.Ext(path) == "" {
+	if filepath.Ext(entryPath) == "" {
 		candidates := []string{".js", ".mjs", ".cjs", ".ts", ".tsx", ".d.ts"}
 		for _, ext := range candidates {
-			candidate := path + ext
+			candidate := entryPath + ext
 			if info, ok := lstatWithinRoot(root, rootPath, candidate); ok && info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
 				return candidate, true
 			}

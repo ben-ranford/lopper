@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -352,6 +353,117 @@ func TestLoadDependencyPackageJSONReturnsWarningWhenCloseFails(t *testing.T) {
 	}
 }
 
+func TestFindLicenseFilesWithinRootContinuesPastUnreadableChild(t *testing.T) {
+	depRoot := t.TempDir()
+	blockedDir := filepath.Join(depRoot, "blocked")
+	if err := os.Mkdir(blockedDir, 0o755); err != nil {
+		t.Fatalf("mkdir blocked dir: %v", err)
+	}
+	licensePath := filepath.Join(depRoot, "LICENSE")
+	testutil.MustWriteFile(t, licensePath, "MIT License\n")
+
+	blockedInfo, err := os.Lstat(blockedDir)
+	if err != nil {
+		t.Fatalf("lstat blocked dir: %v", err)
+	}
+	licenseInfo, err := os.Lstat(licensePath)
+	if err != nil {
+		t.Fatalf("lstat license file: %v", err)
+	}
+
+	root := &fakeJSRoot{
+		open: func(name string) (safeio.File, error) {
+			if name != "." {
+				return nil, errors.New("unexpected open path")
+			}
+			return &fakeReadDirFile{
+				entries: []fs.DirEntry{
+					&fakeDirEntry{name: "blocked", mode: blockedInfo.Mode(), info: blockedInfo},
+					&fakeDirEntry{name: "LICENSE", mode: licenseInfo.Mode(), info: licenseInfo},
+				},
+			}, nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "blocked":
+				return blockedInfo, nil
+			case "LICENSE":
+				return licenseInfo, nil
+			default:
+				return nil, errors.New("unexpected lstat path")
+			}
+		},
+		openRoot: func(name string) (safeio.Root, error) {
+			if name != "blocked" {
+				return nil, errors.New("unexpected child root path")
+			}
+			return nil, errors.New("blocked subtree")
+		},
+	}
+
+	files := findLicenseFilesWithinRoot(root, depRoot)
+	if len(files) != 1 || files[0] != licensePath {
+		t.Fatalf("expected best-effort license walk to keep later readable license, got %#v", files)
+	}
+}
+
+func TestLicenseFileProbeWrappersClearResultsWhenRootCloseFails(t *testing.T) {
+	depRoot := t.TempDir()
+	licensePath := filepath.Join(depRoot, "LICENSE")
+	testutil.MustWriteFile(t, licensePath, "MIT License\n")
+
+	originalOpen := openLicenseValidatedRoot
+	openLicenseValidatedRoot = func(path string) (safeio.Root, string, error) {
+		baseRoot, validatedRoot, err := openValidatedRootNoFollow(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: errors.New("close failed")}, validatedRoot, nil
+	}
+	t.Cleanup(func() {
+		openLicenseValidatedRoot = originalOpen
+	})
+
+	if license := detectLicenseFromFiles(depRoot); license != nil {
+		t.Fatalf("expected close failure to clear file-detected license, got %#v", license)
+	}
+	if probe := probeLicenseFiles(depRoot); probe != nil {
+		t.Fatalf("expected close failure to clear file probe, got %#v", probe)
+	}
+	if probe := probeLicenseCandidates(depRoot, []string{licensePath}); probe != nil {
+		t.Fatalf("expected close failure to clear candidate probe, got %#v", probe)
+	}
+	if probe := probeLicenseCandidate(depRoot, licensePath); probe != nil {
+		t.Fatalf("expected close failure to clear single-candidate probe, got %#v", probe)
+	}
+}
+
+func TestLicenseFileProbeWrappersReturnDetectedLicenseSignals(t *testing.T) {
+	depRoot := t.TempDir()
+	licensePath := filepath.Join(depRoot, "LICENSE")
+	testutil.MustWriteFile(t, licensePath, "MIT License\n")
+
+	license := detectLicenseFromFiles(depRoot)
+	if license == nil || license.SPDX != "MIT" {
+		t.Fatalf("expected license detection from readable license file, got %#v", license)
+	}
+
+	probe := probeLicenseFiles(depRoot)
+	if probe == nil || filepath.Base(probe.path) != "LICENSE" || probe.spdx != "MIT" {
+		t.Fatalf("expected file probe for readable license file, got %#v", probe)
+	}
+
+	candidateProbe := probeLicenseCandidates(depRoot, []string{licensePath})
+	if candidateProbe == nil || filepath.Base(candidateProbe.path) != "LICENSE" || candidateProbe.spdx != "MIT" {
+		t.Fatalf("expected candidate probe for readable license file, got %#v", candidateProbe)
+	}
+
+	singleProbe := probeLicenseCandidate(depRoot, licensePath)
+	if singleProbe == nil || filepath.Base(singleProbe.path) != "LICENSE" || singleProbe.spdx != "MIT" {
+		t.Fatalf("expected single-candidate probe for readable license file, got %#v", singleProbe)
+	}
+}
+
 func TestDetectLicenseAndProvenanceWarnsWhenCloseFails(t *testing.T) {
 	root := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(root, licenseTestPackageJSONFileName), `{"name":"demo","version":"1.0.0","license":"MIT"}`)
@@ -450,8 +562,12 @@ func TestProbeLicenseFileWrappers(t *testing.T) {
 	root := t.TempDir()
 	candidate := filepath.Join(root, "LICENSE")
 	testutil.MustWriteFile(t, candidate, "MIT License\nPermission is hereby granted...")
+	resolvedCandidate, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		t.Fatalf("resolve candidate: %v", err)
+	}
 
-	if probe := probeLicenseFiles(root); probe == nil || probe.path != candidate {
+	if probe := probeLicenseFiles(root); probe == nil || probe.path != resolvedCandidate {
 		t.Fatalf("expected probeLicenseFiles wrapper to return license candidate, got %#v", probe)
 	}
 	if probe := probeLicenseCandidate(root, candidate); probe == nil || probe.spdx != "MIT" {

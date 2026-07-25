@@ -68,33 +68,55 @@ func detectDynamicLoaderUsageWithinRoot(root safeio.Root, depRoot string, entryp
 	skippedLargeFiles := 0
 
 	for _, entry := range entrypoints {
-		if !isLikelyCodeAsset(entry) {
-			continue
-		}
-		relEntry, err := relativePathWithinRoot(depRoot, entry)
+		entryCount, entrySamples, skipped, err := scanDynamicLoaderEntrypoint(root, depRoot, entry)
 		if err != nil {
 			return 0, nil, 0, err
 		}
-		content, err := safeio.ReadFileWithinRootLimit(root, relEntry, jsSourceReadMaxBytes)
-		if err != nil {
-			if errors.Is(err, safeio.ErrFileTooLarge) {
-				skippedLargeFiles++
-				continue
+		count += entryCount
+		skippedLargeFiles += skipped
+		for _, sample := range entrySamples {
+			if len(samples) >= 3 {
+				break
 			}
-			return 0, nil, 0, err
-		}
-		lines := strings.Split(string(content), "\n")
-		for idx, line := range lines {
-			if hasDynamicCall(line, "require(") || hasDynamicCall(line, "import(") {
-				count++
-				if len(samples) < 3 {
-					samples = append(samples, fmt.Sprintf("%s:%d", filepath.Base(entry), idx+1))
-				}
-			}
+			samples = append(samples, sample)
 		}
 	}
 
 	return count, samples, skippedLargeFiles, nil
+}
+
+func scanDynamicLoaderEntrypoint(root safeio.Root, depRoot, entry string) (int, []string, int, error) {
+	if !isLikelyCodeAsset(entry) {
+		return 0, nil, 0, nil
+	}
+	relEntry, err := relativePathWithinRoot(depRoot, entry)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	content, err := safeio.ReadFileWithinRootLimit(root, relEntry, jsSourceReadMaxBytes)
+	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return 0, nil, 1, nil
+		}
+		return 0, nil, 0, err
+	}
+	count, samples := findDynamicLoaderCalls(entry, content)
+	return count, samples, 0, nil
+}
+
+func findDynamicLoaderCalls(entry string, content []byte) (int, []string) {
+	count := 0
+	samples := make([]string, 0, 3)
+	for idx, line := range strings.Split(string(content), "\n") {
+		if !hasDynamicCall(line, "require(") && !hasDynamicCall(line, "import(") {
+			continue
+		}
+		count++
+		if len(samples) < 3 {
+			samples = append(samples, fmt.Sprintf("%s:%d", filepath.Base(entry), idx+1))
+		}
+	}
+	return count, samples
 }
 
 func hasDynamicCall(line, token string) bool {

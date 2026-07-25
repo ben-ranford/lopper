@@ -19,34 +19,37 @@ var openEntrypointRoot = openConstrainedRoot
 func loadPackageJSONForSurface(rootPath, depPath string) (pkg packageJSON, warnings []string, err error) {
 	validatedDepRoot, err := validateDirectoryPathNoFollow(depPath)
 	if err != nil {
-		pkgPath := filepath.Join(depPath, "package.json")
-		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+		return packageJSON{}, packageReadWarnings(depPath), err
 	}
-	pkgPath := filepath.Join(validatedDepRoot, "package.json")
 	if rootPath == "" {
 		rootPath = validatedDepRoot
 	}
 	root, validatedRootPath, err := openValidatedRootNoFollow(rootPath)
 	if err != nil {
-		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+		return packageJSON{}, packageReadWarnings(validatedDepRoot), err
 	}
 	defer func() {
 		if closeErr := root.Close(); closeErr != nil && err == nil {
 			err = closeErr
 		}
 	}()
+	pkgPath := filepath.Join(validatedDepRoot, jsPackageFile)
 	relPkgPath, err := relativePathWithinRoot(validatedRootPath, pkgPath)
 	if err != nil {
-		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+		return packageJSON{}, packageReadWarnings(validatedDepRoot), err
 	}
 	data, err := safeio.ReadFileWithinRootLimit(root, relPkgPath, jsPackageJSONReadMaxBytes)
 	if err != nil {
-		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+		return packageJSON{}, packageReadWarnings(validatedDepRoot), err
 	}
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return packageJSON{}, []string{"failed to parse dependency package.json"}, err
 	}
 	return pkg, nil, nil
+}
+
+func packageReadWarnings(depPath string) []string {
+	return []string{fmt.Sprintf("unable to read %s", filepath.Join(depPath, jsPackageFile))}
 }
 
 func collectCandidateEntrypoints(pkg packageJSON, profile runtimeProfile, surface *ExportSurface) entrypointCandidates {
@@ -193,20 +196,11 @@ func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *Ex
 	parser := newSourceParser()
 	seenEntries := make(map[string]struct{})
 	for _, entry := range resolved {
-		if _, ok := seenEntries[entry]; ok {
+		if !trackEntrypoint(surface, seenEntries, entry) {
 			continue
 		}
-		seenEntries[entry] = struct{}{}
-		surface.EntryPoints = append(surface.EntryPoints, entry)
-
-		relEntry, err := relativePathWithinRoot(validatedRootPath, entry)
-		if err != nil {
-			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
-			continue
-		}
-		content, err := safeio.ReadFileWithinRootLimit(root, relEntry, jsSourceReadMaxBytes)
-		if err != nil {
-			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
+		content, readOK := readEntrypointWithinRoot(root, validatedRootPath, entry, surface)
+		if !readOK {
 			continue
 		}
 		tree, err := parser.Parse(context.Background(), entry, content)
@@ -218,6 +212,29 @@ func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *Ex
 			addCollectedExports(surface, collectExportNames(tree, content))
 		}
 	}
+}
+
+func trackEntrypoint(surface *ExportSurface, seenEntries map[string]struct{}, entry string) bool {
+	if _, ok := seenEntries[entry]; ok {
+		return false
+	}
+	seenEntries[entry] = struct{}{}
+	surface.EntryPoints = append(surface.EntryPoints, entry)
+	return true
+}
+
+func readEntrypointWithinRoot(root safeio.Root, validatedRootPath, entry string, surface *ExportSurface) ([]byte, bool) {
+	relEntry, err := relativePathWithinRoot(validatedRootPath, entry)
+	if err != nil {
+		surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
+		return nil, false
+	}
+	content, err := safeio.ReadFileWithinRootLimit(root, relEntry, jsSourceReadMaxBytes)
+	if err != nil {
+		surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
+		return nil, false
+	}
+	return content, true
 }
 
 func addCollectedExports(surface *ExportSurface, names []string) {

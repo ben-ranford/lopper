@@ -779,8 +779,8 @@ func TestResolveDependencyRootAtDirAndIsPathWithin(t *testing.T) {
 	if err := os.Symlink(symlinkTarget, symlinkPath); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, ok := resolveDependencyRootAtDir(repo, "linked"); ok {
-		t.Fatalf("expected symlinked dependency root to be rejected")
+	if root, ok := resolveDependencyRootAtDir(repo, "linked"); !ok || root != symlinkPath {
+		t.Fatalf("expected in-repo symlinked dependency root to stay resolvable, got root=%q ok=%v", root, ok)
 	}
 
 	if !isPathWithin(filepath.Join(repo, "packages", "web"), repo) {
@@ -860,11 +860,12 @@ func TestDependencyRootValidationHelpers(t *testing.T) {
 	if err := os.MkdirAll(scopedTarget, 0o755); err != nil {
 		t.Fatalf("mkdir scoped target: %v", err)
 	}
+	testutil.MustWriteFile(t, filepath.Join(scopedTarget, testPackageJSONName), "{}\n")
 	if err := os.Symlink(scopedTarget, filepath.Join(scopedDir, "pkg")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := validatedDependencyRootAtDir(repo, "@scope/pkg"); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
-		t.Fatalf("expected symlinked scoped dependency root to be rejected, got %v", err)
+	if got, err := validatedDependencyRootAtDir(repo, "@scope/pkg"); err != nil || got != filepath.Join(scopedDir, "pkg") {
+		t.Fatalf("expected scoped dependency symlink inside repo to resolve safely, got path=%q err=%v", got, err)
 	}
 	if _, err := validatedDependencyRootAtDir(repo, ""); err == nil {
 		t.Fatalf("expected blank dependency name to be rejected")

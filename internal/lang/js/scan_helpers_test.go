@@ -216,6 +216,45 @@ func TestReadAndParseFileAllowsInRepoSourceSymlinkToRegularFile(t *testing.T) {
 	}
 }
 
+func TestReadAndParseFileFallsBackWhenRootedReadReportsPathEscape(t *testing.T) {
+	repo := t.TempDir()
+	targetPath := filepath.Join(repo, "src", "real.js")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	source := "export const inside = 1\n"
+	if err := os.WriteFile(targetPath, []byte(source), 0o600); err != nil {
+		t.Fatalf("write real.js: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "linked.js")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	originalReadRepoSourceUnderLimit := readRepoSourceUnderLimit
+	readRepoSourceUnderLimit = func(string, string, int64) ([]byte, error) {
+		return nil, errors.New("path escapes from parent")
+	}
+	t.Cleanup(func() {
+		readRepoSourceUnderLimit = originalReadRepoSourceUnderLimit
+	})
+
+	content, tree, relPath, err := readAndParseFile(context.Background(), newSourceParser(), repo, linkPath)
+	if err != nil {
+		t.Fatalf("read in-repo source symlink through path-escape fallback: %v", err)
+	}
+	if string(content) != source {
+		t.Fatalf("expected fallback to read symlinked source content, got %q", string(content))
+	}
+	if tree == nil {
+		t.Fatal("expected parse tree from fallback read")
+	}
+	if relPath != "linked.js" {
+		t.Fatalf("expected fallback read to preserve repo-relative symlink path, got %q", relPath)
+	}
+}
+
 func TestReadAndParseFilePreservesMixedNonRegularAndCloseFailure(t *testing.T) {
 	repo := t.TempDir()
 	targetPath := filepath.Join(repo, "real.js")
@@ -239,6 +278,36 @@ func TestReadAndParseFilePreservesMixedNonRegularAndCloseFailure(t *testing.T) {
 	_, _, _, err := readAndParseFile(context.Background(), newSourceParser(), repo, linkPath)
 	if !errors.Is(err, safeio.ErrNonRegularFile) || !errors.Is(err, closeErr) {
 		t.Fatalf("expected mixed non-regular and close failure to surface, got %v", err)
+	}
+}
+
+func TestReadAndParseFileReturnsFallbackErrorForEscapingPathEscapeFallback(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	outsidePath := filepath.Join(outside, "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("export const leaked = true\n"), 0o600); err != nil {
+		t.Fatalf("write outside.js: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "escape.js")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	originalReadRepoSourceUnderLimit := readRepoSourceUnderLimit
+	readRepoSourceUnderLimit = func(string, string, int64) ([]byte, error) {
+		return nil, errors.New("path escapes from parent")
+	}
+	t.Cleanup(func() {
+		readRepoSourceUnderLimit = originalReadRepoSourceUnderLimit
+	})
+
+	_, _, _, err := readAndParseFile(context.Background(), newSourceParser(), repo, linkPath)
+	if err == nil {
+		t.Fatal("expected escaping symlink fallback to fail")
+	}
+	if strings.Contains(err.Error(), "path escapes from parent") {
+		t.Fatalf("expected fallback error to replace initial rooted-read error, got %v", err)
 	}
 }
 

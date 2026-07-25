@@ -73,7 +73,7 @@ func (a *riskCueAggregator) addNativeModuleCue() {
 }
 
 func (a *riskCueAggregator) addTransitiveDepthCue() {
-	a.cues, a.warnings = appendDepthRiskCue(a.cues, a.warnings, a.dependency, a.repoPath, a.depRoot, a.pkg)
+	a.cues, a.warnings = appendDepthRiskCue(a.cues, a.warnings, a.repoPath, a.depRoot, a.pkg)
 }
 
 func (a *riskCueAggregator) finalize() ([]report.RiskCue, []string) {
@@ -136,8 +136,7 @@ func appendNativeRiskCueWithinRoot(cues []report.RiskCue, warnings []string, dep
 	return cues, warnings
 }
 
-func appendDepthRiskCue(cues []report.RiskCue, warnings []string, dependency string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
-	_ = dependency
+func appendDepthRiskCue(cues []report.RiskCue, warnings []string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
 	cue := buildTransitiveDepthRiskCue(repoPath, depRoot, pkg)
 	if cue != nil {
 		cues = append(cues, *cue)

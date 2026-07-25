@@ -69,8 +69,14 @@ func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string
 		content, readErr = safeio.ReadFileLimit(path, jsSourceReadMaxBytes)
 	} else {
 		content, readErr = readRepoSourceUnderLimit(repoPath, path, jsSourceReadMaxBytes)
-		if isPureNonRegularReadError(readErr) {
-			content, readErr = readRepoSourceThroughInRootSymlink(repoPath, path)
+		if readErr != nil && (isPureNonRegularReadError(readErr) || strings.Contains(readErr.Error(), "path escapes from parent")) {
+			fallbackContent, fallbackErr := readRepoSourceThroughInRootSymlink(repoPath, path)
+			switch {
+			case fallbackErr == nil:
+				content, readErr = fallbackContent, nil
+			case strings.Contains(readErr.Error(), "path escapes from parent"):
+				readErr = fallbackErr
+			}
 		}
 	}
 	if readErr != nil {

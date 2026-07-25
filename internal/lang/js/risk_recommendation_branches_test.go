@@ -1,12 +1,15 @@
 package js
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const requireToken = "require("
@@ -134,6 +137,79 @@ func TestDetectDynamicLoaderUsageAndErrors(t *testing.T) {
 
 	if _, _, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")}); err == nil {
 		t.Fatalf("expected read error for missing dynamic-loader entrypoint")
+	}
+}
+
+func TestBuildDynamicLoaderRiskCueWithWarningsReportsOversizedEntrypointSkips(t *testing.T) {
+	depRoot := t.TempDir()
+	largeEntry := filepath.Join(depRoot, "index.js")
+	largeContent := strings.Repeat("a", int(jsSourceReadMaxBytes)+1)
+	if err := os.WriteFile(largeEntry, []byte(largeContent), 0o600); err != nil {
+		t.Fatalf("write oversized entrypoint: %v", err)
+	}
+
+	cue, warnings, err := buildDynamicLoaderRiskCueWithWarnings(depRoot, []string{largeEntry})
+	if err != nil {
+		t.Fatalf("build dynamic-loader cue with oversized entrypoint: %v", err)
+	}
+	if cue != nil {
+		t.Fatalf("expected no dynamic-loader cue when only oversized files are skipped, got %#v", cue)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipped 1 JS/TS file(s)") {
+		t.Fatalf("expected oversized-entrypoint warning, got %#v", warnings)
+	}
+}
+
+func TestDynamicLoaderScansPreserveRootCloseFailures(t *testing.T) {
+	depRoot := t.TempDir()
+	entry := filepath.Join(depRoot, "index.js")
+	if err := os.WriteFile(entry, []byte("module.exports = require(process.env.DEP)\n"), 0o600); err != nil {
+		t.Fatalf("write entrypoint: %v", err)
+	}
+
+	originalOpen := openDependencyRootNoFollow
+	openDependencyRootNoFollow = func(path string) (safeio.Root, error) {
+		root, err := safeio.OpenRootNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &closingLicenseRoot{Root: root, closeErr: errors.New("close failed")}, nil
+	}
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpen
+	})
+
+	count, samples, skippedLargeFiles, err := detectDynamicLoaderUsage(depRoot, []string{entry})
+	if count != 1 || len(samples) != 1 || skippedLargeFiles != 0 {
+		t.Fatalf("expected dynamic-loader signal before close failure, got count=%d samples=%#v skipped=%d", count, samples, skippedLargeFiles)
+	}
+	if err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("expected detectDynamicLoaderUsage to surface root close failure, got %v", err)
+	}
+
+	cue, warnings, err := buildDynamicLoaderRiskCueWithWarnings(depRoot, []string{entry})
+	if cue == nil || cue.Code != riskCodeDynamicLoader {
+		t.Fatalf("expected dynamic-loader cue before close failure, got %#v", cue)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect warnings for readable dynamic-loader entrypoint, got %#v", warnings)
+	}
+	if err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("expected buildDynamicLoaderRiskCueWithWarnings to surface root close failure, got %v", err)
+	}
+}
+
+func TestDynamicLoaderScansReturnDependencyRootErrors(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+
+	if _, warnings, err := buildDynamicLoaderRiskCueWithWarnings(missingRoot, []string{filepath.Join(missingRoot, "index.js")}); err == nil {
+		t.Fatal("expected dynamic-loader cue build to fail for missing dependency root")
+	} else if len(warnings) != 0 {
+		t.Fatalf("did not expect warnings when dependency root cannot be opened, got %#v", warnings)
+	}
+
+	if _, _, _, err := detectDynamicLoaderUsage(missingRoot, []string{filepath.Join(missingRoot, "index.js")}); err == nil {
+		t.Fatal("expected dynamic-loader scan to fail for missing dependency root")
 	}
 }
 

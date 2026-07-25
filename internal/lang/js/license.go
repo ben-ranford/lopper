@@ -314,7 +314,7 @@ func findLicenseFiles(depRoot string) (files []string) {
 
 func findLicenseFilesWithinRoot(root safeio.Root, depRoot string) []string {
 	files := make([]string, 0, 4)
-	if err := walkRootNoFollow(root, licenseWalkFunc(depRoot, &files)); err != nil {
+	if err := walkRootNoFollowBestEffort(root, licenseWalkFunc(depRoot, &files)); err != nil {
 		return files
 	}
 	return files
@@ -385,7 +385,7 @@ func buildProvenance(pkg packageJSON, includeRegistryProvenance bool) *report.De
 }
 
 func collectManifestProvenanceSignals(pkg packageJSON) []string {
-	signals := []string{"manifest:package.json"}
+	signals := []string{"manifest:" + jsPackageFile}
 	if strings.TrimSpace(pkg.Name) != "" {
 		signals = append(signals, "name:"+pkg.Name)
 	}
@@ -427,21 +427,21 @@ func hasRepositorySignal(value any) bool {
 func loadDependencyPackageJSON(depRoot string) (pkg packageJSON, warnings []string) {
 	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
 	if err != nil {
-		pkgPath := filepath.Join(depRoot, "package.json")
+		pkgPath := filepath.Join(depRoot, jsPackageFile)
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}
 	defer func() {
 		if closeErr := root.Close(); closeErr != nil {
 			pkg = packageJSON{}
-			warnings = []string{fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(validatedDepRoot, "package.json"))}
+			warnings = []string{fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(validatedDepRoot, jsPackageFile))}
 		}
 	}()
 	return loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
 }
 
 func loadDependencyPackageJSONFromRoot(root safeio.Root, validatedDepRoot string) (packageJSON, []string) {
-	pkgPath := filepath.Join(validatedDepRoot, "package.json")
-	data, err := safeio.ReadFileWithinRootLimit(root, "package.json", jsPackageJSONReadMaxBytes)
+	pkgPath := filepath.Join(validatedDepRoot, jsPackageFile)
+	data, err := safeio.ReadFileWithinRootLimit(root, jsPackageFile, jsPackageJSONReadMaxBytes)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}

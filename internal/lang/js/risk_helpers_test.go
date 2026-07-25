@@ -467,7 +467,7 @@ func TestAppendDepthRiskCueSeverityHeuristic(t *testing.T) {
 	}
 
 	rootPkg := packageJSON{Dependencies: map[string]string{"a": "1.0.0"}}
-	cues, warnings := appendDepthRiskCue(nil, nil, "pkg", repoRoot, pkgRoot, rootPkg)
+	cues, warnings := appendDepthRiskCue(nil, nil, repoRoot, pkgRoot, rootPkg)
 	if len(warnings) != 0 {
 		t.Fatalf("did not expect warnings: %#v", warnings)
 	}

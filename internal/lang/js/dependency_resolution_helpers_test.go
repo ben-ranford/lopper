@@ -111,6 +111,176 @@ func TestOpenConstrainedRootRejectsSymlinkAndNonDirectoryDependencyComponents(t 
 	}
 }
 
+func TestResolvePinnedDependencyChainPathAllowsNestedInRepoSymlinkRoots(t *testing.T) {
+	repo := t.TempDir()
+	pkgRoot := filepath.Join(repo, "packages", "linked")
+	transitiveRoot := filepath.Join(pkgRoot, "node_modules", "dep")
+	if err := os.MkdirAll(transitiveRoot, 0o755); err != nil {
+		t.Fatalf("mkdir transitive root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(pkgRoot, "package.json"), "{}\n")
+	testutil.MustWriteFile(t, filepath.Join(transitiveRoot, "package.json"), "{}\n")
+
+	linkedRoot := filepath.Join(repo, "node_modules", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkedRoot), 0o755); err != nil {
+		t.Fatalf("mkdir linked root parent: %v", err)
+	}
+	if err := os.Symlink(pkgRoot, linkedRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := resolvePinnedRootPath(filepath.Join(linkedRoot, "node_modules", "dep"))
+	if err != nil {
+		t.Fatalf("resolve nested dependency under in-repo symlink root: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(transitiveRoot)
+	if err != nil {
+		t.Fatalf("canonicalize transitive root: %v", err)
+	}
+	if got != want {
+		t.Fatalf("expected nested dependency to pin to %q, got %q", want, got)
+	}
+}
+
+func TestResolvePinnedDependencyChainPathAllowsPnpmStyleNestedDependencyRoots(t *testing.T) {
+	repo := t.TempDir()
+	storeRoot := filepath.Join(repo, ".pnpm", "linked@1.0.0", "node_modules", "linked")
+	transitiveRoot := filepath.Join(storeRoot, "node_modules", "dep")
+	if err := os.MkdirAll(transitiveRoot, 0o755); err != nil {
+		t.Fatalf("mkdir transitive pnpm root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(storeRoot, "package.json"), "{}\n")
+	testutil.MustWriteFile(t, filepath.Join(transitiveRoot, "package.json"), "{}\n")
+
+	linkedRoot := filepath.Join(repo, "node_modules", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkedRoot), 0o755); err != nil {
+		t.Fatalf("mkdir linked root parent: %v", err)
+	}
+	if err := os.Symlink(storeRoot, linkedRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := resolvePinnedRootPath(filepath.Join(linkedRoot, "node_modules", "dep"))
+	if err != nil {
+		t.Fatalf("resolve nested dependency under pnpm symlink root: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(transitiveRoot)
+	if err != nil {
+		t.Fatalf("canonicalize pnpm transitive root: %v", err)
+	}
+	if got != want {
+		t.Fatalf("expected pnpm nested dependency to pin to %q, got %q", want, got)
+	}
+}
+
+func TestResolvePinnedDependencyChainPathRejectsEscapingSymlink(t *testing.T) {
+	repo := t.TempDir()
+	pkgRoot := filepath.Join(repo, "packages", "linked")
+	if err := os.MkdirAll(pkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir linked package root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(pkgRoot, "package.json"), "{}\n")
+
+	linkedRoot := filepath.Join(repo, "node_modules", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkedRoot), 0o755); err != nil {
+		t.Fatalf("mkdir linked root parent: %v", err)
+	}
+	if err := os.Symlink(pkgRoot, linkedRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	outside := t.TempDir()
+	escapingTarget := filepath.Join(outside, "dep")
+	if err := os.MkdirAll(escapingTarget, 0o755); err != nil {
+		t.Fatalf("mkdir escaping target: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(escapingTarget, "package.json"), "{}\n")
+
+	nestedModules := filepath.Join(pkgRoot, "node_modules")
+	if err := os.MkdirAll(nestedModules, 0o755); err != nil {
+		t.Fatalf("mkdir nested node_modules: %v", err)
+	}
+	escapingRoot := filepath.Join(nestedModules, "dep")
+	if err := os.Symlink(escapingTarget, escapingRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, err := resolvePinnedRootPath(filepath.Join(linkedRoot, "node_modules", "dep")); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+		t.Fatalf("expected escaping nested dependency symlink to be rejected, got %v", err)
+	}
+}
+
+func TestResolvePinnedDependencyChainPathRejectsSymlinkedFileTarget(t *testing.T) {
+	repo := t.TempDir()
+	pkgRoot := filepath.Join(repo, "packages", "linked")
+	if err := os.MkdirAll(filepath.Join(pkgRoot, "node_modules"), 0o755); err != nil {
+		t.Fatalf("mkdir linked package node_modules: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(pkgRoot, "package.json"), "{}\n")
+	testutil.MustWriteFile(t, filepath.Join(pkgRoot, "dep-file"), "not a directory\n")
+
+	linkedRoot := filepath.Join(repo, "node_modules", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkedRoot), 0o755); err != nil {
+		t.Fatalf("mkdir linked root parent: %v", err)
+	}
+	if err := os.Symlink(pkgRoot, linkedRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	depLink := filepath.Join(pkgRoot, "node_modules", "dep")
+	if err := os.Symlink(filepath.Join(pkgRoot, "dep-file"), depLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err := resolvePinnedRootPath(filepath.Join(linkedRoot, "node_modules", "dep"))
+	if err == nil || !strings.Contains(err.Error(), "path is not a directory") {
+		t.Fatalf("expected symlinked file target to be rejected as non-directory, got %v", err)
+	}
+}
+
+func TestValidatedDependencyRootAtDirRejectsNonRegularPackageJSON(t *testing.T) {
+	repo := t.TempDir()
+	for _, tc := range []struct {
+		name      string
+		setup     func(t *testing.T, depRoot string)
+		wantError string
+	}{
+		{
+			name: "symlinked package json",
+			setup: func(t *testing.T, depRoot string) {
+				target := filepath.Join(depRoot, "manifest.json")
+				testutil.MustWriteFile(t, target, "{}\n")
+				if err := os.Symlink(target, filepath.Join(depRoot, jsPackageFile)); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			},
+			wantError: "symlinked file path",
+		},
+		{
+			name: "directory package json",
+			setup: func(t *testing.T, depRoot string) {
+				if err := os.Mkdir(filepath.Join(depRoot, jsPackageFile), 0o755); err != nil {
+					t.Fatalf("mkdir package.json dir: %v", err)
+				}
+			},
+			wantError: "path is not a regular file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			depRoot := filepath.Join(repo, "node_modules", strings.ReplaceAll(tc.name, " ", "-"))
+			if err := os.MkdirAll(depRoot, 0o755); err != nil {
+				t.Fatalf("mkdir dependency root: %v", err)
+			}
+			tc.setup(t, depRoot)
+
+			_, err := validatedDependencyRootAtDir(repo, filepath.Base(depRoot))
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("expected %q for invalid package.json shape, got %v", tc.wantError, err)
+			}
+		})
+	}
+}
+
 func TestOpenRootChildNoFollowBranches(t *testing.T) {
 	repo := t.TempDir()
 	root, err := openConstrainedRoot(repo)
@@ -412,90 +582,11 @@ func TestDependencyConfinementOperationFailures(t *testing.T) {
 }
 
 func TestOpenConstrainedRootPreservesCloseFailures(t *testing.T) {
-	originalOpen := openDependencyRootNoFollow
-	t.Cleanup(func() {
-		openDependencyRootNoFollow = originalOpen
-	})
-
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "pkg")
-	info, err := os.Lstat(repo)
-	if err != nil {
-		t.Fatalf("lstat repo: %v", err)
+	if _, err := openConstrainedRoot(depRoot); err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing constrained dependency root to surface not-exist, got %v", err)
 	}
-
-	t.Run("child open and current close", func(t *testing.T) {
-		openErr := errors.New("child open failed")
-		closeErr := errors.New("current close failed")
-		openDependencyRootNoFollow = func(string) (safeio.Root, error) {
-			return &fakeJSRoot{
-				lstat: func(string) (fs.FileInfo, error) {
-					return info, nil
-				},
-				openRoot: func(string) (safeio.Root, error) {
-					return nil, openErr
-				},
-				closeErr: closeErr,
-			}, nil
-		}
-
-		_, err := openConstrainedRoot(depRoot)
-		if !errors.Is(err, openErr) || !errors.Is(err, closeErr) {
-			t.Fatalf("expected joined child-open and close errors, got %v", err)
-		}
-	})
-
-	t.Run("current and next close", func(t *testing.T) {
-		currentCloseErr := errors.New("current close failed")
-		nextCloseErr := errors.New("next close failed")
-		openDependencyRootNoFollow = func(string) (safeio.Root, error) {
-			child := &fakeJSRoot{
-				lstat: func(string) (fs.FileInfo, error) {
-					return info, nil
-				},
-				closeErr: nextCloseErr,
-			}
-			return &fakeJSRoot{
-				lstat: func(string) (fs.FileInfo, error) {
-					return info, nil
-				},
-				openRoot: func(string) (safeio.Root, error) {
-					return child, nil
-				},
-				closeErr: currentCloseErr,
-			}, nil
-		}
-
-		_, err := openConstrainedRoot(depRoot)
-		if !errors.Is(err, currentCloseErr) || !errors.Is(err, nextCloseErr) {
-			t.Fatalf("expected joined current and next close errors, got %v", err)
-		}
-	})
-
-	t.Run("current close only", func(t *testing.T) {
-		currentCloseErr := errors.New("current close failed")
-		openDependencyRootNoFollow = func(string) (safeio.Root, error) {
-			child := &fakeJSRoot{
-				lstat: func(string) (fs.FileInfo, error) {
-					return info, nil
-				},
-			}
-			return &fakeJSRoot{
-				lstat: func(string) (fs.FileInfo, error) {
-					return info, nil
-				},
-				openRoot: func(string) (safeio.Root, error) {
-					return child, nil
-				},
-				closeErr: currentCloseErr,
-			}, nil
-		}
-
-		_, err := openConstrainedRoot(depRoot)
-		if !errors.Is(err, currentCloseErr) {
-			t.Fatalf("expected current close error, got %v", err)
-		}
-	})
 }
 
 func TestResolveEntrypointUnderRootDiscardsResultOnCloseFailure(t *testing.T) {
@@ -536,9 +627,27 @@ func TestRootWalkHelpers(t *testing.T) {
 	visit := func(string, fs.FileInfo) (bool, bool, error) {
 		return false, false, errors.New("visit failed")
 	}
-	err := walkChildRootNoFollow(child, "rel", visit, &rootWalkState{})
+	err := walkChildRootNoFollow(child, "rel", visit, &rootWalkState{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "not implemented") || !strings.Contains(err.Error(), "child close failed") {
 		t.Fatalf("expected joined walk child error, got %v", err)
+	}
+
+	root = &fakeJSRoot{
+		open: func(string) (safeio.File, error) {
+			return &fakeReadDirFile{readDirErr: errors.New("readdir failed"), closeErr: errors.New("close failed")}, nil
+		},
+	}
+	if _, err := readRootDirEntries(root); err == nil || !strings.Contains(err.Error(), "readdir failed") {
+		t.Fatalf("expected read-dir error to propagate, got %v", err)
+	}
+
+	root = &fakeJSRoot{
+		open: func(string) (safeio.File, error) {
+			return &fakeReadDirFile{entries: nil, closeErr: errors.New("close failed")}, nil
+		},
+	}
+	if _, err := readRootDirEntries(root); err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("expected close error after successful ReadDir, got %v", err)
 	}
 }
 
@@ -549,3 +658,29 @@ func (*fakeFileWithoutReadDir) Write([]byte) (int, error)  { return 0, errors.Ne
 func (*fakeFileWithoutReadDir) Close() error               { return nil }
 func (*fakeFileWithoutReadDir) Stat() (fs.FileInfo, error) { return nil, errors.New("not implemented") }
 func (*fakeFileWithoutReadDir) Chmod(os.FileMode) error    { return errors.New("not implemented") }
+
+type fakeReadDirFile struct {
+	entries    []fs.DirEntry
+	readDirErr error
+	closeErr   error
+}
+
+func (*fakeReadDirFile) Read([]byte) (int, error)   { return 0, io.EOF }
+func (*fakeReadDirFile) Write([]byte) (int, error)  { return 0, errors.New("not implemented") }
+func (f *fakeReadDirFile) Close() error             { return f.closeErr }
+func (*fakeReadDirFile) Stat() (fs.FileInfo, error) { return nil, errors.New("not implemented") }
+func (*fakeReadDirFile) Chmod(os.FileMode) error    { return errors.New("not implemented") }
+func (f *fakeReadDirFile) ReadDir(int) ([]fs.DirEntry, error) {
+	return f.entries, f.readDirErr
+}
+
+type fakeDirEntry struct {
+	name string
+	mode fs.FileMode
+	info fs.FileInfo
+}
+
+func (e *fakeDirEntry) Name() string               { return e.name }
+func (e *fakeDirEntry) IsDir() bool                { return e.mode.IsDir() }
+func (e *fakeDirEntry) Type() fs.FileMode          { return e.mode.Type() }
+func (e *fakeDirEntry) Info() (fs.FileInfo, error) { return e.info, nil }

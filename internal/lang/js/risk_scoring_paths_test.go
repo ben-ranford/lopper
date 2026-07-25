@@ -36,7 +36,7 @@ func testJSDepthRiskCueAdditionalBranch(t *testing.T) {
 		current = nextRoot
 	}
 
-	cues, warnings := appendDepthRiskCue(nil, nil, "root", repo, filepath.Join(root, "node_modules", "a"), packageJSON{
+	cues, warnings := appendDepthRiskCue(nil, nil, repo, filepath.Join(root, "node_modules", "a"), packageJSON{
 		Dependencies: map[string]string{"b": "1.0.0"},
 	})
 	if len(warnings) != 0 || len(cues) != 1 || cues[0].Severity != "high" {

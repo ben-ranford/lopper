@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 )
 
@@ -206,6 +207,9 @@ func validateRegularPathWithinRoot(root Root, targetRel, targetPath string) erro
 	info, err := root.Lstat(targetRel)
 	if err != nil {
 		return translateOpenNotExist(err, targetPath)
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return nil
 	}
 	if !info.Mode().IsRegular() {
 		return ErrNonRegularFile
