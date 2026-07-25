@@ -265,31 +265,23 @@ dependencies {
 	}
 }
 
-func TestJVMParseGradleDependenciesWarnsOnOversizedKTSBuildFile(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), strings.Repeat("a", maxScannableJVMBuildFile+1))
+func TestJVMParseGradleDependenciesWarnsOnOversizedBuildFiles(t *testing.T) {
+	t.Parallel()
 
-	descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
-	if len(descriptors) != 0 {
-		t.Fatalf("expected no gradle descriptors from oversized build.gradle.kts, got %#v", descriptors)
-	}
-	warningText := strings.Join(warnings, "\n")
-	if !strings.Contains(warningText, "unable to read "+buildGradleKTSName+": file exceeds size limit") {
-		t.Fatalf("expected oversized build.gradle.kts warning, got %#v", warnings)
-	}
-}
+	for _, name := range []string{buildGradleName, buildGradleKTSName} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, name), strings.Repeat("a", maxScannableJVMBuildFile+1))
 
-func TestJVMParseGradleDependenciesWarnsOnOversizedBuildGradleFile(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleName), strings.Repeat("a", maxScannableJVMBuildFile+1))
-
-	descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
-	if len(descriptors) != 0 {
-		t.Fatalf("expected no gradle descriptors from oversized build.gradle, got %#v", descriptors)
-	}
-	warningText := strings.Join(warnings, "\n")
-	if !strings.Contains(warningText, "unable to read "+buildGradleName+": file exceeds size limit") {
-		t.Fatalf("expected oversized build.gradle warning, got %#v", warnings)
+			descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
+			if len(descriptors) != 0 {
+				t.Fatalf("expected no gradle descriptors from oversized %s, got %#v", name, descriptors)
+			}
+			warningText := strings.Join(warnings, "\n")
+			if !strings.Contains(warningText, "unable to read "+name+": file exceeds size limit") {
+				t.Fatalf("expected oversized %s warning, got %#v", name, warnings)
+			}
+		})
 	}
 }
 
