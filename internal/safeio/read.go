@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 )
 
@@ -28,6 +29,10 @@ func (r *rootedReadCloser) ReadAt(p []byte, offset int64) (int, error) {
 
 func (r *rootedReadCloser) Close() error {
 	return errors.Join(r.file.Close(), r.root.Close())
+}
+
+func (r *rootedReadCloser) Stat() (fs.FileInfo, error) {
+	return r.file.Stat()
 }
 
 // ReadFileUnder reads targetPath only if it resolves under rootDir.

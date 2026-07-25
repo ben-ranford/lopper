@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func runMergedFinalReport(t *testing.T) report.Report {
 		}},
 	}
 
-	got, err := pipeline.finalReport()
+	got, err := pipeline.finalReport(context.Background())
 	if err != nil {
 		t.Fatalf("final report: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestAnalysisPipelineFinalReportNoResults(t *testing.T) {
 		},
 	}
 
-	got, err := pipeline.finalReport()
+	got, err := pipeline.finalReport(context.Background())
 	if err != nil {
 		t.Fatalf("final report: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestAnnotateRuntimeTraceInvalidFileFails(t *testing.T) {
 		t.Fatalf("write invalid trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}, false); err == nil {
+	if _, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "js-ts", report.Report{}, false); err == nil {
 		t.Fatalf("expected invalid runtime trace to fail")
 	}
 }
@@ -208,7 +209,7 @@ func TestAnnotateRuntimeTraceOversizedFileFails(t *testing.T) {
 		t.Fatalf("write oversized trace: %v", err)
 	}
 
-	if _, err := annotateRuntimeTraceIfPresent(tracePath, "js-ts", report.Report{}, false); !errors.Is(err, safeio.ErrFileTooLarge) {
+	if _, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "js-ts", report.Report{}, false); !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized runtime trace to fail with ErrFileTooLarge, got %v", err)
 	}
 }
@@ -219,12 +220,25 @@ func TestAnnotateRuntimeTraceSkipsUnsupportedLanguageBeforeReadingTrace(t *testi
 		t.Fatalf("write invalid trace: %v", err)
 	}
 
-	annotated, err := annotateRuntimeTraceIfPresent(tracePath, "python", report.Report{}, false)
+	annotated, err := annotateRuntimeTraceIfPresent(context.Background(), tracePath, "python", report.Report{}, false)
 	if err != nil {
 		t.Fatalf("expected disabled Python runtime trace to skip invalid file, got %v", err)
 	}
 	if len(annotated.Warnings) != 0 {
 		t.Fatalf("expected no warnings when unsupported trace is skipped, got %#v", annotated.Warnings)
+	}
+}
+
+func TestAnnotateRuntimeTraceContextCanceled(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte("{\"module\":\"lodash/map\"}\n"), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := annotateRuntimeTraceIfPresent(ctx, tracePath, "js-ts", report.Report{}, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancelled runtime trace annotation, got %v", err)
 	}
 }
 

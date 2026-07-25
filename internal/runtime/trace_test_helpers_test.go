@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -21,4 +22,9 @@ const (
 func loadTraceFromContent(t *testing.T, content string) (Trace, error) {
 	t.Helper()
 	return Load(testutil.WriteTempFile(t, "runtime.ndjson", content))
+}
+
+func loadTraceFromContentContext(ctx context.Context, t *testing.T, content string) (Trace, error) {
+	t.Helper()
+	return LoadContext(ctx, testutil.WriteTempFile(t, "runtime.ndjson", content))
 }

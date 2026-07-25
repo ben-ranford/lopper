@@ -84,7 +84,7 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 	return nil
 }
 
-func (p *analysisPipeline) finalReport() (report.Report, error) {
+func (p *analysisPipeline) finalReport(ctx context.Context) (report.Report, error) {
 	reportData := report.Report{
 		RepoPath: p.repoPath,
 		Warnings: p.collectWarnings(),
@@ -92,13 +92,13 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 	}
 	if len(p.reports) == 0 {
 		reportData.Warnings = append(reportData.Warnings, "no language adapter produced results")
-		return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
+		return finalizeReport(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), reportData)
 	}
 
 	merged := mergeReports(p.repoPath, p.reports)
 	merged.Warnings = append(merged.Warnings, reportData.Warnings...)
 	merged.Cache = reportData.Cache
-	return finalizeReport(p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
+	return finalizeReport(ctx, p.request, p.repoPath, p.analysisRepoPath, p.remappedAnalyzedRoots(), merged)
 }
 
 func (p *analysisPipeline) collectWarnings() []string {
@@ -121,11 +121,11 @@ func (p *analysisPipeline) remappedAnalyzedRoots() []string {
 	return remapAnalyzedRoots(p.analyzedRoots, p.analysisRepoPath, p.repoPath)
 }
 
-func finalizeReport(req Request, repoPath string, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
+func finalizeReport(ctx context.Context, req Request, repoPath string, identityRepoPath string, analyzedRoots []string, reportData report.Report) (report.Report, error) {
 	var err error
 	pythonRuntimeTraceEnabled := req.Features.Enabled(pythonRuntimeTraceFeature) ||
 		(req.PythonRuntimeTraceCaptured && req.Features.Enabled(pythonRuntimeCaptureFeature))
-	reportData, err = annotateRuntimeTraceIfPresent(req.RuntimeTracePath, req.Language, reportData, pythonRuntimeTraceEnabled)
+	reportData, err = annotateRuntimeTraceIfPresent(ctx, req.RuntimeTracePath, req.Language, reportData, pythonRuntimeTraceEnabled)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -328,7 +328,7 @@ func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []strin
 	return uniqueSorted(remapped)
 }
 
-func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
+func annotateRuntimeTraceIfPresent(ctx context.Context, runtimeTracePath string, languageID string, reportData report.Report, pythonRuntimeTraceEnabled bool) (report.Report, error) {
 	if runtimeTracePath == "" {
 		return reportData, nil
 	}
@@ -336,7 +336,7 @@ func annotateRuntimeTraceIfPresent(runtimeTracePath string, languageID string, r
 	if len(supportedLanguages) == 0 {
 		return reportData, nil
 	}
-	traceData, err := runtime.Load(runtimeTracePath)
+	traceData, err := runtime.LoadContext(ctx, runtimeTracePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			reportData.Warnings = append(reportData.Warnings, "runtime trace file not found; continuing with static analysis")
