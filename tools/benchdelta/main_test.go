@@ -139,20 +139,15 @@ func TestParseBenchmarkLineRejectsNonFiniteMemoryMetrics(t *testing.T) {
 	t.Parallel()
 
 	spellings := acceptedNonFiniteSpellings(t)
-	metrics := []struct {
-		name        string
-		metric      string
-		bytesValue  string
-		allocsValue string
-	}{
+	metrics := []nonFiniteMetricCase{
 		{
 			name:        "bytes",
-			metric:      "B/op",
+			metric:      benchmarkMetricBytesPerOp,
 			allocsValue: "3",
 		},
 		{
 			name:       "allocs",
-			metric:     "allocs/op",
+			metric:     benchmarkMetricAllocsPerOp,
 			bytesValue: "128",
 		},
 	}
@@ -160,28 +155,17 @@ func TestParseBenchmarkLineRejectsNonFiniteMemoryMetrics(t *testing.T) {
 	for _, metric := range metrics {
 		t.Run(metric.name, func(t *testing.T) {
 			for _, spelling := range spellings {
-				bytesValue, allocsValue := metric.bytesValue, metric.allocsValue
-				if metric.metric == "B/op" {
-					bytesValue = spelling
-				} else {
-					allocsValue = spelling
-				}
-				line := bytesAllocsBenchmark("NonFinite", bytesValue, allocsValue)
-
-				name, sample, status, diagnostic := parseBenchmarkLine("pkg", line)
-				if status != benchmarkLineInvalid {
-					t.Fatalf("parseBenchmarkLine(%q) status = %v, want invalid", line, status)
-				}
-				if name == "" || len(sample.bytesPerOp) != 0 || len(sample.allocsPerOp) != 0 {
-					t.Fatalf("parseBenchmarkLine(%q) returned unexpected sample %#v for %q", line, sample, name)
-				}
-				wantDiagnostic := invalidBenchmarkMetric("pkg", "NonFinite", metric.metric, spelling)
-				if diagnostic != wantDiagnostic {
-					t.Fatalf("parseBenchmarkLine(%q) diagnostic = %q, want %q", line, diagnostic, wantDiagnostic)
-				}
+				assertNonFiniteMetricRejected(t, metric, spelling)
 			}
 		})
 	}
+}
+
+type nonFiniteMetricCase struct {
+	name        string
+	metric      string
+	bytesValue  string
+	allocsValue string
 }
 
 func TestAcceptedNonFiniteSpellings(t *testing.T) {
@@ -458,13 +442,7 @@ func TestCompareBenchmarksRejectsInvalidSamples(t *testing.T) {
 
 func TestParseBenchmarkFileBranches(t *testing.T) {
 	t.Run("records non-finite benchmark lines as invalid", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "bench.txt")
-		writeBenchmarkFixture(t, path, reportFixture(bytesAllocsBenchmark("Invalid", "nan", "1")))
-
-		input, err := parseBenchmarkFile(path)
-		if err != nil {
-			t.Fatalf("parse benchmark file: %v", err)
-		}
+		input := parseBenchmarkFixture(t, reportFixture(bytesAllocsBenchmark("Invalid", "nan", "1")))
 		wantDiagnostic := invalidBenchmarkMetric(reportBenchmarkPkg, "Invalid", "B/op", "nan")
 		if !slices.Equal(input.invalid, []string{wantDiagnostic}) {
 			t.Fatalf("invalid diagnostics = %#v, want %#v", input.invalid, []string{wantDiagnostic})
@@ -475,13 +453,7 @@ func TestParseBenchmarkFileBranches(t *testing.T) {
 	})
 
 	t.Run("skips invalid benchmark lines in file", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "bench.txt")
-		writeBenchmarkFixture(t, path, reportFixture(benchmarkFixtureLine("Ignored", "1000", "100", "ns/op"), completeBenchmark("Format")))
-
-		input, err := parseBenchmarkFile(path)
-		if err != nil {
-			t.Fatalf("parse benchmark file: %v", err)
-		}
+		input := parseBenchmarkFixture(t, reportFixture(benchmarkFixtureLine("Ignored", "1000", "100", benchmarkMetricNsPerOp), completeBenchmark("Format")))
 		if len(input.data) != 1 || len(input.incomplete) != 1 {
 			t.Fatalf("expected one parsed benchmark and one incomplete diagnostic, got data=%#v incomplete=%#v", input.data, input.incomplete)
 		}
@@ -693,6 +665,44 @@ func runBenchdeltaMainIfRequested(t *testing.T) bool {
 	return true
 }
 
+func assertNonFiniteMetricRejected(t *testing.T, metric nonFiniteMetricCase, spelling string) {
+	t.Helper()
+
+	bytesValue, allocsValue := nonFiniteMetricSampleValues(metric, spelling)
+	line := bytesAllocsBenchmark("NonFinite", bytesValue, allocsValue)
+	name, sample, status, diagnostic := parseBenchmarkLine("pkg", line)
+	if status != benchmarkLineInvalid {
+		t.Fatalf("parseBenchmarkLine(%q) status = %v, want invalid", line, status)
+	}
+	if name == "" || len(sample.bytesPerOp) != 0 || len(sample.allocsPerOp) != 0 {
+		t.Fatalf("parseBenchmarkLine(%q) returned unexpected sample %#v for %q", line, sample, name)
+	}
+	wantDiagnostic := invalidBenchmarkMetric("pkg", "NonFinite", metric.metric, spelling)
+	if diagnostic != wantDiagnostic {
+		t.Fatalf("parseBenchmarkLine(%q) diagnostic = %q, want %q", line, diagnostic, wantDiagnostic)
+	}
+}
+
+func nonFiniteMetricSampleValues(tc nonFiniteMetricCase, spelling string) (string, string) {
+	if tc.metric == benchmarkMetricBytesPerOp {
+		return spelling, tc.allocsValue
+	}
+	return tc.bytesValue, spelling
+}
+
+func parseBenchmarkFixture(t *testing.T, lines []string) benchmarkInput {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "bench.txt")
+	writeBenchmarkFixture(t, path, lines)
+
+	input, err := parseBenchmarkFile(path)
+	if err != nil {
+		t.Fatalf("parse benchmark file: %v", err)
+	}
+	return input
+}
+
 func writeBenchmarkFixture(t *testing.T, path string, lines []string) {
 	t.Helper()
 	content := append([]string{"goos: darwin"}, lines...)
@@ -834,15 +844,15 @@ func completeBenchmark(name string) string {
 }
 
 func bytesAllocsBenchmark(name, bytes, allocs string) string {
-	return benchmarkFixtureLine(name, "1000", "100", "ns/op", bytes, "B/op", allocs, "allocs/op")
+	return benchmarkFixtureLine(name, "1000", "100", benchmarkMetricNsPerOp, bytes, benchmarkMetricBytesPerOp, allocs, benchmarkMetricAllocsPerOp)
 }
 
 func bytesOnlyBenchmark(name, bytes string) string {
-	return benchmarkFixtureLine(name, "1000", "100", "ns/op", bytes, "B/op")
+	return benchmarkFixtureLine(name, "1000", "100", benchmarkMetricNsPerOp, bytes, benchmarkMetricBytesPerOp)
 }
 
 func allocsOnlyBenchmark(name, allocs string) string {
-	return benchmarkFixtureLine(name, "1000", "100", "ns/op", allocs, "allocs/op")
+	return benchmarkFixtureLine(name, "1000", "100", benchmarkMetricNsPerOp, allocs, benchmarkMetricAllocsPerOp)
 }
 
 func repeatedCompleteBenchmark(name string, count int) []string {

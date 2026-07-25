@@ -49,6 +49,10 @@ const (
 	exitCodePassed     = 0
 	exitCodeRegression = 1
 	exitCodeInvalid    = 2
+
+	benchmarkMetricNsPerOp     = "ns/op"
+	benchmarkMetricBytesPerOp  = "B/op"
+	benchmarkMetricAllocsPerOp = "allocs/op"
 )
 
 type benchmarkLineStatus uint8
@@ -175,41 +179,59 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, benchmarkLine
 	}
 	key := currentPkg + "/" + benchmarkName
 	var sample samples
-	var hasNsPerOp bool
-	var hasBytes bool
-	var hasAllocs bool
+	flags := benchmarkSampleFlags{}
 
 	for i := 2; i+1 < len(fields); i += 2 {
-		value, err := strconv.ParseFloat(fields[i], 64)
-		if err != nil {
-			continue
-		}
-		switch fields[i+1] {
-		case "ns/op":
-			hasNsPerOp = true
-		case "B/op":
-			if !isFinite(value) {
-				return key, samples{}, benchmarkLineInvalid, invalidSampleDiagnostic(key, "B/op", fields[i])
-			}
-			hasBytes = true
-			sample.bytesPerOp = append(sample.bytesPerOp, value)
-		case "allocs/op":
-			if !isFinite(value) {
-				return key, samples{}, benchmarkLineInvalid, invalidSampleDiagnostic(key, "allocs/op", fields[i])
-			}
-			hasAllocs = true
-			sample.allocsPerOp = append(sample.allocsPerOp, value)
+		status, diagnostic := collectBenchmarkMetric(fields[i+1], fields[i], key, &sample, &flags)
+		if status != benchmarkLineComplete {
+			return key, samples{}, status, diagnostic
 		}
 	}
 
-	if !hasBytes && !hasAllocs {
-		if hasNsPerOp {
+	return finalizeBenchmarkLine(key, sample, flags)
+}
+
+type benchmarkSampleFlags struct {
+	hasNsPerOp bool
+	hasBytes   bool
+	hasAllocs  bool
+}
+
+func collectBenchmarkMetric(unit, rawValue, key string, sample *samples, flags *benchmarkSampleFlags) (benchmarkLineStatus, string) {
+	value, err := strconv.ParseFloat(rawValue, 64)
+	if err != nil {
+		return benchmarkLineComplete, ""
+	}
+
+	switch unit {
+	case benchmarkMetricNsPerOp:
+		flags.hasNsPerOp = true
+	case benchmarkMetricBytesPerOp:
+		if !isFinite(value) {
+			return benchmarkLineInvalid, invalidSampleDiagnostic(key, benchmarkMetricBytesPerOp, rawValue)
+		}
+		flags.hasBytes = true
+		sample.bytesPerOp = append(sample.bytesPerOp, value)
+	case benchmarkMetricAllocsPerOp:
+		if !isFinite(value) {
+			return benchmarkLineInvalid, invalidSampleDiagnostic(key, benchmarkMetricAllocsPerOp, rawValue)
+		}
+		flags.hasAllocs = true
+		sample.allocsPerOp = append(sample.allocsPerOp, value)
+	}
+
+	return benchmarkLineComplete, ""
+}
+
+func finalizeBenchmarkLine(key string, sample samples, flags benchmarkSampleFlags) (string, samples, benchmarkLineStatus, string) {
+	if !flags.hasBytes && !flags.hasAllocs {
+		if flags.hasNsPerOp {
 			return key, samples{}, benchmarkLineIncomplete, incompleteSampleDiagnostic(key, true, true)
 		}
 		return "", samples{}, benchmarkLineIgnored, ""
 	}
-	if !hasBytes || !hasAllocs {
-		return key, samples{}, benchmarkLineIncomplete, incompleteSampleDiagnostic(key, !hasBytes, !hasAllocs)
+	if !flags.hasBytes || !flags.hasAllocs {
+		return key, samples{}, benchmarkLineIncomplete, incompleteSampleDiagnostic(key, !flags.hasBytes, !flags.hasAllocs)
 	}
 	return key, sample, benchmarkLineComplete, ""
 }
@@ -231,10 +253,10 @@ func normalizeBenchmarkName(name string) string {
 func incompleteSampleDiagnostic(name string, missingBytes, missingAllocs bool) string {
 	missing := make([]string, 0, 2)
 	if missingBytes {
-		missing = append(missing, "B/op")
+		missing = append(missing, benchmarkMetricBytesPerOp)
 	}
 	if missingAllocs {
-		missing = append(missing, "allocs/op")
+		missing = append(missing, benchmarkMetricAllocsPerOp)
 	}
 	return fmt.Sprintf("`%s` missing %s", name, strings.Join(missing, " and "))
 }
