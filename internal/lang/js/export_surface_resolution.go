@@ -9,9 +9,37 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func loadPackageJSONForSurface(depPath string) (packageJSON, []string, error) {
-	pkgPath := filepath.Join(depPath, "package.json")
-	data, err := safeio.ReadFileUnder(depPath, pkgPath)
+type entrypointCandidates struct {
+	ordered []string
+	total   int
+}
+
+var openEntrypointRoot = openConstrainedRoot
+
+func loadPackageJSONForSurface(rootPath, depPath string) (packageJSON, []string, error) {
+	validatedDepRoot, err := validateDirectoryPathNoFollow(depPath)
+	if err != nil {
+		pkgPath := filepath.Join(depPath, "package.json")
+		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+	}
+	pkgPath := filepath.Join(validatedDepRoot, "package.json")
+	if rootPath == "" {
+		rootPath = validatedDepRoot
+	}
+	root, validatedRootPath, err := openValidatedRootNoFollow(rootPath)
+	if err != nil {
+		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	relPkgPath, err := relativePathWithinRoot(validatedRootPath, pkgPath)
+	if err != nil {
+		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
+	}
+	data, err := safeio.ReadFileWithinRootLimit(root, relPkgPath, jsPackageJSONReadMaxBytes)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
 	}
@@ -22,7 +50,7 @@ func loadPackageJSONForSurface(depPath string) (packageJSON, []string, error) {
 	return pkg, nil, nil
 }
 
-func collectCandidateEntrypoints(pkg packageJSON, profile runtimeProfile, surface *ExportSurface) map[string]struct{} {
+func collectCandidateEntrypoints(pkg packageJSON, profile runtimeProfile, surface *ExportSurface) entrypointCandidates {
 	entrypoints := make(map[string]struct{})
 	if pkg.Exports != nil {
 		resolved := resolveExportsEntryPaths(pkg.Exports, profile, "exports", surface)
@@ -44,13 +72,100 @@ func collectCandidateEntrypoints(pkg packageJSON, profile runtimeProfile, surfac
 	if len(entrypoints) == 0 {
 		addEntrypoint(entrypoints, "index.js")
 	}
-	return entrypoints
+	return entrypointCandidates{
+		ordered: prioritizedEntrypoints(pkg, profile, entrypoints),
+		total:   len(entrypoints),
+	}
 }
 
-func resolveEntrypoints(depPath string, entrypoints map[string]struct{}, surface *ExportSurface) []string {
-	resolved := make([]string, 0, len(entrypoints))
-	for entry := range entrypoints {
-		path, ok := resolveEntrypoint(depPath, entry)
+func prioritizedEntrypoints(pkg packageJSON, profile runtimeProfile, entrypoints map[string]struct{}) []string {
+	ordered := make([]string, 0, len(entrypoints))
+	seen := make(map[string]struct{}, len(entrypoints))
+	appendEntry := func(entry string) {
+		if _, ok := entrypoints[entry]; !ok {
+			return
+		}
+		if _, ok := seen[entry]; ok {
+			return
+		}
+		seen[entry] = struct{}{}
+		ordered = append(ordered, entry)
+	}
+
+	for _, entry := range prioritizedExportEntrypoints(pkg.Exports, profile) {
+		appendEntry(entry)
+	}
+	for _, entry := range []string{pkg.Main, pkg.Module, pkg.Types, pkg.Typings, "index.js"} {
+		appendEntry(entry)
+	}
+	for _, entry := range sortedMapKeys(entrypoints) {
+		appendEntry(entry)
+	}
+	return ordered
+}
+
+func prioritizedExportEntrypoints(exports any, profile runtimeProfile) []string {
+	exportsMap, ok := exports.(map[string]any)
+	if !ok || len(exportsMap) == 0 {
+		return resolveExportsEntryPaths(exports, profile, "exports", nil)
+	}
+
+	if !hasSubpathExportKeys(exportsMap) {
+		return resolveExportsEntryPaths(exports, profile, "exports", nil)
+	}
+
+	collected := make([]string, 0, len(exportsMap))
+	seen := make(map[string]struct{})
+	appendPaths := func(paths []string) {
+		for _, entry := range paths {
+			if _, ok := seen[entry]; ok {
+				continue
+			}
+			seen[entry] = struct{}{}
+			collected = append(collected, entry)
+		}
+	}
+
+	if rootExport, ok := exportsMap["."]; ok {
+		paths, _ := resolveExportNode(rootExport, profile, "exports.", nil)
+		appendPaths(paths)
+	}
+
+	for _, key := range sortedObjectKeys(exportsMap) {
+		if key == "." || !isSubpathExportKey(key) {
+			continue
+		}
+		paths, _ := resolveExportNode(exportsMap[key], profile, fmt.Sprintf("exports.%s", key), nil)
+		appendPaths(paths)
+	}
+	return collected
+}
+
+func resolveEntrypoints(rootPath, depPath string, candidates entrypointCandidates, surface *ExportSurface) (resolved []string) {
+	if candidates.total > maxExportEntrypoints {
+		surface.Warnings = append(surface.Warnings, fmt.Sprintf("capped dependency entrypoint resolution at %d candidates", maxExportEntrypoints))
+	}
+
+	root, err := openEntrypointRoot(rootPath)
+	if err != nil {
+		return nil
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			surface.Warnings = append(surface.Warnings, "failed to close dependency root after entrypoint resolution")
+			resolved = nil
+		}
+	}()
+
+	resolved = make([]string, 0, minInt(len(candidates.ordered), maxExportEntrypoints))
+	attempts := 0
+	for _, entry := range candidates.ordered {
+		if attempts >= maxExportEntrypoints || len(resolved) >= maxExportEntrypoints {
+			break
+		}
+		attempts++
+
+		path, ok := resolveEntrypointWithinRoot(root, rootPath, depPath, entry)
 		if !ok {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("entrypoint not found: %s", entry))
 			continue
@@ -60,7 +175,22 @@ func resolveEntrypoints(depPath string, entrypoints map[string]struct{}, surface
 	return resolved
 }
 
-func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *ExportSurface) {
+func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *ExportSurface) {
+	if rootPath == "" {
+		return
+	}
+	root, validatedRootPath, err := openValidatedRootNoFollow(rootPath)
+	if err != nil {
+		for _, entry := range resolved {
+			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
+		}
+		return
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			surface.Warnings = append(surface.Warnings, "failed to close dependency root after entrypoint parsing")
+		}
+	}()
 	parser := newSourceParser()
 	seenEntries := make(map[string]struct{})
 	for _, entry := range resolved {
@@ -68,8 +198,14 @@ func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *Exp
 			continue
 		}
 		seenEntries[entry] = struct{}{}
+		surface.EntryPoints = append(surface.EntryPoints, entry)
 
-		content, err := safeio.ReadFileUnder(depPath, entry)
+		relEntry, err := relativePathWithinRoot(validatedRootPath, entry)
+		if err != nil {
+			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
+			continue
+		}
+		content, err := safeio.ReadFileWithinRootLimit(root, relEntry, jsSourceReadMaxBytes)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
 			continue
@@ -83,9 +219,6 @@ func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *Exp
 			addCollectedExports(surface, collectExportNames(tree, content))
 		}
 	}
-	for entry := range seenEntries {
-		surface.EntryPoints = append(surface.EntryPoints, entry)
-	}
 }
 
 func addCollectedExports(surface *ExportSurface, names []string) {
@@ -96,4 +229,11 @@ func addCollectedExports(surface *ExportSurface, names []string) {
 		}
 		surface.Names[name] = struct{}{}
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -2,6 +2,7 @@ package js
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	jsPnpmWorkspaceFile = "pnpm-workspace.yaml"
-	jsYarnRCFile        = ".yarnrc.yml"
+	jsPnpmWorkspaceFile             = "pnpm-workspace.yaml"
+	jsYarnRCFile                    = ".yarnrc.yml"
+	jsWorkspaceManifestReadMaxBytes = jsPackageJSONReadMaxBytes
 )
 
 type workspaceDependencyCatalog struct {
@@ -126,8 +128,11 @@ func readWorkspacePackageJSON(repoPath, manifestPath string) (packageJSON, bool,
 		return packageJSON{}, false, fmt.Sprintf("workspace manifest path is a directory: %s", workspaceDisplayPath(repoPath, manifestPath))
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, manifestPath, jsWorkspaceManifestReadMaxBytes)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return packageJSON{}, false, fmt.Sprintf("skipped workspace manifest %s above %d bytes", workspaceDisplayPath(repoPath, manifestPath), jsWorkspaceManifestReadMaxBytes)
+		}
 		return packageJSON{}, false, fmt.Sprintf("unable to read workspace manifest %s: %v", workspaceDisplayPath(repoPath, manifestPath), err)
 	}
 
@@ -147,8 +152,11 @@ func readPnpmWorkspaceManifest(repoPath string) (pnpmWorkspaceManifest, bool, st
 		return pnpmWorkspaceManifest{}, false, fmt.Sprintf("unable to read %s: %v", jsPnpmWorkspaceFile, err)
 	}
 
-	manifest, err := shared.ReadYAMLUnderRepo[pnpmWorkspaceManifest](repoPath, path)
+	manifest, err := shared.ReadYAMLUnderRepoLimit[pnpmWorkspaceManifest](repoPath, path, jsWorkspaceManifestReadMaxBytes)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return pnpmWorkspaceManifest{}, false, fmt.Sprintf("skipped %s above %d bytes", jsPnpmWorkspaceFile, jsWorkspaceManifestReadMaxBytes)
+		}
 		return pnpmWorkspaceManifest{}, false, fmt.Sprintf("failed to parse %s: %v", jsPnpmWorkspaceFile, err)
 	}
 	return manifest, true, ""
@@ -163,8 +171,11 @@ func readYarnCatalogManifest(repoPath string) (yarnCatalogManifest, bool, string
 		return yarnCatalogManifest{}, false, fmt.Sprintf("unable to read %s: %v", jsYarnRCFile, err)
 	}
 
-	manifest, err := shared.ReadYAMLUnderRepo[yarnCatalogManifest](repoPath, path)
+	manifest, err := shared.ReadYAMLUnderRepoLimit[yarnCatalogManifest](repoPath, path, jsWorkspaceManifestReadMaxBytes)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return yarnCatalogManifest{}, false, fmt.Sprintf("skipped %s above %d bytes", jsYarnRCFile, jsWorkspaceManifestReadMaxBytes)
+		}
 		return yarnCatalogManifest{}, false, fmt.Sprintf("failed to parse %s: %v", jsYarnRCFile, err)
 	}
 	if len(manifest.Catalog) == 0 && len(manifest.Catalogs) == 0 {

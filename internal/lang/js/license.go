@@ -2,6 +2,7 @@ package js
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -11,24 +12,42 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) (*report.DependencyLicense, *report.DependencyProvenance, []string) {
+const licenseFileReadMaxBytes = jsPackageJSONReadMaxBytes
+
+var openLicenseValidatedRoot = openValidatedRootNoFollow
+
+const dependencyRootOpaqueLayoutWarning = "skipped dependency-root metadata reads because the node_modules layout could not be safely pinned (symlinked or opaque layout)"
+
+func detectLicenseAndProvenance(depRoot string, includeRegistryProvenance bool) (license *report.DependencyLicense, provenance *report.DependencyProvenance, warnings []string) {
 	if strings.TrimSpace(depRoot) == "" {
-		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{"unable to resolve dependency root for license/provenance detection"}
+		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{dependencyRootOpaqueLayoutWarning}
 	}
-	pkg, warnings := loadDependencyPackageJSON(depRoot)
-	license := detectLicenseFromMetadataOrFiles(pkg, depRoot)
-	provenance := buildProvenance(pkg, includeRegistryProvenance)
+	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
+	if err != nil {
+		return unknownDependencyLicense(), unknownDependencyProvenance(), []string{dependencyRootOpaqueLayoutWarning}
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			warnings = append(warnings, "failed to close dependency root after license/provenance detection")
+		}
+	}()
+
+	pkg, warnings := loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
+	var licenseWarnings []string
+	license, licenseWarnings = detectLicenseFromMetadataOrFiles(pkg, root, validatedDepRoot)
+	warnings = append(warnings, licenseWarnings...)
+	provenance = buildProvenance(pkg, includeRegistryProvenance)
 	return license, provenance, warnings
 }
 
-func detectLicenseFromMetadataOrFiles(pkg packageJSON, depRoot string) *report.DependencyLicense {
+func detectLicenseFromMetadataOrFiles(pkg packageJSON, root safeio.Root, depRoot string) (*report.DependencyLicense, []string) {
 	if license := detectLicenseFromPackageJSON(pkg); license != nil {
-		return license
+		return license, nil
 	}
-	if license := detectLicenseFromFiles(depRoot); license != nil {
-		return license
+	if license, warnings := detectLicenseFromFilesWithinRoot(root, depRoot); license != nil {
+		return license, warnings
 	}
-	return unknownDependencyLicense()
+	return unknownDependencyLicense(), nil
 }
 
 func unknownDependencyLicense() *report.DependencyLicense {
@@ -160,41 +179,109 @@ type licenseFileProbe struct {
 	confidence string
 }
 
-func detectLicenseFromFiles(depRoot string) *report.DependencyLicense {
-	probe := probeLicenseFiles(depRoot)
-	if probe == nil {
-		return nil
-	}
-	return synthesizeLicenseFromFileProbe(*probe)
-}
-
-func probeLicenseFiles(depRoot string) *licenseFileProbe {
-	return probeLicenseCandidates(depRoot, findLicenseFiles(depRoot))
-}
-
-func probeLicenseCandidates(depRoot string, candidates []string) *licenseFileProbe {
-	for _, candidate := range candidates {
-		if probe := probeLicenseCandidate(depRoot, candidate); probe != nil {
-			return probe
-		}
-	}
-	return nil
-}
-
-func probeLicenseCandidate(depRoot, candidate string) *licenseFileProbe {
-	content, err := safeio.ReadFileUnder(depRoot, candidate)
+func detectLicenseFromFiles(depRoot string) (license *report.DependencyLicense) {
+	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
 	if err != nil {
 		return nil
 	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			license = nil
+		}
+	}()
+	license, _ = detectLicenseFromFilesWithinRoot(root, validatedDepRoot)
+	return license
+}
+
+func detectLicenseFromFilesWithinRoot(root safeio.Root, depRoot string) (*report.DependencyLicense, []string) {
+	probe, warnings := probeLicenseFilesWithinRoot(root, depRoot)
+	if probe == nil {
+		return nil, warnings
+	}
+	return synthesizeLicenseFromFileProbe(*probe), warnings
+}
+
+func probeLicenseFiles(depRoot string) (probe *licenseFileProbe) {
+	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
+	if err != nil {
+		return nil
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			probe = nil
+		}
+	}()
+	probe, _ = probeLicenseFilesWithinRoot(root, validatedDepRoot)
+	return probe
+}
+
+func probeLicenseFilesWithinRoot(root safeio.Root, depRoot string) (*licenseFileProbe, []string) {
+	return probeLicenseCandidatesWithinRoot(root, depRoot, findLicenseFilesWithinRoot(root, depRoot))
+}
+
+func probeLicenseCandidates(depRoot string, candidates []string) (probe *licenseFileProbe) {
+	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
+	if err != nil {
+		return nil
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			probe = nil
+		}
+	}()
+	probe, _ = probeLicenseCandidatesWithinRoot(root, validatedDepRoot, candidates)
+	return probe
+}
+
+func probeLicenseCandidatesWithinRoot(root safeio.Root, depRoot string, candidates []string) (*licenseFileProbe, []string) {
+	warnings := make([]string, 0)
+	for _, candidate := range candidates {
+		probe, warning := probeLicenseCandidateWithinRoot(root, depRoot, candidate)
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+		if probe != nil {
+			return probe, warnings
+		}
+	}
+	return nil, warnings
+}
+
+func probeLicenseCandidate(depRoot, candidate string) (probe *licenseFileProbe) {
+	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
+	if err != nil {
+		return nil
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			probe = nil
+		}
+	}()
+	probe, _ = probeLicenseCandidateWithinRoot(root, validatedDepRoot, candidate)
+	return probe
+}
+
+func probeLicenseCandidateWithinRoot(root safeio.Root, depRoot, candidate string) (*licenseFileProbe, string) {
+	relCandidate, err := relativePathWithinRoot(depRoot, candidate)
+	if err != nil {
+		return nil, ""
+	}
+	content, err := safeio.ReadFileWithinRootLimit(root, relCandidate, licenseFileReadMaxBytes)
+	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return nil, fmt.Sprintf("skipped license candidate %s above %d bytes", filepath.Base(candidate), licenseFileReadMaxBytes)
+		}
+		return nil, ""
+	}
 	spdx, confidence := detectSPDXFromLicenseContent(string(content))
 	if spdx == "" {
-		return nil
+		return nil, ""
 	}
 	return &licenseFileProbe{
 		path:       candidate,
 		spdx:       spdx,
 		confidence: confidence,
-	}
+	}, ""
 }
 
 func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLicense {
@@ -206,35 +293,46 @@ func synthesizeLicenseFromFileProbe(probe licenseFileProbe) *report.DependencyLi
 	}
 }
 
-func findLicenseFiles(depRoot string) []string {
+func findLicenseFiles(depRoot string) (files []string) {
+	validatedDepRoot, err := validateDirectoryPathNoFollow(depRoot)
+	if err != nil {
+		return nil
+	}
+	root, err := openConstrainedRoot(validatedDepRoot)
+	if err != nil {
+		return nil
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			files = nil
+		}
+	}()
+	return findLicenseFilesWithinRoot(root, validatedDepRoot)
+}
+
+func findLicenseFilesWithinRoot(root safeio.Root, depRoot string) []string {
 	files := make([]string, 0, 4)
-	if filepath.WalkDir(depRoot, licenseWalkFunc(depRoot, &files)) != nil {
+	if err := walkRootNoFollow(root, licenseWalkFunc(depRoot, &files)); err != nil {
 		return files
 	}
 	return files
 }
 
-func licenseWalkFunc(depRoot string, files *[]string) fs.WalkDirFunc {
-	return func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
+func licenseWalkFunc(depRoot string, files *[]string) rootWalkFunc {
+	return func(relPath string, info fs.FileInfo) (bool, bool, error) {
+		if shouldSkipLicenseDir(relPath, info) {
+			return true, false, nil
 		}
-		if shouldSkipLicenseDir(depRoot, path, d) {
-			return filepath.SkipDir
+		if info.IsDir() || !isLicenseCandidate(relPath) {
+			return false, false, nil
 		}
-		if d.IsDir() || !isLicenseCandidate(path) {
-			return nil
-		}
-		*files = append(*files, path)
-		if len(*files) >= 5 {
-			return fs.SkipAll
-		}
-		return nil
+		*files = append(*files, filepath.Join(depRoot, relPath))
+		return false, len(*files) >= 5, nil
 	}
 }
 
-func shouldSkipLicenseDir(depRoot, path string, d fs.DirEntry) bool {
-	return d.IsDir() && path != depRoot && strings.EqualFold(d.Name(), "node_modules")
+func shouldSkipLicenseDir(path string, info fs.FileInfo) bool {
+	return info.IsDir() && path != "" && strings.EqualFold(filepath.Base(path), "node_modules")
 }
 
 func isLicenseCandidate(path string) bool {
@@ -324,9 +422,24 @@ func hasRepositorySignal(value any) bool {
 	return false
 }
 
-func loadDependencyPackageJSON(depRoot string) (packageJSON, []string) {
-	pkgPath := filepath.Join(depRoot, "package.json")
-	data, err := safeio.ReadFileUnder(depRoot, pkgPath)
+func loadDependencyPackageJSON(depRoot string) (pkg packageJSON, warnings []string) {
+	root, validatedDepRoot, err := openLicenseValidatedRoot(depRoot)
+	if err != nil {
+		pkgPath := filepath.Join(depRoot, "package.json")
+		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			pkg = packageJSON{}
+			warnings = []string{fmt.Sprintf("unable to read dependency metadata: %s", filepath.Join(validatedDepRoot, "package.json"))}
+		}
+	}()
+	return loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
+}
+
+func loadDependencyPackageJSONFromRoot(root safeio.Root, validatedDepRoot string) (packageJSON, []string) {
+	pkgPath := filepath.Join(validatedDepRoot, "package.json")
+	data, err := safeio.ReadFileWithinRootLimit(root, "package.json", jsPackageJSONReadMaxBytes)
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read dependency metadata: %s", pkgPath)}
 	}

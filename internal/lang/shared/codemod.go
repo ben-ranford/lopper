@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 )
 
 const CodemodModeSuggestOnly = "suggest-only"
+const codemodSourceReadMaxBytes int64 = 8 << 20
 
 type CodemodSuggestionSpec struct {
 	Language          string
@@ -91,8 +93,11 @@ func LoadCodemodSourceLines(repoPath, filePath string, lineCache map[string][]st
 	if lines, ok := lineCache[filePath]; ok {
 		return lines, "", true
 	}
-	content, err := safeio.ReadFileUnder(repoPath, filepath.Join(repoPath, filePath))
+	content, err := safeio.ReadFileUnderLimit(repoPath, filepath.Join(repoPath, filePath), codemodSourceReadMaxBytes)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return nil, fmt.Sprintf("codemod preview skipped for %s: source exceeds %d bytes", filePath, codemodSourceReadMaxBytes), false
+		}
 		return nil, fmt.Sprintf("codemod preview skipped for %s: %v", filePath, err), false
 	}
 	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")

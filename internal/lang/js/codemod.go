@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const codemodModeSuggestOnly = shared.CodemodModeSuggestOnly
@@ -216,7 +217,7 @@ func newSubpathResolver(dependencyRoot string) subpathResolver {
 	if strings.TrimSpace(dependencyRoot) == "" {
 		return resolver
 	}
-	pkg, _, err := loadPackageJSONForSurface(dependencyRoot)
+	pkg, _, err := loadPackageJSONForSurface(dependencyRoot, dependencyRoot)
 	if err != nil {
 		return resolver
 	}
@@ -254,28 +255,53 @@ func (r *subpathResolver) Resolve(dependency, exportName string) (string, bool) 
 	return "", false
 }
 
-func hasResolvableSubpathFile(dependencyRoot, subpath string) bool {
+func hasResolvableSubpathFile(dependencyRoot, subpath string) (resolved bool) {
 	candidates := []string{
-		filepath.Join(dependencyRoot, subpath),
-		filepath.Join(dependencyRoot, subpath+".js"),
-		filepath.Join(dependencyRoot, subpath+".mjs"),
-		filepath.Join(dependencyRoot, subpath+".cjs"),
-		filepath.Join(dependencyRoot, subpath+".ts"),
-		filepath.Join(dependencyRoot, subpath+".mts"),
-		filepath.Join(dependencyRoot, subpath+".cts"),
-		filepath.Join(dependencyRoot, subpath, "index.js"),
-		filepath.Join(dependencyRoot, subpath, "index.mjs"),
-		filepath.Join(dependencyRoot, subpath, "index.cjs"),
+		subpath,
+		subpath + ".js",
+		subpath + ".mjs",
+		subpath + ".cjs",
+		subpath + ".ts",
+		subpath + ".mts",
+		subpath + ".cts",
+		filepath.Join(subpath, "index.js"),
+		filepath.Join(subpath, "index.mjs"),
+		filepath.Join(subpath, "index.cjs"),
 	}
+
+	root, err := openConstrainedRoot(dependencyRoot)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		resolved = root.Close() == nil && resolved
+	}()
+
 	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err != nil {
-			continue
+		if isRegularFileNoFollow(root, candidate) {
+			return true
 		}
-		if info.IsDir() {
-			continue
-		}
-		return true
 	}
 	return false
+}
+
+func isRegularFileNoFollow(root safeio.Root, path string) bool {
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "." || filepath.IsAbs(cleanPath) || cleanPath == ".." ||
+		strings.HasPrefix(cleanPath, ".."+string(os.PathSeparator)) {
+		return false
+	}
+
+	parts := strings.Split(cleanPath, string(os.PathSeparator))
+	currentPath := ""
+	for _, part := range parts[:len(parts)-1] {
+		currentPath = filepath.Join(currentPath, part)
+		info, err := root.Lstat(currentPath)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return false
+		}
+	}
+
+	info, err := root.Lstat(cleanPath)
+	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular()
 }

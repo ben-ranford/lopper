@@ -8,7 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+const testJSSourceReadMaxBytes = 8 << 20
 
 func TestScanRepoParseErrorWarning(t *testing.T) {
 	repo := t.TempDir()
@@ -101,6 +105,80 @@ func TestReadAndParseFileBranches(t *testing.T) {
 	if _, _, _, err := readAndParseFile(context.Background(), parser, repo, cssPath); err == nil {
 		t.Fatalf("expected parser language error for unsupported extension")
 	}
+}
+
+func TestReadAndParseFileRejectsOversizedInput(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "large.js")
+	if err := os.WriteFile(path, bytesOfLength(testJSSourceReadMaxBytes+1), 0o600); err != nil {
+		t.Fatalf("write large.js: %v", err)
+	}
+
+	_, _, _, err := readAndParseFile(context.Background(), newSourceParser(), repo, path)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized file to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestScanRepoWarnsWhenBoundedReadSkipsOversizedFile(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "large.js")
+	if err := os.WriteFile(path, bytesOfLength(testJSSourceReadMaxBytes+1), 0o600); err != nil {
+		t.Fatalf("write large.js: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo with oversized file: %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("expected oversized file to be skipped, got %#v", result.Files)
+	}
+	warnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(warnings, "skipped 1 JS/TS file(s) above") {
+		t.Fatalf("expected oversized-file warning, got %#v", result.Warnings)
+	}
+}
+
+func TestReadAndParseFileRejectsEscapingSourceSymlink(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	outsidePath := filepath.Join(outside, "outside.js")
+	outsideContent := "import escape from \"outside-dependency\"\nexport const leaked = escape\n"
+	if err := os.WriteFile(outsidePath, []byte(outsideContent), 0o600); err != nil {
+		t.Fatalf("write outside.js: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "escape.js")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if _, _, _, err := readAndParseFile(context.Background(), newSourceParser(), repo, linkPath); err == nil {
+		t.Fatalf("expected escaping source symlink read to fail")
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo with escaping symlink: %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("expected escaping source symlink to be skipped, got %#v", result.Files)
+	}
+	if containsModuleImport(result, "outside-dependency") {
+		t.Fatalf("expected outside symlink content not to be scanned")
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "skipped 1 symlinked JS/TS file(s)") {
+		t.Fatalf("expected symlink skip warning, got %#v", result.Warnings)
+	}
+}
+
+func bytesOfLength(n int64) []byte {
+	data := make([]byte, n)
+	for i := range data {
+		data[i] = 'a'
+	}
+	return data
 }
 
 func TestScanRepoEntrySkipsDirectoriesAndContextCancel(t *testing.T) {

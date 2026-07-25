@@ -75,3 +75,18 @@ func TestLoadCodemodSourceLines(t *testing.T) {
 		t.Fatalf("expected missing-file warning, warning=%q loaded=%t", warning, loaded)
 	}
 }
+
+func TestLoadCodemodSourceLinesRejectsOversizedSource(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "main.py"), []byte("x"+strings.Repeat("y", int(codemodSourceReadMaxBytes))), 0o644); err != nil {
+		t.Fatalf("write oversized source: %v", err)
+	}
+
+	lines, warning, loaded := LoadCodemodSourceLines(repo, "main.py", map[string][]string{})
+	if loaded || len(lines) != 0 {
+		t.Fatalf("expected oversized source preview to be skipped, lines=%#v loaded=%t", lines, loaded)
+	}
+	if !strings.Contains(warning, "codemod preview skipped for main.py: source exceeds") {
+		t.Fatalf("expected stable oversized-source warning, got %q", warning)
+	}
+}

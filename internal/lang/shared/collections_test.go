@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -90,5 +91,11 @@ func TestReadYAMLUnderRepo(t *testing.T) {
 	testutil.MustWriteFile(t, invalidPath, "name: [\n")
 	if _, err := ReadYAMLUnderRepo[manifest](repo, invalidPath); err == nil || !strings.Contains(err.Error(), "parse invalid.yaml") || strings.Contains(err.Error(), invalidPath) {
 		t.Fatalf("expected parse error for invalid yaml, got %v", err)
+	}
+
+	oversizedPath := filepath.Join(repo, "oversized.yaml")
+	testutil.MustWriteFile(t, oversizedPath, "name: \""+strings.Repeat("x", 64)+"\"\n")
+	if _, err := ReadYAMLUnderRepoLimit[manifest](repo, oversizedPath, 16); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge for bounded yaml read, got %v", err)
 	}
 }

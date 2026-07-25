@@ -314,6 +314,9 @@ func (f *fakeFile) Stat() (fs.FileInfo, error) {
 	if f.stat != nil {
 		return f.stat()
 	}
+	if f.File == nil {
+		return nil, errors.New("stat not implemented")
+	}
 	return f.File.Stat()
 }
 

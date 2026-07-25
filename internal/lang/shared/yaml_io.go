@@ -11,9 +11,13 @@ import (
 )
 
 func ReadYAMLUnderRepo[T any](repoPath, path string) (T, error) {
+	return ReadYAMLUnderRepoLimit[T](repoPath, path, 0)
+}
+
+func ReadYAMLUnderRepoLimit[T any](repoPath, path string, maxBytes int64) (T, error) {
 	var value T
 
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxBytes)
 	if err != nil {
 		return value, err
 	}

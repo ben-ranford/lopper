@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -20,6 +21,8 @@ func TestJSAdapterAdditionalBranchCoverage(t *testing.T) {
 	t.Run("analyse warning and normalize branches", testJSAnalyseWarningAndNormalizeBranches)
 	t.Run("usage and export helpers", testJSUsageAndExportHelpers)
 	t.Run("dependency collector and resolution helpers", testJSDependencyCollectorAndResolutionHelpers)
+	t.Run("analyse rejects symlinked dependency root", testJSAnalyseRejectsSymlinkedDependencyRoot)
+	t.Run("suggest only rejects symlinked dependency root", testJSSuggestOnlyRejectsSymlinkedDependencyRoot)
 }
 
 func testJSDetectHelpersReturnRealErrors(t *testing.T) {
@@ -204,11 +207,12 @@ func testJSDependencyCollectorTracksResolvedDeps(t *testing.T, repo, importer st
 
 	cacheCollector := newDependencyCollector()
 	req := dependencyResolutionRequest{RepoPath: repo, ImporterPath: importer, Dependency: "dep"}
-	if cacheCollector.cachedDependencyRoot(req) == "" {
+	first, status := cacheCollector.cachedDependencyRoot(req)
+	if first == "" || status != dependencyRootFound {
 		t.Fatalf("expected cached dependency root to resolve")
 	}
-	if second := cacheCollector.cachedDependencyRoot(req); second == "" || len(cacheCollector.cache) != 1 {
-		t.Fatalf("expected cached dependency root reuse, got second=%q cache=%#v", second, cacheCollector.cache)
+	if second, secondStatus := cacheCollector.cachedDependencyRoot(req); second == "" || secondStatus != dependencyRootFound || len(cacheCollector.cache) != 1 {
+		t.Fatalf("expected cached dependency root reuse, got second=%q status=%v cache=%#v", second, secondStatus, cacheCollector.cache)
 	}
 }
 
@@ -231,5 +235,122 @@ func testJSResolveDependencyRootFailures(t *testing.T, repo string) {
 	}
 	if got := resolveDependencyRootFromImporter(dependencyResolutionRequest{RepoPath: repo, ImporterPath: "src/index.js", Dependency: "dep"}); got != "" {
 		t.Fatalf("expected importer abs resolution failure to return empty root, got %q", got)
+	}
+}
+
+func testJSAnalyseRejectsSymlinkedDependencyRoot(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testIndexJS), "import { map } from \"lodash\"\nmap([1], Boolean)\n")
+
+	outsideDepRoot := filepath.Join(outside, "node_modules", "lodash")
+	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), `{
+  "name": "outside-lodash",
+  "version": "9.9.9",
+  "license": "GPL-3.0-only",
+  "exports": {
+    "./map": "./map.js"
+  }
+}`)
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "index.js"), "export const escaped = 1\n")
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "map.js"), "export default function map() {}\n")
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "LICENSE"), "GNU GENERAL PUBLIC LICENSE\n")
+
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.Symlink(outsideDepRoot, filepath.Join(nodeModules, "lodash")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+	})
+	if err != nil {
+		t.Fatalf("analyse symlinked dependency root: %v", err)
+	}
+	if len(result.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %#v", result.Dependencies)
+	}
+
+	dep := result.Dependencies[0]
+	if dep.TotalExportsCount != 0 || dep.UsedExportsCount != 1 {
+		t.Fatalf("expected outside exports to be ignored, got used=%d total=%d", dep.UsedExportsCount, dep.TotalExportsCount)
+	}
+	if dep.License == nil || !dep.License.Unknown || dep.License.Source != "unknown" {
+		t.Fatalf("expected unknown license for symlinked dependency root, got %#v", dep.License)
+	}
+	if dep.Provenance == nil || dep.Provenance.Source != "unknown" {
+		t.Fatalf("expected unknown provenance for symlinked dependency root, got %#v", dep.Provenance)
+	}
+	joinedSignals := strings.Join(dep.Provenance.Signals, "\n")
+	if strings.Contains(joinedSignals, "outside-lodash") || strings.Contains(joinedSignals, "9.9.9") {
+		t.Fatalf("expected outside provenance signals to be ignored, got %#v", dep.Provenance)
+	}
+	joinedWarnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(joinedWarnings, dependencyRootOpaqueLayoutWarning) {
+		t.Fatalf("expected symlink root warning, got %#v", result.Warnings)
+	}
+	if strings.Contains(joinedWarnings, "outside-lodash") || strings.Contains(joinedWarnings, "9.9.9") {
+		t.Fatalf("expected warnings to avoid outside metadata, got %#v", result.Warnings)
+	}
+}
+
+func testJSSuggestOnlyRejectsSymlinkedDependencyRoot(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testIndexJS), "import { map } from \"lodash\"\nmap([1], Boolean)\n")
+
+	outsideDepRoot := filepath.Join(outside, "node_modules", "lodash")
+	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), `{
+  "name": "outside-lodash",
+  "version": "9.9.9",
+  "exports": {
+    "./map": "./map.js"
+  }
+}`)
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, "map.js"), "export default function map() {}\n")
+
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.Symlink(outsideDepRoot, filepath.Join(nodeModules, "lodash")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:       repo,
+		Dependency:     "lodash",
+		SuggestOnly:    true,
+		RuntimeProfile: runtimeProfileNodeImport,
+	})
+	if err != nil {
+		t.Fatalf("analyse suggest-only symlinked dependency root: %v", err)
+	}
+	dep := result.Dependencies[0]
+	if dep.Codemod == nil {
+		t.Fatalf("expected codemod report in suggest-only mode")
+	}
+	if len(dep.Codemod.Suggestions) != 0 {
+		t.Fatalf("expected no codemod suggestions from outside exports, got %#v", dep.Codemod.Suggestions)
+	}
+	if len(dep.Codemod.Skips) == 0 {
+		t.Fatalf("expected unresolved-export codemod skip, got %#v", dep.Codemod)
+	}
+	if dep.Codemod.Skips[0].ReasonCode != codemodReasonNoSubpathTarget {
+		t.Fatalf("expected no-subpath-target skip, got %#v", dep.Codemod.Skips)
 	}
 }

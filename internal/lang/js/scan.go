@@ -24,6 +24,8 @@ const (
 
 const sideEffectImportName = "<side-effect>"
 
+const jsSourceReadMaxBytes int64 = 8 << 20
+
 type ImportBinding struct {
 	Module     string
 	ExportName string
@@ -100,6 +102,12 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 
 	if len(result.Files) == 0 {
 		result.Warnings = append(result.Warnings, "no JS/TS files found for analysis")
+	}
+	if state.skippedSymlinks > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d symlinked JS/TS file(s)", state.skippedSymlinks))
+	}
+	if state.skippedLargeFiles > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d JS/TS file(s) above %d bytes", state.skippedLargeFiles, jsSourceReadMaxBytes))
 	}
 
 	if state.parseErrorCount > 0 {

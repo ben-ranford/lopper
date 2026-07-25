@@ -1,6 +1,8 @@
 package js
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -175,6 +177,17 @@ func TestReadWorkspacePackageJSONWarnings(t *testing.T) {
 	if found || warning != "" {
 		t.Fatalf("expected missing package manifest to be ignored without warnings, found=%v warning=%q", found, warning)
 	}
+
+	oversizedPath := filepath.Join(repo, "oversized-package.json")
+	testutil.MustWriteFile(t, oversizedPath, `{"name":"`+strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes))+`"}`)
+	_, found, warning = readWorkspacePackageJSON(repo, oversizedPath)
+	if found {
+		t.Fatalf("expected oversized package manifest to be skipped")
+	}
+	want := "skipped workspace manifest oversized-package.json above"
+	if !strings.Contains(warning, want) {
+		t.Fatalf("expected oversized manifest warning containing %q, got %q", want, warning)
+	}
 }
 
 func TestWorkspaceManifestReaders(t *testing.T) {
@@ -209,6 +222,38 @@ func TestWorkspaceManifestReaders(t *testing.T) {
 		}
 		if warning != "" {
 			t.Fatalf("expected no warning for non-catalog yarn config, got %q", warning)
+		}
+	})
+
+	t.Run("pnpm reader skips oversized manifest", func(t *testing.T) {
+		t.Parallel()
+
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, jsPnpmWorkspaceFile), "packages:\n  - \""+strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes))+"\"\n")
+
+		_, found, warning := readPnpmWorkspaceManifest(repo)
+		if found {
+			t.Fatalf("expected oversized pnpm manifest to be skipped")
+		}
+		want := "skipped " + jsPnpmWorkspaceFile + " above"
+		if !strings.Contains(warning, want) {
+			t.Fatalf("expected oversized pnpm warning containing %q, got %q", want, warning)
+		}
+	})
+
+	t.Run("yarn reader skips oversized manifest", func(t *testing.T) {
+		t.Parallel()
+
+		repo := t.TempDir()
+		testutil.MustWriteFile(t, filepath.Join(repo, jsYarnRCFile), "catalog:\n  dep: \""+strings.Repeat("x", int(jsWorkspaceManifestReadMaxBytes))+"\"\n")
+
+		_, found, warning := readYarnCatalogManifest(repo)
+		if found {
+			t.Fatalf("expected oversized yarn manifest to be skipped")
+		}
+		want := "skipped " + jsYarnRCFile + " above"
+		if !strings.Contains(warning, want) {
+			t.Fatalf("expected oversized yarn warning containing %q, got %q", want, warning)
 		}
 	})
 
@@ -324,6 +369,9 @@ func testWorkspacePatternSearchRoots(t *testing.T) {
 
 	if got := workspacePatternLiteralRoot("packages//web/*"); got != filepath.Join("packages", "web") {
 		t.Fatalf("unexpected literal root for repeated separators: %q", got)
+	}
+	if got := workspacePatternLiteralRoot("././packages/web/*"); got != filepath.Join("packages", "web") {
+		t.Fatalf("unexpected literal root for repeated dot prefixes: %q", got)
 	}
 	if got := workspacePatternLiteralRoot("apps/./web/*"); got != filepath.Join("apps", "web") {
 		t.Fatalf("unexpected literal root for dot segment: %q", got)
@@ -477,6 +525,60 @@ func TestDiscoverWorkspacePackageDirsInRootGuardsAndFiltering(t *testing.T) {
 	}
 }
 
+func TestValidateWorkspaceSearchRootSkipsMissingPathWithoutWarning(t *testing.T) {
+	t.Parallel()
+
+	warning, skip := validateWorkspaceSearchRoot(filepath.Join(t.TempDir(), "missing"))
+	if !skip || warning != "" {
+		t.Fatalf("expected missing search root to be skipped without warning, got skip=%v warning=%q", skip, warning)
+	}
+}
+
+func TestWorkspacePackageDirWalkerReturnsWalkError(t *testing.T) {
+	t.Parallel()
+
+	walkErr := errors.New("walk failed")
+	dirs := make(map[string]struct{})
+	walker := workspacePackageDirWalker(t.TempDir(), filepath.Join(t.TempDir(), testPackageJSONName), nil, dirs)
+
+	if err := walker("", nil, walkErr); !errors.Is(err, walkErr) {
+		t.Fatalf("expected walker to return walk error, got %v", err)
+	}
+	if len(dirs) != 0 {
+		t.Fatalf("expected walk error to leave dirs empty, got %#v", dirs)
+	}
+}
+
+func TestWorkspacePackageDirWalkerSkipsIgnoredDirectories(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	var dirEntry fs.DirEntry
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() == "node_modules" {
+			dirEntry = entry
+			break
+		}
+	}
+	if dirEntry == nil {
+		t.Fatal("expected node_modules directory entry")
+	}
+
+	walker := workspacePackageDirWalker(repo, filepath.Join(repo, testPackageJSONName), nil, map[string]struct{}{})
+	if err := walker(nodeModules, dirEntry, nil); !errors.Is(err, filepath.SkipDir) {
+		t.Fatalf("expected node_modules workspace walk to skip dir, got %v", err)
+	}
+}
+
 func TestDiscoverWorkspacePackageDirsReportsWalkErrors(t *testing.T) {
 	t.Parallel()
 
@@ -522,6 +624,9 @@ func TestResolveDependencyRootFromDir(t *testing.T) {
 	}
 	if got := resolveDependencyRootFromDir(repo, t.TempDir(), "react"); got != "" {
 		t.Fatalf("expected outside workspace dir to return empty root, got %q", got)
+	}
+	if got := resolveDependencyRootFromDir(repo, repo, "missing"); got != "" {
+		t.Fatalf("expected unresolved dependency at repo root to return empty root, got %q", got)
 	}
 	if got := resolveDependencyRootFromDir(string([]byte{0}), workspaceDir, "react"); got != "" {
 		t.Fatalf("expected invalid repo path to return empty root, got %q", got)
@@ -620,6 +725,19 @@ func TestResolveDependencyRootAtDirAndIsPathWithin(t *testing.T) {
 		t.Fatalf("expected directory package.json to be rejected")
 	}
 
+	symlinkTarget := filepath.Join(repo, "outside-react")
+	if err := os.MkdirAll(symlinkTarget, 0o755); err != nil {
+		t.Fatalf("mkdir symlink target: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(symlinkTarget, testPackageJSONName), "{}\n")
+	symlinkPath := filepath.Join(repo, "node_modules", "linked")
+	if err := os.Symlink(symlinkTarget, symlinkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, ok := resolveDependencyRootAtDir(repo, "linked"); ok {
+		t.Fatalf("expected symlinked dependency root to be rejected")
+	}
+
 	if !isPathWithin(filepath.Join(repo, "packages", "web"), repo) {
 		t.Fatalf("expected descendant path to be within repo")
 	}
@@ -628,6 +746,89 @@ func TestResolveDependencyRootAtDirAndIsPathWithin(t *testing.T) {
 	}
 	if isPathWithin("packages/web", repo) {
 		t.Fatalf("expected relative path comparison against absolute root to fail")
+	}
+}
+
+func TestDependencyRootValidationHelpers(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+
+	filePath := filepath.Join(repo, "README.md")
+	testutil.MustWriteFile(t, filePath, "root\n")
+	if _, err := validateDirectoryPathNoFollow(filePath); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected file path to be rejected as directory, got %v", err)
+	}
+	if _, err := validateDirectoryPathNoFollow(""); err == nil || !strings.Contains(err.Error(), "path is empty") {
+		t.Fatalf("expected blank path to be rejected, got %v", err)
+	}
+	if _, err := validateDirectoryPathNoFollow(filepath.Join(repo, "missing-dir")); err == nil {
+		t.Fatal("expected missing directory path to be rejected")
+	}
+
+	pkgPath := filepath.Join(repo, testPackageJSONName)
+	testutil.MustWriteFile(t, pkgPath, "{}\n")
+	if err := validateRegularFileNoFollow(pkgPath); err != nil {
+		t.Fatalf("expected regular package file to validate, got %v", err)
+	}
+	if err := validateRegularFileNoFollow(nodeModules); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected directory to be rejected as regular file, got %v", err)
+	}
+	if err := validateRegularFileNoFollow(filepath.Join(repo, "missing.json")); err == nil {
+		t.Fatal("expected missing file to be rejected")
+	}
+
+	linkedDirTarget := filepath.Join(repo, "outside-linked")
+	if err := os.MkdirAll(linkedDirTarget, 0o755); err != nil {
+		t.Fatalf("mkdir linked dir target: %v", err)
+	}
+	linkedDir := filepath.Join(repo, "linked-dir")
+	if err := os.Symlink(linkedDirTarget, linkedDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := validateDirectoryPathNoFollow(linkedDir); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+		t.Fatalf("expected symlinked directory path to be rejected, got %v", err)
+	}
+	linkedFile := filepath.Join(repo, "linked-package.json")
+	if err := os.Symlink(pkgPath, linkedFile); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := validateRegularFileNoFollow(linkedFile); err == nil || !strings.Contains(err.Error(), "symlinked file path") {
+		t.Fatalf("expected symlinked file path to be rejected, got %v", err)
+	}
+	if _, err := validateDirectoryPathNoFollowFromBase(repo, "README.md"); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected file path component to be rejected from base, got %v", err)
+	}
+	if got, err := validateDirectoryPathNoFollowFromBase(repo, ".", "node_modules"); err != nil || got != nodeModules {
+		t.Fatalf("expected dot path component to be ignored, got path=%q err=%v", got, err)
+	}
+
+	scopedDir := filepath.Join(nodeModules, "@scope")
+	if err := os.MkdirAll(scopedDir, 0o755); err != nil {
+		t.Fatalf("mkdir scoped dir: %v", err)
+	}
+	scopedTarget := filepath.Join(repo, "outside-scoped")
+	if err := os.MkdirAll(scopedTarget, 0o755); err != nil {
+		t.Fatalf("mkdir scoped target: %v", err)
+	}
+	if err := os.Symlink(scopedTarget, filepath.Join(scopedDir, "pkg")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := validatedDependencyRootAtDir(repo, "@scope/pkg"); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+		t.Fatalf("expected symlinked scoped dependency root to be rejected, got %v", err)
+	}
+	if _, err := validatedDependencyRootAtDir(repo, ""); err == nil {
+		t.Fatalf("expected blank dependency name to be rejected")
+	}
+	if _, err := validatedDependencyRootAtDir(filePath, "pkg"); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected file root dir to be rejected, got %v", err)
+	}
+	if got := resolveDependencyRootFromDir(repo, filepath.Join(repo, "packages"), ""); got != "" {
+		t.Fatalf("expected blank dependency to resolve to empty root, got %q", got)
 	}
 }
 

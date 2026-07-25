@@ -93,3 +93,22 @@ func assertMalformedJSStaticLiteralGuards(t *testing.T, root *sitter.Node, sourc
 		t.Fatalf("expected bare identifier not to count as static module literal, got value=%q ok=%v", value, ok)
 	}
 }
+
+func TestMalformedJSLiteralGuardsRejectEmptyRecoveredIdentifiers(t *testing.T) {
+	source := []byte(`import { foo as } from "pkg";`)
+	root := parseRootNode(t, source)
+
+	emptyIdentifier := firstNode(root, func(node *sitter.Node) bool {
+		return node.Type() == "identifier" && nodeText(node, source) == ""
+	})
+	if emptyIdentifier == nil {
+		t.Fatal("expected recovered empty identifier node")
+	}
+
+	if value, ok := extractStringLiteral(emptyIdentifier, source); ok || value != "" {
+		t.Fatalf("expected empty recovered identifier to fail string literal extraction, got value=%q ok=%v", value, ok)
+	}
+	if value, ok := extractStaticModuleLiteral(emptyIdentifier, source); ok || value != "" {
+		t.Fatalf("expected empty recovered identifier to fail static module extraction, got value=%q ok=%v", value, ok)
+	}
+}

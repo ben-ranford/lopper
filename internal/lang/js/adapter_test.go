@@ -520,6 +520,53 @@ func TestListDependenciesWarnsWhenDependencyHasMultipleRoots(t *testing.T) {
 	}
 }
 
+func TestListDependenciesIncludesWorkspaceManifestWarnings(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, jsYarnRCFile), 0o755); err != nil {
+		t.Fatalf("mkdir yarn manifest path: %v", err)
+	}
+
+	_, _, warnings := listDependencies(repo, ScanResult{})
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "failed to parse "+jsYarnRCFile) {
+		t.Fatalf("expected workspace manifest warning to propagate, got %#v", warnings)
+	}
+}
+
+func TestListDependenciesWarnsOnUnsafeSymlinkedDependencyRoot(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testIndexJS), "import linked from \"linked\"\nlinked()\n")
+
+	outside := t.TempDir()
+	outsideDepRoot := filepath.Join(outside, "node_modules", "linked")
+	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), `{"name":"linked","main":"index.js"}`)
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testIndexJS), "module.exports = function linked() {}\n")
+
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.Symlink(outsideDepRoot, filepath.Join(nodeModules, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	scan, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	_, _, warnings := listDependencies(repo, scan)
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "dependency root could not be safely resolved in node_modules: linked (symlinked or opaque layout)") {
+		t.Fatalf("expected unsafe-root warning, got %#v", warnings)
+	}
+	if strings.Contains(joined, "dependency not found in node_modules: linked") {
+		t.Fatalf("expected unsafe-root warning to replace missing warning, got %#v", warnings)
+	}
+}
+
 func TestAdapterAnalyseDependencyWarnsWhenMultipleRootsAreResolved(t *testing.T) {
 	repo := t.TempDir()
 	apiDir := filepath.Join(repo, "apps", "api")

@@ -85,6 +85,15 @@ class Widget {}
 	assertIdentifierUsageState(t, tree, source, "util", "member_expression", false)
 	assertIdentifierUsageState(t, tree, source, "list", "subscript_expression", false)
 	assertIdentifierUsageState(t, tree, source, "index", "subscript_expression", true)
+	pairKey := firstNode(tree.RootNode(), func(node *sitter.Node) bool {
+		return node.Type() == "property_identifier" && node.Parent() != nil && node.Parent().Type() == "pair_pattern"
+	})
+	if pairKey == nil {
+		t.Fatal("expected pair-pattern property identifier")
+	}
+	if isIdentifierUsage(pairKey) {
+		t.Fatalf("expected pair-pattern property identifier to be excluded from usage counts")
+	}
 }
 
 func assertIdentifierUsageState(t *testing.T, tree *sitter.Tree, source []byte, name string, parentType string, want bool) {

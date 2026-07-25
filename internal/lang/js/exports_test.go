@@ -114,6 +114,39 @@ func TestResolveDependencyExportsWarnsOnAmbiguousConditionMap(t *testing.T) {
 	}
 }
 
+func TestResolveDependencyExportsRejectsSymlinkedDependencyRoot(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	writeDependencyFiles(t, outside, "ignored", "{\n  \"main\": \"index.js\"\n}\n", map[string]string{
+		"index.js": "export const escaped = 1\n",
+	})
+
+	nodeModules := filepath.Join(repo, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	symlinkPath := filepath.Join(nodeModules, "linked")
+	if err := os.Symlink(filepath.Join(outside, "node_modules", "ignored"), symlinkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:   repo,
+		dependency: "linked",
+	})
+	if err != nil {
+		t.Fatalf(resolveExportsErrFmt, err)
+	}
+	if len(surface.Names) != 0 {
+		t.Fatalf("expected symlinked dependency root to be rejected, got %#v", surface.Names)
+	}
+
+	joined := strings.Join(surface.Warnings, "\n")
+	if !strings.Contains(joined, "unable to read") {
+		t.Fatalf("expected read warning for symlinked dependency root, got %#v", surface.Warnings)
+	}
+}
+
 func writeDependencyFixture(t *testing.T, repoPath string, depName string, packageJSON string, entrypoint string) {
 	t.Helper()
 	depDir := filepath.Join(repoPath, "node_modules", depName)

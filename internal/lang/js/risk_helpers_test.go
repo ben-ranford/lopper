@@ -1,11 +1,15 @@
 package js
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -109,10 +113,162 @@ func TestAssessRiskCueWarningBranches(t *testing.T) {
 
 func TestDetectDynamicLoaderUsageReadError(t *testing.T) {
 	depRoot := t.TempDir()
-	_, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")})
+	_, _, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")})
 	if err == nil {
 		t.Fatalf("expected read error for missing entrypoint")
 	}
+}
+
+func TestAppendDynamicRiskCueSkipsOversizedEntrypointDuringSampling(t *testing.T) {
+	depRoot := t.TempDir()
+	entry := filepath.Join(depRoot, "index.js")
+	dynamicSuffix := "\nmodule.exports = require(loader())\n"
+	content := append(bytesOfLength(jsSourceReadMaxBytes-int64(len(dynamicSuffix))+1), []byte(dynamicSuffix)...)
+	if err := os.WriteFile(entry, content, 0o600); err != nil {
+		t.Fatalf("write oversized entrypoint: %v", err)
+	}
+
+	cues, warnings := appendDynamicRiskCue(nil, nil, "pkg", depRoot, []string{entry})
+	if len(cues) != 0 {
+		t.Fatalf("expected oversized entrypoint to be skipped during dynamic scan, got cues %#v", cues)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected one oversized-entrypoint warning, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "skipped 1 JS/TS file(s) above") {
+		t.Fatalf("expected oversized-entrypoint warning, got %#v", warnings)
+	}
+	if strings.Contains(warnings[0], "dynamic loader scan failed") {
+		t.Fatalf("expected oversized entrypoint skip warning, got %#v", warnings)
+	}
+}
+
+func TestRiskRootOpenAndCloseBranches(t *testing.T) {
+	originalOpen := openDependencyRootNoFollow
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpen
+	})
+
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	_, warnings := appendDynamicRiskCue(nil, nil, "pkg", missingRoot, nil)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "dynamic loader scan failed") {
+		t.Fatalf("expected dynamic-root open warning, got %#v", warnings)
+	}
+
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte(`{"name":"pkg"}`), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	closeErr := errors.New("close failed")
+	openDependencyRootNoFollow = func(path string) (safeio.Root, error) {
+		root, err := safeio.OpenRootNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &jsCloseErrorRoot{Root: root, closeErr: closeErr}, nil
+	}
+
+	_, warnings = assessRiskCues(depRoot, "pkg", depRoot, ExportSurface{})
+	if !warningsContain(warnings, "failed to close dependency root after risk analysis") {
+		t.Fatalf("expected risk-analysis close warning, got %#v", warnings)
+	}
+
+	_, warnings = appendDynamicRiskCue(nil, nil, "pkg", depRoot, nil)
+	if !warningsContain(warnings, "failed to close dependency root after dynamic loader scan") {
+		t.Fatalf("expected dynamic-scan close warning, got %#v", warnings)
+	}
+
+	_, warnings = appendNativeRiskCue(nil, nil, "pkg", depRoot, packageJSON{})
+	if !warningsContain(warnings, "failed to close dependency root after native module scan") {
+		t.Fatalf("expected native-scan close warning, got %#v", warnings)
+	}
+}
+
+func TestNativeRiskConfinementErrorBranches(t *testing.T) {
+	rootErr := errors.New("confined root failure")
+	bindingErrRoot := &fakeJSRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			return nil, rootErr
+		},
+	}
+	if _, err := buildNativeModuleRiskCueWithinRoot(bindingErrRoot, t.TempDir(), packageJSON{}); !errors.Is(err, rootErr) {
+		t.Fatalf("expected native-cue binding error, got %v", err)
+	}
+	cues, warnings := appendNativeRiskCueWithinRoot(nil, nil, "pkg", bindingErrRoot, t.TempDir(), packageJSON{})
+	if len(cues) != 0 || !warningsContain(warnings, "native module scan failed") {
+		t.Fatalf("expected confined native-cue warning, got cues=%#v warnings=%#v", cues, warnings)
+	}
+
+	nodeWalkErrRoot := &fakeJSRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			return nil, os.ErrNotExist
+		},
+		open: func(string) (safeio.File, error) {
+			return nil, rootErr
+		},
+	}
+	if _, _, err := detectNativeModuleIndicatorsWithinRoot(nodeWalkErrRoot, t.TempDir(), packageJSON{}); !errors.Is(err, rootErr) {
+		t.Fatalf("expected native indicator walk error, got %v", err)
+	}
+
+	if _, err := detectBindingGyp(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected missing binding.gyp root to fail")
+	}
+}
+
+func TestNodeBinaryScannerWalkBranches(t *testing.T) {
+	walkErr := errors.New("walk failed")
+	scanner := &nodeBinaryScanner{maxVisited: 2}
+	if err := scanner.walk("", nil, walkErr); !errors.Is(err, walkErr) {
+		t.Fatalf("expected incoming walk error, got %v", err)
+	}
+
+	infoErr := errors.New("entry info failed")
+	if err := scanner.walk("entry", &infoErrorDirEntry{err: infoErr}, nil); !errors.Is(err, infoErr) {
+		t.Fatalf("expected entry info error, got %v", err)
+	}
+
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "entry.txt")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write scanner entry: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("read scanner entries: entries=%#v err=%v", entries, err)
+	}
+
+	capped := &nodeBinaryScanner{maxVisited: 0}
+	if err := capped.walk(filePath, entries[0], nil); !errors.Is(err, fs.SkipAll) {
+		t.Fatalf("expected scanner cap to stop walk, got %v", err)
+	}
+
+	uncapped := &nodeBinaryScanner{maxVisited: 2}
+	if err := uncapped.walk(filePath, entries[0], nil); err != nil {
+		t.Fatalf("expected regular entry walk to continue, got %v", err)
+	}
+}
+
+type jsCloseErrorRoot struct {
+	safeio.Root
+	closeErr error
+}
+
+func (r *jsCloseErrorRoot) Close() error {
+	return errors.Join(r.Root.Close(), r.closeErr)
+}
+
+type infoErrorDirEntry struct {
+	err error
+}
+
+func (*infoErrorDirEntry) Name() string                 { return "entry" }
+func (*infoErrorDirEntry) IsDir() bool                  { return false }
+func (*infoErrorDirEntry) Type() fs.FileMode            { return 0 }
+func (e *infoErrorDirEntry) Info() (fs.FileInfo, error) { return nil, e.err }
+
+func warningsContain(warnings []string, fragment string) bool {
+	return strings.Contains(strings.Join(warnings, "\n"), fragment)
 }
 
 func TestNativeMetadataAndDepthHelpers(t *testing.T) {

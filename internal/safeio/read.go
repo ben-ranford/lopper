@@ -8,6 +8,7 @@ import (
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
+var ErrNonRegularFile = errors.New("path is not a regular file")
 
 type rootedReadCloser struct {
 	file File
@@ -44,6 +45,9 @@ func ReadFileWithinRoot(root Root, targetPath string) (_ []byte, err error) {
 func OpenFileWithinRoot(root Root, targetPath string) (File, error) {
 	targetRel, err := resolveRelativeTarget(targetPath, allowRootTarget)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRegularPathWithinRoot(root, targetRel, targetPath); err != nil {
 		return nil, err
 	}
 
@@ -87,6 +91,9 @@ func ReadFileUnderLimit(rootDir, targetPath string, maxBytes int64) (_ []byte, e
 			err = errors.Join(err, closeErr)
 		}
 	}()
+	if err := validateRegularPathWithinRoot(root, target.rel, targetPath); err != nil {
+		return nil, err
+	}
 
 	file, err := OpenPinnedFile(root, target.rel)
 	if err != nil {
@@ -117,6 +124,9 @@ func ReadFileLimit(targetPath string, maxBytes int64) (data []byte, err error) {
 			err = errors.Join(err, closeErr)
 		}
 	}()
+	if err := validateRegularPathWithinRoot(root, target.fileName, targetPath); err != nil {
+		return nil, err
+	}
 
 	file, err := OpenPinnedFile(root, target.fileName)
 	if err != nil {
@@ -157,12 +167,27 @@ func OpenFile(targetPath string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRegularPathWithinRoot(root, target.fileName, targetPath); err != nil {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		return nil, err
+	}
 
 	file, err := OpenPinnedFile(root, target.fileName)
 	if err != nil {
 		err = translateOpenNotExist(err, targetPath)
 		if closeErr := root.Close(); closeErr != nil {
 			return nil, errors.Join(err, closeErr)
+		}
+		return nil, err
+	}
+	if err := validateOpenedRegularFile(file); err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
 		}
 		return nil, err
 	}
@@ -177,12 +202,29 @@ func openReadRootNoFollow(rootDir, label string) (Root, error) {
 	return root, nil
 }
 
+func validateRegularPathWithinRoot(root Root, targetRel, targetPath string) error {
+	info, err := root.Lstat(targetRel)
+	if err != nil {
+		return translateOpenNotExist(err, targetPath)
+	}
+	if !info.Mode().IsRegular() {
+		return ErrNonRegularFile
+	}
+	return nil
+}
+
 func readOpenedFile(file File, maxBytes int64) ([]byte, error) {
+	info, err := file.Stat()
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, ErrNonRegularFile
+		}
+		if maxBytes > 0 && info.Size() > maxBytes {
+			return nil, ErrFileTooLarge
+		}
+	}
 	if maxBytes <= 0 {
 		return io.ReadAll(file)
-	}
-	if info, err := file.Stat(); err == nil && info.Mode().IsRegular() && info.Size() > maxBytes {
-		return nil, ErrFileTooLarge
 	}
 
 	readLimit := maxBytes + 1
@@ -197,4 +239,15 @@ func readOpenedFile(file File, maxBytes int64) ([]byte, error) {
 		return nil, ErrFileTooLarge
 	}
 	return data, nil
+}
+
+func validateOpenedRegularFile(file File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return ErrNonRegularFile
+	}
+	return nil
 }

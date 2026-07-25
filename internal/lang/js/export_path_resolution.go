@@ -3,9 +3,12 @@ package js
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func dependencyRoot(repoPath, dependency string) (string, error) {
@@ -98,15 +101,37 @@ func isLikelyCodeAsset(path string) bool {
 	}
 }
 
-func resolveEntrypoint(root, entry string) (string, bool) {
+func resolveEntrypoint(depPath, entry string) (string, bool) {
+	return resolveEntrypointUnderRoot(depPath, depPath, entry)
+}
+
+func resolveEntrypointUnderRoot(rootPath, depPath, entry string) (resolved string, ok bool) {
+	root, err := openConstrainedRoot(rootPath)
+	if err != nil {
+		return "", false
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			resolved = ""
+			ok = false
+		}
+	}()
+
+	return resolveEntrypointWithinRoot(root, rootPath, depPath, entry)
+}
+
+func resolveEntrypointWithinRoot(root safeio.Root, rootPath, depPath, entry string) (string, bool) {
 	path := entry
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(root, entry)
+		path = filepath.Join(depPath, entry)
 	}
 
-	if info, err := os.Stat(path); err == nil {
+	if info, ok := lstatWithinRoot(root, rootPath, path); ok {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", false
+		}
 		if info.IsDir() {
-			return resolveEntrypoint(root, filepath.Join(entry, "index"))
+			return resolveEntrypointWithinRoot(root, rootPath, depPath, filepath.Join(entry, "index"))
 		}
 		return path, true
 	}
@@ -115,11 +140,34 @@ func resolveEntrypoint(root, entry string) (string, bool) {
 		candidates := []string{".js", ".mjs", ".cjs", ".ts", ".tsx", ".d.ts"}
 		for _, ext := range candidates {
 			candidate := path + ext
-			if _, err := os.Stat(candidate); err == nil {
+			if info, ok := lstatWithinRoot(root, rootPath, candidate); ok && info.Mode()&os.ModeSymlink == 0 && !info.IsDir() {
 				return candidate, true
 			}
 		}
 	}
 
 	return "", false
+}
+
+func lstatWithinRoot(root safeio.Root, rootPath, targetPath string) (fs.FileInfo, bool) {
+	rootAbs, err := filepath.Abs(rootPath)
+	if err != nil {
+		return nil, false
+	}
+	targetAbs, err := filepath.Abs(targetPath)
+	if err != nil {
+		return nil, false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return nil, false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return nil, false
+	}
+	info, err := root.Lstat(rel)
+	if err != nil {
+		return nil, false
+	}
+	return info, true
 }

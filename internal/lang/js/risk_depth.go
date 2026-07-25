@@ -2,7 +2,6 @@ package js
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -79,13 +78,9 @@ func resolveInstalledDependencyRoot(repoPath, currentPackageRoot, dependency str
 		return "", false
 	}
 
-	candidates := []string{
-		filepath.Join(currentPackageRoot, "node_modules", dependencyPath(dependency)),
-		filepath.Join(repoPath, "node_modules", dependencyPath(dependency)),
-	}
-	for _, root := range candidates {
-		info, err := os.Stat(filepath.Join(root, "package.json"))
-		if err == nil && !info.IsDir() {
+	candidates := []string{currentPackageRoot, repoPath}
+	for _, rootDir := range candidates {
+		if root, ok := resolveDependencyRootAtDir(rootDir, dependency); ok {
 			return root, true
 		}
 	}

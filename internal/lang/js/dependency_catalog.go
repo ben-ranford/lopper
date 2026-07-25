@@ -28,6 +28,9 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 	for dep := range collector.missing {
 		warningSet[fmt.Sprintf("dependency not found in node_modules: %s", dep)] = struct{}{}
 	}
+	for dep := range collector.unsafe {
+		warningSet[fmt.Sprintf("dependency root could not be safely resolved in node_modules: %s (symlinked or opaque layout)", dep)] = struct{}{}
+	}
 	for dep := range collector.multiRoot {
 		warningSet[fmt.Sprintf("dependency resolves to multiple node_modules roots: %s", dep)] = struct{}{}
 	}
@@ -49,7 +52,9 @@ type dependencyCollector struct {
 	roots     map[string]string
 	multiRoot map[string]struct{}
 	missing   map[string]struct{}
+	unsafe    map[string]struct{}
 	cache     map[string]string
+	statuses  map[string]dependencyRootResolutionStatus
 }
 
 func newDependencyCollector() dependencyCollector {
@@ -58,7 +63,9 @@ func newDependencyCollector() dependencyCollector {
 		roots:     make(map[string]string),
 		multiRoot: make(map[string]struct{}),
 		missing:   make(map[string]struct{}),
+		unsafe:    make(map[string]struct{}),
 		cache:     make(map[string]string),
+		statuses:  make(map[string]dependencyRootResolutionStatus),
 	}
 }
 
@@ -67,13 +74,18 @@ func (c *dependencyCollector) recordImport(repoPath string, importerPath string,
 	if dep == "" {
 		return
 	}
-	resolvedRoot := c.cachedDependencyRoot(dependencyResolutionRequest{
+	resolvedRoot, status := c.cachedDependencyRoot(dependencyResolutionRequest{
 		RepoPath:     repoPath,
 		ImporterPath: importerPath,
 		Dependency:   dep,
 	})
 	if resolvedRoot == "" {
 		if _, alreadyFound := c.found[dep]; alreadyFound {
+			return
+		}
+		if status == dependencyRootUnsafe {
+			c.unsafe[dep] = struct{}{}
+			delete(c.missing, dep)
 			return
 		}
 		c.missing[dep] = struct{}{}
@@ -83,19 +95,21 @@ func (c *dependencyCollector) recordImport(repoPath string, importerPath string,
 	c.recordResolvedRoot(dep, resolvedRoot)
 }
 
-func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionRequest) string {
+func (c *dependencyCollector) cachedDependencyRoot(req dependencyResolutionRequest) (string, dependencyRootResolutionStatus) {
 	cacheKey := req.ImporterPath + "\x00" + req.Dependency
 	if resolvedRoot, ok := c.cache[cacheKey]; ok {
-		return resolvedRoot
+		return resolvedRoot, c.statuses[cacheKey]
 	}
-	resolvedRoot := resolveDependencyRootFromImporter(req)
+	resolvedRoot, status := resolveDependencyRootFromDirDetailed(req.RepoPath, filepath.Dir(req.ImporterPath), req.Dependency)
 	c.cache[cacheKey] = resolvedRoot
-	return resolvedRoot
+	c.statuses[cacheKey] = status
+	return resolvedRoot, status
 }
 
 func (c *dependencyCollector) markFound(dep string) {
 	c.found[dep] = struct{}{}
 	delete(c.missing, dep)
+	delete(c.unsafe, dep)
 }
 
 func (c *dependencyCollector) recordResolvedRoot(dep, resolvedRoot string) {
@@ -123,7 +137,16 @@ func (c *dependencyCollector) mergeWorkspaceDeclarations(repoPath string, declar
 			continue
 		}
 		if _, alreadyFound := c.found[dep]; !alreadyFound {
-			c.missing[dep] = struct{}{}
+			status := dependencyRootMissing
+			for dir := range declaration.declarationDirs {
+				if _, status = resolveDependencyRootFromDirDetailed(repoPath, dir, dep); status == dependencyRootUnsafe {
+					c.unsafe[dep] = struct{}{}
+					break
+				}
+			}
+			if status != dependencyRootUnsafe {
+				c.missing[dep] = struct{}{}
+			}
 		}
 	}
 }

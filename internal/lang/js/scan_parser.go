@@ -59,9 +59,9 @@ func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string
 		readErr error
 	)
 	if strings.TrimSpace(repoPath) == "" {
-		content, readErr = safeio.ReadFile(path)
+		content, readErr = safeio.ReadFileLimit(path, jsSourceReadMaxBytes)
 	} else {
-		content, readErr = safeio.ReadFileUnder(repoPath, path)
+		content, readErr = safeio.ReadFileUnderLimit(repoPath, path, jsSourceReadMaxBytes)
 	}
 	if readErr != nil {
 		return nil, nil, "", readErr

@@ -121,15 +121,18 @@ func TestDetectDynamicLoaderUsageAndErrors(t *testing.T) {
 	if err := os.WriteFile(entry, []byte(entryContent), 0o600); err != nil {
 		t.Fatalf("write entrypoint: %v", err)
 	}
-	count, samples, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "notes.txt"), entry})
+	count, samples, skippedLargeFiles, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "notes.txt"), entry})
 	if err != nil {
 		t.Fatalf("detect dynamic loader usage: %v", err)
+	}
+	if skippedLargeFiles != 0 {
+		t.Fatalf("did not expect oversized-entrypoint skips, got %d", skippedLargeFiles)
 	}
 	if count != 1 || len(samples) != 1 {
 		t.Fatalf("expected one dynamic usage sample, got count=%d samples=%#v", count, samples)
 	}
 
-	if _, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")}); err == nil {
+	if _, _, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")}); err == nil {
 		t.Fatalf("expected read error for missing dynamic-loader entrypoint")
 	}
 }

@@ -230,6 +230,16 @@ func TestApplySideEffectImportUsagePreservesExplicitExportName(t *testing.T) {
 	}
 }
 
+func TestApplySideEffectImportUsageFallsBackToDefaultMarker(t *testing.T) {
+	usedExports := make(map[string]struct{})
+	if !applySideEffectImportUsage(ImportBinding{}, usedExports) {
+		t.Fatalf("expected empty side-effect import usage to be marked used")
+	}
+	if _, ok := usedExports[sideEffectImportName]; !ok {
+		t.Fatalf("expected default side-effect export marker, got %#v", usedExports)
+	}
+}
+
 func TestJSRequireBindingAndDynamicImportBranches(t *testing.T) {
 	parser := newSourceParser()
 	source := []byte(`

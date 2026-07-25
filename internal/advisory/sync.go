@@ -544,7 +544,10 @@ func advisoryJoinCloseError(err error, closers ...io.Closer) error {
 func loadCacheManifestWithinRoot(root safeio.Root) (CacheManifest, error) {
 	data, err := readCacheManifestData(root)
 	if err != nil {
-		return CacheManifest{}, err
+		if errors.Is(err, os.ErrNotExist) {
+			return CacheManifest{}, err
+		}
+		return CacheManifest{}, fmt.Errorf("read advisory cache manifest: %w", err)
 	}
 	var manifest CacheManifest
 	if err := json.Unmarshal(data, &manifest); err != nil {

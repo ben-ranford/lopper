@@ -2,12 +2,17 @@ package js
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
@@ -205,12 +210,78 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	if _, ok := surface.Names["value"]; !ok {
 		t.Fatalf("expected parsed export name from valid entrypoint")
 	}
-	if len(surface.EntryPoints) < 2 {
-		t.Fatalf("expected deduplicated entrypoint list, got %#v", surface.EntryPoints)
+	wantEntrypoints := []string{jsFile, badFile, missingFile}
+	if !slices.Equal(surface.EntryPoints, wantEntrypoints) {
+		t.Fatalf("unexpected first-seen entrypoint order: got %#v want %#v", surface.EntryPoints, wantEntrypoints)
 	}
 	warnings := strings.Join(surface.Warnings, "\n")
 	if !strings.Contains(warnings, "failed to parse entrypoint") || !strings.Contains(warnings, "failed to read entrypoint") {
 		t.Fatalf("expected parse/read warnings, got %#v", surface.Warnings)
+	}
+}
+
+func TestParseEntrypointsIntoSurfaceRejectsOutsideEntryAndInvalidRoot(t *testing.T) {
+	repo := t.TempDir()
+	outsideEntry := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsideEntry, []byte("export const escaped = 1\n"), 0o600); err != nil {
+		t.Fatalf("write outside entry: %v", err)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(repo, []string{outsideEntry}, surface)
+	if len(surface.Warnings) != 1 || !strings.Contains(surface.Warnings[0], "failed to read entrypoint") {
+		t.Fatalf("expected outside entrypoint warning, got %#v", surface.Warnings)
+	}
+
+	invalidRoot := filepath.Join(repo, "package.json")
+	if err := os.WriteFile(invalidRoot, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write invalid root file: %v", err)
+	}
+	surface = &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(invalidRoot, []string{filepath.Join(repo, "index.js")}, surface)
+	if len(surface.Warnings) != 1 || !strings.Contains(surface.Warnings[0], "failed to read entrypoint") {
+		t.Fatalf("expected invalid-root warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestResolveDependencyExportsPreservesStableEntrypointAndDynamicSampleOrder(t *testing.T) {
+	depRoot := t.TempDir()
+	packageData := `{"exports":{".":"./root.js","./z":"./z.js","./a":"./a.js","./m":"./m.js"}}`
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(packageData), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	orderedNames := []string{"root.js", "a.js", "m.js", "z.js"}
+	wantEntrypoints := make([]string, 0, len(orderedNames))
+	for _, name := range orderedNames {
+		path := filepath.Join(depRoot, name)
+		if err := os.WriteFile(path, []byte("const loader = require(target)\nexport { loader }\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		wantEntrypoints = append(wantEntrypoints, path)
+	}
+	wantCue := "dynamic require/import usage found in 4 dependency entrypoint location(s) (root.js:1, a.js:1, m.js:1)"
+
+	for run := 0; run < 32; run++ {
+		surface, err := resolveDependencyExports(dependencyExportRequest{
+			dependency:         "pkg",
+			dependencyRootPath: depRoot,
+			runtimeProfileName: runtimeProfileNodeImport,
+		})
+		if err != nil {
+			t.Fatalf("run %d resolve dependency exports: %v", run, err)
+		}
+		if !slices.Equal(surface.EntryPoints, wantEntrypoints) {
+			t.Fatalf("run %d entrypoints: got %#v want %#v", run, surface.EntryPoints, wantEntrypoints)
+		}
+
+		cue, err := buildDynamicLoaderRiskCue(depRoot, surface.EntryPoints)
+		if err != nil {
+			t.Fatalf("run %d build dynamic-loader cue: %v", run, err)
+		}
+		if cue == nil || cue.Message != wantCue {
+			t.Fatalf("run %d dynamic-loader cue: got %#v want %q", run, cue, wantCue)
+		}
 	}
 }
 
@@ -249,6 +320,57 @@ function f(...args) { return args }
 	})
 	if !sawAssignmentPattern || !sawRestPattern {
 		t.Fatalf("expected assignment and rest patterns in parsed source")
+	}
+}
+
+func TestParseExportClauseRecoversMissingAliasName(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`export { foo as }`)
+	tree, err := parser.Parse(context.Background(), indexJSName, source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	clause := firstNodeByType(tree.RootNode(), "export_clause")
+	if clause == nil {
+		t.Fatal("expected export clause")
+	}
+	names := parseExportClause(clause, source)
+	if len(names) != 1 || names[0] != "foo" {
+		t.Fatalf("expected missing export alias to fall back to source name, got %#v", names)
+	}
+}
+
+func TestCollectExportNamesSkipsMalformedEmptyBindingIdentifiers(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`export const { foo: } = obj;`)
+	tree, err := parser.Parse(context.Background(), indexJSName, source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	names := collectExportNames(tree, source)
+	if len(names) != 0 {
+		t.Fatalf("expected malformed empty binding identifier to be skipped, got %#v", names)
+	}
+}
+
+func TestExtractBindingNamesRejectsRecoveredEmptyIdentifier(t *testing.T) {
+	parser := newSourceParser()
+	source := []byte(`const { foo: } = require("pkg");`)
+	tree, err := parser.Parse(context.Background(), indexJSName, source)
+	if err != nil {
+		t.Fatalf("parse source: %v", err)
+	}
+
+	emptyIdentifier := firstNode(tree.RootNode(), func(node *sitter.Node) bool {
+		return node.Type() == "identifier" && nodeText(node, source) == ""
+	})
+	if emptyIdentifier == nil {
+		t.Fatal("expected recovered empty identifier node")
+	}
+	if names := extractBindingNames(emptyIdentifier, source); len(names) != 0 {
+		t.Fatalf("expected recovered empty identifier to produce no binding names, got %#v", names)
 	}
 }
 
@@ -292,11 +414,389 @@ func TestResolveExportNodeBranches(t *testing.T) {
 func TestCollectCandidateEntrypointsFallsBackWhenProfileResolvesNoExports(t *testing.T) {
 	surface := &ExportSurface{}
 	entrypoints := collectCandidateEntrypoints(packageJSON{Exports: map[string]any{".": map[string]any{"import": "./styles.css"}}, Main: "legacy.js"}, runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}, surface)
-	if _, ok := entrypoints["legacy.js"]; !ok {
+	if !slices.Contains(entrypoints.ordered, "legacy.js") {
 		t.Fatalf("expected fallback main entrypoint, got %#v", entrypoints)
 	}
 	joined := strings.Join(surface.Warnings, "\n")
 	if !strings.Contains(joined, "no exports resolved for runtime profile") {
 		t.Fatalf("expected fallback warning, got %#v", surface.Warnings)
 	}
+}
+
+func TestResolveDependencyExportsUsesExplicitDependencyRootPath(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte("{\n  \"main\": \"index.js\"\n}\n"), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export const direct = 1\n"), 0o600); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+
+	surface, err := resolveDependencyExports(dependencyExportRequest{dependencyRootPath: depRoot})
+	if err != nil {
+		t.Fatalf("resolve dependency exports with explicit root: %v", err)
+	}
+	if _, ok := surface.Names["direct"]; !ok {
+		t.Fatalf("expected export from explicit dependency root, got %#v", surface.Names)
+	}
+}
+
+func TestLoadPackageJSONForSurfaceUsesDependencyRootWhenRootPathEmpty(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte("{\"name\":\"pkg\"}"), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	pkg, warnings, err := loadPackageJSONForSurface("", depRoot)
+	if err != nil {
+		t.Fatalf("load package.json with empty root path: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	if pkg.Name != "pkg" {
+		t.Fatalf("expected package name to parse, got %#v", pkg)
+	}
+}
+
+func TestLoadPackageJSONForSurfaceRejectsSymlinkedDependencyRootAndInvalidRootPath(t *testing.T) {
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outside, "package.json"), `{"name":"outside"}`)
+
+	depRoot := filepath.Join(t.TempDir(), "pkg")
+	if err := os.Symlink(outside, depRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, warnings, err := loadPackageJSONForSurface("", depRoot)
+	if err == nil {
+		t.Fatal("expected symlinked dependency root to be rejected")
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read") {
+		t.Fatalf("expected read warning for symlinked dependency root, got %#v", warnings)
+	}
+
+	validRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(validRoot, "package.json"), `{"name":"pkg"}`)
+	invalidRootPath := filepath.Join(validRoot, "package.json")
+	_, warnings, err = loadPackageJSONForSurface(invalidRootPath, validRoot)
+	if err == nil {
+		t.Fatal("expected non-directory root path to be rejected")
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read") {
+		t.Fatalf("expected read warning for invalid root path, got %#v", warnings)
+	}
+}
+
+func TestLoadPackageJSONForSurfaceRejectsOversizedManifest(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"name":"`+strings.Repeat("x", int(jsPackageJSONReadMaxBytes))+`"}`)
+
+	_, warnings, err := loadPackageJSONForSurface("", depRoot)
+	if err == nil {
+		t.Fatal("expected oversized package.json to be rejected")
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read") {
+		t.Fatalf("expected stable oversized read warning, got %#v", warnings)
+	}
+}
+
+func TestLoadPackageJSONForSurfaceRejectsDependencyOutsideRoot(t *testing.T) {
+	rootPath := t.TempDir()
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"name":"pkg"}`)
+
+	_, warnings, err := loadPackageJSONForSurface(rootPath, depRoot)
+	if err == nil {
+		t.Fatal("expected dependency outside root to be rejected")
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read") {
+		t.Fatalf("expected stable outside-root warning, got %#v", warnings)
+	}
+}
+
+func TestResolveEntrypointUnderRootReturnsFalseWhenRootCannotOpen(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	if path, ok := resolveEntrypointUnderRoot(missingRoot, missingRoot, "index.js"); ok || path != "" {
+		t.Fatalf("expected missing root to fail, got path=%q ok=%v", path, ok)
+	}
+}
+
+func TestResolveEntrypointWithinRootRejectsSymlink(t *testing.T) {
+	depRoot := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsideFile, []byte("export const escaped = 1\n"), 0o600); err != nil {
+		t.Fatalf("write outside.js: %v", err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(depRoot, "linked.js")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	root, err := safeio.OpenRoot(depRoot)
+	if err != nil {
+		t.Fatalf("open dependency root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close dependency root: %v", err)
+		}
+	})
+
+	if path, ok := resolveEntrypointWithinRoot(root, depRoot, depRoot, "linked.js"); ok || path != "" {
+		t.Fatalf("expected symlink entrypoint to be rejected, got path=%q ok=%v", path, ok)
+	}
+}
+
+func TestLstatWithinRootRejectsPathOutsideRoot(t *testing.T) {
+	rootPath := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsideFile, []byte("export const escaped = 1\n"), 0o600); err != nil {
+		t.Fatalf("write outside.js: %v", err)
+	}
+
+	root, err := safeio.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	})
+
+	if info, ok := lstatWithinRoot(root, rootPath, outsideFile); ok || info != nil {
+		t.Fatalf("expected outside path to be rejected, got info=%v ok=%v", info, ok)
+	}
+	if info, ok := lstatWithinRoot(root, rootPath, filepath.Dir(rootPath)); ok || info != nil {
+		t.Fatalf("expected direct parent path to be rejected, got info=%v ok=%v", info, ok)
+	}
+}
+
+func TestResolveEntrypointsCapsCandidateList(t *testing.T) {
+	depRoot := t.TempDir()
+	entrypoints := make(map[string]struct{}, maxExportEntrypoints+1)
+	for i := 0; i < maxExportEntrypoints+1; i++ {
+		entrypoints[fmt.Sprintf("./missing-%03d.js", i)] = struct{}{}
+	}
+
+	surface := &ExportSurface{}
+	resolved := resolveEntrypoints(depRoot, depRoot, entrypointCandidates{ordered: sortedMapKeys(entrypoints), total: len(entrypoints)}, surface)
+	if len(resolved) != 0 {
+		t.Fatalf("expected unresolved candidate list, got %#v", resolved)
+	}
+	joined := strings.Join(surface.Warnings, "\n")
+	if !strings.Contains(joined, fmt.Sprintf("capped dependency entrypoint resolution at %d candidates", maxExportEntrypoints)) {
+		t.Fatalf("expected cap warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestResolveEntrypointsReturnsNilWhenRootCannotOpen(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	resolved := resolveEntrypoints(missingRoot, missingRoot, entrypointCandidates{ordered: []string{"./index.js"}, total: 1}, &ExportSurface{})
+	if len(resolved) != 0 {
+		t.Fatalf("expected missing root to produce no resolutions, got %#v", resolved)
+	}
+}
+
+func TestResolveEntrypointsClearsResultsWhenRootCloseFails(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "index.js"), []byte("export const value = 1\n"), 0o600); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+
+	originalOpenRoot := openEntrypointRoot
+	openEntrypointRoot = func(string) (safeio.Root, error) {
+		return &fakeEntrypointRoot{
+			depRoot:   depRoot,
+			closeErr:  errors.New("close failed"),
+			closeHits: new(int),
+		}, nil
+	}
+	t.Cleanup(func() {
+		openEntrypointRoot = originalOpenRoot
+	})
+
+	surface := &ExportSurface{}
+	resolved := resolveEntrypoints(depRoot, depRoot, entrypointCandidates{ordered: []string{"./index.js"}, total: 1}, surface)
+	if len(resolved) != 0 {
+		t.Fatalf("expected close failure to discard resolved entrypoints, got %#v", resolved)
+	}
+	if !strings.Contains(strings.Join(surface.Warnings, "\n"), "failed to close dependency root after entrypoint resolution") {
+		t.Fatalf("expected close warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestPrioritizedExportEntrypointsPrefersRootThenSortedSubpaths(t *testing.T) {
+	profile := runtimeProfile{name: runtimeProfileNodeImport, conditions: []string{"node", "import", "default"}}
+	got := prioritizedExportEntrypoints(map[string]any{"./z": "./z.js", ".": "./root.js", "./a": "./a.js"}, profile)
+	want := []string{"./root.js", "./a.js", "./z.js"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("unexpected prioritized export entrypoints: got %#v want %#v", got, want)
+	}
+
+	got = prioritizedExportEntrypoints("./plain.js", profile)
+	if !slices.Equal(got, []string{"./plain.js"}) {
+		t.Fatalf("expected plain export string to resolve directly, got %#v", got)
+	}
+
+	got = prioritizedExportEntrypoints(map[string]any{"import": "./import.js", "default": "./default.js"}, profile)
+	if !slices.Equal(got, []string{"./import.js"}) {
+		t.Fatalf("expected conditional export map without subpaths to resolve directly, got %#v", got)
+	}
+}
+
+func TestPrioritizedEntrypointsPrefersLegacyFieldsBeforeSortedRemainder(t *testing.T) {
+	profile := runtimeProfile{name: runtimeProfileNodeImport, conditions: []string{"node", "import", "default"}}
+	entrypoints := map[string]struct{}{
+		"./z-last.js":   {},
+		"./m-middle.js": {},
+		"legacy.js":     {},
+		"types.d.ts":    {},
+	}
+
+	got := prioritizedEntrypoints(packageJSON{Main: "legacy.js", Types: "types.d.ts"}, profile, entrypoints)
+	wantPrefix := []string{"legacy.js", "types.d.ts"}
+	if !slices.Equal(got[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("expected legacy fields to lead prioritized entrypoints, got %#v", got)
+	}
+}
+
+func TestResolveDependencyExportsPrioritizesPrimaryEntrypointBeyondNaiveCap(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dep root: %v", err)
+	}
+
+	exports := make([]string, 0, maxExportEntrypoints+4)
+	exports = append(exports, `".": "./zzz-primary.js"`)
+	for i := 0; i < maxExportEntrypoints+2; i++ {
+		exports = append(exports, fmt.Sprintf(`"./subpath-%03d": "./aaa-missing-%03d.js"`, i, i))
+	}
+
+	packageJSON := fmt.Sprintf("{\n  \"exports\": {\n    %s\n  }\n}\n", strings.Join(exports, ",\n    "))
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(packageJSON), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "zzz-primary.js"), []byte("export const primary = 1\n"), 0o600); err != nil {
+		t.Fatalf("write primary entrypoint: %v", err)
+	}
+
+	surface, err := resolveDependencyExports(dependencyExportRequest{
+		repoPath:           repo,
+		dependency:         "pkg",
+		runtimeProfileName: runtimeProfileNodeImport,
+	})
+	if err != nil {
+		t.Fatalf("resolve dependency exports: %v", err)
+	}
+	if _, ok := surface.Names["primary"]; !ok {
+		t.Fatalf("expected primary export to survive capped resolution, got names=%#v warnings=%#v", surface.Names, surface.Warnings)
+	}
+	joined := strings.Join(surface.Warnings, "\n")
+	if !strings.Contains(joined, fmt.Sprintf("capped dependency entrypoint resolution at %d candidates", maxExportEntrypoints)) {
+		t.Fatalf("expected cap warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestResolveEntrypointsCapOrderIsDeterministic(t *testing.T) {
+	depRoot := t.TempDir()
+	entrypoints := make(map[string]struct{}, maxExportEntrypoints+4)
+	ordered := make([]string, 0, maxExportEntrypoints+4)
+
+	ordered = append(ordered, "./zzz-primary.js")
+	entrypoints["./zzz-primary.js"] = struct{}{}
+	if err := os.WriteFile(filepath.Join(depRoot, "zzz-primary.js"), []byte("export const primary = 1\n"), 0o600); err != nil {
+		t.Fatalf("write primary entrypoint: %v", err)
+	}
+
+	for i := 0; i < maxExportEntrypoints+3; i++ {
+		entry := fmt.Sprintf("./subpath-%03d.js", i)
+		entrypoints[entry] = struct{}{}
+		ordered = append(ordered, entry)
+		if err := os.WriteFile(filepath.Join(depRoot, fmt.Sprintf("subpath-%03d.js", i)), []byte(fmt.Sprintf("export const value%03d = %d\n", i, i)), 0o600); err != nil {
+			t.Fatalf("write subpath entrypoint %d: %v", i, err)
+		}
+	}
+
+	surface := &ExportSurface{}
+	resolved := resolveEntrypoints(depRoot, depRoot, entrypointCandidates{ordered: ordered, total: len(entrypoints)}, surface)
+
+	if len(resolved) != maxExportEntrypoints {
+		t.Fatalf("expected exactly %d resolved entrypoints, got %d", maxExportEntrypoints, len(resolved))
+	}
+	if filepath.Base(resolved[0]) != "zzz-primary.js" {
+		t.Fatalf("expected primary entrypoint first, got %#v", resolved[:min(3, len(resolved))])
+	}
+	if filepath.Base(resolved[len(resolved)-1]) != fmt.Sprintf("subpath-%03d.js", maxExportEntrypoints-2) {
+		t.Fatalf("expected deterministic last included entrypoint, got %q", filepath.Base(resolved[len(resolved)-1]))
+	}
+	for _, path := range resolved {
+		if filepath.Base(path) == fmt.Sprintf("subpath-%03d.js", maxExportEntrypoints-1) {
+			t.Fatalf("did not expect entrypoint beyond cap to resolve, got %#v", resolved)
+		}
+	}
+
+	joined := strings.Join(surface.Warnings, "\n")
+	if !strings.Contains(joined, fmt.Sprintf("capped dependency entrypoint resolution at %d candidates", maxExportEntrypoints)) {
+		t.Fatalf("expected cap warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestParseEntrypointsIntoSurfaceReturnsWhenRootPathEmpty(t *testing.T) {
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface("", []string{"index.js"}, surface)
+	if len(surface.Names) != 0 || len(surface.EntryPoints) != 0 || len(surface.Warnings) != 0 {
+		t.Fatalf("expected empty-root parse to leave surface untouched, got %#v", surface)
+	}
+}
+
+type fakeEntrypointRoot struct {
+	depRoot   string
+	closeErr  error
+	closeHits *int
+}
+
+func (r *fakeEntrypointRoot) Open(string) (safeio.File, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) OpenFile(string, int, os.FileMode) (safeio.File, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) OpenRoot(string) (safeio.Root, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) Lstat(name string) (fs.FileInfo, error) {
+	return os.Lstat(filepath.Join(r.depRoot, name))
+}
+
+func (r *fakeEntrypointRoot) Mkdir(string, os.FileMode) error {
+	return errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) Chmod(string, os.FileMode) error {
+	return errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) MkdirAll(string, os.FileMode) error {
+	return errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) Rename(string, string) error {
+	return errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) Remove(string) error {
+	return errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) Close() error {
+	if r.closeHits != nil {
+		hits := *r.closeHits
+		*r.closeHits = hits + 1
+	}
+	return r.closeErr
 }

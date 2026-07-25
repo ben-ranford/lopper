@@ -50,7 +50,7 @@ func assertJSDependencyExportsResolution(t *testing.T) {
 	if len(surface.Warnings) == 0 {
 		t.Fatalf("expected warnings for unknown profile and unresolved entrypoint")
 	}
-	if got := resolveEntrypoints(depRoot, map[string]struct{}{"./missing.js": {}}, &surface); len(got) != 0 {
+	if got := resolveEntrypoints(depRoot, depRoot, entrypointCandidates{ordered: []string{"./missing.js"}, total: 1}, &surface); len(got) != 0 {
 		t.Fatalf("expected unresolved entrypoint warning path")
 	}
 }
@@ -58,7 +58,7 @@ func assertJSDependencyExportsResolution(t *testing.T) {
 func assertJSExportMapHelpers(t *testing.T) {
 	t.Helper()
 	entrypoints := collectCandidateEntrypoints(packageJSON{}, runtimeProfile{name: "x"}, &ExportSurface{})
-	if _, ok := entrypoints[indexJSName]; !ok {
+	if len(entrypoints.ordered) != 1 || entrypoints.ordered[0] != indexJSName {
 		t.Fatalf("expected index.js fallback entrypoint")
 	}
 	profile := runtimeProfile{name: "node-import", conditions: []string{"node", "import", "default"}}

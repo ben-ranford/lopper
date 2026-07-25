@@ -210,6 +210,13 @@ func TestSubpathResolverResolve(t *testing.T) {
 	}
 }
 
+func TestSubpathResolverResolveReturnsFalseWhenFilesystemFallbackMisses(t *testing.T) {
+	resolver := subpathResolver{dependencyRoot: t.TempDir()}
+	if module, ok := resolver.Resolve("lodash", "missing"); ok || module != "" {
+		t.Fatalf("expected missing filesystem fallback to fail, got ok=%v module=%q", ok, module)
+	}
+}
+
 func setupLodashFixture(t *testing.T, source string) (repo string, sourcePath string, original string) {
 	t.Helper()
 	repo = t.TempDir()

@@ -10,10 +10,11 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func buildNativeModuleRiskCue(depRoot string, pkg packageJSON) (*report.RiskCue, error) {
-	isNative, details, err := detectNativeModuleIndicators(depRoot, pkg)
+func buildNativeModuleRiskCueWithinRoot(root safeio.Root, depRoot string, pkg packageJSON) (*report.RiskCue, error) {
+	isNative, details, err := detectNativeModuleIndicatorsWithinRoot(root, depRoot, pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -33,16 +34,27 @@ func buildNativeModuleRiskCue(depRoot string, pkg packageJSON) (*report.RiskCue,
 	}, nil
 }
 
-func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (bool, []string, error) {
+func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (native bool, details []string, err error) {
+	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
+	if err != nil {
+		return false, nil, err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	return detectNativeModuleIndicatorsWithinRoot(root, validatedDepRoot, pkg)
+}
+
+func detectNativeModuleIndicatorsWithinRoot(root safeio.Root, depRoot string, pkg packageJSON) (bool, []string, error) {
 	details := collectNativeMetadataIndicators(pkg)
 
-	bindingDetails, err := detectBindingGyp(depRoot)
+	bindingDetails, err := detectBindingGypWithinRoot(root)
 	if err != nil {
 		return false, nil, err
 	}
 	details = append(details, bindingDetails...)
 
-	nodeBinary, err := detectNodeBinary(depRoot)
+	nodeBinary, err := detectNodeBinaryWithinRoot(root, depRoot)
 	if err != nil {
 		return false, nil, err
 	}
@@ -70,8 +82,19 @@ func collectNativeMetadataIndicators(pkg packageJSON) []string {
 	return details
 }
 
-func detectBindingGyp(depRoot string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(depRoot, "binding.gyp")); err == nil {
+func detectBindingGyp(depRoot string) (details []string, err error) {
+	root, _, err := openValidatedRootNoFollow(depRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	return detectBindingGypWithinRoot(root)
+}
+
+func detectBindingGypWithinRoot(root safeio.Root) ([]string, error) {
+	if info, err := root.Lstat("binding.gyp"); err == nil && info.Mode().IsRegular() {
 		return []string{"binding.gyp"}, nil
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -79,10 +102,23 @@ func detectBindingGyp(depRoot string) ([]string, error) {
 	return nil, nil
 }
 
-func detectNodeBinary(depRoot string) (string, error) {
+func detectNodeBinary(depRoot string) (binary string, err error) {
+	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	return detectNodeBinaryWithinRoot(root, validatedDepRoot)
+}
+
+func detectNodeBinaryWithinRoot(root safeio.Root, depRoot string) (string, error) {
 	const maxVisited = 600
 	scanner := nodeBinaryScanner{maxVisited: maxVisited}
-	if err := filepath.WalkDir(depRoot, scanner.walk); err != nil && !errors.Is(err, fs.SkipAll) {
+	if err := walkRootNoFollow(root, func(relPath string, info fs.FileInfo) (bool, bool, error) {
+		return scanner.walkInfo(depRoot, relPath, info)
+	}); err != nil && !errors.Is(err, fs.SkipAll) {
 		return "", err
 	}
 	return scanner.found, nil
@@ -98,22 +134,34 @@ func (s *nodeBinaryScanner) walk(path string, entry fs.DirEntry, err error) erro
 	if err != nil {
 		return err
 	}
-	if entry.IsDir() {
-		if entry.Name() == "node_modules" {
-			return filepath.SkipDir
-		}
-		return nil
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	skipDir, stop, err := s.walkInfo(path, path, info)
+	if skipDir {
+		return filepath.SkipDir
+	}
+	if stop {
+		return err
+	}
+	return err
+}
+
+func (s *nodeBinaryScanner) walkInfo(depRoot, relPath string, info fs.FileInfo) (bool, bool, error) {
+	if info.IsDir() {
+		return filepath.Base(relPath) == "node_modules", false, nil
 	}
 
 	s.visited++
 	if s.visited > s.maxVisited {
-		return fs.SkipAll
+		return false, true, fs.SkipAll
 	}
-	if strings.EqualFold(filepath.Ext(entry.Name()), ".node") {
-		s.found = filepath.Base(path)
-		return fs.SkipAll
+	if strings.EqualFold(filepath.Ext(relPath), ".node") {
+		s.found = filepath.Base(filepath.Join(depRoot, relPath))
+		return false, true, fs.SkipAll
 	}
-	return nil
+	return false, false, nil
 }
 
 func dedupeStrings(values []string) []string {

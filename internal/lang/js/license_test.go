@@ -1,12 +1,16 @@
 package js
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -15,6 +19,25 @@ const (
 	licenseTestMPL20               = "MPL-2.0"
 	licenseTestRepositoryURL       = "https://github.com/example/repo"
 )
+
+type closingLicenseRoot struct {
+	safeio.Root
+	closeErr error
+}
+
+func (r *closingLicenseRoot) Close() error {
+	var baseErr error
+	if r.Root != nil {
+		baseErr = r.Root.Close()
+	}
+	if baseErr != nil && r.closeErr != nil {
+		return errors.Join(baseErr, r.closeErr)
+	}
+	if r.closeErr != nil {
+		return r.closeErr
+	}
+	return baseErr
+}
 
 func TestDetectLicenseAndProvenanceFromPackageJSON(t *testing.T) {
 	depRoot := t.TempDir()
@@ -47,6 +70,24 @@ func TestDetectLicenseFromFallbackLicenseFile(t *testing.T) {
 	}
 }
 
+func TestDetectLicenseAndProvenanceSkipsOversizedLicenseCandidate(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "COPYING"), string(bytes.Repeat([]byte("x"), int(licenseFileReadMaxBytes)+1)))
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License\nPermission is hereby granted...")
+
+	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	if license == nil || license.SPDX != "MIT" || license.Source != "license-file" {
+		t.Fatalf("expected MIT fallback after oversized license candidate skip, got %#v", license)
+	}
+	if provenance == nil || provenance.Source != "local-manifest" {
+		t.Fatalf("expected provenance from local manifest, got %#v", provenance)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipped license candidate COPYING above") {
+		t.Fatalf("expected stable oversized-license warning, got %#v", warnings)
+	}
+}
+
 func TestDetectProvenanceWithRegistryHeuristics(t *testing.T) {
 	depRoot := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{
@@ -61,6 +102,77 @@ func TestDetectProvenanceWithRegistryHeuristics(t *testing.T) {
 	_, provenance, _ := detectLicenseAndProvenance(depRoot, true)
 	if provenance == nil || provenance.Source != "local+registry-heuristics" {
 		t.Fatalf("expected registry provenance source, got %#v", provenance)
+	}
+}
+
+func TestDetectLicenseAndProvenanceRejectsSymlinkedDependencyRoot(t *testing.T) {
+	depRoot := filepath.Join(t.TempDir(), "pkg")
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outside, licenseTestPackageJSONFileName), `{"name":"outside","version":"9.9.9","license":"GPL-3.0-only"}`)
+	if err := os.Symlink(outside, depRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	license, provenance, warnings := detectLicenseAndProvenance(depRoot, true)
+	if license == nil || !license.Unknown || license.Source != "unknown" {
+		t.Fatalf("expected unknown license for symlinked dependency root, got %#v", license)
+	}
+	if provenance == nil || provenance.Source != "unknown" {
+		t.Fatalf("expected unknown provenance for symlinked dependency root, got %#v", provenance)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], dependencyRootOpaqueLayoutWarning) {
+		t.Fatalf("expected stable symlink rejection warning, got %#v", warnings)
+	}
+}
+
+func TestFindLicenseFilesRejectsInvalidDependencyRoot(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	if got := findLicenseFiles(missing); len(got) != 0 {
+		t.Fatalf("expected missing dependency root to return nil files, got %#v", got)
+	}
+}
+
+func TestFindLicenseFilesDiscardsResultsWhenRootCloseFails(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License")
+
+	originalOpen := openDependencyRootNoFollow
+	openDependencyRootNoFollow = func(path string) (safeio.Root, error) {
+		root, err := safeio.OpenRootNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &closingLicenseRoot{Root: root, closeErr: errors.New("close failed")}, nil
+	}
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpen
+	})
+
+	if files := findLicenseFiles(depRoot); len(files) != 0 {
+		t.Fatalf("expected close failure to discard license files, got %#v", files)
+	}
+}
+
+func TestFindLicenseFilesReturnsCollectedFilesOnWalkError(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License\n")
+
+	blockedDir := filepath.Join(depRoot, "blocked")
+	if err := os.MkdirAll(blockedDir, 0o755); err != nil {
+		t.Fatalf("mkdir blocked dir: %v", err)
+	}
+	if err := os.Chmod(blockedDir, 0o000); err != nil {
+		t.Fatalf("chmod blocked dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(blockedDir, 0o755); err != nil {
+			t.Fatalf("restore blocked dir permissions: %v", err)
+		}
+	})
+
+	files := findLicenseFiles(depRoot)
+	if !slices.Contains(files, filepath.Join(depRoot, "LICENSE")) {
+		t.Fatalf("expected collected license files to be preserved on walk error, got %#v", files)
 	}
 }
 
@@ -198,6 +310,59 @@ func TestLoadDependencyPackageJSONErrorBranches(t *testing.T) {
 	}
 }
 
+func TestLoadDependencyPackageJSONReturnsWarningWhenCloseFails(t *testing.T) {
+	root := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(root, licenseTestPackageJSONFileName), `{"name":"demo"}`)
+
+	originalOpen := openLicenseValidatedRoot
+	openLicenseValidatedRoot = func(path string) (safeio.Root, string, error) {
+		baseRoot, validatedRoot, err := openValidatedRootNoFollow(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: errors.New("close failed")}, validatedRoot, nil
+	}
+	t.Cleanup(func() {
+		openLicenseValidatedRoot = originalOpen
+	})
+
+	pkg, warnings := loadDependencyPackageJSON(root)
+	if pkg.Name != "" {
+		t.Fatalf("expected close failure to clear package metadata, got %#v", pkg)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to read dependency metadata") {
+		t.Fatalf("expected close failure warning, got %#v", warnings)
+	}
+}
+
+func TestDetectLicenseAndProvenanceWarnsWhenCloseFails(t *testing.T) {
+	root := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(root, licenseTestPackageJSONFileName), `{"name":"demo","version":"1.0.0","license":"MIT"}`)
+
+	originalOpen := openLicenseValidatedRoot
+	openLicenseValidatedRoot = func(path string) (safeio.Root, string, error) {
+		baseRoot, validatedRoot, err := openValidatedRootNoFollow(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: errors.New("close failed")}, validatedRoot, nil
+	}
+	t.Cleanup(func() {
+		openLicenseValidatedRoot = originalOpen
+	})
+
+	license, provenance, warnings := detectLicenseAndProvenance(root, false)
+	if license == nil || license.SPDX != "MIT" {
+		t.Fatalf("expected license detection to succeed before close failure, got %#v", license)
+	}
+	if provenance == nil || provenance.Source != "local-manifest" {
+		t.Fatalf("expected provenance detection to succeed before close failure, got %#v", provenance)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license/provenance detection") {
+		t.Fatalf("expected close failure warning, got %#v", warnings)
+	}
+}
+
 func TestNormalizeSPDXExpression(t *testing.T) {
 	if got := normalizeSPDXExpression(" ( mit and apache-2.0 ) "); got != "( MIT AND APACHE-2.0 )" {
 		t.Fatalf("unexpected normalized expression: %q", got)
@@ -240,6 +405,9 @@ func TestDetectLicenseFromFilesNoMatch(t *testing.T) {
 	if got := detectLicenseFromFiles(root); got != nil {
 		t.Fatalf("expected nil fallback for unknown license text, got %#v", got)
 	}
+	if got := detectLicenseFromFiles(filepath.Join(root, "missing")); got != nil {
+		t.Fatalf("expected missing root to return nil fallback, got %#v", got)
+	}
 }
 
 func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
@@ -255,6 +423,51 @@ func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
 	}
 	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
 		t.Fatalf("unexpected probe result: %#v", probe)
+	}
+	if probe := probeLicenseCandidates(filepath.Join(root, "missing"), []string{known}); probe != nil {
+		t.Fatalf("expected missing root to return no candidate probe, got %#v", probe)
+	}
+}
+
+func TestProbeLicenseFileWrappers(t *testing.T) {
+	root := t.TempDir()
+	candidate := filepath.Join(root, "LICENSE")
+	testutil.MustWriteFile(t, candidate, "MIT License\nPermission is hereby granted...")
+
+	if probe := probeLicenseFiles(root); probe == nil || probe.path != candidate {
+		t.Fatalf("expected probeLicenseFiles wrapper to return license candidate, got %#v", probe)
+	}
+	if probe := probeLicenseCandidate(root, candidate); probe == nil || probe.spdx != "MIT" {
+		t.Fatalf("expected probeLicenseCandidate wrapper to detect SPDX, got %#v", probe)
+	}
+	if probe := probeLicenseFiles(filepath.Join(root, "missing")); probe != nil {
+		t.Fatalf("expected missing root to return no file probe, got %#v", probe)
+	}
+	if probe := probeLicenseCandidate(filepath.Join(root, "missing"), candidate); probe != nil {
+		t.Fatalf("expected missing root to return no candidate probe, got %#v", probe)
+	}
+}
+
+func TestProbeLicenseCandidateWithinRootIgnoresEscapingPath(t *testing.T) {
+	root := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(root, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
+
+	safeRoot, validatedRoot, err := openValidatedRootNoFollow(root)
+	if err != nil {
+		t.Fatalf("open validated root: %v", err)
+	}
+	defer func() {
+		if closeErr := safeRoot.Close(); closeErr != nil {
+			t.Fatalf("close safe root: %v", closeErr)
+		}
+	}()
+
+	outsideCandidate := filepath.Join(t.TempDir(), "LICENSE")
+	testutil.MustWriteFile(t, outsideCandidate, "MIT License\nPermission is hereby granted...")
+
+	probe, warning := probeLicenseCandidateWithinRoot(safeRoot, validatedRoot, outsideCandidate)
+	if probe != nil || warning != "" {
+		t.Fatalf("expected escaping candidate path to be ignored, got probe=%#v warning=%q", probe, warning)
 	}
 }
 

@@ -37,6 +37,44 @@ func TestBuildCodemodForMissingSourceWarnsAndSkipsSuggestions(t *testing.T) {
 	}
 }
 
+func TestBuildSubpathCodemodReportSkipsSourceThatGrewOversizedBeforePreview(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"exports":{"./map":"./map.js"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	sourcePath := filepath.Join(repo, "index.js")
+	if err := os.WriteFile(sourcePath, []byte("import { map } from \"lodash\";\n"), 0o644); err != nil {
+		t.Fatalf("write initial source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("x"+strings.Repeat("y", int(jsSourceReadMaxBytes))), 0o644); err != nil {
+		t.Fatalf("grow source after scan: %v", err)
+	}
+
+	report, warnings := BuildSubpathCodemodReport(repo, "lodash", depRoot, ScanResult{
+		Files: []FileScan{{
+			Path: "index.js",
+			Imports: []ImportBinding{{
+				Module:     "lodash",
+				ExportName: "map",
+				LocalName:  "map",
+				Kind:       ImportNamed,
+				Location:   report.Location{Line: 1},
+			}},
+			IdentifierUsage: map[string]int{"map": 1},
+		}},
+	})
+	if report == nil {
+		t.Fatal("expected codemod report")
+	}
+	if len(report.Suggestions) != 0 || len(report.Skips) != 0 {
+		t.Fatalf("expected oversized preview source to produce no suggestions/skips, got %#v", report)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "codemod preview skipped for index.js: source exceeds") {
+		t.Fatalf("expected stable oversized preview warning, got %#v", warnings)
+	}
+}
+
 func TestBuildCodemodForFileWithoutTargetModuleProducesSkip(t *testing.T) {
 	assertCodemodSkipReason(t, `import { map } from "lodash";`, 1, subpathResolver{}, codemodReasonNoSubpathTarget)
 }
@@ -76,6 +114,18 @@ func TestCodemodSkipReasonBranches(t *testing.T) {
 	}
 }
 
+func TestCodemodSkipReasonNamespaceAndAliasBranches(t *testing.T) {
+	if code, message := codemodSkipReason(ImportBinding{Kind: ImportNamespace, ExportName: "*", LocalName: "*"}, FileScan{}); code != codemodReasonSideEffectImport || !strings.Contains(message, "side-effect imports") {
+		t.Fatalf("unexpected namespace wildcard skip: %q %q", code, message)
+	}
+	if code, message := codemodSkipReason(ImportBinding{Kind: ImportNamespace, ExportName: "*", LocalName: "ns"}, FileScan{}); code != codemodReasonNamespaceImport || !strings.Contains(message, "namespace imports") {
+		t.Fatalf("unexpected namespace import skip: %q %q", code, message)
+	}
+	if code, message := codemodSkipReason(ImportBinding{Kind: ImportNamed, ExportName: "map", LocalName: "mapAlias"}, FileScan{}); code != codemodReasonAliasConflict || !strings.Contains(message, "local-name conflicts") {
+		t.Fatalf("unexpected aliased import skip: %q %q", code, message)
+	}
+}
+
 func TestRewriteImportLineGuardBranches(t *testing.T) {
 	if _, ok := rewriteImportLine(`import { map } from "lodash';`, "lodash", "map", lodashMapSubpath); ok {
 		t.Fatalf("expected mismatched quote handling to fail import rewrite")
@@ -98,6 +148,12 @@ func TestNewSubpathResolverIgnoresNonMapExports(t *testing.T) {
 func TestNewSubpathResolverHandlesMissingPackageSurface(t *testing.T) {
 	if got := newSubpathResolver(filepath.Join(t.TempDir(), "missing")); len(got.knownSubpaths) != 0 {
 		t.Fatalf("expected missing package surface to return empty resolver, got %#v", got.knownSubpaths)
+	}
+}
+
+func TestNewSubpathResolverReturnsEmptyForBlankRoot(t *testing.T) {
+	if got := newSubpathResolver("   "); got.dependencyRoot != "   " || len(got.knownSubpaths) != 0 {
+		t.Fatalf("expected blank-root resolver to stay empty, got %#v", got)
 	}
 }
 
@@ -132,6 +188,142 @@ func TestHasResolvableSubpathFileAdditionalBranches(t *testing.T) {
 	}
 	if hasResolvableSubpathFile(withExports, "only-dir") {
 		t.Fatalf("expected pure directory candidate not to resolve")
+	}
+	if hasResolvableSubpathFile(filepath.Join(withExports, "missing"), "nested") {
+		t.Fatalf("expected missing dependency root not to resolve")
+	}
+
+	blockingFile := filepath.Join(withExports, "file")
+	if err := os.WriteFile(blockingFile, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	if hasResolvableSubpathFile(withExports, filepath.Join("file", "nested")) {
+		t.Fatalf("expected non-directory path component not to resolve")
+	}
+
+	outsideDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outsideDir, "escaped.js"), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write outside source: %v", err)
+	}
+	outsideSubpath, err := filepath.Rel(withExports, filepath.Join(outsideDir, "escaped"))
+	if err != nil {
+		t.Fatalf("resolve outside subpath: %v", err)
+	}
+	if hasResolvableSubpathFile(withExports, outsideSubpath) {
+		t.Fatalf("expected traversing subpath not to resolve")
+	}
+}
+
+func TestHasResolvableSubpathFileRejectsSymlinkedFile(t *testing.T) {
+	depRoot := t.TempDir()
+	realPath := filepath.Join(depRoot, "real.js")
+	if err := os.WriteFile(realPath, []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write real source: %v", err)
+	}
+	if err := os.Symlink(realPath, filepath.Join(depRoot, "linked.js")); err != nil {
+		t.Fatalf("create file symlink: %v", err)
+	}
+
+	if hasResolvableSubpathFile(depRoot, "linked") {
+		t.Fatalf("expected symlinked subpath file to be rejected")
+	}
+}
+
+func TestHasResolvableSubpathFileRejectsEscapingSymlinkedDirectory(t *testing.T) {
+	depRoot := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outsideDir, codemodIndexSource), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write outside nested index: %v", err)
+	}
+	if err := os.Symlink(outsideDir, filepath.Join(depRoot, "linked")); err != nil {
+		t.Fatalf("create directory symlink: %v", err)
+	}
+
+	if hasResolvableSubpathFile(depRoot, "linked") {
+		t.Fatalf("expected escaping symlinked subpath directory to be rejected")
+	}
+}
+
+func TestBuildSubpathCodemodReportDedupesWarnings(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"exports":{"./map":"./map.js"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+
+	report, warnings := BuildSubpathCodemodReport(t.TempDir(), "lodash", depRoot, ScanResult{
+		Files: []FileScan{
+			{
+				Path: codemodMissingSource,
+				Imports: []ImportBinding{{
+					Module:     "lodash",
+					ExportName: "map",
+					LocalName:  "map",
+					Kind:       ImportNamed,
+					Location:   report.Location{Line: 1},
+				}},
+				IdentifierUsage: map[string]int{"map": 1},
+			},
+			{
+				Path: codemodMissingSource,
+				Imports: []ImportBinding{{
+					Module:     "lodash",
+					ExportName: "map",
+					LocalName:  "map",
+					Kind:       ImportNamed,
+					Location:   report.Location{Line: 1},
+				}},
+				IdentifierUsage: map[string]int{"map": 1},
+			},
+		},
+	})
+	if report == nil {
+		t.Fatalf("expected codemod report")
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], codemodMissingSource) {
+		t.Fatalf("expected duplicate missing-source warnings to be deduped, got %#v", warnings)
+	}
+}
+
+func TestBuildSubpathCodemodReportSortsSuggestionsAndIgnoresOtherDependencies(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"exports":{"./map":"./map.js","./filter":"./filter.js"}}`), 0o644); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "b.js"), []byte("import { filter } from \"lodash\";\n"), 0o644); err != nil {
+		t.Fatalf("write b.js: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.js"), []byte("import { map } from \"lodash\";\n"), 0o644); err != nil {
+		t.Fatalf("write a.js: %v", err)
+	}
+
+	report, warnings := BuildSubpathCodemodReport(repo, "lodash", depRoot, ScanResult{
+		Files: []FileScan{
+			{
+				Path: "b.js",
+				Imports: []ImportBinding{
+					{Module: "other", ExportName: "filter", LocalName: "filter", Kind: ImportNamed, Location: report.Location{Line: 1}},
+					{Module: "lodash", ExportName: "filter", LocalName: "filter", Kind: ImportNamed, Location: report.Location{Line: 1}},
+				},
+				IdentifierUsage: map[string]int{"filter": 1},
+			},
+			{
+				Path: "a.js",
+				Imports: []ImportBinding{
+					{Module: "lodash", ExportName: "map", LocalName: "map", Kind: ImportNamed, Location: report.Location{Line: 1}},
+				},
+				IdentifierUsage: map[string]int{"map": 1},
+			},
+		},
+	})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	if report == nil || len(report.Suggestions) != 2 {
+		t.Fatalf("expected two sorted suggestions, got %#v", report)
+	}
+	if report.Suggestions[0].File != "a.js" || report.Suggestions[1].File != "b.js" {
+		t.Fatalf("expected suggestions to be sorted by file, got %#v", report.Suggestions)
 	}
 }
 

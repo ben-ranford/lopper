@@ -662,15 +662,15 @@ func TestReadFileLimitRejectsSpecialFile(t *testing.T) {
 			continue
 		}
 
-		if _, err := ReadFileLimit(path, 1024); !errors.Is(err, ErrFileTooLarge) {
-			t.Fatalf("expected ErrFileTooLarge for %s, got %v", path, err)
+		if _, err := ReadFileLimit(path, 1024); !errors.Is(err, ErrNonRegularFile) {
+			t.Fatalf("expected ErrNonRegularFile for %s, got %v", path, err)
 		}
 		return
 	}
 	t.Skip("non-regular file unavailable")
 }
 
-func TestReadOpenedFileRejectsOversizedPipeContent(t *testing.T) {
+func TestReadOpenedFileRejectsPipeBeforeRead(t *testing.T) {
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
@@ -679,49 +679,31 @@ func TestReadOpenedFileRejectsOversizedPipeContent(t *testing.T) {
 		if closeErr := reader.Close(); closeErr != nil {
 			t.Fatalf("close pipe reader: %v", closeErr)
 		}
+		if closeErr := writer.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Fatalf("close pipe writer: %v", closeErr)
+		}
 	})
 
-	done := make(chan error, 1)
-	go func() {
-		_, writeErr := writer.Write([]byte("hello"))
-		closeErr := writer.Close()
-		if writeErr != nil {
-			done <- writeErr
-			return
-		}
-		done <- closeErr
-	}()
-
 	_, err = readOpenedFile(reader, 4)
-	if !errors.Is(err, ErrFileTooLarge) {
-		t.Fatalf("expected ErrFileTooLarge for pipe content, got %v", err)
-	}
-	if writeErr := <-done; writeErr != nil {
-		t.Fatalf("pipe writer error: %v", writeErr)
+	if !errors.Is(err, ErrNonRegularFile) {
+		t.Fatalf("expected ErrNonRegularFile for pipe reader, got %v", err)
 	}
 }
 
 func TestReadOpenedFileAllowsMaxInt64Limit(t *testing.T) {
-	reader, writer, err := os.Pipe()
+	path := filepath.Join(t.TempDir(), "max-int64.txt")
+	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	reader, err := os.Open(path)
 	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
+		t.Fatalf("open file: %v", err)
 	}
 	t.Cleanup(func() {
 		if closeErr := reader.Close(); closeErr != nil {
-			t.Fatalf("close pipe reader: %v", closeErr)
+			t.Fatalf("close reader: %v", closeErr)
 		}
 	})
-
-	done := make(chan error, 1)
-	go func() {
-		_, writeErr := writer.Write([]byte("ok"))
-		closeErr := writer.Close()
-		if writeErr != nil {
-			done <- writeErr
-			return
-		}
-		done <- closeErr
-	}()
 
 	data, err := readOpenedFile(reader, math.MaxInt64)
 	if err != nil {
@@ -729,9 +711,6 @@ func TestReadOpenedFileAllowsMaxInt64Limit(t *testing.T) {
 	}
 	if string(data) != "ok" {
 		t.Fatalf(unexpectedContentFmt, string(data))
-	}
-	if writeErr := <-done; writeErr != nil {
-		t.Fatalf("pipe writer error: %v", writeErr)
 	}
 }
 
@@ -748,6 +727,42 @@ func TestReadOpenedFileDirectoryReadError(t *testing.T) {
 
 	if _, err := readOpenedFile(dirFile, 1); err == nil {
 		t.Fatalf("expected readOpenedFile to fail when reading a directory")
+	}
+}
+
+func TestOpenFileRejectsSpecialFile(t *testing.T) {
+	for _, path := range []string{"/dev/zero", "NUL"} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().IsRegular() {
+			continue
+		}
+
+		file, err := OpenFile(path)
+		if !errors.Is(err, ErrNonRegularFile) {
+			t.Fatalf("expected ErrNonRegularFile for %s, got file=%v err=%v", path, file, err)
+		}
+		return
+	}
+	t.Skip("non-regular file unavailable")
+}
+
+func TestReadOpenedFileContinuesWhenStatFails(t *testing.T) {
+	file := &fakeFile{
+		stat: func() (fs.FileInfo, error) {
+			return nil, errors.New("stat failed")
+		},
+		read: func(p []byte) (int, error) {
+			copy(p, "ok")
+			return len("ok"), io.EOF
+		},
+	}
+
+	data, err := readOpenedFile(file, 0)
+	if err != nil {
+		t.Fatalf("expected stat failure fallback read, got %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf(unexpectedContentFmt, string(data))
 	}
 }
 
@@ -1196,6 +1211,200 @@ func TestOpenFileOpenErrorCloseRootError(t *testing.T) {
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf(rootCloseErrFmt, err)
+	}
+}
+
+func TestReadFileWithinRootOpenErrorAfterRegularPreflight(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "regular.txt")
+	if err := os.WriteFile(infoPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	regularInfo := statTestPath(t, infoPath)
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			return regularInfo, nil
+		},
+		open: func(string) (File, error) {
+			return nil, os.ErrNotExist
+		},
+	}
+
+	_, err := ReadFileWithinRoot(root, missingFileName)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected translated missing-file error, got %v", err)
+	}
+}
+
+func TestReadFileWithinRootRejectsNonRegularBeforeOpen(t *testing.T) {
+	nonRegularInfo := statTestPath(t, t.TempDir())
+	openCalled := false
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			return nonRegularInfo, nil
+		},
+		open: func(string) (File, error) {
+			openCalled = true
+			return nil, errors.New("unexpected open")
+		},
+	}
+
+	if _, err := ReadFileWithinRoot(root, "special"); !errors.Is(err, ErrNonRegularFile) {
+		t.Fatalf("expected non-regular preflight error, got %v", err)
+	}
+	if openCalled {
+		t.Fatal("expected non-regular target to be rejected before open")
+	}
+}
+
+func TestPathLimitReadersPropagatePostPreflightOpenError(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "regular.txt")
+	if err := os.WriteFile(infoPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	regularInfo := statTestPath(t, infoPath)
+	openErr := errors.New("open failed")
+
+	tests := []struct {
+		name string
+		read func(rootDir, targetPath string) ([]byte, error)
+	}{
+		{
+			name: "under",
+			read: func(rootDir, targetPath string) ([]byte, error) {
+				return ReadFileUnderLimit(rootDir, targetPath, 1)
+			},
+		},
+		{
+			name: "exact",
+			read: func(_ string, targetPath string) ([]byte, error) {
+				return ReadFileLimit(targetPath, 1)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+				return &fakeRoot{
+					lstat: func(string) (fs.FileInfo, error) {
+						return regularInfo, nil
+					},
+					open: func(string) (File, error) {
+						return nil, openErr
+					},
+					close: func() error {
+						return nil
+					},
+				}, nil
+			}})
+
+			rootDir := t.TempDir()
+			targetPath := filepath.Join(rootDir, "target.txt")
+			if _, err := test.read(rootDir, targetPath); !errors.Is(err, openErr) {
+				t.Fatalf("expected post-preflight open error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestOpenFileJoinsPreflightAndRootCloseErrors(t *testing.T) {
+	nonRegularInfo := statTestPath(t, t.TempDir())
+	rootCloseErr := errors.New("root close failed")
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		return &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				return nonRegularInfo, nil
+			},
+			close: func() error {
+				return rootCloseErr
+			},
+		}, nil
+	}})
+
+	file, err := OpenFile(filepath.Join(t.TempDir(), "special"))
+	if file != nil || !errors.Is(err, ErrNonRegularFile) || !errors.Is(err, rootCloseErr) {
+		t.Fatalf("expected joined preflight and root-close errors, got file=%v err=%v", file, err)
+	}
+}
+
+func TestOpenFileJoinsPostOpenValidationAndCloseErrors(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), "regular.txt")
+	if err := os.WriteFile(infoPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	regularInfo := statTestPath(t, infoPath)
+	nonRegularInfo := statTestPath(t, t.TempDir())
+	fileCloseErr := errors.New("file close failed")
+	rootCloseErr := errors.New("root close failed")
+
+	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
+		return &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				return regularInfo, nil
+			},
+			open: func(string) (File, error) {
+				return &fakeFile{
+					stat: func() (fs.FileInfo, error) {
+						return nonRegularInfo, nil
+					},
+					close: func() error {
+						return fileCloseErr
+					},
+				}, nil
+			},
+			close: func() error {
+				return rootCloseErr
+			},
+		}, nil
+	}})
+
+	file, err := OpenFile(filepath.Join(t.TempDir(), "target.txt"))
+	if file != nil || !errors.Is(err, ErrNonRegularFile) || !errors.Is(err, fileCloseErr) || !errors.Is(err, rootCloseErr) {
+		t.Fatalf("expected joined validation and close errors, got file=%v err=%v", file, err)
+	}
+}
+
+func TestReadOpenedFileFallbackErrorBranches(t *testing.T) {
+	t.Run("read error", func(t *testing.T) {
+		readErr := errors.New("read failed")
+		file := &fakeFile{
+			stat: func() (fs.FileInfo, error) {
+				return nil, errors.New("stat failed")
+			},
+			read: func([]byte) (int, error) {
+				return 0, readErr
+			},
+		}
+
+		if _, err := readOpenedFile(file, 4); !errors.Is(err, readErr) {
+			t.Fatalf("expected fallback read error, got %v", err)
+		}
+	})
+
+	t.Run("oversized after unknown stat", func(t *testing.T) {
+		file := &fakeFile{
+			stat: func() (fs.FileInfo, error) {
+				return nil, errors.New("stat failed")
+			},
+			read: func(p []byte) (int, error) {
+				copy(p, "hello")
+				return len("hello"), io.EOF
+			},
+		}
+
+		if _, err := readOpenedFile(file, 4); !errors.Is(err, ErrFileTooLarge) {
+			t.Fatalf("expected fallback size-limit error, got %v", err)
+		}
+	})
+}
+
+func TestValidateOpenedRegularFileAllowsUnknownStat(t *testing.T) {
+	file := &fakeFile{
+		stat: func() (fs.FileInfo, error) {
+			return nil, errors.New("stat failed")
+		},
+	}
+	if err := validateOpenedRegularFile(file); err != nil {
+		t.Fatalf("expected unknown stat to preserve existing open behavior, got %v", err)
 	}
 }
 

@@ -3432,7 +3432,7 @@ func TestDownloadSnapshotUnderRootReturnsReadErrorWithResponseCloseDetail(t *tes
 	}
 }
 
-func TestUpdateManifestReturnsWriteError(t *testing.T) {
+func TestUpdateManifestRejectsNonRegularManifest(t *testing.T) {
 	cachePath := t.TempDir()
 	if err := os.Mkdir(filepath.Join(cachePath, manifestFileName), 0o755); err != nil {
 		t.Fatalf("mkdir manifest path: %v", err)
@@ -3440,8 +3440,8 @@ func TestUpdateManifestReturnsWriteError(t *testing.T) {
 
 	root := advisoryOpenTestRoot(t, cachePath)
 	err := updateManifest(root, CacheSnapshot{ID: "new", Path: "snapshots/new.json"}, time.Date(2026, time.July, 13, 0, 0, 0, 0, time.UTC))
-	if !errors.Is(err, fs.ErrInvalid) {
-		t.Fatalf("expected manifest write error, got %v", err)
+	if !errors.Is(err, safeio.ErrNonRegularFile) || !strings.Contains(err.Error(), "read advisory cache manifest") {
+		t.Fatalf("expected wrapped non-regular manifest read error, got %v", err)
 	}
 }
 
@@ -3728,6 +3728,9 @@ func advisoryAssertNoSafeIOTempFiles(t *testing.T, cachePath string) {
 }
 
 func advisoryRootWithoutManifest(root *advisoryFakeRoot) *advisoryFakeRoot {
+	root.lstat = func(string) (fs.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
 	root.open = func(string) (safeio.File, error) {
 		return nil, os.ErrNotExist
 	}

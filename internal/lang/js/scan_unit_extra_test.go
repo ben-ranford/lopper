@@ -148,6 +148,54 @@ func TestParseRequireBindingNoDeclarator(t *testing.T) {
 	}
 }
 
+func TestParseNamedImportsHandlesDefaultAndPlainSpecifiers(t *testing.T) {
+	source := []byte(`import { default as pkgDefault, bar } from "pkg";`)
+	node := parseJSNodeByType(t, source, "named_imports")
+	bindings := parseNamedImports(node, source, "pkg", unitIndexJS)
+	if len(bindings) != 2 {
+		t.Fatalf("expected named imports to be parsed, got %#v", bindings)
+	}
+	if bindings[0].ExportName != "default" || bindings[0].LocalName != "pkgDefault" {
+		t.Fatalf("expected default import specifier to use the property identifier, got %#v", bindings[0])
+	}
+	if bindings[1].ExportName != "bar" || bindings[1].LocalName != "bar" {
+		t.Fatalf("expected plain named import to parse, got %#v", bindings[1])
+	}
+
+	recoverySource := []byte(`import {, baz } from "pkg";`)
+	recoveryNode := parseJSNodeByType(t, recoverySource, "named_imports")
+	recoveryBindings := parseNamedImports(recoveryNode, recoverySource, "pkg", unitIndexJS)
+	if len(recoveryBindings) != 1 || recoveryBindings[0].ExportName != "baz" || recoveryBindings[0].LocalName != "baz" {
+		t.Fatalf("expected parser recovery to keep valid trailing import specifier, got %#v", recoveryBindings)
+	}
+}
+
+func TestParseNamedImportsRecoversMissingAliasName(t *testing.T) {
+	source := []byte(`import { foo as } from "pkg";`)
+	node := parseJSNodeByType(t, source, "named_imports")
+
+	bindings := parseNamedImports(node, source, "pkg", unitIndexJS)
+	if len(bindings) != 1 {
+		t.Fatalf("expected a recovered named import binding, got %#v", bindings)
+	}
+	if bindings[0].ExportName != "foo" || bindings[0].LocalName != "foo" {
+		t.Fatalf("expected missing alias to fall back to export name, got %#v", bindings[0])
+	}
+}
+
+func TestParseRequireBindingRecoversMissingObjectPatternAlias(t *testing.T) {
+	source := []byte(`const { foo: } = require("pkg");`)
+	call := parseJSNodeByType(t, source, "call_expression")
+
+	bindings := parseRequireBinding(call, source, "pkg", unitIndexJS)
+	if len(bindings) != 1 {
+		t.Fatalf("expected recovered require binding, got %#v", bindings)
+	}
+	if bindings[0].ExportName != "foo" || bindings[0].LocalName != "foo" {
+		t.Fatalf("expected missing object-pattern alias to fall back to export name, got %#v", bindings[0])
+	}
+}
+
 func TestCollectReExportBindings(t *testing.T) {
 	sourceLines := []string{`import { map as remap } from "lodash"`, `export { remap as mapAlias }`, `export { filter as keep } from "lodash"`, `export * as api from "./ns"`, `export * from "./other"`, ""}
 	source := []byte(strings.Join(sourceLines, "\n"))
@@ -186,5 +234,21 @@ func TestCollectReExportBindings(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected re-export %q in %#v", key, reExports)
 		}
+	}
+}
+
+func TestCollectReExportBindingsRecoversMissingAliasName(t *testing.T) {
+	source := []byte(`export { foo as } from "pkg";`)
+	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
+	if err != nil {
+		t.Fatalf(parseSourceErrFmt, err)
+	}
+
+	reExports := collectReExportBindings(tree, source, unitIndexJS, nil)
+	if len(reExports) != 1 {
+		t.Fatalf("expected recovered re-export binding, got %#v", reExports)
+	}
+	if reExports[0].SourceModule != "pkg" || reExports[0].SourceExportName != "foo" || reExports[0].ExportName != "foo" {
+		t.Fatalf("expected missing re-export alias to fall back to source name, got %#v", reExports[0])
 	}
 }

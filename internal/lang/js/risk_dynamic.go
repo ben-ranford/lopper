@@ -1,6 +1,7 @@
 package js
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,12 +11,32 @@ import (
 )
 
 func buildDynamicLoaderRiskCue(depRoot string, entrypoints []string) (*report.RiskCue, error) {
-	dynamicCount, samples, err := detectDynamicLoaderUsage(depRoot, entrypoints)
+	cue, _, err := buildDynamicLoaderRiskCueWithWarnings(depRoot, entrypoints)
+	return cue, err
+}
+
+func buildDynamicLoaderRiskCueWithWarnings(depRoot string, entrypoints []string) (cue *report.RiskCue, warnings []string, err error) {
+	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	return buildDynamicLoaderRiskCueWithinRootWithWarnings(root, validatedDepRoot, entrypoints)
+}
+
+func buildDynamicLoaderRiskCueWithinRootWithWarnings(root safeio.Root, depRoot string, entrypoints []string) (*report.RiskCue, []string, error) {
+	dynamicCount, samples, skippedLargeFiles, err := detectDynamicLoaderUsageWithinRoot(root, depRoot, entrypoints)
+	if err != nil {
+		return nil, nil, err
+	}
+	var warnings []string
+	if skippedLargeFiles > 0 {
+		warnings = append(warnings, fmt.Sprintf("skipped %d JS/TS file(s) above %d bytes during dynamic loader scan", skippedLargeFiles, jsSourceReadMaxBytes))
 	}
 	if dynamicCount == 0 {
-		return nil, nil
+		return nil, warnings, nil
 	}
 
 	msg := fmt.Sprintf("dynamic require/import usage found in %d dependency entrypoint location(s)", dynamicCount)
@@ -27,20 +48,40 @@ func buildDynamicLoaderRiskCue(depRoot string, entrypoints []string) (*report.Ri
 		Code:     riskCodeDynamicLoader,
 		Severity: "medium",
 		Message:  msg,
-	}, nil
+	}, warnings, nil
 }
 
-func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []string, error) {
+func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (count int, samples []string, skippedLargeFiles int, err error) {
+	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
+	if err != nil {
+		return 0, nil, 0, err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+	return detectDynamicLoaderUsageWithinRoot(root, validatedDepRoot, entrypoints)
+}
+
+func detectDynamicLoaderUsageWithinRoot(root safeio.Root, depRoot string, entrypoints []string) (int, []string, int, error) {
 	count := 0
 	samples := make([]string, 0, 3)
+	skippedLargeFiles := 0
 
 	for _, entry := range entrypoints {
 		if !isLikelyCodeAsset(entry) {
 			continue
 		}
-		content, err := safeio.ReadFileUnder(depRoot, entry)
+		relEntry, err := relativePathWithinRoot(depRoot, entry)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, 0, err
+		}
+		content, err := safeio.ReadFileWithinRootLimit(root, relEntry, jsSourceReadMaxBytes)
+		if err != nil {
+			if errors.Is(err, safeio.ErrFileTooLarge) {
+				skippedLargeFiles++
+				continue
+			}
+			return 0, nil, 0, err
 		}
 		lines := strings.Split(string(content), "\n")
 		for idx, line := range lines {
@@ -53,7 +94,7 @@ func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []stri
 		}
 	}
 
-	return count, samples, nil
+	return count, samples, skippedLargeFiles, nil
 }
 
 func hasDynamicCall(line, token string) bool {

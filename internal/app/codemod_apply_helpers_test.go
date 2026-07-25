@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestFindCodemodReport(t *testing.T) {
@@ -166,40 +167,15 @@ func TestPrepareCodemodFilesStatFailure(t *testing.T) {
 		t.Fatalf("mkfifo source: %v", err)
 	}
 
-	writerDone := make(chan struct{})
-	writerErrs := make(chan error, 3)
-	go func() {
-		defer close(writerDone)
-		file, err := os.OpenFile(fifoPath, os.O_WRONLY, 0)
-		if err != nil {
-			writerErrs <- err
-			return
-		}
-		if _, err := file.WriteString(importLodashLineWithLF); err != nil {
-			writerErrs <- err
-		}
-		if err := os.Remove(fifoPath); err != nil && !os.IsNotExist(err) {
-			writerErrs <- err
-		}
-		if err := file.Close(); err != nil {
-			writerErrs <- err
-		}
-	}()
-
 	prepared, failures := prepareCodemodFiles(repo, []report.CodemodSuggestion{
 		{File: indexJSFile, Line: 1, Original: importLodashLine, Replacement: importLodashMapLine},
 	})
-	<-writerDone
-	close(writerErrs)
-	for err := range writerErrs {
-		t.Fatalf("fifo writer error: %v", err)
-	}
 
 	if len(prepared) != 0 {
-		t.Fatalf("expected no prepared files when stat fails, got %#v", prepared)
+		t.Fatalf("expected no prepared files for non-regular source, got %#v", prepared)
 	}
-	if len(failures) != 1 || !strings.Contains(strings.ToLower(failures[0].Message), "no such") {
-		t.Fatalf("expected stat failure result, got %#v", failures)
+	if len(failures) != 1 || failures[0].Message != safeio.ErrNonRegularFile.Error() {
+		t.Fatalf("expected immediate ErrNonRegularFile result, got %#v", failures)
 	}
 }
 

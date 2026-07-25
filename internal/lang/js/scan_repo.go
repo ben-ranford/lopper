@@ -2,17 +2,21 @@ package js
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type scanRepoState struct {
-	parser          *sourceParser
-	repoPath        string
-	result          *ScanResult
-	parseErrorCount int
-	parseErrorFiles []string
+	parser            *sourceParser
+	repoPath          string
+	result            *ScanResult
+	skippedLargeFiles int
+	skippedSymlinks   int
+	parseErrorCount   int
+	parseErrorFiles   []string
 }
 
 func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry fs.DirEntry) error {
@@ -25,9 +29,17 @@ func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry
 	if !isSupportedFile(path) {
 		return nil
 	}
+	if entry.Type()&fs.ModeSymlink != 0 {
+		state.skippedSymlinks++
+		return nil
+	}
 
 	content, tree, relPath, err := readAndParseFile(ctx, state.parser, state.repoPath, path)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			state.skippedLargeFiles++
+			return nil
+		}
 		return err
 	}
 	if tree.RootNode().HasError() {

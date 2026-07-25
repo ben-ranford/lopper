@@ -44,6 +44,8 @@ const (
 	runtimeProfileBrowserImport  = "browser-import"
 	runtimeProfileBrowserRequire = "browser-require"
 	defaultRuntimeProfile        = runtimeProfileNodeImport
+	jsPackageJSONReadMaxBytes    = 1 << 20
+	maxExportEntrypoints         = 128
 )
 
 const invalidDependencyFormat = "invalid dependency: %s"
@@ -103,7 +105,9 @@ func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error
 		depPath = root
 	}
 
-	pkg, warnings, err := loadPackageJSONForSurface(depPath)
+	rootPath := depPath
+
+	pkg, warnings, err := loadPackageJSONForSurface(rootPath, depPath)
 	if err != nil {
 		surface.Warnings = append(surface.Warnings, warnings...)
 		return surface, nil
@@ -111,14 +115,14 @@ func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error
 	surface.Warnings = append(surface.Warnings, warnings...)
 
 	entrypoints := collectCandidateEntrypoints(pkg, profile, &surface)
-	resolved := resolveEntrypoints(depPath, entrypoints, &surface)
+	resolved := resolveEntrypoints(rootPath, depPath, entrypoints, &surface)
 
 	if len(resolved) == 0 {
 		surface.Warnings = append(surface.Warnings, "no entrypoints resolved for dependency")
 		return surface, nil
 	}
 
-	parseEntrypointsIntoSurface(depPath, resolved, &surface)
+	parseEntrypointsIntoSurface(rootPath, resolved, &surface)
 
 	return surface, nil
 }
