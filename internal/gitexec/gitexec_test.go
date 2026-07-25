@@ -15,7 +15,7 @@ const keepMeEnvEntry = "KEEP_ME=1"
 
 func TestSafeConfigArgsForcesNonExecutableGitConfig(t *testing.T) {
 	args := SafeConfigArgs()
-	for _, expected := range []string{"core.fsmonitor=false", "diff.external="} {
+	for _, expected := range []string{"core.fsmonitor=false", "diff.external=", "maintenance.auto=false"} {
 		if !containsArgPair(args, "-c", expected) {
 			t.Fatalf("expected safe config arg %q in %#v", expected, args)
 		}
@@ -166,6 +166,47 @@ func TestExecutableAvailable(t *testing.T) {
 	}
 	if !ExecutableAvailable(filePath) {
 		t.Fatalf("expected executable file to be available")
+	}
+}
+
+func TestSanitizedEnvPreventsDetachedGitMaintenanceOnCommit(t *testing.T) {
+	gitPath, err := ResolveBinaryPath()
+	if err != nil {
+		t.Skip("git binary not available")
+	}
+
+	repo := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "trace2.json")
+	run := func(args ...string) {
+		t.Helper()
+
+		command, err := CommandContext(context.Background(), gitPath, append([]string{"-C", repo}, args...)...)
+		if err != nil {
+			t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
+		}
+		command.Env = append(SanitizedEnv(), "GIT_TRACE2_EVENT="+tracePath)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
+		}
+	}
+
+	run("init")
+	run("config", "user.email", "test@example.com")
+	run("config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	run("add", ".")
+	run("commit", "-m", "init")
+
+	trace, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read trace2 output: %v", err)
+	}
+	traceText := string(trace)
+	if strings.Contains(traceText, `"hierarchy":"commit/maintenance"`) {
+		t.Fatalf("expected sanitized env to suppress detached git maintenance, trace=%s", traceText)
 	}
 }
 

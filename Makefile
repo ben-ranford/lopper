@@ -232,8 +232,10 @@ bench-gate:
 	fi; \
 	cat "$$head_output_tmp"; \
 	cp "$$head_output_tmp" "$(BENCH_HEAD_OUTPUT)"; \
+	benchdelta_bin="$$bench_dir/benchdelta"; \
+	GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta; \
 	set +e; \
-	$(GO_CMD) run ./tools/benchdelta -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" -summary-out "$(MEMORY_BENCH_SUMMARY)"; \
+	"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" -summary-out "$(MEMORY_BENCH_SUMMARY)"; \
 	status=$$?; \
 	set -e; \
 	printf "%s\n" "$$status" > "$(MEMORY_BENCH_STATUS)"; \
