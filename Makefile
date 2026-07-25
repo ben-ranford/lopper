@@ -42,6 +42,9 @@ MEMORY_BENCH_MAX_ALLOCS_PCT ?= 10
 BENCH_OUTPUT ?= .artifacts/bench.out
 BENCH_BASE_OUTPUT ?= .artifacts/bench-base.out
 BENCH_HEAD_OUTPUT ?= .artifacts/bench-head.out
+MEMORY_BENCH_DEFINITION_DIR ?= .artifacts/memory-bench-definition
+MEMORY_BENCH_DEFINITION ?= $(MEMORY_BENCH_DEFINITION_DIR)/definition.json
+MEMORY_BENCH_OVERLAY_DIR ?= $(dir $(MEMORY_BENCH_DEFINITION))overlay
 MEMORY_BENCH_SUMMARY ?= .artifacts/memory-bench-summary.md
 MEMORY_BENCH_STATUS ?= .artifacts/memory-bench-status.txt
 MEMORY_BENCH_ENFORCE ?= 1
@@ -191,12 +194,25 @@ test-race-lockfiledrift-head:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
 bench-mem:
-	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
+	@set -eu; \
+	mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
+	work_dir=$$(mktemp -d); \
+	head_tree="$$work_dir/head"; \
 	bench_output_tmp=$$(mktemp); \
-	trap 'rm -f "$$bench_output_tmp"' EXIT INT TERM; \
-	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$bench_output_tmp" 2>&1; then \
-		cat "$$bench_output_tmp"; \
-		exit 1; \
+	bench_log_tmp=$$(mktemp); \
+	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$head_tree" >/dev/null 2>&1 || true); rm -rf "$$work_dir"; rm -f "$$bench_output_tmp" "$$bench_log_tmp"; }; \
+	trap cleanup EXIT INT TERM; \
+	if ! (unset GIT_INDEX_FILE; git worktree add --detach "$$head_tree" HEAD >/dev/null); then \
+		echo "Failed to create memory benchmark worktree for HEAD."; \
+		exit 2; \
+	fi; \
+	if ! $(GO_CMD) run ./tools/benchdelta resolve $(foreach p,$(MEMORY_BENCH_PACKAGES),-package $(p)) -count $(BENCH_COUNT) -benchtime $(BENCH_TIME) -out "$(abspath $(MEMORY_BENCH_DEFINITION))" -overlay-dir "$(abspath $(MEMORY_BENCH_OVERLAY_DIR))"; then \
+		exit 2; \
+	fi; \
+	if ! (cd "$(CURDIR)" && $(GO_CMD) run ./tools/benchdelta run $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFLAGS)") -repo "$$head_tree" -definition "$(abspath $(MEMORY_BENCH_DEFINITION))" -output "$$bench_output_tmp") > "$$bench_log_tmp" 2>&1; then \
+		cat "$$bench_log_tmp"; \
+		cat "$$bench_output_tmp" 2>/dev/null || true; \
+		exit 2; \
 	fi; \
 	cat "$$bench_output_tmp"; \
 	cp "$$bench_output_tmp" "$(BENCH_OUTPUT)"
@@ -229,30 +245,42 @@ bench-gate:
 	fi; \
 	bench_dir=$$(mktemp -d); \
 	base_tree="$$bench_dir/base"; \
+	head_tree="$$bench_dir/head"; \
+	benchdelta_bin="$$bench_dir/benchdelta"; \
 	base_output_tmp=$$(mktemp); \
 	head_output_tmp=$$(mktemp); \
-	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
+	base_log_tmp=$$(mktemp); \
+	head_log_tmp=$$(mktemp); \
+	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); (unset GIT_INDEX_FILE; git worktree remove --force "$$head_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp" "$$base_log_tmp" "$$head_log_tmp"; }; \
 	trap cleanup EXIT INT TERM; \
 	if [ "$$used_fallback" -eq 1 ]; then \
 		echo "Running memory benchmark delta against fallback base $$base_ref (requested $$requested_base_ref)."; \
 	else \
 		echo "Running memory benchmark delta against $$base_ref."; \
 	fi; \
+	GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta; \
 	(unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); \
-	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
+	if ! (unset GIT_INDEX_FILE; git worktree add --detach "$$head_tree" HEAD >/dev/null); then \
+		echo "Failed to create head memory benchmark worktree."; \
+		exit 2; \
+	fi; \
+	if ! "$$benchdelta_bin" resolve -repo "$(CURDIR)" $(foreach p,$(MEMORY_BENCH_PACKAGES),-package $(p)) -count $(BENCH_COUNT) -benchtime $(BENCH_TIME) -out "$(abspath $(MEMORY_BENCH_DEFINITION))" -overlay-dir "$(abspath $(MEMORY_BENCH_OVERLAY_DIR))"; then \
+		exit 2; \
+	fi; \
+	if ! "$$benchdelta_bin" run $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFLAGS)") -repo "$$base_tree" -definition "$(abspath $(MEMORY_BENCH_DEFINITION))" -output "$$base_output_tmp" > "$$base_log_tmp" 2>&1; then \
+		cat "$$base_log_tmp"; \
 		cat "$$base_output_tmp"; \
-		exit 1; \
+		exit 2; \
 	fi; \
 	cat "$$base_output_tmp"; \
 	cp "$$base_output_tmp" "$(BENCH_BASE_OUTPUT)"; \
-	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$head_output_tmp" 2>&1; then \
+	if ! "$$benchdelta_bin" run $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFLAGS)") -repo "$$head_tree" -definition "$(abspath $(MEMORY_BENCH_DEFINITION))" -output "$$head_output_tmp" > "$$head_log_tmp" 2>&1; then \
+		cat "$$head_log_tmp"; \
 		cat "$$head_output_tmp"; \
-		exit 1; \
+		exit 2; \
 	fi; \
 	cat "$$head_output_tmp"; \
 	cp "$$head_output_tmp" "$(BENCH_HEAD_OUTPUT)"; \
-	benchdelta_bin="$$bench_dir/benchdelta"; \
-	GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta; \
 	set +e; \
 	"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" -summary-out "$(MEMORY_BENCH_SUMMARY)"; \
 	status=$$?; \
@@ -271,8 +299,8 @@ benchdelta-cov:
 	@GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./tools/benchdelta -covermode=atomic -coverprofile=".artifacts/benchdelta-coverage.out"
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
 		-coverprofile=".artifacts/benchdelta-coverage.out" \
-		-min=97.0 \
-		-package-min=97.0 \
+		-min=98.0 \
+		-package-min=98.0 \
 		-total-out=".artifacts/benchdelta-coverage-total.txt" \
 		-packages-out=".artifacts/benchdelta-coverage-packages.txt" \
 		-package-failures-out=".artifacts/benchdelta-coverage-package-failures.txt"

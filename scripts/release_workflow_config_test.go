@@ -3053,8 +3053,8 @@ func TestMakefileBenchdeltaCoverageRatchet(t *testing.T) {
 	for _, want := range []string{
 		`./tools/benchdelta -covermode=atomic -coverprofile=".artifacts/benchdelta-coverage.out"`,
 		`$(GO_CMD) run ./tools/coveragegate`,
-		`-min=97.0`,
-		`-package-min=97.0`,
+		`-min=98.0`,
+		`-package-min=98.0`,
 		`-total-out=".artifacts/benchdelta-coverage-total.txt"`,
 		`-packages-out=".artifacts/benchdelta-coverage-packages.txt"`,
 		`-package-failures-out=".artifacts/benchdelta-coverage-package-failures.txt"`,
@@ -3091,6 +3091,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	for _, want := range []string{
 		`benchdelta_bin="$$bench_dir/benchdelta"`,
 		`$(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta`,
+		`"$$benchdelta_bin" resolve -repo "$(CURDIR)"`,
+		`"$$benchdelta_bin" run`,
 		`"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)"`,
 		`printf "%s\n" "$$status" > "$(MEMORY_BENCH_STATUS)"`,
 		`if [ "$(MEMORY_BENCH_ENFORCE)" = "0" ]; then`,

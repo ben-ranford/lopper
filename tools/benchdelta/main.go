@@ -83,24 +83,47 @@ type comparisonSummary struct {
 }
 
 func main() {
-	basePath := flag.String("base", "", "path to base benchmark output")
-	headPath := flag.String("head", "", "path to head benchmark output")
-	maxBytesPct := flag.Float64("max-bytes-pct", 15, "maximum allowed bytes/op increase percentage")
-	maxAllocsPct := flag.Float64("max-allocs-pct", 10, "maximum allowed allocs/op increase percentage")
-	summaryOut := flag.String("summary-out", "", "path to write markdown summary")
-	flag.Parse()
-
-	if strings.TrimSpace(*basePath) == "" || strings.TrimSpace(*headPath) == "" {
-		exitErr(errors.New("both -base and -head are required"))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "resolve":
+			if err := runResolveCommand(os.Args[2:]); err != nil {
+				exitErr(err)
+			}
+			return
+		case "run":
+			if err := runBenchmarkCommand(os.Args[2:]); err != nil {
+				exitErr(err)
+			}
+			return
+		}
 	}
+	if err := runCompareCommand(os.Args[1:]); err != nil {
+		exitErr(err)
+	}
+}
 
+func runCompareCommand(args []string) error {
+	fs := flag.NewFlagSet("benchdelta", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	basePath := fs.String("base", "", "path to base benchmark output")
+	headPath := fs.String("head", "", "path to head benchmark output")
+	maxBytesPct := fs.Float64("max-bytes-pct", 15, "maximum allowed bytes/op increase percentage")
+	maxAllocsPct := fs.Float64("max-allocs-pct", 10, "maximum allowed allocs/op increase percentage")
+	summaryOut := fs.String("summary-out", "", "path to write markdown summary")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*basePath) == "" || strings.TrimSpace(*headPath) == "" {
+		return errors.New("both -base and -head are required")
+	}
 	baseInput, err := parseBenchmarkFile(*basePath)
 	if err != nil {
-		exitErr(fmt.Errorf("parse base benchmarks: %w", err))
+		return fmt.Errorf("parse base benchmarks: %w", err)
 	}
 	headInput, err := parseBenchmarkFile(*headPath)
 	if err != nil {
-		exitErr(fmt.Errorf("parse head benchmarks: %w", err))
+		return fmt.Errorf("parse head benchmarks: %w", err)
 	}
 
 	limits := deltaThresholds{
@@ -111,12 +134,13 @@ func main() {
 	fmt.Print(summary)
 	if *summaryOut != "" {
 		if err := os.WriteFile(*summaryOut, []byte(summary), 0o600); err != nil {
-			exitErr(fmt.Errorf("write summary: %w", err))
+			return fmt.Errorf("write summary: %w", err)
 		}
 	}
 	if statusCode != exitCodePassed {
 		os.Exit(statusCode)
 	}
+	return nil
 }
 
 func exitErr(err error) {
