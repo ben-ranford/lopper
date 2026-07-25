@@ -1,14 +1,17 @@
 package analysis
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type cacheFailAfterWriter struct {
@@ -151,6 +154,68 @@ func TestAnalysisCacheAdditionalStoreBranches(t *testing.T) {
 			testAnalysisCacheStoreWriteFailure(t, tc)
 		})
 	}
+}
+
+func TestAnalysisCacheStoreWriteSyncFailuresPreservePrimaryErrorAndWriteOrdering(t *testing.T) {
+	cachePath, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve canonical cache root: %v", err)
+	}
+	cachePath = filepath.Join(cachePath, cacheDirName)
+	if err := os.MkdirAll(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache path: %v", err)
+	}
+	cache := newTestAnalysisCache(cachePath)
+	cache.storageRoot = cachePath
+	cache.authKey = bytes.Repeat([]byte{0x42}, analysisCacheAuthKeyLength)
+	entry := cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}
+	originalWrite := analysisCacheWriteFileFn
+	t.Cleanup(func() {
+		analysisCacheWriteFileFn = originalWrite
+	})
+
+	t.Run("object write sync failure stops before pointer write", func(t *testing.T) {
+		calls := make([]string, 0, 2)
+		syncErr := errors.New("object sync failure")
+		analysisCacheWriteFileFn = func(root *safeio.WriteRoot, path string, data []byte, perm, parentPerm os.FileMode) error {
+			calls = append(calls, path)
+			return syncErr
+		}
+
+		err := cache.store(entry, report.Report{RepoPath: "repo"})
+		if !errors.Is(err, syncErr) || !strings.Contains(err.Error(), "write cache object") {
+			t.Fatalf("expected object sync error, got %v", err)
+		}
+		if len(calls) != 1 || !strings.Contains(calls[0], filepath.Join("objects", "")) {
+			t.Fatalf("expected only object write attempt, got %#v", calls)
+		}
+	})
+
+	t.Run("pointer write sync failure happens after successful object write", func(t *testing.T) {
+		calls := make([]string, 0, 2)
+		syncErr := errors.New("pointer sync failure")
+		analysisCacheWriteFileFn = func(root *safeio.WriteRoot, path string, data []byte, perm, parentPerm os.FileMode) error {
+			calls = append(calls, path)
+			if len(calls) == 2 {
+				return syncErr
+			}
+			return nil
+		}
+
+		err := cache.store(entry, report.Report{RepoPath: "repo"})
+		if !errors.Is(err, syncErr) || !strings.Contains(err.Error(), "write cache pointer") {
+			t.Fatalf("expected pointer sync error, got %v", err)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("expected object then pointer writes, got %#v", calls)
+		}
+		if !strings.HasPrefix(calls[0], "objects"+string(filepath.Separator)) {
+			t.Fatalf("expected object write first, got %#v", calls)
+		}
+		if !strings.HasPrefix(calls[1], "keys"+string(filepath.Separator)) {
+			t.Fatalf("expected pointer write second, got %#v", calls)
+		}
+	})
 }
 
 func testAnalysisCacheStoreWriteFailure(t *testing.T, tc cacheStoreFailureCase) {

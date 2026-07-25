@@ -287,6 +287,7 @@ type fakeFile struct {
 	close func() error
 	stat  func() (fs.FileInfo, error)
 	chmod func(perm os.FileMode) error
+	sync  func() error
 }
 
 func (f *fakeFile) Read(p []byte) (int, error) {
@@ -322,4 +323,14 @@ func (f *fakeFile) Chmod(perm os.FileMode) error {
 		return f.chmod(perm)
 	}
 	return f.File.Chmod(perm)
+}
+
+func (f *fakeFile) Sync() error {
+	if f.sync != nil {
+		return f.sync()
+	}
+	if f.File == nil {
+		return nil
+	}
+	return f.File.Sync()
 }

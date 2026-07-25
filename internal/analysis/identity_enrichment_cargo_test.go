@@ -220,6 +220,168 @@ linked_crate = "1"
 	assertResolvedCargoIdentity(t, reportData, "linked-crate", "linked_crate", "1.2.0", "workspace/Cargo.lock")
 }
 
+func TestCargoVersionLessThanPartialBranches(t *testing.T) {
+	testCases := []struct {
+		name     string
+		required cargoPartialVersion
+		locked   cargoPartialVersion
+		want     bool
+	}{
+		{
+			name:     "lower major",
+			required: cargoPartialVersion{major: 2, components: 1, normalized: "2.0.0"},
+			locked:   cargoPartialVersion{major: 1, components: 1, normalized: "1.0.0"},
+			want:     true,
+		},
+		{
+			name:     "single component equal major",
+			required: cargoPartialVersion{major: 1, components: 1, normalized: "1.0.0"},
+			locked:   cargoPartialVersion{major: 1, minor: 9, components: 2, normalized: "1.9.0"},
+			want:     false,
+		},
+		{
+			name:     "lower minor",
+			required: cargoPartialVersion{major: 1, minor: 4, components: 2, normalized: "1.4.0"},
+			locked:   cargoPartialVersion{major: 1, minor: 3, components: 2, normalized: "1.3.0"},
+			want:     true,
+		},
+		{
+			name:     "two component equal major minor",
+			required: cargoPartialVersion{major: 1, minor: 4, components: 2, normalized: "1.4.0"},
+			locked:   cargoPartialVersion{major: 1, minor: 4, patch: 9, components: 3, normalized: "1.4.9"},
+			want:     false,
+		},
+		{
+			name:     "lower patch",
+			required: cargoPartialVersion{major: 1, minor: 4, patch: 5, components: 3, normalized: "1.4.5"},
+			locked:   cargoPartialVersion{major: 1, minor: 4, patch: 4, components: 3, normalized: "1.4.4"},
+			want:     false,
+		},
+	}
+
+	for _, tc := range testCases {
+		if got := cargoVersionLessThanPartial(tc.required, tc.locked); got != tc.want {
+			t.Fatalf("%s: cargoVersionLessThanPartial() = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestCargoVersionMatchesTildeBranches(t *testing.T) {
+	assertCargoPartialVersionMatches(t, "cargoVersionMatchesTilde", cargoVersionRangeMatcherCases(), cargoVersionMatchesTildeCase, cargoVersionMatchesTildeWant)
+}
+
+func TestCargoVersionMatchesCaretBranches(t *testing.T) {
+	assertCargoPartialVersionMatches(t, "cargoVersionMatchesCaret", cargoVersionRangeMatcherCases(), cargoVersionMatchesCaretCase, cargoVersionMatchesCaretWant)
+}
+
+func TestCargoRequirementClauseMatchesOperators(t *testing.T) {
+	required := cargoPartialVersion{major: 1, minor: 4, patch: 5, components: 3, normalized: "1.4.5"}
+
+	testCases := []struct {
+		name   string
+		clause cargoRequirementClause
+		locked cargoPartialVersion
+		want   bool
+	}{
+		{
+			name:   "greater equal exact match",
+			clause: cargoRequirementClause{operator: cargoRequirementGreaterEqual, version: required},
+			locked: cargoPartialVersion{major: 1, minor: 4, patch: 5, components: 3, normalized: "1.4.5"},
+			want:   true,
+		},
+		{
+			name:   "less equal with higher version",
+			clause: cargoRequirementClause{operator: cargoRequirementLessEqual, version: required},
+			locked: cargoPartialVersion{major: 1, minor: 4, patch: 6, components: 3, normalized: "1.4.6"},
+			want:   false,
+		},
+		{
+			name:   "caret",
+			clause: cargoRequirementClause{operator: cargoRequirementCaret, version: required},
+			locked: cargoPartialVersion{major: 1, minor: 4, patch: 6, components: 3, normalized: "1.4.6"},
+			want:   true,
+		},
+		{
+			name:   "unknown",
+			clause: cargoRequirementClause{operator: cargoRequirementOperator(255), version: required},
+			locked: cargoPartialVersion{major: 1, minor: 4, patch: 6, components: 3, normalized: "1.4.6"},
+			want:   false,
+		},
+	}
+
+	for _, tc := range testCases {
+		if got := cargoRequirementClauseMatches(tc.clause, tc.locked); got != tc.want {
+			t.Fatalf("%s: cargoRequirementClauseMatches() = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
+type cargoVersionRangeMatcherCase struct {
+	name      string
+	required  cargoPartialVersion
+	locked    cargoPartialVersion
+	wantTilde bool
+	wantCaret bool
+}
+
+func assertCargoPartialVersionMatches(t *testing.T, name string, testCases []cargoVersionRangeMatcherCase, matcher func(cargoVersionRangeMatcherCase) bool, want func(cargoVersionRangeMatcherCase) bool) {
+	t.Helper()
+	for _, tc := range testCases {
+		if got := matcher(tc); got != want(tc) {
+			t.Fatalf("%s %s = %t, want %t", tc.name, name, got, want(tc))
+		}
+	}
+}
+
+func cargoVersionRangeMatcherCases() []cargoVersionRangeMatcherCase {
+	return []cargoVersionRangeMatcherCase{
+		{
+			name:      "different major",
+			required:  cargoPartialVersion{major: 2, components: 1, normalized: "2.0.0"},
+			locked:    cargoPartialVersion{major: 1, components: 1, normalized: "1.0.0"},
+			wantTilde: false,
+			wantCaret: false,
+		},
+		{
+			name:      "single component matches any minor",
+			required:  cargoPartialVersion{major: 1, components: 1, normalized: "1.0.0"},
+			locked:    cargoPartialVersion{major: 1, minor: 9, components: 2, normalized: "1.9.0"},
+			wantTilde: true,
+			wantCaret: true,
+		},
+		{
+			name:      "minor mismatch",
+			required:  cargoPartialVersion{major: 1, minor: 4, components: 2, normalized: "1.4.0"},
+			locked:    cargoPartialVersion{major: 1, minor: 5, components: 2, normalized: "1.5.0"},
+			wantTilde: false,
+			wantCaret: true,
+		},
+		{
+			name:      "patch at or above lower bound",
+			required:  cargoPartialVersion{major: 1, minor: 4, patch: 5, components: 3, normalized: "1.4.5"},
+			locked:    cargoPartialVersion{major: 1, minor: 4, patch: 6, components: 3, normalized: "1.4.6"},
+			wantTilde: true,
+			wantCaret: true,
+		},
+	}
+}
+
+func cargoVersionMatchesTildeCase(tc cargoVersionRangeMatcherCase) bool {
+	return cargoVersionMatchesTilde(tc.required, tc.locked)
+}
+
+func cargoVersionMatchesTildeWant(tc cargoVersionRangeMatcherCase) bool {
+	return tc.wantTilde
+}
+
+func cargoVersionMatchesCaretCase(tc cargoVersionRangeMatcherCase) bool {
+	return cargoVersionMatchesCaret(tc.required, tc.locked)
+}
+
+func cargoVersionMatchesCaretWant(tc cargoVersionRangeMatcherCase) bool {
+	return tc.wantCaret
+}
+
 func TestCargoIdentityCollectorsWarnOnMalformedAndMissingFiles(t *testing.T) {
 	t.Run("malformed", func(t *testing.T) {
 		repoPath := t.TempDir()

@@ -1,17 +1,22 @@
 package analysis
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type resolvedCacheOptions struct {
-	Enabled  bool
-	Path     string
-	ReadOnly bool
+	Enabled      bool
+	Path         string
+	ReadOnly     bool
+	ExplicitPath bool
 }
 
 type analysisCache struct {
@@ -19,6 +24,10 @@ type analysisCache struct {
 	metadata        report.CacheMetadata
 	warnings        []string
 	cacheable       bool
+	authKey         []byte
+	repoRoot        string
+	storageRoot     string
+	storageRootInfo fs.FileInfo
 	inputDigestMemo map[cacheInputDigestMemoKey]string
 }
 
@@ -45,18 +54,120 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 			return cache
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(options.Path, "keys"), 0o750); err != nil {
+	if err := cache.initializeStorage(repoPath); err != nil {
 		cache.cacheable = false
 		cache.warn("analysis cache unavailable: " + err.Error())
 		return cache
 	}
-	if err := os.MkdirAll(filepath.Join(options.Path, "objects"), 0o750); err != nil {
+	authKey, err := cache.resolveAuthKey()
+	if err != nil {
 		cache.cacheable = false
 		cache.warn("analysis cache unavailable: " + err.Error())
 		return cache
 	}
+	cache.authKey = authKey
 	cache.cacheable = true
 	return cache
+}
+
+func (c *analysisCache) initializeStorage(repoPath string) (returnErr error) {
+	canonicalRepo, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		return fmt.Errorf("resolve repository root: %w", err)
+	}
+	c.repoRoot = canonicalRepo
+	storageRoot, err := resolveCacheStorageRoot(c.options, repoPath, canonicalRepo)
+	if err != nil {
+		return err
+	}
+	c.storageRoot = storageRoot
+	if c.options.ReadOnly {
+		if _, err := os.Stat(storageRoot); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	}
+	root, err := safeio.OpenCanonicalWriteRoot(storageRoot)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, root.Close())
+	}()
+	info, err := root.Lstat(".")
+	if err != nil {
+		return err
+	}
+	c.storageRootInfo = info
+	if c.options.ReadOnly {
+		return nil
+	}
+	if err := root.MkdirAll("keys", 0o750); err != nil {
+		return err
+	}
+	return root.MkdirAll("objects", 0o750)
+}
+
+func resolveCacheStorageRoot(options resolvedCacheOptions, repoPath, canonicalRepo string) (string, error) {
+	if options.ExplicitPath {
+		cacheRoot, err := filepath.Abs(options.Path)
+		if err != nil {
+			return "", fmt.Errorf("resolve cache root: %w", err)
+		}
+		if !options.ReadOnly {
+			if err := os.MkdirAll(cacheRoot, 0o750); err != nil {
+				return "", err
+			}
+		}
+		canonicalRoot, err := filepath.EvalSymlinks(cacheRoot)
+		if err == nil {
+			return canonicalRoot, nil
+		}
+		if options.ReadOnly && os.IsNotExist(err) {
+			return cacheRoot, nil
+		}
+		return "", err
+	}
+
+	relativeCachePath, err := filepath.Rel(filepath.Clean(repoPath), filepath.Clean(options.Path))
+	if err != nil {
+		return "", fmt.Errorf("resolve cache path relative to repository: %w", err)
+	}
+	if relativeCachePath == ".." || strings.HasPrefix(relativeCachePath, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("cache path escapes repository root")
+	}
+	cacheRoot := filepath.Join(canonicalRepo, relativeCachePath)
+	if !options.ReadOnly {
+		if err := os.MkdirAll(cacheRoot, 0o750); err != nil {
+			return "", err
+		}
+	}
+	return cacheRoot, nil
+}
+
+func (c *analysisCache) canonicalStorageRoot() (string, error) {
+	if strings.TrimSpace(c.storageRoot) != "" {
+		root, err := filepath.EvalSymlinks(c.storageRoot)
+		if err == nil {
+			return root, nil
+		}
+		if os.IsNotExist(err) {
+			canonicalParent, parentErr := filepath.EvalSymlinks(filepath.Dir(c.storageRoot))
+			if parentErr == nil {
+				return filepath.Join(canonicalParent, filepath.Base(c.storageRoot)), nil
+			}
+		}
+		if c.options.ReadOnly && os.IsNotExist(err) {
+			return c.storageRoot, nil
+		}
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(c.options.Path)
+	if err != nil {
+		return "", err
+	}
+	return root, nil
 }
 
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
@@ -90,6 +201,7 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 	options.Enabled = req.Enabled
 	if strings.TrimSpace(req.Path) != "" {
 		options.Path = strings.TrimSpace(req.Path)
+		options.ExplicitPath = true
 	}
 	options.ReadOnly = req.ReadOnly
 	return options

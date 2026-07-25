@@ -42,6 +42,7 @@ type File interface {
 	io.Closer
 	Stat() (fs.FileInfo, error)
 	Chmod(perm os.FileMode) error
+	Sync() error
 }
 
 type ReadDirFile interface {

@@ -3913,6 +3913,7 @@ type advisoryFakeFile struct {
 	close func() error
 	stat  func() (fs.FileInfo, error)
 	chmod func(os.FileMode) error
+	sync  func() error
 }
 
 type advisoryFakeDirectory struct {
@@ -3954,6 +3955,13 @@ func (f *advisoryFakeFile) Stat() (os.FileInfo, error) {
 func (f *advisoryFakeFile) Chmod(perm os.FileMode) error {
 	if f.chmod != nil {
 		return f.chmod(perm)
+	}
+	return nil
+}
+
+func (f *advisoryFakeFile) Sync() error {
+	if f.sync != nil {
+		return f.sync()
 	}
 	return nil
 }

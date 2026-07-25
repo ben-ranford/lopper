@@ -242,6 +242,27 @@ func TestDependencyIdentityStateFallbackBranches(t *testing.T) {
 	}
 }
 
+func TestDependencyIdentityStateApplyCoordinatesBranches(t *testing.T) {
+	state := newDependencyIdentityState(report.DependencyReport{Language: "python", Name: "requests"}, 1)
+	state.applyCoordinates(identityEvidence{Name: "", Ecosystem: "pypi", Source: "ignored"})
+	if len(state.coordinates) != 0 {
+		t.Fatalf("expected empty-name evidence to be ignored, got %#v", state.coordinates)
+	}
+
+	item := identityEvidence{
+		Ecosystem: "pypi",
+		Namespace: "team",
+		Name:      "requests",
+		Source:    "Pipfile",
+	}
+	state.applyCoordinates(item)
+
+	coordinate := identityCoordinate{ecosystem: "pypi", namespace: "team", name: "requests"}
+	if got := state.coordinates[coordinate]; got != "Pipfile" {
+		t.Fatalf("expected coordinate source to be recorded, got %#v", state.coordinates)
+	}
+}
+
 func TestIdentityEnrichmentLanguageAndPackageHelpers(t *testing.T) {
 	for _, tc := range []struct {
 		language string
@@ -916,6 +937,63 @@ func TestPackageIdentityPathClassification(t *testing.T) {
 	}
 }
 
+func TestCanonicalIdentityEcosystemFallsBackToLanguage(t *testing.T) {
+	if got := canonicalIdentityEcosystem("python", ""); got != "pypi" {
+		t.Fatalf("canonicalIdentityEcosystem() = %q, want pypi", got)
+	}
+}
+
+func TestCanonicalIdentityNamePreservesCargoNameFormatting(t *testing.T) {
+	if got := canonicalIdentityName("rust", "cargo", "  Exact_Crate  "); got != "Exact_Crate" {
+		t.Fatalf("canonicalIdentityName() = %q, want trimmed cargo name", got)
+	}
+}
+
+func TestCanonicalIdentityNameCanonicalizesKnownEcosystems(t *testing.T) {
+	if got := canonicalIdentityName("js-ts", "npm", "  React  "); got != "react" {
+		t.Fatalf("canonicalIdentityName() = %q, want canonical npm name", got)
+	}
+}
+
+func TestCanonicalIdentityNameFallsBackToTrimmedName(t *testing.T) {
+	if got := canonicalIdentityName("", "", "  Example Package  "); got != "example package" {
+		t.Fatalf("canonicalIdentityName() = %q, want normalized fallback name", got)
+	}
+}
+
+func TestScopedNPMPackageURLParsesScopedNames(t *testing.T) {
+	got, ok := scopedNPMPackageURL("npm", "", "@scope/pkg", "1.2.3")
+	if !ok || got != "pkg:npm/%40scope/pkg@1.2.3" {
+		t.Fatalf("scopedNPMPackageURL() = (%q, %t)", got, ok)
+	}
+}
+
+func TestScopedNPMPackageURLRejectsMalformedScopedNames(t *testing.T) {
+	if _, ok := scopedNPMPackageURL("npm", "", "@scope", "1.2.3"); ok {
+		t.Fatal("expected malformed scoped npm package name to be rejected")
+	}
+}
+
+func TestEscapePURLPathSegmentsDropsBlankSegments(t *testing.T) {
+	if got := escapePURLPathSegments(" team // libs ", " package "); got != "team/libs/package" {
+		t.Fatalf("escapePURLPathSegments() = %q, want cleaned path segments", got)
+	}
+}
+
+func TestShouldSkipPackageIdentityDirRejectsCacheDirectories(t *testing.T) {
+	for _, name := range []string{"cache", ".cache"} {
+		if !shouldSkipPackageIdentityDir(name) {
+			t.Fatalf("expected %q to be skipped", name)
+		}
+	}
+}
+
+func TestShouldSkipPackageIdentityDirRejectsStandardIgnoredDirectories(t *testing.T) {
+	if !shouldSkipPackageIdentityDir("node_modules") {
+		t.Fatal("expected node_modules to be skipped by shared identity-dir rules")
+	}
+}
+
 func TestPackageLockDirectPackageNameRejectsNestedAndHiddenPackages(t *testing.T) {
 	for _, tc := range []struct {
 		path         string
@@ -939,6 +1017,12 @@ func TestPackageLockDirectPackageNameRejectsNestedAndHiddenPackages(t *testing.T
 		if gotName != tc.wantName || gotOK != tc.wantOK {
 			t.Fatalf("packageLockDirectPackageName(%q, %q) = (%q, %t), want (%q, %t)", tc.path, tc.declaredName, gotName, gotOK, tc.wantName, tc.wantOK)
 		}
+	}
+}
+
+func TestPackageLockResolvedNameRejectsUnexpectedSegmentCount(t *testing.T) {
+	if got, ok := packageLockResolvedName([]string{"@scope", "pkg", "nested"}, ""); ok || got != "" {
+		t.Fatalf("packageLockResolvedName() = (%q, %t), want empty false", got, ok)
 	}
 }
 

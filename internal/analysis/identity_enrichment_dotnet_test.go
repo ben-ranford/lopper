@@ -624,6 +624,124 @@ func TestNuGetConditionalUpdatesKeepUniqueCandidates(t *testing.T) {
 	}
 }
 
+func TestDiscoverDotNetIdentityManifestsWarnsWhenRepoPathIsMissing(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "missing-repo")
+	snapshot := &identityManifestSnapshot{}
+	warnings := newIdentityWarningCollector(repoPath)
+
+	discoverDotNetIdentityManifests(repoPath, snapshot, warnings)
+
+	got := warnings.list()
+	if len(got) == 0 || !strings.Contains(got[0], "identity manifest discovery failed") {
+		t.Fatalf("expected dotnet discovery warning for missing repo, got %#v", got)
+	}
+}
+
+func TestHasNumericLeadingZeroBranches(t *testing.T) {
+	testCases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "single digit", value: "0", want: false},
+		{name: "leading zero digits", value: "0123", want: true},
+		{name: "leading zero nondigit", value: "01a", want: false},
+		{name: "nonzero prefix", value: "123", want: false},
+	}
+
+	for _, tc := range testCases {
+		if got := hasNumericLeadingZero(tc.value); got != tc.want {
+			t.Fatalf("%s: hasNumericLeadingZero(%q) = %t, want %t", tc.name, tc.value, got, tc.want)
+		}
+	}
+}
+
+func TestIsNuGetIdentifierCharBranches(t *testing.T) {
+	testCases := []struct {
+		name string
+		char rune
+		want bool
+	}{
+		{name: "digit", char: '7', want: true},
+		{name: "uppercase", char: 'N', want: true},
+		{name: "lowercase", char: 'u', want: true},
+		{name: "dash", char: '-', want: true},
+		{name: "punctuation", char: '.', want: false},
+	}
+
+	for _, tc := range testCases {
+		if got := isNuGetIdentifierChar(tc.char); got != tc.want {
+			t.Fatalf("%s: isNuGetIdentifierChar(%q) = %t, want %t", tc.name, tc.char, got, tc.want)
+		}
+	}
+}
+
+func TestValidNuGetPackageNameRejectsMSBuildExpressionsAndBlankNames(t *testing.T) {
+	testCases := []struct {
+		name string
+		id   string
+		want bool
+	}{
+		{name: "blank", id: "   ", want: false},
+		{name: "property expression", id: "$(PackageId)", want: false},
+		{name: "item expression", id: "@(Packages)", want: false},
+		{name: "metadata expression", id: "%(Identity)", want: false},
+		{name: "plain name", id: "Newtonsoft.Json", want: true},
+	}
+
+	for _, tc := range testCases {
+		if got := validNuGetPackageName(tc.id); got != tc.want {
+			t.Fatalf("%s: validNuGetPackageName(%q) = %t, want %t", tc.name, tc.id, got, tc.want)
+		}
+	}
+}
+
+func TestValidNuGetVersionIdentifiersBranches(t *testing.T) {
+	testCases := []struct {
+		name                     string
+		value                    string
+		rejectNumericLeadingZero bool
+		want                     bool
+	}{
+		{name: "blank", value: "", want: false},
+		{name: "empty segment", value: "1..0", want: false},
+		{name: "leading zero rejected", value: "01.2.3", rejectNumericLeadingZero: true, want: false},
+		{name: "leading zero allowed", value: "01.2.3", rejectNumericLeadingZero: false, want: true},
+		{name: "invalid character", value: "1.alpha!", want: false},
+		{name: "plain identifiers", value: "1.alpha-beta", want: true},
+	}
+
+	for _, tc := range testCases {
+		if got := validNuGetVersionIdentifiers(tc.value, tc.rejectNumericLeadingZero); got != tc.want {
+			t.Fatalf("%s: validNuGetVersionIdentifiers(%q, %t) = %t, want %t", tc.name, tc.value, tc.rejectNumericLeadingZero, got, tc.want)
+		}
+	}
+}
+
+func TestUniqueNuGetMSBuildItemsDeduplicatesEquivalentItems(t *testing.T) {
+	items := []nugetMSBuildItem{
+		{name: "Package.A", version: "[1.0.0]"},
+		{name: "Package.A", version: "[1.0.0]"},
+		{name: "Package.A", version: "[1.0.0]", update: true},
+		{name: "Package.A", version: "[1.0.0]", update: true},
+		{name: "Package.A", versionOverride: "[2.0.0]", condition: nugetConditionalMarker},
+	}
+
+	got := uniqueNuGetMSBuildItems(items)
+	if len(got) != 3 {
+		t.Fatalf("expected unique NuGet MSBuild items, got %#v", got)
+	}
+	if got[0].update {
+		t.Fatalf("expected first unique item to preserve non-update variant, got %#v", got)
+	}
+	if !got[1].update {
+		t.Fatalf("expected second unique item to preserve update variant, got %#v", got)
+	}
+	if got[2].versionOverride != "[2.0.0]" {
+		t.Fatalf("expected version override item to be retained, got %#v", got)
+	}
+}
+
 func assertDeclaredNuGetIdentity(t *testing.T, reportData report.Report, name, version, source string) {
 	t.Helper()
 	assertIdentity(t, findIdentityDependency(t, reportData, "dotnet", name), report.DependencyIdentity{

@@ -16,6 +16,10 @@ type WriteRoot struct {
 	rootAbs string
 }
 
+// ErrFileChanged indicates that a checked path resolved to a different file
+// by the time it was opened.
+var ErrFileChanged = errors.New("file changed while opening")
+
 // OpenWriteRoot opens rootDir once for subsequent root-relative writes.
 func OpenWriteRoot(rootDir string) (*WriteRoot, error) {
 	rootAbs, err := resolveAbsolutePath("root", rootDir)
@@ -52,6 +56,16 @@ func (r *WriteRoot) Close() error {
 	return r.root.Close()
 }
 
+// Lstat returns info for a root-relative path within the pinned root.
+func (r *WriteRoot) Lstat(name string) (fs.FileInfo, error) {
+	return r.root.Lstat(name)
+}
+
+// Chmod updates a root-relative path's permissions within the pinned root.
+func (r *WriteRoot) Chmod(name string, perm os.FileMode) error {
+	return r.root.Chmod(name, perm)
+}
+
 // WriteFileCreatingParents atomically writes a root-relative file, creating
 // missing parent directories inside the pinned root.
 func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
@@ -60,6 +74,134 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 		return err
 	}
 	return r.writeFileAtTarget(target, data, perm, true, parentPerm)
+}
+
+// MkdirAll creates a root-relative directory tree without following symlinks.
+func (r *WriteRoot) MkdirAll(dirPath string, perm os.FileMode) error {
+	dirRel, err := resolveRelativeTarget(dirPath, allowRootTarget)
+	if err != nil {
+		return err
+	}
+	dir, closeDir, err := r.openDirectory(dirRel, true, perm)
+	if err != nil {
+		return err
+	}
+	if closeDir {
+		return dir.Close()
+	}
+	return nil
+}
+
+// ReadRegularFile reads a root-relative regular file without following a
+// final-component symlink and verifies that the opened file is the one checked.
+func (r *WriteRoot) ReadRegularFile(targetPath string) (data []byte, info fs.FileInfo, returnErr error) {
+	return r.ReadRegularFileUnderLimit(targetPath, 0)
+}
+
+// ReadRegularFileUnderLimit reads a root-relative regular file without
+// following a final-component symlink, verifies the opened file is the one
+// checked, and does not exceed maxBytes when a positive limit is provided.
+func (r *WriteRoot) ReadRegularFileUnderLimit(targetPath string, maxBytes int64) (data []byte, info fs.FileInfo, returnErr error) {
+	return r.ReadPinnedRegularFileUnderLimit(targetPath, nil, maxBytes)
+}
+
+// ReadPinnedRegularFileUnderLimit additionally verifies that the pinned root
+// still refers to the same directory inode before opening the target file.
+func (r *WriteRoot) ReadPinnedRegularFileUnderLimit(targetPath string, pinnedRootInfo fs.FileInfo, maxBytes int64) (data []byte, info fs.FileInfo, returnErr error) {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return nil, nil, err
+	}
+	targetAbs := filepath.Join(r.rootAbs, targetRel)
+	if pinnedRootInfo != nil {
+		currentRootInfo, err := r.root.Lstat(".")
+		if err != nil {
+			return nil, nil, err
+		}
+		if !os.SameFile(pinnedRootInfo, currentRootInfo) {
+			return nil, nil, fmt.Errorf("%w: %s", ErrFileChanged, r.rootAbs)
+		}
+	}
+	info, err = r.root.Lstat(targetRel)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, fmt.Errorf("target path is a symlink: %s", targetAbs)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("target path is not a regular file: %s", targetAbs)
+	}
+
+	file, err := r.root.Open(targetRel)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, file.Close())
+	}()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, nil, fmt.Errorf("%w: %s", ErrFileChanged, targetAbs)
+	}
+	data, err = readOpenedFile(file, maxBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, openedInfo, nil
+}
+
+// CreateTempFile creates an exclusive temporary file in the pinned root.
+func (r *WriteRoot) CreateTempFile(perm os.FileMode) (string, File, error) {
+	return createAtomicTempFile(r.root, ".", perm)
+}
+
+// CleanupTempFile closes and removes a temporary file in the pinned root.
+func (r *WriteRoot) CleanupTempFile(tempPath string, tempFile File) error {
+	return cleanupAtomicTempFile(r.root, tempPath, tempFile)
+}
+
+// Link creates a hard link between two root-relative paths.
+func (r *WriteRoot) Link(oldPath, newPath string) error {
+	oldRel, err := resolveRelativeTarget(oldPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	newRel, err := resolveRelativeTarget(newPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	return r.root.Link(oldRel, newRel)
+}
+
+// Rename atomically renames one root-relative path to another.
+func (r *WriteRoot) Rename(oldPath, newPath string) error {
+	oldRel, err := resolveRelativeTarget(oldPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	newRel, err := resolveRelativeTarget(newPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	return r.root.Rename(oldRel, newRel)
+}
+
+// Remove removes a root-relative path.
+func (r *WriteRoot) Remove(targetPath string) error {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	return r.root.Remove(targetRel)
+}
+
+// Sync flushes directory-entry changes for the pinned root.
+func (r *WriteRoot) Sync() (returnErr error) {
+	return syncRootDirectory(r.root)
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
@@ -95,14 +237,18 @@ func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.
 
 func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.FileMode) (Root, bool, error) {
 	parentRel := filepath.Dir(target.rel)
-	if parentRel == "." {
+	return r.openDirectory(parentRel, create, perm)
+}
+
+func (r *WriteRoot) openDirectory(dirRel string, create bool, perm os.FileMode) (Root, bool, error) {
+	if dirRel == "." {
 		return r.root, false, nil
 	}
 
 	current := r.root
 	currentOwned := false
 	currentAbs := r.rootAbs
-	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
+	for _, part := range strings.Split(dirRel, string(os.PathSeparator)) {
 		if part == "" || part == "." {
 			continue
 		}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -483,6 +484,347 @@ func TestOpenCanonicalWriteRootWritesInsideCanonicalRoot(t *testing.T) {
 		t.Fatalf("write through canonical root: %v", err)
 	}
 	assertFileContent(t, filepath.Join(canonicalRoot, targetPath), "canonical")
+}
+
+func TestWriteRootMkdirAllCreatesConfinedDirectories(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	dirPath := filepath.Join("keys", "nested")
+	if err := root.MkdirAll(dirPath, 0o750); err != nil {
+		t.Fatalf("mkdir within root: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(rootDir, dirPath))
+	if err != nil {
+		t.Fatalf("stat created directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected %s to be a directory", dirPath)
+	}
+}
+
+func TestWriteRootMkdirAllRejectsSymlinkedDirectory(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(rootDir, "keys")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	err = root.MkdirAll(filepath.Join("keys", "nested"), 0o750)
+	if err == nil || !strings.Contains(err.Error(), "output parent contains symlink") {
+		t.Fatalf("expected symlinked directory rejection, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("expected no directory outside root, stat err=%v", err)
+	}
+}
+
+func TestWriteRootReadRegularFileRejectsFinalSymlink(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	outsideFile := filepath.Join(t.TempDir(), "outside.key")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(rootDir, "key")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	_, _, err = root.ReadRegularFile("key")
+	if err == nil || !strings.Contains(err.Error(), "target path is a symlink") {
+		t.Fatalf("expected final symlink rejection, got %v", err)
+	}
+}
+
+func TestWriteRootReadRegularFileReportsChangedTarget(t *testing.T) {
+	checkedPath := filepath.Join(t.TempDir(), "checked")
+	openedPath := filepath.Join(t.TempDir(), "opened")
+	if err := os.WriteFile(checkedPath, []byte("checked"), 0o600); err != nil {
+		t.Fatalf("write checked file: %v", err)
+	}
+	if err := os.WriteFile(openedPath, []byte("opened"), 0o600); err != nil {
+		t.Fatalf("write opened file: %v", err)
+	}
+	checkedInfo := statTestPath(t, checkedPath)
+	openedInfo := statTestPath(t, openedPath)
+	root := &WriteRoot{
+		rootAbs: "/root",
+		root: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				return checkedInfo, nil
+			},
+			open: func(string) (File, error) {
+				return &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return openedInfo, nil },
+					close: func() error { return nil },
+				}, nil
+			},
+		},
+	}
+	if _, _, err := root.ReadRegularFile("key"); !errors.Is(err, ErrFileChanged) {
+		t.Fatalf("expected changed-target error, got %v", err)
+	}
+}
+
+func TestWriteRootReadRegularFileUnderLimitRejectsOversizedFile(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "key"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	if _, _, err := root.ReadRegularFileUnderLimit("key", 4); !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("expected ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestWriteRootReadPinnedRegularFileUnderLimitReportsChangedRoot(t *testing.T) {
+	checkedRoot := t.TempDir()
+	openedRoot := t.TempDir()
+	targetPath := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(targetPath, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+	rootInfo := statTestPath(t, checkedRoot)
+	openedRootInfo := statTestPath(t, openedRoot)
+	targetInfo := statTestPath(t, targetPath)
+	root := &WriteRoot{
+		rootAbs: checkedRoot,
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name == "." {
+					return openedRootInfo, nil
+				}
+				return targetInfo, nil
+			},
+		},
+	}
+
+	if _, _, err := root.ReadPinnedRegularFileUnderLimit("key", rootInfo, 16); !errors.Is(err, ErrFileChanged) {
+		t.Fatalf("expected changed-root error, got %v", err)
+	}
+}
+
+func TestWriteRootRootRelativeFileOperationsAndSync(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+	tempPath, tempFile, err := root.CreateTempFile(0o600)
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if _, err := tempFile.Write([]byte("secret")); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		t.Fatalf("sync temp file: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	if err := root.Link(tempPath, "key"); err != nil {
+		t.Fatalf("link key: %v", err)
+	}
+	if err := root.Rename(tempPath, "installed"); err != nil {
+		t.Fatalf("rename temp file: %v", err)
+	}
+	if err := root.Sync(); err != nil {
+		t.Fatalf("sync root: %v", err)
+	}
+	data, _, err := root.ReadRegularFile("key")
+	if err != nil {
+		t.Fatalf("read linked key: %v", err)
+	}
+	if string(data) != "secret" {
+		t.Fatalf("unexpected key data: %q", string(data))
+	}
+	if err := root.Remove("installed"); err != nil {
+		t.Fatalf("remove installed path: %v", err)
+	}
+	if err := root.Remove("key"); err != nil {
+		t.Fatalf("remove key path: %v", err)
+	}
+}
+
+func TestWriteRootSyncReturnsDirectorySyncError(t *testing.T) {
+	syncErr := errors.New("directory sync failure")
+	root := &WriteRoot{
+		root: &fakeRoot{
+			open: func(string) (File, error) {
+				return &fakeFile{
+					sync:  func() error { return syncErr },
+					close: func() error { return nil },
+				}, nil
+			},
+		},
+	}
+	if err := root.Sync(); !errors.Is(err, syncErr) {
+		t.Fatalf("expected directory sync error, got %v", err)
+	}
+}
+
+func TestWriteRootReadRegularFileAdditionalBranches(t *testing.T) {
+	t.Run("rejects non-regular target", func(t *testing.T) {
+		root := &WriteRoot{
+			rootAbs: "/root",
+			root: &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) {
+					return statTestPath(t, t.TempDir()), nil
+				},
+			},
+		}
+		_, _, err := root.ReadRegularFile("dir")
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("expected non-regular file error, got %v", err)
+		}
+	})
+
+	t.Run("propagates open stat and read errors", func(t *testing.T) {
+		statErr := errors.New("stat failure")
+		readErr := errors.New("read failure")
+		path := filepath.Join(t.TempDir(), writeTestFileName)
+		if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+			t.Fatalf("write temp file: %v", err)
+		}
+		info := statTestPath(t, path)
+		root := &WriteRoot{
+			rootAbs: "/root",
+			root: &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) { return info, nil },
+				open: func(string) (File, error) {
+					return &fakeFile{
+						stat:  func() (fs.FileInfo, error) { return nil, statErr },
+						close: closeWithoutError,
+					}, nil
+				},
+			},
+		}
+		if _, _, err := root.ReadRegularFile("key"); !errors.Is(err, statErr) {
+			t.Fatalf("expected stat error, got %v", err)
+		}
+
+		root.root = &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return info, nil },
+			open: func(string) (File, error) {
+				return &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return info, nil },
+					read:  func([]byte) (int, error) { return 0, readErr },
+					close: closeWithoutError,
+				}, nil
+			},
+		}
+		if _, _, err := root.ReadRegularFile("key"); !errors.Is(err, readErr) {
+			t.Fatalf("expected read error, got %v", err)
+		}
+	})
+}
+
+func TestWriteRootPathHelpersValidationAndCleanup(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	if err := root.MkdirAll(".", 0o750); err != nil {
+		t.Fatalf("expected root mkdirall noop, got %v", err)
+	}
+	tempPath, tempFile, err := root.CreateTempFile(0o600)
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := root.CleanupTempFile(tempPath, tempFile); err != nil {
+		t.Fatalf("cleanup temp file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, tempPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected cleaned temp path to be absent, got %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{name: "link", call: func() error { return root.Link(".", "x") }},
+		{name: "link-new", call: func() error { return root.Link("x", ".") }},
+		{name: "rename", call: func() error { return root.Rename(".", "x") }},
+		{name: "rename-new", call: func() error { return root.Rename("x", ".") }},
+		{name: "remove", call: func() error { return root.Remove(".") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); err == nil {
+				t.Fatalf("expected %s root-target validation error", tc.name)
+			}
+		})
+	}
+}
+
+func TestSyncRootDirectoryAdditionalErrors(t *testing.T) {
+	openErr := errors.New("open directory failure")
+	if err := syncRootDirectory(&fakeRoot{open: func(string) (File, error) { return nil, openErr }}); !errors.Is(err, openErr) {
+		t.Fatalf("expected open error, got %v", err)
+	}
+
+	closeErr := errors.New("close directory failure")
+	err := syncRootDirectory(&fakeRoot{
+		open: func(string) (File, error) {
+			return &fakeFile{
+				sync:  func() error { return nil },
+				close: func() error { return closeErr },
+			}, nil
+		},
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected close error, got %v", err)
+	}
+}
+
+func TestWriteRootPathHelpersPropagateRootErrors(t *testing.T) {
+	linkErr := errors.New("link failure")
+	renameErr := errors.New("rename failure")
+	openErr := errors.New("open failure")
+	root := &WriteRoot{
+		rootAbs: "/root",
+		root: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				path := filepath.Join(t.TempDir(), writeTestFileName)
+				if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+					t.Fatalf("write temp file: %v", err)
+				}
+				return statTestPath(t, path), nil
+			},
+			link:   func(string, string) error { return linkErr },
+			rename: func(string, string) error { return renameErr },
+			open:   func(string) (File, error) { return nil, openErr },
+		},
+	}
+	if err := root.MkdirAll("/abs", 0o750); err == nil {
+		t.Fatal("expected absolute mkdirall path to fail")
+	}
+	if err := root.Link("a", "b"); !errors.Is(err, linkErr) {
+		t.Fatalf("expected link error, got %v", err)
+	}
+	if err := root.Rename("a", "b"); !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error, got %v", err)
+	}
+	if _, _, err := root.ReadRegularFile("a"); !errors.Is(err, openErr) {
+		t.Fatalf("expected open error, got %v", err)
+	}
 }
 
 func TestOpenCanonicalWriteRootPropagatesResolutionError(t *testing.T) {
@@ -1666,6 +2008,156 @@ func TestAtomicWriteSessionCloseTempFileNoopWhenAlreadyClosed(t *testing.T) {
 
 	if err := session.closeTempFile(); err != nil {
 		t.Fatalf("expected nil closeTempFile error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionWriteAndCommitSyncsInDurableOrder(t *testing.T) {
+	events := make([]string, 0, 8)
+	root := &fakeRoot{
+		rename: func(oldName, newName string) error {
+			events = append(events, "rename:"+oldName+"->"+newName)
+			return nil
+		},
+		open: func(string) (File, error) {
+			events = append(events, "open-dir")
+			return &fakeFile{
+				sync: func() error {
+					events = append(events, "sync-dir")
+					return nil
+				},
+				close: func() error {
+					events = append(events, "close-dir")
+					return nil
+				},
+			}, nil
+		},
+	}
+	session := &atomicWriteSession{
+		root:      root,
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func([]byte) (int, error) {
+				events = append(events, "write-temp")
+				return 4, nil
+			},
+			chmod: func(os.FileMode) error {
+				events = append(events, "chmod-temp")
+				return nil
+			},
+			sync: func() error {
+				events = append(events, "sync-temp")
+				return nil
+			},
+			close: func() error {
+				events = append(events, "close-temp")
+				return nil
+			},
+		},
+	}
+
+	if err := session.writeAndCommit([]byte("data"), 0o600); err != nil {
+		t.Fatalf("writeAndCommit returned error: %v", err)
+	}
+	expected := []string{
+		"write-temp",
+		"chmod-temp",
+		"sync-temp",
+		"close-temp",
+		"rename:temp.json->final.json",
+		"open-dir",
+		"sync-dir",
+		"close-dir",
+	}
+	if !slices.Equal(events, expected) {
+		t.Fatalf("unexpected durable ordering: got %#v want %#v", events, expected)
+	}
+	if session.tempRel != "" {
+		t.Fatalf("expected committed session temp path to be cleared, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionReturnsDirectorySyncErrorAfterRename(t *testing.T) {
+	dirSyncErr := errors.New("directory sync failure")
+	var renamed bool
+	root := &fakeRoot{
+		rename: func(oldName, newName string) error {
+			renamed = true
+			return nil
+		},
+		open: func(string) (File, error) {
+			return &fakeFile{
+				sync:  func() error { return dirSyncErr },
+				close: func() error { return nil },
+			}, nil
+		},
+	}
+	session := &atomicWriteSession{
+		root:      root,
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func(data []byte) (int, error) { return len(data), nil },
+			chmod: chmodWithoutError,
+			sync:  func() error { return nil },
+			close: closeWithoutError,
+		},
+	}
+
+	err := session.writeAndCommit([]byte("data"), 0o600)
+	if !errors.Is(err, dirSyncErr) {
+		t.Fatalf("expected directory sync error, got %v", err)
+	}
+	if !renamed {
+		t.Fatal("expected rename to happen before directory sync failure")
+	}
+	if session.tempRel != "" {
+		t.Fatalf("expected committed temp path cleared before directory sync error, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionReturnsRenameErrorAfterFlushingTempFile(t *testing.T) {
+	renameErr := errors.New("rename failure")
+	events := make([]string, 0, 5)
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			rename: func(string, string) error {
+				events = append(events, "rename")
+				return renameErr
+			},
+		},
+		targetRel: "final.json",
+		tempRel:   "temp.json",
+		tempFile: &fakeFile{
+			write: func(data []byte) (int, error) {
+				events = append(events, "write")
+				return len(data), nil
+			},
+			chmod: func(os.FileMode) error {
+				events = append(events, "chmod")
+				return nil
+			},
+			sync: func() error {
+				events = append(events, "sync")
+				return nil
+			},
+			close: func() error {
+				events = append(events, "close")
+				return nil
+			},
+		},
+	}
+
+	err := session.writeAndCommit([]byte("data"), 0o600)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error, got %v", err)
+	}
+	expected := []string{"write", "chmod", "sync", "close", "rename"}
+	if !slices.Equal(events, expected) {
+		t.Fatalf("unexpected event order: got %#v want %#v", events, expected)
+	}
+	if session.tempRel != "temp.json" {
+		t.Fatalf("expected temp path to remain for cleanup after rename failure, got %q", session.tempRel)
 	}
 }
 

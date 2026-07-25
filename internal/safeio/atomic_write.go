@@ -44,6 +44,26 @@ func (s *atomicWriteSession) writeAndClose(data []byte, perm os.FileMode) error 
 	return s.closeTempFile()
 }
 
+func (s *atomicWriteSession) writeAndCommit(data []byte, perm os.FileMode) error {
+	if _, err := s.tempFile.Write(data); err != nil {
+		return err
+	}
+	if err := s.tempFile.Chmod(perm); err != nil {
+		return err
+	}
+	if err := s.tempFile.Sync(); err != nil {
+		return err
+	}
+	if err := s.closeTempFile(); err != nil {
+		return err
+	}
+	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
+		return err
+	}
+	s.tempRel = ""
+	return syncRootDirectory(s.root)
+}
+
 func (s *atomicWriteSession) commit() error {
 	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
 		return err
@@ -154,4 +174,15 @@ func closeFilePreservingPrimary(file File, primaryErr error) error {
 		return primaryErr
 	}
 	return closeErr
+}
+
+func syncRootDirectory(root Root) (returnErr error) {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, dir.Close())
+	}()
+	return dir.Sync()
 }
