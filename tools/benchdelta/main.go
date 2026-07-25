@@ -159,6 +159,7 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, benchmarkLine
 	}
 	key := currentPkg + "/" + benchmarkName
 	var sample samples
+	var hasNsPerOp bool
 	var hasBytes bool
 	var hasAllocs bool
 
@@ -168,6 +169,8 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, benchmarkLine
 			continue
 		}
 		switch fields[i+1] {
+		case "ns/op":
+			hasNsPerOp = true
 		case "B/op":
 			hasBytes = true
 			sample.bytesPerOp = append(sample.bytesPerOp, value)
@@ -178,6 +181,9 @@ func parseBenchmarkLine(currentPkg, line string) (string, samples, benchmarkLine
 	}
 
 	if !hasBytes && !hasAllocs {
+		if hasNsPerOp {
+			return key, samples{}, benchmarkLineIncomplete, incompleteSampleDiagnostic(key, true, true)
+		}
 		return "", samples{}, benchmarkLineIgnored, ""
 	}
 	if !hasBytes || !hasAllocs {
@@ -213,14 +219,15 @@ func incompleteSampleDiagnostic(name string, missingBytes, missingAllocs bool) s
 
 func compareBenchmarks(baseInput, headInput benchmarkInput, limits deltaThresholds) (string, int) {
 	matchedNames := intersectKeys(baseInput.data, headInput.data)
+	comparableNames, mismatchDiagnostics := comparableMatchedNames(matchedNames, baseInput.data, headInput.data)
 	headOnlyNames := differenceKeys(headInput.data, baseInput.data)
 	baseOnlyNames := differenceKeys(baseInput.data, headInput.data)
 
-	rows, hasRegression := buildComparisonRows(matchedNames, baseInput.data, headInput.data, limits)
-	outcome := classifyComparisonOutcome(baseInput, headInput, matchedNames, headOnlyNames, baseOnlyNames, hasRegression)
+	rows, hasRegression := buildComparisonRows(comparableNames, baseInput.data, headInput.data, limits)
+	outcome := classifyComparisonOutcome(baseInput, headInput, mismatchDiagnostics, matchedNames, headOnlyNames, baseOnlyNames, hasRegression)
 
 	var buf bytes.Buffer
-	writeComparisonSummary(&buf, rows, headOnlyNames, baseOnlyNames, limits, outcome)
+	writeComparisonSummary(&buf, rows, len(baseInput.data), len(headInput.data), headOnlyNames, baseOnlyNames, limits, outcome)
 
 	return buf.String(), outcome.exitCode
 }
@@ -259,19 +266,22 @@ func newComparisonRow(name string, baseSample, headSample samples, limits deltaT
 	}
 }
 
-func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, headOnlyNames, baseOnlyNames []string, limits deltaThresholds, outcome comparisonOutcome) {
+func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, baseCount, headCount int, headOnlyNames, baseOnlyNames []string, limits deltaThresholds, outcome comparisonOutcome) {
 	buf.WriteString("## Memory Benchmarks\n\n")
 	fmt.Fprintf(buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", limits.bytesPct, limits.allocsPct)
-	fmt.Fprintf(buf, "Base benchmarks: %s\n", benchmarkCountLabel(len(rows)+len(baseOnlyNames)))
-	fmt.Fprintf(buf, "Head benchmarks: %s\n\n", benchmarkCountLabel(len(rows)+len(headOnlyNames)))
+	fmt.Fprintf(buf, "Base benchmarks: %s\n", benchmarkCountLabel(baseCount))
+	fmt.Fprintf(buf, "Head benchmarks: %s\n\n", benchmarkCountLabel(headCount))
 
-	writeComparisonTable(buf, rows)
-	writeList(buf, "Head-only benchmarks (missing on base):", headOnlyNames, func(item string) string {
-		return fmt.Sprintf("`%s`", item)
-	})
-	writeList(buf, "Base-only benchmarks (missing on head):", baseOnlyNames, func(item string) string {
-		return fmt.Sprintf("`%s`", item)
-	})
+	showInvalidOnlySections := outcome.status != "incomplete"
+	writeComparisonTable(buf, rows, showInvalidOnlySections)
+	if showInvalidOnlySections {
+		writeList(buf, "Head-only benchmarks (missing on base):", headOnlyNames, func(item string) string {
+			return fmt.Sprintf("`%s`", item)
+		})
+		writeList(buf, "Base-only benchmarks (missing on head):", baseOnlyNames, func(item string) string {
+			return fmt.Sprintf("`%s`", item)
+		})
+	}
 	writeList(buf, "Incomplete benchmark samples:", outcome.diagnostics, func(item string) string {
 		return item
 	})
@@ -287,9 +297,11 @@ func writeComparisonSummary(buf *bytes.Buffer, rows []comparisonRow, headOnlyNam
 	}
 }
 
-func writeComparisonTable(buf *bytes.Buffer, rows []comparisonRow) {
+func writeComparisonTable(buf *bytes.Buffer, rows []comparisonRow, showEmptyMessage bool) {
 	if len(rows) == 0 {
-		buf.WriteString("No overlapping benchmark names were found between base and head.\n\n")
+		if showEmptyMessage {
+			buf.WriteString("No overlapping benchmark names were found between base and head.\n\n")
+		}
 		return
 	}
 
@@ -321,8 +333,8 @@ func benchmarkCountLabel(total int) string {
 	return strconv.Itoa(total)
 }
 
-func classifyComparisonOutcome(baseInput, headInput benchmarkInput, matchedNames, headOnlyNames, baseOnlyNames []string, hasRegression bool) comparisonOutcome {
-	if diagnostics := incompleteDiagnostics(baseInput, headInput); len(diagnostics) > 0 {
+func classifyComparisonOutcome(baseInput, headInput benchmarkInput, mismatchDiagnostics, matchedNames, headOnlyNames, baseOnlyNames []string, hasRegression bool) comparisonOutcome {
+	if diagnostics := incompleteDiagnostics(baseInput, headInput, mismatchDiagnostics); len(diagnostics) > 0 {
 		return comparisonOutcome{
 			exitCode:    exitCodeInvalid,
 			status:      "incomplete",
@@ -343,15 +355,39 @@ func classifyComparisonOutcome(baseInput, headInput benchmarkInput, matchedNames
 	return comparisonOutcome{exitCode: exitCodePassed, status: "passed"}
 }
 
-func incompleteDiagnostics(baseInput, headInput benchmarkInput) []string {
-	diagnostics := make([]string, 0, len(baseInput.incomplete)+len(headInput.incomplete))
+func incompleteDiagnostics(baseInput, headInput benchmarkInput, mismatchDiagnostics []string) []string {
+	diagnostics := make([]string, 0, len(baseInput.incomplete)+len(headInput.incomplete)+len(mismatchDiagnostics))
 	for _, diagnostic := range baseInput.incomplete {
 		diagnostics = append(diagnostics, "base: "+diagnostic)
 	}
 	for _, diagnostic := range headInput.incomplete {
 		diagnostics = append(diagnostics, "head: "+diagnostic)
 	}
+	diagnostics = append(diagnostics, mismatchDiagnostics...)
 	return diagnostics
+}
+
+func comparableMatchedNames(matchedNames []string, baseData, headData benchmarkData) ([]string, []string) {
+	comparableNames := make([]string, 0, len(matchedNames))
+	diagnostics := make([]string, 0)
+	for _, name := range matchedNames {
+		baseCount := sampleCount(baseData[name])
+		headCount := sampleCount(headData[name])
+		if baseCount != headCount {
+			diagnostics = append(diagnostics, sampleCountMismatchDiagnostic(name, baseCount, headCount))
+			continue
+		}
+		comparableNames = append(comparableNames, name)
+	}
+	return comparableNames, diagnostics
+}
+
+func sampleCount(sample samples) int {
+	return len(sample.bytesPerOp)
+}
+
+func sampleCountMismatchDiagnostic(name string, baseCount, headCount int) string {
+	return fmt.Sprintf("sample-count mismatch for `%s`: base=%d head=%d", name, baseCount, headCount)
 }
 
 func comparisonStatus(row comparisonRow) string {

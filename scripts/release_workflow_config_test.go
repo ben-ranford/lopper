@@ -3078,6 +3078,40 @@ func TestMakefileBenchdeltaCoverageRatchet(t *testing.T) {
 	}
 }
 
+func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
+	t.Parallel()
+
+	makefile := readConfig(t, "Makefile")
+	targetPattern := regexp.MustCompile(`(?m)^bench-gate:\n(?:\t.*\n)+`)
+	target := targetPattern.FindString(makefile)
+	if target == "" {
+		t.Fatal("Makefile must define the bench-gate target")
+	}
+
+	for _, want := range []string{
+		`benchdelta_bin="$$bench_dir/benchdelta"`,
+		`$(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta`,
+		`"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)"`,
+		`printf "%s\n" "$$status" > "$(MEMORY_BENCH_STATUS)"`,
+		`if [ "$(MEMORY_BENCH_ENFORCE)" = "0" ]; then`,
+		`if [ "$$status" -eq 1 ]; then`,
+		`exit "$$status"`,
+	} {
+		if !strings.Contains(target, want) {
+			t.Fatalf("bench-gate target must contain %q", want)
+		}
+	}
+
+	for _, omit := range []string{
+		`$(GO_CMD) run ./tools/benchdelta`,
+		`if [ "$$status" -eq 2 ]; then`,
+	} {
+		if strings.Contains(target, omit) {
+			t.Fatalf("bench-gate target must not contain %q", omit)
+		}
+	}
+}
+
 func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
 	t.Parallel()
 

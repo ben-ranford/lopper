@@ -258,6 +258,29 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	})
 }
 
+func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	assertWorkflowStepRunContainsAll(t, runCI, "ci verify run target", []string{
+		`export MEMORY_BENCH_ENFORCE=0`,
+		`make ci`,
+	})
+
+	failUnapproved := workflowStepByName(t, workflow.Jobs, "verify", "Fail on unapproved memory regression")
+	assertWorkflowStepRunContainsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
+		`status="$(tr -d '[:space:]' < .artifacts/memory-bench-status.txt)"`,
+		`if [ "$status" = "1" ]; then`,
+	})
+	assertWorkflowStepRunOmitsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
+		`if [ "$status" = "2" ]`,
+		`if [ "$status" -eq 2 ]`,
+	})
+}
+
 func TestPRMetadataWorkflowPassesMaintainerExemptionLabel(t *testing.T) {
 	t.Parallel()
 	assertPullRequestTriggerTypes(t, ".github/workflows/pr-metadata.yml")

@@ -10,29 +10,32 @@ import (
 	"testing"
 )
 
+const (
+	reportBenchmarkPkg = "github.com/ben-ranford/lopper/internal/report"
+	benchBenchmarkPkg  = "github.com/ben-ranford/lopper/pkg/bench"
+)
+
 func TestParseBenchmarkFileAndCompare(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.txt")
 	headPath := filepath.Join(dir, "head.txt")
 
 	baseLines := []string{
-		"goos: darwin",
-		"pkg: github.com/ben-ranford/lopper/internal/lang/shared",
-		"BenchmarkCountUsage-8    1000   25000 ns/op   25632 B/op   375 allocs/op",
-		"BenchmarkCountUsage-8    1000   25500 ns/op   25632 B/op   375 allocs/op",
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormatLargeTable-8    500   90000 ns/op   64000 B/op   120 allocs/op",
+		packageLine("github.com/ben-ranford/lopper/internal/lang/shared"),
+		benchmarkFixtureLine("CountUsage", "1000", "25000", "ns/op", "25632", "B/op", "375", "allocs/op"),
+		benchmarkFixtureLine("CountUsage", "1000", "25500", "ns/op", "25632", "B/op", "375", "allocs/op"),
+		packageLine(reportBenchmarkPkg),
+		benchmarkFixtureLine("FormatLargeTable", "500", "90000", "ns/op", "64000", "B/op", "120", "allocs/op"),
 	}
 	headLines := []string{
-		"goos: darwin",
-		"pkg: github.com/ben-ranford/lopper/internal/lang/shared",
-		"BenchmarkCountUsage-8    1000   25000 ns/op   30000 B/op   430 allocs/op",
-		"BenchmarkCountUsage-8    1000   25500 ns/op   30000 B/op   430 allocs/op",
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormatLargeTable-8    500   90000 ns/op   64000 B/op   120 allocs/op",
+		packageLine("github.com/ben-ranford/lopper/internal/lang/shared"),
+		benchmarkFixtureLine("CountUsage", "1000", "25000", "ns/op", "30000", "B/op", "430", "allocs/op"),
+		benchmarkFixtureLine("CountUsage", "1000", "25500", "ns/op", "30000", "B/op", "430", "allocs/op"),
+		packageLine(reportBenchmarkPkg),
+		benchmarkFixtureLine("FormatLargeTable", "500", "90000", "ns/op", "64000", "B/op", "120", "allocs/op"),
 	}
-	writeBenchmarkFixture(t, basePath, baseLines[1:])
-	writeBenchmarkFixture(t, headPath, headLines[1:])
+	writeBenchmarkFixture(t, basePath, baseLines)
+	writeBenchmarkFixture(t, headPath, headLines)
 
 	baseInput, err := parseBenchmarkFile(basePath)
 	if err != nil {
@@ -70,7 +73,7 @@ func TestPercentDelta(t *testing.T) {
 	}
 }
 
-func TestBenchmarkParsingAndFormattingBranches(t *testing.T) {
+func TestParseBenchmarkLineFallbackAndIgnoredBranches(t *testing.T) {
 	name, sample, status, diagnostic := parseBenchmarkLine("", "BenchmarkFresh-8 1000 25000 ns/op 128 B/op 3 allocs/op")
 	if status != benchmarkLineComplete || diagnostic != "" || name != "unknown-package/BenchmarkFresh" {
 		t.Fatalf("expected unknown-package fallback benchmark, got name=%q status=%v diagnostic=%q", name, status, diagnostic)
@@ -81,39 +84,56 @@ func TestBenchmarkParsingAndFormattingBranches(t *testing.T) {
 
 	for _, line := range []string{
 		"BenchmarkShort",
-		"BenchmarkNoMetrics-8 1000 25000 ns/op",
 		"BenchmarkBadValue-8 1000 nope B/op",
 	} {
 		if _, _, status, _ := parseBenchmarkLine("pkg", line); status != benchmarkLineIgnored {
 			t.Fatalf("expected parseBenchmarkLine(%q) to be ignored", line)
 		}
 	}
+}
 
-	for _, tc := range []struct {
+func TestParseBenchmarkLineRejectsIncompleteMetrics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
 		line           string
 		wantDiagnostic string
 	}{
 		{
-			line:           "BenchmarkBytesOnly-8 1000 25000 ns/op 128 B/op",
-			wantDiagnostic: "`pkg/BenchmarkBytesOnly` missing allocs/op",
+			name:           "bytes only",
+			line:           benchmarkFixtureLine("BytesOnly", "1000", "25000", "ns/op", "128", "B/op"),
+			wantDiagnostic: benchmarkMissingMetric("pkg", "BytesOnly", "allocs/op"),
 		},
 		{
-			line:           "BenchmarkAllocsOnly-8 1000 25000 ns/op 3 allocs/op",
-			wantDiagnostic: "`pkg/BenchmarkAllocsOnly` missing B/op",
+			name:           "allocs only",
+			line:           benchmarkFixtureLine("AllocsOnly", "1000", "25000", "ns/op", "3", "allocs/op"),
+			wantDiagnostic: benchmarkMissingMetric("pkg", "AllocsOnly", "B/op"),
 		},
-	} {
-		name, sample, status, diagnostic := parseBenchmarkLine("pkg", tc.line)
-		if status != benchmarkLineIncomplete {
-			t.Fatalf("parseBenchmarkLine(%q) status = %v, want incomplete", tc.line, status)
-		}
-		if name == "" || len(sample.bytesPerOp) != 0 || len(sample.allocsPerOp) != 0 {
-			t.Fatalf("parseBenchmarkLine(%q) returned unexpected sample %#v for %q", tc.line, sample, name)
-		}
-		if diagnostic != tc.wantDiagnostic {
-			t.Fatalf("parseBenchmarkLine(%q) diagnostic = %q, want %q", tc.line, diagnostic, tc.wantDiagnostic)
-		}
+		{
+			name:           "ns only",
+			line:           benchmarkFixtureLine("NsOnly", "1000", "25000", "ns/op"),
+			wantDiagnostic: benchmarkMissingMetric("pkg", "NsOnly", "B/op and allocs/op"),
+		},
 	}
 
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			name, sample, status, diagnostic := parseBenchmarkLine("pkg", tc.line)
+			if status != benchmarkLineIncomplete {
+				t.Fatalf("parseBenchmarkLine(%q) status = %v, want incomplete", tc.line, status)
+			}
+			if name == "" || len(sample.bytesPerOp) != 0 || len(sample.allocsPerOp) != 0 {
+				t.Fatalf("parseBenchmarkLine(%q) returned unexpected sample %#v for %q", tc.line, sample, name)
+			}
+			if diagnostic != tc.wantDiagnostic {
+				t.Fatalf("parseBenchmarkLine(%q) diagnostic = %q, want %q", tc.line, diagnostic, tc.wantDiagnostic)
+			}
+		})
+	}
+}
+
+func TestBenchmarkHelpers(t *testing.T) {
 	if got := normalizeBenchmarkName("BenchmarkDash-foo"); got != "BenchmarkDash-foo" {
 		t.Fatalf("expected non-numeric suffix to remain, got %q", got)
 	}
@@ -150,44 +170,36 @@ func TestIssue1403CompareRejectsMissingBenchmarks(t *testing.T) {
 		},
 		{
 			name: "head-only",
-			base: benchmarkInput{data: benchmarkData{
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkShared": {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
-			}},
+			base: benchmarkInput{data: benchmarkData{benchmarkKey(benchBenchmarkPkg, "Shared"): completeBenchmarkSample()}},
 			head: benchmarkInput{data: benchmarkData{
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkShared":   {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkHeadOnly": {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
+				benchmarkKey(benchBenchmarkPkg, "Shared"):   completeBenchmarkSample(),
+				benchmarkKey(benchBenchmarkPkg, "HeadOnly"): completeBenchmarkSample(),
 			}},
 			wantStatusCode: exitCodeInvalid,
 			wantContains: []string{
 				"Comparison status: invalid",
 				"Head-only benchmarks (missing on base):",
-				"`github.com/ben-ranford/lopper/pkg/bench/BenchmarkHeadOnly`",
+				benchmarkRef(benchBenchmarkPkg, "HeadOnly"),
 			},
 		},
 		{
 			name: "base-only",
 			base: benchmarkInput{data: benchmarkData{
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkShared":   {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkBaseOnly": {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
+				benchmarkKey(benchBenchmarkPkg, "Shared"):   completeBenchmarkSample(),
+				benchmarkKey(benchBenchmarkPkg, "BaseOnly"): completeBenchmarkSample(),
 			}},
-			head: benchmarkInput{data: benchmarkData{
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkShared": {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
-			}},
+			head:           benchmarkInput{data: benchmarkData{benchmarkKey(benchBenchmarkPkg, "Shared"): completeBenchmarkSample()}},
 			wantStatusCode: exitCodeInvalid,
 			wantContains: []string{
 				"Comparison status: invalid",
 				"Base-only benchmarks (missing on head):",
-				"`github.com/ben-ranford/lopper/pkg/bench/BenchmarkBaseOnly`",
+				benchmarkRef(benchBenchmarkPkg, "BaseOnly"),
 			},
 		},
 		{
-			name: "zero overlap",
-			base: benchmarkInput{data: benchmarkData{
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkBaseOnly": {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
-			}},
-			head: benchmarkInput{data: benchmarkData{
-				"github.com/ben-ranford/lopper/pkg/bench/BenchmarkHeadOnly": {bytesPerOp: []float64{100}, allocsPerOp: []float64{1}},
-			}},
+			name:           "zero overlap",
+			base:           benchmarkInput{data: benchmarkData{benchmarkKey(benchBenchmarkPkg, "BaseOnly"): completeBenchmarkSample()}},
+			head:           benchmarkInput{data: benchmarkData{benchmarkKey(benchBenchmarkPkg, "HeadOnly"): completeBenchmarkSample()}},
 			wantStatusCode: exitCodeInvalid,
 			wantContains: []string{
 				"Comparison status: invalid",
@@ -213,141 +225,119 @@ func TestIssue1403CompareRejectsMissingBenchmarks(t *testing.T) {
 	}
 }
 
-func TestIssue1403RejectsIncompleteBenchmarkSamples(t *testing.T) {
-	t.Run("parse file excludes partial duplicates from aggregation", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "bench.txt")
-		writeBenchmarkFixture(t, path, []string{
-			"pkg: github.com/ben-ranford/lopper/internal/report",
-			"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-			"BenchmarkFormat-8 1000 100 ns/op 130 B/op",
-			"BenchmarkAllocsOnly-8 1000 100 ns/op 4 allocs/op",
-		})
+func TestParseBenchmarkFileExcludesPartialDuplicatesFromAggregation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bench.txt")
+	writeBenchmarkFixture(t, path, reportFixture(completeBenchmark("Format"), bytesOnlyBenchmark("Format", "130"), allocsOnlyBenchmark("AllocsOnly", "4")))
 
-		input, err := parseBenchmarkFile(path)
-		if err != nil {
-			t.Fatalf("parse benchmark file: %v", err)
-		}
-		sample := input.data["github.com/ben-ranford/lopper/internal/report/BenchmarkFormat"]
-		if len(sample.bytesPerOp) != 1 || len(sample.allocsPerOp) != 1 {
-			t.Fatalf("expected only complete sample to be aggregated, got %#v", sample)
-		}
-		if sample.bytesPerOp[0] != 100 || sample.allocsPerOp[0] != 1 {
-			t.Fatalf("aggregated complete sample = %#v, want bytes=100 allocs=1", sample)
-		}
-		if got, want := input.incomplete, []string{
-			"`github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` missing allocs/op",
-			"`github.com/ben-ranford/lopper/internal/report/BenchmarkAllocsOnly` missing B/op",
-		}; !slices.Equal(got, want) {
-			t.Fatalf("incomplete diagnostics = %#v, want %#v", got, want)
-		}
-	})
+	input, err := parseBenchmarkFile(path)
+	if err != nil {
+		t.Fatalf("parse benchmark file: %v", err)
+	}
+	sample := input.data[benchmarkKey(reportBenchmarkPkg, "Format")]
+	if len(sample.bytesPerOp) != 1 || len(sample.allocsPerOp) != 1 {
+		t.Fatalf("expected only complete sample to be aggregated, got %#v", sample)
+	}
+	if sample.bytesPerOp[0] != 100 || sample.allocsPerOp[0] != 1 {
+		t.Fatalf("aggregated complete sample = %#v, want bytes=100 allocs=1", sample)
+	}
+	if got, want := input.incomplete, []string{
+		benchmarkMissingMetric(reportBenchmarkPkg, "Format", "allocs/op"),
+		benchmarkMissingMetric(reportBenchmarkPkg, "AllocsOnly", "B/op"),
+	}; !slices.Equal(got, want) {
+		t.Fatalf("incomplete diagnostics = %#v, want %#v", got, want)
+	}
+}
 
-	tests := []struct {
-		name         string
-		baseLines    []string
-		headLines    []string
-		wantContains []string
-		wantOmit     []string
-	}{
+func TestParseBenchmarkFileRecordsNsOnlyBenchmarksAsIncomplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bench.txt")
+	writeBenchmarkFixture(t, path, reportFixture(completeBenchmark("Format"), benchmarkFixtureLine("NsOnly", "1000", "100", "ns/op")))
+
+	input, err := parseBenchmarkFile(path)
+	if err != nil {
+		t.Fatalf("parse benchmark file: %v", err)
+	}
+	if len(input.data) != 1 {
+		t.Fatalf("expected one complete benchmark to remain, got %#v", input.data)
+	}
+	if got, want := input.incomplete, []string{
+		benchmarkMissingMetric(reportBenchmarkPkg, "NsOnly", "B/op and allocs/op"),
+	}; !slices.Equal(got, want) {
+		t.Fatalf("incomplete diagnostics = %#v, want %#v", got, want)
+	}
+}
+
+func TestCompareBenchmarksRejectsIncompleteSamples(t *testing.T) {
+	t.Parallel()
+
+	tests := []comparisonScenario{
 		{
-			name: "base bytes-only sample is incomplete",
-			baseLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op",
-			},
-			headLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-			},
+			name:      "base bytes-only sample is incomplete",
+			baseLines: reportFixture(bytesOnlyBenchmark("Format", "100")),
+			headLines: reportFixture(completeBenchmark("Format")),
 			wantContains: []string{
 				"Comparison status: incomplete",
 				"Incomplete benchmark samples:",
-				"base: `github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` missing allocs/op",
+				"base: " + benchmarkMissingMetric(reportBenchmarkPkg, "Format", "allocs/op"),
 			},
+			wantOmit: incompleteInvalidDiagnostics(),
 		},
 		{
-			name: "head allocs-only sample is incomplete",
-			baseLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-			},
-			headLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 1 allocs/op",
-			},
+			name:      "head allocs-only sample is incomplete",
+			baseLines: reportFixture(completeBenchmark("Format")),
+			headLines: reportFixture(allocsOnlyBenchmark("Format", "1")),
 			wantContains: []string{
 				"Comparison status: incomplete",
-				"head: `github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` missing B/op",
+				"head: " + benchmarkMissingMetric(reportBenchmarkPkg, "Format", "B/op"),
 			},
+			wantOmit: incompleteInvalidDiagnostics(),
 		},
 		{
-			name: "base complete plus partial duplicate stays incomplete and averages only complete sample",
-			baseLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-				"BenchmarkFormat-8 1000 100 ns/op 130 B/op",
-			},
-			headLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-			},
+			name:      "base ns-only sample is incomplete",
+			baseLines: reportFixture(benchmarkFixtureLine("Format", "1000", "100", "ns/op")),
+			headLines: reportFixture(completeBenchmark("Format")),
 			wantContains: []string{
 				"Comparison status: incomplete",
-				"| `github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` | 100.0 | 100.0 | +0.0% | 1.0 | 1.0 | +0.0% | ok |",
-				"base: `github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` missing allocs/op",
+				"base: " + benchmarkMissingMetric(reportBenchmarkPkg, "Format", "B/op and allocs/op"),
 			},
-			wantOmit: []string{"115.0"},
+			wantOmit: incompleteInvalidDiagnostics(),
 		},
 		{
-			name: "head complete plus partial duplicate stays incomplete and averages only complete sample",
-			baseLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-			},
-			headLines: []string{
-				"pkg: github.com/ben-ranford/lopper/internal/report",
-				"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-				"BenchmarkFormat-8 1000 100 ns/op 4 allocs/op",
-			},
+			name:      "base complete plus partial duplicate stays incomplete and averages only complete sample",
+			baseLines: reportFixture(completeBenchmark("Format"), bytesOnlyBenchmark("Format", "130")),
+			headLines: reportFixture(completeBenchmark("Format")),
 			wantContains: []string{
 				"Comparison status: incomplete",
-				"| `github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` | 100.0 | 100.0 | +0.0% | 1.0 | 1.0 | +0.0% | ok |",
-				"head: `github.com/ben-ranford/lopper/internal/report/BenchmarkFormat` missing B/op",
+				okComparisonRow(reportBenchmarkPkg, "Format"),
+				"base: " + benchmarkMissingMetric(reportBenchmarkPkg, "Format", "allocs/op"),
 			},
+			wantOmit: append(incompleteInvalidDiagnostics(), "115.0"),
+		},
+		{
+			name:      "head complete plus partial duplicate stays incomplete and averages only complete sample",
+			baseLines: reportFixture(completeBenchmark("Format")),
+			headLines: reportFixture(completeBenchmark("Format"), allocsOnlyBenchmark("Format", "4")),
+			wantContains: []string{
+				"Comparison status: incomplete",
+				okComparisonRow(reportBenchmarkPkg, "Format"),
+				"head: " + benchmarkMissingMetric(reportBenchmarkPkg, "Format", "B/op"),
+			},
+			wantOmit: incompleteInvalidDiagnostics(),
+		},
+		{
+			name:      "mismatched sample counts are incomplete",
+			baseLines: reportFixture(repeatedCompleteBenchmark("Format", 3)...),
+			headLines: reportFixture(completeBenchmark("Format")),
+			wantContains: []string{
+				"Comparison status: incomplete",
+				sampleCountMismatchDiagnostic(benchmarkKey(reportBenchmarkPkg, "Format"), 3, 1),
+			},
+			wantOmit: incompleteInvalidDiagnostics(),
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			basePath := filepath.Join(dir, "base.txt")
-			headPath := filepath.Join(dir, "head.txt")
-			writeBenchmarkFixture(t, basePath, tc.baseLines)
-			writeBenchmarkFixture(t, headPath, tc.headLines)
-
-			baseInput, err := parseBenchmarkFile(basePath)
-			if err != nil {
-				t.Fatalf("parse base: %v", err)
-			}
-			headInput, err := parseBenchmarkFile(headPath)
-			if err != nil {
-				t.Fatalf("parse head: %v", err)
-			}
-
-			summary, statusCode := compareBenchmarks(baseInput, headInput, deltaThresholds{bytesPct: 15, allocsPct: 10})
-			if statusCode != exitCodeInvalid {
-				t.Fatalf("status code = %d, want %d\n%s", statusCode, exitCodeInvalid, summary)
-			}
-			for _, want := range tc.wantContains {
-				if !strings.Contains(summary, want) {
-					t.Fatalf("expected summary to contain %q, got:\n%s", want, summary)
-				}
-			}
-			for _, omit := range tc.wantOmit {
-				if strings.Contains(summary, omit) {
-					t.Fatalf("expected summary to omit %q, got:\n%s", omit, summary)
-				}
-			}
+			assertComparisonScenario(t, tc)
 		})
 	}
 }
@@ -355,21 +345,17 @@ func TestIssue1403RejectsIncompleteBenchmarkSamples(t *testing.T) {
 func TestParseBenchmarkFileBranches(t *testing.T) {
 	t.Run("skips invalid benchmark lines in file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "bench.txt")
-		writeBenchmarkFixture(t, path, []string{
-			"pkg: github.com/ben-ranford/lopper/internal/report",
-			"BenchmarkIgnored-8 1000 100 ns/op",
-			"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-		})
+		writeBenchmarkFixture(t, path, reportFixture(benchmarkFixtureLine("Ignored", "1000", "100", "ns/op"), completeBenchmark("Format")))
 
 		input, err := parseBenchmarkFile(path)
 		if err != nil {
 			t.Fatalf("parse benchmark file: %v", err)
 		}
-		if len(input.data) != 1 {
-			t.Fatalf("expected only one parsed benchmark, got %#v", input.data)
+		if len(input.data) != 1 || len(input.incomplete) != 1 {
+			t.Fatalf("expected one parsed benchmark and one incomplete diagnostic, got data=%#v incomplete=%#v", input.data, input.incomplete)
 		}
-		if len(input.incomplete) != 0 {
-			t.Fatalf("expected no incomplete diagnostics, got %#v", input.incomplete)
+		if input.incomplete[0] != benchmarkMissingMetric(reportBenchmarkPkg, "Ignored", "B/op and allocs/op") {
+			t.Fatalf("unexpected incomplete diagnostic: %#v", input.incomplete)
 		}
 	})
 
@@ -398,6 +384,7 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 		args       []string
 		wantCode   int
 		wantOutput string
+		wantOmit   []string
 	}{
 		{
 			name:       "success",
@@ -440,12 +427,28 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 			args:       []string{"-base", filepath.Join(dir, "base-bytes-only.txt"), "-head", headPath},
 			wantCode:   exitCodeInvalid,
 			wantOutput: "Comparison status: incomplete",
+			wantOmit:   incompleteInvalidDiagnostics(),
 		},
 		{
 			name:       "issue 1403 head allocs-only incomplete",
 			args:       []string{"-base", basePath, "-head", filepath.Join(dir, "head-allocs-only.txt")},
 			wantCode:   exitCodeInvalid,
 			wantOutput: "Comparison status: incomplete",
+			wantOmit:   incompleteInvalidDiagnostics(),
+		},
+		{
+			name:       "ns-only incomplete",
+			args:       []string{"-base", filepath.Join(dir, "base-ns-only.txt"), "-head", headPath},
+			wantCode:   exitCodeInvalid,
+			wantOutput: benchmarkMissingMetric(reportBenchmarkPkg, "Format", "B/op and allocs/op"),
+			wantOmit:   incompleteInvalidDiagnostics(),
+		},
+		{
+			name:       "sample count mismatch incomplete",
+			args:       []string{"-base", filepath.Join(dir, "count-mismatch-base.txt"), "-head", filepath.Join(dir, "count-mismatch-head.txt")},
+			wantCode:   exitCodeInvalid,
+			wantOutput: sampleCountMismatchDiagnostic(benchmarkKey(reportBenchmarkPkg, "Format"), 3, 1),
+			wantOmit:   incompleteInvalidDiagnostics(),
 		},
 		{
 			name:       "missing args",
@@ -467,45 +470,24 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 		},
 	}
 
-	writeBenchmarkFixture(t, filepath.Join(dir, "regressed.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 130 B/op 2 allocs/op",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "empty.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "head-only.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-		"BenchmarkFormatHeadOnly-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "base-only.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-		"BenchmarkFormatBaseOnly-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "zero-overlap-base.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkBaseOnly-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "zero-overlap-head.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkHeadOnly-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "base-bytes-only.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op",
-	})
-	writeBenchmarkFixture(t, filepath.Join(dir, "head-allocs-only.txt"), []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 1 allocs/op",
-	})
+	writeBenchmarkFixture(t, filepath.Join(dir, "regressed.txt"), reportFixture(bytesAllocsBenchmark("Format", "130", "2")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "empty.txt"), reportFixture())
+	writeBenchmarkFixture(t, filepath.Join(dir, "head-only.txt"), reportFixture(completeBenchmark("Format"), completeBenchmark("FormatHeadOnly")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "base-only.txt"), reportFixture(completeBenchmark("Format"), completeBenchmark("FormatBaseOnly")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "zero-overlap-base.txt"), reportFixture(completeBenchmark("BaseOnly")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "zero-overlap-head.txt"), reportFixture(completeBenchmark("HeadOnly")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "base-bytes-only.txt"), reportFixture(bytesOnlyBenchmark("Format", "100")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "head-allocs-only.txt"), reportFixture(allocsOnlyBenchmark("Format", "1")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "base-ns-only.txt"), reportFixture(benchmarkFixtureLine("Format", "1000", "100", "ns/op")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "count-mismatch-base.txt"), reportFixture(repeatedCompleteBenchmark("Format", 3)...))
+	writeBenchmarkFixture(t, filepath.Join(dir, "count-mismatch-head.txt"), reportFixture(completeBenchmark("Format")))
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			output, exitCode := runBenchdeltaHelper(t, "TestMainExitCodesAndErrorPaths", tc.args...)
 			assertBenchdeltaHelperExit(t, output, exitCode, tc.wantCode)
 			assertBenchdeltaHelperOutput(t, output, tc.wantOutput)
+			assertBenchdeltaHelperOutputOmitsAll(t, output, tc.wantOmit)
 		})
 	}
 }
@@ -580,10 +562,7 @@ func writeMatchingBenchmarkFixtures(t *testing.T) (string, string, string) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.txt")
 	headPath := filepath.Join(dir, "head.txt")
-	lines := []string{
-		"pkg: github.com/ben-ranford/lopper/internal/report",
-		"BenchmarkFormat-8 1000 100 ns/op 100 B/op 1 allocs/op",
-	}
+	lines := reportFixture(completeBenchmark("Format"))
 	writeBenchmarkFixture(t, basePath, lines)
 	writeBenchmarkFixture(t, headPath, lines)
 	return dir, basePath, headPath
@@ -626,4 +605,125 @@ func assertBenchdeltaHelperOutput(t *testing.T, output []byte, want string) {
 	if !strings.Contains(string(output), want) {
 		t.Fatalf("expected output to contain %q, got %q", want, string(output))
 	}
+}
+
+func assertBenchdeltaHelperOutputOmitsAll(t *testing.T, output []byte, omitted []string) {
+	t.Helper()
+	assertSummaryOmitsAll(t, string(output), omitted)
+}
+
+type comparisonScenario struct {
+	name         string
+	baseLines    []string
+	headLines    []string
+	wantContains []string
+	wantOmit     []string
+}
+
+func assertComparisonScenario(t *testing.T, tc comparisonScenario) {
+	t.Helper()
+
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.txt")
+	headPath := filepath.Join(dir, "head.txt")
+	writeBenchmarkFixture(t, basePath, tc.baseLines)
+	writeBenchmarkFixture(t, headPath, tc.headLines)
+
+	baseInput, err := parseBenchmarkFile(basePath)
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+	headInput, err := parseBenchmarkFile(headPath)
+	if err != nil {
+		t.Fatalf("parse head: %v", err)
+	}
+
+	summary, statusCode := compareBenchmarks(baseInput, headInput, deltaThresholds{bytesPct: 15, allocsPct: 10})
+	if statusCode != exitCodeInvalid {
+		t.Fatalf("status code = %d, want %d\n%s", statusCode, exitCodeInvalid, summary)
+	}
+	assertSummaryContainsAll(t, summary, tc.wantContains)
+	assertSummaryOmitsAll(t, summary, tc.wantOmit)
+}
+
+func assertSummaryContainsAll(t *testing.T, summary string, expected []string) {
+	t.Helper()
+	for _, want := range expected {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected summary to contain %q, got:\n%s", want, summary)
+		}
+	}
+}
+
+func assertSummaryOmitsAll(t *testing.T, summary string, omitted []string) {
+	t.Helper()
+	for _, omit := range omitted {
+		if strings.Contains(summary, omit) {
+			t.Fatalf("expected summary to omit %q, got:\n%s", omit, summary)
+		}
+	}
+}
+
+func incompleteInvalidDiagnostics() []string {
+	return []string{
+		"Head-only benchmarks (missing on base):",
+		"Base-only benchmarks (missing on head):",
+		"No overlapping benchmark names were found between base and head.",
+	}
+}
+
+func packageLine(pkg string) string {
+	return "pkg: " + pkg
+}
+
+func benchmarkFixtureLine(name string, parts ...string) string {
+	return "Benchmark" + name + "-8 " + strings.Join(parts, " ")
+}
+
+func reportFixture(lines ...string) []string {
+	return append([]string{packageLine(reportBenchmarkPkg)}, lines...)
+}
+
+func completeBenchmark(name string) string {
+	return bytesAllocsBenchmark(name, "100", "1")
+}
+
+func bytesAllocsBenchmark(name, bytes, allocs string) string {
+	return benchmarkFixtureLine(name, "1000", "100", "ns/op", bytes, "B/op", allocs, "allocs/op")
+}
+
+func bytesOnlyBenchmark(name, bytes string) string {
+	return benchmarkFixtureLine(name, "1000", "100", "ns/op", bytes, "B/op")
+}
+
+func allocsOnlyBenchmark(name, allocs string) string {
+	return benchmarkFixtureLine(name, "1000", "100", "ns/op", allocs, "allocs/op")
+}
+
+func repeatedCompleteBenchmark(name string, count int) []string {
+	lines := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		lines = append(lines, completeBenchmark(name))
+	}
+	return lines
+}
+
+func benchmarkKey(pkg, name string) string {
+	return pkg + "/Benchmark" + name
+}
+
+func benchmarkRef(pkg, name string) string {
+	return "`" + benchmarkKey(pkg, name) + "`"
+}
+
+func benchmarkMissingMetric(pkg, name, metric string) string {
+	return benchmarkRef(pkg, name) + " missing " + metric
+}
+
+func completeBenchmarkSample() samples {
+	return samples{bytesPerOp: []float64{100}, allocsPerOp: []float64{1}}
+}
+
+func okComparisonRow(pkg, name string) string {
+	return "| " + benchmarkRef(pkg, name) + " | 100.0 | 100.0 | +0.0% | 1.0 | 1.0 | +0.0% | ok |"
 }
