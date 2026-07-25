@@ -2,6 +2,7 @@ package safeio
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,66 +11,30 @@ import (
 	"time"
 )
 
-func TestOpenFileNoFollowByVerificationRejectsRenamedLeafReplacedBySymlinkToSameFile(t *testing.T) {
-	rootDir := t.TempDir()
-	tracePath := filepath.Join(rootDir, "trace.ndjson")
-	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o600); err != nil {
-		t.Fatalf("write trace: %v", err)
-	}
-
-	withOpenFileNoFollowByVerificationBeforeOpen(t, func() {
-		renamedPath := filepath.Join(rootDir, "trace.real")
-		if err := os.Rename(tracePath, renamedPath); err != nil {
-			t.Fatalf("rename trace aside: %v", err)
-		}
-		if err := os.Symlink(filepath.Base(renamedPath), tracePath); err != nil {
-			t.Fatalf("replace trace with symlink: %v", err)
-		}
-	})
-
-	root := openTestRoot(t, rootDir)
-	file, err := openFileNoFollowByVerification(root, filepath.Base(tracePath))
-	if file != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			t.Fatalf("close unexpected file: %v", closeErr)
-		}
-		t.Fatal("expected symlink swap to fail before returning a file")
-	}
-	if err == nil || !errors.Is(err, ErrNoFollowFinalComponent) {
-		t.Fatalf("expected leaf symlink rejection, got %v", err)
-	}
+type openFileNoFollowByVerificationFailureCase struct {
+	name        string
+	preInfo     fs.FileInfo
+	preErr      error
+	openErr     error
+	openedInfo  fs.FileInfo
+	openedErr   error
+	currentInfo fs.FileInfo
+	currentErr  error
+	closeErr    error
+	wantErr     error
+	wantMessage string
+	wantClosed  bool
 }
 
-func TestOpenFileNoFollowByVerificationRejectsDirectLeafSwap(t *testing.T) {
-	rootDir := t.TempDir()
-	tracePath := filepath.Join(rootDir, "trace.ndjson")
-	replacementPath := filepath.Join(rootDir, "trace.other")
-	if err := os.WriteFile(tracePath, []byte("before\n"), 0o600); err != nil {
-		t.Fatalf("write original trace: %v", err)
-	}
-	if err := os.WriteFile(replacementPath, []byte("after\n"), 0o600); err != nil {
-		t.Fatalf("write replacement trace: %v", err)
-	}
-
-	withOpenFileNoFollowByVerificationBeforeOpen(t, func() {
-		if err := os.Remove(tracePath); err != nil {
-			t.Fatalf("remove original trace: %v", err)
-		}
-		if err := os.Rename(replacementPath, tracePath); err != nil {
-			t.Fatalf("swap replacement trace into place: %v", err)
-		}
-	})
-
-	root := openTestRoot(t, rootDir)
-	file, err := openFileNoFollowByVerification(root, filepath.Base(tracePath))
-	if file != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			t.Fatalf("close unexpected file: %v", closeErr)
-		}
-		t.Fatal("expected direct leaf swap to fail before returning a file")
-	}
-	if err == nil || !strings.Contains(err.Error(), "changed while opening") {
-		t.Fatalf("expected direct leaf swap rejection, got %v", err)
+func TestOpenFileNoFollowByVerificationRejectsMutations(t *testing.T) {
+	for _, tc := range openNoFollowMutationCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			assertOpenFileNoFollowMutationRejected(t, "verification helper", tc, func(t *testing.T, tracePath string) (io.Closer, error) {
+				t.Helper()
+				root := openTestRoot(t, filepath.Dir(tracePath))
+				return openFileNoFollowByVerification(root, filepath.Base(tracePath))
+			})
+		})
 	}
 }
 
@@ -93,20 +58,7 @@ func TestOpenFileNoFollowByVerificationFailsClosedForInvalidStates(t *testing.T)
 	postStatErr := errors.New("post-open lstat failed")
 	closeErr := errors.New("close failed")
 
-	tests := []struct {
-		name        string
-		preInfo     fs.FileInfo
-		preErr      error
-		openErr     error
-		openedInfo  fs.FileInfo
-		openedErr   error
-		currentInfo fs.FileInfo
-		currentErr  error
-		closeErr    error
-		wantErr     error
-		wantMessage string
-		wantClosed  bool
-	}{
+	tests := []openFileNoFollowByVerificationFailureCase{
 		{
 			name:    "pre-open lstat error",
 			preErr:  preStatErr,
@@ -174,57 +126,7 @@ func TestOpenFileNoFollowByVerificationFailsClosedForInvalidStates(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			lstatCalls := 0
-			closed := false
-			root := &fakeRoot{
-				lstat: func(name string) (fs.FileInfo, error) {
-					if name != "trace.ndjson" {
-						t.Fatalf("unexpected lstat path: %q", name)
-					}
-					lstatCalls++
-					if lstatCalls == 1 {
-						return tt.preInfo, tt.preErr
-					}
-					return tt.currentInfo, tt.currentErr
-				},
-				open: func(name string) (File, error) {
-					if name != "trace.ndjson" {
-						t.Fatalf("unexpected open path: %q", name)
-					}
-					if tt.openErr != nil {
-						return nil, tt.openErr
-					}
-					return &fakeFile{
-						stat: func() (fs.FileInfo, error) {
-							return tt.openedInfo, tt.openedErr
-						},
-						close: func() error {
-							closed = true
-							return tt.closeErr
-						},
-					}, nil
-				},
-			}
-
-			file, err := openFileNoFollowByVerification(root, "trace.ndjson")
-			if file != nil {
-				if closeFileErr := file.Close(); closeFileErr != nil {
-					t.Fatalf("close unexpected file: %v", closeFileErr)
-				}
-				t.Fatal("expected invalid verification state to return no file")
-			}
-			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
-				t.Fatalf("expected error matching %v, got %v", tt.wantErr, err)
-			}
-			if tt.wantMessage != "" && (err == nil || !strings.Contains(err.Error(), tt.wantMessage)) {
-				t.Fatalf("expected error containing %q, got %v", tt.wantMessage, err)
-			}
-			if tt.closeErr != nil && !errors.Is(err, tt.closeErr) {
-				t.Fatalf("expected close error to remain recoverable, got %v", err)
-			}
-			if closed != tt.wantClosed {
-				t.Fatalf("unexpected close state: got %t want %t", closed, tt.wantClosed)
-			}
+			runOpenFileNoFollowByVerificationFailureCase(t, tt)
 		})
 	}
 }
@@ -299,6 +201,71 @@ func withOpenFileNoFollowByVerificationBeforeOpen(t *testing.T, hook func()) {
 	t.Cleanup(func() {
 		openFileNoFollowByVerificationBeforeOpen = previousHook
 	})
+}
+
+func runOpenFileNoFollowByVerificationFailureCase(t *testing.T, tc openFileNoFollowByVerificationFailureCase) {
+	t.Helper()
+
+	lstatCalls := 0
+	closed := false
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			expectVerificationName(t, "lstat", name)
+			lstatCalls++
+			if lstatCalls == 1 {
+				return tc.preInfo, tc.preErr
+			}
+			return tc.currentInfo, tc.currentErr
+		},
+		open: func(name string) (File, error) {
+			expectVerificationName(t, "open", name)
+			if tc.openErr != nil {
+				return nil, tc.openErr
+			}
+			return &fakeFile{
+				stat: func() (fs.FileInfo, error) {
+					return tc.openedInfo, tc.openedErr
+				},
+				close: func() error {
+					closed = true
+					return tc.closeErr
+				},
+			}, nil
+		},
+	}
+
+	file, err := openFileNoFollowByVerification(root, "trace.ndjson")
+	if file != nil {
+		if closeFileErr := file.Close(); closeFileErr != nil {
+			t.Fatalf("close unexpected file: %v", closeFileErr)
+		}
+		t.Fatal("expected invalid verification state to return no file")
+	}
+	assertOpenFileNoFollowByVerificationFailure(t, tc, err, closed)
+}
+
+func expectVerificationName(t *testing.T, op, name string) {
+	t.Helper()
+	if name != "trace.ndjson" {
+		t.Fatalf("unexpected %s path: %q", op, name)
+	}
+}
+
+func assertOpenFileNoFollowByVerificationFailure(t *testing.T, tc openFileNoFollowByVerificationFailureCase, err error, closed bool) {
+	t.Helper()
+
+	if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+		t.Fatalf("expected error matching %v, got %v", tc.wantErr, err)
+	}
+	if tc.wantMessage != "" && (err == nil || !strings.Contains(err.Error(), tc.wantMessage)) {
+		t.Fatalf("expected error containing %q, got %v", tc.wantMessage, err)
+	}
+	if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
+		t.Fatalf("expected close error to remain recoverable, got %v", err)
+	}
+	if closed != tc.wantClosed {
+		t.Fatalf("unexpected close state: got %t want %t", closed, tc.wantClosed)
+	}
 }
 
 type verificationFileInfo struct {

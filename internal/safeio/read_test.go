@@ -742,51 +742,34 @@ func TestReadFileLimitRejectsSymlinkedParentAncestor(t *testing.T) {
 }
 
 func TestOpenFileNoFollowRejectsSymlinkedParent(t *testing.T) {
-	rootDir := t.TempDir()
-	targetDir := filepath.Join(rootDir, "target")
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		t.Fatalf("create target dir: %v", err)
-	}
-	targetPath := filepath.Join(targetDir, writeTestFileName)
-	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
-		t.Fatalf(writeFileErrFmt, err)
-	}
-	linkDir := filepath.Join(rootDir, "linked")
-	if err := os.Symlink(targetDir, linkDir); err != nil {
-		t.Skipf("symlink unsupported: %v", err)
-	}
+	targetDir := func(rootDir string) string { return filepath.Join(rootDir, "target") }
 
-	file, err := OpenFileNoFollow(filepath.Join(linkDir, writeTestFileName))
-	if err == nil || !strings.Contains(err.Error(), "path contains symlink") {
-		if file != nil {
-			if closeErr := file.Close(); closeErr != nil {
-				t.Fatalf("close unexpected file: %v", closeErr)
-			}
-		}
-		t.Fatalf("expected symlinked parent rejection, got file=%v err=%v", file, err)
-	}
-	if !errors.Is(err, ErrPathContainsSymlink) {
-		t.Fatalf("expected symlinked parent rejection to match ErrPathContainsSymlink, got %v", err)
-	}
-	var rootErr *RootContainsSymlinkError
-	if !errors.As(err, &rootErr) {
-		t.Fatalf("expected symlinked parent rejection to expose root symlink cause, got %v", err)
-	}
+	assertOpenFileNoFollowRejectsSymlinkedParentPath(t, targetDir, true)
 }
 
 func TestOpenFileNoFollowRejectsSuffixPreservingSymlinkedParent(t *testing.T) {
-	rootDir := t.TempDir()
-	suffixPath := strings.TrimPrefix(filepath.Clean(rootDir), string(filepath.Separator))
-	targetDir := filepath.Join(rootDir, "pivot", suffixPath, "linked")
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
-		t.Fatalf("create crafted target dir: %v", err)
+	targetDir := func(rootDir string) string {
+		suffixPath := strings.TrimPrefix(filepath.Clean(rootDir), string(filepath.Separator))
+		return filepath.Join(rootDir, "pivot", suffixPath, "linked")
 	}
-	targetPath := filepath.Join(targetDir, writeTestFileName)
+
+	assertOpenFileNoFollowRejectsSymlinkedParentPath(t, targetDir, false)
+}
+
+func assertOpenFileNoFollowRejectsSymlinkedParentPath(t *testing.T, targetDir func(rootDir string) string, wantRootCause bool) {
+	t.Helper()
+
+	rootDir := t.TempDir()
+	resolvedTargetDir := targetDir(rootDir)
+	if err := os.MkdirAll(resolvedTargetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	targetPath := filepath.Join(resolvedTargetDir, writeTestFileName)
 	if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
 		t.Fatalf(writeFileErrFmt, err)
 	}
 	linkDir := filepath.Join(rootDir, "linked")
-	if err := os.Symlink(targetDir, linkDir); err != nil {
+	if err := os.Symlink(resolvedTargetDir, linkDir); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 
@@ -800,7 +783,14 @@ func TestOpenFileNoFollowRejectsSuffixPreservingSymlinkedParent(t *testing.T) {
 		t.Fatalf("expected suffix-preserving symlinked parent rejection, got file=%v err=%v", file, err)
 	}
 	if !errors.Is(err, ErrPathContainsSymlink) {
-		t.Fatalf("expected suffix-preserving symlink rejection to match ErrPathContainsSymlink, got %v", err)
+		t.Fatalf("expected symlinked parent rejection to match ErrPathContainsSymlink, got %v", err)
+	}
+	if !wantRootCause {
+		return
+	}
+	var rootErr *RootContainsSymlinkError
+	if !errors.As(err, &rootErr) {
+		t.Fatalf("expected symlinked parent rejection to expose root symlink cause, got %v", err)
 	}
 }
 
@@ -868,6 +858,20 @@ func TestOpenFileNoFollowOpenErrorClosesRoot(t *testing.T) {
 		t.Fatal("expected nofollow root to be closed on open failure")
 	}
 }
+
+func TestTranslateOpenNotExistPreservesNoFollowUnsupported(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
+	err := errors.Join(ErrOpenFileNoFollowUnsupported, &fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist})
+
+	got := translateOpenNotExist(err, targetPath)
+	if !errors.Is(got, ErrOpenFileNoFollowUnsupported) {
+		t.Fatalf("expected unsupported sentinel to survive translation, got %v", got)
+	}
+	if !errors.Is(got, os.ErrNotExist) {
+		t.Fatalf("expected original not-exist cause to remain recoverable, got %v", got)
+	}
+}
+
 func TestReadFileLimitRejectsMissingFile(t *testing.T) {
 	targetPath := filepath.Join(canonicalTempDir(t), "missing.txt")
 

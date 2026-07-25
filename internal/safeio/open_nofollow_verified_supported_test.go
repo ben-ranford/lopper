@@ -1,4 +1,4 @@
-//go:build windows
+//go:build darwin || windows
 
 package safeio
 
@@ -6,12 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-func TestOpenFileNoFollowSupportsVerifiedOpenOnWindows(t *testing.T) {
+func TestOpenFileNoFollowSupportsVerifiedOpen(t *testing.T) {
 	if !OpenFileNoFollowSupported() {
-		t.Fatal("expected windows no-follow support to be enabled")
+		t.Fatalf("expected %s no-follow support to be enabled", runtime.GOOS)
 	}
 
 	rootDir := t.TempDir()

@@ -131,6 +131,9 @@ func normalizeRootedTarget(targetPath, rel string, policy rootedTargetPolicy) (s
 }
 
 func translateOpenNotExist(err error, targetPath string) error {
+	if errors.Is(err, ErrOpenFileNoFollowUnsupported) {
+		return err
+	}
 	if errors.Is(err, fs.ErrNotExist) {
 		pathErr := &fs.PathError{Op: "open", Path: targetPath, Err: err}
 		if isPureSentinelError(err, fs.ErrNotExist) {

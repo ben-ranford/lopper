@@ -140,188 +140,133 @@ func TestOpenPinnedNoFollowHandleFailsClosedWhenPinnedFDStatFails(t *testing.T) 
 	}
 }
 
-func TestReopenPinnedRegularFileRejectsChangedInode(t *testing.T) {
-	restore := stubOpenFileNoFollowSupportProbes(t)
-	t.Cleanup(restore)
+type reopenPinnedRegularFileFailureCase struct {
+	name       string
+	reopenFD   func(t *testing.T, rootDir string) int
+	reopenErr  error
+	wantErr    error
+	wantPathOp string
+	wantMsg    string
+	avoidErr   error
+}
 
+func TestReopenPinnedRegularFileFailureModes(t *testing.T) {
+	tests := []reopenPinnedRegularFileFailureCase{
+		{
+			name: "rejects changed inode",
+			reopenFD: func(t *testing.T, rootDir string) int {
+				t.Helper()
+
+				otherPath := filepath.Join(rootDir, "other.txt")
+				if err := os.WriteFile(otherPath, []byte("other"), 0o600); err != nil {
+					t.Fatalf("write other file: %v", err)
+				}
+				fd, err := unix.Open(otherPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+				if err != nil {
+					t.Fatalf("open other file: %v", err)
+				}
+				return fd
+			},
+			wantMsg: "changed while reopening",
+		},
+		{
+			name:      "fails when proc self fd missing",
+			reopenErr: unix.ENOENT,
+			wantErr:   ErrOpenFileNoFollowUnsupported,
+			wantMsg:   "/proc/self/fd is required",
+		},
+		{
+			name:       "returns path error for reopen failure",
+			reopenErr:  unix.EACCES,
+			wantErr:    unix.EACCES,
+			wantPathOp: "open pinned regular file",
+			avoidErr:   ErrOpenFileNoFollowUnsupported,
+		},
+		{
+			name: "fails closed when reopened fd stat fails",
+			reopenFD: func(t *testing.T, _ string) int {
+				t.Helper()
+
+				reader, writer, err := os.Pipe()
+				if err != nil {
+					t.Fatalf("os.Pipe: %v", err)
+				}
+				fd := int(reader.Fd())
+				if err := reader.Close(); err != nil {
+					t.Fatalf("close pipe reader: %v", err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatalf("close pipe writer: %v", err)
+				}
+				return fd
+			},
+			wantMsg: "fstat reopened file",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubOpenFileNoFollowSupportProbes(t)
+			t.Cleanup(restore)
+
+			pinnedPath, pinnedFD, pinnedStat := openPinnedRegularFileFixture(t)
+			procSelfFDReopen = func(string, int, uint32) (int, error) {
+				if tc.reopenErr != nil {
+					return -1, tc.reopenErr
+				}
+				return tc.reopenFD(t, filepath.Dir(pinnedPath)), nil
+			}
+
+			file, err := reopenPinnedRegularFile(pinnedPath, pinnedFD, pinnedStat)
+			if file != nil {
+				_ = file.Close()
+				t.Fatal("expected reopen failure to return no file")
+			}
+			assertReopenPinnedRegularFileError(t, tc, err)
+		})
+	}
+}
+
+func openPinnedRegularFileFixture(t *testing.T) (string, int, unix.Stat_t) {
 	rootDir := t.TempDir()
 	pinnedPath := filepath.Join(rootDir, "pinned.txt")
-	otherPath := filepath.Join(rootDir, "other.txt")
 	if err := os.WriteFile(pinnedPath, []byte("pinned"), 0o600); err != nil {
 		t.Fatalf("write pinned file: %v", err)
-	}
-	if err := os.WriteFile(otherPath, []byte("other"), 0o600); err != nil {
-		t.Fatalf("write other file: %v", err)
 	}
 
 	pinnedFile, err := os.Open(pinnedPath)
 	if err != nil {
 		t.Fatalf("open pinned file: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if closeErr := pinnedFile.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			t.Fatalf("close pinned file: %v", closeErr)
 		}
-	}()
+	})
 
 	var pinnedStat unix.Stat_t
 	if err := unix.Fstat(int(pinnedFile.Fd()), &pinnedStat); err != nil {
 		t.Fatalf("fstat pinned file: %v", err)
 	}
-
-	procSelfFDReopen = func(string, int, uint32) (int, error) {
-		return unix.Open(otherPath, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	}
-
-	file, err := reopenPinnedRegularFile(pinnedPath, int(pinnedFile.Fd()), pinnedStat)
-	if file != nil {
-		_ = file.Close()
-		t.Fatal("expected inode mismatch to fail before returning a file")
-	}
-	if err == nil || !strings.Contains(err.Error(), "changed while reopening") {
-		t.Fatalf("expected inode mismatch error, got %v", err)
-	}
+	return pinnedPath, int(pinnedFile.Fd()), pinnedStat
 }
 
-func TestReopenPinnedRegularFileFailsWhenProcSelfFDMissing(t *testing.T) {
-	restore := stubOpenFileNoFollowSupportProbes(t)
-	t.Cleanup(restore)
+func assertReopenPinnedRegularFileError(t *testing.T, tc reopenPinnedRegularFileFailureCase, err error) {
+	t.Helper()
 
-	rootDir := t.TempDir()
-	pinnedPath := filepath.Join(rootDir, "pinned.txt")
-	if err := os.WriteFile(pinnedPath, []byte("pinned"), 0o600); err != nil {
-		t.Fatalf("write pinned file: %v", err)
+	if tc.wantMsg != "" && (err == nil || !strings.Contains(err.Error(), tc.wantMsg)) {
+		t.Fatalf("expected error containing %q, got %v", tc.wantMsg, err)
 	}
-
-	pinnedFile, err := os.Open(pinnedPath)
-	if err != nil {
-		t.Fatalf("open pinned file: %v", err)
+	if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+		t.Fatalf("expected error matching %v, got %v", tc.wantErr, err)
 	}
-	defer func() {
-		if closeErr := pinnedFile.Close(); closeErr != nil {
-			t.Fatalf("close pinned file: %v", closeErr)
+	if tc.wantPathOp != "" {
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) || pathErr.Op != tc.wantPathOp {
+			t.Fatalf("expected %s PathError, got %v", tc.wantPathOp, err)
 		}
-	}()
-
-	var pinnedStat unix.Stat_t
-	if err := unix.Fstat(int(pinnedFile.Fd()), &pinnedStat); err != nil {
-		t.Fatalf("fstat pinned file: %v", err)
 	}
-
-	procSelfFDReopen = func(string, int, uint32) (int, error) {
-		return -1, unix.ENOENT
-	}
-
-	file, err := reopenPinnedRegularFile(pinnedPath, int(pinnedFile.Fd()), pinnedStat)
-	if file != nil {
-		_ = file.Close()
-		t.Fatal("expected missing /proc/self/fd to fail before returning a file")
-	}
-	if err == nil || !strings.Contains(err.Error(), "/proc/self/fd is required") {
-		t.Fatalf("expected missing /proc/self/fd error, got %v", err)
-	}
-	if !errors.Is(err, ErrOpenFileNoFollowUnsupported) {
-		t.Fatalf("expected unsupported sentinel, got %v", err)
-	}
-	if !errors.Is(err, unix.ENOENT) {
-		t.Fatalf("expected original /proc/self/fd errno, got %v", err)
-	}
-}
-
-func TestReopenPinnedRegularFileReturnsPathErrorForReopenFailure(t *testing.T) {
-	restore := stubOpenFileNoFollowSupportProbes(t)
-	t.Cleanup(restore)
-
-	rootDir := t.TempDir()
-	pinnedPath := filepath.Join(rootDir, "pinned.txt")
-	if err := os.WriteFile(pinnedPath, []byte("pinned"), 0o600); err != nil {
-		t.Fatalf("write pinned file: %v", err)
-	}
-
-	pinnedFile, err := os.Open(pinnedPath)
-	if err != nil {
-		t.Fatalf("open pinned file: %v", err)
-	}
-	defer func() {
-		if closeErr := pinnedFile.Close(); closeErr != nil {
-			t.Fatalf("close pinned file: %v", closeErr)
-		}
-	}()
-
-	var pinnedStat unix.Stat_t
-	if err := unix.Fstat(int(pinnedFile.Fd()), &pinnedStat); err != nil {
-		t.Fatalf("fstat pinned file: %v", err)
-	}
-
-	procSelfFDReopen = func(string, int, uint32) (int, error) {
-		return -1, unix.EACCES
-	}
-
-	file, err := reopenPinnedRegularFile(pinnedPath, int(pinnedFile.Fd()), pinnedStat)
-	if file != nil {
-		_ = file.Close()
-		t.Fatal("expected reopen failure to return no file")
-	}
-
-	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || pathErr.Op != "open pinned regular file" {
-		t.Fatalf("expected reopen PathError, got %v", err)
-	}
-	if !errors.Is(err, unix.EACCES) {
-		t.Fatalf("expected original operational error, got %v", err)
-	}
-	if errors.Is(err, ErrOpenFileNoFollowUnsupported) {
-		t.Fatalf("expected operational error to remain distinct from unsupported capability, got %v", err)
-	}
-}
-
-func TestReopenPinnedRegularFileFailsClosedWhenReopenedFDStatFails(t *testing.T) {
-	restore := stubOpenFileNoFollowSupportProbes(t)
-	t.Cleanup(restore)
-
-	rootDir := t.TempDir()
-	pinnedPath := filepath.Join(rootDir, "pinned.txt")
-	if err := os.WriteFile(pinnedPath, []byte("pinned"), 0o600); err != nil {
-		t.Fatalf("write pinned file: %v", err)
-	}
-
-	pinnedFile, err := os.Open(pinnedPath)
-	if err != nil {
-		t.Fatalf("open pinned file: %v", err)
-	}
-	defer func() {
-		if closeErr := pinnedFile.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Fatalf("close pinned file: %v", closeErr)
-		}
-	}()
-
-	var pinnedStat unix.Stat_t
-	if err := unix.Fstat(int(pinnedFile.Fd()), &pinnedStat); err != nil {
-		t.Fatalf("fstat pinned file: %v", err)
-	}
-
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	fd := int(reader.Fd())
-	if err := reader.Close(); err != nil {
-		t.Fatalf("close pipe reader: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close pipe writer: %v", err)
-	}
-
-	procSelfFDReopen = func(string, int, uint32) (int, error) {
-		return fd, nil
-	}
-
-	file, err := reopenPinnedRegularFile(pinnedPath, int(pinnedFile.Fd()), pinnedStat)
-	if file != nil {
-		_ = file.Close()
-		t.Fatal("expected reopened fd stat failure to fail before returning a file")
-	}
-	if err == nil || !strings.Contains(err.Error(), "fstat reopened file") {
-		t.Fatalf("expected reopened fstat failure, got %v", err)
+	if tc.avoidErr != nil && errors.Is(err, tc.avoidErr) {
+		t.Fatalf("expected error to remain distinct from %v, got %v", tc.avoidErr, err)
 	}
 }
