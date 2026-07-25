@@ -16,7 +16,7 @@ type entrypointCandidates struct {
 
 var openEntrypointRoot = openConstrainedRoot
 
-func loadPackageJSONForSurface(rootPath, depPath string) (packageJSON, []string, error) {
+func loadPackageJSONForSurface(rootPath, depPath string) (pkg packageJSON, warnings []string, err error) {
 	validatedDepRoot, err := validateDirectoryPathNoFollow(depPath)
 	if err != nil {
 		pkgPath := filepath.Join(depPath, "package.json")
@@ -43,7 +43,6 @@ func loadPackageJSONForSurface(rootPath, depPath string) (packageJSON, []string,
 	if err != nil {
 		return packageJSON{}, []string{fmt.Sprintf("unable to read %s", pkgPath)}, err
 	}
-	var pkg packageJSON
 	if err := json.Unmarshal(data, &pkg); err != nil {
 		return packageJSON{}, []string{"failed to parse dependency package.json"}, err
 	}

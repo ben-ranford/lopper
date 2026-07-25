@@ -31,10 +31,6 @@ func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry
 	if !isSupportedFile(path) {
 		return nil
 	}
-	if entry.Type()&fs.ModeSymlink != 0 {
-		state.skippedNonRegularFiles++
-		return nil
-	}
 
 	readAndParse := state.readAndParseFile
 	if readAndParse == nil {

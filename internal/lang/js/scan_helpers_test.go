@@ -174,6 +174,261 @@ func TestReadAndParseFileRejectsEscapingSourceSymlink(t *testing.T) {
 	}
 }
 
+func TestReadAndParseFileAllowsInRepoSourceSymlinkToRegularFile(t *testing.T) {
+	repo := t.TempDir()
+	targetPath := filepath.Join(repo, "src", "real.js")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	source := "export const inside = 1\n"
+	if err := os.WriteFile(targetPath, []byte(source), 0o600); err != nil {
+		t.Fatalf("write real.js: %v", err)
+	}
+
+	linkPath := filepath.Join(repo, "linked.js")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	content, tree, relPath, err := readAndParseFile(context.Background(), newSourceParser(), repo, linkPath)
+	if err != nil {
+		t.Fatalf("read in-repo source symlink: %v", err)
+	}
+	if string(content) != source {
+		t.Fatalf("expected symlinked source content, got %q", string(content))
+	}
+	if tree == nil {
+		t.Fatal("expected parse tree for in-repo source symlink")
+	}
+	if relPath != "linked.js" {
+		t.Fatalf("expected symlink path to stay relative to scanned repo entry, got %q", relPath)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo with in-repo symlink: %v", err)
+	}
+	if len(result.Files) != 2 {
+		t.Fatalf("expected both real file and symlinked file to be scanned, got %#v", result.Files)
+	}
+	if strings.Contains(strings.Join(result.Warnings, "\n"), "non-regular") {
+		t.Fatalf("did not expect non-regular skip warning for in-repo source symlink, got %#v", result.Warnings)
+	}
+}
+
+func TestReadAndParseFilePreservesMixedNonRegularAndCloseFailure(t *testing.T) {
+	repo := t.TempDir()
+	targetPath := filepath.Join(repo, "real.js")
+	if err := os.WriteFile(targetPath, []byte("export const inside = 1\n"), 0o600); err != nil {
+		t.Fatalf("write real.js: %v", err)
+	}
+	linkPath := filepath.Join(repo, "linked.js")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	closeErr := errors.New("source root close failed")
+
+	originalReadRepoSourceUnderLimit := readRepoSourceUnderLimit
+	readRepoSourceUnderLimit = func(string, string, int64) ([]byte, error) {
+		return nil, errors.Join(safeio.ErrNonRegularFile, closeErr)
+	}
+	t.Cleanup(func() {
+		readRepoSourceUnderLimit = originalReadRepoSourceUnderLimit
+	})
+
+	_, _, _, err := readAndParseFile(context.Background(), newSourceParser(), repo, linkPath)
+	if !errors.Is(err, safeio.ErrNonRegularFile) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected mixed non-regular and close failure to surface, got %v", err)
+	}
+}
+
+func TestScanRepoSkipsEscapingSourceSymlinkDeterministically(t *testing.T) {
+	repo := t.TempDir()
+	targetPath := filepath.Join(t.TempDir(), "external.js")
+	if err := os.WriteFile(targetPath, []byte("export const outside = true\n"), 0o600); err != nil {
+		t.Fatalf("write external.js: %v", err)
+	}
+	linkPath := filepath.Join(repo, "linked.js")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo with escaping symlink: %v", err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("expected escaping symlink to be skipped, got %#v", result.Files)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "skipped 1 non-regular JS/TS file(s)") {
+		t.Fatalf("expected escaping symlink skip warning, got %#v", result.Warnings)
+	}
+}
+
+func TestReadRepoSourceThroughInRootSymlinkRejectsParentSwapBeforeFinalRootedRead(t *testing.T) {
+	repo := t.TempDir()
+	sourceDir := filepath.Join(repo, "src")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	targetName := "real.js"
+	targetPath := filepath.Join(sourceDir, targetName)
+	if err := os.WriteFile(targetPath, []byte("export const inside = true\n"), 0o600); err != nil {
+		t.Fatalf("write in-repo target: %v", err)
+	}
+	linkPath := filepath.Join(repo, "linked.js")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	outsideDir := t.TempDir()
+	outsideSource := "import leaked from \"outside-dependency\"\n"
+	if err := os.WriteFile(filepath.Join(outsideDir, targetName), []byte(outsideSource), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+
+	swapped := false
+	originalOpenRepoSourceRoot := openRepoSourceRoot
+	openRepoSourceRoot = func(path string) (safeio.Root, string, error) {
+		root, validatedPath, err := originalOpenRepoSourceRoot(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return &swapOnLstatRoot{
+			Root:      root,
+			targetRel: filepath.Join("src", targetName),
+			swap: func() error {
+				swapped = true
+				if err := os.Rename(sourceDir, sourceDir+"-original"); err != nil {
+					return err
+				}
+				return os.Symlink(outsideDir, sourceDir)
+			},
+		}, validatedPath, nil
+	}
+	t.Cleanup(func() {
+		openRepoSourceRoot = originalOpenRepoSourceRoot
+	})
+
+	content, err := readRepoSourceThroughInRootSymlink(repo, linkPath)
+	if !swapped {
+		t.Fatal("expected parent swap immediately before the rooted final read")
+	}
+	if err == nil {
+		t.Fatalf("expected escaping parent swap to be rejected, read %q", string(content))
+	}
+	if strings.Contains(string(content), "outside-dependency") {
+		t.Fatalf("outside source content was read: %q", string(content))
+	}
+}
+
+func TestReadRepoSourceThroughInRootSymlinkRejectsInvalidInputsAndNonRegularTargets(t *testing.T) {
+	repo := t.TempDir()
+
+	if _, err := readRepoSourceThroughInRootSymlink("", filepath.Join(repo, "linked.js")); !errors.Is(err, safeio.ErrNonRegularFile) {
+		t.Fatalf("expected empty repo to be rejected as non-regular fallback, got %v", err)
+	}
+	if _, err := readRepoSourceThroughInRootSymlink(repo, filepath.Join(repo, "missing.js")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected missing symlink path to surface not-exist, got %v", err)
+	}
+
+	brokenLink := filepath.Join(repo, "broken.js")
+	if err := os.Symlink(filepath.Join(repo, "missing-target.js"), brokenLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := readRepoSourceThroughInRootSymlink(repo, brokenLink); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected broken symlink target to surface not-exist, got %v", err)
+	}
+
+	plainPath := filepath.Join(repo, "plain.js")
+	if err := os.WriteFile(plainPath, []byte("export const plain = true\n"), 0o600); err != nil {
+		t.Fatalf("write plain.js: %v", err)
+	}
+	if _, err := readRepoSourceThroughInRootSymlink(repo, plainPath); !errors.Is(err, safeio.ErrNonRegularFile) {
+		t.Fatalf("expected non-symlink path to be rejected, got %v", err)
+	}
+
+	targetDir := filepath.Join(repo, "target-dir")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	dirLink := filepath.Join(repo, "dir-link.js")
+	if err := os.Symlink(targetDir, dirLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := readRepoSourceThroughInRootSymlink(repo, dirLink); !errors.Is(err, safeio.ErrNonRegularFile) {
+		t.Fatalf("expected symlinked directory target to be rejected, got %v", err)
+	}
+}
+
+func TestReadRepoSourceThroughInRootSymlinkPreservesRootOpenAndCloseFailures(t *testing.T) {
+	t.Run("open", func(t *testing.T) {
+		openErr := errors.New("open repo source root")
+		originalOpenRepoSourceRoot := openRepoSourceRoot
+		openRepoSourceRoot = func(string) (safeio.Root, string, error) {
+			return nil, "", openErr
+		}
+		t.Cleanup(func() {
+			openRepoSourceRoot = originalOpenRepoSourceRoot
+		})
+
+		if _, err := readRepoSourceThroughInRootSymlink(t.TempDir(), "linked.js"); !errors.Is(err, openErr) {
+			t.Fatalf("expected root open failure to surface, got %v", err)
+		}
+	})
+
+	t.Run("close", func(t *testing.T) {
+		repo := t.TempDir()
+		source := "export const inside = true\n"
+		targetPath := filepath.Join(repo, "real.js")
+		if err := os.WriteFile(targetPath, []byte(source), 0o600); err != nil {
+			t.Fatalf("write in-repo target: %v", err)
+		}
+		linkPath := filepath.Join(repo, "linked.js")
+		if err := os.Symlink(targetPath, linkPath); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		closeErr := errors.New("close repo source root")
+
+		originalOpenRepoSourceRoot := openRepoSourceRoot
+		openRepoSourceRoot = func(path string) (safeio.Root, string, error) {
+			root, validatedPath, err := originalOpenRepoSourceRoot(path)
+			if err != nil {
+				return nil, "", err
+			}
+			return &closingLicenseRoot{Root: root, closeErr: closeErr}, validatedPath, nil
+		}
+		t.Cleanup(func() {
+			openRepoSourceRoot = originalOpenRepoSourceRoot
+		})
+
+		content, err := readRepoSourceThroughInRootSymlink(repo, linkPath)
+		if !errors.Is(err, closeErr) {
+			t.Fatalf("expected root close failure to surface, got %v", err)
+		}
+		if string(content) != source {
+			t.Fatalf("expected successful bounded read before close failure, got %q", string(content))
+		}
+	})
+}
+
+type swapOnLstatRoot struct {
+	safeio.Root
+	targetRel string
+	swap      func() error
+}
+
+func (r *swapOnLstatRoot) Lstat(name string) (fs.FileInfo, error) {
+	if name == r.targetRel && r.swap != nil {
+		swap := r.swap
+		r.swap = nil
+		if err := swap(); err != nil {
+			return nil, err
+		}
+	}
+	return r.Root.Lstat(name)
+}
+
 func TestScanRepoEntrySkipsNonRegularSourceWhenDirEntryTypeIsUnknown(t *testing.T) {
 	repo := t.TempDir()
 	outside := t.TempDir()

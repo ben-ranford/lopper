@@ -88,6 +88,23 @@ func TestDetectLicenseAndProvenanceSkipsOversizedLicenseCandidate(t *testing.T) 
 	}
 }
 
+func TestDetectLicenseAndProvenanceReturnsWarningsWhenAllFallbackCandidatesAreSkipped(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "COPYING"), string(bytes.Repeat([]byte("x"), int(licenseFileReadMaxBytes)+1)))
+
+	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	if license == nil || !license.Unknown || license.Source != "unknown" {
+		t.Fatalf("expected unknown license when every fallback candidate is skipped, got %#v", license)
+	}
+	if provenance == nil || provenance.Source != "local-manifest" {
+		t.Fatalf("expected manifest provenance, got %#v", provenance)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipped license candidate COPYING above") {
+		t.Fatalf("expected oversized candidate warning to be preserved, got %#v", warnings)
+	}
+}
+
 func TestDetectProvenanceWithRegistryHeuristics(t *testing.T) {
 	depRoot := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{

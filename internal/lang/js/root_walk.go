@@ -12,15 +12,25 @@ import (
 type rootWalkFunc func(relPath string, info fs.FileInfo) (skipDir bool, stop bool, err error)
 
 func walkRootNoFollow(root safeio.Root, visit rootWalkFunc) error {
-	return walkRootNoFollowFrom(root, "", visit)
+	return walkRootNoFollowFrom(root, "", visit, &rootWalkState{})
 }
 
-func walkRootNoFollowFrom(root safeio.Root, relDir string, visit rootWalkFunc) error {
+type rootWalkState struct {
+	stopped bool
+}
+
+func walkRootNoFollowFrom(root safeio.Root, relDir string, visit rootWalkFunc, state *rootWalkState) error {
+	if state.stopped {
+		return nil
+	}
 	entries, err := readRootDirEntries(root)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
+		if state.stopped {
+			return nil
+		}
 		relPath := entry.Name()
 		if relDir != "" {
 			relPath = filepath.Join(relDir, relPath)
@@ -31,8 +41,12 @@ func walkRootNoFollowFrom(root safeio.Root, relDir string, visit rootWalkFunc) e
 			return err
 		}
 		skipDir, stop, err := visit(relPath, info)
-		if err != nil || stop {
+		if err != nil {
 			return err
+		}
+		if stop {
+			state.stopped = true
+			return nil
 		}
 		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 || skipDir {
 			continue
@@ -42,20 +56,20 @@ func walkRootNoFollowFrom(root safeio.Root, relDir string, visit rootWalkFunc) e
 		if err != nil {
 			return err
 		}
-		if err := walkChildRootNoFollow(childRoot, relPath, visit); err != nil {
+		if err := walkChildRootNoFollow(childRoot, relPath, visit, state); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func walkChildRootNoFollow(root safeio.Root, relDir string, visit rootWalkFunc) (err error) {
+func walkChildRootNoFollow(root safeio.Root, relDir string, visit rootWalkFunc, state *rootWalkState) (err error) {
 	defer func() {
 		if closeErr := root.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	return walkRootNoFollowFrom(root, relDir, visit)
+	return walkRootNoFollowFrom(root, relDir, visit, state)
 }
 
 func readRootDirEntries(root safeio.Root) (entries []fs.DirEntry, err error) {

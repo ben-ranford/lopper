@@ -12,6 +12,8 @@ type ExportSurface struct {
 	Warnings         []string
 }
 
+var loadPackageJSONForExports = loadPackageJSONForSurface
+
 type packageJSON struct {
 	Name                 string            `json:"name"`
 	Version              string            `json:"version"`
@@ -107,9 +109,12 @@ func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error
 
 	rootPath := depPath
 
-	pkg, warnings, err := loadPackageJSONForSurface(rootPath, depPath)
+	pkg, warnings, err := loadPackageJSONForExports(rootPath, depPath)
 	if err != nil {
 		surface.Warnings = append(surface.Warnings, warnings...)
+		if len(warnings) == 0 {
+			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to load dependency package.json: %v", err))
+		}
 		return surface, nil
 	}
 	surface.Warnings = append(surface.Warnings, warnings...)

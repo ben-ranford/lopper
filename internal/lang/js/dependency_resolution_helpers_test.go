@@ -533,9 +533,10 @@ func TestRootWalkHelpers(t *testing.T) {
 	}
 
 	child := &fakeJSRoot{closeErr: errors.New("child close failed")}
-	err := walkChildRootNoFollow(child, "rel", func(string, fs.FileInfo) (bool, bool, error) {
+	visit := func(string, fs.FileInfo) (bool, bool, error) {
 		return false, false, errors.New("visit failed")
-	})
+	}
+	err := walkChildRootNoFollow(child, "rel", visit, &rootWalkState{})
 	if err == nil || !strings.Contains(err.Error(), "not implemented") || !strings.Contains(err.Error(), "child close failed") {
 		t.Fatalf("expected joined walk child error, got %v", err)
 	}

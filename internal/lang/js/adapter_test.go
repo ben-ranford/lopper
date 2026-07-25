@@ -2,6 +2,7 @@ package js
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -70,6 +71,36 @@ func TestAdapterAnalyseDependency(t *testing.T) {
 	}
 	if !found["map"] || !found["filter"] {
 		t.Fatalf("expected used imports to include map and filter")
+	}
+}
+
+func TestAdapterAnalyseSurfacesExportPackageRootCloseFailure(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte("import value from \"pkg\"\nvalue()\n"), 0o600); err != nil {
+		t.Fatalf(testWriteSourceErrFmt, err)
+	}
+	if err := writeDependency(repo, "pkg", "export default function value() {}\n"); err != nil {
+		t.Fatalf("write dependency: %v", err)
+	}
+	closeErr := errors.New("dependency root close failed")
+
+	originalLoadPackageJSONForExports := loadPackageJSONForExports
+	loadPackageJSONForExports = func(string, string) (packageJSON, []string, error) {
+		return packageJSON{Main: testIndexJS}, nil, closeErr
+	}
+	t.Cleanup(func() {
+		loadPackageJSONForExports = originalLoadPackageJSONForExports
+	})
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "pkg",
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), closeErr.Error()) {
+		t.Fatalf("expected public report warning to surface package root close failure, got %#v", reportData.Warnings)
 	}
 }
 
@@ -564,6 +595,57 @@ func TestListDependenciesWarnsOnUnsafeSymlinkedDependencyRoot(t *testing.T) {
 	}
 	if strings.Contains(joined, "dependency not found in node_modules: linked") {
 		t.Fatalf("expected unsafe-root warning to replace missing warning, got %#v", warnings)
+	}
+}
+
+func TestListDependenciesUnsafeRootDominatesMissingRegardlessOfTraversalOrder(t *testing.T) {
+	repo := t.TempDir()
+	missingImporter := filepath.Join(repo, "apps", "missing-app")
+	unsafeImporter := filepath.Join(repo, "apps", "unsafe-app")
+	testutil.MustWriteFile(t, filepath.Join(missingImporter, "src", testIndexJS), "import linked from \"linked\"\nlinked()\n")
+	testutil.MustWriteFile(t, filepath.Join(unsafeImporter, "src", testIndexJS), "import linked from \"linked\"\nlinked()\n")
+
+	outside := t.TempDir()
+	outsideDepRoot := filepath.Join(outside, "node_modules", "linked")
+	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), `{"name":"linked","main":"index.js"}`)
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testIndexJS), "module.exports = function linked() {}\n")
+
+	unsafeNodeModules := filepath.Join(unsafeImporter, "node_modules")
+	if err := os.MkdirAll(unsafeNodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir unsafe node_modules: %v", err)
+	}
+	if err := os.Symlink(outsideDepRoot, filepath.Join(unsafeNodeModules, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	linkedImport := func(app string) FileScan {
+		return FileScan{
+			Path:    filepath.Join("apps", app, "src", testIndexJS),
+			Imports: []ImportBinding{{Module: "linked", ExportName: "default", LocalName: "linked", Kind: ImportDefault}},
+		}
+	}
+	scan := ScanResult{Files: []FileScan{
+		linkedImport("missing-app"),
+		linkedImport("unsafe-app"),
+	}}
+
+	_, _, warnings := listDependencies(repo, scan)
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "dependency root could not be safely resolved in node_modules: linked (symlinked or opaque layout)") {
+		t.Fatalf("expected unsafe-root warning, got %#v", warnings)
+	}
+	if strings.Contains(joined, "dependency not found in node_modules: linked") {
+		t.Fatalf("did not expect missing warning once unsafe root is observed, got %#v", warnings)
+	}
+
+	reversed := ScanResult{Files: slices.Clone(scan.Files)}
+	reversed.Files[0], reversed.Files[1] = reversed.Files[1], reversed.Files[0]
+	_, _, reversedWarnings := listDependencies(repo, reversed)
+	if !slices.Equal(warnings, reversedWarnings) {
+		t.Fatalf("expected traversal-order stable warnings, got %#v then %#v", warnings, reversedWarnings)
 	}
 }
 

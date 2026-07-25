@@ -84,8 +84,10 @@ func (c *dependencyCollector) recordImport(repoPath string, importerPath string,
 			return
 		}
 		if status == dependencyRootUnsafe {
-			c.unsafe[dep] = struct{}{}
-			delete(c.missing, dep)
+			c.markUnsafe(dep)
+			return
+		}
+		if _, alreadyUnsafe := c.unsafe[dep]; alreadyUnsafe {
 			return
 		}
 		c.missing[dep] = struct{}{}
@@ -112,6 +114,11 @@ func (c *dependencyCollector) markFound(dep string) {
 	delete(c.unsafe, dep)
 }
 
+func (c *dependencyCollector) markUnsafe(dep string) {
+	c.unsafe[dep] = struct{}{}
+	delete(c.missing, dep)
+}
+
 func (c *dependencyCollector) recordResolvedRoot(dep, resolvedRoot string) {
 	if strings.TrimSpace(dep) == "" || strings.TrimSpace(resolvedRoot) == "" {
 		return
@@ -127,28 +134,36 @@ func (c *dependencyCollector) recordResolvedRoot(dep, resolvedRoot string) {
 
 func (c *dependencyCollector) mergeWorkspaceDeclarations(repoPath string, declarations map[string]workspaceDependencyDeclaration) {
 	for dep, declaration := range declarations {
-		resolvedAnyRoot := false
-		for _, root := range resolveDependencyRootsFromDeclarationDirs(repoPath, dep, declaration.declarationDirs) {
-			resolvedAnyRoot = true
-			c.recordResolvedRoot(dep, root)
-		}
-		if resolvedAnyRoot {
+		if c.recordWorkspaceDeclarationRoots(repoPath, dep, declaration) {
 			c.markFound(dep)
 			continue
 		}
 		if _, alreadyFound := c.found[dep]; !alreadyFound {
-			status := dependencyRootMissing
-			for dir := range declaration.declarationDirs {
-				if _, status = resolveDependencyRootFromDirDetailed(repoPath, dir, dep); status == dependencyRootUnsafe {
-					c.unsafe[dep] = struct{}{}
-					break
-				}
-			}
-			if status != dependencyRootUnsafe {
-				c.missing[dep] = struct{}{}
-			}
+			c.recordWorkspaceDeclarationStatus(repoPath, dep, declaration.declarationDirs)
 		}
 	}
+}
+
+func (c *dependencyCollector) recordWorkspaceDeclarationRoots(repoPath, dep string, declaration workspaceDependencyDeclaration) bool {
+	resolvedAnyRoot := false
+	for _, root := range resolveDependencyRootsFromDeclarationDirs(repoPath, dep, declaration.declarationDirs) {
+		resolvedAnyRoot = true
+		c.recordResolvedRoot(dep, root)
+	}
+	return resolvedAnyRoot
+}
+
+func (c *dependencyCollector) recordWorkspaceDeclarationStatus(repoPath, dep string, declarationDirs map[string]struct{}) {
+	for dir := range declarationDirs {
+		if _, status := resolveDependencyRootFromDirDetailed(repoPath, dir, dep); status == dependencyRootUnsafe {
+			c.markUnsafe(dep)
+			return
+		}
+	}
+	if _, alreadyUnsafe := c.unsafe[dep]; alreadyUnsafe {
+		return
+	}
+	c.missing[dep] = struct{}{}
 }
 
 func dependencyFromModule(module string) string {

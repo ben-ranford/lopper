@@ -706,6 +706,51 @@ func TestDependencyCollectorMergeWorkspaceDeclarationsRespectsResolution(t *test
 	}
 }
 
+func TestDependencyCollectorMergeWorkspaceDeclarationsUnsafeDominatesMissing(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	missingDir := filepath.Join(repo, "packages", "missing")
+	unsafeDir := filepath.Join(repo, "packages", "unsafe")
+
+	outside := t.TempDir()
+	outsideDepRoot := filepath.Join(outside, "node_modules", "linked")
+	if err := os.MkdirAll(outsideDepRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside dependency root: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testPackageJSONName), `{"name":"linked","main":"index.js"}`)
+	testutil.MustWriteFile(t, filepath.Join(outsideDepRoot, testIndexJS), "module.exports = function linked() {}\n")
+
+	unsafeNodeModules := filepath.Join(unsafeDir, "node_modules")
+	if err := os.MkdirAll(unsafeNodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir unsafe node_modules: %v", err)
+	}
+	if err := os.Symlink(outsideDepRoot, filepath.Join(unsafeNodeModules, "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	collector := newDependencyCollector()
+	collector.missing["linked"] = struct{}{}
+	collector.mergeWorkspaceDeclarations(repo, map[string]workspaceDependencyDeclaration{
+		"linked": {declarationDirs: map[string]struct{}{missingDir: {}, unsafeDir: {}}},
+	})
+	if _, ok := collector.unsafe["linked"]; !ok {
+		t.Fatalf("expected unsafe workspace declaration to be recorded, got %#v", collector)
+	}
+	if _, ok := collector.missing["linked"]; ok {
+		t.Fatalf("expected unsafe workspace declaration to clear missing status, got %#v", collector)
+	}
+
+	collector = newDependencyCollector()
+	collector.unsafe["linked"] = struct{}{}
+	collector.mergeWorkspaceDeclarations(repo, map[string]workspaceDependencyDeclaration{
+		"linked": {declarationDirs: map[string]struct{}{missingDir: {}}},
+	})
+	if _, ok := collector.missing["linked"]; ok {
+		t.Fatalf("expected existing unsafe status to suppress later missing status, got %#v", collector)
+	}
+}
+
 func TestResolveDependencyRootAtDirAndIsPathWithin(t *testing.T) {
 	t.Parallel()
 

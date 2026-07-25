@@ -46,6 +46,8 @@ func detectLicenseFromMetadataOrFiles(pkg packageJSON, root safeio.Root, depRoot
 	}
 	if license, warnings := detectLicenseFromFilesWithinRoot(root, depRoot); license != nil {
 		return license, warnings
+	} else if len(warnings) > 0 {
+		return unknownDependencyLicense(), warnings
 	}
 	return unknownDependencyLicense(), nil
 }

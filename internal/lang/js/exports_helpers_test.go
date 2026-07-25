@@ -244,6 +244,35 @@ func TestParseEntrypointsIntoSurfaceRejectsOutsideEntryAndInvalidRoot(t *testing
 	}
 }
 
+func TestLoadPackageJSONForSurfaceReturnsCloseFailureAfterSuccessfulRead(t *testing.T) {
+	depRoot := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "package.json"), `{"main":"index.js"}`)
+	closeErr := errors.New("close failed")
+
+	originalOpenDependencyRootNoFollow := openDependencyRootNoFollow
+	openDependencyRootNoFollow = func(path string) (safeio.Root, error) {
+		baseRoot, err := originalOpenDependencyRootNoFollow(path)
+		if err != nil {
+			return nil, err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: closeErr}, nil
+	}
+	t.Cleanup(func() {
+		openDependencyRootNoFollow = originalOpenDependencyRootNoFollow
+	})
+
+	pkg, warnings, err := loadPackageJSONForSurface(depRoot, depRoot)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected close failure after successful read, got pkg=%#v warnings=%#v err=%v", pkg, warnings, err)
+	}
+	if pkg.Main != "index.js" {
+		t.Fatalf("expected parsed package.json result before close failure, got %#v", pkg)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect read/parse warning when close fails after success, got %#v", warnings)
+	}
+}
+
 func TestResolveDependencyExportsPreservesStableEntrypointAndDynamicSampleOrder(t *testing.T) {
 	depRoot := t.TempDir()
 	packageData := `{"exports":{".":"./root.js","./z":"./z.js","./a":"./a.js","./m":"./m.js"}}`
