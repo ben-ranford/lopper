@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"maps"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3183,6 +3184,27 @@ func TestMakefileLockfiledriftHeadContract(t *testing.T) {
 	}
 }
 
+func TestMakefileTestTargetRunsRuntimeHookSuites(t *testing.T) {
+	t.Parallel()
+
+	makefile := readConfig(t, "Makefile")
+	targetPattern := regexp.MustCompile(`(?m)^test:\n(?:\t.*\n)+`)
+	target := targetPattern.FindString(makefile)
+	if target == "" {
+		t.Fatal("Makefile must define the test target")
+	}
+	for _, want := range []string{
+		`node --test scripts/runtime/context-helper_test.mjs scripts/runtime/hooks_test.mjs`,
+		`PYTHONDONTWRITEBYTECODE=1 python3 scripts/runtime/sitecustomize_test.py`,
+		`@pkgs=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list ./... | grep -Ev '/internal/app$$'); \`,
+		`@$(MAKE) test-lockfiledrift-head`,
+	} {
+		if !strings.Contains(target, want) {
+			t.Fatalf("test target must contain %q", want)
+		}
+	}
+}
+
 func TestMakefileCoverageTargetsCreateConfiguredParentDirectories(t *testing.T) {
 	t.Parallel()
 
@@ -3237,7 +3259,6 @@ func TestMakefileCoverageTargetsCreateConfiguredParentDirectories(t *testing.T) 
 		assertFileExists(t, packageFailuresOutput)
 	})
 }
-
 func TestReleaseImageTagScriptSanitizesAndValidatesTags(t *testing.T) {
 	t.Parallel()
 
@@ -5127,6 +5148,101 @@ func writeTarFixture(t *testing.T, members []tarFixtureMember) string {
 	return archivePath
 }
 
+type runtimeProofModule struct {
+	Module string `json:"module"`
+}
+
+func TestRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
+	repo := t.TempDir()
+	mainPath := filepath.Join(repo, "src", "main.js")
+	spacePath := filepath.Join(repo, "src", "hello world.js")
+	if err := os.MkdirAll(filepath.Dir(mainPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	for _, path := range []string{mainPath, spacePath} {
+		if err := os.WriteFile(path, []byte("console.log('x')\n"), 0o600); err != nil {
+			t.Fatalf("write repo file: %v", err)
+		}
+	}
+
+	tracePath := filepath.Join(t.TempDir(), "runtime.ndjson")
+	mainURL := fileURLForRuntimeProof(mainPath, "")
+	localhostSpaceURL := fileURLForRuntimeProof(spacePath, "LOCALHOST")
+	repoURL := fileURLForRuntimeProof(repo, "")
+	content := `{"module":"","resolved":"node_modules/lodash/map.js","parent":"C:\\Users\\alice\\project\\main.js","entrypoint":"` + mainURL + `"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"` + localhostSpaceURL + `","entrypoint":"\\\\server\\share\\project\\main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"//server/share/project/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"\\/server/share/project/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"/\\server/share/project/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"file://localhost/C:/Users/alice/project/main.js","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"file://server/share/project/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src/bad%ZZ.js","entrypoint":"file://localhost/%43%3A%2FUsers/alice/project/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src%2F..%2F..%2FUsers/alice/main.js","entrypoint":"file://localhost/%2F%2Fserver/share/project/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"x:private-token","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"a:foo/bar.js","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"C:Users/alice/private.js","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"data:text/plain,secret","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"mailto:test@example.com","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"https:foo","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"https:/foo","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"","resolved":"node_modules/lodash/map.js","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}` + "\n"
+	if err := os.WriteFile(tracePath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write runtime trace: %v", err)
+	}
+
+	cmd := exec.Command("go", "run", "./cmd/lopper", "analyse", "--repo", repo, "--top", "1", "--language", "js-ts", "--runtime-trace", tracePath, "--format", "json")
+	cmd.Dir = repoRoot(t)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run analyse with runtime trace: %v\n%s", err, output)
+	}
+
+	var payload struct {
+		Dependencies []struct {
+			RuntimeUsage struct {
+				ParentModules []runtimeProofModule `json:"parentModules"`
+				Entrypoints   []runtimeProofModule `json:"entrypoints"`
+			} `json:"runtimeUsage"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(output, &payload); err != nil {
+		t.Fatalf("parse analyse json: %v\n%s", err, output)
+	}
+	if len(payload.Dependencies) != 1 {
+		t.Fatalf("expected one runtime-only dependency, got %#v", payload.Dependencies)
+	}
+	if got := payload.Dependencies[0].RuntimeUsage.ParentModules; !runtimeProofHasExactModules(got, "node:internal/modules/cjs/loader", "src/hello world.js", "src/main.js") {
+		t.Fatalf("expected only local parent contexts, got %#v", got)
+	}
+	if got := payload.Dependencies[0].RuntimeUsage.Entrypoints; !runtimeProofHasExactModules(got, "lodash/map", "src/main.js") {
+		t.Fatalf("expected only local entrypoint contexts, got %#v", got)
+	}
+}
+
+func fileURLForRuntimeProof(pathValue, host string) string {
+	pathValue = filepath.ToSlash(pathValue)
+	if !strings.HasPrefix(pathValue, "/") {
+		pathValue = "/" + pathValue
+	}
+	return (&url.URL{Scheme: "file", Host: host, Path: pathValue}).String()
+}
+
+func runtimeProofHasExactModules(got []runtimeProofModule, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	modules := make(map[string]struct{}, len(got))
+	for _, item := range got {
+		modules[item.Module] = struct{}{}
+	}
+	for _, module := range want {
+		if _, ok := modules[module]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func assertTarValidatorRejects(t *testing.T, validator string, archivePath string, want string) {
 	t.Helper()
 
@@ -5149,6 +5265,15 @@ func assertTarValidatorAccepts(t *testing.T, validator string, archivePath strin
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("tar validator rejected trusted archive %s: %v\n%s", archivePath, err, output)
 	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	return filepath.Clean(filepath.Join(wd, ".."))
 }
 
 func assertTarValidatorFixtures(t *testing.T, validator string, base []tarFixtureMember, fixtures []tarValidatorFixture) {

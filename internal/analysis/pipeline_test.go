@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -255,6 +256,83 @@ func TestAnnotateRuntimeTraceRedactsEmbeddedRelativeTraversal(t *testing.T) {
 	if len(usage.Entrypoints) != 1 || usage.Entrypoints[0].Module != "src/main.js" {
 		t.Fatalf("expected repo-relative entrypoint to be preserved, got %#v", usage.Entrypoints)
 	}
+}
+
+func TestAnnotateRuntimeTraceRedactsNonHostAbsoluteContext(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(t.TempDir(), "trace.ndjson")
+	mainPath := filepath.Join(repo, "src", "main.js")
+	spacePath := filepath.Join(repo, "src", "hello world.js")
+	if err := os.MkdirAll(filepath.Dir(mainPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	for _, path := range []string{mainPath, spacePath} {
+		if err := os.WriteFile(path, []byte("console.log('x')\n"), 0o600); err != nil {
+			t.Fatalf("write repo file: %v", err)
+		}
+	}
+	mainURL := fileURLForAnalysisTest(mainPath, "")
+	localhostSpaceURL := fileURLForAnalysisTest(spacePath, "localhost")
+	repoURL := fileURLForAnalysisTest(repo, "")
+	content := `{"module":"lodash/map","parent":"C:\\Users\\alice\\project\\main.js","entrypoint":"` + mainURL + `"}` + "\n" +
+		`{"module":"lodash/map","parent":"` + localhostSpaceURL + `","entrypoint":"\\\\server\\share\\project\\main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"//server/share/project/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"\\/server/share/project/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"/\\server/share/project/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"file://localhost/C:/Users/alice/project/main.js","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"src/main.js","entrypoint":"file://server/share/project/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src/bad%ZZ.js","entrypoint":"file://localhost/%43%3A%2FUsers/alice/project/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src%2F..%2F..%2FUsers/alice/main.js","entrypoint":"file://localhost/%2F%2Fserver/share/project/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"x:private-token","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"a:foo/bar.js","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"C:Users/alice/private.js","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"data:text/plain,secret","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"mailto:test@example.com","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"https:foo","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"https:/foo","entrypoint":"src/main.js"}` + "\n" +
+		`{"module":"lodash/map","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}` + "\n"
+	if err := os.WriteFile(tracePath, []byte(content), 0o600); err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	annotated, err := annotateRuntimeTraceIfPresent(tracePath, repo, "js-ts", report.Report{}, false)
+	if err != nil {
+		t.Fatalf("annotate runtime trace: %v", err)
+	}
+	if len(annotated.Dependencies) != 1 || annotated.Dependencies[0].RuntimeUsage == nil {
+		t.Fatalf("expected runtime-only dependency row, got %#v", annotated.Dependencies)
+	}
+	usage := annotated.Dependencies[0].RuntimeUsage
+	if !runtimeUsageHasExactModules(usage.ParentModules, "node:internal/modules/cjs/loader", "src/hello world.js", "src/main.js") {
+		t.Fatalf("expected only local parent contexts, got %#v", usage.ParentModules)
+	}
+	if !runtimeUsageHasExactModules(usage.Entrypoints, "lodash/map", "src/main.js") {
+		t.Fatalf("expected only local entrypoint contexts, got %#v", usage.Entrypoints)
+	}
+}
+
+func fileURLForAnalysisTest(pathValue, host string) string {
+	pathValue = filepath.ToSlash(pathValue)
+	if !strings.HasPrefix(pathValue, "/") {
+		pathValue = "/" + pathValue
+	}
+	return (&url.URL{Scheme: "file", Host: host, Path: pathValue}).String()
+}
+
+func runtimeUsageHasExactModules(got []report.RuntimeModuleUsage, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	modules := make(map[string]struct{}, len(got))
+	for _, item := range got {
+		modules[item.Module] = struct{}{}
+	}
+	for _, module := range want {
+		if _, ok := modules[module]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func oversizedRuntimeTraceContentForAnalysisTest() string {

@@ -4,6 +4,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -49,19 +50,7 @@ func runtimeModuleFromSpecifier(specifier, dependency string) string {
 }
 
 func runtimeModuleFromResolvedPath(value, dependency string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	value = strings.TrimPrefix(value, fileURLPrefix)
-	value = filepath.ToSlash(value)
-
-	marker := "/node_modules/"
-	pos := strings.LastIndex(value, marker)
-	if pos < 0 {
-		return ""
-	}
-	rest := value[pos+len(marker):]
+	rest := nodeModulesResolvedSuffix(value)
 	if rest == "" {
 		return ""
 	}
@@ -165,19 +154,7 @@ func dependencyFromSpecifier(specifier string) string {
 }
 
 func dependencyFromResolvedPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	value = strings.TrimPrefix(value, fileURLPrefix)
-	value = filepath.ToSlash(value)
-
-	marker := "/node_modules/"
-	pos := strings.LastIndex(value, marker)
-	if pos < 0 {
-		return ""
-	}
-	rest := value[pos+len(marker):]
+	rest := nodeModulesResolvedSuffix(value)
 	if rest == "" {
 		return ""
 	}
@@ -189,6 +166,18 @@ func dependencyFromResolvedPath(value string) string {
 		return parts[0] + "/" + parts[1]
 	}
 	return parts[0]
+}
+
+func nodeModulesResolvedSuffix(value string) string {
+	value = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(value), fileURLPrefix)))
+	if strings.HasPrefix(value, "node_modules/") {
+		return strings.TrimPrefix(value, "node_modules/")
+	}
+	const marker = "/node_modules/"
+	if pos := strings.LastIndex(value, marker); pos >= 0 {
+		return value[pos+len(marker):]
+	}
+	return ""
 }
 
 func normalizeRuntimeLanguage(language string) string {
@@ -288,6 +277,12 @@ func pythonModuleFromResolvedPath(value, dependency string) string {
 	if value == "" {
 		return ""
 	}
+	if module := sanitizedPythonModuleIdentifier(value); module != "" {
+		if dependency == "" || dependencyFromPythonModule(module) == dependency {
+			return module
+		}
+		return ""
+	}
 	value = strings.TrimPrefix(value, fileURLPrefix)
 	value = filepath.ToSlash(value)
 	for _, marker := range []string{"/site-packages/", "/dist-packages/"} {
@@ -311,6 +306,25 @@ func pythonModuleFromResolvedPath(value, dependency string) string {
 		return module
 	}
 	return ""
+}
+
+func sanitizedPythonModuleIdentifier(value string) string {
+	if strings.ContainsAny(value, `/\:`) {
+		return ""
+	}
+	parts := strings.Split(value, ".")
+	for _, part := range parts {
+		if part == "" {
+			return ""
+		}
+		for index, character := range part {
+			if character == '_' || unicode.IsLetter(character) || (index > 0 && unicode.IsDigit(character)) {
+				continue
+			}
+			return ""
+		}
+	}
+	return value
 }
 
 func normalizePythonRuntimeDependency(dependency string) string {

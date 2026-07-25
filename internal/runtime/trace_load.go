@@ -32,6 +32,10 @@ func load(path string, opts traceLoadOptions) (_ Trace, err error) {
 		}
 	}()
 
+	if strings.TrimSpace(opts.repoRoot) != "" {
+		opts.resolvedRepoRoot = resolveTraceRepoRoot(opts.repoRoot)
+	}
+
 	trace := newTrace()
 	scanner := bufio.NewScanner(newRuntimeTraceByteLimitReader(file, maxRuntimeTraceBytes))
 	line := 0

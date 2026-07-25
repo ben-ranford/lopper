@@ -54,7 +54,7 @@ def _caller_frame():
 
 
 def _record_import(name: str, caller) -> None:
-    module_name = (name or "").strip()
+    module_name = _module_identifier(name)
     if not module_name:
         return
     module = sys.modules.get(module_name)
@@ -69,9 +69,9 @@ def _record_import(name: str, caller) -> None:
 
     event = {
         "language": "python",
-        "dependency": _dependency_for_module(module_name),
+        "dependency": _dependency_identifier(_dependency_for_module(module_name)),
         "module": module_name,
-        "resolved": _abs_path(resolved),
+        "resolved": module_name,
         "parent": _parent_from_frame(caller),
         "entrypoint": ENTRYPOINT,
         "kind": "import",
@@ -102,6 +102,25 @@ def _dependency_for_module(module_name: str) -> str:
     return top_level
 
 
+def _module_identifier(value: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return ""
+    parts = candidate.split(".")
+    if any(not part or not part.isidentifier() for part in parts):
+        return ""
+    return ".".join(parts)
+
+
+def _dependency_identifier(value: str) -> str:
+    candidate = (value or "").strip()
+    if candidate in {"", ".", ".."}:
+        return ""
+    if any(not (character.isalnum() or character in "._-") for character in candidate):
+        return ""
+    return candidate
+
+
 def _package_distributions():
     global PACKAGE_DISTRIBUTIONS
     if PACKAGE_DISTRIBUTIONS is not None:
@@ -123,7 +142,7 @@ def _parent_from_frame(frame) -> str:
     if filename:
         return _normalize_repo_context(str(filename))
     module_name = frame.f_globals.get("__name__", "")
-    return str(module_name or "")
+    return _module_identifier(str(module_name or ""))
 
 
 def _append_event(event) -> None:
@@ -167,6 +186,8 @@ def _normalize_repo_context(path: str) -> str:
         return ""
     if not REPO_ROOT:
         return ""
+    if _rejects_non_native_path(candidate):
+        return ""
     try:
         root = _real_path(REPO_ROOT)
         resolved = _real_path(candidate)
@@ -176,6 +197,40 @@ def _normalize_repo_context(path: str) -> str:
     if relative in {".", ".."} or relative.startswith(".." + os.sep):
         return ""
     return relative.replace(os.sep, "/")
+
+
+def _rejects_non_native_path(value: str) -> bool:
+    if "\0" in value:
+        return True
+    if _has_path_scheme(value) and not _is_native_windows_absolute(value):
+        return True
+    if os.name != "nt" and (_is_windows_absolute(value) or _has_unc_prefix(value)):
+        return True
+    return os.name != "nt" and "\\" in value
+
+
+def _has_path_scheme(value: str) -> bool:
+    separator = value.find(":")
+    if separator <= 0 or not value[0].isalpha():
+        return False
+    return all(character.isalnum() or character in "+.-" for character in value[1:separator])
+
+
+def _is_native_windows_absolute(value: str) -> bool:
+    return os.name == "nt" and (_is_windows_absolute(value) or _has_unc_prefix(value))
+
+
+def _is_windows_absolute(value: str) -> bool:
+    return (
+        len(value) >= 3
+        and value[0].isalpha()
+        and value[1] == ":"
+        and value[2] in "\\/"
+    )
+
+
+def _has_unc_prefix(value: str) -> bool:
+    return len(value) >= 2 and value[0] in "\\/" and value[1] in "\\/"
 
 
 def _chain_project_sitecustomize() -> None:

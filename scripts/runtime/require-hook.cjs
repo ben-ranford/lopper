@@ -1,23 +1,24 @@
 const Module = require("node:module");
 const { createRuntimeTraceHelpers } = require("./context-helper.cjs");
 
-const { append, normalizeContext } = createRuntimeTraceHelpers(process.env);
+const { append, normalizeContext, normalizeModule, normalizeResolved } =
+  createRuntimeTraceHelpers(process.env);
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
   const loaded = originalLoad.apply(this, arguments);
-  let resolved = "";
+  let rawResolved = "";
   try {
-    resolved = Module._resolveFilename(request, parent);
+    rawResolved = Module._resolveFilename(request, parent);
   } catch {
-    resolved = "";
+    rawResolved = "";
   }
   append({
     kind: "require",
-    module: request,
-    resolved,
+    module: normalizeModule(request, rawResolved),
+    resolved: normalizeResolved(rawResolved),
     parent: normalizeContext(parent?.filename ?? ""),
-    entrypoint: isMain ? normalizeContext(resolved || "") : "",
+    entrypoint: isMain ? normalizeContext(rawResolved) : "",
     isMain: Boolean(isMain),
   });
   return loaded;

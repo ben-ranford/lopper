@@ -166,6 +166,80 @@ func TestLoadTraceRedactsContextOutsideRepoBoundary(t *testing.T) {
 	}
 }
 
+func TestLoadTraceRedactsWindowsAbsoluteContextOnAnyHost(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"C:\\Users\\alice\\project\\main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"\\\\server\\share\\project\\main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"//server/share/project/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"\\/server/share/project/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"/\\server/share/project/main.js"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, repo, content)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; got["src/main.js"] != 4 || len(got) != 1 {
+		t.Fatalf("expected only repo-relative parent to remain, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]; got["src/main.js"] != 1 || len(got) != 1 {
+		t.Fatalf("expected only repo-relative entrypoint to remain, got %#v", got)
+	}
+}
+
+func TestLoadTraceParsesAndConfinesFileURLContext(t *testing.T) {
+	repo := t.TempDir()
+	mainPath := filepath.Join(repo, "src", "main.js")
+	spacePath := filepath.Join(repo, "src", "hello world.js")
+	if err := os.MkdirAll(filepath.Dir(mainPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	for _, path := range []string{mainPath, spacePath} {
+		if err := os.WriteFile(path, []byte("console.log('x')\n"), 0o600); err != nil {
+			t.Fatalf("write repo file: %v", err)
+		}
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("console.log('y')\n"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	mainURL := fileURLForRuntimeTest(mainPath, "")
+	localhostSpaceURL := fileURLForRuntimeTest(spacePath, "LOCALHOST")
+	repoURL := fileURLForRuntimeTest(repo, "")
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"` + mainURL + `","entrypoint":"` + localhostSpaceURL + `"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"file://localhost/C:/Users/alice/project/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"file://server/share/project/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src/bad%ZZ.js","entrypoint":"file://localhost/%43%3A%2FUsers/alice/project/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"` + strings.TrimSuffix(repoURL, "/") + `/src%2F..%2F..%2FUsers/alice/main.js","entrypoint":"file://localhost/%2F%2Fserver/share/project/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"x:private-token","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"a:foo/bar.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"C:Users/alice/private.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"data:text/plain,secret","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"mailto:test@example.com","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"https:foo","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"https:/foo","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"node:internal/modules/cjs/loader","entrypoint":"lodash/map"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"` + fileURLForRuntimeTest(outsidePath, "") + `","entrypoint":"` + mainURL + `"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, repo, content)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]; got["src/main.js"] != 2 || got["node:internal/modules/cjs/loader"] != 1 || len(got) != 2 {
+		t.Fatalf("expected only local parent file URLs to remain, got %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]; got["src/main.js"] != 9 || got["src/hello world.js"] != 1 || got["lodash/map"] != 1 || len(got) != 3 {
+		t.Fatalf("expected only local entrypoint file URLs to remain decoded, got %#v", got)
+	}
+}
+
 func TestLoadTraceRejectsSymlinkEscapes(t *testing.T) {
 	repo := t.TempDir()
 	outsideDir := t.TempDir()
@@ -189,6 +263,43 @@ func TestLoadTraceRejectsSymlinkEscapes(t *testing.T) {
 	}
 	if got := trace.DependencyEntrypoints["lodash"]; len(got) != 0 {
 		t.Fatalf("expected symlink-escaped entrypoint to be redacted, got %#v", got)
+	}
+}
+
+func TestLoadTraceCanonicalizesRepoRootOncePerLoad(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+
+	original := resolveTraceRepoRoot
+	calls := 0
+	resolveTraceRepoRoot = func(repoPath string) string {
+		calls++
+		return original(repoPath)
+	}
+	defer func() {
+		resolveTraceRepoRoot = original
+	}()
+
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/main.js","entrypoint":"src/main.js"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, repo, content)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected repo root to resolve once per load, got %d", calls)
+	}
+	if got := trace.DependencyParents["lodash"]["src/main.js"]; got != 2 {
+		t.Fatalf("expected both parent samples to be counted, got %#v", trace.DependencyParents["lodash"])
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["src/main.js"]; got != 2 {
+		t.Fatalf("expected both entrypoint samples to be counted, got %#v", trace.DependencyEntrypoints["lodash"])
 	}
 }
 

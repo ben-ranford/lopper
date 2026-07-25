@@ -113,8 +113,10 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	if strings.Contains(string(content), "localmod") {
 		t.Fatalf("expected local module import to be filtered, got %s", content)
 	}
-	if strings.Contains(string(content), repo) || strings.Contains(string(content), "file://") {
-		t.Fatalf("expected python runtime trace context to avoid absolute paths and file urls, got %s", content)
+	for _, forbidden := range []string{repo, sitePackages, filepath.Dir(sitePackages), "site-packages", "file://"} {
+		if strings.Contains(string(content), forbidden) {
+			t.Fatalf("expected python runtime trace artifact to avoid %q, got %s", forbidden, content)
+		}
 	}
 
 	trace, err := Load(tracePath)
@@ -167,6 +169,8 @@ func TestCaptureNodeRuntimeContextPrivacy(t *testing.T) {
 	}
 	text := string(content)
 	for _, forbidden := range []string{
+		repo,
+		`file://`,
 		`"parent":"` + repo,
 		`"entrypoint":"` + repo,
 		`"parent":"file://`,
@@ -178,6 +182,13 @@ func TestCaptureNodeRuntimeContextPrivacy(t *testing.T) {
 	}
 	if !strings.Contains(text, `"parent":"main.js"`) || !strings.Contains(text, `"entrypoint":"main.js"`) {
 		t.Fatalf("expected repo-relative runtime context in trace, got %s", text)
+	}
+	trace, err := Load(tracePath)
+	if err != nil {
+		t.Fatalf("load captured node runtime trace: %v", err)
+	}
+	if trace.DependencyLoads["left-pad"] == 0 {
+		t.Fatalf("expected left-pad dependency correlation from sanitized trace, got %#v", trace.DependencyLoads)
 	}
 }
 

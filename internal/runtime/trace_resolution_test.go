@@ -13,8 +13,10 @@ func TestDependencyResolutionHelpers(t *testing.T) {
 		{name: "scoped specifier", got: dependencyFromSpecifier("@scope/pkg/path"), want: scopePkgDependency},
 		{name: "scoped resolved path", got: dependencyFromResolvedPath("file:///repo/node_modules/@scope/pkg/lib/index.js"), want: scopePkgDependency},
 		{name: "resolved lodash path", got: dependencyFromResolvedPath("/repo/node_modules/lodash/map.js"), want: "lodash"},
+		{name: "sanitized resolved lodash path", got: dependencyFromResolvedPath("node_modules/lodash/map.js"), want: "lodash"},
 		{name: "non node_modules path", got: dependencyFromResolvedPath("/repo/no-node-modules/here.js"), want: ""},
 		{name: "event fallback", got: dependencyFromEvent(Event{Resolved: "/repo/node_modules/react/index.js"}), want: "react"},
+		{name: "sanitized event fallback", got: dependencyFromEvent(Event{Resolved: "node_modules/react/index.js"}), want: "react"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -86,6 +88,9 @@ func TestPythonRuntimeResolutionBranches(t *testing.T) {
 	if got := dependencyFromEventForLanguage(Event{Resolved: "file:///repo/.venv/lib/python3.12/site-packages/httpx/_client.py"}, runtimeLanguagePython); got != "httpx" {
 		t.Fatalf("expected Python dependency from resolved path, got %q", got)
 	}
+	if got := dependencyFromEventForLanguage(Event{Resolved: "httpx._client"}, runtimeLanguagePython); got != "httpx" {
+		t.Fatalf("expected Python dependency from sanitized resolved module, got %q", got)
+	}
 	if got := dependencyFromPythonResolvedPath("/repo/app.py"); got != "" {
 		t.Fatalf("expected non-site-packages path to be ignored, got %q", got)
 	}
@@ -116,6 +121,9 @@ func TestPythonRuntimeResolvedPathBranches(t *testing.T) {
 		{name: "dependency mismatch", resolved: "file:///repo/.venv/lib/python3.12/site-packages/requests/sessions.py", dependency: "httpx", want: ""},
 		{name: "dependency match", resolved: "file:///repo/.venv/lib/python3.12/site-packages/requests/sessions.py", dependency: "requests", want: "requests"},
 		{name: "dist packages", resolved: "/usr/lib/python3/dist-packages/httpx/_client.py", dependency: "httpx", want: "httpx"},
+		{name: "sanitized dependency mismatch", resolved: "httpx._client", dependency: "requests", want: ""},
+		{name: "sanitized empty segment", resolved: "httpx..client", want: ""},
+		{name: "sanitized invalid character", resolved: "httpx-client", want: ""},
 	}
 	for _, tc := range cases {
 		if got := pythonModuleFromResolvedPath(tc.resolved, tc.dependency); got != tc.want {
