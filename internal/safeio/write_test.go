@@ -47,6 +47,23 @@ type truncatingFakeFile struct {
 	truncate func(size int64) error
 }
 
+type descriptorTestFile struct {
+	File
+	fd      uintptr
+	closeFn func() error
+}
+
+func (f *descriptorTestFile) Fd() uintptr {
+	return f.fd
+}
+
+func (f *descriptorTestFile) Close() error {
+	if f.closeFn != nil {
+		return f.closeFn()
+	}
+	return f.File.Close()
+}
+
 type unsafeReplacementPathCase struct {
 	name string
 	info fs.FileInfo
@@ -150,6 +167,18 @@ func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
 		t.Fatalf("seed changed target: %v", err)
 	}
 	return statTestPath(t, originalPath), statTestPath(t, changedPath)
+}
+
+func openedFileTestRoot(lstatInfo, openedInfo fs.FileInfo, statErr, closeErr error) Root {
+	return &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return lstatInfo, nil },
+		open: func(string) (File, error) {
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return openedInfo, statErr },
+				close: func() error { return closeErr },
+			}, nil
+		},
+	}
 }
 
 func assertOverwritePinnedFileRejectsBeforeMutation(t *testing.T, openedInfo fs.FileInfo, lstat func(*testing.T) func(string) (fs.FileInfo, error), beforeRevalidate func(*testing.T) func() error) {
@@ -888,8 +917,8 @@ func TestLstatOrCreateDirectoryTrackedHandlesExistingDirectoryRace(t *testing.T)
 	if err != nil {
 		t.Fatalf("expected existing-directory race to succeed, got %v", err)
 	}
-	if created {
-		t.Fatal("expected raced existing directory not to report creation")
+	if !created {
+		t.Fatal("expected raced existing directory to request parent sync")
 	}
 	if got != info {
 		t.Fatalf("expected post-race directory info to be returned, got %#v", got)
@@ -947,20 +976,7 @@ func TestWriteRootReadRegularFileReportsChangedTarget(t *testing.T) {
 	}
 	checkedInfo := statTestPath(t, checkedPath)
 	openedInfo := statTestPath(t, openedPath)
-	root := &WriteRoot{
-		rootAbs: "/root",
-		root: &fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) {
-				return checkedInfo, nil
-			},
-			open: func(string) (File, error) {
-				return &fakeFile{
-					stat:  func() (fs.FileInfo, error) { return openedInfo, nil },
-					close: func() error { return nil },
-				}, nil
-			},
-		},
-	}
+	root := &WriteRoot{rootAbs: "/root", root: openedFileTestRoot(checkedInfo, openedInfo, nil, nil)}
 	if _, _, err := root.ReadRegularFile("key"); !errors.Is(err, ErrFileChanged) {
 		t.Fatalf("expected changed-target error, got %v", err)
 	}
@@ -1106,18 +1122,7 @@ func TestWriteRootReadRegularFileAdditionalBranches(t *testing.T) {
 			t.Fatalf("write temp file: %v", err)
 		}
 		info := statTestPath(t, path)
-		root := &WriteRoot{
-			rootAbs: "/root",
-			root: &fakeRoot{
-				lstat: func(string) (fs.FileInfo, error) { return info, nil },
-				open: func(string) (File, error) {
-					return &fakeFile{
-						stat:  func() (fs.FileInfo, error) { return nil, statErr },
-						close: closeWithoutError,
-					}, nil
-				},
-			},
-		}
+		root := &WriteRoot{rootAbs: "/root", root: openedFileTestRoot(info, nil, statErr, nil)}
 		if _, _, err := root.ReadRegularFile("key"); !errors.Is(err, statErr) {
 			t.Fatalf("expected stat error, got %v", err)
 		}
@@ -1174,6 +1179,200 @@ func TestWriteRootPathHelpersValidationAndCleanup(t *testing.T) {
 				t.Fatalf("expected %s root-target validation error", tc.name)
 			}
 		})
+	}
+}
+
+func TestWriteRootRenameNoReplaceRejectsUnsafePaths(t *testing.T) {
+	root := &WriteRoot{}
+	for _, testCase := range []struct {
+		name string
+		path string
+	}{
+		{name: "nested", path: filepath.Join("nested", "candidate")},
+		{name: "absolute", path: filepath.Join(string(os.PathSeparator), "candidate")},
+		{name: "nul", path: "candidate\x00alias"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := root.RenameNoReplace(testCase.path, "winner"); err == nil {
+				t.Fatalf("expected unsafe source path %q to be rejected", testCase.path)
+			}
+			if err := root.RenameNoReplace("candidate", testCase.path); err == nil {
+				t.Fatalf("expected unsafe destination path %q to be rejected", testCase.path)
+			}
+		})
+	}
+}
+
+func TestOpenPinnedRootDirectoryRejectsUntrustedHandles(t *testing.T) {
+	lookupErr := errors.New("lookup failed")
+	openErr := errors.New("open failed")
+	statErr := errors.New("stat failed")
+	expectedInfo := statTestPath(t, t.TempDir())
+	changedInfo := statTestPath(t, t.TempDir())
+
+	testCases := []struct {
+		name string
+		root Root
+		want error
+	}{
+		{
+			name: "lookup error",
+			root: &fakeRoot{lstat: func(string) (fs.FileInfo, error) {
+				return nil, lookupErr
+			}},
+			want: lookupErr,
+		},
+		{
+			name: "root not directory",
+			root: &fakeRoot{lstat: func(string) (fs.FileInfo, error) {
+				return &stubFileInfo{mode: 0o600}, nil
+			}},
+		},
+		{
+			name: "open error",
+			root: &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) { return expectedInfo, nil },
+				open:  func(string) (File, error) { return nil, openErr },
+			},
+			want: openErr,
+		},
+		{
+			name: "opened stat error",
+			root: openedFileTestRoot(expectedInfo, nil, statErr, nil),
+			want: statErr,
+		},
+		{
+			name: "opened root not directory",
+			root: openedFileTestRoot(expectedInfo, &stubFileInfo{mode: 0o600}, nil, nil),
+			want: ErrFileChanged,
+		},
+		{
+			name: "opened root identity changed",
+			root: openedFileTestRoot(expectedInfo, changedInfo, nil, nil),
+			want: ErrFileChanged,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := &WriteRoot{root: testCase.root}
+			directory, err := root.openPinnedRootDirectory()
+			if directory != nil {
+				t.Fatal("expected rejected pinned directory handle to be closed")
+			}
+			if testCase.want != nil {
+				if !errors.Is(err, testCase.want) {
+					t.Fatalf("expected %v, got %v", testCase.want, err)
+				}
+			} else if err == nil {
+				t.Fatal("expected invalid pinned root to be rejected")
+			}
+		})
+	}
+}
+
+func TestDescriptorForFileRejectsUnsupportedAndOutOfRangeDescriptors(t *testing.T) {
+	if _, err := descriptorForFile(&fakeFile{}, ErrRenameNoReplaceUnsupported); !errors.Is(err, ErrRenameNoReplaceUnsupported) {
+		t.Fatalf("expected missing descriptor capability error, got %v", err)
+	}
+	const outOfRangeDescriptor = uintptr(^uint32(0)>>1) + 1
+	file := &descriptorTestFile{File: &fakeFile{}, fd: outOfRangeDescriptor}
+	if _, err := descriptorForFile(file, ErrDirectoryLockUnsupported); !errors.Is(err, ErrDirectoryLockUnsupported) {
+		t.Fatalf("expected out-of-range descriptor capability error, got %v", err)
+	}
+}
+
+func TestWriteRootLockDirectoryReturnsKernelErrorAndClosesHandle(t *testing.T) {
+	expectedInfo := statTestPath(t, t.TempDir())
+	closed := false
+	const invalidDescriptor = uintptr(^uint32(0) >> 1)
+	file := &descriptorTestFile{
+		File: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return expectedInfo, nil },
+		},
+		fd:      invalidDescriptor,
+		closeFn: func() error { closed = true; return nil },
+	}
+	root := &WriteRoot{root: &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return expectedInfo, nil },
+		open:  func(string) (File, error) { return file, nil },
+	}}
+
+	if _, err := root.LockDirectory(); err == nil {
+		t.Fatal("expected invalid descriptor lock failure")
+	}
+	if !closed {
+		t.Fatal("expected directory handle to close after lock failure")
+	}
+}
+
+func TestWriteRootLockDirectoryJoinsDescriptorAndCloseErrors(t *testing.T) {
+	expectedInfo := statTestPath(t, t.TempDir())
+	closeErr := errors.New("close directory after descriptor failure")
+	const outOfRangeDescriptor = uintptr(^uint32(0)>>1) + 1
+	file := &descriptorTestFile{
+		File: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return expectedInfo, nil },
+		},
+		fd:      outOfRangeDescriptor,
+		closeFn: func() error { return closeErr },
+	}
+	root := &WriteRoot{root: &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return expectedInfo, nil },
+		open:  func(string) (File, error) { return file, nil },
+	}}
+
+	_, err := root.LockDirectory()
+	if !errors.Is(err, ErrDirectoryLockUnsupported) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined descriptor and close errors, got %v", err)
+	}
+}
+
+func TestWriteRootRenameNoReplaceJoinsPinnedStatAndCloseErrors(t *testing.T) {
+	expectedInfo := statTestPath(t, t.TempDir())
+	statErr := errors.New("stat opened directory")
+	closeErr := errors.New("close directory after stat failure")
+	root := &WriteRoot{root: openedFileTestRoot(expectedInfo, nil, statErr, closeErr)}
+
+	err := root.RenameNoReplace("candidate", "winner")
+	if !errors.Is(err, statErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined pinned stat and close errors, got %v", err)
+	}
+}
+
+func TestWriteRootRenameNoReplaceRejectsHandleWithoutDescriptor(t *testing.T) {
+	expectedInfo := statTestPath(t, t.TempDir())
+	closed := false
+	root := &WriteRoot{root: &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return expectedInfo, nil },
+		open: func(string) (File, error) {
+			return &fakeFile{
+				stat: func() (fs.FileInfo, error) { return expectedInfo, nil },
+				close: func() error {
+					closed = true
+					return nil
+				},
+			}, nil
+		},
+	}}
+
+	err := root.RenameNoReplace("candidate", "winner")
+	if !errors.Is(err, ErrRenameNoReplaceUnsupported) {
+		t.Fatalf("expected descriptor capability rejection, got %v", err)
+	}
+	if !closed {
+		t.Fatal("expected pinned directory handle to close after descriptor rejection")
+	}
+}
+
+func TestWriteRootLockDirectoryPropagatesPinnedOpenError(t *testing.T) {
+	openErr := errors.New("open pinned directory")
+	root := &WriteRoot{root: &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, openErr },
+	}}
+
+	if _, err := root.LockDirectory(); !errors.Is(err, openErr) {
+		t.Fatalf("expected pinned-directory acquisition error, got %v", err)
 	}
 }
 
@@ -3298,8 +3497,8 @@ func TestOpenPinnedReplacementTargetKeepsStatErrorWhenCloseAlsoFails(t *testing.
 	if !errors.Is(err, statErr) {
 		t.Fatalf("expected stat error, got %v", err)
 	}
-	if errors.Is(err, closeErr) {
-		t.Fatalf("expected close error to remain secondary, got %v", err)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined close error, got %v", err)
 	}
 }
 
@@ -3607,8 +3806,8 @@ func TestCloseFilePreservingPrimaryKeepsPrimaryError(t *testing.T) {
 	if !errors.Is(err, primaryErr) {
 		t.Fatalf("expected primary error, got %v", err)
 	}
-	if errors.Is(err, closeErr) {
-		t.Fatalf("expected close error to remain secondary, got %v", err)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined close error, got %v", err)
 	}
 }
 

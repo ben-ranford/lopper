@@ -5,6 +5,7 @@ package analysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,43 @@ func TestAnalysisCacheAuthKeyNameUsesSameStorageIdentityForCaseAliases(t *testin
 	}
 	if storageKey != aliasKey {
 		t.Fatalf("expected one auth-key identity for the same storage directory, got %q and %q", storageKey, aliasKey)
+	}
+}
+
+func TestAuthRootPathRejectsExistingDescendantThroughCaseAlias(t *testing.T) {
+	parent := t.TempDir()
+	protectedRoot := filepath.Join(parent, "ProtectedRoot")
+	descendant := filepath.Join(protectedRoot, "ExistingChild")
+	if err := os.MkdirAll(descendant, 0o750); err != nil {
+		t.Fatalf("create protected descendant: %v", err)
+	}
+
+	aliasedRoot := filepath.Join(parent, "protectedroot")
+	aliasedDescendant := filepath.Join(aliasedRoot, "existingchild")
+	protectedInfo, err := os.Lstat(protectedRoot)
+	if err != nil {
+		t.Fatalf("inspect protected root: %v", err)
+	}
+	aliasInfo, err := os.Lstat(aliasedRoot)
+	if os.IsNotExist(err) {
+		t.Skip("filesystem is case-sensitive")
+	}
+	if err != nil {
+		t.Fatalf("inspect case alias: %v", err)
+	}
+	if !os.SameFile(protectedInfo, aliasInfo) {
+		t.Skip("case spellings resolve to different directories")
+	}
+	relativePath, err := filepath.Rel(protectedRoot, aliasedDescendant)
+	if err != nil {
+		t.Fatalf("compute lexical case-alias relationship: %v", err)
+	}
+	if relativePath == "." || (relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator))) {
+		t.Skip("host filepath comparison already treats case aliases as equivalent")
+	}
+
+	if err := validateAuthRootPath(aliasedDescendant, protectedRoot); err == nil {
+		t.Fatal("expected existing case-aliased descendant to be rejected as repository-controlled")
 	}
 }
 

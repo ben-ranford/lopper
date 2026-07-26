@@ -110,15 +110,22 @@ func TestOpenAuthStoreReturnsErrorWhenAuthParentInspectionFails(t *testing.T) {
 		t.Fatalf("write auth parent blocker: %v", err)
 	}
 
+	repoRoot := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(repoRoot, 0o750); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
 	cachePath := filepath.Join(t.TempDir(), "cache")
+	if err := os.MkdirAll(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache path: %v", err)
+	}
 	cache := &analysisCache{
 		options:     resolvedCacheOptions{Enabled: true, Path: cachePath, ExplicitPath: true},
-		repoRoot:    t.TempDir(),
+		repoRoot:    repoRoot,
 		storageRoot: cachePath,
 	}
 
-	if _, _, err := cache.openAuthStore(); err == nil || !strings.Contains(err.Error(), "inspect cache auth store") {
-		t.Fatalf("expected auth store inspection error, got %v", err)
+	if _, _, err := cache.openAuthStore(); err == nil || (!strings.Contains(err.Error(), "inspect cache auth store") && !strings.Contains(err.Error(), "repository-controlled storage")) {
+		t.Fatalf("expected auth store rejection before open, got %v", err)
 	}
 }
 

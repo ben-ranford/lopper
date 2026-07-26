@@ -815,6 +815,7 @@ type sharedWalkTestFile struct {
 	close func() error
 	stat  func() (fs.FileInfo, error)
 	chmod func(os.FileMode) error
+	sync  func() error
 }
 
 func (f *sharedWalkTestFile) Read(p []byte) (int, error) {
@@ -848,6 +849,13 @@ func (f *sharedWalkTestFile) Stat() (fs.FileInfo, error) {
 func (f *sharedWalkTestFile) Chmod(perm os.FileMode) error {
 	if f.chmod != nil {
 		return f.chmod(perm)
+	}
+	return nil
+}
+
+func (f *sharedWalkTestFile) Sync() error {
+	if f.sync != nil {
+		return f.sync()
 	}
 	return nil
 }

@@ -11,7 +11,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -19,15 +21,14 @@ import (
 )
 
 const (
-	analysisCacheAuthDirName          = "analysis-cache-auth"
-	analysisCacheAuthKeyLength        = 32
-	analysisCacheAuthKeyMaxBytes      = analysisCacheAuthKeyLength*2 + 8
-	analysisCacheAuthKeyPerm          = 0o600
-	analysisCacheAuthSchemaV1         = "v1"
-	analysisCacheAuthLegacyLockSuffix = ".init-lock"
-	analysisCacheAuthRotateTag        = ".rotate-"
-	analysisCacheAuthRetryLimit       = 200
-	analysisCacheAuthRetryDelay       = 5 * time.Millisecond
+	analysisCacheAuthDirName     = "analysis-cache-auth"
+	analysisCacheAuthKeyLength   = 32
+	analysisCacheAuthKeyMaxBytes = analysisCacheAuthKeyLength*2 + 8
+	analysisCacheAuthKeyPerm     = 0o600
+	analysisCacheAuthSchemaV1    = "v1"
+	analysisCacheAuthRotateTag   = ".rotate-"
+	analysisCacheAuthRetryLimit  = 200
+	analysisCacheAuthRetryDelay  = 5 * time.Millisecond
 )
 
 var (
@@ -42,12 +43,33 @@ var (
 	}
 	analysisCacheStorageIdentityFn       = storageDirectoryIdentity
 	analysisCacheReadAuthKeyFn           = readAnalysisCacheAuthKey
-	analysisCachePublishMissingAuthKeyFn = publishMissingAuthKey
-	analysisCacheRotateInvalidAuthKeyFn  = rotateInvalidAuthKey
-	analysisCacheInvalidKeyGenerationFn  = invalidAuthKeyGeneration
-	analysisCacheSleepFn                 = time.Sleep
-	analysisCacheRandReadFn              = rand.Read
-	analysisCacheWritePointerSigPartsFn  = writePointerSignatureParts
+	analysisCacheAuthKeyPrivateToOwnerFn = func(root *safeio.WriteRoot, keyName string, info fs.FileInfo) (bool, error) {
+		return root.RegularFilePrivateToOwner(keyName, info)
+	}
+	analysisCachePublishMissingAuthKeyFn    = publishMissingAuthKey
+	analysisCacheRotateInvalidAuthKeyFn     = rotateInvalidAuthKey
+	analysisCacheRotateCompromisedAuthKeyFn = rotateCompromisedAuthKey
+	analysisCacheInvalidKeyGenerationFn     = invalidAuthKeyGeneration
+	analysisCacheSleepFn                    = time.Sleep
+	analysisCacheAuthAfterCompromisedReadFn = func() error { return nil }
+	analysisCacheRandReadFn                 = rand.Read
+	analysisCacheWritePointerSigPartsFn     = writePointerSignatureParts
+	analysisCachePathRelFn                  = filepath.Rel
+	analysisCachePathLstatFn                = os.Lstat
+	analysisCachePathSameFileFn             = os.SameFile
+	analysisCacheAuthLinkFn                 = func(root *safeio.WriteRoot, oldPath, newPath string) error {
+		return root.Link(oldPath, newPath)
+	}
+	analysisCacheAuthLockDirectoryFn = func(root *safeio.WriteRoot) (io.Closer, error) {
+		return root.LockDirectory()
+	}
+	analysisCacheAuthRenameNoReplaceFn = func(root *safeio.WriteRoot, oldPath, newPath string) error {
+		return root.RenameNoReplace(oldPath, newPath)
+	}
+	analysisCacheAuthBeforeFallbackInstallFn      = func() error { return nil }
+	analysisCacheMissingAncestryCaseInsensitiveFn = func() bool {
+		return runtime.GOOS == "windows"
+	}
 )
 
 var (
@@ -56,13 +78,33 @@ var (
 	errAnalysisCacheAuthKeyChanged = errors.New("cache auth key changed")
 )
 
+type compromisedAuthKeyState struct {
+	contentDigest string
+	generation    string
+	identity      fs.FileInfo
+}
+
+type compromisedAuthKeyError struct {
+	state  compromisedAuthKeyState
+	reason string
+}
+
+func (e *compromisedAuthKeyError) Error() string {
+	return fmt.Sprintf("%s: %s", errAnalysisCacheAuthKeyInvalid, e.reason)
+}
+
+func (*compromisedAuthKeyError) Unwrap() error {
+	return errAnalysisCacheAuthKeyInvalid
+}
+
 type authKeyReadRoot interface {
 	ReadRegularFileUnderLimit(string, int64) ([]byte, fs.FileInfo, error)
+	RegularFilePrivateToOwner(string, fs.FileInfo) (bool, error)
 	Lstat(string) (fs.FileInfo, error)
 }
 
 type authKeyTempRoot interface {
-	CreateTempFile(os.FileMode) (string, safeio.File, error)
+	CreatePrivateTempFile() (string, safeio.File, error)
 	CleanupTempFile(string, safeio.File) error
 }
 
@@ -158,12 +200,12 @@ func (c *analysisCache) finishReadOnlyResolvedAuthKey(err error) ([]byte, error)
 func (c *analysisCache) finishWritableResolvedAuthKey(authRoot *safeio.WriteRoot, keyName string, err error) ([]byte, error) {
 	switch {
 	case errors.Is(err, errAnalysisCacheAuthKeyMissing):
-		return c.createOrRotateAuthKey(authRoot, keyName, false)
+		return c.createOrRotateAuthKeyFromError(authRoot, keyName, false, err)
 	case errors.Is(err, errAnalysisCacheAuthKeyInvalid):
 		c.warn("analysis cache auth key invalid; rotating key and treating prior pointers as untrusted")
-		return c.createOrRotateAuthKey(authRoot, keyName, true)
+		return c.createOrRotateAuthKeyFromError(authRoot, keyName, true, err)
 	case errors.Is(err, errAnalysisCacheAuthKeyChanged):
-		return c.createOrRotateAuthKey(authRoot, keyName, true)
+		return c.createOrRotateAuthKeyFromError(authRoot, keyName, true, err)
 	default:
 		return nil, err
 	}
@@ -325,38 +367,32 @@ func pathAtOrBelow(path, root string) bool {
 	if windowsComparison, ok := pathAtOrBelowWindows(path, root); ok {
 		return windowsComparison
 	}
-	relativePath, err := filepath.Rel(root, path)
+	relativePath, err := analysisCachePathRelFn(root, path)
 	if err != nil {
 		return true
 	}
-	return relativePath == "." ||
-		(relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator)))
+	if relativePath == "." ||
+		(relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator))) {
+		return true
+	}
+	identityComparison, ok, identityErr := pathAtOrBelowByExistingIdentity(path, root)
+	if identityErr != nil {
+		return true
+	}
+	if ok {
+		return identityComparison
+	}
+	return false
 }
 
 func pathAtOrBelowWindows(path, root string) (bool, bool) {
-	if strings.ContainsRune(path, 0) || strings.ContainsRune(root, 0) {
-		return true, true
-	}
-
 	pathInfo := windowspath.Classify(path)
 	rootInfo := windowspath.Classify(root)
 	if !isWindowsAbsoluteRoot(rootInfo) {
 		return false, false
 	}
-	if pathInfo.Kind == windowspath.KindAmbiguous || rootInfo.Kind == windowspath.KindAmbiguous {
-		return true, true
-	}
-	if windowspath.HasReservedDOSNameComponent(path) || windowspath.HasReservedDOSNameComponent(root) {
-		return true, true
-	}
-	if windowspath.HasTrimmedComponentAlias(path) || windowspath.HasTrimmedComponentAlias(root) {
-		return true, true
-	}
-	if !rootInfo.IsAbsolute() {
-		return true, true
-	}
-	if !pathInfo.IsAbsolute() {
-		return true, true
+	if decision, handled := pathAtOrBelowWindowsPreflight(path, root, pathInfo, rootInfo); handled {
+		return decision, true
 	}
 	if pathInfo.Kind != rootInfo.Kind {
 		return false, true
@@ -369,8 +405,148 @@ func pathAtOrBelowWindows(path, root string) (bool, bool) {
 	return cleanRoot == "/" || cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+"/"), true
 }
 
+func pathAtOrBelowWindowsPreflight(path, root string, pathInfo, rootInfo windowspath.Classification) (bool, bool) {
+	if strings.ContainsRune(path, 0) || strings.ContainsRune(root, 0) {
+		return true, true
+	}
+	if pathAtOrBelowWindowsUnsafe(path, root, pathInfo, rootInfo) {
+		return true, true
+	}
+	if !rootInfo.IsAbsolute() || !pathInfo.IsAbsolute() {
+		return true, true
+	}
+	return false, false
+}
+
+func pathAtOrBelowWindowsUnsafe(path, root string, pathInfo, rootInfo windowspath.Classification) bool {
+	return pathInfo.Kind == windowspath.KindAmbiguous ||
+		rootInfo.Kind == windowspath.KindAmbiguous ||
+		windowspath.HasReservedDOSNameComponent(path) ||
+		windowspath.HasReservedDOSNameComponent(root) ||
+		windowspath.HasTrimmedComponentAlias(path) ||
+		windowspath.HasTrimmedComponentAlias(root)
+}
+
 func isWindowsAbsoluteRoot(info windowspath.Classification) bool {
 	return info.Kind == windowspath.KindDriveAbsolute || info.Kind == windowspath.KindUNCAbsolute
+}
+
+type existingPathAncestor struct {
+	path string
+	info fs.FileInfo
+}
+
+type existingPathAncestry struct {
+	ancestors []existingPathAncestor
+	remainder []string
+}
+
+func inspectExistingPathAncestry(path string) (existingPathAncestry, error) {
+	current := filepath.Clean(path)
+	remainder := make([]string, 0, 2)
+	var info fs.FileInfo
+	for {
+		var err error
+		info, err = analysisCachePathLstatFn(current)
+		if err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			return existingPathAncestry{}, fmt.Errorf("inspect path ancestry: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return existingPathAncestry{}, nil
+		}
+		remainder = append([]string{filepath.Base(current)}, remainder...)
+		current = parent
+	}
+
+	ancestry := existingPathAncestry{remainder: remainder}
+	for {
+		ancestry.ancestors = append(ancestry.ancestors, existingPathAncestor{
+			path: current,
+			info: info,
+		})
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ancestry, nil
+		}
+		current = parent
+		var err error
+		info, err = analysisCachePathLstatFn(current)
+		if err != nil {
+			return existingPathAncestry{}, fmt.Errorf("inspect existing path ancestor: %w", err)
+		}
+	}
+}
+
+func revalidateExistingPathAncestry(ancestry existingPathAncestry) error {
+	for _, ancestor := range ancestry.ancestors {
+		currentInfo, err := analysisCachePathLstatFn(ancestor.path)
+		if err != nil {
+			return fmt.Errorf("revalidate existing path ancestor: %w", err)
+		}
+		if !analysisCachePathSameFileFn(ancestor.info, currentInfo) {
+			return fmt.Errorf("%w: path ancestor %s", safeio.ErrFileChanged, ancestor.path)
+		}
+	}
+	return nil
+}
+
+func pathAtOrBelowByExistingIdentity(path, root string) (bool, bool, error) {
+	pathAncestry, err := inspectExistingPathAncestry(path)
+	if err != nil {
+		return false, false, err
+	}
+	rootAncestry, err := inspectExistingPathAncestry(root)
+	if err != nil {
+		return false, false, err
+	}
+	if len(pathAncestry.ancestors) == 0 || len(rootAncestry.ancestors) == 0 {
+		return false, false, nil
+	}
+	if err := revalidateExistingPathAncestry(pathAncestry); err != nil {
+		return false, false, err
+	}
+	if err := revalidateExistingPathAncestry(rootAncestry); err != nil {
+		return false, false, err
+	}
+
+	rootPrefix := rootAncestry.ancestors[0].info
+	if len(rootAncestry.remainder) == 0 {
+		return ancestryContainsIdentity(pathAncestry, rootPrefix), true, nil
+	}
+	return missingAncestryAtOrBelow(pathAncestry, rootAncestry, rootPrefix), true, nil
+}
+
+func ancestryContainsIdentity(ancestry existingPathAncestry, identity fs.FileInfo) bool {
+	for _, ancestor := range ancestry.ancestors {
+		if analysisCachePathSameFileFn(ancestor.info, identity) {
+			return true
+		}
+	}
+	return false
+}
+
+func missingAncestryAtOrBelow(pathAncestry, rootAncestry existingPathAncestry, rootPrefix fs.FileInfo) bool {
+	if !analysisCachePathSameFileFn(pathAncestry.ancestors[0].info, rootPrefix) ||
+		len(rootAncestry.remainder) > len(pathAncestry.remainder) {
+		return false
+	}
+	for i := range rootAncestry.remainder {
+		if !missingAncestryComponentEqual(pathAncestry.remainder[i], rootAncestry.remainder[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func missingAncestryComponentEqual(pathComponent, rootComponent string) bool {
+	if analysisCacheMissingAncestryCaseInsensitiveFn() {
+		return strings.EqualFold(pathComponent, rootComponent)
+	}
+	return pathComponent == rootComponent
 }
 
 func (c *analysisCache) authKeyName(storageRoot string) (string, error) {
@@ -393,17 +569,19 @@ func analysisCacheAuthKeyName(storageRoot string, storageRootInfo fs.FileInfo) (
 	return sha256Hex([]byte(identity)) + ".key", nil
 }
 
-func readAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, repairPerms bool) ([]byte, error) {
+func readAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, _ bool) ([]byte, error) {
 	keyHex, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
 	switch {
 	case err == nil:
-		if authKeyFileModeTooPermissive(info.Mode()) {
-			if !repairPerms {
-				return nil, fmt.Errorf("%w: permissive mode %o", errAnalysisCacheAuthKeyInvalid, info.Mode().Perm())
+		private, privacyErr := analysisCacheAuthKeyPrivateToOwnerFn(root, keyName, info)
+		if privacyErr != nil {
+			if os.IsNotExist(privacyErr) || errors.Is(privacyErr, safeio.ErrFileChanged) {
+				return nil, errAnalysisCacheAuthKeyChanged
 			}
-			if chmodErr := root.Chmod(keyName, analysisCacheAuthKeyPerm); chmodErr != nil {
-				return nil, fmt.Errorf("repair cache auth key permissions: %w", chmodErr)
-			}
+			return nil, fmt.Errorf("validate cache auth key privacy: %w", privacyErr)
+		}
+		if !private {
+			return nil, newCompromisedAuthKeyError(keyHex, info)
 		}
 		key, decodeErr := decodeAuthKey(strings.TrimSpace(string(keyHex)))
 		if decodeErr != nil {
@@ -422,27 +600,185 @@ func readAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, repairPerm
 }
 
 func (c *analysisCache) createOrRotateAuthKey(root *safeio.WriteRoot, keyName string, replaceInvalid bool) ([]byte, error) {
+	return c.createOrRotateAuthKeyFromError(root, keyName, replaceInvalid, nil)
+}
+
+func (c *analysisCache) createOrRotateAuthKeyFromError(root *safeio.WriteRoot, keyName string, replaceInvalid bool, initialErr error) ([]byte, error) {
+	compromisedStates := make(map[string]compromisedAuthKeyState)
+	if err := observeCompromisedAuthKey(compromisedStates, initialErr); err != nil {
+		return nil, err
+	}
 	for attempt := 0; attempt < analysisCacheAuthRetryLimit; attempt++ {
-		key, err := analysisCacheReadAuthKeyFn(root, keyName, true)
-		switch {
-		case err == nil:
-			c.authKey = append(c.authKey[:0], key...)
-			return append([]byte(nil), c.authKey...), nil
-		case errors.Is(err, errAnalysisCacheAuthKeyMissing):
-			if err := analysisCachePublishMissingAuthKeyFn(root, keyName); err != nil {
-				return nil, err
-			}
-		case errors.Is(err, errAnalysisCacheAuthKeyInvalid) && replaceInvalid:
-			if err := analysisCacheRotateInvalidAuthKeyFn(root, keyName); err != nil && !errors.Is(err, errAnalysisCacheAuthKeyChanged) {
-				return nil, err
-			}
-		case errors.Is(err, errAnalysisCacheAuthKeyChanged):
-		default:
+		key, readErr := analysisCacheReadAuthKeyFn(root, keyName, true)
+		if err := observeCompromisedAuthKey(compromisedStates, readErr); err != nil {
 			return nil, err
+		}
+		resolvedKey, retry, err := c.handleAuthKeyRead(root, keyName, key, readErr, replaceInvalid, compromisedStates)
+		if err != nil {
+			return nil, err
+		}
+		if !retry {
+			return resolvedKey, nil
 		}
 		analysisCacheSleepFn(analysisCacheAuthRetryDelay)
 	}
 	return nil, fmt.Errorf("initialize cache auth key: timed out waiting for persisted winner")
+}
+
+func observeCompromisedAuthKey(states map[string]compromisedAuthKeyState, err error) error {
+	if !rememberCompromisedAuthKey(states, err) {
+		return nil
+	}
+	return analysisCacheAuthAfterCompromisedReadFn()
+}
+
+func (c *analysisCache) handleAuthKeyRead(root *safeio.WriteRoot, keyName string, key []byte, readErr error, replaceInvalid bool, compromisedStates map[string]compromisedAuthKeyState) ([]byte, bool, error) {
+	switch {
+	case readErr == nil:
+		return c.handleResolvedAuthKey(root, keyName, key, replaceInvalid, compromisedStates)
+	case errors.Is(readErr, errAnalysisCacheAuthKeyMissing):
+		return nil, true, analysisCachePublishMissingAuthKeyFn(root, keyName)
+	case errors.Is(readErr, errAnalysisCacheAuthKeyInvalid) && replaceInvalid:
+		return nil, true, authKeyMutationError(rotateRejectedAuthKey(root, keyName, readErr))
+	case errors.Is(readErr, errAnalysisCacheAuthKeyChanged):
+		return nil, true, nil
+	default:
+		return nil, false, readErr
+	}
+}
+
+func (c *analysisCache) handleResolvedAuthKey(root *safeio.WriteRoot, keyName string, key []byte, replaceInvalid bool, compromisedStates map[string]compromisedAuthKeyState) ([]byte, bool, error) {
+	state, compromised, err := currentCompromisedAuthKeyState(root, keyName, key, compromisedStates)
+	if err != nil {
+		return nil, errors.Is(err, errAnalysisCacheAuthKeyChanged), authKeyMutationError(err)
+	}
+	if !compromised {
+		c.authKey = append(c.authKey[:0], key...)
+		return append([]byte(nil), c.authKey...), false, nil
+	}
+	if !replaceInvalid {
+		return nil, false, errAnalysisCacheAuthKeyInvalid
+	}
+	err = analysisCacheRotateCompromisedAuthKeyFn(root, keyName, state)
+	return nil, true, authKeyMutationError(err)
+}
+
+func rotateRejectedAuthKey(root *safeio.WriteRoot, keyName string, err error) error {
+	state, compromised := compromisedAuthKeyStateFromError(err)
+	if compromised {
+		return analysisCacheRotateCompromisedAuthKeyFn(root, keyName, state)
+	}
+	return analysisCacheRotateInvalidAuthKeyFn(root, keyName)
+}
+
+func authKeyMutationError(err error) error {
+	if errors.Is(err, errAnalysisCacheAuthKeyChanged) {
+		return nil
+	}
+	return err
+}
+
+func newCompromisedAuthKeyError(data []byte, info fs.FileInfo) error {
+	return &compromisedAuthKeyError{
+		state:  compromisedAuthKeyStateForData(data, info),
+		reason: fmt.Sprintf("permissions are not owner-only (%o)", info.Mode().Perm()),
+	}
+}
+
+func compromisedAuthKeyStateForData(data []byte, info fs.FileInfo) compromisedAuthKeyState {
+	return compromisedAuthKeyState{
+		contentDigest: authKeyContentDigest(data),
+		generation:    invalidAuthKeyStateDigest(data, info),
+		identity:      info,
+	}
+}
+
+func compromisedAuthKeyStateFromError(err error) (compromisedAuthKeyState, bool) {
+	var compromisedErr *compromisedAuthKeyError
+	if !errors.As(err, &compromisedErr) {
+		return compromisedAuthKeyState{}, false
+	}
+	return compromisedErr.state, true
+}
+
+func rememberCompromisedAuthKey(states map[string]compromisedAuthKeyState, err error) bool {
+	state, ok := compromisedAuthKeyStateFromError(err)
+	if !ok {
+		return false
+	}
+	if _, exists := states[state.contentDigest]; exists {
+		return false
+	}
+	states[state.contentDigest] = state
+	return true
+}
+
+func currentCompromisedAuthKeyState(root *safeio.WriteRoot, keyName string, key []byte, states map[string]compromisedAuthKeyState) (compromisedAuthKeyState, bool, error) {
+	if len(states) == 0 {
+		return compromisedAuthKeyState{}, false, nil
+	}
+	data, info, private, err := recheckAnalysisCacheAuthKey(root, keyName, key)
+	if err != nil {
+		return compromisedAuthKeyState{}, false, err
+	}
+	if !private {
+		return rememberCurrentCompromisedAuthKey(data, info, states)
+	}
+	return retainedCompromisedAuthKeyState(data, info, states)
+}
+
+func recheckAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, key []byte) ([]byte, fs.FileInfo, bool, error) {
+	data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
+	if err != nil {
+		return nil, nil, false, changedOrWrappedAuthKeyError(err, "recheck cache auth key after compromise")
+	}
+	currentKey, err := decodeAuthKey(strings.TrimSpace(string(data)))
+	if err != nil || !hmac.Equal(currentKey, key) {
+		return nil, nil, false, errAnalysisCacheAuthKeyChanged
+	}
+	private, privacyErr := analysisCacheAuthKeyPrivateToOwnerFn(root, keyName, info)
+	if privacyErr != nil {
+		return nil, nil, false, changedOrWrappedAuthKeyError(privacyErr, "recheck cache auth key privacy after compromise")
+	}
+	return data, info, private, nil
+}
+
+func changedOrWrappedAuthKeyError(err error, context string) error {
+	if os.IsNotExist(err) || errors.Is(err, safeio.ErrFileChanged) {
+		return errAnalysisCacheAuthKeyChanged
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+func rememberCurrentCompromisedAuthKey(data []byte, info fs.FileInfo, states map[string]compromisedAuthKeyState) (compromisedAuthKeyState, bool, error) {
+	state := compromisedAuthKeyStateForData(data, info)
+	if _, exists := states[state.contentDigest]; exists {
+		return state, true, nil
+	}
+	states[state.contentDigest] = state
+	if err := analysisCacheAuthAfterCompromisedReadFn(); err != nil {
+		return compromisedAuthKeyState{}, false, err
+	}
+	return state, true, nil
+}
+
+func retainedCompromisedAuthKeyState(data []byte, info fs.FileInfo, states map[string]compromisedAuthKeyState) (compromisedAuthKeyState, bool, error) {
+	currentDigest := authKeyContentDigest(data)
+	for _, state := range states {
+		if currentDigest == state.contentDigest ||
+			state.identity != nil && os.SameFile(state.identity, info) {
+			return state, true, nil
+		}
+	}
+	return compromisedAuthKeyState{}, false, nil
+}
+
+func authKeyContentDigest(data []byte) string {
+	key, err := decodeAuthKey(strings.TrimSpace(string(data)))
+	if err == nil {
+		return sha256Hex(key)
+	}
+	return sha256Hex(data)
 }
 
 func publishMissingAuthKey(root *safeio.WriteRoot, keyName string) (returnErr error) {
@@ -459,9 +795,12 @@ func publishMissingAuthKey(root *safeio.WriteRoot, keyName string) (returnErr er
 	}()
 	// Linking a complete candidate is the creation CAS: only one contender can
 	// publish the absent path, and losers must re-read that persisted winner.
-	if err := root.Link(candidatePath, keyName); err != nil {
-		if os.IsExist(err) {
-			return nil
+	if err := analysisCacheAuthLinkFn(root, candidatePath, keyName); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return syncObservedAuthKeyWinner(root)
+		}
+		if authKeyPublishFallbackAllowed(err) {
+			return publishMissingAuthKeyWithoutHardLink(root, candidatePath, keyName)
 		}
 		return fmt.Errorf("publish cache auth key winner: %w", err)
 	}
@@ -471,11 +810,84 @@ func publishMissingAuthKey(root *safeio.WriteRoot, keyName string) (returnErr er
 	return nil
 }
 
+func authKeyPublishFallbackAllowed(err error) bool {
+	return errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, fs.ErrPermission) ||
+		errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.EOPNOTSUPP) ||
+		errors.Is(err, syscall.EPERM)
+}
+
+func publishMissingAuthKeyWithoutHardLink(root *safeio.WriteRoot, candidatePath, keyName string) (returnErr error) {
+	lock, err := analysisCacheAuthLockDirectoryFn(root)
+	if err != nil {
+		return fmt.Errorf("acquire cache auth key publish lock: %w", err)
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, lock.Close())
+	}()
+	if _, statErr := root.Lstat(keyName); statErr == nil {
+		return syncObservedAuthKeyWinner(root)
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect cache auth key winner before fallback publish: %w", statErr)
+	}
+	if err := analysisCacheAuthBeforeFallbackInstallFn(); err != nil {
+		return err
+	}
+	if err := analysisCacheAuthRenameNoReplaceFn(root, candidatePath, keyName); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return syncObservedAuthKeyWinner(root)
+		}
+		return fmt.Errorf("publish cache auth key winner without hard link: %w", err)
+	}
+	if err := analysisCacheAuthSyncDirFn(root); err != nil {
+		return fmt.Errorf("sync cache auth key directory after fallback publish: %w", err)
+	}
+	return nil
+}
+
+func syncObservedAuthKeyWinner(root *safeio.WriteRoot) error {
+	if err := analysisCacheAuthSyncDirFn(root); err != nil {
+		return fmt.Errorf("sync cache auth key directory after observing winner: %w", err)
+	}
+	return nil
+}
+
 func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) error {
 	generation, err := analysisCacheInvalidKeyGenerationFn(root, keyName)
 	if err != nil {
 		return err
 	}
+	return rotateAuthKey(root, keyName, generation, func() error {
+		currentGeneration, err := analysisCacheInvalidKeyGenerationFn(root, keyName)
+		if err != nil {
+			return err
+		}
+		if currentGeneration != generation {
+			return errAnalysisCacheAuthKeyChanged
+		}
+		return nil
+	})
+}
+
+func rotateCompromisedAuthKey(root *safeio.WriteRoot, keyName string, state compromisedAuthKeyState) error {
+	return rotateAuthKey(root, keyName, state.generation, func() error {
+		data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
+		if err != nil {
+			if os.IsNotExist(err) || errors.Is(err, safeio.ErrFileChanged) {
+				return errAnalysisCacheAuthKeyChanged
+			}
+			return fmt.Errorf("recheck compromised cache auth key: %w", err)
+		}
+		if authKeyContentDigest(data) != state.contentDigest &&
+			(state.identity == nil || !os.SameFile(state.identity, info)) {
+			return errAnalysisCacheAuthKeyChanged
+		}
+		return nil
+	})
+}
+
+func rotateAuthKey(root *safeio.WriteRoot, keyName, generation string, revalidate func() error) error {
 	rotationPath := keyName + analysisCacheAuthRotateTag + generation
 	// The generation path is immutable so delayed contenders can only install
 	// the same replacement key, never a second in-memory winner.
@@ -494,14 +906,10 @@ func rotateInvalidAuthKey(root *safeio.WriteRoot, keyName string) error {
 	if _, err := decodeAuthKey(strings.TrimSpace(string(encodedKey))); err != nil {
 		return fmt.Errorf("validate cache auth key rotation candidate: %w", err)
 	}
-	currentGeneration, err := analysisCacheInvalidKeyGenerationFn(root, keyName)
-	if err != nil {
+	if err := revalidate(); err != nil {
 		return err
 	}
-	if currentGeneration != generation {
-		return errAnalysisCacheAuthKeyChanged
-	}
-	if err := root.WriteFileReplacingAtomicallyWithExactPermissions(keyName, encodedKey, analysisCacheAuthKeyPerm); err != nil {
+	if err := root.WritePrivateFileReplacingAtomically(keyName, encodedKey); err != nil {
 		return fmt.Errorf("install rotated cache auth key: %w", err)
 	}
 	return nil
@@ -515,6 +923,16 @@ func invalidAuthKeyGenerationWith(root authKeyReadRoot, keyName string) (string,
 	data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
 	if err != nil {
 		return invalidAuthKeyGenerationReadError(root, keyName, err)
+	}
+	private, err := root.RegularFilePrivateToOwner(keyName, info)
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, safeio.ErrFileChanged) {
+			return "", errAnalysisCacheAuthKeyChanged
+		}
+		return "", fmt.Errorf("validate invalid cache auth key privacy: %w", err)
+	}
+	if !private {
+		return invalidAuthKeyStateDigest(data, info), nil
 	}
 	if _, err := decodeAuthKey(strings.TrimSpace(string(data))); err == nil {
 		return "", errAnalysisCacheAuthKeyChanged
@@ -544,14 +962,14 @@ func oversizedInvalidAuthKeyGeneration(root authKeyReadRoot, keyName string, rea
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("read invalid cache auth key: %w", readErr)
 	}
-	state := fmt.Appendf(nil, "oversized:%d:%d", info.Size(), info.ModTime().UnixNano())
+	state := fmt.Appendf(nil, "oversized:%o:%d:%d", info.Mode().Perm(), info.Size(), info.ModTime().UnixNano())
 	return sha256Hex(state), nil
 }
 
 func invalidAuthKeyStateDigest(data []byte, info fs.FileInfo) string {
 	state := append([]byte(nil), data...)
 	state = append(state, 0)
-	state = fmt.Appendf(state, "%d:%d", info.Size(), info.ModTime().UnixNano())
+	state = fmt.Appendf(state, "%o:%d:%d", info.Mode().Perm(), info.Size(), info.ModTime().UnixNano())
 	return sha256Hex(state)
 }
 
@@ -560,7 +978,7 @@ func writeAuthKeyCandidate(root *safeio.WriteRoot, encodedKey []byte) (candidate
 }
 
 func writeAuthKeyCandidateWith(root authKeyTempRoot, encodedKey []byte) (candidatePath string, returnErr error) {
-	candidatePath, candidate, err := root.CreateTempFile(0o600)
+	candidatePath, candidate, err := root.CreatePrivateTempFile()
 	if err != nil {
 		return "", fmt.Errorf("create cache auth key candidate: %w", err)
 	}

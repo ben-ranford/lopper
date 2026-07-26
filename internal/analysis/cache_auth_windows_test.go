@@ -13,9 +13,40 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func TestAuthKeyFileModeTooPermissiveIgnoresWindowsPermissionProjection(t *testing.T) {
-	if authKeyFileModeTooPermissive(0o666) {
-		t.Fatal("expected Windows ACL-projected 0666 mode not to be treated as permissive")
+func TestReadAnalysisCacheAuthKeyAcceptsOwnerOnlyWindowsDACL(t *testing.T) {
+	root, err := safeio.OpenWriteRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open auth-key root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close auth-key root: %v", closeErr)
+		}
+	})
+	tempName, tempFile, err := root.CreatePrivateTempFile()
+	if err != nil {
+		t.Fatalf("create owner-only auth key: %v", err)
+	}
+	encodedKey := bytes.Repeat([]byte("ab"), analysisCacheAuthKeyLength)
+	if _, err := tempFile.Write(encodedKey); err != nil {
+		t.Fatalf("write owner-only auth key: %v", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		t.Fatalf("sync owner-only auth key: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		t.Fatalf("close owner-only auth key: %v", err)
+	}
+	if err := root.Rename(tempName, "cache.key"); err != nil {
+		t.Fatalf("publish owner-only auth key: %v", err)
+	}
+
+	key, err := readAnalysisCacheAuthKey(root, "cache.key", false)
+	if err != nil {
+		t.Fatalf("read owner-only auth key: %v", err)
+	}
+	if !bytes.Equal(key, bytes.Repeat([]byte{0xab}, analysisCacheAuthKeyLength)) {
+		t.Fatalf("decoded owner-only auth key = %x", key)
 	}
 }
 

@@ -175,3 +175,48 @@ func TestHasReservedDOSNameComponent(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateUnsupported(t *testing.T) {
+	messages := UnsupportedPathErrorMessages{
+		DriveRelative:      "drive relative: %s",
+		RootedWithoutDrive: "missing drive: %s",
+		Ambiguous:          "ambiguous: %s",
+		UNCIncomplete:      "unc incomplete: %s",
+		TrimmedAlias:       "trimmed alias: %s",
+		ReservedDOSName:    "reserved dos: %s",
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "drive relative", path: `C:cache`, want: "drive relative: C:cache"},
+		{name: "rooted without drive", path: `\cache`, want: `missing drive: \cache`},
+		{name: "ambiguous", path: `\\?\C:\cache`, want: `ambiguous: \\?\C:\cache`},
+		{name: "unc incomplete", path: `\\server`, want: `unc incomplete: \\server`},
+		{name: "trimmed alias", path: `cache `, want: "trimmed alias: cache "},
+		{name: "reserved dos", path: `NUL.txt`, want: "reserved dos: NUL.txt"},
+		{name: "valid", path: `cache\child`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateUnsupported(tc.path, messages)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("ValidateUnsupported(%q) = %v, want nil", tc.path, err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("ValidateUnsupported(%q) = %v, want %q", tc.path, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateUnsupportedSkipsEmptyMessage(t *testing.T) {
+	err := ValidateUnsupported(`C:cache`, UnsupportedPathErrorMessages{})
+	if err != nil {
+		t.Fatalf("ValidateUnsupported with empty messages = %v, want nil", err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,6 +20,18 @@ type WriteRoot struct {
 // ErrFileChanged indicates that a checked path resolved to a different file
 // by the time it was opened.
 var ErrFileChanged = errors.New("file changed while opening")
+
+// ErrDirectoryLockUnsupported indicates that the platform cannot lock a
+// pinned directory for cross-process serialization.
+var ErrDirectoryLockUnsupported = errors.New("directory locking unsupported")
+
+// ErrRenameNoReplaceUnsupported indicates that the platform cannot atomically
+// rename a file while preserving an existing destination.
+var ErrRenameNoReplaceUnsupported = errors.New("atomic no-replace rename unsupported")
+
+// ErrPrivateFilePermissionsUnsupported indicates that the platform cannot
+// create or prove an owner-only file through a pinned handle.
+var ErrPrivateFilePermissionsUnsupported = errors.New("owner-only file permissions unsupported")
 
 // OpenWriteRoot opens rootDir once for subsequent root-relative writes.
 func OpenWriteRoot(rootDir string) (*WriteRoot, error) {
@@ -175,9 +188,54 @@ func (r *WriteRoot) ReadPinnedRegularFileUnderLimit(targetPath string, pinnedRoo
 	return data, openedInfo, nil
 }
 
+// RegularFilePrivateToOwner verifies that targetPath still names expectedInfo
+// and that its platform permissions grant access only to its owner.
+func (r *WriteRoot) RegularFilePrivateToOwner(targetPath string, expectedInfo fs.FileInfo) (private bool, returnErr error) {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return false, err
+	}
+	targetAbs := filepath.Join(r.rootAbs, targetRel)
+	info, err := r.root.Lstat(targetRel)
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("target path is a symlink: %s", targetAbs)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("target path is not a regular file: %s", targetAbs)
+	}
+	if expectedInfo != nil && !os.SameFile(expectedInfo, info) {
+		return false, fmt.Errorf("%w: %s", ErrFileChanged, targetAbs)
+	}
+
+	file, err := r.root.Open(targetRel)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, file.Close())
+	}()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return false, fmt.Errorf("%w: %s", ErrFileChanged, targetAbs)
+	}
+	return filePrivateToOwner(file, openedInfo)
+}
+
 // CreateTempFile creates an exclusive temporary file in the pinned root.
 func (r *WriteRoot) CreateTempFile(perm os.FileMode) (string, File, error) {
 	return createAtomicTempFile(r.root, ".", perm)
+}
+
+// CreatePrivateTempFile creates an exclusive owner-only temporary file in the
+// pinned root without exposing file contents under broader permissions.
+func (r *WriteRoot) CreatePrivateTempFile() (string, File, error) {
+	return createPrivateAtomicTempFile(r.root, ".")
 }
 
 // CleanupTempFile closes and removes a temporary file in the pinned root.
@@ -211,6 +269,52 @@ func (r *WriteRoot) Rename(oldPath, newPath string) error {
 	return r.root.Rename(oldRel, newRel)
 }
 
+// RenameNoReplace atomically renames one direct child of the pinned root to
+// another, returning an existence error without changing either file when the
+// destination already exists.
+func (r *WriteRoot) RenameNoReplace(oldPath, newPath string) (returnErr error) {
+	oldRel, err := resolveDirectRootChild(oldPath)
+	if err != nil {
+		return err
+	}
+	newRel, err := resolveDirectRootChild(newPath)
+	if err != nil {
+		return err
+	}
+	directory, err := r.openPinnedRootDirectory()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, directory.Close())
+	}()
+	fd, err := descriptorForFile(directory, ErrRenameNoReplaceUnsupported)
+	if err != nil {
+		return err
+	}
+	if err := renameNoReplaceInDirectory(fd, oldRel, newRel); err != nil {
+		return &os.LinkError{Op: "rename-no-replace", Old: oldRel, New: newRel, Err: err}
+	}
+	return nil
+}
+
+// LockDirectory acquires an exclusive advisory lock on the pinned root
+// directory. The kernel releases the lock if the process exits.
+func (r *WriteRoot) LockDirectory() (io.Closer, error) {
+	directory, err := r.openPinnedRootDirectory()
+	if err != nil {
+		return nil, err
+	}
+	fd, err := descriptorForFile(directory, ErrDirectoryLockUnsupported)
+	if err != nil {
+		return nil, closeFilePreservingPrimary(directory, err)
+	}
+	if err := lockDirectoryDescriptor(fd); err != nil {
+		return nil, closeFilePreservingPrimary(directory, err)
+	}
+	return &pinnedDirectoryLock{directory: directory, fd: fd}, nil
+}
+
 // Remove removes a root-relative path.
 func (r *WriteRoot) Remove(targetPath string) error {
 	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
@@ -223,6 +327,74 @@ func (r *WriteRoot) Remove(targetPath string) error {
 // Sync flushes directory-entry changes for the pinned root.
 func (r *WriteRoot) Sync() (returnErr error) {
 	return syncRootDirectory(r.root)
+}
+
+type pinnedDirectoryLock struct {
+	directory File
+	fd        uintptr
+}
+
+type descriptorFile interface {
+	Fd() uintptr
+	Close() error
+}
+
+func (l *pinnedDirectoryLock) Close() error {
+	if l == nil || l.directory == nil {
+		return nil
+	}
+	directory := l.directory
+	l.directory = nil
+	return errors.Join(unlockDirectoryDescriptor(l.fd), directory.Close())
+}
+
+func (r *WriteRoot) openPinnedRootDirectory() (File, error) {
+	expected, err := r.root.Lstat(".")
+	if err != nil {
+		return nil, err
+	}
+	if !expected.IsDir() {
+		return nil, fmt.Errorf("pinned root is not a directory")
+	}
+	directory, err := r.root.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	opened, err := directory.Stat()
+	if err != nil {
+		return nil, closeFilePreservingPrimary(directory, err)
+	}
+	if !opened.IsDir() || !os.SameFile(expected, opened) {
+		return nil, closeFilePreservingPrimary(directory, fmt.Errorf("%w: pinned root directory", ErrFileChanged))
+	}
+	return directory, nil
+}
+
+func descriptorForFile(file File, unsupportedErr error) (uintptr, error) {
+	descriptor, ok := file.(descriptorFile)
+	if !ok {
+		return 0, unsupportedErr
+	}
+	fd := descriptor.Fd()
+	const maxSignedInt32 = uintptr(^uint32(0) >> 1)
+	if fd > maxSignedInt32 {
+		return 0, fmt.Errorf("%w: file descriptor out of range", unsupportedErr)
+	}
+	return fd, nil
+}
+
+func resolveDirectRootChild(path string) (string, error) {
+	rel, err := resolveRelativeTarget(path, rejectRootTarget)
+	if err != nil {
+		return "", err
+	}
+	if filepath.Dir(rel) != "." {
+		return "", fmt.Errorf("path must name a direct child of the pinned root: %s", path)
+	}
+	if strings.IndexByte(rel, 0) >= 0 {
+		return "", fmt.Errorf("path contains NUL byte")
+	}
+	return rel, nil
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
@@ -377,14 +549,14 @@ func mkdirAllDurable(root Root, rootAbs, dirRel string, perm os.FileMode) (retur
 }
 
 func openDurableDirectoryChild(root Root, name, path string, perm os.FileMode) (Root, error) {
-	info, created, err := lstatOrCreateDirectoryTracked(root, name, perm)
+	info, syncParent, err := lstatOrCreateDirectoryTracked(root, name, perm)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateInspectedDirectory(path, info); err != nil {
 		return nil, err
 	}
-	if created {
+	if syncParent {
 		if err := syncRootDirectory(root); err != nil {
 			return nil, err
 		}
@@ -402,7 +574,7 @@ func lstatOrCreateDirectoryTracked(root Root, name string, perm os.FileMode) (fs
 			return nil, false, mkdirErr
 		}
 		info, err = root.Lstat(name)
-		return info, false, err
+		return info, true, err
 	}
 	info, err = root.Lstat(name)
 	return info, true, err
@@ -578,6 +750,28 @@ func (r *WriteRoot) WriteFileReplacingWithExactPermissions(targetPath string, da
 // falls back to mutating an existing target in place when rename cannot commit.
 func (r *WriteRoot) WriteFileReplacingAtomicallyWithExactPermissions(targetPath string, data []byte, perm os.FileMode) error {
 	return r.writeFileReplacingWithExactPermissions(targetPath, data, perm, false)
+}
+
+// WritePrivateFileReplacingAtomically replaces targetPath with a complete,
+// synced owner-only temporary file and never falls back to in-place mutation.
+func (r *WriteRoot) WritePrivateFileReplacingAtomically(targetPath string, data []byte) error {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	target := rootedTarget{
+		rootAbs: r.rootAbs,
+		rel:     targetRel,
+		abs:     filepath.Join(r.rootAbs, targetRel),
+	}
+	_, existingInfo, err := resolvedWriteFilePerm(r.root, target, 0o600)
+	if err != nil {
+		return err
+	}
+	return writeAtomicReplacement(r.root, target, data, 0o600, existingInfo, atomicReplacementOptions{
+		forceReplacementPerm: true,
+		privateTemp:          true,
+	})
 }
 
 func (r *WriteRoot) writeFileReplacingWithExactPermissions(targetPath string, data []byte, perm os.FileMode, allowInPlaceFallback bool) error {

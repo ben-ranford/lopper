@@ -23,6 +23,7 @@ type truncatingFile interface {
 type atomicReplacementOptions struct {
 	forceReplacementPerm bool
 	allowInPlaceFallback bool
+	privateTemp          bool
 }
 
 type atomicReplacementFallbackRequest struct {
@@ -38,6 +39,15 @@ type atomicReplacementFallbackRequest struct {
 
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
+	return newAtomicWriteSessionFromTemp(root, targetRel, tempRel, tempFile, err)
+}
+
+func newPrivateAtomicWriteSession(root Root, targetRel string) (*atomicWriteSession, error) {
+	tempRel, tempFile, err := createPrivateAtomicTempFile(root, filepath.Dir(targetRel))
+	return newAtomicWriteSessionFromTemp(root, targetRel, tempRel, tempFile, err)
+}
+
+func newAtomicWriteSessionFromTemp(root Root, targetRel, tempRel string, tempFile File, err error) (*atomicWriteSession, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +126,15 @@ func writeAtomicReplacementInParent(root Root, targetName string, data []byte, p
 		returnErr = errors.Join(returnErr, closeReplacementFile())
 	}()
 
-	session, err := newAtomicWriteSession(root, targetName, perm)
+	var (
+		session *atomicWriteSession
+		err     error
+	)
+	if options.privateTemp {
+		session, err = newPrivateAtomicWriteSession(root, targetName)
+	} else {
+		session, err = newAtomicWriteSession(root, targetName, perm)
+	}
 	if err != nil {
 		return err
 	}
@@ -201,9 +219,5 @@ func overwritePinnedFile(root Root, targetRel string, file File, data []byte, be
 }
 
 func closeFilePreservingPrimary(file File, primaryErr error) error {
-	closeErr := file.Close()
-	if primaryErr != nil {
-		return primaryErr
-	}
-	return closeErr
+	return errors.Join(primaryErr, file.Close())
 }

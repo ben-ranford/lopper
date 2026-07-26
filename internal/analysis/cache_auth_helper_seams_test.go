@@ -13,15 +13,25 @@ import (
 )
 
 type fakeAuthKeyReadRoot struct {
-	readData  []byte
-	readInfo  fs.FileInfo
-	readErr   error
-	lstatInfo fs.FileInfo
-	lstatErr  error
+	readData        []byte
+	readInfo        fs.FileInfo
+	readErr         error
+	private         bool
+	privacyErr      error
+	privacyOverride bool
+	lstatInfo       fs.FileInfo
+	lstatErr        error
 }
 
 func (r *fakeAuthKeyReadRoot) ReadRegularFileUnderLimit(string, int64) ([]byte, fs.FileInfo, error) {
 	return r.readData, r.readInfo, r.readErr
+}
+
+func (r *fakeAuthKeyReadRoot) RegularFilePrivateToOwner(string, fs.FileInfo) (bool, error) {
+	if r.privacyOverride {
+		return r.private, r.privacyErr
+	}
+	return true, nil
 }
 
 func (r *fakeAuthKeyReadRoot) Lstat(string) (fs.FileInfo, error) {
@@ -35,7 +45,7 @@ type fakeAuthKeyTempRoot struct {
 	cleanupErr error
 }
 
-func (r *fakeAuthKeyTempRoot) CreateTempFile(os.FileMode) (string, safeio.File, error) {
+func (r *fakeAuthKeyTempRoot) CreatePrivateTempFile() (string, safeio.File, error) {
 	return r.path, r.file, r.createErr
 }
 
@@ -116,6 +126,75 @@ func TestInvalidAuthKeyGenerationRejectsOversizedNonRegularTarget(t *testing.T) 
 	}
 }
 
+func TestInvalidAuthKeyGenerationHandlesPrivacyRevalidation(t *testing.T) {
+	validData := []byte(strings.Repeat("ab", analysisCacheAuthKeyLength))
+	info := &stubFileInfo{mode: 0o600}
+	privacyErr := errors.New("privacy lookup failed")
+
+	tests := []struct {
+		name           string
+		root           *fakeAuthKeyReadRoot
+		wantChanged    bool
+		wantErr        error
+		wantGeneration bool
+	}{
+		{
+			name: "target changed during privacy check",
+			root: &fakeAuthKeyReadRoot{
+				readData:        validData,
+				readInfo:        info,
+				privacyErr:      safeio.ErrFileChanged,
+				privacyOverride: true,
+			},
+			wantChanged: true,
+		},
+		{
+			name: "privacy lookup error",
+			root: &fakeAuthKeyReadRoot{
+				readData:        validData,
+				readInfo:        info,
+				privacyErr:      privacyErr,
+				privacyOverride: true,
+			},
+			wantErr: privacyErr,
+		},
+		{
+			name: "permissive key has stable generation",
+			root: &fakeAuthKeyReadRoot{
+				readData:        validData,
+				readInfo:        info,
+				private:         false,
+				privacyOverride: true,
+			},
+			wantGeneration: true,
+		},
+		{
+			name: "strict valid key changed before rotation",
+			root: &fakeAuthKeyReadRoot{
+				readData:        validData,
+				readInfo:        info,
+				private:         true,
+				privacyOverride: true,
+			},
+			wantChanged: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			generation, err := invalidAuthKeyGenerationWith(test.root, "cache.key")
+			switch {
+			case test.wantChanged && !errors.Is(err, errAnalysisCacheAuthKeyChanged):
+				t.Fatalf("expected changed-key identity, got generation=%q err=%v", generation, err)
+			case test.wantErr != nil && !errors.Is(err, test.wantErr):
+				t.Fatalf("expected privacy error identity %v, got %v", test.wantErr, err)
+			case test.wantGeneration && (err != nil || generation == ""):
+				t.Fatalf("expected stable generation for permissive key, got generation=%q err=%v", generation, err)
+			}
+		})
+	}
+}
+
 func TestWriteAuthKeyCandidateCleansUpAfterWriteError(t *testing.T) {
 	_, err := writeAuthKeyCandidateWith(&fakeAuthKeyTempRoot{path: "candidate.tmp", file: &fakeAuthKeyFile{writeErr: errors.New("write failed")}, cleanupErr: errors.New("cleanup failed")}, []byte("key"))
 	if err == nil || !strings.Contains(err.Error(), "write cache auth key candidate") || !strings.Contains(err.Error(), "cleanup failed") {
@@ -130,17 +209,23 @@ func TestWriteAuthKeyCandidateRejectsShortWrite(t *testing.T) {
 	}
 }
 
-func TestWriteAuthKeyCandidateReturnsSyncError(t *testing.T) {
-	_, err := writeAuthKeyCandidateWith(&fakeAuthKeyTempRoot{path: "candidate.tmp", file: &fakeAuthKeyFile{syncErr: errors.New("sync failed")}}, []byte("key"))
-	if err == nil || !strings.Contains(err.Error(), "sync cache auth key candidate") {
-		t.Fatalf("expected sync failure, got %v", err)
+func TestWriteAuthKeyCandidateReturnsFlushErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		file *fakeAuthKeyFile
+		want string
+	}{
+		{name: "sync", file: &fakeAuthKeyFile{syncErr: errors.New("sync failed")}, want: "sync cache auth key candidate"},
+		{name: "close", file: &fakeAuthKeyFile{closeErr: errors.New("close failed")}, want: "close cache auth key candidate"},
 	}
-}
 
-func TestWriteAuthKeyCandidateReturnsCloseError(t *testing.T) {
-	_, err := writeAuthKeyCandidateWith(&fakeAuthKeyTempRoot{path: "candidate.tmp", file: &fakeAuthKeyFile{closeErr: errors.New("close failed")}}, []byte("key"))
-	if err == nil || !strings.Contains(err.Error(), "close cache auth key candidate") {
-		t.Fatalf("expected close failure, got %v", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := writeAuthKeyCandidateWith(&fakeAuthKeyTempRoot{path: "candidate.tmp", file: test.file}, []byte("key"))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %s failure, got %v", test.name, err)
+			}
+		})
 	}
 }
 

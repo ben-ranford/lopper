@@ -13,11 +13,12 @@ import (
 )
 
 type durableMkdirSyncFixture struct {
-	t          *testing.T
-	infos      map[string]fs.FileInfo
-	created    map[string]bool
-	syncErrors map[string]error
-	events     []string
+	t           *testing.T
+	infos       map[string]fs.FileInfo
+	created     map[string]bool
+	mkdirErrors map[string]error
+	syncErrors  map[string]error
+	events      []string
 }
 
 type strictAtomicFailureFixture struct {
@@ -126,10 +127,11 @@ func (f *nestedParentSwapFixture) assertReplacementStayedPinned(t *testing.T) {
 func newDurableMkdirSyncFixture(t *testing.T, components ...string) *durableMkdirSyncFixture {
 	t.Helper()
 	fixture := &durableMkdirSyncFixture{
-		t:          t,
-		infos:      make(map[string]fs.FileInfo, len(components)),
-		created:    make(map[string]bool, len(components)),
-		syncErrors: make(map[string]error),
+		t:           t,
+		infos:       make(map[string]fs.FileInfo, len(components)),
+		created:     make(map[string]bool, len(components)),
+		mkdirErrors: make(map[string]error),
+		syncErrors:  make(map[string]error),
 	}
 	infoPath := t.TempDir()
 	logicalPath := ""
@@ -193,6 +195,12 @@ func (f *durableMkdirSyncFixture) mkdir(parent, name string) error {
 	path := fixtureChildPath(parent, name)
 	f.info(path)
 	f.events = append(f.events, "mkdir:"+fixtureEventPath(path))
+	if err := f.mkdirErrors[path]; err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			f.created[path] = true
+		}
+		return err
+	}
 	f.created[path] = true
 	return nil
 }
@@ -676,6 +684,34 @@ func TestWriteRootMkdirAllDurableReturnsSyncErrorOnNonWindows(t *testing.T) {
 	}
 }
 
+func TestWriteRootMkdirAllDurableSyncsParentAfterErrExistRaceOnNonWindows(t *testing.T) {
+	fixture := newDurableMkdirSyncFixture(t, "keys")
+	fixture.mkdirErrors["keys"] = fs.ErrExist
+	root := &WriteRoot{
+		rootAbs: string(os.PathSeparator),
+		root:    fixture.rootAt(""),
+	}
+
+	if err := root.MkdirAllDurable("keys", 0o750); err != nil {
+		t.Fatalf("durable mkdir after err-exist race: %v", err)
+	}
+
+	wantEvents := []string{
+		"lstat:keys",
+		"mkdir:keys",
+		"lstat:keys",
+		"open-sync:.",
+		"sync:.",
+		"close-sync:.",
+		"open-root:keys",
+		"lstat-opened:keys",
+		"close-root:keys",
+	}
+	if !slices.Equal(fixture.events, wantEvents) {
+		t.Fatalf("unexpected err-exist-race events: got %#v want %#v", fixture.events, wantEvents)
+	}
+}
+
 func TestWriteRootRootRelativeFileOperationsAndSyncOnNonWindows(t *testing.T) {
 	rootDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -717,6 +753,174 @@ func TestWriteRootRootRelativeFileOperationsAndSyncOnNonWindows(t *testing.T) {
 	}
 	if err := root.Remove("key"); err != nil {
 		t.Fatalf("remove key path: %v", err)
+	}
+}
+
+func TestWriteRootRenameNoReplacePreservesExistingDestinationOnNonWindows(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	sourcePath := filepath.Join(rootDir, "candidate")
+	targetPath := filepath.Join(rootDir, "winner")
+	if err := os.WriteFile(sourcePath, []byte("candidate"), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("winner"), 0o600); err != nil {
+		t.Fatalf("write winner: %v", err)
+	}
+	winnerInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		t.Fatalf("stat winner before no-replace rename: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	err = root.RenameNoReplace("candidate", "winner")
+	if errors.Is(err, ErrRenameNoReplaceUnsupported) {
+		t.Skip("atomic no-replace rename is not supported by this platform build")
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("expected destination-exists error, got %v", err)
+	}
+	persistedInfo, err := os.Lstat(targetPath)
+	if err != nil {
+		t.Fatalf("stat winner after no-replace rename: %v", err)
+	}
+	if !os.SameFile(winnerInfo, persistedInfo) {
+		t.Fatal("expected no-replace rename to preserve destination identity")
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read winner after no-replace rename: %v", err)
+	}
+	if string(data) != "winner" {
+		t.Fatalf("expected winner bytes to be preserved, got %q", string(data))
+	}
+	if _, err := os.Lstat(sourcePath); err != nil {
+		t.Fatalf("expected candidate to remain after lost no-replace race: %v", err)
+	}
+}
+
+func TestWriteRootRenameNoReplacePublishesAbsentDestinationOnNonWindows(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	sourcePath := filepath.Join(rootDir, "candidate")
+	if err := os.WriteFile(sourcePath, []byte("candidate"), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	candidateInfo, err := os.Lstat(sourcePath)
+	if err != nil {
+		t.Fatalf("stat candidate: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	err = root.RenameNoReplace("candidate", "winner")
+	if errors.Is(err, ErrRenameNoReplaceUnsupported) {
+		t.Skip("atomic no-replace rename is not supported by this platform build")
+	}
+	if err != nil {
+		t.Fatalf("publish absent destination with no-replace rename: %v", err)
+	}
+	if _, err := os.Lstat(sourcePath); !os.IsNotExist(err) {
+		t.Fatalf("expected candidate name to be consumed, stat err=%v", err)
+	}
+	winnerInfo, err := os.Lstat(filepath.Join(rootDir, "winner"))
+	if err != nil {
+		t.Fatalf("stat no-replace winner: %v", err)
+	}
+	if !os.SameFile(candidateInfo, winnerInfo) {
+		t.Fatal("expected no-replace winner to retain candidate identity")
+	}
+}
+
+func TestWriteRootDirectoryLockCanBeReleasedAndReacquiredOnNonWindows(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+	lock, err := root.LockDirectory()
+	if errors.Is(err, ErrDirectoryLockUnsupported) {
+		t.Skip("directory locking is not supported by this platform")
+	}
+	if err != nil {
+		t.Fatalf("lock pinned root directory: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("unlock pinned root directory: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("close released directory lock again: %v", err)
+	}
+	reacquired, err := root.LockDirectory()
+	if err != nil {
+		t.Fatalf("reacquire pinned root directory lock: %v", err)
+	}
+	if err := reacquired.Close(); err != nil {
+		t.Fatalf("release reacquired pinned root directory lock: %v", err)
+	}
+}
+
+func TestWriteRootRenameNoReplaceReturnsHandleCloseErrorAfterPublishOnNonWindows(t *testing.T) {
+	rootDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "candidate"), []byte("candidate"), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	directory, err := os.Open(rootDir)
+	if err != nil {
+		t.Fatalf("open root directory handle: %v", err)
+	}
+	info, err := directory.Stat()
+	if err != nil {
+		t.Fatalf("stat root directory handle: %v", err)
+	}
+	closeErr := errors.New("close failed")
+	file := &descriptorTestFile{
+		File: directory,
+		fd:   directory.Fd(),
+		closeFn: func() error {
+			return errors.Join(directory.Close(), closeErr)
+		},
+	}
+	root := &WriteRoot{root: &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return info, nil },
+		open:  func(string) (File, error) { return file, nil },
+	}}
+
+	err = root.RenameNoReplace("candidate", "winner")
+	if errors.Is(err, ErrRenameNoReplaceUnsupported) {
+		t.Skip("atomic no-replace rename is not supported by this platform build")
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected published rename to retain handle close error, got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(rootDir, "winner"))
+	if err != nil {
+		t.Fatalf("read published winner after close error: %v", err)
+	}
+	if string(data) != "candidate" {
+		t.Fatalf("unexpected published bytes after close error: %q", string(data))
+	}
+}
+
+func TestPinnedDirectoryLockCloseJoinsUnlockAndHandleErrorsOnNonWindows(t *testing.T) {
+	closeErr := errors.New("close failed")
+	const invalidDescriptor = uintptr(^uint32(0) >> 1)
+	lock := &pinnedDirectoryLock{
+		directory: &fakeFile{close: func() error { return closeErr }},
+		fd:        invalidDescriptor,
+	}
+	err := lock.Close()
+	if err == nil || !errors.Is(err, closeErr) {
+		t.Fatalf("expected lock close to retain handle error, got %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatalf("expected second lock close to be idempotent, got %v", err)
 	}
 }
 

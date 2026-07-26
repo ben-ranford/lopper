@@ -3,8 +3,6 @@
 package safeio
 
 import (
-	"fmt"
-
 	"github.com/ben-ranford/lopper/internal/windowspath"
 )
 
@@ -17,22 +15,12 @@ func rejectUnsupportedWindowsRelativePath(name string) error {
 }
 
 func rejectUnsupportedWindowsPath(kind, name string) error {
-	pathInfo := windowspath.Classify(name)
-	switch pathInfo.Kind {
-	case windowspath.KindDriveRelative:
-		return fmt.Errorf("%s must not be drive-relative on Windows: %s", kind, name)
-	case windowspath.KindRootedWithoutDrive:
-		return fmt.Errorf("%s must include a drive or UNC share on Windows: %s", kind, name)
-	case windowspath.KindAmbiguous:
-		return fmt.Errorf("%s must not use Windows device or namespace forms: %s", kind, name)
-	case windowspath.KindUNCIncomplete:
-		return fmt.Errorf("%s must include a UNC host and share on Windows: %s", kind, name)
-	}
-	if windowspath.HasTrimmedComponentAlias(name) {
-		return fmt.Errorf("%s must not contain Windows trailing dot or space aliases: %s", kind, name)
-	}
-	if windowspath.HasReservedDOSNameComponent(name) {
-		return fmt.Errorf("%s must not contain reserved DOS device names on Windows: %s", kind, name)
-	}
-	return nil
+	return windowspath.ValidateUnsupported(name, windowspath.UnsupportedPathErrorMessages{
+		DriveRelative:      kind + " must not be drive-relative on Windows: %s",
+		RootedWithoutDrive: kind + " must include a drive or UNC share on Windows: %s",
+		Ambiguous:          kind + " must not use Windows device or namespace forms: %s",
+		UNCIncomplete:      kind + " must include a UNC host and share on Windows: %s",
+		TrimmedAlias:       kind + " must not contain Windows trailing dot or space aliases: %s",
+		ReservedDOSName:    kind + " must not contain reserved DOS device names on Windows: %s",
+	})
 }

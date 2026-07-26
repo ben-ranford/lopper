@@ -724,6 +724,7 @@ func (r *jvmRootedTestRoot) Close() error {
 type jvmRootedTestFile struct {
 	close func() error
 	stat  func() (fs.FileInfo, error)
+	sync  func() error
 }
 
 func (*jvmRootedTestFile) Read([]byte) (int, error)    { return 0, io.EOF }
@@ -741,6 +742,12 @@ func (f *jvmRootedTestFile) Stat() (fs.FileInfo, error) {
 	return nil, errors.New("unexpected stat")
 }
 func (*jvmRootedTestFile) Chmod(os.FileMode) error { return nil }
+func (f *jvmRootedTestFile) Sync() error {
+	if f.sync != nil {
+		return f.sync()
+	}
+	return nil
+}
 
 type jvmRootedSizedFileInfo struct {
 	fs.FileInfo
