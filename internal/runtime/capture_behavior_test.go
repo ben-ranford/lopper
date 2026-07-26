@@ -2715,7 +2715,7 @@ func restoreSwappedExplicitTracePublishPaths(tempPath string, swapPath string, d
 	return renameIfPresent(displacedPath, tempPath)
 }
 
-func renameIfPresent(from string, to string) error {
+func renameIfPresent(from, to string) error {
 	if _, err := os.Stat(from); err == nil {
 		return os.Rename(from, to)
 	}

@@ -83,6 +83,36 @@ func TestTrustedRuntimeExecutableSourceSuccessPreservesCloseError(t *testing.T) 
 	}
 }
 
+func TestStageRuntimeExecutableRootSelectionFailure(t *testing.T) {
+	wantErr := errors.New("stage root selection failed")
+	withRuntimeExecutableStageRootTest(t, func(string) (string, error) {
+		return "", wantErr
+	})
+
+	assertStageRuntimeExecutableError(t, openRuntimeExecutableSourceForTest(t), wantErr)
+}
+
+func TestStageRuntimeExecutableUsesSourceFilesystemRoot(t *testing.T) {
+	if isWindowsRuntime() {
+		t.Skip("Windows uses the default temp root")
+	}
+
+	source := openRuntimeExecutableSourceForTest(t)
+	stage, err := stageRuntimeExecutable(source)
+	if err != nil {
+		t.Fatalf("stage runtime executable: %v", err)
+	}
+	if err := source.Close(); err != nil && !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("close source after stage: %v", err)
+	}
+	if got, want := filepath.Dir(stage.dirPath), filepath.Dir(source.path); got != want {
+		t.Fatalf("expected stage root %q, got %q", want, got)
+	}
+	if err := stage.cleanup(); err != nil {
+		t.Fatalf("cleanup staged runtime executable: %v", err)
+	}
+}
+
 func TestStageRuntimeExecutableConstructionRootSetupFailures(t *testing.T) {
 	assertStageRuntimeExecutableFailure(t, "open private root failed", func(t *testing.T, source *runtimeExecutableSource) {
 		wantErr := errors.New("open private root failed")
@@ -707,6 +737,16 @@ func withRuntimeStageRootOverride(t *testing.T, decorate func(safeio.Root) safei
 			}
 			return decorate(root), nil
 		},
+	})
+}
+
+func withRuntimeExecutableStageRootTest(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+
+	original := runtimeExecutableStageRoot
+	runtimeExecutableStageRoot = fn
+	t.Cleanup(func() {
+		runtimeExecutableStageRoot = original
 	})
 }
 

@@ -365,30 +365,70 @@ func resolveRuntimeExecutableInDir(executable, dir string) (resolvedRuntimeExecu
 
 func resolvePinnedRuntimeExecutableInDir(executable, dir string) (resolvedRuntimeExecutable, bool) {
 	for _, candidate := range runtimeExecutableCandidates(executable, dir) {
-		source, trusted := openTrustedRuntimeExecutableCandidate(executable, candidate)
-		if !trusted {
-			continue
+		resolution, ok, err := resolvePinnedRuntimeExecutableCandidate(executable, dir, candidate)
+		if err != nil {
+			return resolvedRuntimeExecutable{}, false
 		}
-		resolvedPath := source.path
-		installationRoot := ""
-		if runtimeNodeCLIScriptTarget(executable, resolvedPath) {
-			var ok bool
-			installationRoot, ok = runtimeNodeCLIInstallationRoot(executable, candidate, resolvedPath)
-			if !ok {
-				if err := source.Close(); err != nil {
-					return resolvedRuntimeExecutable{}, false
-				}
-				continue
-			}
+		if ok {
+			return resolution, true
 		}
-		return resolvedRuntimeExecutable{
-			path:                      resolvedPath,
-			selectedLauncherRoot:      filepath.Clean(dir),
-			canonicalInstallationRoot: installationRoot,
-			source:                    source,
-		}, true
 	}
 	return resolvedRuntimeExecutable{}, false
+}
+
+func resolvePinnedRuntimeExecutableCandidate(executable, dir, candidate string) (resolvedRuntimeExecutable, bool, error) {
+	source, trusted := openTrustedRuntimeExecutableCandidate(executable, candidate)
+	if !trusted {
+		return resolvedRuntimeExecutable{}, false, nil
+	}
+	source, resolvedPath, err := resolvePinnedRuntimeExecutablePath(executable, candidate, source)
+	if err != nil {
+		return resolvedRuntimeExecutable{}, false, err
+	}
+	installationRoot, ok, err := resolvePinnedRuntimeInstallationRoot(executable, candidate, resolvedPath, source)
+	if err != nil {
+		return resolvedRuntimeExecutable{}, false, err
+	}
+	if !ok {
+		return resolvedRuntimeExecutable{}, false, nil
+	}
+	return resolvedRuntimeExecutable{
+		path:                      resolvedPath,
+		selectedLauncherRoot:      filepath.Clean(dir),
+		canonicalInstallationRoot: installationRoot,
+		source:                    source,
+	}, true, nil
+}
+
+func resolvePinnedRuntimeExecutablePath(executable, candidate string, source *runtimeExecutableSource) (*runtimeExecutableSource, string, error) {
+	resolvedPath := source.path
+	redirectedPath, redirectedSource, ok, err := runtimeWindowsNodeCLIResolvedPath(executable, candidate, resolvedPath)
+	if err != nil {
+		return nil, "", errors.Join(err, source.Close())
+	}
+	if !ok {
+		return source, resolvedPath, nil
+	}
+	if closeErr := source.Close(); closeErr != nil {
+		if redirectedSource != nil {
+			if err := redirectedSource.Close(); err != nil {
+				return nil, "", errors.Join(closeErr, err)
+			}
+		}
+		return nil, "", closeErr
+	}
+	return redirectedSource, redirectedPath, nil
+}
+
+func resolvePinnedRuntimeInstallationRoot(executable, candidate, resolvedPath string, source *runtimeExecutableSource) (string, bool, error) {
+	if !runtimeNodeCLIScriptTarget(executable, resolvedPath) {
+		return "", true, nil
+	}
+	installationRoot, ok := runtimeNodeCLIInstallationRoot(executable, candidate, resolvedPath)
+	if ok {
+		return installationRoot, true, nil
+	}
+	return "", false, source.Close()
 }
 
 func openTrustedRuntimeExecutableCandidate(executable, candidate string) (*runtimeExecutableSource, bool) {
@@ -757,10 +797,7 @@ func resolveTrustedRuntimeNodeForCLI(launcher resolvedRuntimeExecutable) (resolv
 		return resolvedRuntimeExecutable{}, errors.New("canonical launcher installation identity is unavailable")
 	}
 
-	searchDirs := []string{
-		launcher.selectedLauncherRoot,
-		filepath.Join(launcher.canonicalInstallationRoot, "bin"),
-	}
+	searchDirs := runtimeNodeSearchDirsForCLI(launcher)
 	seen := make(map[string]struct{}, len(searchDirs))
 	for _, dir := range searchDirs {
 		dir = filepath.Clean(dir)
@@ -786,6 +823,9 @@ func resolveTrustedRuntimeNodeForCLI(launcher resolvedRuntimeExecutable) (resolv
 }
 
 func runtimeNodeCLIInstallationRoot(executable, candidate, resolvedPath string) (string, bool) {
+	if root, ok := runtimePlatformNodeCLIInstallationRoot(executable, candidate, resolvedPath); ok {
+		return root, true
+	}
 	if !runtimeNodeCLIScriptTarget(executable, resolvedPath) {
 		return "", false
 	}
@@ -861,6 +901,9 @@ func runtimeNodeBinEntryInstallationRoot(executable, path string) (string, bool)
 }
 
 func runtimeNodeExecutableInstallationRoot(nodePath string) (string, bool) {
+	if root, ok := runtimePlatformNodeExecutableInstallationRoot(nodePath); ok {
+		return root, true
+	}
 	nodePath = filepath.Clean(nodePath)
 	if filepath.Base(nodePath) != "node" || filepath.Base(filepath.Dir(nodePath)) != "bin" {
 		return "", false
@@ -988,7 +1031,7 @@ func resolveTrustedSearchDir(dir string) (string, bool) {
 }
 
 func validateTrustedRuntimeWindowsAncestorChain(path string, allowSymlinkComponents bool) bool {
-	root := trustedRuntimeWindowsExecutableRoot(path)
+	root := trustedRuntimeWindowsTrustedRoot(path)
 	if root == "" {
 		return false
 	}
@@ -996,7 +1039,17 @@ func validateTrustedRuntimeWindowsAncestorChain(path string, allowSymlinkCompone
 }
 
 func trustedRuntimeWindowsPathAllowed(path string) bool {
-	return trustedRuntimeWindowsExecutableRoot(path) != ""
+	return trustedRuntimeWindowsTrustedRoot(path) != ""
+}
+
+func trustedRuntimeWindowsTrustedRoot(path string) string {
+	cleanPath := filepath.Clean(path)
+	for _, root := range trustedRuntimeWindowsTrustedRoots() {
+		if runtimeWindowsPathWithinRoot(cleanPath, root) {
+			return root
+		}
+	}
+	return ""
 }
 
 func trustedRuntimeWindowsExecutableRoot(path string) string {
@@ -1026,4 +1079,88 @@ func trustedRuntimeWindowsExecutableRoots() []string {
 		roots = append(roots, cleanEntry)
 	}
 	return roots
+}
+
+func trustedRuntimeWindowsTrustedRoots() []string {
+	return appendUniqueRuntimeSearchDirs(trustedRuntimeWindowsExecutableRoots(), trustedRuntimeWindowsConfiguredRoots())
+}
+
+func trustedRuntimeWindowsBaseRoots() []string {
+	if !isWindowsRuntime() {
+		return nil
+	}
+
+	entries := runtimeWindowsExecutableRoots()
+	seen := make(map[string]struct{})
+	roots := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		baseRoot, ok := runtimeWindowsBaseRoot(entry)
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(baseRoot)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		roots = append(roots, baseRoot)
+	}
+	return roots
+}
+
+func runtimeWindowsBaseRoot(path string) (string, bool) {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	if cleanPath == "" || !filepath.IsAbs(cleanPath) {
+		return "", false
+	}
+	if strings.EqualFold(filepath.Base(cleanPath), "System32") {
+		return cleanPath, true
+	}
+	parent := filepath.Dir(cleanPath)
+	if strings.EqualFold(filepath.Base(cleanPath), "nodejs") && !sameRuntimeExecutablePath(parent, cleanPath) {
+		return parent, true
+	}
+	return "", false
+}
+
+func trustedRuntimeWindowsConfiguredRoots() []string {
+	if !isWindowsRuntime() {
+		return nil
+	}
+
+	configured := strings.TrimSpace(os.Getenv(runtimeBinDirsEnvKey))
+	if configured == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var roots []string
+	for _, raw := range filepath.SplitList(configured) {
+		dir := filepath.Clean(strings.TrimSpace(raw))
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		key := strings.ToLower(dir)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		roots = append(roots, dir)
+	}
+	return roots
+}
+
+func runtimeWindowsPathWithinRoot(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if sameRuntimeExecutablePath(path, root) {
+		return true
+	}
+	if sameRuntimeExecutablePath(filepath.Dir(path), path) {
+		return false
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 }

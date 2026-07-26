@@ -56,6 +56,8 @@ type runtimeCommand struct {
 	cleanupErr  error
 }
 
+var runtimeExecutableStageRoot = platformRuntimeExecutableStageRoot
+
 func newTrustedRuntimeExecutableFromSource(source *runtimeExecutableSource) (*trustedRuntimeExecutable, error) {
 	if source == nil {
 		return nil, errors.New("trusted runtime executable source is unavailable")
@@ -104,7 +106,11 @@ func (s *runtimeExecutableSource) Close() error {
 }
 
 func stageRuntimeExecutable(source *runtimeExecutableSource) (*runtimeExecutableStage, error) {
-	createdDirPath, err := os.MkdirTemp("", runtimeExecutableStagePrefix)
+	stageRoot, err := runtimeExecutableStageRoot(source.path)
+	if err != nil {
+		return nil, err
+	}
+	createdDirPath, err := os.MkdirTemp(stageRoot, runtimeExecutableStagePrefix)
 	if err != nil {
 		return nil, err
 	}

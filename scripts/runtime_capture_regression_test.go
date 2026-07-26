@@ -2,8 +2,11 @@ package scripts
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,15 +99,15 @@ func TestRuntimeCaptureRejectsExplicitExternalTracePathWithoutExternalMutation(t
 func setupRuntimeCaptureRegressionTool(t *testing.T) string {
 	t.Helper()
 
-	toolDir := testutil.SecureHomeTempDir(t, "scripts-runtime-tool-")
-	testutil.InstallSelfExecutable(t, toolDir, "npm")
+	toolDir := secureScriptsRuntimeHomeTempDir(t, "scripts-runtime-tool-")
+	installScriptsSelfExecutable(t, toolDir, "npm")
 	t.Setenv(scriptsRuntimeHelperModeEnv, "count-trace")
 	return toolDir
 }
 
 func readRuntimeCaptureRegressionCounter(t *testing.T, path string) int {
 	t.Helper()
-	return testutil.MustReadTrimmedIntFile(t, path)
+	return mustReadScriptsTrimmedIntFile(t, path)
 }
 
 type runtimeCaptureRegressionFixture struct {
@@ -222,4 +225,104 @@ func findRuntimeCaptureDependencyUsage(t *testing.T, dependencies []reportmodel.
 		}
 	}
 	return nil
+}
+
+func secureScriptsRuntimeHomeTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+	baseDir := filepath.Join(homeDir, ".lopper-test-fixtures")
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		t.Fatalf("mkdir secure fixture base dir: %v", err)
+	}
+	dir, err := os.MkdirTemp(baseDir, prefix)
+	if err != nil {
+		t.Fatalf("mkdir secure fixture dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove secure fixture dir: %v", err)
+		}
+	})
+	return dir
+}
+
+func installScriptsSelfExecutable(t *testing.T, dir string, name string) string {
+	t.Helper()
+
+	sourcePath, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	if goruntime.GOOS == "windows" && filepath.Ext(name) == "" {
+		name += ".exe"
+	}
+	targetPath := filepath.Join(dir, name)
+
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatalf("open test executable %s: %v", sourcePath, err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		closeErr := sourceFile.Close()
+		t.Fatalf("mkdir helper dir %s: %v (close source: %v)", dir, err, closeErr)
+	}
+	targetRoot, err := os.OpenRoot(dir)
+	if err != nil {
+		closeErr := sourceFile.Close()
+		t.Fatalf("open helper dir %s: %v (close source: %v)", dir, err, closeErr)
+	}
+	targetFile, err := targetRoot.OpenFile(filepath.Base(targetPath), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
+	if err != nil {
+		sourceCloseErr := sourceFile.Close()
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("create helper executable %s: %v (close source: %v; close root: %v)", targetPath, err, sourceCloseErr, rootCloseErr)
+	}
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		sourceCloseErr := sourceFile.Close()
+		targetCloseErr := targetFile.Close()
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("copy helper executable %s: %v (close source: %v; close target: %v; close root: %v)", targetPath, err, sourceCloseErr, targetCloseErr, rootCloseErr)
+	}
+	if err := sourceFile.Close(); err != nil {
+		targetCloseErr := targetFile.Close()
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("close test executable %s: %v (close target: %v; close root: %v)", sourcePath, err, targetCloseErr, rootCloseErr)
+	}
+	if err := targetFile.Close(); err != nil {
+		rootCloseErr := targetRoot.Close()
+		t.Fatalf("close helper executable %s: %v (close root: %v)", targetPath, err, rootCloseErr)
+	}
+	if err := targetRoot.Close(); err != nil {
+		t.Fatalf("close helper dir %s: %v", dir, err)
+	}
+	return targetPath
+}
+
+func mustReadScriptsTrimmedIntFile(t *testing.T, path string) int {
+	t.Helper()
+
+	root, err := os.OpenRoot(filepath.Dir(filepath.Clean(path)))
+	if err != nil {
+		t.Fatalf("open root for %s: %v", path, err)
+	}
+	file, err := root.Open(filepath.Base(path))
+	if err != nil {
+		closeErr := root.Close()
+		t.Fatalf("open %s: %v (close root: %v)", path, err, closeErr)
+	}
+	content, readErr := io.ReadAll(file)
+	fileCloseErr := file.Close()
+	rootCloseErr := root.Close()
+	if readErr != nil || fileCloseErr != nil || rootCloseErr != nil {
+		t.Fatalf("read %s: %v (close file: %v; close root: %v)", path, readErr, fileCloseErr, rootCloseErr)
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(content)))
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return value
 }

@@ -989,7 +989,7 @@ type missingExplicitRuntimeFallbackCase struct {
 	expectNoDependencies bool
 }
 
-func runtimeCaptureWarningCases(repo string, explicitTrace string) []runtimeCaptureWarningCase {
+func runtimeCaptureWarningCases(repo, explicitTrace string) []runtimeCaptureWarningCase {
 	resolvedRepo := resolvedTestRepoPathNoFail(repo)
 	return []runtimeCaptureWarningCase{
 		{

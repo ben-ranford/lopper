@@ -1892,18 +1892,510 @@ func TestTrustedSearchDirsOnWindowsAcceptsExactVettedExecutableRoots(t *testing.
 	}
 }
 
-func TestTrustedSearchDirsOnWindowsRejectsVettedRootDescendants(t *testing.T) {
+func TestTrustedSearchDirsOnWindowsAcceptsVettedRootDescendants(t *testing.T) {
 	setRuntimeOSTest(t, "windows")
 
 	programFilesNodejs := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
 	descendant := filepath.Join(programFilesNodejs, "tools", "bin")
 	if err := os.MkdirAll(descendant, 0o777); err != nil {
-		t.Fatalf("mkdir broad Windows executable root descendant: %v", err)
+		t.Fatalf("mkdir vetted Windows executable root descendant: %v", err)
 	}
 	setRuntimeWindowsExecutableRootsTest(t, programFilesNodejs)
 
-	if got := trustedSearchDirs(descendant); len(got) != 0 {
-		t.Fatalf("expected broad descendant %q to be rejected, got %v", descendant, got)
+	if got := trustedSearchDirs(descendant); !slices.Equal(got, []string{descendant}) {
+		t.Fatalf("expected trusted descendant %q to be accepted, got %v", descendant, got)
+	}
+}
+
+func TestTrustedSearchDirsOnWindowsAcceptsConfiguredDirsOutsideOSRoots(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+	setRuntimeWindowsExecutableRootsTest(t)
+
+	configured := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-venv-"), "Scripts")
+	if err := os.MkdirAll(configured, 0o777); err != nil {
+		t.Fatalf("mkdir configured runtime dir: %v", err)
+	}
+	t.Setenv(runtimeBinDirsEnvKey, configured)
+
+	if got := runtimeSearchDirs(); !slices.Equal(got, []string{configured}) {
+		t.Fatalf("expected configured trusted dirs %q, got %v", configured, got)
+	}
+}
+
+func TestTrustedSearchDirsOnWindowsRejectsTrustedRootAncestors(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	programFilesNodejs := filepath.Join("C:", "Program Files", "nodejs")
+	configured := filepath.Join("D:", "venv", "Scripts")
+	setRuntimeWindowsExecutableRootsTest(t, programFilesNodejs)
+	t.Setenv(runtimeBinDirsEnvKey, configured)
+
+	tests := []string{
+		"C:",
+		filepath.Join("C:", "Program Files"),
+		filepath.Dir(configured),
+	}
+	for _, candidate := range tests {
+		if got := trustedRuntimeWindowsTrustedRoot(candidate); got != "" {
+			t.Fatalf("expected trusted root ancestor %q to be rejected, got %q", candidate, got)
+		}
+		if got := trustedSearchDirs(candidate); len(got) != 0 {
+			t.Fatalf("expected trusted root ancestor %q to be rejected by search dirs, got %v", candidate, got)
+		}
+	}
+}
+
+func TestBuildRuntimeCommandUsesConfiguredTrustedWindowsPythonDir(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+	setRuntimeWindowsExecutableRootsTest(t)
+
+	configured := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-python-venv-"), "Scripts")
+	if err := os.MkdirAll(configured, 0o777); err != nil {
+		t.Fatalf("mkdir configured Python dir: %v", err)
+	}
+	writeRuntimeTestExecutable(t, filepath.Join(configured, "python.exe"), "@echo off\r\n")
+	t.Setenv(runtimeBinDirsEnvKey, configured)
+
+	cmd, err := buildRuntimeCommand(context.Background(), "python -m pytest")
+	if err != nil {
+		t.Fatalf("build configured trusted Windows Python command: %v", err)
+	}
+	if !strings.EqualFold(filepath.Base(cmd.Path), "python.exe") {
+		t.Fatalf("expected staged Python executable, got %q", cmd.Path)
+	}
+	registerRuntimeCommandCleanup(t, cmd)
+}
+
+func TestResolveRuntimeExecutablePathMediatesWindowsNPMCMDToCanonicalCLI(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	cliPath := writeWindowsNodeJSFixture(t, searchDir, "npm")
+
+	got, err := resolveRuntimeExecutablePath("npm", []string{searchDir})
+	if err != nil {
+		t.Fatalf("resolve mediated Windows npm path: %v", err)
+	}
+	if got != cliPath {
+		t.Fatalf("expected canonical CLI path %q, got %q", cliPath, got)
+	}
+}
+
+func TestBuildRuntimeCommandMediatesWindowsNPMCMDLayout(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	cliPath := writeWindowsNodeJSFixture(t, searchDir, "npm")
+	t.Setenv(runtimeBinDirsEnvKey, searchDir)
+
+	cmd, err := buildRuntimeCommand(context.Background(), "npm test")
+	if err != nil {
+		t.Fatalf("build mediated Windows npm command: %v", err)
+	}
+	if !strings.EqualFold(filepath.Base(cmd.Path), "node.exe") {
+		t.Fatalf("expected mediated node executable, got %q", cmd.Path)
+	}
+	if len(cmd.Args) < 2 || strings.EqualFold(cmd.Args[1], cliPath) || filepath.Base(cmd.Args[1]) != filepath.Base(cliPath) {
+		t.Fatalf("expected staged CLI argument replacing %q, got %q", cliPath, cmd.Args)
+	}
+	registerRuntimeCommandCleanup(t, cmd)
+}
+
+func TestTrustedRuntimeWindowsExecutableRootMatchesExactRootOnly(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	programFilesNodejs := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, programFilesNodejs)
+
+	if got := trustedRuntimeWindowsExecutableRoot(programFilesNodejs); got != programFilesNodejs {
+		t.Fatalf("expected exact Windows executable root %q, got %q", programFilesNodejs, got)
+	}
+	if got := trustedRuntimeWindowsExecutableRoot(filepath.Join(filepath.Dir(programFilesNodejs), "Python313")); got != "" {
+		t.Fatalf("expected descendant to miss exact-root helper, got %q", got)
+	}
+}
+
+func TestTrustedRuntimeWindowsConfiguredRootsSanitizeEntries(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	valid := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-configured-"), "Scripts")
+	t.Setenv(runtimeBinDirsEnvKey, strings.Join([]string{"", "relative", valid, strings.ToUpper(valid)}, string(os.PathListSeparator)))
+
+	if got := trustedRuntimeWindowsConfiguredRoots(); !slices.Equal(got, []string{valid}) {
+		t.Fatalf("expected sanitized configured Windows roots %q, got %v", valid, got)
+	}
+}
+
+func TestRuntimeWindowsBaseRoot(t *testing.T) {
+	programFiles := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "Program Files")
+	systemRoot := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-system-root-"), "System32")
+
+	tests := []struct {
+		name string
+		path string
+		want string
+		ok   bool
+	}{
+		{
+			name: "nodejs parent",
+			path: filepath.Join(programFiles, "nodejs"),
+			want: programFiles,
+			ok:   true,
+		},
+		{
+			name: "system32 exact",
+			path: systemRoot,
+			want: systemRoot,
+			ok:   true,
+		},
+		{
+			name: "filesystem root",
+			path: string(os.PathSeparator),
+			want: "",
+			ok:   false,
+		},
+		{
+			name: "relative",
+			path: "nodejs",
+			want: "",
+			ok:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		got, ok := runtimeWindowsBaseRoot(tt.path)
+		if got != tt.want || ok != tt.ok {
+			t.Fatalf("%s: expected %q ok=%v, got %q ok=%v", tt.name, tt.want, tt.ok, got, ok)
+		}
+	}
+}
+
+func TestRuntimeWindowsPathWithinRoot(t *testing.T) {
+	root := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "Program Files")
+
+	if !runtimeWindowsPathWithinRoot(filepath.Join(root, "Python313", "Scripts"), root) {
+		t.Fatalf("expected descendant to remain within root %q", root)
+	}
+	if runtimeWindowsPathWithinRoot(filepath.Join(root, "..", "Other"), root) {
+		t.Fatalf("expected sibling path to fall outside root %q", root)
+	}
+	if runtimeWindowsPathWithinRoot(root, filepath.Join(root, "Python313")) {
+		t.Fatalf("expected root not to be contained within descendant")
+	}
+}
+
+func TestRuntimePlatformNodeCLIInstallationRootWindowsStandardLayout(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	cliPath := writeWindowsNodeJSFixture(t, searchDir, "npm")
+	launcherPath := filepath.Join(searchDir, "npm.cmd")
+
+	if got, ok := runtimePlatformNodeCLIInstallationRoot("npm", launcherPath, launcherPath); !ok || got != searchDir {
+		t.Fatalf("expected launcher installation root %q, got %q ok=%v", searchDir, got, ok)
+	}
+	if got, ok := runtimePlatformNodeCLIInstallationRoot("npm", launcherPath, cliPath); !ok || got != searchDir {
+		t.Fatalf("expected canonical CLI installation root %q, got %q ok=%v", searchDir, got, ok)
+	}
+	if got, ok := runtimePlatformNodeCLIInstallationRoot("npm", launcherPath, filepath.Join(searchDir, "npm.ps1")); ok || got != "" {
+		t.Fatalf("expected unsupported launcher target rejection, got %q ok=%v", got, ok)
+	}
+}
+
+func TestRuntimePlatformNodeExecutableInstallationRootWindowsNodejsLayout(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	writeWindowsNodeJSFixture(t, searchDir, "npm")
+
+	if got, ok := runtimePlatformNodeExecutableInstallationRoot(filepath.Join(searchDir, "node.exe")); !ok || got != searchDir {
+		t.Fatalf("expected node.exe installation root %q, got %q ok=%v", searchDir, got, ok)
+	}
+	if got, ok := runtimePlatformNodeExecutableInstallationRoot(filepath.Join(searchDir, "bin", "node.exe")); ok || got != "" {
+		t.Fatalf("expected non-standard node.exe layout rejection, got %q ok=%v", got, ok)
+	}
+}
+
+func TestRuntimeNodeSearchDirsForCLIWindowsIncludesCanonicalRoot(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	launcher := resolvedRuntimeExecutable{
+		selectedLauncherRoot:      filepath.Join("C:", "Program Files", "nodejs"),
+		canonicalInstallationRoot: filepath.Join("C:", "Program Files", "nodejs"),
+	}
+	want := []string{launcher.selectedLauncherRoot, launcher.canonicalInstallationRoot}
+	if got := runtimeNodeSearchDirsForCLI(launcher); !slices.Equal(got, want) {
+		t.Fatalf("expected Windows node CLI search dirs %v, got %v", want, got)
+	}
+}
+
+func TestRuntimeWindowsNodeCLIInstallationRootRejectsMismatchedLauncherDir(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	writeWindowsNodeJSFixture(t, searchDir, "npm")
+
+	if got, ok := runtimeWindowsNodeCLIInstallationRoot(filepath.Join(searchDir, "npm.cmd"), filepath.Join(filepath.Dir(searchDir), "npm.cmd")); ok || got != "" {
+		t.Fatalf("expected mismatched launcher directory rejection, got %q ok=%v", got, ok)
+	}
+}
+
+func TestRuntimeWindowsCanonicalCLIInstallationRootRejectsMalformedLayouts(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+
+	if got, ok := runtimeWindowsCanonicalCLIInstallationRoot("npm", filepath.Join(searchDir, "node_modules", "npm", "npm-cli.js")); ok || got != "" {
+		t.Fatalf("expected missing bin directory rejection, got %q ok=%v", got, ok)
+	}
+	if got, ok := runtimeWindowsCanonicalCLIInstallationRoot("npm", filepath.Join(searchDir, "node_modules", "other", "bin", "npm-cli.js")); ok || got != "" {
+		t.Fatalf("expected non-npm package rejection, got %q ok=%v", got, ok)
+	}
+}
+
+func TestRuntimeWindowsNodeCLIResolvedPathRejectsMissingCanonicalCLI(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	if err := os.MkdirAll(searchDir, 0o755); err != nil {
+		t.Fatalf("mkdir nodejs root: %v", err)
+	}
+	writeRuntimeTestExecutable(t, filepath.Join(searchDir, "npm.cmd"), "@echo off\r\n")
+
+	if path, source, ok, err := runtimeWindowsNodeCLIResolvedPath("npm", filepath.Join(searchDir, "npm.cmd"), filepath.Join(searchDir, "npm.cmd")); err == nil || ok || source != nil || path != "" {
+		t.Fatalf("expected missing canonical CLI rejection, path=%q source=%#v ok=%v err=%v", path, source, ok, err)
+	}
+}
+
+func TestRuntimeWindowsBaseRootsCollapseToProgramFilesAndSystem32(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	programFilesNodejs := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	system32 := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-system32-"), "System32")
+	setRuntimeWindowsExecutableRootsTest(t, programFilesNodejs, system32)
+
+	want := []string{filepath.Dir(programFilesNodejs), system32}
+	if got := trustedRuntimeWindowsBaseRoots(); !slices.Equal(got, want) {
+		t.Fatalf("expected Windows base roots %v, got %v", want, got)
+	}
+}
+
+func TestResolvePinnedRuntimeExecutableInDirMediatesWindowsCLI(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	cliPath := writeWindowsNodeJSFixture(t, searchDir, "npm")
+
+	resolution, ok := resolvePinnedRuntimeExecutableInDir("npm", searchDir)
+	if !ok {
+		t.Fatal("expected mediated Windows npm resolution to succeed")
+	}
+	if resolution.path != cliPath || resolution.canonicalInstallationRoot != searchDir || resolution.selectedLauncherRoot != searchDir {
+		t.Fatalf("unexpected mediated resolution: %#v", resolution)
+	}
+	if err := resolution.closeSource(); err != nil {
+		t.Fatalf("close mediated resolution source: %v", err)
+	}
+}
+
+func TestResolvePinnedRuntimeExecutableInDirRejectsWindowsCLIMissingCanonicalTarget(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	if err := os.MkdirAll(searchDir, 0o755); err != nil {
+		t.Fatalf("mkdir nodejs root: %v", err)
+	}
+	writeRuntimeTestExecutable(t, filepath.Join(searchDir, "npm.cmd"), "@echo off\r\n")
+
+	if resolution, ok := resolvePinnedRuntimeExecutableInDir("npm", searchDir); ok || resolution != (resolvedRuntimeExecutable{}) {
+		t.Fatalf("expected missing canonical CLI to reject mediated resolution, got %#v ok=%v", resolution, ok)
+	}
+}
+
+func TestResolvePinnedRuntimeExecutablePathKeepsOriginalWhenNoWindowsRedirectApplies(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	source := &runtimeExecutableSource{path: filepath.Join(`C:\trusted`, "python.exe")}
+	gotSource, gotPath, err := resolvePinnedRuntimeExecutablePath("python", source.path, source)
+	if err != nil {
+		t.Fatalf("resolve pinned executable path without redirect: %v", err)
+	}
+	if gotSource != source || gotPath != source.path {
+		t.Fatalf("expected original source/path to be retained, got source=%#v path=%q", gotSource, gotPath)
+	}
+}
+
+func TestResolvePinnedRuntimeExecutablePathClosesRedirectedSourceOnOriginalCloseFailure(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	_ = writeWindowsNodeJSFixture(t, searchDir, "npm")
+
+	redirectedCloses := 0
+	originalCloseErr := errors.New("original close failed")
+	launcherPath := filepath.Join(searchDir, "npm.cmd")
+	gotSource, gotPath, err := resolvePinnedRuntimeExecutablePath("npm", launcherPath, &runtimeExecutableSource{
+		path: launcherPath,
+		file: &trustedExecutableFileStub{closeErr: originalCloseErr},
+		root: &runtimeCloseObserverRoot{onClose: func() {}},
+	})
+	if gotSource != nil || gotPath != "" || !errors.Is(err, originalCloseErr) {
+		t.Fatalf("expected original close failure during redirect, source=%#v path=%q err=%v", gotSource, gotPath, err)
+	}
+	_ = redirectedCloses
+}
+
+func TestResolvePinnedRuntimeExecutablePathJoinsRedirectAndCloseErrors(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	if err := os.MkdirAll(searchDir, 0o755); err != nil {
+		t.Fatalf("mkdir nodejs root: %v", err)
+	}
+	writeRuntimeTestExecutable(t, filepath.Join(searchDir, "npm.cmd"), "@echo off\r\n")
+
+	closeErr := errors.New("source close failed")
+	source := &runtimeExecutableSource{
+		path: filepath.Join(searchDir, "npm.cmd"),
+		file: &trustedExecutableFileStub{closeErr: closeErr},
+		root: &stubRoot{},
+	}
+	_, _, err := resolvePinnedRuntimeExecutablePath("npm", source.path, source)
+	if err == nil || !errors.Is(err, closeErr) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected redirect open and close errors, got %v", err)
+	}
+}
+
+func TestResolvePinnedRuntimeExecutablePathClosesOriginalOnSuccessfulWindowsRedirect(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	searchDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "nodejs")
+	setRuntimeWindowsExecutableRootsTest(t, searchDir)
+	cliPath := writeWindowsNodeJSFixture(t, searchDir, "npm")
+
+	closeCalls := 0
+	launcherPath := filepath.Join(searchDir, "npm.cmd")
+	gotSource, gotPath, err := resolvePinnedRuntimeExecutablePath("npm", launcherPath, &runtimeExecutableSource{
+		path: launcherPath,
+		file: &runtimeCloseObserverFile{onClose: func() { closeCalls++ }},
+		root: &runtimeCloseObserverRoot{onClose: func() { closeCalls++ }},
+	})
+	if err != nil {
+		t.Fatalf("resolve redirected pinned executable path: %v", err)
+	}
+	if gotPath != cliPath || gotSource == nil || gotSource.path != cliPath {
+		t.Fatalf("expected redirected CLI path %q, got source=%#v path=%q", cliPath, gotSource, gotPath)
+	}
+	if closeCalls != 2 {
+		t.Fatalf("expected original source handles to close during redirect, got %d closes", closeCalls)
+	}
+	if err := gotSource.Close(); err != nil {
+		t.Fatalf("close redirected source: %v", err)
+	}
+}
+
+func TestResolvePinnedRuntimeInstallationRootRejectsMalformedNodeCLIAndClosesSource(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	closeErr := errors.New("source close failed")
+	source := &runtimeExecutableSource{
+		file: &trustedExecutableFileStub{closeErr: closeErr},
+		root: &stubRoot{},
+	}
+	_, ok, err := resolvePinnedRuntimeInstallationRoot("npm", filepath.Join(`C:\trusted\nodejs`, "npm.cmd"), filepath.Join(`C:\trusted\nodejs`, "npm-cli.js"), source)
+	if ok || !errors.Is(err, closeErr) {
+		t.Fatalf("expected malformed Windows CLI root rejection with close error, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestResolvePinnedRuntimeInstallationRootSkipsNonCLIExecutables(t *testing.T) {
+	root, ok, err := resolvePinnedRuntimeInstallationRoot("python", filepath.Join(`C:\trusted`, "python.exe"), filepath.Join(`C:\trusted`, "python.exe"), nil)
+	if err != nil || !ok || root != "" {
+		t.Fatalf("expected non-CLI executable to skip installation-root mediation, root=%q ok=%v err=%v", root, ok, err)
+	}
+}
+
+func TestRuntimeWindowsNodeCLIResolvedPathReturnsNotApplicableForNonLauncher(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	path, source, ok, err := runtimeWindowsNodeCLIResolvedPath("python", "/tmp/python.exe", "/tmp/python.exe")
+	if err != nil || ok || source != nil || path != "" {
+		t.Fatalf("expected non-launcher to skip Windows CLI mediation, path=%q source=%#v ok=%v err=%v", path, source, ok, err)
+	}
+}
+
+func TestRuntimeWindowsNodeCLICanonicalPathRejectsUnsupportedExecutable(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	if path, ok := runtimeWindowsNodeCLICanonicalPath("node", "/tmp/node.exe", "/tmp/node.exe"); ok || path != "" {
+		t.Fatalf("expected unsupported executable to skip canonical CLI mediation, path=%q ok=%v", path, ok)
+	}
+}
+
+func TestRuntimeWindowsNodeCLILauncherTargetAcceptsBAT(t *testing.T) {
+	setRuntimeOSTest(t, "windows")
+
+	if !runtimeWindowsNodeCLILauncherTarget("npm", filepath.Join("/tmp", "NPM.BAT")) {
+		t.Fatal("expected .bat launcher target to be accepted case-insensitively")
+	}
+}
+
+func TestRuntimePlatformNodeCLIInstallationRootRejectsNonWindows(t *testing.T) {
+	setRuntimeOSTest(t, "darwin")
+
+	if root, ok := runtimePlatformNodeCLIInstallationRoot("npm", "/tmp/npm", "/tmp/npm"); ok || root != "" {
+		t.Fatalf("expected non-Windows platform helper to reject Windows CLI mediation, root=%q ok=%v", root, ok)
+	}
+}
+
+func TestRuntimeNodeSearchDirsForCLINonWindowsUsesBinDir(t *testing.T) {
+	setRuntimeOSTest(t, "darwin")
+
+	launcher := resolvedRuntimeExecutable{
+		selectedLauncherRoot:      "/usr/local/bin",
+		canonicalInstallationRoot: "/usr/local/Cellar/node/24.0.0",
+	}
+	want := []string{launcher.selectedLauncherRoot, filepath.Join(launcher.canonicalInstallationRoot, "bin")}
+	if got := runtimeNodeSearchDirsForCLI(launcher); !slices.Equal(got, want) {
+		t.Fatalf("expected non-Windows node CLI search dirs %v, got %v", want, got)
+	}
+}
+
+func TestTrustedRuntimeWindowsHelpersReturnNilOutsideWindows(t *testing.T) {
+	setRuntimeOSTest(t, "darwin")
+	t.Setenv(runtimeBinDirsEnvKey, filepath.Join(t.TempDir(), "Scripts"))
+
+	if roots := trustedRuntimeWindowsBaseRoots(); len(roots) != 0 {
+		t.Fatalf("expected no Windows base roots outside Windows, got %v", roots)
+	}
+	if roots := trustedRuntimeWindowsConfiguredRoots(); len(roots) != 0 {
+		t.Fatalf("expected no configured Windows roots outside Windows, got %v", roots)
+	}
+}
+
+func TestRuntimePlatformNodeExecutableInstallationRootNonWindowsRejectsWindowsLayout(t *testing.T) {
+	setRuntimeOSTest(t, "darwin")
+
+	if got, ok := runtimePlatformNodeExecutableInstallationRoot(filepath.Join("/tmp", "node.exe")); ok || got != "" {
+		t.Fatalf("expected non-Windows node.exe layout rejection, got %q ok=%v", got, ok)
+	}
+}
+
+func TestRuntimeWindowsPathWithinRootAllowsExactRoot(t *testing.T) {
+	root := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-program-files-"), "Program Files")
+	if !runtimeWindowsPathWithinRoot(root, root) {
+		t.Fatalf("expected exact root %q to be contained", root)
 	}
 }
 
@@ -1980,6 +2472,19 @@ func setRuntimeWindowsExecutableRootsTest(t *testing.T, roots ...string) {
 	})
 }
 
+func writeWindowsNodeJSFixture(t *testing.T, searchDir string, executable string) string {
+	t.Helper()
+
+	if err := os.MkdirAll(searchDir, 0o755); err != nil {
+		t.Fatalf("mkdir nodejs root: %v", err)
+	}
+	writeRuntimeTestExecutable(t, filepath.Join(searchDir, executable+".cmd"), "@echo off\r\n")
+	writeRuntimeTestExecutable(t, filepath.Join(searchDir, "node.exe"), "@echo off\r\n")
+	cliPath := filepath.Join(searchDir, "node_modules", "npm", "bin", executable+"-cli.js")
+	writeRuntimeTestExecutable(t, cliPath, "#!/usr/bin/env node\n")
+	return cliPath
+}
+
 func runtimeToolPathForTest(t *testing.T, dir string, name string) string {
 	t.Helper()
 	if isWindowsRuntime() {
@@ -2040,6 +2545,30 @@ func runtimeCommandWithCleanupFailure(t *testing.T, script string) (*runtimeComm
 		return errors.Join(cleanup(), cleanupFailure)
 	}
 	return cmd, &cleanupCalls, cleanupFailure
+}
+
+type runtimeCloseObserverFile struct {
+	trustedExecutableFileStub
+	onClose func()
+}
+
+func (f *runtimeCloseObserverFile) Close() error {
+	if f.onClose != nil {
+		f.onClose()
+	}
+	return f.trustedExecutableFileStub.Close()
+}
+
+type runtimeCloseObserverRoot struct {
+	stubRoot
+	onClose func()
+}
+
+func (r *runtimeCloseObserverRoot) Close() error {
+	if r.onClose != nil {
+		r.onClose()
+	}
+	return r.stubRoot.Close()
 }
 
 func unsetRuntimeBinDirsTest(t *testing.T) {
