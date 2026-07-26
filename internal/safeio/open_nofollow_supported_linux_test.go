@@ -369,6 +369,107 @@ func TestProbeOpenFileNoFollowSupportFailsWhenProbePathResolutionFails(t *testin
 	}
 }
 
+func TestProbeOpenFileNoFollowSupportFailsWhenOpenedProbeFileCloseFails(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	probePath := mustRegularProbePath(t)
+	openNoFollowProbePath = func() (string, error) {
+		return probePath, nil
+	}
+	closeNoFollowProbeFile = func(*os.File) error {
+		return errors.New("close opened probe file")
+	}
+
+	if supported, cacheable := probeOpenFileNoFollowSupport(); supported || cacheable {
+		t.Fatalf("expected probe file close failure to fail closed without caching, got supported=%v cacheable=%v", supported, cacheable)
+	}
+}
+
+func TestDefaultOpenNoFollowProbePathUsesResolvedExecutable(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	probePath := mustRegularProbePath(t)
+	noFollowExecutablePath = func() (string, error) {
+		return "/proc/self/exe", nil
+	}
+	noFollowEvalSymlinks = func(path string) (string, error) {
+		if path != "/proc/self/exe" {
+			t.Fatalf("unexpected executable path: %q", path)
+		}
+		return probePath, nil
+	}
+
+	got, err := defaultOpenNoFollowProbePath()
+	if err != nil {
+		t.Fatalf("defaultOpenNoFollowProbePath: %v", err)
+	}
+	if got != probePath {
+		t.Fatalf("unexpected probe path: got %q want %q", got, probePath)
+	}
+}
+
+func TestDefaultOpenNoFollowProbePathReturnsNotExistForNonRegularTarget(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	noFollowExecutablePath = func() (string, error) {
+		return "/proc/self/exe", nil
+	}
+	noFollowEvalSymlinks = func(string) (string, error) {
+		return "/resolved/probe", nil
+	}
+	noFollowLstat = func(name string) (fs.FileInfo, error) {
+		if name != "/resolved/probe" {
+			t.Fatalf("unexpected lstat path: %q", name)
+		}
+		return &verificationFileInfo{name: filepath.Base(name), mode: os.ModeDir | 0o755}, nil
+	}
+
+	_, err := defaultOpenNoFollowProbePath()
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected fs.ErrNotExist for non-regular probe target, got %v", err)
+	}
+}
+
+func TestDefaultOpenNoFollowProbePathPropagatesExecutableAndResolutionFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		execErr error
+		evalErr error
+	}{
+		{name: "executable failure", execErr: errors.New("executable unavailable")},
+		{name: "eval symlinks failure", evalErr: errors.New("eval symlinks failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubOpenFileNoFollowSupportProbes(t)
+			t.Cleanup(restore)
+
+			noFollowExecutablePath = func() (string, error) {
+				if tc.execErr != nil {
+					return "", tc.execErr
+				}
+				return "/proc/self/exe", nil
+			}
+			noFollowEvalSymlinks = func(string) (string, error) {
+				if tc.evalErr != nil {
+					return "", tc.evalErr
+				}
+				return mustRegularProbePath(t), nil
+			}
+
+			_, err := defaultOpenNoFollowProbePath()
+			switch {
+			case tc.execErr != nil && !errors.Is(err, tc.execErr):
+				t.Fatalf("expected executable error %v, got %v", tc.execErr, err)
+			case tc.evalErr != nil && !errors.Is(err, tc.evalErr):
+				t.Fatalf("expected eval symlinks error %v, got %v", tc.evalErr, err)
+			}
+		})
+	}
+}
+
 func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 	t.Helper()
 
@@ -377,6 +478,10 @@ func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 	originalProcOpen := procSelfFDReopen
 	originalCloseFD := closeNoFollowFD
 	originalNewFile := newNoFollowOSFile
+	originalCloseProbeFile := closeNoFollowProbeFile
+	originalExecutable := noFollowExecutablePath
+	originalEvalSymlinks := noFollowEvalSymlinks
+	originalLstat := noFollowLstat
 	originalCloseRoot := closeNoFollowProbeRoot
 	originalOpenRoot := openNoFollowProbeRoot
 	originalRootFD := osRootFDResolver
@@ -398,6 +503,10 @@ func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 		procSelfFDReopen = originalProcOpen
 		closeNoFollowFD = originalCloseFD
 		newNoFollowOSFile = originalNewFile
+		closeNoFollowProbeFile = originalCloseProbeFile
+		noFollowExecutablePath = originalExecutable
+		noFollowEvalSymlinks = originalEvalSymlinks
+		noFollowLstat = originalLstat
 		closeNoFollowProbeRoot = originalCloseRoot
 		openNoFollowProbeRoot = originalOpenRoot
 		osRootFDResolver = originalRootFD

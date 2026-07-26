@@ -20,6 +20,10 @@ var (
 	procSelfFDReopen       = unix.Open
 	closeNoFollowFD        = unix.Close
 	newNoFollowOSFile      = os.NewFile
+	closeNoFollowProbeFile = (*os.File).Close
+	noFollowExecutablePath = os.Executable
+	noFollowEvalSymlinks   = filepath.EvalSymlinks
+	noFollowLstat          = os.Lstat
 	closeNoFollowProbeRoot = (*os.Root).Close
 	openNoFollowProbeRoot  = os.OpenRoot
 	osRootFDResolver       = osRootFD
@@ -62,26 +66,26 @@ func probeOpenFileNoFollowSupport() (supported bool, cacheable bool) {
 		return false, isDefinitiveNoFollowSupportProbeError(err)
 	}
 
-	if file, err := openRegularFileNoFollowFromRootFD(rootFD, filepath.Base(probePath)); err != nil {
+	file, err := openRegularFileNoFollowFromRootFD(rootFD, filepath.Base(probePath))
+	if err != nil {
 		return false, isDefinitiveNoFollowSupportProbeError(err)
-	} else {
-		if closeErr := file.Close(); closeErr != nil {
-			return false, false
-		}
-		return true, true
 	}
+	if closeErr := closeNoFollowProbeFile(file); closeErr != nil {
+		return false, false
+	}
+	return true, true
 }
 
 func defaultOpenNoFollowProbePath() (string, error) {
-	probePath, err := os.Executable()
+	probePath, err := noFollowExecutablePath()
 	if err != nil {
 		return "", err
 	}
-	probePath, err = filepath.EvalSymlinks(probePath)
+	probePath, err = noFollowEvalSymlinks(probePath)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(probePath)
+	info, err := noFollowLstat(probePath)
 	switch {
 	case err != nil:
 		return "", err

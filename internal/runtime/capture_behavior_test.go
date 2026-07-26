@@ -62,7 +62,7 @@ func TestCaptureDefaultTracePathCanonicalizesSymlinkedRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load captured runtime trace from canonical path: %v", err)
 	}
-	if got := trace.DependencyLoads["lodash"]; got != 1 {
+	if trace.DependencyLoads["lodash"] != 1 {
 		t.Fatalf("expected canonical symlinked capture trace to load lodash once, got %#v", trace.DependencyLoads)
 	}
 }
