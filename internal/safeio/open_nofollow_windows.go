@@ -18,7 +18,35 @@ const windowsNoFollowCreateOptions = windows.FILE_SYNCHRONOUS_IO_NONALERT |
 	windows.FILE_NON_DIRECTORY_FILE |
 	windows.FILE_OPEN_REPARSE_POINT
 
-var windowsNtCreateFile = windows.NtCreateFile
+type windowsNTCreateFileRequest struct {
+	handle           *windows.Handle
+	access           uint32
+	objectAttributes *windows.OBJECT_ATTRIBUTES
+	ioStatusBlock    *windows.IO_STATUS_BLOCK
+	allocationSize   *int64
+	attributes       uint32
+	share            uint32
+	disposition      uint32
+	options          uint32
+	eaBuffer         uintptr
+	eaLength         uint32
+}
+
+var windowsNtCreateFile = func(request windowsNTCreateFileRequest) error {
+	return windows.NtCreateFile(
+		request.handle,
+		request.access,
+		request.objectAttributes,
+		request.ioStatusBlock,
+		request.allocationSize,
+		request.attributes,
+		request.share,
+		request.disposition,
+		request.options,
+		request.eaBuffer,
+		request.eaLength,
+	)
+}
 
 func openRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
 	return openRootFileNoFollowAtomic(root, name, openWindowsRootFileNoFollow)
@@ -41,19 +69,16 @@ func openWindowsRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
 	attributes.Length = uint32(unsafe.Sizeof(attributes))
 
 	var handle windows.Handle
-	err = windowsNtCreateFile(
-		&handle,
-		windows.FILE_GENERIC_READ,
-		&attributes,
-		&windows.IO_STATUS_BLOCK{},
-		nil,
-		windows.FILE_ATTRIBUTE_NORMAL,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		windows.FILE_OPEN,
-		windowsNoFollowCreateOptions,
-		0,
-		0,
-	)
+	err = windowsNtCreateFile(windowsNTCreateFileRequest{
+		handle:           &handle,
+		access:           windows.FILE_GENERIC_READ,
+		objectAttributes: &attributes,
+		ioStatusBlock:    &windows.IO_STATUS_BLOCK{},
+		attributes:       windows.FILE_ATTRIBUTE_NORMAL,
+		share:            windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE,
+		disposition:      windows.FILE_OPEN,
+		options:          windowsNoFollowCreateOptions,
+	})
 	runtime.KeepAlive(root)
 	if err != nil {
 		return nil, joinWindowsNTStatusErrno(err)

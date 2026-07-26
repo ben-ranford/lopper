@@ -123,7 +123,7 @@ func TestOpenFileNoFollowNormalizesUnavailableRootFDExtraction(t *testing.T) {
 
 	file, err := OpenFileNoFollow(tracePath)
 	if file != nil {
-		_ = file.Close()
+		reportUnexpectedNoFollowFileClose(t, file)
 		t.Fatal("expected unavailable root fd extraction to return no file")
 	}
 	if !errors.Is(err, ErrOpenFileNoFollowUnsupported) {
@@ -155,7 +155,7 @@ func TestOpenFileNoFollowSupportedFailsWhenProcSelfFDUnavailable(t *testing.T) {
 
 	file, err := OpenFileNoFollow(probePath)
 	if file != nil {
-		_ = file.Close()
+		reportUnexpectedNoFollowFileClose(t, file)
 		t.Fatal("expected unavailable /proc/self/fd to return no file")
 	}
 	if !errors.Is(err, ErrOpenFileNoFollowUnsupported) {
@@ -166,6 +166,37 @@ func TestOpenFileNoFollowSupportedFailsWhenProcSelfFDUnavailable(t *testing.T) {
 	}
 }
 
+func TestProbeOpenFileNoFollowSupportFailsWhenRootCloseFails(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	probePath := mustRealExecutablePath(t)
+	openNoFollowProbePath = func() (string, error) {
+		return probePath, nil
+	}
+	realClose := closeNoFollowProbeRoot
+	closeErr := errors.New("close support probe root")
+	closeNoFollowProbeRoot = func(root *os.Root) error {
+		return errors.Join(realClose(root), closeErr)
+	}
+
+	if probeOpenFileNoFollowSupport() {
+		t.Fatal("expected root close failure to make the support probe fail closed")
+	}
+}
+
+func TestProbeOpenFileNoFollowSupportFailsWhenProbePathResolutionFails(t *testing.T) {
+	restore := stubOpenFileNoFollowSupportProbes(t)
+	t.Cleanup(restore)
+
+	openNoFollowProbePath = func() (string, error) {
+		return "", errors.New("resolve support probe path")
+	}
+	if probeOpenFileNoFollowSupport() {
+		t.Fatal("expected probe path resolution failure to report unsupported")
+	}
+}
+
 func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 	t.Helper()
 
@@ -173,6 +204,8 @@ func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 	originalOpenat := openatNoFollowProbe
 	originalProcOpen := procSelfFDReopen
 	originalCloseFD := closeNoFollowFD
+	originalNewFile := newNoFollowOSFile
+	originalCloseRoot := closeNoFollowProbeRoot
 	originalRootFD := osRootFDResolver
 	originalProbe := openNoFollowProbe
 	originalProbePath := openNoFollowProbePath
@@ -191,6 +224,8 @@ func stubOpenFileNoFollowSupportProbes(t *testing.T) func() {
 		openatNoFollowProbe = originalOpenat
 		procSelfFDReopen = originalProcOpen
 		closeNoFollowFD = originalCloseFD
+		newNoFollowOSFile = originalNewFile
+		closeNoFollowProbeRoot = originalCloseRoot
 		osRootFDResolver = originalRootFD
 		openNoFollowProbe = originalProbe
 		openNoFollowProbePath = originalProbePath

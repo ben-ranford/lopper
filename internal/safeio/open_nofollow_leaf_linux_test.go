@@ -126,7 +126,7 @@ func openNoFollowWithTimeout(t *testing.T, path string) error {
 	go func() {
 		file, err := OpenFileNoFollow(path)
 		if file != nil {
-			_ = file.Close()
+			err = errors.Join(err, file.Close())
 		}
 		errCh <- err
 	}()

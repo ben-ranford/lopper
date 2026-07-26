@@ -62,20 +62,8 @@ func TestOpenWindowsRootFileNoFollowUsesExactCreateOptions(t *testing.T) {
 	})
 
 	var gotOptions uint32
-	windowsNtCreateFile = func(
-		_ *windows.Handle,
-		_ uint32,
-		_ *windows.OBJECT_ATTRIBUTES,
-		_ *windows.IO_STATUS_BLOCK,
-		_ *int64,
-		_ uint32,
-		_ uint32,
-		_ uint32,
-		options uint32,
-		_ uintptr,
-		_ uint32,
-	) error {
-		gotOptions = options
+	windowsNtCreateFile = func(request windowsNTCreateFileRequest) error {
+		gotOptions = request.options
 		return windows.STATUS_OBJECT_NAME_NOT_FOUND
 	}
 

@@ -14,13 +14,15 @@ import (
 )
 
 var (
-	openat2NoFollowProbe  = unix.Openat2
-	openatNoFollowProbe   = unix.Openat
-	procSelfFDReopen      = unix.Open
-	closeNoFollowFD       = unix.Close
-	osRootFDResolver      = osRootFD
-	openNoFollowProbe     = probeOpenFileNoFollowSupport
-	openNoFollowProbePath = defaultOpenNoFollowProbePath
+	openat2NoFollowProbe   = unix.Openat2
+	openatNoFollowProbe    = unix.Openat
+	procSelfFDReopen       = unix.Open
+	closeNoFollowFD        = unix.Close
+	newNoFollowOSFile      = os.NewFile
+	closeNoFollowProbeRoot = (*os.Root).Close
+	osRootFDResolver       = osRootFD
+	openNoFollowProbe      = probeOpenFileNoFollowSupport
+	openNoFollowProbePath  = defaultOpenNoFollowProbePath
 
 	openNoFollowSupportOnce sync.Once
 	openNoFollowSupported   bool
@@ -35,7 +37,7 @@ func openRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
 	return openRegularFileNoFollowFromRootFD(rootFD, name)
 }
 
-func probeOpenFileNoFollowSupport() bool {
+func probeOpenFileNoFollowSupport() (supported bool) {
 	probePath, err := openNoFollowProbePath()
 	if err != nil {
 		return false
@@ -46,7 +48,9 @@ func probeOpenFileNoFollowSupport() bool {
 		return false
 	}
 	defer func() {
-		_ = root.Close()
+		if closeErr := closeNoFollowProbeRoot(root); closeErr != nil {
+			supported = false
+		}
 	}()
 
 	rootFD, err := osRootFDResolver(root)
@@ -58,10 +62,7 @@ func probeOpenFileNoFollowSupport() bool {
 	if err != nil {
 		return false
 	}
-	if closeErr := file.Close(); closeErr != nil {
-		return false
-	}
-	return true
+	return file.Close() == nil
 }
 
 func defaultOpenNoFollowProbePath() (string, error) {
@@ -77,11 +78,20 @@ func openRegularFileNoFollowFromRootFD(rootFD int, name string) (*os.File, error
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = closeNoFollowFD(pinnedFD)
-	}()
 
-	return reopenPinnedRegularFile(name, pinnedFD, pinnedStat)
+	file, err := reopenPinnedRegularFile(name, pinnedFD, pinnedStat)
+	return finishPinnedNoFollowOpen(file, pinnedFD, err)
+}
+
+func finishPinnedNoFollowOpen(file *os.File, pinnedFD int, openErr error) (*os.File, error) {
+	closeErr := closeNoFollowFD(pinnedFD)
+	if closeErr == nil {
+		return file, openErr
+	}
+	if file == nil {
+		return nil, errors.Join(openErr, closeErr)
+	}
+	return nil, errors.Join(openErr, closeErr, file.Close())
 }
 
 func openPinnedNoFollowHandle(rootFD int, name string) (int, unix.Stat_t, error) {
@@ -114,12 +124,12 @@ func openPinnedNoFollowHandleFallback(rootFD int, name string) (int, unix.Stat_t
 func validatePinnedNoFollowHandle(op string, path string, pinnedFD int) (int, unix.Stat_t, error) {
 	var pinnedStat unix.Stat_t
 	if err := unix.Fstat(pinnedFD, &pinnedStat); err != nil {
-		_ = closeNoFollowFD(pinnedFD)
-		return -1, unix.Stat_t{}, &os.PathError{Op: "fstat", Path: path, Err: err}
+		statErr := &os.PathError{Op: "fstat", Path: path, Err: err}
+		return -1, unix.Stat_t{}, closeNoFollowFDWithError(pinnedFD, statErr)
 	}
 	if pinnedStat.Mode&unix.S_IFMT != unix.S_IFREG {
-		_ = closeNoFollowFD(pinnedFD)
-		return -1, unix.Stat_t{}, normalizeNoFollowLeafOpenError(op, path, ErrNoFollowFinalComponent)
+		openErr := normalizeNoFollowLeafOpenError(op, path, ErrNoFollowFinalComponent)
+		return -1, unix.Stat_t{}, closeNoFollowFDWithError(pinnedFD, openErr)
 	}
 
 	return pinnedFD, pinnedStat, nil
@@ -140,20 +150,24 @@ func reopenPinnedRegularFile(path string, pinnedFD int, pinnedStat unix.Stat_t) 
 
 	var reopenedStat unix.Stat_t
 	if err := unix.Fstat(reopenedFD, &reopenedStat); err != nil {
-		_ = closeNoFollowFD(reopenedFD)
-		return nil, &os.PathError{Op: "fstat reopened file", Path: path, Err: err}
+		statErr := &os.PathError{Op: "fstat reopened file", Path: path, Err: err}
+		return nil, closeNoFollowFDWithError(reopenedFD, statErr)
 	}
 	if !sameUnixFile(pinnedStat, reopenedStat) {
-		_ = closeNoFollowFD(reopenedFD)
-		return nil, &os.PathError{Op: "open pinned regular file", Path: path, Err: fmt.Errorf("pinned regular file changed while reopening")}
+		openErr := &os.PathError{Op: "open pinned regular file", Path: path, Err: fmt.Errorf("pinned regular file changed while reopening")}
+		return nil, closeNoFollowFDWithError(reopenedFD, openErr)
 	}
 
-	file := os.NewFile(uintptr(reopenedFD), path)
+	file := newNoFollowOSFile(uintptr(reopenedFD), path)
 	if file == nil {
-		_ = closeNoFollowFD(reopenedFD)
-		return nil, fmt.Errorf("open pinned regular file %s: failed to wrap fd", path)
+		openErr := fmt.Errorf("open pinned regular file %s: failed to wrap fd", path)
+		return nil, closeNoFollowFDWithError(reopenedFD, openErr)
 	}
 	return file, nil
+}
+
+func closeNoFollowFDWithError(fd int, err error) error {
+	return errors.Join(err, closeNoFollowFD(fd))
 }
 
 func sameUnixFile(a, b unix.Stat_t) bool {

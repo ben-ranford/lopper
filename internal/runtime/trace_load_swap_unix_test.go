@@ -80,7 +80,9 @@ func mutateTraceToDirectSocket(t *testing.T, tracePath string) {
 		t.Fatalf("swap trace directly to socket: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = listener.Close()
+		if closeErr := listener.Close(); closeErr != nil {
+			t.Errorf("close trace socket: %v", closeErr)
+		}
 	})
 }
 
