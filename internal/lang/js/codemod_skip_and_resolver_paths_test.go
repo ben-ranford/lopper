@@ -214,18 +214,61 @@ func TestHasResolvableSubpathFileAdditionalBranches(t *testing.T) {
 	}
 }
 
-func TestHasResolvableSubpathFileRejectsSymlinkedFile(t *testing.T) {
-	depRoot := t.TempDir()
+func TestHasResolvableSubpathFileAcceptsSymlinkedFileWithinRoot(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
 	realPath := filepath.Join(depRoot, "real.js")
 	if err := os.WriteFile(realPath, []byte("export default 1\n"), 0o644); err != nil {
 		t.Fatalf("write real source: %v", err)
 	}
 	if err := os.Symlink(realPath, filepath.Join(depRoot, "linked.js")); err != nil {
-		t.Fatalf("create file symlink: %v", err)
+		t.Skipf("create file symlink: %v", err)
 	}
 
-	if hasResolvableSubpathFile(depRoot, "linked") {
-		t.Fatalf("expected symlinked subpath file to be rejected")
+	if !hasResolvableSubpathFile(depRoot, "linked") {
+		t.Fatalf("expected symlinked in-root subpath file to resolve")
+	}
+}
+
+func TestHasResolvableSubpathFileAcceptsSymlinkedDirectoryWithinRoot(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
+	realDir := filepath.Join(depRoot, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, codemodIndexSource), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write real index: %v", err)
+	}
+	if err := os.Symlink("real", filepath.Join(depRoot, "linked")); err != nil {
+		t.Skipf("create directory symlink: %v", err)
+	}
+
+	if !hasResolvableSubpathFile(depRoot, "linked") {
+		t.Fatalf("expected symlinked in-root subpath directory to resolve")
+	}
+}
+
+func TestHasResolvableSubpathFileRejectsPinnedStatReadyFailure(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "map.js"), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write map.js: %v", err)
+	}
+
+	originalReady := pinnedPathStatReadyFn
+	pinnedPathStatReadyFn = func() error { return os.ErrPermission }
+	t.Cleanup(func() {
+		pinnedPathStatReadyFn = originalReady
+	})
+
+	if hasResolvableSubpathFile(depRoot, "map") {
+		t.Fatal("expected pinned stat readiness failure to suppress subpath resolution")
 	}
 }
 
@@ -241,6 +284,46 @@ func TestHasResolvableSubpathFileRejectsEscapingSymlinkedDirectory(t *testing.T)
 
 	if hasResolvableSubpathFile(depRoot, "linked") {
 		t.Fatalf("expected escaping symlinked subpath directory to be rejected")
+	}
+}
+
+func TestHasResolvableSubpathFileRejectsParentSwapBetweenValidationAndFinalStat(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	originalDir := filepath.Join(depRoot, "nested")
+	relocatedDir := filepath.Join(depRoot, "nested-real")
+	outsideDir := filepath.Join(t.TempDir(), "nested")
+	if err := os.MkdirAll(originalDir, 0o755); err != nil {
+		t.Fatalf("mkdir original dir: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(originalDir, codemodIndexSource), []byte("export default 1\n"), 0o644); err != nil {
+		t.Fatalf("write original index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, codemodIndexSource), []byte("export default 2\n"), 0o644); err != nil {
+		t.Fatalf("write alternate index: %v", err)
+	}
+
+	originalReady := pinnedPathStatReadyFn
+	swapped := false
+	pinnedPathStatReadyFn = func() error {
+		if swapped {
+			return nil
+		}
+		swapped = true
+		if err := os.Rename(originalDir, relocatedDir); err != nil {
+			return err
+		}
+		return os.Symlink(outsideDir, originalDir)
+	}
+	t.Cleanup(func() {
+		pinnedPathStatReadyFn = originalReady
+	})
+
+	if hasResolvableSubpathFile(depRoot, "nested") {
+		t.Fatalf("expected parent swap to break subpath fallback resolution")
 	}
 }
 

@@ -200,55 +200,48 @@ func TestCollectReExportBindings(t *testing.T) {
 	sourceLines := []string{`import { map as remap } from "lodash"`, `export { remap as mapAlias }`, `export { filter as keep } from "lodash"`, `export * as api from "./ns"`, `export * from "./other"`, ""}
 	source := []byte(strings.Join(sourceLines, "\n"))
 
-	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrFmt, err)
-	}
-
-	imports, _ := collectImportBindings(tree, source, unitIndexJS)
-	reExports := collectReExportBindings(tree, source, unitIndexJS, imports)
+	reExports := collectReExportBindingsForSource(t, source)
 	if len(reExports) < 3 {
 		t.Fatalf("expected re-export bindings, got %#v", reExports)
 	}
 
-	found := map[string]bool{
-		"mapAlias": false,
-		"keep":     false,
-		"api":      false,
-		"*":        false,
-	}
-	for _, item := range reExports {
-		switch {
-		case item.ExportName == "mapAlias" && item.SourceModule == "lodash" && item.SourceExportName == "map":
-			found["mapAlias"] = true
-		case item.ExportName == "keep" && item.SourceModule == "lodash" && item.SourceExportName == "filter":
-			found["keep"] = true
-		case item.ExportName == "api" && item.SourceModule == "./ns" && item.SourceExportName == "*":
-			found["api"] = true
-		case item.ExportName == "*" && item.SourceModule == "./other" && item.SourceExportName == "*":
-			found["*"] = true
-		}
-	}
-
-	for key, ok := range found {
-		if !ok {
-			t.Fatalf("expected re-export %q in %#v", key, reExports)
-		}
-	}
+	assertReExportBindingPresent(t, reExports, "mapAlias", "lodash", "map")
+	assertReExportBindingPresent(t, reExports, "keep", "lodash", "filter")
+	assertReExportBindingPresent(t, reExports, "api", "./ns", "*")
+	assertReExportBindingPresent(t, reExports, "*", "./other", "*")
 }
 
 func TestCollectReExportBindingsRecoversMissingAliasName(t *testing.T) {
 	source := []byte(`export { foo as } from "pkg";`)
-	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
-	if err != nil {
-		t.Fatalf(parseSourceErrFmt, err)
-	}
-
-	reExports := collectReExportBindings(tree, source, unitIndexJS, nil)
+	reExports := collectReExportBindingsForSource(t, source)
 	if len(reExports) != 1 {
 		t.Fatalf("expected recovered re-export binding, got %#v", reExports)
 	}
 	if reExports[0].SourceModule != "pkg" || reExports[0].SourceExportName != "foo" || reExports[0].ExportName != "foo" {
 		t.Fatalf("expected missing re-export alias to fall back to source name, got %#v", reExports[0])
 	}
+}
+
+func collectReExportBindingsForSource(t *testing.T, source []byte) []ReExportBinding {
+	t.Helper()
+
+	tree, err := newSourceParser().Parse(context.Background(), unitIndexJS, source)
+	if err != nil {
+		t.Fatalf(parseSourceErrFmt, err)
+	}
+
+	imports, _ := collectImportBindings(tree, source, unitIndexJS)
+	return collectReExportBindings(tree, source, unitIndexJS, imports)
+}
+
+func assertReExportBindingPresent(t *testing.T, bindings []ReExportBinding, exportName, sourceModule, sourceExportName string) {
+	t.Helper()
+
+	for _, item := range bindings {
+		if item.ExportName == exportName && item.SourceModule == sourceModule && item.SourceExportName == sourceExportName {
+			return
+		}
+	}
+
+	t.Fatalf("expected re-export %q from %q (%q) in %#v", exportName, sourceModule, sourceExportName, bindings)
 }

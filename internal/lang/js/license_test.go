@@ -2,6 +2,7 @@ package js
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -49,7 +51,7 @@ func TestDetectLicenseAndProvenanceFromPackageJSON(t *testing.T) {
   "license": "MIT OR Apache-2.0"
 }`)
 
-	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), depRoot, false)
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", warnings)
 	}
@@ -66,7 +68,7 @@ func TestDetectLicenseFromFallbackLicenseFile(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License\nPermission is hereby granted...")
 
-	license, _, _ := detectLicenseAndProvenance(depRoot, false)
+	license, _, _ := detectLicenseAndProvenance(context.Background(), depRoot, false)
 	if license == nil || license.SPDX != "MIT" || license.Source != "license-file" {
 		t.Fatalf("expected MIT fallback from LICENSE file, got %#v", license)
 	}
@@ -78,7 +80,7 @@ func TestDetectLicenseAndProvenanceSkipsOversizedLicenseCandidate(t *testing.T) 
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "COPYING"), string(bytes.Repeat([]byte("x"), int(licenseFileReadMaxBytes)+1)))
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License\nPermission is hereby granted...")
 
-	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), depRoot, false)
 	if license == nil || license.SPDX != "MIT" || license.Source != "license-file" {
 		t.Fatalf("expected MIT fallback after oversized license candidate skip, got %#v", license)
 	}
@@ -95,7 +97,7 @@ func TestDetectLicenseAndProvenanceReturnsWarningsWhenAllFallbackCandidatesAreSk
 	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "COPYING"), string(bytes.Repeat([]byte("x"), int(licenseFileReadMaxBytes)+1)))
 
-	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), depRoot, false)
 	if license == nil || !license.Unknown || license.Source != "unknown" {
 		t.Fatalf("expected unknown license when every fallback candidate is skipped, got %#v", license)
 	}
@@ -118,7 +120,7 @@ func TestDetectProvenanceWithRegistryHeuristics(t *testing.T) {
   "publishConfig": { "registry": "https://registry.npmjs.org/" }
 }`)
 
-	_, provenance, _ := detectLicenseAndProvenance(depRoot, true)
+	_, provenance, _ := detectLicenseAndProvenance(context.Background(), depRoot, true)
 	if provenance == nil || provenance.Source != "local+registry-heuristics" {
 		t.Fatalf("expected registry provenance source, got %#v", provenance)
 	}
@@ -132,7 +134,7 @@ func TestDetectLicenseAndProvenanceRejectsSymlinkedDependencyRoot(t *testing.T) 
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	license, provenance, warnings := detectLicenseAndProvenance(depRoot, true)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), depRoot, true)
 	if license == nil || !license.Unknown || license.Source != "unknown" {
 		t.Fatalf("expected unknown license for symlinked dependency root, got %#v", license)
 	}
@@ -146,7 +148,7 @@ func TestDetectLicenseAndProvenanceRejectsSymlinkedDependencyRoot(t *testing.T) 
 
 func TestFindLicenseFilesRejectsInvalidDependencyRoot(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
-	if got, warnings := findLicenseFiles(missing); len(got) != 0 || len(warnings) != 0 {
+	if got, warnings := findLicenseFiles(context.Background(), missing); len(got) != 0 || len(warnings) != 0 {
 		t.Fatalf("expected missing dependency root to return nil files without warnings, got files=%#v warnings=%#v", got, warnings)
 	}
 }
@@ -167,8 +169,24 @@ func TestFindLicenseFilesDiscardsResultsWhenRootCloseFails(t *testing.T) {
 		openDependencyRootNoFollow = originalOpen
 	})
 
-	if files, warnings := findLicenseFiles(depRoot); len(files) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license file discovery") || !strings.Contains(warnings[0], "close failed") {
+	if files, warnings := findLicenseFiles(context.Background(), depRoot); len(files) != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license file discovery") || !strings.Contains(warnings[0], "close failed") {
 		t.Fatalf("expected close failure to discard license files and warn, got files=%#v warnings=%#v", files, warnings)
+	}
+}
+
+func TestFindLicenseFilesReturnsNilWhenDependencyRootCannotBeOpened(t *testing.T) {
+	depRoot := t.TempDir()
+	readyErr := errors.New("open blocked")
+
+	originalReady := dependencyRootOpenReadyFn
+	dependencyRootOpenReadyFn = func() error { return readyErr }
+	t.Cleanup(func() {
+		dependencyRootOpenReadyFn = originalReady
+	})
+
+	files, warnings := findLicenseFiles(context.Background(), depRoot)
+	if len(files) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected failed no-follow root open to fail closed, got files=%#v warnings=%#v", files, warnings)
 	}
 }
 
@@ -189,12 +207,12 @@ func TestFindLicenseFilesReturnsCollectedFilesOnWalkError(t *testing.T) {
 		}
 	})
 
-	files, warnings := findLicenseFiles(depRoot)
+	files, warnings := findLicenseFiles(context.Background(), depRoot)
 	if !slices.Contains(files, filepath.Join(depRoot, "LICENSE")) {
 		t.Fatalf("expected collected license files to be preserved on walk error, got %#v", files)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("expected walk error branch to avoid extra wrapper warnings, got %#v", warnings)
+	if len(warnings) != 1 || warnings[0] != "unable to inspect dependency license path blocked" {
+		t.Fatalf("expected stable walk warning, got %#v", warnings)
 	}
 }
 
@@ -264,7 +282,7 @@ func TestHasRepositorySignal(t *testing.T) {
 }
 
 func TestDetectLicenseAndProvenanceMissingRoot(t *testing.T) {
-	license, provenance, warnings := detectLicenseAndProvenance("", false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), "", false)
 	if license == nil || !license.Unknown {
 		t.Fatalf("expected unknown license for missing root, got %#v", license)
 	}
@@ -357,6 +375,12 @@ func TestLoadDependencyPackageJSONReturnsWarningWhenCloseFails(t *testing.T) {
 	}
 }
 
+func TestLicenseWalkWarningFallsBackForBlankPath(t *testing.T) {
+	if got := licenseWalkWarning(" \t "); got != dependencyLicenseWalkWarning {
+		t.Fatalf("expected blank path warning fallback, got %q", got)
+	}
+}
+
 func TestFindLicenseFilesWithinRootContinuesPastUnreadableChild(t *testing.T) {
 	depRoot := t.TempDir()
 	blockedDir := filepath.Join(depRoot, "blocked")
@@ -405,12 +429,32 @@ func TestFindLicenseFilesWithinRootContinuesPastUnreadableChild(t *testing.T) {
 		},
 	}
 
-	files, warnings := findLicenseFilesWithinRoot(root, depRoot)
+	files, warnings := findLicenseFilesWithinRoot(context.Background(), root, depRoot)
 	if len(files) != 1 || files[0] != licensePath {
 		t.Fatalf("expected best-effort license walk to keep later readable license, got %#v", files)
 	}
-	if len(warnings) != 0 {
-		t.Fatalf("expected child subtree failure to continue without warnings, got %#v", warnings)
+	if len(warnings) != 1 || warnings[0] != "unable to inspect dependency license path blocked" {
+		t.Fatalf("expected stable child subtree warning, got %#v", warnings)
+	}
+}
+
+func TestFindLicenseFilesWithinRootHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	openCalls := 0
+	root := &fakeJSRoot{
+		open: func(string) (safeio.File, error) {
+			openCalls++
+			return nil, errors.New("unexpected open")
+		},
+	}
+	files, warnings := findLicenseFilesWithinRoot(ctx, root, t.TempDir())
+	if len(files) != 0 || !slices.Equal(warnings, []string{dependencyLicenseWalkWarning}) {
+		t.Fatalf("unexpected canceled license result: files=%v warnings=%v", files, warnings)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected canceled license walk not to open the root, got %d calls", openCalls)
 	}
 }
 
@@ -449,14 +493,14 @@ func TestDetectLicenseAndProvenanceWarnsOnUnreadableLicenseRoot(t *testing.T) {
 		openLicenseValidatedRoot = originalOpen
 	})
 
-	license, provenance, warnings := detectLicenseAndProvenance(depRoot, false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), depRoot, false)
 	if license == nil || !license.Unknown || license.Source != "unknown" {
 		t.Fatalf("expected unknown license when root walk fails, got %#v", license)
 	}
 	if provenance == nil || provenance.Source != "local-manifest" {
 		t.Fatalf("expected manifest provenance to survive unreadable license root, got %#v", provenance)
 	}
-	wantWarning := "unable to inspect dependency license files: " + depRoot
+	wantWarning := dependencyLicenseWalkWarning
 	if len(warnings) != 1 || warnings[0] != wantWarning {
 		t.Fatalf("expected exact root-walk warning %q, got %#v", wantWarning, warnings)
 	}
@@ -467,30 +511,19 @@ func TestLicenseFileProbeWrappersClearResultsWhenRootCloseFails(t *testing.T) {
 	licensePath := filepath.Join(depRoot, "LICENSE")
 	testutil.MustWriteFile(t, licensePath, "MIT License\n")
 
-	originalOpen := openLicenseValidatedRoot
-	openLicenseValidatedRoot = func(path string) (safeio.Root, string, error) {
-		baseRoot, validatedRoot, err := openValidatedRootNoFollow(path)
-		if err != nil {
-			return nil, "", err
-		}
-		return &closingLicenseRoot{Root: baseRoot, closeErr: errors.New("close failed")}, validatedRoot, nil
-	}
-	t.Cleanup(func() {
-		openLicenseValidatedRoot = originalOpen
-	})
+	installClosingLicenseRoot(t, errors.New("close failed"))
 
-	if license, warnings := detectLicenseFromFiles(depRoot); license != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license file detection") || !strings.Contains(warnings[0], "close failed") {
-		t.Fatalf("expected close failure to clear file-detected license with warning, got license=%#v warnings=%#v", license, warnings)
-	}
-	if probe, warnings := probeLicenseFiles(depRoot); probe != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license file probing") || !strings.Contains(warnings[0], "close failed") {
-		t.Fatalf("expected close failure to clear file probe with warning, got probe=%#v warnings=%#v", probe, warnings)
-	}
-	if probe, warnings := probeLicenseCandidates(depRoot, []string{licensePath}); probe != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license candidate probing") || !strings.Contains(warnings[0], "close failed") {
-		t.Fatalf("expected close failure to clear candidate probe with warning, got probe=%#v warnings=%#v", probe, warnings)
-	}
-	if probe, warnings := probeLicenseCandidate(depRoot, licensePath); probe != nil || len(warnings) != 1 || !strings.Contains(warnings[0], "failed to close dependency root after license candidate probing") || !strings.Contains(warnings[0], "close failed") {
-		t.Fatalf("expected close failure to clear single-candidate probe with warning, got probe=%#v warnings=%#v", probe, warnings)
-	}
+	license, warnings := detectLicenseFromFiles(context.Background(), depRoot)
+	assertNilLicenseWithSingleWarning(t, license, warnings, "failed to close dependency root after license file detection", "close failed")
+
+	probe, warnings := probeLicenseFiles(context.Background(), depRoot)
+	assertNilLicenseProbeWithSingleWarning(t, probe, warnings, "failed to close dependency root after license file probing", "close failed")
+
+	probe, warnings = probeLicenseCandidates(context.Background(), depRoot, []string{licensePath})
+	assertNilLicenseProbeWithSingleWarning(t, probe, warnings, "failed to close dependency root after license candidate probing", "close failed")
+
+	probe, warnings = probeLicenseCandidate(context.Background(), depRoot, licensePath)
+	assertNilLicenseProbeWithSingleWarning(t, probe, warnings, "failed to close dependency root after license candidate probing", "close failed")
 }
 
 func TestLicenseFileProbeWrappersPreserveOversizedAndCloseWarnings(t *testing.T) {
@@ -512,7 +545,7 @@ func TestLicenseFileProbeWrappersPreserveOversizedAndCloseWarnings(t *testing.T)
 		openLicenseValidatedRoot = originalOpen
 	})
 
-	if license, warnings := detectLicenseFromFiles(depRoot); license != nil {
+	if license, warnings := detectLicenseFromFiles(context.Background(), depRoot); license != nil {
 		t.Fatalf("expected close failure to clear detected license, got %#v", license)
 	} else {
 		assertExactWarnings(t, warnings, []string{
@@ -521,7 +554,7 @@ func TestLicenseFileProbeWrappersPreserveOversizedAndCloseWarnings(t *testing.T)
 		})
 	}
 
-	if probe, warnings := probeLicenseFiles(depRoot); probe != nil {
+	if probe, warnings := probeLicenseFiles(context.Background(), depRoot); probe != nil {
 		t.Fatalf("expected close failure to clear file probe, got %#v", probe)
 	} else {
 		assertExactWarnings(t, warnings, []string{
@@ -530,7 +563,7 @@ func TestLicenseFileProbeWrappersPreserveOversizedAndCloseWarnings(t *testing.T)
 		})
 	}
 
-	if probe, warnings := probeLicenseCandidates(depRoot, []string{oversized, oversized}); probe != nil {
+	if probe, warnings := probeLicenseCandidates(context.Background(), depRoot, []string{oversized, oversized}); probe != nil {
 		t.Fatalf("expected oversized candidate probe to remain nil, got %#v", probe)
 	} else {
 		assertExactWarnings(t, warnings, []string{
@@ -539,7 +572,7 @@ func TestLicenseFileProbeWrappersPreserveOversizedAndCloseWarnings(t *testing.T)
 		})
 	}
 
-	if probe, warnings := probeLicenseCandidate(depRoot, oversized); probe != nil {
+	if probe, warnings := probeLicenseCandidate(context.Background(), depRoot, oversized); probe != nil {
 		t.Fatalf("expected oversized single-candidate probe to remain nil, got %#v", probe)
 	} else {
 		assertExactWarnings(t, warnings, []string{
@@ -554,37 +587,17 @@ func TestLicenseFileProbeWrappersReturnDetectedLicenseSignals(t *testing.T) {
 	licensePath := filepath.Join(depRoot, "LICENSE")
 	testutil.MustWriteFile(t, licensePath, "MIT License\n")
 
-	license, warnings := detectLicenseFromFiles(depRoot)
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings for readable license detection, got %#v", warnings)
-	}
-	if license == nil || license.SPDX != "MIT" {
-		t.Fatalf("expected license detection from readable license file, got %#v", license)
-	}
+	license, warnings := detectLicenseFromFiles(context.Background(), depRoot)
+	assertDetectedLicense(t, license, warnings)
 
-	probe, warnings := probeLicenseFiles(depRoot)
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings for readable file probe, got %#v", warnings)
-	}
-	if probe == nil || filepath.Base(probe.path) != "LICENSE" || probe.spdx != "MIT" {
-		t.Fatalf("expected file probe for readable license file, got %#v", probe)
-	}
+	probe, warnings := probeLicenseFiles(context.Background(), depRoot)
+	assertDetectedLicenseProbe(t, probe, warnings)
 
-	candidateProbe, warnings := probeLicenseCandidates(depRoot, []string{licensePath})
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings for readable candidate probe, got %#v", warnings)
-	}
-	if candidateProbe == nil || filepath.Base(candidateProbe.path) != "LICENSE" || candidateProbe.spdx != "MIT" {
-		t.Fatalf("expected candidate probe for readable license file, got %#v", candidateProbe)
-	}
+	probe, warnings = probeLicenseCandidates(context.Background(), depRoot, []string{licensePath})
+	assertDetectedLicenseProbe(t, probe, warnings)
 
-	singleProbe, warnings := probeLicenseCandidate(depRoot, licensePath)
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings for readable single-candidate probe, got %#v", warnings)
-	}
-	if singleProbe == nil || filepath.Base(singleProbe.path) != "LICENSE" || singleProbe.spdx != "MIT" {
-		t.Fatalf("expected single-candidate probe for readable license file, got %#v", singleProbe)
-	}
+	probe, warnings = probeLicenseCandidate(context.Background(), depRoot, licensePath)
+	assertDetectedLicenseProbe(t, probe, warnings)
 }
 
 func TestLicenseFileProbeWrappersPreserveWalkAndCloseWarnings(t *testing.T) {
@@ -609,21 +622,21 @@ func TestLicenseFileProbeWrappersPreserveWalkAndCloseWarnings(t *testing.T) {
 		openLicenseValidatedRoot = originalOpen
 	})
 
-	if license, warnings := detectLicenseFromFiles(depRoot); license != nil {
+	if license, warnings := detectLicenseFromFiles(context.Background(), depRoot); license != nil {
 		t.Fatalf("expected walk failure to leave license unset, got %#v", license)
 	} else {
 		assertExactWarnings(t, warnings, []string{
 			"failed to close dependency root after license file detection: close failed",
-			"unable to inspect dependency license files: " + depRoot,
+			dependencyLicenseWalkWarning,
 		})
 	}
 
-	if probe, warnings := probeLicenseFiles(depRoot); probe != nil {
+	if probe, warnings := probeLicenseFiles(context.Background(), depRoot); probe != nil {
 		t.Fatalf("expected walk failure to leave file probe unset, got %#v", probe)
 	} else {
 		assertExactWarnings(t, warnings, []string{
 			"failed to close dependency root after license file probing: close failed",
-			"unable to inspect dependency license files: " + depRoot,
+			dependencyLicenseWalkWarning,
 		})
 	}
 }
@@ -644,7 +657,7 @@ func TestDetectLicenseAndProvenanceWarnsWhenCloseFails(t *testing.T) {
 		openLicenseValidatedRoot = originalOpen
 	})
 
-	license, provenance, warnings := detectLicenseAndProvenance(root, false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), root, false)
 	if license == nil || license.SPDX != "MIT" {
 		t.Fatalf("expected license detection to succeed before close failure, got %#v", license)
 	}
@@ -670,7 +683,7 @@ func TestFindLicenseFilesSkipsNestedNodeModules(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "MIT License")
 	testutil.MustWriteFile(t, filepath.Join(root, "node_modules", "dep", "LICENSE"), "MIT License")
 
-	files, warnings := findLicenseFiles(root)
+	files, warnings := findLicenseFiles(context.Background(), root)
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings while collecting readable license files, got %#v", warnings)
 	}
@@ -689,7 +702,7 @@ func TestFindLicenseFilesLimit(t *testing.T) {
 	for i := 0; i < 7; i++ {
 		testutil.MustWriteFile(t, filepath.Join(root, "LICENSE_"+string(rune('A'+i))), "MIT")
 	}
-	files, warnings := findLicenseFiles(root)
+	files, warnings := findLicenseFiles(context.Background(), root)
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for file-limit scan, got %#v", warnings)
 	}
@@ -701,10 +714,10 @@ func TestFindLicenseFilesLimit(t *testing.T) {
 func TestDetectLicenseFromFilesNoMatch(t *testing.T) {
 	root := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(root, "LICENSE"), "custom internal license text")
-	if got, warnings := detectLicenseFromFiles(root); got != nil || len(warnings) != 0 {
+	if got, warnings := detectLicenseFromFiles(context.Background(), root); got != nil || len(warnings) != 0 {
 		t.Fatalf("expected nil fallback for unknown license text without warnings, got license=%#v warnings=%#v", got, warnings)
 	}
-	if got, warnings := detectLicenseFromFiles(filepath.Join(root, "missing")); got != nil || len(warnings) != 0 {
+	if got, warnings := detectLicenseFromFiles(context.Background(), filepath.Join(root, "missing")); got != nil || len(warnings) != 0 {
 		t.Fatalf("expected missing root to return nil fallback without warnings, got license=%#v warnings=%#v", got, warnings)
 	}
 }
@@ -716,7 +729,7 @@ func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
 	testutil.MustWriteFile(t, unknown, "custom internal license text")
 	testutil.MustWriteFile(t, known, "MIT License\nPermission is hereby granted...")
 
-	probe, warnings := probeLicenseCandidates(root, []string{unknown, known})
+	probe, warnings := probeLicenseCandidates(context.Background(), root, []string{unknown, known})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings for readable candidate probe chain, got %#v", warnings)
 	}
@@ -726,7 +739,7 @@ func TestProbeLicenseCandidatesSkipsUnknownUntilMatch(t *testing.T) {
 	if probe.path != known || probe.spdx != "MIT" || probe.confidence != "medium" {
 		t.Fatalf("unexpected probe result: %#v", probe)
 	}
-	if probe, warnings := probeLicenseCandidates(filepath.Join(root, "missing"), []string{known}); probe != nil || len(warnings) != 0 {
+	if probe, warnings := probeLicenseCandidates(context.Background(), filepath.Join(root, "missing"), []string{known}); probe != nil || len(warnings) != 0 {
 		t.Fatalf("expected missing root to return no candidate probe without warnings, got probe=%#v warnings=%#v", probe, warnings)
 	}
 }
@@ -740,16 +753,16 @@ func TestProbeLicenseFileWrappers(t *testing.T) {
 		t.Fatalf("resolve candidate: %v", err)
 	}
 
-	if probe, warnings := probeLicenseFiles(root); probe == nil || probe.path != resolvedCandidate || len(warnings) != 0 {
+	if probe, warnings := probeLicenseFiles(context.Background(), root); probe == nil || probe.path != resolvedCandidate || len(warnings) != 0 {
 		t.Fatalf("expected probeLicenseFiles wrapper to return license candidate without warnings, got probe=%#v warnings=%#v", probe, warnings)
 	}
-	if probe, warnings := probeLicenseCandidate(root, candidate); probe == nil || probe.spdx != "MIT" || len(warnings) != 0 {
+	if probe, warnings := probeLicenseCandidate(context.Background(), root, candidate); probe == nil || probe.spdx != "MIT" || len(warnings) != 0 {
 		t.Fatalf("expected probeLicenseCandidate wrapper to detect SPDX without warnings, got probe=%#v warnings=%#v", probe, warnings)
 	}
-	if probe, warnings := probeLicenseFiles(filepath.Join(root, "missing")); probe != nil || len(warnings) != 0 {
+	if probe, warnings := probeLicenseFiles(context.Background(), filepath.Join(root, "missing")); probe != nil || len(warnings) != 0 {
 		t.Fatalf("expected missing root to return no file probe without warnings, got probe=%#v warnings=%#v", probe, warnings)
 	}
-	if probe, warnings := probeLicenseCandidate(filepath.Join(root, "missing"), candidate); probe != nil || len(warnings) != 0 {
+	if probe, warnings := probeLicenseCandidate(context.Background(), filepath.Join(root, "missing"), candidate); probe != nil || len(warnings) != 0 {
 		t.Fatalf("expected missing root to return no candidate probe without warnings, got probe=%#v warnings=%#v", probe, warnings)
 	}
 }
@@ -772,8 +785,28 @@ func TestProbeLicenseCandidateWithinRootIgnoresEscapingPath(t *testing.T) {
 	testutil.MustWriteFile(t, outsideCandidate, "MIT License\nPermission is hereby granted...")
 
 	probe, warning := probeLicenseCandidateWithinRoot(safeRoot, validatedRoot, outsideCandidate)
-	if probe != nil || warning != "" {
-		t.Fatalf("expected escaping candidate path to be ignored, got probe=%#v warning=%q", probe, warning)
+	if probe != nil || warning != "skipped license candidate LICENSE because it could not be read safely" {
+		t.Fatalf("expected escaping candidate path warning, got probe=%#v warning=%q", probe, warning)
+	}
+}
+
+func TestProbeLicenseCandidateWithinRootWarnsOnUnreadableCandidate(t *testing.T) {
+	depRoot := t.TempDir()
+	licensePath := filepath.Join(depRoot, "LICENSE")
+	testutil.MustWriteFile(t, filepath.Join(depRoot, licenseTestPackageJSONFileName), `{"name":"demo","version":"0.1.0"}`)
+
+	root := &fakeJSRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "LICENSE" {
+				return nil, errors.New("unexpected lstat path")
+			}
+			return nil, errors.New("lstat failed")
+		},
+	}
+
+	probe, warning := probeLicenseCandidateWithinRoot(root, depRoot, licensePath)
+	if probe != nil || warning != "skipped license candidate LICENSE because it could not be read safely" {
+		t.Fatalf("expected unreadable candidate warning, got probe=%#v warning=%q", probe, warning)
 	}
 }
 
@@ -799,7 +832,7 @@ func TestCollectRegistryProvenanceSignals(t *testing.T) {
 
 func TestFindLicenseFilesMissingRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing")
-	if files, warnings := findLicenseFiles(root); len(files) != 0 || len(warnings) != 0 {
+	if files, warnings := findLicenseFiles(context.Background(), root); len(files) != 0 || len(warnings) != 0 {
 		t.Fatalf("expected no files for missing root, got files=%#v warnings=%#v", files, warnings)
 	}
 }
@@ -808,5 +841,74 @@ func assertExactWarnings(t *testing.T, got, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
 		t.Fatalf("unexpected warnings: got %#v want %#v", got, want)
+	}
+}
+
+func installClosingLicenseRoot(t *testing.T, closeErr error) {
+	t.Helper()
+
+	originalOpen := openLicenseValidatedRoot
+	openLicenseValidatedRoot = func(path string) (safeio.Root, string, error) {
+		baseRoot, validatedRoot, err := openValidatedRootNoFollow(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return &closingLicenseRoot{Root: baseRoot, closeErr: closeErr}, validatedRoot, nil
+	}
+	t.Cleanup(func() {
+		openLicenseValidatedRoot = originalOpen
+	})
+}
+
+func assertNilLicenseWithSingleWarning(t *testing.T, license *report.DependencyLicense, warnings []string, fragments ...string) {
+	t.Helper()
+
+	if license != nil {
+		t.Fatalf("expected nil license, got %#v", license)
+	}
+	assertSingleLicenseWarningContains(t, warnings, fragments...)
+}
+
+func assertNilLicenseProbeWithSingleWarning(t *testing.T, probe *licenseFileProbe, warnings []string, fragments ...string) {
+	t.Helper()
+
+	if probe != nil {
+		t.Fatalf("expected nil probe, got %#v", probe)
+	}
+	assertSingleLicenseWarningContains(t, warnings, fragments...)
+}
+
+func assertSingleLicenseWarningContains(t *testing.T, warnings []string, fragments ...string) {
+	t.Helper()
+
+	if len(warnings) != 1 {
+		t.Fatalf("expected one warning, got %#v", warnings)
+	}
+	for _, fragment := range fragments {
+		if !strings.Contains(warnings[0], fragment) {
+			t.Fatalf("expected warning %q to contain %q", warnings[0], fragment)
+		}
+	}
+}
+
+func assertDetectedLicense(t *testing.T, license *report.DependencyLicense, warnings []string) {
+	t.Helper()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for readable license detection, got %#v", warnings)
+	}
+	if license == nil || license.SPDX != "MIT" {
+		t.Fatalf("expected license detection from readable license file, got %#v", license)
+	}
+}
+
+func assertDetectedLicenseProbe(t *testing.T, probe *licenseFileProbe, warnings []string) {
+	t.Helper()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for readable license probe, got %#v", warnings)
+	}
+	if probe == nil || filepath.Base(probe.path) != "LICENSE" || probe.spdx != "MIT" {
+		t.Fatalf("expected readable MIT license probe, got %#v", probe)
 	}
 }

@@ -3824,6 +3824,7 @@ type advisoryFakeRoot struct {
 	openFile func(name string, flag int, perm os.FileMode) (safeio.File, error)
 	openRoot func(name string) (safeio.Root, error)
 	lstat    func(name string) (fs.FileInfo, error)
+	stat     func(name string) (fs.FileInfo, error)
 	mkdir    func(name string, perm os.FileMode) error
 	chmod    func(name string, perm os.FileMode) error
 	mkdirAll func(name string, perm os.FileMode) error
@@ -3859,6 +3860,16 @@ func (r *advisoryFakeRoot) Lstat(name string) (fs.FileInfo, error) {
 		return r.lstat(name)
 	}
 	return nil, errors.New("unexpected lstat")
+}
+
+func (r *advisoryFakeRoot) Stat(name string) (fs.FileInfo, error) {
+	if r.stat != nil {
+		return r.stat(name)
+	}
+	if r.lstat != nil {
+		return r.lstat(name)
+	}
+	return nil, errors.New("unexpected stat")
 }
 
 func (r *advisoryFakeRoot) Mkdir(name string, perm os.FileMode) error {

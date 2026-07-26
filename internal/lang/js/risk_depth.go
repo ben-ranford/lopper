@@ -31,13 +31,13 @@ type depthEvaluation struct {
 	warnings []string
 }
 
-func estimateTransitiveDepth(repoPath string, depRoot string, pkg packageJSON) (int, []string) {
+func estimateTransitiveDepth(repoPath, depRoot string, pkg packageJSON) (int, []string) {
 	visiting := make(map[string]struct{})
 	result := transitiveDepth(repoPath, depRoot, pkg, map[string]depthEvaluation{}, visiting, 512)
 	return result.depth, dedupeStrings(result.warnings)
 }
 
-func transitiveDepth(repoPath string, pkgRoot string, pkg packageJSON, memo map[string]depthEvaluation, visiting map[string]struct{}, budget int) depthEvaluation {
+func transitiveDepth(repoPath, pkgRoot string, pkg packageJSON, memo map[string]depthEvaluation, visiting map[string]struct{}, budget int) depthEvaluation {
 	if cached, ok := memo[pkgRoot]; ok {
 		return cached
 	}

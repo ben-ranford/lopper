@@ -56,41 +56,16 @@ export * from "./other.js";
 func TestEntrypointAndPathHelpers(t *testing.T) {
 	repo := t.TempDir()
 	depRoot := filepath.Join(repo, "node_modules", "pkg")
-	if err := os.MkdirAll(depRoot, 0o755); err != nil {
-		t.Fatalf("mkdir dep root: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, indexJSName), []byte("export const x = 1"), 0o600); err != nil {
-		t.Fatalf("write index.js: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(depRoot, "subdir"), 0o755); err != nil {
-		t.Fatalf("mkdir subdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(depRoot, "subdir", indexJSName), []byte("export const y = 2"), 0o600); err != nil {
-		t.Fatalf("write subdir index.js: %v", err)
-	}
+	writeExportEntrypointFixture(t, depRoot)
 
-	if got, ok, err := resolveEntrypoint(depRoot, "index"); err != nil || !ok || filepath.Base(got) != indexJSName {
-		t.Fatalf("expected index.js entrypoint resolution, got %q ok=%v err=%v", got, ok, err)
-	}
-	if got, ok, err := resolveEntrypoint(depRoot, "subdir"); err != nil || !ok || filepath.Base(got) != indexJSName {
-		t.Fatalf("expected directory entrypoint resolution, got %q ok=%v err=%v", got, ok, err)
-	}
-	if _, ok, err := resolveEntrypoint(depRoot, "missing"); err != nil || ok {
-		t.Fatalf("expected missing entrypoint to fail without error, got ok=%v err=%v", ok, err)
-	}
+	assertResolvedEntrypoint(t, depRoot, "index")
+	assertResolvedEntrypoint(t, depRoot, "subdir")
+	assertMissingEntrypoint(t, depRoot, "missing")
 
-	if _, err := dependencyRoot("", "pkg"); err == nil {
-		t.Fatalf("expected repo-path validation error")
-	}
-	if _, err := dependencyRoot(repo, ""); err == nil {
-		t.Fatalf("expected dependency validation error")
-	}
-	if _, err := dependencyRoot(repo, testMalformedDependency); err == nil {
-		t.Fatalf("expected scoped dependency validation error")
-	}
-	if got, err := dependencyRoot(repo, testMalformedDependency+"/pkg"); err != nil || got != filepath.Join(repo, "node_modules", testMalformedDependency, "pkg") {
-		t.Fatalf("unexpected scoped root: %q err=%v", got, err)
-	}
+	assertDependencyRootError(t, "", "pkg")
+	assertDependencyRootError(t, repo, "")
+	assertDependencyRootError(t, repo, testMalformedDependency)
+	assertDependencyRootPath(t, repo, testMalformedDependency+"/pkg", filepath.Join(repo, "node_modules", testMalformedDependency, "pkg"))
 }
 
 func TestDependencyRootRejectsMalformedNames(t *testing.T) {
@@ -162,10 +137,11 @@ func TestCollectExportPathsConditionWarnings(t *testing.T) {
 func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 	repo := t.TempDir()
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:   repo,
 		dependency: "missing",
 	})
+
 	if err != nil {
 		t.Fatalf("resolve missing dependency exports: %v", err)
 	}
@@ -180,10 +156,11 @@ func TestResolveDependencyExportsMissingAndInvalidPackageJSON(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(badRoot, "package.json"), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid package.json: %v", err)
 	}
-	surface, err = resolveDependencyExports(dependencyExportRequest{
+	surface, err = resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:   repo,
 		dependency: "bad",
 	})
+
 	if err != nil {
 		t.Fatalf("resolve invalid dependency exports: %v", err)
 	}
@@ -205,7 +182,7 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	missingFile := filepath.Join(repo, "missing.js")
 
 	surface := &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface(repo, []string{jsFile, jsFile, badFile, missingFile}, surface)
+	parseEntrypointsIntoSurface(context.Background(), repo, []string{jsFile, jsFile, badFile, missingFile}, surface)
 
 	if _, ok := surface.Names["value"]; !ok {
 		t.Fatalf("expected parsed export name from valid entrypoint")
@@ -228,7 +205,7 @@ func TestParseEntrypointsIntoSurfaceRejectsOutsideEntryAndInvalidRoot(t *testing
 	}
 
 	surface := &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface(repo, []string{outsideEntry}, surface)
+	parseEntrypointsIntoSurface(context.Background(), repo, []string{outsideEntry}, surface)
 	if len(surface.Warnings) != 1 || !strings.Contains(surface.Warnings[0], "failed to read entrypoint") {
 		t.Fatalf("expected outside entrypoint warning, got %#v", surface.Warnings)
 	}
@@ -238,7 +215,7 @@ func TestParseEntrypointsIntoSurfaceRejectsOutsideEntryAndInvalidRoot(t *testing
 		t.Fatalf("write invalid root file: %v", err)
 	}
 	surface = &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface(invalidRoot, []string{filepath.Join(repo, "index.js")}, surface)
+	parseEntrypointsIntoSurface(context.Background(), invalidRoot, []string{filepath.Join(repo, "index.js")}, surface)
 	if len(surface.Warnings) != 1 || !strings.Contains(surface.Warnings[0], "failed to read entrypoint") {
 		t.Fatalf("expected invalid-root warning, got %#v", surface.Warnings)
 	}
@@ -339,6 +316,10 @@ func TestLoadPackageJSONForSurfaceJoinsReadAndCloseErrors(t *testing.T) {
 
 func TestResolveDependencyExportsPreservesStableEntrypointAndDynamicSampleOrder(t *testing.T) {
 	depRoot := t.TempDir()
+	canonicalDepRoot, err := filepath.EvalSymlinks(depRoot)
+	if err != nil {
+		t.Fatalf("canonicalize dependency root: %v", err)
+	}
 	packageData := `{"exports":{".":"./root.js","./z":"./z.js","./a":"./a.js","./m":"./m.js"}}`
 	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(packageData), 0o600); err != nil {
 		t.Fatalf("write package.json: %v", err)
@@ -351,16 +332,17 @@ func TestResolveDependencyExportsPreservesStableEntrypointAndDynamicSampleOrder(
 		if err := os.WriteFile(path, []byte("const loader = require(target)\nexport { loader }\n"), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
-		wantEntrypoints = append(wantEntrypoints, path)
+		wantEntrypoints = append(wantEntrypoints, filepath.Join(canonicalDepRoot, name))
 	}
 	wantCue := "dynamic require/import usage found in 4 dependency entrypoint location(s) (root.js:1, a.js:1, m.js:1)"
 
 	for run := 0; run < 32; run++ {
-		surface, err := resolveDependencyExports(dependencyExportRequest{
+		surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 			dependency:         "pkg",
 			dependencyRootPath: depRoot,
 			runtimeProfileName: runtimeProfileNodeImport,
 		})
+
 		if err != nil {
 			t.Fatalf("run %d resolve dependency exports: %v", run, err)
 		}
@@ -525,7 +507,7 @@ func TestResolveDependencyExportsUsesExplicitDependencyRootPath(t *testing.T) {
 		t.Fatalf("write index.js: %v", err)
 	}
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{dependencyRootPath: depRoot})
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{dependencyRootPath: depRoot})
 	if err != nil {
 		t.Fatalf("resolve dependency exports with explicit root: %v", err)
 	}
@@ -665,6 +647,217 @@ func TestLstatWithinRootRejectsPathOutsideRoot(t *testing.T) {
 	}
 }
 
+func TestResolveEntrypointAcceptsSymlinkedInRootFile(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	if err := os.MkdirAll(filepath.Join(depRoot, "dist"), 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	target := filepath.Join(depRoot, "dist", "index.js")
+	if err := os.WriteFile(target, []byte("export const linked = 1\n"), 0o600); err != nil {
+		t.Fatalf("write dist index: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(depRoot, "linked.js")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	resolved, ok, err := resolveEntrypoint(depRoot, "linked")
+	if err != nil || !ok {
+		t.Fatalf("expected symlinked in-root file entrypoint to resolve, got %q ok=%v err=%v", resolved, ok, err)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(filepath.Join(depRoot, "linked.js"))
+	if err != nil {
+		t.Fatalf("canonicalize symlink target: %v", err)
+	}
+	if resolved != canonicalTarget {
+		t.Fatalf("expected symlink entrypoint to resolve to canonical target, got %q want %q", resolved, canonicalTarget)
+	}
+}
+
+func TestResolveEntrypointAndParseSurfaceAcceptSymlinkedDirectoryCanonicalPath(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	realDir := filepath.Join(depRoot, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, indexJSName), []byte("export const linked = 1\n"), 0o600); err != nil {
+		t.Fatalf("write real index: %v", err)
+	}
+	if err := os.Symlink("real", filepath.Join(depRoot, "linked")); err != nil {
+		t.Skipf("create directory symlink: %v", err)
+	}
+
+	resolved, ok, err := resolveEntrypoint(depRoot, "linked")
+	if err != nil || !ok {
+		t.Fatalf("expected symlinked directory entrypoint to resolve, got %q ok=%v err=%v", resolved, ok, err)
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(filepath.Join(depRoot, "linked", indexJSName))
+	if err != nil {
+		t.Fatalf("canonicalize symlinked directory entrypoint: %v", err)
+	}
+	if resolved != canonicalTarget {
+		t.Fatalf("expected canonical directory entrypoint path, got %q want %q", resolved, canonicalTarget)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(context.Background(), depRoot, []string{resolved}, surface)
+	if _, ok := surface.Names["linked"]; !ok {
+		t.Fatalf("expected canonical directory entrypoint to be readable, got %#v", surface.Names)
+	}
+	if !slices.Equal(surface.EntryPoints, []string{canonicalTarget}) {
+		t.Fatalf("expected canonical entrypoint to be tracked, got %#v", surface.EntryPoints)
+	}
+	if len(surface.Warnings) != 0 {
+		t.Fatalf("expected no warnings for canonical directory entrypoint read, got %#v", surface.Warnings)
+	}
+}
+
+func TestResolveEntrypointRejectsParentSwapBetweenValidationAndFinalStat(t *testing.T) {
+	repo := t.TempDir()
+	depRoot := filepath.Join(repo, "node_modules", "pkg")
+	originalDir := filepath.Join(depRoot, "lib")
+	relocatedDir := filepath.Join(depRoot, "lib-real")
+	outsideDir := filepath.Join(t.TempDir(), "lib")
+	if err := os.MkdirAll(originalDir, 0o755); err != nil {
+		t.Fatalf("mkdir original dir: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(originalDir, indexJSName), []byte("export const original = 1\n"), 0o600); err != nil {
+		t.Fatalf("write original index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideDir, indexJSName), []byte("export const alternate = 1\n"), 0o600); err != nil {
+		t.Fatalf("write alternate index: %v", err)
+	}
+
+	originalReady := pinnedPathStatReadyFn
+	swapped := false
+	pinnedPathStatReadyFn = func() error {
+		if swapped {
+			return nil
+		}
+		swapped = true
+		if err := os.Rename(originalDir, relocatedDir); err != nil {
+			return err
+		}
+		return os.Symlink(outsideDir, originalDir)
+	}
+	t.Cleanup(func() {
+		pinnedPathStatReadyFn = originalReady
+	})
+
+	resolved, ok, err := resolveEntrypointUnderRoot(depRoot, depRoot, "lib")
+	if err != nil {
+		t.Fatalf("expected parent swap to be rejected without surfacing a close error, got %v", err)
+	}
+	if ok || resolved != "" {
+		t.Fatalf("expected swapped parent to break directory entrypoint resolution, got %q ok=%v", resolved, ok)
+	}
+}
+
+func TestStatWithinRootRejectsPinnedPathReadyFailure(t *testing.T) {
+	depRoot := t.TempDir()
+	target := filepath.Join(depRoot, indexJSName)
+	if err := os.WriteFile(target, []byte("export const value = 1\n"), 0o600); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+
+	root, err := safeio.OpenRoot(depRoot)
+	if err != nil {
+		t.Fatalf("open dependency root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close dependency root: %v", err)
+		}
+	})
+
+	originalReady := pinnedPathStatReadyFn
+	pinnedPathStatReadyFn = func() error { return errors.New("ready failed") }
+	t.Cleanup(func() {
+		pinnedPathStatReadyFn = originalReady
+	})
+
+	if path, info, ok := statWithinRoot(root, depRoot, target); ok || path != "" || info != nil {
+		t.Fatalf("expected ready-hook failure to reject stat, got path=%q info=%v ok=%v", path, info, ok)
+	}
+}
+
+func TestOpenPathParentWithinRootJoinsLookupAndCurrentCloseErrors(t *testing.T) {
+	dirInfo, err := os.Lstat(t.TempDir())
+	if err != nil {
+		t.Fatalf("lstat temp dir: %v", err)
+	}
+
+	root := &fakeJSRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "a" {
+				t.Fatalf("unexpected root lstat %q", name)
+			}
+			return dirInfo, nil
+		},
+		openRoot: func(name string) (safeio.Root, error) {
+			if name != "a" {
+				t.Fatalf("unexpected root open %q", name)
+			}
+			return &fakeJSRoot{
+				lstat: func(string) (fs.FileInfo, error) {
+					return nil, errors.New("lookup failed")
+				},
+				closeErr: errors.New("close current failed"),
+			}, nil
+		},
+	}
+
+	parent, closeParent, err := openPathParentWithinRoot(root, t.TempDir(), filepath.Join("a", "b"))
+	if parent != nil || closeParent || err == nil || !strings.Contains(err.Error(), "lookup failed") || !strings.Contains(err.Error(), "close current failed") {
+		t.Fatalf("expected joined lookup/current-close failure, got parent=%v closeParent=%v err=%v", parent, closeParent, err)
+	}
+}
+
+func TestOpenPathParentWithinRootJoinsCurrentAndNextCloseErrors(t *testing.T) {
+	dirInfo, err := os.Lstat(t.TempDir())
+	if err != nil {
+		t.Fatalf("lstat temp dir: %v", err)
+	}
+
+	root := &fakeJSRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "a" {
+				t.Fatalf("unexpected root lstat %q", name)
+			}
+			return dirInfo, nil
+		},
+		openRoot: func(name string) (safeio.Root, error) {
+			if name != "a" {
+				t.Fatalf("unexpected root open %q", name)
+			}
+			return &fakeJSRoot{
+				lstat: func(name string) (fs.FileInfo, error) {
+					if name != "b" && name != "." {
+						t.Fatalf("unexpected child lstat %q", name)
+					}
+					return dirInfo, nil
+				},
+				openRoot: func(name string) (safeio.Root, error) {
+					if name != "b" {
+						t.Fatalf("unexpected child open %q", name)
+					}
+					return &fakeJSRoot{closeErr: errors.New("close next failed")}, nil
+				},
+				closeErr: errors.New("close current failed"),
+			}, nil
+		},
+	}
+
+	parent, closeParent, err := openPathParentWithinRoot(root, t.TempDir(), filepath.Join("a", "b"))
+	if parent != nil || closeParent || err == nil || !strings.Contains(err.Error(), "close current failed") || !strings.Contains(err.Error(), "close next failed") {
+		t.Fatalf("expected joined current/next-close failure, got parent=%v closeParent=%v err=%v", parent, closeParent, err)
+	}
+}
+
 func TestResolveEntrypointsCapsCandidateList(t *testing.T) {
 	depRoot := t.TempDir()
 	entrypoints := make(map[string]struct{}, maxExportEntrypoints+1)
@@ -716,6 +909,319 @@ func TestResolveEntrypointsClearsResultsWhenRootCloseFails(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(surface.Warnings, "\n"), "failed to close dependency root after entrypoint resolution") || !strings.Contains(strings.Join(surface.Warnings, "\n"), "close failed") {
 		t.Fatalf("expected close warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestLstatPinnedPathWithinRootReturnsCloseFailureAfterSuccessfulLookup(t *testing.T) {
+	rootPath := t.TempDir()
+	nestedPath := filepath.Join(rootPath, "a")
+	if err := os.MkdirAll(nestedPath, 0o755); err != nil {
+		t.Fatalf("mkdir nested path: %v", err)
+	}
+	filePath := filepath.Join(nestedPath, "file.js")
+	testutil.MustWriteFile(t, filePath, "export {}\n")
+
+	dirInfo, err := os.Lstat(nestedPath)
+	if err != nil {
+		t.Fatalf("lstat nested path: %v", err)
+	}
+	fileInfo, err := os.Lstat(filePath)
+	if err != nil {
+		t.Fatalf("lstat file path: %v", err)
+	}
+
+	parent := &fakeJSRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "a":
+				return dirInfo, nil
+			default:
+				t.Fatalf("unexpected lstat %q", name)
+				return nil, nil
+			}
+		},
+		openRoot: func(name string) (safeio.Root, error) {
+			if name != "a" {
+				t.Fatalf("unexpected root open %q", name)
+			}
+			return &fakeJSRoot{
+				lstat: func(name string) (fs.FileInfo, error) {
+					switch name {
+					case ".":
+						return dirInfo, nil
+					case "file.js":
+						return fileInfo, nil
+					default:
+						t.Fatalf("unexpected child lstat %q", name)
+						return nil, nil
+					}
+				},
+				closeErr: errors.New("close failed"),
+			}, nil
+		},
+	}
+
+	info, err := lstatPinnedPathWithinRoot(parent, rootPath, filePath)
+	if info == nil || err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("expected successful lookup with close failure, got info=%v err=%v", info, err)
+	}
+}
+
+func TestLstatPinnedPathWithinRootReadsNestedFile(t *testing.T) {
+	rootPath := t.TempDir()
+	nestedDir := filepath.Join(rootPath, "a")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+	filePath := filepath.Join(nestedDir, "file.js")
+	testutil.MustWriteFile(t, filePath, "export {}\n")
+
+	root, err := safeio.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	})
+
+	info, err := lstatPinnedPathWithinRoot(root, rootPath, filePath)
+	if err != nil {
+		t.Fatalf("lstat pinned path within root: %v", err)
+	}
+	if info == nil || info.Name() != "file.js" {
+		t.Fatalf("expected nested file info, got %v", info)
+	}
+}
+
+func TestLstatPinnedPathWithinRootRejectsSymlinkLeaf(t *testing.T) {
+	rootPath := t.TempDir()
+	targetPath := filepath.Join(rootPath, "target.js")
+	testutil.MustWriteFile(t, targetPath, "export {}\n")
+
+	linkPath := filepath.Join(rootPath, "linked.js")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	root, err := safeio.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	})
+
+	info, err := lstatPinnedPathWithinRoot(root, rootPath, linkPath)
+	if info != nil || err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+		t.Fatalf("expected symlink leaf rejection, got info=%v err=%v", info, err)
+	}
+}
+
+func TestLstatPinnedPathWithinRootDoesNotLookupLeafWhenParentOpenFails(t *testing.T) {
+	rootPath := t.TempDir()
+	parentPath := filepath.Join(rootPath, "a")
+	if err := os.Mkdir(parentPath, 0o755); err != nil {
+		t.Fatalf("mkdir parent path: %v", err)
+	}
+	parentInfo, err := os.Lstat(parentPath)
+	if err != nil {
+		t.Fatalf("lstat parent path: %v", err)
+	}
+
+	leafLookedUp := false
+	root := &fakeJSRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "a":
+				return parentInfo, nil
+			case "file.js":
+				leafLookedUp = true
+				return nil, errors.New("unexpected leaf lookup")
+			default:
+				t.Fatalf("unexpected lstat %q", name)
+				return nil, nil
+			}
+		},
+		openRoot: func(name string) (safeio.Root, error) {
+			if name != "a" {
+				t.Fatalf("unexpected root open %q", name)
+			}
+			return nil, errors.New("open failed")
+		},
+	}
+
+	info, err := lstatPinnedPathWithinRoot(root, rootPath, filepath.Join(parentPath, "file.js"))
+	if info != nil || err == nil || !strings.Contains(err.Error(), "open failed") {
+		t.Fatalf("expected parent-open failure, got info=%v err=%v", info, err)
+	}
+	if leafLookedUp {
+		t.Fatal("expected parent-open failure to prevent leaf lookup")
+	}
+}
+
+func TestStatWithinRootReadsNestedFile(t *testing.T) {
+	depRoot := t.TempDir()
+	nestedDir := filepath.Join(depRoot, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested dir: %v", err)
+	}
+	targetPath := filepath.Join(nestedDir, "index.js")
+	testutil.MustWriteFile(t, targetPath, "export const value = 1\n")
+
+	root, err := safeio.OpenRoot(depRoot)
+	if err != nil {
+		t.Fatalf("open dependency root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close dependency root: %v", err)
+		}
+	})
+
+	resolved, info, ok := statWithinRoot(root, depRoot, targetPath)
+	if !ok || info == nil {
+		t.Fatalf("expected nested stat lookup to succeed, got resolved=%q info=%v ok=%v", resolved, info, ok)
+	}
+	expectedPath, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		t.Fatalf("canonicalize target path: %v", err)
+	}
+	if resolved != expectedPath || info.Name() != "index.js" {
+		t.Fatalf("unexpected nested stat result: resolved=%q info=%v", resolved, info)
+	}
+}
+
+func TestOpenPathParentWithinRootReturnsRootForDot(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := safeio.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	})
+
+	parent, closeParent, err := openPathParentWithinRoot(root, rootPath, ".")
+	if err != nil {
+		t.Fatalf("open path parent within root: %v", err)
+	}
+	if parent != root || closeParent {
+		t.Fatalf("expected dot parent to reuse original root, got parent=%v closeParent=%v", parent, closeParent)
+	}
+}
+
+func TestOpenPathParentWithinRootSkipsDotSegmentsDuringTraversal(t *testing.T) {
+	rootPath := t.TempDir()
+	nestedPath := filepath.Join(rootPath, "a", "b")
+	if err := os.MkdirAll(nestedPath, 0o755); err != nil {
+		t.Fatalf("mkdir nested path: %v", err)
+	}
+
+	root, err := safeio.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	})
+
+	parentRel := strings.Join([]string{".", "a", ".", "b"}, string(os.PathSeparator))
+	parent, closeParent, err := openPathParentWithinRoot(root, rootPath, parentRel)
+	if err != nil {
+		t.Fatalf("open path parent within root: %v", err)
+	}
+	if !closeParent {
+		t.Fatal("expected nested traversal to return an owned parent root")
+	}
+	defer func() {
+		if err := parent.Close(); err != nil {
+			t.Fatalf("close parent: %v", err)
+		}
+	}()
+	if _, err := parent.Lstat("."); err != nil {
+		t.Fatalf("lstat traversed parent: %v", err)
+	}
+}
+
+func TestResolvePinnedPathWithinBoundaryRejectsPinnedParentOutsideAllowedRoot(t *testing.T) {
+	repo := t.TempDir()
+	allowedRoot := filepath.Join(repo, "allowed")
+	targetPath := filepath.Join(repo, "outside", "index.js")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target parent: %v", err)
+	}
+	testutil.MustWriteFile(t, targetPath, "export const escaped = 1\n")
+
+	if _, err := resolvePinnedPathWithinBoundary(targetPath, allowedRoot); err == nil || !strings.Contains(err.Error(), "path escapes root") {
+		t.Fatalf("expected outside pinned parent to be rejected, got %v", err)
+	}
+}
+
+func TestResolvePinnedPathWithinBoundaryAcceptsPinnedSymlinkRootTarget(t *testing.T) {
+	repo := t.TempDir()
+	pkgRoot := filepath.Join(repo, "packages", "linked")
+	if err := os.MkdirAll(pkgRoot, 0o755); err != nil {
+		t.Fatalf("mkdir package root: %v", err)
+	}
+	targetPath := filepath.Join(pkgRoot, "index.js")
+	testutil.MustWriteFile(t, targetPath, "export const linked = 1\n")
+
+	linkPath := filepath.Join(repo, "node_modules", "linked")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.Symlink(pkgRoot, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	allowedRoot, err := resolvePinnedRootPath(linkPath)
+	if err != nil {
+		t.Fatalf("resolve pinned root: %v", err)
+	}
+	resolved, err := resolvePinnedPathWithinBoundary(filepath.Join(linkPath, "index.js"), allowedRoot)
+	if err != nil {
+		t.Fatalf("resolve pinned path within boundary: %v", err)
+	}
+	expectedTarget, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		t.Fatalf("canonicalize target path: %v", err)
+	}
+	if resolved != expectedTarget {
+		t.Fatalf("expected canonical pinned target %q, got %q", expectedTarget, resolved)
+	}
+}
+
+func TestResolvePinnedPathWithinBoundaryRejectsSymlinkTargetOutsideAllowedRoot(t *testing.T) {
+	repo := t.TempDir()
+	allowedRoot := filepath.Join(repo, "allowed")
+	outsideRoot := filepath.Join(repo, "outside")
+	if err := os.MkdirAll(allowedRoot, 0o755); err != nil {
+		t.Fatalf("mkdir allowed root: %v", err)
+	}
+	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+	targetPath := filepath.Join(allowedRoot, "linked.js")
+	outsideTarget := filepath.Join(outsideRoot, "index.js")
+	testutil.MustWriteFile(t, outsideTarget, "export const escaped = 1\n")
+	if err := os.Symlink(outsideTarget, targetPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	validatedAllowedRoot, err := resolvePinnedRootPath(allowedRoot)
+	if err != nil {
+		t.Fatalf("resolve pinned allowed root: %v", err)
+	}
+	if _, err := resolvePinnedPathWithinBoundary(targetPath, validatedAllowedRoot); err == nil || !strings.Contains(err.Error(), "symlinked path component") {
+		t.Fatalf("expected symlink target outside allowed root to be rejected, got %v", err)
 	}
 }
 
@@ -775,11 +1281,12 @@ func TestResolveDependencyExportsPrioritizesPrimaryEntrypointBeyondNaiveCap(t *t
 		t.Fatalf("write primary entrypoint: %v", err)
 	}
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:           repo,
 		dependency:         "pkg",
 		runtimeProfileName: runtimeProfileNodeImport,
 	})
+
 	if err != nil {
 		t.Fatalf("resolve dependency exports: %v", err)
 	}
@@ -838,7 +1345,7 @@ func TestResolveEntrypointsCapOrderIsDeterministic(t *testing.T) {
 
 func TestParseEntrypointsIntoSurfaceReturnsWhenRootPathEmpty(t *testing.T) {
 	surface := &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface("", []string{"index.js"}, surface)
+	parseEntrypointsIntoSurface(context.Background(), "", []string{"index.js"}, surface)
 	if len(surface.Names) != 0 || len(surface.EntryPoints) != 0 || len(surface.Warnings) != 0 {
 		t.Fatalf("expected empty-root parse to leave surface untouched, got %#v", surface)
 	}
@@ -848,6 +1355,50 @@ type fakeEntrypointRoot struct {
 	depRoot   string
 	closeErr  error
 	closeHits *int
+}
+
+func writeExportEntrypointFixture(t *testing.T, depRoot string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Join(depRoot, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(depRoot, indexJSName), "export const x = 1")
+	testutil.MustWriteFile(t, filepath.Join(depRoot, "subdir", indexJSName), "export const y = 2")
+}
+
+func assertResolvedEntrypoint(t *testing.T, depRoot, entry string) {
+	t.Helper()
+
+	got, ok, err := resolveEntrypoint(depRoot, entry)
+	if err != nil || !ok || filepath.Base(got) != indexJSName {
+		t.Fatalf("expected %s entrypoint resolution, got %q ok=%v err=%v", entry, got, ok, err)
+	}
+}
+
+func assertMissingEntrypoint(t *testing.T, depRoot, entry string) {
+	t.Helper()
+
+	if _, ok, err := resolveEntrypoint(depRoot, entry); err != nil || ok {
+		t.Fatalf("expected missing entrypoint to fail without error, got ok=%v err=%v", ok, err)
+	}
+}
+
+func assertDependencyRootError(t *testing.T, repo, dependency string) {
+	t.Helper()
+
+	if _, err := dependencyRoot(repo, dependency); err == nil {
+		t.Fatalf("expected dependency root error for repo=%q dependency=%q", repo, dependency)
+	}
+}
+
+func assertDependencyRootPath(t *testing.T, repo, dependency, want string) {
+	t.Helper()
+
+	got, err := dependencyRoot(repo, dependency)
+	if err != nil || got != want {
+		t.Fatalf("unexpected dependency root for %q: got %q want %q err=%v", dependency, got, want, err)
+	}
 }
 
 func (r *fakeEntrypointRoot) Open(string) (safeio.File, error) {
@@ -866,6 +1417,10 @@ func (r *fakeEntrypointRoot) Lstat(name string) (fs.FileInfo, error) {
 	return os.Lstat(filepath.Join(r.depRoot, name))
 }
 
+func (r *fakeEntrypointRoot) Stat(name string) (fs.FileInfo, error) {
+	return os.Stat(filepath.Join(r.depRoot, name))
+}
+
 func (r *fakeEntrypointRoot) Mkdir(string, os.FileMode) error {
 	return errors.New("not implemented")
 }
@@ -875,6 +1430,10 @@ func (r *fakeEntrypointRoot) Chmod(string, os.FileMode) error {
 }
 
 func (r *fakeEntrypointRoot) MkdirAll(string, os.FileMode) error {
+	return errors.New("not implemented")
+}
+
+func (r *fakeEntrypointRoot) Link(string, string) error {
 	return errors.New("not implemented")
 }
 

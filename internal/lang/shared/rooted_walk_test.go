@@ -691,6 +691,10 @@ func (r *sharedPinnedChildRoot) Lstat(name string) (fs.FileInfo, error) {
 	return nil, errors.New("unexpected lstat: " + name)
 }
 
+func (r *sharedPinnedChildRoot) Stat(name string) (fs.FileInfo, error) {
+	return r.Lstat(name)
+}
+
 func (*sharedPinnedChildRoot) Mkdir(string, os.FileMode) error { return errors.New("unexpected mkdir") }
 func (*sharedPinnedChildRoot) Chmod(string, os.FileMode) error { return errors.New("unexpected chmod") }
 func (*sharedPinnedChildRoot) MkdirAll(string, os.FileMode) error {
@@ -726,6 +730,10 @@ func (r *sharedWalkTestRoot) Lstat(name string) (fs.FileInfo, error) {
 		return r.info, nil
 	}
 	return nil, errors.New("unexpected lstat: " + name)
+}
+
+func (r *sharedWalkTestRoot) Stat(name string) (fs.FileInfo, error) {
+	return r.Lstat(name)
 }
 
 func (*sharedWalkTestRoot) Mkdir(string, os.FileMode) error { return errors.New("unexpected mkdir") }
@@ -779,6 +787,10 @@ func (r *countingSharedWalkRoot) OpenRoot(name string) (safeio.Root, error) {
 func (r *countingSharedWalkRoot) Lstat(name string) (fs.FileInfo, error) {
 	r.counts.lstatCalls++
 	return r.underlying.Lstat(name)
+}
+
+func (r *countingSharedWalkRoot) Stat(name string) (fs.FileInfo, error) {
+	return r.underlying.Stat(name)
 }
 
 func (r *countingSharedWalkRoot) Mkdir(name string, perm os.FileMode) error {

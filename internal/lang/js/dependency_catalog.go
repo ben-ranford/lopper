@@ -1,21 +1,28 @@
 package js
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
-func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[string]string, []string) {
+func listDependencies(ctx context.Context, repoPath string, scanResult ScanResult) ([]string, map[string]string, []string, error) {
 	collector := newDependencyCollector()
 	for _, file := range scanResult.Files {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 		importerPath := filepath.Join(repoPath, file.Path)
 		for _, imp := range file.Imports {
 			collector.recordImport(repoPath, importerPath, imp)
 		}
 	}
-	workspaceCatalog := loadWorkspaceDependencyCatalog(repoPath)
+	workspaceCatalog, err := loadWorkspaceDependencyCatalog(ctx, repoPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	collector.mergeWorkspaceDeclarations(repoPath, workspaceCatalog.declarations)
 
 	deps := make([]string, 0, len(collector.found))
@@ -44,7 +51,7 @@ func listDependencies(repoPath string, scanResult ScanResult) ([]string, map[str
 	}
 	sort.Strings(warnings)
 
-	return deps, collector.roots, warnings
+	return deps, collector.roots, warnings, nil
 }
 
 type dependencyCollector struct {
@@ -69,7 +76,7 @@ func newDependencyCollector() dependencyCollector {
 	}
 }
 
-func (c *dependencyCollector) recordImport(repoPath string, importerPath string, imp ImportBinding) {
+func (c *dependencyCollector) recordImport(repoPath, importerPath string, imp ImportBinding) {
 	dep := dependencyFromModule(imp.Module)
 	if dep == "" {
 		return

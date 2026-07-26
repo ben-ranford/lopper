@@ -172,7 +172,7 @@ func resolveEntrypoints(rootPath, depPath string, candidates entrypointCandidate
 	return resolved
 }
 
-func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *ExportSurface) {
+func parseEntrypointsIntoSurface(ctx context.Context, rootPath string, resolved []string, surface *ExportSurface) {
 	if rootPath == "" {
 		return
 	}
@@ -187,6 +187,10 @@ func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *Ex
 	parser := newSourceParser()
 	seenEntries := make(map[string]struct{})
 	for _, entry := range resolved {
+		if err := ctx.Err(); err != nil {
+			surface.Warnings = append(surface.Warnings, err.Error())
+			return
+		}
 		if !trackEntrypoint(surface, seenEntries, entry) {
 			continue
 		}
@@ -194,7 +198,7 @@ func parseEntrypointsIntoSurface(rootPath string, resolved []string, surface *Ex
 		if !readOK {
 			continue
 		}
-		tree, err := parser.Parse(context.Background(), entry, content)
+		tree, err := parser.Parse(ctx, entry, content)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to parse entrypoint: %s", entry))
 			continue

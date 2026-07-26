@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +14,11 @@ func TestResolveDependencyExports(t *testing.T) {
 	repo := t.TempDir()
 	writeDependencyFixture(t, repo, "sample", "{\n  \"main\": \"index.js\"\n}\n", "export const alpha = 1\nexport function beta() {}\nexport default function () {}\n")
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:   repo,
 		dependency: "sample",
 	})
+
 	if err != nil {
 		t.Fatalf(resolveExportsErrFmt, err)
 	}
@@ -32,10 +34,11 @@ func TestResolveDependencyExportsSkipsNonCodeAssets(t *testing.T) {
 	repo := t.TempDir()
 	writeDependencyFixture(t, repo, "styled", "{\n  \"exports\": {\n    \"default\": {\n      \"styles\": \"./styles.css\",\n      \"import\": \"./index.js\"\n    }\n  }\n}\n", "export const theme = {}\n")
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:   repo,
 		dependency: "styled",
 	})
+
 	if err != nil {
 		t.Fatalf(resolveExportsErrFmt, err)
 	}
@@ -56,11 +59,12 @@ func TestResolveDependencyExportsUsesRuntimeProfile(t *testing.T) {
 		"require.js": "export const requireOnly = 1\n",
 	})
 
-	importSurface, err := resolveDependencyExports(dependencyExportRequest{
+	importSurface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:           repo,
 		dependency:         "profiled",
 		runtimeProfileName: runtimeProfileNodeImport,
 	})
+
 	if err != nil {
 		t.Fatalf("resolve import profile exports: %v", err)
 	}
@@ -71,11 +75,12 @@ func TestResolveDependencyExportsUsesRuntimeProfile(t *testing.T) {
 		t.Fatalf("did not expect require export in import profile")
 	}
 
-	requireSurface, err := resolveDependencyExports(dependencyExportRequest{
+	requireSurface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:           repo,
 		dependency:         "profiled",
 		runtimeProfileName: runtimeProfileNodeRequire,
 	})
+
 	if err != nil {
 		t.Fatalf("resolve require profile exports: %v", err)
 	}
@@ -96,11 +101,12 @@ func TestResolveDependencyExportsWarnsOnAmbiguousConditionMap(t *testing.T) {
 		"default.js": "export const fromDefault = 1\n",
 	})
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:           repo,
 		dependency:         "ambiguous",
 		runtimeProfileName: runtimeProfileNodeImport,
 	})
+
 	if err != nil {
 		t.Fatalf(resolveExportsErrFmt, err)
 	}
@@ -130,10 +136,11 @@ func TestResolveDependencyExportsRejectsSymlinkedDependencyRoot(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:   repo,
 		dependency: "linked",
 	})
+
 	if err != nil {
 		t.Fatalf(resolveExportsErrFmt, err)
 	}
@@ -173,7 +180,7 @@ func TestResolveDependencyExportsAcceptsPinnedInRepoSymlinkedDependencyRoot(t *t
 		t.Fatalf("expected dependency root validator to return symlink path, got root=%q ok=%v", resolvedRoot, ok)
 	}
 
-	surface, err := resolveDependencyExports(dependencyExportRequest{dependencyRootPath: resolvedRoot})
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{dependencyRootPath: resolvedRoot})
 	if err != nil {
 		t.Fatalf("resolve exports through validated symlink root: %v", err)
 	}
@@ -185,7 +192,7 @@ func TestResolveDependencyExportsAcceptsPinnedInRepoSymlinkedDependencyRoot(t *t
 	}
 }
 
-func writeDependencyFixture(t *testing.T, repoPath string, depName string, packageJSON string, entrypoint string) {
+func writeDependencyFixture(t *testing.T, repoPath, depName, packageJSON, entrypoint string) {
 	t.Helper()
 	depDir := filepath.Join(repoPath, "node_modules", depName)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {
@@ -199,7 +206,7 @@ func writeDependencyFixture(t *testing.T, repoPath string, depName string, packa
 	}
 }
 
-func writeDependencyFiles(t *testing.T, repoPath string, depName string, packageJSON string, files map[string]string) {
+func writeDependencyFiles(t *testing.T, repoPath, depName, packageJSON string, files map[string]string) {
 	t.Helper()
 	depDir := filepath.Join(repoPath, "node_modules", depName)
 	if err := os.MkdirAll(depDir, 0o755); err != nil {

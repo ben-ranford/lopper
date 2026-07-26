@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sort"
@@ -42,10 +43,13 @@ type dependencyReportOptions struct {
 	IncludeRegistryProvenance         bool
 }
 
-func buildDependencyReport(opts dependencyReportOptions) (report.DependencyReport, []string) {
+func buildDependencyReport(ctx context.Context, opts dependencyReportOptions) (report.DependencyReport, []string, error) {
 	warnings := make([]string, 0)
+	if err := ctx.Err(); err != nil {
+		return report.DependencyReport{}, warnings, err
+	}
 
-	surface, surfaceWarnings := resolveSurfaceWarnings(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.RuntimeProfile)
+	surface, surfaceWarnings := resolveSurfaceWarnings(ctx, opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.RuntimeProfile)
 	warnings = append(warnings, surfaceWarnings...)
 	usage := collectDependencyUsageSummary(opts.ScanResult, opts.Dependency)
 	warnings = append(warnings, usage.warnings...)
@@ -59,10 +63,16 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 		usedExportCount = len(usage.usedExports)
 	}
 
-	riskCues, riskWarnings := assessRiskCues(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, surface)
+	riskCues, riskWarnings := assessRiskCues(ctx, opts.RepoPath, opts.Dependency, opts.DependencyRootPath, surface)
 	warnings = append(warnings, riskWarnings...)
-	license, provenance, licenseWarnings := detectLicenseAndProvenance(opts.DependencyRootPath, opts.IncludeRegistryProvenance)
+	if err := ctx.Err(); err != nil {
+		return report.DependencyReport{}, warnings, err
+	}
+	license, provenance, licenseWarnings := detectLicenseAndProvenance(ctx, opts.DependencyRootPath, opts.IncludeRegistryProvenance)
 	warnings = append(warnings, licenseWarnings...)
+	if err := ctx.Err(); err != nil {
+		return report.DependencyReport{}, warnings, err
+	}
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
@@ -85,7 +95,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 		depReport.Codemod = codemod
 		warnings = append(warnings, codemodWarnings...)
 	}
-	return depReport, warnings
+	return depReport, warnings, nil
 }
 
 // dependencyUsageSummary captures intermediate usage aggregates for dependency report assembly.
@@ -128,10 +138,10 @@ func finalizeImportUsageLists(usedImports, unusedImports map[string]*report.Impo
 	return usedImportList, removeOverlappingUnusedImports(unusedImportList, usedImportList)
 }
 
-func resolveSurfaceWarnings(repoPath, dependency, dependencyRootPath, runtimeProfile string) (ExportSurface, []string) {
+func resolveSurfaceWarnings(ctx context.Context, repoPath, dependency, dependencyRootPath, runtimeProfile string) (ExportSurface, []string) {
 	surface := ExportSurface{Names: map[string]struct{}{}}
 	warnings := make([]string, 0)
-	resolved, err := resolveDependencyExports(dependencyExportRequest{
+	resolved, err := resolveDependencyExports(ctx, dependencyExportRequest{
 		repoPath:           repoPath,
 		dependency:         dependency,
 		dependencyRootPath: dependencyRootPath,
@@ -187,7 +197,7 @@ type dependencyImportAttributionContext struct {
 	unusedImports map[string]*report.ImportUse
 }
 
-func applyDependencyImportAttribution(file FileScan, imp ImportBinding, ctx *dependencyImportAttributionContext) (matched bool, ambiguous bool) {
+func applyDependencyImportAttribution(file FileScan, imp ImportBinding, ctx *dependencyImportAttributionContext) (matched, ambiguous bool) {
 	attributed, provenance := attributedImportBinding(file.Path, imp, ctx.dependency, ctx.resolver)
 	if !matchesDependency(attributed.Module, ctx.dependency) {
 		return false, false
@@ -398,7 +408,7 @@ func removeOverlappingUnusedImports(unused, used []report.ImportUse) []report.Im
 	return filtered
 }
 
-func buildUnusedExports(module string, surface map[string]struct{}, used map[string]struct{}) []report.SymbolRef {
+func buildUnusedExports(module string, surface, used map[string]struct{}) []report.SymbolRef {
 	items := make([]report.SymbolRef, 0, len(surface))
 	for name := range surface {
 		if _, ok := used[name]; ok {
@@ -412,7 +422,7 @@ func buildUnusedExports(module string, surface map[string]struct{}, used map[str
 	return items
 }
 
-func countUsedExports(surface map[string]struct{}, used map[string]struct{}) int {
+func countUsedExports(surface, used map[string]struct{}) int {
 	count := 0
 	for name := range used {
 		if _, ok := surface[name]; ok {
@@ -432,15 +442,18 @@ func matchesDependency(module, dependency string) bool {
 	return false
 }
 
-func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights, includeRegistryProvenance bool) ([]report.DependencyReport, []string) {
-	dependencies, dependencyRoots, warnings := listDependencies(repoPath, scanResult)
+func buildTopDependencies(ctx context.Context, repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights, includeRegistryProvenance bool) ([]report.DependencyReport, []string, error) {
+	dependencies, dependencyRoots, warnings, err := listDependencies(ctx, repoPath, scanResult)
+	if err != nil {
+		return nil, warnings, err
+	}
 	if len(dependencies) == 0 {
-		return nil, warnings
+		return nil, warnings, nil
 	}
 
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
-		depReport, depWarnings := buildDependencyReport(dependencyReportOptions{
+		depReport, depWarnings, err := buildDependencyReport(ctx, dependencyReportOptions{
 			RepoPath:                          repoPath,
 			Dependency:                        dep,
 			DependencyRootPath:                dependencyRoots[dep],
@@ -450,6 +463,9 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 			SuggestOnly:                       false,
 			IncludeRegistryProvenance:         includeRegistryProvenance,
 		})
+		if err != nil {
+			return nil, warnings, err
+		}
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
 	}
@@ -460,7 +476,7 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		reports = reports[:topN]
 	}
 
-	return reports, warnings
+	return reports, warnings, nil
 }
 
 func resolveMinUsageRecommendationThreshold(value *int) int {

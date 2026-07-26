@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -73,7 +74,7 @@ func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 		t.Fatalf("write binding.gyp: %v", err)
 	}
 
-	binary, err := detectNodeBinary(root)
+	binary, err := detectNodeBinary(context.Background(), root)
 	if err != nil {
 		t.Fatalf("detect node binary: %v", err)
 	}
@@ -89,9 +90,28 @@ func TestDetectNodeBinaryAndBindingGyp(t *testing.T) {
 	}
 }
 
+func TestDetectNodeBinaryWithinRootPropagatesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	openCalls := 0
+	root := &fakeJSRoot{
+		open: func(string) (safeio.File, error) {
+			openCalls++
+			return nil, errors.New("unexpected open")
+		},
+	}
+	if _, err := detectNodeBinaryWithinRoot(ctx, root, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled native walk to return context.Canceled, got %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected canceled native walk not to open the root, got %d calls", openCalls)
+	}
+}
+
 func TestAssessRiskCueWarningBranches(t *testing.T) {
 	repo := t.TempDir()
-	cues, warnings := assessRiskCues(repo, "", "", ExportSurface{})
+	cues, warnings := assessRiskCues(context.Background(), repo, "", "", ExportSurface{})
 	if len(cues) != 0 {
 		t.Fatalf("expected no cues for invalid dependency root, got %#v", cues)
 	}
@@ -106,7 +126,7 @@ func TestAssessRiskCueWarningBranches(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(depRoot, packageJSONFile), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write invalid package.json: %v", err)
 	}
-	_, warnings = assessRiskCues(repo, "pkg", "", ExportSurface{EntryPoints: []string{filepath.Join(depRoot, "missing.js")}})
+	_, warnings = assessRiskCues(context.Background(), repo, "pkg", "", ExportSurface{EntryPoints: []string{filepath.Join(depRoot, "missing.js")}})
 	if len(warnings) == 0 {
 		t.Fatalf("expected warnings for invalid metadata and missing entrypoint")
 	}
@@ -169,7 +189,7 @@ func TestRiskRootOpenAndCloseBranches(t *testing.T) {
 		return &jsCloseErrorRoot{Root: root, closeErr: closeErr}, nil
 	}
 
-	_, warnings = assessRiskCues(depRoot, "pkg", depRoot, ExportSurface{})
+	_, warnings = assessRiskCues(context.Background(), depRoot, "pkg", depRoot, ExportSurface{})
 	if !warningsContain(warnings, "failed to close dependency root after risk analysis") || !warningsContain(warnings, "close failed") {
 		t.Fatalf("expected risk-analysis close warning, got %#v", warnings)
 	}
@@ -179,7 +199,7 @@ func TestRiskRootOpenAndCloseBranches(t *testing.T) {
 		t.Fatalf("expected dynamic-scan close warning, got %#v", warnings)
 	}
 
-	_, warnings = appendNativeRiskCue(nil, nil, "pkg", depRoot, packageJSON{})
+	_, warnings = appendNativeRiskCue(context.Background(), nil, nil, "pkg", depRoot, packageJSON{})
 	if !warningsContain(warnings, "failed to close dependency root after native module scan") || !warningsContain(warnings, "close failed") {
 		t.Fatalf("expected native-scan close warning, got %#v", warnings)
 	}
@@ -192,10 +212,10 @@ func TestNativeRiskConfinementErrorBranches(t *testing.T) {
 			return nil, rootErr
 		},
 	}
-	if _, err := buildNativeModuleRiskCueWithinRoot(bindingErrRoot, t.TempDir(), packageJSON{}); !errors.Is(err, rootErr) {
+	if _, err := buildNativeModuleRiskCueWithinRoot(context.Background(), bindingErrRoot, t.TempDir(), packageJSON{}); !errors.Is(err, rootErr) {
 		t.Fatalf("expected native-cue binding error, got %v", err)
 	}
-	cues, warnings := appendNativeRiskCueWithinRoot(nil, nil, "pkg", bindingErrRoot, t.TempDir(), packageJSON{})
+	cues, warnings := appendNativeRiskCueWithinRoot(context.Background(), nil, nil, "pkg", bindingErrRoot, t.TempDir(), packageJSON{})
 	if len(cues) != 0 || !warningsContain(warnings, "native module scan failed") {
 		t.Fatalf("expected confined native-cue warning, got cues=%#v warnings=%#v", cues, warnings)
 	}
@@ -208,7 +228,7 @@ func TestNativeRiskConfinementErrorBranches(t *testing.T) {
 			return nil, rootErr
 		},
 	}
-	if _, _, err := detectNativeModuleIndicatorsWithinRoot(nodeWalkErrRoot, t.TempDir(), packageJSON{}); !errors.Is(err, rootErr) {
+	if _, _, err := detectNativeModuleIndicatorsWithinRoot(context.Background(), nodeWalkErrRoot, t.TempDir(), packageJSON{}); !errors.Is(err, rootErr) {
 		t.Fatalf("expected native indicator walk error, got %v", err)
 	}
 
@@ -293,7 +313,7 @@ func TestNativeMetadataAndDepthHelpers(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(depRoot, bindingGypFile)); !os.IsNotExist(err) {
 		t.Fatalf("expected no binding.gyp in fixture")
 	}
-	native, details, err := detectNativeModuleIndicators(depRoot, pkg)
+	native, details, err := detectNativeModuleIndicators(context.Background(), depRoot, pkg)
 	if err != nil {
 		t.Fatalf("detect native module indicators: %v", err)
 	}
@@ -347,7 +367,7 @@ func TestDetectNodeBinaryMaxVisitedBranch(t *testing.T) {
 		}
 	}
 
-	found, err := detectNodeBinary(depRoot)
+	found, err := detectNodeBinary(context.Background(), depRoot)
 	if err != nil {
 		t.Fatalf("detect node binary with max visited cap: %v", err)
 	}
@@ -362,7 +382,7 @@ func TestRiskHelperAdditionalBranches(t *testing.T) {
 	}
 
 	depRoot := t.TempDir()
-	native, details, err := detectNativeModuleIndicators(depRoot, packageJSON{})
+	native, details, err := detectNativeModuleIndicators(context.Background(), depRoot, packageJSON{})
 	if err != nil {
 		t.Fatalf("detect native indicators without metadata: %v", err)
 	}
@@ -379,11 +399,11 @@ func TestRiskHelperErrorBranches(t *testing.T) {
 		t.Fatalf("write depRoot file: %v", err)
 	}
 
-	if _, _, err := detectNativeModuleIndicators(depRoot, packageJSON{}); err == nil {
+	if _, _, err := detectNativeModuleIndicators(context.Background(), depRoot, packageJSON{}); err == nil {
 		t.Fatalf("expected detectNativeModuleIndicators permission error")
 	}
 
-	if _, err := detectNodeBinary(filepath.Join(t.TempDir(), "missing-root")); err == nil {
+	if _, err := detectNodeBinary(context.Background(), filepath.Join(t.TempDir(), "missing-root")); err == nil {
 		t.Fatalf("expected detectNodeBinary error for missing root")
 	}
 }
@@ -416,7 +436,7 @@ func TestDetectNativeModuleIndicatorsNodeBinaryBranch(t *testing.T) {
 		t.Fatalf("write node binary: %v", err)
 	}
 
-	isNative, details, err := detectNativeModuleIndicators(depRoot, packageJSON{})
+	isNative, details, err := detectNativeModuleIndicators(context.Background(), depRoot, packageJSON{})
 	if err != nil {
 		t.Fatalf("detect native indicators with node binary: %v", err)
 	}
@@ -586,20 +606,10 @@ func TestTransitiveDepthResolvesRepoHoistedChain(t *testing.T) {
 	repoRoot := t.TempDir()
 	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "pkg")
 
-	mustWritePackage := func(root string, contents string) {
-		t.Helper()
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			t.Fatalf("mkdir package root %s: %v", root, err)
-		}
-		if err := os.WriteFile(filepath.Join(root, packageJSONFile), []byte(contents), 0o600); err != nil {
-			t.Fatalf("write package.json for %s: %v", root, err)
-		}
-	}
-
-	mustWritePackage(rootPkgRoot, `{"name":"pkg","main":"index.js","gypfile":true,"dependencies":{"deep-a":"1.0.0"}}`)
-	mustWritePackage(filepath.Join(repoRoot, "node_modules", "deep-a"), `{"name":"deep-a","dependencies":{"deep-b":"1.0.0"}}`)
-	mustWritePackage(filepath.Join(repoRoot, "node_modules", "deep-b"), `{"name":"deep-b","dependencies":{"deep-c":"1.0.0"}}`)
-	mustWritePackage(filepath.Join(repoRoot, "node_modules", "deep-c"), `{"name":"deep-c"}`)
+	mustWritePackage(t, rootPkgRoot, `{"name":"pkg","main":"index.js","gypfile":true,"dependencies":{"deep-a":"1.0.0"}}`)
+	mustWritePackage(t, filepath.Join(repoRoot, "node_modules", "deep-a"), `{"name":"deep-a","dependencies":{"deep-b":"1.0.0"}}`)
+	mustWritePackage(t, filepath.Join(repoRoot, "node_modules", "deep-b"), `{"name":"deep-b","dependencies":{"deep-c":"1.0.0"}}`)
+	mustWritePackage(t, filepath.Join(repoRoot, "node_modules", "deep-c"), `{"name":"deep-c"}`)
 
 	rootPkg, warnings := loadDependencyPackageJSONWithinBoundary(rootPkgRoot, repoRoot)
 	if len(warnings) != 0 {
@@ -790,34 +800,7 @@ func TestAppendDepthRiskCueSurfacesIncompleteEvaluationWarnings(t *testing.T) {
 }
 
 func TestAssessRiskCuesIncludesDeepGraphForRepoHoistedChain(t *testing.T) {
-	repoRoot := t.TempDir()
-	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "risky")
-	if err := os.MkdirAll(rootPkgRoot, 0o755); err != nil {
-		t.Fatalf(rootPackageMkdirErr, err)
-	}
-	if err := os.WriteFile(filepath.Join(rootPkgRoot, packageJSONFile), []byte(`{"name":"risky","main":"index.js","gypfile":true,"dependencies":{"deep-a":"1.0.0"}}`), 0o600); err != nil {
-		t.Fatalf("write root package.json: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(rootPkgRoot, "index.js"), []byte("const dep = process.env.DEP\nmodule.exports = require(dep)\n"), 0o600); err != nil {
-		t.Fatalf("write root entrypoint: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(rootPkgRoot, "binding.gyp"), []byte("{ }\n"), 0o600); err != nil {
-		t.Fatalf("write binding.gyp: %v", err)
-	}
-
-	for path, contents := range map[string]string{
-		filepath.Join(repoRoot, "node_modules", "deep-a", packageJSONFile): `{"name":"deep-a","dependencies":{"deep-b":"1.0.0"}}`,
-		filepath.Join(repoRoot, "node_modules", "deep-b", packageJSONFile): `{"name":"deep-b","dependencies":{"deep-c":"1.0.0"}}`,
-		filepath.Join(repoRoot, "node_modules", "deep-c", packageJSONFile): `{"name":"deep-c"}`,
-	} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir package dir for %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatalf("write package.json for %s: %v", path, err)
-		}
-	}
-
+	repoRoot, rootPkgRoot := setupRepoHoistedRiskChain(t)
 	root, validatedDepRoot, err := openValidatedRootNoFollow(rootPkgRoot)
 	if err != nil {
 		t.Fatalf("open validated root: %v", err)
@@ -829,27 +812,52 @@ func TestAssessRiskCuesIncludesDeepGraphForRepoHoistedChain(t *testing.T) {
 	}()
 
 	rootPkg, warnings := loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
-	if len(warnings) != 0 {
-		t.Fatalf("did not expect root package warnings, got %#v", warnings)
-	}
+	assertNoRiskWarnings(t, "root package", warnings)
 	depthCues, depthWarnings := appendDepthRiskCue(nil, nil, repoRoot, validatedDepRoot, rootPkg)
-	if len(depthWarnings) != 0 {
-		t.Fatalf("did not expect standalone depth warnings, got %#v", depthWarnings)
-	}
+	assertNoRiskWarnings(t, "standalone depth", depthWarnings)
 	if len(depthCues) != 1 || depthCues[0].Code != riskCodeDeepGraph {
 		t.Fatalf("expected standalone depth cue before aggregate risk assessment, got cues=%#v rawRoot=%q validatedRoot=%q", depthCues, rootPkgRoot, validatedDepRoot)
 	}
 
-	cues, warnings := assessRiskCues(repoRoot, "risky", rootPkgRoot, ExportSurface{EntryPoints: []string{filepath.Join(rootPkgRoot, "index.js")}})
-	if len(warnings) != 0 {
-		t.Fatalf("did not expect risk warnings for repo-hoisted chain, got %#v", warnings)
-	}
+	cues, warnings := assessRiskCues(context.Background(), repoRoot, "risky", rootPkgRoot, ExportSurface{EntryPoints: []string{filepath.Join(rootPkgRoot, "index.js")}})
+	assertNoRiskWarnings(t, "aggregate risk", warnings)
 	codes := make([]string, 0, len(cues))
 	for _, cue := range cues {
 		codes = append(codes, cue.Code)
 	}
 	if !slices.Contains(codes, riskCodeDeepGraph) {
 		t.Fatalf("expected deep-graph cue, got %#v", cues)
+	}
+}
+
+func setupRepoHoistedRiskChain(t *testing.T) (string, string) {
+	t.Helper()
+
+	repoRoot := t.TempDir()
+	rootPkgRoot := filepath.Join(repoRoot, "node_modules", "risky")
+	mustWritePackage(t, rootPkgRoot, `{"name":"risky","main":"index.js","gypfile":true,"dependencies":{"deep-a":"1.0.0"}}`)
+	if err := os.WriteFile(filepath.Join(rootPkgRoot, "index.js"), []byte("const dep = process.env.DEP\nmodule.exports = require(dep)\n"), 0o600); err != nil {
+		t.Fatalf("write root entrypoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPkgRoot, bindingGypFile), []byte("{ }\n"), 0o600); err != nil {
+		t.Fatalf("write binding.gyp: %v", err)
+	}
+
+	for depRoot, pkgJSON := range map[string]string{
+		filepath.Join(repoRoot, "node_modules", "deep-a"): `{"name":"deep-a","dependencies":{"deep-b":"1.0.0"}}`,
+		filepath.Join(repoRoot, "node_modules", "deep-b"): `{"name":"deep-b","dependencies":{"deep-c":"1.0.0"}}`,
+		filepath.Join(repoRoot, "node_modules", "deep-c"): `{"name":"deep-c"}`,
+	} {
+		mustWritePackage(t, depRoot, pkgJSON)
+	}
+
+	return repoRoot, rootPkgRoot
+}
+
+func assertNoRiskWarnings(t *testing.T, context string, warnings []string) {
+	t.Helper()
+	if len(warnings) != 0 {
+		t.Fatalf("did not expect %s warnings, got %#v", context, warnings)
 	}
 }
 

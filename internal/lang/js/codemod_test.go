@@ -217,7 +217,7 @@ func TestSubpathResolverResolveReturnsFalseWhenFilesystemFallbackMisses(t *testi
 	}
 }
 
-func setupLodashFixture(t *testing.T, source string) (repo string, sourcePath string, original string) {
+func setupLodashFixture(t *testing.T, source string) (repo, sourcePath, original string) {
 	t.Helper()
 	repo = t.TempDir()
 	sourcePath = filepath.Join(repo, "index.js")

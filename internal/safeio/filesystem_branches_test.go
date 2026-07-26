@@ -2,6 +2,7 @@ package safeio
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,6 +20,44 @@ func (f *fakeReadDirFile) ReadDir(count int) ([]fs.DirEntry, error) {
 		return f.readDir(count)
 	}
 	return nil, nil
+}
+
+func TestOpenPinnedFileReadsNestedFileAndClosesAncestors(t *testing.T) {
+	repo := t.TempDir()
+	targetPath := filepath.Join(repo, "nested", "leaf", "child.txt")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir nested file parent: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	root := openTestRoot(t, repo)
+	file, err := OpenPinnedFile(root, filepath.Join("nested", "leaf", "child.txt"))
+	if err != nil {
+		t.Fatalf("open pinned file: %v", err)
+	}
+
+	data, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatalf("read/close pinned file: %v", errors.Join(readErr, closeErr))
+	}
+	if string(data) != "content" {
+		t.Fatalf("unexpected pinned file content: %q", string(data))
+	}
+}
+
+func TestPinnedFileCloseJoinsFileAndRootCloseErrors(t *testing.T) {
+	fileCloseErr := errors.New("close file")
+	rootCloseErr := errors.New("close root")
+	err := (&pinnedFile{
+		File:  &fakeFile{close: func() error { return fileCloseErr }},
+		roots: []Root{&fakeRoot{close: func() error { return rootCloseErr }}},
+	}).Close()
+	if !errors.Is(err, fileCloseErr) || !errors.Is(err, rootCloseErr) {
+		t.Fatalf("expected pinned file close to join file and root close errors, got %v", err)
+	}
 }
 
 func TestOpenPinnedDirectoryReadsNestedDirectoryAndClosesAncestors(t *testing.T) {
@@ -197,6 +236,12 @@ func TestIsPureSentinelErrorRejectsNilErrorAndMissingSentinels(t *testing.T) {
 	}
 	if isPureSentinelError(fs.ErrNotExist) {
 		t.Fatal("expected missing sentinel set to be impure")
+	}
+}
+
+func TestArePureSentinelCausesRejectMixedCauses(t *testing.T) {
+	if arePureSentinelCauses([]error{fs.ErrNotExist, errors.New("other")}, []error{fs.ErrNotExist}) {
+		t.Fatal("expected mixed sentinel causes to be impure")
 	}
 }
 
@@ -607,6 +652,39 @@ func TestSplitPinnedPathSkipsEmptyAndDotSegments(t *testing.T) {
 	}
 	if len(parts) != 2 || parts[0] != "nested" || parts[1] != "leaf" {
 		t.Fatalf("unexpected split parts: %#v", parts)
+	}
+}
+
+func TestTrustedRootAliasTargetRejectsUntrustedPath(t *testing.T) {
+	if target, ok := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "Users", "example")); ok || target != "" {
+		t.Fatalf("expected non-alias path to be rejected, got target=%q ok=%v", target, ok)
+	}
+}
+
+func TestOSRootLinkCreatesHardLinkAndCloses(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "source.txt")
+	if err := os.WriteFile(source, []byte("content"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	root, err := (&osFileSystem{}).OpenRoot(repo)
+	if err != nil {
+		t.Fatalf("open os root: %v", err)
+	}
+	if err := root.Link("source.txt", "linked.txt"); err != nil {
+		t.Fatalf("create hard link: %v", err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close os root: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(repo, "linked.txt"))
+	if err != nil {
+		t.Fatalf("read hard link: %v", err)
+	}
+	if string(data) != "content" {
+		t.Fatalf("unexpected hard link content: %q", string(data))
 	}
 }
 

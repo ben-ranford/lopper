@@ -24,7 +24,7 @@ func assertJSRuntimeProfileResolution(t *testing.T) {
 	if profile, _ := resolveRuntimeProfile(runtimeProfileBrowserRequire); profile.name != runtimeProfileBrowserRequire {
 		t.Fatalf("expected browser-require runtime profile")
 	}
-	if _, err := resolveDependencyExports(dependencyExportRequest{}); err == nil {
+	if _, err := resolveDependencyExports(context.Background(), dependencyExportRequest{}); err == nil {
 		t.Fatalf("expected dependency export resolution to error for empty request")
 	}
 }
@@ -39,11 +39,12 @@ func assertJSDependencyExportsResolution(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"exports":{"default":"./missing.js"}}`), 0o600); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
-	surface, err := resolveDependencyExports(dependencyExportRequest{
+	surface, err := resolveDependencyExports(context.Background(), dependencyExportRequest{
 		repoPath:           repo,
 		dependency:         "pkg",
 		runtimeProfileName: "unknown-profile",
 	})
+
 	if err != nil {
 		t.Fatalf("resolveDependencyExports unknown profile: %v", err)
 	}

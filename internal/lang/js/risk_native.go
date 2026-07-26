@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,8 +14,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func buildNativeModuleRiskCueWithinRoot(root safeio.Root, depRoot string, pkg packageJSON) (*report.RiskCue, error) {
-	isNative, details, err := detectNativeModuleIndicatorsWithinRoot(root, depRoot, pkg)
+func buildNativeModuleRiskCueWithinRoot(ctx context.Context, root safeio.Root, depRoot string, pkg packageJSON) (*report.RiskCue, error) {
+	isNative, details, err := detectNativeModuleIndicatorsWithinRoot(ctx, root, depRoot, pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +35,7 @@ func buildNativeModuleRiskCueWithinRoot(root safeio.Root, depRoot string, pkg pa
 	}, nil
 }
 
-func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (native bool, details []string, err error) {
+func detectNativeModuleIndicators(ctx context.Context, depRoot string, pkg packageJSON) (native bool, details []string, err error) {
 	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
 	if err != nil {
 		return false, nil, err
@@ -42,10 +43,13 @@ func detectNativeModuleIndicators(depRoot string, pkg packageJSON) (native bool,
 	defer func() {
 		err = errors.Join(err, root.Close())
 	}()
-	return detectNativeModuleIndicatorsWithinRoot(root, validatedDepRoot, pkg)
+	return detectNativeModuleIndicatorsWithinRoot(ctx, root, validatedDepRoot, pkg)
 }
 
-func detectNativeModuleIndicatorsWithinRoot(root safeio.Root, depRoot string, pkg packageJSON) (bool, []string, error) {
+func detectNativeModuleIndicatorsWithinRoot(ctx context.Context, root safeio.Root, depRoot string, pkg packageJSON) (bool, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
 	details := collectNativeMetadataIndicators(pkg)
 
 	bindingDetails, err := detectBindingGypWithinRoot(root)
@@ -54,7 +58,7 @@ func detectNativeModuleIndicatorsWithinRoot(root safeio.Root, depRoot string, pk
 	}
 	details = append(details, bindingDetails...)
 
-	nodeBinary, err := detectNodeBinaryWithinRoot(root, depRoot)
+	nodeBinary, err := detectNodeBinaryWithinRoot(ctx, root, depRoot)
 	if err != nil {
 		return false, nil, err
 	}
@@ -102,7 +106,7 @@ func detectBindingGypWithinRoot(root safeio.Root) ([]string, error) {
 	return nil, nil
 }
 
-func detectNodeBinary(depRoot string) (binary string, err error) {
+func detectNodeBinary(ctx context.Context, depRoot string) (binary string, err error) {
 	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
 	if err != nil {
 		return "", err
@@ -110,13 +114,13 @@ func detectNodeBinary(depRoot string) (binary string, err error) {
 	defer func() {
 		err = errors.Join(err, root.Close())
 	}()
-	return detectNodeBinaryWithinRoot(root, validatedDepRoot)
+	return detectNodeBinaryWithinRoot(ctx, root, validatedDepRoot)
 }
 
-func detectNodeBinaryWithinRoot(root safeio.Root, depRoot string) (string, error) {
+func detectNodeBinaryWithinRoot(ctx context.Context, root safeio.Root, depRoot string) (string, error) {
 	const maxVisited = 600
 	scanner := nodeBinaryScanner{maxVisited: maxVisited}
-	if err := walkRootNoFollow(root, func(relPath string, info fs.FileInfo) (bool, bool, error) {
+	if err := walkRootNoFollow(ctx, root, func(relPath string, info fs.FileInfo) (bool, bool, error) {
 		return scanner.walkInfo(depRoot, relPath, info)
 	}); err != nil && !errors.Is(err, fs.SkipAll) {
 		return "", err

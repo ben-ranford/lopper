@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
+	"sort"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -74,6 +74,10 @@ var skipDirectories = map[string]bool{
 }
 
 func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
+	return scanRepoWithEntryLimit(ctx, repoPath, defaultJSWalkEntryBudget)
+}
+
+func scanRepoWithEntryLimit(ctx context.Context, repoPath string, entryLimit int) (ScanResult, error) {
 	result := ScanResult{}
 	if repoPath == "" {
 		return result, errors.New("repo path is empty")
@@ -86,18 +90,17 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 		result:   &result,
 	}
 
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	walkSummary, err := walkScanRepo(ctx, repoPath, entryLimit, func(path string, entry fs.DirEntry) error {
 		return scanRepoEntry(ctx, &state, path, entry)
 	})
-
 	if err != nil {
 		return result, err
+	}
+	sort.Slice(result.Files, func(i, j int) bool {
+		return result.Files[i].Path < result.Files[j].Path
+	})
+	if walkSummary.truncated {
+		result.Warnings = append(result.Warnings, jsRepoScanBudgetWarning(walkSummary))
 	}
 
 	if len(result.Files) == 0 {

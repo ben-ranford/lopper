@@ -42,7 +42,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	case req.Dependency != "":
 		resolvedRoots := resolveDependencyRootsFromScan(repoPath, req.Dependency, scanResult)
 		dependencyRootPath := firstResolvedDependencyRoot(resolvedRoots)
-		depReport, warnings := buildDependencyReport(dependencyReportOptions{
+		depReport, warnings, err := buildDependencyReport(ctx, dependencyReportOptions{
 			RepoPath:                          repoPath,
 			Dependency:                        req.Dependency,
 			DependencyRootPath:                dependencyRootPath,
@@ -52,6 +52,9 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 			SuggestOnly:                       req.SuggestOnly,
 			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
 		})
+		if err != nil {
+			return report.Report{}, err
+		}
 		result.Dependencies = []report.DependencyReport{depReport}
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(resolvedRoots) > 1 {
@@ -59,7 +62,10 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
-		deps, warnings := buildTopDependencies(repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights), req.IncludeRegistryProvenance)
+		deps, warnings, err := buildTopDependencies(ctx, repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights), req.IncludeRegistryProvenance)
+		if err != nil {
+			return report.Report{}, err
+		}
 		result.Dependencies = deps
 		result.Warnings = append(result.Warnings, warnings...)
 		if len(deps) == 0 {

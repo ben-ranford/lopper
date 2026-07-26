@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/pathutil"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -24,6 +25,7 @@ var (
 	evaluateDependencySymlinks = filepath.EvalSymlinks
 	relativeDependencyPath     = filepath.Rel
 	openDependencyRootNoFollow = safeio.OpenRootNoFollow
+	dependencyRootOpenReadyFn  = func() error { return nil }
 )
 
 type dependencyResolutionRequest struct {
@@ -48,84 +50,130 @@ func resolveDependencyRootFromDir(repoPath, startDir, dependency string) string 
 }
 
 func resolveDependencyRootFromDirDetailed(repoPath, startDir, dependency string) (string, dependencyRootResolutionStatus) {
-	if repoPath == "" || startDir == "" || dependency == "" {
+	walk, ok := newDependencyRootWalk(repoPath, startDir, dependency)
+	if !ok {
 		return "", dependencyRootMissing
 	}
-	rawRepo, err := absoluteDependencyPath(repoPath)
-	if err != nil {
-		return "", dependencyRootMissing
-	}
-	rawStart, err := absoluteDependencyPath(startDir)
-	if err != nil {
-		return "", dependencyRootMissing
-	}
-	canonicalRepo, err := resolvePinnedDependencyChainBase(repoPath)
-	if err != nil {
-		return "", dependencyRootMissing
-	}
-	canonicalStart, err := canonicalizeDependencyWalkStart(rawStart)
-	if err != nil {
-		return "", dependencyRootMissing
-	}
-	if !isPathWithin(canonicalStart, canonicalRepo) {
-		return "", dependencyRootMissing
-	}
-	if !isPathWithin(rawStart, rawRepo) {
-		if !isPathWithin(rawStart, canonicalRepo) {
-			return "", dependencyRootMissing
-		}
-		rawRepo = canonicalRepo
-	}
-
-	sawUnsafe := false
-	probed := make(map[string]struct{}, 8)
 	for {
-		for _, candidate := range []string{rawStart, canonicalStart} {
-			if candidate == "" {
-				continue
-			}
-			if _, seen := probed[candidate]; seen {
-				continue
-			}
-			probed[candidate] = struct{}{}
-			root, status := resolveDependencyRootAtDirDetailedWithinBoundary(candidate, dependency, canonicalRepo)
-			if status == dependencyRootFound {
-				return root, dependencyRootFound
-			}
-			if status == dependencyRootUnsafe {
-				sawUnsafe = true
-			}
+		if root, status, found := walk.probe(); found {
+			return root, status
 		}
-
-		rawDone := rawStart == rawRepo
-		canonicalDone := canonicalStart == canonicalRepo
-		if rawDone && canonicalDone {
-			break
-		}
-
-		progressed := false
-		if !rawDone {
-			nextRawStart := filepath.Dir(rawStart)
-			if nextRawStart != rawStart {
-				rawStart = nextRawStart
-				progressed = true
-			}
-		}
-		if !canonicalDone {
-			nextCanonicalStart := filepath.Dir(canonicalStart)
-			if nextCanonicalStart != canonicalStart {
-				canonicalStart = nextCanonicalStart
-				progressed = true
-			}
-		}
-		if !progressed {
+		if !walk.advance() {
 			break
 		}
 	}
-	if sawUnsafe {
+	if walk.sawUnsafe {
 		return "", dependencyRootUnsafe
 	}
 	return "", dependencyRootMissing
+}
+
+type dependencyRootWalk struct {
+	dependency     string
+	rawRepo        string
+	rawStart       string
+	canonicalRepo  string
+	canonicalStart string
+	sawUnsafe      bool
+	probed         map[string]struct{}
+}
+
+func newDependencyRootWalk(repoPath, startDir, dependency string) (dependencyRootWalk, bool) {
+	if repoPath == "" || startDir == "" || dependency == "" {
+		return dependencyRootWalk{}, false
+	}
+	rawRepo, err := absoluteDependencyPath(repoPath)
+	if err != nil {
+		return dependencyRootWalk{}, false
+	}
+	rawStart, err := absoluteDependencyPath(startDir)
+	if err != nil {
+		return dependencyRootWalk{}, false
+	}
+	canonicalRepo, err := resolvePinnedDependencyChainBase(repoPath)
+	if err != nil {
+		return dependencyRootWalk{}, false
+	}
+	canonicalStart, err := canonicalizeDependencyWalkStart(rawStart)
+	if err != nil {
+		return dependencyRootWalk{}, false
+	}
+	rawRepo, ok := normalizeDependencyWalkRepo(rawRepo, rawStart, canonicalRepo, canonicalStart)
+	if !ok {
+		return dependencyRootWalk{}, false
+	}
+	return dependencyRootWalk{
+		dependency:     dependency,
+		rawRepo:        rawRepo,
+		rawStart:       rawStart,
+		canonicalRepo:  canonicalRepo,
+		canonicalStart: canonicalStart,
+		probed:         make(map[string]struct{}, 8),
+	}, true
+}
+
+func normalizeDependencyWalkRepo(rawRepo, rawStart, canonicalRepo, canonicalStart string) (string, bool) {
+	if !isPathWithin(canonicalStart, canonicalRepo) {
+		return "", false
+	}
+	if isPathWithin(rawStart, rawRepo) {
+		return rawRepo, true
+	}
+	if !isPathWithin(rawStart, canonicalRepo) {
+		return "", false
+	}
+	return canonicalRepo, true
+}
+
+func (w *dependencyRootWalk) probe() (string, dependencyRootResolutionStatus, bool) {
+	for _, candidate := range []string{w.rawStart, w.canonicalStart} {
+		root, status, found := w.probeCandidate(candidate)
+		if found {
+			return root, status, true
+		}
+	}
+	return "", dependencyRootMissing, false
+}
+
+func (w *dependencyRootWalk) probeCandidate(candidate string) (string, dependencyRootResolutionStatus, bool) {
+	if candidate == "" {
+		return "", dependencyRootMissing, false
+	}
+	if _, seen := w.probed[candidate]; seen {
+		return "", dependencyRootMissing, false
+	}
+	w.probed[candidate] = struct{}{}
+	root, status := resolveDependencyRootAtDirDetailedWithinBoundary(candidate, w.dependency, w.canonicalRepo)
+	if status == dependencyRootUnsafe {
+		w.sawUnsafe = true
+	}
+	if status == dependencyRootFound {
+		return root, dependencyRootFound, true
+	}
+	return "", dependencyRootMissing, false
+}
+
+func (w *dependencyRootWalk) advance() bool {
+	rawDone := equalDependencyWalkPath(w.rawStart, w.rawRepo)
+	canonicalDone := equalDependencyWalkPath(w.canonicalStart, w.canonicalRepo)
+	if rawDone && canonicalDone {
+		return false
+	}
+	progressed := false
+	w.rawStart, progressed = advanceDependencyWalkPath(w.rawStart, rawDone, progressed)
+	w.canonicalStart, progressed = advanceDependencyWalkPath(w.canonicalStart, canonicalDone, progressed)
+	return progressed
+}
+
+func advanceDependencyWalkPath(current string, done, progressed bool) (string, bool) {
+	if done {
+		return current, progressed
+	}
+	next := filepath.Dir(current)
+	if next == current {
+		return current, progressed
+	}
+	return next, true
 }
 
 func canonicalizeDependencyWalkStart(path string) (string, error) {
@@ -139,7 +187,7 @@ func canonicalizeDependencyWalkStart(path string) (string, error) {
 	return canonicalizeNoFollowParentPath(path)
 }
 
-func resolveDependencyRootsFromDeclarationDirs(repoPath string, dependency string, declarationDirs map[string]struct{}) []string {
+func resolveDependencyRootsFromDeclarationDirs(repoPath, dependency string, declarationDirs map[string]struct{}) []string {
 	rootsSet := make(map[string]struct{})
 	for dir := range declarationDirs {
 		if resolved := resolveDependencyRootFromDir(repoPath, dir, dependency); resolved != "" {
@@ -155,7 +203,7 @@ func resolveDependencyRootsFromDeclarationDirs(repoPath string, dependency strin
 	return roots
 }
 
-func resolveDependencyRootsFromScan(repoPath string, dependency string, scanResult ScanResult) []string {
+func resolveDependencyRootsFromScan(repoPath, dependency string, scanResult ScanResult) []string {
 	rootsSet := make(map[string]struct{})
 	for _, file := range scanResult.Files {
 		for _, imp := range file.Imports {
@@ -378,7 +426,7 @@ func openValidatedRootNoFollowWithinBoundary(path, allowedRoot string) (safeio.R
 	if err != nil {
 		return nil, "", err
 	}
-	root, err := openDependencyRootNoFollow(validatedPath)
+	root, err := openPinnedDependencyRootNoFollow(validatedPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -390,7 +438,33 @@ func openConstrainedRoot(path string) (safeio.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	return openDependencyRootNoFollow(validatedPath)
+	return openPinnedDependencyRootNoFollow(validatedPath)
+}
+
+func openPinnedDependencyRootNoFollow(path string) (safeio.Root, error) {
+	expectedInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !expectedInfo.IsDir() {
+		return nil, fmt.Errorf("path is not a directory: %s", path)
+	}
+	if err := dependencyRootOpenReadyFn(); err != nil {
+		return nil, err
+	}
+
+	root, err := openDependencyRootNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := root.Lstat(".")
+	if err != nil {
+		return nil, closeRootWithErr(root, err)
+	}
+	if !openedInfo.IsDir() || !os.SameFile(expectedInfo, openedInfo) {
+		return nil, closeRootWithErr(root, fmt.Errorf("path changed while opening: %s", path))
+	}
+	return root, nil
 }
 
 func dependencyChainBase(path string) (string, []string, bool) {
@@ -492,29 +566,113 @@ func resolvePinnedRootPathWithinBoundary(path, allowedRoot string) (string, erro
 }
 
 func resolvePinnedDependencyChainPath(basePath string, relParts []string, allowedRoot string) (string, error) {
-	current, err := resolvePinnedDependencyChainBase(basePath)
+	chain, err := newPinnedDependencyChain(basePath, allowedRoot)
 	if err != nil {
 		return "", err
 	}
-	pinnedBoundary := current
-	if allowedRoot != "" {
-		pinnedBoundary, err = resolvePinnedDependencyChainBase(allowedRoot)
-		if err != nil {
-			return "", err
-		}
-	}
 	for _, part := range relParts {
-		if part == "" || part == "." {
-			continue
-		}
-		nextPath := filepath.Join(current, part)
-		nextPath, err = resolvePinnedDependencyComponent(nextPath, pinnedBoundary)
-		if err != nil {
+		if err := chain.advance(part); err != nil {
 			return "", err
 		}
-		current = nextPath
 	}
-	return current, nil
+	return chain.result()
+}
+
+type pinnedDependencyChain struct {
+	current         string
+	allowedBoundary string
+	ancestorParts   []string
+	bounded         bool
+}
+
+func newPinnedDependencyChain(basePath, allowedRoot string) (pinnedDependencyChain, error) {
+	current, err := resolvePinnedDependencyChainBase(basePath)
+	if err != nil {
+		return pinnedDependencyChain{}, err
+	}
+	chain := pinnedDependencyChain{
+		current:         current,
+		allowedBoundary: current,
+	}
+	if allowedRoot == "" {
+		return chain, nil
+	}
+	chain.allowedBoundary, err = resolvePinnedDependencyChainBase(allowedRoot)
+	if err != nil {
+		return pinnedDependencyChain{}, err
+	}
+	chain.ancestorParts, err = dependencyBoundaryAncestorParts(current, chain.allowedBoundary)
+	if err != nil {
+		return pinnedDependencyChain{}, err
+	}
+	chain.bounded = true
+	return chain, nil
+}
+
+func (c *pinnedDependencyChain) advance(part string) error {
+	if part == "" || part == "." {
+		return nil
+	}
+	nextPath := filepath.Join(c.current, part)
+	nextPath, err := resolvePinnedDependencyComponent(nextPath, c.componentBoundary())
+	if err != nil {
+		return err
+	}
+	if err := c.consumeAncestorPart(nextPath); err != nil {
+		return err
+	}
+	c.current = nextPath
+	return nil
+}
+
+func (c *pinnedDependencyChain) componentBoundary() string {
+	if c.bounded && len(c.ancestorParts) != 0 {
+		return dependencyBoundaryRoot(c.current, c.allowedBoundary)
+	}
+	return c.allowedBoundary
+}
+
+func (c *pinnedDependencyChain) consumeAncestorPart(nextPath string) error {
+	if !c.bounded || len(c.ancestorParts) == 0 {
+		return nil
+	}
+	if equalDependencyWalkPath(nextPath, c.allowedBoundary) {
+		c.ancestorParts = nil
+		return nil
+	}
+	expectedPath := filepath.Join(c.current, c.ancestorParts[0])
+	if !equalDependencyWalkPath(nextPath, expectedPath) {
+		return fmt.Errorf("path escapes root: %s", nextPath)
+	}
+	c.ancestorParts = c.ancestorParts[1:]
+	return nil
+}
+
+func (c *pinnedDependencyChain) result() (string, error) {
+	if c.bounded {
+		if err := enforceDependencyPathWithinRoot(c.current, c.allowedBoundary); err != nil {
+			return "", err
+		}
+	}
+	return c.current, nil
+}
+
+func dependencyBoundaryRoot(basePath, allowedRoot string) string {
+	if allowedRoot == "" {
+		return basePath
+	}
+	if isPathWithin(basePath, allowedRoot) {
+		return allowedRoot
+	}
+	candidate := basePath
+	for !isPathWithin(allowedRoot, candidate) {
+		next := filepath.Dir(candidate)
+		if equalDependencyWalkPath(next, candidate) {
+			return candidate
+		}
+		candidate = next
+	}
+	return candidate
 }
 
 func resolvePinnedDependencyChainBase(basePath string) (string, error) {
@@ -540,7 +698,14 @@ func resolvePinnedDependencyComponent(path, allowedRoot string) (string, error) 
 	if info.Mode()&os.ModeSymlink != 0 {
 		return resolvePinnedSymlinkDependencyComponent(path, allowedRoot)
 	}
-	return requirePinnedDependencyDirectory(path, info)
+	resolvedPath, err := requirePinnedDependencyDirectory(path, info)
+	if err != nil {
+		return "", err
+	}
+	if err := enforceDependencyPathWithinRoot(resolvedPath, allowedRoot); err != nil {
+		return "", err
+	}
+	return resolvedPath, nil
 }
 
 func requirePinnedDependencyDirectory(path string, info os.FileInfo) (string, error) {
@@ -555,7 +720,7 @@ func resolvePinnedSymlinkDependencyComponent(path, allowedRoot string) (string, 
 	if err != nil {
 		return "", err
 	}
-	if !isPathWithin(resolvedPath, allowedRoot) {
+	if err := enforceDependencyPathWithinRoot(resolvedPath, allowedRoot); err != nil {
 		return "", fmt.Errorf("symlinked path component: %s", path)
 	}
 	resolvedInfo, err := os.Stat(path)
@@ -588,12 +753,47 @@ func relativePathWithinRoot(rootPath, targetPath string) (string, error) {
 }
 
 func isPathWithin(path, root string) bool {
-	rel, err := filepath.Rel(root, path)
+	return pathutil.WithinRoot(root, path)
+}
+
+func enforceDependencyPathWithinRoot(path, allowedRoot string) error {
+	if allowedRoot == "" || isPathWithin(path, allowedRoot) {
+		return nil
+	}
+	return fmt.Errorf("path escapes root: %s", path)
+}
+
+func equalDependencyWalkPath(left, right string) bool {
+	return pathutil.Equal(left, right)
+}
+
+func dependencyBoundaryAncestorParts(basePath, allowedRoot string) ([]string, error) {
+	if allowedRoot == "" || isPathWithin(basePath, allowedRoot) {
+		return nil, nil
+	}
+	rel, err := relativeDependencyPath(basePath, allowedRoot)
 	if err != nil {
+		return nil, err
+	}
+	if !pathContainedByRelativePath(rel) {
+		return nil, fmt.Errorf("path escapes root: %s", allowedRoot)
+	}
+	return splitDependencyRelativePath(rel), nil
+}
+
+func pathContainedByRelativePath(rel string) bool {
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return false
 	}
-	if rel == ".." {
-		return false
+	return true
+}
+
+func splitDependencyRelativePath(rel string) []string {
+	if rel == "." || rel == "" {
+		return nil
 	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return strings.Split(rel, string(filepath.Separator))
 }

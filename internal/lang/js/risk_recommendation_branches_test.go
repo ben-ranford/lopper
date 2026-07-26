@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -58,7 +59,7 @@ func TestCollectNativeMetadataIndicatorsAndFilesystemSignals(t *testing.T) {
 	if err != nil || len(binding) != 1 {
 		t.Fatalf("expected binding.gyp detection, got %#v err=%v", binding, err)
 	}
-	nodeBinary, err := detectNodeBinary(depRoot)
+	nodeBinary, err := detectNodeBinary(context.Background(), depRoot)
 	if err != nil {
 		t.Fatalf("detect node binary: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestHasDynamicCallBranches(t *testing.T) {
 
 func TestDetectNativeModuleIndicatorsNoNativeAndErrors(t *testing.T) {
 	depRoot := t.TempDir()
-	isNative, details, err := detectNativeModuleIndicators(depRoot, packageJSON{})
+	isNative, details, err := detectNativeModuleIndicators(context.Background(), depRoot, packageJSON{})
 	if err != nil {
 		t.Fatalf("detect native indicators: %v", err)
 	}
@@ -111,7 +112,7 @@ func TestDetectNativeModuleIndicatorsNoNativeAndErrors(t *testing.T) {
 		t.Fatalf("expected no native indicators, got isNative=%v details=%#v", isNative, details)
 	}
 
-	if _, err := detectNodeBinary(filepath.Join(depRoot, "missing")); err == nil {
+	if _, err := detectNodeBinary(context.Background(), filepath.Join(depRoot, "missing")); err == nil {
 		t.Fatalf("expected detectNodeBinary error for missing root")
 	}
 }
@@ -225,7 +226,7 @@ func TestDetectNodeBinaryBoundedWalk(t *testing.T) {
 			t.Fatalf("write file %d: %v", i, err)
 		}
 	}
-	binary, err := detectNodeBinary(depRoot)
+	binary, err := detectNodeBinary(context.Background(), depRoot)
 	if err != nil {
 		t.Fatalf("detect node binary bounded walk: %v", err)
 	}
@@ -268,7 +269,7 @@ func TestAppendNativeRiskCueBranches(t *testing.T) {
 		t.Fatalf("write binding.gyp: %v", err)
 	}
 
-	cues, warnings := appendNativeRiskCue(nil, nil, "dep", depRoot, packageJSON{})
+	cues, warnings := appendNativeRiskCue(context.Background(), nil, nil, "dep", depRoot, packageJSON{})
 	if len(warnings) != 0 {
 		t.Fatalf("did not expect warnings for valid native cue scan, got %#v", warnings)
 	}
@@ -276,7 +277,7 @@ func TestAppendNativeRiskCueBranches(t *testing.T) {
 		t.Fatalf("expected native-module cue, got %#v", cues)
 	}
 
-	_, warnings = appendNativeRiskCue(nil, nil, "dep", filepath.Join(depRoot, "missing"), packageJSON{})
+	_, warnings = appendNativeRiskCue(context.Background(), nil, nil, "dep", filepath.Join(depRoot, "missing"), packageJSON{})
 	if len(warnings) == 0 {
 		t.Fatalf("expected warning when native cue scan fails")
 	}

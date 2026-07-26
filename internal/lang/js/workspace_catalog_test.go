@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -134,7 +137,7 @@ catalogs:
 			writeWorkspaceCatalogFiles(t, repo, testCase.scenario.files)
 			installWorkspaceCatalogDependencies(t, repo, testCase.scenario.installedDeps...)
 
-			deps, roots, warnings := listDependencies(repo, ScanResult{})
+			deps, roots, warnings := mustListDependencies(t, repo, ScanResult{})
 			assertWorkspaceCatalogDependencies(t, deps, testCase.scenario.wantDeps, true)
 			assertWorkspaceCatalogDependencies(t, deps, testCase.scenario.wantAbsentDeps, false)
 			assertWorkspaceCatalogRoots(t, repo, roots, testCase.scenario.wantRootDeps)
@@ -425,7 +428,7 @@ catalog:
 }`,
 	})
 
-	catalog := loadWorkspaceDependencyCatalog(repo)
+	catalog := mustLoadWorkspaceDependencyCatalog(t, repo)
 	assertWorkspaceCatalogDeclarationKeys(t, catalog.declarations, "leaf-dep", "leaf-optional", "pnpm-catalog", "root-dep", "root-peer", "yarn-catalog")
 	if len(catalog.warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", catalog.warnings)
@@ -437,20 +440,110 @@ func TestDiscoverWorkspacePackageDirsHonorsExcludesAndSkipsNodeModules(t *testin
 
 	repo := t.TempDir()
 	writeWorkspaceCatalogFiles(t, repo, map[string]string{
-		filepath.Join("packages", "web", testPackageJSONName):    `{"name":"web"}`,
-		filepath.Join("packages", "legacy", testPackageJSONName): `{"name":"legacy"}`,
+		filepath.Join("packages", "web", testPackageJSONName):                    `{"name":"web"}`,
+		filepath.Join("packages", "legacy", testPackageJSONName):                 `{"name":"legacy"}`,
+		filepath.Join("packages", "node_modules", "nested", testPackageJSONName): `{"name":"nested-skip"}`,
 		filepath.Join("node_modules", "skip", testPackageJSONName): `{
   "name": "skip"
 }`,
 	})
 
-	dirs, warnings := discoverWorkspacePackageDirs(repo, []string{"packages/*", "!packages/legacy"})
+	dirs, warnings := mustDiscoverWorkspacePackageDirs(t, repo, []string{"packages/*", "!packages/legacy"})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", warnings)
 	}
 	want := []string{filepath.Join(repo, "packages", "web")}
 	if !slices.Equal(dirs, want) {
 		t.Fatalf("unexpected workspace dirs: got %#v want %#v", dirs, want)
+	}
+}
+
+func TestDiscoverWorkspacePackageDirsSharesStreamingBudgetAcrossDescents(t *testing.T) {
+	repo := t.TempDir()
+	writeWorkspaceCatalogFiles(t, repo, map[string]string{
+		filepath.Join("packages", "mobile", testPackageJSONName): `{"name":"mobile"}`,
+		filepath.Join("packages", "web", testPackageJSONName):    `{"name":"web"}`,
+	})
+
+	dirs, warnings := mustDiscoverWorkspacePackageDirsWithEntryLimit(t, repo, []string{"packages/*"}, 3)
+	wantDirs := []string{filepath.Join(repo, "packages", "mobile")}
+	if !slices.Equal(dirs, wantDirs) {
+		t.Fatalf("expected only the budgeted workspace manifest, got %#v want %#v", dirs, wantDirs)
+	}
+	wantWarning := workspaceWalkBudgetWarning(jsWalkSummary{entriesVisited: 3, truncated: true})
+	if !slices.Equal(warnings, []string{wantWarning}) {
+		t.Fatalf("expected deterministic partial-results warning, got %#v want %q", warnings, wantWarning)
+	}
+
+	dirs, warnings = mustDiscoverWorkspacePackageDirsWithEntryLimit(t, repo, []string{"packages/*"}, 0)
+	if len(dirs) != 0 {
+		t.Fatalf("expected zero budget to discover no workspaces, got %#v", dirs)
+	}
+	wantWarning = workspaceWalkBudgetWarning(jsWalkSummary{truncated: true})
+	if !slices.Equal(warnings, []string{wantWarning}) {
+		t.Fatalf("expected zero-budget partial-results warning, got %#v want %q", warnings, wantWarning)
+	}
+}
+
+func TestAdapterAnalysePropagatesWorkspaceWalkCancellation(t *testing.T) {
+	repo := t.TempDir()
+	writeWorkspaceCatalogFiles(t, repo, map[string]string{
+		testPackageJSONName: `{"private":true,"workspaces":["packages/*"]}`,
+	})
+	if err := os.Mkdir(filepath.Join(repo, "packages"), 0o700); err != nil {
+		t.Fatalf("mkdir packages: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &boundedRootWalkReadDirFile{total: 1_000_000, cancelOnRead: cancel}
+	root := &fakeJSRoot{
+		open: func(string) (safeio.File, error) {
+			return reader, nil
+		},
+	}
+	originalOpenWorkspaceSearchRoot := openWorkspaceSearchRoot
+	openWorkspaceSearchRoot = func(string) (safeio.Root, error) {
+		return root, nil
+	}
+	t.Cleanup(func() {
+		openWorkspaceSearchRoot = originalOpenWorkspaceSearchRoot
+	})
+
+	_, err := NewAdapter().Analyse(ctx, language.Request{RepoPath: repo, TopN: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected public analysis to return context cancellation, got %v", err)
+	}
+	if reader.enumerated != jsWalkReadDirBatchSize || reader.totalNameCalls() != 0 {
+		t.Fatalf("expected cancellation within one untouched batch, enumerated=%d names=%d", reader.enumerated, reader.totalNameCalls())
+	}
+}
+
+func TestDiscoverWorkspacePackageDirsNoFollowRootGuards(t *testing.T) {
+	repo := t.TempDir()
+	rootManifestPath := filepath.Join(repo, testPackageJSONName)
+	ignoredRoot := filepath.Join(repo, "node_modules")
+	if err := os.Mkdir(ignoredRoot, 0o700); err != nil {
+		t.Fatalf("mkdir ignored root: %v", err)
+	}
+	dirs, warnings := mustDiscoverWorkspacePackageDirsInRoot(t, repo, rootManifestPath, ignoredRoot, nil)
+	if len(dirs) != 0 || len(warnings) != 0 {
+		t.Fatalf("expected ignored search root to be skipped, dirs=%#v warnings=%#v", dirs, warnings)
+	}
+
+	targetRoot := filepath.Join(repo, "packages")
+	if err := os.Mkdir(targetRoot, 0o700); err != nil {
+		t.Fatalf("mkdir target root: %v", err)
+	}
+	symlinkRoot := filepath.Join(repo, "linked-packages")
+	if err := os.Symlink(targetRoot, symlinkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dirs, warnings = mustDiscoverWorkspacePackageDirsInRoot(t, repo, rootManifestPath, symlinkRoot, nil)
+	if len(dirs) != 0 {
+		t.Fatalf("expected symlinked search root not to be traversed, got %#v", dirs)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "unable to scan workspace package manifests") {
+		t.Fatalf("expected symlinked search-root warning, got %#v", warnings)
 	}
 }
 
@@ -475,7 +568,7 @@ func TestDiscoverWorkspacePackageDirsScopesWalkToWorkspaceRoots(t *testing.T) {
 		}
 	}()
 
-	dirs, warnings := discoverWorkspacePackageDirs(repo, []string{"packages/*"})
+	dirs, warnings := mustDiscoverWorkspacePackageDirs(t, repo, []string{"packages/*"})
 	if len(warnings) != 0 {
 		t.Fatalf("expected scoped walk to avoid unrelated warnings, got %#v", warnings)
 	}
@@ -502,19 +595,19 @@ func TestDiscoverWorkspacePackageDirsInRootGuardsAndFiltering(t *testing.T) {
 		t.Fatalf("expected no compile warnings, got %#v", warnings)
 	}
 
-	_, invalidRootWarnings := discoverWorkspacePackageDirsInRoot(repo, rootManifestPath, string([]byte{0}), compiled)
+	_, invalidRootWarnings := mustDiscoverWorkspacePackageDirsInRoot(t, repo, rootManifestPath, string([]byte{0}), compiled)
 	if len(invalidRootWarnings) != 1 || !strings.Contains(invalidRootWarnings[0], "unable to access workspace search root") {
 		t.Fatalf("expected invalid search-root warning, got %#v", invalidRootWarnings)
 	}
 
 	notDirPath := filepath.Join(repo, "not-a-dir")
 	testutil.MustWriteFile(t, notDirPath, "x")
-	notDirDirs, notDirWarnings := discoverWorkspacePackageDirsInRoot(repo, rootManifestPath, notDirPath, compiled)
+	notDirDirs, notDirWarnings := mustDiscoverWorkspacePackageDirsInRoot(t, repo, rootManifestPath, notDirPath, compiled)
 	if len(notDirDirs) != 0 || len(notDirWarnings) != 0 {
 		t.Fatalf("expected file search root to be ignored without warnings, dirs=%#v warnings=%#v", notDirDirs, notDirWarnings)
 	}
 
-	dirs, rootWarnings := discoverWorkspacePackageDirsInRoot(repo, rootManifestPath, repo, compiled)
+	dirs, rootWarnings := mustDiscoverWorkspacePackageDirsInRoot(t, repo, rootManifestPath, repo, compiled)
 	if len(rootWarnings) != 0 {
 		t.Fatalf("expected no root walk warnings, got %#v", rootWarnings)
 	}
@@ -603,7 +696,7 @@ func TestDiscoverWorkspacePackageDirsReportsWalkErrors(t *testing.T) {
 		}
 	}()
 
-	dirs, warnings := discoverWorkspacePackageDirs(repo, []string{"packages/*"})
+	dirs, warnings := mustDiscoverWorkspacePackageDirs(t, repo, []string{"packages/*"})
 	if len(dirs) != 0 {
 		t.Fatalf("expected unreadable workspace directory to be skipped, got %#v", dirs)
 	}
@@ -992,7 +1085,7 @@ func TestWorkspacePathAndDedupeHelpers(t *testing.T) {
 		t.Fatalf("unexpected deduped patterns: %#v", patterns)
 	}
 
-	catalog := loadWorkspaceDependencyCatalog("")
+	catalog := mustLoadWorkspaceDependencyCatalog(t, "")
 	if len(catalog.declarations) != 0 || len(catalog.warnings) != 0 {
 		t.Fatalf("expected empty catalog for blank repo path, got %#v", catalog)
 	}
@@ -1005,7 +1098,7 @@ func TestLoadWorkspaceDependencyCatalogKeepsWarningsWithoutWorkspaceSignals(t *t
 	testutil.MustWriteFile(t, filepath.Join(repo, testPackageJSONName), "{")
 	testutil.MustWriteFile(t, filepath.Join(repo, jsYarnRCFile), "catalog: [\n")
 
-	catalog := loadWorkspaceDependencyCatalog(repo)
+	catalog := mustLoadWorkspaceDependencyCatalog(t, repo)
 	if len(catalog.declarations) != 0 {
 		t.Fatalf("expected no declarations, got %#v", catalog.declarations)
 	}
@@ -1034,7 +1127,7 @@ func TestLoadWorkspaceDependencyCatalogCollectsWorkspaceWarnings(t *testing.T) {
 		filepath.Join("packages", "broken", testPackageJSONName): "{",
 	})
 
-	catalog := loadWorkspaceDependencyCatalog(repo)
+	catalog := mustLoadWorkspaceDependencyCatalog(t, repo)
 	assertWorkspaceCatalogDeclarationKeys(t, catalog.declarations, "react")
 	if len(catalog.warnings) != 2 {
 		t.Fatalf("expected workspace manifest warnings to be preserved, got %#v", catalog.warnings)
@@ -1070,35 +1163,23 @@ func TestWorkspaceCatalogHelperGuardBranches(t *testing.T) {
 
 	repo := t.TempDir()
 
-	_, found, warning := readWorkspacePackageJSON(repo, "")
-	if found || warning != "" {
-		t.Fatalf("expected blank manifest path to be ignored without warnings, found=%v warning=%q", found, warning)
-	}
-
 	invalidPath := string([]byte{0})
-	_, found, warning = readWorkspacePackageJSON(repo, invalidPath)
-	if found {
-		t.Fatalf("expected invalid manifest path to be rejected")
-	}
-	if !strings.Contains(warning, "unable to read workspace manifest") {
-		t.Fatalf("expected invalid manifest warning, got %q", warning)
-	}
-
-	_, found, warning = readPnpmWorkspaceManifest(invalidPath)
-	if found {
-		t.Fatalf("expected invalid pnpm repo path to be rejected")
-	}
-	if !strings.Contains(warning, "unable to read "+jsPnpmWorkspaceFile) {
-		t.Fatalf("expected invalid pnpm path warning, got %q", warning)
-	}
-
-	_, found, warning = readYarnCatalogManifest(invalidPath)
-	if found {
-		t.Fatalf("expected invalid yarn repo path to be rejected")
-	}
-	if !strings.Contains(warning, "unable to read "+jsYarnRCFile) {
-		t.Fatalf("expected invalid yarn path warning, got %q", warning)
-	}
+	assertWorkspaceManifestGuard(t, "blank-manifest", "", "", func() (bool, string) {
+		_, found, warning := readWorkspacePackageJSON(repo, "")
+		return found, warning
+	})
+	assertWorkspaceManifestGuard(t, "invalid-manifest", "unable to read workspace manifest", invalidPath, func() (bool, string) {
+		_, found, warning := readWorkspacePackageJSON(repo, invalidPath)
+		return found, warning
+	})
+	assertWorkspaceManifestGuard(t, "invalid-pnpm", "unable to read "+jsPnpmWorkspaceFile, invalidPath, func() (bool, string) {
+		_, found, warning := readPnpmWorkspaceManifest(invalidPath)
+		return found, warning
+	})
+	assertWorkspaceManifestGuard(t, "invalid-yarn", "unable to read "+jsYarnRCFile, invalidPath, func() (bool, string) {
+		_, found, warning := readYarnCatalogManifest(invalidPath)
+		return found, warning
+	})
 
 	catalog := workspaceDependencyCatalog{declarations: make(map[string]workspaceDependencyDeclaration)}
 	catalog.addDependency("./bad", repo)
@@ -1124,12 +1205,84 @@ func TestWorkspaceCatalogHelperGuardBranches(t *testing.T) {
 	}
 }
 
+func assertWorkspaceManifestGuard(t *testing.T, name, wantWarning, input string, read func() (bool, string)) {
+	t.Helper()
+
+	t.Run(name, func(t *testing.T) {
+		t.Helper()
+
+		found, warning := read()
+		if found {
+			t.Fatalf("expected %q input %q to be rejected", name, input)
+		}
+		if wantWarning == "" {
+			if warning != "" {
+				t.Fatalf("expected %q input %q to return no warning, got %q", name, input, warning)
+			}
+			return
+		}
+		if !strings.Contains(warning, wantWarning) {
+			t.Fatalf("expected %q warning containing %q, got %q", name, wantWarning, warning)
+		}
+	})
+}
+
 func writeWorkspaceCatalogFiles(t *testing.T, repo string, files map[string]string) {
 	t.Helper()
 
 	for relativePath, content := range files {
 		testutil.MustWriteFile(t, filepath.Join(repo, relativePath), content)
 	}
+}
+
+func mustListDependencies(t *testing.T, repo string, scan ScanResult) ([]string, map[string]string, []string) {
+	t.Helper()
+
+	deps, roots, warnings, err := listDependencies(context.Background(), repo, scan)
+	if err != nil {
+		t.Fatalf("list dependencies: %v", err)
+	}
+	return deps, roots, warnings
+}
+
+func mustLoadWorkspaceDependencyCatalog(t *testing.T, repo string) workspaceDependencyCatalog {
+	t.Helper()
+
+	catalog, err := loadWorkspaceDependencyCatalog(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("load workspace dependency catalog: %v", err)
+	}
+	return catalog
+}
+
+func mustDiscoverWorkspacePackageDirs(t *testing.T, repo string, patterns []string) ([]string, []string) {
+	t.Helper()
+
+	dirs, warnings, err := discoverWorkspacePackageDirs(context.Background(), repo, patterns)
+	if err != nil {
+		t.Fatalf("discover workspace package dirs: %v", err)
+	}
+	return dirs, warnings
+}
+
+func mustDiscoverWorkspacePackageDirsWithEntryLimit(t *testing.T, repo string, patterns []string, entryLimit int) ([]string, []string) {
+	t.Helper()
+
+	dirs, warnings, err := discoverWorkspacePackageDirsWithEntryLimit(context.Background(), repo, patterns, entryLimit)
+	if err != nil {
+		t.Fatalf("discover workspace package dirs with entry limit: %v", err)
+	}
+	return dirs, warnings
+}
+
+func mustDiscoverWorkspacePackageDirsInRoot(t *testing.T, repo, rootManifestPath, searchRoot string, patterns []workspacePattern) (map[string]struct{}, []string) {
+	t.Helper()
+
+	dirs, warnings, err := discoverWorkspacePackageDirsInRoot(context.Background(), repo, rootManifestPath, searchRoot, patterns)
+	if err != nil {
+		t.Fatalf("discover workspace package dirs in root: %v", err)
+	}
+	return dirs, warnings
 }
 
 func installWorkspaceCatalogDependencies(t *testing.T, repo string, names ...string) {
@@ -1142,7 +1295,7 @@ func installWorkspaceCatalogDependencies(t *testing.T, repo string, names ...str
 	}
 }
 
-func assertWorkspaceCatalogDependencies(t *testing.T, deps []string, expected []string, present bool) {
+func assertWorkspaceCatalogDependencies(t *testing.T, deps, expected []string, present bool) {
 	t.Helper()
 
 	for _, dependency := range expected {

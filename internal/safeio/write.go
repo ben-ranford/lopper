@@ -103,9 +103,6 @@ func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.F
 	currentOwned := false
 	currentAbs := r.rootAbs
 	for _, part := range strings.Split(parentRel, string(os.PathSeparator)) {
-		if part == "" || part == "." {
-			continue
-		}
 		partAbs := filepath.Join(currentAbs, part)
 		next, err := openTargetParentChild(current, part, partAbs, create, perm)
 		if err != nil {

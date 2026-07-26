@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,7 +103,7 @@ func assertParentSwapBreaksSubpathResolution(t *testing.T, resolvedRoot string) 
 func assertParentSwapFallsBackToUnknownLicense(t *testing.T, resolvedRoot string) {
 	t.Helper()
 
-	license, provenance, warnings := detectLicenseAndProvenance(resolvedRoot, false)
+	license, provenance, warnings := detectLicenseAndProvenance(context.Background(), resolvedRoot, false)
 	if license == nil || !license.Unknown || license.Source != "unknown" {
 		t.Fatalf("expected unknown license after parent swap, got %#v", license)
 	}
@@ -112,7 +113,7 @@ func assertParentSwapFallsBackToUnknownLicense(t *testing.T, resolvedRoot string
 	assertSingleWarningContains(t, warnings, dependencyRootOpaqueLayoutWarning, "stable root-resolution warning after parent swap")
 }
 
-func assertSingleWarningContains(t *testing.T, warnings []string, wantSubstring string, context string) {
+func assertSingleWarningContains(t *testing.T, warnings []string, wantSubstring, context string) {
 	t.Helper()
 
 	if len(warnings) != 1 || !strings.Contains(warnings[0], wantSubstring) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -57,8 +58,10 @@ func scanRepoEntry(ctx context.Context, state *scanRepoState, path string, entry
 }
 
 func appendParseErrorFile(parseErrorFiles *[]string, relPath string) {
-	if len(*parseErrorFiles) < 5 {
-		*parseErrorFiles = append(*parseErrorFiles, relPath)
+	*parseErrorFiles = append(*parseErrorFiles, relPath)
+	sort.Strings(*parseErrorFiles)
+	if len(*parseErrorFiles) > 5 {
+		*parseErrorFiles = (*parseErrorFiles)[:5]
 	}
 }
 
@@ -93,5 +96,5 @@ func isPureNonRegularReadError(err error) bool {
 		}
 		return isPureNonRegularReadError(innerErr)
 	}
-	return errors.Is(err, safeio.ErrNonRegularFile)
+	return errors.Is(err, safeio.ErrNonRegularFile) || errors.Is(err, safeio.ErrTargetPathSymlink)
 }

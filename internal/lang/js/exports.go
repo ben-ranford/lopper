@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -92,8 +93,11 @@ func resolveRuntimeProfile(name string) (runtimeProfile, string) {
 	}
 }
 
-func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error) {
+func resolveDependencyExports(ctx context.Context, req dependencyExportRequest) (ExportSurface, error) {
 	surface := ExportSurface{Names: make(map[string]struct{})}
+	if err := ctx.Err(); err != nil {
+		return surface, err
+	}
 	profile, profileWarning := resolveRuntimeProfile(req.runtimeProfileName)
 	if profileWarning != "" {
 		surface.Warnings = append(surface.Warnings, profileWarning)
@@ -127,7 +131,7 @@ func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error
 		return surface, nil
 	}
 
-	parseEntrypointsIntoSurface(rootPath, resolved, &surface)
+	parseEntrypointsIntoSurface(ctx, rootPath, resolved, &surface)
 
 	return surface, nil
 }

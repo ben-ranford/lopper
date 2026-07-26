@@ -72,8 +72,8 @@ func testJSDetectHandlesEOFCapAndSkippedDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detect with confidence on capped repo: %v", err)
 	}
-	if !detection.Matched || detection.Confidence == 0 {
-		t.Fatalf("expected detection to survive EOF cap normalization, got %#v", detection)
+	if !detection.Matched || detection.Confidence != 95 {
+		t.Fatalf("expected capped detection confidence after %d files, got %#v", jsDetectionFileLimit, detection)
 	}
 
 	skipRepo := t.TempDir()
@@ -84,7 +84,7 @@ func testJSDetectHandlesEOFCapAndSkippedDirs(t *testing.T) {
 		t.Fatalf("write skipped file: %v", err)
 	}
 	detection = language.Detection{}
-	if err := scanFilesForJSDetection(skipRepo, &detection, map[string]struct{}{}); err != nil {
+	if err := scanFilesForJSDetection(context.Background(), skipRepo, &detection, map[string]struct{}{}); err != nil {
 		t.Fatalf("scan skipped repo: %v", err)
 	}
 	if detection.Matched {
@@ -363,7 +363,7 @@ func installSymlinkedDependencyRootFixture(t *testing.T, packageJSON string, fil
 	return repo
 }
 
-func assertOutsideMetadataExcluded(t *testing.T, joined string, field string, got any) {
+func assertOutsideMetadataExcluded(t *testing.T, joined, field string, got any) {
 	t.Helper()
 
 	for _, forbidden := range []string{"outside-lodash", "9.9.9"} {

@@ -3,8 +3,9 @@ package js
 import (
 	"context"
 	"errors"
-	"io"
+	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,13 +34,75 @@ func TestJSDetectWithConfidenceEmptyRepoPathAndRootFallback(t *testing.T) {
 
 func TestJSScanFilesForDetectionMaxFiles(t *testing.T) {
 	repo := t.TempDir()
-	testutil.WriteNumberedTextFiles(t, repo, 260)
+	for index := 0; index < 260; index++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, fmt.Sprintf("file-%03d.js", index)), "export {}\n")
+	}
 
 	detect := &language.Detection{Matched: false}
 	roots := map[string]struct{}{}
-	err := scanFilesForJSDetection(repo, detect, roots)
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("expected io.EOF when max files exceeded, got %v", err)
+	err := scanFilesForJSDetection(context.Background(), repo, detect, roots)
+	if err != nil {
+		t.Fatalf("scan files for detection: %v", err)
+	}
+	if detect.Confidence != 2*jsDetectionFileLimit {
+		t.Fatalf("expected exactly %d files to contribute confidence, got %#v", jsDetectionFileLimit, detect)
+	}
+}
+
+func TestJSDetectWithConfidencePropagatesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := NewAdapter().DetectWithConfidence(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled detection to return context.Canceled, got %v", err)
+	}
+}
+
+func TestCanceledReportHelpersReturnWithoutWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, _, err := buildDependencyReport(ctx, dependencyReportOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled dependency report, got %v", err)
+	}
+	if _, err := resolveDependencyExports(ctx, dependencyExportRequest{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled export resolution, got %v", err)
+	}
+	if _, err := loadWorkspaceDependencyCatalog(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled workspace catalog, got %v", err)
+	}
+	if _, _, err := discoverWorkspacePackageDirsWithEntryLimit(ctx, t.TempDir(), []string{"packages/*"}, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled workspace discovery, got %v", err)
+	}
+}
+
+func TestCanceledWalkCallersReturnWithoutEntryWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, _, _, err := discoverWorkspacePackageDirsInRootWithBudget(ctx, "", "", "", nil, newJSWalkEntryBudget(1)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled workspace root walk, got %v", err)
+	}
+	if _, _, err := detectNativeModuleIndicatorsWithinRoot(ctx, nil, "", packageJSON{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled native indicator walk, got %v", err)
+	}
+	if probe, warnings := probeLicenseCandidatesWithinRoot(ctx, nil, "", []string{"LICENSE"}); probe != nil || !slices.Equal(warnings, []string{context.Canceled.Error()}) {
+		t.Fatalf("unexpected canceled license candidates result: probe=%#v warnings=%v", probe, warnings)
+	}
+	if probe, warnings := probeLicenseCandidate(ctx, t.TempDir(), "LICENSE"); probe != nil || !slices.Equal(warnings, []string{context.Canceled.Error()}) {
+		t.Fatalf("unexpected canceled license candidate result: probe=%#v warnings=%v", probe, warnings)
+	}
+
+	surface := &ExportSurface{Names: make(map[string]struct{})}
+	parseEntrypointsIntoSurface(ctx, t.TempDir(), []string{"index.js"}, surface)
+	if !slices.Equal(surface.Warnings, []string{context.Canceled.Error()}) {
+		t.Fatalf("unexpected canceled entrypoint warnings: %v", surface.Warnings)
+	}
+	if _, err := addWorkspacePackageManifests(ctx, &workspaceDependencyCatalog{}, "", []string{"workspace"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled workspace manifest load, got %v", err)
+	}
+	if _, err := processRootWalkBatch(ctx, nil, "", rootWalkBatch{}, nil, &rootWalkState{}, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled batch processing, got %v", err)
 	}
 }
 
@@ -165,7 +228,7 @@ func testJSDependencyUsageWarningsIncludeWildcardNotes(t *testing.T) {
 }
 
 func TestResolveSurfaceWarningsBranches(t *testing.T) {
-	surface, warnings := resolveSurfaceWarnings("", "dep", "", "")
+	surface, warnings := resolveSurfaceWarnings(context.Background(), "", "dep", "", "")
 	if len(surface.Names) != 0 {
 		t.Fatalf("expected empty surface on resolution error")
 	}
@@ -182,7 +245,7 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(depRoot, testIndexJS), source)
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "other.js"), "export const x = 1")
 
-	surface, warnings = resolveSurfaceWarnings(repo, "wild", "", "")
+	surface, warnings = resolveSurfaceWarnings(context.Background(), repo, "wild", "", "")
 	if !surface.IncludesWildcard {
 		t.Fatalf("expected wildcard export surface")
 	}
@@ -194,7 +257,10 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
-	reports, warnings := buildTopDependencies(repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights(), false)
+	reports, warnings, err := buildTopDependencies(context.Background(), repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights(), false)
+	if err != nil {
+		t.Fatalf("build top dependencies: %v", err)
+	}
 	if len(reports) != 0 {
 		t.Fatalf("expected nil reports when no dependencies are discovered, got %#v", reports)
 	}

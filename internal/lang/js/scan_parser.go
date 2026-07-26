@@ -57,7 +57,7 @@ func (p *sourceParser) languageForPath(path string) (*sitter.Language, error) {
 	}
 }
 
-func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string, path string) ([]byte, *sitter.Tree, string, error) {
+func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath, path string) ([]byte, *sitter.Tree, string, error) {
 	var (
 		content []byte
 		readErr error

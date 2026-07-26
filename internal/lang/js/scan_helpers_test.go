@@ -504,7 +504,7 @@ func dirEntryAtPath(path string) (fs.DirEntry, error) {
 	return nil, fs.ErrNotExist
 }
 
-func mustDirEntryForFile(t *testing.T, path string, content string) fs.DirEntry {
+func mustDirEntryForFile(t *testing.T, path, content string) fs.DirEntry {
 	t.Helper()
 
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {

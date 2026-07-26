@@ -456,7 +456,7 @@ func TestListDependenciesMissingAndBuiltinFiltering(t *testing.T) {
 			},
 		},
 	}
-	deps, roots, warnings := listDependencies(repo, scan)
+	deps, roots, warnings := mustListDependencies(t, repo, scan)
 	if len(deps) != 0 {
 		t.Fatalf("expected no existing dependencies, got %#v", deps)
 	}
@@ -504,7 +504,7 @@ func assertWorkspaceExpressRoot(t *testing.T, repo, appDir, installRoot string) 
 		},
 	}
 
-	deps, roots, warnings := listDependencies(repo, scan)
+	deps, roots, warnings := mustListDependencies(t, repo, scan)
 	if len(warnings) != 0 {
 		t.Fatalf("expected no missing dependency warning, got %#v", warnings)
 	}
@@ -544,7 +544,7 @@ func TestListDependenciesWarnsWhenDependencyHasMultipleRoots(t *testing.T) {
 			},
 		},
 	}
-	_, _, warnings := listDependencies(repo, scan)
+	_, _, warnings := mustListDependencies(t, repo, scan)
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "dependency resolves to multiple node_modules roots: express") {
 		t.Fatalf("expected multi-root warning, got %#v", warnings)
@@ -557,7 +557,7 @@ func TestListDependenciesIncludesWorkspaceManifestWarnings(t *testing.T) {
 		t.Fatalf("mkdir yarn manifest path: %v", err)
 	}
 
-	_, _, warnings := listDependencies(repo, ScanResult{})
+	_, _, warnings := mustListDependencies(t, repo, ScanResult{})
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "failed to parse "+jsYarnRCFile) {
 		t.Fatalf("expected workspace manifest warning to propagate, got %#v", warnings)
@@ -588,7 +588,7 @@ func TestListDependenciesWarnsOnUnsafeSymlinkedDependencyRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan repo: %v", err)
 	}
-	_, _, warnings := listDependencies(repo, scan)
+	_, _, warnings := mustListDependencies(t, repo, scan)
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "dependency root could not be safely resolved in node_modules: linked (symlinked or opaque layout)") {
 		t.Fatalf("expected unsafe-root warning, got %#v", warnings)
@@ -632,7 +632,7 @@ func TestListDependenciesUnsafeRootDominatesMissingRegardlessOfTraversalOrder(t 
 		linkedImport("unsafe-app"),
 	}}
 
-	_, _, warnings := listDependencies(repo, scan)
+	_, _, warnings := mustListDependencies(t, repo, scan)
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "dependency root could not be safely resolved in node_modules: linked (symlinked or opaque layout)") {
 		t.Fatalf("expected unsafe-root warning, got %#v", warnings)
@@ -643,7 +643,7 @@ func TestListDependenciesUnsafeRootDominatesMissingRegardlessOfTraversalOrder(t 
 
 	reversed := ScanResult{Files: slices.Clone(scan.Files)}
 	reversed.Files[0], reversed.Files[1] = reversed.Files[1], reversed.Files[0]
-	_, _, reversedWarnings := listDependencies(repo, reversed)
+	_, _, reversedWarnings := mustListDependencies(t, repo, reversed)
 	if !slices.Equal(warnings, reversedWarnings) {
 		t.Fatalf("expected traversal-order stable warnings, got %#v then %#v", warnings, reversedWarnings)
 	}
@@ -689,7 +689,7 @@ func writeDependency(repo, name, entrypoint string) error {
 	return os.WriteFile(filepath.Join(depDir, testIndexJS), []byte(entrypoint), 0o644)
 }
 
-func mustWritePackage(t *testing.T, root string, pkgJSON string) {
+func mustWritePackage(t *testing.T, root, pkgJSON string) {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", root, err)

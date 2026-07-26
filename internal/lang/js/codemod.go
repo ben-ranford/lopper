@@ -54,7 +54,7 @@ func BuildSubpathCodemodReport(repoPath, dependency, dependencyRootPath string, 
 	return &report.CodemodReport{Mode: codemodModeSuggestOnly, Suggestions: suggestions, Skips: skips}, dedupeStrings(lineWarnings)
 }
 
-func buildCodemodForFile(repoPath string, dependency string, resolver subpathResolver, file FileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
+func buildCodemodForFile(repoPath, dependency string, resolver subpathResolver, file FileScan, lineCache map[string][]string) ([]report.CodemodSuggestion, []report.CodemodSkip, []string) {
 	suggestions := make([]report.CodemodSuggestion, 0)
 	skips := make([]report.CodemodSkip, 0)
 	warnings := make([]string, 0)
@@ -84,7 +84,7 @@ type codemodOutcome struct {
 	skip       *report.CodemodSkip
 }
 
-func buildCodemodOutcome(repoPath string, dependency string, resolver subpathResolver, file FileScan, imp ImportBinding, lineCache map[string][]string) (codemodOutcome, string, bool) {
+func buildCodemodOutcome(repoPath, dependency string, resolver subpathResolver, file FileScan, imp ImportBinding, lineCache map[string][]string) (codemodOutcome, string, bool) {
 	reasonCode, reasonMessage := codemodSkipReason(imp, file)
 	if reasonCode != "" {
 		skip := newCodemodSkip(file.Path, imp, reasonCode, reasonMessage)
@@ -269,39 +269,45 @@ func hasResolvableSubpathFile(dependencyRoot, subpath string) (resolved bool) {
 		filepath.Join(subpath, "index.cjs"),
 	}
 
-	root, err := openConstrainedRoot(dependencyRoot)
+	validatedRoot, err := resolvePinnedRootPathWithinBoundary(dependencyRoot, "")
+	if err != nil {
+		return false
+	}
+	root, err := openConstrainedRoot(validatedRoot)
 	if err != nil {
 		return false
 	}
 	defer func() {
-		resolved = root.Close() == nil && resolved
+		if err := root.Close(); err != nil {
+			resolved = false
+		}
 	}()
 
 	for _, candidate := range candidates {
-		if isRegularFileNoFollow(root, candidate) {
+		if isRegularFileWithinRoot(root, validatedRoot, candidate) {
 			return true
 		}
 	}
 	return false
 }
 
-func isRegularFileNoFollow(root safeio.Root, path string) bool {
+func isRegularFileWithinRoot(root safeio.Root, rootPath, path string) bool {
 	cleanPath := filepath.Clean(path)
 	if cleanPath == "." || filepath.IsAbs(cleanPath) || cleanPath == ".." ||
 		strings.HasPrefix(cleanPath, ".."+string(os.PathSeparator)) {
 		return false
 	}
 
-	parts := strings.Split(cleanPath, string(os.PathSeparator))
-	currentPath := ""
-	for _, part := range parts[:len(parts)-1] {
-		currentPath = filepath.Join(currentPath, part)
-		info, err := root.Lstat(currentPath)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return false
-		}
+	resolvedPath, err := resolvePinnedPathWithinBoundary(cleanPath, rootPath)
+	if err != nil {
+		return false
 	}
-
-	info, err := root.Lstat(cleanPath)
-	return err == nil && info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular()
+	if err := pinnedPathStatReadyFn(); err != nil {
+		return false
+	}
+	info, err := lstatPinnedPathWithinRoot(root, rootPath, resolvedPath)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir() && info.Mode().IsRegular()
 }

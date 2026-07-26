@@ -26,6 +26,7 @@ type Root interface {
 	OpenFile(name string, flag int, perm os.FileMode) (File, error)
 	OpenRoot(name string) (Root, error)
 	Lstat(name string) (fs.FileInfo, error)
+	Stat(name string) (fs.FileInfo, error)
 	Mkdir(name string, perm os.FileMode) error
 	Chmod(name string, perm os.FileMode) error
 	MkdirAll(name string, perm os.FileMode) error
@@ -72,6 +73,7 @@ func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, erro
 		return openRootChildPinnedWith(root, childName, requestedPath, fileSystem.OpenRootNoFollow, os.Stat, os.SameFile)
 	})
 }
+
 type osFileSystem struct{}
 
 func (*osFileSystem) Abs(path string) (string, error) {
@@ -459,6 +461,10 @@ func closeFileWithError(file File, err error) error {
 
 func (r *osRoot) Open(name string) (File, error) {
 	return r.root.Open(name)
+}
+
+func (r *osRoot) Stat(name string) (fs.FileInfo, error) {
+	return r.root.Stat(name)
 }
 
 func (r *osRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {

@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,72 +47,117 @@ type workspacePattern struct {
 	regex   *regexp.Regexp
 }
 
-func loadWorkspaceDependencyCatalog(repoPath string) workspaceDependencyCatalog {
+type workspaceCatalogInputs struct {
+	rootManifest      packageJSON
+	rootManifestFound bool
+	pnpmManifest      pnpmWorkspaceManifest
+	pnpmFound         bool
+	yarnManifest      yarnCatalogManifest
+	yarnFound         bool
+	patterns          []string
+	warnings          []string
+}
+
+var openWorkspaceSearchRoot = openConstrainedRoot
+
+func loadWorkspaceDependencyCatalog(ctx context.Context, repoPath string) (workspaceDependencyCatalog, error) {
 	catalog := workspaceDependencyCatalog{
 		declarations: make(map[string]workspaceDependencyDeclaration),
 		warnings:     make([]string, 0),
 	}
+	if err := ctx.Err(); err != nil {
+		return catalog, err
+	}
 	if strings.TrimSpace(repoPath) == "" {
-		return catalog
+		return catalog, nil
 	}
 
-	rootManifest, rootManifestFound, rootManifestWarning := readWorkspacePackageJSON(repoPath, filepath.Join(repoPath, jsPackageFile))
-	if rootManifestWarning != "" {
-		catalog.warnings = append(catalog.warnings, rootManifestWarning)
-	}
-
-	workspacePatterns := make([]string, 0)
-	if rootManifestFound {
-		workspacePatterns = append(workspacePatterns, parseWorkspacePatterns(rootManifest.Workspaces)...)
-	}
-
-	pnpmManifest, pnpmFound, pnpmWarning := readPnpmWorkspaceManifest(repoPath)
-	if pnpmWarning != "" {
-		catalog.warnings = append(catalog.warnings, pnpmWarning)
-	}
-	if pnpmFound {
-		workspacePatterns = append(workspacePatterns, pnpmManifest.Packages...)
-	}
-
-	yarnManifest, yarnFound, yarnWarning := readYarnCatalogManifest(repoPath)
-	if yarnWarning != "" {
-		catalog.warnings = append(catalog.warnings, yarnWarning)
-	}
-
-	workspacePatterns = dedupeWorkspacePatterns(workspacePatterns)
-	hasWorkspaceSignals := pnpmFound || len(workspacePatterns) > 0 || yarnFound
-	if !hasWorkspaceSignals {
+	inputs := readWorkspaceCatalogInputs(repoPath)
+	catalog.warnings = append(catalog.warnings, inputs.warnings...)
+	if !inputs.hasSignals() {
 		catalog.warnings = dedupeWorkspaceWarnings(catalog.warnings)
-		return catalog
+		return catalog, nil
 	}
 
-	if rootManifestFound {
-		addManifestDependencies(&catalog, repoPath, rootManifest)
-	}
-	addCatalogEntries(&catalog, repoPath, pnpmManifest.Catalog, pnpmManifest.Catalogs)
-	addCatalogEntries(&catalog, repoPath, yarnManifest.Catalog, yarnManifest.Catalogs)
+	inputs.addDeclarations(&catalog, repoPath)
 
-	if len(workspacePatterns) == 0 {
+	if len(inputs.patterns) == 0 {
 		catalog.warnings = dedupeWorkspaceWarnings(catalog.warnings)
-		return catalog
+		return catalog, nil
 	}
 
-	workspacePackageDirs, discoveryWarnings := discoverWorkspacePackageDirs(repoPath, workspacePatterns)
+	workspacePackageDirs, discoveryWarnings, err := discoverWorkspacePackageDirs(ctx, repoPath, inputs.patterns)
 	catalog.warnings = append(catalog.warnings, discoveryWarnings...)
+	if err != nil {
+		return catalog, err
+	}
+	manifestWarnings, err := addWorkspacePackageManifests(ctx, &catalog, repoPath, workspacePackageDirs)
+	catalog.warnings = append(catalog.warnings, manifestWarnings...)
+	if err != nil {
+		return catalog, err
+	}
+
+	catalog.warnings = dedupeWorkspaceWarnings(catalog.warnings)
+	return catalog, nil
+}
+
+func readWorkspaceCatalogInputs(repoPath string) workspaceCatalogInputs {
+	inputs := workspaceCatalogInputs{}
+	var warning string
+	inputs.rootManifest, inputs.rootManifestFound, warning = readWorkspacePackageJSON(repoPath, filepath.Join(repoPath, jsPackageFile))
+	inputs.warnings = appendWorkspaceWarning(inputs.warnings, warning)
+	if inputs.rootManifestFound {
+		inputs.patterns = append(inputs.patterns, parseWorkspacePatterns(inputs.rootManifest.Workspaces)...)
+	}
+
+	inputs.pnpmManifest, inputs.pnpmFound, warning = readPnpmWorkspaceManifest(repoPath)
+	inputs.warnings = appendWorkspaceWarning(inputs.warnings, warning)
+	if inputs.pnpmFound {
+		inputs.patterns = append(inputs.patterns, inputs.pnpmManifest.Packages...)
+	}
+
+	inputs.yarnManifest, inputs.yarnFound, warning = readYarnCatalogManifest(repoPath)
+	inputs.warnings = appendWorkspaceWarning(inputs.warnings, warning)
+	inputs.patterns = dedupeWorkspacePatterns(inputs.patterns)
+	return inputs
+}
+
+func appendWorkspaceWarning(warnings []string, warning string) []string {
+	if warning == "" {
+		return warnings
+	}
+	return append(warnings, warning)
+}
+
+func (i *workspaceCatalogInputs) hasSignals() bool {
+	return i.pnpmFound || len(i.patterns) > 0 || i.yarnFound
+}
+
+func (i *workspaceCatalogInputs) addDeclarations(catalog *workspaceDependencyCatalog, repoPath string) {
+	if i.rootManifestFound {
+		addManifestDependencies(catalog, repoPath, i.rootManifest)
+	}
+	addCatalogEntries(catalog, repoPath, i.pnpmManifest.Catalog, i.pnpmManifest.Catalogs)
+	addCatalogEntries(catalog, repoPath, i.yarnManifest.Catalog, i.yarnManifest.Catalogs)
+}
+
+func addWorkspacePackageManifests(ctx context.Context, catalog *workspaceDependencyCatalog, repoPath string, workspacePackageDirs []string) ([]string, error) {
+	warnings := make([]string, 0)
 	for _, dir := range workspacePackageDirs {
+		if err := ctx.Err(); err != nil {
+			return warnings, err
+		}
 		manifestPath := filepath.Join(dir, jsPackageFile)
 		pkg, found, warning := readWorkspacePackageJSON(repoPath, manifestPath)
 		if warning != "" {
-			catalog.warnings = append(catalog.warnings, warning)
+			warnings = append(warnings, warning)
 		}
 		if !found {
 			continue
 		}
-		addManifestDependencies(&catalog, dir, pkg)
+		addManifestDependencies(catalog, dir, pkg)
 	}
-
-	catalog.warnings = dedupeWorkspaceWarnings(catalog.warnings)
-	return catalog
+	return warnings, nil
 }
 
 func readWorkspacePackageJSON(repoPath, manifestPath string) (packageJSON, bool, string) {
@@ -244,43 +290,109 @@ func (c *workspaceDependencyCatalog) addDependency(dep, declarationDir string) {
 	c.declarations[name] = entry
 }
 
-func discoverWorkspacePackageDirs(repoPath string, workspacePatterns []string) ([]string, []string) {
+func discoverWorkspacePackageDirs(ctx context.Context, repoPath string, workspacePatterns []string) ([]string, []string, error) {
+	return discoverWorkspacePackageDirsWithEntryLimit(ctx, repoPath, workspacePatterns, defaultJSWalkEntryBudget)
+}
+
+func discoverWorkspacePackageDirsWithEntryLimit(ctx context.Context, repoPath string, workspacePatterns []string, entryLimit int) ([]string, []string, error) {
 	compiledPatterns, warnings := compileWorkspacePatterns(workspacePatterns)
 	dirs := make(map[string]struct{})
 	rootManifestPath := filepath.Join(repoPath, jsPackageFile)
+	budget := newJSWalkEntryBudget(entryLimit)
+	truncated := false
 
 	for _, searchRoot := range workspacePatternSearchRoots(repoPath, workspacePatterns) {
-		foundDirs, rootWarnings := discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot, compiledPatterns)
+		if err := ctx.Err(); err != nil {
+			return sortedWorkspaceDirs(dirs), dedupeWorkspaceWarnings(warnings), err
+		}
+		foundDirs, rootWarnings, summary, err := discoverWorkspacePackageDirsInRootWithBudget(ctx, repoPath, rootManifestPath, searchRoot, compiledPatterns, budget)
 		warnings = append(warnings, rootWarnings...)
 		for dir := range foundDirs {
 			dirs[dir] = struct{}{}
 		}
+		if err != nil {
+			return sortedWorkspaceDirs(dirs), dedupeWorkspaceWarnings(warnings), err
+		}
+		if summary.truncated {
+			truncated = true
+			break
+		}
+	}
+	if truncated {
+		warnings = append(warnings, workspaceWalkBudgetWarning(jsWalkSummary{
+			entriesVisited: budget.entriesVisited,
+			truncated:      true,
+		}))
 	}
 
+	return sortedWorkspaceDirs(dirs), dedupeWorkspaceWarnings(warnings), nil
+}
+
+func sortedWorkspaceDirs(dirs map[string]struct{}) []string {
 	out := make([]string, 0, len(dirs))
 	for dir := range dirs {
 		out = append(out, dir)
 	}
 	sort.Strings(out)
-	return out, dedupeWorkspaceWarnings(warnings)
+	return out
 }
 
-func discoverWorkspacePackageDirsInRoot(repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern) (map[string]struct{}, []string) {
+func discoverWorkspacePackageDirsInRoot(ctx context.Context, repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern) (map[string]struct{}, []string, error) {
+	dirs, warnings, _, err := discoverWorkspacePackageDirsInRootWithBudget(ctx, repoPath, rootManifestPath, searchRoot, compiledPatterns, newJSWalkEntryBudget(defaultJSWalkEntryBudget))
+	return dirs, warnings, err
+}
+
+func discoverWorkspacePackageDirsInRootWithBudget(ctx context.Context, repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern, budget *jsWalkEntryBudget) (map[string]struct{}, []string, jsWalkSummary, error) {
 	dirs := make(map[string]struct{})
 	warnings := make([]string, 0)
 
+	if err := ctx.Err(); err != nil {
+		return dirs, warnings, jsWalkSummary{entriesVisited: budget.entriesVisited}, err
+	}
 	if warning, skip := validateWorkspaceSearchRoot(searchRoot); skip {
 		if warning != "" {
 			warnings = append(warnings, warning)
 		}
-		return dirs, warnings
+		return dirs, warnings, jsWalkSummary{entriesVisited: budget.entriesVisited}, nil
+	}
+	if shared.ShouldSkipDir(filepath.Base(searchRoot), skipDirectories) {
+		return dirs, warnings, jsWalkSummary{entriesVisited: budget.entriesVisited}, nil
 	}
 
-	walkErr := filepath.WalkDir(searchRoot, workspacePackageDirWalker(repoPath, rootManifestPath, compiledPatterns, dirs))
+	summary, walkErr := walkWorkspaceSearchRoot(ctx, repoPath, rootManifestPath, searchRoot, compiledPatterns, dirs, budget)
 	if walkErr != nil {
+		if errors.Is(walkErr, context.Canceled) || errors.Is(walkErr, context.DeadlineExceeded) {
+			return dirs, warnings, summary, walkErr
+		}
 		warnings = append(warnings, fmt.Sprintf("unable to scan workspace package manifests under %q: %v", searchRoot, walkErr))
 	}
-	return dirs, warnings
+	return dirs, warnings, summary, nil
+}
+
+func walkWorkspaceSearchRoot(ctx context.Context, repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern, dirs map[string]struct{}, budget *jsWalkEntryBudget) (summary jsWalkSummary, err error) {
+	root, err := openWorkspaceSearchRoot(searchRoot)
+	if err != nil {
+		return summary, err
+	}
+	defer closeReadCloserPreserveErr(root, &err)
+
+	return walkRootNoFollowContext(ctx, root, budget, workspaceRootWalkFunc(repoPath, rootManifestPath, searchRoot, compiledPatterns, dirs), nil)
+}
+
+func workspaceRootWalkFunc(repoPath, rootManifestPath, searchRoot string, compiledPatterns []workspacePattern, dirs map[string]struct{}) rootWalkFunc {
+	walker := workspacePackageDirWalker(repoPath, rootManifestPath, compiledPatterns, dirs)
+	return func(relPath string, info fs.FileInfo) (bool, bool, error) {
+		path := filepath.Join(searchRoot, relPath)
+		walkErr := walker(path, fs.FileInfoToDirEntry(info), nil)
+		if errors.Is(walkErr, fs.SkipDir) {
+			return true, false, nil
+		}
+		return false, false, walkErr
+	}
+}
+
+func workspaceWalkBudgetWarning(summary jsWalkSummary) string {
+	return fmt.Sprintf("stopped workspace package manifest scan after %d entries; results are partial", summary.entriesVisited)
 }
 
 func validateWorkspaceSearchRoot(searchRoot string) (string, bool) {

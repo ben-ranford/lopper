@@ -1,6 +1,7 @@
 package js
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -14,7 +15,7 @@ const (
 	riskCodeDeepGraph     = "deep-transitive-graph"
 )
 
-func assessRiskCues(repoPath string, dependency string, dependencyRootPath string, surface ExportSurface) (cues []report.RiskCue, warnings []string) {
+func assessRiskCues(ctx context.Context, repoPath, dependency, dependencyRootPath string, surface ExportSurface) (cues []report.RiskCue, warnings []string) {
 	depRoot := dependencyRootPath
 	if depRoot == "" {
 		root, err := dependencyRoot(repoPath, dependency)
@@ -33,7 +34,7 @@ func assessRiskCues(repoPath string, dependency string, dependencyRootPath strin
 	pkg, warnings := loadDependencyPackageJSONFromRoot(root, validatedDepRoot)
 	aggregator := newRiskCueAggregator(repoPath, dependency, validatedDepRoot, root, pkg, warnings)
 	aggregator.addDynamicLoaderCue(surface.EntryPoints)
-	aggregator.addNativeModuleCue()
+	aggregator.addNativeModuleCue(ctx)
 	aggregator.addTransitiveDepthCue()
 	return aggregator.finalize()
 }
@@ -64,8 +65,8 @@ func (a *riskCueAggregator) addDynamicLoaderCue(entrypoints []string) {
 	a.cues, a.warnings = appendDynamicRiskCueWithinRoot(a.cues, a.warnings, a.dependency, a.root, a.depRoot, entrypoints)
 }
 
-func (a *riskCueAggregator) addNativeModuleCue() {
-	a.cues, a.warnings = appendNativeRiskCueWithinRoot(a.cues, a.warnings, a.dependency, a.root, a.depRoot, a.pkg)
+func (a *riskCueAggregator) addNativeModuleCue(ctx context.Context) {
+	a.cues, a.warnings = appendNativeRiskCueWithinRoot(ctx, a.cues, a.warnings, a.dependency, a.root, a.depRoot, a.pkg)
 }
 
 func (a *riskCueAggregator) addTransitiveDepthCue() {
@@ -79,7 +80,7 @@ func (a *riskCueAggregator) finalize() ([]report.RiskCue, []string) {
 	return a.cues, a.warnings
 }
 
-func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency string, depRoot string, entrypoints []string) (resultCues []report.RiskCue, resultWarnings []string) {
+func appendDynamicRiskCue(cues []report.RiskCue, warnings []string, dependency, depRoot string, entrypoints []string) (resultCues []report.RiskCue, resultWarnings []string) {
 	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("dynamic loader scan failed for %q: %v", dependency, err))
@@ -102,18 +103,18 @@ func appendDynamicRiskCueWithinRoot(cues []report.RiskCue, warnings []string, de
 	return cues, warnings
 }
 
-func appendNativeRiskCue(cues []report.RiskCue, warnings []string, dependency string, depRoot string, pkg packageJSON) (resultCues []report.RiskCue, resultWarnings []string) {
+func appendNativeRiskCue(ctx context.Context, cues []report.RiskCue, warnings []string, dependency, depRoot string, pkg packageJSON) (resultCues []report.RiskCue, resultWarnings []string) {
 	root, validatedDepRoot, err := openValidatedRootNoFollow(depRoot)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("native module scan failed for %q: %v", dependency, err))
 		return cues, warnings
 	}
 	defer closeRootAppendWarning(root, &resultWarnings, fmt.Sprintf("failed to close dependency root after native module scan for %q", dependency))
-	return appendNativeRiskCueWithinRoot(cues, warnings, dependency, root, validatedDepRoot, pkg)
+	return appendNativeRiskCueWithinRoot(ctx, cues, warnings, dependency, root, validatedDepRoot, pkg)
 }
 
-func appendNativeRiskCueWithinRoot(cues []report.RiskCue, warnings []string, dependency string, root safeio.Root, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
-	cue, err := buildNativeModuleRiskCueWithinRoot(root, depRoot, pkg)
+func appendNativeRiskCueWithinRoot(ctx context.Context, cues []report.RiskCue, warnings []string, dependency string, root safeio.Root, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
+	cue, err := buildNativeModuleRiskCueWithinRoot(ctx, root, depRoot, pkg)
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("native module scan failed for %q: %v", dependency, err))
 		return cues, warnings
@@ -124,7 +125,7 @@ func appendNativeRiskCueWithinRoot(cues []report.RiskCue, warnings []string, dep
 	return cues, warnings
 }
 
-func appendDepthRiskCue(cues []report.RiskCue, warnings []string, repoPath string, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
+func appendDepthRiskCue(cues []report.RiskCue, warnings []string, repoPath, depRoot string, pkg packageJSON) ([]report.RiskCue, []string) {
 	depth, depthWarnings := estimateTransitiveDepth(repoPath, depRoot, pkg)
 	warnings = append(warnings, depthWarnings...)
 	cue := buildTransitiveDepthRiskCueForDepth(depth)

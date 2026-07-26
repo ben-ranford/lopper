@@ -142,6 +142,15 @@ func statTestPath(t *testing.T, path string) fs.FileInfo {
 	return info
 }
 
+func lstatTestPath(t *testing.T, path string) fs.FileInfo {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+	return info
+}
+
 type fakeFileSystem struct {
 	base             FileSystem
 	abs              func(path string) (string, error)
@@ -196,6 +205,7 @@ type fakeRoot struct {
 	openFile func(name string, flag int, perm os.FileMode) (File, error)
 	openRoot func(name string) (Root, error)
 	lstat    func(name string) (fs.FileInfo, error)
+	stat     func(name string) (fs.FileInfo, error)
 	mkdir    func(name string, perm os.FileMode) error
 	link     func(oldName, newName string) error
 	rename   func(oldName, newName string) error
@@ -229,6 +239,16 @@ func (r *fakeRoot) Lstat(name string) (fs.FileInfo, error) {
 		return r.lstat(name)
 	}
 	return r.Root.Lstat(name)
+}
+
+func (r *fakeRoot) Stat(name string) (fs.FileInfo, error) {
+	if r.stat != nil {
+		return r.stat(name)
+	}
+	if r.Root != nil {
+		return r.Root.Stat(name)
+	}
+	return nil, errors.New("not implemented")
 }
 
 func (r *fakeRoot) Mkdir(name string, perm os.FileMode) error {
