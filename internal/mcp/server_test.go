@@ -430,7 +430,7 @@ func TestCallAnalyseTopUsesInitializedCacheReadOnly(t *testing.T) {
 	}
 	repo := filepath.Join(repoRoot, "repo")
 	writeMCPJSFixture(t, repo)
-	cachePath := filepath.Join(repoRoot, "cache")
+	cachePath := filepath.Join(repo, ".lopper-cache")
 	for _, dirName := range []string{"keys", "objects"} {
 		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dirName, err)
@@ -443,7 +443,7 @@ func TestCallAnalyseTopUsesInitializedCacheReadOnly(t *testing.T) {
 		"repoPath":      repo,
 		"topN":          1,
 		"language":      "js-ts",
-		"cachePath":     cachePath,
+		"include":       []string{"**/*.js"},
 		"cacheReadOnly": false,
 	})
 	if result.IsError {
@@ -452,6 +452,9 @@ func TestCallAnalyseTopUsesInitializedCacheReadOnly(t *testing.T) {
 	payload := result.StructuredContent.(analysisPayload)
 	if payload.Report.Cache == nil || !payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
 		t.Fatalf("expected enabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	if payload.Report.Cache.Path != cachePath {
+		t.Fatalf("expected scoped analysis to preserve cache path %q, got %q", cachePath, payload.Report.Cache.Path)
 	}
 	for _, dirName := range []string{"keys", "objects"} {
 		entries, err := os.ReadDir(filepath.Join(cachePath, dirName))
