@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	goruntime "runtime"
 	"strings"
 )
 
@@ -13,6 +14,8 @@ const SafeSystemPath = platformSafeSystemPath
 
 const safeGitNoSystemConfig = "GIT_CONFIG_NOSYSTEM=1"
 const safeGitGlobalConfig = "GIT_CONFIG_GLOBAL=/dev/null"
+
+var windowsEnvKeyMatching = goruntime.GOOS == "windows"
 
 // ExecutablePrimary is the preferred conventional Unix Git executable path.
 const ExecutablePrimary = "/usr/bin/git"
@@ -111,18 +114,32 @@ func sanitizedEnvEntries(env []string) []string {
 }
 
 func shouldStripGitEnvKey(key string) bool {
-	if strings.HasPrefix(key, "GIT_") {
+	if envKeyHasPrefix(key, "GIT_") {
 		return true
 	}
-	if strings.HasPrefix(key, "LD_") || strings.HasPrefix(key, "DYLD_") {
+	if envKeyHasPrefix(key, "LD_") || envKeyHasPrefix(key, "DYLD_") {
 		return true
 	}
-	switch key {
-	case "PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "PAGER", "EDITOR", "VISUAL":
-		return true
-	default:
-		return false
+	for _, sensitiveKey := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "PAGER", "EDITOR", "VISUAL"} {
+		if envKeyEquals(key, sensitiveKey) {
+			return true
+		}
 	}
+	return false
+}
+
+func envKeyHasPrefix(key, prefix string) bool {
+	if windowsEnvKeyMatching {
+		return strings.HasPrefix(strings.ToUpper(key), prefix)
+	}
+	return strings.HasPrefix(key, prefix)
+}
+
+func envKeyEquals(key, expected string) bool {
+	if windowsEnvKeyMatching {
+		return strings.EqualFold(key, expected)
+	}
+	return key == expected
 }
 
 func safeGitConfigEnvEntries() []string {

@@ -23,7 +23,7 @@ func TestWindowsProgramFilesCandidatesSupportNonstandardVolume(t *testing.T) {
 	}
 
 	candidates := platformExecutableCandidates()
-	want := filepath.Join(`D:\Applications`, "Git", "cmd", "git.exe")
+	want := filepath.Join(`D:\Applications`, "Git", "cmd", windowsGitExecutableName)
 	if !containsWindowsPath(candidates, want) {
 		t.Fatalf("Windows Git candidates = %#v, want %q", candidates, want)
 	}
@@ -125,7 +125,7 @@ func TestValidateWindowsExecutablePathRejectsOutsideProgramFiles(t *testing.T) {
 	}
 
 	err := validateWindowsExecutablePath(
-		`C:\Users\runneradmin\bin\git.exe`,
+		`C:\Users\runneradmin\bin\`+windowsGitExecutableName,
 		[]string{`C:\Program Files`},
 		inspect,
 	)
@@ -138,7 +138,7 @@ func TestValidateWindowsExecutablePathRejectsOutsideProgramFiles(t *testing.T) {
 }
 
 func TestWindowsExecutablePathPartsIncludesVolumeRootAndLeaf(t *testing.T) {
-	path := `C:\Program Files\Git\cmd\git.exe`
+	path := `C:\Program Files\Git\cmd\` + windowsGitExecutableName
 	parts := windowsExecutablePathParts(`C:\Program Files`, path)
 	if parts[0] != `C:\` ||
 		parts[1] != `C:\Program Files` ||
@@ -151,7 +151,7 @@ func trustedWindowsSnapshots(t *testing.T) (string, []string, map[string]windows
 	t.Helper()
 
 	programFiles := filepath.Join(t.TempDir(), "Program Files")
-	path := filepath.Join(programFiles, "Git", "cmd", "git.exe")
+	path := filepath.Join(programFiles, "Git", "cmd", windowsGitExecutableName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir trusted Windows fixture: %v", err)
 	}

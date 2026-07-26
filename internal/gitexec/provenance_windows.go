@@ -24,6 +24,7 @@ const (
 	windowsSystemAuditACEType       = byte(2)
 	windowsSystemAlarmACEType       = byte(3)
 	windowsInheritOnlyACE           = byte(0x08)
+	windowsGitExecutableName        = "git.exe"
 )
 
 var (
@@ -66,13 +67,13 @@ const platformSafeSystemPath = "PATH="
 
 func platformExecutableCandidates() []string {
 	candidates := make([]string, 0, 10)
-	if path, err := exec.LookPath("git.exe"); err == nil {
+	if path, err := exec.LookPath(windowsGitExecutableName); err == nil {
 		candidates = append(candidates, path)
 	}
 	for _, root := range windowsProgramFilesRoots() {
 		candidates = append(candidates,
-			filepath.Join(root, "Git", "cmd", "git.exe"),
-			filepath.Join(root, "Git", "bin", "git.exe"),
+			filepath.Join(root, "Git", "cmd", windowsGitExecutableName),
+			filepath.Join(root, "Git", "bin", windowsGitExecutableName),
 		)
 	}
 	return uniqueWindowsCandidates(candidates)

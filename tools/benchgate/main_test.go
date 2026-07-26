@@ -599,7 +599,7 @@ func testResolveBaseCommitFromArgsGitPathOutRequiresBaseRefResolutionMode(t *tes
 	gitPathOut := filepath.Join(dir, "git-path.txt")
 
 	_, err := resolveBaseCommitFromArgs([]string{"-git-path-out", gitPathOut}, dir)
-	if err == nil || !strings.Contains(err.Error(), "git-path-out requires base-ref resolution mode") {
+	if err == nil || !strings.Contains(err.Error(), "git-path-out requires "+baseRefFlagName+" resolution mode") {
 		t.Fatalf("expected git-path-out mode error, got %v", err)
 	}
 	assertBenchgatePathAbsent(t, gitPathOut)
@@ -2824,6 +2824,20 @@ func TestResolveArtifactCollisionKeyPropagatesLeafCanonicalizationError(t *testi
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod dir read-only: %v", err)
 	}
+	probePath := filepath.Join(dir, "permission-probe.txt")
+	probe, probeErr := os.OpenFile(probePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, artifactFileMode)
+	if probeErr == nil {
+		if err := probe.Close(); err != nil {
+			t.Fatalf("close writability probe: %v", err)
+		}
+		if err := os.Remove(probePath); err != nil {
+			t.Fatalf("remove writability probe: %v", err)
+		}
+		t.Skip("effective privileges bypass directory permission restrictions")
+	}
+	if !os.IsPermission(probeErr) {
+		t.Skipf("directory permission restrictions are not testable: %v", probeErr)
+	}
 
 	_, err := resolveArtifactCollisionKey(filepath.Join(dir, "summary.txt"))
 	if err == nil {
@@ -2896,6 +2910,33 @@ func TestFinalizeArtifactDirModeAllowsSafeExistingDirectory(t *testing.T) {
 
 	if err := finalizeArtifactDirMode(root, dir, false); err != nil {
 		t.Fatalf("safe existing directory rejected: %v", err)
+	}
+}
+
+func TestFinalizeArtifactDirModeSkipsUnsafePermissionRejectionWhenDisabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows already exercises the disabled permission check in production")
+	}
+
+	restoreBenchgateSeams(t)
+	enforceArtifactDirPerms = false
+
+	dir := benchgateCanonicalTempDir(t)
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+	root, err := safeio.OpenCanonicalRoot(dir)
+	if err != nil {
+		t.Fatalf("open canonical root: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	}()
+
+	if err := finalizeArtifactDirMode(root, dir, false); err != nil {
+		t.Fatalf("expected disabled permission check to allow existing directory, got %v", err)
 	}
 }
 
@@ -3108,7 +3149,7 @@ func TestParseArgs(t *testing.T) {
 	if cfg.baseRef != "origin/main" || cfg.headRef != "HEAD~1" || cfg.summaryOut != "summary.md" || cfg.statusOut != "status.txt" {
 		t.Fatalf("unexpected config: %#v", cfg)
 	}
-	if !flagWasProvided(cfg, "base-ref") || !flagWasProvided(cfg, "summary-out") || !flagWasProvided(cfg, "status-out") {
+	if !flagWasProvided(cfg, baseRefFlagName) || !flagWasProvided(cfg, "summary-out") || !flagWasProvided(cfg, "status-out") {
 		t.Fatalf("expected explicit flags to be tracked, got %#v", cfg.explicitFlags)
 	}
 }
@@ -3162,7 +3203,7 @@ func TestParseArgsRejectsPositionalArguments(t *testing.T) {
 }
 
 func TestValidateGitRevisionOperandRejectsWhitespace(t *testing.T) {
-	err := validateGitRevisionOperand("base-ref", "   ")
+	err := validateGitRevisionOperand(baseRefFlagName, "   ")
 	if err == nil || !strings.Contains(err.Error(), "base-ref is required") {
 		t.Fatalf("expected whitespace operand rejection, got %v", err)
 	}
@@ -3557,6 +3598,7 @@ func restoreBenchgateSeams(t *testing.T) {
 	originalOpenArtifactInputFile := openArtifactInputFile
 	originalResolveArtifactPathAbs := resolveArtifactPathAbs
 	originalWriteArtifactWithinRoot := writeArtifactWithinRoot
+	originalEnforceArtifactDirPerms := enforceArtifactDirPerms
 	t.Cleanup(func() {
 		resolveGitBinaryPath = originalResolveGitBinaryPath
 		gitCommandContext = originalGitCommandContext
@@ -3567,6 +3609,7 @@ func restoreBenchgateSeams(t *testing.T) {
 		openArtifactInputFile = originalOpenArtifactInputFile
 		resolveArtifactPathAbs = originalResolveArtifactPathAbs
 		writeArtifactWithinRoot = originalWriteArtifactWithinRoot
+		enforceArtifactDirPerms = originalEnforceArtifactDirPerms
 	})
 }
 

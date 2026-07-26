@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 
@@ -18,8 +19,10 @@ import (
 )
 
 const (
-	artifactDirMode  = 0o750
-	artifactFileMode = 0o600
+	artifactDirMode        = 0o750
+	artifactFileMode       = 0o600
+	baseRefFlagName        = "base-ref"
+	worktreeCommitFlagName = "worktree-commit"
 )
 
 var errArtifactParentSymlink = errors.New("artifact parent contains symlink")
@@ -34,6 +37,7 @@ var (
 	openArtifactInputFile     = safeio.OpenFile
 	resolveArtifactPathAbs    = filepath.Abs
 	writeArtifactWithinRoot   = safeio.WriteFileReplacingWithinRoot
+	enforceArtifactDirPerms   = goruntime.GOOS != "windows"
 )
 
 type config struct {
@@ -142,7 +146,7 @@ func validateExecutionMode(cfg config) error {
 		return errors.New("failure-message cannot be combined with base-ref or git-path-out")
 	}
 	if requested.gitPath && !requested.base {
-		return errors.New("git-path-out requires base-ref resolution mode")
+		return fmt.Errorf("git-path-out requires %s resolution mode", baseRefFlagName)
 	}
 	return nil
 }
@@ -169,7 +173,7 @@ func validateExplicitOutputPaths(cfg config) error {
 
 func executionModesRequested(cfg config) executionModeRequests {
 	return executionModeRequests{
-		base:     flagWasProvided(cfg, "base-ref"),
+		base:     flagWasProvided(cfg, baseRefFlagName),
 		gitPath:  flagWasProvided(cfg, "git-path-out"),
 		failure:  flagWasProvided(cfg, "failure-message"),
 		publish:  publishRequested(cfg),
@@ -194,7 +198,7 @@ func parseArgs(args []string) (config, error) {
 	fs.SetOutput(io.Discard)
 
 	cfg := config{}
-	fs.StringVar(&cfg.baseRef, "base-ref", "", "git ref to compare against HEAD")
+	fs.StringVar(&cfg.baseRef, baseRefFlagName, "", "git ref to compare against HEAD")
 	fs.StringVar(&cfg.headRef, "head-ref", "HEAD", "git ref to compare the base against")
 	fs.StringVar(&cfg.gitPathOut, "git-path-out", "", "path to write the resolved git executable")
 	fs.StringVar(&cfg.summaryOut, "summary-out", "", "path to write the memory benchmark summary on failure")
@@ -207,7 +211,7 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&cfg.benchHeadOut, "bench-head-out", "", "path to publish the head benchmark artifact")
 	fs.IntVar(&cfg.statusCode, "status-code", -1, "status code to publish to the benchmark status artifact")
 	fs.StringVar(&cfg.worktreeAdd, "worktree-add", "", "path to create a detached worktree at")
-	fs.StringVar(&cfg.worktreeCommit, "worktree-commit", "", "commit to check out when creating a detached worktree")
+	fs.StringVar(&cfg.worktreeCommit, worktreeCommitFlagName, "", "commit to check out when creating a detached worktree")
 	fs.StringVar(&cfg.worktreeRemove, "worktree-remove", "", "path to forcibly remove from git worktrees")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -233,7 +237,7 @@ func publishRequested(cfg config) bool {
 
 func worktreeRequested(cfg config) bool {
 	return flagWasProvided(cfg, "worktree-add") ||
-		flagWasProvided(cfg, "worktree-commit") ||
+		flagWasProvided(cfg, worktreeCommitFlagName) ||
 		flagWasProvided(cfg, "worktree-remove")
 }
 
@@ -242,7 +246,7 @@ func flagWasProvided(cfg config, name string) bool {
 }
 
 func resolveBaseCommit(repoRoot, gitPath, baseRef, headRef string) (string, error) {
-	if err := validateGitRevisionOperand("base-ref", baseRef); err != nil {
+	if err := validateGitRevisionOperand(baseRefFlagName, baseRef); err != nil {
 		return "", err
 	}
 	if err := validateGitRevisionOperand("head-ref", headRef); err != nil {
@@ -287,7 +291,7 @@ func executeWorktree(repoRoot string, cfg config) error {
 	}
 	switch {
 	case cfg.worktreeAdd != "":
-		if err := validateGitRevisionOperand("worktree-commit", cfg.worktreeCommit); err != nil {
+		if err := validateGitRevisionOperand(worktreeCommitFlagName, cfg.worktreeCommit); err != nil {
 			return err
 		}
 		return addWorktreeWithCleanConfig(repoRoot, gitPath, cfg.worktreeAdd, cfg.worktreeCommit)
@@ -940,6 +944,9 @@ func invalidComparisonSummary(message string) string {
 func finalizeArtifactDirMode(root safeio.Root, path string, created bool) error {
 	if created {
 		return root.Chmod(".", artifactDirMode)
+	}
+	if !enforceArtifactDirPerms {
+		return nil
 	}
 	info, err := root.Lstat(".")
 	if err != nil {

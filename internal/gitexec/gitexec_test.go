@@ -178,6 +178,37 @@ func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
 	}
 }
 
+func TestSanitizedEnvEntriesWindowsCaseInsensitiveFiltering(t *testing.T) {
+	original := windowsEnvKeyMatching
+	windowsEnvKeyMatching = true
+	t.Cleanup(func() {
+		windowsEnvKeyMatching = original
+	})
+
+	input := []string{
+		"git_dir=/tmp/attacker.git",
+		"Path=C:\\attacker\\bin",
+		"home=C:\\attacker",
+		"DyLd_Insert_Libraries=evil.dll",
+		keepMeEnvEntry,
+	}
+	env := sanitizedEnvEntries(input)
+
+	for _, filteredEntry := range []string{
+		"git_dir=/tmp/attacker.git",
+		"Path=C:\\attacker\\bin",
+		"home=C:\\attacker",
+		"DyLd_Insert_Libraries=evil.dll",
+	} {
+		if containsEnv(env, filteredEntry) {
+			t.Fatalf("expected Windows case-insensitive filter to strip %q, got %#v", filteredEntry, env)
+		}
+	}
+	if !containsEnv(env, keepMeEnvEntry) {
+		t.Fatalf("expected unrelated env entry to be preserved, got %#v", env)
+	}
+}
+
 func TestCommandUsesKnownGitPaths(t *testing.T) {
 	testKnownGitPaths(t, func(gitPath string) (*exec.Cmd, error) {
 		return Command(gitPath, versionArg)
