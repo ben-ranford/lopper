@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -406,6 +407,10 @@ func readOnlyMCPAnalysisCacheOptions(repoPath string, enabled *bool, cachePath s
 	if !options.Enabled {
 		return options
 	}
+	if trimmedPath != "" && pathContainsTraversalComponent(trimmedPath) {
+		options.Enabled = false
+		return options
+	}
 	resolvedPath := trimmedPath
 	if resolvedPath == "" {
 		resolvedPath = filepath.Join(repoPath, ".lopper-cache")
@@ -445,6 +450,18 @@ func pathContainsSymlink(path string) bool {
 		}
 		current = parent
 	}
+}
+
+func pathContainsTraversalComponent(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	path = path[len(filepath.VolumeName(path)):]
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return os.IsPathSeparator(uint8(r))
+	})
+	return slices.Contains(parts, "..")
 }
 
 func (s *Server) runListLanguagesTool(ctx context.Context, rawArgs json.RawMessage) toolCallResult {
@@ -950,6 +967,11 @@ func summarizeReport(kind analysisToolKind, reportData report.Report) string {
 
 func analysisInputSchema(requireDependency, allowDependency, allowTopN, requireBaseline bool) map[string]any {
 	properties := commonAnalysisProperties()
+	properties["cacheReadOnly"] = map[string]any{
+		"type":        "boolean",
+		"default":     true,
+		"description": "Read-only MCP analysis never writes cache entries; false is ignored.",
+	}
 	required := []string{"repoPath"}
 	if allowDependency {
 		properties["dependency"] = map[string]any{"type": "string"}
@@ -992,7 +1014,7 @@ func commonAnalysisProperties() map[string]any {
 		"disableFeatures":                   stringArraySchema(),
 		"cacheEnabled":                      map[string]any{"type": "boolean", "default": true},
 		"cachePath":                         map[string]any{"type": "string"},
-		"cacheReadOnly":                     map[string]any{"type": "boolean", "default": true, "description": "Read-only MCP analysis never writes cache entries; false is ignored."},
+		"cacheReadOnly":                     map[string]any{"type": "boolean"},
 		"runtimeProfile":                    map[string]any{"type": "string", "enum": []string{"node-import", "node-require", "browser-import", "browser-require"}, "default": defaultRuntimeProfile},
 		"runtimeTracePath":                  map[string]any{"type": "string"},
 		"advisorySourcePath":                map[string]any{"type": "string", "description": "Local JSON or YAML advisory file used to attach vulnerability findings without network access."},
