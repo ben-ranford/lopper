@@ -424,7 +424,7 @@ func TestAnalysisCacheCanonicalStorageAliasesShareTrustedHits(t *testing.T) {
 	}
 	assertAdapterCalls(t, adapter, 1, "alias-path hit")
 	assertCacheMetadata(t, second.Cache, 1, 0, 0, "")
-	if keyAfter := readCacheAuthKey(t, aliasKeyPath); keyAfter != keyBefore {
+	if readCacheAuthKey(t, aliasKeyPath) != keyBefore {
 		t.Fatalf("expected canonical cache aliases to retain one stable auth key")
 	}
 }
@@ -470,7 +470,7 @@ func TestAnalysisCacheExplicitLegacyUnsignedPointerMissesOnceThenRepopulates(t *
 	}
 	assertAdapterCalls(t, adapter, 1, "rewritten hit")
 	assertCacheMetadata(t, second.Cache, 1, 0, 0, "")
-	if keyAfter := readCacheAuthKey(t, keyPath); keyBefore != keyAfter {
+	if readCacheAuthKey(t, keyPath) != keyBefore {
 		t.Fatalf("expected explicit cache auth key to remain stable across rewrite")
 	}
 }

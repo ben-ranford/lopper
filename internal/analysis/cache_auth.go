@@ -41,10 +41,10 @@ var (
 	analysisCacheAuthMkdirAllDurableFn = func(root *safeio.WriteRoot, path string, perm os.FileMode) error {
 		return root.MkdirAllDurable(path, perm)
 	}
-	analysisCacheStorageIdentityFn       = storageDirectoryIdentity
-	analysisCacheReadAuthKeyFn           = readAnalysisCacheAuthKey
-	analysisCacheAuthKeyPrivateToOwnerFn = func(root *safeio.WriteRoot, keyName string, info fs.FileInfo) (bool, error) {
-		return root.RegularFilePrivateToOwner(keyName, info)
+	analysisCacheStorageIdentityFn    = storageDirectoryIdentity
+	analysisCacheReadAuthKeyFn        = readAnalysisCacheAuthKey
+	analysisCacheReadPrivateAuthKeyFn = func(root *safeio.WriteRoot, keyName string, maxBytes int64) ([]byte, fs.FileInfo, bool, error) {
+		return root.ReadRegularFilePrivateToOwnerUnderLimit(keyName, maxBytes)
 	}
 	analysisCachePublishMissingAuthKeyFn    = publishMissingAuthKey
 	analysisCacheRotateInvalidAuthKeyFn     = rotateInvalidAuthKey
@@ -99,7 +99,7 @@ func (*compromisedAuthKeyError) Unwrap() error {
 
 type authKeyReadRoot interface {
 	ReadRegularFileUnderLimit(string, int64) ([]byte, fs.FileInfo, error)
-	RegularFilePrivateToOwner(string, fs.FileInfo) (bool, error)
+	ReadRegularFilePrivateToOwnerUnderLimit(string, int64) ([]byte, fs.FileInfo, bool, error)
 	Lstat(string) (fs.FileInfo, error)
 }
 
@@ -570,16 +570,9 @@ func analysisCacheAuthKeyName(storageRoot string, storageRootInfo fs.FileInfo) (
 }
 
 func readAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, _ bool) ([]byte, error) {
-	keyHex, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
+	keyHex, info, private, err := analysisCacheReadPrivateAuthKeyFn(root, keyName, analysisCacheAuthKeyMaxBytes)
 	switch {
 	case err == nil:
-		private, privacyErr := analysisCacheAuthKeyPrivateToOwnerFn(root, keyName, info)
-		if privacyErr != nil {
-			if os.IsNotExist(privacyErr) || errors.Is(privacyErr, safeio.ErrFileChanged) {
-				return nil, errAnalysisCacheAuthKeyChanged
-			}
-			return nil, fmt.Errorf("validate cache auth key privacy: %w", privacyErr)
-		}
 		if !private {
 			return nil, newCompromisedAuthKeyError(keyHex, info)
 		}
@@ -728,17 +721,13 @@ func currentCompromisedAuthKeyState(root *safeio.WriteRoot, keyName string, key 
 }
 
 func recheckAnalysisCacheAuthKey(root *safeio.WriteRoot, keyName string, key []byte) ([]byte, fs.FileInfo, bool, error) {
-	data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
+	data, info, private, err := analysisCacheReadPrivateAuthKeyFn(root, keyName, analysisCacheAuthKeyMaxBytes)
 	if err != nil {
 		return nil, nil, false, changedOrWrappedAuthKeyError(err, "recheck cache auth key after compromise")
 	}
 	currentKey, err := decodeAuthKey(strings.TrimSpace(string(data)))
 	if err != nil || !hmac.Equal(currentKey, key) {
 		return nil, nil, false, errAnalysisCacheAuthKeyChanged
-	}
-	private, privacyErr := analysisCacheAuthKeyPrivateToOwnerFn(root, keyName, info)
-	if privacyErr != nil {
-		return nil, nil, false, changedOrWrappedAuthKeyError(privacyErr, "recheck cache auth key privacy after compromise")
 	}
 	return data, info, private, nil
 }
@@ -764,11 +753,8 @@ func rememberCurrentCompromisedAuthKey(data []byte, info fs.FileInfo, states map
 
 func retainedCompromisedAuthKeyState(data []byte, info fs.FileInfo, states map[string]compromisedAuthKeyState) (compromisedAuthKeyState, bool, error) {
 	currentDigest := authKeyContentDigest(data)
-	for _, state := range states {
-		if currentDigest == state.contentDigest ||
-			state.identity != nil && os.SameFile(state.identity, info) {
-			return state, true, nil
-		}
+	if _, ok := states[currentDigest]; ok {
+		return compromisedAuthKeyStateForData(data, info), true, nil
 	}
 	return compromisedAuthKeyState{}, false, nil
 }
@@ -879,8 +865,7 @@ func rotateCompromisedAuthKey(root *safeio.WriteRoot, keyName string, state comp
 			}
 			return fmt.Errorf("recheck compromised cache auth key: %w", err)
 		}
-		if authKeyContentDigest(data) != state.contentDigest &&
-			(state.identity == nil || !os.SameFile(state.identity, info)) {
+		if authKeyContentDigest(data) != state.contentDigest || invalidAuthKeyStateDigest(data, info) != state.generation {
 			return errAnalysisCacheAuthKeyChanged
 		}
 		return nil
@@ -906,6 +891,13 @@ func rotateAuthKey(root *safeio.WriteRoot, keyName, generation string, revalidat
 	if _, err := decodeAuthKey(strings.TrimSpace(string(encodedKey))); err != nil {
 		return fmt.Errorf("validate cache auth key rotation candidate: %w", err)
 	}
+	lock, err := analysisCacheAuthLockDirectoryFn(root)
+	if err != nil {
+		return fmt.Errorf("acquire cache auth key rotation lock: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, lock.Close())
+	}()
 	if err := revalidate(); err != nil {
 		return err
 	}
@@ -920,16 +912,9 @@ func invalidAuthKeyGeneration(root *safeio.WriteRoot, keyName string) (string, e
 }
 
 func invalidAuthKeyGenerationWith(root authKeyReadRoot, keyName string) (string, error) {
-	data, info, err := root.ReadRegularFileUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
+	data, info, private, err := root.ReadRegularFilePrivateToOwnerUnderLimit(keyName, analysisCacheAuthKeyMaxBytes)
 	if err != nil {
 		return invalidAuthKeyGenerationReadError(root, keyName, err)
-	}
-	private, err := root.RegularFilePrivateToOwner(keyName, info)
-	if err != nil {
-		if os.IsNotExist(err) || errors.Is(err, safeio.ErrFileChanged) {
-			return "", errAnalysisCacheAuthKeyChanged
-		}
-		return "", fmt.Errorf("validate invalid cache auth key privacy: %w", err)
 	}
 	if !private {
 		return invalidAuthKeyStateDigest(data, info), nil

@@ -139,6 +139,73 @@ func (r *WriteRoot) ReadRegularFileUnderLimit(targetPath string, maxBytes int64)
 	return r.ReadPinnedRegularFileUnderLimit(targetPath, nil, maxBytes)
 }
 
+// ReadRegularFilePrivateToOwnerUnderLimit reads a root-relative regular file
+// without following a final-component symlink, verifies the opened file is the
+// one checked, validates owner-only permissions on the same opened file handle,
+// and does not exceed maxBytes when a positive limit is provided.
+func (r *WriteRoot) ReadRegularFilePrivateToOwnerUnderLimit(targetPath string, maxBytes int64) (data []byte, info fs.FileInfo, private bool, returnErr error) {
+	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	targetAbs := filepath.Join(r.rootAbs, targetRel)
+	info, err = r.root.Lstat(targetRel)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, false, fmt.Errorf("target path is a symlink: %s", targetAbs)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, false, fmt.Errorf("target path is not a regular file: %s", targetAbs)
+	}
+
+	file, err := r.root.Open(targetRel)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, file.Close())
+	}()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, nil, false, fmt.Errorf("%w: %s", ErrFileChanged, targetAbs)
+	}
+	privateSnapshot, private, err := capturePrivateFileAccessSnapshot(file, openedInfo)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	data, err = readOpenedFile(file, maxBytes)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	postReadInfo, err := file.Stat()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !sameFileSnapshot(openedInfo, postReadInfo) {
+		return nil, nil, false, fmt.Errorf("%w: %s", ErrFileChanged, targetAbs)
+	}
+	postReadSnapshot, postReadPrivate, err := capturePrivateFileAccessSnapshot(file, postReadInfo)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if private != postReadPrivate || !samePrivateFileAccessSnapshot(privateSnapshot, postReadSnapshot) {
+		return nil, nil, false, fmt.Errorf("%w: %s", ErrFileChanged, targetAbs)
+	}
+	return data, postReadInfo, postReadPrivate, nil
+}
+
+func sameFileSnapshot(before, after fs.FileInfo) bool {
+	return os.SameFile(before, after) &&
+		before.Mode() == after.Mode() &&
+		before.Size() == after.Size() &&
+		before.ModTime().Equal(after.ModTime())
+}
+
 // ReadPinnedRegularFileUnderLimit additionally verifies that the pinned root
 // still refers to the same directory inode before opening the target file.
 func (r *WriteRoot) ReadPinnedRegularFileUnderLimit(targetPath string, pinnedRootInfo fs.FileInfo, maxBytes int64) (data []byte, info fs.FileInfo, returnErr error) {

@@ -45,7 +45,6 @@ static int safeio_renameat_noreplace(
 }
 */
 import "C"
-
 import "syscall"
 
 func renameNoReplaceInDirectory(fd uintptr, oldName, newName string) error {

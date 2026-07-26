@@ -3,6 +3,7 @@
 package safeio
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -74,6 +75,12 @@ type windowsAccessAllowedACEValue struct {
 	header   windowsACEHeader
 	mask     uint32
 	sidStart uint32
+}
+
+type privateFileAccessSnapshot struct {
+	owner   []byte
+	dacl    []byte
+	control uint16
 }
 
 var (
@@ -257,23 +264,50 @@ func filePrivateToOwner(file File, _ fs.FileInfo) (private bool, returnErr error
 	if err != nil {
 		return false, err
 	}
+	snapshot, private, err := captureWindowsPrivateFileAccessSnapshot(handle)
+	_ = snapshot
+	return private, err
+}
+
+func capturePrivateFileAccessSnapshot(file File, _ fs.FileInfo) (privateFileAccessSnapshot, bool, error) {
+	handle, err := windowsFileHandle(file)
+	if err != nil {
+		return privateFileAccessSnapshot{}, false, err
+	}
+	return captureWindowsPrivateFileAccessSnapshot(handle)
+}
+
+func samePrivateFileAccessSnapshot(before, after privateFileAccessSnapshot) bool {
+	return before.control == after.control &&
+		bytes.Equal(before.owner, after.owner) &&
+		bytes.Equal(before.dacl, after.dacl)
+}
+
+func captureWindowsPrivateFileAccessSnapshot(handle syscall.Handle) (snapshot privateFileAccessSnapshot, private bool, returnErr error) {
 	owner, dacl, securityDescriptor, err := windowsFileSecurityInfo(handle)
 	if err != nil {
-		return false, err
+		return privateFileAccessSnapshot{}, false, err
 	}
 	defer func() {
 		_, freeErr := syscall.LocalFree(syscall.Handle(uintptr(securityDescriptor)))
 		returnErr = errors.Join(returnErr, freeErr)
 	}()
+	control, err := windowsSecurityDescriptorControl(securityDescriptor)
+	if err != nil {
+		return privateFileAccessSnapshot{}, false, err
+	}
+	snapshot, err = windowsPrivateFileAccessSnapshot(owner, dacl, control)
+	if err != nil {
+		return privateFileAccessSnapshot{}, false, err
+	}
 	if owner == nil || dacl == nil || dacl.aceCount != 1 {
-		return false, nil
+		return snapshot, false, nil
 	}
-	if ok, err := windowsOwnerOnlyDACLControl(securityDescriptor); err != nil {
-		return false, err
-	} else if !ok {
-		return false, nil
+	if !windowsOwnerOnlyDACLControlValue(control) {
+		return snapshot, false, nil
 	}
-	return windowsSingleOwnerACE(owner, dacl)
+	private, err = windowsSingleOwnerACE(owner, dacl)
+	return snapshot, private, err
 }
 
 func windowsFileSecurityInfo(handle syscall.Handle) (*syscall.SID, *windowsACL, unsafe.Pointer, error) {
@@ -298,7 +332,7 @@ func windowsFileSecurityInfo(handle syscall.Handle) (*syscall.SID, *windowsACL, 
 	return owner, dacl, securityDescriptor, nil
 }
 
-func windowsOwnerOnlyDACLControl(securityDescriptor unsafe.Pointer) (bool, error) {
+func windowsSecurityDescriptorControl(securityDescriptor unsafe.Pointer) (uint16, error) {
 	var (
 		control  uint16
 		revision uint32
@@ -309,9 +343,21 @@ func windowsOwnerOnlyDACLControl(securityDescriptor unsafe.Pointer) (bool, error
 		uintptr(unsafe.Pointer(&revision)),
 	)
 	if result == 0 {
-		return false, windowsLastError("read private file security descriptor control", callErr)
+		return 0, windowsLastError("read private file security descriptor control", callErr)
 	}
-	return control&windowsDACLPresent != 0 && control&windowsDACLProtected != 0, nil
+	return control, nil
+}
+
+func windowsOwnerOnlyDACLControl(securityDescriptor unsafe.Pointer) (bool, error) {
+	control, err := windowsSecurityDescriptorControl(securityDescriptor)
+	if err != nil {
+		return false, err
+	}
+	return windowsOwnerOnlyDACLControlValue(control), nil
+}
+
+func windowsOwnerOnlyDACLControlValue(control uint16) bool {
+	return control&windowsDACLPresent != 0 && control&windowsDACLProtected != 0
 }
 
 func windowsSingleOwnerACE(owner *syscall.SID, dacl *windowsACL) (bool, error) {
@@ -348,6 +394,21 @@ func windowsSingleOwnerACE(owner *syscall.SID, dacl *windowsACL) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+func windowsPrivateFileAccessSnapshot(owner *syscall.SID, dacl *windowsACL, control uint16) (privateFileAccessSnapshot, error) {
+	snapshot := privateFileAccessSnapshot{control: control}
+	if owner != nil {
+		result, _, callErr := windowsIsValidSID.Call(uintptr(unsafe.Pointer(owner)))
+		if result == 0 {
+			return privateFileAccessSnapshot{}, windowsLastError("validate private file owner SID", callErr)
+		}
+		snapshot.owner = append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(owner)), owner.Len())...)
+	}
+	if dacl != nil {
+		snapshot.dacl = append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(dacl)), int(dacl.size))...)
+	}
+	return snapshot, nil
 }
 
 func windowsFileHandle(file File) (syscall.Handle, error) {

@@ -27,11 +27,14 @@ func (r *fakeAuthKeyReadRoot) ReadRegularFileUnderLimit(string, int64) ([]byte, 
 	return r.readData, r.readInfo, r.readErr
 }
 
-func (r *fakeAuthKeyReadRoot) RegularFilePrivateToOwner(string, fs.FileInfo) (bool, error) {
-	if r.privacyOverride {
-		return r.private, r.privacyErr
+func (r *fakeAuthKeyReadRoot) ReadRegularFilePrivateToOwnerUnderLimit(string, int64) ([]byte, fs.FileInfo, bool, error) {
+	if r.readErr != nil {
+		return nil, nil, false, r.readErr
 	}
-	return true, nil
+	if r.privacyOverride {
+		return r.readData, r.readInfo, r.private, r.privacyErr
+	}
+	return r.readData, r.readInfo, true, nil
 }
 
 func (r *fakeAuthKeyReadRoot) Lstat(string) (fs.FileInfo, error) {

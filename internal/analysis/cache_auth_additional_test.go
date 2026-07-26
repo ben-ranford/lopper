@@ -695,12 +695,16 @@ func TestReadAnalysisCacheAuthKeyFailsClosedOnPrivacyErrors(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			prevPrivacy := analysisCacheAuthKeyPrivateToOwnerFn
-			analysisCacheAuthKeyPrivateToOwnerFn = func(*safeio.WriteRoot, string, fs.FileInfo) (bool, error) {
-				return false, test.privacyErr
+			prevReadPrivate := analysisCacheReadPrivateAuthKeyFn
+			analysisCacheReadPrivateAuthKeyFn = func(root *safeio.WriteRoot, keyName string, maxBytes int64) ([]byte, fs.FileInfo, bool, error) {
+				data, info, err := root.ReadRegularFileUnderLimit(keyName, maxBytes)
+				if err != nil {
+					return nil, nil, false, err
+				}
+				return data, info, false, test.privacyErr
 			}
 			t.Cleanup(func() {
-				analysisCacheAuthKeyPrivateToOwnerFn = prevPrivacy
+				analysisCacheReadPrivateAuthKeyFn = prevReadPrivate
 			})
 
 			_, err := readAnalysisCacheAuthKey(target.root, target.keyName, true)
@@ -885,7 +889,7 @@ func TestCreateOrRotateAuthKeyHandlesCompromisedPrivacyRecheckErrors(t *testing.
 		laterReadErr := errors.New("read after changed privacy target")
 		readCalls := 0
 		prevRead := analysisCacheReadAuthKeyFn
-		prevPrivacy := analysisCacheAuthKeyPrivateToOwnerFn
+		prevReadPrivate := analysisCacheReadPrivateAuthKeyFn
 		prevSleep := analysisCacheSleepFn
 		analysisCacheReadAuthKeyFn = func(*safeio.WriteRoot, string, bool) ([]byte, error) {
 			readCalls++
@@ -894,13 +898,17 @@ func TestCreateOrRotateAuthKeyHandlesCompromisedPrivacyRecheckErrors(t *testing.
 			}
 			return nil, laterReadErr
 		}
-		analysisCacheAuthKeyPrivateToOwnerFn = func(*safeio.WriteRoot, string, fs.FileInfo) (bool, error) {
-			return false, safeio.ErrFileChanged
+		analysisCacheReadPrivateAuthKeyFn = func(root *safeio.WriteRoot, keyName string, maxBytes int64) ([]byte, fs.FileInfo, bool, error) {
+			data, info, err := root.ReadRegularFileUnderLimit(keyName, maxBytes)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			return data, info, false, safeio.ErrFileChanged
 		}
 		analysisCacheSleepFn = func(time.Duration) {}
 		t.Cleanup(func() {
 			analysisCacheReadAuthKeyFn = prevRead
-			analysisCacheAuthKeyPrivateToOwnerFn = prevPrivacy
+			analysisCacheReadPrivateAuthKeyFn = prevReadPrivate
 			analysisCacheSleepFn = prevSleep
 		})
 
@@ -919,16 +927,20 @@ func TestCreateOrRotateAuthKeyHandlesCompromisedPrivacyRecheckErrors(t *testing.
 		initialErr := newCompromisedAuthKeyError(encoded, info)
 		privacyErr := errors.New("privacy recheck failed")
 		prevRead := analysisCacheReadAuthKeyFn
-		prevPrivacy := analysisCacheAuthKeyPrivateToOwnerFn
+		prevReadPrivate := analysisCacheReadPrivateAuthKeyFn
 		analysisCacheReadAuthKeyFn = func(*safeio.WriteRoot, string, bool) ([]byte, error) {
 			return key, nil
 		}
-		analysisCacheAuthKeyPrivateToOwnerFn = func(*safeio.WriteRoot, string, fs.FileInfo) (bool, error) {
-			return false, privacyErr
+		analysisCacheReadPrivateAuthKeyFn = func(root *safeio.WriteRoot, keyName string, maxBytes int64) ([]byte, fs.FileInfo, bool, error) {
+			data, info, err := root.ReadRegularFileUnderLimit(keyName, maxBytes)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			return data, info, false, privacyErr
 		}
 		t.Cleanup(func() {
 			analysisCacheReadAuthKeyFn = prevRead
-			analysisCacheAuthKeyPrivateToOwnerFn = prevPrivacy
+			analysisCacheReadPrivateAuthKeyFn = prevReadPrivate
 		})
 
 		_, err := (&analysisCache{}).createOrRotateAuthKeyFromError(target.root, target.keyName, true, initialErr)
@@ -1012,12 +1024,16 @@ func TestCurrentCompromisedAuthKeyStateFailsClosedOnPrivacyErrors(t *testing.T) 
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			prevPrivacy := analysisCacheAuthKeyPrivateToOwnerFn
-			analysisCacheAuthKeyPrivateToOwnerFn = func(*safeio.WriteRoot, string, fs.FileInfo) (bool, error) {
-				return false, test.privacyErr
+			prevReadPrivate := analysisCacheReadPrivateAuthKeyFn
+			analysisCacheReadPrivateAuthKeyFn = func(root *safeio.WriteRoot, keyName string, maxBytes int64) ([]byte, fs.FileInfo, bool, error) {
+				data, info, err := root.ReadRegularFileUnderLimit(keyName, maxBytes)
+				if err != nil {
+					return nil, nil, false, err
+				}
+				return data, info, false, test.privacyErr
 			}
 			t.Cleanup(func() {
-				analysisCacheAuthKeyPrivateToOwnerFn = prevPrivacy
+				analysisCacheReadPrivateAuthKeyFn = prevReadPrivate
 			})
 
 			_, compromised, err := currentCompromisedAuthKeyState(target.root, target.keyName, key, states)
