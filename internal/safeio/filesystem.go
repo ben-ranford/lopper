@@ -44,6 +44,21 @@ type File interface {
 	Chmod(perm os.FileMode) error
 }
 
+type directoryFile interface {
+	File
+	ReadDir(int) ([]fs.DirEntry, error)
+}
+
+type readlinkRoot interface {
+	Root
+	Readlink(string) (string, error)
+}
+
+type symlinkRoot interface {
+	Root
+	Symlink(string, string) error
+}
+
 type ReadDirFile interface {
 	File
 	ReadDir(count int) ([]fs.DirEntry, error)
@@ -52,6 +67,8 @@ type ReadDirFile interface {
 var ErrTargetPathSymlink = errors.New("target path is a symlink")
 
 var fileSystem FileSystem = &osFileSystem{}
+var sameDeviceFileInfoFn = sameDeviceRootPair
+var sameDeviceIdentitySupportedFn = sameDeviceIdentitySupported
 
 // OpenRoot opens a confined filesystem root.
 func OpenRoot(name string) (Root, error) {
@@ -71,6 +88,43 @@ func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, erro
 	return openRootExistingAncestorNoFollowWith(name, fileSystem.Abs, filepath.Rel, fileSystem.OpenRoot, func(root Root, childName, requestedPath string) (Root, string, error) {
 		return openRootChildPinnedWith(root, childName, requestedPath, fileSystem.OpenRootNoFollow, os.Stat, os.SameFile)
 	})
+}
+
+// ReadDirWithinRoot reads a directory without widening the public File
+// interface required by safeio callers.
+func ReadDirWithinRoot(root Root, name string) (_ []fs.DirEntry, returnErr error) {
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, file.Close())
+	}()
+	reader, ok := file.(directoryFile)
+	if !ok {
+		return nil, errors.New("root file does not support directory reads")
+	}
+	return reader.ReadDir(-1)
+}
+
+// ReadlinkWithinRoot reads a symlink through a capability supported by the
+// concrete rooted filesystem implementation.
+func ReadlinkWithinRoot(root Root, name string) (string, error) {
+	reader, ok := root.(readlinkRoot)
+	if !ok {
+		return "", errors.New("root does not support symlink reads")
+	}
+	return reader.Readlink(name)
+}
+
+// SymlinkWithinRoot creates a symlink through a capability supported by the
+// concrete rooted filesystem implementation.
+func SymlinkWithinRoot(root Root, oldName, newName string) error {
+	writer, ok := root.(symlinkRoot)
+	if !ok {
+		return errors.New("root does not support symlink creation")
+	}
+	return writer.Symlink(oldName, newName)
 }
 
 type osFileSystem struct{}
@@ -189,7 +243,18 @@ func trustedRootAliasTarget(requestedPath string) (string, bool) {
 	}
 }
 
+func enforceSameDeviceBoundary(parent Root, child Root, left fs.FileInfo, right fs.FileInfo) bool {
+	if !sameDeviceIdentitySupportedFn() {
+		return true
+	}
+	return sameDeviceFileInfoFn(parent, child, left, right)
+}
+
 func openRootChildNoFollow(root Root, name, path string) (Root, error) {
+	parentInfo, err := root.Lstat(".")
+	if err != nil {
+		return nil, err
+	}
 	info, err := root.Lstat(name)
 	if err != nil {
 		return nil, err
@@ -211,6 +276,9 @@ func openRootChildNoFollow(root Root, name, path string) (Root, error) {
 	}
 	if !os.SameFile(info, openedInfo) {
 		return nil, closeRootWithError(next, fmt.Errorf("root changed while opening: %s", path))
+	}
+	if !enforceSameDeviceBoundary(root, next, parentInfo, openedInfo) {
+		return nil, closeRootWithError(next, fmt.Errorf("root crosses device boundary: %s", path))
 	}
 	return next, nil
 }
@@ -476,6 +544,14 @@ func (r *osRoot) OpenRoot(name string) (Root, error) {
 
 func (r *osRoot) Lstat(name string) (fs.FileInfo, error) {
 	return r.root.Lstat(name)
+}
+
+func (r *osRoot) Readlink(name string) (string, error) {
+	return r.root.Readlink(name)
+}
+
+func (r *osRoot) Symlink(oldName, newName string) error {
+	return r.root.Symlink(oldName, newName)
 }
 
 func (r *osRoot) Mkdir(name string, perm os.FileMode) error {

@@ -18,12 +18,14 @@ type Service struct {
 	InitErr  error
 }
 
-func (s *Service) Analyse(ctx context.Context, req Request) (report.Report, error) {
+func (s *Service) Analyse(ctx context.Context, req Request) (_ report.Report, returnErr error) {
 	pipeline, err := s.newAnalysisPipeline(ctx, req)
 	if err != nil {
 		return report.Report{}, err
 	}
-	defer pipeline.cleanup()
+	defer func() {
+		returnErr = errors.Join(returnErr, pipeline.cleanup())
+	}()
 
 	if err := pipeline.execute(ctx); err != nil {
 		return report.Report{}, err

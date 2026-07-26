@@ -163,6 +163,15 @@ func TestBuildPRReviewArtifactAppliesReachableVulnerabilityPriorityThreshold(t *
 	}
 }
 
+func TestPRReviewRevisionHelpers(t *testing.T) {
+	if got := shortPRReviewRevision("  abcdef1234567890  "); got != "abcdef123456" {
+		t.Fatalf("expected trimmed short revision, got %q", got)
+	}
+	if got := shortPRReviewRevision("short"); got != "short" {
+		t.Fatalf("expected short revision to pass through, got %q", got)
+	}
+}
+
 func TestBuildPRReviewArtifactTreatsUnevaluableReachableFindingsAsRegressionsUnlessOff(t *testing.T) {
 	baseDependency := prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)
 	headDependency := baseDependency
@@ -1255,18 +1264,14 @@ func TestBuildPRReviewArtifactPreservesDuplicateVersionlessInstancesDeterministi
 	first := build([]report.DependencyReport{baseChanged, baseStable}, []report.DependencyReport{headAdded, headStable, headChanged})
 	second := build([]report.DependencyReport{baseStable, baseChanged}, []report.DependencyReport{headChanged, headAdded, headStable})
 
-	if first.Summary.Added != 1 || first.Summary.Upgraded != 1 || first.Summary.PolicyChanged != 1 {
-		t.Fatalf("expected duplicate versionless instances to retain one add, one upgrade, and one policy change, got %#v", first.Summary)
-	}
+	assertPRReviewDuplicateVersionlessSummary(t, first.Summary)
 	if first.Summary != second.Summary {
 		t.Fatalf("expected duplicate pairing summary to be order-independent, got %#v vs %#v", first.Summary, second.Summary)
 	}
 
 	firstAdded := prReviewTestSectionRows(t, first, prReviewCategoryAdded)
 	secondAdded := prReviewTestSectionRows(t, second, prReviewCategoryAdded)
-	if len(firstAdded) != 1 || firstAdded[0].HeadVersion != "3.0.0" || len(secondAdded) != 1 || secondAdded[0].HeadVersion != "3.0.0" {
-		t.Fatalf("expected added duplicate instance to survive pairing, got %#v and %#v", firstAdded, secondAdded)
-	}
+	assertPRReviewDuplicateVersionlessAddedRows(t, firstAdded, secondAdded)
 
 	firstUpgraded := prReviewTestSectionRows(t, first, prReviewCategoryUpgraded)
 	secondUpgraded := prReviewTestSectionRows(t, second, prReviewCategoryUpgraded)
@@ -1284,6 +1289,22 @@ func TestBuildPRReviewArtifactPreservesDuplicateVersionlessInstancesDeterministi
 	}
 	if len(secondPolicy) != 1 || secondPolicy[0].PolicyChange != firstPolicy[0].PolicyChange || secondPolicy[0].BaseVersion != firstPolicy[0].BaseVersion || secondPolicy[0].HeadVersion != firstPolicy[0].HeadVersion {
 		t.Fatalf("expected policy row to be order-independent, got %#v vs %#v", firstPolicy, secondPolicy)
+	}
+}
+
+func assertPRReviewDuplicateVersionlessSummary(t *testing.T, summary prReviewSummary) {
+	t.Helper()
+
+	if summary.Added != 1 || summary.Upgraded != 1 || summary.PolicyChanged != 1 {
+		t.Fatalf("expected duplicate versionless instances to retain one add, one upgrade, and one policy change, got %#v", summary)
+	}
+}
+
+func assertPRReviewDuplicateVersionlessAddedRows(t *testing.T, firstAdded, secondAdded []prReviewRow) {
+	t.Helper()
+
+	if len(firstAdded) != 1 || firstAdded[0].HeadVersion != "3.0.0" || len(secondAdded) != 1 || secondAdded[0].HeadVersion != "3.0.0" {
+		t.Fatalf("expected added duplicate instance to survive pairing, got %#v and %#v", firstAdded, secondAdded)
 	}
 }
 
@@ -1534,14 +1555,33 @@ func assertPRReviewAnalysisCalls(t *testing.T, calls []analysis.Request) {
 func assertPRReviewAnalysisCall(t *testing.T, call analysis.Request) {
 	t.Helper()
 
+	assertPRReviewAnalysisCache(t, call)
+	assertPRReviewAnalysisOptions(t, call)
+	assertPRReviewAnalysisPolicies(t, call)
+	assertPRReviewAnalysisWeightsAndFiles(t, call)
+}
+
+func assertPRReviewAnalysisCache(t *testing.T, call analysis.Request) {
+	t.Helper()
+
 	if call.Cache == nil || call.Cache.Enabled || !call.Cache.ReadOnly {
 		t.Fatalf("expected pr-review analysis cache to be disabled/read-only, got %#v", call.Cache)
 	}
+}
+
+func assertPRReviewAnalysisOptions(t *testing.T, call analysis.Request) {
+	t.Helper()
+
 	if call.TopN != 7 || call.ScopeMode != ScopeModeChangedPackages ||
 		strings.Join(call.IncludePatterns, ",") != "src/**" ||
 		strings.Join(call.ExcludePatterns, ",") != "vendor/**" {
 		t.Fatalf("expected analysis request options to be forwarded, got %#v", call)
 	}
+}
+
+func assertPRReviewAnalysisPolicies(t *testing.T, call analysis.Request) {
+	t.Helper()
+
 	if strings.Join(call.LicenseDenyList, ",") != "GPL-3.0-only" || !call.IncludeRegistryProvenance {
 		t.Fatalf("expected license policy to be forwarded, got %#v", call)
 	}
@@ -1549,6 +1589,11 @@ func assertPRReviewAnalysisCall(t *testing.T, call analysis.Request) {
 		call.MinUsagePercentForRecommendations == nil || *call.MinUsagePercentForRecommendations != 62 {
 		t.Fatalf("expected threshold policy to be forwarded, got %#v", call)
 	}
+}
+
+func assertPRReviewAnalysisWeightsAndFiles(t *testing.T, call analysis.Request) {
+	t.Helper()
+
 	if call.RemovalCandidateWeights == nil ||
 		call.RemovalCandidateWeights.Usage != 0.1 ||
 		call.RemovalCandidateWeights.Impact != 0.2 ||

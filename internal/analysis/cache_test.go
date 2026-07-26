@@ -93,37 +93,10 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	svc, adapter := newCacheTestService(t)
 	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
 	req := newCacheRequest(repo, cacheDir, false)
-
-	first, err := svc.Analyse(context.Background(), req)
-	if err != nil {
-		t.Fatalf("first analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected first run to call adapter once, got %d", adapter.calls)
-	}
-	if first.Cache == nil || first.Cache.Misses != 1 || first.Cache.Writes != 1 || first.Cache.Hits != 0 {
-		t.Fatalf("unexpected first cache metadata: %#v", first.Cache)
-	}
-
-	second, err := svc.Analyse(context.Background(), req)
-	if err != nil {
-		t.Fatalf("second analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected second run to be cache hit, adapter calls=%d", adapter.calls)
-	}
-	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
-		t.Fatalf("unexpected second cache metadata: %#v", second.Cache)
-	}
-
+	assertCacheTestRun(t, svc, req, adapter, 1, 1, 1, 0)
+	assertCacheTestRun(t, svc, req, adapter, 1, 0, 0, 1)
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import { filter } from \"lodash\"\nfilter([1], (x) => x)\n")
-	third, err := svc.Analyse(context.Background(), req)
-	if err != nil {
-		t.Fatalf("third analyse: %v", err)
-	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected cache invalidation after source change, adapter calls=%d", adapter.calls)
-	}
+	third := assertCacheTestRun(t, svc, req, adapter, 2, 1, 1, 0)
 	if third.Cache == nil || third.Cache.Misses != 1 {
 		t.Fatalf("expected miss after source change, got %#v", third.Cache)
 	}
@@ -142,13 +115,7 @@ func TestAnalysisCacheSeparatesSuggestOnlyEntries(t *testing.T) {
 	baseReq := newCacheRequest(repo, cacheDir, false)
 	baseReq.Dependency = "dep"
 
-	first, err := svc.Analyse(context.Background(), baseReq)
-	if err != nil {
-		t.Fatalf("first analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected first run to call adapter once, got %d", adapter.calls)
-	}
+	first := assertCacheTestRun(t, svc, baseReq, adapter, 1, 1, 1, 0)
 	if first.Dependencies[0].Codemod != nil {
 		t.Fatalf("expected non-suggest run to skip codemod, got %#v", first.Dependencies[0].Codemod)
 	}
@@ -156,16 +123,7 @@ func TestAnalysisCacheSeparatesSuggestOnlyEntries(t *testing.T) {
 	suggestReq := baseReq
 	suggestReq.SuggestOnly = true
 
-	second, err := svc.Analyse(context.Background(), suggestReq)
-	if err != nil {
-		t.Fatalf("suggest-only analyse: %v", err)
-	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected suggest-only mode to use a distinct cache key, adapter calls=%d", adapter.calls)
-	}
-	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses != 1 {
-		t.Fatalf("expected suggest-only run cache miss on first invocation, got %#v", second.Cache)
-	}
+	second := assertCacheTestRun(t, svc, suggestReq, adapter, 2, 1, 1, 0)
 	if second.Dependencies[0].Codemod == nil || second.Dependencies[0].Codemod.Mode != "suggest-only" {
 		t.Fatalf("expected suggest-only codemod output, got %#v", second.Dependencies[0].Codemod)
 	}
@@ -183,6 +141,21 @@ func TestAnalysisCacheSeparatesSuggestOnlyEntries(t *testing.T) {
 	if third.Dependencies[0].Codemod == nil || third.Dependencies[0].Codemod.Mode != "suggest-only" {
 		t.Fatalf("expected cached suggest-only codemod output, got %#v", third.Dependencies[0].Codemod)
 	}
+}
+
+func assertCacheTestRun(t *testing.T, svc *Service, req Request, adapter *countingAdapter, wantCalls, wantMisses, wantWrites, wantHits int) report.Report {
+	t.Helper()
+	result, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if adapter.calls != wantCalls {
+		t.Fatalf("unexpected adapter calls: got %d want %d", adapter.calls, wantCalls)
+	}
+	if result.Cache == nil || result.Cache.Misses != wantMisses || result.Cache.Writes != wantWrites || result.Cache.Hits != wantHits {
+		t.Fatalf("unexpected cache metadata: %#v", result.Cache)
+	}
+	return result
 }
 
 func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
@@ -333,11 +306,15 @@ func TestAnalysisCachePrepareEntryIncludesNormalizedPathScopeIdentity(t *testing
 	req := Request{
 		RepoPath: repo,
 		TopN:     1,
-		Cache: &CacheOptions{
-			Enabled:    true,
-			PinnedPath: filepath.Join(repo, cacheTestDirectoryName),
-		},
 	}
+	cacheOptions, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
+		Enabled: true,
+		Path:    filepath.Join(repo, cacheTestDirectoryName),
+	})
+	if err != nil {
+		t.Fatalf("resolve trusted pinned cache path: %v", err)
+	}
+	req.Cache = cacheOptions
 	cache := newAnalysisCache(req, repo)
 
 	unscopedEntry, err := cache.prepareEntry(req, "cachelang", repo)
@@ -435,6 +412,21 @@ func TestAnalysisCachePrepareEntryDoesNotReuseInputDigestForDifferentConfigPath(
 	reqB.ConfigPath = configPathB
 	if _, err := cache.prepareEntry(reqB, "adapter-b", root); err == nil {
 		t.Fatalf("expected digest recomputation for different config path to fail after root removal")
+	}
+}
+
+func TestStableRuntimeAndConfigCachePathsPreferStableFields(t *testing.T) {
+	req := Request{
+		ConfigPath:            filepath.Join("/tmp", "snapshot", "config.yml"),
+		ConfigCachePath:       "config.yml",
+		RuntimeTracePath:      filepath.Join("/tmp", "snapshot", "trace.ndjson"),
+		RuntimeTraceCachePath: "trace.ndjson",
+	}
+	if got := stableConfigCachePath(req); got != "config.yml" {
+		t.Fatalf("expected stable config cache path, got %q", got)
+	}
+	if got := stableRuntimeTraceCachePath(req); got != "trace.ndjson" {
+		t.Fatalf("expected stable runtime trace cache path, got %q", got)
 	}
 }
 

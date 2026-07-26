@@ -45,6 +45,20 @@ func (a *App) ensureMCPMutationDefaults() {
 	}
 }
 
+func (*appMCPMutationRunner) CaptureAnalysisState(ctx context.Context, req mcp.AnalysisMutationRequest) (mcp.AnalysisMutationRequest, error) {
+	appReq := newMCPAnalyseRequest(req)
+	appReq.Analyse.ApplyCodemod = req.ApplyCodemod
+	captureAnalyseGitSensitiveState(ctx, req.RepositoryView, &appReq.Analyse)
+	req.CurrentBaselineKey = appReq.Analyse.currentBaselineKey
+	req.CurrentBaselineKeyCaptured = appReq.Analyse.currentBaselineKeyCaptured
+	req.CodemodPrecondition = appReq.Analyse.codemodPrecondition
+	req.CodemodPreconditionCaptured = appReq.Analyse.codemodPreconditionCaptured
+	req.LockfileWarnings = append([]string{}, appReq.Analyse.lockfileWarnings...)
+	req.LockfileDriftErr = appReq.Analyse.lockfileDriftErr
+	req.LockfileDriftCaptured = appReq.Analyse.lockfileDriftCaptured
+	return req, nil
+}
+
 func (r *appMCPMutationRunner) ApplyCodemod(ctx context.Context, req mcp.AnalysisMutationRequest) (report.Report, error) {
 	appReq := newMCPAnalyseRequest(req)
 	appReq.Analyse.ApplyCodemod = true
@@ -95,15 +109,26 @@ func newMCPAnalyseRequest(req mcp.AnalysisMutationRequest) Request {
 	appReq.Analyse.ScopeMode = req.ScopeMode
 	appReq.Analyse.Format = report.FormatJSON
 	appReq.Analyse.Language = req.Language
-	appReq.Analyse.CacheEnabled = req.CacheEnabled
-	appReq.Analyse.CachePath = req.CachePath
-	appReq.Analyse.CachePinnedPath = req.CachePinnedPath
-	appReq.Analyse.CacheReadOnly = req.CacheReadOnly
+	appReq.Analyse.cacheOptions = req.Cache
+	appReq.Analyse.repository = req.Repository
+	appReq.Analyse.repositoryView = req.RepositoryView
+	if req.Cache != nil {
+		appReq.Analyse.CacheEnabled = req.Cache.Enabled
+		appReq.Analyse.CachePath = req.Cache.Path
+		appReq.Analyse.CacheReadOnly = req.Cache.ReadOnly
+	}
 	appReq.Analyse.RuntimeProfile = req.RuntimeProfile
 	appReq.Analyse.RuntimeTracePath = req.RuntimeTracePath
 	appReq.Analyse.IncludePatterns = append([]string{}, req.IncludePatterns...)
 	appReq.Analyse.ExcludePatterns = append([]string{}, req.ExcludePatterns...)
 	appReq.Analyse.ConfigPath = req.ConfigPath
+	appReq.Analyse.currentBaselineKey = req.CurrentBaselineKey
+	appReq.Analyse.currentBaselineKeyCaptured = req.CurrentBaselineKeyCaptured
+	appReq.Analyse.codemodPrecondition = req.CodemodPrecondition
+	appReq.Analyse.codemodPreconditionCaptured = req.CodemodPreconditionCaptured
+	appReq.Analyse.lockfileWarnings = append([]string{}, req.LockfileWarnings...)
+	appReq.Analyse.lockfileDriftErr = req.LockfileDriftErr
+	appReq.Analyse.lockfileDriftCaptured = req.LockfileDriftCaptured
 	appReq.Analyse.PolicySources = append([]string{}, req.PolicySources...)
 	appReq.Analyse.PolicyTrace = append([]report.PolicyMergeTrace{}, req.PolicyTrace...)
 	appReq.Analyse.Features = req.Features

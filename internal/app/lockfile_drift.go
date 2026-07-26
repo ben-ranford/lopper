@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
@@ -29,6 +31,42 @@ func evaluateLockfileDriftPolicyWithFeatures(ctx context.Context, repoPath, poli
 	}
 	failMode := normalizedPolicy == "fail"
 	result := detectLockfileDriftDetailed(ctx, repoPath, failMode, features)
+	return resolveLockfileDriftPolicyResult(result, failMode)
+}
+
+func evaluateLockfileDriftPolicyWithRepositoryView(ctx context.Context, repositoryView *analysis.RepositoryView, policy string, features featureflags.Set) ([]string, error) {
+	normalizedPolicy := strings.TrimSpace(policy)
+	if normalizedPolicy == "off" {
+		return nil, nil
+	}
+	metadata := repositoryView.GitMetadata()
+	if !metadata.Captured {
+		return nil, errors.New("repository view Git metadata was not captured")
+	}
+	if metadata.CaptureError != nil {
+		return nil, metadata.CaptureError
+	}
+
+	failMode := normalizedPolicy == "fail"
+	rules := activeLockfileRules(features)
+	prepared, candidatePaths, candidateErr := prepareLockfileManifestChangeCandidates(ctx, repositoryView.ExecutionPath(), rules)
+	if candidateErr != nil && (failMode || !isRecoverableLockfileManifestReadError(candidateErr)) {
+		return nil, candidateErr
+	}
+	if filterErr := repositoryViewLockfileFilterError(metadata.ActiveFilterDrivers, candidatePaths); filterErr != nil {
+		return nil, errors.Join(candidateErr, filterErr)
+	}
+
+	gitContext := lockfileGitContext{
+		changedFiles:  repositoryViewChangedFiles(metadata.ChangedFiles),
+		hasGitContext: metadata.IsWorktree,
+		preparedScan:  prepared,
+	}
+	result := scanLockfileDriftDetailed(ctx, repositoryView.ExecutionPath(), gitContext, failMode, rules)
+	return resolveLockfileDriftPolicyResult(result, failMode)
+}
+
+func resolveLockfileDriftPolicyResult(result lockfileDriftResult, failMode bool) ([]string, error) {
 	if result.err != nil && !failMode && isPureLockfileManifestReadSizeError(result.err) {
 		return result.orderedWarnings, nil
 	}
@@ -39,6 +77,32 @@ func evaluateLockfileDriftPolicyWithFeatures(ctx context.Context, repoPath, poli
 		return result.findings, formatLockfileDriftError(result.findings)
 	}
 	return result.findings, nil
+}
+
+func repositoryViewChangedFiles(paths []string) map[string]struct{} {
+	changed := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		changed[filepath.Clean(filepath.FromSlash(path))] = struct{}{}
+	}
+	return changed
+}
+
+func repositoryViewLockfileFilterError(filters []analysis.RepositoryGitFilter, candidatePaths []string) error {
+	candidates := make(map[string]struct{}, len(candidatePaths))
+	for _, path := range candidatePaths {
+		candidates[filepath.Clean(path)] = struct{}{}
+	}
+	active := make([]gitFilterPathDriver, 0)
+	for _, filter := range filters {
+		path := filepath.Clean(filepath.FromSlash(filter.Path))
+		if _, ok := candidates[path]; ok {
+			active = append(active, gitFilterPathDriver{path: path, driver: filter.Driver})
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	return newLockfileDriftFilterAmbiguityError(active)
 }
 
 func oversizedLockfileDriftWarning(err error) string {

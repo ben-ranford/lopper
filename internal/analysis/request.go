@@ -12,14 +12,38 @@ const (
 )
 
 type CacheOptions struct {
-	Enabled    bool
-	Path       string
-	ReadOnly   bool
-	PinnedPath string
+	Enabled  bool
+	Path     string
+	ReadOnly bool
+
+	trustedPin *trustedCachePin
 }
+
+type repositoryAuthState struct {
+	paths trustedRepoPaths
+	nonce uint64
+}
+
+// trustedCachePin is created only at the repository validation boundary.
+// Downstream code consumes these immutable identities without resolving again.
+type trustedCachePin struct {
+	kind             trustedCachePathKind
+	repositoryState  *repositoryAuthState
+	canonicalPath    string
+	repoRelativePath string
+}
+
+type trustedCachePathKind uint8
+
+const (
+	trustedCachePathInRepo trustedCachePathKind = iota + 1
+	trustedCachePathExternal
+)
 
 type Request struct {
 	RepoPath                          string
+	Repository                        *RepositoryAuthorization
+	RepositoryView                    *RepositoryView
 	ChangedFiles                      []string
 	ChangedFilesExplicit              bool
 	Dependency                        string
@@ -28,8 +52,10 @@ type Request struct {
 	SuggestOnly                       bool
 	Language                          string
 	ConfigPath                        string
+	ConfigCachePath                   string
 	RuntimeProfile                    string
 	RuntimeTracePath                  string
+	RuntimeTraceCachePath             string
 	RuntimeTracePathExplicit          bool
 	PythonRuntimeTraceCaptured        bool
 	RuntimeTestCommand                string

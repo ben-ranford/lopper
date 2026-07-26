@@ -56,7 +56,21 @@ func TestOpenPinnedDirectoryRejectsNonReadDirFileAndJoinsCloseErrors(t *testing.
 	}
 	fileCloseErr := errors.New("close opened file")
 	rootCloseErr := errors.New("close pinned ancestor")
-	childRoot := &fakeRoot{
+	childRoot := testPinnedDirectoryChildRoot(t, dirInfo, fileCloseErr, rootCloseErr)
+	root := testPinnedDirectoryParentRoot(t, dirInfo, childRoot)
+
+	dir, err := OpenPinnedDirectory(root, filepath.Join("nested", "leaf"))
+	if dir != nil {
+		t.Fatal("expected invalid pinned directory wrapper to return nil")
+	}
+	if !errors.Is(err, fs.ErrInvalid) || !errors.Is(err, fileCloseErr) || !errors.Is(err, rootCloseErr) {
+		t.Fatalf("expected invalid directory joined with file and root close errors, got %v", err)
+	}
+}
+
+func testPinnedDirectoryChildRoot(t *testing.T, dirInfo fs.FileInfo, fileCloseErr, rootCloseErr error) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name == "." || name == "leaf" {
 				return dirInfo, nil
@@ -70,15 +84,19 @@ func TestOpenPinnedDirectoryRejectsNonReadDirFileAndJoinsCloseErrors(t *testing.
 			if name != "leaf" {
 				t.Fatalf("unexpected child open %q", name)
 			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
-				close: func() error { return fileCloseErr },
-			}, nil
+			return &fakeFile{stat: func() (fs.FileInfo, error) { return dirInfo, nil }, close: func() error { return fileCloseErr }}, nil
 		},
 		close: func() error { return rootCloseErr },
 	}
-	root := &fakeRoot{
+}
+
+func testPinnedDirectoryParentRoot(t *testing.T, dirInfo fs.FileInfo, childRoot Root) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "." {
+				return dirInfo, nil
+			}
 			if name != "nested" {
 				t.Fatalf("unexpected root lstat %q", name)
 			}
@@ -90,14 +108,6 @@ func TestOpenPinnedDirectoryRejectsNonReadDirFileAndJoinsCloseErrors(t *testing.
 			}
 			return childRoot, nil
 		},
-	}
-
-	dir, err := OpenPinnedDirectory(root, filepath.Join("nested", "leaf"))
-	if dir != nil {
-		t.Fatal("expected invalid pinned directory wrapper to return nil")
-	}
-	if !errors.Is(err, fs.ErrInvalid) || !errors.Is(err, fileCloseErr) || !errors.Is(err, rootCloseErr) {
-		t.Fatalf("expected invalid directory joined with file and root close errors, got %v", err)
 	}
 }
 

@@ -794,6 +794,7 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
+          - windows-latest
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -809,7 +810,12 @@ jobs:
           go-version-file: go.mod
 
       - name: Run smoke checks
+        if: ${{ matrix.os != 'windows-latest' }}
         run: make smoke
+
+      - name: Run Windows safeio smoke checks
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: go test ./internal/safeio -run '^(TestWindowsOpenRootNoFollowTraversesNestedDirectoryWithRealHandles|TestWindowsOpenRelativeWriteRootTraversesNestedDirectoryWithRealHandles|TestWindowsOpenRelativeWriteRootRejectsIdentityErrorsFromRealHandles)$'
 
   vscode-smoke:
     name: vscode-smoke (${{ matrix.os }})

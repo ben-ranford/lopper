@@ -681,8 +681,9 @@ func TestReadFileLimitRejectsSpecialFile(t *testing.T) {
 			continue
 		}
 
-		if _, err := ReadFileLimit(path, 1024); !errors.Is(err, ErrFileTooLarge) {
-			t.Fatalf("expected ErrFileTooLarge for %s, got %v", path, err)
+		_, err = ReadFileLimit(path, 1024)
+		if !errors.Is(err, ErrFileTooLarge) && !strings.Contains(err.Error(), "device boundary") {
+			t.Fatalf("expected special-file or device-boundary rejection for %s, got %v", path, err)
 		}
 		return
 	}

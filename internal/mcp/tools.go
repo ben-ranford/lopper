@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -124,11 +123,13 @@ type languagesPayload struct {
 
 type resolvedToolRequest struct {
 	analysisRequest    analysis.Request
+	repositoryView     *analysis.RepositoryView
 	repoPath           string
 	thresholds         thresholds.Values
 	policySources      []string
 	policyTrace        []report.PolicyMergeTrace
 	advisorySourcePath string
+	advisoryLoadPath   string
 	baselinePath       string
 	baselineKey        string
 	currentKey         string
@@ -238,18 +239,27 @@ func (s *Server) runAnalysisTool(ctx context.Context, rawArgs json.RawMessage, k
 		return toolError(errorCodeInvalidInput, err)
 	}
 
+	payload, summary, runErr := s.executeResolvedAnalysisTool(reqCtx, resolved, kind)
+	runErr = errors.Join(runErr, resolved.repositoryView.Close())
+	if runErr != nil {
+		return analysisErrorResult(runErr)
+	}
+	return toolSuccess(summary, payload)
+}
+
+func (s *Server) executeResolvedAnalysisTool(ctx context.Context, resolved resolvedToolRequest, kind analysisToolKind) (analysisPayload, string, error) {
 	analyzer := s.analyzer
 	if analyzer == nil {
 		analyzer = analysis.NewService()
 	}
-	reportData, err := analyzer.Analyse(reqCtx, resolved.analysisRequest)
+	reportData, err := analyzer.Analyse(ctx, resolved.analysisRequest)
 	if err != nil {
-		return analysisErrorResult(err)
+		return analysisPayload{}, "", err
 	}
-	if resolved.advisorySourcePath != "" {
-		advisories, err := advisory.Load(resolved.advisorySourcePath)
+	if resolved.advisoryLoadPath != "" {
+		advisories, err := advisory.Load(resolved.advisoryLoadPath)
 		if err != nil {
-			return analysisErrorResult(err)
+			return analysisPayload{}, "", err
 		}
 		report.AnnotateVulnerabilities(&reportData, advisories)
 		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
@@ -258,7 +268,7 @@ func (s *Server) runAnalysisTool(ctx context.Context, rawArgs json.RawMessage, k
 	if resolved.baselinePath != "" {
 		reportData, err = applyBaseline(reportData, resolved.baselinePath, resolved.baselineKey, resolved.currentKey)
 		if err != nil {
-			return analysisErrorResult(err)
+			return analysisPayload{}, "", err
 		}
 	}
 
@@ -268,11 +278,11 @@ func (s *Server) runAnalysisTool(ctx context.Context, rawArgs json.RawMessage, k
 		Summary:       summary,
 		Report:        reportData,
 	}
-	return toolSuccess(summary, payload)
+	return payload, summary, nil
 }
 
-func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolArguments, kind analysisToolKind) (resolvedToolRequest, error) {
-	repoPath, err := validateRepoPath(args.RepoPath)
+func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolArguments, kind analysisToolKind) (_ resolvedToolRequest, returnErr error) {
+	repoPath, repository, err := validateTrustedRepoPath(args.RepoPath)
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
@@ -286,7 +296,21 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
-	loadResult, thresholdsValue, policySources, policyTrace, err := resolveThresholds(repoPath, args)
+	cacheOptions, err := resolveMCPAnalysisCacheOptionsForRepository(repository, cacheEnabled(args.CacheEnabled), args.CachePath, args.CacheReadOnly)
+	if err != nil {
+		return resolvedToolRequest{}, err
+	}
+	repositoryView, err := analysis.OpenTrustedRepositoryWithGitMetadata(ctx, repository, repoPath, cacheOptions)
+	if err != nil {
+		return resolvedToolRequest{}, err
+	}
+	defer func() {
+		if repositoryView != nil {
+			returnErr = errors.Join(returnErr, repositoryView.Close())
+		}
+	}()
+	currentKey, currentKeyCaptured := repositoryViewCurrentBaselineKey(repositoryView)
+	loadResult, thresholdsValue, policySources, policyTrace, err := resolveThresholdsWithRepositoryView(repositoryView, args)
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
@@ -294,12 +318,9 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
-	cacheOptions, err := resolveMCPAnalysisCacheOptions(repoPath, cacheEnabled(args.CacheEnabled), args.CachePath, args.CacheReadOnly)
-	if err != nil {
-		return resolvedToolRequest{}, err
-	}
 	analysisReq := newAnalysisRequest(args, analysisRequestContext{
 		repoPath:   repoPath,
+		repository: repository,
 		dependency: dependency,
 		topN:       topN,
 		scopeMode:  scopeMode,
@@ -308,30 +329,46 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 		featureSet: features,
 		cache:      cacheOptions,
 	})
+	analysisReq.RepositoryView = repositoryView
+	if err := analysis.ValidateTrustedScopedCacheOptions(analysisReq.Cache, analysisReq.IncludePatterns, analysisReq.ExcludePatterns); err != nil {
+		return resolvedToolRequest{}, err
+	}
 
-	baselinePath, baselineKey, currentKey, err := resolveBaselineComparison(repoPath, args)
+	baselinePath, baselineKey, baselineCurrentKey, err := resolveBaselineComparisonWithCapturedCurrentKey(repositoryView, args, currentKey, currentKeyCaptured)
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
-	advisorySourcePath := resolveAdvisorySourcePath(loadResult, args)
+	advisoryLoadPath, err := snapshotRepositoryPath(repositoryView, resolveAdvisorySourcePath(loadResult, args))
+	if err != nil {
+		return resolvedToolRequest{}, err
+	}
+	advisorySourcePath := displayRepositoryPath(repositoryView, advisoryLoadPath)
 	if err := validateAnalysisVulnerabilityFeature(features, thresholdsValue, advisorySourcePath); err != nil {
 		return resolvedToolRequest{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return resolvedToolRequest{}, err
+	}
+	retainedView := repositoryView
+	repositoryView = nil
 	return resolvedToolRequest{
 		analysisRequest:    analysisReq,
+		repositoryView:     retainedView,
 		repoPath:           repoPath,
 		thresholds:         thresholdsValue,
 		policySources:      policySources,
 		policyTrace:        policyTrace,
 		advisorySourcePath: advisorySourcePath,
+		advisoryLoadPath:   advisoryLoadPath,
 		baselinePath:       baselinePath,
 		baselineKey:        baselineKey,
-		currentKey:         currentKey,
-	}, ctx.Err()
+		currentKey:         baselineCurrentKey,
+	}, nil
 }
 
 type analysisRequestContext struct {
 	repoPath   string
+	repository *analysis.RepositoryAuthorization
 	dependency string
 	topN       int
 	scopeMode  string
@@ -381,6 +418,7 @@ func newAnalysisRequest(args analysisToolArguments, req analysisRequestContext) 
 	weights := thresholds.RemovalCandidateWeights(req.thresholds)
 	return analysis.Request{
 		RepoPath:                          req.repoPath,
+		Repository:                        req.repository,
 		Dependency:                        req.dependency,
 		TopN:                              req.topN,
 		ScopeMode:                         req.scopeMode,
@@ -552,6 +590,78 @@ func resolveThresholds(repoPath string, args analysisToolArguments) (thresholds.
 	return loadResult, resolved, policySources, policyTrace, nil
 }
 
+func resolveThresholdsWithRepositoryView(repositoryView *analysis.RepositoryView, args analysisToolArguments) (thresholds.LoadResult, thresholds.Values, []string, []report.PolicyMergeTrace, error) {
+	loadResult, err := loadThresholdsThroughRepositoryView(repositoryView, strings.TrimSpace(args.ConfigPath))
+	if err != nil {
+		return thresholds.LoadResult{}, thresholds.Values{}, nil, nil, err
+	}
+	overrides := thresholds.Overrides{
+		LowConfidenceWarningPercent:       args.LowConfidenceWarningPercent,
+		MinUsagePercentForRecommendations: args.MinUsagePercentForRecommendations,
+		MaxUncertainImportCount:           args.MaxUncertainImportCount,
+		RemovalCandidateWeightUsage:       args.ScoreWeightUsage,
+		RemovalCandidateWeightImpact:      args.ScoreWeightImpact,
+		RemovalCandidateWeightConfidence:  args.ScoreWeightConfidence,
+		LicenseDenyList:                   append([]string{}, args.LicenseDeny...),
+		LicenseFailOnDeny:                 args.LicenseFailOnDeny,
+		LicenseIncludeRegistryProvenance:  args.LicenseProvenanceRegistry,
+		ReachableVulnerabilityPriority:    args.ReachableVulnerabilityPriority,
+	}
+	return resolveThresholdsFromLoadResult(loadResult, overrides, hasMCPPolicyOverrides(args), mcpPolicyTrace(args))
+}
+
+func resolveThresholdsFromLoadResult(loadResult thresholds.LoadResult, overrides thresholds.Overrides, hasOverrides bool, overrideTrace []report.PolicyMergeTrace) (thresholds.LoadResult, thresholds.Values, []string, []report.PolicyMergeTrace, error) {
+	if err := overrides.Validate(); err != nil {
+		return thresholds.LoadResult{}, thresholds.Values{}, nil, nil, err
+	}
+	resolved := overrides.Apply(loadResult.Resolved)
+	if err := resolved.Validate(); err != nil {
+		return thresholds.LoadResult{}, thresholds.Values{}, nil, nil, err
+	}
+	policySources := append([]string{}, loadResult.PolicySources...)
+	policyTrace := append([]report.PolicyMergeTrace{}, loadResult.PolicyTrace...)
+	if hasOverrides {
+		policySources = prependPolicySource("mcp", policySources)
+		policyTrace = mergePolicyTraceUpdates(policyTrace, overrideTrace)
+	}
+	return loadResult, resolved, policySources, policyTrace, nil
+}
+
+func loadThresholdsThroughRepositoryView(repositoryView *analysis.RepositoryView, configPath string) (thresholds.LoadResult, error) {
+	snapshotPath, err := snapshotRepositoryPath(repositoryView, configPath)
+	if err != nil {
+		return thresholds.LoadResult{}, err
+	}
+	loadResult, err := thresholds.LoadWithPolicy(repositoryView.ExecutionPath(), snapshotPath)
+	if err != nil {
+		return thresholds.LoadResult{}, err
+	}
+	loadResult.ConfigPath = displayRepositoryPath(repositoryView, loadResult.ConfigPath)
+	loadResult.AdvisorySourcePath = displayRepositoryPath(repositoryView, loadResult.AdvisorySourcePath)
+	for index, source := range loadResult.PolicySources {
+		loadResult.PolicySources[index] = displayRepositoryPath(repositoryView, source)
+	}
+	for index, item := range loadResult.PolicyTrace {
+		loadResult.PolicyTrace[index].Source = displayRepositoryPath(repositoryView, item.Source)
+	}
+	return loadResult, nil
+}
+
+func snapshotRepositoryPath(repositoryView *analysis.RepositoryView, path string) (string, error) {
+	if repositoryView == nil {
+		return strings.TrimSpace(path), nil
+	}
+	return repositoryView.SnapshotPath(path)
+}
+
+func displayRepositoryPath(repositoryView *analysis.RepositoryView, path string) string {
+	trimmed := strings.TrimSpace(path)
+	if repositoryView == nil || trimmed == "" || !filepath.IsAbs(trimmed) {
+		return trimmed
+	}
+	return repositoryView.StablePath(trimmed)
+}
+
 func hasMCPPolicyOverrides(args analysisToolArguments) bool {
 	return args.LowConfidenceWarningPercent != nil ||
 		args.MinUsagePercentForRecommendations != nil ||
@@ -581,6 +691,10 @@ func prependPolicySource(source string, sources []string) []string {
 
 func mergeMCPPolicyTrace(trace []report.PolicyMergeTrace, args analysisToolArguments) []report.PolicyMergeTrace {
 	updates := mcpPolicyTrace(args)
+	return mergePolicyTraceUpdates(trace, updates)
+}
+
+func mergePolicyTraceUpdates(trace []report.PolicyMergeTrace, updates []report.PolicyMergeTrace) []report.PolicyMergeTrace {
 	if len(updates) == 0 {
 		return append([]report.PolicyMergeTrace{}, trace...)
 	}
@@ -659,6 +773,22 @@ func validateAnalysisVulnerabilityFeature(features featureflags.Set, values thre
 }
 
 func resolveBaselineComparison(repoPath string, args analysisToolArguments) (string, string, string, error) {
+	currentKey, captured := captureAuthorizedCurrentBaselineKey(repoPath)
+	return resolveBaselineComparisonWithCapturedCurrentKey(nil, args, currentKey, captured)
+}
+
+func repositoryViewCurrentBaselineKey(repositoryView *analysis.RepositoryView) (string, bool) {
+	metadata := repositoryView.GitMetadata()
+	if !metadata.Captured {
+		return "", false
+	}
+	if currentCommit := strings.TrimSpace(metadata.CurrentCommit); currentCommit != "" {
+		return "commit:" + currentCommit, true
+	}
+	return "", true
+}
+
+func resolveBaselineComparisonWithCapturedCurrentKey(repositoryView *analysis.RepositoryView, args analysisToolArguments, currentKey string, currentKeyCaptured bool) (string, string, string, error) {
 	baselinePath := strings.TrimSpace(args.BaselinePath)
 	baselineStorePath := strings.TrimSpace(args.BaselineStorePath)
 	baselineKey := strings.TrimSpace(args.BaselineKey)
@@ -674,9 +804,15 @@ func resolveBaselineComparison(repoPath string, args analysisToolArguments) (str
 	if baselinePath == "" {
 		return "", "", "", nil
 	}
-	currentKey := "current"
-	if sha, err := workspace.CurrentCommitSHA(repoPath); err == nil {
-		currentKey = "commit:" + sha
+	if repositoryView != nil {
+		var err error
+		baselinePath, err = snapshotRepositoryPath(repositoryView, baselinePath)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	if currentKeyCaptured && strings.TrimSpace(currentKey) == "" {
+		currentKey = "current"
 	}
 	return baselinePath, baselineKey, currentKey, nil
 }
@@ -761,24 +897,26 @@ func contextForTimeout(ctx context.Context, timeoutMillis int) (context.Context,
 }
 
 func validateRepoPath(raw string) (string, error) {
+	repoPath, _, err := validateTrustedRepoPath(raw)
+	return repoPath, err
+}
+
+func validateTrustedRepoPath(raw string) (string, *analysis.RepositoryAuthorization, error) {
 	if strings.TrimSpace(raw) == "" {
-		return "", errors.New("repoPath is required")
+		return "", nil, errors.New("repoPath is required")
 	}
 	if strings.Contains(strings.ToLower(strings.TrimSpace(raw)), "://") {
-		return "", errors.New("repoPath must be a local filesystem path")
+		return "", nil, errors.New("repoPath must be a local filesystem path")
 	}
 	repoPath, err := workspace.NormalizeRepoPath(strings.TrimSpace(raw))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	info, err := os.Stat(repoPath)
+	repository, err := analysis.ResolveTrustedRepository(repoPath)
 	if err != nil {
-		return "", fmt.Errorf("stat repoPath: %w", err)
+		return "", nil, fmt.Errorf("stat repoPath: %w", err)
 	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("repoPath is not a directory: %s", repoPath)
-	}
-	return repoPath, nil
+	return repoPath, repository, nil
 }
 
 func topNOrDefault(topN *int) int {
@@ -827,24 +965,23 @@ func cacheEnabled(value *bool) bool {
 	return *value
 }
 
-func resolveMCPAnalysisCacheOptions(repoPath string, enabled bool, rawPath string, readOnly bool) (*analysis.CacheOptions, error) {
-	if enabled && strings.TrimSpace(rawPath) == "" {
-		pinnedPath, err := analysis.ResolveTrustedDefaultCachePath(repoPath)
-		if err != nil {
-			return nil, err
-		}
-		return &analysis.CacheOptions{
-			Enabled:    true,
-			Path:       "",
-			ReadOnly:   readOnly,
-			PinnedPath: filepath.Clean(pinnedPath),
-		}, nil
+func resolveMCPAnalysisCacheOptionsForRepository(repository *analysis.RepositoryAuthorization, enabled bool, rawPath string, readOnly bool) (*analysis.CacheOptions, error) {
+	cachePath := strings.TrimSpace(rawPath)
+	if enabled && cachePath == "" {
+		return analysis.ResolveTrustedDefaultCacheOptionsForRepository(repository, readOnly)
 	}
-	return analysis.ResolveTrustedCacheOptions(repoPath, &analysis.CacheOptions{
+	cacheOptions, err := analysis.ResolveTrustedCacheOptionsForRepository(repository, &analysis.CacheOptions{
 		Enabled:  enabled,
-		Path:     rawPath,
+		Path:     cachePath,
 		ReadOnly: readOnly,
 	})
+	if err == nil {
+		return cacheOptions, nil
+	}
+	if enabled && filepath.IsAbs(cachePath) && analysis.AuthenticatedExternalCacheOptions(cacheOptions, err) {
+		return cacheOptions, nil
+	}
+	return nil, err
 }
 
 func mergeStringOptions(configValues, argumentValues []string) []string {

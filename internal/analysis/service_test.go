@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -580,45 +582,45 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n")
 
 	service := NewService()
-	disabledFeature, err := service.Analyse(context.Background(), Request{
+	assertPythonRuntimeFeatureDisabled(t, service, repo, tracePath)
+	assertPythonRuntimeTraceDisabled(t, service, repo, tracePath)
+	assertPythonRuntimeStableDefaults(t, service, repo, tracePath)
+}
+
+func analysePythonRuntimeReport(t *testing.T, service *Service, repo, tracePath string, features featureflags.Set) report.Report {
+	t.Helper()
+	reportData, err := service.Analyse(context.Background(), Request{
 		RepoPath:         repo,
 		TopN:             10,
 		Language:         "python",
 		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, false),
+		Features:         features,
 	})
 	if err != nil {
-		t.Fatalf("analyse python runtime with feature disabled: %v", err)
+		t.Fatalf("analyse python runtime: %v", err)
 	}
-	if dep := dependencyByLanguageName(t, disabledFeature.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
+	return reportData
+}
+
+func assertPythonRuntimeFeatureDisabled(t *testing.T, service *Service, repo, tracePath string) {
+	t.Helper()
+	reportData := analysePythonRuntimeReport(t, service, repo, tracePath, mustResolvePythonRuntimeTraceFeatureSet(t, false))
+	if dep := dependencyByLanguageName(t, reportData.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
 		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
 	}
+}
 
-	captureWithTraceDisabled, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse Python runtime with trace disabled: %v", err)
-	}
-	if requests := dependencyByLanguageName(t, captureWithTraceDisabled.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
+func assertPythonRuntimeTraceDisabled(t *testing.T, service *Service, repo, tracePath string) {
+	t.Helper()
+	reportData := analysePythonRuntimeReport(t, service, repo, tracePath, mustResolvePythonRuntimeCaptureWithTraceDisabled(t))
+	if requests := dependencyByLanguageName(t, reportData.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
 		t.Fatalf("did not expect an explicit Python trace to bypass the disabled trace feature, got %#v", requests.RuntimeUsage)
 	}
+}
 
-	stableDefault, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolveStableDefaultsFeatureSet(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse python runtime with stable defaults: %v", err)
-	}
-
+func assertPythonRuntimeStableDefaults(t *testing.T, service *Service, repo, tracePath string) {
+	t.Helper()
+	stableDefault := analysePythonRuntimeReport(t, service, repo, tracePath, mustResolveStableDefaultsFeatureSet(t))
 	requests := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "requests")
 	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
 		t.Fatalf("expected Python requests overlap correlation, got %#v", requests.RuntimeUsage)
@@ -632,7 +634,6 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "/repo/main.py" {
 		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
 	}
-
 	httpx := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "httpx")
 	if httpx.RuntimeUsage == nil || httpx.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly || !httpx.RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected Python httpx runtime-only row, got %#v", httpx.RuntimeUsage)
@@ -720,13 +721,127 @@ func TestServiceAnalyseAllowsAbsoluteCachePathOutsideRepo(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseRejectsAbsoluteSymlinkEscapeCachePath(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+		Language:   "js-ts",
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    filepath.Join(repo, "tmp", "cache"),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
+		t.Fatalf("expected absolute symlink cache rejection, got %v", err)
+	}
+}
+
+func TestServiceAnalyseRejectsCanonicalSymlinkEscapeUnderRequestedRepoAlias(t *testing.T) {
+	requestedRepo, canonicalCache, outsideCache := canonicalAliasCacheEscapeFixture(t)
+	writeJSFixture(t, requestedRepo)
+
+	_, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   requestedRepo,
+		Dependency: "lodash",
+		Language:   "js-ts",
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    canonicalCache,
+		},
+	})
+	if !CachePathSymlinkEscape(err) {
+		t.Fatalf("expected service symlink escape rejection, got %v", err)
+	}
+	if CachePathExternal(err) {
+		t.Fatalf("expected service not to classify canonical in-repo form as external, got %v", err)
+	}
+	if _, statErr := os.Stat(outsideCache); !os.IsNotExist(statErr) {
+		t.Fatalf("expected service not to create external cache directory, stat err=%v", statErr)
+	}
+}
+
+func TestServiceAnalyseRejectsAlternateAbsoluteRepoAliasesThatLaterEscape(t *testing.T) {
+	for _, fixture := range alternateAbsoluteRepoAliasEscapeFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			writeJSFixture(t, fixture.requestedRepo)
+			_, err := NewService().Analyse(context.Background(), Request{
+				RepoPath:   fixture.requestedRepo,
+				Dependency: "lodash",
+				Language:   "js-ts",
+				Cache: &CacheOptions{
+					Enabled: true,
+					Path:    fixture.cachePath,
+				},
+			})
+			if !CachePathSymlinkEscape(err) || CachePathExternal(err) {
+				t.Fatalf("expected service symlink escape rejection, got %v", err)
+			}
+			if _, statErr := os.Stat(fixture.outsideCache); !os.IsNotExist(statErr) {
+				t.Fatalf("expected service not to create outside cache, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
+func TestServiceAnalyseConfiguredRepoCacheIgnoresWorkingDirectory(t *testing.T) {
+	repo := t.TempDir()
+	writeJSFixture(t, repo)
+	configuredCache := filepath.Join(repo, ".cache", "lopper")
+	workingDir := t.TempDir()
+
+	originalWorkingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatalf("change working directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalWorkingDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Dependency: "lodash",
+		Language:   "js-ts",
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    configuredCache,
+		},
+	})
+	if err != nil {
+		t.Fatalf("analyse with configured repo cache path: %v", err)
+	}
+	if reportData.Cache == nil || reportData.Cache.Path != configuredCache || reportData.Cache.Misses != 1 || reportData.Cache.Writes != 1 {
+		t.Fatalf("expected configured repo cache miss/write metadata, got %#v", reportData.Cache)
+	}
+	assertCacheDirsExist(t, configuredCache)
+
+	entries, err := os.ReadDir(workingDir)
+	if err != nil {
+		t.Fatalf("read working directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no cache writes in working directory, got %#v", entries)
+	}
+}
+
 func TestServiceAnalyseScopedPinnedDefaultCacheWritesStayUnderRepoRoot(t *testing.T) {
 	repo := writeScopedCacheFixture(t)
 
-	pinnedCachePath, err := ResolveTrustedDefaultCachePath(repo)
+	cacheOptions, err := ResolveTrustedDefaultCacheOptions(repo, false)
 	if err != nil {
-		t.Fatalf("resolve trusted default cache path: %v", err)
+		t.Fatalf("resolve trusted default cache options: %v", err)
 	}
+	pinnedCachePath := cacheOptions.trustedPinnedPath()
 
 	scopedRoot := captureScopedWorkspacePath(t)
 	assertScopedCacheInitUsesRepoRoot(t, repo, scopedRoot)
@@ -737,10 +852,7 @@ func TestServiceAnalyseScopedPinnedDefaultCacheWritesStayUnderRepoRoot(t *testin
 		Language:        "js-ts",
 		IncludePatterns: []string{"src/**"},
 		ExcludePatterns: []string{"vendor/**"},
-		Cache: &CacheOptions{
-			Enabled:    true,
-			PinnedPath: pinnedCachePath,
-		},
+		Cache:           cacheOptions,
 	}
 
 	reportData, err := NewService().Analyse(context.Background(), req)
@@ -754,7 +866,6 @@ func TestServiceAnalyseScopedPinnedDefaultCacheWritesStayUnderRepoRoot(t *testin
 		t.Fatalf("expected scoped cache metadata to report pinned repo-root path and first-run miss/write, got %#v", reportData.Cache)
 	}
 	assertCacheDirsExist(t, filepath.Join(repo, defaultAnalysisCacheDirName))
-	assertScopedRootExcludesCacheDir(t, *scopedRoot, defaultAnalysisCacheDirName)
 
 	secondReport, err := NewService().Analyse(context.Background(), req)
 	if err != nil {
@@ -775,11 +886,12 @@ func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRun
 	if err != nil {
 		t.Fatalf("resolve trusted explicit relative cache path: %v", err)
 	}
-	if cacheOptions.PinnedPath == "" {
+	if !cacheOptions.hasTrustedPin() {
 		t.Fatalf("expected trusted cache options to pin explicit relative cache path")
 	}
 
 	scopedRoot := captureScopedWorkspacePath(t)
+	assertScopedCacheInitExcludesCacheDir(t, scopedRoot, filepath.Join(".cache", "lopper"))
 
 	req := Request{
 		RepoPath:        repo,
@@ -798,7 +910,6 @@ func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRun
 		t.Fatalf("expected first scoped run to report explicit relative cache path with miss/write metadata, got %#v", firstReport.Cache)
 	}
 	assertCacheDirsExist(t, filepath.Join(repo, ".cache", "lopper"))
-	assertScopedRootExcludesCacheDir(t, *scopedRoot, filepath.Join(".cache", "lopper"))
 
 	secondReport, err := NewService().Analyse(context.Background(), req)
 	if err != nil {
@@ -809,55 +920,244 @@ func TestServiceAnalyseScopedExplicitRelativeCachePathUsesPinnedRepoKeyAcrossRun
 	}
 }
 
+func TestServiceAnalyseScopedAbsoluteInRepoCachePathPinsAndHitsAcrossRuns(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+	absoluteCachePath := filepath.Join(repo, ".cache", "lopper-absolute")
+	if err := os.MkdirAll(absoluteCachePath, 0o750); err != nil {
+		t.Fatalf("create pre-seeded absolute cache root: %v", err)
+	}
+
+	scopedRoot := captureScopedWorkspacePath(t)
+	assertScopedCacheInitExcludesCacheDir(t, scopedRoot, filepath.Join(".cache", "lopper-absolute"))
+	req := Request{
+		RepoPath:        repo,
+		Dependency:      "lodash",
+		Language:        "js-ts",
+		IncludePatterns: []string{"**"},
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    absoluteCachePath,
+		},
+	}
+
+	firstReport, err := NewService().Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first analyse with scoped absolute in-repo cache path: %v", err)
+	}
+	if firstReport.Cache == nil || firstReport.Cache.Path != absoluteCachePath || firstReport.Cache.Misses != 1 || firstReport.Cache.Writes != 1 {
+		t.Fatalf("expected first scoped run to report absolute in-repo cache miss/write metadata, got %#v", firstReport.Cache)
+	}
+	assertCacheDirsExist(t, absoluteCachePath)
+
+	secondReport, err := NewService().Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second analyse with scoped absolute in-repo cache path: %v", err)
+	}
+	if secondReport.Cache == nil || secondReport.Cache.Path != absoluteCachePath || secondReport.Cache.Hits != 1 || secondReport.Cache.Misses != 0 {
+		t.Fatalf("expected second scoped run to hit absolute in-repo cache with truthful metadata, got %#v", secondReport.Cache)
+	}
+}
+
+func TestServiceAnalyseConfigPathUsesStableCacheIdentityAcrossSnapshotRuns(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	configPath := filepath.Join(repo, ".lopper.yml")
+	testutil.MustWriteFile(t, configPath, "thresholds:\n  low_confidence_warning_percent: 10\n")
+
+	service, adapter := newCacheTestService(t)
+	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
+	req.ConfigPath = configPath
+
+	first, err := service.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first analyse with explicit config path: %v", err)
+	}
+	if first.Cache == nil || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
+		t.Fatalf("expected first config-path run cache miss/write, got %#v", first.Cache)
+	}
+
+	second, err := service.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second analyse with explicit config path: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected explicit config path to preserve cache hit across snapshot runs, adapter calls=%d", adapter.calls)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
+		t.Fatalf("expected second config-path run cache hit, got %#v", second.Cache)
+	}
+}
+
+func TestServiceAnalyseScopedAbsoluteInRepoCachePathSkipsCacheDirAcrossRepoAliasOnSecondRun(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+	aliasRoot := t.TempDir()
+	repoAlias := filepath.Join(aliasRoot, "repo")
+	if err := os.Symlink(repo, repoAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	cachePath := filepath.Join(repoAlias, ".cache", "lopper-alias")
+	scopedRoots := captureScopedWorkspacePaths(t)
+	req := Request{
+		RepoPath:        repoAlias,
+		Dependency:      "lodash",
+		Language:        "js-ts",
+		IncludePatterns: []string{"**"},
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    cachePath,
+		},
+	}
+
+	firstReport, err := NewService().Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first analyse with aliased absolute in-repo cache path: %v", err)
+	}
+	if firstReport.Cache == nil || firstReport.Cache.Path != cachePath || firstReport.Cache.Misses != 1 || firstReport.Cache.Writes != 1 {
+		t.Fatalf("expected first aliased scoped run to miss and write, got %#v", firstReport.Cache)
+	}
+	assertCacheDirsExist(t, filepath.Join(repo, ".cache", "lopper-alias"))
+
+	previous := cacheInitBeforeObjectsEnsureFn
+	cacheInitBeforeObjectsEnsureFn = func() error {
+		if len(*scopedRoots) < 2 {
+			t.Fatalf("expected second scoped workspace before cache init, roots=%#v", *scopedRoots)
+		}
+		assertScopedRootExcludesCacheDir(t, (*scopedRoots)[len(*scopedRoots)-1], filepath.Join(".cache", "lopper-alias"))
+		return nil
+	}
+	t.Cleanup(func() {
+		cacheInitBeforeObjectsEnsureFn = previous
+	})
+
+	secondReport, err := NewService().Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second analyse with aliased absolute in-repo cache path: %v", err)
+	}
+	if secondReport.Cache == nil || secondReport.Cache.Path != cachePath || secondReport.Cache.Hits != 1 || secondReport.Cache.Misses != 0 {
+		t.Fatalf("expected second aliased scoped run to hit cached entry, got %#v", secondReport.Cache)
+	}
+}
+
+func TestServiceAnalyseScopedRepoRootCachePathIsRejected(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+
+	_, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:        repo,
+		Dependency:      "lodash",
+		Language:        "js-ts",
+		IncludePatterns: []string{"src/**"},
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    repo,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "scoped analysis does not allow cachePath at the repository root") {
+		t.Fatalf("expected scoped repo-root cache rejection, got %v", err)
+	}
+}
+
+func TestServiceAnalyseScopedExternalCacheAliasToRepoRootIsRejectedBeforeCacheInit(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+	cacheAlias := filepath.Join(t.TempDir(), "external-cache-alias")
+	if err := os.Symlink(repo, cacheAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:        repo,
+		Dependency:      "lodash",
+		Language:        "js-ts",
+		IncludePatterns: []string{"src/**"},
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    cacheAlias,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "scoped analysis does not allow cachePath at the repository root") {
+		t.Fatalf("expected external alias to receive in-repo root rejection, got %v", err)
+	}
+	assertCacheLayoutAbsent(t, repo)
+}
+
+func TestServicePipelineScopedExternalCacheAliasToRepoSubdirUsesInRepoExclusionWithoutMutation(t *testing.T) {
+	repo := writeScopedCacheFixture(t)
+	cacheRoot := filepath.Join(repo, ".cache", "external-alias")
+	if err := os.MkdirAll(cacheRoot, 0o750); err != nil {
+		t.Fatalf("mkdir cache root: %v", err)
+	}
+	cacheAlias := filepath.Join(t.TempDir(), "external-cache-alias")
+	if err := os.Symlink(cacheRoot, cacheAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	req := Request{
+		RepoPath:        repo,
+		Dependency:      "lodash",
+		Language:        "js-ts",
+		IncludePatterns: []string{"**"},
+		Cache: &CacheOptions{
+			Enabled: true,
+			Path:    cacheAlias,
+		},
+	}
+	cacheOptions, err := normalizePipelineCacheOptions(repo, req)
+	if err != nil {
+		t.Fatalf("normalize external alias to repo subdir: %v", err)
+	}
+	if !InRepoCacheOptions(cacheOptions) {
+		t.Fatalf("expected external alias to mint an in-repo pin, got %#v", cacheOptions)
+	}
+	if relativeRoot := pinnedScopedCacheRoot(cacheOptions); relativeRoot != filepath.Join(".cache", "external-alias") {
+		t.Fatalf("expected scoped copy exclusion for aliased cache subdir, got %q", relativeRoot)
+	}
+	req.Cache = cacheOptions
+	req.Language = language.Auto
+	scopedRoots := captureScopedWorkspacePaths(t)
+	_, err = (&Service{Registry: language.NewRegistry()}).newAnalysisPipeline(context.Background(), req)
+	if !errors.Is(err, language.ErrNoMatch) {
+		t.Fatalf("expected empty registry to stop before cache initialization, got %v", err)
+	}
+	if len(*scopedRoots) != 1 {
+		t.Fatalf("expected one scoped workspace, got %#v", *scopedRoots)
+	}
+	if _, statErr := os.Stat((*scopedRoots)[0]); !os.IsNotExist(statErr) {
+		t.Fatalf("expected failed pipeline setup to clean scoped workspace, stat err=%v", statErr)
+	}
+	assertCacheLayoutAbsent(t, cacheRoot)
+	assertCacheLayoutAbsent(t, repo)
+}
+
 func TestServiceAnalyseScopedAndUnscopedPinnedCacheEntriesDoNotCollide(t *testing.T) {
 	repo := writeScopedCacheFixture(t)
-	pinnedCachePath, err := ResolveTrustedDefaultCachePath(repo)
+	cacheOptions, err := ResolveTrustedDefaultCacheOptions(repo, false)
 	if err != nil {
-		t.Fatalf("resolve trusted default cache path: %v", err)
+		t.Fatalf("resolve trusted default cache options: %v", err)
 	}
 
 	baseReq := Request{
 		RepoPath:   repo,
 		Dependency: "lodash",
 		Language:   "js-ts",
-		Cache: &CacheOptions{
-			Enabled:    true,
-			PinnedPath: pinnedCachePath,
-		},
+		Cache:      cacheOptions,
 	}
 	scopedReq := baseReq
 	scopedReq.IncludePatterns = []string{"src/**"}
+	assertScopedCacheRun(t, baseReq, 1, 1, 1, 0)
+	assertScopedCacheRun(t, scopedReq, 1, 1, 1, 0)
+	assertScopedCacheRun(t, baseReq, 0, 0, 0, 1)
+	assertScopedCacheRun(t, scopedReq, 0, 0, 0, 1)
+}
 
-	unscopedFirst, err := NewService().Analyse(context.Background(), baseReq)
+func assertScopedCacheRun(t *testing.T, req Request, wantMisses, wantWrites, wantCallsDelta, wantHits int) {
+	t.Helper()
+	result, err := NewService().Analyse(context.Background(), req)
 	if err != nil {
-		t.Fatalf("first unscoped analyse: %v", err)
+		t.Fatalf("analyse: %v", err)
 	}
-	if unscopedFirst.Cache == nil || unscopedFirst.Cache.Misses != 1 || unscopedFirst.Cache.Writes != 1 {
-		t.Fatalf("expected first unscoped run to miss and write, got %#v", unscopedFirst.Cache)
-	}
-
-	scopedFirst, err := NewService().Analyse(context.Background(), scopedReq)
-	if err != nil {
-		t.Fatalf("first scoped analyse: %v", err)
-	}
-	if scopedFirst.Cache == nil || scopedFirst.Cache.Misses != 1 || scopedFirst.Cache.Writes != 1 {
-		t.Fatalf("expected first scoped run to miss and write its own entry, got %#v", scopedFirst.Cache)
-	}
-
-	unscopedSecond, err := NewService().Analyse(context.Background(), baseReq)
-	if err != nil {
-		t.Fatalf("second unscoped analyse: %v", err)
-	}
-	if unscopedSecond.Cache == nil || unscopedSecond.Cache.Hits != 1 || unscopedSecond.Cache.Misses != 0 {
-		t.Fatalf("expected second unscoped run to hit its original entry, got %#v", unscopedSecond.Cache)
-	}
-
-	scopedSecond, err := NewService().Analyse(context.Background(), scopedReq)
-	if err != nil {
-		t.Fatalf("second scoped analyse: %v", err)
-	}
-	if scopedSecond.Cache == nil || scopedSecond.Cache.Hits != 1 || scopedSecond.Cache.Misses != 0 {
-		t.Fatalf("expected second scoped run to hit its scoped entry, got %#v", scopedSecond.Cache)
+	if result.Cache == nil || result.Cache.Misses != wantMisses || result.Cache.Writes != wantWrites || result.Cache.Hits != wantHits {
+		t.Fatalf("unexpected scoped cache metadata: %#v", result.Cache)
 	}
 }
 
@@ -884,17 +1184,39 @@ func captureScopedWorkspacePath(t *testing.T) *string {
 	return scopedRoot
 }
 
+func captureScopedWorkspacePaths(t *testing.T) *[]string {
+	t.Helper()
+	scopedRoots := &[]string{}
+	previous := scopeWorkspaceCreatedFn
+	scopeWorkspaceCreatedFn = func(path string) {
+		*scopedRoots = append(*scopedRoots, path)
+	}
+	t.Cleanup(func() {
+		scopeWorkspaceCreatedFn = previous
+	})
+	return scopedRoots
+}
+
 func assertScopedCacheInitUsesRepoRoot(t *testing.T, repo string, scopedRoot *string) {
 	t.Helper()
 	previous := cacheInitBeforeObjectsEnsureFn
 	cacheInitBeforeObjectsEnsureFn = func() error {
-		if *scopedRoot == "" {
-			t.Fatalf("expected scoped workspace path before cache initialization")
-		}
 		assertScopedRootExcludesCacheDir(t, *scopedRoot, defaultAnalysisCacheDirName)
 		if _, err := os.Stat(filepath.Join(repo, defaultAnalysisCacheDirName, cacheKeysDirName)); err != nil {
 			t.Fatalf("expected repo-root cache keys dir during cache init: %v", err)
 		}
+		return nil
+	}
+	t.Cleanup(func() {
+		cacheInitBeforeObjectsEnsureFn = previous
+	})
+}
+
+func assertScopedCacheInitExcludesCacheDir(t *testing.T, scopedRoot *string, relativeCachePath string) {
+	t.Helper()
+	previous := cacheInitBeforeObjectsEnsureFn
+	cacheInitBeforeObjectsEnsureFn = func() error {
+		assertScopedRootExcludesCacheDir(t, *scopedRoot, relativeCachePath)
 		return nil
 	}
 	t.Cleanup(func() {
@@ -915,6 +1237,13 @@ func assertScopedRootExcludesCacheDir(t *testing.T, scopedRoot string, relativeC
 	t.Helper()
 	if scopedRoot == "" {
 		t.Fatalf("expected scoped workspace to be created")
+	}
+	info, err := os.Stat(scopedRoot)
+	if err != nil {
+		t.Fatalf("expected scoped workspace %q to exist before cache initialization: %v", scopedRoot, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected scoped workspace %q to be a directory", scopedRoot)
 	}
 	if _, err := os.Stat(filepath.Join(scopedRoot, relativeCachePath)); !os.IsNotExist(err) {
 		t.Fatalf("expected scoped workspace cache root %q to remain absent, stat err=%v", relativeCachePath, err)
@@ -1234,6 +1563,90 @@ func TestServiceAppliesScopeBeforeResolve(t *testing.T) {
 	}
 }
 
+func TestServiceAnalyseRepositoryViewPreservesUnsafeJVMSymlinkWarningsWithoutOutsideReads(t *testing.T) {
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	writeFile(t, filepath.Join(repo, buildGradleFileName), `
+dependencies {
+  implementation("org.junit.jupiter:junit-jupiter-api:5.10.0")
+  implementation("com.outside:secret:1.0.0")
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", "main", "java", "App.java"), `
+import org.junit.jupiter.api.Assertions;
+class App { void run() { Assertions.assertTrue(true); } }
+`)
+	writeFile(t, filepath.Join(outsideDir, "Outside.java"), `
+import com.outside.SecretApi;
+class Outside { void use() { SecretApi.call(); } }
+`)
+	if err := os.Symlink(filepath.Join("..", "..", "..", "..", filepath.Base(outsideDir), "Outside.java"), filepath.Join(repo, "src", "main", "java", "Outside.java")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	service := NewService()
+	direct, err := service.Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Language:   "jvm",
+		Dependency: "secret",
+		TopN:       10,
+	})
+	if err != nil {
+		t.Fatalf("analyse direct repo: %v", err)
+	}
+
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("resolve trusted repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	defer func() {
+		if closeErr := view.Close(); closeErr != nil {
+			t.Errorf("close repository view: %v", closeErr)
+		}
+	}()
+
+	withView, err := service.Analyse(context.Background(), Request{
+		RepoPath:       repo,
+		Repository:     repository,
+		RepositoryView: view,
+		Language:       "jvm",
+		Dependency:     "secret",
+		TopN:           10,
+	})
+	if err != nil {
+		t.Fatalf("analyse through repository view: %v", err)
+	}
+
+	const sourceWarning = "skipped JVM source symlink src/main/java/Outside.java: target escapes repo root"
+	const summaryWarning = "skipped 1 unreadable or untrusted JVM source symlink(s)"
+	assertContainsWarning(t, direct.Warnings, sourceWarning)
+	assertContainsWarning(t, direct.Warnings, summaryWarning)
+	assertContainsWarning(t, withView.Warnings, sourceWarning)
+	assertContainsWarning(t, withView.Warnings, summaryWarning)
+	if countWarningsMatching(direct.Warnings, sourceWarning) != 1 {
+		t.Fatalf("expected one direct symlink warning, got %#v", direct.Warnings)
+	}
+	if countWarningsMatching(withView.Warnings, sourceWarning) != 1 {
+		t.Fatalf("expected one repository-view symlink warning, got %#v", withView.Warnings)
+	}
+	if hasDependencyByLanguageAndName(direct, "jvm", "secret") {
+		t.Fatalf("expected direct analysis to ignore outside source content, got %#v", direct.Dependencies)
+	}
+	if hasDependencyByLanguageAndName(withView, "jvm", "secret") {
+		t.Fatalf("expected repository-view analysis to ignore outside source content, got %#v", withView.Dependencies)
+	}
+	if findDependencyByLanguageAndName(t, direct, "jvm", "junit-jupiter-api").UsedExportsCount == 0 {
+		t.Fatalf("expected direct in-repo dependency usage, got %#v", direct.Dependencies)
+	}
+	if findDependencyByLanguageAndName(t, withView, "jvm", "junit-jupiter-api").UsedExportsCount == 0 {
+		t.Fatalf("expected repository-view in-repo dependency usage, got %#v", withView.Dependencies)
+	}
+}
+
 func hasRecommendationCode(dep report.DependencyReport, code string) bool {
 	for _, rec := range dep.Recommendations {
 		if rec.Code == code {
@@ -1317,4 +1730,44 @@ func (f *findingsAdapter) Analyse(context.Context, language.Request) (report.Rep
 			},
 		},
 	}, nil
+}
+
+func assertContainsWarning(t *testing.T, warnings []string, want string) {
+	t.Helper()
+	for _, warning := range warnings {
+		if warning == want {
+			return
+		}
+	}
+	t.Fatalf("expected warning %q in %#v", want, warnings)
+}
+
+func countWarningsMatching(warnings []string, want string) int {
+	count := 0
+	for _, warning := range warnings {
+		if warning == want {
+			count++
+		}
+	}
+	return count
+}
+
+func findDependencyByLanguageAndName(t *testing.T, reportData report.Report, languageID, name string) report.DependencyReport {
+	t.Helper()
+	for _, dependency := range reportData.Dependencies {
+		if dependency.Language == languageID && dependency.Name == name {
+			return dependency
+		}
+	}
+	t.Fatalf("expected dependency %s/%s in %#v", languageID, name, reportData.Dependencies)
+	return report.DependencyReport{}
+}
+
+func hasDependencyByLanguageAndName(reportData report.Report, languageID, name string) bool {
+	for _, dependency := range reportData.Dependencies {
+		if dependency.Language == languageID && dependency.Name == name {
+			return true
+		}
+	}
+	return false
 }

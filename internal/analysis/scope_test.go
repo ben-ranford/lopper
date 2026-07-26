@@ -18,7 +18,7 @@ func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	writeScopeFile(t, filepath.Join(repo, "src", "skip.test.js"), "export const skip = true\n")
 	writeScopeFile(t, filepath.Join(repo, "README.md"), "doc\n")
 
-	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, []string{"**/*.test.js"})
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, []string{"**/*.test.js"}, "")
 	if err != nil {
 		t.Fatalf("apply path scope: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestGlobMatchSupportsDoubleStar(t *testing.T) {
 
 func TestApplyPathScopeNoPatternsReturnsOriginalPath(t *testing.T) {
 	repo := t.TempDir()
-	scopedPath, warnings, cleanup, err := applyPathScope(repo, nil, nil)
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, nil, nil, "")
 	if err != nil {
 		t.Fatalf("apply path scope without patterns: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 		t.Skipf("symlink unsupported in test environment: %v", err)
 	}
 
-	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil, "")
 	if err != nil {
 		t.Fatalf("apply path scope: %v", err)
 	}
@@ -133,42 +133,13 @@ func TestApplyPathScopeSkipsPinnedCacheDirAndToleratesConcurrentCacheWrites(t *t
 	repo := t.TempDir()
 	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
 	writeScopeFile(t, filepath.Join(repo, defaultAnalysisCacheDirName, "objects", "seed.json"), "{\"cached\":true}\n")
-
-	stopWrites := make(chan struct{})
-	writeErrs := make(chan error, 1)
-	var writer sync.WaitGroup
-	writer.Add(1)
-	go func() {
-		defer writer.Done()
-		for i := 0; i < 64; i++ {
-			select {
-			case <-stopWrites:
-				return
-			default:
-			}
-			path := filepath.Join(repo, defaultAnalysisCacheDirName, "objects", "concurrent", strings.Repeat("x", i%4+1)+".json")
-			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-				select {
-				case writeErrs <- err:
-				default:
-				}
-				return
-			}
-			if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
-				select {
-				case writeErrs <- err:
-				default:
-				}
-				return
-			}
-		}
-	}()
+	stopWrites, writeErrs, waitWrites := startConcurrentScopeCacheWrites(repo)
 	defer func() {
 		close(stopWrites)
-		writer.Wait()
+		waitWrites()
 	}()
 
-	scopedPath, _, cleanup, err := applyPathScope(repo, []string{"**"}, nil)
+	scopedPath, _, cleanup, err := applyPathScope(repo, []string{"**"}, nil, "")
 	if err != nil {
 		t.Fatalf("apply path scope with pinned cache dir present: %v", err)
 	}
@@ -184,6 +155,60 @@ func TestApplyPathScopeSkipsPinnedCacheDirAndToleratesConcurrentCacheWrites(t *t
 	case err := <-writeErrs:
 		t.Fatalf("concurrent cache write failed: %v", err)
 	default:
+	}
+}
+
+func startConcurrentScopeCacheWrites(repo string) (chan struct{}, chan error, func()) {
+	stopWrites := make(chan struct{})
+	writeErrs := make(chan error, 1)
+	var writer sync.WaitGroup
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+		for i := 0; i < 64; i++ {
+			select {
+			case <-stopWrites:
+				return
+			default:
+			}
+			path := filepath.Join(repo, defaultAnalysisCacheDirName, "objects", "concurrent", strings.Repeat("x", i%4+1)+".json")
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				reportScopeWriteError(writeErrs, err)
+				return
+			}
+			if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+				reportScopeWriteError(writeErrs, err)
+				return
+			}
+		}
+	}()
+	return stopWrites, writeErrs, writer.Wait
+}
+
+func reportScopeWriteError(writeErrs chan error, err error) {
+	select {
+	case writeErrs <- err:
+	default:
+	}
+}
+
+func TestApplyPathScopeSkipsConfiguredPinnedCacheDir(t *testing.T) {
+	repo := t.TempDir()
+	cacheRoot := filepath.Join(".cache", "lopper")
+	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	writeScopeFile(t, filepath.Join(repo, cacheRoot, "objects", "seed.json"), "{\"cached\":true}\n")
+
+	scopedPath, _, cleanup, err := applyPathScope(repo, []string{"**"}, nil, cacheRoot)
+	if err != nil {
+		t.Fatalf("apply path scope with configured cache dir present: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
+		t.Fatalf("expected in-scope file copied into scoped workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scopedPath, cacheRoot)); !os.IsNotExist(err) {
+		t.Fatalf("expected configured pinned cache dir to be excluded from scoped workspace, got err=%v", err)
 	}
 }
 
@@ -269,4 +294,8 @@ func writeScopeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+func TestNoOpCleanupReturnsSafely(t *testing.T) {
+	noOpCleanup()
 }

@@ -17,7 +17,7 @@ func TestScopeNoOpCleanupIsCallable(t *testing.T) {
 }
 
 func TestScopeApplyPathScopeReturnsWalkErrorForMissingRepo(t *testing.T) {
-	_, _, _, err := applyPathScope(filepath.Join(t.TempDir(), "missing"), []string{scopeJSGlob}, nil)
+	_, _, _, err := applyPathScope(filepath.Join(t.TempDir(), "missing"), []string{scopeJSGlob}, nil, "")
 	if err == nil {
 		t.Fatalf("expected missing repo to fail applyPathScope")
 	}
@@ -68,10 +68,10 @@ func TestScopePatternCompileAndTempWorkspaceFailures(t *testing.T) {
 	if _, err := compileGlobPatterns([]string{invalidPattern}); err == nil {
 		t.Fatalf("expected invalid utf-8 pattern to fail compilation")
 	}
-	if _, _, _, err := applyPathScope(t.TempDir(), []string{invalidPattern}, nil); err == nil {
+	if _, _, _, err := applyPathScope(t.TempDir(), []string{invalidPattern}, nil, ""); err == nil {
 		t.Fatalf("expected include pattern compile error")
 	}
-	if _, _, _, err := applyPathScope(t.TempDir(), nil, []string{invalidPattern}); err == nil {
+	if _, _, _, err := applyPathScope(t.TempDir(), nil, []string{invalidPattern}, ""); err == nil {
 		t.Fatalf("expected exclude pattern compile error")
 	}
 
@@ -81,7 +81,7 @@ func TestScopePatternCompileAndTempWorkspaceFailures(t *testing.T) {
 		t.Fatalf("write tmp file: %v", err)
 	}
 	t.Setenv("TMPDIR", tmpFile)
-	if _, _, _, err := applyPathScope(t.TempDir(), []string{scopeJSGlob}, nil); err == nil {
+	if _, _, _, err := applyPathScope(t.TempDir(), []string{scopeJSGlob}, nil, ""); err == nil {
 		t.Fatalf("expected temp workspace creation to fail")
 	}
 }

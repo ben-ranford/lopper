@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/mcp"
@@ -244,6 +246,124 @@ func TestExecuteMCPMutationRejectsDirtyWorktree(t *testing.T) {
 	}
 }
 
+func TestExecuteMCPMutationUsesCapturedRepoACleanlinessAfterSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("open-directory replacement semantics are not available on Windows")
+	}
+	repo, _ := setupMCPGitLodashFixture(t)
+	writeTextFile(t, filepath.Join(repo, "README.md"), "dirty repo a\n", 0o600)
+	repoB := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-repo-b")
+	if err := os.Mkdir(repoB, 0o750); err != nil {
+		t.Fatalf("mkdir repo B: %v", err)
+	}
+	writeTextFile(t, filepath.Join(repoB, "identity.txt"), "clean repo b\n", 0o600)
+	initGitRepo(t, repoB)
+	movedRepoA := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-repo-a-original")
+	viewOpens := 0
+	restore := analysis.SetRepositoryViewHandleOpenedHookForTest(func() error {
+		viewOpens++
+		return repositorySwapHook(repo, movedRepoA, repoB)()
+	})
+	t.Cleanup(restore)
+	viewCloses := 0
+	restoreClose := analysis.SetRepositoryViewCloseHookForTest(func() error {
+		viewCloses++
+		return nil
+	})
+	t.Cleanup(restoreClose)
+
+	response := executeMCPTool(t, "lopper_apply_codemod", map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"confirmApply": true,
+		"cacheEnabled": false,
+	})
+	if response.Result == nil || !response.Result.IsError {
+		t.Fatalf("expected captured dirty repo A rejection, got %#v", response)
+	}
+	if !strings.Contains(response.Result.Content[0].Text, "clean git worktree") {
+		t.Fatalf("expected dirty-worktree error, got %#v", response.Result.Content)
+	}
+	if viewOpens != 1 {
+		t.Fatalf("repository view opens = %d, want 1", viewOpens)
+	}
+	if viewCloses != 1 {
+		t.Fatalf("repository view closes = %d, want 1", viewCloses)
+	}
+}
+
+func TestExecuteMCPMutationTransfersSinglePolicyViewAcrossRepositorySwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("open-directory replacement semantics are not available on Windows")
+	}
+	repo, _ := setupMCPGitLodashFixture(t)
+	writeTextFile(t, filepath.Join(repo, ".lopper.yml"), "thresholds:\n  low_confidence_warning_percent: 17\n", 0o600)
+	testutil.RunGit(t, repo, "add", ".lopper.yml")
+	testutil.RunGit(t, repo, "commit", "-m", "add policy")
+
+	parent := filepath.Dir(repo)
+	repoB := filepath.Join(parent, filepath.Base(repo)+"-repo-b")
+	if err := os.Mkdir(repoB, 0o750); err != nil {
+		t.Fatalf("mkdir repo B: %v", err)
+	}
+	writeTextFile(t, filepath.Join(repoB, indexJSFile), "repo-b must remain unchanged\n", 0o644)
+	movedRepoA := filepath.Join(parent, filepath.Base(repo)+"-repo-a-original")
+	viewOpens := 0
+	restore := analysis.SetRepositoryViewHandleOpenedHookForTest(func() error {
+		viewOpens++
+		if viewOpens != 1 {
+			return nil
+		}
+		if err := os.Rename(repo, movedRepoA); err != nil {
+			return err
+		}
+		return os.Rename(repoB, repo)
+	})
+	t.Cleanup(restore)
+	viewCloses := 0
+	restoreClose := analysis.SetRepositoryViewCloseHookForTest(func() error {
+		viewCloses++
+		return nil
+	})
+	t.Cleanup(restoreClose)
+
+	response := executeMCPTool(t, "lopper_apply_codemod", map[string]any{
+		"repoPath":      repo,
+		"dependency":    "lodash",
+		"confirmApply":  true,
+		"cacheEnabled":  false,
+		"timeoutMillis": 10000,
+	})
+	if response.Result == nil || response.Result.IsError {
+		t.Fatalf("expected successful retained-view mutation, got %#v", response)
+	}
+	if viewOpens != 1 {
+		t.Fatalf("repository view opens = %d, want 1", viewOpens)
+	}
+	if viewCloses != 1 {
+		t.Fatalf("repository view closes = %d, want 1", viewCloses)
+	}
+	var payload struct {
+		BackupPath string `json:"backupPath"`
+	}
+	decodeMCPStructuredContent(t, response, &payload)
+	if !strings.Contains(readTextFile(t, filepath.Join(movedRepoA, indexJSFile)), "lodash/map") {
+		t.Fatal("expected codemod write in moved repo A")
+	}
+	if got := readTextFile(t, filepath.Join(repo, indexJSFile)); got != "repo-b must remain unchanged\n" {
+		t.Fatalf("replacement repo B source changed: %q", got)
+	}
+	if payload.BackupPath == "" {
+		t.Fatal("expected rollback artifact path")
+	}
+	if _, err := os.Stat(filepath.Join(movedRepoA, filepath.FromSlash(payload.BackupPath))); err != nil {
+		t.Fatalf("expected rollback artifact in moved repo A: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".artifacts")); !os.IsNotExist(err) {
+		t.Fatalf("replacement repo B received artifacts: %v", err)
+	}
+}
+
 func TestMCPMutationPinnedCachePathSurvivesSymlinkRetargetBeforeFirstWrite(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory replacement semantics are covered on Unix")
@@ -268,13 +388,10 @@ func TestMCPMutationPinnedCachePathSurvivesSymlinkRetargetBeforeFirstWrite(t *te
 		t.Fatalf("resolve trusted cache options: %v", err)
 	}
 	req := newMCPAnalyseRequest(mcp.AnalysisMutationRequest{
-		RepoPath:        repo,
-		Dependency:      "lodash",
-		Language:        "js-ts",
-		CacheEnabled:    cacheOptions.Enabled,
-		CachePath:       cacheOptions.Path,
-		CachePinnedPath: cacheOptions.PinnedPath,
-		CacheReadOnly:   cacheOptions.ReadOnly,
+		RepoPath:   repo,
+		Dependency: "lodash",
+		Language:   "js-ts",
+		Cache:      cacheOptions,
 	})
 	req.Analyse.Thresholds = thresholds.Defaults()
 
@@ -298,6 +415,224 @@ func TestMCPMutationPinnedCachePathSurvivesSymlinkRetargetBeforeFirstWrite(t *te
 	if _, err := os.Stat(filepath.Join(redirectedTarget, "cache")); !os.IsNotExist(err) {
 		t.Fatalf("expected retargeted outside cache root to remain absent, got err=%v", err)
 	}
+}
+
+func TestMCPMutationStagesRemainBoundAfterRepositoryReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("open-directory replacement semantics are not available on Windows")
+	}
+	t.Run("codemod and rollback", testMCPMutationCodemodAndRollbackRemainBound)
+	t.Run("baseline write", testMCPMutationBaselineWriteRemainsBound)
+}
+
+func testMCPMutationCodemodAndRollbackRemainBound(t *testing.T) {
+	repo, _ := setupMCPGitLodashFixture(t)
+	parent := filepath.Dir(repo)
+	repoB := filepath.Join(parent, filepath.Base(repo)+"-repo-b")
+	if err := os.Mkdir(repoB, 0o750); err != nil {
+		t.Fatalf("mkdir repo B: %v", err)
+	}
+	writeTextFile(t, filepath.Join(repoB, indexJSFile), "repo-b must remain unchanged\n", 0o644)
+	movedRepoA := filepath.Join(parent, filepath.Base(repo)+"-repo-a-original")
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repo A: %v", err)
+	}
+	cacheOptions, err := analysis.ResolveTrustedCacheOptionsForRepository(repository, &analysis.CacheOptions{Enabled: false})
+	if err != nil {
+		t.Fatalf("resolve disabled cache options: %v", err)
+	}
+	analyzer := &retargetingMutationAnalyzer{
+		repo:      repo,
+		movedRepo: movedRepoA,
+		repoB:     repoB,
+		report:    singleLodashSuggestionReport(indexJSFile),
+	}
+	runner := &appMCPMutationRunner{app: &App{Analyzer: analyzer, Formatter: report.NewFormatter()}}
+	reportData, err := runner.ApplyCodemod(context.Background(), mcp.AnalysisMutationRequest{
+		RepoPath:   repo,
+		Repository: repository,
+		Dependency: "lodash",
+		Language:   "js-ts",
+		Cache:      cacheOptions,
+		Thresholds: thresholds.Defaults(),
+		AllowDirty: false,
+	})
+	if err != nil {
+		t.Fatalf("apply codemod after repository replacement: %v", err)
+	}
+	if analyzer.lastRequest.RepositoryView == nil {
+		t.Fatalf("expected analyzer request to retain repository view")
+	}
+	if got := readTextFile(t, filepath.Join(movedRepoA, indexJSFile)); !strings.Contains(got, "lodash/map") {
+		t.Fatalf("expected codemod write in moved repo A, got %q", got)
+	}
+	if got := readTextFile(t, filepath.Join(repo, indexJSFile)); got != "repo-b must remain unchanged\n" {
+		t.Fatalf("expected repo B source to remain untouched, got %q", got)
+	}
+	apply := requireCodemodApplyReport(t, reportData)
+	if apply.BackupPath == "" {
+		t.Fatalf("expected rooted rollback artifact, report=%#v", reportData)
+	}
+	if _, err := os.Stat(filepath.Join(movedRepoA, filepath.FromSlash(apply.BackupPath))); err != nil {
+		t.Fatalf("expected rollback artifact in moved repo A: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".artifacts")); !os.IsNotExist(err) {
+		t.Fatalf("expected replacement repo B to receive no artifacts, stat err=%v", err)
+	}
+}
+
+func testMCPMutationBaselineWriteRemainsBound(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	if err := os.Mkdir(repo, 0o750); err != nil {
+		t.Fatalf("mkdir repo A: %v", err)
+	}
+	writeTextFile(t, filepath.Join(repo, "identity.txt"), "repo-a\n", 0o644)
+	repoB := filepath.Join(parent, "repo-b")
+	if err := os.Mkdir(repoB, 0o750); err != nil {
+		t.Fatalf("mkdir repo B: %v", err)
+	}
+	writeTextFile(t, filepath.Join(repoB, "identity.txt"), "repo-b\n", 0o644)
+	repoBBaseline := report.BaselineSnapshotPath(filepath.Join(repoB, ".artifacts", "baselines"), "manual-retarget")
+	if err := os.MkdirAll(filepath.Dir(repoBBaseline), 0o750); err != nil {
+		t.Fatalf("mkdir repo B baseline trap: %v", err)
+	}
+	writeTextFile(t, repoBBaseline, "{malformed repo-b baseline", 0o600)
+	movedRepoA := filepath.Join(parent, "repo-a-original")
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repo A: %v", err)
+	}
+	cacheOptions, err := analysis.ResolveTrustedCacheOptionsForRepository(repository, &analysis.CacheOptions{Enabled: false})
+	if err != nil {
+		t.Fatalf("resolve disabled cache options: %v", err)
+	}
+	analyzer := &retargetingMutationAnalyzer{
+		repo:      repo,
+		movedRepo: movedRepoA,
+		repoB:     repoB,
+		report: report.Report{
+			SchemaVersion: report.SchemaVersion,
+			RepoPath:      repo,
+			Dependencies:  []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 1, UsedPercent: 100}},
+		},
+	}
+	runner := &appMCPMutationRunner{app: &App{Analyzer: analyzer, Formatter: report.NewFormatter()}}
+	storePath := filepath.Join(repo, ".artifacts", "baselines")
+	_, _, err = runner.SaveBaseline(context.Background(), mcp.AnalysisMutationRequest{
+		RepoPath:          repo,
+		Repository:        repository,
+		TopN:              1,
+		Language:          "js-ts",
+		Cache:             cacheOptions,
+		Thresholds:        thresholds.Defaults(),
+		BaselineStorePath: storePath,
+		BaselineKey:       "manual-retarget",
+	})
+	if err != nil {
+		t.Fatalf("save baseline after repository replacement: %v", err)
+	}
+	expectedSnapshot := report.BaselineSnapshotPath(filepath.Join(movedRepoA, ".artifacts", "baselines"), "manual-retarget")
+	if _, err := os.Stat(expectedSnapshot); err != nil {
+		t.Fatalf("expected baseline in moved repo A: %v", err)
+	}
+	if got := readTextFile(t, filepath.Join(repo, ".artifacts", "baselines", filepath.Base(repoBBaseline))); got != "{malformed repo-b baseline" {
+		t.Fatalf("expected replacement repo B baseline trap to remain untouched, got %q", got)
+	}
+}
+
+func TestRepositoryAwareAnalysisAndBaselineGuardBranches(t *testing.T) {
+	removedRepo := filepath.Join(t.TempDir(), "removed-repo")
+	if err := os.Mkdir(removedRepo, 0o750); err != nil {
+		t.Fatalf("mkdir removable repository: %v", err)
+	}
+	removedAuthorization, err := analysis.ResolveTrustedRepository(removedRepo)
+	if err != nil {
+		t.Fatalf("authorize removable repository: %v", err)
+	}
+	if err := os.Remove(removedRepo); err != nil {
+		t.Fatalf("remove authorized repository: %v", err)
+	}
+	executeRequest := DefaultRequest()
+	executeRequest.RepoPath = removedRepo
+	executeRequest.Analyse.repository = removedAuthorization
+	if _, err := (&App{}).executeAnalyse(context.Background(), executeRequest); err == nil {
+		t.Fatal("expected removed authorized repository rejection before analysis")
+	}
+
+	repo := t.TempDir()
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := analysis.OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close trusted repository: %v", err)
+		}
+	})
+	now := time.Date(2026, time.July, 26, 0, 0, 0, 0, time.UTC)
+	reportData := report.Report{SchemaVersion: report.SchemaVersion, RepoPath: repo}
+	application := &App{}
+
+	externalStore := filepath.Join(t.TempDir(), "baselines")
+	externalRequest := AnalyseRequest{
+		SaveBaseline:      true,
+		BaselineStorePath: externalStore,
+		BaselineKey:       "external",
+	}
+	if _, err := application.saveBaselineIfNeededWithRepository(reportData, repo, externalRequest, now, view); err != nil {
+		t.Fatalf("save genuine external baseline with repository view: %v", err)
+	}
+	if _, err := os.Stat(report.BaselineSnapshotPath(externalStore, "external")); err != nil {
+		t.Fatalf("inspect genuine external baseline: %v", err)
+	}
+
+	inRepoRequest := AnalyseRequest{
+		SaveBaseline:      true,
+		BaselineStorePath: filepath.Join(repo, ".artifacts", "baselines"),
+	}
+	if _, err := application.saveBaselineIfNeededWithRepository(reportData, repo, inRepoRequest, now, view); err == nil {
+		t.Fatal("expected missing rooted baseline key rejection")
+	}
+	inRepoRequest.BaselineKey = "rooted"
+	if _, err := application.saveBaselineIfNeededWithRepository(reportData, repo, inRepoRequest, now, view); err != nil {
+		t.Fatalf("save rooted baseline: %v", err)
+	}
+	if _, err := application.saveBaselineIfNeededWithRepository(reportData, repo, inRepoRequest, now, view); err == nil {
+		t.Fatal("expected immutable rooted baseline duplicate rejection")
+	}
+
+	if err := view.Close(); err != nil {
+		t.Fatalf("close trusted repository before write: %v", err)
+	}
+	inRepoRequest.BaselineKey = "closed"
+	if _, err := application.saveBaselineIfNeededWithRepository(reportData, repo, inRepoRequest, now, view); err == nil {
+		t.Fatal("expected rooted baseline write through closed repository view to fail")
+	}
+}
+
+type retargetingMutationAnalyzer struct {
+	repo        string
+	movedRepo   string
+	repoB       string
+	report      report.Report
+	lastRequest analysis.Request
+}
+
+func (a *retargetingMutationAnalyzer) Analyse(_ context.Context, req analysis.Request) (report.Report, error) {
+	a.lastRequest = req
+	if err := os.Rename(a.repo, a.movedRepo); err != nil {
+		return report.Report{}, err
+	}
+	if err := os.Rename(a.repoB, a.repo); err != nil {
+		return report.Report{}, err
+	}
+	return a.report, nil
 }
 
 func TestExecuteMCPReadOnlyToolRejectsMutationArguments(t *testing.T) {
@@ -331,6 +666,37 @@ func TestMCPMutationRunnerHelperBranches(t *testing.T) {
 	}
 	if got := savedSnapshotPath([]string{"unrelated warning"}, baselineSaveWarningPrefix); got != "" {
 		t.Fatalf("expected no saved snapshot path, got %q", got)
+	}
+}
+
+func TestMCPMutationCaptureDoesNotOverwriteAuthorizedCapturedState(t *testing.T) {
+	codemodErr := errors.New("captured codemod sentinel")
+	lockfileErr := errors.New("captured lockfile sentinel")
+	request := mcp.AnalysisMutationRequest{
+		RepoPath:                    t.TempDir(),
+		CurrentBaselineKey:          "commit:authorized",
+		CurrentBaselineKeyCaptured:  true,
+		ApplyCodemod:                true,
+		CodemodPrecondition:         codemodErr,
+		CodemodPreconditionCaptured: true,
+		LockfileWarnings:            []string{"captured warning"},
+		LockfileDriftErr:            lockfileErr,
+		LockfileDriftCaptured:       true,
+		Thresholds:                  thresholds.Defaults(),
+	}
+	captured, err := (&appMCPMutationRunner{}).CaptureAnalysisState(context.Background(), request)
+	if err != nil {
+		t.Fatalf("capture analysis state: %v", err)
+	}
+	if captured.CurrentBaselineKey != request.CurrentBaselineKey || !captured.CurrentBaselineKeyCaptured {
+		t.Fatalf("current commit capture was overwritten: %#v", captured)
+	}
+	if !errors.Is(captured.CodemodPrecondition, codemodErr) || !captured.CodemodPreconditionCaptured {
+		t.Fatalf("codemod capture was overwritten: %#v", captured.CodemodPrecondition)
+	}
+	if !errors.Is(captured.LockfileDriftErr, lockfileErr) || !captured.LockfileDriftCaptured ||
+		len(captured.LockfileWarnings) != 1 || captured.LockfileWarnings[0] != request.LockfileWarnings[0] {
+		t.Fatalf("lockfile capture was overwritten: %#v", captured)
 	}
 }
 

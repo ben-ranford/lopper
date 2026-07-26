@@ -186,3 +186,34 @@ func TestLoadDashboardConfigEmptyPath(t *testing.T) {
 		t.Fatalf("expected empty loaded config, got %#v", loaded)
 	}
 }
+
+func TestDashboardRoutingOptionsCopiesOwnershipConfig(t *testing.T) {
+	config := dashboard.ConfigOwnership{
+		DefaultOwner:  "security",
+		DefaultTeam:   "platform",
+		DefaultDue:    "2026-08-15",
+		DefaultStatus: "triage",
+		Rules: []dashboard.ConfigOwnershipRule{{
+			Repo:       "api",
+			PathPrefix: "services/api",
+			Category:   "vulnerability",
+			Dependency: "lib",
+			Owner:      "owner",
+			Team:       "team",
+			Due:        "2026-08-01",
+			Status:     "assigned",
+		}},
+	}
+
+	got := dashboardRoutingOptions(config)
+	if got.DefaultOwner != config.DefaultOwner || got.DefaultTeam != config.DefaultTeam || got.DefaultDue != config.DefaultDue || got.DefaultStatus != config.DefaultStatus {
+		t.Fatalf("expected defaults to be copied, got %#v", got)
+	}
+	if len(got.Rules) != 1 {
+		t.Fatalf("expected one routing rule, got %#v", got.Rules)
+	}
+	rule := got.Rules[0]
+	if rule.Repo != "api" || rule.PathPrefix != "services/api" || rule.Category != "vulnerability" || rule.Dependency != "lib" || rule.Owner != "owner" || rule.Team != "team" || rule.Due != "2026-08-01" || rule.Status != "assigned" {
+		t.Fatalf("unexpected routing rule conversion: %#v", rule)
+	}
+}

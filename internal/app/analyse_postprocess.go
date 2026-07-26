@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/advisory"
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
@@ -45,6 +46,23 @@ func (a *App) applyBaselineIfNeeded(reportData report.Report, repoPath string, r
 	return reportData, nil
 }
 
+func (a *App) applyBaselineIfNeededWithRepository(reportData report.Report, repoPath string, req AnalyseRequest, repository *analysis.RepositoryView) (report.Report, error) {
+	if repository == nil {
+		return a.applyBaselineIfNeeded(reportData, repoPath, req)
+	}
+	boundRequest := req
+	var err error
+	boundRequest.BaselinePath, err = repository.SnapshotPath(req.BaselinePath)
+	if err != nil {
+		return reportData, err
+	}
+	boundRequest.BaselineStorePath, err = repository.SnapshotPath(req.BaselineStorePath)
+	if err != nil {
+		return reportData, err
+	}
+	return a.applyBaselineIfNeeded(reportData, repoPath, boundRequest)
+}
+
 func isBootstrapableMissingBaseline(req AnalyseRequest, err error) bool {
 	if !req.SaveBaseline {
 		return false
@@ -61,28 +79,75 @@ func isBootstrapableMissingBaseline(req AnalyseRequest, err error) bool {
 	return true
 }
 
+func currentBaselineKeyForAnalyse(repoPath string, req AnalyseRequest) string {
+	if req.currentBaselineKeyCaptured {
+		return strings.TrimSpace(req.currentBaselineKey)
+	}
+	if req.repositoryView != nil {
+		return ""
+	}
+	return resolveCurrentBaselineKey(repoPath)
+}
+
 func resolveBaselineComparisonPaths(repoPath string, req AnalyseRequest) (string, string, string, bool, error) {
+	currentKey := currentBaselineKeyForAnalyse(repoPath, req)
 	if strings.TrimSpace(req.BaselinePath) != "" {
-		return strings.TrimSpace(req.BaselinePath), "", resolveCurrentBaselineKey(repoPath), true, nil
+		return strings.TrimSpace(req.BaselinePath), "", currentKey, true, nil
 	}
 
-	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromAnalyse(req), report.ResolveBaselineSnapshotPath)
+	return resolveBaselineStoreComparisonPaths(currentKey, baselineKeyRequestFromAnalyse(req), report.ResolveBaselineSnapshotPath)
 }
 
 func (a *App) saveBaselineIfNeeded(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
-	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[report.Report]{
-		enabled:       req.SaveBaseline,
-		repoPath:      repoPath,
-		req:           baselineKeyRequestFromAnalyse(req),
-		keyName:       "baseline",
-		now:           now,
-		save:          report.SaveSnapshot,
-		appendWarning: appendBaselineSaveWarning,
-	})
+	return a.saveBaselineIfNeededWithRepository(reportData, repoPath, req, now, nil)
+}
+
+func (a *App) saveBaselineIfNeededWithRepository(reportData report.Report, repoPath string, req AnalyseRequest, now time.Time, repository *analysis.RepositoryView) (report.Report, error) {
+	if repository == nil || !req.SaveBaseline {
+		return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[report.Report]{
+			enabled:       req.SaveBaseline,
+			repoPath:      repoPath,
+			currentKey:    currentBaselineKeyForAnalyse(repoPath, req),
+			req:           baselineKeyRequestFromAnalyse(req),
+			keyName:       "baseline",
+			now:           now,
+			save:          report.SaveSnapshot,
+			appendWarning: appendBaselineSaveWarning,
+		})
+	}
+	relativeStore, inRepository := repository.RepositoryRelativePath(req.BaselineStorePath)
+	if !inRepository {
+		return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[report.Report]{
+			enabled:       true,
+			repoPath:      repoPath,
+			currentKey:    currentBaselineKeyForAnalyse(repoPath, req),
+			req:           baselineKeyRequestFromAnalyse(req),
+			keyName:       "baseline",
+			now:           now,
+			save:          report.SaveSnapshot,
+			appendWarning: appendBaselineSaveWarning,
+		})
+	}
+	saveKey, err := resolveBaselineSaveKey(currentBaselineKeyForAnalyse(repoPath, req), baselineKeyRequestFromAnalyse(req), "baseline")
+	if err != nil {
+		return reportData, err
+	}
+	root, err := repository.OpenWriteRoot(".", false)
+	if err != nil {
+		return reportData, err
+	}
+	savedPath, saveErr := report.SaveSnapshotWithinRoot(root, relativeStore, repository.DisplayPath(relativeStore), saveKey, reportData, now)
+	if closeErr := root.Close(); closeErr != nil {
+		saveErr = errors.Join(saveErr, closeErr)
+	}
+	if saveErr != nil {
+		return reportData, saveErr
+	}
+	return appendBaselineSaveWarning(reportData, savedPath), nil
 }
 
 func resolveSaveBaselineKey(repoPath string, req AnalyseRequest) (string, error) {
-	return resolveBaselineSaveKey(repoPath, baselineKeyRequestFromAnalyse(req), "baseline")
+	return resolveBaselineSaveKey(currentBaselineKeyForAnalyse(repoPath, req), baselineKeyRequestFromAnalyse(req), "baseline")
 }
 
 type baselineKeyRequest struct {
@@ -107,7 +172,7 @@ func baselineKeyRequestFromDashboard(resolved resolvedDashboardRequest) baseline
 	}
 }
 
-func resolveBaselineStoreComparisonPaths(repoPath string, req baselineKeyRequest, snapshotPath func(string, string) string) (string, string, string, bool, error) {
+func resolveBaselineStoreComparisonPaths(currentKey string, req baselineKeyRequest, snapshotPath func(string, string) string) (string, string, string, bool, error) {
 	storePath := strings.TrimSpace(req.storePath)
 	if storePath == "" {
 		return "", "", "", false, nil
@@ -115,28 +180,28 @@ func resolveBaselineStoreComparisonPaths(repoPath string, req baselineKeyRequest
 
 	baselineKey := strings.TrimSpace(req.key)
 	if baselineKey == "" {
-		baselineKey = resolveCurrentBaselineKey(repoPath)
+		baselineKey = strings.TrimSpace(currentKey)
 	}
 	if baselineKey == "" {
 		return "", "", "", false, fmt.Errorf("baseline key is required when using --baseline-store")
 	}
 
-	return snapshotPath(storePath, baselineKey), baselineKey, resolveCurrentBaselineKey(repoPath), true, nil
+	return snapshotPath(storePath, baselineKey), baselineKey, strings.TrimSpace(currentKey), true, nil
 }
 
-func resolveBaselineSaveTarget(repoPath string, req baselineKeyRequest, keyName string) (string, string, error) {
+func resolveBaselineSaveTarget(currentKey string, req baselineKeyRequest, keyName string) (string, string, error) {
 	storePath := strings.TrimSpace(req.storePath)
 	if storePath == "" {
 		return "", "", fmt.Errorf("--save-baseline requires --baseline-store")
 	}
-	saveKey, err := resolveBaselineSaveKey(repoPath, req, keyName)
+	saveKey, err := resolveBaselineSaveKey(currentKey, req, keyName)
 	if err != nil {
 		return "", "", err
 	}
 	return storePath, saveKey, nil
 }
 
-func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName string) (string, error) {
+func resolveBaselineSaveKey(currentKey string, req baselineKeyRequest, keyName string) (string, error) {
 	if label := strings.TrimSpace(req.label); label != "" {
 		return "label:" + label, nil
 	}
@@ -144,16 +209,16 @@ func resolveBaselineSaveKey(repoPath string, req baselineKeyRequest, keyName str
 		return key, nil
 	}
 
-	key := resolveCurrentBaselineKey(repoPath)
-	if key == "" {
+	if strings.TrimSpace(currentKey) == "" {
 		return "", fmt.Errorf("unable to resolve git commit for %s key; pass --baseline-label or --baseline-key", keyName)
 	}
-	return key, nil
+	return strings.TrimSpace(currentKey), nil
 }
 
 type immutableBaselineSaveConfig[T any] struct {
 	enabled       bool
 	repoPath      string
+	currentKey    string
 	req           baselineKeyRequest
 	keyName       string
 	now           time.Time
@@ -166,7 +231,7 @@ func saveImmutableBaselineSnapshot[T any](reportData T, cfg immutableBaselineSav
 		return reportData, nil
 	}
 
-	storePath, saveKey, err := resolveBaselineSaveTarget(cfg.repoPath, cfg.req, cfg.keyName)
+	storePath, saveKey, err := resolveBaselineSaveTarget(cfg.currentKey, cfg.req, cfg.keyName)
 	if err != nil {
 		return reportData, err
 	}
@@ -186,7 +251,11 @@ func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (repo
 	if strings.TrimSpace(req.AdvisorySourcePath) == "" {
 		return reportData, nil
 	}
-	advisories, err := advisory.Load(req.AdvisorySourcePath)
+	loadPath := strings.TrimSpace(req.advisoryLoadPath)
+	if loadPath == "" {
+		loadPath = req.AdvisorySourcePath
+	}
+	advisories, err := advisory.Load(loadPath)
 	if err != nil {
 		return reportData, err
 	}

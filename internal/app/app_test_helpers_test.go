@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
-	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/notify"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/ui"
@@ -137,24 +136,4 @@ func writeBlockedFile(t *testing.T, path string) {
 	if err := os.WriteFile(path, []byte("blocked"), 0o600); err != nil {
 		t.Fatalf("write blocker: %v", err)
 	}
-}
-
-func mustEnabledPreviewFeatureSet(t *testing.T) featureflags.Set {
-	t.Helper()
-	registry, err := featureflags.NewRegistry([]featureflags.Flag{{
-		Code:      "LOP-FEAT-0001",
-		Name:      "dart-source-attribution",
-		Lifecycle: featureflags.LifecyclePreview,
-	}})
-	if err != nil {
-		t.Fatalf("new feature registry: %v", err)
-	}
-	features, err := registry.Resolve(featureflags.ResolveOptions{
-		Channel: featureflags.ChannelDev,
-		Enable:  []string{"dart-source-attribution"},
-	})
-	if err != nil {
-		t.Fatalf("resolve feature set: %v", err)
-	}
-	return features
 }

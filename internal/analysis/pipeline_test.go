@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -148,6 +149,472 @@ func TestAnalysisPipelineCacheMetadataNil(t *testing.T) {
 	pipeline := &analysisPipeline{}
 	if got := pipeline.cacheMetadata(); got != nil {
 		t.Fatalf("expected nil cache metadata, got %#v", got)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceAndCleanupWithOwnedRepositoryView(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	runtimeStatePath := runtimeTracePath + ".state.json"
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	writeFile(t, runtimeStatePath, "{\"captured\":true}\n")
+
+	cleanupCalled := 0
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		ownsRepository:    true,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+		cleanupFn: func() {
+			cleanupCalled++
+		},
+	}
+
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("persist runtime trace: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no runtime trace persistence warnings, got %#v", warnings)
+	}
+
+	if data, err := os.ReadFile(filepath.Join(repo, "trace", "runtime.ndjson")); err != nil || string(data) != "{\"module\":\"lodash/map\"}\n" {
+		t.Fatalf("persist runtime trace report: data=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(repo, "trace", "runtime.ndjson.state.json")); err != nil || string(data) != "{\"captured\":true}\n" {
+		t.Fatalf("persist runtime trace state: data=%q err=%v", data, err)
+	}
+
+	snapshotPath := view.ExecutionPath()
+	if err := pipeline.cleanup(); err != nil {
+		t.Fatalf("pipeline cleanup: %v", err)
+	}
+	if cleanupCalled != 1 {
+		t.Fatalf("expected cleanupFn once, got %d", cleanupCalled)
+	}
+	if _, err := os.Stat(snapshotPath); !os.IsNotExist(err) {
+		t.Fatalf("expected owned repository view cleanup to remove snapshot, stat err=%v", err)
+	}
+}
+
+func TestAnalysisPipelineCleanupWithoutOwnedRepositoryViewAndRuntimeTraceSkip(t *testing.T) {
+	cleanupCalled := 0
+	pipeline := &analysisPipeline{
+		executionRepoPath: t.TempDir(),
+		cleanupFn: func() {
+			cleanupCalled++
+		},
+	}
+
+	warnings, err := pipeline.persistRuntimeTrace(filepath.Join(t.TempDir(), "outside", "runtime.ndjson"))
+	if err != nil {
+		t.Fatalf("unexpected external runtime trace persistence error: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no external runtime trace persistence warnings, got %#v", warnings)
+	}
+
+	if err := pipeline.cleanup(); err != nil {
+		t.Fatalf("pipeline cleanup without owned repository view: %v", err)
+	}
+	if cleanupCalled != 1 {
+		t.Fatalf("expected cleanupFn once without owned repository view, got %d", cleanupCalled)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceRefusesSymlinkedRepositoryTarget(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "trace-target"), 0o750); err != nil {
+		t.Fatalf("mkdir trace target: %v", err)
+	}
+	if err := os.Symlink("trace-target", filepath.Join(repo, "trace")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace-target", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+	}
+	_, err = pipeline.persistRuntimeTrace(filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson"))
+	if err == nil || !strings.Contains(err.Error(), "persist requested runtime trace") {
+		t.Fatalf("expected symlinked repository target persistence error, got %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repo, "trace-target", "runtime.ndjson")); !os.IsNotExist(err) {
+		t.Fatalf("symlinked repository trace target was written: %v", err)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceSurfacesMissingExplicitTrace(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+	}
+	_, err = pipeline.persistRuntimeTrace(filepath.Join(view.ExecutionPath(), "trace", "missing.ndjson"))
+	if err == nil || !strings.Contains(err.Error(), "persist requested runtime trace") {
+		t.Fatalf("expected missing trace persistence error, got %v", err)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceAllowsMissingDefaultTrace(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test"},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(filepath.Join(view.ExecutionPath(), "trace", "missing.ndjson"))
+	if err != nil {
+		t.Fatalf("expected missing default trace persistence to stay best-effort, got %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for missing default trace persistence, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceAllowsDefaultWriteFailure(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	if err := os.MkdirAll(filepath.Join(repo, "trace", "runtime.ndjson"), 0o750); err != nil {
+		t.Fatalf("mkdir blocking runtime trace path: %v", err)
+	}
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test"},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("expected default trace write failure to stay best-effort, got %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for default trace write failure, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceSurfacesExplicitWriteFailure(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	if err := os.MkdirAll(filepath.Join(repo, "trace", "runtime.ndjson"), 0o750); err != nil {
+		t.Fatalf("mkdir blocking runtime trace path: %v", err)
+	}
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+	}
+	_, err = pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err == nil || !strings.Contains(err.Error(), "persist requested runtime trace") {
+		t.Fatalf("expected explicit runtime trace write failure, got %v", err)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceExplicitlyAllowsMissingState(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("persist explicit runtime trace without state: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for missing explicit state file, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceWarnsWhenExplicitStateWriteFails(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	writeFile(t, runtimeTracePath+".state.json", "{\"captured\":true}\n")
+	if err := os.MkdirAll(filepath.Join(repo, "trace", "runtime.ndjson.state.json"), 0o750); err != nil {
+		t.Fatalf("mkdir blocking state path: %v", err)
+	}
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("persist explicit runtime trace with blocked state path: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "runtime trace state was not persisted") {
+		t.Fatalf("expected explicit state write warning, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceWarnsWhenExplicitStateReadFails(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	if err := os.MkdirAll(runtimeTracePath+".state.json", 0o750); err != nil {
+		t.Fatalf("mkdir state directory in execution snapshot: %v", err)
+	}
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test", RuntimeTracePathExplicit: true},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("persist explicit runtime trace with unreadable state path: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "runtime trace state was not persisted") {
+		t.Fatalf("expected explicit state read warning, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceAllowsDefaultStateWriteFailure(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	writeFile(t, runtimeTracePath+".state.json", "{\"captured\":true}\n")
+	if err := os.MkdirAll(filepath.Join(repo, "trace", "runtime.ndjson.state.json"), 0o750); err != nil {
+		t.Fatalf("mkdir blocking state path: %v", err)
+	}
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test"},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("expected default state write failure to stay best-effort, got %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for default state write failure, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceAllowsDefaultStateReadFailure(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	runtimeTracePath := filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")
+	writeFile(t, runtimeTracePath, "{\"module\":\"lodash/map\"}\n")
+	if err := os.MkdirAll(runtimeTracePath+".state.json", 0o750); err != nil {
+		t.Fatalf("mkdir state directory in execution snapshot: %v", err)
+	}
+
+	pipeline := &analysisPipeline{
+		executionRepoPath: view.ExecutionPath(),
+		repositoryView:    view,
+		request:           Request{RuntimeTestCommand: "npm test"},
+	}
+	warnings, err := pipeline.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		t.Fatalf("expected default state read failure to stay best-effort, got %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for default state read failure, got %#v", warnings)
+	}
+}
+
+func TestAnalysisPipelinePersistRuntimeTraceNoopsWithoutCaptureContext(t *testing.T) {
+	if warnings, err := (*analysisPipeline)(nil).persistRuntimeTrace("trace.ndjson"); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected nil pipeline runtime trace noop, warnings=%#v err=%v", warnings, err)
+	}
+	pipeline := &analysisPipeline{}
+	if warnings, err := pipeline.persistRuntimeTrace("trace.ndjson"); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected missing repository view runtime trace noop, warnings=%#v err=%v", warnings, err)
+	}
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open trusted repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+	pipeline = &analysisPipeline{repositoryView: view}
+	if warnings, err := pipeline.persistRuntimeTrace(""); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected blank runtime trace noop, warnings=%#v err=%v", warnings, err)
+	}
+	if warnings, err := pipeline.persistRuntimeTrace(filepath.Join(view.ExecutionPath(), "trace", "runtime.ndjson")); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected missing runtime command noop, warnings=%#v err=%v", warnings, err)
+	}
+	pipeline.request.RuntimeTestCommand = "npm test"
+	if warnings, err := pipeline.persistRuntimeTrace(view.ExecutionPath()); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected repository-root runtime trace noop, warnings=%#v err=%v", warnings, err)
+	}
+	if warnings, err := pipeline.persistRuntimeTrace(filepath.Join(t.TempDir(), "outside", "runtime.ndjson")); err != nil || len(warnings) != 0 {
+		t.Fatalf("expected external runtime trace noop, warnings=%#v err=%v", warnings, err)
+	}
+}
+
+func TestRemapAnalyzedRootsMapsExecutionRootToAuthorizedRepository(t *testing.T) {
+	got := remapAnalyzedRoots([]string{"/execution-snapshot"}, "/execution-snapshot", "/authorized-repo")
+	if len(got) != 1 || got[0] != "/authorized-repo" {
+		t.Fatalf("remapped execution root = %#v, want authorized repository root", got)
 	}
 }
 

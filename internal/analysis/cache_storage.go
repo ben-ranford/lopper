@@ -131,8 +131,21 @@ func (c *analysisCache) openStoreWriteRoot() (*safeio.WriteRoot, error) {
 }
 
 func (c *analysisCache) openPinnedWriteRoot() (_ *safeio.WriteRoot, err error) {
+	if c == nil {
+		return nil, errors.New("analysis cache is required")
+	}
+	if c.writeRootOpener != nil {
+		root, err := c.writeRootOpener()
+		if err != nil {
+			return nil, err
+		}
+		if err := c.validateOpenedWriteRoot(root); err != nil {
+			return nil, errors.Join(err, root.Close())
+		}
+		return root, nil
+	}
 	rootPath := c.pinnedWritePath()
-	if c == nil || c.writeRootInfo == nil {
+	if c.writeRootInfo == nil {
 		rootPath, err = resolvePathWithinExistingTree(rootPath)
 		if err != nil {
 			return nil, err

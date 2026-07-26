@@ -24,8 +24,9 @@ type cacheDigestInput struct {
 }
 
 type cacheInputDigestMemoKey struct {
-	normalizedRoot  string
-	cleanConfigPath string
+	normalizedRoot          string
+	cleanConfigIdentityPath string
+	cleanConfigContentPath  string
 }
 
 func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
@@ -44,12 +45,12 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 		"topN":           req.TopN,
 		"suggestOnly":    req.SuggestOnly,
 		"runtimeProfile": req.RuntimeProfile,
-		"configPath":     strings.TrimSpace(req.ConfigPath),
+		"configPath":     stableConfigCachePath(req),
 	}
 	if command := strings.TrimSpace(req.RuntimeTestCommand); command != "" {
 		baseKey["runtimeTestCommand"] = command
 		baseKey["runtimeTracePathExplicit"] = req.RuntimeTracePathExplicit
-		if tracePath := cleanRuntimeTracePath(req.RuntimeTracePath); tracePath != "" {
+		if tracePath := stableRuntimeTraceCachePath(req); tracePath != "" {
 			baseKey["runtimeTracePath"] = tracePath
 		}
 	}
@@ -76,7 +77,7 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
-	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath)
+	inputDigest, err := c.memoizedInputDigest(normalizedRoot, stableConfigCachePath(req), req.ConfigPath)
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
@@ -87,18 +88,19 @@ func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot stri
 	}, nil
 }
 
-func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string, error) {
+func (c *analysisCache) memoizedInputDigest(rootPath, configIdentityPath, configContentPath string) (string, error) {
 	if c.inputDigestMemo == nil {
 		c.inputDigestMemo = make(map[cacheInputDigestMemoKey]string)
 	}
 	memoKey := cacheInputDigestMemoKey{
-		normalizedRoot:  filepath.Clean(rootPath),
-		cleanConfigPath: cleanConfigPath(configPath),
+		normalizedRoot:          filepath.Clean(rootPath),
+		cleanConfigIdentityPath: cleanConfigPath(configIdentityPath),
+		cleanConfigContentPath:  cleanConfigPath(configContentPath),
 	}
 	if digest, ok := c.inputDigestMemo[memoKey]; ok {
 		return digest, nil
 	}
-	digest, err := c.computeInputDigest(memoKey.normalizedRoot, memoKey.cleanConfigPath)
+	digest, err := c.computeInputDigestWithConfigIdentity(memoKey.normalizedRoot, memoKey.cleanConfigIdentityPath, memoKey.cleanConfigContentPath)
 	if err != nil {
 		return "", err
 	}
@@ -107,6 +109,10 @@ func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string
 }
 
 func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
+	return c.computeInputDigestWithConfigIdentity(rootPath, configPath, configPath)
+}
+
+func (c *analysisCache) computeInputDigestWithConfigIdentity(rootPath, configIdentityPath, configContentPath string) (string, error) {
 	rootPath = filepath.Clean(rootPath)
 	files, err := c.collectRelevantFiles(rootPath)
 	if err != nil {
@@ -121,11 +127,12 @@ func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string,
 		})
 	}
 
-	cleanedConfigPath := cleanConfigPath(configPath)
-	if cleanedConfigPath != "" {
+	cleanedConfigIdentityPath := cleanConfigPath(configIdentityPath)
+	cleanedConfigContentPath := cleanConfigPath(configContentPath)
+	if cleanedConfigContentPath != "" {
 		inputs = append(inputs, cacheDigestInput{
-			sortKey:      "config\x00" + cleanedConfigPath,
-			path:         cleanedConfigPath,
+			sortKey:      "config\x00" + cleanedConfigIdentityPath,
+			path:         cleanedConfigContentPath,
 			allowMissing: true,
 		})
 	}
@@ -154,6 +161,20 @@ func cleanRuntimeTracePath(tracePath string) string {
 		return ""
 	}
 	return filepath.Clean(strings.TrimSpace(tracePath))
+}
+
+func stableConfigCachePath(req Request) string {
+	if strings.TrimSpace(req.ConfigCachePath) != "" {
+		return cleanConfigPath(req.ConfigCachePath)
+	}
+	return cleanConfigPath(req.ConfigPath)
+}
+
+func stableRuntimeTraceCachePath(req Request) string {
+	if strings.TrimSpace(req.RuntimeTraceCachePath) != "" {
+		return cleanRuntimeTracePath(req.RuntimeTraceCachePath)
+	}
+	return cleanRuntimeTracePath(req.RuntimeTracePath)
 }
 
 func normalizeCacheLanguage(languageID string) string {

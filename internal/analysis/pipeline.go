@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,17 +22,20 @@ const (
 )
 
 type analysisPipeline struct {
-	service          *Service
-	request          Request
-	repoPath         string
-	analysisRepoPath string
-	scopeWarnings    []string
-	cleanupFn        func()
-	candidates       []language.Candidate
-	cache            *analysisCache
-	reports          []report.Report
-	warnings         []string
-	analyzedRoots    []string
+	service           *Service
+	request           Request
+	repoPath          string
+	executionRepoPath string
+	analysisRepoPath  string
+	repositoryView    *RepositoryView
+	ownsRepository    bool
+	scopeWarnings     []string
+	cleanupFn         func()
+	candidates        []language.Candidate
+	cache             *analysisCache
+	reports           []report.Report
+	warnings          []string
+	analyzedRoots     []string
 }
 
 func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analysisPipeline, error) {
@@ -39,41 +43,193 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 	if err != nil {
 		return nil, err
 	}
-	if req.Cache != nil && strings.TrimSpace(req.Cache.PinnedPath) != "" {
-		req.Cache, err = ResolveTrustedCacheOptions(repoPath, req.Cache)
+	repository, err := resolvePipelineRepository(repoPath, req)
+	if err != nil {
+		return nil, err
+	}
+	req.Repository = repository
+	req.Cache, err = normalizePipelineCacheOptions(repoPath, req)
+	if err != nil {
+		return nil, err
+	}
+	repositoryView, ownsRepository, err := resolvePipelineRepositoryView(ctx, repoPath, req)
+	if err != nil {
+		return nil, err
+	}
+	executionRepoPath := repositoryView.ExecutionPath()
+	req.RepositoryView = repositoryView
+	req.RepoPath = repositoryView.StablePath(executionRepoPath)
+	req.ConfigCachePath = repositoryView.StablePath(req.ConfigPath)
+	req.RuntimeTraceCachePath = repositoryView.StablePath(req.RuntimeTracePath)
+	req.ConfigPath, err = repositoryView.SnapshotPath(req.ConfigPath)
+	if err != nil {
+		if ownsRepository {
+			err = errors.Join(err, repositoryView.Close())
+		}
+		return nil, err
+	}
+	if req.RuntimeTracePathExplicit {
+		req.RuntimeTracePath, err = repositoryView.SnapshotPath(req.RuntimeTracePath)
 		if err != nil {
+			if ownsRepository {
+				err = errors.Join(err, repositoryView.Close())
+			}
 			return nil, err
 		}
 	}
-	req.RepoPath = repoPath
 
 	req.ScopeMode = normalizeScopeMode(req.ScopeMode)
-	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScope(repoPath, req.IncludePatterns, req.ExcludePatterns)
+	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScope(executionRepoPath, req.IncludePatterns, req.ExcludePatterns, pinnedScopedCacheRoot(req.Cache))
 	if err != nil {
+		if ownsRepository {
+			err = errors.Join(err, repositoryView.Close())
+		}
 		return nil, err
 	}
 	candidates, err := s.resolveCandidates(ctx, analysisRepoPath, req)
 	if err != nil {
 		cleanupFn()
+		if ownsRepository {
+			err = errors.Join(err, repositoryView.Close())
+		}
 		return nil, err
 	}
 
 	return &analysisPipeline{
-		service:          s,
-		request:          req,
-		repoPath:         repoPath,
-		analysisRepoPath: analysisRepoPath,
-		scopeWarnings:    scopeWarnings,
-		cleanupFn:        cleanupFn,
-		candidates:       candidates,
-		cache:            newAnalysisCache(req, analysisRepoPath),
+		service:           s,
+		request:           req,
+		repoPath:          repoPath,
+		executionRepoPath: executionRepoPath,
+		analysisRepoPath:  analysisRepoPath,
+		repositoryView:    repositoryView,
+		ownsRepository:    ownsRepository,
+		scopeWarnings:     scopeWarnings,
+		cleanupFn:         cleanupFn,
+		candidates:        candidates,
+		cache:             newAnalysisCache(req, analysisRepoPath, repositoryView),
 	}, nil
 }
 
-func (p *analysisPipeline) cleanup() {
+func (p *analysisPipeline) cleanup() error {
 	if p.cleanupFn != nil {
 		p.cleanupFn()
 	}
+	if p.ownsRepository && p.repositoryView != nil {
+		return p.repositoryView.Close()
+	}
+	return nil
+}
+
+func normalizePipelineCacheOptions(repoPath string, req Request) (*CacheOptions, error) {
+	if req.Cache == nil {
+		return ResolveTrustedDefaultCacheOptionsForRepository(req.Repository, false)
+	}
+	if !req.Cache.Enabled {
+		return req.Cache, nil
+	}
+	if strings.TrimSpace(req.Cache.Path) == "" && !req.Cache.hasTrustedPin() {
+		return ResolveTrustedDefaultCacheOptionsForRepository(req.Repository, req.Cache.ReadOnly)
+	}
+	cacheOptions, err := resolvePipelineCacheOptions(repoPath, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateTrustedScopedCacheOptions(cacheOptions, req.IncludePatterns, req.ExcludePatterns); err != nil {
+		return nil, err
+	}
+	return cacheOptions, nil
+}
+
+func resolvePipelineCacheOptions(repoPath string, req Request) (*CacheOptions, error) {
+	if req.Repository == nil {
+		repository, err := resolvePipelineRepository(repoPath, req)
+		if err != nil {
+			return nil, err
+		}
+		req.Repository = repository
+	} else if err := useTrustedRepository(repoPath, req.Repository); err != nil {
+		return nil, err
+	}
+	if req.Cache.hasTrustedPin() {
+		if req.Cache.trustedPin.repositoryState != req.Repository.authorizationState() {
+			return nil, errors.New("trusted cache pin does not match repository authorization")
+		}
+		return useTrustedCacheOptions(repoPath, req.Cache)
+	}
+	cacheOptions, err := ResolveTrustedCacheOptionsForRepository(req.Repository, req.Cache)
+	if err == nil {
+		return cacheOptions, nil
+	}
+	if AuthenticatedExternalCacheOptions(cacheOptions, err) {
+		return cacheOptions, nil
+	}
+	return nil, err
+}
+
+func resolvePipelineRepository(repoPath string, req Request) (*RepositoryAuthorization, error) {
+	if req.Repository != nil {
+		if err := useTrustedRepository(repoPath, req.Repository); err != nil {
+			return nil, err
+		}
+		return req.Repository, nil
+	}
+	if req.Cache.hasTrustedPin() {
+		repository := newRepositoryAuthorization(req.Cache.trustedPin.repositoryState)
+		if err := useTrustedRepository(repoPath, repository); err != nil {
+			return nil, err
+		}
+		return repository, nil
+	}
+	return ResolveTrustedRepository(repoPath)
+}
+
+func resolvePipelineRepositoryView(ctx context.Context, repoPath string, req Request) (*RepositoryView, bool, error) {
+	if req.RepositoryView != nil {
+		if !req.RepositoryView.matches(req.Repository) {
+			return nil, false, errors.New("trusted repository view does not match repository authorization")
+		}
+		return req.RepositoryView, false, nil
+	}
+	view, err := OpenTrustedRepository(ctx, req.Repository, repoPath, req.Cache)
+	if err != nil {
+		return nil, false, err
+	}
+	return view, true, nil
+}
+
+// ValidateTrustedScopedCacheOptions rejects authenticated in-repository cache
+// roots that would otherwise be copied into a scoped workspace.
+func ValidateTrustedScopedCacheOptions(cacheOptions *CacheOptions, includePatterns, excludePatterns []string) error {
+	if !patternsUseScopedWorkspace(includePatterns, excludePatterns) || cacheOptions == nil || !cacheOptions.Enabled {
+		return nil
+	}
+	if !scopedCacheTargetsRepositoryRoot(cacheOptions) {
+		return nil
+	}
+	return fmt.Errorf("scoped analysis does not allow cachePath at the repository root because cache keys/objects would be copied into the scoped workspace")
+}
+
+func scopedCacheTargetsRepositoryRoot(cacheOptions *CacheOptions) bool {
+	return InRepoCacheOptions(cacheOptions) && cacheOptions.trustedPin.repoRelativePath == "."
+}
+
+func requestUsesScopedWorkspace(req Request) bool {
+	return patternsUseScopedWorkspace(req.IncludePatterns, req.ExcludePatterns)
+}
+
+func patternsUseScopedWorkspace(includePatterns, excludePatterns []string) bool {
+	return len(normalizePatterns(includePatterns)) > 0 || len(normalizePatterns(excludePatterns)) > 0
+}
+
+func pinnedScopedCacheRoot(cache *CacheOptions) string {
+	if cache == nil || !cache.Enabled || !InRepoCacheOptions(cache) {
+		return ""
+	}
+	relativePath := cache.trustedPin.repoRelativePath
+	if relativePath == "." {
+		return ""
+	}
+	return filepath.Clean(relativePath)
 }
 
 func (p *analysisPipeline) execute(ctx context.Context) error {
@@ -81,14 +237,57 @@ func (p *analysisPipeline) execute(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtimeWarnings, runtimeTracePath, pythonRuntimeTraceCaptured := captureRuntimeTraceIfNeeded(ctx, p.request, p.repoPath, p.cache, p.candidates)
+	runtimeWarnings, runtimeTracePath, pythonRuntimeTraceCaptured := captureRuntimeTraceIfNeeded(ctx, p.request, p.executionRepoPath, p.cache, p.candidates)
+	persistWarnings, err := p.persistRuntimeTrace(runtimeTracePath)
+	if err != nil {
+		return err
+	}
 	p.reports = reports
 	warnings = append(warnings, runtimeWarnings...)
+	warnings = append(warnings, persistWarnings...)
 	p.warnings = warnings
 	p.analyzedRoots = analyzedRoots
 	p.request.RuntimeTracePath = runtimeTracePath
 	p.request.PythonRuntimeTraceCaptured = pythonRuntimeTraceCaptured
 	return nil
+}
+
+func (p *analysisPipeline) persistRuntimeTrace(runtimeTracePath string) ([]string, error) {
+	if p == nil || p.repositoryView == nil || strings.TrimSpace(runtimeTracePath) == "" || strings.TrimSpace(p.request.RuntimeTestCommand) == "" {
+		return nil, nil
+	}
+	relativePath, inRepository := p.repositoryView.RepositoryRelativePath(runtimeTracePath)
+	if !inRepository || !isSafeRepositoryRelativePath(relativePath, false) {
+		return nil, nil
+	}
+	data, err := p.repositoryView.ReadExecutionFile(relativePath)
+	if err != nil {
+		if p.request.RuntimeTracePathExplicit {
+			return nil, fmt.Errorf("persist requested runtime trace %s: %w", p.repositoryView.DisplayPath(relativePath), err)
+		}
+		return nil, nil
+	}
+	if err := p.repositoryView.WriteFile(relativePath, data, 0o600); err != nil {
+		if p.request.RuntimeTracePathExplicit {
+			return nil, fmt.Errorf("persist requested runtime trace %s: %w", p.repositoryView.DisplayPath(relativePath), err)
+		}
+		return nil, nil
+	}
+	stateRelativePath := relativePath + ".state.json"
+	stateData, err := p.repositoryView.ReadExecutionFile(stateRelativePath)
+	if err == nil {
+		if err := p.repositoryView.WriteFile(stateRelativePath, stateData, 0o600); err != nil {
+			if !p.request.RuntimeTracePathExplicit {
+				return nil, nil
+			}
+			return []string{fmt.Sprintf("runtime trace state was not persisted to %s: %v", p.repositoryView.DisplayPath(stateRelativePath), err)}, nil
+		}
+		return nil, nil
+	}
+	if errors.Is(err, os.ErrNotExist) || !p.request.RuntimeTracePathExplicit {
+		return nil, nil
+	}
+	return []string{fmt.Sprintf("runtime trace state was not persisted to %s: %v", p.repositoryView.DisplayPath(stateRelativePath), err)}, nil
 }
 
 func (p *analysisPipeline) finalReport() (report.Report, error) {
@@ -110,6 +309,9 @@ func (p *analysisPipeline) finalReport() (report.Report, error) {
 
 func (p *analysisPipeline) collectWarnings() []string {
 	warnings := append([]string(nil), p.scopeWarnings...)
+	if p.repositoryView != nil {
+		warnings = append(warnings, p.repositoryView.snapshotWarnings()...)
+	}
 	warnings = append(warnings, p.warnings...)
 	if p.cache != nil {
 		warnings = append(warnings, p.cache.takeWarnings()...)
@@ -326,8 +528,12 @@ func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []strin
 	remapped := make([]string, 0, len(roots))
 	for _, root := range roots {
 		rel, err := filepath.Rel(fromRepoPath, root)
-		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
 			remapped = append(remapped, root)
+			continue
+		}
+		if rel == "." {
+			remapped = append(remapped, toRepoPath)
 			continue
 		}
 		remapped = append(remapped, filepath.Join(toRepoPath, rel))

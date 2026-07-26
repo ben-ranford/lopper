@@ -119,6 +119,24 @@ func changedDirectoryTestRoot(t *testing.T) (*fakeRoot, *bool) {
 	return root, &childClosed
 }
 
+func withSameDeviceFileInfoFn(t *testing.T, fn func(Root, Root, fs.FileInfo, fs.FileInfo) bool) {
+	t.Helper()
+	previous := sameDeviceFileInfoFn
+	sameDeviceFileInfoFn = fn
+	t.Cleanup(func() {
+		sameDeviceFileInfoFn = previous
+	})
+}
+
+func withSameDeviceIdentitySupportedFn(t *testing.T, fn func() bool) {
+	t.Helper()
+	previous := sameDeviceIdentitySupportedFn
+	sameDeviceIdentitySupportedFn = fn
+	t.Cleanup(func() {
+		sameDeviceIdentitySupportedFn = previous
+	})
+}
+
 type writeRootFileFunc func(*WriteRoot, string, []byte, os.FileMode, os.FileMode) error
 
 func assertWriteRootRejectsParent(t *testing.T, root *WriteRoot, write writeRootFileFunc, wantError, failureMessage string) {
@@ -796,6 +814,35 @@ func TestOpenExistingCanonicalWriteRootRejectsSymlinkAncestor(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "nested", writeTestFileName)); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no outside file writes, stat err=%v", statErr)
+	}
+}
+
+func TestOpenExistingCanonicalWriteRootRejectsDeviceBoundary(t *testing.T) {
+	withSameDeviceFileInfoFn(t, func(Root, Root, fs.FileInfo, fs.FileInfo) bool { return false })
+
+	dirInfo := statTestPath(t, t.TempDir())
+	withFileSystem(t, &fakeFileSystem{
+		abs: func(path string) (string, error) { return filepath.Clean(path), nil },
+		openRootNoFollow: func(string) (Root, error) {
+			return &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+				openRoot: func(string) (Root, error) {
+					return &fakeRoot{
+						lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+						close: closeWithoutError,
+					}, nil
+				},
+				close: closeWithoutError,
+			}, nil
+		},
+	})
+
+	root, rel, err := OpenExistingCanonicalWriteRoot(filepath.Join(string(os.PathSeparator), "repo", writeTestFileName), false)
+	if root != nil || rel != "" {
+		t.Fatalf("expected rejected canonical write root, got root=%v rel=%q", root, rel)
+	}
+	if err == nil || !strings.Contains(err.Error(), "device boundary") {
+		t.Fatalf("expected device-boundary error, got %v", err)
 	}
 }
 
@@ -1507,6 +1554,29 @@ func TestWriteRootEnsureDirRejectsSymlinkTarget(t *testing.T) {
 	}
 }
 
+func TestWriteRootEnsureDirRejectsDeviceBoundary(t *testing.T) {
+	withSameDeviceFileInfoFn(t, func(Root, Root, fs.FileInfo, fs.FileInfo) bool { return false })
+
+	dirInfo := statTestPath(t, t.TempDir())
+	root := &WriteRoot{
+		root: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+			openRoot: func(string) (Root, error) {
+				return &fakeRoot{
+					lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+					close: closeWithoutError,
+				}, nil
+			},
+		},
+		rootAbs: ".",
+	}
+
+	err := root.EnsureDir(filepath.Join("reports", "nested"), 0o750)
+	if err == nil || !strings.Contains(err.Error(), "device boundary") {
+		t.Fatalf("expected device-boundary ensure-dir error, got %v", err)
+	}
+}
+
 func TestOpenTargetParentChildPropagatesOpenError(t *testing.T) {
 	dirInfo := statTestPath(t, t.TempDir())
 	expectedErr := errors.New("parent open failure")
@@ -1569,6 +1639,36 @@ func TestOpenTargetParentChildRejectsChangedDirectory(t *testing.T) {
 	}
 }
 
+func TestOpenTargetParentChildRejectsDeviceBoundary(t *testing.T) {
+	withSameDeviceFileInfoFn(t, func(Root, Root, fs.FileInfo, fs.FileInfo) bool { return false })
+
+	dirInfo := statTestPath(t, t.TempDir())
+	childClosed := false
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		openRoot: func(string) (Root, error) {
+			return &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+				close: func() error {
+					childClosed = true
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	opened, err := openTargetParentChild(root, "parent", "/root/parent", false, 0)
+	if opened != nil {
+		t.Fatal("expected device-boundary parent root rejection")
+	}
+	if err == nil || !strings.Contains(err.Error(), "device boundary") {
+		t.Fatalf("expected device-boundary error, got %v", err)
+	}
+	if !childClosed {
+		t.Fatal("expected rejected device-boundary root to be closed")
+	}
+}
+
 func TestLstatOrCreateDirectoryPropagatesMkdirError(t *testing.T) {
 	expectedErr := errors.New("mkdir parent failure")
 	root := &fakeRoot{
@@ -1619,6 +1719,29 @@ func TestOpenTargetParentClosesOwnedParentAfterDescendantError(t *testing.T) {
 	}
 	if !ownedClosed {
 		t.Fatal("expected owned parent root to be closed")
+	}
+}
+
+func TestOpenRelativeWriteRootRejectsDeviceBoundary(t *testing.T) {
+	withSameDeviceFileInfoFn(t, func(Root, Root, fs.FileInfo, fs.FileInfo) bool { return false })
+
+	dirInfo := statTestPath(t, t.TempDir())
+	parent := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		openRoot: func(string) (Root, error) {
+			return &fakeRoot{
+				lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+	}
+
+	opened, err := OpenRelativeWriteRoot(parent, "child", false, 0)
+	if opened != nil {
+		t.Fatal("expected device-boundary relative write root rejection")
+	}
+	if err == nil || !strings.Contains(err.Error(), "device boundary") {
+		t.Fatalf("expected device-boundary error, got %v", err)
 	}
 }
 

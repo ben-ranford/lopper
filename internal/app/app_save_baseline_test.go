@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -143,6 +144,78 @@ func TestSaveBaselineIfNeededDisabledNoop(t *testing.T) {
 	}
 	if len(updated.Warnings) != 1 || updated.Warnings[0] != "keep" {
 		t.Fatalf("expected unchanged report on noop save baseline, got %#v", updated)
+	}
+}
+
+func TestSaveBaselineIfNeededWithRepositoryKeepsExternalStoreOnFilesystem(t *testing.T) {
+	repo := t.TempDir()
+	externalStore := t.TempDir()
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := analysis.OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	application := &App{Formatter: report.NewFormatter()}
+	base := report.Report{SchemaVersion: "0.1.0", RepoPath: repo}
+	req := AnalyseRequest{
+		SaveBaseline:      true,
+		BaselineStorePath: externalStore,
+		BaselineLabel:     "nightly",
+	}
+	updated, err := application.saveBaselineIfNeededWithRepository(base, repo, req, testTime(), view)
+	if err != nil {
+		t.Fatalf("save baseline with external store: %v", err)
+	}
+	if len(updated.Warnings) == 0 || !strings.Contains(updated.Warnings[0], externalStore) {
+		t.Fatalf("expected external baseline save warning, got %#v", updated.Warnings)
+	}
+}
+
+func TestSaveBaselineIfNeededWithRepositoryWritesInRepoStoreThroughRetainedView(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := analysis.OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	application := &App{Formatter: report.NewFormatter()}
+	base := report.Report{SchemaVersion: "0.1.0", RepoPath: repo}
+	req := AnalyseRequest{
+		SaveBaseline:      true,
+		BaselineStorePath: filepath.Join(repo, "baselines"),
+		BaselineLabel:     "nightly",
+	}
+	updated, err := application.saveBaselineIfNeededWithRepository(base, repo, req, testTime(), view)
+	if err != nil {
+		t.Fatalf("save baseline with in-repo store: %v", err)
+	}
+	if len(updated.Warnings) == 0 {
+		t.Fatalf("expected in-repo save warning, got %#v", updated.Warnings)
+	}
+	savedPath := strings.TrimPrefix(updated.Warnings[0], "saved immutable baseline snapshot: ")
+	if _, err := os.Stat(savedPath); err != nil {
+		t.Fatalf("expected retained-view baseline snapshot to exist: %v", err)
+	}
+	if !strings.Contains(savedPath, filepath.Join(repo, "baselines")) {
+		t.Fatalf("expected in-repo baseline snapshot path, got %q", savedPath)
 	}
 }
 

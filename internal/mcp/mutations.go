@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -20,34 +21,44 @@ import (
 const MutationToolsFeature = "mcp-mutation-tools"
 
 type MutationRunner interface {
+	CaptureAnalysisState(context.Context, AnalysisMutationRequest) (AnalysisMutationRequest, error)
 	ApplyCodemod(context.Context, AnalysisMutationRequest) (report.Report, error)
 	SaveBaseline(context.Context, AnalysisMutationRequest) (report.Report, string, error)
 	SaveDashboardBaseline(context.Context, DashboardMutationRequest) (dashboard.Report, string, error)
 }
 
 type AnalysisMutationRequest struct {
-	RepoPath          string
-	Dependency        string
-	TopN              int
-	ScopeMode         string
-	Language          string
-	ConfigPath        string
-	IncludePatterns   []string
-	ExcludePatterns   []string
-	CacheEnabled      bool
-	CachePath         string
-	CachePinnedPath   string
-	CacheReadOnly     bool
-	RuntimeProfile    string
-	RuntimeTracePath  string
-	Features          featureflags.Set
-	Thresholds        thresholds.Values
-	PolicySources     []string
-	PolicyTrace       []report.PolicyMergeTrace
-	AllowDirty        bool
-	BaselineStorePath string
-	BaselineKey       string
-	BaselineLabel     string
+	RepoPath   string
+	Repository *analysis.RepositoryAuthorization
+	// RepositoryView is borrowed by MutationRunner. The MCP tool boundary owns
+	// the view and closes it exactly once after runner execution.
+	RepositoryView              *analysis.RepositoryView
+	CurrentBaselineKey          string
+	CurrentBaselineKeyCaptured  bool
+	ApplyCodemod                bool
+	CodemodPrecondition         error
+	CodemodPreconditionCaptured bool
+	LockfileWarnings            []string
+	LockfileDriftErr            error
+	LockfileDriftCaptured       bool
+	Dependency                  string
+	TopN                        int
+	ScopeMode                   string
+	Language                    string
+	ConfigPath                  string
+	IncludePatterns             []string
+	ExcludePatterns             []string
+	Cache                       *analysis.CacheOptions
+	RuntimeProfile              string
+	RuntimeTracePath            string
+	Features                    featureflags.Set
+	Thresholds                  thresholds.Values
+	PolicySources               []string
+	PolicyTrace                 []report.PolicyMergeTrace
+	AllowDirty                  bool
+	BaselineStorePath           string
+	BaselineKey                 string
+	BaselineLabel               string
 }
 
 type DashboardMutationRequest struct {
@@ -207,6 +218,7 @@ func (s *Server) runCodemodApplyTool(ctx context.Context, rawArgs json.RawMessag
 	request.AllowDirty = args.AllowDirty
 
 	reportData, runErr := s.mutationRunner.ApplyCodemod(reqCtx, request)
+	runErr = errors.Join(runErr, request.RepositoryView.Close())
 	payload := shapeCodemodApplyPayload(request, reportData, runErr)
 	if runErr != nil {
 		return mutationToolError(runErr, payload)
@@ -237,15 +249,16 @@ func (s *Server) runBaselineSaveTool(ctx context.Context, rawArgs json.RawMessag
 	if err != nil {
 		return toolError(errorCodeInvalidInput, err)
 	}
-	storePath, key, err := resolveBaselineMutationTarget(request.RepoPath, args.BaselineStorePath, args.BaselineKey, args.BaselineLabel, "baseline")
+	storePath, key, err := resolveBaselineMutationTargetWithCurrentKey(request.RepoPath, args.BaselineStorePath, args.BaselineKey, args.BaselineLabel, "baseline", request.CurrentBaselineKey)
 	if err != nil {
-		return toolError(errorCodeInvalidInput, err)
+		return toolError(errorCodeInvalidInput, errors.Join(err, request.RepositoryView.Close()))
 	}
 	request.BaselineStorePath = storePath
 	request.BaselineKey = key
 	request.BaselineLabel = strings.TrimSpace(args.BaselineLabel)
 
 	reportData, savedPath, runErr := s.mutationRunner.SaveBaseline(reqCtx, request)
+	runErr = errors.Join(runErr, request.RepositoryView.Close())
 	if savedPath == "" {
 		savedPath = report.BaselineSnapshotPath(storePath, key)
 	}
@@ -307,8 +320,8 @@ const (
 	mutationAnalysisKindTopOrDependency mutationAnalysisKind = "top-or-dependency"
 )
 
-func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutationAnalysisArguments, kind mutationAnalysisKind) (AnalysisMutationRequest, error) {
-	repoPath, err := validateRepoPath(args.RepoPath)
+func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutationAnalysisArguments, kind mutationAnalysisKind) (_ AnalysisMutationRequest, returnErr error) {
+	repoPath, repository, err := validateTrustedRepoPath(args.RepoPath)
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
@@ -320,8 +333,21 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
-	analysisArgs := analysisArgsFromMutation(args)
-	loadResult, thresholdsValue, policySources, policyTrace, err := resolveThresholds(repoPath, analysisArgs)
+	cacheOptions, err := resolveMCPAnalysisCacheOptionsForRepository(repository, cacheEnabled(args.CacheEnabled), args.CachePath, args.CacheReadOnly)
+	if err != nil {
+		return AnalysisMutationRequest{}, err
+	}
+
+	repositoryView, err := analysis.OpenTrustedRepositoryWithGitMetadata(ctx, repository, repoPath, cacheOptions)
+	if err != nil {
+		return AnalysisMutationRequest{}, err
+	}
+	defer func() {
+		if repositoryView != nil {
+			returnErr = errors.Join(returnErr, repositoryView.Close())
+		}
+	}()
+	loadResult, thresholdsValue, policySources, policyTrace, err := resolveMutationThresholds(repositoryView, args)
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
@@ -329,34 +355,81 @@ func (s *Server) resolveAnalysisMutationRequest(ctx context.Context, args mutati
 	if err != nil {
 		return AnalysisMutationRequest{}, err
 	}
-	cacheOptions, err := resolveMCPAnalysisCacheOptions(repoPath, cacheEnabled(args.CacheEnabled), args.CachePath, args.CacheReadOnly)
-	if err != nil {
-		return AnalysisMutationRequest{}, err
-	}
 	if err := ctx.Err(); err != nil {
 		return AnalysisMutationRequest{}, err
 	}
+	includePatterns := mergeStringOptions(loadResult.Scope.Include, args.Include)
+	excludePatterns := mergeStringOptions(loadResult.Scope.Exclude, args.Exclude)
+	if err := analysis.ValidateTrustedScopedCacheOptions(cacheOptions, includePatterns, excludePatterns); err != nil {
+		return AnalysisMutationRequest{}, err
+	}
 
+	request := newAnalysisMutationRequest(args, analysisMutationRequestContext{
+		repoPath:      repoPath,
+		repository:    repository,
+		kind:          kind,
+		dependency:    dependency,
+		topN:          topN,
+		scopeMode:     scopeMode,
+		cache:         cacheOptions,
+		loadResult:    loadResult,
+		thresholds:    thresholdsValue,
+		features:      features,
+		policySources: policySources,
+		policyTrace:   policyTrace,
+	})
+	request.RepositoryView = repositoryView
+	request.CurrentBaselineKey, request.CurrentBaselineKeyCaptured = repositoryViewCurrentBaselineKey(repositoryView)
+	capturedRequest, err := s.mutationRunner.CaptureAnalysisState(ctx, request)
+	if err != nil {
+		return AnalysisMutationRequest{}, err
+	}
+	request.CodemodPrecondition = capturedRequest.CodemodPrecondition
+	request.CodemodPreconditionCaptured = capturedRequest.CodemodPreconditionCaptured
+	request.LockfileWarnings = append([]string{}, capturedRequest.LockfileWarnings...)
+	request.LockfileDriftErr = capturedRequest.LockfileDriftErr
+	request.LockfileDriftCaptured = capturedRequest.LockfileDriftCaptured
+	request.IncludePatterns = includePatterns
+	request.ExcludePatterns = excludePatterns
+	repositoryView = nil
+	return request, nil
+}
+
+type analysisMutationRequestContext struct {
+	repoPath      string
+	repository    *analysis.RepositoryAuthorization
+	kind          mutationAnalysisKind
+	dependency    string
+	topN          int
+	scopeMode     string
+	cache         *analysis.CacheOptions
+	loadResult    thresholds.LoadResult
+	thresholds    thresholds.Values
+	features      featureflags.Set
+	policySources []string
+	policyTrace   []report.PolicyMergeTrace
+}
+
+func newAnalysisMutationRequest(args mutationAnalysisArguments, req analysisMutationRequestContext) AnalysisMutationRequest {
 	return AnalysisMutationRequest{
-		RepoPath:         repoPath,
-		Dependency:       dependency,
-		TopN:             topN,
-		ScopeMode:        scopeMode,
+		RepoPath:         req.repoPath,
+		Repository:       req.repository,
+		ApplyCodemod:     req.kind == mutationAnalysisKindDependency,
+		Dependency:       req.dependency,
+		TopN:             req.topN,
+		ScopeMode:        req.scopeMode,
 		Language:         languageOrDefault(args.Language),
-		ConfigPath:       strings.TrimSpace(loadResult.ConfigPath),
-		IncludePatterns:  mergeStringOptions(loadResult.Scope.Include, args.Include),
-		ExcludePatterns:  mergeStringOptions(loadResult.Scope.Exclude, args.Exclude),
-		CacheEnabled:     cacheOptions.Enabled,
-		CachePath:        cacheOptions.Path,
-		CachePinnedPath:  cacheOptions.PinnedPath,
-		CacheReadOnly:    cacheOptions.ReadOnly,
+		ConfigPath:       strings.TrimSpace(req.loadResult.ConfigPath),
+		IncludePatterns:  mergeStringOptions(req.loadResult.Scope.Include, args.Include),
+		ExcludePatterns:  mergeStringOptions(req.loadResult.Scope.Exclude, args.Exclude),
+		Cache:            req.cache,
 		RuntimeProfile:   runtimeProfileOrDefault(args.RuntimeProfile),
 		RuntimeTracePath: strings.TrimSpace(args.RuntimeTracePath),
-		Features:         features,
-		Thresholds:       thresholdsValue,
-		PolicySources:    policySources,
-		PolicyTrace:      policyTrace,
-	}, nil
+		Features:         req.features,
+		Thresholds:       req.thresholds,
+		PolicySources:    append([]string{}, req.policySources...),
+		PolicyTrace:      append([]report.PolicyMergeTrace{}, req.policyTrace...),
+	}
 }
 
 func resolveMutationAnalysisTarget(args mutationAnalysisArguments, kind mutationAnalysisKind) (string, int, error) {
@@ -384,34 +457,71 @@ func resolveMutationAnalysisTarget(args mutationAnalysisArguments, kind mutation
 	}
 }
 
-func analysisArgsFromMutation(args mutationAnalysisArguments) analysisToolArguments {
-	return analysisToolArguments{
-		RepoPath:                          args.RepoPath,
-		Dependency:                        args.Dependency,
-		TopN:                              args.TopN,
-		Language:                          args.Language,
-		ScopeMode:                         args.ScopeMode,
-		ConfigPath:                        args.ConfigPath,
-		Include:                           append([]string{}, args.Include...),
-		Exclude:                           append([]string{}, args.Exclude...),
-		EnableFeatures:                    append([]string{}, args.EnableFeatures...),
-		DisableFeatures:                   append([]string{}, args.DisableFeatures...),
-		CacheEnabled:                      args.CacheEnabled,
-		CachePath:                         args.CachePath,
-		CacheReadOnly:                     args.CacheReadOnly,
-		RuntimeProfile:                    args.RuntimeProfile,
-		RuntimeTracePath:                  args.RuntimeTracePath,
+func resolveMutationThresholds(repositoryView *analysis.RepositoryView, args mutationAnalysisArguments) (thresholds.LoadResult, thresholds.Values, []string, []report.PolicyMergeTrace, error) {
+	loadResult, err := loadThresholdsThroughRepositoryView(repositoryView, strings.TrimSpace(args.ConfigPath))
+	if err != nil {
+		return thresholds.LoadResult{}, thresholds.Values{}, nil, nil, err
+	}
+	return resolveMutationThresholdsFromLoadResult(loadResult, args)
+}
+
+func resolveMutationThresholdsFromLoadResult(loadResult thresholds.LoadResult, args mutationAnalysisArguments) (thresholds.LoadResult, thresholds.Values, []string, []report.PolicyMergeTrace, error) {
+	overrides := thresholds.Overrides{
 		LowConfidenceWarningPercent:       args.LowConfidenceWarningPercent,
 		MinUsagePercentForRecommendations: args.MinUsagePercentForRecommendations,
 		MaxUncertainImportCount:           args.MaxUncertainImportCount,
-		ScoreWeightUsage:                  args.ScoreWeightUsage,
-		ScoreWeightImpact:                 args.ScoreWeightImpact,
-		ScoreWeightConfidence:             args.ScoreWeightConfidence,
-		LicenseDeny:                       append([]string{}, args.LicenseDeny...),
+		RemovalCandidateWeightUsage:       args.ScoreWeightUsage,
+		RemovalCandidateWeightImpact:      args.ScoreWeightImpact,
+		RemovalCandidateWeightConfidence:  args.ScoreWeightConfidence,
+		LicenseDenyList:                   append([]string{}, args.LicenseDeny...),
 		LicenseFailOnDeny:                 args.LicenseFailOnDeny,
-		LicenseProvenanceRegistry:         args.LicenseProvenanceRegistry,
-		TimeoutMillis:                     args.TimeoutMillis,
+		LicenseIncludeRegistryProvenance:  args.LicenseProvenanceRegistry,
 	}
+	return resolveThresholdsFromLoadResult(loadResult, overrides, hasMutationPolicyOverrides(args), mutationPolicyTrace(args))
+}
+
+func hasMutationPolicyOverrides(args mutationAnalysisArguments) bool {
+	return args.LowConfidenceWarningPercent != nil ||
+		args.MinUsagePercentForRecommendations != nil ||
+		args.MaxUncertainImportCount != nil ||
+		args.ScoreWeightUsage != nil ||
+		args.ScoreWeightImpact != nil ||
+		args.ScoreWeightConfidence != nil ||
+		len(args.LicenseDeny) > 0 ||
+		args.LicenseFailOnDeny != nil ||
+		args.LicenseProvenanceRegistry != nil
+}
+
+func mutationPolicyTrace(args mutationAnalysisArguments) []report.PolicyMergeTrace {
+	trace := make([]report.PolicyMergeTrace, 0, 8)
+	if args.LowConfidenceWarningPercent != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.low_confidence_warning_percent", Source: "mcp"})
+	}
+	if args.MinUsagePercentForRecommendations != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.min_usage_percent_for_recommendations", Source: "mcp"})
+	}
+	if args.MaxUncertainImportCount != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "thresholds.max_uncertain_import_count", Source: "mcp"})
+	}
+	if args.ScoreWeightUsage != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.usage", Source: "mcp"})
+	}
+	if args.ScoreWeightImpact != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.impact", Source: "mcp"})
+	}
+	if args.ScoreWeightConfidence != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "removal_candidate_weights.confidence", Source: "mcp"})
+	}
+	if len(args.LicenseDeny) > 0 {
+		trace = append(trace, report.PolicyMergeTrace{Field: "license.deny", Source: "mcp"})
+	}
+	if args.LicenseFailOnDeny != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "license.fail_on_deny", Source: "mcp"})
+	}
+	if args.LicenseProvenanceRegistry != nil {
+		trace = append(trace, report.PolicyMergeTrace{Field: "license.include_registry_provenance", Source: "mcp"})
+	}
+	return trace
 }
 
 func (s *Server) resolveDashboardMutationRequest(ctx context.Context, args dashboardBaselineSaveArguments) (DashboardMutationRequest, error) {
@@ -470,6 +580,10 @@ func validateDashboardMutationRepos(repos []DashboardRepoInput) error {
 }
 
 func resolveBaselineMutationTarget(repoPath, storePath, key, label, keyName string) (string, string, error) {
+	return resolveBaselineMutationTargetWithCurrentKey(repoPath, storePath, key, label, keyName, resolveAuthorizedCurrentBaselineKey(repoPath))
+}
+
+func resolveBaselineMutationTargetWithCurrentKey(repoPath, storePath, key, label, keyName, currentKey string) (string, string, error) {
 	resolvedStorePath, err := resolveLocalMutationPath(repoPath, storePath, "baselineStorePath")
 	if err != nil {
 		return "", "", err
@@ -485,11 +599,10 @@ func resolveBaselineMutationTarget(repoPath, storePath, key, label, keyName stri
 	case trimmedKey != "":
 		return resolvedStorePath, trimmedKey, nil
 	default:
-		currentKey := resolveMutationCurrentBaselineKey(repoPath)
-		if currentKey == "" {
+		if strings.TrimSpace(currentKey) == "" {
 			return "", "", fmt.Errorf("unable to resolve git commit for %s key; pass baselineLabel or baselineKey", keyName)
 		}
-		return resolvedStorePath, currentKey, nil
+		return resolvedStorePath, strings.TrimSpace(currentKey), nil
 	}
 }
 
@@ -510,12 +623,17 @@ func resolveLocalMutationPath(repoPath, rawPath, field string) (string, error) {
 	return filepath.Join(repoPath, trimmed), nil
 }
 
-func resolveMutationCurrentBaselineKey(repoPath string) string {
+func resolveAuthorizedCurrentBaselineKey(repoPath string) string {
+	currentKey, _ := captureAuthorizedCurrentBaselineKey(repoPath)
+	return currentKey
+}
+
+func captureAuthorizedCurrentBaselineKey(repoPath string) (string, bool) {
 	sha, err := workspace.CurrentCommitSHA(repoPath)
 	if err != nil || strings.TrimSpace(sha) == "" {
-		return ""
+		return "", true
 	}
-	return "commit:" + sha
+	return "commit:" + sha, true
 }
 
 func shapeCodemodApplyPayload(req AnalysisMutationRequest, reportData report.Report, err error) codemodApplyPayload {

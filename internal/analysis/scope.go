@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 const maxScopeDiagnostics = 5
@@ -37,6 +38,7 @@ func newScopeStats(includePatterns, excludePatterns []string) *scopeStats {
 type scopeWalker struct {
 	repoPath        string
 	scopedRoot      string
+	skipDir         string
 	includePatterns []string
 	excludePatterns []string
 	includeCompiled []compiledPattern
@@ -49,7 +51,7 @@ type compiledPattern struct {
 	regex   *regexp.Regexp
 }
 
-func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
+func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string, skipDir string) (string, []string, func(), error) {
 	includePatterns = normalizePatterns(includePatterns)
 	excludePatterns = normalizePatterns(excludePatterns)
 	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
@@ -79,6 +81,7 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	walker := &scopeWalker{
 		repoPath:        repoPath,
 		scopedRoot:      scopedRoot,
+		skipDir:         strings.TrimSpace(skipDir),
 		includePatterns: includePatterns,
 		excludePatterns: excludePatterns,
 		includeCompiled: includeCompiled,
@@ -112,7 +115,7 @@ func (w *scopeWalker) walk(currentPath string, entry fs.DirEntry, walkErr error)
 		return walkErr
 	}
 	if entry.IsDir() {
-		if shouldSkipScopeDir(w.repoPath, currentPath, entry.Name()) {
+		if shouldSkipScopeDir(w.repoPath, currentPath, entry.Name(), w.skipDir) {
 			return filepath.SkipDir
 		}
 		return nil
@@ -165,9 +168,17 @@ func recordScopeSkipReason(stats *scopeStats, slashed string, reason string) {
 	stats.skippedDiagnostics = append(stats.skippedDiagnostics, slashed+" ("+reason+")")
 }
 
-func shouldSkipScopeDir(repoPath, currentPath, name string) bool {
+func shouldSkipScopeDir(repoPath, currentPath, name, skipDir string) bool {
 	if name == ".git" {
 		return true
 	}
-	return filepath.Clean(currentPath) == filepath.Join(filepath.Clean(repoPath), defaultAnalysisCacheDirName)
+	repoRoot := filepath.Clean(repoPath)
+	cleanCurrentPath := filepath.Clean(currentPath)
+	if cleanCurrentPath == filepath.Join(repoRoot, defaultAnalysisCacheDirName) {
+		return true
+	}
+	if strings.TrimSpace(skipDir) == "" {
+		return false
+	}
+	return cleanCurrentPath == filepath.Join(repoRoot, filepath.Clean(skipDir))
 }

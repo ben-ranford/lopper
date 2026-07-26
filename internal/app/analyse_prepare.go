@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -21,7 +22,7 @@ type preparedAnalyseExecution struct {
 }
 
 func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseExecution, error) {
-	lockfileWarnings, err := evaluateLockfileDriftPolicyWithFeatures(ctx, req.RepoPath, req.Analyse.Thresholds.LockfileDriftPolicy, req.Analyse.Features)
+	lockfileWarnings, err := resolvePreparedLockfileDrift(ctx, req.RepoPath, req.Analyse)
 	if err != nil {
 		return preparedAnalyseExecution{}, err
 	}
@@ -34,8 +35,13 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 	if err != nil {
 		return preparedAnalyseExecution{}, err
 	}
+	if err := analysis.ValidateTrustedScopedCacheOptions(cacheOptions, req.Analyse.IncludePatterns, req.Analyse.ExcludePatterns); err != nil {
+		return preparedAnalyseExecution{}, err
+	}
 	baseRequest := analysis.Request{
 		RepoPath:                 req.RepoPath,
+		Repository:               req.Analyse.repository,
+		RepositoryView:           req.Analyse.repositoryView,
 		Dependency:               req.Analyse.Dependency,
 		TopN:                     req.Analyse.TopN,
 		ScopeMode:                req.Analyse.ScopeMode,
@@ -72,15 +78,31 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 	}, nil
 }
 
+func resolvePreparedLockfileDrift(ctx context.Context, repoPath string, req AnalyseRequest) ([]string, error) {
+	if req.lockfileDriftCaptured {
+		return append([]string{}, req.lockfileWarnings...), req.lockfileDriftErr
+	}
+	if req.repositoryView != nil {
+		return nil, errors.New("lockfile drift state was not captured before opening the repository view")
+	}
+	return evaluateLockfileDriftPolicyWithFeatures(ctx, repoPath, req.Thresholds.LockfileDriftPolicy, req.Features)
+}
+
 func validateCodemodApplyPreconditions(ctx context.Context, repoPath string, req AnalyseRequest) error {
-	if !req.ApplyCodemod {
+	if !req.ApplyCodemod || req.AllowDirty {
 		return nil
+	}
+	if req.codemodPreconditionCaptured {
+		return req.codemodPrecondition
+	}
+	if req.repositoryView != nil {
+		return errors.New("codemod cleanliness state was not captured before opening the repository view")
 	}
 	normalizedRepoPath, err := normalizeRepoPathForCodemod(repoPath)
 	if err != nil {
 		return err
 	}
-	return ensureCleanWorktreeForCodemod(ctx, normalizedRepoPath, req.AllowDirty)
+	return ensureCleanWorktreeForCodemod(ctx, normalizedRepoPath, false)
 }
 
 func decorateAnalyseReport(reportData *report.Report, prepared preparedAnalyseExecution) {
@@ -114,13 +136,15 @@ func prepareRuntimeTracePlan(req Request) (string, bool) {
 }
 
 func prepareAnalyseCacheOptions(repoPath string, req AnalyseRequest) (*analysis.CacheOptions, error) {
-	cacheOptions := &analysis.CacheOptions{
-		Enabled:    req.CacheEnabled,
-		Path:       req.CachePath,
-		ReadOnly:   req.CacheReadOnly,
-		PinnedPath: req.CachePinnedPath,
+	if req.cacheOptions != nil {
+		return req.cacheOptions, nil
 	}
-	if !cacheOptions.Enabled || strings.TrimSpace(cacheOptions.PinnedPath) != "" {
+	cacheOptions := &analysis.CacheOptions{
+		Enabled:  req.CacheEnabled,
+		Path:     req.CachePath,
+		ReadOnly: req.CacheReadOnly,
+	}
+	if !cacheOptions.Enabled {
 		return cacheOptions, nil
 	}
 	cachePath := strings.TrimSpace(cacheOptions.Path)
@@ -128,12 +152,20 @@ func prepareAnalyseCacheOptions(repoPath string, req AnalyseRequest) (*analysis.
 		return cacheOptions, nil
 	}
 
-	trustedOptions, err := analysis.ResolveTrustedCacheOptions(repoPath, cacheOptions)
+	var (
+		trustedOptions *analysis.CacheOptions
+		err            error
+	)
+	if req.repository != nil {
+		trustedOptions, err = analysis.ResolveTrustedCacheOptionsForRepository(req.repository, cacheOptions)
+	} else {
+		trustedOptions, err = analysis.ResolveTrustedCacheOptions(repoPath, cacheOptions)
+	}
 	if err == nil {
 		return trustedOptions, nil
 	}
-	if filepath.IsAbs(cachePath) {
-		return cacheOptions, nil
+	if filepath.IsAbs(cachePath) && analysis.AuthenticatedExternalCacheOptions(trustedOptions, err) {
+		return trustedOptions, nil
 	}
 	return nil, err
 }

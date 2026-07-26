@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/workspace"
@@ -64,6 +65,10 @@ type codemodContentLine struct {
 }
 
 func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPath string, req AnalyseRequest, now time.Time) (report.Report, error) {
+	return applyCodemodIfNeededWithRepository(ctx, reportData, repoPath, req, now, nil)
+}
+
+func applyCodemodIfNeededWithRepository(ctx context.Context, reportData report.Report, repoPath string, req AnalyseRequest, now time.Time, repository *analysis.RepositoryView) (report.Report, error) {
 	if !req.ApplyCodemod {
 		return reportData, nil
 	}
@@ -76,7 +81,7 @@ func applyCodemodIfNeeded(ctx context.Context, reportData report.Report, repoPat
 		return reportData, nil
 	}
 
-	mutation, err := executeCodemodApplyMutation(target, now)
+	mutation, err := executeCodemodApplyMutationWithRepository(target, now, repository)
 	if err != nil {
 		return reportData, err
 	}
@@ -108,8 +113,12 @@ func resolveCodemodApplyTarget(reportData *report.Report, repoPath, dependency s
 	}, true, nil
 }
 
-func executeCodemodApplyMutation(target codemodApplyTarget, now time.Time) (codemodApplyMutation, error) {
-	preparedFiles, failedResults := prepareCodemodFiles(target.repoPath, target.codemod.Suggestions)
+func executeCodemodApplyMutationWithRepository(target codemodApplyTarget, now time.Time, repository *analysis.RepositoryView) (codemodApplyMutation, error) {
+	preparationPath := target.repoPath
+	if repository != nil {
+		preparationPath = repository.ExecutionPath()
+	}
+	preparedFiles, failedResults := prepareCodemodFiles(preparationPath, target.codemod.Suggestions)
 	mutation := codemodApplyMutation{
 		skipResults:   buildCodemodSkipResults(target.codemod.Skips),
 		failedResults: failedResults,
@@ -118,13 +127,13 @@ func executeCodemodApplyMutation(target codemodApplyTarget, now time.Time) (code
 		return mutation, nil
 	}
 
-	backupPath, err := writeCodemodRollbackArtifact(target.repoPath, target.dependency, preparedFiles, now)
+	backupPath, err := writeCodemodRollbackArtifactWithRepository(target.repoPath, target.dependency, preparedFiles, now, repository)
 	if err != nil {
 		return codemodApplyMutation{}, fmt.Errorf("write codemod rollback artifact: %w", err)
 	}
 
 	mutation.backupPath = backupPath
-	mutation.appliedResults, mutation.failedResults = applyPreparedCodemodFiles(target.repoPath, preparedFiles, mutation.failedResults)
+	mutation.appliedResults, mutation.failedResults = applyPreparedCodemodFilesWithRepository(target.repoPath, preparedFiles, mutation.failedResults, repository)
 	return mutation, nil
 }
 
@@ -165,7 +174,31 @@ func ensureCleanWorktreeForCodemod(ctx context.Context, repoPath string, allowDi
 	if !hasGitContext || len(changed) == 0 {
 		return nil
 	}
+	return dirtyWorktreeError(changed)
+}
 
+func ensureCleanRepositoryViewForCodemod(repositoryView *analysis.RepositoryView, allowDirty bool) error {
+	if allowDirty {
+		return nil
+	}
+	metadata := repositoryView.GitMetadata()
+	if !metadata.Captured {
+		return errors.New("repository view Git metadata was not captured")
+	}
+	if metadata.CaptureError != nil {
+		return metadata.CaptureError
+	}
+	if !metadata.IsWorktree || len(metadata.ChangedFiles) == 0 {
+		return nil
+	}
+	changed := make(map[string]struct{}, len(metadata.ChangedFiles))
+	for _, path := range metadata.ChangedFiles {
+		changed[filepath.Clean(filepath.FromSlash(path))] = struct{}{}
+	}
+	return dirtyWorktreeError(changed)
+}
+
+func dirtyWorktreeError(changed map[string]struct{}) error {
 	files := make([]string, 0, len(changed))
 	for file := range changed {
 		files = append(files, file)
@@ -400,9 +433,19 @@ func joinCodemodContentLines(lines []codemodContentLine) string {
 }
 
 func applyPreparedCodemodFiles(repoPath string, prepared []preparedCodemodFile, failures []report.CodemodApplyResult) ([]report.CodemodApplyResult, []report.CodemodApplyResult) {
+	return applyPreparedCodemodFilesWithRepository(repoPath, prepared, failures, nil)
+}
+
+func applyPreparedCodemodFilesWithRepository(repoPath string, prepared []preparedCodemodFile, failures []report.CodemodApplyResult, repository *analysis.RepositoryView) ([]report.CodemodApplyResult, []report.CodemodApplyResult) {
 	applied := make([]report.CodemodApplyResult, 0, len(prepared))
 	for _, item := range prepared {
-		if err := writeFileAtomically(repoPath, item.absPath, item.updated, item.mode); err != nil {
+		var err error
+		if repository != nil {
+			err = repository.WriteFile(item.file, []byte(item.updated), item.mode)
+		} else {
+			err = writeFileAtomically(repoPath, item.absPath, item.updated, item.mode)
+		}
+		if err != nil {
 			failures = append(failures, report.CodemodApplyResult{
 				File:       item.file,
 				Status:     codemodApplyStatusFailed,
@@ -421,8 +464,20 @@ func applyPreparedCodemodFiles(repoPath string, prepared []preparedCodemodFile, 
 }
 
 func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []preparedCodemodFile, now time.Time) (relativePath string, err error) {
+	return writeCodemodRollbackArtifactWithRepository(repoPath, dependency, prepared, now, nil)
+}
+
+func writeCodemodRollbackArtifactWithRepository(repoPath, dependency string, prepared []preparedCodemodFile, now time.Time, repository *analysis.RepositoryView) (relativePath string, err error) {
 	if len(prepared) == 0 {
 		return "", nil
+	}
+	if repository != nil {
+		if err := repository.EnsureDir(codemodRollbackDir, 0o750); err != nil {
+			return "", err
+		}
+		return writeCodemodRollbackPayload(dependency, prepared, now, func(relativePath string, data []byte) error {
+			return repository.WriteFile(relativePath, data, 0o600)
+		})
 	}
 	root, err := os.OpenRoot(repoPath)
 	if err != nil {
@@ -437,10 +492,12 @@ func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []prepar
 		return "", err
 	}
 
-	fileName := fmt.Sprintf("%s-%d.json", sanitizeArtifactName(dependency), now.UTC().UnixNano())
-	relativePath = filepath.Join(codemodRollbackDir, fileName)
-	absPath := filepath.Join(repoPath, relativePath)
+	return writeCodemodRollbackPayload(dependency, prepared, now, func(relativePath string, data []byte) error {
+		return writeFileAtomically(repoPath, filepath.Join(repoPath, relativePath), string(data), 0o600)
+	})
+}
 
+func writeCodemodRollbackPayload(dependency string, prepared []preparedCodemodFile, now time.Time, write func(string, []byte) error) (string, error) {
 	payload := codemodRollbackArtifact{
 		GeneratedAt: now.UTC(),
 		Dependency:  dependency,
@@ -458,7 +515,9 @@ func writeCodemodRollbackArtifact(repoPath, dependency string, prepared []prepar
 	if err != nil {
 		return "", err
 	}
-	if err := writeFileAtomically(repoPath, absPath, string(data)+"\n", 0o600); err != nil {
+	fileName := fmt.Sprintf("%s-%d.json", sanitizeArtifactName(dependency), now.UTC().UnixNano())
+	relativePath := filepath.Join(codemodRollbackDir, fileName)
+	if err := write(relativePath, append(data, '\n')); err != nil {
 		return "", err
 	}
 	return filepath.ToSlash(relativePath), nil

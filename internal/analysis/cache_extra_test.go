@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -127,8 +129,8 @@ func TestResolveTrustedCacheOptionsRejectsPathOutsideRepo(t *testing.T) {
 		Enabled: true,
 		Path:    outside,
 	})
-	if options != nil {
-		t.Fatalf("expected rejected options to remain nil, got %#v", options)
+	if !AuthenticatedExternalCacheOptions(options, err) {
+		t.Fatalf("expected rejected options to carry an authenticated external pin, options=%#v err=%v", options, err)
 	}
 	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
 		t.Fatalf("expected outside path rejection, got %v", err)
@@ -152,6 +154,152 @@ func TestResolveTrustedCacheOptionsRejectsSymlinkAncestorEscape(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
 		t.Fatalf("expected symlink ancestor rejection, got %v", err)
 	}
+	if !CachePathSymlinkEscape(err) {
+		t.Fatalf("expected symlink escape sentinel, got %v", err)
+	}
+}
+
+func TestResolveTrustedCacheOptionsRejectsAbsoluteSymlinkAncestorEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	options, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
+		Enabled: true,
+		Path:    filepath.Join(repo, "tmp", "cache"),
+	})
+	if options != nil {
+		t.Fatalf("expected rejected options to remain nil, got %#v", options)
+	}
+	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
+		t.Fatalf("expected absolute symlink ancestor rejection, got %v", err)
+	}
+	if !CachePathSymlinkEscape(err) {
+		t.Fatalf("expected absolute symlink escape sentinel, got %v", err)
+	}
+}
+
+func TestResolveTrustedCacheOptionsRejectsCanonicalSymlinkEscapeUnderRequestedRepoAlias(t *testing.T) {
+	requestedRepo, canonicalCache, outsideCache := canonicalAliasCacheEscapeFixture(t)
+
+	options, err := ResolveTrustedCacheOptions(requestedRepo, &CacheOptions{
+		Enabled: true,
+		Path:    canonicalCache,
+	})
+	if options != nil {
+		t.Fatalf("expected canonical-form symlink escape rejection, got %#v", options)
+	}
+	if !CachePathSymlinkEscape(err) {
+		t.Fatalf("expected symlink escape sentinel, got %v", err)
+	}
+	if CachePathExternal(err) {
+		t.Fatalf("expected in-repo canonical form not to be classified as external, got %v", err)
+	}
+	if _, statErr := os.Stat(outsideCache); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no external cache directory, stat err=%v", statErr)
+	}
+}
+
+func TestResolveTrustedCacheOptionsRejectsAlternateAbsoluteRepoAliasesThatLaterEscape(t *testing.T) {
+	for _, fixture := range alternateAbsoluteRepoAliasEscapeFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			options, err := ResolveTrustedCacheOptions(fixture.requestedRepo, &CacheOptions{
+				Enabled: true,
+				Path:    fixture.cachePath,
+			})
+			if options != nil {
+				t.Fatalf("expected alternate-alias escape rejection, got %#v", options)
+			}
+			if !CachePathSymlinkEscape(err) || CachePathExternal(err) {
+				t.Fatalf("expected authenticated symlink escape classification, got %v", err)
+			}
+			if _, statErr := os.Stat(fixture.outsideCache); !os.IsNotExist(statErr) {
+				t.Fatalf("expected no outside cache directory, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
+func TestResolveTrustedCacheOptionsClassifiesExternalAliasesIntoRepoWithoutMutation(t *testing.T) {
+	repo := t.TempDir()
+	cacheSubdir := filepath.Join(repo, ".cache", "lopper")
+	if err := os.MkdirAll(cacheSubdir, 0o750); err != nil {
+		t.Fatalf("mkdir cache subdir: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		target       string
+		wantRelative string
+	}{
+		{name: "repo root", target: repo, wantRelative: "."},
+		{name: "repo subdir", target: cacheSubdir, wantRelative: filepath.Join(".cache", "lopper")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			aliasPath := filepath.Join(t.TempDir(), "external-cache-alias")
+			if err := os.Symlink(tc.target, aliasPath); err != nil {
+				t.Skipf("symlink not supported: %v", err)
+			}
+
+			options, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
+				Enabled: true,
+				Path:    aliasPath,
+			})
+			if err != nil {
+				t.Fatalf("resolve external alias into repo: %v", err)
+			}
+			if !InRepoCacheOptions(options) {
+				t.Fatalf("expected external alias to mint an in-repo pin, got %#v", options)
+			}
+			if options.trustedPin.repoRelativePath != tc.wantRelative {
+				t.Fatalf("expected repo-relative pin %q, got %q", tc.wantRelative, options.trustedPin.repoRelativePath)
+			}
+			assertCacheLayoutAbsent(t, tc.target)
+		})
+	}
+}
+
+func TestTrustedCacheClassificationRejectsForgedErrorsAndMutablePathRebinding(t *testing.T) {
+	repo := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "cache")
+	options, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
+		Enabled: true,
+		Path:    outside,
+	})
+	if !AuthenticatedExternalCacheOptions(options, err) {
+		t.Fatalf("expected genuine external classification, options=%#v err=%v", options, err)
+	}
+	wrappedErr := fmt.Errorf("wrapped external classification: %w", err)
+	if !CachePathExternal(wrappedErr) || !AuthenticatedExternalCacheOptions(options, wrappedErr) {
+		t.Fatalf("expected wrapped authenticated classification to remain recognizable, err=%v", wrappedErr)
+	}
+
+	lookalike := errors.New("trusted cache path is external to repoPath")
+	if CachePathExternal(lookalike) {
+		t.Fatalf("expected matching mutable error text not to authorize an external cache")
+	}
+	if AuthenticatedExternalCacheOptions(options, lookalike) {
+		t.Fatalf("expected a forged classification error not to authenticate options")
+	}
+
+	repoAlias := filepath.Join(t.TempDir(), "repo-alias")
+	if err := os.Symlink(repo, repoAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	options.Path = repoAlias
+	if InRepoCacheOptions(options) {
+		t.Fatalf("expected exported path mutation not to reclassify the opaque external pin")
+	}
+	canonicalOutside, resolveErr := resolvePathWithinExistingTree(outside)
+	if resolveErr != nil {
+		t.Fatalf("resolve expected external pin: %v", resolveErr)
+	}
+	if options.trustedPinnedPath() != canonicalOutside {
+		t.Fatalf("expected opaque pin to remain bound to %q, got %q", canonicalOutside, options.trustedPinnedPath())
+	}
+	assertCacheLayoutAbsent(t, repo)
 }
 
 func TestResolveTrustedCacheOptionsBypassesNilDisabledAndEmptyPath(t *testing.T) {
@@ -177,18 +325,288 @@ func TestResolveTrustedCacheOptionsBypassesNilDisabledAndEmptyPath(t *testing.T)
 	if err != nil {
 		t.Fatalf("resolve empty-path cache options: %v", err)
 	}
-	if emptyPath == nil || emptyPath.Path != "" || emptyPath.PinnedPath != "" {
+	if emptyPath == nil || emptyPath.Path != "" || emptyPath.hasTrustedPin() {
 		t.Fatalf("expected empty cache path to preserve default-path behavior, got %#v", emptyPath)
 	}
 }
 
+func TestTrustedCacheBoundaryGuardBranches(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	assertTrustedCacheNilAndInvalidGuards(t, repo, repository)
+	cacheOptions := assertTrustedCacheOptionReuse(t, repo, repository)
+	assertTrustedCacheRepositoryMismatch(t, repo, cacheOptions)
+	assertTrustedDefaultCacheSymlinkRejection(t, repo, repository)
+}
+
+func assertTrustedCacheNilAndInvalidGuards(t *testing.T, repo string, repository *RepositoryAuthorization) {
+	t.Helper()
+	if CachePathExternal(nil) || CachePathSymlinkEscape(nil) {
+		t.Fatal("nil errors must not carry trusted cache classifications")
+	}
+	if AuthenticatedExternalCacheOptions(nil, errors.New("external")) {
+		t.Fatal("nil cache options must not authenticate an external classification")
+	}
+	if (*RepositoryAuthorization)(nil).matchesPath(repo) {
+		t.Fatal("nil repository authorization must not match a path")
+	}
+	if _, err := ResolveTrustedDefaultCacheOptionsForRepository(nil, false); err == nil {
+		t.Fatal("expected missing repository authorization rejection")
+	}
+	if _, err := ResolveTrustedDefaultCacheOptions(filepath.Join(repo, "missing"), false); err == nil {
+		t.Fatal("expected missing repository rejection for default cache options")
+	}
+	if _, err := ResolveTrustedCacheOptions(filepath.Join(repo, "missing"), &CacheOptions{Enabled: true, Path: ".cache"}); err == nil {
+		t.Fatal("expected missing repository rejection for explicit cache options")
+	}
+	if options, err := ResolveTrustedCacheOptionsForRepository(repository, nil); err != nil || options != nil {
+		t.Fatalf("nil cache options = %#v, %v; want nil, nil", options, err)
+	}
+	if _, err := ResolveTrustedCacheOptionsForRepository(nil, &CacheOptions{Enabled: true}); err == nil {
+		t.Fatal("expected cache resolution without repository authorization to fail")
+	}
+	if _, err := useTrustedCacheOptions(repo, nil); err == nil {
+		t.Fatal("expected unauthenticated trusted-cache use to fail")
+	}
+	if _, err := pinTrustedCachePathForRepository(nil, filepath.Join(repo, "cache"), "cachePath"); !CachePathSymlinkEscape(err) {
+		t.Fatalf("expected nil repository pin attempt to be a symlink-escape rejection, got %v", err)
+	}
+	repoPaths := trustedRepoPaths{requestedPath: repo, canonicalPath: repo}
+	if _, err := resolveTrustedAbsolutePath(repo, repoPaths, maxTrustedCacheSymlinkExpansions+1); err == nil {
+		t.Fatal("expected excessive cache-path symlink expansion rejection")
+	}
+	if _, err := resolveTrustedAbsolutePath(string([]byte{0}), repoPaths, 0); err == nil {
+		t.Fatal("expected invalid absolute cache-path resolution to fail")
+	}
+}
+
+func assertTrustedCacheOptionReuse(t *testing.T, repo string, repository *RepositoryAuthorization) *CacheOptions {
+	t.Helper()
+	cacheOptions, err := ResolveTrustedCacheOptionsForRepository(repository, &CacheOptions{Enabled: true, Path: filepath.Join(".cache", "lopper")})
+	if err != nil {
+		t.Fatalf("resolve in-repository cache options: %v", err)
+	}
+	reused, err := ResolveTrustedCacheOptions(repo, cacheOptions)
+	if err != nil || reused.trustedPin != cacheOptions.trustedPin {
+		t.Fatalf("reuse trusted cache options: options=%#v err=%v", reused, err)
+	}
+	reused, err = ResolveTrustedCacheOptionsForRepository(repository, cacheOptions)
+	if err != nil || reused.trustedPin != cacheOptions.trustedPin {
+		t.Fatalf("reuse trusted cache options at repository boundary: options=%#v err=%v", reused, err)
+	}
+	return cacheOptions
+}
+
+func assertTrustedCacheRepositoryMismatch(t *testing.T, repo string, cacheOptions *CacheOptions) {
+	t.Helper()
+	otherRepository, err := ResolveTrustedRepository(t.TempDir())
+	if err != nil {
+		t.Fatalf("authorize second repository: %v", err)
+	}
+	if _, err := ResolveTrustedCacheOptionsForRepository(otherRepository, cacheOptions); err == nil {
+		t.Fatal("expected cache pin/repository authorization mismatch")
+	}
+	if _, err := ResolveTrustedCacheOptions(repo, cacheOptions); err != nil {
+		t.Fatalf("reuse trusted cache options for matching path: %v", err)
+	}
+	if _, err := ResolveTrustedCacheOptions(TrustedRepositoryPath(otherRepository), cacheOptions); err == nil {
+		t.Fatal("expected trusted cache options to reject a different repository path")
+	}
+}
+
+func assertTrustedDefaultCacheSymlinkRejection(t *testing.T, repo string, repository *RepositoryAuthorization) {
+	t.Helper()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, defaultAnalysisCacheDirName)); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if _, err := ResolveTrustedDefaultCacheOptionsForRepository(repository, false); !CachePathSymlinkEscape(err) {
+		t.Fatalf("expected symlinked default cache rejection, got %v", err)
+	}
+}
+
+func TestTrustedCacheIdentityNormalizesRelativeCandidatesAndRejectsInvalidRepositories(t *testing.T) {
+	repo := t.TempDir()
+	if got := normalizeTrustedCacheCandidate(repo, filepath.Join(".cache", "lopper")); got != filepath.Join(repo, ".cache", "lopper") {
+		t.Fatalf("normalized relative cache path = %q", got)
+	}
+	if _, err := resolveTrustedRepoPaths(string([]byte{0})); err == nil {
+		t.Fatal("expected invalid repository path rejection")
+	}
+
+	brokenLink := filepath.Join(t.TempDir(), "broken-repository")
+	if err := os.Symlink("missing-target", brokenLink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if _, err := resolveTrustedRepoPaths(brokenLink); err == nil {
+		t.Fatal("expected broken repository symlink rejection")
+	}
+}
+
+func TestRepositoryBackedCacheLayoutUsesRetainedRootAndFailsClosed(t *testing.T) {
+	repo := t.TempDir()
+	repository, err := ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	cacheOptions, err := ResolveTrustedCacheOptionsForRepository(repository, &CacheOptions{
+		Enabled: true,
+		Path:    filepath.Join(".cache", "lopper"),
+	})
+	if err != nil {
+		t.Fatalf("resolve in-repository cache options: %v", err)
+	}
+	view, err := OpenTrustedRepository(context.Background(), repository, repo, cacheOptions)
+	if err != nil {
+		t.Fatalf("open trusted repository: %v", err)
+	}
+
+	expectedHookErr := errors.New("objects init blocked")
+	previousHook := cacheInitBeforeObjectsEnsureFn
+	cacheInitBeforeObjectsEnsureFn = func() error { return expectedHookErr }
+	t.Cleanup(func() {
+		cacheInitBeforeObjectsEnsureFn = previousHook
+	})
+	cache := newAnalysisCache(Request{RepoPath: repo, Repository: repository, Cache: cacheOptions}, view.ExecutionPath(), view)
+	if cache.cacheable || len(cache.takeWarnings()) == 0 {
+		t.Fatal("expected retained-root cache initialization hook failure")
+	}
+	cacheRoot := filepath.Join(repo, ".cache", "lopper")
+	if _, err := os.Stat(filepath.Join(cacheRoot, cacheKeysDirName)); err != nil {
+		t.Fatalf("expected keys directory before hook failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheRoot, cacheObjectsDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected objects directory to remain absent, got %v", err)
+	}
+
+	cacheInitBeforeObjectsEnsureFn = previousHook
+	cache = newAnalysisCache(Request{RepoPath: repo, Repository: repository, Cache: cacheOptions}, view.ExecutionPath(), view)
+	if !cache.cacheable || cache.writeRootOpener == nil {
+		t.Fatalf("expected retained-root cache initialization success, warnings=%#v", cache.takeWarnings())
+	}
+	root, err := cache.openPinnedWriteRoot()
+	if err != nil {
+		t.Fatalf("open retained cache root: %v", err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close retained cache root: %v", err)
+	}
+
+	if err := view.Close(); err != nil {
+		t.Fatalf("close trusted repository: %v", err)
+	}
+	cache = newAnalysisCache(Request{RepoPath: repo, Repository: repository, Cache: cacheOptions}, repo, view)
+	if cache.cacheable {
+		t.Fatal("expected closed retained root to reject cache initialization")
+	}
+
+	var nilCache *analysisCache
+	nilCache.configureStablePaths(Request{})
+	if nilCache.validateDefaultWritePath(Request{}, repo) {
+		t.Fatal("nil cache must not validate a default write path")
+	}
+}
+
+func TestTrustedCanonicalCacheLayoutRejectsBlockingEntries(t *testing.T) {
+	for _, entry := range []string{cacheKeysDirName, cacheObjectsDirName} {
+		t.Run(entry, func(t *testing.T) {
+			root := mustEvalSymlinks(t, t.TempDir())
+			if entry == cacheObjectsDirName {
+				if err := os.Mkdir(filepath.Join(root, cacheKeysDirName), 0o750); err != nil {
+					t.Fatalf("create keys directory: %v", err)
+				}
+			}
+			writeFile(t, filepath.Join(root, entry), "blocking file\n")
+			if _, _, err := ensureTrustedPinnedCacheLayout(root); err == nil {
+				t.Fatalf("expected blocking %s entry rejection", entry)
+			}
+		})
+	}
+}
+
+func TestAnalysisCachePinnedWriteRootGuardBranches(t *testing.T) {
+	var nilCache *analysisCache
+	if _, err := nilCache.openPinnedWriteRoot(); err == nil {
+		t.Fatal("expected nil analysis cache rejection")
+	}
+
+	expectedOpenErr := errors.New("retained cache root unavailable")
+	cache := &analysisCache{
+		writeRootOpener: func() (*safeio.WriteRoot, error) {
+			return nil, expectedOpenErr
+		},
+	}
+	if _, err := cache.openPinnedWriteRoot(); !errors.Is(err, expectedOpenErr) {
+		t.Fatalf("expected retained cache-root opener error, got %v", err)
+	}
+
+	rootA := mustEvalSymlinks(t, t.TempDir())
+	rootB := mustEvalSymlinks(t, t.TempDir())
+	rootAInfo, err := os.Lstat(rootA)
+	if err != nil {
+		t.Fatalf("stat root A: %v", err)
+	}
+	cache = &analysisCache{
+		writeRootInfo: rootAInfo,
+		writeRootOpener: func() (*safeio.WriteRoot, error) {
+			return safeio.OpenCanonicalWriteRoot(rootB)
+		},
+	}
+	if _, err := cache.openPinnedWriteRoot(); err == nil || !strings.Contains(err.Error(), "cache root changed while pinned") {
+		t.Fatalf("expected retained cache-root identity mismatch, got %v", err)
+	}
+
+	closedRoot, err := safeio.OpenCanonicalWriteRoot(rootA)
+	if err != nil {
+		t.Fatalf("open root to close: %v", err)
+	}
+	if err := closedRoot.Close(); err != nil {
+		t.Fatalf("close root before validation: %v", err)
+	}
+	if err := cache.validateOpenedWriteRoot(closedRoot); err == nil {
+		t.Fatal("expected closed cache-root validation failure")
+	}
+}
+
+func TestAnalysisCacheStableRootAndDefaultValidationBranches(t *testing.T) {
+	repo := t.TempDir()
+	cache := &analysisCache{
+		options:           resolvedCacheOptions{WritePath: filepath.Join(repo, defaultAnalysisCacheDirName)},
+		analysisRootPath:  repo,
+		stableKeyRepoPath: filepath.Join(string(os.PathSeparator), "stable", "repository"),
+	}
+	if !cache.validateDefaultWritePath(Request{}, repo) {
+		t.Fatal("expected safe missing default cache path")
+	}
+	outside := t.TempDir()
+	if got := cache.stableCacheRoot(outside); got != outside {
+		t.Fatalf("outside stable cache root = %q, want %q", got, outside)
+	}
+}
+
 func TestResolveCacheOptionsUsesPinnedWritePath(t *testing.T) {
-	options := resolveCacheOptions(&CacheOptions{Enabled: true, Path: filepath.Join(".cache", "lopper"), PinnedPath: "/trusted/cache", ReadOnly: true}, "/repo")
+	cacheOptions := &CacheOptions{
+		Enabled:    true,
+		Path:       filepath.Join(".cache", "lopper"),
+		ReadOnly:   true,
+		trustedPin: &trustedCachePin{canonicalPath: "/trusted/cache"},
+	}
+	options := resolveCacheOptions(cacheOptions, "/repo")
 	if options.Path != filepath.Join(".cache", "lopper") {
 		t.Fatalf("expected display path to remain unchanged, got %#v", options)
 	}
 	if options.WritePath != "/trusted/cache" || !options.ReadOnly {
 		t.Fatalf("expected pinned write path to be preferred, got %#v", options)
+	}
+}
+
+func TestResolveCacheOptionsUsesRelativeWritePath(t *testing.T) {
+	options := resolveCacheOptions(&CacheOptions{Enabled: true, Path: filepath.Join(".cache", "lopper")}, "/repo")
+	if options.WritePath != filepath.Join("/repo", ".cache", "lopper") {
+		t.Fatalf("expected repository-relative cache write path, got %#v", options)
 	}
 }
 
@@ -227,13 +645,48 @@ func TestResolveTrustedCacheOptionsPinsRelativePathWithoutRewritingUserValue(t *
 	if err != nil {
 		t.Fatalf("resolve expected pinned path: %v", err)
 	}
-	if cacheOptions.PinnedPath != expectedPinnedPath {
-		t.Fatalf("expected pinned path inside repo, got %q", cacheOptions.PinnedPath)
+	if cacheOptions.trustedPinnedPath() != expectedPinnedPath {
+		t.Fatalf("expected pinned path inside repo, got %q", cacheOptions.trustedPinnedPath())
 	}
 }
 
-func TestResolveTrustedCacheOptionsPreservesSuppliedPinnedPathAcrossRepoAlias(t *testing.T) {
+func TestResolveTrustedCacheOptionsPinsRelativePathFromCanonicalDotRepoPath(t *testing.T) {
+	repo := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("chdir repo: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Errorf("restore cwd: %v", err)
+		}
+	})
+
+	cacheOptions, err := ResolveTrustedCacheOptions(".", &CacheOptions{
+		Enabled: true,
+		Path:    filepath.Join(".cache", "lopper"),
+	})
+	if err != nil {
+		t.Fatalf("resolve trusted cache options from dot repo path: %v", err)
+	}
+	expectedPinnedPath, err := resolvePathWithinExistingTree(filepath.Join(repo, ".cache", "lopper"))
+	if err != nil {
+		t.Fatalf("resolve expected pinned path: %v", err)
+	}
+	if cacheOptions.trustedPinnedPath() != expectedPinnedPath {
+		t.Fatalf("expected canonical pinned path %q, got %q", expectedPinnedPath, cacheOptions.trustedPinnedPath())
+	}
+}
+
+func TestResolveTrustedCacheOptionsPinsCanonicalPathAcrossRepoAlias(t *testing.T) {
 	realRepo := t.TempDir()
+	canonicalRepo, err := filepath.EvalSymlinks(realRepo)
+	if err != nil {
+		t.Fatalf("resolve canonical repo: %v", err)
+	}
 	aliasRoot := t.TempDir()
 	repoAlias := filepath.Join(aliasRoot, "repo-alias")
 	if err := os.Symlink(realRepo, repoAlias); err != nil {
@@ -241,57 +694,71 @@ func TestResolveTrustedCacheOptionsPreservesSuppliedPinnedPathAcrossRepoAlias(t 
 	}
 
 	cachePath := filepath.Join(".cache", "lopper")
-	pinnedPath, err := resolvePathWithinExistingTree(filepath.Join(realRepo, cachePath))
+	pinnedPath, err := resolvePathWithinExistingTree(filepath.Join(canonicalRepo, cachePath))
 	if err != nil {
 		t.Fatalf("resolve pinned path: %v", err)
 	}
 	cacheOptions, err := ResolveTrustedCacheOptions(repoAlias, &CacheOptions{
-		Enabled:    true,
-		Path:       cachePath,
-		PinnedPath: pinnedPath,
+		Enabled: true,
+		Path:    filepath.Join(canonicalRepo, cachePath),
 	})
 	if err != nil {
 		t.Fatalf("resolve trusted cache options for alias repo: %v", err)
 	}
-	if cacheOptions.PinnedPath != pinnedPath {
-		t.Fatalf("expected supplied pinned path to be preserved, got %q", cacheOptions.PinnedPath)
+	if cacheOptions.trustedPinnedPath() != pinnedPath {
+		t.Fatalf("expected canonical pinned path to be preserved, got %q", cacheOptions.trustedPinnedPath())
 	}
 }
 
-func TestResolveTrustedCacheOptionsRejectsSuppliedPinnedPathOutsideRepo(t *testing.T) {
+func TestResolveTrustedCacheOptionsEstablishesOpaqueCanonicalPin(t *testing.T) {
 	repo := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "cache")
+	pinnedAlias := filepath.Join(repo, ".cache", "lopper")
 
 	cacheOptions, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
-		Enabled:    true,
-		Path:       filepath.Join(".cache", "lopper"),
-		PinnedPath: outside,
+		Enabled: true,
+		Path:    pinnedAlias,
 	})
-	if cacheOptions != nil {
-		t.Fatalf("expected outside pinned path rejection, got %#v", cacheOptions)
+	if err != nil {
+		t.Fatalf("resolve trusted cache options: %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
-		t.Fatalf("expected outside pinned path rejection, got %v", err)
+	expectedPinnedPath, err := resolvePathWithinExistingTree(pinnedAlias)
+	if err != nil {
+		t.Fatalf("resolve expected canonical pinned path: %v", err)
+	}
+	if cacheOptions.trustedPin == nil {
+		t.Fatal("expected an opaque trusted cache pin")
+	}
+	if cacheOptions.trustedPinnedPath() != expectedPinnedPath {
+		t.Fatalf("expected canonical pin %q, got %q", expectedPinnedPath, cacheOptions.trustedPinnedPath())
 	}
 }
 
-func TestResolveTrustedCacheOptionsRejectsPinnedOnlyPathOutsideRepoBeforeMutation(t *testing.T) {
+func TestResolveTrustedCacheOptionsRejectsOutsidePathBeforeMutation(t *testing.T) {
 	repo := t.TempDir()
 	outsideRoot := t.TempDir()
 	outside := filepath.Join(outsideRoot, "missing", "cache")
 
 	cacheOptions, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
-		Enabled:    true,
-		PinnedPath: outside,
+		Enabled: true,
+		Path:    outside,
 	})
-	if cacheOptions != nil {
-		t.Fatalf("expected pinned-only outside path rejection, got %#v", cacheOptions)
+	if !AuthenticatedExternalCacheOptions(cacheOptions, err) {
+		t.Fatalf("expected authenticated external options, options=%#v err=%v", cacheOptions, err)
 	}
 	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
-		t.Fatalf("expected pinned-only outside path rejection, got %v", err)
+		t.Fatalf("expected outside path rejection, got %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(outsideRoot, "missing")); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no filesystem mutation for rejected pinned path, stat err=%v", statErr)
+	}
+}
+
+func assertCacheLayoutAbsent(t *testing.T, root string) {
+	t.Helper()
+	for _, dir := range []string{cacheKeysDirName, cacheObjectsDirName} {
+		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to remain absent under %s, stat err=%v", dir, root, err)
+		}
 	}
 }
 
@@ -311,26 +778,34 @@ func TestCachePathEscapesRepoFallsBackToCleanMissingRepoPath(t *testing.T) {
 
 func TestPathWithinTrustedRootAcceptsCanonicalRepoAlias(t *testing.T) {
 	realRepo := t.TempDir()
+	canonicalRepo, err := filepath.EvalSymlinks(realRepo)
+	if err != nil {
+		t.Fatalf("resolve canonical repo: %v", err)
+	}
 	aliasRoot := t.TempDir()
 	repoAlias := filepath.Join(aliasRoot, "repo-alias")
 	if err := os.Symlink(realRepo, repoAlias); err != nil {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	if !pathWithinTrustedRoot(repoAlias, filepath.Join(realRepo, cacheDirName)) {
+	if !pathWithinTrustedRoot(repoAlias, filepath.Join(canonicalRepo, cacheDirName)) {
 		t.Fatalf("expected canonical repo alias path to stay within trusted root")
 	}
 }
 
 func TestValidateNoSymlinkEscapeAllowsMissingCanonicalDescendant(t *testing.T) {
 	realRepo := t.TempDir()
+	canonicalRepo, err := filepath.EvalSymlinks(realRepo)
+	if err != nil {
+		t.Fatalf("resolve canonical repo: %v", err)
+	}
 	aliasRoot := t.TempDir()
 	repoAlias := filepath.Join(aliasRoot, "repo-alias")
 	if err := os.Symlink(realRepo, repoAlias); err != nil {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	err := validateNoSymlinkEscape(repoAlias, filepath.Join(realRepo, "missing", cacheDirName), "cachePath")
+	err = validateNoSymlinkEscape(repoAlias, filepath.Join(canonicalRepo, "missing", cacheDirName), "cachePath")
 	if err != nil {
 		t.Fatalf("expected missing canonical descendant to remain allowed, got %v", err)
 	}
@@ -481,6 +956,44 @@ func TestResolvePathWithinExistingTreeRejectsInvalidPath(t *testing.T) {
 	}
 }
 
+func TestResolveTrustedAbsolutePathFollowsInRepoSymlinkWithMissingSuffix(t *testing.T) {
+	repo := t.TempDir()
+	actual := filepath.Join(repo, "actual")
+	if err := os.MkdirAll(actual, 0o755); err != nil {
+		t.Fatalf("mkdir actual target: %v", err)
+	}
+	linkPath := filepath.Join(repo, "linked")
+	if err := os.Symlink(filepath.Base(actual), linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	repoPaths, err := resolveTrustedRepoPaths(repo)
+	if err != nil {
+		t.Fatalf("resolve trusted repo paths: %v", err)
+	}
+
+	resolved, err := resolveTrustedAbsolutePath(filepath.Join(repo, "linked", "missing", "cache"), repoPaths, 0)
+	if err != nil {
+		t.Fatalf("resolve trusted absolute path through in-repo symlink: %v", err)
+	}
+	if !resolved.enteredRepository {
+		t.Fatalf("expected symlinked path to stay inside repository, got %#v", resolved)
+	}
+	if !resolved.missingPath {
+		t.Fatalf("expected unresolved suffix to be reported missing, got %#v", resolved)
+	}
+	if resolved.symlinkExpansions < 1 {
+		t.Fatalf("expected at least one symlink expansion, got %#v", resolved)
+	}
+	expectedPath, err := resolvePathWithinExistingTree(filepath.Join(actual, "missing", "cache"))
+	if err != nil {
+		t.Fatalf("resolve expected path within existing tree: %v", err)
+	}
+	if resolved.path != expectedPath {
+		t.Fatalf("resolved path = %q, want %q", resolved.path, expectedPath)
+	}
+}
+
 func TestPathWithinTrustedRootRejectsMissingRepoAndInvalidCandidate(t *testing.T) {
 	if pathWithinTrustedRoot(filepath.Join(t.TempDir(), "missing-repo"), t.TempDir()) {
 		t.Fatalf("expected missing repo root to be rejected")
@@ -533,8 +1046,8 @@ func TestPinnedTrustedCachePathPreventsSymlinkRetargetRaceBeforeFirstWrite(t *te
 	if err != nil {
 		t.Fatalf("resolve expected pinned cache root: %v", err)
 	}
-	if cacheOptions.PinnedPath != expectedPinnedPath {
-		t.Fatalf("expected pinned cache root under original target, got %q", cacheOptions.PinnedPath)
+	if cacheOptions.trustedPinnedPath() != expectedPinnedPath {
+		t.Fatalf("expected pinned cache root under original target, got %q", cacheOptions.trustedPinnedPath())
 	}
 
 	if err := os.Remove(linkPath); err != nil {
@@ -556,6 +1069,49 @@ func TestPinnedTrustedCachePathPreventsSymlinkRetargetRaceBeforeFirstWrite(t *te
 	}
 	if _, err := os.Stat(filepath.Join(redirectedTarget, "cache")); !os.IsNotExist(err) {
 		t.Fatalf("expected retargeted outside cache root to remain absent, got err=%v", err)
+	}
+}
+
+func TestPinnedTrustedCachePathRejectsInsertedSymlinkForMissingSuffixBeforeFirstWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo := t.TempDir()
+	cacheParent := filepath.Join(repo, "cache-parent")
+	redirectedTarget := t.TempDir()
+	if err := os.MkdirAll(cacheParent, 0o755); err != nil {
+		t.Fatalf("mkdir cache parent: %v", err)
+	}
+
+	cacheOptions, err := ResolveTrustedCacheOptions(repo, &CacheOptions{
+		Enabled: true,
+		Path:    filepath.Join("cache-parent", "missing", "cache"),
+	})
+	if err != nil {
+		t.Fatalf("resolve trusted cache options: %v", err)
+	}
+	expectedPinnedPath, err := resolvePathWithinExistingTree(filepath.Join(cacheParent, "missing", "cache"))
+	if err != nil {
+		t.Fatalf("resolve expected pinned cache root: %v", err)
+	}
+	if cacheOptions.trustedPinnedPath() != expectedPinnedPath {
+		t.Fatalf("expected pinned cache root under original repo ancestor, got %q", cacheOptions.trustedPinnedPath())
+	}
+
+	if err := os.Symlink(redirectedTarget, filepath.Join(cacheParent, "missing")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	cache := newAnalysisCache(Request{Cache: cacheOptions}, repo)
+	if cache.cacheable {
+		t.Fatalf("expected inserted missing-suffix symlink to fail cache init, warnings=%#v", cache.takeWarnings())
+	}
+	if _, err := os.Stat(filepath.Join(redirectedTarget, "cache")); !os.IsNotExist(err) {
+		t.Fatalf("expected redirected outside cache root to remain absent, got err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(cacheParent, "missing")); err != nil {
+		t.Fatalf("expected inserted symlink to remain in place for failure inspection: %v", err)
 	}
 }
 
@@ -649,6 +1205,93 @@ func withCacheInitBeforeObjectsEnsureHook(t *testing.T, hook func() error) {
 	t.Cleanup(func() {
 		cacheInitBeforeObjectsEnsureFn = previous
 	})
+}
+
+func canonicalAliasCacheEscapeFixture(t *testing.T) (requestedRepo, canonicalCache, outsideCache string) {
+	t.Helper()
+
+	canonicalParent := t.TempDir()
+	canonicalRepo := filepath.Join(canonicalParent, "repo")
+	if err := os.MkdirAll(canonicalRepo, 0o755); err != nil {
+		t.Fatalf("mkdir canonical repo: %v", err)
+	}
+	canonicalRepo, err := filepath.EvalSymlinks(canonicalRepo)
+	if err != nil {
+		t.Fatalf("resolve canonical repo: %v", err)
+	}
+	requestedParent := filepath.Join(t.TempDir(), "requested-parent")
+	if err := os.Symlink(canonicalParent, requestedParent); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(canonicalRepo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	return filepath.Join(requestedParent, "repo"),
+		filepath.Join(canonicalRepo, "tmp", "cache"),
+		filepath.Join(outside, "cache")
+}
+
+type alternateRepoAliasEscapeFixture struct {
+	name          string
+	requestedRepo string
+	cachePath     string
+	outsideCache  string
+}
+
+func alternateAbsoluteRepoAliasEscapeFixtures(t *testing.T) []alternateRepoAliasEscapeFixture {
+	t.Helper()
+	fixtures := []alternateRepoAliasEscapeFixture{arbitraryAbsoluteRepoAliasEscapeFixture(t)}
+	if systemAlias, ok := systemAbsoluteRepoAliasEscapeFixture(t); ok {
+		fixtures = append(fixtures, systemAlias)
+	}
+	return fixtures
+}
+
+func arbitraryAbsoluteRepoAliasEscapeFixture(t *testing.T) alternateRepoAliasEscapeFixture {
+	t.Helper()
+	repoParent := t.TempDir()
+	repo := filepath.Join(repoParent, "repo")
+	if err := os.Mkdir(repo, 0o750); err != nil {
+		t.Fatalf("mkdir arbitrary-alias repo: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	aliasParent := filepath.Join(t.TempDir(), "alternate-parent")
+	if err := os.Symlink(repoParent, aliasParent); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	return alternateRepoAliasEscapeFixture{
+		name:          "arbitrary alias",
+		requestedRepo: repo,
+		cachePath:     filepath.Join(aliasParent, "repo", "tmp", "cache"),
+		outsideCache:  filepath.Join(outside, "cache"),
+	}
+}
+
+func systemAbsoluteRepoAliasEscapeFixture(t *testing.T) (alternateRepoAliasEscapeFixture, bool) {
+	t.Helper()
+	requestedRepo := t.TempDir()
+	canonicalRepo, err := filepath.EvalSymlinks(requestedRepo)
+	if err != nil {
+		t.Fatalf("resolve system-alias repo: %v", err)
+	}
+	if filepath.Clean(requestedRepo) == filepath.Clean(canonicalRepo) {
+		return alternateRepoAliasEscapeFixture{}, false
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(requestedRepo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	return alternateRepoAliasEscapeFixture{
+		name:          "system absolute alias",
+		requestedRepo: canonicalRepo,
+		cachePath:     filepath.Join(requestedRepo, "tmp", "cache"),
+		outsideCache:  filepath.Join(outside, "cache"),
+	}, true
 }
 
 func runCacheLookupRootSwapCase(t *testing.T, tc cacheLookupRootSwapCase) {

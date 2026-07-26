@@ -99,6 +99,26 @@ func TestExecuteFeaturesOutputFile(t *testing.T) {
 	}
 }
 
+func TestExecuteFeaturesOutputPathError(t *testing.T) {
+	registry := mustFeatureRegistry(t)
+	application := &App{Features: registry}
+	root := t.TempDir()
+	blocker := filepath.Join(root, "blocked")
+	if err := os.WriteFile(blocker, []byte("block"), 0o600); err != nil {
+		t.Fatalf("write blocker file: %v", err)
+	}
+
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.Channel = "dev"
+	req.Features.OutputPath = filepath.Join(blocker, "features.json")
+
+	if _, err := application.Execute(context.Background(), req); err == nil {
+		t.Fatalf("expected feature output path error")
+	}
+}
+
 func TestExecuteFeaturesRollingChannel(t *testing.T) {
 	application := &App{Features: mustFeatureRegistry(t)}
 	req := DefaultRequest()
@@ -116,43 +136,8 @@ func TestExecuteFeaturesRollingChannel(t *testing.T) {
 }
 
 func TestExecuteFeaturesReleaseChannelAndEmptyRegistry(t *testing.T) {
-	application := &App{Features: mustFeatureRegistry(t)}
-	req := DefaultRequest()
-	req.Mode = ModeFeatures
-	req.Features.Format = "json"
-	req.Features.Channel = "release"
-	req.Features.Release = "v1.4.2"
-
-	output, err := application.Execute(context.Background(), req)
-	if err != nil {
-		t.Fatalf("execute release features: %v", err)
-	}
-	if !strings.Contains(output, `"code": "LOP-FEAT-0002"`) || !strings.Contains(output, `"enabledByDefault": true`) {
-		t.Fatalf("expected release manifest to enable stable flag: %s", output)
-	}
-
-	emptyReq := DefaultRequest()
-	emptyReq.Mode = ModeFeatures
-	// Keep this assertion stable across CI lanes that set BUILD_CHANNEL=rolling.
-	emptyReq.Features.Channel = "dev"
-	emptyOutput, err := (&App{}).Execute(context.Background(), emptyReq)
-	if err != nil {
-		t.Fatalf("execute empty features: %v", err)
-	}
-	if !strings.Contains(emptyOutput, "dart-source-attribution") ||
-		!strings.Contains(emptyOutput, "lockfile-drift-ecosystem-expansion") ||
-		!strings.Contains(emptyOutput, "swift-carthage") ||
-		!strings.Contains(emptyOutput, "powershell-adapter") ||
-		!strings.Contains(emptyOutput, "go-vendored-provenance") ||
-		!strings.Contains(emptyOutput, "baseline-provenance-runtime-context") ||
-		!strings.Contains(emptyOutput, "vscode-multi-root-workflows") ||
-		!strings.Contains(emptyOutput, "mcp-server") ||
-		!strings.Contains(emptyOutput, "true") {
-		t.Fatalf("expected default feature table to include embedded graduated flags enabled by default, got %q", emptyOutput)
-	}
-	if strings.Contains(emptyOutput, "dart-source-attribution-preview") || strings.Contains(emptyOutput, "mcp-server-preview") {
-		t.Fatalf("expected default feature table to use stable aliases, got %q", emptyOutput)
-	}
+	t.Run("release manifest enables stable flag", testExecuteFeaturesReleaseChannel)
+	t.Run("empty registry output uses stable aliases", testExecuteFeaturesEmptyRegistryOutput)
 }
 
 func TestExecuteFeaturesDefaultReleaseAndStdoutOutputPath(t *testing.T) {
@@ -287,4 +272,50 @@ func mustFeatureRegistry(t *testing.T) *featureflags.Registry {
 		t.Fatalf("new feature registry: %v", err)
 	}
 	return registry
+}
+
+func testExecuteFeaturesReleaseChannel(t *testing.T) {
+	t.Helper()
+
+	application := &App{Features: mustFeatureRegistry(t)}
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Format = "json"
+	req.Features.Channel = "release"
+	req.Features.Release = "v1.4.2"
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute release features: %v", err)
+	}
+	if !strings.Contains(output, `"code": "LOP-FEAT-0002"`) || !strings.Contains(output, `"enabledByDefault": true`) {
+		t.Fatalf("expected release manifest to enable stable flag: %s", output)
+	}
+}
+
+func testExecuteFeaturesEmptyRegistryOutput(t *testing.T) {
+	t.Helper()
+
+	req := DefaultRequest()
+	req.Mode = ModeFeatures
+	req.Features.Channel = "dev"
+
+	output, err := (&App{}).Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute empty features: %v", err)
+	}
+	assertContainsAll(t, output, []string{
+		"dart-source-attribution",
+		"lockfile-drift-ecosystem-expansion",
+		"swift-carthage",
+		"powershell-adapter",
+		"go-vendored-provenance",
+		"baseline-provenance-runtime-context",
+		"vscode-multi-root-workflows",
+		"mcp-server",
+		"true",
+	})
+	if strings.Contains(output, "dart-source-attribution-preview") || strings.Contains(output, "mcp-server-preview") {
+		t.Fatalf("expected default feature table to use stable aliases, got %q", output)
+	}
 }

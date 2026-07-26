@@ -111,6 +111,7 @@ func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPat
 	return saveImmutableBaselineSnapshot(reportData, immutableBaselineSaveConfig[dashboard.Report]{
 		enabled:       resolved.saveBaseline,
 		repoPath:      repoPath,
+		currentKey:    resolveCurrentBaselineKey(repoPath),
 		req:           baselineKeyRequestFromDashboard(resolved),
 		keyName:       "dashboard baseline",
 		now:           now,
@@ -120,7 +121,7 @@ func (a *App) saveDashboardBaselineIfNeeded(reportData dashboard.Report, repoPat
 }
 
 func resolveDashboardBaselinePaths(repoPath string, resolved resolvedDashboardRequest) (string, string, string, bool, error) {
-	return resolveBaselineStoreComparisonPaths(repoPath, baselineKeyRequestFromDashboard(resolved), dashboard.ResolveBaselineSnapshotPath)
+	return resolveBaselineStoreComparisonPaths(resolveCurrentBaselineKey(repoPath), baselineKeyRequestFromDashboard(resolved), dashboard.ResolveBaselineSnapshotPath)
 }
 
 func appendDashboardBaselineSaveWarning(reportData dashboard.Report, savedPath string) dashboard.Report {

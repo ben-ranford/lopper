@@ -203,6 +203,10 @@ func rejectMatchingLegacySnapshot(dir, key string, existsErr error) error {
 	if err != nil {
 		return err
 	}
+	return matchingLegacySnapshotError(data, key, existsErr, filepath.Join(dir, legacyName))
+}
+
+func matchingLegacySnapshotError(data []byte, key string, existsErr error, path string) error {
 	var identity struct {
 		Key string `json:"key"`
 	}
@@ -210,9 +214,9 @@ func rejectMatchingLegacySnapshot(dir, key string, existsErr error) error {
 		return nil
 	}
 	if existsErr == nil {
-		return fmt.Errorf("baseline snapshot already exists: key %q (%s)", key, filepath.Join(dir, legacyName))
+		return fmt.Errorf("baseline snapshot already exists: key %q (%s)", key, path)
 	}
-	return fmt.Errorf("%w: key %q (%s)", existsErr, key, filepath.Join(dir, legacyName))
+	return fmt.Errorf("%w: key %q (%s)", existsErr, key, path)
 }
 
 func ListStoreEntries(dir string) ([]string, error) {

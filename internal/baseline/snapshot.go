@@ -2,7 +2,9 @@ package baseline
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -115,6 +117,72 @@ func LoadConfiguredStoreSnapshot[T any](dir, key string, maxBytes int64, store S
 
 func SaveConfiguredSnapshot[T any](dir, key string, now time.Time, report T, store SnapshotStore[T]) (string, error) {
 	return SaveSnapshot(dir, key, now, report, store.ExistsErr, store.Normalize)
+}
+
+// SaveConfiguredSnapshotWithinRoot saves an immutable snapshot beneath an
+// already-open write root.
+func SaveConfiguredSnapshotWithinRoot[T any](root *safeio.WriteRoot, dir, displayDir, key string, now time.Time, report T, store SnapshotStore[T]) (string, error) {
+	trimmedKey := strings.TrimSpace(key)
+	if root == nil {
+		return "", errors.New("baseline store root is required")
+	}
+	if trimmedKey == "" {
+		return "", errors.New("baseline key is required")
+	}
+	cleanDir := filepath.Clean(strings.TrimSpace(dir))
+	if filepath.IsAbs(cleanDir) || cleanDir == ".." || strings.HasPrefix(cleanDir, ".."+string(filepath.Separator)) {
+		return "", errors.New("baseline store directory must be relative to repository root")
+	}
+	if cleanDir != "." {
+		if err := root.EnsureDir(cleanDir, 0o750); err != nil {
+			return "", err
+		}
+	}
+
+	if err := rejectMatchingLegacySnapshotWithinRoot(root, cleanDir, displayDir, trimmedKey, store.ExistsErr); err != nil {
+		return "", err
+	}
+	payload, err := json.MarshalIndent(NewConfiguredSnapshot(trimmedKey, report, now, store), "", "  ")
+	if err != nil {
+		return "", err
+	}
+	payload = append(payload, '\n')
+	fileName := SnapshotFileName(trimmedKey)
+	targetPath := filepath.Join(cleanDir, fileName)
+	if err := root.WriteFileExclusiveCreatingParents(targetPath, payload, 0o600, 0o750); err != nil {
+		if errors.Is(err, os.ErrExist) && store.ExistsErr != nil {
+			return "", store.ExistsErr
+		}
+		return "", err
+	}
+	return filepath.Join(displayDir, fileName), nil
+}
+
+func rejectMatchingLegacySnapshotWithinRoot(root *safeio.WriteRoot, dir, displayDir, key string, existsErr error) error {
+	legacyName := LegacySnapshotFileName(key)
+	legacyPath := filepath.Join(dir, legacyName)
+	info, err := root.Lstat(legacyPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	displayPath := filepath.Join(displayDir, legacyName)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("baseline snapshot must not be a symlink: %s", displayPath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("baseline snapshot must be a regular file: %s", displayPath)
+	}
+	if info.Size() > MaxSnapshotBytes {
+		return fmt.Errorf("%w: %s", ErrSnapshotTooLarge, displayPath)
+	}
+	data, err := root.ReadFile(legacyPath)
+	if err != nil {
+		return err
+	}
+	return matchingLegacySnapshotError(data, key, existsErr, displayPath)
 }
 
 func NewConfiguredSnapshot[T any](key string, report T, now time.Time, store SnapshotStore[T]) Snapshot[T] {

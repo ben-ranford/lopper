@@ -5,12 +5,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
+	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 func TestRunCodemodApplyToolReturnsStructuredPayload(t *testing.T) {
@@ -117,6 +120,271 @@ func TestRunBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 	}
 	if payload.ReportSummary == nil || payload.ReportSummary.DependencyCount != 1 {
 		t.Fatalf("expected report summary in structured content, got %#v", payload.ReportSummary)
+	}
+}
+
+func TestRunBaselineSaveToolUsesAuthorizedCommitAndConfigAfterRepositorySwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("open-directory replacement semantics are not available on Windows")
+	}
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	repoB := filepath.Join(parent, "repo-b")
+	for _, root := range []string{repo, repoB} {
+		if err := os.Mkdir(root, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", root, err)
+		}
+	}
+	writeMCPRepoConfigFixture(t, repo, 21, "GHSA-repo-a")
+	writeMCPRepoConfigFixture(t, repoB, 88, "GHSA-repo-b")
+	initMCPGitRepo(t, repo, "repo-a")
+	initMCPGitRepo(t, repoB, "repo-b")
+	repoACommit, err := workspace.CurrentCommitSHA(repo)
+	if err != nil {
+		t.Fatalf("repo A commit: %v", err)
+	}
+	repoBCommit, err := workspace.CurrentCommitSHA(repoB)
+	if err != nil {
+		t.Fatalf("repo B commit: %v", err)
+	}
+	movedRepoA := filepath.Join(parent, "repo-a-original")
+	restore := analysis.SetRepositoryViewHandleOpenedHookForTest(func() error {
+		if err := os.Rename(repo, movedRepoA); err != nil {
+			return err
+		}
+		return os.Rename(repoB, repo)
+	})
+	t.Cleanup(restore)
+
+	runner := &fakeMutationRunner{baselineReport: sampleReport(repo)}
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+	result := callToolResult(t, server, toolSaveBaseline, map[string]any{
+		"repoPath":          repo,
+		"baselineStorePath": ".artifacts/baselines",
+		"topN":              1,
+		"confirmSave":       true,
+		"cacheEnabled":      false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected baseline save after swap: %#v", result)
+	}
+	if runner.lastBaseline.BaselineKey != "commit:"+repoACommit || runner.lastBaseline.CurrentBaselineKey != "commit:"+repoACommit {
+		t.Fatalf("expected repo A commit-bound baseline request, got %#v", runner.lastBaseline)
+	}
+	if runner.lastBaseline.Thresholds.LowConfidenceWarningPercent != 21 {
+		t.Fatalf("expected repo A thresholds after swap, got %#v", runner.lastBaseline.Thresholds)
+	}
+	if runner.lastBaseline.BaselineKey == "commit:"+repoBCommit {
+		t.Fatalf("expected repo B commit not to leak into baseline key")
+	}
+}
+
+func TestRunBaselineSaveToolSealsSamePathHeadAndConfigBeforeMutationCapture(t *testing.T) {
+	repo := t.TempDir()
+	writeMCPRepoConfigFixture(t, repo, 23, "GHSA-config-a")
+	initMCPGitRepo(t, repo, "repo-a")
+	commitA, err := workspace.CurrentCommitSHA(repo)
+	if err != nil {
+		t.Fatalf("resolve commit A: %v", err)
+	}
+
+	writeMCPRepoConfigFixture(t, repo, 89, "GHSA-config-b")
+	if err := os.WriteFile(filepath.Join(repo, "identity.txt"), []byte("repo-b\n"), 0o600); err != nil {
+		t.Fatalf("write identity B: %v", err)
+	}
+	testutil.RunGit(t, repo, "add", ".")
+	testutil.RunGit(t, repo, "commit", "-m", "repo-b")
+	commitB, err := workspace.CurrentCommitSHA(repo)
+	if err != nil {
+		t.Fatalf("resolve commit B: %v", err)
+	}
+	testutil.RunGit(t, repo, "checkout", "--detach", commitA)
+
+	viewOpens := 0
+	restoreOpen := analysis.SetRepositoryViewHandleOpenedHookForTest(func() error {
+		viewOpens++
+		testutil.RunGit(t, repo, "checkout", "--detach", commitB)
+		return nil
+	})
+	t.Cleanup(restoreOpen)
+	viewCloses := 0
+	restoreClose := analysis.SetRepositoryViewCloseHookForTest(func() error {
+		viewCloses++
+		return nil
+	})
+	t.Cleanup(restoreClose)
+
+	runner := &fakeMutationRunner{baselineReport: sampleReport(repo)}
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+	result := callToolResult(t, server, toolSaveBaseline, map[string]any{
+		"repoPath":          repo,
+		"baselineStorePath": ".artifacts/baselines",
+		"topN":              1,
+		"confirmSave":       true,
+		"cacheEnabled":      false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected same-path baseline mutation error: %#v", result)
+	}
+	if !runner.baselineCalled || runner.lastBaseline.RepositoryView == nil {
+		t.Fatalf("mutation did not receive the authoritative borrowed view: %#v", runner.lastBaseline)
+	}
+	if runner.lastBaseline.Thresholds.LowConfidenceWarningPercent != 23 {
+		t.Fatalf("mutation thresholds = %#v, want config A", runner.lastBaseline.Thresholds)
+	}
+	if runner.lastBaseline.CurrentBaselineKey != "commit:"+commitA ||
+		runner.lastBaseline.BaselineKey != "commit:"+commitA ||
+		!runner.lastBaseline.CurrentBaselineKeyCaptured {
+		t.Fatalf("mutation baseline identity = %#v, want commit A", runner.lastBaseline)
+	}
+	if runner.lastBaseline.CurrentBaselineKey == "commit:"+commitB {
+		t.Fatal("same-path commit B retargeted mutation state")
+	}
+	if viewOpens != 1 || viewCloses != 1 {
+		t.Fatalf("repository view opens/closes = %d/%d, want 1/1", viewOpens, viewCloses)
+	}
+}
+
+func TestRunBaselineSaveToolJoinsRunnerAndRepositoryViewCloseFailures(t *testing.T) {
+	repo := t.TempDir()
+	runErr := errors.New("baseline runner sentinel")
+	closeErr := errors.New("mutation repository close sentinel")
+	closeCalls := 0
+	restore := analysis.SetRepositoryViewCloseHookForTest(func() error {
+		closeCalls++
+		return closeErr
+	})
+	t.Cleanup(restore)
+
+	runner := &fakeMutationRunner{baselineErr: runErr}
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+	result := callToolResult(t, server, toolSaveBaseline, map[string]any{
+		"repoPath":          repo,
+		"baselineStorePath": "baselines",
+		"baselineLabel":     "close-error",
+		"confirmSave":       true,
+		"cacheEnabled":      false,
+	})
+	if !result.IsError || len(result.Content) == 0 {
+		t.Fatalf("expected joined mutation failure, got %#v", result)
+	}
+	if !strings.Contains(result.Content[0].Text, runErr.Error()) || !strings.Contains(result.Content[0].Text, closeErr.Error()) {
+		t.Fatalf("expected runner and close errors, got %q", result.Content[0].Text)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("repository close calls = %d, want 1", closeCalls)
+	}
+}
+
+func TestRunCodemodApplyToolKeepsPinnedPolicyAndPropagatesRepositoryViewCloseFailure(t *testing.T) {
+	repo := t.TempDir()
+	configPath := filepath.Join(repo, ".lopper.yml")
+	if err := os.WriteFile(configPath, []byte("thresholds:\n  lockfile_drift_policy: off\n"), 0o600); err != nil {
+		t.Fatalf("write initial policy: %v", err)
+	}
+	closeErr := errors.New("policy drift close sentinel")
+	closeCalls := 0
+	restore := analysis.SetRepositoryViewCloseHookForTest(func() error {
+		closeCalls++
+		return closeErr
+	})
+	t.Cleanup(restore)
+
+	runner := &fakeMutationRunner{
+		captureFn: func(req AnalysisMutationRequest) (AnalysisMutationRequest, error) {
+			err := os.WriteFile(configPath, []byte("thresholds:\n  lockfile_drift_policy: warn\n"), 0o600)
+			return req, err
+		},
+	}
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+	result := callToolResult(t, server, toolApplyCodemod, map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"confirmApply": true,
+		"cacheEnabled": false,
+	})
+	if !result.IsError || len(result.Content) == 0 {
+		t.Fatalf("expected repository-view close failure, got %#v", result)
+	}
+	if strings.Contains(result.Content[0].Text, "policy changed while capturing mutation preconditions") ||
+		!strings.Contains(result.Content[0].Text, closeErr.Error()) {
+		t.Fatalf("expected only the close failure after pinned-policy execution, got %q", result.Content[0].Text)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("repository close calls = %d, want 1", closeCalls)
+	}
+	if !runner.applyCalled {
+		t.Fatal("expected mutation runner to execute with pinned policy")
+	}
+	if runner.lastApply.Thresholds.LockfileDriftPolicy != "off" {
+		t.Fatalf("mutation policy = %q, want pinned off policy", runner.lastApply.Thresholds.LockfileDriftPolicy)
+	}
+}
+
+func TestAnalysisMutationCaptureFailureClosesAuthoritativeRepositoryView(t *testing.T) {
+	repo := t.TempDir()
+	captureErr := errors.New("capture precondition sentinel")
+	viewOpens := 0
+	restore := analysis.SetRepositoryViewHandleOpenedHookForTest(func() error {
+		viewOpens++
+		return nil
+	})
+	t.Cleanup(restore)
+	viewCloses := 0
+	restoreClose := analysis.SetRepositoryViewCloseHookForTest(func() error {
+		viewCloses++
+		return nil
+	})
+	t.Cleanup(restoreClose)
+
+	runner := &fakeMutationRunner{captureErr: captureErr}
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+	result := callToolResult(t, server, toolApplyCodemod, map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"confirmApply": true,
+		"cacheEnabled": false,
+	})
+	assertMutationToolErrorContains(t, result, captureErr.Error())
+	if viewOpens != 1 {
+		t.Fatalf("repository view opens = %d, want 1", viewOpens)
+	}
+	if viewCloses != 1 {
+		t.Fatalf("repository view closes = %d, want 1", viewCloses)
+	}
+}
+
+func TestMutationPolicyTraceRecordsEveryOverrideWithStableSource(t *testing.T) {
+	args := mutationAnalysisArguments{
+		LowConfidenceWarningPercent:       intPtr(11),
+		MinUsagePercentForRecommendations: intPtr(22),
+		MaxUncertainImportCount:           intPtr(3),
+		ScoreWeightUsage:                  floatPtr(0.5),
+		ScoreWeightImpact:                 floatPtr(0.3),
+		ScoreWeightConfidence:             floatPtr(0.2),
+		LicenseDeny:                       []string{"GPL-3.0-only"},
+		LicenseFailOnDeny:                 boolPtr(true),
+		LicenseProvenanceRegistry:         boolPtr(true),
+	}
+	trace := mutationPolicyTrace(args)
+	wantFields := []string{
+		"thresholds.low_confidence_warning_percent",
+		"thresholds.min_usage_percent_for_recommendations",
+		"thresholds.max_uncertain_import_count",
+		"removal_candidate_weights.usage",
+		"removal_candidate_weights.impact",
+		"removal_candidate_weights.confidence",
+		"license.deny",
+		"license.fail_on_deny",
+		"license.include_registry_provenance",
+	}
+	if len(trace) != len(wantFields) {
+		t.Fatalf("policy trace length = %d, want %d: %#v", len(trace), len(wantFields), trace)
+	}
+	for index, field := range wantFields {
+		if trace[index].Field != field || trace[index].Source != "mcp" {
+			t.Fatalf("policy trace[%d] = %#v, want field %q from mcp", index, trace[index], field)
+		}
 	}
 }
 
@@ -434,20 +702,24 @@ func TestResolveMutationAnalysisTargetBranches(t *testing.T) {
 func TestResolveMutationRequestValidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: &fakeMutationRunner{}})
+	assertMutationAnalysisValidationErrors(t, server, repo)
+	assertMutationExternalCacheCompatibility(t, server, repo)
+	assertMutationDashboardValidationErrors(t, server, repo)
+}
 
-	analysisCases := []struct {
+func assertMutationAnalysisValidationErrors(t *testing.T, server *Server, repo string) {
+	t.Helper()
+	for _, tc := range []struct {
 		name string
 		args mutationAnalysisArguments
 		want string
 	}{
 		{"bad repo", mutationAnalysisArguments{RepoPath: filepath.Join(repo, "missing"), Dependency: "dep"}, "stat repoPath"},
 		{"missing dependency", mutationAnalysisArguments{RepoPath: repo}, "dependency"},
-		{"cache path escape", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", CacheEnabled: boolPtr(true), CachePath: filepath.Join(t.TempDir(), "cache")}, "cachePath must stay within repoPath"},
 		{"bad scope", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", ScopeMode: "bad"}, "scopeMode"},
 		{"bad threshold", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", LowConfidenceWarningPercent: intPtr(101)}, "low_confidence"},
 		{"unknown feature", mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", EnableFeatures: []string{"missing"}}, "unknown feature"},
-	}
-	for _, tc := range analysisCases {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := server.resolveAnalysisMutationRequest(context.Background(), tc.args, mutationAnalysisKindDependency)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -455,15 +727,36 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 			}
 		})
 	}
-
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := server.resolveAnalysisMutationRequest(cancelled, mutationAnalysisArguments{RepoPath: repo, Dependency: "dep"}, mutationAnalysisKindDependency)
-	if !errors.Is(err, context.Canceled) {
+	if _, err := server.resolveAnalysisMutationRequest(cancelled, mutationAnalysisArguments{RepoPath: repo, Dependency: "dep"}, mutationAnalysisKindDependency); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled analysis request, got %v", err)
 	}
+}
 
-	dashboardCases := []struct {
+func assertMutationExternalCacheCompatibility(t *testing.T, server *Server, repo string) {
+	t.Helper()
+	outsideCache := filepath.Join(t.TempDir(), "cache")
+	request, err := server.resolveAnalysisMutationRequest(context.Background(), mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", CacheEnabled: boolPtr(true), CachePath: outsideCache, CacheReadOnly: true}, mutationAnalysisKindDependency)
+	if err != nil {
+		t.Fatalf("resolve mutation request with external cache path: %v", err)
+	}
+	if request.Cache == nil || !request.Cache.Enabled || request.Cache.Path != outsideCache || !request.Cache.ReadOnly {
+		t.Fatalf("expected external absolute cache path to be preserved for mutations, got %#v", request)
+	}
+	symlinkOutside := t.TempDir()
+	if err := os.Symlink(symlinkOutside, filepath.Join(repo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	_, err = server.resolveAnalysisMutationRequest(context.Background(), mutationAnalysisArguments{RepoPath: repo, Dependency: "dep", CacheEnabled: boolPtr(true), CachePath: filepath.Join(repo, "tmp", "cache")}, mutationAnalysisKindDependency)
+	if err == nil || !strings.Contains(err.Error(), "cachePath must stay within repoPath") {
+		t.Fatalf("expected symlinked cache escape rejection, got %v", err)
+	}
+}
+
+func assertMutationDashboardValidationErrors(t *testing.T, server *Server, repo string) {
+	t.Helper()
+	for _, tc := range []struct {
 		name string
 		args dashboardBaselineSaveArguments
 		want string
@@ -473,8 +766,7 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 		{"bad topN", dashboardBaselineSaveArguments{RepoPath: repo, Repos: []DashboardRepoInput{{Path: repo}}, BaselineStorePath: "store", BaselineKey: "key", TopN: intPtr(0)}, "topN"},
 		{"bad store", dashboardBaselineSaveArguments{RepoPath: repo, Repos: []DashboardRepoInput{{Path: repo}}, BaselineStorePath: "https://example.com/store", BaselineKey: "key"}, "local filesystem"},
 		{"unknown feature", dashboardBaselineSaveArguments{RepoPath: repo, Repos: []DashboardRepoInput{{Path: repo}}, BaselineStorePath: "store", BaselineKey: "key", EnableFeatures: []string{"missing"}}, "unknown feature"},
-	}
-	for _, tc := range dashboardCases {
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := server.resolveDashboardMutationRequest(context.Background(), tc.args)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -482,10 +774,9 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 			}
 		})
 	}
-
-	cancelled, cancel = context.WithCancel(context.Background())
+	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = server.resolveDashboardMutationRequest(cancelled, dashboardBaselineSaveArguments{
+	_, err := server.resolveDashboardMutationRequest(cancelled, dashboardBaselineSaveArguments{
 		RepoPath:          repo,
 		Repos:             []DashboardRepoInput{{Path: repo}},
 		BaselineStorePath: "store",
@@ -493,6 +784,87 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled dashboard request, got %v", err)
+	}
+}
+
+func TestResolveAnalysisMutationRequestRejectsCanonicalSymlinkEscapeUnderRequestedRepoAlias(t *testing.T) {
+	requestedRepo, canonicalCache, outsideCache := mcpCanonicalAliasCacheEscapeFixture(t)
+	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: &fakeMutationRunner{}})
+
+	args := mutationAnalysisArguments{
+		RepoPath:     requestedRepo,
+		Dependency:   "dep",
+		CacheEnabled: boolPtr(true),
+		CachePath:    canonicalCache,
+	}
+	_, err := server.resolveAnalysisMutationRequest(context.Background(), args, mutationAnalysisKindDependency)
+	if !analysis.CachePathSymlinkEscape(err) {
+		t.Fatalf("expected canonical-form mutation symlink escape rejection, got %v", err)
+	}
+	if analysis.CachePathExternal(err) {
+		t.Fatalf("expected mutation not to classify canonical in-repo form as external, got %v", err)
+	}
+	if _, statErr := os.Stat(outsideCache); !os.IsNotExist(statErr) {
+		t.Fatalf("expected MCP mutation not to create external cache directory, stat err=%v", statErr)
+	}
+}
+
+func TestResolveAnalysisMutationRequestRejectsAlternateAbsoluteRepoAliasesThatLaterEscape(t *testing.T) {
+	for _, fixture := range mcpAlternateAbsoluteRepoAliasEscapeFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: &fakeMutationRunner{}})
+			args := mutationAnalysisArguments{
+				RepoPath:     fixture.requestedRepo,
+				Dependency:   "dep",
+				CacheEnabled: boolPtr(true),
+				CachePath:    fixture.cachePath,
+			}
+			_, err := server.resolveAnalysisMutationRequest(context.Background(), args, mutationAnalysisKindDependency)
+			if !analysis.CachePathSymlinkEscape(err) || analysis.CachePathExternal(err) {
+				t.Fatalf("expected MCP mutation alternate-alias escape rejection, got %v", err)
+			}
+			if _, statErr := os.Stat(fixture.outsideCache); !os.IsNotExist(statErr) {
+				t.Fatalf("expected MCP mutation not to create outside cache, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
+func TestCodemodMutationClassifiesExternalCacheAliasesIntoRepoBeforeRunnerInvocation(t *testing.T) {
+	repo := t.TempDir()
+	cacheSubdir := filepath.Join(repo, ".cache", "lopper")
+	if err := os.MkdirAll(cacheSubdir, 0o750); err != nil {
+		t.Fatalf("mkdir cache subdir: %v", err)
+	}
+	for _, tc := range mcpRepoCacheAliasFixtures(repo, cacheSubdir) {
+		t.Run(tc.name, func(t *testing.T) {
+			cacheAlias := mustMCPCacheAlias(t, tc.target)
+			runner := &fakeMutationRunner{applyReport: sampleReport(repo)}
+			server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
+			result := callToolResult(t, server, toolApplyCodemod, map[string]any{
+				"repoPath":     repo,
+				"dependency":   "lodash",
+				"cachePath":    cacheAlias,
+				"cacheEnabled": true,
+				"include":      []string{"**"},
+				"confirmApply": true,
+			})
+			assertMCPMutationRepoCacheAliasOutcome(t, result, runner.applyCalled, analysis.InRepoCacheOptions(runner.lastApply.Cache), tc.wantReject)
+			assertMCPCacheLayoutAbsent(t, tc.target)
+		})
+	}
+}
+
+func assertMCPMutationRepoCacheAliasOutcome(t *testing.T, result toolCallResult, called, inRepo bool, wantReject bool) {
+	t.Helper()
+	if wantReject {
+		if !result.IsError || !strings.Contains(result.Content[0].Text, "scoped analysis does not allow cachePath at the repository root") || called {
+			t.Fatalf("expected external repo-root alias rejection, got %#v called=%t", result, called)
+		}
+		return
+	}
+	if result.IsError || !called || !inRepo {
+		t.Fatalf("expected in-repo cache pin for mutation alias, result=%#v called=%t inRepo=%t", result, called, inRepo)
 	}
 }
 

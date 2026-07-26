@@ -1,9 +1,11 @@
 package safeio
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -71,6 +73,56 @@ func openWriteRoot(rootAbs string) (*WriteRoot, error) {
 	return &WriteRoot{root: root, rootAbs: rootAbs}, nil
 }
 
+// OpenRelativeWriteRoot opens a child write root from an already-open parent.
+// Existing path components must be real directories; missing components are
+// created only when create is true.
+func OpenRelativeWriteRoot(parent Root, targetPath string, create bool, perm os.FileMode) (*WriteRoot, error) {
+	if parent == nil {
+		return nil, errors.New("parent root is required")
+	}
+	targetRel, err := resolveRelativeTarget(targetPath, allowRootTarget)
+	if err != nil {
+		return nil, err
+	}
+	current, currentOwned, currentPath, err := openRelativeWriteRootDescendants(parent, targetRel, create, perm)
+	if err != nil {
+		return nil, err
+	}
+	if !currentOwned {
+		next, err := current.OpenRoot(".")
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return &WriteRoot{root: current, rootAbs: currentPath}, nil
+}
+
+func openRelativeWriteRootDescendants(parent Root, targetRel string, create bool, perm os.FileMode) (Root, bool, string, error) {
+	current := parent
+	currentOwned := false
+	currentPath := "."
+	for _, part := range strings.Split(targetRel, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		partPath := filepath.Join(currentPath, part)
+		next, err := openTargetParentChild(current, part, partPath, create, perm)
+		if err != nil {
+			return nil, false, "", closeOwnedRootWithError(current, currentOwned, err)
+		}
+		if currentOwned {
+			if err := current.Close(); err != nil {
+				return nil, false, "", closeRootWithError(next, err)
+			}
+		}
+		current = next
+		currentOwned = true
+		currentPath = partPath
+	}
+	return current, currentOwned, currentPath, nil
+}
+
 // Close releases the pinned filesystem root.
 func (r *WriteRoot) Close() error {
 	return r.root.Close()
@@ -136,6 +188,50 @@ func (r *WriteRoot) WriteFileReplacingParents(targetPath string, data []byte, pe
 		return err
 	}
 	return r.writeFileAtTarget(target, data, perm, true, parentPerm, true)
+}
+
+// WriteFileExclusiveCreatingParents writes a new root-relative file and fails
+// if the target already exists.
+func (r *WriteRoot) WriteFileExclusiveCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) (returnErr error) {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	parent, closeParent, err := r.openTargetParent(target, true, parentPerm)
+	if err != nil {
+		return err
+	}
+	if closeParent {
+		defer func() {
+			returnErr = errors.Join(returnErr, parent.Close())
+		}()
+	}
+
+	targetName := filepath.Base(target.rel)
+	file, err := parent.OpenFile(targetName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	removeOnError := true
+	writeSucceeded := false
+	defer func() {
+		closeErr := file.Close()
+		if closeErr == nil && writeSucceeded {
+			removeOnError = false
+		} else {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+		if removeOnError {
+			if removeErr := parent.Remove(targetName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				returnErr = errors.Join(returnErr, removeErr)
+			}
+		}
+	}()
+	if _, err := io.Copy(file, bytes.NewReader(data)); err != nil {
+		return err
+	}
+	writeSucceeded = true
+	return nil
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
@@ -316,6 +412,10 @@ func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.F
 }
 
 func openTargetParentChild(root Root, name, path string, create bool, perm os.FileMode) (Root, error) {
+	parentInfo, err := root.Lstat(".")
+	if err != nil {
+		return nil, err
+	}
 	info, err := lstatOrCreateDirectory(root, name, create, perm)
 	if err != nil {
 		return nil, err
@@ -337,6 +437,9 @@ func openTargetParentChild(root Root, name, path string, create bool, perm os.Fi
 	}
 	if !os.SameFile(info, openedInfo) {
 		return nil, closeRootWithError(next, fmt.Errorf("output parent changed while opening: %s", path))
+	}
+	if !enforceSameDeviceBoundary(root, next, parentInfo, openedInfo) {
+		return nil, closeRootWithError(next, fmt.Errorf("output parent crosses device boundary: %s", path))
 	}
 	return next, nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 type resolvedCacheOptions struct {
@@ -36,17 +37,55 @@ type analysisCache struct {
 	stableKeyRepoPath string
 	writeRootPath     string
 	writeRootInfo     fs.FileInfo
+	writeRootOpener   func() (*safeio.WriteRoot, error)
 }
 
 const analysisCacheUnavailablePrefix = "analysis cache unavailable: "
 
-var (
-	cacheInitBeforeObjectsEnsureFn = func() error { return nil }
+var cacheInitBeforeObjectsEnsureFn = func() error { return nil }
+
+type trustedCachePathValidationKind uint8
+
+const (
+	trustedCachePathValidationExternal trustedCachePathValidationKind = iota + 1
+	trustedCachePathValidationSymlinkEscape
 )
 
 const defaultAnalysisCacheDirName = ".lopper-cache"
 
-func newAnalysisCache(req Request, repoPath string) *analysisCache {
+// CachePathExternal reports whether validation authenticated a cache target
+// that remains outside the canonical repository.
+func CachePathExternal(err error) bool {
+	return trustedCachePathErrorHasKind(err, trustedCachePathValidationExternal)
+}
+
+// CachePathSymlinkEscape reports whether a lexically in-repository
+// cache target escaped the canonical repository through a symlink.
+func CachePathSymlinkEscape(err error) bool {
+	return trustedCachePathErrorHasKind(err, trustedCachePathValidationSymlinkEscape)
+}
+
+// AuthenticatedExternalCacheOptions verifies that options and an external-path
+// classification came from the same trust-boundary resolution.
+func AuthenticatedExternalCacheOptions(options *CacheOptions, err error) bool {
+	if options == nil || options.trustedPin == nil || options.trustedPin.kind != trustedCachePathExternal {
+		return false
+	}
+	var validationErr *trustedCachePathValidationError
+	return CachePathExternal(err) &&
+		errors.As(err, &validationErr) &&
+		validationErr.trustedPin == options.trustedPin
+}
+
+// InRepoCacheOptions reports whether options carry an authenticated
+// canonical cache target inside their bound repository.
+func InRepoCacheOptions(options *CacheOptions) bool {
+	return options != nil &&
+		options.trustedPin != nil &&
+		options.trustedPin.kind == trustedCachePathInRepo
+}
+
+func newAnalysisCache(req Request, repoPath string, repositoryViews ...*RepositoryView) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
 	cache := &analysisCache{
 		options:          options,
@@ -62,7 +101,11 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	if !cache.validateDefaultWritePath(req, repoPath) {
 		return cache
 	}
-	cache.initializeWriteRoot(options.writePath())
+	var repositoryView *RepositoryView
+	if len(repositoryViews) > 0 {
+		repositoryView = repositoryViews[0]
+	}
+	cache.initializeWriteRoot(options.writePath(), req.Cache, repositoryView)
 	return cache
 }
 
@@ -84,7 +127,7 @@ func (c *analysisCache) configureStablePaths(req Request) {
 			c.stableKeyRepoPath = repoRootPath
 		}
 	}
-	if req.Cache != nil && strings.TrimSpace(req.Cache.PinnedPath) != "" && strings.TrimSpace(req.Cache.Path) == "" {
+	if req.Cache.hasTrustedPin() && strings.TrimSpace(req.Cache.Path) == "" {
 		c.metadata.Path = c.options.WritePath
 	}
 }
@@ -93,7 +136,7 @@ func (c *analysisCache) validateDefaultWritePath(req Request, repoPath string) b
 	if c == nil {
 		return false
 	}
-	if req.Cache != nil && (strings.TrimSpace(req.Cache.Path) != "" || strings.TrimSpace(req.Cache.PinnedPath) != "") {
+	if req.Cache != nil && (strings.TrimSpace(req.Cache.Path) != "" || req.Cache.hasTrustedPin()) {
 		return true
 	}
 	if cachePathEscapesRepo(c.options.writePath(), repoPath) {
@@ -104,8 +147,26 @@ func (c *analysisCache) validateDefaultWritePath(req Request, repoPath string) b
 	return true
 }
 
-func (c *analysisCache) initializeWriteRoot(writePath string) {
-	writeRootPath, writeRootInfo, err := ensurePinnedCacheLayout(writePath)
+func (c *analysisCache) initializeWriteRoot(writePath string, options *CacheOptions, repositoryView *RepositoryView) {
+	var (
+		writeRootPath string
+		writeRootInfo fs.FileInfo
+		err           error
+	)
+	switch {
+	case InRepoCacheOptions(options) && repositoryView != nil && repositoryView.state != nil && repositoryView.state == options.trustedPin.repositoryState:
+		writeRootPath = options.trustedPinnedPath()
+		writeRootInfo, err = c.ensureRepositoryCacheLayout(repositoryView, options.trustedPin.repoRelativePath)
+		if err == nil {
+			c.writeRootOpener = func() (*safeio.WriteRoot, error) {
+				return repositoryView.OpenWriteRoot(options.trustedPin.repoRelativePath, false)
+			}
+		}
+	case options.hasTrustedPin():
+		writeRootPath, writeRootInfo, err = ensureTrustedPinnedCacheLayout(writePath)
+	default:
+		writeRootPath, writeRootInfo, err = ensurePinnedCacheLayout(writePath)
+	}
 	if err != nil {
 		c.cacheable = false
 		c.warn(analysisCacheUnavailablePrefix + err.Error())
@@ -114,6 +175,26 @@ func (c *analysisCache) initializeWriteRoot(writePath string) {
 	c.writeRootPath = writeRootPath
 	c.writeRootInfo = writeRootInfo
 	c.cacheable = true
+}
+
+func (c *analysisCache) ensureRepositoryCacheLayout(repositoryView *RepositoryView, relativePath string) (_ fs.FileInfo, returnErr error) {
+	root, err := repositoryView.OpenWriteRoot(relativePath, true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, root.Close())
+	}()
+	if err := root.EnsureDir("keys", 0o750); err != nil {
+		return nil, err
+	}
+	if err := cacheInitBeforeObjectsEnsureFn(); err != nil {
+		return nil, err
+	}
+	if err := root.EnsureDir("objects", 0o750); err != nil {
+		return nil, err
+	}
+	return root.Lstat(".")
 }
 
 func (c *analysisCache) stableCacheRoot(normalizedRoot string) string {
@@ -163,16 +244,16 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 		return options
 	}
 	options.Enabled = req.Enabled
-	if strings.TrimSpace(req.PinnedPath) != "" {
-		pinnedPath := filepath.Clean(strings.TrimSpace(req.PinnedPath))
+	pinnedPath := req.trustedPinnedPath()
+	if pinnedPath != "" {
 		options.Path = pinnedPath
 		options.WritePath = pinnedPath
 	}
 	if strings.TrimSpace(req.Path) != "" {
 		options.Path = strings.TrimSpace(req.Path)
 		switch {
-		case req.PinnedPath != "":
-			options.WritePath = req.PinnedPath
+		case pinnedPath != "":
+			options.WritePath = pinnedPath
 		case filepath.IsAbs(options.Path):
 			options.WritePath = filepath.Clean(options.Path)
 		default:
@@ -183,28 +264,68 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 	return options
 }
 
-func ResolveTrustedDefaultCachePath(repoPath string) (string, error) {
-	return pinTrustedCachePath(repoPath, filepath.Join(repoPath, defaultAnalysisCacheDirName), "cachePath")
+func ResolveTrustedDefaultCacheOptions(repoPath string, readOnly bool) (*CacheOptions, error) {
+	repository, err := ResolveTrustedRepository(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveTrustedDefaultCacheOptionsForRepository(repository, readOnly)
 }
 
-// ResolveTrustedCacheOptions normalizes enabled cache options so writes stay
-// within the trusted repository root. Empty paths are left empty so callers can
-// preserve default cache-path behavior.
+// ResolveTrustedDefaultCacheOptionsForRepository pins the default cache path
+// using an already-established repository authorization.
+func ResolveTrustedDefaultCacheOptionsForRepository(repository *RepositoryAuthorization, readOnly bool) (*CacheOptions, error) {
+	state := repository.authorizationState()
+	if state == nil {
+		return nil, errors.New("trusted repository authorization is required")
+	}
+	pin, err := pinTrustedCachePathForRepository(repository, filepath.Join(state.paths.requestedPath, defaultAnalysisCacheDirName), "cachePath")
+	if err != nil {
+		return nil, err
+	}
+	return &CacheOptions{
+		Enabled:    true,
+		ReadOnly:   readOnly,
+		trustedPin: pin,
+	}, nil
+}
+
+// ResolveTrustedCacheOptions pins enabled cache options to canonical paths.
+// Genuine external targets return paired authenticated options and a
+// CachePathExternal error; empty paths preserve default cache-path behavior.
 func ResolveTrustedCacheOptions(repoPath string, req *CacheOptions) (*CacheOptions, error) {
 	if req == nil {
 		return nil, nil
 	}
+	if req.hasTrustedPin() {
+		return useTrustedCacheOptions(repoPath, req)
+	}
+	repository, err := ResolveTrustedRepository(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return ResolveTrustedCacheOptionsForRepository(repository, req)
+}
+
+// ResolveTrustedCacheOptionsForRepository resolves cache options using an
+// already-established repository authorization.
+func ResolveTrustedCacheOptionsForRepository(repository *RepositoryAuthorization, req *CacheOptions) (*CacheOptions, error) {
+	if req == nil {
+		return nil, nil
+	}
+	state := repository.authorizationState()
+	if state == nil {
+		return nil, errors.New("trusted repository authorization is required")
+	}
 	options := *req
 	options.Path = strings.TrimSpace(options.Path)
-	options.PinnedPath = strings.TrimSpace(options.PinnedPath)
-	if !options.Enabled {
+	if options.hasTrustedPin() {
+		if options.trustedPin.repositoryState != repository.authorizationState() {
+			return nil, errors.New("trusted cache pin does not match repository authorization")
+		}
 		return &options, nil
 	}
-	if options.PinnedPath != "" {
-		options.PinnedPath = filepath.Clean(options.PinnedPath)
-		if err := validateTrustedCachePath(repoPath, options.PinnedPath, "cachePath"); err != nil {
-			return nil, err
-		}
+	if !options.Enabled {
 		return &options, nil
 	}
 	if options.Path == "" {
@@ -212,15 +333,49 @@ func ResolveTrustedCacheOptions(repoPath string, req *CacheOptions) (*CacheOptio
 	}
 	cachePath := options.Path
 	if !filepath.IsAbs(cachePath) {
-		cachePath = filepath.Join(repoPath, cachePath)
+		cachePath = filepath.Join(state.paths.requestedPath, cachePath)
 	}
 	cachePath = filepath.Clean(cachePath)
-	pinnedPath, err := pinTrustedCachePath(repoPath, cachePath, "cachePath")
+	pin, err := pinTrustedCachePathForRepository(repository, cachePath, "cachePath")
 	if err != nil {
+		if CachePathExternal(err) && !filepath.IsAbs(options.Path) {
+			return nil, err
+		}
+		if pin != nil {
+			options.trustedPin = pin
+			return &options, err
+		}
 		return nil, err
 	}
-	options.PinnedPath = pinnedPath
+	options.trustedPin = pin
 	return &options, nil
+}
+
+func normalizeTrustedRepoPath(repoPath string) (string, error) {
+	return workspace.NormalizeRepoPath(strings.TrimSpace(repoPath))
+}
+
+func useTrustedCacheOptions(repoPath string, req *CacheOptions) (*CacheOptions, error) {
+	if req == nil || !req.hasTrustedPin() {
+		return nil, errors.New("trusted cache options require an authenticated pin")
+	}
+	repository := newRepositoryAuthorization(req.trustedPin.repositoryState)
+	if err := useTrustedRepository(repoPath, repository); err != nil {
+		return nil, err
+	}
+	options := *req
+	return &options, nil
+}
+
+func (o *CacheOptions) hasTrustedPin() bool {
+	return o != nil && o.trustedPin != nil
+}
+
+func (o *CacheOptions) trustedPinnedPath() string {
+	if !o.hasTrustedPin() {
+		return ""
+	}
+	return o.trustedPin.canonicalPath
 }
 
 func (c *analysisCache) warn(message string) {
@@ -269,7 +424,15 @@ func ensurePinnedCacheLayout(rootPath string) (_ string, _ fs.FileInfo, returnEr
 	if err != nil {
 		return "", nil, err
 	}
-	ancestorRoot, rootRel, err := safeio.OpenExistingCanonicalWriteRoot(canonicalRootPath, true)
+	return ensureCanonicalCacheLayout(canonicalRootPath)
+}
+
+func ensureTrustedPinnedCacheLayout(rootPath string) (_ string, _ fs.FileInfo, returnErr error) {
+	return ensureCanonicalCacheLayout(filepath.Clean(rootPath))
+}
+
+func ensureCanonicalCacheLayout(rootPath string) (_ string, _ fs.FileInfo, returnErr error) {
+	ancestorRoot, rootRel, err := safeio.OpenExistingCanonicalWriteRoot(rootPath, true)
 	if err != nil {
 		return "", nil, err
 	}
@@ -320,6 +483,9 @@ func (c *analysisCache) validateWriteRoot() error {
 	if c == nil || c.writeRootInfo == nil {
 		return nil
 	}
+	if c.writeRootOpener != nil {
+		return nil
+	}
 	writePath := c.pinnedWritePath()
 	info, err := os.Lstat(writePath)
 	if err != nil {
@@ -331,11 +497,161 @@ func (c *analysisCache) validateWriteRoot() error {
 	return nil
 }
 
-func pinTrustedCachePath(repoPath, cachePath, field string) (string, error) {
-	if err := validateTrustedCachePath(repoPath, cachePath, field); err != nil {
-		return "", err
+func pinTrustedCachePath(repoPath, cachePath, field string) (*trustedCachePin, error) {
+	if !validTrustedCacheCandidate(cachePath) {
+		return nil, trustedCachePathError(field, trustedCachePathValidationSymlinkEscape)
 	}
-	return resolvePathWithinExistingTree(cachePath)
+	repository, err := ResolveTrustedRepository(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	return pinTrustedCachePathForRepository(repository, cachePath, field)
+}
+
+func pinTrustedCachePathForRepository(repository *RepositoryAuthorization, cachePath, field string) (*trustedCachePin, error) {
+	state := repository.authorizationState()
+	if state == nil || !validTrustedCacheCandidate(cachePath) {
+		return nil, trustedCachePathError(field, trustedCachePathValidationSymlinkEscape)
+	}
+	repoPaths := state.paths
+	candidatePath := normalizeTrustedCacheCandidate(repoPaths.requestedPath, cachePath)
+	lexicallyInRepo := pathWithinTrustedRepresentations(repoPaths, candidatePath)
+	resolution, err := resolveTrustedCacheCandidate(repoPaths, candidatePath)
+	if err != nil {
+		return nil, err
+	}
+	if resolution.escapedRepository {
+		return nil, trustedCachePathError(field, trustedCachePathValidationSymlinkEscape)
+	}
+	canonicalPath := resolution.path
+	if !pathWithinDir(repoPaths.canonicalPath, canonicalPath) {
+		if lexicallyInRepo || resolution.enteredRepository {
+			return nil, trustedCachePathError(field, trustedCachePathValidationSymlinkEscape)
+		}
+		pin := newTrustedCachePin(trustedCachePathExternal, repository, canonicalPath, "")
+		return pin, trustedExternalCachePathError(field, pin)
+	}
+	relativePath, err := filepath.Rel(repoPaths.canonicalPath, canonicalPath)
+	if err != nil {
+		return nil, trustedCachePathError(field, trustedCachePathValidationSymlinkEscape)
+	}
+	return newTrustedCachePin(trustedCachePathInRepo, repository, canonicalPath, relativePath), nil
+}
+
+func newTrustedCachePin(kind trustedCachePathKind, repository *RepositoryAuthorization, canonicalPath, relativePath string) *trustedCachePin {
+	if relativePath != "" {
+		relativePath = filepath.Clean(relativePath)
+	}
+	return &trustedCachePin{
+		kind:             kind,
+		repositoryState:  repository.authorizationState(),
+		canonicalPath:    filepath.Clean(canonicalPath),
+		repoRelativePath: relativePath,
+	}
+}
+
+type trustedCacheCandidateResolution struct {
+	path              string
+	enteredRepository bool
+	escapedRepository bool
+	missingPath       bool
+	symlinkExpansions int
+}
+
+const maxTrustedCacheSymlinkExpansions = 255
+
+func resolveTrustedCacheCandidate(repoPaths trustedRepoPaths, candidatePath string) (trustedCacheCandidateResolution, error) {
+	return resolveTrustedAbsolutePath(filepath.Clean(candidatePath), repoPaths, 0)
+}
+
+func resolveTrustedAbsolutePath(path string, repoPaths trustedRepoPaths, symlinkExpansions int) (trustedCacheCandidateResolution, error) {
+	if symlinkExpansions > maxTrustedCacheSymlinkExpansions {
+		return trustedCacheCandidateResolution{}, errors.New("too many symlinks while resolving cachePath")
+	}
+	volumeRoot := filepath.VolumeName(path) + string(os.PathSeparator)
+	relativePath, err := filepath.Rel(volumeRoot, path)
+	if err != nil {
+		return trustedCacheCandidateResolution{}, err
+	}
+	walk := trustedCachePathWalk{
+		repoPaths:         repoPaths,
+		segments:          strings.Split(relativePath, string(filepath.Separator)),
+		currentPath:       volumeRoot,
+		enteredRepository: pathWithinTrustedRepresentations(repoPaths, volumeRoot),
+		symlinkExpansions: symlinkExpansions,
+	}
+	for index, segment := range walk.segments {
+		resolution, done, err := walk.resolveSegment(index, segment)
+		if err != nil || done {
+			return resolution, err
+		}
+	}
+	return trustedCacheCandidateResolution{
+		path:              filepath.Clean(walk.currentPath),
+		enteredRepository: walk.enteredRepository,
+		symlinkExpansions: walk.symlinkExpansions,
+	}, nil
+}
+
+type trustedCachePathWalk struct {
+	repoPaths         trustedRepoPaths
+	segments          []string
+	currentPath       string
+	enteredRepository bool
+	symlinkExpansions int
+}
+
+func (w *trustedCachePathWalk) resolveSegment(index int, segment string) (trustedCacheCandidateResolution, bool, error) {
+	if segment == "" || segment == "." {
+		return trustedCacheCandidateResolution{}, false, nil
+	}
+	nextPath := filepath.Join(w.currentPath, segment)
+	info, err := os.Lstat(nextPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return w.missingPathResolution(index, nextPath), true, nil
+	}
+	if err != nil {
+		return trustedCacheCandidateResolution{}, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return w.resolveSymlink(nextPath)
+	}
+	w.currentPath = nextPath
+	w.enteredRepository = w.enteredRepository || pathWithinTrustedRepresentations(w.repoPaths, nextPath)
+	return trustedCacheCandidateResolution{}, false, nil
+}
+
+func (w *trustedCachePathWalk) missingPathResolution(index int, nextPath string) trustedCacheCandidateResolution {
+	resolvedPath := filepath.Join(append([]string{nextPath}, w.segments[index+1:]...)...)
+	return trustedCacheCandidateResolution{
+		path:              resolvedPath,
+		enteredRepository: w.enteredRepository || pathWithinTrustedRepresentations(w.repoPaths, resolvedPath),
+		missingPath:       true,
+		symlinkExpansions: w.symlinkExpansions,
+	}
+}
+
+func (w *trustedCachePathWalk) resolveSymlink(path string) (trustedCacheCandidateResolution, bool, error) {
+	linkTarget, err := os.Readlink(path)
+	if err != nil {
+		return trustedCacheCandidateResolution{}, false, err
+	}
+	if !filepath.IsAbs(linkTarget) {
+		linkTarget = filepath.Join(filepath.Dir(path), linkTarget)
+	}
+	target, err := resolveTrustedAbsolutePath(filepath.Clean(linkTarget), w.repoPaths, w.symlinkExpansions+1)
+	if err != nil {
+		return trustedCacheCandidateResolution{}, false, err
+	}
+	targetInside := pathWithinTrustedRepresentations(w.repoPaths, target.path)
+	if target.missingPath || target.escapedRepository || w.enteredRepository && !targetInside {
+		target.escapedRepository = true
+		return target, true, nil
+	}
+	w.enteredRepository = w.enteredRepository || target.enteredRepository || targetInside
+	w.symlinkExpansions = target.symlinkExpansions
+	w.currentPath = target.path
+	return trustedCacheCandidateResolution{}, false, nil
 }
 
 func openConfinedWriteRootUnder(rootPath, targetPath string) (*safeio.WriteRoot, string, error) {
@@ -392,92 +708,97 @@ func validateTrustedCachePath(repoPath, cachePath, field string) error {
 	if cachePath == "" {
 		return nil
 	}
-	if !pathWithinTrustedRoot(repoPath, cachePath) {
-		return fmt.Errorf("%s must stay within repoPath", field)
-	}
-	return validateNoSymlinkEscape(repoPath, cachePath, field)
+	_, err := pinTrustedCachePath(repoPath, cachePath, field)
+	return err
 }
 
 func pathWithinTrustedRoot(repoPath, candidatePath string) bool {
-	cleanRepoPath := filepath.Clean(repoPath)
-	cleanCandidatePath := filepath.Clean(candidatePath)
-	if pathWithinDir(cleanRepoPath, cleanCandidatePath) {
-		return true
-	}
-	resolvedRepoPath, err := filepath.EvalSymlinks(cleanRepoPath)
-	if err != nil {
+	if !validTrustedCacheCandidate(candidatePath) {
 		return false
 	}
-	resolvedCandidatePath, err := resolvePathWithinExistingTree(cleanCandidatePath)
+	pin, err := pinTrustedCachePath(repoPath, candidatePath, "cachePath")
+	return err == nil && pin != nil && pin.kind == trustedCachePathInRepo
+}
+
+type trustedRepoPaths struct {
+	requestedPath string
+	canonicalPath string
+	canonicalInfo fs.FileInfo
+}
+
+func resolveTrustedRepoPaths(repoPath string) (trustedRepoPaths, error) {
+	requestedPath, err := normalizeTrustedRepoPath(repoPath)
 	if err != nil {
-		return false
+		return trustedRepoPaths{}, err
 	}
-	return pathWithinDir(resolvedRepoPath, resolvedCandidatePath)
+	canonicalPath, err := resolvePathWithinExistingTree(requestedPath)
+	if err != nil {
+		return trustedRepoPaths{}, err
+	}
+	canonicalPath = filepath.Clean(canonicalPath)
+	canonicalInfo, err := os.Lstat(canonicalPath)
+	if err != nil {
+		return trustedRepoPaths{}, fmt.Errorf("stat canonical repoPath: %w", err)
+	}
+	if canonicalInfo.Mode()&os.ModeSymlink != 0 || !canonicalInfo.IsDir() {
+		return trustedRepoPaths{}, errors.New("repoPath must resolve to a directory")
+	}
+	return trustedRepoPaths{
+		requestedPath: filepath.Clean(requestedPath),
+		canonicalPath: canonicalPath,
+		canonicalInfo: canonicalInfo,
+	}, nil
+}
+
+func normalizeTrustedCacheCandidate(requestedRepoPath, candidatePath string) string {
+	candidatePath = strings.TrimSpace(candidatePath)
+	if !filepath.IsAbs(candidatePath) {
+		candidatePath = filepath.Join(requestedRepoPath, candidatePath)
+	}
+	return filepath.Clean(candidatePath)
+}
+
+func validTrustedCacheCandidate(candidatePath string) bool {
+	return !strings.ContainsRune(candidatePath, '\x00')
+}
+
+func pathWithinTrustedRepresentations(repoPaths trustedRepoPaths, candidatePath string) bool {
+	return pathWithinDir(repoPaths.requestedPath, candidatePath) ||
+		pathWithinDir(repoPaths.canonicalPath, candidatePath)
 }
 
 func validateNoSymlinkEscape(repoPath, candidatePath, field string) error {
-	cleanRepoPath := filepath.Clean(repoPath)
-	cleanCandidatePath := filepath.Clean(candidatePath)
-	resolvedRepoPath, err := filepath.EvalSymlinks(cleanRepoPath)
-	if err != nil {
-		resolvedRepoPath = cleanRepoPath
-	}
-	walkRoot, walkTarget, err := resolveTrustedWalkPaths(cleanRepoPath, cleanCandidatePath, resolvedRepoPath, field)
-	if err != nil {
-		return err
-	}
-	return validateWalkedPathSegments(walkRoot, walkTarget, resolvedRepoPath, field)
+	return validateTrustedCachePath(repoPath, candidatePath, field)
 }
 
-func resolveTrustedWalkPaths(cleanRepoPath, cleanCandidatePath, resolvedRepoPath, field string) (string, string, error) {
-	if pathWithinDir(cleanRepoPath, cleanCandidatePath) {
-		return cleanRepoPath, cleanCandidatePath, nil
+func trustedCachePathError(field string, kind trustedCachePathValidationKind) error {
+	return &trustedCachePathValidationError{
+		field: field,
+		kind:  kind,
 	}
-
-	resolvedCandidatePath, err := resolvePathWithinExistingTree(cleanCandidatePath)
-	if err != nil || !pathWithinDir(resolvedRepoPath, resolvedCandidatePath) {
-		return "", "", fmt.Errorf("%s must stay within repoPath", field)
-	}
-	return resolvedRepoPath, resolvedCandidatePath, nil
 }
 
-func validateWalkedPathSegments(walkRoot, walkTarget, resolvedRepoPath, field string) error {
-	relativePath, err := filepath.Rel(walkRoot, walkTarget)
-	if err != nil {
-		return fmt.Errorf("%s must stay within repoPath", field)
+func trustedExternalCachePathError(field string, pin *trustedCachePin) error {
+	return &trustedCachePathValidationError{
+		field:      field,
+		kind:       trustedCachePathValidationExternal,
+		trustedPin: pin,
 	}
-	if relativePath == "." {
-		return nil
-	}
-
-	currentPath := walkRoot
-	for _, segment := range strings.Split(relativePath, string(filepath.Separator)) {
-		currentPath = filepath.Join(currentPath, segment)
-		done, err := validateWalkedPathSegment(currentPath, resolvedRepoPath, field)
-		if done || err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
-func validateWalkedPathSegment(currentPath, resolvedRepoPath, field string) (bool, error) {
-	info, err := os.Lstat(currentPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("stat %s: %w", field, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return false, nil
-	}
+type trustedCachePathValidationError struct {
+	field      string
+	kind       trustedCachePathValidationKind
+	trustedPin *trustedCachePin
+}
 
-	resolvedPath, err := filepath.EvalSymlinks(currentPath)
-	if err != nil || !pathWithinDir(resolvedRepoPath, resolvedPath) {
-		return false, fmt.Errorf("%s must stay within repoPath", field)
-	}
-	return false, nil
+func (e *trustedCachePathValidationError) Error() string {
+	return fmt.Sprintf("%s must stay within repoPath", e.field)
+}
+
+func trustedCachePathErrorHasKind(err error, kind trustedCachePathValidationKind) bool {
+	var validationErr *trustedCachePathValidationError
+	return errors.As(err, &validationErr) && validationErr.kind == kind
 }
 
 func pathWithinDir(root, child string) bool {

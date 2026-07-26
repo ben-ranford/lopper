@@ -7,6 +7,7 @@ import (
 	"time"
 
 	baselineutil "github.com/ben-ranford/lopper/internal/baseline"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const BaselineSnapshotSchemaVersion = baselineutil.SnapshotSchemaVersion
@@ -47,6 +48,10 @@ func ValidateBaselineSnapshotKey(requestedKey, storedKey string) error {
 
 func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
 	return baselineutil.SaveConfiguredSnapshot(dir, key, now, rep, baselineSnapshots)
+}
+
+func SaveSnapshotWithinRoot(root *safeio.WriteRoot, dir, displayDir, key string, rep Report, now time.Time) (string, error) {
+	return baselineutil.SaveConfiguredSnapshotWithinRoot(root, dir, displayDir, key, now, rep, baselineSnapshots)
 }
 
 func BaselineSnapshotPath(dir, key string) string {

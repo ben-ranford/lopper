@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type testSnapshotReport struct {
@@ -309,45 +312,20 @@ func TestLoadStoreSnapshotReturnsReadDecodeAndValidationErrors(t *testing.T) {
 		decodeCalled = true
 		return testSnapshotReport{}, "", nil
 	}
-	got, key, path, err := LoadStoreSnapshot(dir, "label:missing", MaxSnapshotBytes, unexpectedDecode, nil)
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("LoadStoreSnapshot() read error = %v, want os.ErrNotExist", err)
-	}
-	if decodeCalled || got != (testSnapshotReport{}) || key != "" || path != ResolveSnapshotPath(dir, "label:missing") {
-		t.Fatalf("LoadStoreSnapshot() read failure = %#v, %q, %q, decodeCalled=%t", got, key, path, decodeCalled)
-	}
+	assertLoadStoreSnapshotReadError(t, dir, decodeCalled, unexpectedDecode)
 
 	decodeErr := errors.New("decode snapshot")
 	failDecode := func([]byte) (testSnapshotReport, string, error) {
 		return testSnapshotReport{}, "", decodeErr
 	}
-	got, key, path, err = LoadStoreSnapshot(dir, "label:weekly", MaxSnapshotBytes, failDecode, nil)
-	if !errors.Is(err, decodeErr) {
-		t.Fatalf("LoadStoreSnapshot() decode error = %v, want %v", err, decodeErr)
-	}
-	if got != (testSnapshotReport{}) || key != "" || path != savedPath {
-		t.Fatalf("LoadStoreSnapshot() decode failure = %#v, %q, %q", got, key, path)
-	}
+	assertLoadStoreSnapshotDecodeError(t, dir, savedPath, decodeErr, failDecode)
 
 	decode := func([]byte) (testSnapshotReport, string, error) {
 		return testSnapshotReport{Value: "decoded"}, "label:stored", nil
 	}
-	got, key, path, err = LoadStoreSnapshot(dir, "label:weekly", MaxSnapshotBytes, decode, nil)
-	if err != nil || got.Value != "decoded" || key != "label:stored" || path != savedPath {
-		t.Fatalf("LoadStoreSnapshot() without validation = %#v, %q, %q, %v", got, key, path, err)
-	}
-
 	validateErr := errors.New("validate snapshot key")
-	rejectKey := func(string, string) error {
-		return validateErr
-	}
-	got, key, path, err = LoadStoreSnapshot(dir, "label:weekly", MaxSnapshotBytes, decode, rejectKey)
-	if !errors.Is(err, validateErr) {
-		t.Fatalf("LoadStoreSnapshot() validation error = %v, want %v", err, validateErr)
-	}
-	if got != (testSnapshotReport{}) || key != "label:stored" || path != savedPath {
-		t.Fatalf("LoadStoreSnapshot() validation failure = %#v, %q, %q", got, key, path)
-	}
+	assertLoadStoreSnapshotSuccess(t, dir, savedPath, decode)
+	assertLoadStoreSnapshotValidationError(t, dir, savedPath, decode, validateErr)
 }
 
 func TestValidateSnapshotKeyWrapsCustomMismatchError(t *testing.T) {
@@ -365,20 +343,7 @@ func TestValidateSnapshotKeyWrapsCustomMismatchError(t *testing.T) {
 
 func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	t.Parallel()
-
-	repair := func(report testSnapshotReport) testSnapshotReport {
-		report.Value = "repaired:" + report.Value
-		return report
-	}
-	store := SnapshotStore[testSnapshotReport]{
-		Repair:            repair,
-		Normalize:         normalizeTestSnapshotReport,
-		UnsupportedSchema: func(version string) error { return fmt.Errorf("unsupported configured schema version: %s", version) },
-		ValidateKey: func(requestedKey, storedKey string) error {
-			return ValidateSnapshotKey(requestedKey, storedKey, errors.New("configured key mismatch"))
-		},
-		ExistsErr: errors.New("configured snapshot already exists"),
-	}
+	store := configuredSnapshotRoundTripStore()
 	dir := t.TempDir()
 	now := time.Date(2026, time.July, 12, 11, 15, 0, 0, time.FixedZone("AEST", 10*60*60))
 
@@ -391,7 +356,71 @@ func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveConfiguredSnapshot() error = %v", err)
 	}
+	assertConfiguredSnapshotLoadRoundTrip(t, path, store)
+	assertConfiguredSnapshotDecodeRoundTrip(t, path, store)
+	assertConfiguredStoreSnapshotRoundTrip(t, dir, path, store)
+}
 
+func assertLoadStoreSnapshotReadError(t *testing.T, dir string, decodeCalled bool, unexpectedDecode func([]byte) (testSnapshotReport, string, error)) {
+	t.Helper()
+	got, key, path, err := LoadStoreSnapshot(dir, "label:missing", MaxSnapshotBytes, unexpectedDecode, nil)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LoadStoreSnapshot() read error = %v, want os.ErrNotExist", err)
+	}
+	if decodeCalled || got != (testSnapshotReport{}) || key != "" || path != ResolveSnapshotPath(dir, "label:missing") {
+		t.Fatalf("LoadStoreSnapshot() read failure = %#v, %q, %q, decodeCalled=%t", got, key, path, decodeCalled)
+	}
+}
+
+func assertLoadStoreSnapshotDecodeError(t *testing.T, dir, savedPath string, decodeErr error, failDecode func([]byte) (testSnapshotReport, string, error)) {
+	t.Helper()
+	got, key, path, err := LoadStoreSnapshot(dir, "label:weekly", MaxSnapshotBytes, failDecode, nil)
+	if !errors.Is(err, decodeErr) {
+		t.Fatalf("LoadStoreSnapshot() decode error = %v, want %v", err, decodeErr)
+	}
+	if got != (testSnapshotReport{}) || key != "" || path != savedPath {
+		t.Fatalf("LoadStoreSnapshot() decode failure = %#v, %q, %q", got, key, path)
+	}
+}
+
+func assertLoadStoreSnapshotSuccess(t *testing.T, dir, savedPath string, decode func([]byte) (testSnapshotReport, string, error)) {
+	t.Helper()
+	got, key, path, err := LoadStoreSnapshot(dir, "label:weekly", MaxSnapshotBytes, decode, nil)
+	if err != nil || got.Value != "decoded" || key != "label:stored" || path != savedPath {
+		t.Fatalf("LoadStoreSnapshot() without validation = %#v, %q, %q, %v", got, key, path, err)
+	}
+}
+
+func assertLoadStoreSnapshotValidationError(t *testing.T, dir, savedPath string, decode func([]byte) (testSnapshotReport, string, error), validateErr error) {
+	t.Helper()
+	rejectKey := func(string, string) error { return validateErr }
+	got, key, path, err := LoadStoreSnapshot(dir, "label:weekly", MaxSnapshotBytes, decode, rejectKey)
+	if !errors.Is(err, validateErr) {
+		t.Fatalf("LoadStoreSnapshot() validation error = %v, want %v", err, validateErr)
+	}
+	if got != (testSnapshotReport{}) || key != "label:stored" || path != savedPath {
+		t.Fatalf("LoadStoreSnapshot() validation failure = %#v, %q, %q", got, key, path)
+	}
+}
+
+func configuredSnapshotRoundTripStore() SnapshotStore[testSnapshotReport] {
+	repair := func(report testSnapshotReport) testSnapshotReport {
+		report.Value = "repaired:" + report.Value
+		return report
+	}
+	return SnapshotStore[testSnapshotReport]{
+		Repair:            repair,
+		Normalize:         normalizeTestSnapshotReport,
+		UnsupportedSchema: func(version string) error { return fmt.Errorf("unsupported configured schema version: %s", version) },
+		ValidateKey: func(requestedKey, storedKey string) error {
+			return ValidateSnapshotKey(requestedKey, storedKey, errors.New("configured key mismatch"))
+		},
+		ExistsErr: errors.New("configured snapshot already exists"),
+	}
+}
+
+func assertConfiguredSnapshotLoadRoundTrip(t *testing.T, path string, store SnapshotStore[testSnapshotReport]) {
+	t.Helper()
 	got, key, err := LoadConfiguredSnapshot(path, store)
 	if err != nil {
 		t.Fatalf("LoadConfiguredSnapshot() error = %v", err)
@@ -399,12 +428,14 @@ func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	if key != "label:configured" || got.Value != "repaired:OK" {
 		t.Fatalf("LoadConfiguredSnapshot() = key=%q report=%#v", key, got)
 	}
+}
 
+func assertConfiguredSnapshotDecodeRoundTrip(t *testing.T, path string, store SnapshotStore[testSnapshotReport]) {
+	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read configured snapshot: %v", err)
 	}
-
 	decoded, decodedKey, err := DecodeConfiguredSnapshot(data, store)
 	if err != nil {
 		t.Fatalf("DecodeConfiguredSnapshot() error = %v", err)
@@ -412,7 +443,10 @@ func TestConfiguredSnapshotHelpersRoundTrip(t *testing.T) {
 	if decodedKey != "label:configured" || decoded.Value != "repaired:OK" {
 		t.Fatalf("DecodeConfiguredSnapshot() = key=%q report=%#v", decodedKey, decoded)
 	}
+}
 
+func assertConfiguredStoreSnapshotRoundTrip(t *testing.T, dir, path string, store SnapshotStore[testSnapshotReport]) {
+	t.Helper()
 	loaded, loadedKey, resolvedPath, err := LoadConfiguredStoreSnapshot(dir, " label:configured ", MaxSnapshotBytes, store)
 	if err != nil {
 		t.Fatalf("LoadConfiguredStoreSnapshot() error = %v", err)
@@ -460,6 +494,237 @@ func TestConfiguredSnapshotHelpersReturnCustomErrors(t *testing.T) {
 	}
 	if loadedKey != "label:configured" || resolvedPath != path {
 		t.Fatalf("LoadConfiguredStoreSnapshot() validation result = key=%q path=%q", loadedKey, resolvedPath)
+	}
+}
+
+func TestSaveConfiguredSnapshotWithinRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open rooted baseline store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close rooted baseline store: %v", err)
+		}
+	})
+
+	existsMarker := errors.New("configured snapshot already exists")
+	store := SnapshotStore[testSnapshotReport]{
+		Normalize: normalizeTestSnapshotReport,
+		ExistsErr: existsMarker,
+	}
+	now := time.Date(2026, time.July, 25, 23, 15, 0, 0, time.FixedZone("AEST", 10*60*60))
+	dir := filepath.Join("state", "baselines")
+	displayDir := filepath.Join("/display", "state", "baselines")
+
+	path, err := SaveConfiguredSnapshotWithinRoot(root, dir, displayDir, " label:rooted ", now, testSnapshotReport{Value: "ok"}, store)
+	if err != nil {
+		t.Fatalf("save rooted baseline: %v", err)
+	}
+	wantPath := filepath.Join(displayDir, SnapshotFileName("label:rooted"))
+	if path != wantPath {
+		t.Fatalf("rooted baseline path = %q, want %q", path, wantPath)
+	}
+	data, err := os.ReadFile(filepath.Join(rootDir, dir, SnapshotFileName("label:rooted")))
+	if err != nil {
+		t.Fatalf("read rooted baseline: %v", err)
+	}
+	var snapshot Snapshot[testSnapshotReport]
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("decode rooted baseline: %v", err)
+	}
+	if snapshot.Key != "label:rooted" || snapshot.Report.Value != "OK" || !snapshot.SavedAt.Equal(now.UTC()) {
+		t.Fatalf("unexpected rooted baseline: %#v", snapshot)
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, displayDir, "label:rooted", now, testSnapshotReport{}, store); !errors.Is(err, existsMarker) {
+		t.Fatalf("duplicate rooted baseline error = %v, want %v", err, existsMarker)
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, displayDir, "label:rooted", now, testSnapshotReport{}, SnapshotStore[testSnapshotReport]{}); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("raw duplicate rooted baseline error = %v, want os.ErrExist", err)
+	}
+}
+
+func TestSaveConfiguredSnapshotWithinRootAllowsRepositoryRootStore(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open rooted baseline store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close rooted baseline store: %v", err)
+		}
+	})
+
+	now := time.Date(2026, time.July, 26, 9, 0, 0, 0, time.UTC)
+	path, err := SaveConfiguredSnapshotWithinRoot(root, ".", rootDir, "label:root", now, testSnapshotReport{Value: "ok"}, SnapshotStore[testSnapshotReport]{})
+	if err != nil {
+		t.Fatalf("save rooted baseline at repository root: %v", err)
+	}
+	if path != filepath.Join(rootDir, SnapshotFileName("label:root")) {
+		t.Fatalf("unexpected rooted baseline path: %q", path)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, SnapshotFileName("label:root"))); err != nil {
+		t.Fatalf("expected rooted baseline file: %v", err)
+	}
+}
+
+func TestSaveConfiguredSnapshotWithinRootLegacyCompatibility(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open rooted baseline store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close rooted baseline store: %v", err)
+		}
+	})
+
+	dir := "baselines"
+	if err := os.Mkdir(filepath.Join(rootDir, dir), 0o750); err != nil {
+		t.Fatalf("create baseline directory: %v", err)
+	}
+	key := "label:a/b"
+	legacyPath := filepath.Join(rootDir, dir, LegacySnapshotFileName(key))
+	if err := os.WriteFile(legacyPath, []byte(`{"key":"label:a_b"}`), 0o600); err != nil {
+		t.Fatalf("write non-matching legacy baseline: %v", err)
+	}
+	store := SnapshotStore[testSnapshotReport]{ExistsErr: errors.New("baseline exists")}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, dir, key, time.Now(), testSnapshotReport{}, store); err != nil {
+		t.Fatalf("non-matching legacy key should not block rooted save: %v", err)
+	}
+
+	matchingKey := "label:matching"
+	matchingPath := filepath.Join(rootDir, dir, LegacySnapshotFileName(matchingKey))
+	if err := os.WriteFile(matchingPath, []byte(`{"key":"label:matching"}`), 0o600); err != nil {
+		t.Fatalf("write matching legacy baseline: %v", err)
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, dir, matchingKey, time.Now(), testSnapshotReport{}, store); !errors.Is(err, store.ExistsErr) {
+		t.Fatalf("matching legacy baseline error = %v, want %v", err, store.ExistsErr)
+	}
+
+	matchingWithoutMarker := "label:no-marker"
+	if err := os.WriteFile(filepath.Join(rootDir, dir, LegacySnapshotFileName(matchingWithoutMarker)), []byte(`{"key":"label:no-marker"}`), 0o600); err != nil {
+		t.Fatalf("write marker-free legacy baseline: %v", err)
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, dir, matchingWithoutMarker, time.Now(), testSnapshotReport{}, SnapshotStore[testSnapshotReport]{}); err == nil || !strings.Contains(err.Error(), "baseline snapshot already exists") {
+		t.Fatalf("marker-free matching legacy baseline error = %v", err)
+	}
+}
+
+func TestSaveConfiguredSnapshotWithinRootRejectsUnsafeLegacyEntries(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open rooted baseline store: %v", err)
+	}
+	dir := "baselines"
+	if err := os.Mkdir(filepath.Join(rootDir, dir), 0o750); err != nil {
+		t.Fatalf("create baseline directory: %v", err)
+	}
+	store := SnapshotStore[testSnapshotReport]{}
+	assertRejected := func(key string, create func(string) error, want error) {
+		t.Helper()
+		assertUnsafeLegacySnapshotRejected(t, rootDir, root, dir, key, create, want, store)
+	}
+	assertRejected("label:directory", func(path string) error { return os.Mkdir(path, 0o750) }, nil)
+	assertRejected("label:oversized", createOversizedLegacySnapshot, ErrSnapshotTooLarge)
+	assertSymlinkedLegacySnapshotRejected(t, rootDir, root, dir, store)
+
+	if err := root.Close(); err != nil {
+		t.Fatalf("close rooted baseline store: %v", err)
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, dir, "label:closed", time.Now(), testSnapshotReport{}, store); err == nil {
+		t.Fatal("expected closed rooted baseline store rejection")
+	}
+}
+
+func assertUnsafeLegacySnapshotRejected(t *testing.T, rootDir string, root *safeio.WriteRoot, dir, key string, create func(string) error, want error, store SnapshotStore[testSnapshotReport]) {
+	t.Helper()
+	path := filepath.Join(rootDir, dir, LegacySnapshotFileName(key))
+	if err := create(path); err != nil {
+		t.Fatalf("create unsafe legacy entry: %v", err)
+	}
+	_, err := SaveConfiguredSnapshotWithinRoot(root, dir, dir, key, time.Now(), testSnapshotReport{}, store)
+	if want != nil && !errors.Is(err, want) {
+		t.Fatalf("legacy entry error = %v, want %v", err, want)
+	}
+	if want == nil && err == nil {
+		t.Fatal("expected unsafe legacy entry rejection")
+	}
+}
+
+func createOversizedLegacySnapshot(path string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := file.Truncate(MaxSnapshotBytes + 1); err != nil {
+		return errors.Join(err, file.Close())
+	}
+	return file.Close()
+}
+
+func assertSymlinkedLegacySnapshotRejected(t *testing.T, rootDir string, root *safeio.WriteRoot, dir string, store SnapshotStore[testSnapshotReport]) {
+	t.Helper()
+	symlinkKey := "label:symlink"
+	symlinkTarget := filepath.Join(rootDir, dir, "target.json")
+	if err := os.WriteFile(symlinkTarget, []byte(`{"key":"target"}`), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	symlinkPath := filepath.Join(rootDir, dir, LegacySnapshotFileName(symlinkKey))
+	if err := os.Symlink(filepath.Base(symlinkTarget), symlinkPath); err != nil {
+		t.Logf("symlink creation unsupported: %v", err)
+		return
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, dir, dir, symlinkKey, time.Now(), testSnapshotReport{}, store); err == nil {
+		t.Fatal("expected symlinked legacy entry rejection")
+	}
+}
+
+func TestSaveConfiguredSnapshotWithinRootRejectsUnsafeInputsAndWriteFailures(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open rooted baseline store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close rooted baseline store: %v", err)
+		}
+	})
+	now := time.Date(2026, time.July, 25, 0, 0, 0, 0, time.UTC)
+	store := SnapshotStore[any]{ExistsErr: errors.New("baseline exists")}
+
+	testCases := []struct {
+		name string
+		root *safeio.WriteRoot
+		dir  string
+		key  string
+	}{
+		{name: "missing root", root: nil, dir: "baselines", key: "label:test"},
+		{name: "missing key", root: root, dir: "baselines", key: "  "},
+		{name: "absolute directory", root: root, dir: filepath.Join(string(os.PathSeparator), "outside"), key: "label:test"},
+		{name: "escaping directory", root: root, dir: filepath.Join("..", "outside"), key: "label:test"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := SaveConfiguredSnapshotWithinRoot(testCase.root, testCase.dir, testCase.dir, testCase.key, now, "report", store); err == nil {
+				t.Fatal("expected rooted baseline input rejection")
+			}
+		})
+	}
+
+	if err := os.WriteFile(filepath.Join(rootDir, "blocking"), []byte("file"), 0o600); err != nil {
+		t.Fatalf("write blocking parent: %v", err)
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot(root, filepath.Join("blocking", "child"), "display", "label:test", now, "report", store); err == nil {
+		t.Fatal("expected rooted baseline parent creation failure")
+	}
+	if _, err := SaveConfiguredSnapshotWithinRoot[any](root, "marshal", "display", "label:test", now, make(chan int), store); err == nil {
+		t.Fatal("expected rooted baseline marshal failure")
 	}
 }
 

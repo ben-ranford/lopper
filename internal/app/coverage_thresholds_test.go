@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -116,6 +118,191 @@ func TestAnalyseFormatterReturnsFormatterErrorWithoutOriginalError(t *testing.T)
 	}
 	if err == nil || !strings.Contains(err.Error(), "unknown format") {
 		t.Fatalf("expected formatter error, got %v", err)
+	}
+}
+
+func TestRetainedAnalyseViewRejectsMismatchedAndUncapturedState(t *testing.T) {
+	repo := t.TempDir()
+	view := openAnalysisViewWithoutMetadata(t, repo)
+	uncaptured := AnalyseRequest{repositoryView: view}
+	assertUncapturedRetainedAnalyseViewErrors(t, repo, view, uncaptured)
+	assertMetadataRetainedAnalyseViewErrors(t, uncaptured)
+	assertFilteredRetainedAnalyseViewErrors(t, uncaptured)
+	assertBorrowedRetainedViewMismatch(t, repo, view)
+}
+
+func openAnalysisViewWithoutMetadata(t *testing.T, repo string) *analysis.RepositoryView {
+	t.Helper()
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := analysis.OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+	return view
+}
+
+func openAnalysisViewWithMetadata(t *testing.T, repo string) *analysis.RepositoryView {
+	t.Helper()
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := analysis.OpenTrustedRepositoryWithGitMetadata(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open metadata repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close metadata repository view: %v", err)
+		}
+	})
+	return view
+}
+
+func assertUncapturedRetainedAnalyseViewErrors(t *testing.T, repo string, view *analysis.RepositoryView, uncaptured AnalyseRequest) {
+	t.Helper()
+	if _, err := resolvePreparedLockfileDrift(context.Background(), repo, uncaptured); err == nil || !strings.Contains(err.Error(), "was not captured") {
+		t.Fatalf("expected uncaptured lockfile state rejection, got %v", err)
+	}
+	uncaptured.ApplyCodemod = true
+	if err := validateCodemodApplyPreconditions(context.Background(), repo, uncaptured); err == nil || !strings.Contains(err.Error(), "was not captured") {
+		t.Fatalf("expected uncaptured codemod state rejection, got %v", err)
+	}
+	if key := currentBaselineKeyForAnalyse(repo, uncaptured); key != "" {
+		t.Fatalf("uncaptured retained-view baseline key = %q, want empty", key)
+	}
+	if err := ensureCleanRepositoryViewForCodemod(view, true); err != nil {
+		t.Fatalf("allow-dirty retained view returned error: %v", err)
+	}
+	if err := ensureCleanRepositoryViewForCodemod(view, false); err == nil || !strings.Contains(err.Error(), "metadata was not captured") {
+		t.Fatalf("expected uncaptured retained-view cleanliness rejection, got %v", err)
+	}
+	if _, err := evaluateLockfileDriftPolicyWithRepositoryView(context.Background(), view, "warn", uncaptured.Features); err == nil || !strings.Contains(err.Error(), "metadata was not captured") {
+		t.Fatalf("expected uncaptured retained-view lockfile rejection, got %v", err)
+	}
+	filterErr := repositoryViewLockfileFilterError([]analysis.RepositoryGitFilter{{Path: "package.json", Driver: "demo"}}, []string{"package.json"})
+	if filterErr == nil || !strings.Contains(filterErr.Error(), "package.json (demo)") {
+		t.Fatalf("expected captured filter ambiguity, got %v", filterErr)
+	}
+	if err := ensureCleanWorktreeForCodemod(context.Background(), repo, true); err != nil {
+		t.Fatalf("allow-dirty live precondition returned error: %v", err)
+	}
+}
+
+func assertMetadataRetainedAnalyseViewErrors(t *testing.T, uncaptured AnalyseRequest) {
+	t.Helper()
+	metadataRepo := t.TempDir()
+	writeFile(t, filepath.Join(metadataRepo, goModManifestName), oversizedGoModManifestBody())
+	metadataView := openAnalysisViewWithMetadata(t, metadataRepo)
+	if err := ensureCleanRepositoryViewForCodemod(metadataView, false); err != nil {
+		t.Fatalf("clean non-Git metadata view returned error: %v", err)
+	}
+	if _, err := evaluateLockfileDriftPolicyWithRepositoryView(context.Background(), metadataView, "fail", uncaptured.Features); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected retained-view oversized manifest failure, got %v", err)
+	}
+	if _, err := applyCodemodIfNeededWithRepository(context.Background(), report.Report{}, "", AnalyseRequest{ApplyCodemod: true}, time.Now(), nil); err == nil {
+		t.Fatal("expected invalid retained codemod target rejection")
+	}
+}
+
+func assertFilteredRetainedAnalyseViewErrors(t *testing.T, uncaptured AnalyseRequest) {
+	t.Helper()
+	filteredRepo := t.TempDir()
+	writeFile(t, filepath.Join(filteredRepo, ".gitattributes"), "*.json filter=demo\n")
+	writeFile(t, filepath.Join(filteredRepo, manifestFileName), demoPackageJSON)
+	writeFile(t, filepath.Join(filteredRepo, lockfileName), demoPackageJSON)
+	initGitRepo(t, filteredRepo)
+	runGit(t, filteredRepo, "config", "filter.demo.clean", "cat")
+	filteredView := openAnalysisViewWithMetadata(t, filteredRepo)
+	if _, err := evaluateLockfileDriftPolicyWithRepositoryView(context.Background(), filteredView, "warn", uncaptured.Features); err == nil || !strings.Contains(err.Error(), "active custom git filter") {
+		t.Fatalf("expected retained-view filter rejection, got %v", err)
+	}
+}
+
+func assertBorrowedRetainedViewMismatch(t *testing.T, repo string, view *analysis.RepositoryView) {
+	t.Helper()
+	otherRepository, err := analysis.ResolveTrustedRepository(t.TempDir())
+	if err != nil {
+		t.Fatalf("authorize other repository: %v", err)
+	}
+	req := DefaultRequest()
+	req.RepoPath = repo
+	req.Analyse.repository = otherRepository
+	req.Analyse.repositoryView = view
+	if _, _, err := openAnalyseRepositoryView(context.Background(), req); err == nil {
+		t.Fatal("expected mismatched borrowed repository view rejection")
+	}
+}
+
+func TestPersistAnalyseOutputRetainedViewGuards(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "reports"), 0o750); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, "directory-target"), 0o750); err != nil {
+		t.Fatalf("mkdir directory target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "blocked"), []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatalf("write blocked parent: %v", err)
+	}
+	repository, err := analysis.ResolveTrustedRepository(repo)
+	if err != nil {
+		t.Fatalf("authorize repository: %v", err)
+	}
+	view, err := analysis.OpenTrustedRepository(context.Background(), repository, repo, nil)
+	if err != nil {
+		t.Fatalf("open repository view: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := view.Close(); err != nil {
+			t.Errorf("close repository view: %v", err)
+		}
+	})
+
+	directoryStylePath := filepath.Join(repo, "reports") + string(os.PathSeparator)
+	if _, err := persistAnalyseOutput("{}", directoryStylePath, repo, view); err == nil || !strings.Contains(err.Error(), "must name a file") {
+		t.Fatalf("expected directory-style output rejection, got %v", err)
+	}
+	rootOutput := filepath.Join(repo, "report.json")
+	if _, err := persistAnalyseOutput("root\n", rootOutput, repo, view); err != nil {
+		t.Fatalf("write repository-root output: %v", err)
+	}
+	nestedOutput := filepath.Join(repo, "reports", "analyse.json")
+	if _, err := persistAnalyseOutput("nested\n", nestedOutput, repo, view); err != nil {
+		t.Fatalf("write output through existing repository directory: %v", err)
+	}
+	if _, err := persistAnalyseOutput("{}", filepath.Join(repo, "directory-target"), repo, view); err == nil {
+		t.Fatal("expected retained-view write to reject a directory target")
+	}
+	if _, err := persistAnalyseOutput("{}", filepath.Join(repo, "blocked", "nested", "analyse.json"), repo, view); err == nil {
+		t.Fatal("expected retained-view output inspection error below a file")
+	}
+}
+
+func TestAnalyseRepositoryBoundaryErrorBranches(t *testing.T) {
+	captureAnalyseGitSensitiveState(context.Background(), nil, nil)
+
+	req := DefaultRequest()
+	req.RepoPath = filepath.Join(t.TempDir(), "missing")
+	if _, err := (&App{Analyzer: &fakeAnalyzer{}, Formatter: report.NewFormatter()}).executeAnalyse(context.Background(), req); err == nil {
+		t.Fatal("expected missing repository authorization failure")
+	}
+
+	repo := t.TempDir()
+	current, err := (&App{}).applyBaselineIfNeededWithRepository(report.Report{}, repo, AnalyseRequest{}, nil)
+	if err != nil {
+		t.Fatalf("apply disabled baseline without repository view: %v", err)
+	}
+	if len(current.Dependencies) != 0 {
+		t.Fatalf("disabled baseline changed report: %#v", current)
 	}
 }
 

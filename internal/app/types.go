@@ -52,7 +52,6 @@ type AnalyseRequest struct {
 	Language                string
 	CacheEnabled            bool
 	CachePath               string
-	CachePinnedPath         string
 	CacheReadOnly           bool
 	RuntimeProfile          string
 	BaselinePath            string
@@ -72,6 +71,18 @@ type AnalyseRequest struct {
 	Features                featureflags.Set
 	Thresholds              thresholds.Values
 	Notifications           notify.Config
+
+	cacheOptions                *analysis.CacheOptions
+	repository                  *analysis.RepositoryAuthorization
+	repositoryView              *analysis.RepositoryView
+	advisoryLoadPath            string
+	currentBaselineKey          string
+	currentBaselineKeyCaptured  bool
+	codemodPrecondition         error
+	codemodPreconditionCaptured bool
+	lockfileWarnings            []string
+	lockfileDriftErr            error
+	lockfileDriftCaptured       bool
 }
 
 type TUIRequest struct {

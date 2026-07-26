@@ -6,9 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -43,6 +44,8 @@ type testAdapter struct {
 }
 
 type fakeMutationRunner struct {
+	captureFn       func(AnalysisMutationRequest) (AnalysisMutationRequest, error)
+	captureErr      error
 	applyReport     report.Report
 	applyErr        error
 	baselineReport  report.Report
@@ -57,6 +60,13 @@ type fakeMutationRunner struct {
 	lastApply       AnalysisMutationRequest
 	lastBaseline    AnalysisMutationRequest
 	lastDashboard   DashboardMutationRequest
+}
+
+func (f *fakeMutationRunner) CaptureAnalysisState(_ context.Context, req AnalysisMutationRequest) (AnalysisMutationRequest, error) {
+	if f.captureFn != nil {
+		return f.captureFn(req)
+	}
+	return req, f.captureErr
 }
 
 func (f *fakeMutationRunner) ApplyCodemod(_ context.Context, req AnalysisMutationRequest) (report.Report, error) {
@@ -398,27 +408,15 @@ func TestCallToolTimeoutCancelsAnalysis(t *testing.T) {
 	}
 }
 
-func TestCallAnalyseDependencyRejectsCachePathOutsideRepo(t *testing.T) {
-	repo := t.TempDir()
+func TestCallAnalyseDependencySupportsAbsoluteCachePathOutsideRepo(t *testing.T) {
+	repo := writeMCPDependencyFixture(t)
 	outsideCache := filepath.Join(t.TempDir(), "cache")
-	fake := &fakeAnalyser{report: sampleReport(repo)}
-	server := NewServer(Options{Analyzer: fake})
-
-	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
-		"repoPath":     repo,
-		"dependency":   "lodash",
-		"cachePath":    outsideCache,
-		"cacheEnabled": true,
-	})
-	if !result.IsError || !strings.Contains(result.Content[0].Text, "cachePath must stay within repoPath") {
-		t.Fatalf("expected outside cache rejection, got %#v", result)
-	}
-	if fake.called {
-		t.Fatalf("expected analyser to remain uncalled")
-	}
-	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
-		t.Fatalf("expected no outside cache writes, stat err=%v", err)
-	}
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+	firstPayload := runScopedMCPDependencyAnalysis(t, server, repo, map[string]any{"cachePath": outsideCache, "cacheEnabled": true})
+	assertMCPCacheMetrics(t, firstPayload.Report.Cache, outsideCache, 1, 1, 0)
+	assertMCPCacheLayoutPresent(t, outsideCache)
+	secondPayload := runScopedMCPDependencyAnalysis(t, server, repo, map[string]any{"cachePath": outsideCache, "cacheEnabled": true})
+	assertMCPCacheMetrics(t, secondPayload.Report.Cache, outsideCache, 0, 0, 1)
 }
 
 func TestCallAnalyseDependencyRejectsSymlinkedCachePathEscape(t *testing.T) {
@@ -433,7 +431,7 @@ func TestCallAnalyseDependencyRejectsSymlinkedCachePathEscape(t *testing.T) {
 	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
 		"repoPath":     repo,
 		"dependency":   "lodash",
-		"cachePath":    filepath.Join("tmp", "cache"),
+		"cachePath":    filepath.Join(repo, "tmp", "cache"),
 		"cacheEnabled": true,
 	})
 	if !result.IsError || !strings.Contains(result.Content[0].Text, "cachePath must stay within repoPath") {
@@ -447,36 +445,77 @@ func TestCallAnalyseDependencyRejectsSymlinkedCachePathEscape(t *testing.T) {
 	}
 }
 
-func TestCallAnalyseDependencyPinsDefaultCachePathForScopedRequest(t *testing.T) {
-	repo := t.TempDir()
-	fake := &fakeAnalyser{report: sampleReport(repo)}
+func TestCallAnalyseDependencyRejectsCanonicalSymlinkEscapeUnderRequestedRepoAlias(t *testing.T) {
+	requestedRepo, canonicalCache, outsideCache := mcpCanonicalAliasCacheEscapeFixture(t)
+	fake := &fakeAnalyser{report: sampleReport(requestedRepo)}
 	server := NewServer(Options{Analyzer: fake})
 
 	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
-		"repoPath":   repo,
-		"dependency": "lodash",
-		"include":    []string{"src/**"},
-		"exclude":    []string{"vendor/**"},
+		"repoPath":     requestedRepo,
+		"dependency":   "lodash",
+		"cachePath":    canonicalCache,
+		"cacheEnabled": true,
 	})
-	if result.IsError {
-		t.Fatalf("unexpected tool error: %#v", result)
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "cachePath must stay within repoPath") {
+		t.Fatalf("expected canonical-form symlink escape rejection, got %#v", result)
 	}
-	if !fake.called {
-		t.Fatalf("expected analyser to be called")
+	if fake.called {
+		t.Fatalf("expected analyser to remain uncalled")
 	}
-	expectedPinnedPath := mustResolveDefaultPinnedCachePath(t, repo)
-	if fake.lastReq.Cache == nil || !fake.lastReq.Cache.Enabled {
-		t.Fatalf("expected enabled default cache options, got %#v", fake.lastReq.Cache)
-	}
-	if fake.lastReq.Cache.Path != "" {
-		t.Fatalf("expected default MCP cache path to remain implicit, got %#v", fake.lastReq.Cache)
-	}
-	if cachePinnedPathValue(fake.lastReq.Cache) != expectedPinnedPath {
-		t.Fatalf("expected pinned default cache path %q, got %#v", expectedPinnedPath, fake.lastReq.Cache)
+	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
+		t.Fatalf("expected MCP analysis not to create external cache directory, stat err=%v", err)
 	}
 }
 
-func TestCallAnalyseDependencyScopedRequestReusesPinnedDefaultCacheAndReportsCanonicalPath(t *testing.T) {
+func TestCallAnalyseDependencyRejectsAlternateAbsoluteRepoAliasesThatLaterEscape(t *testing.T) {
+	for _, fixture := range mcpAlternateAbsoluteRepoAliasEscapeFixtures(t) {
+		t.Run(fixture.name, func(t *testing.T) {
+			fake := &fakeAnalyser{report: sampleReport(fixture.requestedRepo)}
+			server := NewServer(Options{Analyzer: fake})
+			result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+				"repoPath":     fixture.requestedRepo,
+				"dependency":   "lodash",
+				"cachePath":    fixture.cachePath,
+				"cacheEnabled": true,
+			})
+			if !result.IsError || !strings.Contains(result.Content[0].Text, "cachePath must stay within repoPath") {
+				t.Fatalf("expected alternate-alias symlink escape rejection, got %#v", result)
+			}
+			if fake.called {
+				t.Fatalf("expected analyser to remain uncalled")
+			}
+			if _, statErr := os.Stat(fixture.outsideCache); !os.IsNotExist(statErr) {
+				t.Fatalf("expected MCP analysis not to create outside cache, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
+func TestCallAnalyseDependencyClassifiesExternalCacheAliasesIntoRepoBeforeAnalyzerInvocation(t *testing.T) {
+	repo := t.TempDir()
+	cacheSubdir := filepath.Join(repo, ".cache", "lopper")
+	if err := os.MkdirAll(cacheSubdir, 0o750); err != nil {
+		t.Fatalf("mkdir cache subdir: %v", err)
+	}
+	for _, tc := range mcpRepoCacheAliasFixtures(repo, cacheSubdir) {
+		t.Run(tc.name, func(t *testing.T) {
+			cacheAlias := mustMCPCacheAlias(t, tc.target)
+			fake := &fakeAnalyser{report: sampleReport(repo)}
+			server := NewServer(Options{Analyzer: fake})
+			result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+				"repoPath":     repo,
+				"dependency":   "lodash",
+				"cachePath":    cacheAlias,
+				"cacheEnabled": true,
+				"include":      []string{"**"},
+			})
+			assertMCPRepoCacheAliasOutcome(t, result, fake.called, analysis.InRepoCacheOptions(fake.lastReq.Cache), tc.wantReject)
+			assertMCPCacheLayoutAbsent(t, tc.target)
+		})
+	}
+}
+
+func TestCallAnalyseDependencyScopedRequestRejectsRepoRootCachePath(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o750); err != nil {
 		t.Fatalf("mkdir src: %v", err)
@@ -496,42 +535,268 @@ func TestCallAnalyseDependencyScopedRequestReusesPinnedDefaultCacheAndReportsCan
 	if err := os.WriteFile(filepath.Join(repo, "node_modules", "lodash", "index.js"), []byte("export function map() {}\n"), 0o600); err != nil {
 		t.Fatalf("write lodash index.js: %v", err)
 	}
+	server := NewServer(Options{Analyzer: analysis.NewService()})
 
+	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":     repo,
+		"dependency":   "lodash",
+		"cachePath":    repo,
+		"cacheEnabled": true,
+		"include":      []string{"src/**"},
+	})
+	if !result.IsError || !strings.Contains(result.Content[0].Text, "scoped analysis does not allow cachePath at the repository root") {
+		t.Fatalf("expected scoped repo-root cache rejection, got %#v", result)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "keys")); !os.IsNotExist(err) {
+		t.Fatalf("expected no repo-root cache writes, stat err=%v", err)
+	}
+}
+
+func TestCallAnalyseDependencyProvidesDefaultCacheOptionsForScopedRequest(t *testing.T) {
+	repo := t.TempDir()
+	fake := &fakeAnalyser{report: sampleReport(repo)}
+	server := NewServer(Options{Analyzer: fake})
+
+	result := callToolResult(t, server, toolAnalyseDependency, map[string]any{
+		"repoPath":   repo,
+		"dependency": "lodash",
+		"include":    []string{"src/**"},
+		"exclude":    []string{"vendor/**"},
+	})
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	if !fake.called {
+		t.Fatalf("expected analyser to be called")
+	}
+	if fake.lastReq.Cache == nil || !fake.lastReq.Cache.Enabled {
+		t.Fatalf("expected enabled default cache options, got %#v", fake.lastReq.Cache)
+	}
+	if fake.lastReq.Cache.Path != "" {
+		t.Fatalf("expected default MCP cache path to remain implicit, got %#v", fake.lastReq.Cache)
+	}
+}
+
+func TestCallAnalyseDependencyScopedRequestReusesPinnedDefaultCacheAndReportsCanonicalPath(t *testing.T) {
+	repo := writeMCPDependencyFixture(t)
 	server := NewServer(Options{Analyzer: analysis.NewService()})
 	expectedPinnedPath := mustResolveDefaultPinnedCachePath(t, repo)
+	firstPayload := runScopedMCPDependencyAnalysis(t, server, repo, nil)
+	assertMCPCacheMetrics(t, firstPayload.Report.Cache, expectedPinnedPath, 1, 1, 0)
+	secondPayload := runScopedMCPDependencyAnalysis(t, server, repo, nil)
+	assertMCPCacheMetrics(t, secondPayload.Report.Cache, expectedPinnedPath, 0, 0, 1)
+}
 
-	first := callToolResult(t, server, toolAnalyseDependency, map[string]any{
-		"repoPath":   repo,
-		"dependency": "lodash",
-		"include":    []string{"src/**"},
-		"exclude":    []string{"vendor/**"},
-	})
-	if first.IsError {
-		t.Fatalf("unexpected first tool error: %#v", first)
+type mcpRepoCacheAliasFixture struct {
+	name       string
+	target     string
+	wantReject bool
+}
+
+func writeMCPDependencyFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, dir := range []string{filepath.Join(repo, "src"), filepath.Join(repo, "node_modules", "lodash")} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir fixture dir %s: %v", dir, err)
+		}
 	}
-	firstPayload, ok := first.StructuredContent.(analysisPayload)
+	files := map[string]string{
+		"package.json":                   "{\n  \"name\": \"demo\"\n}\n",
+		filepath.Join("src", "index.js"): "import { map } from \"lodash\"\nmap([1], (x) => x)\n",
+		filepath.Join("node_modules", "lodash", "package.json"): "{\n  \"main\": \"index.js\"\n}\n",
+		filepath.Join("node_modules", "lodash", "index.js"):     "export function map() {}\n",
+	}
+	for rel, content := range files {
+		if err := os.WriteFile(filepath.Join(repo, rel), []byte(content), 0o600); err != nil {
+			t.Fatalf("write fixture %s: %v", rel, err)
+		}
+	}
+	return repo
+}
+
+func runScopedMCPDependencyAnalysis(t *testing.T, server *Server, repo string, extra map[string]any) analysisPayload {
+	t.Helper()
+	args := map[string]any{"repoPath": repo, "dependency": "lodash", "include": []string{"src/**"}, "exclude": []string{"vendor/**"}}
+	for key, value := range extra {
+		args[key] = value
+	}
+	result := callToolResult(t, server, toolAnalyseDependency, args)
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result)
+	}
+	payload, ok := result.StructuredContent.(analysisPayload)
 	if !ok {
-		t.Fatalf("expected first analysis payload, got %#v", first.StructuredContent)
+		t.Fatalf("expected analysis payload, got %#v", result.StructuredContent)
 	}
-	if firstPayload.Report.Cache == nil || firstPayload.Report.Cache.Path != expectedPinnedPath || firstPayload.Report.Cache.Misses != 1 || firstPayload.Report.Cache.Writes != 1 {
-		t.Fatalf("expected first scoped MCP run to report canonical pinned cache path and miss/write metadata, got %#v", firstPayload.Report.Cache)
+	return payload
+}
+
+func assertMCPCacheMetrics(t *testing.T, cache *report.CacheMetadata, path string, misses, writes, hits int) {
+	t.Helper()
+	if cache == nil || cache.Path != path || cache.Misses != misses || cache.Writes != writes || cache.Hits != hits {
+		t.Fatalf("unexpected cache metrics: %#v", cache)
+	}
+}
+
+func assertMCPCacheLayoutPresent(t *testing.T, root string) {
+	t.Helper()
+	for _, dir := range []string{"keys", "objects"} {
+		if _, err := os.Stat(filepath.Join(root, dir)); err != nil {
+			t.Fatalf("expected %s dir in external cache root: %v", dir, err)
+		}
+	}
+}
+
+func mcpRepoCacheAliasFixtures(repo, cacheSubdir string) []mcpRepoCacheAliasFixture {
+	return []mcpRepoCacheAliasFixture{{name: "repo root", target: repo, wantReject: true}, {name: "repo subdir", target: cacheSubdir}}
+}
+
+func mustMCPCacheAlias(t *testing.T, target string) string {
+	t.Helper()
+	cacheAlias := filepath.Join(t.TempDir(), "external-cache-alias")
+	if err := os.Symlink(target, cacheAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	return cacheAlias
+}
+
+func assertMCPRepoCacheAliasOutcome(t *testing.T, result toolCallResult, called, inRepo bool, wantReject bool) {
+	t.Helper()
+	if wantReject {
+		if !result.IsError || !strings.Contains(result.Content[0].Text, "scoped analysis does not allow cachePath at the repository root") || called {
+			t.Fatalf("expected external repo-root alias rejection, got %#v called=%t", result, called)
+		}
+		return
+	}
+	if result.IsError || !called || !inRepo {
+		t.Fatalf("expected in-repo cache pin for alias, result=%#v called=%t inRepo=%t", result, called, inRepo)
+	}
+}
+
+func assertMCPCacheLayoutAbsent(t *testing.T, root string) {
+	t.Helper()
+	for _, dir := range []string{"keys", "objects"} {
+		if _, statErr := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(statErr) {
+			t.Fatalf("expected no cache creation under %s/%s, stat err=%v", root, dir, statErr)
+		}
+	}
+}
+
+func TestConfiguredMCPAnalysisUsesStableCacheIdentityAcrossRepositorySnapshots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("open-directory replacement semantics are not available on Windows")
+	}
+	repo, repoB, movedRepoA := setupConfiguredMCPAnalysisRepos(t)
+	viewOpens := 0
+	restoreHook := analysis.SetRepositoryViewHandleOpenedHookForTest(func() error {
+		viewOpens++
+		if err := os.Rename(repo, movedRepoA); err != nil {
+			return err
+		}
+		return os.Rename(repoB, repo)
+	})
+	t.Cleanup(restoreHook)
+
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+	args := analysisToolArguments{RepoPath: repo, Dependency: "lodash", ConfigPath: filepath.Join(repo, ".lopper.yml")}
+	firstPayload := runConfiguredMCPAnalysis(t, server, args)
+	assertConfiguredMCPAnalysisCache(t, firstPayload.Report.Cache, 1, 1, 0)
+	assertStableMCPPolicyMetadata(t, firstPayload.Report, repo)
+	assertMCPAnalysisCacheAbsent(t, repo, "replacement repo B received cache data")
+
+	restoreConfiguredMCPRepoPair(t, repo, repoB, movedRepoA)
+	if err := os.WriteFile(filepath.Join(repoB, ".lopper.yml"), []byte("thresholds:\n  low_confidence_warning_percent: 88\n"), 0o600); err != nil {
+		t.Fatalf("change repo B config trap: %v", err)
 	}
 
-	second := callToolResult(t, server, toolAnalyseDependency, map[string]any{
-		"repoPath":   repo,
-		"dependency": "lodash",
-		"include":    []string{"src/**"},
-		"exclude":    []string{"vendor/**"},
-	})
-	if second.IsError {
-		t.Fatalf("unexpected second tool error: %#v", second)
+	secondPayload := runConfiguredMCPAnalysis(t, server, args)
+	assertConfiguredMCPAnalysisCache(t, secondPayload.Report.Cache, 0, 0, 1)
+	assertStableMCPPolicyMetadata(t, secondPayload.Report, repo)
+	if viewOpens != 2 {
+		t.Fatalf("repository view opens = %d, want one per MCP call", viewOpens)
 	}
-	secondPayload, ok := second.StructuredContent.(analysisPayload)
-	if !ok {
-		t.Fatalf("expected second analysis payload, got %#v", second.StructuredContent)
+	assertMCPAnalysisCacheAbsent(t, repo, "replacement repo B received cache data after second call")
+}
+
+func setupConfiguredMCPAnalysisRepos(t *testing.T) (string, string, string) {
+	t.Helper()
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	repoB := filepath.Join(parent, "repo-b")
+	writeMCPAnalysisCacheFixture(t, repo, 11)
+	writeMCPAnalysisCacheFixture(t, repoB, 77)
+	return repo, repoB, filepath.Join(parent, "repo-a-original")
+}
+
+func runConfiguredMCPAnalysis(t *testing.T, server *Server, args analysisToolArguments) analysisPayload {
+	t.Helper()
+	result := server.runAnalysisTool(context.Background(), mustJSON(t, args), analysisToolKindDependency)
+	if result.IsError {
+		t.Fatalf("unexpected configured analysis error: %#v", result)
 	}
-	if secondPayload.Report.Cache == nil || secondPayload.Report.Cache.Path != expectedPinnedPath || secondPayload.Report.Cache.Hits != 1 || secondPayload.Report.Cache.Misses != 0 {
-		t.Fatalf("expected second scoped MCP run to reuse canonical pinned cache path, got %#v", secondPayload.Report.Cache)
+	return result.StructuredContent.(analysisPayload)
+}
+
+func assertConfiguredMCPAnalysisCache(t *testing.T, cache *report.CacheMetadata, wantMisses, wantWrites, wantHits int) {
+	t.Helper()
+	if cache == nil || cache.Misses != wantMisses || cache.Writes != wantWrites || cache.Hits != wantHits {
+		t.Fatalf("unexpected configured cache metadata: %#v", cache)
+	}
+}
+
+func restoreConfiguredMCPRepoPair(t *testing.T, repo, repoB, movedRepoA string) {
+	t.Helper()
+	if err := os.Rename(repo, repoB); err != nil {
+		t.Fatalf("restore repo B location: %v", err)
+	}
+	if err := os.Rename(movedRepoA, repo); err != nil {
+		t.Fatalf("restore repo A location: %v", err)
+	}
+}
+
+func assertMCPAnalysisCacheAbsent(t *testing.T, repo, failure string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(repo, ".lopper-cache")); !os.IsNotExist(err) {
+		t.Fatalf("%s: %v", failure, err)
+	}
+}
+
+func writeMCPAnalysisCacheFixture(t *testing.T, repo string, lowConfidence int) {
+	t.Helper()
+	for _, dir := range []string{filepath.Join(repo, "src"), filepath.Join(repo, "node_modules", "lodash")} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir fixture directory %s: %v", dir, err)
+		}
+	}
+	files := map[string]string{
+		".lopper.yml":                    fmt.Sprintf("thresholds:\n  low_confidence_warning_percent: %d\n", lowConfidence),
+		"package.json":                   "{\n  \"name\": \"demo\"\n}\n",
+		filepath.Join("src", "index.js"): "import { map } from \"lodash\"\nmap([1], (x) => x)\n",
+		filepath.Join("node_modules", "lodash", "package.json"): "{\n  \"main\": \"index.js\"\n}\n",
+		filepath.Join("node_modules", "lodash", "index.js"):     "export function map() {}\n",
+	}
+	for relativePath, content := range files {
+		if err := os.WriteFile(filepath.Join(repo, relativePath), []byte(content), 0o600); err != nil {
+			t.Fatalf("write fixture %s: %v", relativePath, err)
+		}
+	}
+}
+
+func assertStableMCPPolicyMetadata(t *testing.T, reportData report.Report, repo string) {
+	t.Helper()
+	if reportData.EffectivePolicy == nil {
+		t.Fatal("expected effective policy metadata")
+	}
+	serialized, err := json.Marshal(reportData.EffectivePolicy)
+	if err != nil {
+		t.Fatalf("marshal effective policy: %v", err)
+	}
+	if strings.Contains(string(serialized), "lopper-repository-snapshot-") {
+		t.Fatalf("snapshot path leaked into policy metadata: %s", serialized)
+	}
+	if !strings.Contains(string(serialized), filepath.Join(repo, ".lopper.yml")) {
+		t.Fatalf("authorized config identity missing from policy metadata: %s", serialized)
 	}
 }
 
@@ -562,18 +827,6 @@ func TestListLanguagesReturnsAdapterAndConfigMetadata(t *testing.T) {
 	}
 }
 
-func cachePinnedPathValue(cache any) string {
-	value := reflect.ValueOf(cache)
-	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() {
-		return ""
-	}
-	field := value.Elem().FieldByName("PinnedPath")
-	if !field.IsValid() || field.Kind() != reflect.String {
-		return ""
-	}
-	return field.String()
-}
-
 func mustResolveDefaultPinnedCachePath(t *testing.T, repo string) string {
 	t.Helper()
 	cachePath := filepath.Join(repo, ".lopper-cache")
@@ -585,6 +838,81 @@ func mustResolveDefaultPinnedCachePath(t *testing.T, repo string) string {
 		t.Fatalf("resolve default pinned cache path: %v", err)
 	}
 	return resolvedPath
+}
+
+func mcpCanonicalAliasCacheEscapeFixture(t *testing.T) (requestedRepo, canonicalCache, outsideCache string) {
+	t.Helper()
+
+	canonicalParent := t.TempDir()
+	canonicalRepo := filepath.Join(canonicalParent, "repo")
+	if err := os.MkdirAll(canonicalRepo, 0o755); err != nil {
+		t.Fatalf("mkdir canonical repo: %v", err)
+	}
+	canonicalRepo, err := filepath.EvalSymlinks(canonicalRepo)
+	if err != nil {
+		t.Fatalf("resolve canonical repo: %v", err)
+	}
+	requestedParent := filepath.Join(t.TempDir(), "requested-parent")
+	if err := os.Symlink(canonicalParent, requestedParent); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(canonicalRepo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	return filepath.Join(requestedParent, "repo"),
+		filepath.Join(canonicalRepo, "tmp", "cache"),
+		filepath.Join(outside, "cache")
+}
+
+type mcpAlternateRepoAliasEscapeFixture struct {
+	name          string
+	requestedRepo string
+	cachePath     string
+	outsideCache  string
+}
+
+func mcpAlternateAbsoluteRepoAliasEscapeFixtures(t *testing.T) []mcpAlternateRepoAliasEscapeFixture {
+	t.Helper()
+	repoParent := t.TempDir()
+	repo := filepath.Join(repoParent, "repo")
+	if err := os.Mkdir(repo, 0o750); err != nil {
+		t.Fatalf("mkdir arbitrary-alias repo: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	aliasParent := filepath.Join(t.TempDir(), "alternate-parent")
+	if err := os.Symlink(repoParent, aliasParent); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	fixtures := []mcpAlternateRepoAliasEscapeFixture{{
+		name:          "arbitrary alias",
+		requestedRepo: repo,
+		cachePath:     filepath.Join(aliasParent, "repo", "tmp", "cache"),
+		outsideCache:  filepath.Join(outside, "cache"),
+	}}
+
+	systemRequestedRepo := t.TempDir()
+	systemCanonicalRepo, err := filepath.EvalSymlinks(systemRequestedRepo)
+	if err != nil {
+		t.Fatalf("resolve system-alias repo: %v", err)
+	}
+	if filepath.Clean(systemRequestedRepo) == filepath.Clean(systemCanonicalRepo) {
+		return fixtures
+	}
+	systemOutside := t.TempDir()
+	if err := os.Symlink(systemOutside, filepath.Join(systemRequestedRepo, "tmp")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	return append(fixtures, mcpAlternateRepoAliasEscapeFixture{
+		name:          "system absolute alias",
+		requestedRepo: systemCanonicalRepo,
+		cachePath:     filepath.Join(systemRequestedRepo, "tmp", "cache"),
+		outsideCache:  filepath.Join(systemOutside, "cache"),
+	})
 }
 
 func TestServeProcessesFramedInitialize(t *testing.T) {
