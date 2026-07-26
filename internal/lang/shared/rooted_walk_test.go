@@ -655,6 +655,13 @@ func (r *sharedWalkSwapRoot) Open(name string) (safeio.File, error) {
 	return r.Root.Open(name)
 }
 
+func (r *sharedWalkSwapRoot) OpenNoFollow(name string) (safeio.File, error) {
+	if r.open != nil {
+		return r.open(name)
+	}
+	return r.Root.OpenNoFollow(name)
+}
+
 func (r *sharedWalkSwapRoot) OpenRoot(name string) (safeio.Root, error) {
 	if r.openRoot != nil {
 		return r.openRoot(name)
@@ -671,6 +678,10 @@ func (r *sharedWalkSwapRoot) Close() error {
 
 func (*sharedPinnedChildRoot) Open(string) (safeio.File, error) {
 	return nil, errors.New("unexpected open")
+}
+
+func (r *sharedPinnedChildRoot) OpenNoFollow(name string) (safeio.File, error) {
+	return r.Open(name)
 }
 
 func (*sharedPinnedChildRoot) OpenFile(string, int, os.FileMode) (safeio.File, error) {
@@ -711,6 +722,10 @@ func (r *sharedWalkTestRoot) Open(name string) (safeio.File, error) {
 		return r.open(name)
 	}
 	return nil, errors.New("unexpected open: " + name)
+}
+
+func (r *sharedWalkTestRoot) OpenNoFollow(name string) (safeio.File, error) {
+	return r.Open(name)
 }
 
 func (*sharedWalkTestRoot) OpenFile(string, int, os.FileMode) (safeio.File, error) {
@@ -761,6 +776,11 @@ func newCountingSharedWalkRoot(t *testing.T, repo string, counts *sharedWalkOper
 func (r *countingSharedWalkRoot) Open(name string) (safeio.File, error) {
 	r.counts.openCalls++
 	return r.underlying.Open(name)
+}
+
+func (r *countingSharedWalkRoot) OpenNoFollow(name string) (safeio.File, error) {
+	r.counts.openCalls++
+	return r.underlying.OpenNoFollow(name)
 }
 
 func (r *countingSharedWalkRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {

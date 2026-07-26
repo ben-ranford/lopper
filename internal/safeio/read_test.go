@@ -317,7 +317,7 @@ func TestReadFileWithinRootRejectsAbsolutePath(t *testing.T) {
 
 func TestReadFileWithinRootLimitReturnsNotExistForMissingFile(t *testing.T) {
 	root := &fakeRoot{
-		open: func(string) (File, error) {
+		lstat: func(string) (fs.FileInfo, error) {
 			return nil, os.ErrNotExist
 		},
 	}
@@ -1607,6 +1607,7 @@ func withPinnedPublicReaderSwap(t *testing.T, rootPath, targetPath string) {
 		targetName: filepath.Base(targetPath),
 	}
 	withFileSystem(t, &fakeFileSystem{
+		openRoot:         fixture.openRoot,
 		openRootNoFollow: fixture.openRootNoFollow,
 	})
 }
@@ -1624,15 +1625,27 @@ func (f *pinnedPublicReaderSwapFixture) openRootNoFollow(name string) (Root, err
 	if err != nil {
 		return nil, err
 	}
+	return f.wrapRoot(name, root), nil
+}
+
+func (f *pinnedPublicReaderSwapFixture) openRoot(name string) (Root, error) {
+	root, err := (&osFileSystem{}).OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	return f.wrapRoot(name, root), nil
+}
+
+func (f *pinnedPublicReaderSwapFixture) wrapRoot(name string, root Root) Root {
 	if name != f.rootPath {
-		return root, nil
+		return root
 	}
 	return &fakeRoot{
 		Root: root,
 		open: func(child string) (File, error) {
 			return f.open(root, child)
 		},
-	}, nil
+	}
 }
 
 func (f *pinnedPublicReaderSwapFixture) open(root Root, child string) (File, error) {
