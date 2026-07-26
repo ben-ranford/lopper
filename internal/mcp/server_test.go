@@ -395,10 +395,13 @@ func TestCallCompareBaselineAppliesBaselineDiff(t *testing.T) {
 }
 
 func TestCallAnalyseTopForcesReadOnlyCacheAndLeavesOutsidePathAbsent(t *testing.T) {
-	repo := t.TempDir()
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	repo := filepath.Join(repoRoot, "repo")
 	writeMCPJSFixture(t, repo)
-	outsideRoot := t.TempDir()
-	outsideCache := filepath.Join(outsideRoot, "outside-cache")
+	outsideCache := filepath.Join(repoRoot, "outside-cache")
 	server := NewServer(Options{Analyzer: analysis.NewService()})
 
 	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
@@ -417,6 +420,54 @@ func TestCallAnalyseTopForcesReadOnlyCacheAndLeavesOutsidePathAbsent(t *testing.
 	}
 	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
 		t.Fatalf("expected outside cache path to remain absent, got err=%v", err)
+	}
+}
+
+func TestCallAnalyseTopUsesInitializedCacheReadOnly(t *testing.T) {
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	repo := filepath.Join(repoRoot, "repo")
+	writeMCPJSFixture(t, repo)
+	cachePath := filepath.Join(repoRoot, "cache")
+	for _, dirName := range []string{"keys", "objects"} {
+		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dirName, err)
+		}
+	}
+	testutil.MustWriteFile(t, filepath.Join(cachePath, "sentinel.txt"), "keep\n")
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     cachePath,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || !payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected enabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	for _, dirName := range []string{"keys", "objects"} {
+		entries, err := os.ReadDir(filepath.Join(cachePath, dirName))
+		if err != nil {
+			t.Fatalf("read %s: %v", dirName, err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected initialized cache %s dir to remain untouched, got %#v", dirName, entries)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(cachePath, "sentinel.txt"))
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("expected sentinel file to remain unchanged, got %q", string(data))
 	}
 }
 
@@ -506,54 +557,6 @@ func TestCallAnalyseTopLeavesSymlinkedOutsideCachePathUnmodified(t *testing.T) {
 	}
 	if string(data) != "keep\n" {
 		t.Fatalf("expected sentinel file to remain unchanged, got %q", string(data))
-	}
-}
-
-func TestCachePathReadyForReadOnlyRequiresInitializedDirectories(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolve temp root: %v", err)
-	}
-	cachePath := filepath.Join(root, "cache")
-	if cachePathReadyForReadOnly(cachePath) {
-		t.Fatalf("expected missing cache path to be unreadable")
-	}
-	if err := os.MkdirAll(filepath.Join(cachePath, "keys"), 0o755); err != nil {
-		t.Fatalf("mkdir keys: %v", err)
-	}
-	testutil.MustWriteFile(t, filepath.Join(cachePath, "objects"), "not-a-dir\n")
-	if cachePathReadyForReadOnly(cachePath) {
-		t.Fatalf("expected non-directory objects path to be unreadable")
-	}
-	if err := os.Remove(filepath.Join(cachePath, "objects")); err != nil {
-		t.Fatalf("remove objects file: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(cachePath, "objects"), 0o755); err != nil {
-		t.Fatalf("mkdir objects: %v", err)
-	}
-	if !cachePathReadyForReadOnly(cachePath) {
-		t.Fatalf("expected initialized cache path to be readable")
-	}
-}
-
-func TestPathContainsSymlinkDetectsAncestorLinks(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolve temp root: %v", err)
-	}
-	target := filepath.Join(root, "target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("mkdir target: %v", err)
-	}
-	linkRoot := filepath.Join(root, "link-root")
-	if err := os.Symlink(target, linkRoot); err != nil {
-		t.Skipf("symlink unsupported: %v", err)
-	}
-	if !pathContainsSymlink(filepath.Join(linkRoot, "cache")) {
-		t.Fatalf("expected symlinked ancestor to be detected")
-	}
-	if pathContainsSymlink(filepath.Join(root, "plain", "cache")) {
-		t.Fatalf("expected plain path without symlinks to be allowed")
 	}
 }
 
