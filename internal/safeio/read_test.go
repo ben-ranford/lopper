@@ -389,7 +389,13 @@ func TestReadFileWithinRootLimitPreservesNestedMissingTargetAndAncestorCloseErro
 }
 
 func TestReadFileWithinRootLimitTranslatesMissingOpenError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatalf(writeFileErrFmt, err)
+	}
+	info := statTestPath(t, path)
 	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return info, nil },
 		open: func(string) (File, error) {
 			return nil, os.ErrNotExist
 		},
