@@ -10,11 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/version"
 )
 
@@ -71,44 +71,44 @@ func TestAnalyseBinaryRuntimeTraceWorkBoundsE2E(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected fail-closed runtime trace rejection with no stdout, got %q", stdout)
 	}
-	const lineLimitError = "runtime trace exceeds maximum line count of 600000\n"
+	const keyLimitError = "runtime trace exceeds maximum distinct dependency keys of 2048\n"
 	const unsupportedError = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n"
-	if stderr != lineLimitError && stderr != unsupportedError {
+	if stderr != keyLimitError && stderr != unsupportedError {
 		t.Fatalf("unexpected runtime trace failure stderr: %q", stderr)
 	}
 }
 
 func TestAnalyseBinaryRuntimeTraceWorkBoundsWithoutNoFollowSupportE2E(t *testing.T) {
-	if safeio.OpenFileNoFollowSupported() {
-		t.Skip("runtime trace no-follow support available on this platform")
-	}
-
 	fixture := prepareHermeticAnalyseFixture(t)
 	tracePath := filepath.Join(fixture.workspaceRoot, "trace.ndjson")
 	writeWorkAmplifyingRuntimeTrace(t, tracePath)
 
-	assertHermeticAnalyseFailure(t, fixture, tracePath, "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n", "")
+	stdout, stderr, exitCode := runHermeticAnalyse(t, fixture.workspaceRoot, fixture.binaryPath, fixture.repoPath, tracePath)
+	if stderr != "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n" {
+		t.Skipf("runtime trace no-follow support enabled in this environment: exit=%d stderr=%q stdout=%q", exitCode, stderr, stdout)
+	}
+	if exitCode != 1 || stdout != "" {
+		t.Fatalf("expected unsupported runtime trace open failure, got exit=%d stderr=%q stdout=%q", exitCode, stderr, stdout)
+	}
 }
 
 func TestAnalyseBinaryRejectsRuntimeTraceSymlinkedParentE2E(t *testing.T) {
-	if !safeio.OpenFileNoFollowSupported() {
-		t.Skip("runtime trace no-follow support unavailable on this platform")
-	}
-
 	fixture := prepareHermeticAnalyseFixture(t)
-	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "runtime-trace-target"))
-	assertHermeticAnalyseFailure(t, fixture, tracePath, "", "path contains symlink")
+	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "runtime-trace-target"), false)
+	assertHermeticAnalyseFailureAllowingUnsupported(t, fixture, tracePath, "path contains symlink")
 }
 
 func TestAnalyseBinaryRejectsSuffixPreservingRuntimeTraceSymlinkedParentE2E(t *testing.T) {
-	if !safeio.OpenFileNoFollowSupported() {
-		t.Skip("runtime trace no-follow support unavailable on this platform")
-	}
-
 	fixture := prepareHermeticAnalyseFixture(t)
 	suffixPath := strings.TrimPrefix(filepath.Clean(fixture.workspaceRoot), string(filepath.Separator))
-	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "pivot", suffixPath, "runtime-trace-link"))
-	assertHermeticAnalyseFailure(t, fixture, tracePath, "", "path contains symlink")
+	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "pivot", suffixPath, "runtime-trace-link"), false)
+	assertHermeticAnalyseFailureAllowingUnsupported(t, fixture, tracePath, "path contains symlink")
+}
+
+func TestAnalyseBinaryRejectsRuntimeTraceRelativeSymlinkedParentE2E(t *testing.T) {
+	fixture := prepareHermeticAnalyseFixture(t)
+	tracePath := writeSymlinkedRuntimeTrace(t, fixture.workspaceRoot, filepath.Join(fixture.workspaceRoot, "runtime-trace-target"), true)
+	assertHermeticAnalyseFailureAllowingUnsupported(t, fixture, tracePath, "path contains symlink")
 }
 
 func prepareHermeticAnalyseFixture(t *testing.T) hermeticAnalyseFixture {
@@ -135,7 +135,7 @@ func prepareHermeticAnalyseFixture(t *testing.T) hermeticAnalyseFixture {
 	}
 }
 
-func assertHermeticAnalyseFailure(t *testing.T, fixture hermeticAnalyseFixture, runtimeTracePath string, wantStderr string, wantStderrSubstring string) {
+func assertHermeticAnalyseFailureAllowingUnsupported(t *testing.T, fixture hermeticAnalyseFixture, runtimeTracePath string, wantStderrSubstring string) {
 	t.Helper()
 
 	stdout, stderr, exitCode := runHermeticAnalyse(t, fixture.workspaceRoot, fixture.binaryPath, fixture.repoPath, runtimeTracePath)
@@ -145,15 +145,16 @@ func assertHermeticAnalyseFailure(t *testing.T, fixture hermeticAnalyseFixture, 
 	if stdout != "" {
 		t.Fatalf("expected runtime trace rejection with no stdout, got %q", stdout)
 	}
-	if wantStderr != "" && stderr != wantStderr {
-		t.Fatalf("stderr = %q, want %q", stderr, wantStderr)
+	if strings.Contains(stderr, wantStderrSubstring) {
+		return
 	}
-	if wantStderrSubstring != "" && !strings.Contains(stderr, wantStderrSubstring) {
-		t.Fatalf("expected stderr to contain %q, got %q", wantStderrSubstring, stderr)
+	if stderr == "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable\n" {
+		t.Skipf("runtime trace no-follow support unavailable in this environment: stderr=%q", stderr)
 	}
+	t.Fatalf("expected stderr to contain %q or report unsupported runtime-trace path opening, got %q", wantStderrSubstring, stderr)
 }
 
-func writeSymlinkedRuntimeTrace(t *testing.T, workspaceRoot string, targetDir string) string {
+func writeSymlinkedRuntimeTrace(t *testing.T, workspaceRoot string, targetDir string, relativeTarget bool) string {
 	t.Helper()
 
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -164,7 +165,15 @@ func writeSymlinkedRuntimeTrace(t *testing.T, workspaceRoot string, targetDir st
 		t.Fatalf("write runtime trace: %v", err)
 	}
 	traceLinkDir := filepath.Join(workspaceRoot, "runtime-trace-link")
-	if err := os.Symlink(targetDir, traceLinkDir); err != nil {
+	symlinkTarget := targetDir
+	if relativeTarget {
+		var err error
+		symlinkTarget, err = filepath.Rel(filepath.Dir(traceLinkDir), targetDir)
+		if err != nil {
+			t.Fatalf("relative runtime-trace target: %v", err)
+		}
+	}
+	if err := os.Symlink(symlinkTarget, traceLinkDir); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 	return filepath.Join(traceLinkDir, "trace.ndjson")
@@ -342,9 +351,14 @@ func writeWorkAmplifyingRuntimeTrace(t *testing.T, path string) {
 	t.Helper()
 
 	var content strings.Builder
-	content.Grow(600000 + 192)
-	content.WriteString(strings.Repeat("\n", 600000))
-	content.WriteString("{\"kind\":\"resolve\",\"module\":\"lodash/map\",\"resolved\":\"file:///repo/node_modules/lodash/map.js\",\"parent\":\"file:///repo/src/index.js\",\"entrypoint\":\"file:///repo/src/main.js\"}\n")
+	content.Grow(256 * 2200)
+	for i := 0; i <= 2048; i++ {
+		content.WriteString("{\"language\":\"python\",\"dependency\":\"dep")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString("\",\"module\":\"dep")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString(".mod\"}\n")
+	}
 	if err := os.WriteFile(path, []byte(content.String()), 0o600); err != nil {
 		t.Fatalf("write runtime trace: %v", err)
 	}

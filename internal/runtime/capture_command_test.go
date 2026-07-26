@@ -508,6 +508,17 @@ func TestRuntimeExecutableCandidatesWindowsKeepsExplicitExtension(t *testing.T) 
 	}
 }
 
+func TestRuntimeExecutableCandidatesNonWindowsReturnsBaseOnly(t *testing.T) {
+	setRuntimeOSTest(t, "linux")
+
+	dir := t.TempDir()
+	got := runtimeExecutableCandidates("npm", dir)
+	want := []string{filepath.Join(dir, "npm")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected non-windows candidates %v, got %v", want, got)
+	}
+}
+
 func TestIsTrustedRuntimeExecutableOnWindowsIgnoresModeBits(t *testing.T) {
 	setRuntimeOSTest(t, "windows")
 

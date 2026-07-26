@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -315,6 +316,431 @@ func TestLoadTraceEventCountLimit(t *testing.T) {
 	_, err := loadTraceFromContent(t, strings.Repeat(line, maxRuntimeTraceEvents+1))
 	if err == nil || !strings.Contains(err.Error(), "maximum event count") {
 		t.Fatalf("expected event count limit error, got %v", err)
+	}
+}
+
+func TestLoadTraceDistinctDependencyKeyLimit(t *testing.T) {
+	var content strings.Builder
+	for i := 0; i <= maxRuntimeTraceDependencyKeys; i++ {
+		content.WriteString("{\"language\":\"python\",\"dependency\":\"dep")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString("\"}\n")
+	}
+
+	_, err := loadTraceFromContent(t, content.String())
+	if err == nil || !strings.Contains(err.Error(), "maximum distinct dependency keys") {
+		t.Fatalf("expected dependency-key limit error, got %v", err)
+	}
+}
+
+func TestLoadTraceDistinctEvidenceValueLimit(t *testing.T) {
+	var content strings.Builder
+	for i := 0; i <= maxRuntimeTraceEvidenceValues; i++ {
+		content.WriteString("{\"language\":\"python\",\"dependency\":\"requests\",\"module\":\"requests.mod")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString("\"}\n")
+	}
+
+	_, err := loadTraceFromContent(t, content.String())
+	if err == nil || !strings.Contains(err.Error(), "maximum distinct evidence values") {
+		t.Fatalf("expected evidence-value limit error, got %v", err)
+	}
+}
+
+func TestLoadTraceNestedEvidenceMapLimit(t *testing.T) {
+	var content strings.Builder
+	for i := 0; i <= maxRuntimeTraceNestedMaps/8; i++ {
+		content.WriteString("{\"dependency\":\"dep")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString("\",\"module\":\"dep")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString("/mod\",\"parent\":\"/repo/src/")
+		content.WriteString(strconv.Itoa(i))
+		content.WriteString(".js\",\"entrypoint\":\"/repo/main.js\"}\n")
+	}
+
+	_, err := loadTraceFromContent(t, content.String())
+	if err == nil || !strings.Contains(err.Error(), "maximum nested evidence maps") {
+		t.Fatalf("expected nested-map limit error, got %v", err)
+	}
+}
+
+func TestAddRuntimeEventRecordsLegacyAndLanguageCounts(t *testing.T) {
+	trace := newTrace()
+
+	addRuntimeEvent(&trace, runtimeLanguageJSTS, "lodash", "lodash/map", "/repo/src/index.js", "/repo/src/main.js", "map")
+
+	jsKey := DependencyKey{Language: runtimeLanguageJSTS, Name: "lodash"}
+	if got := trace.DependencyLoadsByLanguage[jsKey]; got != 1 {
+		t.Fatalf("expected language-scoped load count 1, got %d", got)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected legacy JS load count 1, got %d", got)
+	}
+	if got := trace.DependencyModulesByLanguage[jsKey]["lodash/map"]; got != 1 {
+		t.Fatalf("expected language-scoped module count 1, got %d", got)
+	}
+	if got := trace.DependencySymbols["lodash"]["lodash/map\x00map"]; got != 1 {
+		t.Fatalf("expected legacy symbol count 1, got %d", got)
+	}
+}
+
+func TestAddRuntimeEventSkipsEmptyDependencyAndKeepsPythonOutOfLegacyMaps(t *testing.T) {
+	trace := newTrace()
+
+	addRuntimeEvent(&trace, runtimeLanguagePython, "", "requests.sessions", "/repo/app.py", "/repo/app.py", "sessions")
+	addRuntimeEvent(&trace, runtimeLanguagePython, "requests", "requests.sessions", "/repo/app.py", "/repo/app.py", "sessions")
+
+	if len(trace.DependencyLoads) != 0 || len(trace.DependencyModules) != 0 || len(trace.DependencySymbols) != 0 {
+		t.Fatalf("expected direct python wrapper to avoid legacy JS maps, got loads=%#v modules=%#v symbols=%#v", trace.DependencyLoads, trace.DependencyModules, trace.DependencySymbols)
+	}
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+	if got := trace.DependencyLoadsByLanguage[key]; got != 1 {
+		t.Fatalf("expected one python load through direct wrapper, got %d", got)
+	}
+}
+
+func TestLegacyTraceCountWrappersUpdateMaps(t *testing.T) {
+	byName := make(map[string]map[string]int)
+	byKey := make(map[DependencyKey]map[string]int)
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+
+	addCount(byName, "lodash", "lodash/map")
+	addSymbolCount(byName, "lodash", "lodash/map", "map")
+	addCountByKey(byKey, key, "requests.sessions")
+	addSymbolCountByKey(byKey, key, "requests.sessions", "sessions")
+
+	if got := byName["lodash"]["lodash/map"]; got != 1 {
+		t.Fatalf("expected legacy wrapper to record module count 1, got %d", got)
+	}
+	if got := byName["lodash"]["lodash/map\x00map"]; got != 1 {
+		t.Fatalf("expected legacy wrapper to record symbol count 1, got %d", got)
+	}
+	if got := byKey[key]["requests.sessions"]; got != 1 {
+		t.Fatalf("expected keyed wrapper to record module count 1, got %d", got)
+	}
+	if got := byKey[key]["requests.sessions\x00sessions"]; got != 1 {
+		t.Fatalf("expected keyed wrapper to record symbol count 1, got %d", got)
+	}
+}
+
+func TestLegacyKeyedTraceCountWrappersSkipEmptyInputs(t *testing.T) {
+	byKey := make(map[DependencyKey]map[string]int)
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+
+	addCountByKey(byKey, DependencyKey{}, "requests.sessions")
+	addCountByKey(byKey, key, "")
+	addSymbolCountByKey(byKey, DependencyKey{}, "requests.sessions", "sessions")
+	addSymbolCountByKey(byKey, key, "requests.sessions", "")
+
+	if len(byKey) != 0 {
+		t.Fatalf("expected empty keyed wrapper inputs to leave map untouched, got %#v", byKey)
+	}
+}
+
+func TestAddRuntimeEventWithBoundsRejectsDependencyKeyLimitImmediately(t *testing.T) {
+	trace := newTrace()
+	state := &runtimeTraceLoadState{dependencyKeys: maxRuntimeTraceDependencyKeys}
+
+	err := addRuntimeEventWithBounds(state, &trace, runtimeLanguagePython, "overflow", "overflow.mod", "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "maximum distinct dependency keys") {
+		t.Fatalf("expected dependency-key limit error, got %v", err)
+	}
+	if len(trace.DependencyLoadsByLanguage) != 0 {
+		t.Fatalf("expected rejected event not to mutate dependency counts, got %#v", trace.DependencyLoadsByLanguage)
+	}
+}
+
+func TestAddRuntimeEventWithBoundsSkipsEmptyDependency(t *testing.T) {
+	trace := newTrace()
+	state := &runtimeTraceLoadState{}
+
+	if err := addRuntimeEventWithBounds(state, &trace, runtimeLanguagePython, "", "requests.sessions", "", "", ""); err != nil {
+		t.Fatalf("expected empty dependency to be ignored, got %v", err)
+	}
+	if state.dependencyKeys != 0 || len(trace.DependencyLoadsByLanguage) != 0 {
+		t.Fatalf("expected empty dependency to leave state untouched, got state=%+v trace=%#v", state, trace.DependencyLoadsByLanguage)
+	}
+}
+
+func TestAddRuntimeEventWithBoundsKeepsPythonOutOfLegacyJSMaps(t *testing.T) {
+	trace := newTrace()
+	state := &runtimeTraceLoadState{}
+
+	if err := addRuntimeEventWithBounds(state, &trace, runtimeLanguagePython, "requests", "requests.sessions", "/repo/app.py", "/repo/app.py", "sessions"); err != nil {
+		t.Fatalf("add runtime event: %v", err)
+	}
+	if len(trace.DependencyLoads) != 0 || len(trace.DependencyModules) != 0 {
+		t.Fatalf("expected python event to avoid legacy JS maps, got loads=%#v modules=%#v", trace.DependencyLoads, trace.DependencyModules)
+	}
+	if got := trace.DependencyLoadsByLanguage[DependencyKey{Language: runtimeLanguagePython, Name: "requests"}]; got != 1 {
+		t.Fatalf("expected python dependency load count 1, got %d", got)
+	}
+}
+
+func TestAddRuntimeEventWithBoundsTracksDistinctJSEvidenceOnce(t *testing.T) {
+	trace := newTrace()
+	state := &runtimeTraceLoadState{}
+
+	for range 2 {
+		if err := addRuntimeEventWithBounds(state, &trace, runtimeLanguageJSTS, "lodash", "lodash/map", "/repo/src/index.js", "/repo/src/main.js", "map"); err != nil {
+			t.Fatalf("add runtime event: %v", err)
+		}
+	}
+
+	key := DependencyKey{Language: runtimeLanguageJSTS, Name: "lodash"}
+	if got := trace.DependencyLoadsByLanguage[key]; got != 2 {
+		t.Fatalf("expected language-scoped load count 2, got %d", got)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 2 {
+		t.Fatalf("expected legacy JS load count 2, got %d", got)
+	}
+	if got := trace.DependencyModulesByLanguage[key]["lodash/map"]; got != 2 {
+		t.Fatalf("expected language-scoped module count 2, got %d", got)
+	}
+	if got := trace.DependencyParents["lodash"]["/repo/src/index.js"]; got != 2 {
+		t.Fatalf("expected legacy parent count 2, got %d", got)
+	}
+	if got := trace.DependencySymbolsByLanguage[key]["lodash/map\x00map"]; got != 2 {
+		t.Fatalf("expected language-scoped symbol count 2, got %d", got)
+	}
+	if state.dependencyKeys != 1 {
+		t.Fatalf("expected one distinct dependency key, got %d", state.dependencyKeys)
+	}
+	if state.nestedMaps != 8 {
+		t.Fatalf("expected one nested map per keyed and legacy evidence bucket, got %d", state.nestedMaps)
+	}
+	if state.evidenceValues != 8 {
+		t.Fatalf("expected repeated JS evidence to count once per bucket, got %d", state.evidenceValues)
+	}
+}
+
+func TestAddRuntimeEventWithBoundsFailsClosedOnScopedEvidenceLimit(t *testing.T) {
+	trace := newTrace()
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+	trace.DependencyLoadsByLanguage[key] = 1
+	state := &runtimeTraceLoadState{evidenceValues: maxRuntimeTraceEvidenceValues}
+
+	err := addRuntimeEventWithBounds(state, &trace, runtimeLanguagePython, "requests", "requests.sessions", "/repo/app.py", "/repo/app.py", "sessions")
+	if err == nil || !strings.Contains(err.Error(), "maximum distinct evidence values") {
+		t.Fatalf("expected scoped evidence limit error, got %v", err)
+	}
+	if got := trace.DependencyLoadsByLanguage[key]; got != 2 {
+		t.Fatalf("expected load count increment before scoped evidence failure, got %d", got)
+	}
+	if items, ok := trace.DependencyModulesByLanguage[key]; !ok || len(items) != 0 {
+		t.Fatalf("expected scoped evidence failure to leave an empty allocated module bucket, got %#v", trace.DependencyModulesByLanguage)
+	}
+	if len(trace.DependencyParentsByLanguage) != 0 || len(trace.DependencySymbolsByLanguage) != 0 {
+		t.Fatalf("expected scoped evidence failure to stop before parent/symbol buckets, got parents=%#v symbols=%#v", trace.DependencyParentsByLanguage, trace.DependencySymbolsByLanguage)
+	}
+}
+
+func TestAddRuntimeEventWithBoundsFailsClosedOnLegacyEvidenceLimitAfterScopedSuccess(t *testing.T) {
+	trace := newTrace()
+	key := DependencyKey{Language: runtimeLanguageJSTS, Name: "lodash"}
+	trace.DependencyLoadsByLanguage[key] = 1
+	trace.DependencyModulesByLanguage[key] = map[string]int{"lodash/map": 1}
+	trace.DependencyParentsByLanguage[key] = map[string]int{"/repo/src/index.js": 1}
+	trace.DependencyEntrypointsByLanguage[key] = map[string]int{"/repo/src/main.js": 1}
+	trace.DependencySymbolsByLanguage[key] = map[string]int{"lodash/map\x00map": 1}
+	state := &runtimeTraceLoadState{evidenceValues: maxRuntimeTraceEvidenceValues}
+
+	err := addRuntimeEventWithBounds(state, &trace, runtimeLanguageJSTS, "lodash", "lodash/map", "/repo/src/index.js", "/repo/src/main.js", "map")
+	if err == nil || !strings.Contains(err.Error(), "maximum distinct evidence values") {
+		t.Fatalf("expected legacy evidence limit error, got %v", err)
+	}
+	if got := trace.DependencyLoadsByLanguage[key]; got != 2 {
+		t.Fatalf("expected scoped load count increment before legacy failure, got %d", got)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected legacy load count increment before legacy evidence failure, got %d", got)
+	}
+	if items, ok := trace.DependencyModules["lodash"]; !ok || len(items) != 0 {
+		t.Fatalf("expected legacy evidence failure to leave an empty allocated legacy module bucket, got %#v", trace.DependencyModules)
+	}
+	if len(trace.DependencyParents) != 0 || len(trace.DependencySymbols) != 0 {
+		t.Fatalf("expected legacy evidence failure to stop before parent/symbol buckets, got parents=%#v symbols=%#v", trace.DependencyParents, trace.DependencySymbols)
+	}
+}
+
+func TestTraceAggregationHelpersTreatRepeatedValuesAsSingleDistinctEntry(t *testing.T) {
+	state := &runtimeTraceLoadState{}
+	items := make(map[string]int)
+
+	if err := addCountWithBounds(state, map[string]map[string]int{"lodash": items}, "lodash", "lodash/map"); err != nil {
+		t.Fatalf("initial addCountWithBounds: %v", err)
+	}
+	if err := addCountWithBounds(state, map[string]map[string]int{"lodash": items}, "lodash", "lodash/map"); err != nil {
+		t.Fatalf("repeat addCountWithBounds: %v", err)
+	}
+	if state.evidenceValues != 1 {
+		t.Fatalf("expected repeated evidence value to count once, got %d", state.evidenceValues)
+	}
+}
+
+func TestRuntimeTraceBoundNotersIgnoreNilStateAndRepeatedEntries(t *testing.T) {
+	trace := newTrace()
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+	items := map[string]int{"requests.sessions": 1}
+
+	if err := noteRuntimeTraceDependencyKey(nil, &trace, key); err != nil {
+		t.Fatalf("nil-state dependency key note: %v", err)
+	}
+	if err := noteRuntimeTraceNestedMap(nil); err != nil {
+		t.Fatalf("nil-state nested-map note: %v", err)
+	}
+	if err := noteRuntimeTraceEvidenceValue[string](nil, items, "requests.sessions"); err != nil {
+		t.Fatalf("nil-state evidence note: %v", err)
+	}
+
+	state := &runtimeTraceLoadState{}
+	trace.DependencyLoadsByLanguage[key] = 1
+	if err := noteRuntimeTraceDependencyKey(state, &trace, key); err != nil {
+		t.Fatalf("repeat dependency key note: %v", err)
+	}
+	if state.dependencyKeys != 0 {
+		t.Fatalf("expected repeated dependency key not to change state, got %d", state.dependencyKeys)
+	}
+	if err := noteRuntimeTraceEvidenceValue(state, items, "requests.sessions"); err != nil {
+		t.Fatalf("repeat evidence note: %v", err)
+	}
+	if state.evidenceValues != 0 {
+		t.Fatalf("expected repeated evidence not to change state, got %d", state.evidenceValues)
+	}
+}
+
+func TestTraceAggregationHelpersSkipEmptyInputs(t *testing.T) {
+	state := &runtimeTraceLoadState{}
+	legacy := make(map[string]map[string]int)
+	keyed := make(map[DependencyKey]map[string]int)
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+
+	if err := addCountWithBounds(state, legacy, "", "value"); err != nil {
+		t.Fatalf("addCountWithBounds empty dependency: %v", err)
+	}
+	if err := addCountWithBounds(state, legacy, "lodash", ""); err != nil {
+		t.Fatalf("addCountWithBounds empty value: %v", err)
+	}
+	if err := addSymbolCountWithBounds(state, legacy, "", "lodash/map", "map"); err != nil {
+		t.Fatalf("addSymbolCountWithBounds empty dependency: %v", err)
+	}
+	if err := addSymbolCountWithBounds(state, legacy, "lodash", "lodash/map", ""); err != nil {
+		t.Fatalf("addSymbolCountWithBounds empty symbol: %v", err)
+	}
+	if err := addCountByKeyWithBounds(state, keyed, DependencyKey{}, "requests.sessions"); err != nil {
+		t.Fatalf("addCountByKeyWithBounds empty key: %v", err)
+	}
+	if err := addCountByKeyWithBounds(state, keyed, key, ""); err != nil {
+		t.Fatalf("addCountByKeyWithBounds empty value: %v", err)
+	}
+	if err := addSymbolCountByKeyWithBounds(state, keyed, DependencyKey{}, "requests.sessions", "sessions"); err != nil {
+		t.Fatalf("addSymbolCountByKeyWithBounds empty key: %v", err)
+	}
+	if err := addSymbolCountByKeyWithBounds(state, keyed, key, "requests.sessions", ""); err != nil {
+		t.Fatalf("addSymbolCountByKeyWithBounds empty symbol: %v", err)
+	}
+
+	if state.nestedMaps != 0 || state.evidenceValues != 0 {
+		t.Fatalf("expected empty inputs to leave bounds state untouched, got %+v", state)
+	}
+	if len(legacy) != 0 || len(keyed) != 0 {
+		t.Fatalf("expected empty inputs to leave targets untouched, got legacy=%#v keyed=%#v", legacy, keyed)
+	}
+}
+
+func TestTraceAggregationHelpersFailClosedAtNestedMapLimit(t *testing.T) {
+	state := &runtimeTraceLoadState{nestedMaps: maxRuntimeTraceNestedMaps}
+	legacy := make(map[string]map[string]int)
+	keyed := make(map[DependencyKey]map[string]int)
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+
+	if err := addCountWithBounds(state, legacy, "lodash", "lodash/map"); err == nil || !strings.Contains(err.Error(), "maximum nested evidence maps") {
+		t.Fatalf("expected legacy nested-map limit error, got %v", err)
+	}
+	if err := addSymbolCountByKeyWithBounds(state, keyed, key, "requests.sessions", "sessions"); err == nil || !strings.Contains(err.Error(), "maximum nested evidence maps") {
+		t.Fatalf("expected keyed nested-map limit error, got %v", err)
+	}
+	if len(legacy) != 0 || len(keyed) != 0 {
+		t.Fatalf("expected rejected nested-map allocations to leave targets empty, got legacy=%#v keyed=%#v", legacy, keyed)
+	}
+}
+
+func TestTraceAggregationHelpersFailClosedAtEvidenceLimit(t *testing.T) {
+	state := &runtimeTraceLoadState{evidenceValues: maxRuntimeTraceEvidenceValues}
+	legacy := map[string]map[string]int{"lodash": {}}
+	key := DependencyKey{Language: runtimeLanguagePython, Name: "requests"}
+	keyed := map[DependencyKey]map[string]int{key: {}}
+
+	if err := addSymbolCountWithBounds(state, legacy, "lodash", "lodash/map", "map"); err == nil || !strings.Contains(err.Error(), "maximum distinct evidence values") {
+		t.Fatalf("expected legacy evidence limit error, got %v", err)
+	}
+	if err := addCountByKeyWithBounds(state, keyed, key, "requests.sessions"); err == nil || !strings.Contains(err.Error(), "maximum distinct evidence values") {
+		t.Fatalf("expected keyed evidence limit error, got %v", err)
+	}
+	if len(legacy["lodash"]) != 0 || len(keyed[key]) != 0 {
+		t.Fatalf("expected rejected evidence additions to leave targets empty, got legacy=%#v keyed=%#v", legacy, keyed)
+	}
+}
+
+func TestRequireRuntimeTraceObjectBoundaryHelpersRejectInvalidTokens(t *testing.T) {
+	startDecoder := json.NewDecoder(strings.NewReader("[]"))
+	if err := requireRuntimeTraceObjectStart(startDecoder); err == nil || !strings.Contains(err.Error(), "JSON object") {
+		t.Fatalf("expected object-start rejection, got %v", err)
+	}
+
+	endDecoder := json.NewDecoder(strings.NewReader("{\"module\":\"lodash/map\"} []"))
+	if err := requireRuntimeTraceObjectStart(endDecoder); err != nil {
+		t.Fatalf("require object start: %v", err)
+	}
+	if _, err := readRuntimeTraceFieldName(endDecoder); err != nil {
+		t.Fatalf("read field name: %v", err)
+	}
+	var value string
+	if err := endDecoder.Decode(&value); err != nil {
+		t.Fatalf("decode field value: %v", err)
+	}
+	if err := requireRuntimeTraceObjectEnd(endDecoder); err == nil || !strings.Contains(err.Error(), "exactly one JSON object") {
+		t.Fatalf("expected object-end rejection, got %v", err)
+	}
+}
+
+func TestRequireRuntimeTraceObjectBoundaryHelpersPropagateTokenErrors(t *testing.T) {
+	if err := requireRuntimeTraceObjectStart(json.NewDecoder(strings.NewReader(""))); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected object-start EOF, got %v", err)
+	}
+
+	fieldDecoder := json.NewDecoder(strings.NewReader("{"))
+	if err := requireRuntimeTraceObjectStart(fieldDecoder); err != nil {
+		t.Fatalf("require object start: %v", err)
+	}
+	if _, err := readRuntimeTraceFieldName(fieldDecoder); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected field-name EOF, got %v", err)
+	}
+
+	endDecoder := json.NewDecoder(strings.NewReader("{\"module\":\"lodash/map\""))
+	if err := requireRuntimeTraceObjectStart(endDecoder); err != nil {
+		t.Fatalf("require object start: %v", err)
+	}
+	if _, err := readRuntimeTraceFieldName(endDecoder); err != nil {
+		t.Fatalf("read field name: %v", err)
+	}
+	var value string
+	if err := endDecoder.Decode(&value); err != nil {
+		t.Fatalf("decode field value: %v", err)
+	}
+	if err := requireRuntimeTraceObjectEnd(endDecoder); !errors.Is(err, io.EOF) {
+		t.Fatalf("expected object-end EOF, got %v", err)
+	}
+}
+
+func TestParseRuntimeTraceEventAllowsUnknownFields(t *testing.T) {
+	event, err := parseRuntimeTraceEvent(context.Background(), []byte("{\"unknown\":{\"nested\":true},\"module\":\""+lodashMapModule+"\"}"))
+	if err != nil {
+		t.Fatalf("parse runtime trace event: %v", err)
+	}
+	if event.Module != lodashMapModule {
+		t.Fatalf("expected module to decode alongside unknown field, got %#v", event)
 	}
 }
 

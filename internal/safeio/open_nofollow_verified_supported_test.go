@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -88,5 +89,64 @@ func TestOpenFileNoFollowKeepsParentPinnedAcrossRename(t *testing.T) {
 	}
 	if string(data) != want {
 		t.Fatalf("opened replacement parent content: got %q want %q", data, want)
+	}
+}
+
+func TestOpenFileNoFollowRejectsParentReplacementWithSymlink(t *testing.T) {
+	assertOpenFileNoFollowRejectsParentReplacementWithSymlink(t, false)
+}
+
+func TestOpenFileNoFollowRejectsParentReplacementWithRelativeSymlink(t *testing.T) {
+	assertOpenFileNoFollowRejectsParentReplacementWithSymlink(t, true)
+}
+
+func assertOpenFileNoFollowRejectsParentReplacementWithSymlink(t *testing.T, relativeTarget bool) {
+	t.Helper()
+
+	rootDir := t.TempDir()
+	parentPath := filepath.Join(rootDir, "trace-parent")
+	replacementPath := filepath.Join(rootDir, "replacement-parent")
+	if err := os.Mkdir(parentPath, 0o700); err != nil {
+		t.Fatalf("mkdir trace parent: %v", err)
+	}
+	if err := os.Mkdir(replacementPath, 0o700); err != nil {
+		t.Fatalf("mkdir replacement parent: %v", err)
+	}
+
+	tracePath := filepath.Join(parentPath, "trace.ndjson")
+	if err := os.WriteFile(tracePath, []byte("pinned parent\n"), 0o600); err != nil {
+		t.Fatalf("write pinned trace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(replacementPath, filepath.Base(tracePath)), []byte("replacement parent\n"), 0o600); err != nil {
+		t.Fatalf("write replacement trace: %v", err)
+	}
+
+	withOpenParentRootNoFollowBeforeChildOpen(t, parentPath, func() {
+		displacedPath := parentPath + ".original"
+		if err := os.Rename(parentPath, displacedPath); err != nil {
+			t.Fatalf("rename pinned parent: %v", err)
+		}
+		symlinkTarget := replacementPath
+		if relativeTarget {
+			var err error
+			symlinkTarget, err = filepath.Rel(filepath.Dir(parentPath), replacementPath)
+			if err != nil {
+				t.Fatalf("relative replacement path: %v", err)
+			}
+		}
+		if err := os.Symlink(symlinkTarget, parentPath); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+	})
+
+	file, err := OpenFileNoFollow(tracePath)
+	if file != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close unexpected file: %v", closeErr)
+		}
+		t.Fatal("expected parent replacement by symlink to be rejected")
+	}
+	if err == nil || !strings.Contains(err.Error(), "path contains symlink") {
+		t.Fatalf("expected parent replacement symlink rejection, got %v", err)
 	}
 }

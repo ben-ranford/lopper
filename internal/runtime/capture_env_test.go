@@ -68,6 +68,21 @@ func TestWithPythonRuntimeTraceEnvWithoutExistingPythonPath(t *testing.T) {
 	assertEnvEntryValue(t, env, "PYTHONPATH", hookDir)
 }
 
+func TestWithPythonRuntimeTraceEnvPropagatesHookDirectoryError(t *testing.T) {
+	t.Helper()
+	restoreRuntimeHookState(t)
+
+	runtimePythonHookDirOnce = sync.Once{}
+	runtimePythonHookDirOnce.Do(func() {
+		runtimePythonHookDirErr = errors.New("python hook unavailable")
+	})
+
+	_, err := withPythonRuntimeTraceEnv([]string{"PATH=/usr/bin"}, "/tmp/python-runtime.ndjson")
+	if err == nil || !strings.Contains(err.Error(), "resolve runtime python hook") {
+		t.Fatalf("expected python hook resolution error, got %v", err)
+	}
+}
+
 func TestRuntimeCaptureProviderValidationBranches(t *testing.T) {
 	if got := normalizeCaptureProvider(""); got != CaptureProviderNode {
 		t.Fatalf("expected default provider to normalize to node, got %q", got)
@@ -216,6 +231,37 @@ func TestRuntimeHookSearchRootsResolveRelativeCallerPaths(t *testing.T) {
 	}
 	if !reflect.DeepEqual(roots, want) {
 		t.Fatalf("expected relative runtime hook roots %v, got %v", want, roots)
+	}
+}
+
+func TestRuntimeHookSearchRootsSkipsExecutableErrorsAndMissingCaller(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return "", errors.New("executable unavailable")
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, "", 0, false
+	}
+
+	if roots := runtimeHookSearchRoots(); len(roots) != 0 {
+		t.Fatalf("expected empty runtime hook roots, got %v", roots)
+	}
+}
+
+func TestRuntimeHookSearchRootsDeduplicatesNormalizedPaths(t *testing.T) {
+	restoreRuntimeHookPathProviders(t)
+
+	runtimeExecutablePath = func() (string, error) {
+		return filepath.Join("/tmp", "plant", "bin", "lopper"), nil
+	}
+	runtimeCaller = func(skip int) (uintptr, string, int, bool) {
+		return 0, filepath.Join("/tmp", "plant", "share", "lopper", "internal", "runtime", "capture_env.go"), 0, true
+	}
+
+	roots := runtimeHookSearchRoots()
+	if len(roots) != 2 {
+		t.Fatalf("expected deduplicated runtime hook roots, got %v", roots)
 	}
 }
 

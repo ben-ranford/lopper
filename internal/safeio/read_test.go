@@ -236,6 +236,78 @@ func TestOpenParentRootNoFollowOpensVolumeRoot(t *testing.T) {
 	}
 }
 
+func TestOpenParentRootChildNoFollowFallsBackWhenAtomicUnsupported(t *testing.T) {
+	rootDir := t.TempDir()
+	childPath := filepath.Join(rootDir, "child")
+	if err := os.Mkdir(childPath, 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+
+	root := openTestRoot(t, rootDir)
+	child, err := openParentRootChildNoFollow(root, "child", childPath)
+	if err != nil {
+		t.Fatalf("openParentRootChildNoFollow(%q): %v", childPath, err)
+	}
+	defer func() {
+		if closeErr := child.Close(); closeErr != nil {
+			t.Fatalf("close child root: %v", closeErr)
+		}
+	}()
+
+	info, err := child.Lstat(".")
+	if err != nil {
+		t.Fatalf("lstat opened child root: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected opened child root to be a directory, got mode %v", info.Mode())
+	}
+}
+
+func TestOpenParentRootChildNoFollowReturnsAtomicResult(t *testing.T) {
+	wantRoot := &fakeRoot{}
+	root := &fakeRoot{
+		openParentRootChildNoFollowAtomicFn: func(name string) (Root, error) {
+			if name != "child" {
+				t.Fatalf("unexpected atomic open child %q", name)
+			}
+			return wantRoot, nil
+		},
+		lstat: func(string) (fs.FileInfo, error) {
+			t.Fatal("fallback lstat should not run after atomic success")
+			return nil, nil
+		},
+	}
+
+	gotRoot, err := openParentRootChildNoFollow(root, "child", filepath.Join(string(filepath.Separator), "tmp", "child"))
+	if err != nil {
+		t.Fatalf("openParentRootChildNoFollow returned error: %v", err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("unexpected atomic root: got %v want %v", gotRoot, wantRoot)
+	}
+}
+
+func TestOpenParentRootChildNoFollowRejectsAtomicSymlinkReplacement(t *testing.T) {
+	symlinkInfo := &modeOverrideFileInfo{FileInfo: statTestPath(t, t.TempDir()), mode: os.ModeSymlink | 0o777}
+	root := &fakeRoot{
+		openParentRootChildNoFollowAtomicFn: func(string) (Root, error) {
+			return nil, errors.New("atomic open raced")
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "child" {
+				t.Fatalf("unexpected lstat path %q", name)
+			}
+			return symlinkInfo, nil
+		},
+	}
+
+	_, err := openParentRootChildNoFollow(root, "child", filepath.Join(string(filepath.Separator), "tmp", "child"))
+	var symlinkErr *RootContainsSymlinkError
+	if !errors.As(err, &symlinkErr) {
+		t.Fatalf("expected root symlink error, got %v", err)
+	}
+}
+
 func TestReadFileUnderLimitReadsFileInsideRoot(t *testing.T) {
 	rootDir := canonicalTempDir(t)
 	targetPath := filepath.Join(rootDir, "nested", writeTestFileName)
@@ -945,7 +1017,7 @@ func TestReadFileLimitCloseRootError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("read limit root close failure")
-	withRootCloseError(t, expectedErr)
+	withRootCloseError(t, rootDir, expectedErr)
 
 	_, err := ReadFileLimit(targetPath, 0)
 	if err == nil {
@@ -964,7 +1036,7 @@ func TestReadFileLimitCloseFileError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("read limit file close failure")
-	withOpenedFileCloseError(t, expectedErr)
+	withOpenedFileCloseError(t, rootDir, expectedErr)
 
 	_, err := ReadFileLimit(targetPath, 0)
 	if err == nil {
@@ -1207,6 +1279,87 @@ func TestPathReadersReturnErrorForMissingFile(t *testing.T) {
 	}
 }
 
+func TestPathReadersRejectStableSymlinkedParent(t *testing.T) {
+	for _, reader := range pathReaders() {
+		t.Run(reader.name, func(t *testing.T) {
+			rootDir := t.TempDir()
+			targetDir := filepath.Join(rootDir, "target")
+			if err := os.MkdirAll(targetDir, 0o755); err != nil {
+				t.Fatalf("mkdir target dir: %v", err)
+			}
+			targetPath := filepath.Join(targetDir, writeTestFileName)
+			if err := os.WriteFile(targetPath, []byte("hello"), 0o600); err != nil {
+				t.Fatalf(writeFileErrFmt, err)
+			}
+			linkDir := filepath.Join(rootDir, "linked")
+			if err := os.Symlink(targetDir, linkDir); err != nil {
+				t.Skipf("symlink unsupported: %v", err)
+			}
+
+			_, err := reader.read(filepath.Join(linkDir, writeTestFileName))
+			if err == nil || !strings.Contains(err.Error(), "contains symlink") {
+				t.Fatalf("expected symlinked parent rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestPathReadersRejectParentReplacementWithSymlink(t *testing.T) {
+	assertPathReadersRejectParentReplacementWithSymlink(t, false)
+}
+
+func TestPathReadersRejectParentReplacementWithRelativeSymlink(t *testing.T) {
+	assertPathReadersRejectParentReplacementWithSymlink(t, true)
+}
+
+func assertPathReadersRejectParentReplacementWithSymlink(t *testing.T, relativeTarget bool) {
+	t.Helper()
+
+	for _, reader := range pathReaders() {
+		t.Run(reader.name, func(t *testing.T) {
+			rootDir := t.TempDir()
+			parentPath := filepath.Join(rootDir, "trace-parent")
+			replacementPath := filepath.Join(rootDir, "replacement-parent")
+			if err := os.MkdirAll(parentPath, 0o755); err != nil {
+				t.Fatalf("mkdir trace parent: %v", err)
+			}
+			if err := os.MkdirAll(replacementPath, 0o755); err != nil {
+				t.Fatalf("mkdir replacement parent: %v", err)
+			}
+			targetPath := filepath.Join(parentPath, writeTestFileName)
+			if err := os.WriteFile(targetPath, []byte("pinned"), 0o600); err != nil {
+				t.Fatalf(writeFileErrFmt, err)
+			}
+			if err := os.WriteFile(filepath.Join(replacementPath, writeTestFileName), []byte("replacement"), 0o600); err != nil {
+				t.Fatalf(writeFileErrFmt, err)
+			}
+
+			withOpenParentRootNoFollowBeforeChildOpen(t, parentPath, func() {
+				displacedPath := parentPath + ".original"
+				if err := os.Rename(parentPath, displacedPath); err != nil {
+					t.Fatalf("rename pinned parent: %v", err)
+				}
+				symlinkTarget := replacementPath
+				if relativeTarget {
+					var err error
+					symlinkTarget, err = filepath.Rel(filepath.Dir(parentPath), replacementPath)
+					if err != nil {
+						t.Fatalf("relative replacement path: %v", err)
+					}
+				}
+				if err := os.Symlink(symlinkTarget, parentPath); err != nil {
+					t.Skipf("symlink unsupported: %v", err)
+				}
+			})
+
+			_, err := reader.read(targetPath)
+			if err == nil || !strings.Contains(err.Error(), "contains symlink") {
+				t.Fatalf("expected parent replacement symlink rejection, got %v", err)
+			}
+		})
+	}
+}
+
 func TestReadFileReturnsErrorWhenParentIsNotDirectory(t *testing.T) {
 	rootDir := canonicalTempDir(t)
 	parentFile := filepath.Join(rootDir, "not-a-dir")
@@ -1316,50 +1469,74 @@ func TestReadFileUnderPropagatesNoFollowRootOpenError(t *testing.T) {
 	}
 }
 
-func withRootCloseError(t *testing.T, expectedErr error) {
+func withRootCloseError(t *testing.T, targetRootPath string, expectedErr error) {
 	t.Helper()
 	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
 		root, err := (&osFileSystem{}).OpenRoot(name)
 		if err != nil {
 			return nil, err
 		}
-		return &fakeRoot{
-			Root: root,
-			close: func() error {
-				if err := root.Close(); err != nil {
-					return err
-				}
-				return expectedErr
-			},
-		}, nil
-	}})
-}
-
-func withOpenedFileCloseError(t *testing.T, expectedErr error) {
-	t.Helper()
-	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
-		root, err := (&osFileSystem{}).OpenRoot(name)
-		if err != nil {
-			return nil, err
-		}
-		return &fakeRoot{
-			Root: root,
-			open: func(name string) (File, error) {
-				file, err := root.Open(name)
+		var wrap func(string, Root) Root
+		wrap = func(currentPath string, realRoot Root) Root {
+			wrapped := &fakeRoot{Root: realRoot}
+			wrapped.openRoot = func(child string) (Root, error) {
+				next, err := realRoot.OpenRoot(child)
 				if err != nil {
 					return nil, err
 				}
-				return &fakeFile{
-					File: file,
-					close: func() error {
-						if err := file.Close(); err != nil {
-							return err
-						}
-						return expectedErr
-					},
-				}, nil
-			},
-		}, nil
+				return wrap(filepath.Join(currentPath, child), next), nil
+			}
+			if filepath.Clean(currentPath) == filepath.Clean(targetRootPath) {
+				wrapped.close = func() error {
+					if err := realRoot.Close(); err != nil {
+						return err
+					}
+					return expectedErr
+				}
+			}
+			return wrapped
+		}
+		return wrap(name, root), nil
+	}})
+}
+
+func withOpenedFileCloseError(t *testing.T, targetRootPath string, expectedErr error) {
+	t.Helper()
+	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		var wrap func(string, Root) Root
+		wrap = func(currentPath string, realRoot Root) Root {
+			wrapped := &fakeRoot{Root: realRoot}
+			if filepath.Clean(currentPath) == filepath.Clean(targetRootPath) {
+				wrapped.open = func(name string) (File, error) {
+					file, err := realRoot.Open(name)
+					if err != nil {
+						return nil, err
+					}
+					return &fakeFile{
+						File: file,
+						close: func() error {
+							if err := file.Close(); err != nil {
+								return err
+							}
+							return expectedErr
+						},
+					}, nil
+				}
+			}
+			wrapped.openRoot = func(child string) (Root, error) {
+				next, err := realRoot.OpenRoot(child)
+				if err != nil {
+					return nil, err
+				}
+				return wrap(filepath.Join(currentPath, child), next), nil
+			}
+			return wrapped
+		}
+		return wrap(name, root), nil
 	}})
 }
 
@@ -1371,7 +1548,7 @@ func TestReadFileUnderCloseRootError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("root close failure")
-	withRootCloseError(t, expectedErr)
+	withRootCloseError(t, filepath.Dir(targetPath), expectedErr)
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -1390,7 +1567,7 @@ func TestReadFileUnderCloseFileError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("file close failure")
-	withOpenedFileCloseError(t, expectedErr)
+	withOpenedFileCloseError(t, filepath.Dir(targetPath), expectedErr)
 
 	_, err := ReadFileUnder(rootDir, targetPath)
 	if err == nil {
@@ -1409,7 +1586,7 @@ func TestReadFileCloseError(t *testing.T) {
 	}
 
 	expectedErr := errors.New("read closer close failure")
-	withOpenedFileCloseError(t, expectedErr)
+	withOpenedFileCloseError(t, filepath.Dir(targetPath), expectedErr)
 
 	_, err := ReadFile(targetPath)
 	if err == nil {
@@ -1429,26 +1606,20 @@ func TestOpenFileMissingFileCloseRootError(t *testing.T) {
 	targetPath := filepath.Join(canonicalTempDir(t), missingFileName)
 
 	expectedErr := errors.New("open parent root close failure")
-	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
-		root, err := (&osFileSystem{}).OpenRoot(name)
-		if err != nil {
-			return nil, err
-		}
+	openRoot := func(string) (Root, error) {
 		return &fakeRoot{
-			Root: root,
+			lstat: func(string) (fs.FileInfo, error) {
+				return nil, os.ErrNotExist
+			},
 			open: func(string) (File, error) {
 				return nil, os.ErrNotExist
 			},
 			close: func() error {
-				if err := root.Close(); err != nil {
-					return err
-				}
 				return expectedErr
 			},
 		}, nil
-	}})
-
-	_, err := OpenFile(targetPath)
+	}
+	_, err := openExactFile(targetPath, openRoot, "open parent root")
 	if err == nil {
 		t.Fatal("expected fs.ErrNotExist on missing file with root close error")
 	}
@@ -1468,16 +1639,11 @@ func TestOpenFileOpenErrorCloseRootError(t *testing.T) {
 		t.Fatalf(writeFileErrFmt, err)
 	}
 	markerInfo := statTestPath(t, markerPath)
-
 	openErr := errors.New("open child failure")
 	expectedErr := errors.New("open root close failure")
-	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
-		root, err := (&osFileSystem{}).OpenRoot(name)
-		if err != nil {
-			return nil, err
-		}
+
+	openRoot := func(string) (Root, error) {
 		return &fakeRoot{
-			Root: root,
 			lstat: func(string) (fs.FileInfo, error) {
 				return markerInfo, nil
 			},
@@ -1485,15 +1651,11 @@ func TestOpenFileOpenErrorCloseRootError(t *testing.T) {
 				return nil, openErr
 			},
 			close: func() error {
-				if err := root.Close(); err != nil {
-					return err
-				}
 				return expectedErr
 			},
 		}, nil
-	}})
-
-	_, err := OpenFile(targetPath)
+	}
+	_, err := openExactFile(targetPath, openRoot, "open parent root")
 	if err == nil {
 		t.Fatal("expected open error joined with root close error")
 	}
@@ -1612,6 +1774,23 @@ func withPinnedPublicReaderSwap(t *testing.T, rootPath, targetPath string) {
 	})
 }
 
+func withOpenParentRootNoFollowBeforeChildOpen(t *testing.T, childPath string, hook func()) {
+	t.Helper()
+
+	previousHook := openParentRootNoFollowBeforeChildOpen
+	called := false
+	openParentRootNoFollowBeforeChildOpen = func(path string) {
+		if called || !strings.HasSuffix(filepath.Clean(path), filepath.Clean(childPath)) {
+			return
+		}
+		called = true
+		hook()
+	}
+	t.Cleanup(func() {
+		openParentRootNoFollowBeforeChildOpen = previousHook
+	})
+}
+
 type pinnedPublicReaderSwapFixture struct {
 	t          *testing.T
 	rootPath   string
@@ -1637,15 +1816,20 @@ func (f *pinnedPublicReaderSwapFixture) openRoot(name string) (Root, error) {
 }
 
 func (f *pinnedPublicReaderSwapFixture) wrapRoot(name string, root Root) Root {
-	if name != f.rootPath {
-		return root
-	}
-	return &fakeRoot{
-		Root: root,
-		open: func(child string) (File, error) {
+	wrapped := &fakeRoot{Root: root}
+	if strings.HasSuffix(filepath.Clean(name), filepath.Clean(f.rootPath)) {
+		wrapped.open = func(child string) (File, error) {
 			return f.open(root, child)
-		},
+		}
 	}
+	wrapped.openRoot = func(child string) (Root, error) {
+		next, err := root.OpenRoot(child)
+		if err != nil {
+			return nil, err
+		}
+		return f.wrapRoot(filepath.Join(name, child), next), nil
+	}
+	return wrapped
 }
 
 func (f *pinnedPublicReaderSwapFixture) open(root Root, child string) (File, error) {

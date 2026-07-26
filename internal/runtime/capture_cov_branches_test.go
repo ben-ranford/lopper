@@ -1,3 +1,5 @@
+//go:build !windows
+
 package runtime
 
 import (
@@ -119,23 +121,6 @@ func TestConfigureRuntimeCommandCancelBranches(t *testing.T) {
 		if !errors.Is(err, os.ErrProcessDone) {
 			t.Fatalf("expected process-done error after exit, got %v", err)
 		}
-	})
-}
-
-func restoreRuntimeHookState(t *testing.T) {
-	t.Helper()
-
-	originalRequire := runtimeRequireHookPath
-	originalLoader := runtimeLoaderHookPath
-	originalErr := runtimeHookPathsErr
-
-	t.Cleanup(func() {
-		runtimeHookPathsOnce = sync.Once{}
-		runtimeHookPathsOnce.Do(func() {
-			runtimeRequireHookPath = originalRequire
-			runtimeLoaderHookPath = originalLoader
-			runtimeHookPathsErr = originalErr
-		})
 	})
 }
 

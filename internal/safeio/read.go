@@ -11,6 +11,11 @@ import (
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
+var errParentRootChildNoFollowAtomicUnsupported = errors.New("atomic parent root child open unsupported")
+
+type openParentRootChildNoFollowAtomicer interface {
+	openParentRootChildNoFollowAtomic(name string) (Root, error)
+}
 
 type rootedReadCloser struct {
 	file File
@@ -155,7 +160,7 @@ func ReadFile(targetPath string) (data []byte, err error) {
 
 // OpenFile opens the exact targetPath by opening its parent directory as a root.
 func OpenFile(targetPath string) (io.ReadCloser, error) {
-	return openExactFile(targetPath, fileSystem.OpenRoot, "open parent root")
+	return openExactFile(targetPath, openParentRootNoFollow, "open parent root")
 }
 
 // OpenFileNoFollow opens the exact targetPath while rejecting symlinks in any
@@ -237,7 +242,7 @@ func openParentRootNoFollow(parentDir string) (Root, error) {
 
 	for _, part := range nonDotPathParts(strings.Join(parts, string(filepath.Separator)), string(filepath.Separator)) {
 		partPath := filepath.Join(currentPath, part)
-		next, openErr := openRootChildNoFollow(current, part, partPath)
+		next, openErr := openParentRootChildNoFollow(current, part, partPath)
 		if openErr != nil {
 			return nil, closeRootWithError(current, openErr)
 		}
@@ -248,6 +253,30 @@ func openParentRootNoFollow(parentDir string) (Root, error) {
 		currentPath = partPath
 	}
 	return current, nil
+}
+
+func openParentRootChildNoFollow(root Root, name, path string) (Root, error) {
+	if openParentRootNoFollowBeforeChildOpen != nil {
+		openParentRootNoFollowBeforeChildOpen(path)
+	}
+	if opener, ok := root.(openParentRootChildNoFollowAtomicer); ok {
+		next, err := opener.openParentRootChildNoFollowAtomic(name)
+		if err == nil {
+			return next, nil
+		}
+		if !errors.Is(err, errParentRootChildNoFollowAtomicUnsupported) {
+			if info, lstatErr := root.Lstat(name); lstatErr == nil {
+				if info.Mode()&fs.ModeSymlink != 0 {
+					return nil, &RootContainsSymlinkError{Path: path}
+				}
+				if !info.IsDir() {
+					return nil, fmt.Errorf("root is not a directory: %s", path)
+				}
+			}
+			return nil, err
+		}
+	}
+	return openRootChildNoFollow(root, name, path)
 }
 
 func normalizeOpenParentRootNoFollowError(err error, parentDir string) error {

@@ -17,12 +17,15 @@ import (
 )
 
 const (
-	maxRuntimeTraceBytes        int64 = 8 * 1024 * 1024
-	maxRuntimeTraceLines              = 600_000
-	maxRuntimeTraceEvents             = 500_000
-	maxRuntimeTraceObjectFields       = 16
-	maxRuntimeTraceNameBytes          = 1_024
-	maxRuntimeTraceLineBytes          = bufio.MaxScanTokenSize
+	maxRuntimeTraceBytes          int64 = 8 * 1024 * 1024
+	maxRuntimeTraceLines                = 600_000
+	maxRuntimeTraceEvents               = 500_000
+	maxRuntimeTraceObjectFields         = 16
+	maxRuntimeTraceNameBytes            = 1_024
+	maxRuntimeTraceLineBytes            = bufio.MaxScanTokenSize
+	maxRuntimeTraceDependencyKeys       = 2_048
+	maxRuntimeTraceNestedMaps           = 4_096
+	maxRuntimeTraceEvidenceValues       = 32_768
 )
 
 const runtimeTraceOpenUnsupportedMessage = "runtime trace path opening unsupported: exact pinned no-follow regular-file opening is unavailable"
@@ -84,9 +87,12 @@ func readRuntimeTraceLine(reader *bufio.Reader) (string, error) {
 }
 
 type runtimeTraceLoadState struct {
-	trace      *Trace
-	line       int
-	eventCount int
+	trace          *Trace
+	line           int
+	eventCount     int
+	dependencyKeys int
+	nestedMaps     int
+	evidenceValues int
 }
 
 func (s *runtimeTraceLoadState) consumeLine(ctx context.Context, text string, readErr error) (bool, error) {
@@ -158,8 +164,7 @@ func (s *runtimeTraceLoadState) addEvent(ctx context.Context, data []byte) error
 	parent := runtimeContextValue(event.Parent)
 	entrypoint := runtimeContextValue(event.Entrypoint)
 	symbol := runtimeSymbolFromModuleForLanguage(module, language, dependency)
-	addRuntimeEvent(s.trace, language, dependency, module, parent, entrypoint, symbol)
-	return nil
+	return addRuntimeEventWithBounds(s, s.trace, language, dependency, module, parent, entrypoint, symbol)
 }
 
 func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
@@ -266,6 +271,9 @@ func newTrace() Trace {
 
 func addRuntimeEvent(trace *Trace, language, dependency, module, parent, entrypoint, symbol string) {
 	key := DependencyKey{Language: normalizeRuntimeLanguage(language), Name: dependency}
+	if key.Name == "" {
+		return
+	}
 	trace.DependencyLoadsByLanguage[key]++
 	addCountByKey(trace.DependencyModulesByLanguage, key, module)
 	addCountByKey(trace.DependencyParentsByLanguage, key, parent)
@@ -281,6 +289,43 @@ func addRuntimeEvent(trace *Trace, language, dependency, module, parent, entrypo
 	addSymbolCount(trace.DependencySymbols, dependency, module, symbol)
 }
 
+func addRuntimeEventWithBounds(state *runtimeTraceLoadState, trace *Trace, language, dependency, module, parent, entrypoint, symbol string) error {
+	key := DependencyKey{Language: normalizeRuntimeLanguage(language), Name: dependency}
+	if key.Name == "" {
+		return nil
+	}
+	if err := noteRuntimeTraceDependencyKey(state, trace, key); err != nil {
+		return err
+	}
+	trace.DependencyLoadsByLanguage[key]++
+	if err := addCountByKeyWithBounds(state, trace.DependencyModulesByLanguage, key, module); err != nil {
+		return err
+	}
+	if err := addCountByKeyWithBounds(state, trace.DependencyParentsByLanguage, key, parent); err != nil {
+		return err
+	}
+	if err := addCountByKeyWithBounds(state, trace.DependencyEntrypointsByLanguage, key, entrypoint); err != nil {
+		return err
+	}
+	if err := addSymbolCountByKeyWithBounds(state, trace.DependencySymbolsByLanguage, key, module, symbol); err != nil {
+		return err
+	}
+	if key.Language != runtimeLanguageJSTS {
+		return nil
+	}
+	trace.DependencyLoads[dependency]++
+	if err := addCountWithBounds(state, trace.DependencyModules, dependency, module); err != nil {
+		return err
+	}
+	if err := addCountWithBounds(state, trace.DependencyParents, dependency, parent); err != nil {
+		return err
+	}
+	if err := addCountWithBounds(state, trace.DependencyEntrypoints, dependency, entrypoint); err != nil {
+		return err
+	}
+	return addSymbolCountWithBounds(state, trace.DependencySymbols, dependency, module, symbol)
+}
+
 func addCount(target map[string]map[string]int, dependency string, value string) {
 	if dependency == "" || value == "" {
 		return
@@ -291,6 +336,25 @@ func addCount(target map[string]map[string]int, dependency string, value string)
 		target[dependency] = items
 	}
 	items[value]++
+}
+
+func addCountWithBounds(state *runtimeTraceLoadState, target map[string]map[string]int, dependency string, value string) error {
+	if dependency == "" || value == "" {
+		return nil
+	}
+	items, ok := target[dependency]
+	if !ok {
+		if err := noteRuntimeTraceNestedMap(state); err != nil {
+			return err
+		}
+		items = make(map[string]int)
+		target[dependency] = items
+	}
+	if err := noteRuntimeTraceEvidenceValue(state, items, value); err != nil {
+		return err
+	}
+	items[value]++
+	return nil
 }
 
 func addSymbolCount(target map[string]map[string]int, dependency string, module string, symbol string) {
@@ -305,6 +369,26 @@ func addSymbolCount(target map[string]map[string]int, dependency string, module 
 	items[module+"\x00"+symbol]++
 }
 
+func addSymbolCountWithBounds(state *runtimeTraceLoadState, target map[string]map[string]int, dependency string, module string, symbol string) error {
+	if dependency == "" || symbol == "" {
+		return nil
+	}
+	items, ok := target[dependency]
+	if !ok {
+		if err := noteRuntimeTraceNestedMap(state); err != nil {
+			return err
+		}
+		items = make(map[string]int)
+		target[dependency] = items
+	}
+	value := module + "\x00" + symbol
+	if err := noteRuntimeTraceEvidenceValue(state, items, value); err != nil {
+		return err
+	}
+	items[value]++
+	return nil
+}
+
 func addCountByKey(target map[DependencyKey]map[string]int, key DependencyKey, value string) {
 	if key.Name == "" || value == "" {
 		return
@@ -317,6 +401,25 @@ func addCountByKey(target map[DependencyKey]map[string]int, key DependencyKey, v
 	items[value]++
 }
 
+func addCountByKeyWithBounds(state *runtimeTraceLoadState, target map[DependencyKey]map[string]int, key DependencyKey, value string) error {
+	if key.Name == "" || value == "" {
+		return nil
+	}
+	items, ok := target[key]
+	if !ok {
+		if err := noteRuntimeTraceNestedMap(state); err != nil {
+			return err
+		}
+		items = make(map[string]int)
+		target[key] = items
+	}
+	if err := noteRuntimeTraceEvidenceValue(state, items, value); err != nil {
+		return err
+	}
+	items[value]++
+	return nil
+}
+
 func addSymbolCountByKey(target map[DependencyKey]map[string]int, key DependencyKey, module string, symbol string) {
 	if key.Name == "" || symbol == "" {
 		return
@@ -327,6 +430,65 @@ func addSymbolCountByKey(target map[DependencyKey]map[string]int, key Dependency
 		target[key] = items
 	}
 	items[module+"\x00"+symbol]++
+}
+
+func addSymbolCountByKeyWithBounds(state *runtimeTraceLoadState, target map[DependencyKey]map[string]int, key DependencyKey, module string, symbol string) error {
+	if key.Name == "" || symbol == "" {
+		return nil
+	}
+	items, ok := target[key]
+	if !ok {
+		if err := noteRuntimeTraceNestedMap(state); err != nil {
+			return err
+		}
+		items = make(map[string]int)
+		target[key] = items
+	}
+	value := module + "\x00" + symbol
+	if err := noteRuntimeTraceEvidenceValue(state, items, value); err != nil {
+		return err
+	}
+	items[value]++
+	return nil
+}
+
+func noteRuntimeTraceDependencyKey(state *runtimeTraceLoadState, trace *Trace, key DependencyKey) error {
+	if state == nil {
+		return nil
+	}
+	if _, ok := trace.DependencyLoadsByLanguage[key]; ok {
+		return nil
+	}
+	state.dependencyKeys++
+	if state.dependencyKeys > maxRuntimeTraceDependencyKeys {
+		return fmt.Errorf("runtime trace exceeds maximum distinct dependency keys of %d", maxRuntimeTraceDependencyKeys)
+	}
+	return nil
+}
+
+func noteRuntimeTraceNestedMap(state *runtimeTraceLoadState) error {
+	if state == nil {
+		return nil
+	}
+	state.nestedMaps++
+	if state.nestedMaps > maxRuntimeTraceNestedMaps {
+		return fmt.Errorf("runtime trace exceeds maximum nested evidence maps of %d", maxRuntimeTraceNestedMaps)
+	}
+	return nil
+}
+
+func noteRuntimeTraceEvidenceValue[K comparable](state *runtimeTraceLoadState, items map[K]int, value K) error {
+	if state == nil {
+		return nil
+	}
+	if _, ok := items[value]; ok {
+		return nil
+	}
+	state.evidenceValues++
+	if state.evidenceValues > maxRuntimeTraceEvidenceValues {
+		return fmt.Errorf("runtime trace exceeds maximum distinct evidence values of %d", maxRuntimeTraceEvidenceValues)
+	}
+	return nil
 }
 
 func runtimeContextValue(value string) string {

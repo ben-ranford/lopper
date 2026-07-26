@@ -462,6 +462,7 @@ func closeFileWithError(file File, err error) error {
 }
 
 var openNoFollowDescriptorOperationHook func()
+var openParentRootNoFollowBeforeChildOpen func(string)
 
 func (r *osRoot) Open(name string) (File, error) {
 	return r.root.Open(name)
@@ -510,6 +511,10 @@ func (r *osRoot) OpenRoot(name string) (Root, error) {
 		return nil, err
 	}
 	return &osRoot{root: root}, nil
+}
+
+func (r *osRoot) openParentRootChildNoFollowAtomic(name string) (Root, error) {
+	return nil, errParentRootChildNoFollowAtomicUnsupported
 }
 
 func (r *osRoot) Lstat(name string) (fs.FileInfo, error) {

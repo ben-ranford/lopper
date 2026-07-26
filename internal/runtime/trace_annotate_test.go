@@ -271,7 +271,7 @@ func TestAnnotateAddsRuntimeOnlyDependencyRows(t *testing.T) {
 	}
 }
 
-func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
+func TestAppendRuntimeOnlyDependenciesSkipsSeenPythonAndZeroJSLoads(t *testing.T) {
 	rep := report.Report{}
 	trace := Trace{
 		DependencyLoads: map[string]int{
@@ -320,5 +320,118 @@ func TestRuntimeDependencyKeysSkipsZeroAndUnsupportedLanguages(t *testing.T) {
 	}
 	if got := runtimeLoadCount(Trace{}, DependencyKey{Language: runtimeLanguagePython, Name: "missing"}); got != 0 {
 		t.Fatalf("expected missing non-JS runtime load count 0, got %d", got)
+	}
+}
+
+func TestSupportedRuntimeLanguagesNormalizesAndDropsUnknownEntries(t *testing.T) {
+	supported := supportedRuntimeLanguages([]string{"Python", "", "ruby", "javascript"})
+
+	if _, ok := supported[runtimeLanguagePython]; !ok {
+		t.Fatalf("expected python language to be normalized into supported set: %#v", supported)
+	}
+	if _, ok := supported[runtimeLanguageJSTS]; !ok {
+		t.Fatalf("expected javascript language to be normalized into supported set: %#v", supported)
+	}
+	if _, ok := supported[""]; ok {
+		t.Fatalf("did not expect empty normalized language in supported set: %#v", supported)
+	}
+}
+
+func TestSupportedRuntimeLanguagesDefaultsToJSTS(t *testing.T) {
+	supported := supportedRuntimeLanguages(nil)
+
+	if len(supported) != 1 {
+		t.Fatalf("expected only default JS/TS support, got %#v", supported)
+	}
+	if _, ok := supported[runtimeLanguageJSTS]; !ok {
+		t.Fatalf("expected default JS/TS support, got %#v", supported)
+	}
+}
+
+func TestSupportedRuntimeLanguagesKeepsNonEmptyUnknownLabels(t *testing.T) {
+	supported := supportedRuntimeLanguages([]string{"ruby", "", "unknown"})
+
+	if _, ok := supported["ruby"]; !ok {
+		t.Fatalf("expected non-empty unknown label to be retained, got %#v", supported)
+	}
+	if _, ok := supported["unknown"]; !ok {
+		t.Fatalf("expected second non-empty unknown label to be retained, got %#v", supported)
+	}
+	if _, ok := supported[""]; ok {
+		t.Fatalf("did not expect empty language label to be retained, got %#v", supported)
+	}
+}
+
+func TestAppendRuntimeOnlyDependenciesSkipsSeenAndZeroLoads(t *testing.T) {
+	rep := report.Report{}
+	trace := Trace{
+		DependencyLoads: map[string]int{
+			"zero": 0,
+		},
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			{Language: runtimeLanguagePython, Name: "requests"}: 1,
+		},
+	}
+	seen := map[DependencyKey]struct{}{
+		{Language: runtimeLanguagePython, Name: "requests"}: {},
+	}
+
+	appendRuntimeOnlyDependencies(&rep, trace, seen, map[string]struct{}{
+		runtimeLanguageJSTS:   {},
+		runtimeLanguagePython: {},
+	})
+	if len(rep.Dependencies) != 0 {
+		t.Fatalf("expected seen and zero-load dependencies to be skipped, got %#v", rep.Dependencies)
+	}
+}
+
+func TestAppendRuntimeOnlyDependenciesSkipsLegacyKeyWhenScopedLoadIsZero(t *testing.T) {
+	rep := report.Report{}
+	trace := Trace{
+		DependencyLoads: map[string]int{
+			"lodash": 3,
+			"chalk":  2,
+		},
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			{Language: runtimeLanguageJSTS, Name: "lodash"}: 0,
+		},
+		DependencyModules: map[string]map[string]int{
+			"chalk": {"chalk/index.js": 2},
+		},
+	}
+
+	appendRuntimeOnlyDependencies(&rep, trace, nil, map[string]struct{}{runtimeLanguageJSTS: {}})
+	if len(rep.Dependencies) != 1 || rep.Dependencies[0].Name != "chalk" {
+		t.Fatalf("expected scoped zero-load JS key to suppress legacy-only row, got %#v", rep.Dependencies)
+	}
+}
+
+func TestRuntimeDependencyKeysIncludesSupportedPythonAndSortedLegacyJS(t *testing.T) {
+	trace := Trace{
+		DependencyLoads: map[string]int{
+			"zeta":  1,
+			"alpha": 1,
+		},
+		DependencyLoadsByLanguage: map[DependencyKey]int{
+			{Language: runtimeLanguagePython, Name: "requests"}: 2,
+		},
+	}
+
+	keys := runtimeDependencyKeys(trace, map[string]struct{}{
+		runtimeLanguageJSTS:   {},
+		runtimeLanguagePython: {},
+	})
+	want := []DependencyKey{
+		{Language: runtimeLanguageJSTS, Name: "alpha"},
+		{Language: runtimeLanguageJSTS, Name: "zeta"},
+		{Language: runtimeLanguagePython, Name: "requests"},
+	}
+	if len(keys) != len(want) {
+		t.Fatalf("expected runtime dependency keys %v, got %v", want, keys)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("expected runtime dependency keys %v, got %v", want, keys)
+		}
 	}
 }

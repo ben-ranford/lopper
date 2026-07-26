@@ -12,7 +12,7 @@ func openParentRootNoFollowAlias(current Root, currentPath string, parts []strin
 
 	for _, aliasPart := range aliasParts {
 		partPath := filepath.Join(currentPath, aliasPart)
-		next, openErr := openRootChildNoFollow(current, aliasPart, partPath)
+		next, openErr := openParentRootChildNoFollow(current, aliasPart, partPath)
 		if openErr != nil {
 			return nil, "", nil, closeRootWithError(current, openErr)
 		}

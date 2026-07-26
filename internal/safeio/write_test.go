@@ -1746,7 +1746,7 @@ func TestWriteFileUnderCloseRootError(t *testing.T) {
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 
 	expectedErr := errors.New("close root failure")
-	withRootCloseError(t, expectedErr)
+	withRootCloseError(t, rootDir, expectedErr)
 
 	err := WriteFileUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if err == nil {
@@ -2372,7 +2372,7 @@ func TestWriteFileReplacingUnderReturnsCloseRootError(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
 	expectedErr := errors.New("close root failure")
-	withRootCloseError(t, expectedErr)
+	withRootCloseError(t, rootDir, expectedErr)
 
 	err := WriteFileReplacingUnder(rootDir, targetPath, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {

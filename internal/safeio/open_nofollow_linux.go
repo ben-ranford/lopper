@@ -55,7 +55,7 @@ func probeOpenFileNoFollowSupport() (supported bool, cacheable bool) {
 		return false, false
 	}
 	defer func() {
-		if closeErr := closeNoFollowProbeRoot(root); closeErr != nil {
+		if closeNoFollowProbeRoot(root) != nil {
 			supported = false
 			cacheable = false
 		}
@@ -70,7 +70,7 @@ func probeOpenFileNoFollowSupport() (supported bool, cacheable bool) {
 	if err != nil {
 		return false, isDefinitiveNoFollowSupportProbeError(err)
 	}
-	if closeErr := closeNoFollowProbeFile(file); closeErr != nil {
+	if closeNoFollowProbeFile(file) != nil {
 		return false, false
 	}
 	return true, true
