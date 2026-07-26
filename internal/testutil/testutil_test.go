@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -393,20 +394,20 @@ func TestIsolatedGitEnv(t *testing.T) {
 	if !strings.Contains(envText, "PATH=/tmp/custom-bin:") {
 		t.Fatalf("expected caller PATH to be preserved in %#v", env)
 	}
-	if homeIndex := indexEnv(env, "HOME="); homeIndex < 0 {
+	homeIndex := indexEnv(env, "HOME=")
+	if homeIndex < 0 {
 		t.Fatalf("expected isolated HOME in %#v", env)
-	} else if xdgIndex := indexEnv(env, "XDG_CONFIG_HOME="); xdgIndex != homeIndex+1 {
+	}
+	xdgIndex := indexEnv(env, "XDG_CONFIG_HOME=")
+	if xdgIndex != homeIndex+1 {
 		t.Fatalf("expected XDG_CONFIG_HOME immediately after HOME in %#v", env)
 	}
 }
 
 func indexEnv(env []string, prefix string) int {
-	for index, entry := range env {
-		if strings.HasPrefix(entry, prefix) {
-			return index
-		}
-	}
-	return -1
+	return slices.IndexFunc(env, func(entry string) bool {
+		return strings.HasPrefix(entry, prefix)
+	})
 }
 
 func TestMustWriteFileModeReportsMkdirFailures(t *testing.T) {

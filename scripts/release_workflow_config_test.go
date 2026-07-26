@@ -926,161 +926,9 @@ func TestRollingWorkflowPublishesFromFreshValidatedInputs(t *testing.T) {
 		t.Fatal("rolling Darwin amd64 checkout must disable persisted credentials")
 	}
 	assertWorkflowJobPermissions(t, darwinProducer, "rolling Darwin amd64 producer", map[string]string{"contents": "read"})
-
-	notesPreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-release-notes")
-	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
-	assertWorkflowJobPermissions(t, notesPreparation, "rolling release note preparation", map[string]string{"contents": "read"})
-	assertWorkflowJobEnvEmpty(t, notesPreparation, "rolling release note preparation")
-	assertWorkflowJobOmitsText(t, notesPreparation, "secrets.", "rolling release note preparation must not receive secrets")
-	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, notesPreparation, "prepare-rolling-release-notes")
-	assertWorkflowStepOrder(t, notesPreparation, "Checkout rolling source", "Verify rolling source checkout", "Setup Go", "Generate rolling release notes", "Validate rolling release notes", "Upload rolling release notes")
-	generateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Generate rolling release notes")
-	assertWorkflowStepRunContainsAll(t, generateNotes, "rolling release note generation", []string{
-		`notes_root="${RUNNER_TEMP}/rolling-release-notes"`,
-		`rm -rf -- "${notes_root}"`,
-		`mkdir -- "${notes_root}"`,
-		`rm -rf -- .artifacts`,
-		`mkdir -- .artifacts`,
-		`previous_catalog=".artifacts/previous-rolling-features.json"`,
-		`args+=(--previous-catalog "${previous_catalog}")`,
-		`go run ./tools/featureflag "${args[@]}" > "${feature_report}"`,
-		`> "${notes_root}/rolling-changelog.md"`,
-	})
-	assertWorkflowStepRunOmitsAll(t, generateNotes, "rolling release note generation", []string{
-		`previous_catalog="${RUNNER_TEMP}/previous-rolling-features.json"`,
-	})
-	assertTextAppearsBefore(t, generateNotes.Run, `rm -rf -- .artifacts`, `mkdir -- .artifacts`, "rolling release note generation must reset its workspace-confined catalog staging directory")
-	assertTextAppearsBefore(t, generateNotes.Run, `mkdir -- .artifacts`, `previous_catalog=".artifacts/previous-rolling-features.json"`, "rolling release note generation must recreate catalog staging before selecting the relative path")
-	assertTextAppearsBefore(t, generateNotes.Run, `previous_catalog=".artifacts/previous-rolling-features.json"`, `args+=(--previous-catalog "${previous_catalog}")`, "rolling release note generation must select the workspace-confined catalog before passing it to the report")
-	assertTextAppearsBefore(t, generateNotes.Run, `args+=(--previous-catalog "${previous_catalog}")`, `go run ./tools/featureflag`, "rolling release note generation must pass the staged catalog to the report")
-	validateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Validate rolling release notes")
-	assertWorkflowStringValues(t, []workflowStringValue{{
-		label: "rolling release note validation shell",
-		got:   validateNotes.Shell,
-		want:  hardenedShell,
-	}})
-	assertWorkflowStepEnv(t, validateNotes, "rolling release note validation", map[string]string{
-		"NOTES_ROOT": "${{ runner.temp }}/rolling-release-notes",
-		"PATH":       "/usr/bin:/bin",
-	})
-	assertWorkflowStepRunContainsAll(t, validateNotes, "rolling release note validation", []string{
-		`changelog="${NOTES_ROOT}/rolling-changelog.md"`,
-		`find -P "${NOTES_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
-		`[ "${file_count}" -ne 1 ]`,
-		`[ ! -f "${changelog}" ] || [ -L "${changelog}" ] || [ ! -s "${changelog}" ]`,
-		`[ "$(stat --format=%s "${changelog}")" -gt 1048576 ]`,
-	})
-	notesUpload := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Upload rolling release notes")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "rolling release note artifact name", got: notesUpload.With["name"], want: "rolling-release-notes"},
-		{label: "rolling release note artifact path", got: notesUpload.With["path"], want: "${{ runner.temp }}/rolling-release-notes/rolling-changelog.md"},
-		{label: "rolling release note missing-file behavior", got: notesUpload.With["if-no-files-found"], want: "error"},
-	})
-
-	archivePreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-source-archive")
-	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
-	assertWorkflowJobPermissions(t, archivePreparation, "rolling source archive preparation", map[string]string{"contents": "read"})
-	assertWorkflowJobEnvEmpty(t, archivePreparation, "rolling source archive preparation")
-	assertWorkflowJobOmitsText(t, archivePreparation, "secrets.", "rolling source archive preparation must not receive secrets")
-	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, archivePreparation, "prepare-rolling-source-archive")
-	assertWorkflowJobStepRunsOmitAllFold(t, archivePreparation, "rolling source archive preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"})
-	assertWorkflowStepOrder(t, archivePreparation, "Checkout rolling source", "Verify rolling source checkout", "Build rolling source archive", "Validate rolling source archive", "Upload rolling source archive")
-	verifySource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Verify rolling source checkout")
-	assertWorkflowStepEnv(t, verifySource, "rolling source archive checkout verification", map[string]string{
-		"EXPECTED_SOURCE_SHA": "${{ needs.prepare-rolling.outputs.source_sha }}",
-	})
-	assertWorkflowStepRunContainsAll(t, verifySource, "rolling source archive checkout verification", []string{
-		`actual_source_sha="$(git rev-parse HEAD)"`,
-		`[ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]`,
-	})
-	buildSource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Build rolling source archive")
-	assertWorkflowStringValues(t, []workflowStringValue{{
-		label: "rolling source archive build shell",
-		got:   buildSource.Shell,
-		want:  hardenedShell,
-	}})
-	assertWorkflowStepEnv(t, buildSource, "rolling source archive", map[string]string{
-		"PATH":        "/usr/bin:/bin",
-		"ROLLING_TAG": "${{ needs.prepare-rolling.outputs.tag }}",
-		"SOURCE_SHA":  "${{ needs.prepare-rolling.outputs.source_sha }}",
-	})
-	assertWorkflowStepRunContainsAll(t, buildSource, "rolling source archive", []string{
-		`archive_root="${RUNNER_TEMP}/rolling-source-archive"`,
-		`rm -rf -- "${archive_root}"`,
-		`mkdir -- "${archive_root}"`,
-		`archive_path="${archive_root}/lopper_${ROLLING_TAG}_source.tar.gz"`,
-		`git archive --format=tar.gz --prefix="${bundle}/" -o "${archive_path}" "${SOURCE_SHA}"`,
-	})
-	validateSource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Validate rolling source archive")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "rolling source archive validation shell", got: validateSource.Shell, want: hardenedShell},
-	})
-	assertWorkflowStepEnv(t, validateSource, "rolling source archive validation", map[string]string{
-		"ARCHIVE_ROOT": "${{ runner.temp }}/rolling-source-archive",
-		"PATH":         "/usr/bin:/bin",
-		"ROLLING_TAG":  "${{ needs.prepare-rolling.outputs.tag }}",
-	})
-	assertWorkflowStepRunContainsAll(t, validateSource, "rolling source archive validation", []string{
-		`archive="${ARCHIVE_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"`,
-		`find -P "${ARCHIVE_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
-		`[ "${file_count}" -ne 1 ]`,
-		`[ ! -f "${archive}" ] || [ -L "${archive}" ] || [ ! -s "${archive}" ]`,
-		`[ "$(stat --format=%s "${archive}")" -gt 1073741824 ]`,
-	})
-	sourceUpload := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Upload rolling source archive")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "rolling source archive artifact name", got: sourceUpload.With["name"], want: "rolling-source-archive"},
-		{label: "rolling source archive artifact path", got: sourceUpload.With["path"], want: "${{ runner.temp }}/rolling-source-archive/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz"},
-		{label: "rolling source archive missing-file behavior", got: sourceUpload.With["if-no-files-found"], want: "error"},
-	})
-	for _, step := range archivePreparation.Steps[workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Build rolling source archive")+1:] {
-		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
-			if strings.Contains(step.Run, repositoryCommand) {
-				t.Fatalf("rolling source archive step %q must not execute repository-controlled command %q after archive creation", step.Name, repositoryCommand)
-			}
-		}
-	}
-
-	preparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-publication")
-	assertWorkflowJobNeeds(t, preparation, "rolling publication preparation", workflowJobNeeds{"prepare-rolling", "prepare-rolling-release-notes", "prepare-rolling-source-archive", "orchestrate-rolling", "build-darwin-amd64-rolling"})
-	assertWorkflowJobHasExplicitEmptyPermissions(t, preparation, "rolling publication preparation")
-	assertWorkflowJobEnvEmpty(t, preparation, "rolling publication preparation")
-	assertWorkflowJobOmitsText(t, preparation, "secrets.", "rolling publication preparation must not receive secrets")
-	assertWorkflowJobOmitsCheckout(t, preparation, "prepare-rolling-publication")
-	assertWorkflowJobStepRunsOmitAllFold(t, preparation, "rolling publication preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "git "})
-
-	resetIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Reset rolling publication assembly")
-	sourceDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling source archive")
-	notesDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling release notes")
-	linuxWindowsDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Linux and Windows artifacts")
-	darwinArm64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Darwin arm64 artifact")
-	darwinAmd64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Darwin amd64 artifact")
-	stageIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Stage bounded rolling publication inputs")
-	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Upload rolling publication inputs")
-	if sourceDownloadIndex != resetIndex+1 || notesDownloadIndex != sourceDownloadIndex+1 || linuxWindowsDownloadIndex != notesDownloadIndex+1 ||
-		darwinArm64DownloadIndex != linuxWindowsDownloadIndex+1 || darwinAmd64DownloadIndex != darwinArm64DownloadIndex+1 ||
-		stageIndex != darwinAmd64DownloadIndex+1 || uploadIndex != stageIndex+1 {
-		t.Fatal("rolling publication inputs must reset, download exact producers, stage, and upload contiguously")
-	}
-	resetStep := preparation.Steps[resetIndex]
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "rolling publication assembly reset shell", got: resetStep.Shell, want: hardenedShell},
-	})
-	assertWorkflowStepEnv(t, resetStep, "rolling publication assembly reset", map[string]string{"PATH": "/usr/bin:/bin"})
-	assertWorkflowStepRunContainsAll(t, resetStep, "rolling publication assembly reset", []string{
-		`assembly_root="${RUNNER_TEMP}/rolling-publication-assembly"`,
-		`rm -rf -- "${assembly_root}"`,
-		`rm -rf -- rolling-publication-inputs`,
-		`mkdir -- "${assembly_root}"`,
-	})
-	downloadContracts := []workflowArtifactDownloadContract{
-		{index: sourceDownloadIndex, name: "rolling-source-archive", path: "${{ runner.temp }}/rolling-publication-assembly/source-archive"},
-		{index: notesDownloadIndex, name: "rolling-release-notes", path: "${{ runner.temp }}/rolling-publication-assembly/release-notes"},
-		{index: linuxWindowsDownloadIndex, name: "rolling-linux-windows", path: "${{ runner.temp }}/rolling-publication-assembly/linux-windows"},
-		{index: darwinArm64DownloadIndex, name: "rolling-darwin", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-arm64"},
-		{index: darwinAmd64DownloadIndex, name: "rolling-darwin-amd64", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-amd64"},
-	}
-	assertExactArtifactDownloads(t, preparation.Steps, downloadContracts)
+	assertRollingReleaseNotesPreparation(t, workflow, hardenedShell)
+	assertRollingSourceArchivePreparation(t, workflow, hardenedShell)
+	preparation, stageIndex, uploadIndex := assertRollingPublicationPreparation(t, workflow, hardenedShell)
 	for _, step := range preparation.Steps {
 		if strings.Contains(step.Run, "${{ needs.") {
 			t.Fatalf("fresh rolling assembly step %q must bind trusted values through env", step.Name)
@@ -2530,6 +2378,194 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
 
 	prepareStep := workflowStepByName(t, workflow.Jobs, "prepare-feature-release-history-push", "Prepare trusted feature history commit")
+	assertFeatureHistoryCommitPreparationStep(t, prepareStep)
+
+	pushStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push feature history commit")
+	assertFeatureHistoryPushStep(t, prepareStep.Shell, pushStep)
+}
+
+func assertRollingReleaseNotesPreparation(t *testing.T, workflow workflowConfig, hardenedShell string) {
+	t.Helper()
+
+	notesPreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-release-notes")
+	assertWorkflowJobNeeds(t, notesPreparation, "rolling release note preparation", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
+	assertWorkflowJobPermissions(t, notesPreparation, "rolling release note preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, notesPreparation, "rolling release note preparation")
+	assertWorkflowJobOmitsText(t, notesPreparation, "secrets.", "rolling release note preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, notesPreparation, "prepare-rolling-release-notes")
+	assertWorkflowStepOrder(t, notesPreparation, "Checkout rolling source", "Verify rolling source checkout", "Setup Go", "Generate rolling release notes", "Validate rolling release notes", "Upload rolling release notes")
+
+	generateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Generate rolling release notes")
+	assertWorkflowStepRunContainsAll(t, generateNotes, "rolling release note generation", []string{
+		`notes_root="${RUNNER_TEMP}/rolling-release-notes"`,
+		`rm -rf -- "${notes_root}"`,
+		`mkdir -- "${notes_root}"`,
+		`rm -rf -- .artifacts`,
+		`mkdir -- .artifacts`,
+		`previous_catalog=".artifacts/previous-rolling-features.json"`,
+		`args+=(--previous-catalog "${previous_catalog}")`,
+		`go run ./tools/featureflag "${args[@]}" > "${feature_report}"`,
+		`> "${notes_root}/rolling-changelog.md"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, generateNotes, "rolling release note generation", []string{
+		`previous_catalog="${RUNNER_TEMP}/previous-rolling-features.json"`,
+	})
+	assertTextAppearsBefore(t, generateNotes.Run, `rm -rf -- .artifacts`, `mkdir -- .artifacts`, "rolling release note generation must reset its workspace-confined catalog staging directory")
+	assertTextAppearsBefore(t, generateNotes.Run, `mkdir -- .artifacts`, `previous_catalog=".artifacts/previous-rolling-features.json"`, "rolling release note generation must recreate catalog staging before selecting the relative path")
+	assertTextAppearsBefore(t, generateNotes.Run, `previous_catalog=".artifacts/previous-rolling-features.json"`, `args+=(--previous-catalog "${previous_catalog}")`, "rolling release note generation must select the workspace-confined catalog before passing it to the report")
+	assertTextAppearsBefore(t, generateNotes.Run, `args+=(--previous-catalog "${previous_catalog}")`, `go run ./tools/featureflag`, "rolling release note generation must pass the staged catalog to the report")
+
+	validateNotes := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Validate rolling release notes")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling release note validation shell",
+		got:   validateNotes.Shell,
+		want:  hardenedShell,
+	}})
+	assertWorkflowStepEnv(t, validateNotes, "rolling release note validation", map[string]string{
+		"NOTES_ROOT": "${{ runner.temp }}/rolling-release-notes",
+		"PATH":       "/usr/bin:/bin",
+	})
+	assertWorkflowStepRunContainsAll(t, validateNotes, "rolling release note validation", []string{
+		`changelog="${NOTES_ROOT}/rolling-changelog.md"`,
+		`find -P "${NOTES_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ "${file_count}" -ne 1 ]`,
+		`[ ! -f "${changelog}" ] || [ -L "${changelog}" ] || [ ! -s "${changelog}" ]`,
+		`[ "$(stat --format=%s "${changelog}")" -gt 1048576 ]`,
+	})
+
+	notesUpload := workflowStepByName(t, workflow.Jobs, "prepare-rolling-release-notes", "Upload rolling release notes")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling release note artifact name", got: notesUpload.With["name"], want: "rolling-release-notes"},
+		{label: "rolling release note artifact path", got: notesUpload.With["path"], want: "${{ runner.temp }}/rolling-release-notes/rolling-changelog.md"},
+		{label: "rolling release note missing-file behavior", got: notesUpload.With["if-no-files-found"], want: "error"},
+	})
+}
+
+func assertRollingSourceArchivePreparation(t *testing.T, workflow workflowConfig, hardenedShell string) {
+	t.Helper()
+
+	archivePreparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-source-archive")
+	assertWorkflowJobNeeds(t, archivePreparation, "rolling source archive preparation", workflowJobNeeds{"prepare-rolling", "verify-rolling-source-ci"})
+	assertWorkflowJobPermissions(t, archivePreparation, "rolling source archive preparation", map[string]string{"contents": "read"})
+	assertWorkflowJobEnvEmpty(t, archivePreparation, "rolling source archive preparation")
+	assertWorkflowJobOmitsText(t, archivePreparation, "secrets.", "rolling source archive preparation must not receive secrets")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, archivePreparation, "prepare-rolling-source-archive")
+	assertWorkflowJobStepRunsOmitAllFold(t, archivePreparation, "rolling source archive preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"})
+	assertWorkflowStepOrder(t, archivePreparation, "Checkout rolling source", "Verify rolling source checkout", "Build rolling source archive", "Validate rolling source archive", "Upload rolling source archive")
+
+	verifySource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Verify rolling source checkout")
+	assertWorkflowStepEnv(t, verifySource, "rolling source archive checkout verification", map[string]string{
+		"EXPECTED_SOURCE_SHA": "${{ needs.prepare-rolling.outputs.source_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, verifySource, "rolling source archive checkout verification", []string{
+		`actual_source_sha="$(git rev-parse HEAD)"`,
+		`[ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]`,
+	})
+
+	buildSource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Build rolling source archive")
+	assertWorkflowStringValues(t, []workflowStringValue{{
+		label: "rolling source archive build shell",
+		got:   buildSource.Shell,
+		want:  hardenedShell,
+	}})
+	assertWorkflowStepEnv(t, buildSource, "rolling source archive", map[string]string{
+		"PATH":        "/usr/bin:/bin",
+		"ROLLING_TAG": "${{ needs.prepare-rolling.outputs.tag }}",
+		"SOURCE_SHA":  "${{ needs.prepare-rolling.outputs.source_sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, buildSource, "rolling source archive", []string{
+		`archive_root="${RUNNER_TEMP}/rolling-source-archive"`,
+		`rm -rf -- "${archive_root}"`,
+		`mkdir -- "${archive_root}"`,
+		`archive_path="${archive_root}/lopper_${ROLLING_TAG}_source.tar.gz"`,
+		`git archive --format=tar.gz --prefix="${bundle}/" -o "${archive_path}" "${SOURCE_SHA}"`,
+	})
+
+	validateSource := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Validate rolling source archive")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling source archive validation shell", got: validateSource.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, validateSource, "rolling source archive validation", map[string]string{
+		"ARCHIVE_ROOT": "${{ runner.temp }}/rolling-source-archive",
+		"PATH":         "/usr/bin:/bin",
+		"ROLLING_TAG":  "${{ needs.prepare-rolling.outputs.tag }}",
+	})
+	assertWorkflowStepRunContainsAll(t, validateSource, "rolling source archive validation", []string{
+		`archive="${ARCHIVE_ROOT}/lopper_${ROLLING_TAG}_source.tar.gz"`,
+		`find -P "${ARCHIVE_ROOT}" -mindepth 1 -maxdepth 1 ! -type f -print -quit`,
+		`[ "${file_count}" -ne 1 ]`,
+		`[ ! -f "${archive}" ] || [ -L "${archive}" ] || [ ! -s "${archive}" ]`,
+		`[ "$(stat --format=%s "${archive}")" -gt 1073741824 ]`,
+	})
+
+	sourceUpload := workflowStepByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Upload rolling source archive")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling source archive artifact name", got: sourceUpload.With["name"], want: "rolling-source-archive"},
+		{label: "rolling source archive artifact path", got: sourceUpload.With["path"], want: "${{ runner.temp }}/rolling-source-archive/lopper_${{ needs.prepare-rolling.outputs.tag }}_source.tar.gz"},
+		{label: "rolling source archive missing-file behavior", got: sourceUpload.With["if-no-files-found"], want: "error"},
+	})
+
+	for _, step := range archivePreparation.Steps[workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-source-archive", "Build rolling source archive")+1:] {
+		for _, repositoryCommand := range []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "./extensions/"} {
+			if strings.Contains(step.Run, repositoryCommand) {
+				t.Fatalf("rolling source archive step %q must not execute repository-controlled command %q after archive creation", step.Name, repositoryCommand)
+			}
+		}
+	}
+}
+
+func assertRollingPublicationPreparation(t *testing.T, workflow workflowConfig, hardenedShell string) (workflowJobConfig, int, int) {
+	t.Helper()
+
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-rolling-publication")
+	assertWorkflowJobNeeds(t, preparation, "rolling publication preparation", workflowJobNeeds{"prepare-rolling", "prepare-rolling-release-notes", "prepare-rolling-source-archive", "orchestrate-rolling", "build-darwin-amd64-rolling"})
+	assertWorkflowJobHasExplicitEmptyPermissions(t, preparation, "rolling publication preparation")
+	assertWorkflowJobEnvEmpty(t, preparation, "rolling publication preparation")
+	assertWorkflowJobOmitsText(t, preparation, "secrets.", "rolling publication preparation must not receive secrets")
+	assertWorkflowJobOmitsCheckout(t, preparation, "prepare-rolling-publication")
+	assertWorkflowJobStepRunsOmitAllFold(t, preparation, "rolling publication preparation", []string{"go run ./", "make ", "npm ", "npx ", "scripts/", "git "})
+
+	resetIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Reset rolling publication assembly")
+	sourceDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling source archive")
+	notesDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling release notes")
+	linuxWindowsDownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Linux and Windows artifacts")
+	darwinArm64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Darwin arm64 artifact")
+	darwinAmd64DownloadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Download rolling Darwin amd64 artifact")
+	stageIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Stage bounded rolling publication inputs")
+	uploadIndex := workflowStepIndexByName(t, workflow.Jobs, "prepare-rolling-publication", "Upload rolling publication inputs")
+	if sourceDownloadIndex != resetIndex+1 || notesDownloadIndex != sourceDownloadIndex+1 || linuxWindowsDownloadIndex != notesDownloadIndex+1 ||
+		darwinArm64DownloadIndex != linuxWindowsDownloadIndex+1 || darwinAmd64DownloadIndex != darwinArm64DownloadIndex+1 ||
+		stageIndex != darwinAmd64DownloadIndex+1 || uploadIndex != stageIndex+1 {
+		t.Fatal("rolling publication inputs must reset, download exact producers, stage, and upload contiguously")
+	}
+
+	resetStep := preparation.Steps[resetIndex]
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling publication assembly reset shell", got: resetStep.Shell, want: hardenedShell},
+	})
+	assertWorkflowStepEnv(t, resetStep, "rolling publication assembly reset", map[string]string{"PATH": "/usr/bin:/bin"})
+	assertWorkflowStepRunContainsAll(t, resetStep, "rolling publication assembly reset", []string{
+		`assembly_root="${RUNNER_TEMP}/rolling-publication-assembly"`,
+		`rm -rf -- "${assembly_root}"`,
+		`rm -rf -- rolling-publication-inputs`,
+		`mkdir -- "${assembly_root}"`,
+	})
+
+	downloadContracts := []workflowArtifactDownloadContract{
+		{index: sourceDownloadIndex, name: "rolling-source-archive", path: "${{ runner.temp }}/rolling-publication-assembly/source-archive"},
+		{index: notesDownloadIndex, name: "rolling-release-notes", path: "${{ runner.temp }}/rolling-publication-assembly/release-notes"},
+		{index: linuxWindowsDownloadIndex, name: "rolling-linux-windows", path: "${{ runner.temp }}/rolling-publication-assembly/linux-windows"},
+		{index: darwinArm64DownloadIndex, name: "rolling-darwin", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-arm64"},
+		{index: darwinAmd64DownloadIndex, name: "rolling-darwin-amd64", path: "${{ runner.temp }}/rolling-publication-assembly/darwin-amd64"},
+	}
+	assertExactArtifactDownloads(t, preparation.Steps, downloadContracts)
+
+	return preparation, stageIndex, uploadIndex
+}
+
+func assertFeatureHistoryCommitPreparationStep(t *testing.T, prepareStep workflowStepConfig) {
+	t.Helper()
+
 	if prepareStep.Shell != "/usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}" {
 		t.Fatalf("feature history commit preparation shell = %q", prepareStep.Shell)
 	}
@@ -2566,9 +2602,12 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 			t.Fatalf("feature history commit preparation must not contain %q", forbidden)
 		}
 	}
+}
 
-	pushStep := workflowStepByName(t, workflow.Jobs, "push-feature-release-history", "Push feature history commit")
-	if pushStep.Shell != prepareStep.Shell {
+func assertFeatureHistoryPushStep(t *testing.T, expectedShell string, pushStep workflowStepConfig) {
+	t.Helper()
+
+	if pushStep.Shell != expectedShell {
 		t.Fatalf("feature history push shell = %q", pushStep.Shell)
 	}
 	if len(pushStep.Env) != 3 || pushStep.Env["RELEASE_TAG"] != "${{ needs.prepare-feature-release-history-push.outputs.release_tag }}" || pushStep.Env["RELEASE_SHA"] != "${{ needs.prepare-feature-release-history-push.outputs.release_sha }}" || pushStep.Env["PUSH_TOKEN"] != "${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}" {
@@ -2610,6 +2649,7 @@ func TestReleaseWorkflowPushesFeatureHistoryFromFreshValidatedCommit(t *testing.
 		`git_network -C "${repo_dir}" push origin HEAD:main`,
 		"Failed to push feature release history after retries",
 	})
+
 	validationIndex := strings.Index(pushStep.Run, `if [ "${prepared_commit_count}" -ne 1 ]`)
 	tokenIndex := strings.Index(pushStep.Run, `push_token="${PUSH_TOKEN}"`)
 	if validationIndex < 0 || tokenIndex < 0 || validationIndex >= tokenIndex {
@@ -3095,15 +3135,21 @@ func TestMakefileBenchGateFailsClosedAndPreservesInvalidExitCodes(t *testing.T) 
 		`printf "%s" "memory benchmark helper $$tool_path build failed; comparison could not be evaluated" > "$$run_go_tool_failure_file"; \`,
 		`printf "%s" "memory benchmark helper $$tool_path launch failed; comparison could not be evaluated" > "$$run_go_tool_failure_file"; \`,
 		`run_go_tool ./tools/benchgate -base-ref "$$requested_base_ref" -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)"`,
+		`publish_benchgate_failure() { \`,
 		`cleanup() { (run_go_tool ./tools/benchgate -worktree-remove "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp" "$$summary_output_tmp" "$$run_go_tool_failure_file"; }; \`,
-		`run_go_tool ./tools/benchgate -worktree-add "$$base_tree" -worktree-commit "$$base_commit"; \`,
+		`run_go_tool ./tools/benchgate -worktree-add "$$base_tree" -worktree-commit "$$base_commit";`,
+		`worktree_status=$$?; \`,
+		`publish_benchgate_failure "memory benchmark worktree setup failed; comparison could not be evaluated" "$$run_go_tool_failure_message"; \`,
 		`run_go_tool ./tools/benchgate -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)" -failure-message "$$message"`,
 		`run_go_tool_failure_message=$$(cat "$$run_go_tool_failure_file"); \`,
 		`if [ -n "$$run_go_tool_failure_message" ]; then \`,
 		`echo "$$run_go_tool_failure_message" >&2; \`,
 		`summary_output_tmp=$$(mktemp); \`,
 		`benchdelta_bin="$$bench_dir/benchdelta"`,
-		`$(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta`,
+		`benchdelta_build_output=$$(GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta 2>&1); \`,
+		`benchdelta_build_status=$$?; \`,
+		`echo "$$benchdelta_build_output" >&2; \`,
+		`publish_benchgate_failure "memory benchmark comparison setup failed; comparison could not be evaluated" "memory benchmark comparison setup failed; comparison could not be evaluated"; \`,
 		`"$$benchdelta_bin" -base "$$base_output_tmp" -head "$$head_output_tmp"`,
 		`cat "$$summary_output_tmp"; \`,
 		`run_go_tool ./tools/benchgate \`,

@@ -5,22 +5,20 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 )
 
-const SafeSystemPath = "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+// SafeSystemPath restricts Git subprocess PATH lookup to OS-managed locations.
+const SafeSystemPath = platformSafeSystemPath
+
 const safeGitNoSystemConfig = "GIT_CONFIG_NOSYSTEM=1"
 const safeGitGlobalConfig = "GIT_CONFIG_GLOBAL=/dev/null"
-const ExecutablePrimary = "/usr/bin/git"
-const ExecutableFallback = "/bin/git"
 
-var trustedExecutablePaths = []string{
-	ExecutablePrimary,
-	ExecutableFallback,
-	"/usr/local/bin/git",
-	"/opt/homebrew/bin/git",
-}
+// ExecutablePrimary is the preferred conventional Unix Git executable path.
+const ExecutablePrimary = "/usr/bin/git"
+
+// ExecutableFallback is the conventional Unix Git executable fallback path.
+const ExecutableFallback = "/bin/git"
 
 type gitConfigOverride struct {
 	key   string
@@ -37,20 +35,31 @@ var forcedGitConfigOverrides = []gitConfigOverride{
 	{key: "core.pager", value: "cat"},
 }
 
+// SafeConfigArgs returns forced Git config overrides that disable executable helpers.
 func SafeConfigArgs() []string {
 	return configArgs(forcedGitConfigOverrides)
 }
 
+// SafeConfigEnvEntries returns forced Git config overrides in environment form.
 func SafeConfigEnvEntries() []string {
 	return gitConfigEnvEntries(forcedGitConfigOverrides)
 }
 
+// ResolveBinaryPath returns the first trusted Git executable available on the host.
 func ResolveBinaryPath() (string, error) {
-	return resolveBinaryPath(trustedExecutablePaths, ExecutableAvailable)
+	return resolveBinaryPath(platformExecutableCandidates(), ExecutableAvailable)
 }
 
+// TrustedExecutablePaths returns currently available Git executables with trusted provenance.
 func TrustedExecutablePaths() []string {
-	return slices.Clone(trustedExecutablePaths)
+	candidates := platformExecutableCandidates()
+	trusted := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if ExecutableAvailable(candidate) {
+			trusted = append(trusted, candidate)
+		}
+	}
+	return trusted
 }
 
 func resolveBinaryPath(candidates []string, available func(string) bool) (string, error) {
@@ -62,24 +71,23 @@ func resolveBinaryPath(candidates []string, available func(string) bool) (string
 	return "", fmt.Errorf("git executable not found in trusted locations")
 }
 
-func isTrustedBinaryPath(path string) bool {
-	return slices.Contains(trustedExecutablePaths, path)
-}
-
+// Command constructs a Git command only for trusted executable paths.
 func Command(path string, args ...string) (*exec.Cmd, error) {
-	if !isTrustedBinaryPath(path) {
-		return nil, fmt.Errorf("unsupported git executable path: %q", path)
+	if err := validatePlatformExecutable(path); err != nil {
+		return nil, fmt.Errorf("unsupported git executable path %q: %w", path, err)
 	}
 	return exec.Command(path, args...), nil
 }
 
+// CommandContext constructs a context-aware Git command for trusted executable paths.
 func CommandContext(ctx context.Context, path string, args ...string) (*exec.Cmd, error) {
-	if !isTrustedBinaryPath(path) {
-		return nil, fmt.Errorf("unsupported git executable path: %q", path)
+	if err := validatePlatformExecutable(path); err != nil {
+		return nil, fmt.Errorf("unsupported git executable path %q: %w", path, err)
 	}
 	return exec.CommandContext(ctx, path, args...), nil
 }
 
+// SanitizedEnv returns a hardened environment for Git subprocess execution.
 func SanitizedEnv() []string {
 	return sanitizedEnvEntries(os.Environ())
 }
@@ -138,10 +146,7 @@ func gitConfigEnvEntries(overrides []gitConfigOverride) []string {
 	return entries
 }
 
+// ExecutableAvailable reports whether a Git path is executable and has trusted provenance.
 func ExecutableAvailable(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return info.Mode()&0o111 != 0
+	return validatePlatformExecutable(path) == nil
 }

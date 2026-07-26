@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,9 +22,10 @@ const (
 	artifactFileMode = 0o600
 )
 
+var errArtifactParentSymlink = errors.New("artifact parent contains symlink")
+
 var (
 	resolveGitBinaryPath      = gitexec.ResolveBinaryPath
-	writeGitPathOut           = os.WriteFile
 	gitCommandContext         = gitexec.CommandContext
 	openArtifactDirFn         = openArtifactDir
 	openArtifactAncestorFn    = openArtifactAncestorRoot
@@ -50,6 +52,15 @@ type config struct {
 	worktreeAdd    string
 	worktreeCommit string
 	worktreeRemove string
+	explicitFlags  map[string]bool
+}
+
+type executionModeRequests struct {
+	base     bool
+	gitPath  bool
+	failure  bool
+	publish  bool
+	worktree bool
 }
 
 func main() {
@@ -76,13 +87,15 @@ func execute(args []string, repoRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if publishRequested(cfg) {
+	if err := validateExecutionMode(cfg); err != nil {
+		return "", err
+	}
+	switch {
+	case publishRequested(cfg):
 		return "", publishArtifacts(cfg)
-	}
-	if strings.TrimSpace(cfg.failureMessage) != "" {
+	case strings.TrimSpace(cfg.failureMessage) != "":
 		return "", writeFailure(cfg.summaryOut, cfg.statusOut, errors.New(cfg.failureMessage))
-	}
-	if worktreeRequested(cfg) {
+	case worktreeRequested(cfg):
 		return "", executeWorktree(repoRoot, cfg)
 	}
 	if strings.TrimSpace(cfg.baseRef) == "" {
@@ -94,7 +107,7 @@ func execute(args []string, repoRoot string) (string, error) {
 		return "", writeFailure(cfg.summaryOut, cfg.statusOut, err)
 	}
 	if cfg.gitPathOut != "" {
-		if err := writeGitPathOut(cfg.gitPathOut, []byte(gitPath+"\n"), artifactFileMode); err != nil {
+		if err := writeGitPathArtifact(cfg.gitPathOut, gitPath); err != nil {
 			return "", writeFailure(cfg.summaryOut, cfg.statusOut, fmt.Errorf("write git path output: %w", err))
 		}
 	}
@@ -109,6 +122,71 @@ func execute(args []string, repoRoot string) (string, error) {
 
 func resolveBaseCommitFromArgs(args []string, repoRoot string) (string, error) {
 	return execute(args, repoRoot)
+}
+
+func validateExecutionMode(cfg config) error {
+	if err := validateExplicitOutputPaths(cfg); err != nil {
+		return err
+	}
+	requested := executionModesRequested(cfg)
+	if requested.publish && requested.worktree {
+		return errors.New("publish mode cannot be combined with worktree mode")
+	}
+	if requested.worktree && hasWorktreeModeConflict(requested) {
+		return errors.New("worktree mode cannot be combined with publish, base-ref, git-path-out, or failure-message")
+	}
+	if requested.publish && hasPublishModeConflict(requested) {
+		return errors.New("publish mode cannot be combined with base-ref, git-path-out, or failure-message")
+	}
+	if requested.failure && hasFailureModeConflict(requested) {
+		return errors.New("failure-message cannot be combined with base-ref or git-path-out")
+	}
+	if requested.gitPath && !requested.base {
+		return errors.New("git-path-out requires base-ref resolution mode")
+	}
+	return nil
+}
+
+func validateExplicitOutputPaths(cfg config) error {
+	outputs := []artifactOutput{
+		{label: "git-path", path: cfg.gitPathOut},
+		{label: "summary", path: cfg.summaryOut},
+		{label: "status", path: cfg.statusOut},
+		{label: "bench-base", path: cfg.benchBaseOut},
+		{label: "bench-head", path: cfg.benchHeadOut},
+	}
+	for _, output := range outputs {
+		flagName := output.label + "-out"
+		if !flagWasProvided(cfg, flagName) {
+			continue
+		}
+		if err := validateNonBlankOutputPath(flagName, output.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func executionModesRequested(cfg config) executionModeRequests {
+	return executionModeRequests{
+		base:     flagWasProvided(cfg, "base-ref"),
+		gitPath:  flagWasProvided(cfg, "git-path-out"),
+		failure:  flagWasProvided(cfg, "failure-message"),
+		publish:  publishRequested(cfg),
+		worktree: worktreeRequested(cfg),
+	}
+}
+
+func hasWorktreeModeConflict(requested executionModeRequests) bool {
+	return requested.publish || requested.base || requested.gitPath || requested.failure
+}
+
+func hasPublishModeConflict(requested executionModeRequests) bool {
+	return requested.base || requested.gitPath || requested.failure
+}
+
+func hasFailureModeConflict(requested executionModeRequests) bool {
+	return requested.base || requested.gitPath
 }
 
 func parseArgs(args []string) (config, error) {
@@ -134,15 +212,33 @@ func parseArgs(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
+	if len(fs.Args()) != 0 {
+		return config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	cfg.explicitFlags = make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		cfg.explicitFlags[f.Name] = true
+	})
 	return cfg, nil
 }
 
 func publishRequested(cfg config) bool {
-	return cfg.summaryInput != "" || cfg.benchBaseInput != "" || cfg.benchBaseOut != "" || cfg.benchHeadInput != "" || cfg.benchHeadOut != "" || cfg.statusCode >= 0
+	return flagWasProvided(cfg, "summary-input") ||
+		flagWasProvided(cfg, "bench-base-input") ||
+		flagWasProvided(cfg, "bench-base-out") ||
+		flagWasProvided(cfg, "bench-head-input") ||
+		flagWasProvided(cfg, "bench-head-out") ||
+		flagWasProvided(cfg, "status-code")
 }
 
 func worktreeRequested(cfg config) bool {
-	return cfg.worktreeAdd != "" || cfg.worktreeCommit != "" || cfg.worktreeRemove != ""
+	return flagWasProvided(cfg, "worktree-add") ||
+		flagWasProvided(cfg, "worktree-commit") ||
+		flagWasProvided(cfg, "worktree-remove")
+}
+
+func flagWasProvided(cfg config, name string) bool {
+	return cfg.explicitFlags[name]
 }
 
 func resolveBaseCommit(repoRoot, gitPath, baseRef, headRef string) (string, error) {
@@ -154,19 +250,25 @@ func resolveBaseCommit(repoRoot, gitPath, baseRef, headRef string) (string, erro
 	}
 
 	if _, err := gitOutput(repoRoot, gitPath, "rev-parse", "--verify", "-q", baseRef+"^{commit}"); err != nil {
-		return "", fmt.Errorf("memory benchmark base ref %q does not resolve to a commit", baseRef)
+		if gitExitCodeIs(err, 1) {
+			return "", fmt.Errorf("memory benchmark base ref %q does not resolve to a commit: %w", baseRef, err)
+		}
+		return "", fmt.Errorf("verify memory benchmark base ref %q: %w", baseRef, err)
 	}
 
 	baseCommit, err := gitOutput(repoRoot, gitPath, "merge-base", baseRef, headRef)
 	if err != nil {
-		return "", fmt.Errorf("memory benchmark base ref %q is unrelated to %s", baseRef, headRef)
+		if gitExitCodeIs(err, 1) {
+			return "", fmt.Errorf("memory benchmark base ref %q is unrelated to %s: %w", baseRef, headRef, err)
+		}
+		return "", fmt.Errorf("resolve merge-base for %q and %s: %w", baseRef, headRef, err)
 	}
 	return baseCommit, nil
 }
 
 func executeWorktree(repoRoot string, cfg config) error {
-	if publishRequested(cfg) || strings.TrimSpace(cfg.failureMessage) != "" || strings.TrimSpace(cfg.baseRef) != "" {
-		return errors.New("worktree mode cannot be combined with publish, base-ref, or failure-message")
+	if publishRequested(cfg) || strings.TrimSpace(cfg.failureMessage) != "" || strings.TrimSpace(cfg.baseRef) != "" || strings.TrimSpace(cfg.gitPathOut) != "" {
+		return errors.New("worktree mode cannot be combined with publish, base-ref, git-path-out, or failure-message")
 	}
 	if cfg.worktreeAdd != "" {
 		if cfg.worktreeRemove != "" {
@@ -188,7 +290,7 @@ func executeWorktree(repoRoot string, cfg config) error {
 		if err := validateGitRevisionOperand("worktree-commit", cfg.worktreeCommit); err != nil {
 			return err
 		}
-		return runGitCommand(repoRoot, gitPath, "worktree", "add", "--detach", "--", cfg.worktreeAdd, cfg.worktreeCommit)
+		return addWorktreeWithCleanConfig(repoRoot, gitPath, cfg.worktreeAdd, cfg.worktreeCommit)
 	case cfg.worktreeRemove != "":
 		return runGitCommand(repoRoot, gitPath, "worktree", "remove", "--force", "--", cfg.worktreeRemove)
 	default:
@@ -208,17 +310,25 @@ func validateGitRevisionOperand(name, value string) error {
 }
 
 func gitOutput(repoRoot, gitPath string, args ...string) (string, error) {
-	cmd, err := gitCommandContext(context.Background(), gitPath, args...)
+	output, err := gitOutputBytes(repoRoot, gitPath, args...)
 	if err != nil {
 		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func gitOutputBytes(repoRoot, gitPath string, args ...string) ([]byte, error) {
+	cmd, err := gitCommandContext(context.Background(), gitPath, args...)
+	if err != nil {
+		return nil, err
 	}
 	cmd.Dir = repoRoot
 	cmd.Env = gitexec.SanitizedEnv()
 	output, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return strings.TrimSpace(string(output)), nil
+	return output, nil
 }
 
 func runGitCommand(repoRoot, gitPath string, args ...string) error {
@@ -239,6 +349,14 @@ func runGitCommand(repoRoot, gitPath string, args ...string) error {
 	return nil
 }
 
+func gitExitCodeIs(err error, want int) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	return exitErr.ExitCode() == want
+}
+
 func writeFailure(summaryOut, statusOut string, err error) error {
 	if writeErr := writeFailureArtifacts(summaryOut, statusOut, err.Error()); writeErr != nil {
 		return errors.Join(err, fmt.Errorf("write failure artifacts: %w", writeErr))
@@ -247,6 +365,10 @@ func writeFailure(summaryOut, statusOut string, err error) error {
 }
 
 func writeFailureArtifacts(summaryOut, statusOut, message string) error {
+	if err := validateDistinctArtifactOutputs(artifactOutput{label: "summary", path: summaryOut}, artifactOutput{label: "status", path: statusOut}); err != nil {
+		return err
+	}
+
 	var errs []error
 	if summaryOut != "" {
 		if err := writeSummaryArtifact(summaryOut, message); err != nil {
@@ -270,10 +392,25 @@ func writeStatusArtifact(statusOut string) error {
 	return writeArtifactFile(statusOut, []byte("2\n"))
 }
 
+func writeGitPathArtifact(path, gitPath string) error {
+	return writeArtifactFile(path, []byte(gitPath+"\n"))
+}
+
 type artifactSpec struct {
 	label   string
 	path    string
 	content []byte
+}
+
+type artifactOutput struct {
+	label string
+	path  string
+}
+
+type fileArtifactRequest struct {
+	label      string
+	inputPath  string
+	outputPath string
 }
 
 type artifactHandle struct {
@@ -284,9 +421,10 @@ type artifactHandle struct {
 type artifactWriter struct {
 	roots   map[string]safeio.Root
 	targets map[string]artifactHandle
+	written map[string]struct{}
 }
 
-func publishArtifacts(cfg config) (returnErr error) {
+func publishArtifacts(cfg config) error {
 	specs, err := buildArtifactSpecs(cfg)
 	if err != nil {
 		return err
@@ -295,75 +433,105 @@ func publishArtifacts(cfg config) (returnErr error) {
 	writer := &artifactWriter{
 		roots:   make(map[string]safeio.Root),
 		targets: make(map[string]artifactHandle),
+		written: make(map[string]struct{}),
 	}
-	defer func() {
-		if closeErr := writer.Close(); closeErr != nil {
-			returnErr = errors.Join(returnErr, closeErr)
-		}
-	}()
-
 	if err := writer.PrepareAll(specs); err != nil {
 		return err
 	}
-
-	var errs []error
-	for _, spec := range specs {
-		if err := writer.Write(spec); err != nil {
-			errs = append(errs, fmt.Errorf("%s artifact: %w", spec.label, err))
+	statusSpec, contentSpecs := splitStatusArtifactSpec(specs)
+	if statusSpec != nil {
+		if err := writeFailureStatusArtifact(writer, statusSpec.path); err != nil {
+			return err
 		}
 	}
-	return errors.Join(errs...)
+	if err := writeArtifactSpecs(writer, contentSpecs); err != nil {
+		return rollbackPublishedArtifacts(writer, statusSpec, err)
+	}
+	if err := writer.Close(); err != nil {
+		return rollbackPublishedArtifacts(writer, statusSpec, err)
+	}
+	if statusSpec != nil {
+		if err := writeArtifactFile(statusSpec.path, statusSpec.content); err != nil {
+			return rollbackFinalStatusPublication(writer, statusSpec.path, err)
+		}
+	}
+	return nil
 }
 
 func buildArtifactSpecs(cfg config) ([]artifactSpec, error) {
-	if strings.TrimSpace(cfg.failureMessage) != "" || strings.TrimSpace(cfg.baseRef) != "" {
-		return nil, errors.New("publish mode cannot be combined with base-ref or failure-message")
+	if err := validatePublishModeConfig(cfg); err != nil {
+		return nil, err
 	}
 
-	var specs []artifactSpec
-	appendFileSpec := func(label, inputPath, outputPath string) error {
-		switch {
-		case inputPath == "" && outputPath == "":
-			return nil
-		case inputPath == "" || outputPath == "":
-			return fmt.Errorf("%s publish requires both input and output paths", label)
+	specs := make([]artifactSpec, 0, 4)
+	fileRequests := []fileArtifactRequest{
+		{label: "bench-base", inputPath: cfg.benchBaseInput, outputPath: cfg.benchBaseOut},
+		{label: "bench-head", inputPath: cfg.benchHeadInput, outputPath: cfg.benchHeadOut},
+		{label: "summary", inputPath: cfg.summaryInput, outputPath: cfg.summaryOut},
+	}
+	for _, request := range fileRequests {
+		if err := appendFileArtifactSpec(&specs, request); err != nil {
+			return nil, err
 		}
-		content, err := readArtifactInput(inputPath)
-		if err != nil {
-			return fmt.Errorf("read %s input: %w", label, err)
-		}
-		specs = append(specs, artifactSpec{label: label, path: outputPath, content: content})
-		return nil
 	}
-
-	if err := appendFileSpec("bench-base", cfg.benchBaseInput, cfg.benchBaseOut); err != nil {
+	if err := appendStatusArtifactSpec(&specs, cfg.statusCode, cfg.statusOut); err != nil {
 		return nil, err
 	}
-	if err := appendFileSpec("bench-head", cfg.benchHeadInput, cfg.benchHeadOut); err != nil {
+	if err := validateArtifactSpecs(specs); err != nil {
 		return nil, err
-	}
-	if err := appendFileSpec("summary", cfg.summaryInput, cfg.summaryOut); err != nil {
-		return nil, err
-	}
-
-	switch {
-	case cfg.statusCode < 0 && cfg.statusOut == "":
-	case cfg.statusCode < 0 || cfg.statusOut == "":
-		return nil, errors.New("status publish requires both status-code and status-out")
-	case cfg.statusCode > 2:
-		return nil, fmt.Errorf("status-code must be between 0 and 2: %d", cfg.statusCode)
-	default:
-		specs = append(specs, artifactSpec{
-			label:   "status",
-			path:    cfg.statusOut,
-			content: []byte(strconv.Itoa(cfg.statusCode) + "\n"),
-		})
-	}
-
-	if len(specs) == 0 {
-		return nil, errors.New("publish mode requires at least one artifact")
 	}
 	return specs, nil
+}
+
+func validatePublishModeConfig(cfg config) error {
+	if strings.TrimSpace(cfg.failureMessage) != "" || strings.TrimSpace(cfg.baseRef) != "" || strings.TrimSpace(cfg.gitPathOut) != "" {
+		return errors.New("publish mode cannot be combined with base-ref, git-path-out, or failure-message")
+	}
+	return nil
+}
+
+func appendFileArtifactSpec(specs *[]artifactSpec, request fileArtifactRequest) error {
+	switch {
+	case request.inputPath == "" && request.outputPath == "":
+		return nil
+	case request.inputPath == "" || request.outputPath == "":
+		return fmt.Errorf("%s publish requires both input and output paths", request.label)
+	}
+	content, err := readArtifactInput(request.inputPath)
+	if err != nil {
+		return fmt.Errorf("read %s input: %w", request.label, err)
+	}
+	*specs = append(*specs, artifactSpec{label: request.label, path: request.outputPath, content: content})
+	return nil
+}
+
+func appendStatusArtifactSpec(specs *[]artifactSpec, statusCode int, statusOut string) error {
+	switch {
+	case statusCode < 0 && statusOut == "":
+		return nil
+	case statusCode < 0 || statusOut == "":
+		return errors.New("status publish requires both status-code and status-out")
+	case statusCode > 2:
+		return fmt.Errorf("status-code must be between 0 and 2: %d", statusCode)
+	default:
+		*specs = append(*specs, artifactSpec{
+			label:   "status",
+			path:    statusOut,
+			content: []byte(strconv.Itoa(statusCode) + "\n"),
+		})
+		return nil
+	}
+}
+
+func validateArtifactSpecs(specs []artifactSpec) error {
+	if len(specs) == 0 {
+		return errors.New("publish mode requires at least one artifact")
+	}
+	outputs := make([]artifactOutput, 0, len(specs))
+	for _, spec := range specs {
+		outputs = append(outputs, artifactOutput{label: spec.label, path: spec.path})
+	}
+	return validateDistinctArtifactOutputs(outputs...)
 }
 
 func readArtifactInput(path string) (data []byte, returnErr error) {
@@ -383,16 +551,61 @@ func readArtifactInput(path string) (data []byte, returnErr error) {
 	return data, nil
 }
 
+func splitStatusArtifactSpec(specs []artifactSpec) (*artifactSpec, []artifactSpec) {
+	contentSpecs := make([]artifactSpec, 0, len(specs))
+	for idx := range specs {
+		spec := specs[idx]
+		if spec.label == "status" {
+			statusSpec := spec
+			return &statusSpec, contentSpecs
+		}
+		contentSpecs = append(contentSpecs, spec)
+	}
+	return nil, contentSpecs
+}
+
+func writeArtifactSpecs(writer *artifactWriter, specs []artifactSpec) error {
+	for _, spec := range specs {
+		if err := writeArtifactSpec(writer, spec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeArtifactSpec(writer *artifactWriter, spec artifactSpec) error {
+	if err := writer.Write(spec); err != nil {
+		return fmt.Errorf("%s artifact: %w", spec.label, err)
+	}
+	return nil
+}
+
+func writeFailureStatusArtifact(writer *artifactWriter, statusPath string) error {
+	err := writeArtifactSpec(writer, artifactSpec{
+		label:   "status",
+		path:    statusPath,
+		content: []byte("2\n"),
+	})
+	if err == nil {
+		return nil
+	}
+	writer.trackWritten(statusPath)
+	return rollbackPublishedArtifacts(writer, nil, err)
+}
+
 func (w *artifactWriter) PrepareAll(specs []artifactSpec) error {
 	for _, spec := range specs {
 		if _, err := w.prepare(spec.path); err != nil {
-			return fmt.Errorf("%s artifact: %w", spec.label, err)
+			return errors.Join(fmt.Errorf("%s artifact: %w", spec.label, err), w.Close())
 		}
 	}
 	return nil
 }
 
 func (w *artifactWriter) Write(spec artifactSpec) error {
+	if w.written == nil {
+		w.written = make(map[string]struct{})
+	}
 	handle, err := w.prepare(spec.path)
 	if err != nil {
 		return err
@@ -400,7 +613,15 @@ func (w *artifactWriter) Write(spec artifactSpec) error {
 	if err := writeArtifactWithinRoot(handle.root, handle.fileName, spec.content, artifactFileMode); err != nil {
 		return err
 	}
+	w.trackWritten(spec.path)
 	return handle.root.Chmod(handle.fileName, artifactFileMode)
+}
+
+func (w *artifactWriter) trackWritten(path string) {
+	if w.written == nil {
+		w.written = make(map[string]struct{})
+	}
+	w.written[path] = struct{}{}
 }
 
 func (w *artifactWriter) Close() error {
@@ -411,6 +632,16 @@ func (w *artifactWriter) Close() error {
 		}
 		if err := root.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (w *artifactWriter) CleanupWritten() error {
+	var errs []error
+	for path := range w.written {
+		if err := removeArtifactFile(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -496,9 +727,10 @@ func openArtifactDir(path string) (_ safeio.Root, fileName string, returnErr err
 
 	current := root
 	currentAbs := rootAbs
+	currentCreated := false
 	for _, part := range relParts {
 		nextAbs := filepath.Join(currentAbs, part)
-		next, err := openOrCreateArtifactFn(current, part, nextAbs)
+		next, created, err := openOrCreateArtifactFn(current, part, nextAbs)
 		if err != nil {
 			return nil, "", closeRootWithError(current, err)
 		}
@@ -507,9 +739,10 @@ func openArtifactDir(path string) (_ safeio.Root, fileName string, returnErr err
 		}
 		current = next
 		currentAbs = nextAbs
+		currentCreated = created
 	}
 
-	if err := current.Chmod(".", artifactDirMode); err != nil {
+	if err := finalizeArtifactDirMode(current, currentAbs, currentCreated); err != nil {
 		return nil, "", closeRootWithError(current, err)
 	}
 
@@ -536,6 +769,36 @@ func resolveArtifactTarget(path string) (artifactTarget, error) {
 	}, nil
 }
 
+func resolveArtifactCollisionKey(path string) (key string, returnErr error) {
+	target, err := resolveArtifactTarget(path)
+	if err != nil {
+		return "", err
+	}
+
+	root, existingDir, missingParts, err := openArtifactAncestorFn(target.dir)
+	if err != nil {
+		if !errors.Is(err, errArtifactParentSymlink) {
+			return filepath.Join(target.dir, target.fileName), nil
+		}
+		return "", err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+
+	caseInsensitive, err := artifactRootCaseInsensitive(root)
+	if err != nil {
+		return "", err
+	}
+	key = filepath.Join(appendArtifactPathParts(existingDir, missingParts), target.fileName)
+	if caseInsensitive {
+		key = strings.ToLower(key)
+	}
+	return key, nil
+}
+
 func openArtifactAncestorRoot(targetDir string) (safeio.Root, string, []string, error) {
 	rootAbs := filepath.VolumeName(targetDir) + string(os.PathSeparator)
 	root, err := openCanonicalArtifactRoot(rootAbs)
@@ -555,41 +818,62 @@ func openArtifactAncestorRoot(targetDir string) (safeio.Root, string, []string, 
 	current := root
 	currentAbs := rootAbs
 	for idx, part := range relParts {
-		nextAbs := filepath.Join(currentAbs, part)
-		info, err := current.Lstat(part)
+		next, nextAbs, err := openExistingArtifactParent(current, currentAbs, part)
 		switch {
-		case err == nil:
-			if info.Mode()&os.ModeSymlink != 0 {
-				return nil, "", nil, closeRootWithError(current, fmt.Errorf("artifact parent contains symlink: %s", nextAbs))
-			}
-			if !info.IsDir() {
-				return nil, "", nil, closeRootWithError(current, fmt.Errorf("artifact parent is not a directory: %s", nextAbs))
-			}
-
-			next, err := current.OpenRoot(part)
-			if err != nil {
-				return nil, "", nil, closeRootWithError(current, err)
-			}
-			openedInfo, err := next.Lstat(".")
-			if err != nil {
-				return nil, "", nil, closeRootWithError(current, closeRootWithError(next, err))
-			}
-			if !os.SameFile(info, openedInfo) {
-				return nil, "", nil, closeRootWithError(current, closeRootWithError(next, fmt.Errorf("artifact parent changed while opening: %s", nextAbs)))
-			}
-			if err := current.Close(); err != nil {
-				return nil, "", nil, closeRootWithError(next, err)
-			}
-			current = next
-			currentAbs = nextAbs
 		case os.IsNotExist(err):
 			return current, currentAbs, relParts[idx:], nil
-		default:
+		case err != nil:
 			return nil, "", nil, closeRootWithError(current, err)
 		}
+		if err := current.Close(); err != nil {
+			return nil, "", nil, closeRootWithError(next, err)
+		}
+		current = next
+		currentAbs = nextAbs
 	}
 
 	return current, currentAbs, nil, nil
+}
+
+func openExistingArtifactParent(current safeio.Root, currentAbs, part string) (safeio.Root, string, error) {
+	nextAbs := filepath.Join(currentAbs, part)
+	info, err := current.Lstat(part)
+	if err != nil {
+		return nil, nextAbs, err
+	}
+	if err := validateArtifactParentInfo(info, nextAbs); err != nil {
+		return nil, nextAbs, err
+	}
+
+	next, err := current.OpenRoot(part)
+	if err != nil {
+		return nil, nextAbs, err
+	}
+	if err := verifyOpenedArtifactParent(next, info, nextAbs); err != nil {
+		return nil, nextAbs, err
+	}
+	return next, nextAbs, nil
+}
+
+func validateArtifactParentInfo(info fs.FileInfo, path string) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s", errArtifactParentSymlink, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("artifact parent is not a directory: %s", path)
+	}
+	return nil
+}
+
+func verifyOpenedArtifactParent(root safeio.Root, want fs.FileInfo, path string) error {
+	openedInfo, err := root.Lstat(".")
+	if err != nil {
+		return closeRootWithError(root, err)
+	}
+	if !os.SameFile(want, openedInfo) {
+		return closeRootWithError(root, fmt.Errorf("artifact parent changed while opening: %s", path))
+	}
+	return nil
 }
 
 func splitArtifactPath(rel string) []string {
@@ -607,36 +891,39 @@ func splitArtifactPath(rel string) []string {
 	return filtered
 }
 
-func openOrCreateArtifactDir(root safeio.Root, name, path string) (safeio.Root, error) {
+func openOrCreateArtifactDir(root safeio.Root, name, path string) (safeio.Root, bool, error) {
+	created := false
 	info, err := root.Lstat(name)
 	if os.IsNotExist(err) {
 		if mkdirErr := root.Mkdir(name, artifactDirMode); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
-			return nil, mkdirErr
+			return nil, false, mkdirErr
+		} else if mkdirErr == nil {
+			created = true
 		}
 		info, err = root.Lstat(name)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("artifact parent contains symlink: %s", path)
+		return nil, false, fmt.Errorf("%w: %s", errArtifactParentSymlink, path)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("artifact parent is not a directory: %s", path)
+		return nil, false, fmt.Errorf("artifact parent is not a directory: %s", path)
 	}
 
 	next, err := root.OpenRoot(name)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	openedInfo, err := next.Lstat(".")
 	if err != nil {
-		return nil, closeRootWithError(next, err)
+		return nil, false, closeRootWithError(next, err)
 	}
 	if !os.SameFile(info, openedInfo) {
-		return nil, closeRootWithError(next, fmt.Errorf("artifact parent changed while opening: %s", path))
+		return nil, false, closeRootWithError(next, fmt.Errorf("artifact parent changed while opening: %s", path))
 	}
-	return next, nil
+	return next, created, nil
 }
 
 func closeRootWithError(root safeio.Root, err error) error {
@@ -648,4 +935,205 @@ func closeRootWithError(root safeio.Root, err error) error {
 
 func invalidComparisonSummary(message string) string {
 	return fmt.Sprintf("## Memory Benchmarks\n\nComparison could not be evaluated.\n\n%s\n", message)
+}
+
+func finalizeArtifactDirMode(root safeio.Root, path string, created bool) error {
+	if created {
+		return root.Chmod(".", artifactDirMode)
+	}
+	info, err := root.Lstat(".")
+	if err != nil {
+		return err
+	}
+	if unsafePermBits(info.Mode().Perm(), artifactDirMode) {
+		return fmt.Errorf("artifact root has unsafe permissions: %s", path)
+	}
+	return nil
+}
+
+func unsafePermBits(got, allowed os.FileMode) bool {
+	return got&0o022 != 0
+}
+
+func validateDistinctArtifactOutputs(outputs ...artifactOutput) error {
+	seen := make(map[string]string, len(outputs))
+	for _, output := range outputs {
+		if output.path == "" {
+			continue
+		}
+		if err := validateNonBlankOutputPath(output.label+"-out", output.path); err != nil {
+			return err
+		}
+		canonicalPath, err := resolveArtifactCollisionKey(output.path)
+		if err != nil {
+			return fmt.Errorf("%s artifact: %w", output.label, err)
+		}
+		if prior, ok := seen[canonicalPath]; ok {
+			return fmt.Errorf("%s artifact output collides with %s artifact output: %s", output.label, prior, output.path)
+		}
+		seen[canonicalPath] = output.label
+	}
+	return nil
+}
+
+func validateNonBlankOutputPath(flagName, path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("%s must not be empty or whitespace", flagName)
+	}
+	return nil
+}
+
+func rollbackPublishedArtifacts(writer *artifactWriter, statusSpec *artifactSpec, cause error) error {
+	cleanupErr := writer.CleanupWritten()
+	closeErr := writer.Close()
+	restoreErr := restoreFailureStatus(statusSpec)
+	return errors.Join(cause, cleanupErr, closeErr, restoreErr)
+}
+
+func rollbackFinalStatusPublication(writer *artifactWriter, statusPath string, cause error) error {
+	cleanupErr := writer.CleanupWritten()
+	restoreErr := writeStatusArtifact(statusPath)
+	return errors.Join(cause, cleanupErr, restoreErr)
+}
+
+func restoreFailureStatus(statusSpec *artifactSpec) error {
+	if statusSpec == nil {
+		return nil
+	}
+	return writeStatusArtifact(statusSpec.path)
+}
+
+func appendArtifactPathParts(base string, parts []string) string {
+	for _, part := range parts {
+		base = filepath.Join(base, part)
+	}
+	return base
+}
+
+func artifactDirCaseInsensitive(dir string) (caseInsensitive bool, returnErr error) {
+	root, _, _, err := openArtifactAncestorFn(dir)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	return artifactRootCaseInsensitive(root)
+}
+
+func artifactRootCaseInsensitive(root safeio.Root) (caseInsensitive bool, returnErr error) {
+	probeName, probeFile, err := safeio.CreateTempFileWithinRoot(root, "", artifactFileMode)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if cleanupErr := safeio.CleanupTempFileWithinRoot(root, probeName, probeFile); cleanupErr != nil {
+			returnErr = errors.Join(returnErr, cleanupErr)
+		}
+	}()
+	if err := probeFile.Close(); err != nil {
+		return false, err
+	}
+
+	info, err := root.Lstat(strings.ToUpper(probeName))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	probeInfo, err := root.Lstat(probeName)
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(probeInfo, info), nil
+}
+
+func removeArtifactFile(path string) (err error) {
+	root, fileName, err := openArtifactDirFn(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	return root.Remove(fileName)
+}
+
+func addWorktreeWithCleanConfig(repoRoot, gitPath, worktreePath, commit string) error {
+	configArgs, err := cleanWorktreeConfigArgs(repoRoot, gitPath)
+	if err != nil {
+		return err
+	}
+	configArgs = append(configArgs, "worktree", "add", "--detach", "--", worktreePath, commit)
+	return runGitCommand(repoRoot, gitPath, configArgs...)
+}
+
+func cleanWorktreeConfigArgs(repoRoot, gitPath string) ([]string, error) {
+	args := append(gitexec.SafeConfigArgs(), "config", "--null", "--includes", "--get-regexp", `^filter\..*\.(smudge|process|clean|required)$`)
+	output, err := gitOutputBytes(repoRoot, gitPath, args...)
+	if err != nil && !gitExitCodeIs(err, 1) {
+		return nil, fmt.Errorf("read effective filter configuration: %w", err)
+	}
+
+	configArgs := append([]string{}, gitexec.SafeConfigArgs()...)
+	configArgs = append(configArgs, "-c", "core.hooksPath=/dev/null")
+	filterNames, err := configuredFilterNames(output)
+	if err != nil {
+		return nil, err
+	}
+	for _, filterName := range filterNames {
+		configArgs = append(configArgs, "-c", fmt.Sprintf("filter.%s.smudge=", filterName))
+		configArgs = append(configArgs, "-c", fmt.Sprintf("filter.%s.process=", filterName))
+		configArgs = append(configArgs, "-c", fmt.Sprintf("filter.%s.clean=", filterName))
+		configArgs = append(configArgs, "-c", fmt.Sprintf("filter.%s.required=false", filterName))
+	}
+	return configArgs, nil
+}
+
+func configuredFilterNames(configOutput []byte) ([]string, error) {
+	if len(configOutput) == 0 {
+		return nil, nil
+	}
+	if configOutput[len(configOutput)-1] != 0 {
+		return nil, errors.New("parse effective filter configuration: missing trailing NUL terminator")
+	}
+	seen := make(map[string]struct{})
+	var names []string
+	for _, record := range strings.Split(string(configOutput[:len(configOutput)-1]), "\x00") {
+		if record == "" {
+			continue
+		}
+		key, _, ok := strings.Cut(record, "\n")
+		if !ok {
+			return nil, fmt.Errorf("parse effective filter configuration: malformed record %q", record)
+		}
+		name, ok := filterDriverNameFromConfigKey(strings.TrimSpace(key))
+		if !ok {
+			return nil, fmt.Errorf("parse effective filter configuration: unexpected key %q", key)
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+func filterDriverNameFromConfigKey(key string) (string, bool) {
+	const prefix = "filter."
+	if !strings.HasPrefix(key, prefix) {
+		return "", false
+	}
+	for _, suffix := range []string{".smudge", ".process", ".clean", ".required"} {
+		if strings.HasSuffix(key, suffix) && len(key) > len(prefix)+len(suffix) {
+			return key[len(prefix) : len(key)-len(suffix)], true
+		}
+	}
+	return "", false
 }

@@ -233,11 +233,19 @@ bench-gate:
 		phase="$$2"; \
 		cat "$$bench_output_path"; \
 		message="memory benchmark $$phase execution failed; comparison could not be evaluated"; \
+		publish_benchgate_failure "$$message" ""; \
+	}; \
+	publish_benchgate_failure() { \
+		message="$$1"; \
+		helper_failure_message="$$2"; \
 		set +e; \
 		run_go_tool ./tools/benchgate -summary-out "$(MEMORY_BENCH_SUMMARY)" -status-out "$(MEMORY_BENCH_STATUS)" -failure-message "$$message"; \
 		artifact_status=$$?; \
 		run_go_tool_failure_message=$$(cat "$$run_go_tool_failure_file"); \
 		set -e; \
+		if [ -n "$$helper_failure_message" ]; then \
+			echo "$$helper_failure_message" >&2; \
+		fi; \
 		if [ -n "$$run_go_tool_failure_message" ]; then \
 			echo "$$run_go_tool_failure_message" >&2; \
 		elif [ "$$artifact_status" -ne 2 ]; then \
@@ -269,7 +277,14 @@ bench-gate:
 	cleanup() { (run_go_tool ./tools/benchgate -worktree-remove "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp" "$$summary_output_tmp" "$$run_go_tool_failure_file"; }; \
 	trap cleanup EXIT INT TERM; \
 	echo "Running memory benchmark delta against $$requested_base_ref."; \
+	set +e; \
 	run_go_tool ./tools/benchgate -worktree-add "$$base_tree" -worktree-commit "$$base_commit"; \
+	worktree_status=$$?; \
+	run_go_tool_failure_message=$$(cat "$$run_go_tool_failure_file"); \
+	set -e; \
+	if [ "$$worktree_status" -ne 0 ]; then \
+		publish_benchgate_failure "memory benchmark worktree setup failed; comparison could not be evaluated" "$$run_go_tool_failure_message"; \
+	fi; \
 	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
 		benchgate_failure "$$base_output_tmp" base; \
 	fi; \
@@ -279,7 +294,14 @@ bench-gate:
 	fi; \
 	cat "$$head_output_tmp"; \
 	benchdelta_bin="$$bench_dir/benchdelta"; \
-	GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta; \
+	set +e; \
+	benchdelta_build_output=$$(GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta 2>&1); \
+	benchdelta_build_status=$$?; \
+	set -e; \
+	if [ "$$benchdelta_build_status" -ne 0 ]; then \
+		echo "$$benchdelta_build_output" >&2; \
+		publish_benchgate_failure "memory benchmark comparison setup failed; comparison could not be evaluated" "memory benchmark comparison setup failed; comparison could not be evaluated"; \
+	fi; \
 	set +e; \
 	"$$benchdelta_bin" -base "$$base_output_tmp" -head "$$head_output_tmp" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" > "$$summary_output_tmp"; \
 	status=$$?; \

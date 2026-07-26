@@ -33,11 +33,15 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	windowsBenchgate := workflowJobByName(t, workflow.Jobs, "windows-benchgate")
 	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read"})
+	assertWorkflowJobPermissions(t, windowsBenchgate, "ci windows benchgate", map[string]string{"contents": "read"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, verify, "ci verify")
+	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, windowsBenchgate, "ci windows benchgate")
 	assertWorkflowStepOrder(t, verify, "Run coverage gate", "Stage PR report inputs", "Upload PR report inputs", "Upload binary artifact", "Fail workflow on coverage gate")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "ci verify trusted PR report output", got: verify.Outputs["pr_report_artifact_id"], want: "${{ steps.upload_pr_report_inputs.outputs.artifact-id }}"},
+		{label: "ci windows benchgate runner", got: windowsBenchgate.RunsOn, want: "windows-latest"},
 	})
 
 	for _, check := range []workflowActionCheck{
@@ -50,6 +54,8 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		{"publish-pr-reports", "Comment lopper report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "lopper report comment"},
 		{"publish-pr-reports", "Post SonarQube review comments (PR)", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "Sonar review comment"},
 		{"publish-pr-reports", "Comment on coverage failure", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "coverage failure comment"},
+		{"windows-benchgate", "Checkout", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "windows benchgate checkout"},
+		{"windows-benchgate", "Setup Go", "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", "windows benchgate setup-go"},
 	} {
 		step := workflowStepByName(t, workflow.Jobs, check.jobName, check.stepName)
 		if step.Uses != check.wantUses {
@@ -58,13 +64,31 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	}
 
 	immutableAction := regexp.MustCompile(`^[^@[:space:]]+@[0-9a-f]{40}$`)
-	for _, jobName := range []string{"verify", "publish-pr-reports"} {
+	for _, jobName := range []string{"verify", "windows-benchgate", "publish-pr-reports"} {
 		for _, step := range workflow.Jobs[jobName].Steps {
 			if step.Uses != "" && !immutableAction.MatchString(step.Uses) {
 				t.Fatalf("%s step %q must use an immutable action SHA: %q", jobName, step.Name, step.Uses)
 			}
 		}
 	}
+}
+
+func TestCIWorkflowRunsWindowsBenchgateIntegrationOnWindowsRunner(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	job := workflowJobByName(t, workflow.Jobs, "windows-benchgate")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "windows benchgate runner", got: job.RunsOn, want: "windows-latest"},
+	})
+	assertWorkflowStepOrder(t, job, "Checkout", "Setup Go", "Run Windows benchgate trusted git integration")
+
+	runStep := workflowStepByName(t, workflow.Jobs, "windows-benchgate", "Run Windows benchgate trusted git integration")
+	assertWorkflowStepRunContainsAll(t, runStep, "windows benchgate integration", []string{
+		`go test ./tools/benchgate -run '^TestWindowsTrustedGitPathAndWorktreeAddNeutralizeFiltersWithSanitizedPath$' -count=1`,
+	})
 }
 
 func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {

@@ -70,16 +70,19 @@ func openOSRoot(name string) (rootHandle, error) {
 	return &osRootHandle{root: root}, nil
 }
 
+// CanceledContext returns a context that has already been canceled.
 func CanceledContext() context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	return ctx
 }
 
+// MustWriteFile writes content to path with the default test file mode.
 func MustWriteFile(t *testing.T, path string, content string) {
 	MustWriteFileMode(t, path, content, 0o600)
 }
 
+// MustWriteFileMode writes content to path and fails the test on error.
 func MustWriteFileMode(t *testing.T, path string, content string, perm os.FileMode) {
 	mustWriteFileMode(t, path, content, perm)
 }
@@ -94,6 +97,7 @@ func mustWriteFileMode(t helperTB, path string, content string, perm os.FileMode
 	}
 }
 
+// MustWritePaddedFile writes content to path and pads it to at least minBytes.
 func MustWritePaddedFile(t *testing.T, path string, content string, minBytes int64) {
 	mustWritePaddedFile(t, path, content, minBytes)
 }
@@ -141,6 +145,7 @@ func mustWritePaddedFile(t helperTB, path string, content string, minBytes int64
 	}
 }
 
+// WriteNumberedTextFiles writes count small text fixtures into dir.
 func WriteNumberedTextFiles(t *testing.T, dir string, count int) {
 	t.Helper()
 	for i := 0; i < count; i++ {
@@ -148,6 +153,7 @@ func WriteNumberedTextFiles(t *testing.T, dir string, count int) {
 	}
 }
 
+// WriteTempFile writes content into a file under a fresh temp directory.
 func WriteTempFile(t *testing.T, filename string, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), filename)
@@ -155,6 +161,7 @@ func WriteTempFile(t *testing.T, filename string, content string) string {
 	return path
 }
 
+// Chdir changes into dir and restores the original working directory on cleanup.
 func Chdir(t *testing.T, dir string) {
 	changeDir(t, dir)
 }
@@ -175,6 +182,7 @@ func changeDir(t helperTB, dir string) {
 	})
 }
 
+// ChdirRemovedDir changes into a temp dir, removes it, and restores the original cwd on cleanup.
 func ChdirRemovedDir(t *testing.T) {
 	changeToRemovedDir(t)
 }
@@ -203,6 +211,7 @@ func changeToRemovedDir(t helperTB) {
 	}
 }
 
+// MustFirstFileEntry returns the first non-directory entry in dir or fails the test.
 func MustFirstFileEntry(t *testing.T, dir string) fs.DirEntry {
 	return mustFirstFileEntry(t, dir)
 }
@@ -222,6 +231,7 @@ func mustFirstFileEntry(t helperTB, dir string) fs.DirEntry {
 	return nil
 }
 
+// RunGit executes a Git command in repo and fails the test on error.
 func RunGit(t *testing.T, repo string, args ...string) {
 	runGit(t, repo, args...)
 }
@@ -243,6 +253,7 @@ func runGit(t helperTB, repo string, args ...string) {
 	}
 }
 
+// IsolatedGitEnv returns a Git environment isolated from caller-controlled config.
 func IsolatedGitEnv(t *testing.T) []string {
 	return isolatedGitEnv(t)
 }

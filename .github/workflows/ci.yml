@@ -289,6 +289,25 @@ jobs:
         if: ${{ steps.cov.outcome == 'failure' }}
         run: exit 1
 
+  windows-benchgate:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+
+      - name: Run Windows benchgate trusted git integration
+        run: go test ./tools/benchgate -run '^TestWindowsTrustedGitPathAndWorktreeAddNeutralizeFiltersWithSanitizedPath$' -count=1
+
   publish-pr-reports:
     needs: verify
     if: ${{ always() && github.event_name == 'pull_request' && needs.verify.outputs.pr_report_artifact_id != '' }}

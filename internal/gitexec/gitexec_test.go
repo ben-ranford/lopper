@@ -124,7 +124,7 @@ func TestResolveBinaryPathBranches(t *testing.T) {
 func TestTrustedExecutablePathsReturnsIndependentSlice(t *testing.T) {
 	paths := TrustedExecutablePaths()
 	if len(paths) == 0 {
-		t.Fatal("expected trusted git paths")
+		t.Skip("no trusted Git executable available")
 	}
 	mutated := TrustedExecutablePaths()
 	mutated[0] = "/tmp/hijacked-git"
@@ -133,52 +133,29 @@ func TestTrustedExecutablePathsReturnsIndependentSlice(t *testing.T) {
 	}
 }
 
-func TestSanitizedEnv(t *testing.T) {
-	t.Setenv("PATH", "/tmp/custom-bin")
-	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")
-	t.Setenv("GIT_WORK_TREE", "/tmp/fake-worktree")
-	t.Setenv("GIT_INDEX_FILE", "/tmp/fake-index")
-	t.Setenv("LD_PRELOAD", "/tmp/malicious.so")
-	t.Setenv("LD_LIBRARY_PATH", "/tmp/malicious-lib")
-	t.Setenv("DYLD_FOO", "/tmp/malicious-dyld")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/attacker-global")
-	t.Setenv("GIT_CONFIG_COUNT", "1")
-	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
-	t.Setenv("GIT_CONFIG_VALUE_0", "/tmp/attacker-helper")
-	t.Setenv("HOME", "/tmp/attacker-home")
-	t.Setenv("XDG_CONFIG_HOME", "/tmp/attacker-xdg")
-	t.Setenv("PAGER", "/tmp/attacker-pager")
-	t.Setenv("KEEP_ME", "1")
-
-	env := SanitizedEnv()
-	if !containsEnv(env, SafeSystemPath) {
-		t.Fatalf("expected safe path %q in env, got %#v", SafeSystemPath, env)
-	}
-	if containsEnvPrefix(env, "GIT_DIR=") || containsEnvPrefix(env, "GIT_WORK_TREE=") || containsEnvPrefix(env, "GIT_INDEX_FILE=") {
-		t.Fatalf("expected git override vars to be stripped, got %#v", env)
-	}
-	if containsEnvPrefix(env, "LD_") || containsEnvPrefix(env, "DYLD_") {
-		t.Fatalf("expected dynamic loader vars to be stripped, got %#v", env)
-	}
-	if containsEnv(env, attackerGlobalConfigEnvEntry) ||
-		containsEnv(env, "GIT_CONFIG_COUNT=1") ||
-		containsEnv(env, "GIT_CONFIG_VALUE_0=/tmp/attacker-helper") ||
-		containsEnv(env, "HOME=/tmp/attacker-home") ||
-		containsEnv(env, "XDG_CONFIG_HOME=/tmp/attacker-xdg") ||
-		containsEnv(env, "PAGER=/tmp/attacker-pager") {
-		t.Fatalf("expected caller-controlled git config env vars to be stripped, got %#v", env)
-	}
-	if !containsEnv(env, safeGitNoSystemConfig) || !containsEnv(env, safeGitGlobalConfig) {
-		t.Fatalf("expected hardened git config env entries, got %#v", env)
-	}
-	for _, expected := range safeGitConfigEnvEntries() {
-		if !containsEnv(env, expected) {
-			t.Fatalf("expected forced git config entry %q in env, got %#v", expected, env)
+func TestTrustedExecutablePathsHaveValidatedAbsoluteProvenance(t *testing.T) {
+	paths := TrustedExecutablePaths()
+	for _, path := range paths {
+		if !filepath.IsAbs(path) {
+			t.Fatalf("trusted Git path is not absolute: %q", path)
+		}
+		if !ExecutableAvailable(path) {
+			t.Fatalf("trusted Git path failed provenance revalidation: %q", path)
 		}
 	}
-	if !containsEnv(env, keepMeEnvEntry) {
-		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)
+	for _, rejected := range []string{"/opt/homebrew/bin/git", filepath.Join(t.TempDir(), "git")} {
+		if slices.Contains(paths, rejected) {
+			t.Fatalf("trusted Git paths contain user-managed path %q: %#v", rejected, paths)
+		}
 	}
+}
+
+func TestSanitizedEnv(t *testing.T) {
+	setSanitizedEnvTestVars(t)
+
+	env := SanitizedEnv()
+	assertSanitizedEnvCoreEntries(t, env)
+	assertSanitizedEnvForcedGitConfig(t, env)
 }
 
 func TestSanitizedEnvEntriesPreservesMalformedEntries(t *testing.T) {
@@ -214,11 +191,32 @@ func TestCommandContextUsesKnownGitPaths(t *testing.T) {
 }
 
 func TestCommandRejectsUnknownGitPath(t *testing.T) {
-	if _, err := Command("/tmp/fake-git", versionArg); err == nil {
-		t.Fatalf("expected unknown path error")
+	for _, path := range []string{"/tmp/fake-git", "git"} {
+		if _, err := Command(path, versionArg); err == nil {
+			t.Fatalf("expected %q path error", path)
+		}
+		if _, err := CommandContext(context.Background(), path, versionArg); err == nil {
+			t.Fatalf("expected %q path error for context command", path)
+		}
 	}
-	if _, err := CommandContext(context.Background(), "/tmp/fake-git", versionArg); err == nil {
-		t.Fatalf("expected unknown path error for context command")
+}
+
+func TestCommandRejectsUserManagedInstallPaths(t *testing.T) {
+	userLocalPath := filepath.Join(t.TempDir(), "bin", "git")
+	if err := os.MkdirAll(filepath.Dir(userLocalPath), 0o755); err != nil {
+		t.Fatalf("mkdir user-local bin: %v", err)
+	}
+	if err := os.WriteFile(userLocalPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write user-local Git: %v", err)
+	}
+
+	for _, path := range []string{userLocalPath, "/opt/homebrew/bin/git"} {
+		if _, err := Command(path, versionArg); err == nil {
+			t.Fatalf("expected %q to be rejected", path)
+		}
+		if _, err := CommandContext(context.Background(), path, versionArg); err == nil {
+			t.Fatalf("expected %q to be rejected for context command", path)
+		}
 	}
 }
 
@@ -237,8 +235,8 @@ func TestExecutableAvailable(t *testing.T) {
 	if err := os.Chmod(filePath, 0o700); err != nil {
 		t.Fatalf("chmod file executable: %v", err)
 	}
-	if !ExecutableAvailable(filePath) {
-		t.Fatalf("expected executable file to be available")
+	if ExecutableAvailable(filePath) {
+		t.Fatalf("expected user-owned executable to fail provenance validation")
 	}
 }
 
@@ -299,6 +297,68 @@ func containsEnvPrefix(env []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func setSanitizedEnvTestVars(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("PATH", "/tmp/custom-bin")
+	t.Setenv("GIT_DIR", "/tmp/fake-git-dir")
+	t.Setenv("GIT_WORK_TREE", "/tmp/fake-worktree")
+	t.Setenv("GIT_INDEX_FILE", "/tmp/fake-index")
+	t.Setenv("LD_PRELOAD", "/tmp/malicious.so")
+	t.Setenv("LD_LIBRARY_PATH", "/tmp/malicious-lib")
+	t.Setenv("DYLD_FOO", "/tmp/malicious-dyld")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/tmp/attacker-global")
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+	t.Setenv("GIT_CONFIG_VALUE_0", "/tmp/attacker-helper")
+	t.Setenv("HOME", "/tmp/attacker-home")
+	t.Setenv("XDG_CONFIG_HOME", "/tmp/attacker-xdg")
+	t.Setenv("PAGER", "/tmp/attacker-pager")
+	t.Setenv("KEEP_ME", "1")
+}
+
+func assertSanitizedEnvCoreEntries(t *testing.T, env []string) {
+	t.Helper()
+
+	if !containsEnv(env, SafeSystemPath) {
+		t.Fatalf("expected safe path %q in env, got %#v", SafeSystemPath, env)
+	}
+	if containsEnvPrefix(env, "GIT_DIR=") || containsEnvPrefix(env, "GIT_WORK_TREE=") || containsEnvPrefix(env, "GIT_INDEX_FILE=") {
+		t.Fatalf("expected git override vars to be stripped, got %#v", env)
+	}
+	if containsEnvPrefix(env, "LD_") || containsEnvPrefix(env, "DYLD_") {
+		t.Fatalf("expected dynamic loader vars to be stripped, got %#v", env)
+	}
+	if !containsEnv(env, keepMeEnvEntry) {
+		t.Fatalf("expected unrelated env vars to be preserved, got %#v", env)
+	}
+}
+
+func assertSanitizedEnvForcedGitConfig(t *testing.T, env []string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		attackerGlobalConfigEnvEntry,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_VALUE_0=/tmp/attacker-helper",
+		"HOME=/tmp/attacker-home",
+		"XDG_CONFIG_HOME=/tmp/attacker-xdg",
+		"PAGER=/tmp/attacker-pager",
+	} {
+		if containsEnv(env, forbidden) {
+			t.Fatalf("expected caller-controlled git config env vars to be stripped, got %#v", env)
+		}
+	}
+	if !containsEnv(env, safeGitNoSystemConfig) || !containsEnv(env, safeGitGlobalConfig) {
+		t.Fatalf("expected hardened git config env entries, got %#v", env)
+	}
+	for _, expected := range safeGitConfigEnvEntries() {
+		if !containsEnv(env, expected) {
+			t.Fatalf("expected forced git config entry %q in env, got %#v", expected, env)
+		}
+	}
 }
 
 func testKnownGitPaths(t *testing.T, build func(string) (*exec.Cmd, error)) {

@@ -9,11 +9,13 @@ import (
 	"testing"
 )
 
+// ByteFuzzSeed is one parsed byte-seed entry from a Go fuzz corpus directory.
 type ByteFuzzSeed struct {
 	Name string
 	Data []byte
 }
 
+// LoadByteFuzzCorpus loads and sorts byte-based Go fuzz corpus seeds from dir.
 func LoadByteFuzzCorpus(tb testing.TB, dir string) []ByteFuzzSeed {
 	return loadByteFuzzCorpus(tb, dir)
 }

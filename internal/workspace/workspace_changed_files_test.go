@@ -405,8 +405,8 @@ func TestGitExecutableAvailable(t *testing.T) {
 	if err := os.Chmod(file, 0o700); err != nil {
 		t.Fatalf("chmod executable: %v", err)
 	}
-	if !gitexec.ExecutableAvailable(file) {
-		t.Fatalf("expected executable file to be available")
+	if gitexec.ExecutableAvailable(file) {
+		t.Fatalf("expected user-owned executable to fail provenance validation")
 	}
 }
 
