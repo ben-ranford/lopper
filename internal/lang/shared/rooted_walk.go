@@ -90,7 +90,7 @@ func rootedWalkDirectoryNameSkip(skipDir func(string) bool) rootedWalkDirectoryS
 	if skipDir == nil {
 		skipDir = ShouldSkipCommonDir
 	}
-	return func(_ string, name string) bool {
+	return func(_, name string) bool {
 		return skipDir(name)
 	}
 }
