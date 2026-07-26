@@ -11,10 +11,12 @@ import { createDirectoryLinkSync, createFileLinkSync, removeDirectoryLinkSync, s
 
 const {
   createRuntimeTraceHelpers,
+  findValidatedLinkedPackageRoot,
   isSafeRepoRelativePath,
   normalizeContextValue,
   normalizeRuntimeModuleValue,
   normalizeRuntimeResolvedValue,
+  preservesValidatedLinkedPackageSubpath,
   sanitizeNodeModulesResolvedPath,
 } = helpers;
 
@@ -320,42 +322,177 @@ test("preserves validated package specifiers when hoisted node_modules resolutio
   fs.rmSync(testRoot, { recursive: true, force: true });
 });
 
-test("preserves bare and scoped linked package requests while redacting external realpaths", (t) => {
+test("preserves bare, scoped, and validated linked package subpath requests while redacting external realpaths", (t) => {
   const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
   const repoRoot = path.join(testRoot, "repo");
   const linkedRoot = path.join(testRoot, "linked-packages");
   const barePackagePath = path.join(linkedRoot, "fixture-dep", "index.js");
+  const barePackageSubpath = path.join(linkedRoot, "fixture-dep", "lib", "index.js");
   const scopedPackagePath = path.join(linkedRoot, "@scope", "pkg", "index.js");
+  const scopedPackageSubpath = path.join(linkedRoot, "@scope", "pkg", "client", "index.js");
   fs.mkdirSync(path.dirname(barePackagePath), { recursive: true });
+  fs.mkdirSync(path.dirname(barePackageSubpath), { recursive: true });
   fs.mkdirSync(path.dirname(scopedPackagePath), { recursive: true });
+  fs.mkdirSync(path.dirname(scopedPackageSubpath), { recursive: true });
+  fs.writeFileSync(path.join(linkedRoot, "fixture-dep", "package.json"), JSON.stringify({ name: "fixture-dep" }), "utf8");
+  fs.writeFileSync(path.join(linkedRoot, "@scope", "pkg", "package.json"), JSON.stringify({ name: "@scope/pkg" }), "utf8");
   fs.writeFileSync(barePackagePath, "module.exports = 1;\n", "utf8");
-  fs.writeFileSync(scopedPackagePath, "module.exports = 2;\n", "utf8");
+  fs.writeFileSync(barePackageSubpath, "module.exports = 2;\n", "utf8");
+  fs.writeFileSync(scopedPackagePath, "module.exports = 3;\n", "utf8");
+  fs.writeFileSync(scopedPackageSubpath, "module.exports = 4;\n", "utf8");
 
   const { realpath } = trackRealpathCalls();
   assert.equal(normalizeRuntimeModuleValue("fixture-dep", barePackagePath, repoRoot, realpath), "fixture-dep");
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep/lib", barePackageSubpath, repoRoot, realpath), "fixture-dep/lib");
   assert.equal(normalizeRuntimeModuleValue("@scope/pkg", scopedPackagePath, repoRoot, realpath), "@scope/pkg");
+  assert.equal(
+    normalizeRuntimeModuleValue("@scope/pkg/client", scopedPackageSubpath, repoRoot, realpath),
+    "@scope/pkg/client",
+  );
   assert.equal(normalizeRuntimeResolvedValue(barePackagePath, repoRoot, realpath), "");
   assert.equal(normalizeRuntimeResolvedValue(scopedPackagePath, repoRoot, realpath), "");
 
   fs.rmSync(testRoot, { recursive: true, force: true });
 });
 
-test("rejects unsafe linked package requests when the realpath is redacted", () => {
+test("rejects unsafe or phantom linked package requests when the realpath is redacted", () => {
   const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
   const repoRoot = path.join(testRoot, "repo");
   const linkedRoot = path.join(testRoot, "linked-packages");
   const barePackagePath = path.join(linkedRoot, "fixture-dep", "index.js");
+  const barePackageSubpath = path.join(linkedRoot, "fixture-dep", "lib", "index.js");
   const scopedPackagePath = path.join(linkedRoot, "@scope", "pkg", "index.js");
+  const phantomPackagePath = path.join(linkedRoot, "src", "client", "index.js");
   fs.mkdirSync(path.dirname(barePackagePath), { recursive: true });
+  fs.mkdirSync(path.dirname(barePackageSubpath), { recursive: true });
   fs.mkdirSync(path.dirname(scopedPackagePath), { recursive: true });
+  fs.mkdirSync(path.dirname(phantomPackagePath), { recursive: true });
+  fs.writeFileSync(path.join(linkedRoot, "fixture-dep", "package.json"), JSON.stringify({ name: "fixture-dep" }), "utf8");
+  fs.writeFileSync(path.join(linkedRoot, "@scope", "pkg", "package.json"), JSON.stringify({ name: "@scope/pkg" }), "utf8");
   fs.writeFileSync(barePackagePath, "module.exports = 1;\n", "utf8");
-  fs.writeFileSync(scopedPackagePath, "module.exports = 2;\n", "utf8");
+  fs.writeFileSync(barePackageSubpath, "module.exports = 2;\n", "utf8");
+  fs.writeFileSync(scopedPackagePath, "module.exports = 3;\n", "utf8");
+  fs.writeFileSync(phantomPackagePath, "module.exports = 4;\n", "utf8");
 
   const { realpath } = trackRealpathCalls();
   assert.equal(normalizeRuntimeModuleValue("fixture-dep/lib/index.js", barePackagePath, repoRoot, realpath), "");
-  assert.equal(normalizeRuntimeModuleValue("@scope/pkg/index.js", scopedPackagePath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("@scope/pkg/client", scopedPackagePath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep/\nlib", barePackageSubpath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep/.env", barePackageSubpath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("@scope/pkg/../client", scopedPackagePath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("src/client", phantomPackagePath, repoRoot, realpath), "");
 
   fs.rmSync(testRoot, { recursive: true, force: true });
+});
+
+test("preserves linked package subpaths for drive-letter realpaths without duplicating the Windows root", () => {
+  const manifests = new Map([
+    [String.raw`C:\linked\fixture-dep\package.json`, JSON.stringify({ name: "fixture-dep" })],
+    [String.raw`C:\linked\@scope\pkg\package.json`, JSON.stringify({ name: "@scope/pkg" })],
+  ]);
+  const windowsFs = {
+    existsSync(value) {
+      return manifests.has(value);
+    },
+    readFileSync(value) {
+      const manifest = manifests.get(value);
+      if (manifest === undefined) {
+        throw new Error(`missing manifest: ${value}`);
+      }
+      return manifest;
+    },
+  };
+  const identityRealpath = (value) => value;
+
+  assert.equal(
+    findValidatedLinkedPackageRoot(
+      String.raw`C:\linked\fixture-dep\lib\index.js`,
+      { packageName: "fixture-dep", packageRootParts: ["fixture-dep"], subpathParts: ["lib"] },
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ),
+    String.raw`C:\linked\fixture-dep`,
+  );
+  assert.equal(
+    preservesValidatedLinkedPackageSubpath(
+      "fixture-dep/lib",
+      "fixture-dep/lib",
+      String.raw`C:\linked\fixture-dep\lib\index.js`,
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ),
+    true,
+  );
+  assert.equal(
+    preservesValidatedLinkedPackageSubpath(
+      "@scope/pkg/client",
+      "@scope/pkg/client",
+      String.raw`C:\linked\@scope\pkg\client\index.js`,
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ),
+    true,
+  );
+});
+
+test("redacts malformed or escaping drive-letter linked package subpaths", () => {
+  const manifests = new Map([
+    [String.raw`C:\linked\fixture-dep\package.json`, JSON.stringify({ name: "fixture-dep" })],
+    [String.raw`C:\linked\@scope\pkg\package.json`, JSON.stringify({ name: "@scope/pkg" })],
+  ]);
+  const windowsFs = {
+    existsSync(value) {
+      return manifests.has(value);
+    },
+    readFileSync(value) {
+      const manifest = manifests.get(value);
+      if (manifest === undefined) {
+        throw new Error(`missing manifest: ${value}`);
+      }
+      return manifest;
+    },
+  };
+  const identityRealpath = (value) => value;
+
+  assert.equal(
+    findValidatedLinkedPackageRoot(
+      String.raw`C:\linked\fixture-dep\lib\index.js`,
+      { packageName: "fixture-dep", packageRootParts: ["fixture-dep"], subpathParts: ["lib"] },
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ).includes("C:\\C:\\"),
+    false,
+  );
+  assert.equal(
+    preservesValidatedLinkedPackageSubpath(
+      "fixture-dep/lib",
+      "fixture-dep/lib",
+      String.raw`C:\linked\fixture-dep\..\private\lib\index.js`,
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ),
+    false,
+  );
+  assert.equal(
+    preservesValidatedLinkedPackageSubpath(
+      "@scope/pkg/client",
+      "@scope/pkg/client",
+      String.raw`C:\linked\@scope\pkg\..\private\client\index.js`,
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ),
+    false,
+  );
+  assert.equal(
+    preservesValidatedLinkedPackageSubpath(
+      "fixture-dep/lib",
+      "fixture-dep/lib",
+      String.raw`C:\linked\fixture-dep\C:\private\index.js`,
+      identityRealpath,
+      { fs: windowsFs, pathImpl: path.win32 },
+    ),
+    false,
+  );
 });
 
 test("sanitizes runtime module and resolved artifact values", () => {

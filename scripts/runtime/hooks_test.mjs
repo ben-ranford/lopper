@@ -143,6 +143,44 @@ test("runtime hooks preserve hoisted external node_modules dependencies while re
   }
 });
 
+test("runtime hooks preserve validated linked package subpaths while redacting external realpaths", (t) => {
+  for (const format of ["cjs", "esm"]) {
+    const fixture = createNodeLinkedSubpathFixture(t, format);
+    const events = captureNodeHookEvents(
+      fixture,
+      format === "cjs" ? "--require" : "--loader",
+      format === "cjs" ? "require-hook.cjs" : "loader.mjs",
+    );
+
+    assertArtifactPrivacy(events, fixture);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.module === "fixture-dep/lib" &&
+          event.resolved === "" &&
+          event.parent === `main.${format === "cjs" ? "cjs" : "mjs"}` &&
+          event.entrypoint === "",
+      ),
+      `${format} hook should preserve linked bare subpath identity while redacting resolved path`,
+    );
+    assert.ok(
+      events.some(
+        (event) =>
+          event.module === "@scope/pkg/client" &&
+          event.resolved === "" &&
+          event.parent === `main.${format === "cjs" ? "cjs" : "mjs"}` &&
+          event.entrypoint === "",
+      ),
+      `${format} hook should preserve linked scoped subpath identity while redacting resolved path`,
+    );
+    assert.equal(
+      JSON.stringify(events).includes(path.join(fixture.fixtureRoot, "linked-store")),
+      false,
+      `${format} hook should not leak the linked package store path`,
+    );
+  }
+});
+
 function createNodeFixture(t, format) {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lopper-runtime-${format}-`));
   t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
@@ -276,6 +314,69 @@ function createNodeHoistedDependencyFixture(t, format) {
   fs.writeFileSync(
     entrypoint,
     format === "esm" ? 'import "fixture-dep";\n' : 'require("fixture-dep");\n',
+  );
+
+  return { entrypoint, fixtureRoot, repoRoot, tracePath };
+}
+
+function createNodeLinkedSubpathFixture(t, format) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lopper-runtime-linked-${format}-`));
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  const repoRoot = path.join(fixtureRoot, "repo");
+  const linkedStoreRoot = path.join(fixtureRoot, "linked-store");
+  const linkedNodeModules = path.join(linkedStoreRoot, "node_modules");
+  const barePackageRoot = path.join(linkedNodeModules, "fixture-dep");
+  const scopedPackageRoot = path.join(linkedNodeModules, "@scope", "pkg");
+  const extension = format === "esm" ? "mjs" : "cjs";
+  const entrypoint = path.join(repoRoot, `main.${extension}`);
+  const tracePath = path.join(fixtureRoot, `${format}.ndjson`);
+
+  fs.mkdirSync(path.join(barePackageRoot, "lib"), { recursive: true });
+  fs.mkdirSync(path.join(scopedPackageRoot, "client"), { recursive: true });
+  fs.writeFileSync(
+    path.join(barePackageRoot, "package.json"),
+    JSON.stringify({
+      name: "fixture-dep",
+      version: "1.0.0",
+      ...(format === "esm"
+        ? { type: "module", main: "index.mjs", exports: { ".": "./index.mjs", "./lib": "./lib/index.mjs" } }
+        : { main: "index.cjs", exports: { ".": "./index.cjs", "./lib": "./lib/index.cjs" } }),
+    }),
+  );
+  fs.writeFileSync(
+    path.join(scopedPackageRoot, "package.json"),
+    JSON.stringify({
+      name: "@scope/pkg",
+      version: "1.0.0",
+      ...(format === "esm"
+        ? { type: "module", main: "index.mjs", exports: { ".": "./index.mjs", "./client": "./client/index.mjs" } }
+        : { main: "index.cjs", exports: { ".": "./index.cjs", "./client": "./client/index.cjs" } }),
+    }),
+  );
+  fs.writeFileSync(
+    path.join(barePackageRoot, `index.${extension}`),
+    format === "esm" ? "export default 1;\n" : "module.exports = 1;\n",
+  );
+  fs.writeFileSync(
+    path.join(barePackageRoot, "lib", `index.${extension}`),
+    format === "esm" ? "export default 2;\n" : "module.exports = 2;\n",
+  );
+  fs.writeFileSync(
+    path.join(scopedPackageRoot, `index.${extension}`),
+    format === "esm" ? "export default 3;\n" : "module.exports = 3;\n",
+  );
+  fs.writeFileSync(
+    path.join(scopedPackageRoot, "client", `index.${extension}`),
+    format === "esm" ? "export default 4;\n" : "module.exports = 4;\n",
+  );
+  fs.mkdirSync(repoRoot, { recursive: true });
+  createDirectoryLinkSync(linkedNodeModules, path.join(repoRoot, "node_modules"));
+  fs.writeFileSync(
+    entrypoint,
+    format === "esm"
+      ? 'import "fixture-dep/lib";\nimport "@scope/pkg/client";\n'
+      : 'require("fixture-dep/lib");\nrequire("@scope/pkg/client");\n',
   );
 
   return { entrypoint, fixtureRoot, repoRoot, tracePath };

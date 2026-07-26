@@ -38,7 +38,7 @@ func normalizeRuntimeContextValue(value string, opts traceLoadOptions) string {
 
 func normalizeRuntimeContextValueUncached(value string, opts traceLoadOptions) string {
 	if normalized, ok := normalizeRuntimeContextPath(value, opts); ok {
-		if normalized != "" || !looksLikePackageStyleRuntimeContextLabel(value) {
+		if normalized != "" || runtimeContextShouldStayRedacted(value, opts) || !looksLikePackageStyleRuntimeContextLabel(value) {
 			return normalized
 		}
 	}
@@ -69,6 +69,25 @@ func runtimeContextHasOuterWhitespaceOrControl(value string) bool {
 
 func runtimeContextIsOuterWhitespaceOrControl(r rune) bool {
 	return unicode.IsSpace(r) || unicode.IsControl(r)
+}
+
+func runtimeContextShouldStayRedacted(value string, opts traceLoadOptions) bool {
+	value, ok := runtimeContextFilesystemCandidate(value)
+	if !ok || value == "" {
+		return false
+	}
+	if runtimeContextHasDefiniteFilesystemSignal(value) {
+		return true
+	}
+	repoRoot, resolvedRepoRoot, ok := runtimeContextTrustedRepoRoots(opts)
+	if !ok {
+		return false
+	}
+	pathValue, ok := runtimeContextTrustedCandidatePath(value, repoRoot, resolvedRepoRoot)
+	if !ok {
+		return true
+	}
+	return resolveRuntimeContextPath(pathValue, opts.evalSymlinksFunc()) != ""
 }
 
 func normalizeRuntimeContextPath(value string, opts traceLoadOptions) (string, bool) {
@@ -299,6 +318,28 @@ func looksLikeFilesystemPath(value string) bool {
 	}
 	base := parts[len(parts)-1]
 	return looksLikePathStyleBase(base)
+}
+
+func runtimeContextHasDefiniteFilesystemSignal(value string) bool {
+	if filePath, isFileURL := runtimeContextFileURLPath(value); isFileURL {
+		return filePath != ""
+	}
+	if rejectsRuntimeContextScheme(value) || strings.Contains(value, "://") {
+		return true
+	}
+	if hasFilesystemPathPrefix(value) {
+		return true
+	}
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	if !strings.Contains(value, "/") {
+		return false
+	}
+	parts := strings.Split(value, "/")
+	if runtimePathPartsContainTraversal(parts) {
+		return true
+	}
+	base := parts[len(parts)-1]
+	return base == "" || strings.HasPrefix(base, ".")
 }
 
 func hasFilesystemPathPrefix(value string) bool {

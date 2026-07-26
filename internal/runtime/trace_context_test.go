@@ -397,6 +397,92 @@ func TestNormalizeRuntimeContextPathRejectsUnresolvableRepoRoot(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuntimeContextValueKeepsRecognizedRepoRelativeEscapeRedacted(t *testing.T) {
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	linkPath := filepath.Join(repo, "src", "linked.js")
+	targetPath := filepath.Join(outsideDir, "secret.js")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("export {};\n"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("symlink escape: %v", err)
+	}
+
+	opts := traceLoadOptions{repoRoot: repo, resolvedRepoRoot: resolvedRuntimeRepoRoot(repo)}
+	if got := normalizeRuntimeContextValue("src/linked.js", opts); got != "" {
+		t.Fatalf("expected repo-relative symlink escape to stay redacted, got %q", got)
+	}
+}
+
+func TestNormalizeRuntimeContextValuePreservesPackageLabelWhenRepoRelativeProbeFails(t *testing.T) {
+	repo := t.TempDir()
+	opts := traceLoadOptions{repoRoot: repo, resolvedRepoRoot: resolvedRuntimeRepoRoot(repo)}
+
+	if got := normalizeRuntimeContextValue("lodash/fp.js", opts); got != "lodash/fp.js" {
+		t.Fatalf("expected package label to survive failed repo-relative probe, got %q", got)
+	}
+	if got := normalizeRuntimeContextValue("@scope/pkg/index.js", opts); got != "@scope/pkg/index.js" {
+		t.Fatalf("expected scoped package label to survive failed repo-relative probe, got %q", got)
+	}
+}
+
+func TestRuntimeContextHasDefiniteFilesystemSignal(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "file URL", value: "file:///repo/src/main.js", want: true},
+		{name: "rejected scheme", value: "https:/example.com/private.js", want: true},
+		{name: "absolute path", value: "/repo/src/main.js", want: true},
+		{name: "traversal path", value: "src/../main.js", want: true},
+		{name: "hidden base path", value: "config/.env", want: true},
+		{name: "package label", value: "lodash/fp.js", want: false},
+		{name: "scoped package label", value: "@scope/pkg/index.js", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runtimeContextHasDefiniteFilesystemSignal(tc.value); got != tc.want {
+				t.Fatalf("runtimeContextHasDefiniteFilesystemSignal(%q) = %t, want %t", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeContextShouldStayRedacted(t *testing.T) {
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	linkPath := filepath.Join(repo, "src", "linked.js")
+	targetPath := filepath.Join(outsideDir, "secret.js")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("export {};\n"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("symlink escape: %v", err)
+	}
+
+	opts := traceLoadOptions{repoRoot: repo, resolvedRepoRoot: resolvedRuntimeRepoRoot(repo)}
+	if !runtimeContextShouldStayRedacted("src/linked.js", opts) {
+		t.Fatalf("expected repo-relative symlink escape to stay redacted")
+	}
+	if runtimeContextShouldStayRedacted("lodash/fp.js", opts) {
+		t.Fatalf("expected package label to remain eligible for label normalization")
+	}
+	if !runtimeContextShouldStayRedacted("/tmp/private.js", opts) {
+		t.Fatalf("expected definite filesystem path to stay redacted")
+	}
+	if runtimeContextShouldStayRedacted("src/main.js", traceLoadOptions{}) {
+		t.Fatalf("expected ambiguous path-like label without repo roots to remain unresolved")
+	}
+}
+
 func TestNormalizeRuntimeContextPathRejectsHostilePathsBeforeFilesystemProbe(t *testing.T) {
 	repo := t.TempDir()
 	var probed []string

@@ -428,6 +428,42 @@ func TestLoadTracePreservesPackageStyleLabels(t *testing.T) {
 	}
 }
 
+func TestLoadTraceKeepsRepoRelativeSymlinkEscapesRedactedWithoutPackageFallback(t *testing.T) {
+	repo := t.TempDir()
+	outsideDir := t.TempDir()
+	linkPath := filepath.Join(repo, "src", "linked.js")
+	targetPath := filepath.Join(outsideDir, "secret.js")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("console.log('secret')\n"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("symlink escape: %v", err)
+	}
+
+	content :=
+		`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"src/linked.js","entrypoint":"src/linked.js"}` + "\n" +
+			`{"module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"lodash/fp.js","entrypoint":"@scope/pkg/index.js"}` + "\n"
+	trace, err := loadTraceFromContentInRepo(t, repo, content)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyParents["lodash"]["src/linked.js"]; got != 0 {
+		t.Fatalf("expected repo-relative symlink escape parent to stay redacted, got %#v", trace.DependencyParents["lodash"])
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["src/linked.js"]; got != 0 {
+		t.Fatalf("expected repo-relative symlink escape entrypoint to stay redacted, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+	if got := trace.DependencyParents["lodash"]["lodash/fp.js"]; got != 1 {
+		t.Fatalf("expected legitimate package-style parent label to remain, got %#v", trace.DependencyParents["lodash"])
+	}
+	if got := trace.DependencyEntrypoints["lodash"]["@scope/pkg/index.js"]; got != 1 {
+		t.Fatalf("expected legitimate package-style entrypoint label to remain, got %#v", trace.DependencyEntrypoints["lodash"])
+	}
+}
+
 func TestLoadTracePreservesModuleOnlyPackageEventsWhenResolvedPathIsRedacted(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {

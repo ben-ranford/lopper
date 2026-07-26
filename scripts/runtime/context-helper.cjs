@@ -78,7 +78,8 @@ function normalizedRepoRoot(repoRoot, realpath = fs.realpathSync.native) {
 
 function repoRelativeUnderTrustedRoots(candidatePath, repoRoot, realpath = fs.realpathSync.native) {
   for (const trustedRoot of trustedRepoRoots(normalizedRepoRoot(repoRoot, realpath))) {
-    const rel = path.relative(trustedRoot, candidatePath);
+    const pathImpl = pathModuleForValue(candidatePath || trustedRoot);
+    const rel = pathImpl.relative(trustedRoot, candidatePath);
     if (isSafeRepoRelativePath(rel)) {
       return rel;
     }
@@ -88,7 +89,7 @@ function repoRelativeUnderTrustedRoots(candidatePath, repoRoot, realpath = fs.re
 
 function normalizeRepoRelativePath(value) {
   try {
-    return value.split(path.sep).join("/");
+    return value.replaceAll("\\", "/");
   } catch {
     return "";
   }
@@ -123,14 +124,16 @@ function normalizeRuntimeModuleValue(value, resolved, repoRoot, realpath = fs.re
   } else if (
     looksLikeFilesystemContextValue(resolved) &&
     !externalNodeModulesResolved &&
-    !preservesLinkedPackageRequest(identifier, value)
+    !preservesLinkedPackageRequest(identifier, value) &&
+    !preservesValidatedLinkedPackageSubpath(identifier, value, resolved, realpath)
   ) {
     return "";
   } else if (
     resolved &&
     looksLikeFilesystemContextValue(value) &&
     !externalNodeModulesResolved &&
-    !preservesLinkedPackageRequest(identifier, value)
+    !preservesLinkedPackageRequest(identifier, value) &&
+    !preservesValidatedLinkedPackageSubpath(identifier, value, resolved, realpath)
   ) {
     return "";
   }
@@ -184,6 +187,123 @@ function preservesLinkedPackageRequest(identifier, rawValue) {
     return parts.length === 2;
   }
   return parts.length === 1;
+}
+
+function preservesValidatedLinkedPackageSubpath(
+  identifier,
+  rawValue,
+  resolved,
+  realpath = fs.realpathSync.native,
+  options = {},
+) {
+  if (!identifier || identifier !== rawValue || identifier.startsWith("node:")) {
+    return false;
+  }
+  const packageRequest = parsePackageRequest(identifier);
+  if (!packageRequest || packageRequest.subpathParts.length === 0) {
+    return false;
+  }
+  const resolvedPath = looksLikeWindowsAbsolutePath(resolved) ? normalizeLexicalAbsolutePath(resolved) : resolveContextPath(resolved);
+  if (!resolvedPath) {
+    return false;
+  }
+  const absolutePath = normalizeAbsolutePath(resolvedPath, realpath);
+  if (!absolutePath) {
+    return false;
+  }
+  const packageRoot = findValidatedLinkedPackageRoot(absolutePath, packageRequest, realpath, options);
+  if (!packageRoot) {
+    return false;
+  }
+  const packageRelative = repoRelativeUnderTrustedRoots(absolutePath, { trusted: [packageRoot] }, realpath);
+  if (!packageRelative) {
+    return false;
+  }
+  return packageRelativeStartsWithSubpath(packageRelative, packageRequest.subpathParts);
+}
+
+function parsePackageRequest(identifier) {
+  const parts = identifier.split("/");
+  if (identifier.startsWith("@")) {
+    if (parts.length < 3) {
+      return null;
+    }
+    return {
+      packageName: `${parts[0]}/${parts[1]}`,
+      packageRootParts: [parts[0], parts[1]],
+      subpathParts: parts.slice(2),
+    };
+  }
+  if (parts.length < 2) {
+    return null;
+  }
+  return {
+    packageName: parts[0],
+    packageRootParts: [parts[0]],
+    subpathParts: parts.slice(1),
+  };
+}
+
+function findValidatedLinkedPackageRoot(absolutePath, packageRequest, realpath = fs.realpathSync.native, options = {}) {
+  const pathImpl = options.pathImpl || pathModuleForValue(absolutePath);
+  const root = pathImpl.parse(absolutePath).root;
+  const segments = splitAbsolutePathSegments(absolutePath, pathImpl);
+  for (let index = segments.length - packageRequest.packageRootParts.length; index >= 0; index -= 1) {
+    if (!matchesPackageRootSegments(segments, index, packageRequest.packageRootParts)) {
+      continue;
+    }
+    const candidateRoot = pathImpl.join(root, ...segments.slice(0, index + packageRequest.packageRootParts.length));
+    if (validatedPackageName(candidateRoot, realpath, options) === packageRequest.packageName) {
+      return candidateRoot;
+    }
+  }
+  return "";
+}
+
+function splitAbsolutePathSegments(absolutePath, pathImpl) {
+  const root = pathImpl.parse(absolutePath).root;
+  return absolutePath
+    .slice(root.length)
+    .split(pathImpl.sep)
+    .filter(Boolean);
+}
+
+function matchesPackageRootSegments(segments, index, packageRootParts) {
+  for (let offset = 0; offset < packageRootParts.length; offset += 1) {
+    if (segments[index + offset] !== packageRootParts[offset]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validatedPackageName(packageRoot, realpath = fs.realpathSync.native, options = {}) {
+  const pathImpl = options.pathImpl || pathModuleForValue(packageRoot);
+  const fileOps = options.fs || fs;
+  const packageJSONPath = pathImpl.join(packageRoot, "package.json");
+  if (!fileOps.existsSync(packageJSONPath)) {
+    return "";
+  }
+  try {
+    const manifestPath = normalizeAbsolutePath(packageJSONPath, realpath) || packageJSONPath;
+    const manifest = JSON.parse(fileOps.readFileSync(manifestPath, "utf8"));
+    return typeof manifest?.name === "string" ? manifest.name.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function packageRelativeStartsWithSubpath(packageRelative, subpathParts) {
+  const relativeParts = packageRelative.split(/[\\/]+/).filter(Boolean);
+  if (relativeParts.length < subpathParts.length) {
+    return false;
+  }
+  for (let index = 0; index < subpathParts.length; index += 1) {
+    if (relativeParts[index] !== subpathParts[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function isUnsafeModuleSegment(part) {
@@ -270,7 +390,7 @@ function looksLikeNodeModulesResolvedContextValue(value, realpath = fs.realpathS
 
 function normalizeLexicalAbsolutePath(value) {
   try {
-    return path.resolve(value);
+    return pathModuleForValue(value).resolve(value);
   } catch {
     return "";
   }
@@ -317,7 +437,7 @@ function isSafeRepoRelativePath(value) {
   if (!value || relStartsOutsideRepo(value)) {
     return false;
   }
-  return !path.isAbsolute(value) && !looksLikeWindowsAbsolutePath(value);
+  return !path.isAbsolute(value) && !path.win32.isAbsolute(value) && !looksLikeWindowsAbsolutePath(value);
 }
 
 function looksLikeNodeModulesResolvedPath(value) {
@@ -329,7 +449,11 @@ function isLexicallyConfinedToRepo(candidatePath, repoRoot) {
 }
 
 function relStartsOutsideRepo(value) {
-  return value === ".." || value.startsWith(`..${path.sep}`);
+  return value === ".." || value.startsWith("../") || value.startsWith("..\\");
+}
+
+function pathModuleForValue(value) {
+  return looksLikeWindowsAbsolutePath(value) ? path.win32 : path;
 }
 
 function hasControlWhitespace(value) {
@@ -338,10 +462,12 @@ function hasControlWhitespace(value) {
 
 module.exports = {
   createRuntimeTraceHelpers,
+  findValidatedLinkedPackageRoot,
   isSafeRepoRelativePath,
   normalizeContextValue,
   normalizeRuntimeModuleValue,
   normalizeRuntimeResolvedValue,
+  preservesValidatedLinkedPackageSubpath,
   resolveContextPath,
   sanitizeNodeModulesResolvedPath,
 };
