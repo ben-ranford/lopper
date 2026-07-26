@@ -432,7 +432,8 @@ func TestCallAnalyseTopRejectsInitializedTraversalShapedOutsideCachePath(t *test
 		t.Fatalf("mkdir objects: %v", err)
 	}
 	testutil.MustWriteFile(t, filepath.Join(outsideCache, "sentinel.txt"), "keep\n")
-	traversalPath := filepath.Join(repo, "..", "outside", "cache")
+	separator := string(os.PathSeparator)
+	traversalPath := repo + separator + ".." + separator + "outside" + separator + "cache"
 	server := NewServer(Options{Analyzer: analysis.NewService()})
 
 	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
