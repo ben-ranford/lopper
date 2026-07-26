@@ -54,6 +54,10 @@ func workflowInvalidCase(name, baseID, headID string, expected ...string) workfl
 		headID:       headID,
 		wantCode:     2,
 		wantContains: append([]string{"Comparison status: invalid"}, expected...),
+		wantOmit: []string{
+			"Result: memory benchmark gate passed.",
+			"Result: memory benchmark regression detected.",
+		},
 	}
 }
 
