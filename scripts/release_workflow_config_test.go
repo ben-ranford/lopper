@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -3089,6 +3091,10 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		`write_invalid_memory_summary() { \`,
+		`printf "2\n" > "$(MEMORY_BENCH_STATUS)"`,
+		`requested base ref '$$base_ref' is missing or invalid`,
+		`requested base ref '$$base_ref' is not related to HEAD`,
 		`benchdelta_bin="$$bench_dir/benchdelta"`,
 		`$(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta`,
 		`"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)"`,
@@ -3105,11 +3111,73 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	for _, omit := range []string{
 		`$(GO_CMD) run ./tools/benchdelta`,
 		`if [ "$$status" -eq 2 ]; then`,
+		`falling back to 'HEAD~1'`,
+		`No valid memory benchmark base ref found; skipping memory benchmark gate.`,
+		`is not related to HEAD; skipping memory benchmark gate.`,
 	} {
 		if strings.Contains(target, omit) {
 			t.Fatalf("bench-gate target must not contain %q", omit)
 		}
 	}
+}
+
+func TestMakefileBenchGateFailsClosedForInvalidRequestedBase(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	summaryPath := filepath.Join("nested", "summary", "memory-bench-summary.md")
+	statusPath := filepath.Join("nested", "status", "memory-bench-status.txt")
+	baseOutputPath := filepath.Join("nested", "base", "bench-base.out")
+	vars := map[string]string{
+		"MEMORY_BENCH_BASE":    "refs/heads/does-not-exist",
+		"MEMORY_BENCH_SUMMARY": summaryPath,
+		"MEMORY_BENCH_STATUS":  statusPath,
+		"BENCH_BASE_OUTPUT":    baseOutputPath,
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	if !strings.Contains(output, "missing or invalid; failing closed") {
+		t.Fatalf("expected invalid base failure output, got:\n%s", output)
+	}
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark input could not be read: requested base ref 'refs/heads/does-not-exist' is missing or invalid.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+	}
+	assertMemoryBenchArtifactsAtPaths(t, repo, summaryPath, statusPath, "2\n", wantContains, wantOmit)
+	assertFileExists(t, filepath.Join(repo, filepath.Dir(baseOutputPath)))
+}
+
+func TestMakefileBenchGateFailsClosedForUnrelatedRequestedBase(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	runGitCommand(t, repo, "checkout", "--orphan", "unrelated-base")
+	writeFile(t, filepath.Join(repo, "unrelated.txt"), "unrelated\n")
+	runGitCommand(t, repo, "add", "unrelated.txt")
+	runGitCommand(t, repo, "commit", "-m", "unrelated history")
+	runGitCommand(t, repo, "checkout", "main")
+
+	vars := map[string]string{
+		"MEMORY_BENCH_BASE":    "unrelated-base",
+		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
+		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	if !strings.Contains(output, "not related to HEAD; failing closed") {
+		t.Fatalf("expected unrelated base failure output, got:\n%s", output)
+	}
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark input could not be read: requested base ref 'unrelated-base' is not related to HEAD.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
 }
 
 func TestMakefileLockfiledriftHeadContract(t *testing.T) {
@@ -5002,6 +5070,34 @@ func runMakeTargetInDir(t *testing.T, dir, target string, vars map[string]string
 	return string(output)
 }
 
+func runMakeTargetInDirExpectExitCode(t *testing.T, dir, target string, vars map[string]string, wantExitCode int) (string, int) {
+	t.Helper()
+
+	args := []string{target}
+	for key, value := range vars {
+		args = append(args, key+"="+value)
+	}
+
+	cmd := exec.Command("make", args...)
+	cmd.Dir = dir
+	cmd.Env = gitexec.SanitizedEnv()
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		if wantExitCode != 0 {
+			t.Fatalf("make %s exited 0, want %d\n%s", target, wantExitCode, output)
+		}
+		return string(output), 0
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("make %s returned unexpected error: %v\n%s", target, err, output)
+	}
+	if exitErr.ExitCode() != wantExitCode {
+		t.Fatalf("make %s exit code = %d, want %d\n%s", target, exitErr.ExitCode(), wantExitCode, output)
+	}
+	return string(output), exitErr.ExitCode()
+}
+
 func newTempCoverageMakeRepo(t *testing.T) string {
 	t.Helper()
 
@@ -5010,6 +5106,19 @@ func newTempCoverageMakeRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte(makefile), 0o644); err != nil {
 		t.Fatalf("write temp Makefile: %v", err)
 	}
+	return root
+}
+
+func newTempBenchGateRepo(t *testing.T) string {
+	t.Helper()
+
+	root := newTempCoverageMakeRepo(t)
+	runGitCommand(t, root, "init", "-b", "main")
+	runGitCommand(t, root, "config", "user.name", "Ben Ranford")
+	runGitCommand(t, root, "config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+	writeFile(t, filepath.Join(root, "README.md"), "baseline\n")
+	runGitCommand(t, root, "add", "README.md", "Makefile")
+	runGitCommand(t, root, "commit", "-m", "baseline")
 	return root
 }
 
@@ -5049,6 +5158,55 @@ func assertFileExists(t *testing.T, path string) {
 
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected %s to exist, err=%v", path, err)
+	}
+}
+
+func runGitCommand(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitexec.SanitizedEnv()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func assertMemoryBenchArtifacts(t *testing.T, repo string, wantStatus string, wantContains []string, wantOmit []string) {
+	t.Helper()
+
+	assertMemoryBenchArtifactsAtPaths(t, repo, filepath.Join(".artifacts", "memory-bench-summary.md"), filepath.Join(".artifacts", "memory-bench-status.txt"), wantStatus, wantContains, wantOmit)
+}
+
+func assertMemoryBenchArtifactsAtPaths(t *testing.T, repo string, summaryRelPath string, statusRelPath string, wantStatus string, wantContains []string, wantOmit []string) {
+	t.Helper()
+
+	statusPath := filepath.Join(repo, statusRelPath)
+	statusBytes, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("read memory bench status: %v", err)
+	}
+	if string(statusBytes) != wantStatus {
+		t.Fatalf("memory bench status = %q, want %q", statusBytes, wantStatus)
+	}
+
+	summaryPath := filepath.Join(repo, summaryRelPath)
+	summaryBytes, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read memory bench summary: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range wantContains {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected memory bench summary to contain %q, got:\n%s", want, summary)
+		}
+	}
+	for _, omit := range wantOmit {
+		if strings.Contains(summary, omit) {
+			t.Fatalf("expected memory bench summary to omit %q, got:\n%s", omit, summary)
+		}
 	}
 }
 

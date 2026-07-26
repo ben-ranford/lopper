@@ -575,13 +575,13 @@ func TestMainExitCodesAndErrorPaths(t *testing.T) {
 			name:       "missing base file",
 			args:       []string{"-base", filepath.Join(dir, "missing.txt"), "-head", headPath},
 			wantCode:   exitCodeInvalid,
-			wantOutput: "parse base benchmarks",
+			wantOutput: "base benchmark input could not be read",
 		},
 		{
 			name:       "missing head file",
 			args:       []string{"-base", basePath, "-head", filepath.Join(dir, "missing-head.txt")},
 			wantCode:   exitCodeInvalid,
-			wantOutput: "parse head benchmarks",
+			wantOutput: "head benchmark input could not be read",
 		},
 	}
 
@@ -644,6 +644,116 @@ func TestMainSummaryWriteSuccess(t *testing.T) {
 	}
 	if !strings.Contains(string(summaryBytes), "Result: memory benchmark gate passed.") {
 		t.Fatalf("expected written summary to contain pass result, got:\n%s", summaryBytes)
+	}
+}
+
+func TestMainInvalidComparisonsStillWriteDeterministicSummaryArtifacts(t *testing.T) {
+	if runBenchdeltaMainIfRequested(t) {
+		return
+	}
+
+	dir, _, headPath := writeMatchingBenchmarkFixtures(t)
+	malformedPath := filepath.Join(dir, "malformed.txt")
+	if err := os.WriteFile(malformedPath, []byte(strings.Repeat("x", 70*1024)+"\n"), 0o644); err != nil {
+		t.Fatalf("write malformed benchmark file: %v", err)
+	}
+	writeBenchmarkFixture(t, filepath.Join(dir, "zero-overlap-base.txt"), reportFixture(completeBenchmark("BaseOnly")))
+	writeBenchmarkFixture(t, filepath.Join(dir, "zero-overlap-head.txt"), reportFixture(completeBenchmark("HeadOnly")))
+
+	tests := []struct {
+		name         string
+		args         []string
+		wantContains []string
+		wantOmit     []string
+	}{
+		{
+			name: "missing base file",
+			args: []string{"-base", filepath.Join(dir, "missing.txt"), "-head", headPath},
+			wantContains: []string{
+				"Comparison status: invalid",
+				"Base benchmarks: unavailable",
+				"Head benchmarks: unavailable",
+				"base benchmark input could not be read",
+				"missing.txt",
+			},
+			wantOmit: []string{
+				"Result: memory benchmark gate passed.",
+				"Result: memory benchmark regression detected.",
+			},
+		},
+		{
+			name: "unreadable base path",
+			args: []string{"-base", dir, "-head", headPath},
+			wantContains: []string{
+				"Comparison status: invalid",
+				"Base benchmarks: unavailable",
+				"Head benchmarks: unavailable",
+				"base benchmark input could not be read",
+			},
+			wantOmit: []string{
+				"Result: memory benchmark gate passed.",
+				"Result: memory benchmark regression detected.",
+			},
+		},
+		{
+			name: "malformed base file",
+			args: []string{"-base", malformedPath, "-head", headPath},
+			wantContains: []string{
+				"Comparison status: invalid",
+				"Base benchmarks: unavailable",
+				"Head benchmarks: unavailable",
+				"base benchmark input could not be read",
+				"token too long",
+			},
+			wantOmit: []string{
+				"Result: memory benchmark gate passed.",
+				"Result: memory benchmark regression detected.",
+			},
+		},
+		{
+			name: "unrelated head comparison",
+			args: []string{"-base", filepath.Join(dir, "zero-overlap-base.txt"), "-head", filepath.Join(dir, "zero-overlap-head.txt")},
+			wantContains: []string{
+				"Comparison status: invalid",
+				"Base benchmarks: 1",
+				"Head benchmarks: 1",
+				"No overlapping benchmark names were found between base and head.",
+			},
+			wantOmit: []string{
+				"Result: memory benchmark gate passed.",
+				"Result: memory benchmark regression detected.",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			summaryPath := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-")+".md")
+			args := append(append([]string{}, tc.args...), "-summary-out", summaryPath)
+			output, exitCode := runBenchdeltaHelper(t, "TestMainInvalidComparisonsStillWriteDeterministicSummaryArtifacts", args...)
+			assertBenchdeltaHelperExit(t, output, exitCode, exitCodeInvalid)
+			assertBenchdeltaSummaryArtifact(t, summaryPath, tc.wantContains, tc.wantOmit)
+		})
+	}
+}
+
+func assertBenchdeltaSummaryArtifact(t *testing.T, summaryPath string, wantContains, wantOmit []string) {
+	t.Helper()
+
+	summaryBytes, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read summary artifact: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range wantContains {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected summary artifact to contain %q, got:\n%s", want, summary)
+		}
+	}
+	for _, omit := range wantOmit {
+		if strings.Contains(summary, omit) {
+			t.Fatalf("expected summary artifact to omit %q, got:\n%s", omit, summary)
+		}
 	}
 }
 

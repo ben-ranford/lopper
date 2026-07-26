@@ -208,24 +208,21 @@ bench-gate:
 	@set -eu; \
 	requested_base_ref="$(MEMORY_BENCH_BASE)"; \
 	base_ref="$$requested_base_ref"; \
-	used_fallback=0; \
-	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
-		echo "Warning: memory benchmark base ref '$$base_ref' not found; falling back to 'HEAD~1'."; \
-		base_ref="HEAD~1"; \
-		used_fallback=1; \
-	fi; \
 	mkdir -p $$(dirname "$(BENCH_BASE_OUTPUT)"); \
+	write_invalid_memory_summary() { \
+		mkdir -p $$(dirname "$(MEMORY_BENCH_SUMMARY)") $$(dirname "$(MEMORY_BENCH_STATUS)"); \
+		printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark input could not be read for a safe memory comparison.\n" "$(MEMORY_BENCH_MAX_BYTES_PCT)" "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" "$$1" > "$(MEMORY_BENCH_SUMMARY)"; \
+		printf "2\n" > "$(MEMORY_BENCH_STATUS)"; \
+	}; \
 	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
-		echo "No valid memory benchmark base ref found; skipping memory benchmark gate."; \
-		printf "## Memory Benchmarks\n\nNo valid base ref found; skipping memory benchmark gate.\n" > "$(MEMORY_BENCH_SUMMARY)"; \
-		printf "0\n" > "$(MEMORY_BENCH_STATUS)"; \
-		exit 0; \
+		echo "Memory benchmark base ref '$$base_ref' is missing or invalid; failing closed."; \
+		write_invalid_memory_summary "base benchmark input could not be read: requested base ref '$$base_ref' is missing or invalid."; \
+		exit 2; \
 	fi; \
 	if ! base_commit=$$(git merge-base "$$base_ref" HEAD 2>/dev/null); then \
-		echo "Base ref '$$base_ref' is not related to HEAD; skipping memory benchmark gate."; \
-		printf "## Memory Benchmarks\n\nBase ref '%s' is not related to HEAD; skipping memory benchmark gate.\n" "$$base_ref" > "$(MEMORY_BENCH_SUMMARY)"; \
-		printf "0\n" > "$(MEMORY_BENCH_STATUS)"; \
-		exit 0; \
+		echo "Memory benchmark base ref '$$base_ref' is not related to HEAD; failing closed."; \
+		write_invalid_memory_summary "base benchmark input could not be read: requested base ref '$$base_ref' is not related to HEAD."; \
+		exit 2; \
 	fi; \
 	bench_dir=$$(mktemp -d); \
 	base_tree="$$bench_dir/base"; \
@@ -233,11 +230,7 @@ bench-gate:
 	head_output_tmp=$$(mktemp); \
 	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
 	trap cleanup EXIT INT TERM; \
-	if [ "$$used_fallback" -eq 1 ]; then \
-		echo "Running memory benchmark delta against fallback base $$base_ref (requested $$requested_base_ref)."; \
-	else \
-		echo "Running memory benchmark delta against $$base_ref."; \
-	fi; \
+	echo "Running memory benchmark delta against $$base_ref."; \
 	(unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); \
 	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
 		cat "$$base_output_tmp"; \

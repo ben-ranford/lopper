@@ -94,19 +94,20 @@ func main() {
 		exitErr(errors.New("both -base and -head are required"))
 	}
 
-	baseInput, err := parseBenchmarkFile(*basePath)
-	if err != nil {
-		exitErr(fmt.Errorf("parse base benchmarks: %w", err))
-	}
-	headInput, err := parseBenchmarkFile(*headPath)
-	if err != nil {
-		exitErr(fmt.Errorf("parse head benchmarks: %w", err))
-	}
-
 	limits := deltaThresholds{
 		bytesPct:  *maxBytesPct,
 		allocsPct: *maxAllocsPct,
 	}
+
+	baseInput, err := parseBenchmarkFile(*basePath)
+	if err != nil {
+		exitWithSummary(*summaryOut, invalidInputSummary(limits, "unavailable", "unavailable", fmt.Sprintf("base benchmark input could not be read: %v", err)))
+	}
+	headInput, err := parseBenchmarkFile(*headPath)
+	if err != nil {
+		exitWithSummary(*summaryOut, invalidInputSummary(limits, benchmarkCountLabel(len(baseInput.data)), "unavailable", fmt.Sprintf("head benchmark input could not be read: %v", err)))
+	}
+
 	summary, statusCode := compareBenchmarks(baseInput, headInput, limits)
 	fmt.Print(summary)
 	if *summaryOut != "" {
@@ -121,6 +122,16 @@ func main() {
 
 func exitErr(err error) {
 	fmt.Fprintln(os.Stderr, err)
+	os.Exit(exitCodeInvalid)
+}
+
+func exitWithSummary(summaryOut, summary string) {
+	fmt.Print(summary)
+	if strings.TrimSpace(summaryOut) != "" {
+		if err := os.WriteFile(summaryOut, []byte(summary), 0o600); err != nil {
+			exitErr(fmt.Errorf("write summary: %w", err))
+		}
+	}
 	os.Exit(exitCodeInvalid)
 }
 
@@ -349,6 +360,18 @@ func writeComparisonSummary(buf *bytes.Buffer, summary comparisonSummary) {
 	default:
 		buf.WriteString("Result: memory benchmark gate passed.\n")
 	}
+}
+
+func invalidInputSummary(limits deltaThresholds, baseCount, headCount, diagnostic string) string {
+	var buf bytes.Buffer
+	buf.WriteString("## Memory Benchmarks\n\n")
+	fmt.Fprintf(&buf, "Thresholds: bytes/op <= +%.1f%%, allocs/op <= +%.1f%%\n\n", limits.bytesPct, limits.allocsPct)
+	fmt.Fprintf(&buf, "Base benchmarks: %s\n", baseCount)
+	fmt.Fprintf(&buf, "Head benchmarks: %s\n\n", headCount)
+	writeList(&buf, "Input errors:", []string{diagnostic}, func(item string) string { return item })
+	buf.WriteString("Comparison status: invalid\n")
+	buf.WriteString("Result: benchmark input could not be read for a safe memory comparison.\n")
+	return buf.String()
 }
 
 func writeComparisonTable(buf *bytes.Buffer, rows []comparisonRow, showEmptyMessage bool) {
