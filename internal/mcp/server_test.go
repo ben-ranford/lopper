@@ -17,6 +17,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 type fakeAnalyser struct {
@@ -176,6 +177,9 @@ func assertDependencySchema(t *testing.T, tool toolSpec) {
 	properties := tool.InputSchema["properties"].(map[string]any)
 	if _, ok := properties["topN"]; !ok {
 		t.Fatalf("dependency schema should advertise topN as accepted input")
+	}
+	if cacheReadOnly, ok := properties["cacheReadOnly"].(map[string]any); !ok || cacheReadOnly["default"] != true {
+		t.Fatalf("dependency schema should advertise read-only cache default, got %#v", properties["cacheReadOnly"])
 	}
 }
 
@@ -370,6 +374,144 @@ func TestCallCompareBaselineAppliesBaselineDiff(t *testing.T) {
 	}
 	if !strings.Contains(payload.Summary, "Waste delta") {
 		t.Fatalf("expected baseline summary with delta, got %q", payload.Summary)
+	}
+}
+
+func TestCallAnalyseTopForcesReadOnlyCacheAndLeavesOutsidePathAbsent(t *testing.T) {
+	repo := t.TempDir()
+	writeMCPJSFixture(t, repo)
+	outsideRoot := t.TempDir()
+	outsideCache := filepath.Join(outsideRoot, "outside-cache")
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     outsideCache,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected disabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
+		t.Fatalf("expected outside cache path to remain absent, got err=%v", err)
+	}
+}
+
+func TestCallAnalyseTopLeavesTraversalShapedOutsideCachePathAbsent(t *testing.T) {
+	repoRoot := t.TempDir()
+	repo := filepath.Join(repoRoot, "repo")
+	writeMCPJSFixture(t, repo)
+	outsideCache := filepath.Join(repoRoot, "outside", "cache")
+	traversalPath := filepath.Join(repo, "..", "outside", "cache")
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     traversalPath,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
+		t.Fatalf("expected traversal-shaped outside cache path to remain absent, got err=%v", err)
+	}
+}
+
+func TestCallAnalyseTopLeavesSymlinkedOutsideCachePathUnmodified(t *testing.T) {
+	repo := t.TempDir()
+	writeMCPJSFixture(t, repo)
+	outsideRoot := t.TempDir()
+	outsideCache := filepath.Join(outsideRoot, "cache")
+	testutil.MustWriteFile(t, filepath.Join(outsideCache, "sentinel.txt"), "keep\n")
+	linkPath := filepath.Join(repo, "linked-cache")
+	if err := os.Symlink(outsideCache, linkPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     linkPath,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected disabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	if _, err := os.Stat(filepath.Join(outsideCache, "keys")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlinked outside cache keys dir to remain absent, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideCache, "objects")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlinked outside cache objects dir to remain absent, got err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(outsideCache, "sentinel.txt"))
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("expected sentinel file to remain unchanged, got %q", string(data))
+	}
+}
+
+func TestCachePathReadyForReadOnlyRequiresInitializedDirectories(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	cachePath := filepath.Join(root, "cache")
+	if cachePathReadyForReadOnly(cachePath) {
+		t.Fatalf("expected missing cache path to be unreadable")
+	}
+	if err := os.MkdirAll(filepath.Join(cachePath, "keys"), 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(cachePath, "objects"), "not-a-dir\n")
+	if cachePathReadyForReadOnly(cachePath) {
+		t.Fatalf("expected non-directory objects path to be unreadable")
+	}
+	if err := os.Remove(filepath.Join(cachePath, "objects")); err != nil {
+		t.Fatalf("remove objects file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cachePath, "objects"), 0o755); err != nil {
+		t.Fatalf("mkdir objects: %v", err)
+	}
+	if !cachePathReadyForReadOnly(cachePath) {
+		t.Fatalf("expected initialized cache path to be readable")
+	}
+}
+
+func TestPathContainsSymlinkDetectsAncestorLinks(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	linkRoot := filepath.Join(root, "link-root")
+	if err := os.Symlink(target, linkRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if !pathContainsSymlink(filepath.Join(linkRoot, "cache")) {
+		t.Fatalf("expected symlinked ancestor to be detected")
+	}
+	if pathContainsSymlink(filepath.Join(root, "plain", "cache")) {
+		t.Fatalf("expected plain path without symlinks to be allowed")
 	}
 }
 
@@ -570,6 +712,14 @@ func sampleReport(repoPath string) report.Report {
 			UsedPercent:       50,
 		},
 	}
+}
+
+func writeMCPJSFixture(t *testing.T, repo string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
 }
 
 func mustJSON(t *testing.T, value any) json.RawMessage {
