@@ -231,7 +231,7 @@ func runtimeContextModules(values map[string]int, repoPath string) []report.Runt
 	return runtimeModules(redacted)
 }
 
-func visibleRuntimeContextModule(value string, repoPath string) string {
+func visibleRuntimeContextModule(value, repoPath string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
