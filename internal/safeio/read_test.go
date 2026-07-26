@@ -1229,18 +1229,18 @@ func pinnedPathReaders() []pinnedPathReaderCase {
 		},
 		{
 			name: "read-file-limit",
-			read: func(_ string, path string) (string, error) {
+			read: func(_, path string) (string, error) {
 				data, err := ReadFileLimit(path, 0)
 				return string(data), err
 			},
-			rootOpenPath: func(_ string, path string) string { return filepath.Dir(path) },
+			rootOpenPath: func(_, path string) string { return filepath.Dir(path) },
 		},
 		{
 			name: "open-file",
-			read: func(_ string, path string) (string, error) {
+			read: func(_, path string) (string, error) {
 				return openFileContent(path)
 			},
-			rootOpenPath: func(_ string, path string) string { return filepath.Dir(path) },
+			rootOpenPath: func(_, path string) string { return filepath.Dir(path) },
 		},
 		{
 			name: "open-file-within-root",

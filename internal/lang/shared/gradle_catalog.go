@@ -22,6 +22,9 @@ const (
 	defaultGradleCatalogMaxTraversalEntries = 4096
 	defaultGradleCatalogMaxFiles            = 1024
 	defaultGradleCatalogMaxWorkItems        = 1024
+	gradleCatalogScanOperation              = "Gradle version catalog scan"
+	settingsGradleFileName                  = "settings.gradle"
+	settingsGradleKTSFileName               = "settings.gradle.kts"
 	gradleCatalogReadWarningFormat          = "unable to read %s: %v"
 	unsupportedGradleCatalogLibraryFormat   = "unsupported Gradle version catalog library %q in %s"
 	unsupportedGradleCatalogModuleFormat    = "unsupported Gradle version catalog module %q in %s"
@@ -128,7 +131,7 @@ func LoadGradleCatalogResolverWithinRoot(ctx context.Context, repoPath string, r
 	}
 	registry := newGradleCatalogRegistry(repoPath)
 	if err := registry.collectSourcesWithinRoot(ctx, root); err != nil {
-		if warning, limited := RootedWalkBudgetWarning("Gradle version catalog scan", rootedGradleCatalogWalkBudget(), err); limited {
+		if warning, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, rootedGradleCatalogWalkBudget(), err); limited {
 			registry.warnings = append(registry.warnings, warning)
 		} else {
 			return GradleCatalogResolver{}, nil, err
@@ -161,7 +164,7 @@ func (r *gradleCatalogRegistry) collectSourcesWithinRoot(ctx context.Context, ro
 	budget := rootedGradleCatalogWalkBudget()
 	walkErr := WalkRepoFilesWithinRootPinned(ctx, r.repoPath, root, budget, maybeSkipGradleCatalogDirectoryName, func(file RootedWalkFile) error {
 		switch strings.ToLower(file.Leaf) {
-		case "settings.gradle", "settings.gradle.kts":
+		case settingsGradleFileName, settingsGradleKTSFileName:
 			return r.loadSettingsFileWithinPinnedParent(file.Parent, file.Leaf, file.Path)
 		case defaultGradleCatalogFileName:
 			r.registerDefaultCatalog(file.Path)
@@ -169,13 +172,13 @@ func (r *gradleCatalogRegistry) collectSourcesWithinRoot(ctx context.Context, ro
 		return nil
 	})
 	if walkErr != nil {
-		if _, limited := RootedWalkBudgetWarning("Gradle version catalog scan", budget, walkErr); !limited {
+		if _, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, budget, walkErr); !limited {
 			return walkErr
 		}
 	}
 	sourceWalkErr := r.captureSourcesWithinRoot(ctx, root)
 	if sourceWalkErr != nil {
-		if _, limited := RootedWalkBudgetWarning("Gradle version catalog scan", budget, sourceWalkErr); !limited {
+		if _, limited := RootedWalkBudgetWarning(gradleCatalogScanOperation, budget, sourceWalkErr); !limited {
 			return sourceWalkErr
 		}
 	}
@@ -229,7 +232,7 @@ func rootedGradleCatalogWalkBudget() RootedWalkBudget {
 		MaxWorkItems:        defaultGradleCatalogMaxWorkItems,
 		CountCandidate: func(_ string, entry fs.DirEntry) bool {
 			switch strings.ToLower(entry.Name()) {
-			case "settings.gradle", "settings.gradle.kts", defaultGradleCatalogFileName:
+			case settingsGradleFileName, settingsGradleKTSFileName, defaultGradleCatalogFileName:
 				return true
 			default:
 				return false
@@ -246,7 +249,7 @@ func (r *gradleCatalogRegistry) visit(path string, entry fs.DirEntry, err error)
 		return maybeSkipGradleCatalogDirectory(entry)
 	}
 	switch strings.ToLower(entry.Name()) {
-	case "settings.gradle", "settings.gradle.kts":
+	case settingsGradleFileName, settingsGradleKTSFileName:
 		r.loadSettingsFile(path)
 	case defaultGradleCatalogFileName:
 		r.registerDefaultCatalog(path)

@@ -1419,13 +1419,65 @@ func advisoryWriteLegacyLockPath(t *testing.T, path, contents string) fs.FileInf
 
 func advisoryReplaceLegacyLockPath(t *testing.T, path string, original fs.FileInfo) {
 	t.Helper()
+	replacementPath, replacementInfo := advisoryCreateDistinctLegacyLockReplacement(t, path, original)
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("unlink legacy publication lock path: %v", err)
 	}
-	replacement := advisoryWriteLegacyLockPath(t, path, "replacement")
-	if os.SameFile(original, replacement) {
-		t.Fatal("legacy publication lock replacement reused the original identity")
+	if err := os.Rename(replacementPath, path); err != nil {
+		t.Fatalf("rename distinct legacy publication lock replacement: %v", err)
 	}
+	renamedInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat renamed legacy publication lock replacement: %v", err)
+	}
+	if !os.SameFile(replacementInfo, renamedInfo) {
+		t.Fatal("legacy publication lock replacement changed identity during rename")
+	}
+}
+
+func advisoryCreateDistinctLegacyLockReplacement(t *testing.T, path string, original fs.FileInfo) (string, fs.FileInfo) {
+	t.Helper()
+
+	dir := filepath.Dir(path)
+	pattern := filepath.Base(path) + ".replacement-*"
+	for attempt := 0; attempt < 8; attempt++ {
+		file, err := os.CreateTemp(dir, pattern)
+		if err != nil {
+			t.Fatalf("create distinct legacy publication lock replacement: %v", err)
+		}
+		replacementPath := file.Name()
+		if _, err := file.WriteString("replacement"); err != nil {
+			if closeErr := file.Close(); closeErr != nil {
+				t.Logf("close failed replacement file after write error: %v", closeErr)
+			}
+			if removeErr := os.Remove(replacementPath); removeErr != nil {
+				t.Logf("remove failed replacement file after write error: %v", removeErr)
+			}
+			t.Fatalf("write distinct legacy publication lock replacement: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			if removeErr := os.Remove(replacementPath); removeErr != nil {
+				t.Logf("remove failed replacement file after close error: %v", removeErr)
+			}
+			t.Fatalf("close distinct legacy publication lock replacement: %v", err)
+		}
+		replacementInfo, err := os.Lstat(replacementPath)
+		if err != nil {
+			if removeErr := os.Remove(replacementPath); removeErr != nil {
+				t.Logf("remove failed replacement file after lstat error: %v", removeErr)
+			}
+			t.Fatalf("lstat distinct legacy publication lock replacement: %v", err)
+		}
+		if os.SameFile(original, replacementInfo) {
+			if removeErr := os.Remove(replacementPath); removeErr != nil {
+				t.Logf("remove failed reused-identity replacement file: %v", removeErr)
+			}
+			continue
+		}
+		return replacementPath, replacementInfo
+	}
+	t.Fatal("failed to create a distinct legacy publication lock replacement")
+	return "", nil
 }
 
 func advisoryPublicationLockChildCommand(t *testing.T, mode, cachePath, markerPath, testName string) (*exec.Cmd, *bytes.Buffer) {

@@ -117,7 +117,7 @@ func testRootedBuildCandidateReadSurvivesSwap(t *testing.T) {
 	writeJVMRootedCandidate(t, filepath.Join(repo, parentRel, leaf), original)
 	swap, root := openSwappingJVMRoot(t, repo, parentRel, leaf, replacement, 1)
 	var parsedContent string
-	parser := func(_ string, content string) ([]dependencyDescriptor, []string) {
+	parser := func(_, content string) ([]dependencyDescriptor, []string) {
 		parsedContent = content
 		return nil, nil
 	}

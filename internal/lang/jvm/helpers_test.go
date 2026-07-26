@@ -662,37 +662,57 @@ func testJVMOversizedDirectoryFailsClosed(t *testing.T) {
 	}
 
 	err = walker.walk()
-	assertJVMOversizedDirectoryOutcome(t, repo, err, markerEntry, fillEntry, directory, budget, detect, openCalls)
+	assertJVMOversizedDirectoryOutcome(t, jvmOversizedDirectoryOutcome{
+		repo:        repo,
+		err:         err,
+		markerEntry: markerEntry,
+		fillEntry:   fillEntry,
+		directory:   directory,
+		budget:      budget,
+		detect:      detect,
+		openCalls:   openCalls,
+	})
 	assertJVMOversizedDirectoryReads(t, directory, wantChildren)
 }
 
-func assertJVMOversizedDirectoryOutcome(t *testing.T, repo string, err error, markerEntry, fillEntry fs.DirEntry, directory *jvmDetectionTestDirectory, budget *jvmDetectionBudget, detect *language.Detection, openCalls int) {
+type jvmOversizedDirectoryOutcome struct {
+	repo        string
+	err         error
+	markerEntry fs.DirEntry
+	fillEntry   fs.DirEntry
+	directory   *jvmDetectionTestDirectory
+	budget      *jvmDetectionBudget
+	detect      *language.Detection
+	openCalls   int
+}
+
+func assertJVMOversizedDirectoryOutcome(t *testing.T, outcome jvmOversizedDirectoryOutcome) {
 	t.Helper()
 
-	wantChildren := budget.maxTraversalEntries - 1
-	if !errors.Is(err, errJVMDetectionTraversalLimit) {
-		t.Fatalf("expected explicit traversal-limit error, got %v", err)
+	wantChildren := outcome.budget.maxTraversalEntries - 1
+	if !errors.Is(outcome.err, errJVMDetectionTraversalLimit) {
+		t.Fatalf("expected explicit traversal-limit error, got %v", outcome.err)
 	}
-	if !strings.Contains(err.Error(), repo) {
-		t.Fatalf("expected traversal-limit error to contain directory path %q, got %v", repo, err)
+	if !strings.Contains(outcome.err.Error(), outcome.repo) {
+		t.Fatalf("expected traversal-limit error to contain directory path %q, got %v", outcome.repo, outcome.err)
 	}
-	if markerEntry.Name() >= fillEntry.Name() || !directory.overflowReturned {
-		t.Fatalf("expected lexically early JVM marker to appear only in overflow probe, marker=%q fill=%q", markerEntry.Name(), fillEntry.Name())
+	if outcome.markerEntry.Name() >= outcome.fillEntry.Name() || !outcome.directory.overflowReturned {
+		t.Fatalf("expected lexically early JVM marker to appear only in overflow probe, marker=%q fill=%q", outcome.markerEntry.Name(), outcome.fillEntry.Name())
 	}
-	if directory.entriesReturned != wantChildren+1 {
-		t.Fatalf("expected %d bounded children plus one overflow probe, got %d", wantChildren, directory.entriesReturned)
+	if outcome.directory.entriesReturned != wantChildren+1 {
+		t.Fatalf("expected %d bounded children plus one overflow probe, got %d", wantChildren, outcome.directory.entriesReturned)
 	}
-	if budget.traversalEntriesSeen != 1 || budget.traversalEntriesQueued != wantChildren {
-		t.Fatalf("expected root visited and %d children bounded in queue, got seen=%d queued=%d", wantChildren, budget.traversalEntriesSeen, budget.traversalEntriesQueued)
+	if outcome.budget.traversalEntriesSeen != 1 || outcome.budget.traversalEntriesQueued != wantChildren {
+		t.Fatalf("expected root visited and %d children bounded in queue, got seen=%d queued=%d", wantChildren, outcome.budget.traversalEntriesSeen, outcome.budget.traversalEntriesQueued)
 	}
-	if budget.confinedCandidatesSeen != 0 {
-		t.Fatalf("expected overflow marker not to consume candidate budget, got %d", budget.confinedCandidatesSeen)
+	if outcome.budget.confinedCandidatesSeen != 0 {
+		t.Fatalf("expected overflow marker not to consume candidate budget, got %d", outcome.budget.confinedCandidatesSeen)
 	}
-	if detect.Matched {
-		t.Fatalf("expected overflow marker not to produce a partial detection, got %#v", detect)
+	if outcome.detect.Matched {
+		t.Fatalf("expected overflow marker not to produce a partial detection, got %#v", outcome.detect)
 	}
-	if openCalls != 1 || directory.closeCalls != 1 {
-		t.Fatalf("expected one directory open/close, got opens=%d closes=%d", openCalls, directory.closeCalls)
+	if outcome.openCalls != 1 || outcome.directory.closeCalls != 1 {
+		t.Fatalf("expected one directory open/close, got opens=%d closes=%d", outcome.openCalls, outcome.directory.closeCalls)
 	}
 }
 

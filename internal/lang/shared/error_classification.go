@@ -23,7 +23,7 @@ func IsPureSentinelError(err error, sentinels ...error) bool {
 	return matchesSentinel(err, sentinels)
 }
 
-func arePureSentinelCauses(causes []error, sentinels []error) bool {
+func arePureSentinelCauses(causes, sentinels []error) bool {
 	found := false
 	for _, cause := range causes {
 		if cause == nil {
