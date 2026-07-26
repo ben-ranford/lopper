@@ -732,23 +732,28 @@ func TestMainInvalidComparisonsStillWriteDeterministicSummaryArtifacts(t *testin
 			args := append(append([]string{}, tc.args...), "-summary-out", summaryPath)
 			output, exitCode := runBenchdeltaHelper(t, "TestMainInvalidComparisonsStillWriteDeterministicSummaryArtifacts", args...)
 			assertBenchdeltaHelperExit(t, output, exitCode, exitCodeInvalid)
-
-			summaryBytes, err := os.ReadFile(summaryPath)
-			if err != nil {
-				t.Fatalf("read summary artifact: %v", err)
-			}
-			summary := string(summaryBytes)
-			for _, want := range tc.wantContains {
-				if !strings.Contains(summary, want) {
-					t.Fatalf("expected summary artifact to contain %q, got:\n%s", want, summary)
-				}
-			}
-			for _, omit := range tc.wantOmit {
-				if strings.Contains(summary, omit) {
-					t.Fatalf("expected summary artifact to omit %q, got:\n%s", omit, summary)
-				}
-			}
+			assertBenchdeltaSummaryArtifact(t, summaryPath, tc.wantContains, tc.wantOmit)
 		})
+	}
+}
+
+func assertBenchdeltaSummaryArtifact(t *testing.T, summaryPath string, wantContains, wantOmit []string) {
+	t.Helper()
+
+	summaryBytes, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read summary artifact: %v", err)
+	}
+	summary := string(summaryBytes)
+	for _, want := range wantContains {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected summary artifact to contain %q, got:\n%s", want, summary)
+		}
+	}
+	for _, omit := range wantOmit {
+		if strings.Contains(summary, omit) {
+			t.Fatalf("expected summary artifact to omit %q, got:\n%s", omit, summary)
+		}
 	}
 }
 
