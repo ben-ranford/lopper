@@ -193,12 +193,17 @@ func (r *gradleCatalogRegistry) captureSourcesWithinRoot(ctx context.Context, ro
 	if len(keysByPath) == 0 {
 		return nil
 	}
+	captureDirectories := gradleCatalogCaptureDirectories(r.repoPath, keysByPath)
 	budget := rootedGradleCatalogWalkBudget()
 	budget.CountCandidate = func(path string, _ fs.DirEntry) bool {
 		_, ok := keysByPath[filepath.Clean(path)]
 		return ok
 	}
-	return WalkRepoFilesWithinRootPinned(ctx, r.repoPath, root, budget, maybeSkipGradleCatalogDirectoryName, func(file RootedWalkFile) error {
+	skipDirectory := func(path, _ string) bool {
+		_, capture := captureDirectories[filepath.Clean(path)]
+		return !capture
+	}
+	captureSource := func(file RootedWalkFile) error {
 		keys := keysByPath[filepath.Clean(file.Path)]
 		if len(keys) == 0 {
 			return nil
@@ -212,7 +217,23 @@ func (r *gradleCatalogRegistry) captureSourcesWithinRoot(ctx context.Context, ro
 			r.sources[key] = source
 		}
 		return nil
-	})
+	}
+	return walkRepoFilesWithinRootPinnedWithPathSkip(ctx, r.repoPath, root, budget, skipDirectory, captureSource)
+}
+
+func gradleCatalogCaptureDirectories(repoPath string, keysByPath map[string][]string) map[string]struct{} {
+	repoPath = filepath.Clean(repoPath)
+	directories := make(map[string]struct{})
+	for path := range keysByPath {
+		relativePath, err := filepath.Rel(repoPath, path)
+		if err != nil || gradleCatalogRelativePathEscapesRepo(relativePath) {
+			continue
+		}
+		for directory := filepath.Dir(relativePath); directory != "."; directory = filepath.Dir(directory) {
+			directories[filepath.Join(repoPath, directory)] = struct{}{}
+		}
+	}
+	return directories
 }
 
 func (r *gradleCatalogRegistry) sourceKeysByPath() map[string][]string {
@@ -480,10 +501,14 @@ func uncapturedGradleCatalogSourceError(repoPath, path string) error {
 	if err != nil {
 		return err
 	}
-	if relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) || filepath.IsAbs(relativePath) {
+	if gradleCatalogRelativePathEscapesRepo(relativePath) {
 		return fmt.Errorf("%w: %s", safeio.ErrPathEscapesRoot, path)
 	}
 	return &fs.PathError{Op: "open", Path: relativePath, Err: fs.ErrNotExist}
+}
+
+func gradleCatalogRelativePathEscapesRepo(path string) bool {
+	return path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) || filepath.IsAbs(path)
 }
 
 func isPureGradleCatalogReadWarning(err error) bool {

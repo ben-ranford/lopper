@@ -44,6 +44,8 @@ type RootedWalkFile struct {
 
 type RootedWalkVisit func(file RootedWalkFile) error
 
+type rootedWalkDirectorySkip func(path, name string) bool
+
 // WalkRepoFilesWithinRoot traverses repoPath using an already-open confined
 // root and emits synthetic absolute paths rooted at repoPath.
 func WalkRepoFilesWithinRoot(ctx context.Context, repoPath string, root safeio.Root, budget RootedWalkBudget, skipDir func(string) bool, visit func(path string, entry fs.DirEntry) error) error {
@@ -55,8 +57,12 @@ func WalkRepoFilesWithinRoot(ctx context.Context, repoPath string, root safeio.R
 // WalkRepoFilesWithinRootPinned traverses repoPath and exposes each entry
 // through its callback-scoped pinned parent root and leaf name.
 func WalkRepoFilesWithinRootPinned(ctx context.Context, repoPath string, root safeio.Root, budget RootedWalkBudget, skipDir func(string) bool, visit RootedWalkVisit) error {
+	return walkRepoFilesWithinRootPinnedWithPathSkip(ctx, repoPath, root, budget, rootedWalkDirectoryNameSkip(skipDir), visit)
+}
+
+func walkRepoFilesWithinRootPinnedWithPathSkip(ctx context.Context, repoPath string, root safeio.Root, budget RootedWalkBudget, skipDir rootedWalkDirectorySkip, visit RootedWalkVisit) error {
 	if skipDir == nil {
-		skipDir = ShouldSkipCommonDir
+		skipDir = rootedWalkDirectoryNameSkip(nil)
 	}
 
 	info, err := root.Lstat(".")
@@ -80,10 +86,19 @@ func WalkRepoFilesWithinRootPinned(ctx context.Context, repoPath string, root sa
 	return nil
 }
 
+func rootedWalkDirectoryNameSkip(skipDir func(string) bool) rootedWalkDirectorySkip {
+	if skipDir == nil {
+		skipDir = ShouldSkipCommonDir
+	}
+	return func(_ string, name string) bool {
+		return skipDir(name)
+	}
+}
+
 type rootedRepoWalker struct {
 	repoPath string
 	budget   RootedWalkBudget
-	skipDir  func(string) bool
+	skipDir  rootedWalkDirectorySkip
 	visit    RootedWalkVisit
 	state    rootedWalkBudgetState
 }
@@ -109,7 +124,7 @@ func (w *rootedRepoWalker) walk(ctx context.Context, parentRoot safeio.Root, rel
 }
 
 func (w *rootedRepoWalker) walkDirectory(ctx context.Context, parentRoot safeio.Root, relPath, path string, entry fs.DirEntry) (err error) {
-	if relPath != "." && w.skipDir(entry.Name()) {
+	if relPath != "." && w.skipDir(path, entry.Name()) {
 		return nil
 	}
 	if relPath == "." {

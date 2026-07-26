@@ -26,6 +26,124 @@ func TestLoadGradleCatalogResolverWithinRootTreatsBlankRepoPathAsNoop(t *testing
 	}
 }
 
+func TestLoadGradleCatalogResolverWithinRootLoadsConfiguredCatalogBelowSkippedDirectory(t *testing.T) {
+	repo := t.TempDir()
+	writeGradleCatalogTestFile(t, filepath.Join(repo, gradleSettingsFileName), `
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("tools") {
+      from(files("build/tools.toml"))
+    }
+  }
+}
+`)
+	writeGradleCatalogTestFile(t, filepath.Join(repo, "build", "tools.toml"), "[libraries]\ncli = \"dev.example:cli:1.0.0\"\n")
+	writeGradleCatalogTestFile(t, filepath.Join(repo, "build", "generated", "gradle", defaultGradleCatalogFileName), "[libraries]\ndecoy = \"dev.example:decoy:9.9.9\"\n")
+
+	rejectErr := errors.New("opened non-configured catalog directory")
+	root := &rejectingGradleCatalogRoot{
+		Root:         openSharedTestRoot(t, repo),
+		rejectedPath: filepath.Join("build", "generated"),
+		rejectErr:    rejectErr,
+	}
+	resolver, warnings, err := LoadGradleCatalogResolverWithinRoot(context.Background(), repo, root)
+	if err != nil {
+		t.Fatalf("load configured catalog below skipped directory: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected configured skipped-directory catalog without warnings, got %#v", warnings)
+	}
+	if _, discovered := resolver.knownCatalogs["libs"]; discovered {
+		t.Fatalf("expected non-configured skipped-directory catalog to remain undiscovered, got %#v", resolver.knownCatalogs)
+	}
+
+	libraries, parseWarnings := resolver.ParseDependencyReferences(filepath.Join(repo, "build.gradle.kts"), "dependencies { implementation(tools.cli) }")
+	want := GradleCatalogLibrary{Alias: "cli", Catalog: "tools", Group: "dev.example", Artifact: "cli", Version: "1.0.0"}
+	if len(parseWarnings) != 0 || len(libraries) != 1 || libraries[0] != want {
+		t.Fatalf("expected configured skipped-directory dependency %#v, got libraries=%#v warnings=%#v", want, libraries, parseWarnings)
+	}
+}
+
+func TestLoadGradleCatalogResolverWithinRootRejectsEscapingConfiguredCatalog(t *testing.T) {
+	workspace := t.TempDir()
+	repo := filepath.Join(workspace, "repo")
+	writeGradleCatalogTestFile(t, filepath.Join(repo, gradleSettingsFileName), `
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("tools") {
+      from(files("../outside.toml"))
+    }
+  }
+}
+`)
+	writeGradleCatalogTestFile(t, filepath.Join(workspace, "outside.toml"), "[libraries]\nevil = \"dev.example:evil:9.9.9\"\n")
+
+	assertConfiguredGradleCatalogRejected(t, repo, safeio.ErrPathEscapesRoot.Error())
+}
+
+func TestLoadGradleCatalogResolverWithinRootRejectsSymlinkedConfiguredCatalog(t *testing.T) {
+	repo := t.TempDir()
+	writeGradleCatalogTestFile(t, filepath.Join(repo, gradleSettingsFileName), `
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("tools") {
+      from(files("build/tools.toml"))
+    }
+  }
+}
+`)
+	outsideCatalog := filepath.Join(t.TempDir(), "outside.toml")
+	writeGradleCatalogTestFile(t, outsideCatalog, "[libraries]\nevil = \"dev.example:evil:9.9.9\"\n")
+	catalogPath := filepath.Join(repo, "build", "tools.toml")
+	if err := os.MkdirAll(filepath.Dir(catalogPath), 0o750); err != nil {
+		t.Fatalf("create configured catalog parent: %v", err)
+	}
+	if err := os.Symlink(outsideCatalog, catalogPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	assertConfiguredGradleCatalogRejected(t, repo, safeio.ErrTargetPathSymlink.Error())
+}
+
+func assertConfiguredGradleCatalogRejected(t *testing.T, repo, wantWarning string) {
+	t.Helper()
+	resolver, warnings, err := LoadGradleCatalogResolverWithinRoot(context.Background(), repo, openSharedTestRoot(t, repo))
+	if err != nil {
+		t.Fatalf("load resolver with untrusted configured catalog: %v", err)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), wantWarning) {
+		t.Fatalf("expected configured catalog warning containing %q, got %#v", wantWarning, warnings)
+	}
+	libraries, _ := resolver.ParseDependencyReferences(filepath.Join(repo, "build.gradle.kts"), "dependencies { implementation(tools.evil) }")
+	if len(libraries) != 0 {
+		t.Fatalf("expected untrusted configured catalog to contribute no dependencies, got %#v", libraries)
+	}
+}
+
+type rejectingGradleCatalogRoot struct {
+	safeio.Root
+	relativePath string
+	rejectedPath string
+	rejectErr    error
+}
+
+func (r *rejectingGradleCatalogRoot) OpenRoot(name string) (safeio.Root, error) {
+	relativePath := filepath.Join(r.relativePath, name)
+	if relativePath == r.rejectedPath {
+		return nil, r.rejectErr
+	}
+	child, err := r.Root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	return &rejectingGradleCatalogRoot{
+		Root:         child,
+		relativePath: relativePath,
+		rejectedPath: r.rejectedPath,
+		rejectErr:    r.rejectErr,
+	}, nil
+}
+
 func TestLoadGradleCatalogResolverWithinRootReturnsPartialResultAtTraversalLimit(t *testing.T) {
 	repo := t.TempDir()
 	info, err := os.Stat(repo)
