@@ -441,17 +441,22 @@ func TestLoadTracePreservesModuleOnlyPackageEventsWhenResolvedPathIsRedacted(t *
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
-	if got := trace.DependencyLoads["fixture-dep"]; got != 1 {
-		t.Fatalf("expected module-only dependency load to survive, got %d", got)
+	assertModuleOnlyPackageEvent(t, trace, "fixture-dep", "src/main.js")
+}
+
+func assertModuleOnlyPackageEvent(t *testing.T, trace Trace, dep, context string) {
+	t.Helper()
+	if trace.DependencyLoads[dep] != 1 {
+		t.Fatalf("expected module-only dependency load to survive, got %d", trace.DependencyLoads[dep])
 	}
-	if got := trace.DependencyModules["fixture-dep"]["fixture-dep"]; got != 1 {
-		t.Fatalf("expected module-only dependency module attribution, got %#v", trace.DependencyModules["fixture-dep"])
+	if trace.DependencyModules[dep][dep] != 1 {
+		t.Fatalf("expected module-only dependency module attribution, got %#v", trace.DependencyModules[dep])
 	}
-	if got := trace.DependencyParents["fixture-dep"]["src/main.js"]; got != 1 {
-		t.Fatalf("expected parent attribution to survive resolved redaction, got %#v", trace.DependencyParents["fixture-dep"])
+	if trace.DependencyParents[dep][context] != 1 {
+		t.Fatalf("expected parent attribution to survive resolved redaction, got %#v", trace.DependencyParents[dep])
 	}
-	if got := trace.DependencyEntrypoints["fixture-dep"]["src/main.js"]; got != 1 {
-		t.Fatalf("expected entrypoint attribution to survive resolved redaction, got %#v", trace.DependencyEntrypoints["fixture-dep"])
+	if trace.DependencyEntrypoints[dep][context] != 1 {
+		t.Fatalf("expected entrypoint attribution to survive resolved redaction, got %#v", trace.DependencyEntrypoints[dep])
 	}
 }
 

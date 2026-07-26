@@ -271,6 +271,55 @@ func TestCaptureCommandFailureWithoutOutput(t *testing.T) {
 	}
 }
 
+func TestCaptureRunErrorWithoutCleanup(t *testing.T) {
+	sentinel := errors.New("command failed")
+	output := newRuntimeCommandOutput()
+	if _, err := output.Write([]byte("command diagnostic")); err != nil {
+		t.Fatalf("write command diagnostic: %v", err)
+	}
+
+	err := captureRunError(sentinel, nil, output)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected command error to remain primary, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "command diagnostic") {
+		t.Fatalf("expected command diagnostic, got %v", err)
+	}
+}
+
+func TestCaptureRunErrorWithSuccessfulCleanup(t *testing.T) {
+	sentinel := errors.New("command failed")
+	cleanupCalled := false
+	cleanup := func() error {
+		cleanupCalled = true
+		return nil
+	}
+	err := captureRunError(sentinel, cleanup, newRuntimeCommandOutput())
+
+	if !cleanupCalled {
+		t.Fatal("expected cleanup after command failure")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected command error to remain primary, got %v", err)
+	}
+}
+
+func TestCaptureRunErrorIncludesCleanupFailureNote(t *testing.T) {
+	runErr := errors.New("command failed")
+	cleanupErr := errors.New("cleanup failed")
+	cleanup := func() error {
+		return cleanupErr
+	}
+	err := captureRunError(runErr, cleanup, newRuntimeCommandOutput())
+
+	if !errors.Is(err, runErr) {
+		t.Fatalf("expected command error to remain primary, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "[runtime hook cleanup after failure: cleanup failed]") {
+		t.Fatalf("expected cleanup failure diagnostic, got %v", err)
+	}
+}
+
 func TestCapturePythonHookCleanupErrors(t *testing.T) {
 	sentinel := errors.New("forced cleanup failure")
 	previousChmod := runtimeHookDirChmod
@@ -288,19 +337,14 @@ func TestCapturePythonHookCleanupErrors(t *testing.T) {
 
 	t.Run("surfaces cleanup error after successful capture", func(t *testing.T) {
 		repo := t.TempDir()
-		tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
 		script := "#!/bin/sh\nprintf '{\"module\":\"thirdparty\",\"language\":\"python\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
-		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", script))
-
-		err := Capture(context.Background(), CaptureRequest{
+		req := CaptureRequest{
 			RepoPath:  repo,
-			TracePath: tracePath,
+			TracePath: filepath.Join(repo, ".artifacts", runtimeTraceNDJSON),
 			Command:   "pytest",
 			Provider:  CaptureProviderPython,
-		})
-		if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "cleanup staged runtime python hook") {
-			t.Fatalf("expected staged hook cleanup error, got %v", err)
 		}
+		assertCaptureReturnsCleanupFailure(t, sentinel, req, script)
 	})
 
 	t.Run("does not reuse cleanup-failed state on next run", func(t *testing.T) {
@@ -318,10 +362,7 @@ func TestCapturePythonHookCleanupErrors(t *testing.T) {
 			Provider:         CaptureProviderPython,
 			ReuseIfUnchanged: true,
 		}
-		err := Capture(context.Background(), req)
-		if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "cleanup staged runtime python hook") {
-			t.Fatalf("expected staged hook cleanup error, got %v", err)
-		}
+		assertCaptureReturnsCleanupFailure(t, sentinel, req, script)
 		if got := readCaptureCounter(t, counterPath); got != 1 {
 			t.Fatalf("expected first cleanup-failed capture execution count 1, got %d", got)
 		}
@@ -341,24 +382,38 @@ func TestCapturePythonHookCleanupErrors(t *testing.T) {
 	})
 
 	t.Run("preserves primary capture error", func(t *testing.T) {
-		repo := t.TempDir()
-		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexit 3\n"))
-
-		err := Capture(context.Background(), CaptureRequest{
-			RepoPath: repo,
-			Command:  "pytest",
-			Provider: CaptureProviderPython,
-		})
-		if err == nil {
-			t.Fatal("expected primary capture error")
-		}
-		if !strings.Contains(err.Error(), "runtime test command failed") {
-			t.Fatalf("expected primary capture error, got %v", err)
-		}
-		if strings.Contains(err.Error(), "cleanup staged runtime python hook") {
-			t.Fatalf("expected cleanup error to be suppressed when capture fails, got %v", err)
-		}
+		assertCaptureFailureSuppressesCleanupError(t)
 	})
+}
+
+func assertCaptureReturnsCleanupFailure(t *testing.T, sentinel error, req CaptureRequest, script string) {
+	t.Helper()
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", script))
+	err := Capture(context.Background(), req)
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "cleanup staged runtime python hook") {
+		t.Fatalf("expected staged hook cleanup error, got %v", err)
+	}
+}
+
+func assertCaptureFailureSuppressesCleanupError(t *testing.T) {
+	t.Helper()
+	repo := t.TempDir()
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexit 3\n"))
+
+	err := Capture(context.Background(), CaptureRequest{
+		RepoPath: repo,
+		Command:  "pytest",
+		Provider: CaptureProviderPython,
+	})
+	if err == nil {
+		t.Fatal("expected primary capture error")
+	}
+	if !strings.Contains(err.Error(), "runtime test command failed") {
+		t.Fatalf("expected primary capture error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "cleanup staged runtime python hook") {
+		t.Fatalf("expected cleanup error to be suppressed when capture fails, got %v", err)
+	}
 }
 
 func TestCaptureHonorsContextCancellation(t *testing.T) {

@@ -115,16 +115,25 @@ function normalizeContextValue(value, repoRoot, realpath = fs.realpathSync.nativ
 function normalizeRuntimeModuleValue(value, resolved, repoRoot, realpath = fs.realpathSync.native) {
   const normalizedResolvedPath = normalizeContextValue(resolved, repoRoot, realpath);
   const externalNodeModulesResolved = looksLikeNodeModulesResolvedContextValue(resolved, realpath);
+  const identifier = normalizeModuleIdentifier(value);
   if (normalizedResolvedPath) {
     if (!looksLikeNodeModulesResolvedPath(normalizedResolvedPath)) {
       return "";
     }
-  } else if (looksLikeFilesystemContextValue(resolved) && !externalNodeModulesResolved) {
+  } else if (
+    looksLikeFilesystemContextValue(resolved) &&
+    !externalNodeModulesResolved &&
+    !preservesLinkedPackageRequest(identifier, value)
+  ) {
     return "";
-  } else if (resolved && looksLikeFilesystemContextValue(value) && !externalNodeModulesResolved) {
+  } else if (
+    resolved &&
+    looksLikeFilesystemContextValue(value) &&
+    !externalNodeModulesResolved &&
+    !preservesLinkedPackageRequest(identifier, value)
+  ) {
     return "";
   }
-  const identifier = normalizeModuleIdentifier(value);
   if (identifier) {
     return identifier;
   }
@@ -161,6 +170,20 @@ function normalizeModuleIdentifier(value) {
     return "";
   }
   return value;
+}
+
+function preservesLinkedPackageRequest(identifier, rawValue) {
+  if (!identifier || identifier !== rawValue) {
+    return false;
+  }
+  if (identifier.startsWith("node:")) {
+    return false;
+  }
+  const parts = identifier.split("/");
+  if (identifier.startsWith("@")) {
+    return parts.length === 2;
+  }
+  return parts.length === 1;
 }
 
 function isUnsafeModuleSegment(part) {

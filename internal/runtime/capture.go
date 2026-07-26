@@ -47,7 +47,7 @@ func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest,
 	if err != nil {
 		return err
 	}
-	if reused := reuseRuntimeTrace(plan, req.ReuseIfUnchanged); reused {
+	if reuseRuntimeTrace(plan, req.ReuseIfUnchanged) {
 		return nil
 	}
 	if err := prepareTracePath(plan.tracePath); err != nil {
@@ -68,27 +68,41 @@ func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest,
 	output := newRuntimeCommandOutput()
 	cmd.Stdout = output
 	cmd.Stderr = output
-	err = cmd.Run()
-	if err != nil {
-		if cleanup != nil {
-			if cleanupErr := cleanup(); cleanupErr != nil {
-				note := []byte(fmt.Sprintf("\n[runtime hook cleanup after failure: %v]\n", cleanupErr))
-				if _, writeErr := output.Write(note); writeErr != nil {
-					return formatRuntimeCommandError(err, output.diagnostic())
-				}
-			}
-		}
-		return formatRuntimeCommandError(err, output.diagnostic())
+	if err := cmd.Run(); err != nil {
+		return captureRunError(err, cleanup, output)
 	}
-	if cleanup != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
-			return fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr)
-		}
+	if err := cleanupAfterCapture(cleanup); err != nil {
+		return err
 	}
 	if err := writeRuntimeTraceState(plan.tracePath, plan.command, plan.provider); err != nil {
 		return fmt.Errorf("write runtime trace state: %w", err)
 	}
 
+	return nil
+}
+
+func captureRunError(runErr error, cleanup func() error, output *boundedRuntimeCommandOutput) error {
+	appendCleanupFailureNote(cleanup, output)
+	return formatRuntimeCommandError(runErr, output.diagnostic())
+}
+
+func appendCleanupFailureNote(cleanup func() error, output *boundedRuntimeCommandOutput) {
+	if cleanup == nil {
+		return
+	}
+	if cleanupErr := cleanup(); cleanupErr != nil {
+		note := []byte(fmt.Sprintf("\n[runtime hook cleanup after failure: %v]\n", cleanupErr))
+		output.write(note)
+	}
+}
+
+func cleanupAfterCapture(cleanup func() error) error {
+	if cleanup == nil {
+		return nil
+	}
+	if cleanupErr := cleanup(); cleanupErr != nil {
+		return fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr)
+	}
 	return nil
 }
 

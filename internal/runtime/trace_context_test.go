@@ -291,43 +291,57 @@ func TestNormalizeRuntimeContextValueRedactsRepoPathsWithControlWhitespace(t *te
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			modulePath := filepath.Join(srcDir, tc.filename)
-			if err := os.WriteFile(modulePath, []byte("export {};\n"), 0o600); err != nil {
-				t.Fatalf("write repo module: %v", err)
-			}
-			if got := normalizeRuntimeContextValue(modulePath, opts); got != tc.want {
-				t.Fatalf("normalize runtime context %q: got %q, want %q", modulePath, got, tc.want)
-			}
-			if tc.want != "" {
-				return
-			}
-
-			eventData, err := json.Marshal(Event{
-				Module:     lodashMapModule,
-				Parent:     modulePath,
-				Entrypoint: modulePath,
-			})
-			if err != nil {
-				t.Fatalf("marshal runtime event: %v", err)
-			}
-			trace, err := loadTraceFromContentInRepo(t, repo, string(eventData)+"\n")
-			if err != nil {
-				t.Fatalf(loadTraceErrFmt, err)
-			}
-			if got := trace.DependencyParents["lodash"]; len(got) != 0 {
-				t.Fatalf("control-whitespace parent entered trace correlation: %#v", got)
-			}
-			if got := trace.DependencyEntrypoints["lodash"]; len(got) != 0 {
-				t.Fatalf("control-whitespace entrypoint entered trace correlation: %#v", got)
-			}
-			key := DependencyKey{Language: runtimeLanguageJSTS, Name: "lodash"}
-			if got := trace.DependencyParentsByLanguage[key]; len(got) != 0 {
-				t.Fatalf("control-whitespace parent entered language trace correlation: %#v", got)
-			}
-			if got := trace.DependencyEntrypointsByLanguage[key]; len(got) != 0 {
-				t.Fatalf("control-whitespace entrypoint entered language trace correlation: %#v", got)
-			}
+			assertRuntimeContextWhitespaceCase(t, repo, srcDir, opts, tc.filename, tc.want)
 		})
+	}
+}
+
+func assertRuntimeContextWhitespaceCase(t *testing.T, repo, srcDir string, opts traceLoadOptions, filename, want string) {
+	t.Helper()
+	modulePath := filepath.Join(srcDir, filename)
+	if err := os.WriteFile(modulePath, []byte("export {};\n"), 0o600); err != nil {
+		t.Fatalf("write repo module: %v", err)
+	}
+	if got := normalizeRuntimeContextValue(modulePath, opts); got != want {
+		t.Fatalf("normalize runtime context %q: got %q, want %q", modulePath, got, want)
+	}
+	if want != "" {
+		return
+	}
+	assertRedactedRuntimeContextTrace(t, repo, modulePath)
+}
+
+func assertRedactedRuntimeContextTrace(t *testing.T, repo, modulePath string) {
+	t.Helper()
+	eventData, err := json.Marshal(Event{
+		Module:     lodashMapModule,
+		Parent:     modulePath,
+		Entrypoint: modulePath,
+	})
+	if err != nil {
+		t.Fatalf("marshal runtime event: %v", err)
+	}
+	trace, err := loadTraceFromContentInRepo(t, repo, string(eventData)+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	assertEmptyRuntimeContextCorrelation(t, trace)
+}
+
+func assertEmptyRuntimeContextCorrelation(t *testing.T, trace Trace) {
+	t.Helper()
+	if got := trace.DependencyParents["lodash"]; len(got) != 0 {
+		t.Fatalf("control-whitespace parent entered trace correlation: %#v", got)
+	}
+	if got := trace.DependencyEntrypoints["lodash"]; len(got) != 0 {
+		t.Fatalf("control-whitespace entrypoint entered trace correlation: %#v", got)
+	}
+	key := DependencyKey{Language: runtimeLanguageJSTS, Name: "lodash"}
+	if got := trace.DependencyParentsByLanguage[key]; len(got) != 0 {
+		t.Fatalf("control-whitespace parent entered language trace correlation: %#v", got)
+	}
+	if got := trace.DependencyEntrypointsByLanguage[key]; len(got) != 0 {
+		t.Fatalf("control-whitespace entrypoint entered language trace correlation: %#v", got)
 	}
 }
 

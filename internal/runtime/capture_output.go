@@ -20,9 +20,13 @@ func newRuntimeCommandOutput() *boundedRuntimeCommandOutput {
 }
 
 func (b *boundedRuntimeCommandOutput) Write(p []byte) (int, error) {
+	return b.write(p), nil
+}
+
+func (b *boundedRuntimeCommandOutput) write(p []byte) int {
 	written := len(p)
 	if written == 0 {
-		return 0, nil
+		return 0
 	}
 
 	b.mu.Lock()
@@ -32,7 +36,7 @@ func (b *boundedRuntimeCommandOutput) Write(p []byte) (int, error) {
 		copy(b.data, p[written-len(b.data):])
 		b.start = 0
 		b.size = len(b.data)
-		return written, nil
+		return written
 	}
 
 	if overflow := b.size + written - len(b.data); overflow > 0 {
@@ -41,7 +45,7 @@ func (b *boundedRuntimeCommandOutput) Write(p []byte) (int, error) {
 		b.size -= overflow
 	}
 	b.append(p)
-	return written, nil
+	return written
 }
 
 func (b *boundedRuntimeCommandOutput) append(p []byte) {

@@ -320,6 +320,44 @@ test("preserves validated package specifiers when hoisted node_modules resolutio
   fs.rmSync(testRoot, { recursive: true, force: true });
 });
 
+test("preserves bare and scoped linked package requests while redacting external realpaths", (t) => {
+  const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
+  const repoRoot = path.join(testRoot, "repo");
+  const linkedRoot = path.join(testRoot, "linked-packages");
+  const barePackagePath = path.join(linkedRoot, "fixture-dep", "index.js");
+  const scopedPackagePath = path.join(linkedRoot, "@scope", "pkg", "index.js");
+  fs.mkdirSync(path.dirname(barePackagePath), { recursive: true });
+  fs.mkdirSync(path.dirname(scopedPackagePath), { recursive: true });
+  fs.writeFileSync(barePackagePath, "module.exports = 1;\n", "utf8");
+  fs.writeFileSync(scopedPackagePath, "module.exports = 2;\n", "utf8");
+
+  const { realpath } = trackRealpathCalls();
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep", barePackagePath, repoRoot, realpath), "fixture-dep");
+  assert.equal(normalizeRuntimeModuleValue("@scope/pkg", scopedPackagePath, repoRoot, realpath), "@scope/pkg");
+  assert.equal(normalizeRuntimeResolvedValue(barePackagePath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeResolvedValue(scopedPackagePath, repoRoot, realpath), "");
+
+  fs.rmSync(testRoot, { recursive: true, force: true });
+});
+
+test("rejects unsafe linked package requests when the realpath is redacted", () => {
+  const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
+  const repoRoot = path.join(testRoot, "repo");
+  const linkedRoot = path.join(testRoot, "linked-packages");
+  const barePackagePath = path.join(linkedRoot, "fixture-dep", "index.js");
+  const scopedPackagePath = path.join(linkedRoot, "@scope", "pkg", "index.js");
+  fs.mkdirSync(path.dirname(barePackagePath), { recursive: true });
+  fs.mkdirSync(path.dirname(scopedPackagePath), { recursive: true });
+  fs.writeFileSync(barePackagePath, "module.exports = 1;\n", "utf8");
+  fs.writeFileSync(scopedPackagePath, "module.exports = 2;\n", "utf8");
+
+  const { realpath } = trackRealpathCalls();
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep/lib/index.js", barePackagePath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("@scope/pkg/index.js", scopedPackagePath, repoRoot, realpath), "");
+
+  fs.rmSync(testRoot, { recursive: true, force: true });
+});
+
 test("sanitizes runtime module and resolved artifact values", () => {
   const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
   const repoRoot = path.join(testRoot, "repo");
