@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -373,6 +374,7 @@ func newAnalysisRequest(args analysisToolArguments, req analysisRequestContext) 
 	lowConfidence := req.thresholds.LowConfidenceWarningPercent
 	minUsage := req.thresholds.MinUsagePercentForRecommendations
 	weights := thresholds.RemovalCandidateWeights(req.thresholds)
+	cacheOptions := readOnlyMCPAnalysisCacheOptions(req.repoPath, args.CacheEnabled, args.CachePath)
 	return analysis.Request{
 		RepoPath:                          req.repoPath,
 		Dependency:                        req.dependency,
@@ -391,12 +393,76 @@ func newAnalysisRequest(args analysisToolArguments, req analysisRequestContext) 
 		RemovalCandidateWeights:           &weights,
 		LicenseDenyList:                   append([]string{}, req.thresholds.LicenseDenyList...),
 		IncludeRegistryProvenance:         req.thresholds.LicenseIncludeRegistryProvenance,
-		Cache: &analysis.CacheOptions{
-			Enabled:  cacheEnabled(args.CacheEnabled),
-			Path:     strings.TrimSpace(args.CachePath),
-			ReadOnly: args.CacheReadOnly,
-		},
+		Cache:                             cacheOptions,
 	}
+}
+
+func readOnlyMCPAnalysisCacheOptions(repoPath string, enabled *bool, cachePath string) *analysis.CacheOptions {
+	trimmedPath := strings.TrimSpace(cachePath)
+	options := &analysis.CacheOptions{
+		Enabled:  cacheEnabled(enabled),
+		Path:     trimmedPath,
+		ReadOnly: true,
+	}
+	if !options.Enabled {
+		return options
+	}
+	if trimmedPath != "" && pathContainsTraversalComponent(trimmedPath) {
+		options.Enabled = false
+		return options
+	}
+	resolvedPath := trimmedPath
+	if resolvedPath == "" {
+		resolvedPath = filepath.Join(repoPath, ".lopper-cache")
+	}
+	options.Path = resolvedPath
+	if !cachePathReadyForReadOnly(resolvedPath) {
+		options.Enabled = false
+	}
+	return options
+}
+
+func cachePathReadyForReadOnly(cachePath string) bool {
+	if pathContainsSymlink(cachePath) {
+		return false
+	}
+	for _, dirName := range []string{"keys", "objects"} {
+		info, err := os.Stat(filepath.Join(cachePath, dirName))
+		if err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+func pathContainsSymlink(path string) bool {
+	current := filepath.Clean(path)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+		current = parent
+	}
+}
+
+func pathContainsTraversalComponent(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	path = path[len(filepath.VolumeName(path)):]
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return os.IsPathSeparator(uint8(r))
+	})
+	return slices.Contains(parts, "..")
 }
 
 func (s *Server) runListLanguagesTool(ctx context.Context, rawArgs json.RawMessage) toolCallResult {
@@ -902,6 +968,11 @@ func summarizeReport(kind analysisToolKind, reportData report.Report) string {
 
 func analysisInputSchema(requireDependency, allowDependency, allowTopN, requireBaseline bool) map[string]any {
 	properties := commonAnalysisProperties()
+	properties["cacheReadOnly"] = map[string]any{
+		"type":        "boolean",
+		"default":     true,
+		"description": "Read-only MCP analysis never writes cache entries; false is ignored.",
+	}
 	required := []string{"repoPath"}
 	if allowDependency {
 		properties["dependency"] = map[string]any{"type": "string"}
@@ -944,7 +1015,7 @@ func commonAnalysisProperties() map[string]any {
 		"disableFeatures":                   stringArraySchema(),
 		"cacheEnabled":                      map[string]any{"type": "boolean", "default": true},
 		"cachePath":                         map[string]any{"type": "string"},
-		"cacheReadOnly":                     map[string]any{"type": "boolean", "default": false},
+		"cacheReadOnly":                     map[string]any{"type": "boolean"},
 		"runtimeProfile":                    map[string]any{"type": "string", "enum": []string{"node-import", "node-require", "browser-import", "browser-require"}, "default": defaultRuntimeProfile},
 		"runtimeTracePath":                  map[string]any{"type": "string"},
 		"advisorySourcePath":                map[string]any{"type": "string", "description": "Local JSON or YAML advisory file used to attach vulnerability findings without network access."},

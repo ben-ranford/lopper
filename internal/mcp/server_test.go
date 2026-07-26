@@ -17,6 +17,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 type fakeAnalyser struct {
@@ -132,6 +133,8 @@ func TestHandleToolsListRegistersMutationToolsWhenFeatureEnabled(t *testing.T) {
 	assertRequiredSchemaFields(t, byName[toolApplyCodemod], "repoPath", "dependency", "confirmApply")
 	assertRequiredSchemaFields(t, byName[toolSaveBaseline], "repoPath", "baselineStorePath", "confirmSave")
 	assertRequiredSchemaFields(t, byName[toolSaveDashboardBaseline], "repoPath", "baselineStorePath", "confirmSave")
+	assertMutationCacheSchema(t, byName[toolApplyCodemod])
+	assertMutationCacheSchema(t, byName[toolSaveBaseline])
 }
 
 func assertToolOrder(t *testing.T, tools []toolSpec) {
@@ -176,6 +179,24 @@ func assertDependencySchema(t *testing.T, tool toolSpec) {
 	properties := tool.InputSchema["properties"].(map[string]any)
 	if _, ok := properties["topN"]; !ok {
 		t.Fatalf("dependency schema should advertise topN as accepted input")
+	}
+	if cacheReadOnly, ok := properties["cacheReadOnly"].(map[string]any); !ok || cacheReadOnly["default"] != true {
+		t.Fatalf("dependency schema should advertise read-only cache default, got %#v", properties["cacheReadOnly"])
+	}
+}
+
+func assertMutationCacheSchema(t *testing.T, tool toolSpec) {
+	t.Helper()
+	properties := tool.InputSchema["properties"].(map[string]any)
+	cacheReadOnly, ok := properties["cacheReadOnly"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s should advertise cacheReadOnly input", tool.Name)
+	}
+	if _, ok := cacheReadOnly["default"]; ok {
+		t.Fatalf("%s cacheReadOnly schema should not advertise a read-only default, got %#v", tool.Name, cacheReadOnly)
+	}
+	if description, ok := cacheReadOnly["description"].(string); ok && strings.Contains(description, "false is ignored") {
+		t.Fatalf("%s cacheReadOnly schema should not advertise ignored writes, got %#v", tool.Name, cacheReadOnly)
 	}
 }
 
@@ -370,6 +391,175 @@ func TestCallCompareBaselineAppliesBaselineDiff(t *testing.T) {
 	}
 	if !strings.Contains(payload.Summary, "Waste delta") {
 		t.Fatalf("expected baseline summary with delta, got %q", payload.Summary)
+	}
+}
+
+func TestCallAnalyseTopForcesReadOnlyCacheAndLeavesOutsidePathAbsent(t *testing.T) {
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	repo := filepath.Join(repoRoot, "repo")
+	writeMCPJSFixture(t, repo)
+	outsideCache := filepath.Join(repoRoot, "outside-cache")
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     outsideCache,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected disabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	if _, err := os.Stat(outsideCache); !os.IsNotExist(err) {
+		t.Fatalf("expected outside cache path to remain absent, got err=%v", err)
+	}
+}
+
+func TestCallAnalyseTopUsesInitializedCacheReadOnly(t *testing.T) {
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	repo := filepath.Join(repoRoot, "repo")
+	writeMCPJSFixture(t, repo)
+	cachePath := filepath.Join(repo, ".lopper-cache")
+	for _, dirName := range []string{"keys", "objects"} {
+		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dirName, err)
+		}
+	}
+	testutil.MustWriteFile(t, filepath.Join(cachePath, "sentinel.txt"), "keep\n")
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"include":       []string{"**/*.js"},
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || !payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected enabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	if payload.Report.Cache.Path != cachePath {
+		t.Fatalf("expected scoped analysis to preserve cache path %q, got %q", cachePath, payload.Report.Cache.Path)
+	}
+	for _, dirName := range []string{"keys", "objects"} {
+		entries, err := os.ReadDir(filepath.Join(cachePath, dirName))
+		if err != nil {
+			t.Fatalf("read %s: %v", dirName, err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected initialized cache %s dir to remain untouched, got %#v", dirName, entries)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(cachePath, "sentinel.txt"))
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("expected sentinel file to remain unchanged, got %q", string(data))
+	}
+}
+
+func TestCallAnalyseTopRejectsInitializedTraversalShapedOutsideCachePath(t *testing.T) {
+	repoRoot := t.TempDir()
+	repo := filepath.Join(repoRoot, "repo")
+	writeMCPJSFixture(t, repo)
+	outsideCache := filepath.Join(repoRoot, "outside", "cache")
+	if err := os.MkdirAll(filepath.Join(outsideCache, "keys"), 0o755); err != nil {
+		t.Fatalf("mkdir keys: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outsideCache, "objects"), 0o755); err != nil {
+		t.Fatalf("mkdir objects: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(outsideCache, "sentinel.txt"), "keep\n")
+	separator := string(os.PathSeparator)
+	traversalPath := repo + separator + ".." + separator + "outside" + separator + "cache"
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     traversalPath,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected disabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	for _, dirName := range []string{"keys", "objects"} {
+		entries, err := os.ReadDir(filepath.Join(outsideCache, dirName))
+		if err != nil {
+			t.Fatalf("read %s: %v", dirName, err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected traversal-shaped outside cache %s dir to remain untouched, got %#v", dirName, entries)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(outsideCache, "sentinel.txt"))
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("expected sentinel file to remain unchanged, got %q", string(data))
+	}
+}
+
+func TestCallAnalyseTopLeavesSymlinkedOutsideCachePathUnmodified(t *testing.T) {
+	repo := t.TempDir()
+	writeMCPJSFixture(t, repo)
+	outsideRoot := t.TempDir()
+	outsideCache := filepath.Join(outsideRoot, "cache")
+	testutil.MustWriteFile(t, filepath.Join(outsideCache, "sentinel.txt"), "keep\n")
+	linkPath := filepath.Join(repo, "linked-cache")
+	if err := os.Symlink(outsideCache, linkPath); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	server := NewServer(Options{Analyzer: analysis.NewService()})
+
+	result := callToolResult(t, server, toolAnalyseTop, map[string]any{
+		"repoPath":      repo,
+		"topN":          1,
+		"language":      "js-ts",
+		"cachePath":     linkPath,
+		"cacheReadOnly": false,
+	})
+	if result.IsError {
+		t.Fatalf("unexpected analyse error: %#v", result)
+	}
+	payload := result.StructuredContent.(analysisPayload)
+	if payload.Report.Cache == nil || payload.Report.Cache.Enabled || !payload.Report.Cache.ReadOnly {
+		t.Fatalf("expected disabled readonly cache metadata, got %#v", payload.Report.Cache)
+	}
+	if _, err := os.Stat(filepath.Join(outsideCache, "keys")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlinked outside cache keys dir to remain absent, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideCache, "objects")); !os.IsNotExist(err) {
+		t.Fatalf("expected symlinked outside cache objects dir to remain absent, got err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(outsideCache, "sentinel.txt"))
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("expected sentinel file to remain unchanged, got %q", string(data))
 	}
 }
 
@@ -570,6 +760,14 @@ func sampleReport(repoPath string) report.Report {
 			UsedPercent:       50,
 		},
 	}
+}
+
+func writeMCPJSFixture(t *testing.T, repo string) {
+	t.Helper()
+	testutil.MustWriteFile(t, filepath.Join(repo, "package.json"), "{\n  \"name\": \"demo\"\n}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "index.js"), "import { map } from \"lodash\"\nmap([1], (x) => x)\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "node_modules", "lodash", "package.json"), "{\n  \"main\": \"index.js\"\n}\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "node_modules", "lodash", "index.js"), "export function map() {}\n")
 }
 
 func mustJSON(t *testing.T, value any) json.RawMessage {
