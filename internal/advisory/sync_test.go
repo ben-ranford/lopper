@@ -4000,6 +4000,10 @@ func (f *advisoryStaticFile) Chmod(os.FileMode) error {
 	return nil
 }
 
+func (f *advisoryStaticFile) Sync() error {
+	return nil
+}
+
 type advisoryWrappedFile struct {
 	safeio.File
 	closeHook func() error

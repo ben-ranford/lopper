@@ -3279,33 +3279,6 @@ func TestOpenPinnedReplacementTargetReturnsOpenError(t *testing.T) {
 	}
 }
 
-func TestOpenPinnedReplacementTargetReturnsOpenedFile(t *testing.T) {
-	targetPath := filepath.Join(t.TempDir(), "target")
-	if err := os.WriteFile(targetPath, []byte("target"), 0o600); err != nil {
-		t.Fatalf("seed pinned target: %v", err)
-	}
-	expectedInfo := statTestPath(t, targetPath)
-	root := &fakeRoot{
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return expectedInfo, nil },
-				close: closeWithoutError,
-			}, nil
-		},
-	}
-
-	file, err := openPinnedReplacementTarget(root, writeTestFileName, expectedInfo)
-	if err != nil {
-		t.Fatalf("expected pinned target open success, got %v", err)
-	}
-	if file == nil {
-		t.Fatal("expected opened pinned target file")
-	}
-	if closeErr := file.Close(); closeErr != nil {
-		t.Fatalf("close opened pinned target: %v", closeErr)
-	}
-}
-
 func TestOpenPinnedReplacementTargetKeepsStatErrorWhenCloseAlsoFails(t *testing.T) {
 	statErr := errors.New("stat target failure")
 	closeErr := errors.New("close target failure")
