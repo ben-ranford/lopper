@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,6 +28,16 @@ func writeJVMPomFile(t *testing.T, repo, content string) {
 	t.Helper()
 
 	testutil.MustWriteFile(t, filepath.Join(repo, "pom.xml"), content)
+}
+
+func canonicalRepoPath(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(repo)
+	if err == nil && resolved != "" {
+		return resolved
+	}
+	return repo
 }
 
 func managedDependencyManagementPOM(properties, junitVersion, springVersion string) string {
@@ -104,6 +115,47 @@ import com.acme.lib.Widget;
 	}
 	if imports[1].Module != "com.acme.lib.Widget" {
 		t.Fatalf("expected non-commented import to parse, got %#v", imports[1])
+	}
+}
+
+func TestJVMScanRepoInfersFallbackDependenciesForUnmappedImports(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "src", "App.kt")
+	testutil.MustWriteFile(t, sourcePath, `package com.example.app
+import com.example.app.LocalType
+import custom.deep.feature.Type
+import vendor.tools.Helper as AliasHelper
+import single
+
+fun use(input: Type, helper: AliasHelper) {
+    println(input)
+    println(helper)
+}
+`)
+
+	result, err := scanRepo(context.Background(), repo, nil, nil)
+	if err != nil {
+		t.Fatalf("scan repo with fallback imports: %v", err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("expected no warnings for fallback import scan, got %#v", result.Warnings)
+	}
+	if len(result.Files) != 1 {
+		t.Fatalf("expected one scanned file, got %#v", result.Files)
+	}
+
+	imports := result.Files[0].Imports
+	if len(imports) != 3 {
+		t.Fatalf("expected same-package import to be ignored while fallback imports remain, got %#v", imports)
+	}
+	if imports[0].Dependency != "custom.deep" || imports[0].Name != "Type" || imports[0].Local != "Type" {
+		t.Fatalf("expected dotted fallback dependency to resolve first two segments, got %#v", imports[0])
+	}
+	if imports[1].Dependency != "vendor.tools" || imports[1].Local != "AliasHelper" {
+		t.Fatalf("expected aliased fallback dependency to keep alias-local name, got %#v", imports[1])
+	}
+	if imports[2].Dependency != "single" || imports[2].Name != "single" {
+		t.Fatalf("expected single-segment fallback dependency to survive scan, got %#v", imports[2])
 	}
 }
 
@@ -262,6 +314,56 @@ dependencies {
 		if !slices.Contains(names, name) {
 			t.Fatalf("expected gradle dependency %q in %#v", name, descriptors)
 		}
+	}
+}
+
+func TestJVMParseGradleDependenciesWarnsOnOversizedBuildFiles(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{buildGradleName, buildGradleKTSName} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, name), strings.Repeat("a", maxScannableJVMBuildFile+1))
+
+			descriptors, warnings := parseGradleDependenciesWithWarnings(repo)
+			if len(descriptors) != 0 {
+				t.Fatalf("expected no gradle descriptors from oversized %s, got %#v", name, descriptors)
+			}
+			warningText := strings.Join(warnings, "\n")
+			if !strings.Contains(warningText, "unable to read "+name+": file exceeds size limit") {
+				t.Fatalf("expected oversized %s warning, got %#v", name, warnings)
+			}
+		})
+	}
+}
+
+func TestJVMCollectBuildDescriptorsResolveCatalogReferencesOutsideRoot(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "settings.gradle.kts"), `
+dependencyResolutionManagement {
+  versionCatalogs {
+    create("testLibs") {
+      from(files("gradle/test-libs.versions.toml"))
+    }
+  }
+}
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "gradle", "test-libs.versions.toml"), `
+[libraries]
+junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter-api", version = "5.10.0" }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, buildGradleKTSName), `
+dependencies {
+  implementation(testLibs.junit.jupiter)
+}
+`)
+
+	descriptors, warnings := collectBuildDescriptors(repo)
+	if len(warnings) != 0 {
+		t.Fatalf("expected catalog-backed build descriptor parsing without warnings, got %#v", warnings)
+	}
+	if len(descriptors) != 1 || descriptors[0].Name != "junit-jupiter-api" {
+		t.Fatalf("expected catalog-backed build descriptor, got %#v", descriptors)
 	}
 }
 
@@ -501,18 +603,593 @@ func TestJVMDetectAndWalkBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("max file walk budget", func(t *testing.T) {
-		repo := t.TempDir()
-		testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
-		entry := testutil.MustFirstFileEntry(t, repo)
-		visited := 1
-		roots := map[string]struct{}{}
-		detect := &language.Detection{}
-		err := walkJVMDetectionEntry(filepath.Join(repo, entry.Name()), entry, roots, detect, &visited, 1)
-		if !errors.Is(err, fs.SkipAll) {
-			t.Fatalf("expected fs.SkipAll when maxFiles exceeded, got %v", err)
-		}
+	t.Run("max file walk budget", testJVMMaxTraversalWalkBudget)
+	t.Run("escaping symlinks do not consume file budget", func(t *testing.T) {
+		testJVMEscapingSymlinkFloodDoesNotConsumeCandidateBudget(t, adapter)
 	})
+	t.Run("oversized directory fails closed", testJVMOversizedDirectoryFailsClosed)
+	t.Run("exact traversal budget completes", testJVMExactTraversalBudgetCompletes)
+	t.Run("directory enumeration errors propagate", testJVMDetectionDirectoryErrors)
+	t.Run("traversal budget guards queued entries", testJVMDetectionBudgetGuards)
+	t.Run("traversal budget stops rejected-entry flood", testJVMTraversalBudgetStopsRejectedEntryFlood)
+	t.Run("confined candidate budget still stops ordinary file flood", testJVMConfinedCandidateBudgetStopsOrdinaryFileFlood)
+	t.Run("broken and escaping entries count toward traversal only", testJVMBrokenAndEscapingEntriesCountTowardTraversalOnly)
+}
+
+func testJVMMaxTraversalWalkBudget(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Main.java"), "class Main {}")
+	entry := testutil.MustFirstFileEntry(t, repo)
+	budget := &jvmDetectionBudget{maxTraversalEntries: 1, traversalEntriesSeen: 1}
+	roots := map[string]struct{}{}
+	detect := &language.Detection{}
+	err := walkJVMDetectionEntry(repo, filepath.Join(repo, entry.Name()), entry, roots, detect, budget)
+	if !errors.Is(err, errJVMDetectionTraversalLimit) {
+		t.Fatalf("expected traversal-limit error, got %v", err)
+	}
+}
+
+func testJVMOversizedDirectoryFailsClosed(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "z-seed"), 0o755); err != nil {
+		t.Fatalf("mkdir seed directory: %v", err)
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "a-Main.java"), "class Main {}\n")
+	rawEntries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read flood entries: %v", err)
+	}
+	markerEntry := rawEntries[0]
+	fillEntry := rawEntries[1]
+
+	budget := defaultJVMDetectionBudget()
+	wantChildren := budget.maxTraversalEntries - 1
+	directory := &jvmDetectionTestDirectory{
+		fillEntry:     fillEntry,
+		repeatEntries: wantChildren,
+		overflowEntry: markerEntry,
+	}
+	roots := map[string]struct{}{}
+	detect := &language.Detection{}
+	walker := newJVMDetectionWalker(repo, roots, detect, budget)
+	openCalls := 0
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		openCalls++
+		return directory, nil
+	}
+
+	err = walker.walk()
+	assertJVMOversizedDirectoryOutcome(t, jvmOversizedDirectoryOutcome{
+		repo:        repo,
+		err:         err,
+		markerEntry: markerEntry,
+		fillEntry:   fillEntry,
+		directory:   directory,
+		budget:      budget,
+		detect:      detect,
+		openCalls:   openCalls,
+	})
+	assertJVMOversizedDirectoryReads(t, directory, wantChildren)
+}
+
+type jvmOversizedDirectoryOutcome struct {
+	repo        string
+	err         error
+	markerEntry fs.DirEntry
+	fillEntry   fs.DirEntry
+	directory   *jvmDetectionTestDirectory
+	budget      *jvmDetectionBudget
+	detect      *language.Detection
+	openCalls   int
+}
+
+func assertJVMOversizedDirectoryOutcome(t *testing.T, outcome jvmOversizedDirectoryOutcome) {
+	t.Helper()
+
+	wantChildren := outcome.budget.maxTraversalEntries - 1
+	if !errors.Is(outcome.err, errJVMDetectionTraversalLimit) {
+		t.Fatalf("expected explicit traversal-limit error, got %v", outcome.err)
+	}
+	if !strings.Contains(outcome.err.Error(), outcome.repo) {
+		t.Fatalf("expected traversal-limit error to contain directory path %q, got %v", outcome.repo, outcome.err)
+	}
+	if outcome.markerEntry.Name() >= outcome.fillEntry.Name() || !outcome.directory.overflowReturned {
+		t.Fatalf("expected lexically early JVM marker to appear only in overflow probe, marker=%q fill=%q", outcome.markerEntry.Name(), outcome.fillEntry.Name())
+	}
+	if outcome.directory.entriesReturned != wantChildren+1 {
+		t.Fatalf("expected %d bounded children plus one overflow probe, got %d", wantChildren, outcome.directory.entriesReturned)
+	}
+	if outcome.budget.traversalEntriesSeen != 1 || outcome.budget.traversalEntriesQueued != wantChildren {
+		t.Fatalf("expected root visited and %d children bounded in queue, got seen=%d queued=%d", wantChildren, outcome.budget.traversalEntriesSeen, outcome.budget.traversalEntriesQueued)
+	}
+	if outcome.budget.confinedCandidatesSeen != 0 {
+		t.Fatalf("expected overflow marker not to consume candidate budget, got %d", outcome.budget.confinedCandidatesSeen)
+	}
+	if outcome.detect.Matched {
+		t.Fatalf("expected overflow marker not to produce a partial detection, got %#v", outcome.detect)
+	}
+	if outcome.openCalls != 1 || outcome.directory.closeCalls != 1 {
+		t.Fatalf("expected one directory open/close, got opens=%d closes=%d", outcome.openCalls, outcome.directory.closeCalls)
+	}
+}
+
+func assertJVMOversizedDirectoryReads(t *testing.T, directory *jvmDetectionTestDirectory, wantChildren int) {
+	t.Helper()
+
+	wantBudgetReads := (wantChildren + jvmDetectionReadBatchSize - 1) / jvmDetectionReadBatchSize
+	if len(directory.readSizes) != wantBudgetReads+1 {
+		t.Fatalf("expected %d bounded reads plus one overflow probe, got %d", wantBudgetReads, len(directory.readSizes))
+	}
+	for index, size := range directory.readSizes[:wantBudgetReads] {
+		if size <= 0 || size > jvmDetectionReadBatchSize {
+			t.Fatalf("read %d requested invalid batch size %d", index, size)
+		}
+	}
+	if got := directory.readSizes[wantBudgetReads-1]; got != wantChildren%jvmDetectionReadBatchSize {
+		t.Fatalf("expected final bounded read size %d, got %d", wantChildren%jvmDetectionReadBatchSize, got)
+	}
+	if got := directory.readSizes[wantBudgetReads]; got != 1 {
+		t.Fatalf("expected one-entry overflow probe, got %d", got)
+	}
+}
+
+func testJVMExactTraversalBudgetCompletes(t *testing.T) {
+	repo := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		if err := os.Mkdir(filepath.Join(repo, name), 0o755); err != nil {
+			t.Fatalf("mkdir exact-budget directory %s: %v", name, err)
+		}
+	}
+
+	budget := &jvmDetectionBudget{maxTraversalEntries: 3, maxConfinedCandidates: 2}
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, budget)
+	if err := walker.walk(); err != nil {
+		t.Fatalf("expected complete tree at exact traversal budget to succeed, got %v", err)
+	}
+	if budget.traversalEntriesSeen != 3 || budget.traversalEntriesQueued != 0 {
+		t.Fatalf("expected exact budget to drain all entries, got seen=%d queued=%d", budget.traversalEntriesSeen, budget.traversalEntriesQueued)
+	}
+}
+
+func testJVMDetectionDirectoryErrors(t *testing.T) {
+	t.Run("root open", testJVMDetectionRootOpenError)
+	t.Run("open", testJVMDetectionDirectoryOpenError)
+	t.Run("read and close", testJVMDetectionDirectoryReadAndCloseErrors)
+	t.Run("no progress", testJVMDetectionDirectoryNoProgress)
+	t.Run("oversized batch", testJVMDetectionDirectoryOversizedBatch)
+	t.Run("limit probe read error", testJVMDetectionLimitProbeReadError)
+	t.Run("limit probe entry and read error", testJVMDetectionLimitProbeEntryAndReadError)
+	t.Run("limit probe no progress", testJVMDetectionLimitProbeNoProgress)
+}
+
+func testJVMDetectionRootOpenError(t *testing.T) {
+	openErr := errors.New("open root")
+	walker := newJVMDetectionWalker(t.TempDir(), map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return nil, openErr
+	}
+	if err := walker.walk(); !errors.Is(err, openErr) {
+		t.Fatalf("expected root open error, got %v", err)
+	}
+}
+
+func testJVMDetectionDirectoryOpenError(t *testing.T) {
+	openErr := errors.New("open directory")
+	repo := t.TempDir()
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return nil, openErr
+	}
+	if err := walker.walk(); !errors.Is(err, openErr) {
+		t.Fatalf("expected directory open error, got %v", err)
+	}
+}
+
+func testJVMDetectionDirectoryReadAndCloseErrors(t *testing.T) {
+	readErr := errors.New("read directory")
+	closeErr := errors.New("close directory")
+	directory := &jvmDetectionTestDirectory{readErr: readErr, closeErr: closeErr}
+	repo := t.TempDir()
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return directory, nil
+	}
+	err := walker.walk()
+	if !errors.Is(err, readErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined read and close errors, got %v", err)
+	}
+	if directory.closeCalls != 1 {
+		t.Fatalf("expected failed reader to close once, got %d", directory.closeCalls)
+	}
+}
+
+func testJVMDetectionDirectoryNoProgress(t *testing.T) {
+	directory := &jvmDetectionTestDirectory{noProgress: true}
+	repo := t.TempDir()
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return directory, nil
+	}
+	if err := walker.walk(); !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("expected no-progress error, got %v", err)
+	}
+	if directory.closeCalls != 1 {
+		t.Fatalf("expected no-progress reader to close once, got %d", directory.closeCalls)
+	}
+}
+
+func testJVMDetectionDirectoryOversizedBatch(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, "seed"), 0o755); err != nil {
+		t.Fatalf("mkdir oversized batch seed: %v", err)
+	}
+	seedEntries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read oversized batch seed: %v", err)
+	}
+	readErr := errors.New("read oversized detection batch")
+	directory := &jvmDetectionTestDirectory{
+		fillEntry:          seedEntries[0],
+		extraEntries:       1,
+		readErrWithEntries: errors.Join(io.EOF, readErr),
+	}
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, defaultJVMDetectionBudget())
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return directory, nil
+	}
+	if err := walker.walk(); !errors.Is(err, errJVMDetectionTraversalLimit) || !errors.Is(err, io.EOF) || !errors.Is(err, readErr) {
+		t.Fatalf("expected joined oversized-batch traversal-limit, EOF, and read error, got %v", err)
+	}
+	if directory.closeCalls != 1 {
+		t.Fatalf("expected oversized batch reader to close once, got %d", directory.closeCalls)
+	}
+}
+
+func testJVMDetectionLimitProbeReadError(t *testing.T) {
+	readErr := errors.New("probe directory")
+	directory := &jvmDetectionTestDirectory{readErr: readErr}
+	budget := &jvmDetectionBudget{maxTraversalEntries: 1, maxConfinedCandidates: 1}
+	repo := t.TempDir()
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, budget)
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return directory, nil
+	}
+	if err := walker.walk(); !errors.Is(err, readErr) {
+		t.Fatalf("expected limit probe read error, got %v", err)
+	}
+	if directory.closeCalls != 1 {
+		t.Fatalf("expected failed limit probe to close once, got %d", directory.closeCalls)
+	}
+}
+
+func testJVMDetectionLimitProbeEntryAndReadError(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "entry"), []byte("entry"), 0o600); err != nil {
+		t.Fatalf("write probe entry: %v", err)
+	}
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read probe entry: %v", err)
+	}
+	readErr := errors.New("read overflowing detection probe")
+	directory := &jvmDetectionTestDirectory{
+		fillEntry:          entries[0],
+		overflowEntry:      entries[0],
+		readErrWithEntries: readErr,
+	}
+	budget := &jvmDetectionBudget{maxTraversalEntries: 1, maxConfinedCandidates: 1}
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, budget)
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return directory, nil
+	}
+
+	err = walker.walk()
+	if !errors.Is(err, errJVMDetectionTraversalLimit) || !errors.Is(err, readErr) {
+		t.Fatalf("expected joined probe traversal-limit and read error, got %v", err)
+	}
+	if directory.closeCalls != 1 {
+		t.Fatalf("expected overflowing probe directory to close once, got %d", directory.closeCalls)
+	}
+}
+
+func testJVMDetectionLimitProbeNoProgress(t *testing.T) {
+	directory := &jvmDetectionTestDirectory{noProgress: true}
+	budget := &jvmDetectionBudget{maxTraversalEntries: 1, maxConfinedCandidates: 1}
+	repo := t.TempDir()
+	walker := newJVMDetectionWalker(repo, map[string]struct{}{}, &language.Detection{}, budget)
+	walker.openRoot = func(string) (jvmDetectionRoot, error) {
+		return newJVMDetectionTestRoot(t, repo), nil
+	}
+	walker.openDirectory = func(jvmDetectionRoot, string) (jvmDetectionDirectory, error) {
+		return directory, nil
+	}
+	if err := walker.walk(); !errors.Is(err, io.ErrNoProgress) {
+		t.Fatalf("expected limit probe no-progress error, got %v", err)
+	}
+	if directory.closeCalls != 1 {
+		t.Fatalf("expected no-progress limit probe to close once, got %d", directory.closeCalls)
+	}
+}
+
+type jvmDetectionTestDirectory struct {
+	fillEntry          fs.DirEntry
+	readErr            error
+	readErrWithEntries error
+	closeErr           error
+	noProgress         bool
+	extraEntries       int
+	repeatEntries      int
+	overflowEntry      fs.DirEntry
+	overflowReturned   bool
+	readSizes          []int
+	entriesReturned    int
+	closeCalls         int
+}
+
+func (d *jvmDetectionTestDirectory) Stat() (fs.FileInfo, error) {
+	if d.fillEntry != nil {
+		return d.fillEntry.Info()
+	}
+	if d.overflowEntry != nil {
+		return d.overflowEntry.Info()
+	}
+	return nil, errors.New("unexpected stat")
+}
+
+func (d *jvmDetectionTestDirectory) ReadDir(count int) ([]fs.DirEntry, error) {
+	d.readSizes = append(d.readSizes, count)
+	if d.readErr != nil {
+		return nil, d.readErr
+	}
+	if d.noProgress {
+		return nil, nil
+	}
+	if d.fillEntry == nil {
+		return nil, io.EOF
+	}
+
+	if d.repeatEntries > 0 {
+		entryCount := min(count, d.repeatEntries)
+		entries := make([]fs.DirEntry, entryCount)
+		for index := range entries {
+			entries[index] = d.fillEntry
+		}
+		d.repeatEntries -= entryCount
+		d.entriesReturned += len(entries)
+		return entries, d.readErrWithEntries
+	}
+	if d.overflowEntry != nil && !d.overflowReturned {
+		d.overflowReturned = true
+		d.entriesReturned++
+		return []fs.DirEntry{d.overflowEntry}, d.readErrWithEntries
+	}
+
+	entries := make([]fs.DirEntry, count+d.extraEntries)
+	for index := range entries {
+		entries[index] = d.fillEntry
+	}
+	d.entriesReturned += len(entries)
+	return entries, d.readErrWithEntries
+}
+
+func (d *jvmDetectionTestDirectory) Close() error {
+	d.closeCalls++
+	return d.closeErr
+}
+
+type jvmDetectionTestRoot struct {
+	info fs.FileInfo
+}
+
+func (*jvmDetectionTestRoot) Open(string) (jvmDetectionDirectory, error) {
+	return nil, errors.New("unexpected root open")
+}
+
+func (*jvmDetectionTestRoot) OpenRoot(string) (jvmDetectionRoot, error) {
+	return nil, errors.New("unexpected child root open")
+}
+
+func (r *jvmDetectionTestRoot) Lstat(name string) (fs.FileInfo, error) {
+	if name == "." && r.info != nil {
+		return r.info, nil
+	}
+	return nil, errors.New("unexpected root lstat")
+}
+
+func (*jvmDetectionTestRoot) Close() error {
+	return nil
+}
+
+func newJVMDetectionTestRoot(t testing.TB, path string) *jvmDetectionTestRoot {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat detection test root %s: %v", path, err)
+	}
+	return &jvmDetectionTestRoot{info: info}
+}
+
+func testJVMDetectionBudgetGuards(t *testing.T) {
+	unlimited := &jvmDetectionBudget{}
+	if got := unlimited.traversalReadSize(); got != jvmDetectionReadBatchSize {
+		t.Fatalf("expected unlimited budget batch size %d, got %d", jvmDetectionReadBatchSize, got)
+	}
+	if !unlimited.queueTraversalEntries(1) || !unlimited.dequeueTraversalEntry() {
+		t.Fatal("expected unlimited budget to queue and dequeue an entry")
+	}
+	if unlimited.dequeueTraversalEntry() {
+		t.Fatal("expected empty traversal queue dequeue to fail")
+	}
+
+	bounded := &jvmDetectionBudget{maxTraversalEntries: 1}
+	if !bounded.queueTraversalEntries(1) {
+		t.Fatal("expected bounded budget to queue its final entry")
+	}
+	if bounded.queueTraversalEntries(1) || bounded.queueTraversalEntries(-1) {
+		t.Fatal("expected bounded budget to reject over-limit and negative entries")
+	}
+}
+
+func testJVMEscapingSymlinkFloodDoesNotConsumeCandidateBudget(t *testing.T, adapter *Adapter) {
+	repo := t.TempDir()
+	outsideSource := filepath.Join(t.TempDir(), "Outside.java")
+	testutil.MustWriteFile(t, outsideSource, "class Outside {}\n")
+	for index := 0; index < 1024; index++ {
+		linkPath := filepath.Join(repo, fmt.Sprintf("a-%04d.java", index))
+		if err := os.Symlink(outsideSource, linkPath); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "z-module", "src", "main", "java", "Main.java"), "class Main {}\n")
+
+	detection, err := adapter.DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect with confidence after escaping symlink flood: %v", err)
+	}
+	if !detection.Matched {
+		t.Fatalf("expected legitimate later JVM file to remain detectable, got %#v", detection)
+	}
+}
+
+func testJVMTraversalBudgetStopsRejectedEntryFlood(t *testing.T) {
+	repo := t.TempDir()
+	outsideSource := filepath.Join(t.TempDir(), "Outside.java")
+	testutil.MustWriteFile(t, outsideSource, "class Outside {}\n")
+	for index := 0; index < 4; index++ {
+		linkPath := filepath.Join(repo, fmt.Sprintf("escape-%04d.java", index))
+		if err := os.Symlink(outsideSource, linkPath); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+	}
+	testutil.MustWriteFile(t, filepath.Join(repo, "z-module", "src", "main", "java", "Main.java"), "class Main {}\n")
+
+	entries, err := sortedJVMRepoEntries(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+
+	budget := &jvmDetectionBudget{maxTraversalEntries: 2, maxConfinedCandidates: 1024}
+	roots := map[string]struct{}{}
+	detect := &language.Detection{}
+	stopPath := ""
+	for _, entry := range entries {
+		path := filepath.Join(repo, entry.Name())
+		err := walkJVMDetectionEntry(repo, path, entry, roots, detect, budget)
+		if errors.Is(err, errJVMDetectionTraversalLimit) {
+			stopPath = path
+			break
+		}
+		if err != nil {
+			t.Fatalf("walk detection entry %s: %v", entry.Name(), err)
+		}
+	}
+
+	if stopPath == "" {
+		t.Fatal("expected traversal budget flood to stop the walker")
+	}
+	if budget.traversalEntriesSeen != 2 {
+		t.Fatalf("expected traversal budget to stop after bounded work, got %d", budget.traversalEntriesSeen)
+	}
+	if budget.confinedCandidatesSeen != 0 {
+		t.Fatalf("expected rejected entries to avoid confined candidate budget, got %d", budget.confinedCandidatesSeen)
+	}
+	if detect.Matched {
+		t.Fatalf("expected traversal stop before legitimate file update, got %#v", detect)
+	}
+}
+
+func testJVMConfinedCandidateBudgetStopsOrdinaryFileFlood(t *testing.T) {
+	repo := t.TempDir()
+	for index := 0; index < 4; index++ {
+		testutil.MustWriteFile(t, filepath.Join(repo, fmt.Sprintf("Main%04d.java", index)), "class Main {}\n")
+	}
+
+	budget := &jvmDetectionBudget{maxTraversalEntries: 8, maxConfinedCandidates: 2}
+	roots := map[string]struct{}{}
+	detect := &language.Detection{}
+	walker := newJVMDetectionWalker(repo, roots, detect, budget)
+	if err := walker.walk(); !errors.Is(err, fs.SkipAll) {
+		t.Fatalf("expected confined candidate budget flood to stop the walker, got %v", err)
+	}
+	if budget.traversalEntriesSeen != 4 || budget.traversalEntriesQueued != 1 {
+		t.Fatalf("expected root and three visited files with one bounded queued file, got seen=%d queued=%d", budget.traversalEntriesSeen, budget.traversalEntriesQueued)
+	}
+	if budget.confinedCandidatesSeen != 3 {
+		t.Fatalf("expected confined candidate budget to stop after bounded work, got %d", budget.confinedCandidatesSeen)
+	}
+	if !detect.Matched {
+		t.Fatalf("expected ordinary confined files to update detection before the stop, got %#v", detect)
+	}
+}
+
+func testJVMBrokenAndEscapingEntriesCountTowardTraversalOnly(t *testing.T) {
+	repo := t.TempDir()
+	outsideSource := filepath.Join(t.TempDir(), "Outside.java")
+	testutil.MustWriteFile(t, outsideSource, "class Outside {}\n")
+
+	escapingLink := filepath.Join(repo, "Escaping.java")
+	if err := os.Symlink(outsideSource, escapingLink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	brokenLink := filepath.Join(repo, "Broken.java")
+	if err := os.Symlink(filepath.Join(repo, "missing", "Broken.java"), brokenLink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	entries, err := sortedJVMRepoEntries(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	budget := &jvmDetectionBudget{maxTraversalEntries: 8, maxConfinedCandidates: 8}
+	roots := map[string]struct{}{}
+	detect := &language.Detection{}
+	for _, entry := range entries {
+		if err := walkJVMDetectionEntry(repo, filepath.Join(repo, entry.Name()), entry, roots, detect, budget); err != nil {
+			t.Fatalf("walk detection entry %s: %v", entry.Name(), err)
+		}
+	}
+
+	if budget.traversalEntriesSeen != 2 {
+		t.Fatalf("expected broken and escaping links to count toward traversal budget, got %d", budget.traversalEntriesSeen)
+	}
+	if budget.confinedCandidatesSeen != 0 {
+		t.Fatalf("expected broken and escaping links to avoid confined candidate budget, got %d", budget.confinedCandidatesSeen)
+	}
+	if detect.Matched {
+		t.Fatalf("expected rejected links to keep detection unmatched, got %#v", detect)
+	}
+}
+
+func sortedJVMRepoEntries(repo string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(entries, func(left, right os.DirEntry) int {
+		return strings.Compare(left.Name(), right.Name())
+	})
+	return entries, nil
 }
 
 func TestJVMParseHelpersEdgeBranches(t *testing.T) {
@@ -531,5 +1208,24 @@ func TestJVMParseHelpersEdgeBranches(t *testing.T) {
 	}
 	if got := lastModuleSegment(""); got != "" {
 		t.Fatalf("expected empty last module segment for empty module, got %q", got)
+	}
+	if got := fallbackDependency("a.b"); got != "a.b" {
+		t.Fatalf("expected two-segment fallback dependency to keep both segments, got %q", got)
+	}
+	if got := relativeSourceScanPath("", "Main.java"); got != "Main.java" {
+		t.Fatalf("expected empty rooted source path to preserve original path, got %q", got)
+	}
+
+	token, replacement, ok := pomPropertyReplacement([]string{"${missing}"}, map[string]string{"missing": "ignored"})
+	if ok || token != "" || replacement != "" {
+		t.Fatalf("expected malformed pom property match to be rejected, got token=%q replacement=%q ok=%v", token, replacement, ok)
+	}
+	token, replacement, ok = pomPropertyReplacement([]string{"${empty}", "empty"}, map[string]string{"empty": "   "})
+	if ok || token != "${empty}" || replacement != "" {
+		t.Fatalf("expected empty pom property replacement to be rejected, got token=%q replacement=%q ok=%v", token, replacement, ok)
+	}
+	descriptors, warnings := parseBuildFilesWithWarnings(filepath.Join(t.TempDir(), "missing"), func(string, string) ([]dependencyDescriptor, []string) { return nil, nil }, buildGradleName)
+	if len(descriptors) != 0 || len(warnings) != 1 {
+		t.Fatalf("expected missing rooted build walk to return one warning, got descriptors=%#v warnings=%#v", descriptors, warnings)
 	}
 }

@@ -526,6 +526,50 @@ func TestOpenRootNoFollowOpensVolumeRoot(t *testing.T) {
 	}
 }
 
+func TestOpenRootNoFollowOpensNestedPathWithDotSegments(t *testing.T) {
+	parent := t.TempDir()
+	nested := filepath.Join(parent, "nested", "child")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested path: %v", err)
+	}
+
+	root, err := (&osFileSystem{}).OpenRootNoFollow(filepath.Join(parent, ".", "nested", ".", "child"))
+	if err != nil {
+		t.Fatalf("OpenRootNoFollow returned error for nested path: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close nested no-follow root: %v", closeErr)
+		}
+	}()
+
+	openedInfo, err := root.Lstat(".")
+	if err != nil {
+		t.Fatalf("lstat nested no-follow root: %v", err)
+	}
+	if !os.SameFile(openedInfo, statTestPath(t, nested)) {
+		t.Fatalf("expected nested no-follow root to pin the requested directory")
+	}
+}
+
+func TestOpenRootNoFollowDelegatesToConfiguredFileSystem(t *testing.T) {
+	expected := &fakeRoot{}
+	withFileSystem(t, &fakeFileSystem{openRootNoFollow: func(name string) (Root, error) {
+		if name != "/delegated" {
+			t.Fatalf("expected delegated path, got %q", name)
+		}
+		return expected, nil
+	}})
+
+	root, err := OpenRootNoFollow("/delegated")
+	if err != nil {
+		t.Fatalf("OpenRootNoFollow returned error: %v", err)
+	}
+	if root != expected {
+		t.Fatalf("expected delegated root, got %#v", root)
+	}
+}
+
 func TestOpenRootNoFollowRejectsInvalidComponents(t *testing.T) {
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -564,6 +608,311 @@ func TestOpenRootNoFollowRejectsInvalidComponents(t *testing.T) {
 	}
 }
 
+func TestOpenRootNoFollowAllowsTrustedTempAlias(t *testing.T) {
+	aliasPath, resolvedPath, ok := tempDirAliasPair(t)
+	if !ok {
+		t.Skip("trusted temp alias unavailable")
+	}
+
+	root, err := (&osFileSystem{}).OpenRootNoFollow(aliasPath)
+	if err != nil {
+		t.Fatalf("OpenRootNoFollow returned error: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close trusted alias root: %v", closeErr)
+		}
+	}()
+
+	aliasInfo, err := os.Stat(resolvedPath)
+	if err != nil {
+		t.Fatalf("stat resolved trusted alias path: %v", err)
+	}
+	openedInfo, err := root.Lstat(".")
+	if err != nil {
+		t.Fatalf("lstat opened trusted alias root: %v", err)
+	}
+	if !os.SameFile(aliasInfo, openedInfo) {
+		t.Fatalf("expected trusted alias root to pin resolved directory identity")
+	}
+}
+
+func TestOpenRootExistingAncestorNoFollowRejectsUntrustedSymlinkAncestor(t *testing.T) {
+	parentDir := t.TempDir()
+	outsideDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside dir: %v", err)
+	}
+	linkPath := filepath.Join(parentDir, "cache-link")
+	if err := os.Symlink(outsideDir, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	root, ancestorPath, missingParts, err := OpenRootExistingAncestorNoFollow(filepath.Join(linkPath, "nested", "cache"))
+	if root != nil {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected root: %v", closeErr)
+		}
+		t.Fatal("expected untrusted symlink ancestor to be rejected")
+	}
+	if ancestorPath != "" || len(missingParts) != 0 {
+		t.Fatalf("expected rejected ancestor walk to return no path state, got path=%q missing=%v", ancestorPath, missingParts)
+	}
+	if err == nil || !strings.Contains(err.Error(), "root contains symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+func TestOpenRootExistingAncestorNoFollowAllowsTrustedAliasAncestor(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("trusted aliases are only enabled on darwin")
+	}
+
+	requestedPath := uniqueTrustedAliasMissingPath(t, "cache")
+	root, ancestorPath, missingParts, err := OpenRootExistingAncestorNoFollow(requestedPath)
+	if err != nil {
+		t.Fatalf("OpenRootExistingAncestorNoFollow returned error: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close trusted alias ancestor root: %v", closeErr)
+		}
+	}()
+
+	wantAncestorPath := filepath.Join(string(os.PathSeparator), "private", "tmp")
+	if ancestorPath != wantAncestorPath {
+		t.Fatalf("expected trusted alias ancestor path %q, got %q", wantAncestorPath, ancestorPath)
+	}
+	if len(missingParts) != 2 || missingParts[0] == "" || missingParts[1] != "cache" {
+		t.Fatalf("unexpected missing parts: %v", missingParts)
+	}
+
+	openedInfo, err := root.Lstat(".")
+	if err != nil {
+		t.Fatalf("lstat trusted alias ancestor root: %v", err)
+	}
+	targetInfo, err := os.Stat(wantAncestorPath)
+	if err != nil {
+		t.Fatalf("stat trusted alias target: %v", err)
+	}
+	if !os.SameFile(openedInfo, targetInfo) {
+		t.Fatalf("expected ancestor root to pin %q", wantAncestorPath)
+	}
+}
+
+func TestTrustedRootAliasTargetGuards(t *testing.T) {
+	untrustedTarget, ok := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "tmp", "nested"))
+	if ok || untrustedTarget != "" {
+		t.Fatalf("expected nested alias path to be rejected, got target=%q ok=%v", untrustedTarget, ok)
+	}
+
+	expectedTmpTarget := filepath.Join(string(os.PathSeparator), "private", "tmp")
+	tmpTarget, tmpOK := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "tmp"))
+	if runtime.GOOS == "darwin" {
+		if !tmpOK || tmpTarget != expectedTmpTarget {
+			t.Fatalf("expected /tmp alias target %q, got target=%q ok=%v", expectedTmpTarget, tmpTarget, tmpOK)
+		}
+		expectedVarTarget := filepath.Join(string(os.PathSeparator), "private", "var")
+		varTarget, varOK := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "var"))
+		if !varOK || varTarget != expectedVarTarget {
+			t.Fatalf("expected /var alias target %q, got target=%q ok=%v", expectedVarTarget, varTarget, varOK)
+		}
+		return
+	}
+	if tmpOK || tmpTarget != "" {
+		t.Fatalf("expected trusted aliases to be disabled on %s, got target=%q ok=%v", runtime.GOOS, tmpTarget, tmpOK)
+	}
+}
+
+func TestOpenRootChildPinnedBranches(t *testing.T) {
+	dirInfo := statTestPath(t, t.TempDir())
+	child := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		close: func() error { return nil },
+	}
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		openRoot: func(string) (Root, error) {
+			return child, nil
+		},
+	}
+
+	opened, openedPath, err := (&osFileSystem{}).openRootChildPinned(root, "child", "/root/child")
+	if err != nil || opened == nil || openedPath != "/root/child" {
+		t.Fatalf("expected non-symlink child to open unchanged, got root=%v path=%q err=%v", opened, openedPath, err)
+	}
+	if closeErr := opened.Close(); closeErr != nil {
+		t.Fatalf("close opened child: %v", closeErr)
+	}
+
+	linkDir := t.TempDir()
+	linkInfoPath := filepath.Join(linkDir, "link-target")
+	testFile := filepath.Join(linkInfoPath, "target")
+	if err := os.MkdirAll(linkInfoPath, 0o755); err != nil {
+		t.Fatalf("mkdir link target: %v", err)
+	}
+	linkPath := filepath.Join(linkDir, "link")
+	if err := os.Symlink(testFile, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	symlinkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	untrustedRoot := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return symlinkInfo, nil },
+	}
+	rejected, rejectedPath, err := (&osFileSystem{}).openRootChildPinned(untrustedRoot, "link", filepath.Join(string(os.PathSeparator), "repo", "link"))
+	if rejected != nil || rejectedPath != "" || err == nil || !strings.Contains(err.Error(), "root contains symlink") {
+		t.Fatalf("expected untrusted symlink child rejection, got root=%v path=%q err=%v", rejected, rejectedPath, err)
+	}
+}
+
+func TestOpenRootChildPinnedPropagatesLookupError(t *testing.T) {
+	lookupErr := errors.New("pinned child lookup failure")
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lookupErr },
+	}
+
+	opened, openedPath, err := (&osFileSystem{}).openRootChildPinned(root, "child", "/root/child")
+	if opened != nil || openedPath != "" {
+		t.Fatalf("expected lookup failure to return no child root, got root=%v path=%q", opened, openedPath)
+	}
+	if !errors.Is(err, lookupErr) {
+		t.Fatalf("expected lookup error, got %v", err)
+	}
+}
+
+func TestOpenRootNoFollowWithPropagatesAbsAndVolumeOpenErrors(t *testing.T) {
+	absErr := errors.New("abs path failure")
+	absFn := func(string) (string, error) { return "", absErr }
+	openRootFn := func(string) (Root, error) {
+		t.Fatal("unexpected volume root open")
+		return nil, nil
+	}
+	openChildFn := func(Root, string, string) (Root, string, error) {
+		t.Fatal("unexpected child open")
+		return nil, "", nil
+	}
+	root, err := openRootNoFollowWith("repo", absFn, filepath.Rel, openRootFn, openChildFn)
+	if root != nil || !errors.Is(err, absErr) {
+		t.Fatalf("expected abs error, got root=%v err=%v", root, err)
+	}
+
+	openErr := errors.New("open volume root")
+	absFn = func(string) (string, error) { return filepath.Join(string(os.PathSeparator), "repo"), nil }
+	openRootFn = func(string) (Root, error) {
+		return nil, openErr
+	}
+	openChildFn = func(Root, string, string) (Root, string, error) {
+		t.Fatal("unexpected child open after volume-root failure")
+		return nil, "", nil
+	}
+	root, err = openRootNoFollowWith("repo", absFn, filepath.Rel, openRootFn, openChildFn)
+	if root != nil || !errors.Is(err, openErr) {
+		t.Fatalf("expected volume-root open error, got root=%v err=%v", root, err)
+	}
+}
+
+func TestOpenRootNoFollowWithJoinsOwnedRootCloseError(t *testing.T) {
+	closeErr := errors.New("close traversed root")
+	childErr := errors.New("open child failure")
+	root := &fakeRoot{
+		close: func() error { return closeErr },
+	}
+	absFn := func(string) (string, error) { return filepath.Join(string(os.PathSeparator), "repo", "child"), nil }
+	openRootFn := func(string) (Root, error) { return root, nil }
+	openChildFn := func(Root, string, string) (Root, string, error) { return nil, "", childErr }
+
+	opened, err := openRootNoFollowWith(filepath.Join(string(os.PathSeparator), "repo", "child"), absFn, filepath.Rel, openRootFn, openChildFn)
+	if opened != nil {
+		t.Fatalf("expected traversal failure to return no root, got %#v", opened)
+	}
+	if !errors.Is(err, childErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined child and close errors, got %v", err)
+	}
+}
+
+func TestOpenPinnedRootAliasWithPropagatesAliasRootAndStatErrors(t *testing.T) {
+	openErr := errors.New("open trusted alias")
+	openRootNoFollowFn := func(string) (Root, error) { return nil, openErr }
+	opened, path, err := openPinnedRootAliasWith("/private/tmp", "/tmp", openRootNoFollowFn, os.Stat, os.SameFile)
+	if opened != nil || path != "" || !errors.Is(err, openErr) {
+		t.Fatalf("expected trusted-alias open error, got root=%v path=%q err=%v", opened, path, err)
+	}
+
+	statErr := errors.New("stat trusted alias")
+	closeErr := errors.New("close trusted alias root")
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return statTestPath(t, t.TempDir()), nil },
+		close: func() error { return closeErr },
+	}
+	openRootNoFollowFn = func(string) (Root, error) { return root, nil }
+	statFn := func(string) (fs.FileInfo, error) {
+		return nil, statErr
+	}
+	opened, path, err = openPinnedRootAliasWith("/private/tmp", "/tmp", openRootNoFollowFn, statFn, os.SameFile)
+	if opened != nil || path != "" {
+		t.Fatalf("expected stat failure to return no trusted-alias root, got root=%v path=%q", opened, path)
+	}
+	if !errors.Is(err, statErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected joined stat and close errors, got %v", err)
+	}
+}
+
+func TestOpenPinnedRootAliasWithRejectsChangedDirectoryIdentity(t *testing.T) {
+	targetInfo := statTestPath(t, t.TempDir())
+	openedInfo := statTestPath(t, t.TempDir())
+	closeErr := errors.New("close changed alias root")
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return openedInfo, nil },
+		close: func() error { return closeErr },
+	}
+	openRootNoFollowFn := func(string) (Root, error) { return root, nil }
+	statFn := func(string) (fs.FileInfo, error) { return targetInfo, nil }
+	sameFileFn := func(fs.FileInfo, fs.FileInfo) bool { return false }
+
+	opened, path, err := openPinnedRootAliasWith("/private/tmp", "/tmp", openRootNoFollowFn, statFn, sameFileFn)
+	if opened != nil || path != "" {
+		t.Fatalf("expected changed trusted-alias root to be rejected, got root=%v path=%q", opened, path)
+	}
+	if err == nil || !strings.Contains(err.Error(), "root changed while opening") || !errors.Is(err, closeErr) {
+		t.Fatalf("expected changed trusted-alias root error with close failure, got %v", err)
+	}
+}
+
+func TestOpenRootChildPinnedAllowsTrustedAliasTarget(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("trusted aliases are only enabled on darwin")
+	}
+
+	aliasInfo, err := os.Lstat(filepath.Join(string(os.PathSeparator), "tmp"))
+	if err != nil {
+		t.Fatalf("lstat /tmp alias: %v", err)
+	}
+	if aliasInfo.Mode()&os.ModeSymlink == 0 {
+		t.Skip("/tmp is not exposed as a symlink on this host")
+	}
+
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return aliasInfo, nil },
+	}
+	opened, openedPath, err := (&osFileSystem{}).openRootChildPinned(root, "tmp", filepath.Join(string(os.PathSeparator), "tmp"))
+	if err != nil {
+		t.Fatalf("expected trusted alias child open to succeed, got %v", err)
+	}
+	defer func() {
+		if closeErr := opened.Close(); closeErr != nil {
+			t.Fatalf("close trusted alias child: %v", closeErr)
+		}
+	}()
+
+	wantPath := filepath.Join(string(os.PathSeparator), "private", "tmp")
+	if openedPath != wantPath {
+		t.Fatalf("expected trusted alias target %q, got %q", wantPath, openedPath)
+	}
+}
+
 func TestOpenRootChildNoFollowPropagatesLookupError(t *testing.T) {
 	expectedErr := errors.New("child lookup failure")
 	root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) {
@@ -576,6 +925,32 @@ func TestOpenRootChildNoFollowPropagatesLookupError(t *testing.T) {
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected child lookup error, got %v", err)
+	}
+}
+
+func TestOpenRootChildNoFollowRejectsSymlinkAndNonDirectory(t *testing.T) {
+	linkDir := t.TempDir()
+	targetPath := filepath.Join(linkDir, "target")
+	if err := os.WriteFile(targetPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	linkPath := filepath.Join(linkDir, "link")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	symlinkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return symlinkInfo, nil }}
+	if _, err := openRootChildNoFollow(root, "link", "/root/link"); err == nil || !strings.Contains(err.Error(), "root contains symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+
+	fileInfo := statTestPath(t, targetPath)
+	root = &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return fileInfo, nil }}
+	if _, err := openRootChildNoFollow(root, "file", "/root/file"); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected non-directory rejection, got %v", err)
 	}
 }
 
@@ -847,6 +1222,23 @@ func TestOpenTargetParentClosesOwnedParentAfterDescendantError(t *testing.T) {
 	}
 	if !ownedClosed {
 		t.Fatal("expected owned parent root to be closed")
+	}
+}
+
+func TestOpenTargetParentReturnsExistingRootForTopLevelTarget(t *testing.T) {
+	root := &fakeRoot{}
+	writeRoot := &WriteRoot{root: root, rootAbs: "/root"}
+	target := rootedTarget{rootAbs: "/root", rel: writeTestFileName}
+
+	parent, closeParent, err := writeRoot.openTargetParent(target, false, 0)
+	if err != nil {
+		t.Fatalf("expected top-level target parent lookup to succeed, got %v", err)
+	}
+	if parent != root {
+		t.Fatalf("expected top-level target to reuse the write root, got %#v", parent)
+	}
+	if closeParent {
+		t.Fatal("expected top-level target parent to remain caller-owned")
 	}
 }
 
@@ -1536,6 +1928,33 @@ func TestOpenPinnedReplacementTargetReturnsOpenError(t *testing.T) {
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected open target error, got %v", err)
+	}
+}
+
+func TestOpenPinnedReplacementTargetReturnsOpenedFile(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(targetPath, []byte("target"), 0o600); err != nil {
+		t.Fatalf("seed pinned target: %v", err)
+	}
+	expectedInfo := statTestPath(t, targetPath)
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return expectedInfo, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+	}
+
+	file, err := openPinnedReplacementTarget(root, writeTestFileName, expectedInfo)
+	if err != nil {
+		t.Fatalf("expected pinned target open success, got %v", err)
+	}
+	if file == nil {
+		t.Fatal("expected opened pinned target file")
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		t.Fatalf("close opened pinned target: %v", closeErr)
 	}
 }
 

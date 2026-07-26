@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+var ErrPathEscapesRoot = errors.New("path escapes root")
+
 type rootedTarget struct {
 	rootAbs string
 	rel     string
@@ -27,9 +29,48 @@ type exactFileTarget struct {
 	fileName  string
 }
 
+type pathEscapesRootError struct {
+	path string
+}
+
+func (e *pathEscapesRootError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrPathEscapesRoot, e.path)
+}
+
+func (*pathEscapesRootError) Unwrap() error {
+	return ErrPathEscapesRoot
+}
+
+func newPathEscapesRootError(path string) error {
+	return &pathEscapesRootError{path: path}
+}
+
+func normalizePathEscapesRootError(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrPathEscapesRoot) {
+		return err
+	}
+
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathEscapesRootInvariant(pathErr.Path) {
+		return newPathEscapesRootError(path)
+	}
+	return err
+}
+
+func pathEscapesRootInvariant(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := resolveRelativeTarget(path, allowRootTarget)
+	return errors.Is(err, ErrPathEscapesRoot)
+}
+
 func resolveRelativeTarget(targetPath string, policy rootedTargetPolicy) (string, error) {
 	if filepath.IsAbs(targetPath) {
-		return "", fmt.Errorf("path escapes root: %s", targetPath)
+		return "", newPathEscapesRootError(targetPath)
 	}
 	return normalizeRootedTarget(targetPath, filepath.Clean(targetPath), policy)
 }
@@ -83,7 +124,7 @@ func normalizeRootedTarget(targetPath, rel string, policy rootedTargetPolicy) (s
 			return "", fmt.Errorf("target path resolves to root directory: %s", targetPath)
 		}
 	case rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)):
-		return "", fmt.Errorf("path escapes root: %s", targetPath)
+		return "", newPathEscapesRootError(targetPath)
 	}
 
 	return filepath.Clean(rel), nil
@@ -91,7 +132,53 @@ func normalizeRootedTarget(targetPath, rel string, policy rootedTargetPolicy) (s
 
 func translateOpenNotExist(err error, targetPath string) error {
 	if errors.Is(err, fs.ErrNotExist) {
-		return &fs.PathError{Op: "open", Path: targetPath, Err: os.ErrNotExist}
+		pathErr := &fs.PathError{Op: "open", Path: targetPath, Err: err}
+		if isPureSentinelError(err, fs.ErrNotExist) {
+			pathErr.Err = os.ErrNotExist
+		}
+		return pathErr
 	}
 	return err
+}
+
+type multiError interface {
+	error
+	Unwrap() []error
+}
+
+func isPureSentinelError(err error, sentinels ...error) bool {
+	if err == nil || len(sentinels) == 0 {
+		return false
+	}
+	var wrapped multiError
+	if errors.As(err, &wrapped) {
+		return arePureSentinelCauses(wrapped.Unwrap(), sentinels)
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return isPureSentinelError(cause, sentinels...)
+	}
+	return matchesSentinel(err, sentinels)
+}
+
+func arePureSentinelCauses(causes, sentinels []error) bool {
+	found := false
+	for _, cause := range causes {
+		if cause == nil {
+			continue
+		}
+		found = true
+		if !isPureSentinelError(cause, sentinels...) {
+			return false
+		}
+	}
+	return found
+}
+
+func matchesSentinel(err error, sentinels []error) bool {
+	for _, sentinel := range sentinels {
+		if sentinel != nil && errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
 }

@@ -43,27 +43,24 @@ func testJVMMissingDetectionPathAndSkippedDirHelper(t *testing.T) {
 		t.Fatalf("expected missing repo to fail detection walk")
 	}
 
-	repo := t.TempDir()
-	skipDir := filepath.Join(repo, ".gradle")
-	if err := os.MkdirAll(skipDir, 0o755); err != nil {
-		t.Fatalf("mkdir skip dir: %v", err)
-	}
-	entries, err := os.ReadDir(repo)
-	if err != nil {
-		t.Fatalf("read repo dir: %v", err)
-	}
-	var dirEntry os.DirEntry
-	for _, entry := range entries {
-		if entry.Name() == ".gradle" {
-			dirEntry = entry
-			break
-		}
-	}
-	if dirEntry == nil {
-		t.Fatalf("expected .gradle entry")
-	}
-	if err := walkJVMDetectionEntry(skipDir, dirEntry, map[string]struct{}{}, &language.Detection{}, new(int), 8); !errors.Is(err, filepath.SkipDir) {
+	repo := canonicalRepoPath(t)
+	dirEntry := mustReadJVMDirEntry(t, repo, ".gradle")
+	budget := defaultJVMDetectionBudget()
+	if err := walkJVMDetectionEntry(repo, filepath.Join(repo, dirEntry.Name()), dirEntry, map[string]struct{}{}, &language.Detection{}, budget); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected detection walker to skip .gradle, got %v", err)
+	}
+	if budget.traversalEntriesSeen != 1 {
+		t.Fatalf("expected skipped directory to consume one traversal entry, got %d", budget.traversalEntriesSeen)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gradle", "Main.java"), []byte("class Main {}\n"), 0o644); err != nil {
+		t.Fatalf("write skipped JVM source: %v", err)
+	}
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect with skipped directory: %v", err)
+	}
+	if detection.Matched {
+		t.Fatalf("expected detection walker not to descend into .gradle, got %#v", detection)
 	}
 	if _, err := scanRepo(context.Background(), repo, nil, nil); err != nil {
 		t.Fatalf("scan empty repo: %v", err)
@@ -79,4 +76,24 @@ func testJVMRootlessSourceLayoutAndCustomWeights(t *testing.T) {
 	if got == report.DefaultRemovalCandidateWeights() {
 		t.Fatalf("expected non-nil removal weights to normalize instead of using defaults")
 	}
+}
+
+func mustReadJVMDirEntry(t *testing.T, repo, name string) os.DirEntry {
+	t.Helper()
+
+	path := filepath.Join(repo, name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", name, err)
+	}
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read repo dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return entry
+		}
+	}
+	t.Fatalf("expected %s entry", name)
+	return nil
 }

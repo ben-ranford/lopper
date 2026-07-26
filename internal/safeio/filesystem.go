@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 )
 
 // FileSystem captures the filesystem operations safeio needs.
@@ -27,6 +29,7 @@ type Root interface {
 	Mkdir(name string, perm os.FileMode) error
 	Chmod(name string, perm os.FileMode) error
 	MkdirAll(name string, perm os.FileMode) error
+	Link(oldName, newName string) error
 	Rename(oldName, newName string) error
 	Remove(name string) error
 	Close() error
@@ -41,11 +44,33 @@ type File interface {
 	Chmod(perm os.FileMode) error
 }
 
+type ReadDirFile interface {
+	File
+	ReadDir(count int) ([]fs.DirEntry, error)
+}
+
+var ErrTargetPathSymlink = errors.New("target path is a symlink")
+
 var fileSystem FileSystem = &osFileSystem{}
 
 // OpenRoot opens a confined filesystem root.
 func OpenRoot(name string) (Root, error) {
 	return fileSystem.OpenRoot(name)
+}
+
+// OpenRootNoFollow opens a confined filesystem root without following symlinks
+// in any component of name.
+func OpenRootNoFollow(name string) (Root, error) {
+	return fileSystem.OpenRootNoFollow(name)
+}
+
+// OpenRootExistingAncestorNoFollow opens the deepest existing ancestor for
+// name without following untrusted symlinks. It returns the opened ancestor,
+// that ancestor's canonical path, and any remaining missing path components.
+func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, error) {
+	return openRootExistingAncestorNoFollowWith(name, fileSystem.Abs, filepath.Rel, fileSystem.OpenRoot, func(root Root, childName, requestedPath string) (Root, string, error) {
+		return openRootChildPinnedWith(root, childName, requestedPath, fileSystem.OpenRootNoFollow, os.Stat, os.SameFile)
+	})
 }
 
 type osFileSystem struct{}
@@ -67,12 +92,21 @@ func (*osFileSystem) OpenRoot(name string) (Root, error) {
 }
 
 func (f *osFileSystem) OpenRootNoFollow(name string) (Root, error) {
-	volumeRoot := filepath.VolumeName(name) + string(os.PathSeparator)
-	rel, err := filepath.Rel(volumeRoot, name)
+	return openRootNoFollowWith(name, f.Abs, filepath.Rel, f.OpenRoot, f.openRootChildPinned)
+}
+
+func openRootNoFollowWith(name string, absFn func(string) (string, error), relFn func(string, string) (string, error), openRootFn func(string) (Root, error), openRootChildFn func(Root, string, string) (Root, string, error)) (Root, error) {
+	absName, err := absFn(name)
 	if err != nil {
 		return nil, err
 	}
-	root, err := f.OpenRoot(volumeRoot)
+
+	volumeRoot := filepath.VolumeName(absName) + string(os.PathSeparator)
+	rel, err := relFn(volumeRoot, absName)
+	if err != nil {
+		return nil, err
+	}
+	root, err := openRootFn(volumeRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -85,8 +119,8 @@ func (f *osFileSystem) OpenRootNoFollow(name string) (Root, error) {
 		if part == "" || part == "." {
 			continue
 		}
-		currentPath = filepath.Join(currentPath, part)
-		next, err := openRootChildNoFollow(root, part, currentPath)
+		requestedPath := filepath.Join(currentPath, part)
+		next, nextPath, err := openRootChildFn(root, part, requestedPath)
 		if err != nil {
 			return nil, closeRootWithError(root, err)
 		}
@@ -94,8 +128,65 @@ func (f *osFileSystem) OpenRootNoFollow(name string) (Root, error) {
 			return nil, closeRootWithError(next, err)
 		}
 		root = next
+		currentPath = nextPath
 	}
 	return root, nil
+}
+
+func (f *osFileSystem) openRootChildPinned(root Root, name, requestedPath string) (Root, string, error) {
+	return openRootChildPinnedWith(root, name, requestedPath, f.OpenRootNoFollow, os.Stat, os.SameFile)
+}
+
+func openRootChildPinnedWith(root Root, name, requestedPath string, openRootNoFollowFn func(string) (Root, error), statFn func(string) (fs.FileInfo, error), sameFileFn func(fs.FileInfo, fs.FileInfo) bool) (Root, string, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, "", err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		next, err := openRootChildNoFollow(root, name, requestedPath)
+		return next, requestedPath, err
+	}
+
+	targetPath, ok := trustedRootAliasTarget(requestedPath)
+	if !ok {
+		return nil, "", fmt.Errorf("root contains symlink: %s", requestedPath)
+	}
+
+	return openPinnedRootAliasWith(targetPath, requestedPath, openRootNoFollowFn, statFn, sameFileFn)
+}
+
+func openPinnedRootAliasWith(targetPath string, requestedPath string, openRootNoFollowFn func(string) (Root, error), statFn func(string) (fs.FileInfo, error), sameFileFn func(fs.FileInfo, fs.FileInfo) bool) (Root, string, error) {
+	next, err := openRootNoFollowFn(targetPath)
+	if err != nil {
+		return nil, "", err
+	}
+	targetInfo, err := statFn(targetPath)
+	if err != nil {
+		return nil, "", closeRootWithError(next, err)
+	}
+	openedInfo, err := next.Lstat(".")
+	if err != nil {
+		return nil, "", closeRootWithError(next, err)
+	}
+	if !sameFileFn(targetInfo, openedInfo) {
+		return nil, "", closeRootWithError(next, fmt.Errorf("root changed while opening: %s", requestedPath))
+	}
+	return next, targetPath, nil
+}
+
+func trustedRootAliasTarget(requestedPath string) (string, bool) {
+	if runtime.GOOS != "darwin" {
+		return "", false
+	}
+
+	switch filepath.Clean(requestedPath) {
+	case filepath.Join(string(os.PathSeparator), "tmp"):
+		return filepath.Join(string(os.PathSeparator), "private", "tmp"), true
+	case filepath.Join(string(os.PathSeparator), "var"):
+		return filepath.Join(string(os.PathSeparator), "private", "var"), true
+	default:
+		return "", false
+	}
 }
 
 func openRootChildNoFollow(root Root, name, path string) (Root, error) {
@@ -124,6 +215,62 @@ func openRootChildNoFollow(root Root, name, path string) (Root, error) {
 	return next, nil
 }
 
+func openRootExistingAncestorNoFollowWith(name string, absFn func(string) (string, error), relFn func(string, string) (string, error), openRootFn func(string) (Root, error), openRootChildFn func(Root, string, string) (Root, string, error)) (Root, string, []string, error) {
+	absName, err := absFn(name)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	volumeRoot := filepath.VolumeName(absName) + string(os.PathSeparator)
+	rel, err := relFn(volumeRoot, absName)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	root, err := openRootFn(volumeRoot)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if rel == "." {
+		return root, volumeRoot, nil, nil
+	}
+	_, parts := splitPinnedPath(rel)
+	return openExistingRootAncestors(root, volumeRoot, parts, openRootChildFn)
+}
+
+func openExistingRootAncestors(root Root, currentPath string, parts []string, openRootChildFn func(Root, string, string) (Root, string, error)) (Root, string, []string, error) {
+	for idx, part := range parts {
+		requestedPath := filepath.Join(currentPath, part)
+		exists, err := rootChildExists(root, part)
+		if err != nil {
+			return nil, "", nil, closeRootWithError(root, err)
+		}
+		if !exists {
+			return root, currentPath, parts[idx:], nil
+		}
+		next, nextPath, err := openRootChildFn(root, part, requestedPath)
+		if err != nil {
+			return nil, "", nil, closeRootWithError(root, err)
+		}
+		if err := root.Close(); err != nil {
+			return nil, "", nil, closeRootWithError(next, err)
+		}
+		root = next
+		currentPath = nextPath
+	}
+	return root, currentPath, nil, nil
+}
+
+func rootChildExists(root Root, name string) (bool, error) {
+	_, err := root.Lstat(name)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func closeRootWithError(root Root, err error) error {
 	if closeErr := root.Close(); closeErr != nil {
 		return errors.Join(err, closeErr)
@@ -133,6 +280,182 @@ func closeRootWithError(root Root, err error) error {
 
 type osRoot struct {
 	root *os.Root
+}
+
+func OpenPinnedFile(root Root, name string) (_ File, err error) {
+	file, roots, err := openPinnedPath(root, name, pinnedChildExpectFile)
+	if err != nil {
+		return nil, err
+	}
+	if len(roots) == 0 {
+		return file, nil
+	}
+	return &pinnedFile{File: file, roots: roots}, nil
+}
+
+func OpenPinnedDirectory(root Root, name string) (_ ReadDirFile, err error) {
+	file, roots, err := openPinnedPath(root, name, pinnedChildExpectDirectory)
+	if err != nil {
+		return nil, err
+	}
+	dir, ok := file.(ReadDirFile)
+	if ok {
+		if len(roots) == 0 {
+			return dir, nil
+		}
+		return &pinnedReadDirFile{ReadDirFile: dir, roots: roots}, nil
+	}
+	if len(roots) > 0 {
+		err = closeRootsWithError(roots, fs.ErrInvalid)
+	} else {
+		err = fs.ErrInvalid
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		return nil, errors.Join(err, closeErr)
+	}
+	return nil, err
+}
+
+type pinnedFile struct {
+	File
+	roots []Root
+}
+
+func (f *pinnedFile) Close() error {
+	return closeRootsWithError(f.roots, f.File.Close())
+}
+
+type pinnedReadDirFile struct {
+	ReadDirFile
+	roots []Root
+}
+
+func (f *pinnedReadDirFile) Close() error {
+	return closeRootsWithError(f.roots, f.ReadDirFile.Close())
+}
+
+func openPinnedPath(root Root, name string, kind pinnedChildKind) (_ File, _ []Root, err error) {
+	cleanName, parts := splitPinnedPath(name)
+	if len(parts) <= 1 {
+		file, err := openPinnedChildAtPath(root, cleanName, cleanName, kind)
+		return file, nil, err
+	}
+
+	roots, leafRoot, leafName, leafPath, err := openPinnedAncestors(root, parts)
+	if err != nil {
+		return nil, nil, err
+	}
+	file, err := openPinnedChildAtPath(leafRoot, leafName, leafPath, kind)
+	if err != nil {
+		return nil, nil, closeRootsWithError(roots, err)
+	}
+	return file, roots, nil
+}
+
+func splitPinnedPath(name string) (string, []string) {
+	cleanName := filepath.Clean(name)
+	if cleanName == "." {
+		return cleanName, nil
+	}
+
+	rawParts := strings.Split(cleanName, string(os.PathSeparator))
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		if part == "" || part == "." {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return cleanName, parts
+}
+
+func openPinnedAncestors(root Root, parts []string) (_ []Root, _ Root, _ string, _ string, err error) {
+	opened := make([]Root, 0, len(parts)-1)
+	current := root
+	currentPath := ""
+	for _, part := range parts[:len(parts)-1] {
+		currentPath = filepath.Join(currentPath, part)
+		next, openErr := openRootChildNoFollow(current, part, currentPath)
+		if openErr != nil {
+			return nil, nil, "", "", closeRootsWithError(opened, openErr)
+		}
+		opened = append(opened, next)
+		current = next
+	}
+	return opened, current, parts[len(parts)-1], filepath.Join(parts...), nil
+}
+
+func closeRootsWithError(roots []Root, err error) error {
+	for idx := len(roots) - 1; idx >= 0; idx-- {
+		err = errors.Join(err, roots[idx].Close())
+	}
+	return err
+}
+
+func openPinnedChildAtPath(root Root, name, path string, kind pinnedChildKind) (_ File, err error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, &targetPathSymlinkError{path: path}
+	}
+	if kind == pinnedChildExpectFile && info.IsDir() {
+		return nil, fs.ErrInvalid
+	}
+	if kind == pinnedChildExpectDirectory && !info.IsDir() {
+		return nil, fs.ErrInvalid
+	}
+
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, normalizePathEscapesRootError(path, err)
+	}
+
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, closeFileWithError(file, err)
+	}
+	if kind == pinnedChildExpectFile && openedInfo.IsDir() {
+		return nil, closeFileWithError(file, fs.ErrInvalid)
+	}
+	if kind == pinnedChildExpectDirectory && !openedInfo.IsDir() {
+		return nil, closeFileWithError(file, fs.ErrInvalid)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, closeFileWithError(file, fmt.Errorf("path changed while opening: %s", path))
+	}
+	return file, nil
+}
+
+type pinnedChildKind int
+
+const (
+	pinnedChildExpectFile pinnedChildKind = iota
+	pinnedChildExpectDirectory
+)
+
+type targetPathSymlinkError struct {
+	path string
+}
+
+func (e *targetPathSymlinkError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrTargetPathSymlink, e.path)
+}
+
+func (*targetPathSymlinkError) Unwrap() error {
+	return ErrTargetPathSymlink
+}
+
+func (*targetPathSymlinkError) Is(target error) bool {
+	return target == syscall.ELOOP
+}
+
+func closeFileWithError(file File, err error) error {
+	if closeErr := file.Close(); closeErr != nil {
+		return errors.Join(err, closeErr)
+	}
+	return err
 }
 
 func (r *osRoot) Open(name string) (File, error) {
@@ -165,6 +488,10 @@ func (r *osRoot) Chmod(name string, perm os.FileMode) error {
 
 func (r *osRoot) MkdirAll(name string, perm os.FileMode) error {
 	return r.root.MkdirAll(name, perm)
+}
+
+func (r *osRoot) Link(oldName, newName string) error {
+	return r.root.Link(oldName, newName)
 }
 
 func (r *osRoot) Rename(oldName, newName string) error {

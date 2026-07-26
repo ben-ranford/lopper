@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -78,6 +79,47 @@ func openTestRoot(t *testing.T, rootDir string) Root {
 		}
 	})
 	return root
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err == nil && resolved != "" {
+		return resolved
+	}
+	return dir
+}
+
+func tempDirAliasPair(t *testing.T) (string, string, bool) {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		return "", "", false
+	}
+
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil || resolved == "" || resolved == dir {
+		return "", "", false
+	}
+	return dir, resolved, true
+}
+
+func uniqueTrustedAliasMissingPath(t *testing.T, leaf string) string {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+
+	dir, err := os.MkdirTemp(filepath.Join(string(os.PathSeparator), "tmp"), "lopper-safeio-")
+	if err != nil {
+		t.Skipf("trusted temp alias unavailable: %v", err)
+	}
+	base := filepath.Base(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove trusted alias fixture %s: %v", dir, err)
+	}
+	return filepath.Join(string(os.PathSeparator), "tmp", base, leaf)
 }
 
 func assertFileContent(t *testing.T, path, want string) {
@@ -155,6 +197,7 @@ type fakeRoot struct {
 	openRoot func(name string) (Root, error)
 	lstat    func(name string) (fs.FileInfo, error)
 	mkdir    func(name string, perm os.FileMode) error
+	link     func(oldName, newName string) error
 	rename   func(oldName, newName string) error
 	remove   func(name string) error
 	close    func() error
@@ -207,6 +250,13 @@ func (r *fakeRoot) MkdirAll(name string, perm os.FileMode) error {
 		return r.mkdirAll(name, perm)
 	}
 	return r.Root.MkdirAll(name, perm)
+}
+
+func (r *fakeRoot) Link(oldName, newName string) error {
+	if r.link != nil {
+		return r.link(oldName, newName)
+	}
+	return r.Root.Link(oldName, newName)
 }
 
 func (r *fakeRoot) Rename(oldName, newName string) error {

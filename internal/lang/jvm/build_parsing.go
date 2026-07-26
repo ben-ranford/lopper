@@ -1,6 +1,7 @@
 package jvm
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io/fs"
@@ -71,6 +72,16 @@ func collectDeclaredDependencies(repoPath string) ([]dependencyDescriptor, map[s
 	return descriptors, prefixes, aliases, warnings
 }
 
+func collectDeclaredDependenciesWithinRoot(ctx context.Context, repoPath string, root safeio.Root) ([]dependencyDescriptor, map[string]string, map[string]string, []string, error) {
+	descriptors, warnings, err := collectBuildDescriptorsWithinRoot(ctx, repoPath, root)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	descriptors = dedupeAndSortDescriptors(descriptors)
+	prefixes, aliases := buildDescriptorLookups(descriptors)
+	return descriptors, prefixes, aliases, warnings, nil
+}
+
 func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string) {
 	catalogResolver, warnings := shared.LoadGradleCatalogResolver(repoPath)
 	buildParser := func(path, content string) ([]dependencyDescriptor, []string) {
@@ -96,6 +107,39 @@ func collectBuildDescriptors(repoPath string) ([]dependencyDescriptor, []string)
 	descriptors, parseWarnings := parseBuildFilesWithWarnings(repoPath, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
 	warnings = append(warnings, parseWarnings...)
 	return descriptors, shared.DedupeWarnings(warnings)
+}
+
+func collectBuildDescriptorsWithinRoot(ctx context.Context, repoPath string, root safeio.Root) ([]dependencyDescriptor, []string, error) {
+	catalogResolver, warnings, err := shared.LoadGradleCatalogResolverWithinRoot(ctx, repoPath, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	buildParser := func(path, content string) ([]dependencyDescriptor, []string) {
+		switch strings.ToLower(filepath.Base(path)) {
+		case pomXMLName:
+			return parsePomDependencyContent(relativeBuildFilePath(repoPath, path), content)
+		case buildGradleName, buildGradleKTSName:
+			descriptors := parseGradleDependencyContent(path, content)
+			catalogDescriptors, catalogWarnings := catalogResolver.ParseDependencyReferences(path, content)
+			for _, descriptor := range catalogDescriptors {
+				descriptors = append(descriptors, dependencyDescriptor{
+					Name:     descriptor.Artifact,
+					Group:    descriptor.Group,
+					Artifact: descriptor.Artifact,
+				})
+			}
+			return dedupeAndSortDescriptors(descriptors), catalogWarnings
+		default:
+			return nil, nil
+		}
+	}
+
+	descriptors, parseWarnings, err := parseBuildFilesWithWarningsWithinRoot(ctx, repoPath, root, buildParser, pomXMLName, buildGradleName, buildGradleKTSName)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, parseWarnings...)
+	return descriptors, shared.DedupeWarnings(warnings), nil
 }
 
 func dedupeAndSortDescriptors(descriptors []dependencyDescriptor) []dependencyDescriptor {
@@ -458,6 +502,34 @@ func parseBuildFilesWithWarnings(repoPath string, parser func(path, content stri
 	return collector.descriptors, shared.DedupeWarnings(collector.warnings)
 }
 
+func parseBuildFilesWithWarningsWithinRoot(ctx context.Context, repoPath string, root safeio.Root, parser func(path, content string) ([]dependencyDescriptor, []string), names ...string) ([]dependencyDescriptor, []string, error) {
+	collector := buildFileWarningCollector{
+		repoPath: repoPath,
+		parser:   parser,
+		names:    names,
+		seen:     make(map[string]struct{}),
+	}
+	budget := shared.RootedWalkBudget{
+		MaxTraversalEntries: maxJVMBuildTraversalEntries,
+		MaxFiles:            maxJVMBuildFiles,
+		MaxWorkItems:        maxJVMBuildWorkItems,
+		CountCandidate: func(path string, entry fs.DirEntry) bool {
+			return matchesBuildFile(strings.ToLower(entry.Name()), names)
+		},
+	}
+	err := shared.WalkRepoFilesWithinRootPinned(ctx, repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
+		return collector.visitWithinRoot(file.Parent, file.Leaf, file.Path, file.Entry)
+	})
+	if err != nil {
+		if warning, limited := shared.RootedWalkBudgetWarning("JVM build file scan", budget, err); limited {
+			collector.warnings = append(collector.warnings, warning)
+		} else {
+			return nil, nil, err
+		}
+	}
+	return collector.descriptors, shared.DedupeWarnings(collector.warnings), nil
+}
+
 func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names []string, parser func(content string) []dependencyDescriptor, seen map[string]struct{}, descriptors *[]dependencyDescriptor) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
@@ -470,7 +542,7 @@ func parseBuildFileEntry(repoPath string, path string, entry fs.DirEntry, names 
 		return nil
 	}
 
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableJVMBuildFile)
 	if err != nil {
 		return nil
 	}
@@ -507,7 +579,7 @@ func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err er
 	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
 		return nil
 	}
-	content, readErr := safeio.ReadFileUnder(c.repoPath, path)
+	content, readErr := safeio.ReadFileUnderLimit(c.repoPath, path, maxScannableJVMBuildFile)
 	if readErr != nil {
 		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
 		return nil
@@ -523,6 +595,50 @@ func (c *buildFileWarningCollector) visit(path string, entry fs.DirEntry, err er
 		c.descriptors = append(c.descriptors, descriptor)
 	}
 	return nil
+}
+
+func (c *buildFileWarningCollector) visitWithinRoot(parent safeio.Root, leaf, path string, entry fs.DirEntry) error {
+	if !matchesBuildFile(strings.ToLower(entry.Name()), c.names) {
+		return nil
+	}
+	content, readErr := safeio.ReadFileWithinRootLimit(parent, leaf, maxScannableJVMBuildFile)
+	if readErr != nil {
+		if !isPureJVMBuildFileReadWarning(readErr) {
+			return readErr
+		}
+		c.warnings = append(c.warnings, formatBuildFileReadWarning(c.repoPath, path, readErr))
+		return nil
+	}
+	items, parseWarnings := c.parser(path, string(content))
+	c.warnings = append(c.warnings, parseWarnings...)
+	for _, descriptor := range items {
+		key := descriptor.Group + ":" + descriptor.Artifact
+		if _, ok := c.seen[key]; ok {
+			continue
+		}
+		c.seen[key] = struct{}{}
+		c.descriptors = append(c.descriptors, descriptor)
+	}
+	return nil
+}
+
+func isPureJVMBuildFileReadWarning(err error) bool {
+	allowed := []error{
+		safeio.ErrFileTooLarge,
+		safeio.ErrTargetPathSymlink,
+		safeio.ErrPathEscapesRoot,
+		fs.ErrNotExist,
+		fs.ErrPermission,
+	}
+	return shared.IsPureSentinelError(err, allowed...)
+}
+
+func readJVMBuildFileWithinRoot(root safeio.Root, repoPath, path string) ([]byte, error) {
+	relativePath, err := filepath.Rel(repoPath, path)
+	if err != nil {
+		return nil, err
+	}
+	return safeio.ReadFileWithinRootLimit(root, relativePath, maxScannableJVMBuildFile)
 }
 
 func formatBuildFileReadWarning(repoPath, path string, err error) string {

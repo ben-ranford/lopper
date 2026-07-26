@@ -12,7 +12,7 @@ import (
 )
 
 func TestBuildFileWarningCollectorVisitPropagatesWalkError(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalRepoPath(t)
 	walkErr := errors.New("walk failed")
 	collector := newBuildFileWarningCollector(repo)
 	if err := collector.visit("", nil, walkErr); !errors.Is(err, walkErr) {
@@ -21,8 +21,8 @@ func TestBuildFileWarningCollectorVisitPropagatesWalkError(t *testing.T) {
 }
 
 func TestBuildFileWarningCollectorVisitWarnsOnOutsideBuildFile(t *testing.T) {
-	repo := t.TempDir()
-	outside := t.TempDir()
+	repo := canonicalRepoPath(t)
+	outside := canonicalRepoPath(t)
 	outsideBuild := filepath.Join(outside, buildGradleName)
 	testutil.MustWriteFile(t, outsideBuild, `implementation "org.example:demo:1.0.0"`)
 
@@ -37,7 +37,7 @@ func TestBuildFileWarningCollectorVisitWarnsOnOutsideBuildFile(t *testing.T) {
 }
 
 func TestBuildFileWarningCollectorVisitSkipsGradleDir(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalRepoPath(t)
 	collector := newBuildFileWarningCollector(repo)
 	skipDir := filepath.Join(repo, ".gradle")
 	if err := os.MkdirAll(skipDir, 0o755); err != nil {
@@ -50,7 +50,7 @@ func TestBuildFileWarningCollectorVisitSkipsGradleDir(t *testing.T) {
 }
 
 func TestBuildFileWarningCollectorVisitCollectsRepoBuildFile(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalRepoPath(t)
 	collector := newBuildFileWarningCollector(repo)
 	insideBuild := filepath.Join(repo, buildGradleName)
 	testutil.MustWriteFile(t, insideBuild, `implementation "org.example:demo:1.0.0"`)
@@ -67,7 +67,7 @@ func TestBuildFileWarningCollectorVisitCollectsRepoBuildFile(t *testing.T) {
 }
 
 func TestFormatBuildFileReadWarningIncludesPathAndError(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalRepoPath(t)
 	insideBuild := filepath.Join(repo, buildGradleName)
 	warning := formatBuildFileReadWarning(repo, insideBuild, fs.ErrPermission)
 	if !strings.Contains(warning, buildGradleName) || !strings.Contains(warning, fs.ErrPermission.Error()) {

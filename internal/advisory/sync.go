@@ -24,6 +24,7 @@ import (
 const (
 	DefaultOSVSourceURL          = "https://osv-vulnerabilities.storage.googleapis.com/all.zip"
 	defaultHTTPTimeout           = 15 * time.Minute
+	maxCacheManifestBytes int64  = 8 * 1024 * 1024
 	maxSyncMetadataBytes         = 64 * 1024 * 1024
 	maxSyncSnapshotBytes  int64  = 4 * 1024 * 1024 * 1024
 	maxOSVZipEntries             = 2_000_000
@@ -72,17 +73,37 @@ type fetchedSnapshot struct {
 	sizeBytes  int64
 }
 
-var syncAfterDownloadTestHook func(cachePath, tempRel string)
+var (
+	syncAfterDownloadTestHook       func(cachePath, tempRel string)
+	syncBeforeSnapshotPlacementHook func(cachePath, snapshotRel string)
+	syncAfterSnapshotPlacementHook  func(cachePath, snapshotRel string)
+	syncPublicationLockWaitTestHook func()
+	syncUpdateManifestTestHook      = updateManifest
+	openAdvisoryCacheRootHook       = openAdvisoryCacheRoot
+	openAdvisoryCacheAncestor       = safeio.OpenRootExistingAncestorNoFollow
+)
+
+var (
+	errAdvisorySnapshotContentMismatch = errors.New("advisory snapshot content mismatch")
+	errAdvisorySnapshotOwnershipLost   = errors.New("advisory snapshot ownership lost")
+)
+
+type advisorySnapshotOwnership struct {
+	name string
+	info os.FileInfo
+}
+
+type advisoryPublicationLock struct {
+	identity safeio.File
+	native   *advisoryNativePublicationLock
+}
 
 func SyncOSV(ctx context.Context, opts SyncOptions) (snapshot CacheSnapshot, err error) {
 	sourceURL, cachePath, now, err := resolveSyncOptions(opts)
 	if err != nil {
 		return CacheSnapshot{}, err
 	}
-	if err := os.MkdirAll(cachePath, 0o750); err != nil {
-		return CacheSnapshot{}, fmt.Errorf("create advisory cache: %w", err)
-	}
-	root, err := safeio.OpenRoot(cachePath)
+	root, err := prepareAdvisoryCacheRoot(cachePath)
 	if err != nil {
 		return CacheSnapshot{}, fmt.Errorf("create advisory cache: %w", err)
 	}
@@ -91,35 +112,151 @@ func SyncOSV(ctx context.Context, opts SyncOptions) (snapshot CacheSnapshot, err
 			err = errors.Join(err, closeErr)
 		}
 	}()
+	return syncOSVWithinCacheRoot(ctx, sourceURL, cachePath, now, opts.Client, root)
+}
+
+func syncOSVWithinCacheRoot(ctx context.Context, sourceURL, cachePath string, now time.Time, client *http.Client, root safeio.Root) (snapshot CacheSnapshot, err error) {
 	if err := root.MkdirAll("snapshots", 0o750); err != nil {
 		return CacheSnapshot{}, fmt.Errorf("create advisory cache: %w", err)
 	}
-	fetched, err := downloadSnapshotUnderRoot(ctx, sourceURL, opts.Client, root)
+	snapshotsRoot, err := advisoryOpenOrCreatePinnedChild(root, cachePath, "snapshots")
+	if err != nil {
+		return CacheSnapshot{}, fmt.Errorf("create advisory cache: %w", err)
+	}
+	defer func() {
+		if closeErr := snapshotsRoot.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	fetched, err := downloadSnapshotUnderRoot(ctx, sourceURL, client, snapshotsRoot)
 	if err != nil {
 		return CacheSnapshot{}, err
 	}
-	tempOwned := true
 	defer func() {
-		if !tempOwned {
-			return
-		}
-		err = errors.Join(err, safeio.CleanupTempFileWithinRoot(root, fetched.tempRel, nil))
+		err = errors.Join(err, safeio.CleanupTempFileWithinRoot(snapshotsRoot, fetched.tempRel, nil))
 	}()
+	tempCacheRel := filepath.Join("snapshots", fetched.tempRel)
 	if syncAfterDownloadTestHook != nil {
-		syncAfterDownloadTestHook(cachePath, fetched.tempRel)
+		syncAfterDownloadTestHook(cachePath, tempCacheRel)
 	}
+	return publishAdvisorySnapshot(ctx, sourceURL, cachePath, now, root, snapshotsRoot, fetched)
+}
 
+func publishAdvisorySnapshot(ctx context.Context, sourceURL, cachePath string, now time.Time, root, snapshotsRoot safeio.Root, fetched fetchedSnapshot) (snapshot CacheSnapshot, err error) {
 	id := snapshotIDFromDigest(fetched.digest)
-	snapshotRel := filepath.Join("snapshots", id+snapshotExtension(fetched.schema))
-	if err := safeio.MoveFileWithinRoot(root, fetched.tempRel, snapshotRel, 0o750, 0o640); err != nil {
+	snapshotName := id + snapshotExtension(fetched.schema)
+	snapshotRel := filepath.Join("snapshots", snapshotName)
+	publicationLock, err := acquireAdvisoryPublicationLock(ctx, root)
+	if err != nil {
+		return CacheSnapshot{}, fmt.Errorf("lock advisory cache publication: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, publicationLock.Close())
+	}()
+	if _, err := advisorySnapshotAbsent(snapshotsRoot, snapshotName); err != nil {
 		return CacheSnapshot{}, fmt.Errorf("write advisory snapshot: %w", err)
 	}
-	tempOwned = false
+	if syncBeforeSnapshotPlacementHook != nil {
+		syncBeforeSnapshotPlacementHook(cachePath, snapshotRel)
+	}
+	ownership, err := advisoryPlaceSnapshotNoReplace(snapshotsRoot, fetched.tempRel, snapshotName, fetched.digest, fetched.sizeBytes)
+	if err != nil {
+		return CacheSnapshot{}, fmt.Errorf("write advisory snapshot: %w", err)
+	}
 	snapshot = buildCacheSnapshot(id, sourceURL, now, snapshotRel, fetched)
-	if err := updateManifest(root, snapshot, now); err != nil {
+	if syncAfterSnapshotPlacementHook != nil {
+		syncAfterSnapshotPlacementHook(cachePath, snapshotRel)
+	}
+	if err := advisoryVerifyPinnedSnapshotsChild(root, snapshotsRoot); err != nil {
+		placementErr := fmt.Errorf("write advisory snapshot: %w", err)
+		if ownership != nil {
+			placementErr = rollbackOwnedSnapshot(snapshotsRoot, ownership, placementErr)
+		}
+		return CacheSnapshot{}, placementErr
+	}
+	if err := syncUpdateManifestTestHook(root, snapshot, now); err != nil {
+		if ownership != nil {
+			err = rollbackOwnedSnapshot(snapshotsRoot, ownership, err)
+		}
 		return CacheSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func acquireAdvisoryPublicationLock(ctx context.Context, root safeio.Root) (*advisoryPublicationLock, error) {
+	identity, err := openAdvisoryCacheIdentity(root)
+	if err != nil {
+		return nil, err
+	}
+	osFile, ok := identity.(*os.File)
+	if !ok {
+		return nil, errors.Join(errors.New("advisory cache identity has no descriptor"), identity.Close())
+	}
+	native, err := newAdvisoryNativePublicationLock(osFile.Fd())
+	if err != nil {
+		return nil, errors.Join(err, identity.Close())
+	}
+	lock := &advisoryPublicationLock{identity: identity, native: native}
+	if err := lock.acquire(ctx); err != nil {
+		return nil, errors.Join(err, native.close(), identity.Close())
+	}
+	if err := verifyAdvisoryCacheIdentity(root, identity); err != nil {
+		return nil, errors.Join(err, lock.Close())
+	}
+	return lock, nil
+}
+
+func openAdvisoryCacheIdentity(root safeio.Root) (safeio.File, error) {
+	return safeio.OpenPinnedDirectory(root, ".")
+}
+
+func verifyAdvisoryCacheIdentity(root safeio.Root, identity safeio.File) error {
+	pathInfo, err := root.Lstat(".")
+	if err != nil {
+		return err
+	}
+	openedInfo, err := identity.Stat()
+	if err != nil {
+		return err
+	}
+	if !pathInfo.IsDir() || !openedInfo.IsDir() {
+		return errors.New("advisory cache identity is not a directory")
+	}
+	if !os.SameFile(pathInfo, openedInfo) {
+		return errors.New("advisory cache identity changed while locking")
+	}
+	return nil
+}
+
+func (l *advisoryPublicationLock) acquire(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitNotified := false
+	for {
+		acquired, err := l.native.tryAcquire()
+		if err != nil {
+			return err
+		}
+		if acquired {
+			return nil
+		}
+		if !waitNotified && syncPublicationLockWaitTestHook != nil {
+			syncPublicationLockWaitTestHook()
+			waitNotified = true
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (l *advisoryPublicationLock) Close() error {
+	return errors.Join(l.native.release(), l.native.close(), l.identity.Close())
 }
 
 func resolveSyncOptions(opts SyncOptions) (sourceURL, cachePath string, now time.Time, err error) {
@@ -163,6 +300,122 @@ func buildCacheSnapshot(id, sourceURL string, now time.Time, snapshotRel string,
 	}
 }
 
+func advisorySnapshotAbsent(root safeio.Root, snapshotName string) (bool, error) {
+	info, err := root.Lstat(snapshotName)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("snapshot path is a symlink: %s", snapshotName)
+		}
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("snapshot path is not a regular file: %s", snapshotName)
+		}
+		return false, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
+}
+
+func advisoryPlaceSnapshotNoReplace(root safeio.Root, tempName, snapshotName, digest string, sizeBytes int64) (*advisorySnapshotOwnership, error) {
+	tempInfo, err := root.Lstat(tempName)
+	if err != nil {
+		return nil, err
+	}
+	if !tempInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("snapshot temp path is not a regular file: %s", tempName)
+	}
+	if err := root.Chmod(tempName, 0o640); err != nil {
+		return nil, err
+	}
+	if err := root.Link(tempName, snapshotName); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			absent, validateErr := advisorySnapshotAbsent(root, snapshotName)
+			if validateErr != nil {
+				return nil, validateErr
+			}
+			if absent {
+				return nil, errors.New("snapshot path disappeared during no-replace placement")
+			}
+			return nil, advisoryVerifyExistingSnapshot(root, snapshotName, digest, sizeBytes)
+		}
+		return nil, err
+	}
+	ownership := &advisorySnapshotOwnership{name: snapshotName, info: tempInfo}
+	publishedInfo, err := root.Lstat(snapshotName)
+	if err != nil {
+		return nil, rollbackOwnedSnapshot(root, ownership, err)
+	}
+	if !os.SameFile(tempInfo, publishedInfo) {
+		ownershipErr := fmt.Errorf("%w: %s", errAdvisorySnapshotOwnershipLost, snapshotName)
+		return nil, rollbackOwnedSnapshot(root, ownership, ownershipErr)
+	}
+	return ownership, nil
+}
+
+func advisoryVerifyExistingSnapshot(root safeio.Root, snapshotName, digest string, sizeBytes int64) (err error) {
+	file, err := safeio.OpenPinnedFile(root, snapshotName)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: snapshot path is not a regular file: %s", errAdvisorySnapshotContentMismatch, snapshotName)
+	}
+	if info.Size() != sizeBytes {
+		return fmt.Errorf("%w: snapshot size %d does not match downloaded size %d: %s", errAdvisorySnapshotContentMismatch, info.Size(), sizeBytes, snapshotName)
+	}
+	hasher := sha256.New()
+	copied, err := io.Copy(hasher, file)
+	if err != nil {
+		return err
+	}
+	actualDigest := sha256Prefix + hex.EncodeToString(hasher.Sum(nil))
+	if copied != sizeBytes || actualDigest != digest {
+		return fmt.Errorf("%w: snapshot digest or size does not match download: %s", errAdvisorySnapshotContentMismatch, snapshotName)
+	}
+	return nil
+}
+
+func advisoryVerifyPinnedSnapshotsChild(root, snapshotsRoot safeio.Root) error {
+	pathInfo, err := root.Lstat("snapshots")
+	if err != nil {
+		return err
+	}
+	openedInfo, err := snapshotsRoot.Lstat(".")
+	if err != nil {
+		return err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.IsDir() || !os.SameFile(pathInfo, openedInfo) {
+		return errors.New("snapshots directory changed during publication")
+	}
+	return nil
+}
+
+func rollbackOwnedSnapshot(root safeio.Root, ownership *advisorySnapshotOwnership, publicationErr error) error {
+	currentInfo, err := root.Lstat(ownership.name)
+	if errors.Is(err, os.ErrNotExist) {
+		return publicationErr
+	}
+	if err != nil {
+		return errors.Join(publicationErr, fmt.Errorf("rollback advisory snapshot: %w", err))
+	}
+	if !os.SameFile(ownership.info, currentInfo) {
+		return errors.Join(publicationErr, fmt.Errorf("%w: %s", errAdvisorySnapshotOwnershipLost, ownership.name))
+	}
+	removeErr := root.Remove(ownership.name)
+	if removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+		return publicationErr
+	}
+	return errors.Join(publicationErr, fmt.Errorf("rollback advisory snapshot: %w", removeErr))
+}
+
 func snapshotExtension(schema string) string {
 	switch schema {
 	case schemaOSVZip:
@@ -172,8 +425,124 @@ func snapshotExtension(schema string) string {
 	}
 }
 
-func LoadCacheManifest(cachePath string) (CacheManifest, error) {
-	data, err := safeio.ReadFileUnder(cachePath, filepath.Join(cachePath, manifestFileName))
+func LoadCacheManifest(cachePath string) (manifest CacheManifest, err error) {
+	root, err := openAdvisoryCacheRootHook(cachePath)
+	if err != nil {
+		return CacheManifest{}, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	data, err := readCacheManifestData(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return CacheManifest{}, &os.PathError{
+				Op:   "open",
+				Path: filepath.Join(cachePath, manifestFileName),
+				Err:  os.ErrNotExist,
+			}
+		}
+		return CacheManifest{}, err
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return CacheManifest{}, fmt.Errorf("parse advisory cache manifest: %w", err)
+	}
+	return manifest, nil
+}
+
+func prepareAdvisoryCacheRoot(cachePath string) (safeio.Root, error) {
+	root, currentPath, missingParts, err := openAdvisoryCacheAncestor(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(missingParts) == 0 {
+		return root, nil
+	}
+	current, err := openMissingAdvisoryCacheParts(root, currentPath, missingParts)
+	if err != nil {
+		return nil, err
+	}
+	if err := root.Close(); err != nil {
+		return nil, advisoryJoinCloseError(err, current)
+	}
+	return current, nil
+}
+
+func openMissingAdvisoryCacheParts(root safeio.Root, currentPath string, missingParts []string) (safeio.Root, error) {
+	current := root
+	for index, part := range missingParts {
+		next, err := advisoryOpenOrCreatePinnedChild(current, currentPath, part)
+		if err != nil {
+			if index == 0 {
+				return nil, advisoryJoinCloseError(err, root)
+			}
+			return nil, advisoryJoinCloseError(err, current, root)
+		}
+		if index > 0 {
+			if err := current.Close(); err != nil {
+				return nil, advisoryJoinCloseError(err, next, root)
+			}
+		}
+		current = next
+		currentPath = filepath.Join(currentPath, part)
+	}
+	return current, nil
+}
+
+func openAdvisoryCacheRoot(cachePath string) (safeio.Root, error) {
+	return safeio.OpenRootNoFollow(cachePath)
+}
+
+func advisoryOpenOrCreatePinnedChild(root safeio.Root, parentPath, name string) (safeio.Root, error) {
+	childPath := filepath.Join(parentPath, name)
+	info, err := root.Lstat(name)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if mkdirErr := root.Mkdir(name, 0o750); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return nil, mkdirErr
+		}
+		info, err = root.Lstat(name)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("root contains symlink: %s", childPath)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("root is not a directory: %s", childPath)
+	}
+
+	next, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := next.Lstat(".")
+	if err != nil {
+		return nil, advisoryJoinCloseError(err, next)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, advisoryJoinCloseError(fmt.Errorf("root changed while opening: %s", childPath), next)
+	}
+	return next, nil
+}
+
+func advisoryJoinCloseError(err error, closers ...io.Closer) error {
+	for _, closer := range closers {
+		if closer == nil {
+			continue
+		}
+		err = errors.Join(err, closer.Close())
+	}
+	return err
+}
+
+func loadCacheManifestWithinRoot(root safeio.Root) (CacheManifest, error) {
+	data, err := readCacheManifestData(root)
 	if err != nil {
 		return CacheManifest{}, err
 	}
@@ -184,16 +553,12 @@ func LoadCacheManifest(cachePath string) (CacheManifest, error) {
 	return manifest, nil
 }
 
-func loadCacheManifestWithinRoot(root safeio.Root) (CacheManifest, error) {
-	data, err := safeio.ReadFileWithinRoot(root, manifestFileName)
-	if err != nil {
-		return CacheManifest{}, err
+func readCacheManifestData(root safeio.Root) ([]byte, error) {
+	data, err := safeio.ReadFileWithinRootLimit(root, manifestFileName, maxCacheManifestBytes)
+	if errors.Is(err, safeio.ErrFileTooLarge) {
+		return nil, fmt.Errorf("read advisory cache manifest: %w", err)
 	}
-	var manifest CacheManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return CacheManifest{}, fmt.Errorf("parse advisory cache manifest: %w", err)
-	}
-	return manifest, nil
+	return data, err
 }
 
 func validateSyncURL(raw string) error {
@@ -252,7 +617,7 @@ func downloadSnapshotUnderRoot(ctx context.Context, sourceURL string, client *ht
 		}
 	}()
 	openTempSnapshot := func() (io.ReadCloser, error) {
-		file, openErr := root.Open(tempRel)
+		file, openErr := safeio.OpenFileWithinRoot(root, tempRel)
 		return file, openErr
 	}
 	loadTempMetadata := func(sizeBytes int64, schema string) ([]string, int) {
@@ -481,22 +846,9 @@ func loadSnapshotMetadataFromReader(schema string, sizeBytes int64, read func() 
 	return snapshotEcosystems(data), snapshotEntryCount(data)
 }
 
-func readAllAndClose(file io.ReadCloser) ([]byte, error) {
-	data, err := io.ReadAll(file)
-	closeErr := file.Close()
-	if err != nil || closeErr != nil {
-		return nil, errors.Join(err, closeErr)
-	}
-	return data, nil
-}
-
 func loadSnapshotMetadataUnderRoot(root safeio.Root, path string, sizeBytes int64, schema string) ([]string, int) {
 	return loadSnapshotMetadataFromReader(schema, sizeBytes, func() ([]byte, error) {
-		file, err := root.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		return readAllAndClose(file)
+		return safeio.ReadFileWithinRootLimit(root, path, maxSyncMetadataBytes)
 	})
 }
 
@@ -529,6 +881,9 @@ func updateManifest(root safeio.Root, snapshot CacheSnapshot, now time.Time) err
 		return err
 	}
 	payload = append(payload, '\n')
+	if int64(len(payload)) > maxCacheManifestBytes {
+		return fmt.Errorf("write advisory cache manifest: serialized size %d exceeds %d-byte limit: %w", len(payload), maxCacheManifestBytes, safeio.ErrFileTooLarge)
+	}
 	return safeio.WriteFileWithinRoot(root, manifestFileName, payload, 0o640)
 }
 
