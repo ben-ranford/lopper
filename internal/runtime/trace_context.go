@@ -152,25 +152,32 @@ func runtimeContextFileURLPath(value string) (string, bool) {
 	}
 
 	parsed, err := url.Parse(value)
-	if err != nil ||
-		!strings.EqualFold(parsed.Scheme, "file") ||
-		parsed.Opaque != "" ||
-		parsed.User != nil ||
-		parsed.RawQuery != "" ||
-		parsed.ForceQuery ||
-		parsed.Fragment != "" {
+	if err != nil || !isTrustedRuntimeContextFileURL(parsed) {
 		return "", true
 	}
-	if parsed.Host != "" && !strings.EqualFold(parsed.Host, "localhost") {
+	pathValue, ok := normalizedRuntimeContextFileURLPath(parsed.Path)
+	if !ok {
 		return "", true
 	}
+	return pathValue, true
+}
 
-	pathValue := parsed.Path
+func isTrustedRuntimeContextFileURL(parsed *url.URL) bool {
+	return strings.EqualFold(parsed.Scheme, "file") &&
+		parsed.Opaque == "" &&
+		parsed.User == nil &&
+		parsed.RawQuery == "" &&
+		!parsed.ForceQuery &&
+		parsed.Fragment == "" &&
+		(parsed.Host == "" || strings.EqualFold(parsed.Host, "localhost"))
+}
+
+func normalizedRuntimeContextFileURLPath(pathValue string) (string, bool) {
 	if pathValue == "" || strings.IndexByte(pathValue, 0) >= 0 {
-		return "", true
+		return "", false
 	}
 	if strings.HasPrefix(pathValue, "/") && looksLikeWindowsAbsoluteContextPath(pathValue[1:]) {
-		pathValue = pathValue[1:]
+		return pathValue[1:], true
 	}
 	return pathValue, true
 }
@@ -225,20 +232,35 @@ func runtimeContextScheme(value string) (string, bool) {
 		return "", false
 	}
 	colon := strings.IndexByte(value, ':')
-	if colon <= 0 {
+	if colon <= 0 || isWindowsAbsoluteDrivePrefix(value) {
 		return "", false
 	}
-	if isWindowsAbsoluteDrivePrefix(value) {
-		return "", false
-	}
-	for i := 0; i < colon; i++ {
-		r := value[i]
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9' && i > 0) || (i > 0 && (r == '+' || r == '.' || r == '-')) {
-			continue
-		}
+	if !isValidRuntimeContextScheme(value[:colon]) {
 		return "", false
 	}
 	return value[:colon], true
+}
+
+func isValidRuntimeContextScheme(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if !isValidRuntimeContextSchemeByte(value[i], i) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidRuntimeContextSchemeByte(value byte, index int) bool {
+	if value >= 'a' && value <= 'z' {
+		return true
+	}
+	if value >= 'A' && value <= 'Z' {
+		return true
+	}
+	if index > 0 && value >= '0' && value <= '9' {
+		return true
+	}
+	return index > 0 && (value == '+' || value == '.' || value == '-')
 }
 
 func isWindowsAbsoluteDrivePrefix(value string) bool {
@@ -264,13 +286,7 @@ func isRuntimeContextSlash(b byte) bool {
 }
 
 func looksLikeFilesystemPath(value string) bool {
-	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "\\") {
-		return true
-	}
-	if strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") {
-		return true
-	}
-	if len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+	if hasFilesystemPathPrefix(value) {
 		return true
 	}
 	value = filepath.ToSlash(strings.TrimSpace(value))
@@ -278,19 +294,32 @@ func looksLikeFilesystemPath(value string) bool {
 		return false
 	}
 	parts := strings.Split(value, "/")
+	if runtimePathPartsContainTraversal(parts) {
+		return true
+	}
+	base := parts[len(parts)-1]
+	return looksLikePathStyleBase(base)
+}
+
+func hasFilesystemPathPrefix(value string) bool {
+	return strings.HasPrefix(value, "/") ||
+		strings.HasPrefix(value, "\\") ||
+		strings.HasPrefix(value, "./") ||
+		strings.HasPrefix(value, "../") ||
+		isWindowsAbsoluteDrivePrefix(value)
+}
+
+func runtimePathPartsContainTraversal(parts []string) bool {
 	for _, part := range parts {
 		if part == "." || part == ".." {
 			return true
 		}
 	}
-	base := parts[len(parts)-1]
-	if base == "" || strings.HasPrefix(base, ".") {
-		return true
-	}
-	if pathLikeExtension(base) != "" {
-		return true
-	}
 	return false
+}
+
+func looksLikePathStyleBase(base string) bool {
+	return base == "" || strings.HasPrefix(base, ".") || pathLikeExtension(base) != ""
 }
 
 func pathLikeExtension(base string) string {
@@ -383,5 +412,13 @@ func runtimeContextRepoRelative(repoRoot, value string) (string, bool) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	return filepath.ToSlash(filepath.Clean(rel)), true
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if runtimeContextHasControlWhitespace(rel) {
+		return "", false
+	}
+	return rel, true
+}
+
+func runtimeContextHasControlWhitespace(value string) bool {
+	return strings.ContainsAny(value, "\n\r\t")
 }

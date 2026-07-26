@@ -43,22 +43,13 @@ func Capture(ctx context.Context, req CaptureRequest) error {
 }
 
 func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest, resolver *runtimeHookPathResolver) (err error) {
-	plan, err := resolveCapturePlan(req)
+	plan, commandOptions, err := prepareCapturePlan(req)
 	if err != nil {
 		return err
 	}
-	commandOptions := CommandOptions{PythonRunnerProfiles: plan.pythonRunnerProfiles}
-	if err := ValidateCommand(plan.command, commandOptions); err != nil {
-		return err
+	if reused := reuseRuntimeTrace(plan, req.ReuseIfUnchanged); reused {
+		return nil
 	}
-
-	if req.ReuseIfUnchanged {
-		reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command, plan.provider)
-		if err == nil && reused {
-			return nil
-		}
-	}
-
 	if err := prepareTracePath(plan.tracePath); err != nil {
 		return err
 	}
@@ -73,27 +64,52 @@ func captureWithRuntimeHookPathResolver(ctx context.Context, req CaptureRequest,
 		return err
 	}
 	cmd.Env = env
-	if cleanup != nil {
-		defer func() {
-			cleanupErr := cleanup()
-			if cleanupErr != nil && err == nil {
-				err = fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr)
-			}
-		}()
-	}
 
 	output := newRuntimeCommandOutput()
 	cmd.Stdout = output
 	cmd.Stderr = output
 	err = cmd.Run()
 	if err != nil {
+		if cleanup != nil {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				note := []byte(fmt.Sprintf("\n[runtime hook cleanup after failure: %v]\n", cleanupErr))
+				if _, writeErr := output.Write(note); writeErr != nil {
+					return formatRuntimeCommandError(err, output.diagnostic())
+				}
+			}
+		}
 		return formatRuntimeCommandError(err, output.diagnostic())
+	}
+	if cleanup != nil {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			return fmt.Errorf("cleanup staged runtime python hook: %w", cleanupErr)
+		}
 	}
 	if err := writeRuntimeTraceState(plan.tracePath, plan.command, plan.provider); err != nil {
 		return fmt.Errorf("write runtime trace state: %w", err)
 	}
 
 	return nil
+}
+
+func prepareCapturePlan(req CaptureRequest) (capturePlan, CommandOptions, error) {
+	plan, err := resolveCapturePlan(req)
+	if err != nil {
+		return capturePlan{}, CommandOptions{}, err
+	}
+	commandOptions := CommandOptions{PythonRunnerProfiles: plan.pythonRunnerProfiles}
+	if err := ValidateCommand(plan.command, commandOptions); err != nil {
+		return capturePlan{}, CommandOptions{}, err
+	}
+	return plan, commandOptions, nil
+}
+
+func reuseRuntimeTrace(plan capturePlan, enabled bool) bool {
+	if !enabled {
+		return false
+	}
+	reused, err := reuseRuntimeTraceIfPossible(plan.tracePath, plan.command, plan.provider)
+	return err == nil && reused
 }
 
 func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {

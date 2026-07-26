@@ -134,21 +134,13 @@ func jsDependencyFromEvent(event Event) string {
 }
 
 func dependencyFromSpecifier(specifier string) string {
-	specifier = strings.TrimSpace(specifier)
-	if specifier == "" {
+	parts := safeRuntimePackageSegments(strings.TrimSpace(specifier), false, 1)
+	if len(parts) == 0 {
 		return ""
 	}
-	if strings.HasPrefix(specifier, ".") || strings.HasPrefix(specifier, "/") || strings.Contains(specifier, ":") {
-		return ""
-	}
-	if strings.HasPrefix(specifier, "@") {
-		parts := strings.SplitN(specifier, "/", 3)
-		if len(parts) < 2 {
-			return ""
-		}
+	if strings.HasPrefix(parts[0], "@") {
 		return parts[0] + "/" + parts[1]
 	}
-	parts := strings.SplitN(specifier, "/", 2)
 	return parts[0]
 }
 
@@ -198,35 +190,48 @@ func looksLikeSafeNodeBuiltinContextLabel(value string) bool {
 }
 
 func safeRuntimePackageSegments(value string, allowNodeBuiltin bool, minParts int) []string {
-	if value == "" || strings.TrimSpace(value) != value || runtimeLabelContainsWhitespaceOrControl(value) {
+	if invalidRuntimePackageLabel(value) {
 		return nil
 	}
 	if allowNodeBuiltin && looksLikeSafeNodeBuiltinContextLabel(value) {
 		return []string{value}
 	}
+	if runtimePackageLooksLikePathPayload(value) {
+		return nil
+	}
+	parts := strings.Split(filepath.ToSlash(value), "/")
+	if len(parts) < minParts || !runtimePackageSegmentsAreSafe(parts) || invalidScopedRuntimePackageSegments(parts) {
+		return nil
+	}
+	return parts
+}
+
+func invalidRuntimePackageLabel(value string) bool {
+	return value == "" || strings.TrimSpace(value) != value || runtimeLabelContainsWhitespaceOrControl(value)
+}
+
+func runtimePackageLooksLikePathPayload(value string) bool {
 	// This path-derived fallback is privacy-sensitive: reject suffixes that look like paths, URLs, or traversal payloads.
-	if strings.ContainsAny(value, `\:%?#|`) ||
+	return strings.ContainsAny(value, `\:%?#|`) ||
 		strings.HasPrefix(value, "/") ||
 		strings.HasPrefix(value, "~") ||
 		strings.HasPrefix(value, "./") ||
 		strings.HasPrefix(value, "../") ||
 		looksLikeWindowsAbsoluteContextPath(value) ||
-		filepath.IsAbs(filepath.FromSlash(value)) {
-		return nil
-	}
-	parts := strings.Split(filepath.ToSlash(value), "/")
-	if len(parts) < minParts {
-		return nil
-	}
+		filepath.IsAbs(filepath.FromSlash(value))
+}
+
+func runtimePackageSegmentsAreSafe(parts []string) bool {
 	for _, part := range parts {
 		if !isSafeRuntimePackageSegment(part) {
-			return nil
+			return false
 		}
 	}
-	if strings.HasPrefix(parts[0], "@") && (parts[0] == "@" || len(parts) < 2) {
-		return nil
-	}
-	return parts
+	return true
+}
+
+func invalidScopedRuntimePackageSegments(parts []string) bool {
+	return strings.HasPrefix(parts[0], "@") && (parts[0] == "@" || len(parts) < 2)
 }
 
 func runtimeLabelContainsWhitespaceOrControl(value string) bool {
@@ -267,7 +272,7 @@ func normalizeRuntimeDependency(dependency, language string) string {
 	if normalizeRuntimeLanguage(language) == runtimeLanguagePython {
 		return normalizePythonRuntimeDependency(dependency)
 	}
-	return dependency
+	return dependencyFromSpecifier(dependency)
 }
 
 func pythonDependencyFromEvent(event Event) string {

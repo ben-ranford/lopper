@@ -303,6 +303,43 @@ func TestCapturePythonHookCleanupErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("does not reuse cleanup-failed state on next run", func(t *testing.T) {
+		repo := t.TempDir()
+		tracePath := filepath.Join(repo, ".artifacts", runtimeTraceNDJSON)
+		counterPath := filepath.Join(repo, "counter.txt")
+		script := "#!/bin/sh\ncount=$(cat \"$LOPPER_RUNTIME_COUNTER\" 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$LOPPER_RUNTIME_COUNTER\"\nprintf '{\"module\":\"thirdparty\",\"language\":\"python\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"
+		t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
+		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", script))
+
+		req := CaptureRequest{
+			RepoPath:         repo,
+			TracePath:        tracePath,
+			Command:          "pytest",
+			Provider:         CaptureProviderPython,
+			ReuseIfUnchanged: true,
+		}
+		err := Capture(context.Background(), req)
+		if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "cleanup staged runtime python hook") {
+			t.Fatalf("expected staged hook cleanup error, got %v", err)
+		}
+		if got := readCaptureCounter(t, counterPath); got != 1 {
+			t.Fatalf("expected first cleanup-failed capture execution count 1, got %d", got)
+		}
+		if _, statErr := os.Stat(runtimeTraceStatePath(tracePath)); !os.IsNotExist(statErr) {
+			t.Fatalf("expected cleanup-failed capture to leave no reusable state, stat err = %v", statErr)
+		}
+
+		runtimeHookDirChmod = previousChmod
+		runtimeHookDirRemoveAll = previousRemoveAll
+
+		if err := Capture(context.Background(), req); err != nil {
+			t.Fatalf("capture after cleanup failure: %v", err)
+		}
+		if got := readCaptureCounter(t, counterPath); got != 2 {
+			t.Fatalf("expected second capture to recapture instead of reuse, got %d executions", got)
+		}
+	})
+
 	t.Run("preserves primary capture error", func(t *testing.T) {
 		repo := t.TempDir()
 		t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexit 3\n"))
@@ -776,25 +813,7 @@ func assertPythonRuntimeBytecodeSemantics(t *testing.T, pyDontWriteBytecode stri
 	fixture := newCapturePythonRuntimeFixture(t)
 	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
 	t.Setenv("PYTHONPATH", fixture.sitePackages)
-	if pyDontWriteBytecode == "" {
-		previous, hadPrevious := os.LookupEnv("PYTHONDONTWRITEBYTECODE")
-		if err := os.Unsetenv("PYTHONDONTWRITEBYTECODE"); err != nil {
-			t.Fatalf("unset PYTHONDONTWRITEBYTECODE: %v", err)
-		}
-		t.Cleanup(func() {
-			if !hadPrevious {
-				if err := os.Unsetenv("PYTHONDONTWRITEBYTECODE"); err != nil {
-					t.Fatalf("cleanup PYTHONDONTWRITEBYTECODE: %v", err)
-				}
-				return
-			}
-			if err := os.Setenv("PYTHONDONTWRITEBYTECODE", previous); err != nil {
-				t.Fatalf("restore PYTHONDONTWRITEBYTECODE: %v", err)
-			}
-		})
-	} else {
-		t.Setenv("PYTHONDONTWRITEBYTECODE", pyDontWriteBytecode)
-	}
+	configurePythonBytecodeEnv(t, pyDontWriteBytecode)
 	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "pytest", "#!/bin/sh\nexec \"$LOPPER_TEST_PYTHON\" -c 'import thirdparty; import localmod'\n"))
 
 	err = Capture(context.Background(), CaptureRequest{
@@ -815,4 +834,35 @@ func assertPythonRuntimeBytecodeSemantics(t *testing.T, pyDontWriteBytecode stri
 		t.Fatalf("expected local module bytecode under normal python semantics, got none")
 	}
 	assertPathsDoNotExist(t, []string{fixture.hookPycache}, "expected runtime hook staging to avoid hook __pycache__ artifacts")
+}
+
+func configurePythonBytecodeEnv(t *testing.T, pyDontWriteBytecode string) {
+	t.Helper()
+
+	if pyDontWriteBytecode != "" {
+		t.Setenv("PYTHONDONTWRITEBYTECODE", pyDontWriteBytecode)
+		return
+	}
+
+	previous, hadPrevious := os.LookupEnv("PYTHONDONTWRITEBYTECODE")
+	if err := os.Unsetenv("PYTHONDONTWRITEBYTECODE"); err != nil {
+		t.Fatalf("unset PYTHONDONTWRITEBYTECODE: %v", err)
+	}
+	t.Cleanup(func() {
+		restorePythonBytecodeEnv(t, previous, hadPrevious)
+	})
+}
+
+func restorePythonBytecodeEnv(t *testing.T, previous string, hadPrevious bool) {
+	t.Helper()
+
+	if !hadPrevious {
+		if err := os.Unsetenv("PYTHONDONTWRITEBYTECODE"); err != nil {
+			t.Fatalf("cleanup PYTHONDONTWRITEBYTECODE: %v", err)
+		}
+		return
+	}
+	if err := os.Setenv("PYTHONDONTWRITEBYTECODE", previous); err != nil {
+		t.Fatalf("restore PYTHONDONTWRITEBYTECODE: %v", err)
+	}
 }

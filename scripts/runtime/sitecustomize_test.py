@@ -209,6 +209,68 @@ class SitecustomizeArtifactPrivacyTest(unittest.TestCase):
             self.assertEqual(module._normalize_repo_context(str(entrypoint)), "main.py")
             self.assertGreaterEqual(len(calls), 2)
 
+    @unittest.skipIf(os.name == "nt", "Windows does not support control whitespace in filenames")
+    def test_redacts_control_whitespace_from_context_helpers_and_import_events(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="lopper-runtime-python-controls-") as fixture:
+            fixture_root = Path(fixture)
+            repo_root = fixture_root / "repo"
+            site_packages = fixture_root / "python" / "site-packages"
+            package_root = site_packages / "thirdparty"
+            package_root.mkdir(parents=True)
+            repo_root.mkdir()
+            (package_root / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+            module_name, module = load_sitecustomize_module(repo_root)
+            self.addCleanup(sys.modules.pop, module_name, None)
+
+            safe_path = repo_root / "hello world-\u4e16\u754c.py"
+            safe_path.write_text("print('ok')\n", encoding="utf-8")
+            self.assertEqual(
+                module._normalize_repo_context(str(safe_path)),
+                "hello world-\u4e16\u754c.py",
+            )
+
+            cases = (
+                ("newline", "\n"),
+                ("carriage return", "\r"),
+                ("tab", "\t"),
+            )
+            for name, character in cases:
+                with self.subTest(name=name):
+                    entrypoint = repo_root / f"main{character}context.py"
+                    trace_path = fixture_root / f"{name.replace(' ', '-')}.ndjson"
+                    entrypoint.write_text("import thirdparty\n", encoding="utf-8")
+                    self.assertEqual(module._normalize_repo_context(str(entrypoint)), "")
+
+                    env = os.environ.copy()
+                    env.pop("PYTHONHOME", None)
+                    env["LOPPER_RUNTIME_REPO_ROOT"] = str(repo_root)
+                    env["LOPPER_RUNTIME_TRACE"] = str(trace_path)
+                    env["PYTHONDONTWRITEBYTECODE"] = "1"
+                    env["PYTHONPATH"] = os.pathsep.join((str(HOOK_DIR), str(site_packages)))
+                    subprocess.run(
+                        [sys.executable, str(entrypoint)],
+                        cwd=repo_root,
+                        env=env,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    artifact = trace_path.read_text(encoding="utf-8")
+                    escaped_filename = json.dumps(entrypoint.name)[1:-1]
+                    self.assertNotIn(escaped_filename, artifact)
+                    events = [
+                        json.loads(line)
+                        for line in artifact.splitlines()
+                        if line.strip()
+                    ]
+                    event = next(item for item in events if item.get("module") == "thirdparty")
+                    self.assertEqual(event["parent"], "")
+                    self.assertEqual(event["entrypoint"], "")
+                    for field in ("parent", "entrypoint"):
+                        self.assertFalse(any(control in event[field] for control in "\n\r\t"))
+
     def test_symlinked_repo_root_trust_is_stable_and_escape_safe(self) -> None:
         with tempfile.TemporaryDirectory(prefix="lopper-runtime-python-") as fixture:
             fixture_root = Path(fixture)

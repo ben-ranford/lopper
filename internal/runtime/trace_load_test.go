@@ -428,6 +428,73 @@ func TestLoadTracePreservesPackageStyleLabels(t *testing.T) {
 	}
 }
 
+func TestLoadTracePreservesModuleOnlyPackageEventsWhenResolvedPathIsRedacted(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "src", "main.js"), []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+
+	trace, err := loadTraceFromContentInRepo(t, repo, `{"module":"fixture-dep","resolved":"","parent":"src/main.js","entrypoint":"src/main.js"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	if got := trace.DependencyLoads["fixture-dep"]; got != 1 {
+		t.Fatalf("expected module-only dependency load to survive, got %d", got)
+	}
+	if got := trace.DependencyModules["fixture-dep"]["fixture-dep"]; got != 1 {
+		t.Fatalf("expected module-only dependency module attribution, got %#v", trace.DependencyModules["fixture-dep"])
+	}
+	if got := trace.DependencyParents["fixture-dep"]["src/main.js"]; got != 1 {
+		t.Fatalf("expected parent attribution to survive resolved redaction, got %#v", trace.DependencyParents["fixture-dep"])
+	}
+	if got := trace.DependencyEntrypoints["fixture-dep"]["src/main.js"]; got != 1 {
+		t.Fatalf("expected entrypoint attribution to survive resolved redaction, got %#v", trace.DependencyEntrypoints["fixture-dep"])
+	}
+}
+
+func TestLoadForRepoRejectsUnsafeJSDependencyValues(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir repo src: %v", err)
+	}
+	mainPath := filepath.Join(repo, "src", "main.js")
+	if err := os.WriteFile(mainPath, []byte("console.log('x')\n"), 0o600); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+
+	content :=
+		`{"dependency":"fixture-dep","parent":"` + mainPath + `","entrypoint":"` + mainPath + `"}` + "\n" +
+			`{"dependency":"fixture-dep/.env/private.js","parent":"` + mainPath + `","entrypoint":"` + mainPath + `"}` + "\n" +
+			`{"dependency":"C:\\Users\\alice\\private.js","parent":"` + mainPath + `","entrypoint":"` + mainPath + `"}` + "\n" +
+			`{"dependency":"../private.js","parent":"` + mainPath + `","entrypoint":"` + mainPath + `"}` + "\n" +
+			`{"dependency":"@scope/pkg/index.js","parent":"` + mainPath + `","entrypoint":"` + mainPath + `"}` + "\n" +
+			`{"dependency":"//server/share/private.js","module":"lodash/map","resolved":"file:///repo/node_modules/lodash/map.js","parent":"` + mainPath + `","entrypoint":"` + mainPath + `"}` + "\n"
+
+	tracePath := testutil.WriteTempFile(t, filepath.Join("runtime", "trace.ndjson"), content)
+	trace, err := LoadForRepo(tracePath, repo)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+
+	if got := trace.DependencyLoads["fixture-dep"]; got != 1 {
+		t.Fatalf("expected safe bare dependency to survive, got %d", got)
+	}
+	if got := trace.DependencyLoads["@scope/pkg"]; got != 1 {
+		t.Fatalf("expected safe scoped dependency to normalize to package ID, got %d", got)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected unsafe dependency to fall back to safe module/resolved attribution, got %d", got)
+	}
+	for _, dep := range []string{"fixture-dep/.env/private.js", `C:\Users\alice\private.js`, "../private.js", "//server/share/private.js"} {
+		if got := trace.DependencyLoads[dep]; got != 0 {
+			t.Fatalf("expected unsafe dependency %q to be redacted, got load count %d", dep, got)
+		}
+	}
+}
+
 func TestLoadForRepoRedactsForeignAbsoluteRuntimeContexts(t *testing.T) {
 	repo := t.TempDir()
 	contexts := []string{

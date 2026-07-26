@@ -5,14 +5,22 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-function createHelpersImportHref(baseUrl = import.meta.url, caseId = `${Date.now()}-${Math.random()}`) {
+function createHelpersImportHref(caseId = "default", baseUrl = import.meta.url) {
   const helperUrl = new URL("./test-link-helpers.mjs", baseUrl);
   helperUrl.searchParams.set("case", caseId);
   return helperUrl.href;
 }
 
-async function loadHelpers(baseUrl = import.meta.url, caseId) {
-  return import(createHelpersImportHref(baseUrl, caseId));
+async function loadHelpers(caseId = "default", baseUrl = import.meta.url) {
+  return import(createHelpersImportHref(caseId, baseUrl));
+}
+
+function createPrivateTempDir(prefix) {
+  const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), "lopper-runtime-"));
+  fs.chmodSync(parentDir, 0o700);
+  const tempDir = path.join(parentDir, prefix);
+  fs.mkdirSync(tempDir, { mode: 0o700 });
+  return { parentDir, tempDir };
 }
 
 test("createDirectoryLinkSync surfaces Windows junction privilege failures", async (t) => {
@@ -29,7 +37,7 @@ test("createDirectoryLinkSync surfaces Windows junction privilege failures", asy
     fs.symlinkSync = originalSymlinkSync;
   });
 
-  const { createDirectoryLinkSync } = await loadHelpers();
+  const { createDirectoryLinkSync } = await loadHelpers("windows-junction-privilege");
   assert.throws(() => createDirectoryLinkSync("target", "link"), (caught) => caught === error);
 });
 
@@ -40,7 +48,7 @@ test("createFileLinkSync preserves skip semantics for file symlink privilege fai
   const originalRmSync = fs.rmSync;
   const error = Object.assign(new Error("privilege missing"), { code: "EPERM" });
 
-  fs.mkdtempSync = () => "/tmp/lopper-file-symlink-probe";
+  fs.mkdtempSync = () => path.join(os.tmpdir(), "lopper-file-symlink-probe");
   fs.writeFileSync = () => {};
   fs.rmSync = () => {};
   fs.symlinkSync = () => {
@@ -53,7 +61,7 @@ test("createFileLinkSync preserves skip semantics for file symlink privilege fai
     fs.rmSync = originalRmSync;
   });
 
-  const { createFileLinkSync, skipIfLinkUnsupported } = await loadHelpers();
+  const { createFileLinkSync, skipIfLinkUnsupported } = await loadHelpers("file-symlink-privilege");
   let skipped = false;
   let thrown;
   try {
@@ -77,9 +85,9 @@ test("createFileLinkSync preserves skip semantics for file symlink privilege fai
 });
 
 test("loadHelpers preserves spaced and escaped file URL segments", async (t) => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lopper test-link-helpers %23 "));
+  const { parentDir, tempDir: tempRoot } = createPrivateTempDir("lopper test-link-helpers %23");
   t.after(() => {
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    fs.rmSync(parentDir, { recursive: true, force: true });
   });
 
   const runtimeDir = path.join(tempRoot, "runtime fixtures");
@@ -91,12 +99,12 @@ test("loadHelpers preserves spaced and escaped file URL segments", async (t) => 
 
   const syntheticTestPath = path.join(runtimeDir, "test-link-helpers_test.mjs");
   const syntheticBaseUrl = pathToFileURL(syntheticTestPath).href;
-  const helpers = await loadHelpers(syntheticBaseUrl, "spaced-escaped");
+  const helpers = await loadHelpers("spaced-escaped", syntheticBaseUrl);
 
   assert.equal(typeof helpers.createDirectoryLinkSync, "function");
   assert.equal(typeof helpers.createFileLinkSync, "function");
 
-  const importedUrl = new URL(createHelpersImportHref(syntheticBaseUrl, "spaced-escaped"));
+  const importedUrl = new URL(createHelpersImportHref("spaced-escaped", syntheticBaseUrl));
   assert.match(importedUrl.href, /runtime%20fixtures/);
   assert.match(importedUrl.href, /%2523/);
 });

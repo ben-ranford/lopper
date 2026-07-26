@@ -115,6 +115,34 @@ test("runtime hooks redact symlink-escaped parent and entrypoint contexts", (t) 
   }
 });
 
+test("runtime hooks preserve hoisted external node_modules dependencies while redacting resolved paths", (t) => {
+  for (const format of ["cjs", "esm"]) {
+    const fixture = createNodeHoistedDependencyFixture(t, format);
+    const events = captureNodeHookEvents(
+      fixture,
+      format === "cjs" ? "--require" : "--loader",
+      format === "cjs" ? "require-hook.cjs" : "loader.mjs",
+    );
+
+    assertArtifactPrivacy(events, fixture);
+    assert.ok(
+      events.some(
+        (event) =>
+          event.module === "fixture-dep" &&
+          event.resolved === "" &&
+          event.parent === `main.${format === "cjs" ? "cjs" : "mjs"}` &&
+          event.entrypoint === "",
+      ),
+      `${format} hook should keep the hoisted dependency specifier even when resolved is redacted`,
+    );
+    assert.equal(
+      JSON.stringify(events).includes(path.join(fixture.fixtureRoot, "external-store")),
+      false,
+      `${format} hook should not leak the hoisted node_modules path`,
+    );
+  }
+});
+
 function createNodeFixture(t, format) {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lopper-runtime-${format}-`));
   t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
@@ -213,6 +241,41 @@ function createNodeFixture(t, format) {
           'require("../outside.cjs");',
           "",
         ].join("\n"),
+  );
+
+  return { entrypoint, fixtureRoot, repoRoot, tracePath };
+}
+
+function createNodeHoistedDependencyFixture(t, format) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), `lopper-runtime-hoisted-${format}-`));
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  const repoRoot = path.join(fixtureRoot, "repo");
+  const externalStoreRoot = path.join(fixtureRoot, "external-store");
+  const outsideNodeModules = path.join(externalStoreRoot, "node_modules");
+  const packageRoot = path.join(outsideNodeModules, "fixture-dep");
+  const extension = format === "esm" ? "mjs" : "cjs";
+  const entrypoint = path.join(repoRoot, `main.${extension}`);
+  const tracePath = path.join(fixtureRoot, `${format}.ndjson`);
+
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    JSON.stringify({
+      name: "fixture-dep",
+      version: "1.0.0",
+      ...(format === "esm" ? { type: "module", main: "index.mjs" } : { main: "index.cjs" }),
+    }),
+  );
+  fs.writeFileSync(
+    path.join(packageRoot, `index.${extension}`),
+    format === "esm" ? "export default 1;\n" : "module.exports = 1;\n",
+  );
+  fs.mkdirSync(repoRoot, { recursive: true });
+  createDirectoryLinkSync(outsideNodeModules, path.join(repoRoot, "node_modules"));
+  fs.writeFileSync(
+    entrypoint,
+    format === "esm" ? 'import "fixture-dep";\n' : 'require("fixture-dep");\n',
   );
 
   return { entrypoint, fixtureRoot, repoRoot, tracePath };

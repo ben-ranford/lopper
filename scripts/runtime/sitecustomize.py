@@ -240,7 +240,14 @@ def _normalize_repo_context(path: str) -> str:
     relative = _repo_relative_under_trusted_roots(resolved)
     if not relative:
         return ""
-    return relative.replace(os.sep, "/")
+    normalized = relative.replace(os.sep, "/")
+    if _has_control_whitespace(normalized):
+        return ""
+    return normalized
+
+
+def _has_control_whitespace(value: str) -> bool:
+    return any(character in value for character in "\n\r\t")
 
 
 def _rejects_non_native_path(value: str) -> bool:

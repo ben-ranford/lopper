@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import helpers from "./context-helper.cjs";
 import { createDirectoryLinkSync, createFileLinkSync, removeDirectoryLinkSync, skipIfLinkUnsupported } from "./test-link-helpers.mjs";
@@ -66,6 +68,78 @@ test("decodes percent-encoded file URLs with fileURLToPath", () => {
   assert.equal(normalizeContextValue(pathToFileURL(modulePath).href, repoRoot), "src/hello world.js");
 
   fs.rmSync(repoRoot, { recursive: true, force: true });
+});
+
+test("redacts control whitespace from repo context helpers and runtime hook events", (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows does not support control whitespace in filenames");
+    return;
+  }
+
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lopper-runtime-controls-"));
+  t.after(() => fs.rmSync(testRoot, { recursive: true, force: true }));
+  const repoRoot = path.join(testRoot, "repo");
+  const packageRoot = path.join(repoRoot, "node_modules", "fixture-dep");
+  const dependencyPath = path.join(packageRoot, "index.cjs");
+  const hookPath = fileURLToPath(new URL("./require-hook.cjs", import.meta.url));
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    JSON.stringify({ name: "fixture-dep", version: "1.0.0", main: "index.cjs" }),
+    "utf8",
+  );
+  fs.writeFileSync(dependencyPath, "module.exports = 1;\n", "utf8");
+
+  const safePath = path.join(repoRoot, "hello world-\u4e16\u754c.cjs");
+  fs.writeFileSync(safePath, "module.exports = 1;\n", "utf8");
+  assert.equal(normalizeContextValue(safePath, repoRoot), "hello world-\u4e16\u754c.cjs");
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep", dependencyPath, repoRoot), "fixture-dep");
+
+  const cases = [
+    { name: "newline", character: "\n" },
+    { name: "carriage return", character: "\r" },
+    { name: "tab", character: "\t" },
+  ];
+  for (const { name, character } of cases) {
+    const filename = `main${character}context.cjs`;
+    const entrypoint = path.join(repoRoot, filename);
+    const tracePath = path.join(testRoot, `${name.replaceAll(" ", "-")}.ndjson`);
+    fs.writeFileSync(entrypoint, 'require("fixture-dep");\n', "utf8");
+
+    assert.equal(normalizeContextValue(entrypoint, repoRoot), "", `${name} helper result`);
+    execFileSync(process.execPath, [`--require=${hookPath}`, entrypoint], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        LOPPER_RUNTIME_REPO_ROOT: repoRoot,
+        LOPPER_RUNTIME_TRACE: tracePath,
+      },
+      stdio: "pipe",
+    });
+
+    const artifact = fs.readFileSync(tracePath, "utf8");
+    const escapedFilename = JSON.stringify(filename).slice(1, -1);
+    assert.equal(artifact.includes(escapedFilename), false, `${name} filename entered runtime NDJSON`);
+    const events = artifact
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.ok(
+      events.some((event) => event.module === "fixture-dep" && event.parent === ""),
+      `${name} dependency event must redact its parent`,
+    );
+    assert.ok(
+      events.some((event) => event.isMain && event.entrypoint === ""),
+      `${name} main event must redact its entrypoint`,
+    );
+    for (const event of events) {
+      for (const value of Object.values(event)) {
+        if (typeof value !== "string") continue;
+        assert.equal(/[\n\r\t]/.test(value), false, `${name} event field contains control whitespace`);
+      }
+    }
+  }
 });
 
 test("rejects hostile absolute and traversal inputs before realpath", (t) => {
@@ -214,6 +288,34 @@ test("redacts escaped repo-relative runtime module requests without demoting pac
     normalizeRuntimeModuleValue("fixture-dep/lib/index.js", packageResolvedPath, repoRoot, realpath),
     "fixture-dep/lib/index.js",
   );
+
+  fs.rmSync(testRoot, { recursive: true, force: true });
+});
+
+test("preserves validated package specifiers when hoisted node_modules resolutions are redacted", () => {
+  const testRoot = fs.mkdtempSync(path.join(process.cwd(), ".runtime-context-"));
+  const repoRoot = path.join(testRoot, "repo");
+  const hoistedRoot = path.join(testRoot, "hoisted", "node_modules");
+  const hoistedDepPath = path.join(hoistedRoot, "fixture-dep", "index.mjs");
+  const hoistedDepSubpath = path.join(hoistedRoot, "@scope", "pkg", "index.js");
+  const localEscapePath = path.join(testRoot, "private.mjs");
+  const hiddenDepPath = path.join(hoistedRoot, "fixture-dep", ".env", "private.mjs");
+  fs.mkdirSync(path.dirname(hoistedDepPath), { recursive: true });
+  fs.mkdirSync(path.dirname(hoistedDepSubpath), { recursive: true });
+  fs.mkdirSync(path.dirname(hiddenDepPath), { recursive: true });
+  fs.writeFileSync(hoistedDepPath, "export default 1;\n", "utf8");
+  fs.writeFileSync(hoistedDepSubpath, "export default 2;\n", "utf8");
+  fs.writeFileSync(localEscapePath, "export default 3;\n", "utf8");
+  fs.writeFileSync(hiddenDepPath, "export default 4;\n", "utf8");
+
+  const { realpath } = trackRealpathCalls();
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep", hoistedDepPath, repoRoot, realpath), "fixture-dep");
+  assert.equal(
+    normalizeRuntimeModuleValue("@scope/pkg/index.js", hoistedDepSubpath, repoRoot, realpath),
+    "@scope/pkg/index.js",
+  );
+  assert.equal(normalizeRuntimeModuleValue("src/escaped.mjs", localEscapePath, repoRoot, realpath), "");
+  assert.equal(normalizeRuntimeModuleValue("fixture-dep/.env/private.mjs", hiddenDepPath, repoRoot, realpath), "");
 
   fs.rmSync(testRoot, { recursive: true, force: true });
 });

@@ -42,6 +42,11 @@ func TestDependencyFromSpecifierAndResolvedPathEdgeCases(t *testing.T) {
 		{name: "reject traversal hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/../secret.mjs"), want: ""},
 		{name: "reject hidden hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/.env/private.mjs"), want: ""},
 		{name: "reject home hybrid suffix", got: dependencyFromResolvedPath("node_modules/fixture-dep/~/.ssh/id_rsa"), want: ""},
+		{name: "reject hidden package-like specifier", got: dependencyFromSpecifier("fixture-dep/.env/private.mjs"), want: ""},
+		{name: "reject traversal package-like specifier", got: dependencyFromSpecifier("fixture-dep/../private.mjs"), want: ""},
+		{name: "reject absolute package-like specifier", got: dependencyFromSpecifier("/tmp/private.mjs"), want: ""},
+		{name: "reject windows package-like specifier", got: dependencyFromSpecifier(`C:\Users\alice\private.mjs`), want: ""},
+		{name: "reject whitespace in package-like specifier", got: dependencyFromSpecifier("fixture-dep /private.mjs"), want: ""},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -57,6 +62,26 @@ func TestDependencyFromEventPrefersModule(t *testing.T) {
 	}
 	if dep := dependencyFromEvent(event); dep != leftPadDependency {
 		t.Fatalf("expected module-derived dependency, got %q", dep)
+	}
+}
+
+func TestDependencyFromEventRejectsUnsafeJSDependencyValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		event Event
+		want  string
+	}{
+		{name: "safe bare dependency", event: Event{Dependency: "fixture-dep"}, want: "fixture-dep"},
+		{name: "safe scoped subpath dependency", event: Event{Dependency: "@scope/pkg/index.js"}, want: "@scope/pkg"},
+		{name: "unsafe absolute dependency falls back to module", event: Event{Dependency: "/tmp/private.js", Module: "lodash/map"}, want: "lodash"},
+		{name: "unsafe drive dependency falls back to resolved", event: Event{Dependency: `C:\Users\alice\private.js`, Resolved: "node_modules/react/index.js"}, want: "react"},
+		{name: "unsafe hidden dependency is rejected", event: Event{Dependency: "fixture-dep/.env/private.js"}, want: ""},
+		{name: "unsafe traversal dependency is rejected", event: Event{Dependency: "fixture-dep/../private.js"}, want: ""},
+	}
+	for _, tc := range cases {
+		if got := dependencyFromEvent(tc.event); got != tc.want {
+			t.Fatalf("%s: expected dependency %q, got %q", tc.name, tc.want, got)
+		}
 	}
 }
 
@@ -79,7 +104,16 @@ func TestPythonRuntimeSymbolStripsFileSuffixes(t *testing.T) {
 
 func TestPythonRuntimeResolutionBranches(t *testing.T) {
 	if got := normalizeRuntimeDependency("  My__Package  ", runtimeLanguageJSTS); got != "My__Package" {
-		t.Fatalf("expected non-Python dependency to preserve trimmed value, got %q", got)
+		t.Fatalf("expected package-style JS dependency to preserve package label, got %q", got)
+	}
+	if got := normalizeRuntimeDependency(" @scope/pkg/index.js ", runtimeLanguageJSTS); got != "@scope/pkg" {
+		t.Fatalf("expected JS dependency to collapse safe scoped subpath to package ID, got %q", got)
+	}
+	if got := normalizeRuntimeDependency(" /tmp/private.js ", runtimeLanguageJSTS); got != "" {
+		t.Fatalf("expected JS absolute dependency to be rejected, got %q", got)
+	}
+	if got := normalizeRuntimeDependency(" fixture-dep/.env/private.js ", runtimeLanguageJSTS); got != "" {
+		t.Fatalf("expected JS hidden-segment dependency to be rejected, got %q", got)
 	}
 	if got := normalizeRuntimeDependency("  ", runtimeLanguagePython); got != "" {
 		t.Fatalf("expected blank dependency to stay blank, got %q", got)

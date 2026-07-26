@@ -146,111 +146,115 @@ func TestStagePythonRuntimeHookDirectoryCleanupReturnsError(t *testing.T) {
 	}
 }
 
-func TestStagePythonRuntimeHookDirectorySanitizesPathErrors(t *testing.T) {
-	t.Run("read source", func(t *testing.T) {
-		resolver := newRuntimeHookPathResolver(nil, nil)
-		previousReadFile := runtimeHookFileRead
-		runtimeHookFileRead = func(path string) ([]byte, error) {
-			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
-		}
-		t.Cleanup(func() {
-			runtimeHookFileRead = previousReadFile
-		})
-
-		_, _, err := stagePythonRuntimeHookDirectoryForResolver(resolver)
-		assertRuntimeHookStagePathNeutralError(t, err, "read runtime python hook", "open <path>")
+func TestStagePythonRuntimeHookDirectorySanitizesReadSourcePathErrors(t *testing.T) {
+	previous := runtimeHookFileRead
+	runtimeHookFileRead = func(path string) ([]byte, error) {
+		return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
+	}
+	t.Cleanup(func() {
+		runtimeHookFileRead = previous
 	})
 
-	t.Run("write staged file", func(t *testing.T) {
-		resolver := newRuntimeHookPathResolver(nil, nil)
-		previousWriteFile := runtimeHookFileWrite
-		runtimeHookFileWrite = func(path string, _ []byte, _ os.FileMode) error {
-			return &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
-		}
-		t.Cleanup(func() {
-			runtimeHookFileWrite = previousWriteFile
-		})
+	assertStagePythonRuntimeHookDirectoryError(t, "read runtime python hook", "open <path>")
+}
 
-		_, _, err := stagePythonRuntimeHookDirectoryForResolver(resolver)
-		assertRuntimeHookStagePathNeutralError(t, err, "write staged runtime python hook", "open <path>")
+func TestStagePythonRuntimeHookDirectorySanitizesWritePathErrors(t *testing.T) {
+	previous := runtimeHookFileWrite
+	runtimeHookFileWrite = func(path string, _ []byte, _ os.FileMode) error {
+		return &os.PathError{Op: "open", Path: path, Err: os.ErrPermission}
+	}
+	t.Cleanup(func() {
+		runtimeHookFileWrite = previous
 	})
 
-	t.Run("create staged dir", func(t *testing.T) {
-		resolver := newRuntimeHookPathResolver(nil, nil)
-		previousMkdirTemp := runtimeHookDirMkdirTemp
-		tempRoot := filepath.Join(string(os.PathSeparator), "tmp", "lopper-path-neutral-test")
-		runtimeHookDirMkdirTemp = func(dir, pattern string) (string, error) {
-			return "", &os.PathError{
-				Op:   "mkdirtemp",
-				Path: filepath.Join(tempRoot, pattern+"123456789"),
-				Err:  os.ErrPermission,
-			}
-		}
-		t.Cleanup(func() {
-			runtimeHookDirMkdirTemp = previousMkdirTemp
-		})
+	assertStagePythonRuntimeHookDirectoryError(t, "write staged runtime python hook", "open <path>")
+}
 
-		_, _, err := stagePythonRuntimeHookDirectoryForResolver(resolver)
-		assertRuntimeHookStagePathNeutralError(t, err, "create runtime python hook dir", "mkdirtemp <path>")
-		if strings.Contains(err.Error(), tempRoot) {
-			t.Fatalf("expected staged dir creation error to exclude temp root %q, got %q", tempRoot, err)
+func TestStagePythonRuntimeHookDirectorySanitizesTempDirPathErrors(t *testing.T) {
+	previousMkdirTemp := runtimeHookDirMkdirTemp
+	tempRoot := filepath.Join(string(os.PathSeparator), "tmp", "lopper-path-neutral-test")
+	runtimeHookDirMkdirTemp = func(dir, pattern string) (string, error) {
+		return "", &os.PathError{
+			Op:   "mkdirtemp",
+			Path: filepath.Join(tempRoot, pattern+"123456789"),
+			Err:  os.ErrPermission,
 		}
-		if !errors.Is(err, os.ErrPermission) {
-			t.Fatalf("expected staged dir creation error to preserve errors.Is(..., os.ErrPermission), got %v", err)
+	}
+	t.Cleanup(func() {
+		runtimeHookDirMkdirTemp = previousMkdirTemp
+	})
+
+	err := stagePythonRuntimeHookDirectoryError(t)
+	assertRuntimeHookStagePathNeutralError(t, err, "create runtime python hook dir", "mkdirtemp <path>")
+	if strings.Contains(err.Error(), tempRoot) {
+		t.Fatalf("expected staged dir creation error to exclude temp root %q, got %q", tempRoot, err)
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected staged dir creation error to preserve errors.Is(..., os.ErrPermission), got %v", err)
+	}
+}
+
+func TestStagePythonRuntimeHookDirectorySanitizesSealPathErrors(t *testing.T) {
+	previous := runtimeHookDirSeal
+	runtimeHookDirSeal = func(path string, _ os.FileMode) error {
+		return &os.PathError{Op: "chmod", Path: path, Err: os.ErrPermission}
+	}
+	t.Cleanup(func() {
+		runtimeHookDirSeal = previous
+	})
+
+	assertStagePythonRuntimeHookDirectoryError(t, "seal staged runtime python hook dir", "chmod <path>")
+}
+
+func TestStagePythonRuntimeHookDirectoryCleanupSanitizesChmodAndRemoveErrors(t *testing.T) {
+	stagedDir, cleanup, err := stagePythonRuntimeHookDirectory()
+	if err != nil {
+		t.Fatalf("stage runtime python hook directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if chmodErr := os.Chmod(stagedDir, 0o700); chmodErr != nil && !os.IsNotExist(chmodErr) {
+			t.Fatalf("cleanup staged runtime python hook directory chmod: %v", chmodErr)
+		}
+		if removeErr := os.RemoveAll(stagedDir); removeErr != nil && !os.IsNotExist(removeErr) {
+			t.Fatalf("cleanup staged runtime python hook directory remove: %v", removeErr)
 		}
 	})
 
-	t.Run("seal staged dir", func(t *testing.T) {
-		resolver := newRuntimeHookPathResolver(nil, nil)
-		previousSealDir := runtimeHookDirSeal
-		runtimeHookDirSeal = func(path string, _ os.FileMode) error {
-			return &os.PathError{Op: "chmod", Path: path, Err: os.ErrPermission}
+	previousChmod := runtimeHookDirChmod
+	previousRemoveAll := runtimeHookDirRemoveAll
+	runtimeHookDirChmod = func(path string, mode os.FileMode) error {
+		if path != stagedDir {
+			return previousChmod(path, mode)
 		}
-		t.Cleanup(func() {
-			runtimeHookDirSeal = previousSealDir
-		})
-
-		_, _, err := stagePythonRuntimeHookDirectoryForResolver(resolver)
-		assertRuntimeHookStagePathNeutralError(t, err, "seal staged runtime python hook dir", "chmod <path>")
+		return &os.PathError{Op: "chmod", Path: path, Err: os.ErrPermission}
+	}
+	runtimeHookDirRemoveAll = func(path string) error {
+		if path != stagedDir {
+			return previousRemoveAll(path)
+		}
+		return &os.PathError{Op: "remove", Path: path, Err: os.ErrPermission}
+	}
+	t.Cleanup(func() {
+		runtimeHookDirChmod = previousChmod
+		runtimeHookDirRemoveAll = previousRemoveAll
 	})
 
-	t.Run("cleanup joins sanitized chmod and remove", func(t *testing.T) {
-		stagedDir, cleanup, err := stagePythonRuntimeHookDirectory()
-		if err != nil {
-			t.Fatalf("stage runtime python hook directory: %v", err)
-		}
-		t.Cleanup(func() {
-			if chmodErr := os.Chmod(stagedDir, 0o700); chmodErr != nil && !os.IsNotExist(chmodErr) {
-				t.Fatalf("cleanup staged runtime python hook directory chmod: %v", chmodErr)
-			}
-			if removeErr := os.RemoveAll(stagedDir); removeErr != nil && !os.IsNotExist(removeErr) {
-				t.Fatalf("cleanup staged runtime python hook directory remove: %v", removeErr)
-			}
-		})
+	err = cleanup()
+	assertRuntimeHookStagePathNeutralError(t, err, "chmod staged runtime python hook dir", "chmod <path>")
+	assertRuntimeHookStagePathNeutralError(t, err, "remove staged runtime python hook dir", "remove <path>")
+}
 
-		previousChmod := runtimeHookDirChmod
-		previousRemoveAll := runtimeHookDirRemoveAll
-		runtimeHookDirChmod = func(path string, mode os.FileMode) error {
-			if path != stagedDir {
-				return previousChmod(path, mode)
-			}
-			return &os.PathError{Op: "chmod", Path: path, Err: os.ErrPermission}
-		}
-		runtimeHookDirRemoveAll = func(path string) error {
-			if path != stagedDir {
-				return previousRemoveAll(path)
-			}
-			return &os.PathError{Op: "remove", Path: path, Err: os.ErrPermission}
-		}
-		t.Cleanup(func() {
-			runtimeHookDirChmod = previousChmod
-			runtimeHookDirRemoveAll = previousRemoveAll
-		})
+func stagePythonRuntimeHookDirectoryError(t *testing.T) error {
+	t.Helper()
 
-		err = cleanup()
-		assertRuntimeHookStagePathNeutralError(t, err, "chmod staged runtime python hook dir", "chmod <path>")
-		assertRuntimeHookStagePathNeutralError(t, err, "remove staged runtime python hook dir", "remove <path>")
-	})
+	_, _, err := stagePythonRuntimeHookDirectoryForResolver(newRuntimeHookPathResolver(nil, nil))
+	return err
+}
+
+func assertStagePythonRuntimeHookDirectoryError(t *testing.T, requiredSubstrings ...string) {
+	t.Helper()
+
+	assertRuntimeHookStagePathNeutralError(t, stagePythonRuntimeHookDirectoryError(t), requiredSubstrings...)
 }
 
 func TestWithPreparedPythonRuntimeTraceEnvForResolverWrapsStagingError(t *testing.T) {

@@ -108,16 +108,20 @@ function normalizeContextValue(value, repoRoot, realpath = fs.realpathSync.nativ
   if (!rel) {
     return "";
   }
-  return normalizeRepoRelativePath(rel);
+  const normalized = normalizeRepoRelativePath(rel);
+  return hasControlWhitespace(normalized) ? "" : normalized;
 }
 
 function normalizeRuntimeModuleValue(value, resolved, repoRoot, realpath = fs.realpathSync.native) {
   const normalizedResolvedPath = normalizeContextValue(resolved, repoRoot, realpath);
+  const externalNodeModulesResolved = looksLikeNodeModulesResolvedContextValue(resolved, realpath);
   if (normalizedResolvedPath) {
     if (!looksLikeNodeModulesResolvedPath(normalizedResolvedPath)) {
       return "";
     }
-  } else if (looksLikeFilesystemContextValue(resolved) || (resolved && looksLikeFilesystemContextValue(value))) {
+  } else if (looksLikeFilesystemContextValue(resolved) && !externalNodeModulesResolved) {
+    return "";
+  } else if (resolved && looksLikeFilesystemContextValue(value) && !externalNodeModulesResolved) {
     return "";
   }
   const identifier = normalizeModuleIdentifier(value);
@@ -219,7 +223,7 @@ function looksLikeFilesystemContextValue(value) {
   }
   if (!value || typeof value !== "string") return false;
   value = value.trim();
-  if (!value || !value.includes("/")) {
+  if (!value?.includes("/")) {
     return false;
   }
   const parts = value.split("/");
@@ -227,6 +231,18 @@ function looksLikeFilesystemContextValue(value) {
     return true;
   }
   return path.posix.extname(parts[parts.length - 1]) !== "";
+}
+
+function looksLikeNodeModulesResolvedContextValue(value, realpath = fs.realpathSync.native) {
+  const resolvedPath = resolveContextPath(value);
+  if (!resolvedPath) {
+    return false;
+  }
+  const absolutePath = normalizeAbsolutePath(resolvedPath, realpath);
+  if (!absolutePath) {
+    return false;
+  }
+  return sanitizeNodeModulesResolvedPath(nodeModulesSuffix(absolutePath)) !== "";
 }
 
 function normalizeLexicalAbsolutePath(value) {
@@ -244,6 +260,18 @@ function normalizeAbsolutePath(value, realpath = fs.realpathSync.native) {
   } catch {
     return "";
   }
+}
+
+function nodeModulesSuffix(value) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+  const parts = value.split(path.sep);
+  const firstNodeModulesIndex = parts.indexOf("node_modules");
+  if (firstNodeModulesIndex === -1) {
+    return "";
+  }
+  return parts.slice(firstNodeModulesIndex).join("/");
 }
 
 function fileURLPath(value) {
@@ -279,6 +307,10 @@ function isLexicallyConfinedToRepo(candidatePath, repoRoot) {
 
 function relStartsOutsideRepo(value) {
   return value === ".." || value.startsWith(`..${path.sep}`);
+}
+
+function hasControlWhitespace(value) {
+  return /[\n\r\t]/.test(value);
 }
 
 module.exports = {
