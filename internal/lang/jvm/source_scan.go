@@ -35,7 +35,51 @@ func scanRepo(ctx context.Context, repoPath string, depPrefixes map[string]strin
 	return scanRepoWithSourceReader(ctx, repoPath, depPrefixes, depAliases, safeio.ReadFileUnderLimit)
 }
 
+func scanRepoWithinRoot(ctx context.Context, repoPath string, root safeio.Root, depPrefixes map[string]string, depAliases map[string]string) (scanResult, error) {
+	result := scanResult{}
+	if repoPath == "" {
+		return result, fs.ErrInvalid
+	}
+
+	budget := shared.RootedWalkBudget{
+		MaxTraversalEntries: maxJVMSourceTraversalEntries,
+		MaxFiles:            maxJVMSourceFiles,
+		MaxWorkItems:        maxJVMSourceWorkItems,
+		CountCandidate: func(path string, _ fs.DirEntry) bool {
+			return isSourceFile(path)
+		},
+	}
+	err := shared.WalkRepoFilesWithinRootPinned(ctx, repoPath, root, budget, shouldSkipDir, func(file shared.RootedWalkFile) error {
+		readSource := rootedJVMSourceReader(file.Parent, file.Leaf)
+		return scanJVMSourceFileWithReader(repoPath, file.Path, file.Entry, depPrefixes, depAliases, &result, readSource)
+	})
+	if err != nil {
+		if warning, limited := shared.RootedWalkBudgetWarning("JVM source scan", budget, err); limited {
+			result.Warnings = append(result.Warnings, warning)
+		} else {
+			return result, err
+		}
+	}
+
+	if result.SkippedLargeFiles > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d large JVM file(s) above %d bytes", result.SkippedLargeFiles, maxScannableJVMSourceFile))
+	}
+	if result.SkippedSymlinks > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d unreadable or untrusted JVM source symlink(s)", result.SkippedSymlinks))
+	}
+	if len(result.Files) == 0 {
+		result.Warnings = append(result.Warnings, "no Java/Kotlin source files found for analysis")
+	}
+	return result, nil
+}
+
 type jvmSourceReader func(rootDir, targetPath string, maxBytes int64) ([]byte, error)
+
+func rootedJVMSourceReader(parent safeio.Root, leaf string) jvmSourceReader {
+	return func(_, _ string, maxBytes int64) ([]byte, error) {
+		return safeio.ReadFileWithinRootLimit(parent, leaf, maxBytes)
+	}
+}
 
 func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes map[string]string, depAliases map[string]string, readSource jvmSourceReader) (scanResult, error) {
 	result := scanResult{}
@@ -56,7 +100,7 @@ func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes 
 			}
 			return nil
 		}
-		return scanJVMSourceFileWithReader(repoPath, path, depPrefixes, depAliases, &result, readSource)
+		return scanJVMSourceFileWithReader(repoPath, path, entry, depPrefixes, depAliases, &result, readSource)
 	})
 	if err != nil {
 		return result, err
@@ -75,10 +119,10 @@ func scanRepoWithSourceReader(ctx context.Context, repoPath string, depPrefixes 
 }
 
 func scanJVMSourceFile(repoPath string, path string, depPrefixes map[string]string, depAliases map[string]string, result *scanResult) error {
-	return scanJVMSourceFileWithReader(repoPath, path, depPrefixes, depAliases, result, safeio.ReadFileUnderLimit)
+	return scanJVMSourceFileWithReader(repoPath, path, nil, depPrefixes, depAliases, result, safeio.ReadFileUnderLimit)
 }
 
-func scanJVMSourceFileWithReader(repoPath string, path string, depPrefixes map[string]string, depAliases map[string]string, result *scanResult, readSource jvmSourceReader) error {
+func scanJVMSourceFileWithReader(repoPath string, path string, entry fs.DirEntry, depPrefixes map[string]string, depAliases map[string]string, result *scanResult, readSource jvmSourceReader) error {
 	if !isSourceFile(path) {
 		return nil
 	}
@@ -91,14 +135,14 @@ func scanJVMSourceFileWithReader(repoPath string, path string, depPrefixes map[s
 	} else {
 		content, err = readSource(repoPath, path, maxScannableJVMSourceFile)
 	}
-	if errors.Is(err, safeio.ErrFileTooLarge) {
+	if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
 		if result != nil {
 			result.SkippedLargeFiles++
 		}
 		return nil
 	}
 	if err != nil {
-		if warning, skip := classifySkippableJVMSourceReadError(repoPath, path, err); skip {
+		if warning, skip := classifySkippableJVMSourceReadError(repoPath, path, entry, err); skip {
 			if result != nil {
 				result.SkippedSymlinks++
 				result.Warnings = append(result.Warnings, warning)
@@ -123,7 +167,7 @@ func scanJVMSourceFileWithReader(repoPath string, path string, depPrefixes map[s
 	return nil
 }
 
-func classifySkippableJVMSourceReadError(repoPath, path string, err error) (string, bool) {
+func classifySkippableJVMSourceReadError(repoPath, path string, entry fs.DirEntry, err error) (string, bool) {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return "", false
 	}
@@ -132,9 +176,7 @@ func classifySkippableJVMSourceReadError(repoPath, path string, err error) (stri
 	if !expected {
 		return "", false
 	}
-
-	info, statErr := os.Lstat(path)
-	if statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+	if entry == nil || entry.Type()&os.ModeSymlink == 0 {
 		return "", false
 	}
 
@@ -154,10 +196,12 @@ func relativeSourceScanPath(repoPath, path string) string {
 
 func describeExpectedJVMSourceReadError(err error) (string, bool) {
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
+	case shared.IsPureSentinelError(err, fs.ErrNotExist):
 		return "target missing", true
-	case errors.Is(err, fs.ErrPermission):
+	case shared.IsPureSentinelError(err, fs.ErrPermission):
 		return "target unreadable", true
+	case shared.IsPureSentinelError(err, safeio.ErrTargetPathSymlink):
+		return "target is an untrusted symlink", true
 	case isJVMSourceSymlinkLoopError(err):
 		return "target loops through symlinks", true
 	case isJVMSourceRepoRootEscapeError(err):
@@ -168,24 +212,11 @@ func describeExpectedJVMSourceReadError(err error) (string, bool) {
 }
 
 func isJVMSourceRepoRootEscapeError(err error) bool {
-	if strings.HasPrefix(err.Error(), "path escapes root: ") {
-		return true
-	}
-
-	var pathErr *fs.PathError
-	return errors.As(err, &pathErr) &&
-		pathErr.Err != nil &&
-		pathErr.Err.Error() == "path escapes from parent"
+	return shared.IsPureSentinelError(err, safeio.ErrPathEscapesRoot)
 }
 
 func isJVMSourceSymlinkLoopError(err error) bool {
-	if errors.Is(err, syscall.ELOOP) {
-		return true
-	}
-
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "too many levels of symbolic links") ||
-		strings.Contains(message, "too many symlinks")
+	return shared.IsPureSentinelError(err, syscall.ELOOP)
 }
 
 func isSourceFile(path string) bool {

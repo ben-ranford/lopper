@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -264,57 +265,95 @@ func TestJVMSourceScanSkipsExpectedSymlinkReadErrors(t *testing.T) {
 }
 
 func TestJVMSourceScanSkipsSymlinkLoopReadErrors(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		wantSkips int
-		buildLoop func(*testing.T, string)
-	}{
-		{
-			name:      "self loop",
-			wantSkips: 1,
-			buildLoop: func(t *testing.T, repo string) {
-				t.Helper()
-				loopPath := filepath.Join(repo, "Loop.java")
-				if err := os.Symlink(filepath.Base(loopPath), loopPath); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-			},
-		},
-		{
-			name:      "multi link loop",
-			wantSkips: 2,
-			buildLoop: func(t *testing.T, repo string) {
-				t.Helper()
-				first := filepath.Join(repo, "LoopA.java")
-				second := filepath.Join(repo, "LoopB.java")
-				if err := os.Symlink(filepath.Base(second), first); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-				if err := os.Symlink(filepath.Base(first), second); err != nil {
-					t.Skipf("symlink not supported: %v", err)
-				}
-			},
-		},
+	for _, test := range []jvmSymlinkLoopTest{
+		{name: "self loop", wantSkips: 1, buildLoop: buildJVMSelfSymlinkLoop},
+		{name: "multi link loop", wantSkips: 2, buildLoop: buildJVMMultiSymlinkLoop},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repo := t.TempDir()
-			testutil.MustWriteFile(t, filepath.Join(repo, mainJavaFile), "class Main {}\n")
-			test.buildLoop(t, repo)
-
-			result, err := scanRepo(context.Background(), repo, nil, nil)
-			if err != nil {
-				t.Fatalf("expected symlink loop to be downgraded, got %v", err)
-			}
-			if len(result.Files) != 1 || result.Files[0].Path != mainJavaFile {
-				t.Fatalf("expected regular JVM source to remain scannable, got %#v", result.Files)
-			}
-			if result.SkippedSymlinks != test.wantSkips {
-				t.Fatalf("expected %d skipped symlink loop(s), got %#v", test.wantSkips, result)
-			}
-			if !strings.Contains(strings.Join(result.Warnings, "\n"), "target loops through symlinks") {
-				t.Fatalf("expected symlink loop warning, got %#v", result.Warnings)
-			}
+			assertJVMSourceScanSkipsSymlinkLoop(t, test)
 		})
+	}
+}
+
+type jvmSymlinkLoopTest struct {
+	name      string
+	wantSkips int
+	buildLoop func(*testing.T, string)
+}
+
+func buildJVMSelfSymlinkLoop(t *testing.T, repo string) {
+	t.Helper()
+	loopPath := filepath.Join(repo, "Loop.java")
+	if err := os.Symlink(filepath.Base(loopPath), loopPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+}
+
+func buildJVMMultiSymlinkLoop(t *testing.T, repo string) {
+	t.Helper()
+	first := filepath.Join(repo, "LoopA.java")
+	second := filepath.Join(repo, "LoopB.java")
+	if err := os.Symlink(filepath.Base(second), first); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	if err := os.Symlink(filepath.Base(first), second); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+}
+
+func assertJVMSourceScanSkipsSymlinkLoop(t *testing.T, test jvmSymlinkLoopTest) {
+	t.Helper()
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, mainJavaFile), "class Main {}\n")
+	test.buildLoop(t, repo)
+
+	result, err := scanRepo(context.Background(), repo, nil, nil)
+	if err != nil {
+		t.Fatalf("expected symlink loop to be downgraded, got %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != mainJavaFile {
+		t.Fatalf("expected regular JVM source to remain scannable, got %#v", result.Files)
+	}
+	if result.SkippedSymlinks != test.wantSkips {
+		t.Fatalf("expected %d skipped symlink loop(s), got %#v", test.wantSkips, result)
+	}
+	if !strings.Contains(strings.Join(result.Warnings, "\n"), "target is an untrusted symlink") {
+		t.Fatalf("expected pinned leaf-symlink warning, got %#v", result.Warnings)
+	}
+}
+
+func TestJVMSourceScanSkipsLeafSymlinkViaPinnedPathReader(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, mainJavaFile), "class Main {}\n")
+
+	outsideSource := filepath.Join(t.TempDir(), "Linked.java")
+	testutil.MustWriteFile(t, outsideSource, "class Linked {}\n")
+
+	sourceLink := filepath.Join(repo, "Linked.java")
+	if err := os.Symlink(outsideSource, sourceLink); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	root := openJVMTestRoot(t, repo)
+	if _, err := safeio.ReadFileWithinRootLimit(root, filepath.Base(sourceLink), maxScannableJVMSourceFile); !errors.Is(err, syscall.ELOOP) || !errors.Is(err, safeio.ErrTargetPathSymlink) {
+		t.Fatalf("expected actual symlink entry to classify as ELOOP and target symlink, got %v", err)
+	}
+
+	result, err := scanRepoWithinRoot(context.Background(), repo, root, nil, nil)
+	if err != nil {
+		t.Fatalf("expected leaf symlink read to be downgraded, got %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != mainJavaFile {
+		t.Fatalf("expected regular JVM source to remain scannable, got %#v", result.Files)
+	}
+	if result.SkippedSymlinks != 1 {
+		t.Fatalf("expected one skipped symlink, got %#v", result)
+	}
+	wantWarnings := []string{
+		"skipped JVM source symlink Linked.java: target is an untrusted symlink",
+		"skipped 1 unreadable or untrusted JVM source symlink(s)",
+	}
+	if len(result.Warnings) != len(wantWarnings) || result.Warnings[0] != wantWarnings[0] || result.Warnings[1] != wantWarnings[1] {
+		t.Fatalf("expected exact leaf-symlink warnings %#v, got %#v", wantWarnings, result.Warnings)
 	}
 }
 
@@ -365,7 +404,7 @@ func TestJVMClassifySkippableSourceReadErrorRejectsRegularFiles(t *testing.T) {
 			regularSource := filepath.Join(repo, "Regular.java")
 			testutil.MustWriteFile(t, regularSource, "class Regular {}\n")
 
-			warning, skip := classifySkippableJVMSourceReadError(repo, regularSource, test.err)
+			warning, skip := classifySkippableJVMSourceReadError(repo, regularSource, nil, test.err)
 			if skip || warning != "" {
 				t.Fatalf("expected regular-file read errors to propagate, warning=%q skip=%v", warning, skip)
 			}
@@ -377,7 +416,7 @@ func TestJVMClassifySkippableSourceReadErrorClassifiesRepoEscapeSentinel(t *test
 	repo := t.TempDir()
 	sourceLink := createJVMSourceSymlink(t, repo, "EscapesRoot.java")
 
-	warning, skip := classifySkippableJVMSourceReadError(repo, sourceLink, errors.New("path escapes root: /private/tmp/outside.java"))
+	warning, skip := classifySkippableJVMSourceReadError(repo, sourceLink, mustReadJVMSourceDirEntry(t, repo, filepath.Base(sourceLink)), safeio.ErrPathEscapesRoot)
 	if !skip {
 		t.Fatalf("expected repo-escape sentinel error to be downgraded for source symlink")
 	}
@@ -390,10 +429,10 @@ func TestJVMClassifySkippableSourceReadErrorClassifiesParentEscapePathError(t *t
 	repo := t.TempDir()
 	sourceLink := createJVMSourceSymlink(t, repo, "EscapesParent.java")
 
-	warning, skip := classifySkippableJVMSourceReadError(repo, sourceLink, &fs.PathError{
+	warning, skip := classifySkippableJVMSourceReadError(repo, sourceLink, mustReadJVMSourceDirEntry(t, repo, filepath.Base(sourceLink)), &fs.PathError{
 		Op:   "openat",
 		Path: sourceLink,
-		Err:  errors.New("path escapes from parent"),
+		Err:  safeio.ErrPathEscapesRoot,
 	})
 	if !skip {
 		t.Fatalf("expected parent-escape path error to be downgraded for source symlink")
@@ -407,7 +446,7 @@ func TestJVMClassifySkippableSourceReadErrorIgnoresCanceledContext(t *testing.T)
 	repo := t.TempDir()
 	sourceLink := createJVMSourceSymlink(t, repo, "Canceled.java")
 
-	warning, skip := classifySkippableJVMSourceReadError(repo, sourceLink, context.Canceled)
+	warning, skip := classifySkippableJVMSourceReadError(repo, sourceLink, mustReadJVMSourceDirEntry(t, repo, filepath.Base(sourceLink)), context.Canceled)
 	if skip || warning != "" {
 		t.Fatalf("expected canceled reads not to be downgraded, warning=%q skip=%v", warning, skip)
 	}
@@ -431,6 +470,22 @@ func createJVMSourceSymlink(t *testing.T, repo, name string) string {
 		t.Skipf("symlink not supported: %v", err)
 	}
 	return sourceLink
+}
+
+func mustReadJVMSourceDirEntry(t *testing.T, repo, name string) fs.DirEntry {
+	t.Helper()
+
+	entries, err := os.ReadDir(repo)
+	if err != nil {
+		t.Fatalf("read source repo dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return entry
+		}
+	}
+	t.Fatalf("expected %s entry", name)
+	return nil
 }
 
 func assertSkippedJVMSourceReadError(t *testing.T, name string, readErr error, wantWarning string) {

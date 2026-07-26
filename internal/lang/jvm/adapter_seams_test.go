@@ -10,7 +10,7 @@ import (
 )
 
 func TestJVMSeamUnitsComposeForDeclaredDependencyUsage(t *testing.T) {
-	repo := t.TempDir()
+	repo := canonicalRepoPath(t)
 	writeJVMPomFile(t, repo, `
 <project>
   <dependencies>

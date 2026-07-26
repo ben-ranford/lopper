@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/kotlin"
 )
 
 func TestParseGradleDependencyCoordinatesForGroovyAndKotlin(t *testing.T) {
@@ -87,6 +88,25 @@ func TestGradleBuildParserDefensiveHelpers(t *testing.T) {
 	assertGradleCoordinateParsing(t)
 	assertGradleNodeWalking(t)
 	assertGradleCatalogDefensiveParsing(t)
+}
+
+func TestGradleDependencyArgumentExpressionsIgnoreStringArguments(t *testing.T) {
+	node, source := parseFirstKotlinValueArgument(t, `dependencies { implementation("com.example:demo:1.0.0") }`)
+
+	if got := gradleDependencyArgumentExpressions(node, source); len(got) != 0 {
+		t.Fatalf("expected string dependency argument to produce no expression text, got %#v", got)
+	}
+}
+
+func TestCollectGradleNamedArgumentIgnoresIncompleteValueArgument(t *testing.T) {
+	node, source := parseFirstKotlinValueArgument(t, `dependencies { implementation(group = "com.example") }`)
+	fields := map[string]string{}
+
+	collectGradleNamedArgument(fields, node.NamedChild(0), source)
+
+	if len(fields) != 0 {
+		t.Fatalf("expected incomplete named argument to be ignored, got %#v", fields)
+	}
 }
 
 func assertGradleNilInputs(t *testing.T) {
@@ -214,4 +234,29 @@ func assertGradleCatalogReference(t *testing.T, references []gradleCatalogRefere
 		}
 	}
 	t.Fatalf("expected Gradle catalog reference catalog=%q alias=%q bundle=%t unsupported=%q in %#v", catalogName, alias, bundle, unsupported, references)
+}
+
+func parseFirstKotlinValueArgument(t *testing.T, content string) (*sitter.Node, []byte) {
+	t.Helper()
+	parser := sitter.NewParser()
+	parser.SetLanguage(kotlin.GetLanguage())
+	source := []byte(content)
+	tree, err := parser.ParseCtx(t.Context(), nil, source)
+	if err != nil {
+		t.Fatalf("parse kotlin source: %v", err)
+	}
+	if tree == nil {
+		t.Fatal("expected kotlin parse tree")
+	}
+
+	var found *sitter.Node
+	walkGradleNode(tree.RootNode(), func(node *sitter.Node) {
+		if found == nil && node.Type() == "value_argument" {
+			found = node
+		}
+	})
+	if found == nil {
+		t.Fatal("expected Kotlin value_argument node")
+	}
+	return found, source
 }

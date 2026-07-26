@@ -279,6 +279,22 @@ func TestDeclarationAndMaskingHelpers(t *testing.T) {
 	}
 }
 
+func TestClampUsageCountsResetsNegativeUsageToZero(t *testing.T) {
+	usage := map[string]int{
+		"alpha": -2,
+		"beta":  3,
+	}
+
+	clampUsageCounts(map[string]int{"alpha": 1, "beta": 1}, usage)
+
+	if usage["alpha"] != 0 {
+		t.Fatalf("expected negative usage to clamp to zero, got %d", usage["alpha"])
+	}
+	if usage["beta"] != 3 {
+		t.Fatalf("expected non-negative usage to remain unchanged, got %d", usage["beta"])
+	}
+}
+
 func BenchmarkCountUsage(b *testing.B) {
 	imports, content := benchmarkImportsAndContent()
 	b.ReportAllocs()
