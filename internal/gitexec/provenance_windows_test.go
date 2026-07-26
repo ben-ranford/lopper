@@ -23,22 +23,32 @@ func TestWindowsProgramFilesCandidatesSupportNonstandardVolume(t *testing.T) {
 	}
 
 	candidates := platformExecutableCandidates()
-	want := filepath.Join(`D:\Applications`, "Git", "cmd", windowsGitExecutableName)
-	if !containsWindowsPath(candidates, want) {
-		t.Fatalf("Windows Git candidates = %#v, want %q", candidates, want)
+	for _, want := range []string{
+		filepath.Join(`D:\Applications`, "Git", "cmd", windowsGitExecutableName),
+		filepath.Join(`D:\Applications`, "Git", "bin", windowsGitExecutableName),
+		filepath.Join(`E:\Applications`, "Git", "cmd", windowsGitExecutableName),
+		filepath.Join(`E:\Applications`, "Git", "bin", windowsGitExecutableName),
+	} {
+		if !containsWindowsPath(candidates, want) {
+			t.Fatalf("Windows Git candidates = %#v, want %q", candidates, want)
+		}
 	}
 }
 
 func TestValidateWindowsExecutablePathAcceptsTrustedInstall(t *testing.T) {
-	path, roots, snapshots := trustedWindowsSnapshots(t)
+	for _, subdir := range []string{"cmd", "bin"} {
+		t.Run(subdir, func(t *testing.T) {
+			path, roots, snapshots := trustedWindowsSnapshots(t, subdir)
 
-	if err := validateWindowsExecutablePath(path, roots, windowsSnapshotInspector(snapshots)); err != nil {
-		t.Fatalf("validate secure Windows Git path: %v", err)
+			if err := validateWindowsExecutablePath(path, roots, windowsSnapshotInspector(snapshots)); err != nil {
+				t.Fatalf("validate secure Windows Git path: %v", err)
+			}
+		})
 	}
 }
 
 func TestValidateWindowsExecutablePathRejectsUntrustedProvenance(t *testing.T) {
-	path, roots, snapshots := trustedWindowsSnapshots(t)
+	path, roots, snapshots := trustedWindowsSnapshots(t, "cmd")
 	for _, tc := range []struct {
 		name   string
 		target string
@@ -89,7 +99,7 @@ func TestValidateWindowsExecutablePathRejectsUntrustedProvenance(t *testing.T) {
 }
 
 func TestValidateWindowsExecutablePathRejectsReplacementDuringSecondPass(t *testing.T) {
-	path, roots, snapshots := trustedWindowsSnapshots(t)
+	path, roots, snapshots := trustedWindowsSnapshots(t, "cmd")
 	replacementPath := filepath.Join(t.TempDir(), "replacement.exe")
 	if err := os.WriteFile(replacementPath, []byte("replacement"), 0o600); err != nil {
 		t.Fatalf("write replacement executable: %v", err)
@@ -147,11 +157,11 @@ func TestWindowsExecutablePathPartsIncludesVolumeRootAndLeaf(t *testing.T) {
 	}
 }
 
-func trustedWindowsSnapshots(t *testing.T) (string, []string, map[string]windowsExecutableSnapshot) {
+func trustedWindowsSnapshots(t *testing.T, subdir string) (string, []string, map[string]windowsExecutableSnapshot) {
 	t.Helper()
 
 	programFiles := filepath.Join(t.TempDir(), "Program Files")
-	path := filepath.Join(programFiles, "Git", "cmd", windowsGitExecutableName)
+	path := filepath.Join(programFiles, "Git", subdir, windowsGitExecutableName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir trusted Windows fixture: %v", err)
 	}

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -133,6 +135,35 @@ func TestUniqueUnixCandidatesDropsEmptyAndDuplicatePaths(t *testing.T) {
 	want := []string{"/usr/bin/git", "/bin/git"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("unique Unix candidates = %#v, want %#v", got, want)
+	}
+}
+
+func TestUnixExecutablePathPartsIncludeOnlyFilesystemRootForRootPath(t *testing.T) {
+	got := unixExecutablePathParts(string(os.PathSeparator))
+	want := []string{string(os.PathSeparator)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("root path parts = %#v, want %#v", got, want)
+	}
+}
+
+func TestInspectUnixPathCapturesStatMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "git")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write test executable: %v", err)
+	}
+
+	snapshot, err := inspectUnixPath(path)
+	if err != nil {
+		t.Fatalf("inspect Unix path: %v", err)
+	}
+	if snapshot.path != path {
+		t.Fatalf("snapshot path = %q, want %q", snapshot.path, path)
+	}
+	if !snapshot.mode.IsRegular() {
+		t.Fatalf("snapshot mode = %v, want regular file", snapshot.mode)
+	}
+	if snapshot.identity == "" {
+		t.Fatal("snapshot identity = empty, want device/inode identity")
 	}
 }
 

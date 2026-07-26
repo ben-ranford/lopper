@@ -310,19 +310,22 @@ func TestWindowsTrustedGitPathAndWorktreeAddNeutralizeFiltersWithSanitizedPath(t
 	writeBenchgateInputFile(t, includeConfig, "[filter \"foo.bar\"]\n\tsmudge = definitely-missing-filter-helper.exe\n\tprocess = definitely-missing-filter-helper.exe\n\tclean = definitely-missing-filter-helper.exe\n\trequired = true\n")
 	runGit(t, repo, "config", "include.path", "../included-filters.gitconfig")
 
+	t.Setenv("PATH", filepath.Join(benchgateCanonicalTempDir(t), "missing-bin"))
+
 	expectedGitPath, err := gitexec.ResolveBinaryPath()
 	if err != nil {
 		t.Fatalf("resolve trusted git path with provenance validation: %v", err)
 	}
+	assertWindowsTrustedGitPath(t, expectedGitPath)
 
 	gitPathOut := filepath.Join(benchgateCanonicalTempDir(t), "git-path.txt")
-	t.Setenv("PATH", filepath.Join(benchgateCanonicalTempDir(t), "missing-bin"))
 
 	output, exitCode := runBenchgateHelper(t, repo, "TestMainSuccessAndFailureArtifacts", "-base-ref", "HEAD", "-git-path-out", gitPathOut)
 	if exitCode != 0 {
 		t.Fatalf("git path helper exit code = %d, want 0\n%s", exitCode, output)
 	}
 	assertBenchgateFileContent(t, gitPathOut, expectedGitPath+"\n")
+	assertWindowsTrustedGitPath(t, strings.TrimSpace(string(testutilReadFile(t, gitPathOut))))
 
 	worktreePath := filepath.Join(benchgateCanonicalTempDir(t), "worktree")
 	output, exitCode = runBenchgateHelper(t, repo, "TestMainSuccessAndFailureArtifacts", "-worktree-add", worktreePath, "-worktree-commit", "HEAD")
@@ -336,6 +339,66 @@ func TestWindowsTrustedGitPathAndWorktreeAddNeutralizeFiltersWithSanitizedPath(t
 	})
 
 	assertBenchgateFileContent(t, filepath.Join(worktreePath, "tracked.txt"), "tracked contents\n")
+}
+
+func assertWindowsTrustedGitPath(t *testing.T, gitPath string) {
+	t.Helper()
+
+	if runtime.GOOS != "windows" {
+		t.Fatalf("Windows trusted git path assertion requires Windows, got %s", runtime.GOOS)
+	}
+	if !filepath.IsAbs(gitPath) {
+		t.Fatalf("trusted git path = %q, want absolute path", gitPath)
+	}
+	if filepath.Clean(gitPath) != gitPath {
+		t.Fatalf("trusted git path = %q, want clean path", gitPath)
+	}
+	if !strings.EqualFold(filepath.Ext(gitPath), ".exe") {
+		t.Fatalf("trusted git path = %q, want .exe suffix", gitPath)
+	}
+	allowedRoots := []string{
+		filepath.Clean(os.Getenv("ProgramW6432")),
+		filepath.Clean(os.Getenv("ProgramFiles")),
+		filepath.Clean(os.Getenv("ProgramFiles(x86)")),
+	}
+	rootMatched := false
+	for _, root := range allowedRoots {
+		if root == "." || root == "" {
+			continue
+		}
+		rel, err := filepath.Rel(root, gitPath)
+		if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		rootMatched = true
+		break
+	}
+	if !rootMatched {
+		t.Fatalf("trusted git path = %q, want Program Files confinement within %#v", gitPath, allowedRoots)
+	}
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		t.Fatalf("stat trusted git path %q: %v", gitPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("trusted git path = %q, want non-reparse regular file", gitPath)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("trusted git path = %q, want regular file", gitPath)
+	}
+	if !gitexec.ExecutableAvailable(gitPath) {
+		t.Fatalf("trusted git path = %q, want provenance-validated executable", gitPath)
+	}
+}
+
+func testutilReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
 }
 
 func testMainSuccess(t *testing.T) {
@@ -1709,18 +1772,22 @@ func TestWriteFailureArtifactsStatusWriteError(t *testing.T) {
 
 func TestWriteFailureArtifactsSummaryWriteErrorStillWritesStatus(t *testing.T) {
 	dir := benchgateCanonicalTempDir(t)
-	blocker := filepath.Join(dir, "summary-blocker")
-	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write blocker: %v", err)
-	}
-	summaryPath := filepath.Join(blocker, "summary.md")
+	summaryPath := filepath.Join(dir, "summary.md")
 	statusPath := filepath.Join(dir, "status.txt")
+	summaryWriteErr := errors.New("summary write failure")
+	restoreBenchgateSeams(t)
+	writeArtifactWithinRoot = func(root safeio.Root, name string, data []byte, mode os.FileMode) error {
+		if name == filepath.Base(summaryPath) {
+			return summaryWriteErr
+		}
+		return safeio.WriteFileReplacingWithinRoot(root, name, data, mode)
+	}
 
 	err := writeFailureArtifacts(summaryPath, statusPath, "summary write error")
 	if err == nil {
 		t.Fatal("expected summary write error")
 	}
-	if !strings.Contains(err.Error(), "summary artifact:") {
+	if !strings.Contains(err.Error(), "summary artifact:") || !errors.Is(err, summaryWriteErr) {
 		t.Fatalf("error = %v, want summary artifact failure", err)
 	}
 	status, readErr := os.ReadFile(statusPath)
@@ -1758,23 +1825,30 @@ func TestWriteFailureArtifactsStatusWriteErrorStillWritesSummary(t *testing.T) {
 
 func TestWriteFailureArtifactsAggregatesWriteErrors(t *testing.T) {
 	dir := benchgateCanonicalTempDir(t)
-	summaryBlocker := filepath.Join(dir, "summary-blocker")
-	statusBlocker := filepath.Join(dir, "status-blocker")
-	if err := os.WriteFile(summaryBlocker, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write summary blocker: %v", err)
-	}
-	if err := os.WriteFile(statusBlocker, []byte("x"), 0o644); err != nil {
-		t.Fatalf("write status blocker: %v", err)
+	summaryPath := filepath.Join(dir, "summary.md")
+	statusPath := filepath.Join(dir, "status.txt")
+	summaryWriteErr := errors.New("summary write failure")
+	statusWriteErr := errors.New("status write failure")
+	restoreBenchgateSeams(t)
+	writeArtifactWithinRoot = func(root safeio.Root, name string, data []byte, mode os.FileMode) error {
+		switch name {
+		case filepath.Base(summaryPath):
+			return summaryWriteErr
+		case filepath.Base(statusPath):
+			return statusWriteErr
+		default:
+			return safeio.WriteFileReplacingWithinRoot(root, name, data, mode)
+		}
 	}
 
-	err := writeFailureArtifacts(filepath.Join(summaryBlocker, "summary.md"), filepath.Join(statusBlocker, "status.txt"), "both writes fail")
+	err := writeFailureArtifacts(summaryPath, statusPath, "both writes fail")
 	if err == nil {
 		t.Fatal("expected aggregate write error")
 	}
-	if !strings.Contains(err.Error(), "summary artifact:") {
+	if !strings.Contains(err.Error(), "summary artifact:") || !errors.Is(err, summaryWriteErr) {
 		t.Fatalf("error = %v, want summary artifact failure", err)
 	}
-	if !strings.Contains(err.Error(), "status artifact:") {
+	if !strings.Contains(err.Error(), "status artifact:") || !errors.Is(err, statusWriteErr) {
 		t.Fatalf("error = %v, want status artifact failure", err)
 	}
 }
@@ -2730,6 +2804,33 @@ func TestResolveArtifactCollisionKeyPropagatesTargetError(t *testing.T) {
 	}
 }
 
+func TestResolveArtifactCollisionKeyPropagatesUnexpectedAncestorErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "permission", err: fs.ErrPermission},
+		{name: "transient", err: errors.New("transient ancestor failure")},
+		{name: "probe", err: errors.New("probe failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreBenchgateSeams(t)
+			targetPath := filepath.Join(string(os.PathSeparator), "tmp", "artifacts", "summary.md")
+			resolveArtifactPathAbs = func(string) (string, error) {
+				return targetPath, nil
+			}
+			openArtifactAncestorFn = func(string) (safeio.Root, string, []string, error) {
+				return nil, "", nil, tc.err
+			}
+
+			_, err := resolveArtifactCollisionKey("summary.md")
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("expected ancestor error %v, got %v", tc.err, err)
+			}
+		})
+	}
+}
+
 func TestResolveArtifactCollisionKeyRejectsSymlinkAncestor(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior is environment-dependent on Windows")
@@ -2851,6 +2952,29 @@ func TestAppendArtifactPathParts(t *testing.T) {
 	if got != want {
 		t.Fatalf("artifact path = %q, want %q", got, want)
 	}
+}
+
+func TestRollbackPublishedArtifactsCleansTrackedOutputsAndRestoresFailureStatus(t *testing.T) {
+	dir := benchgateCanonicalTempDir(t)
+	summaryPath := filepath.Join(dir, "summary.md")
+	statusPath := filepath.Join(dir, "status.txt")
+	writeBenchgateInputFile(t, summaryPath, "summary\n")
+	writeBenchgateInputFile(t, statusPath, "1\n")
+
+	writer := &artifactWriter{
+		written: map[string]struct{}{
+			summaryPath: {},
+			statusPath:  {},
+		},
+	}
+
+	cause := errors.New("publish failure")
+	if err := rollbackPublishedArtifacts(writer, &artifactSpec{path: statusPath}, cause); !errors.Is(err, cause) {
+		t.Fatalf("expected rollback cause, got %v", err)
+	}
+
+	assertBenchgatePathAbsent(t, summaryPath)
+	assertBenchgateFileContent(t, statusPath, "2\n")
 }
 
 func TestOpenArtifactDirCreatesMissingParents(t *testing.T) {

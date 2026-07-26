@@ -292,7 +292,7 @@ func TestMakefileBenchGateBenchdeltaBuildFailureWritesArtifactsAndExitsTwo(t *te
 
 	repo := initBenchGateFixtureRepo(t, benchGateFixture{
 		baseBenchmarkSource: passingBenchmarkSource(),
-		headBenchmarkSource: passingBenchmarkSourceWithComment("head fixture"),
+		headBenchmarkSource: passingBenchmarkSource(),
 	})
 	summaryPath := filepath.Join(repo, ".artifacts", "memory-bench-summary.md")
 	statusPath := filepath.Join(repo, ".artifacts", "memory-bench-status.txt")
@@ -573,6 +573,28 @@ func TestMakefileBenchGateRejectsSymlinkedArtifactTargetsAcrossPublishOutcomes(t
 	}
 }
 
+func TestMakefileBenchGatePassPublishFixturePassesBeforeArtifactTargetRejection(t *testing.T) {
+	t.Parallel()
+
+	scenario := benchGatePassPublishScenario()
+	repo := initBenchGateFixtureRepo(t, scenario.fixture)
+	summaryPath := filepath.Join(repo, ".artifacts", "memory-bench-summary.md")
+	statusPath := filepath.Join(repo, ".artifacts", "memory-bench-status.txt")
+
+	output, exitCode := runBenchGateMake(t, repo, scenario.extraEnv)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0\n%s", exitCode, output)
+	}
+	if !strings.Contains(output, scenario.outputSubstring) {
+		t.Fatalf("output = %q, want %q", output, scenario.outputSubstring)
+	}
+	assertBenchGateStatus(t, statusPath, "0\n")
+	summary := benchGateFileContent(t, summaryPath)
+	if !strings.Contains(summary, scenario.outputSubstring) {
+		t.Fatalf("summary = %q, want %q", summary, scenario.outputSubstring)
+	}
+}
+
 func TestBenchgateToolFailureArtifactsRejectSymlinkAncestorPathWithoutOutsideWrites(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -581,7 +603,7 @@ func TestBenchgateToolFailureArtifactsRejectSymlinkAncestorPathWithoutOutsideWri
 
 	repo := initBenchGateFixtureRepo(t, benchGateFixture{
 		baseBenchmarkSource: passingBenchmarkSource(),
-		headBenchmarkSource: passingBenchmarkSourceWithComment("head fixture"),
+		headBenchmarkSource: passingBenchmarkSource(),
 	})
 	outsideDir := filepath.Join(benchgateCanonicalTempDir(t), "outside")
 	outsideExistingDir := filepath.Join(outsideDir, "existing")
@@ -745,20 +767,7 @@ type benchGateArtifactTarget struct {
 
 func benchGatePublishScenarios() []benchGatePublishScenario {
 	return []benchGatePublishScenario{
-		{
-			name: "pass",
-			fixture: benchGateFixture{
-				baseBenchmarkSource: passingBenchmarkSource(),
-				headBenchmarkSource: passingBenchmarkSourceWithComment("head fixture"),
-			},
-			extraEnv: map[string]string{
-				"MEMORY_BENCH_BASE":     "HEAD~1",
-				"MEMORY_BENCH_PACKAGES": "./benchfixture",
-				"BENCH_COUNT":           "1",
-				"BENCH_TIME":            "1x",
-			},
-			outputSubstring: "Result: memory benchmark gate passed.",
-		},
+		benchGatePassPublishScenario(),
 		{
 			name: "regression",
 			fixture: benchGateFixture{
@@ -789,6 +798,23 @@ func benchGatePublishScenarios() []benchGatePublishScenario {
 			},
 			outputSubstring: "Comparison status: invalid",
 		},
+	}
+}
+
+func benchGatePassPublishScenario() benchGatePublishScenario {
+	return benchGatePublishScenario{
+		name: "pass",
+		fixture: benchGateFixture{
+			baseBenchmarkSource: passingBenchmarkSource(),
+			headBenchmarkSource: passingBenchmarkSource(),
+		},
+		extraEnv: map[string]string{
+			"MEMORY_BENCH_BASE":     "HEAD~1",
+			"MEMORY_BENCH_PACKAGES": "./benchfixture",
+			"BENCH_COUNT":           "1",
+			"BENCH_TIME":            "1x",
+		},
+		outputSubstring: "Result: memory benchmark gate passed.",
 	}
 }
 
@@ -847,6 +873,9 @@ func initBenchGateFixtureRepo(t *testing.T, fixture benchGateFixture) string {
 	runGitCommand(t, repo, "commit", "-m", "base benchmark fixture")
 
 	writeBenchGateFile(t, filepath.Join(repo, "benchfixture", "bench_test.go"), fixture.headBenchmarkSource)
+	if fixture.headBenchmarkSource == fixture.baseBenchmarkSource {
+		writeBenchGateFile(t, filepath.Join(repo, "benchfixture", "fixture-head.txt"), "head fixture\n")
+	}
 	runGitCommand(t, repo, "add", ".")
 	runGitCommand(t, repo, "commit", "-m", "head benchmark fixture")
 
@@ -869,15 +898,23 @@ func failingBenchmarkSource(message string) string {
 }
 
 func passingBenchmarkSource() string {
-	return "package benchfixture\n\nimport \"testing\"\n\nfunc BenchmarkFixture(b *testing.B) {\n\tfor i := 0; i < b.N; i++ {\n\t}\n}\n"
+	return stablePassingBenchmarkSource("BenchmarkFixture", "")
 }
 
 func passingBenchmarkSourceWithComment(comment string) string {
-	return "package benchfixture\n\nimport \"testing\"\n\n// " + comment + "\nfunc BenchmarkFixture(b *testing.B) {\n\tfor i := 0; i < b.N; i++ {\n\t}\n}\n"
+	return stablePassingBenchmarkSource("BenchmarkFixture", comment)
 }
 
 func passingNamedBenchmarkSource(name string) string {
-	return "package benchfixture\n\nimport \"testing\"\n\nfunc " + name + "(b *testing.B) {\n\tfor i := 0; i < b.N; i++ {\n\t}\n}\n"
+	return stablePassingBenchmarkSource(name, "")
+}
+
+func stablePassingBenchmarkSource(name, comment string) string {
+	commentLine := ""
+	if comment != "" {
+		commentLine = "// " + comment + "\n"
+	}
+	return "package benchfixture\n\nimport \"testing\"\n\nvar benchmarkSink int\n\n" + commentLine + "func " + name + "(b *testing.B) {\n\tb.ReportAllocs()\n\tfor i := 0; i < b.N; i++ {\n\t\tbenchmarkSink += i\n\t}\n}\n"
 }
 
 func benchmarkSourceWithMalformedBenchmarkLine() string {

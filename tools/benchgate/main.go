@@ -781,9 +781,6 @@ func resolveArtifactCollisionKey(path string) (key string, returnErr error) {
 
 	root, existingDir, missingParts, err := openArtifactAncestorFn(target.dir)
 	if err != nil {
-		if !errors.Is(err, errArtifactParentSymlink) {
-			return filepath.Join(target.dir, target.fileName), nil
-		}
 		return "", err
 	}
 	defer func() {
