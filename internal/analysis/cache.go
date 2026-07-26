@@ -12,6 +12,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const analysisCacheUnavailableWarningPrefix = "analysis cache unavailable: "
+
 var (
 	analysisCacheAbsFn          = filepath.Abs
 	analysisCacheMkdirAllFn     = os.MkdirAll
@@ -64,23 +66,23 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	if req.Cache == nil || strings.TrimSpace(req.Cache.Path) == "" {
 		if cachePathEscapesRepo(options.Path, repoPath) {
 			cache.cacheable = false
-			cache.warn("analysis cache unavailable: cache path escapes repository root")
+			cache.warn(analysisCacheUnavailableWarningPrefix + "cache path escapes repository root")
 			return cache
 		}
 	} else if err := validateExplicitCachePath(options.rawExplicitPath()); err != nil {
 		cache.cacheable = false
-		cache.warn("analysis cache unavailable: " + err.Error())
+		cache.warn(analysisCacheUnavailableWarningPrefix + err.Error())
 		return cache
 	}
 	if err := cache.initializeStorage(repoPath); err != nil {
 		cache.cacheable = false
-		cache.warn("analysis cache unavailable: " + err.Error())
+		cache.warn(analysisCacheUnavailableWarningPrefix + err.Error())
 		return cache
 	}
 	authKey, err := cache.resolveAuthKey()
 	if err != nil {
 		cache.cacheable = false
-		cache.warn("analysis cache unavailable: " + err.Error())
+		cache.warn(analysisCacheUnavailableWarningPrefix + err.Error())
 		return cache
 	}
 	cache.authKey = authKey

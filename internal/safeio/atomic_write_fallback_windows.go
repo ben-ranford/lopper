@@ -9,14 +9,18 @@ import (
 	"syscall"
 )
 
-func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, perm os.FileMode, forceReplacementPerm bool, renameErr error) (returnErr error) {
-	if !windowsReplaceExistingRenameFallback(renameErr, oldName, newName) {
-		return renameErr
+func fallbackAtomicReplacement(request atomicReplacementFallbackRequest) (returnErr error) {
+	if !windowsReplaceExistingRenameFallback(request.renameErr, request.tempName, request.targetName) {
+		return request.renameErr
 	}
 
-	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, newName, replacementFile)
+	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(
+		request.root,
+		request.targetName,
+		request.replacementFile,
+	)
 	if err != nil {
-		return errors.Join(renameErr, err)
+		return errors.Join(request.renameErr, err)
 	}
 	defer func() {
 		if closeErr := closeReplacementFile(); closeErr != nil {
@@ -24,17 +28,17 @@ func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFi
 		}
 	}()
 
-	fallbackErr := overwritePinnedFile(root, newName, replacementFile, data, nil)
+	fallbackErr := overwritePinnedFile(request.root, request.targetName, replacementFile, request.data, nil)
 	if fallbackErr != nil {
-		return errors.Join(renameErr, fallbackErr)
+		return errors.Join(request.renameErr, fallbackErr)
 	}
-	if forceReplacementPerm {
-		if err := replacementFile.Chmod(perm); err != nil {
-			return errors.Join(renameErr, err)
+	if request.forceReplacementPerm {
+		if err := replacementFile.Chmod(request.perm); err != nil {
+			return errors.Join(request.renameErr, err)
 		}
 	}
 	if err := replacementFile.Sync(); err != nil {
-		return errors.Join(renameErr, err)
+		return errors.Join(request.renameErr, err)
 	}
 	return nil
 }

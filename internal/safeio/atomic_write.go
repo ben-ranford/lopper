@@ -25,6 +25,17 @@ type atomicReplacementOptions struct {
 	allowInPlaceFallback bool
 }
 
+type atomicReplacementFallbackRequest struct {
+	root                 Root
+	tempName             string
+	targetName           string
+	replacementFile      File
+	data                 []byte
+	perm                 os.FileMode
+	forceReplacementPerm bool
+	renameErr            error
+}
+
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
 	if err != nil {
@@ -120,7 +131,16 @@ func writeAtomicReplacementInParent(root Root, targetName string, data []byte, p
 		if !options.allowInPlaceFallback {
 			return err
 		}
-		return fallbackAtomicReplacement(root, session.tempRel, targetName, replacementFile, data, perm, options.forceReplacementPerm, err)
+		return fallbackAtomicReplacement(atomicReplacementFallbackRequest{
+			root:                 root,
+			tempName:             session.tempRel,
+			targetName:           targetName,
+			replacementFile:      replacementFile,
+			data:                 data,
+			perm:                 perm,
+			forceReplacementPerm: options.forceReplacementPerm,
+			renameErr:            err,
+		})
 	}
 	return nil
 }

@@ -165,6 +165,32 @@ func TestAnalysisCacheAdditionalStoreBranches(t *testing.T) {
 }
 
 func TestAnalysisCacheStoreWriteSyncFailuresPreservePrimaryErrorAndWriteOrdering(t *testing.T) {
+	cache, entry := newAnalysisCacheStoreSyncFailureFixture(t)
+
+	for _, tc := range []cacheStoreSyncFailureCase{
+		{
+			name:           "object write sync failure stops before pointer write",
+			syncErr:        errors.New("object sync failure"),
+			writeErrIndex:  1,
+			wantErrContext: "write cache object",
+			assertCalls:    assertOnlyCacheObjectWriteAttempted,
+		},
+		{
+			name:           "pointer write sync failure happens after successful object write",
+			syncErr:        errors.New("pointer sync failure"),
+			writeErrIndex:  2,
+			wantErrContext: "write cache pointer",
+			assertCalls:    assertCacheObjectThenPointerWrites,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertAnalysisCacheStoreWriteSyncFailure(t, cache, entry, tc)
+		})
+	}
+}
+
+func newAnalysisCacheStoreSyncFailureFixture(t *testing.T) (*analysisCache, cacheEntryDescriptor) {
+	t.Helper()
 	cachePath, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatalf("resolve canonical cache root: %v", err)
@@ -181,42 +207,26 @@ func TestAnalysisCacheStoreWriteSyncFailuresPreservePrimaryErrorAndWriteOrdering
 	t.Cleanup(func() {
 		analysisCacheWriteFileFn = originalWrite
 	})
+	return cache, entry
+}
 
-	for _, tc := range []cacheStoreSyncFailureCase{
-		{
-			name:           "object write sync failure stops before pointer write",
-			syncErr:        errors.New("object sync failure"),
-			writeErrIndex:  1,
-			wantErrContext: "write cache object",
-			assertCalls: func(t *testing.T, calls []string) {
-				t.Helper()
-				if len(calls) != 1 || !strings.Contains(calls[0], filepath.Join("objects", "")) {
-					t.Fatalf("expected only object write attempt, got %#v", calls)
-				}
-			},
-		},
-		{
-			name:           "pointer write sync failure happens after successful object write",
-			syncErr:        errors.New("pointer sync failure"),
-			writeErrIndex:  2,
-			wantErrContext: "write cache pointer",
-			assertCalls: func(t *testing.T, calls []string) {
-				t.Helper()
-				if len(calls) != 2 {
-					t.Fatalf("expected object then pointer writes, got %#v", calls)
-				}
-				if !strings.HasPrefix(calls[0], "objects"+string(filepath.Separator)) {
-					t.Fatalf("expected object write first, got %#v", calls)
-				}
-				if !strings.HasPrefix(calls[1], "keys"+string(filepath.Separator)) {
-					t.Fatalf("expected pointer write second, got %#v", calls)
-				}
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assertAnalysisCacheStoreWriteSyncFailure(t, cache, entry, tc)
-		})
+func assertOnlyCacheObjectWriteAttempted(t *testing.T, calls []string) {
+	t.Helper()
+	if len(calls) != 1 || !strings.Contains(calls[0], filepath.Join("objects", "")) {
+		t.Fatalf("expected only object write attempt, got %#v", calls)
+	}
+}
+
+func assertCacheObjectThenPointerWrites(t *testing.T, calls []string) {
+	t.Helper()
+	if len(calls) != 2 {
+		t.Fatalf("expected object then pointer writes, got %#v", calls)
+	}
+	if !strings.HasPrefix(calls[0], "objects"+string(filepath.Separator)) {
+		t.Fatalf("expected object write first, got %#v", calls)
+	}
+	if !strings.HasPrefix(calls[1], "keys"+string(filepath.Separator)) {
+		t.Fatalf("expected pointer write second, got %#v", calls)
 	}
 }
 

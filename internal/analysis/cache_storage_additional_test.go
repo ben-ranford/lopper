@@ -206,6 +206,41 @@ func TestInitializeStorageReturnsReadonlyStatErrorFromStatSeam(t *testing.T) {
 	}
 }
 
+func TestInitializeStorageReturnsPinnedRootOpenError(t *testing.T) {
+	prevOpenRoot := analysisCacheOpenRootFn
+	openErr := errors.New("open root failed")
+	analysisCacheOpenRootFn = func(string) (*safeio.WriteRoot, error) {
+		return nil, openErr
+	}
+	prevLstat := analysisCacheRootLstatFn
+	lstatCalled := false
+	analysisCacheRootLstatFn = func(*safeio.WriteRoot, string) (os.FileInfo, error) {
+		lstatCalled = true
+		return nil, errors.New("unexpected lstat")
+	}
+	t.Cleanup(func() {
+		analysisCacheOpenRootFn = prevOpenRoot
+		analysisCacheRootLstatFn = prevLstat
+	})
+
+	repo := t.TempDir()
+	cache := &analysisCache{
+		options: resolvedCacheOptions{
+			Enabled:      true,
+			Path:         filepath.Join(t.TempDir(), "cache"),
+			ExplicitPath: true,
+		},
+	}
+
+	err := cache.initializeStorage(repo)
+	if !errors.Is(err, openErr) {
+		t.Fatalf("expected pinned-root open failure, got %v", err)
+	}
+	if lstatCalled {
+		t.Fatal("expected initializeStorage to stop before root lstat when opening the pinned root fails")
+	}
+}
+
 func TestInitializeStorageReturnsPinnedRootLstatError(t *testing.T) {
 	prevLstat := analysisCacheRootLstatFn
 	analysisCacheRootLstatFn = func(*safeio.WriteRoot, string) (os.FileInfo, error) {

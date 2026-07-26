@@ -455,7 +455,14 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 			}
 			renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), 0o600, false, renameErr)
+			err := fallbackAtomicReplacement(atomicReplacementFallbackRequest{
+				root:       root,
+				tempName:   ".safeio-atomic-temp",
+				targetName: writeTestFileName,
+				data:       []byte("after"),
+				perm:       0o600,
+				renameErr:  renameErr,
+			})
 			if !errors.Is(err, renameErr) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected joined rename and %q rejection, got %v", tt.want, err)
 			}
@@ -638,7 +645,14 @@ func assertWindowsFallbackRejectsAfterLatePin(
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), 0o600, false, renameErr)
+	err := fallbackAtomicReplacement(atomicReplacementFallbackRequest{
+		root:       root,
+		tempName:   ".safeio-atomic-temp",
+		targetName: writeTestFileName,
+		data:       []byte("after"),
+		perm:       0o600,
+		renameErr:  renameErr,
+	})
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("expected original rename error, got %v", err)
 	}

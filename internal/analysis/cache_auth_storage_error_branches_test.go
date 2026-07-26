@@ -14,6 +14,78 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+type analysisCacheAuthTestTarget struct {
+	root    *safeio.WriteRoot
+	authDir string
+	keyName string
+	keyPath string
+}
+
+type invalidAuthKeyRotationTestTarget struct {
+	analysisCacheAuthTestTarget
+	rotationPath string
+}
+
+func newAnalysisCacheAuthTestTarget(t *testing.T) analysisCacheAuthTestTarget {
+	t.Helper()
+	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
+	cachePath := filepath.Join(t.TempDir(), "cache")
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
+	authDir := filepath.Dir(keyPath)
+	if err := os.MkdirAll(authDir, 0o750); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	root, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
+	return analysisCacheAuthTestTarget{
+		root:    root,
+		authDir: authDir,
+		keyName: keyName,
+		keyPath: keyPath,
+	}
+}
+
+func newPermissionBlockedAuthTestTarget(t *testing.T) analysisCacheAuthTestTarget {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based temp file failures are not portable on windows")
+	}
+	target := newAnalysisCacheAuthTestTarget(t)
+	if err := os.Chmod(target.authDir, 0o500); err != nil {
+		t.Fatalf("chmod auth dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(target.authDir, 0o750); err != nil {
+			t.Fatalf("restore auth dir perms: %v", err)
+		}
+	})
+	return target
+}
+
+func newDirectoryAuthKeyTestTarget(t *testing.T) analysisCacheAuthTestTarget {
+	t.Helper()
+	target := newAnalysisCacheAuthTestTarget(t)
+	if err := os.Mkdir(target.keyPath, 0o750); err != nil {
+		t.Fatalf("mkdir key target: %v", err)
+	}
+	return target
+}
+
+func newInvalidAuthKeyRotationTestTarget(t *testing.T, keyData string) invalidAuthKeyRotationTestTarget {
+	t.Helper()
+	target := newAnalysisCacheAuthTestTarget(t)
+	if err := os.WriteFile(target.keyPath, []byte(keyData), 0o600); err != nil {
+		t.Fatalf("write invalid current key: %v", err)
+	}
+	generation, err := invalidAuthKeyGeneration(target.root, target.keyName)
+	if err != nil {
+		t.Fatalf("invalidAuthKeyGeneration: %v", err)
+	}
+	return invalidAuthKeyRotationTestTarget{
+		analysisCacheAuthTestTarget: target,
+		rotationPath:                filepath.Join(target.authDir, target.keyName+analysisCacheAuthRotateTag+generation),
+	}
+}
+
 func TestOpenAuthStoreReturnsErrorWhenUserCacheDirIsEmpty(t *testing.T) {
 	original := analysisCacheUserCacheDirFn
 	analysisCacheUserCacheDirFn = func() (string, error) { return "   ", nil }
@@ -213,53 +285,17 @@ func TestPublishMissingAuthKeyReturnsErrorWhenDirectorySyncFails(t *testing.T) {
 }
 
 func TestPublishMissingAuthKeyReturnsErrorWhenCandidateCreationFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based temp file failures are not portable on windows")
-	}
+	target := newPermissionBlockedAuthTestTarget(t)
 
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, _ := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	if err := os.Chmod(authDir, 0o500); err != nil {
-		t.Fatalf("chmod auth dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(authDir, 0o750); err != nil {
-			t.Fatalf("restore auth dir perms: %v", err)
-		}
-	})
-
-	if err := publishMissingAuthKey(authRoot, "winner.key"); err == nil || !strings.Contains(err.Error(), "create cache auth key candidate") {
+	if err := publishMissingAuthKey(target.root, "winner.key"); err == nil || !strings.Contains(err.Error(), "create cache auth key candidate") {
 		t.Fatalf("expected candidate-creation failure, got %v", err)
 	}
 }
 
 func TestWriteAuthKeyCandidateReturnsErrorWhenTempFileCannotBeCreated(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based temp file failures are not portable on windows")
-	}
+	target := newPermissionBlockedAuthTestTarget(t)
 
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, _ := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	if err := os.Chmod(authDir, 0o500); err != nil {
-		t.Fatalf("chmod auth dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(authDir, 0o750); err != nil {
-			t.Fatalf("restore auth dir perms: %v", err)
-		}
-	})
-
-	if _, err := writeAuthKeyCandidate(authRoot, []byte(strings.Repeat("ab", analysisCacheAuthKeyLength))); err == nil || !strings.Contains(err.Error(), "create cache auth key candidate") {
+	if _, err := writeAuthKeyCandidate(target.root, []byte(strings.Repeat("ab", analysisCacheAuthKeyLength))); err == nil || !strings.Contains(err.Error(), "create cache auth key candidate") {
 		t.Fatalf("expected temp-file creation failure, got %v", err)
 	}
 }
@@ -282,88 +318,40 @@ func TestRemoveAuthFileIfPresentReturnsErrorForNonEmptyDirectory(t *testing.T) {
 }
 
 func TestRotateInvalidAuthKeyReturnsErrorWhenRotationTargetCannotBeRead(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-
-	keyPath := filepath.Join(authDir, keyName)
-	if err := os.WriteFile(keyPath, []byte("invalid"), 0o600); err != nil {
-		t.Fatalf("write invalid key: %v", err)
-	}
-	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
-	if err != nil {
-		t.Fatalf("invalidAuthKeyGeneration: %v", err)
-	}
-	rotationPath := filepath.Join(authDir, keyName+analysisCacheAuthRotateTag+generation)
-	if err := os.MkdirAll(rotationPath, 0o750); err != nil {
+	target := newInvalidAuthKeyRotationTestTarget(t, "invalid")
+	if err := os.MkdirAll(target.rotationPath, 0o750); err != nil {
 		t.Fatalf("mkdir rotation path blocker: %v", err)
 	}
 
-	err = rotateInvalidAuthKey(authRoot, keyName)
+	err := rotateInvalidAuthKey(target.root, target.keyName)
 	if err == nil || !strings.Contains(err.Error(), "read cache auth key rotation candidate") {
 		t.Fatalf("expected rotation-candidate read error, got %v", err)
 	}
 }
 
 func TestRotateInvalidAuthKeyReturnsGenerationErrorWhenKeyTargetIsDirectory(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	if err := os.Mkdir(filepath.Join(authDir, keyName), 0o750); err != nil {
-		t.Fatalf("mkdir key target: %v", err)
-	}
+	target := newDirectoryAuthKeyTestTarget(t)
 
-	if err := rotateInvalidAuthKey(authRoot, keyName); err == nil || !strings.Contains(err.Error(), "read invalid cache auth key") {
+	if err := rotateInvalidAuthKey(target.root, target.keyName); err == nil || !strings.Contains(err.Error(), "read invalid cache auth key") {
 		t.Fatalf("expected invalid-generation error, got %v", err)
 	}
 }
 
 func TestCreateOrRotateAuthKeyReturnsRotationFailureWhenReplacingInvalidKey(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	if err := os.WriteFile(filepath.Join(authDir, keyName), []byte("invalid"), 0o600); err != nil {
-		t.Fatalf("write invalid key: %v", err)
-	}
-	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
-	if err != nil {
-		t.Fatalf("invalidAuthKeyGeneration: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(authDir, keyName+analysisCacheAuthRotateTag+generation), 0o750); err != nil {
+	target := newInvalidAuthKeyRotationTestTarget(t, "invalid")
+	if err := os.MkdirAll(target.rotationPath, 0o750); err != nil {
 		t.Fatalf("mkdir rotation blocker: %v", err)
 	}
 
-	if _, err := (&analysisCache{}).createOrRotateAuthKey(authRoot, keyName, true); err == nil || !strings.Contains(err.Error(), "read cache auth key rotation candidate") {
+	if _, err := (&analysisCache{}).createOrRotateAuthKey(target.root, target.keyName, true); err == nil || !strings.Contains(err.Error(), "read cache auth key rotation candidate") {
 		t.Fatalf("expected rotation failure during replacement, got %v", err)
 	}
 }
 
 func TestInvalidAuthKeyGenerationReturnsErrorForDirectoryTarget(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
+	target := newDirectoryAuthKeyTestTarget(t)
 
-	if err := os.Mkdir(filepath.Join(authDir, keyName), 0o750); err != nil {
-		t.Fatalf("mkdir key target: %v", err)
-	}
-
-	if _, err := invalidAuthKeyGeneration(authRoot, keyName); err == nil || !strings.Contains(err.Error(), "read invalid cache auth key") {
+	if _, err := invalidAuthKeyGeneration(target.root, target.keyName); err == nil || !strings.Contains(err.Error(), "read invalid cache auth key") {
 		t.Fatalf("expected invalid-key generation read error, got %v", err)
 	}
 }
@@ -797,19 +785,9 @@ func TestWriteFileDigestOrMissingReturnsWriterErrorForMissingSentinel(t *testing
 }
 
 func TestReadAnalysisCacheAuthKeyReturnsReadErrorForDirectoryTarget(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
+	target := newDirectoryAuthKeyTestTarget(t)
 
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	if err := os.Mkdir(filepath.Join(authDir, keyName), 0o750); err != nil {
-		t.Fatalf("mkdir key path: %v", err)
-	}
-
-	if _, err := readAnalysisCacheAuthKey(authRoot, keyName, false); err == nil || !strings.Contains(err.Error(), "read cache auth key") {
+	if _, err := readAnalysisCacheAuthKey(target.root, target.keyName, false); err == nil || !strings.Contains(err.Error(), "read cache auth key") {
 		t.Fatalf("expected auth key read error for directory target, got %v", err)
 	}
 }
@@ -904,29 +882,12 @@ func TestStoreReturnsErrorWhenStorageRootChangesAfterInit(t *testing.T) {
 }
 
 func TestRotateInvalidAuthKeyReturnsReadErrorWhenRotationCandidateIsInvalid(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	cachePath := filepath.Join(t.TempDir(), "cache")
-	authDir := filepath.Dir(testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath))
-	if err := os.MkdirAll(authDir, 0o750); err != nil {
-		t.Fatalf("mkdir auth dir: %v", err)
-	}
-
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	keyPath := filepath.Join(authDir, keyName)
-	if err := os.WriteFile(keyPath, []byte("invalid-current-key"), 0o600); err != nil {
-		t.Fatalf("write invalid current key: %v", err)
-	}
-
-	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
-	if err != nil {
-		t.Fatalf("invalidAuthKeyGeneration: %v", err)
-	}
-	rotationPath := filepath.Join(authDir, keyName+analysisCacheAuthRotateTag+generation)
-	if err := os.WriteFile(rotationPath, []byte("invalid-rotation-key"), 0o600); err != nil {
+	target := newInvalidAuthKeyRotationTestTarget(t, "invalid-current-key")
+	if err := os.WriteFile(target.rotationPath, []byte("invalid-rotation-key"), 0o600); err != nil {
 		t.Fatalf("write invalid rotation key: %v", err)
 	}
 
-	err = rotateInvalidAuthKey(authRoot, keyName)
+	err := rotateInvalidAuthKey(target.root, target.keyName)
 	if err == nil || !strings.Contains(err.Error(), "read cache auth key rotation candidate") {
 		t.Fatalf("expected invalid rotation candidate read error, got %v", err)
 	}

@@ -34,6 +34,24 @@ type analysisCacheAuthAttackCase struct {
 	setup func(*testing.T, string, string, string)
 }
 
+type seededAnalysisCacheFixture struct {
+	userCacheDir string
+	repo         string
+	service      *Service
+	adapter      *countingAdapter
+	cachePath    string
+	request      Request
+	keyPath      string
+}
+
+type publishedRotationCandidateFixture struct {
+	repo        string
+	request     Request
+	authRoot    *safeio.WriteRoot
+	keyName     string
+	expectedKey []byte
+}
+
 func (a *countingAdapter) ID() string { return a.id }
 func (a *countingAdapter) Aliases() []string {
 	return nil
@@ -91,6 +109,77 @@ func newCacheRequest(repo, cacheDir string, readOnly bool) Request {
 			Path:     cacheDir,
 			ReadOnly: readOnly,
 		},
+	}
+}
+
+func newSeededAnalysisCacheFixture(t *testing.T) seededAnalysisCacheFixture {
+	t.Helper()
+	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	service, adapter := newCacheTestService(t)
+	cachePath := filepath.Join(repo, cacheTestDirectoryName)
+	request := newCacheRequest(repo, cachePath, false)
+	if _, err := service.Analyse(context.Background(), request); err != nil {
+		t.Fatalf("seed writable analyse: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
+	}
+	return seededAnalysisCacheFixture{
+		userCacheDir: userCacheDir,
+		repo:         repo,
+		service:      service,
+		adapter:      adapter,
+		cachePath:    cachePath,
+		request:      request,
+		keyPath:      testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath),
+	}
+}
+
+func newPublishedRotationCandidateFixture(t *testing.T, cacheName string) publishedRotationCandidateFixture {
+	t.Helper()
+	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheName)
+	request := newCacheRequest(repo, cachePath, false)
+	seed := newAnalysisCache(request, repo)
+	if !seed.cacheable {
+		t.Fatalf("expected seed cache to be cacheable, warnings=%#v", seed.takeWarnings())
+	}
+	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
+	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
+		t.Fatalf("corrupt auth key: %v", err)
+	}
+	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
+	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
+	if err != nil {
+		t.Fatalf("resolve invalid key generation: %v", err)
+	}
+	rotationName := keyName + analysisCacheAuthRotateTag + generation
+	if err := publishMissingAuthKey(authRoot, rotationName); err != nil {
+		t.Fatalf("publish rotation candidate: %v", err)
+	}
+	expectedKey, err := readAnalysisCacheAuthKey(authRoot, rotationName, true)
+	if err != nil {
+		t.Fatalf("read rotation candidate: %v", err)
+	}
+	return publishedRotationCandidateFixture{
+		repo:        repo,
+		request:     request,
+		authRoot:    authRoot,
+		keyName:     keyName,
+		expectedKey: expectedKey,
+	}
+}
+
+func assertPointerUntrustedCacheMiss(t *testing.T, metadata *report.CacheMetadata, wantWrites int, scenario string) {
+	t.Helper()
+	if metadata == nil || metadata.Hits != 0 || metadata.Misses != 1 || metadata.Writes != wantWrites {
+		t.Fatalf("expected %s miss metadata, got %#v", scenario, metadata)
+	}
+	if len(metadata.Invalidations) == 0 || metadata.Invalidations[0].Reason != "pointer-untrusted" {
+		t.Fatalf("expected %s pointer-untrusted invalidation, got %#v", scenario, metadata.Invalidations)
 	}
 }
 
@@ -726,32 +815,7 @@ func TestAnalysisCacheConcurrentFirstRunIgnoresLegacyStaleLock(t *testing.T) {
 }
 
 func TestAnalysisCacheConcurrentCorruptKeyRecoveryUsesPublishedCandidate(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "corrupt-key-cache")
-	req := newCacheRequest(repo, cachePath, false)
-	seed := newAnalysisCache(req, repo)
-	if !seed.cacheable {
-		t.Fatalf("expected seed cache to be cacheable, warnings=%#v", seed.takeWarnings())
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
-		t.Fatalf("corrupt auth key: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
-	if err != nil {
-		t.Fatalf("resolve corrupt key generation: %v", err)
-	}
-	rotationPath := keyName + analysisCacheAuthRotateTag + generation
-	if err := publishMissingAuthKey(authRoot, rotationPath); err != nil {
-		t.Fatalf("publish interrupted rotation candidate: %v", err)
-	}
-	expectedKey, err := readAnalysisCacheAuthKey(authRoot, rotationPath, true)
-	if err != nil {
-		t.Fatalf("read interrupted rotation candidate: %v", err)
-	}
+	fixture := newPublishedRotationCandidateFixture(t, "corrupt-key-cache")
 
 	const workers = 24
 	caches := make([]*analysisCache, workers)
@@ -760,7 +824,7 @@ func TestAnalysisCacheConcurrentCorruptKeyRecoveryUsesPublishedCandidate(t *test
 	recoverCache := func(index int) {
 		defer wg.Done()
 		<-start
-		caches[index] = newAnalysisCache(req, repo)
+		caches[index] = newAnalysisCache(fixture.request, fixture.repo)
 	}
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -773,15 +837,15 @@ func TestAnalysisCacheConcurrentCorruptKeyRecoveryUsesPublishedCandidate(t *test
 		if cache == nil || !cache.cacheable {
 			t.Fatalf("expected cache %d to recover corrupt key, cache=%#v", i, cache)
 		}
-		if string(cache.authKey) != string(expectedKey) {
+		if string(cache.authKey) != string(fixture.expectedKey) {
 			t.Fatalf("expected cache %d to use published rotation candidate", i)
 		}
 	}
-	persistedKey, err := readAnalysisCacheAuthKey(authRoot, keyName, true)
+	persistedKey, err := readAnalysisCacheAuthKey(fixture.authRoot, fixture.keyName, true)
 	if err != nil {
 		t.Fatalf("read recovered auth key: %v", err)
 	}
-	if string(persistedKey) != string(expectedKey) {
+	if string(persistedKey) != string(fixture.expectedKey) {
 		t.Fatalf("expected recovered key file to contain published rotation candidate")
 	}
 }
@@ -827,32 +891,7 @@ func TestAnalysisCacheAuthPublishSyncFailureFailsClosed(t *testing.T) {
 }
 
 func TestAnalysisCacheAuthRotationDoesNotRunRedundantDirectorySync(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "rotation-writer-owned-sync-cache")
-	req := newCacheRequest(repo, cachePath, false)
-	seed := newAnalysisCache(req, repo)
-	if !seed.cacheable {
-		t.Fatalf("expected seed cache to be cacheable, warnings=%#v", seed.takeWarnings())
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
-		t.Fatalf("corrupt auth key: %v", err)
-	}
-	authRoot, keyName := openTestAnalysisCacheAuthRoot(t, userCacheDir, cachePath)
-	generation, err := invalidAuthKeyGeneration(authRoot, keyName)
-	if err != nil {
-		t.Fatalf("resolve invalid key generation: %v", err)
-	}
-	rotationName := keyName + analysisCacheAuthRotateTag + generation
-	if err := publishMissingAuthKey(authRoot, rotationName); err != nil {
-		t.Fatalf("publish rotation candidate: %v", err)
-	}
-	expectedKey, err := readAnalysisCacheAuthKey(authRoot, rotationName, true)
-	if err != nil {
-		t.Fatalf("read rotation candidate: %v", err)
-	}
+	fixture := newPublishedRotationCandidateFixture(t, "rotation-writer-owned-sync-cache")
 
 	syncCalls := 0
 	originalSync := analysisCacheAuthSyncDirFn
@@ -863,18 +902,18 @@ func TestAnalysisCacheAuthRotationDoesNotRunRedundantDirectorySync(t *testing.T)
 	t.Cleanup(func() {
 		analysisCacheAuthSyncDirFn = originalSync
 	})
-	err = rotateInvalidAuthKey(authRoot, keyName)
+	err := rotateInvalidAuthKey(fixture.authRoot, fixture.keyName)
 	if err != nil {
 		t.Fatalf("expected writer-owned commit sync to avoid a false rotation failure, got %v", err)
 	}
 	if syncCalls != 0 {
 		t.Fatalf("expected no redundant analysis-layer directory sync, got %d calls", syncCalls)
 	}
-	persistedKey, err := readAnalysisCacheAuthKey(authRoot, keyName, true)
+	persistedKey, err := readAnalysisCacheAuthKey(fixture.authRoot, fixture.keyName, true)
 	if err != nil {
 		t.Fatalf("read renamed auth key: %v", err)
 	}
-	if string(persistedKey) != string(expectedKey) {
+	if string(persistedKey) != string(fixture.expectedKey) {
 		t.Fatalf("expected rotation writer to install the complete immutable candidate")
 	}
 }
@@ -1037,26 +1076,14 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 }
 
 func TestAnalysisCacheReadOnlyAllowsTrustedHits(t *testing.T) {
-	useTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	fixture := newSeededAnalysisCacheFixture(t)
 
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-
-	if _, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, false)); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
-	}
-
-	got, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, true))
+	got, err := fixture.service.Analyse(context.Background(), newCacheRequest(fixture.repo, fixture.cachePath, true))
 	if err != nil {
 		t.Fatalf("readonly trusted analyse: %v", err)
 	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected readonly trusted cache hit without extra adapter calls, got %d", adapter.calls)
+	if fixture.adapter.calls != 1 {
+		t.Fatalf("expected readonly trusted cache hit without extra adapter calls, got %d", fixture.adapter.calls)
 	}
 	if got.Cache == nil || !got.Cache.ReadOnly || got.Cache.Hits != 1 || got.Cache.Writes != 0 {
 		t.Fatalf("expected readonly trusted cache hit metadata, got %#v", got.Cache)
@@ -1064,38 +1091,20 @@ func TestAnalysisCacheReadOnlyAllowsTrustedHits(t *testing.T) {
 }
 
 func TestAnalysisCacheReadOnlyWithCorruptAuthKeyFailsClosedWithoutMutation(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	if _, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, false)); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
+	fixture := newSeededAnalysisCacheFixture(t)
+	if err := os.WriteFile(fixture.keyPath, []byte("corrupt-key"), 0o600); err != nil {
 		t.Fatalf("corrupt auth key: %v", err)
 	}
 
-	got, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, true))
+	got, err := fixture.service.Analyse(context.Background(), newCacheRequest(fixture.repo, fixture.cachePath, true))
 	if err != nil {
 		t.Fatalf("readonly analyse with corrupt auth key: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected readonly corrupt-key run to fail closed and call adapter, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected readonly corrupt-key run to fail closed and call adapter, got %d calls", fixture.adapter.calls)
 	}
-	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 0 {
-		t.Fatalf("expected readonly corrupt-key miss metadata, got %#v", got.Cache)
-	}
-	if len(got.Cache.Invalidations) == 0 || got.Cache.Invalidations[0].Reason != "pointer-untrusted" {
-		t.Fatalf("expected readonly corrupt-key pointer-untrusted invalidation, got %#v", got.Cache.Invalidations)
-	}
-	keyData, err := os.ReadFile(keyPath)
+	assertPointerUntrustedCacheMiss(t, got.Cache, 0, "readonly corrupt-key")
+	keyData, err := os.ReadFile(fixture.keyPath)
 	if err != nil {
 		t.Fatalf("read corrupt auth key after readonly analyse: %v", err)
 	}
@@ -1105,39 +1114,21 @@ func TestAnalysisCacheReadOnlyWithCorruptAuthKeyFailsClosedWithoutMutation(t *te
 }
 
 func TestAnalysisCacheReadOnlyWithOversizedAuthKeyFailsClosedWithoutMutation(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	if _, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, false)); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
+	fixture := newSeededAnalysisCacheFixture(t)
 	oversized := strings.Repeat("a", analysisCacheAuthKeyMaxBytes+1)
-	if err := os.WriteFile(keyPath, []byte(oversized), 0o600); err != nil {
+	if err := os.WriteFile(fixture.keyPath, []byte(oversized), 0o600); err != nil {
 		t.Fatalf("write oversized auth key: %v", err)
 	}
 
-	got, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, true))
+	got, err := fixture.service.Analyse(context.Background(), newCacheRequest(fixture.repo, fixture.cachePath, true))
 	if err != nil {
 		t.Fatalf("readonly analyse with oversized auth key: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected readonly oversized-key run to fail closed and call adapter, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected readonly oversized-key run to fail closed and call adapter, got %d calls", fixture.adapter.calls)
 	}
-	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 0 {
-		t.Fatalf("expected readonly oversized-key miss metadata, got %#v", got.Cache)
-	}
-	if len(got.Cache.Invalidations) == 0 || got.Cache.Invalidations[0].Reason != "pointer-untrusted" {
-		t.Fatalf("expected readonly oversized-key pointer-untrusted invalidation, got %#v", got.Cache.Invalidations)
-	}
-	keyData, err := os.ReadFile(keyPath)
+	assertPointerUntrustedCacheMiss(t, got.Cache, 0, "readonly oversized-key")
+	keyData, err := os.ReadFile(fixture.keyPath)
 	if err != nil {
 		t.Fatalf("read oversized auth key after readonly analyse: %v", err)
 	}
@@ -1147,46 +1138,30 @@ func TestAnalysisCacheReadOnlyWithOversizedAuthKeyFailsClosedWithoutMutation(t *
 }
 
 func TestAnalysisCacheWritableCorruptAuthKeyRotatesAndRepopulates(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	req := newCacheRequest(repo, cachePath, false)
-	if _, err := svc.Analyse(context.Background(), req); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.WriteFile(keyPath, []byte("corrupt-key"), 0o600); err != nil {
+	fixture := newSeededAnalysisCacheFixture(t)
+	if err := os.WriteFile(fixture.keyPath, []byte("corrupt-key"), 0o600); err != nil {
 		t.Fatalf("corrupt auth key: %v", err)
 	}
 
-	second, err := svc.Analyse(context.Background(), req)
+	second, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("analyse after auth key corruption: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected corrupt key to invalidate pointer and call adapter, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected corrupt key to invalidate pointer and call adapter, got %d calls", fixture.adapter.calls)
 	}
-	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses != 1 || second.Cache.Writes != 1 {
-		t.Fatalf("expected corrupt-key miss and repopulation metadata, got %#v", second.Cache)
-	}
-	if len(second.Cache.Invalidations) == 0 || second.Cache.Invalidations[0].Reason != "pointer-untrusted" {
-		t.Fatalf("expected corrupt-key pointer-untrusted invalidation, got %#v", second.Cache.Invalidations)
-	}
-	persistedKey := readTestAnalysisCacheAuthKey(t, userCacheDir, cachePath)
+	assertPointerUntrustedCacheMiss(t, second.Cache, 1, "corrupt-key repopulation")
+	persistedKey := readTestAnalysisCacheAuthKey(t, fixture.userCacheDir, fixture.cachePath)
 	if len(persistedKey) != analysisCacheAuthKeyLength {
 		t.Fatalf("expected complete rotated auth key, got %d bytes", len(persistedKey))
 	}
 
-	third, err := svc.Analyse(context.Background(), req)
+	third, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("analyse after corrupt-key repopulation: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected cache hit after corrupt-key repopulation, calls=%d", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected cache hit after corrupt-key repopulation, calls=%d", fixture.adapter.calls)
 	}
 	if third.Cache == nil || third.Cache.Hits != 1 || third.Cache.Misses != 0 {
 		t.Fatalf("expected hit after corrupt-key repopulation, got %#v", third.Cache)
@@ -1194,69 +1169,39 @@ func TestAnalysisCacheWritableCorruptAuthKeyRotatesAndRepopulates(t *testing.T) 
 }
 
 func TestAnalysisCacheWritableOversizedAuthKeyRotatesAndRepopulates(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	req := newCacheRequest(repo, cachePath, false)
-	if _, err := svc.Analyse(context.Background(), req); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.WriteFile(keyPath, []byte(strings.Repeat("a", analysisCacheAuthKeyMaxBytes+1)), 0o600); err != nil {
+	fixture := newSeededAnalysisCacheFixture(t)
+	if err := os.WriteFile(fixture.keyPath, []byte(strings.Repeat("a", analysisCacheAuthKeyMaxBytes+1)), 0o600); err != nil {
 		t.Fatalf("write oversized auth key: %v", err)
 	}
 
-	second, err := svc.Analyse(context.Background(), req)
+	second, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("analyse after oversized auth key: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected oversized key to invalidate pointer and call adapter, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected oversized key to invalidate pointer and call adapter, got %d calls", fixture.adapter.calls)
 	}
-	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses != 1 || second.Cache.Writes != 1 {
-		t.Fatalf("expected oversized-key miss and repopulation metadata, got %#v", second.Cache)
-	}
-	if len(second.Cache.Invalidations) == 0 || second.Cache.Invalidations[0].Reason != "pointer-untrusted" {
-		t.Fatalf("expected oversized-key pointer-untrusted invalidation, got %#v", second.Cache.Invalidations)
-	}
-	if persistedKey := readTestAnalysisCacheAuthKey(t, userCacheDir, cachePath); len(persistedKey) != analysisCacheAuthKeyLength {
+	assertPointerUntrustedCacheMiss(t, second.Cache, 1, "oversized-key repopulation")
+	if persistedKey := readTestAnalysisCacheAuthKey(t, fixture.userCacheDir, fixture.cachePath); len(persistedKey) != analysisCacheAuthKeyLength {
 		t.Fatalf("expected complete rotated auth key, got %d bytes", len(persistedKey))
 	}
 }
 
 func TestAnalysisCacheReadOnlyRejectsPermissiveAuthKeyModesWithoutMutation(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	if _, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, false)); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.Chmod(keyPath, 0o644); err != nil {
+	fixture := newSeededAnalysisCacheFixture(t)
+	if err := os.Chmod(fixture.keyPath, 0o644); err != nil {
 		t.Fatalf("chmod auth key: %v", err)
 	}
 
-	got, err := svc.Analyse(context.Background(), newCacheRequest(repo, cachePath, true))
+	got, err := fixture.service.Analyse(context.Background(), newCacheRequest(fixture.repo, fixture.cachePath, true))
 	if err != nil {
 		t.Fatalf("readonly analyse with permissive auth key: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected readonly permissive-key run to fail closed and call adapter, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected readonly permissive-key run to fail closed and call adapter, got %d calls", fixture.adapter.calls)
 	}
-	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 0 {
-		t.Fatalf("expected readonly permissive-key miss metadata, got %#v", got.Cache)
-	}
-	if len(got.Cache.Invalidations) == 0 || got.Cache.Invalidations[0].Reason != "pointer-untrusted" {
-		t.Fatalf("expected readonly permissive-key pointer-untrusted invalidation, got %#v", got.Cache.Invalidations)
-	}
-	if info, err := os.Stat(keyPath); err != nil {
+	assertPointerUntrustedCacheMiss(t, got.Cache, 0, "readonly permissive-key")
+	if info, err := os.Stat(fixture.keyPath); err != nil {
 		t.Fatalf("stat auth key after readonly analyse: %v", err)
 	} else if info.Mode().Perm() != 0o644 {
 		t.Fatalf("expected readonly mode not to repair auth key perms, got %o", info.Mode().Perm())
@@ -1264,32 +1209,22 @@ func TestAnalysisCacheReadOnlyRejectsPermissiveAuthKeyModesWithoutMutation(t *te
 }
 
 func TestAnalysisCacheWritableRepairsPermissiveAuthKeyModesAndPreservesHits(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	req := newCacheRequest(repo, cachePath, false)
-	if _, err := svc.Analyse(context.Background(), req); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
-	if err := os.Chmod(keyPath, 0o646); err != nil {
+	fixture := newSeededAnalysisCacheFixture(t)
+	if err := os.Chmod(fixture.keyPath, 0o646); err != nil {
 		t.Fatalf("chmod auth key: %v", err)
 	}
 
-	got, err := svc.Analyse(context.Background(), req)
+	got, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("writable analyse with permissive auth key: %v", err)
 	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected writable permissive-key run to preserve trusted hit, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 1 {
+		t.Fatalf("expected writable permissive-key run to preserve trusted hit, got %d calls", fixture.adapter.calls)
 	}
 	if got.Cache == nil || got.Cache.Hits != 1 || got.Cache.Misses != 0 || got.Cache.Writes != 0 {
 		t.Fatalf("expected writable permissive-key hit metadata, got %#v", got.Cache)
 	}
-	if info, err := os.Stat(keyPath); err != nil {
+	if info, err := os.Stat(fixture.keyPath); err != nil {
 		t.Fatalf("stat auth key after writable analyse: %v", err)
 	} else if info.Mode().Perm() != analysisCacheAuthKeyPerm {
 		t.Fatalf("expected writable mode to repair auth key perms to %o, got %o", analysisCacheAuthKeyPerm, info.Mode().Perm())
@@ -1297,46 +1232,27 @@ func TestAnalysisCacheWritableRepairsPermissiveAuthKeyModesAndPreservesHits(t *t
 }
 
 func TestAnalysisCacheWritableKeyRotationInvalidatesPointersAndRepopulates(t *testing.T) {
-	userCacheDir := setTestAnalysisCacheUserCacheDir(t)
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
-
-	svc, adapter := newCacheTestService(t)
-	cachePath := filepath.Join(repo, cacheTestDirectoryName)
-	req := newCacheRequest(repo, cachePath, false)
-	if _, err := svc.Analyse(context.Background(), req); err != nil {
-		t.Fatalf("seed writable analyse: %v", err)
-	}
-	if adapter.calls != 1 {
-		t.Fatalf("expected writable seed run to call adapter once, got %d", adapter.calls)
-	}
-
-	keyPath := testAnalysisCacheAuthKeyPath(t, userCacheDir, cachePath)
+	fixture := newSeededAnalysisCacheFixture(t)
 	rotatedKey := strings.Repeat("ab", analysisCacheAuthKeyLength)
-	if err := os.WriteFile(keyPath, []byte(rotatedKey), 0o600); err != nil {
+	if err := os.WriteFile(fixture.keyPath, []byte(rotatedKey), 0o600); err != nil {
 		t.Fatalf("rotate auth key: %v", err)
 	}
 
-	second, err := svc.Analyse(context.Background(), req)
+	second, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("analyse after key rotation: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected rotated key to invalidate pointer and call adapter again, got %d calls", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected rotated key to invalidate pointer and call adapter again, got %d calls", fixture.adapter.calls)
 	}
-	if second.Cache == nil || second.Cache.Hits != 0 || second.Cache.Misses != 1 || second.Cache.Writes != 1 {
-		t.Fatalf("expected rotated key miss and repopulation metadata, got %#v", second.Cache)
-	}
-	if len(second.Cache.Invalidations) == 0 || second.Cache.Invalidations[0].Reason != "pointer-untrusted" {
-		t.Fatalf("expected rotated key pointer-untrusted invalidation, got %#v", second.Cache.Invalidations)
-	}
+	assertPointerUntrustedCacheMiss(t, second.Cache, 1, "rotated-key repopulation")
 
-	third, err := svc.Analyse(context.Background(), req)
+	third, err := fixture.service.Analyse(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatalf("analyse after key-rotation repopulation: %v", err)
 	}
-	if adapter.calls != 2 {
-		t.Fatalf("expected cache hit after key-rotation repopulation, adapter calls=%d", adapter.calls)
+	if fixture.adapter.calls != 2 {
+		t.Fatalf("expected cache hit after key-rotation repopulation, adapter calls=%d", fixture.adapter.calls)
 	}
 	if third.Cache == nil || third.Cache.Hits != 1 || third.Cache.Misses != 0 {
 		t.Fatalf("expected hit after key-rotation repopulation, got %#v", third.Cache)

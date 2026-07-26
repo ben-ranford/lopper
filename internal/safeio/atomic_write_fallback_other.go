@@ -2,8 +2,6 @@
 
 package safeio
 
-import "os"
-
-func fallbackAtomicReplacement(_ Root, _ string, _ string, _ File, _ []byte, _ os.FileMode, _ bool, renameErr error) error {
-	return renameErr
+func fallbackAtomicReplacement(request atomicReplacementFallbackRequest) error {
+	return request.renameErr
 }
