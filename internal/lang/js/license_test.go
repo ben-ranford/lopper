@@ -191,23 +191,11 @@ func TestFindLicenseFilesReturnsNilWhenDependencyRootCannotBeOpened(t *testing.T
 }
 
 func TestFindLicenseFilesReturnsCollectedFilesOnWalkError(t *testing.T) {
-	depRoot := t.TempDir()
+	depRoot := filepath.Join(t.TempDir(), "pkg")
 	testutil.MustWriteFile(t, filepath.Join(depRoot, "LICENSE"), "MIT License\n")
+	root := newSkippedPathRootWalkFixture(t)
 
-	blockedDir := filepath.Join(depRoot, "blocked")
-	if err := os.MkdirAll(blockedDir, 0o755); err != nil {
-		t.Fatalf("mkdir blocked dir: %v", err)
-	}
-	if err := os.Chmod(blockedDir, 0o000); err != nil {
-		t.Fatalf("chmod blocked dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(blockedDir, 0o755); err != nil {
-			t.Fatalf("restore blocked dir permissions: %v", err)
-		}
-	})
-
-	files, warnings := findLicenseFiles(context.Background(), depRoot)
+	files, warnings := findLicenseFilesWithinRoot(context.Background(), root, depRoot)
 	if !slices.Contains(files, filepath.Join(depRoot, "LICENSE")) {
 		t.Fatalf("expected collected license files to be preserved on walk error, got %#v", files)
 	}

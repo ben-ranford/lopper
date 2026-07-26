@@ -48,22 +48,7 @@ func TestWalkRootNoFollowStopPropagatesAcrossRecursiveFrames(t *testing.T) {
 }
 
 func TestWalkRootNoFollowBestEffortContinuesPastUnreadableSubtree(t *testing.T) {
-	rootDir := createRootWalkFixture(t, []string{filepath.Join("z", "LICENSE")})
-	blockedDir := filepath.Join(rootDir, "a", "blocked")
-	if err := os.MkdirAll(blockedDir, 0o755); err != nil {
-		t.Fatalf("mkdir blocked dir: %v", err)
-	}
-	if err := os.Chmod(blockedDir, 0o000); err != nil {
-		t.Fatalf("chmod blocked dir: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(blockedDir, 0o755); err != nil {
-			t.Fatalf("restore blocked dir permissions: %v", err)
-		}
-	})
-
-	root := openRootWalkFixture(t, rootDir)
-	defer closeRootWalkFixture(t, root)
+	root := newBlockedSubtreeRootWalkFixture(t)
 
 	var visited []string
 	err := walkRootNoFollowBestEffort(context.Background(), root, func(relPath string, info os.FileInfo) (bool, bool, error) {
@@ -78,6 +63,90 @@ func TestWalkRootNoFollowBestEffortContinuesPastUnreadableSubtree(t *testing.T) 
 	}
 	if len(visited) != 1 || visited[0] != filepath.Join("z", "LICENSE") {
 		t.Fatalf("expected later license to be preserved, got %#v", visited)
+	}
+}
+
+func newBlockedSubtreeRootWalkFixture(t *testing.T) safeio.Root {
+	t.Helper()
+
+	rootDir := t.TempDir()
+	blockedDir := filepath.Join(rootDir, "a", "blocked")
+	if err := os.MkdirAll(blockedDir, 0o755); err != nil {
+		t.Fatalf("mkdir blocked dir: %v", err)
+	}
+	licensePath := filepath.Join(rootDir, "z", "LICENSE")
+	if err := os.MkdirAll(filepath.Dir(licensePath), 0o755); err != nil {
+		t.Fatalf("mkdir license dir: %v", err)
+	}
+	if err := os.WriteFile(licensePath, []byte("MIT License"), 0o600); err != nil {
+		t.Fatalf("write license: %v", err)
+	}
+	blockedInfo, err := os.Lstat(blockedDir)
+	if err != nil {
+		t.Fatalf("lstat blocked dir: %v", err)
+	}
+	licenseInfo, err := os.Lstat(licensePath)
+	if err != nil {
+		t.Fatalf("lstat license: %v", err)
+	}
+	licenseDirInfo, err := os.Lstat(filepath.Dir(licensePath))
+	if err != nil {
+		t.Fatalf("lstat license dir: %v", err)
+	}
+
+	return &fakeJSRoot{
+		open: func(name string) (safeio.File, error) {
+			if name != "." {
+				return nil, errors.New("unexpected open path")
+			}
+			return &fakeReadDirFile{
+				entries: []os.DirEntry{
+					&fakeDirEntry{name: "blocked", mode: blockedInfo.Mode(), info: blockedInfo},
+					&fakeDirEntry{name: "z", mode: licenseDirInfo.Mode(), info: licenseDirInfo},
+				},
+			}, nil
+		},
+		lstat: func(name string) (os.FileInfo, error) {
+			switch name {
+			case "blocked":
+				return blockedInfo, nil
+			case "z":
+				return licenseDirInfo, nil
+			default:
+				return nil, errors.New("unexpected lstat path")
+			}
+		},
+		openRoot: func(name string) (safeio.Root, error) {
+			switch name {
+			case "blocked":
+				return nil, fs.ErrPermission
+			case "z":
+				return &fakeJSRoot{
+					open: func(child string) (safeio.File, error) {
+						if child != "." {
+							return nil, errors.New("unexpected child open path")
+						}
+						return &fakeReadDirFile{
+							entries: []os.DirEntry{
+								&fakeDirEntry{name: "LICENSE", mode: licenseInfo.Mode(), info: licenseInfo},
+							},
+						}, nil
+					},
+					lstat: func(child string) (os.FileInfo, error) {
+						switch child {
+						case ".":
+							return licenseDirInfo, nil
+						case "LICENSE":
+							return licenseInfo, nil
+						default:
+							return nil, errors.New("unexpected child lstat path")
+						}
+					},
+				}, nil
+			default:
+				return nil, errors.New("unexpected child root path")
+			}
+		},
 	}
 }
 
@@ -524,7 +593,7 @@ func TestWalkRootNoFollowCancellationBeforeEntry(t *testing.T) {
 	}
 }
 
-func TestWalkRootNoFollowCancellationBeforeDescent(t *testing.T) {
+func TestWalkRootNoFollowCancellationBeforeDescentStopsWithoutChildOpen(t *testing.T) {
 	dirPath := filepath.Join(t.TempDir(), "child")
 	if err := os.Mkdir(dirPath, 0o700); err != nil {
 		t.Fatalf("mkdir child: %v", err)
@@ -562,7 +631,7 @@ func TestWalkRootNoFollowCancellationBeforeDescent(t *testing.T) {
 	}
 }
 
-func TestWalkRootNoFollowCancellationBeforeNextBatch(t *testing.T) {
+func TestWalkRootNoFollowCancellationBeforeNextBatchStopsWithoutSecondRead(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "file.js")
 	if err := os.WriteFile(filePath, []byte("export {}\n"), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)

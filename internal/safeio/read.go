@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+
+	"github.com/ben-ranford/lopper/internal/pathutil"
 )
 
 var ErrFileTooLarge = errors.New("file exceeds size limit")
@@ -57,27 +59,9 @@ func OpenFileWithinRoot(root Root, targetPath string) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	expectedPathInfo, expectedOpenedInfo := fs.FileInfo(nil), fs.FileInfo(nil)
-	if filepath.Dir(targetRel) == "." {
-		expectedPathInfo, expectedOpenedInfo, err = preflightPinnedReadTargetWithinRoot(root, targetRel, targetPath)
-		if err != nil {
-			return nil, translateOpenNotExist(err, targetPath)
-		}
-	} else {
-		parent, closeParent, err := openReadTargetParentNoFollow(root, ".", filepath.Dir(targetRel))
-		if err != nil {
-			return nil, err
-		}
-		name := filepath.Base(targetRel)
-		expectedPathInfo, expectedOpenedInfo, err = preflightPinnedReadTargetWithinRoot(parent, name, targetPath)
-		if closeParent {
-			if closeErr := parent.Close(); closeErr != nil {
-				err = errors.Join(err, closeErr)
-			}
-		}
-		if err != nil {
-			return nil, translateOpenNotExist(err, targetPath)
-		}
+	expectedPathInfo, expectedOpenedInfo, err := preflightReadTargetWithinRoot(root, targetRel, targetPath)
+	if err != nil {
+		return nil, err
 	}
 	if err := readFileTargetReadyFn(); err != nil {
 		return nil, err
@@ -88,6 +72,35 @@ func OpenFileWithinRoot(root Root, targetPath string) (File, error) {
 		return nil, translateOpenNotExist(err, targetPath)
 	}
 	return file, nil
+}
+
+func preflightReadTargetWithinRoot(root Root, targetRel, targetPath string) (fs.FileInfo, fs.FileInfo, error) {
+	parent, name, closeParent, err := openReadPreflightParent(root, targetRel)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	expectedPathInfo, expectedOpenedInfo, preflightErr := preflightPinnedReadTargetWithinRoot(parent, name, targetPath)
+	if closeParent {
+		if closeErr := parent.Close(); closeErr != nil {
+			preflightErr = errors.Join(preflightErr, closeErr)
+		}
+	}
+	if preflightErr != nil {
+		return nil, nil, translateOpenNotExist(preflightErr, targetPath)
+	}
+	return expectedPathInfo, expectedOpenedInfo, nil
+}
+
+func openReadPreflightParent(root Root, targetRel string) (Root, string, bool, error) {
+	if filepath.Dir(targetRel) == "." {
+		return root, targetRel, false, nil
+	}
+	parent, closeParent, err := openReadTargetParentNoFollow(root, ".", filepath.Dir(targetRel))
+	if err != nil {
+		return nil, "", false, err
+	}
+	return parent, filepath.Base(targetRel), closeParent, nil
 }
 
 // ReadFileWithinRootLimit reads targetPath using an already-open confined root
@@ -488,7 +501,7 @@ func isPathEscapesParentError(err error) bool {
 }
 
 func samePinnedRootPath(requestedPath, canonicalPath string) bool {
-	if filepath.Clean(requestedPath) == filepath.Clean(canonicalPath) {
+	if pathutil.Equal(requestedPath, canonicalPath) {
 		return true
 	}
 	if runtime.GOOS != "darwin" {
@@ -501,13 +514,15 @@ func samePinnedRootPath(requestedPath, canonicalPath string) bool {
 		{requested: filepath.Join(string(os.PathSeparator), "tmp"), canonical: filepath.Join(string(os.PathSeparator), "private", "tmp")},
 		{requested: filepath.Join(string(os.PathSeparator), "var"), canonical: filepath.Join(string(os.PathSeparator), "private", "var")},
 	} {
-		if requestedPath == alias.requested && canonicalPath == alias.canonical {
+		if pathutil.Equal(requestedPath, alias.requested) && pathutil.Equal(canonicalPath, alias.canonical) {
 			return true
 		}
-		if strings.HasPrefix(filepath.Clean(requestedPath), alias.requested+string(os.PathSeparator)) &&
-			strings.HasPrefix(filepath.Clean(canonicalPath), alias.canonical+string(os.PathSeparator)) {
-			relRequested := strings.TrimPrefix(filepath.Clean(requestedPath), alias.requested)
-			relCanonical := strings.TrimPrefix(filepath.Clean(canonicalPath), alias.canonical)
+		cleanRequested := filepath.Clean(requestedPath)
+		cleanCanonical := filepath.Clean(canonicalPath)
+		if strings.HasPrefix(cleanRequested, alias.requested+string(os.PathSeparator)) &&
+			strings.HasPrefix(cleanCanonical, alias.canonical+string(os.PathSeparator)) {
+			relRequested := strings.TrimPrefix(cleanRequested, alias.requested)
+			relCanonical := strings.TrimPrefix(cleanCanonical, alias.canonical)
 			if relRequested == relCanonical {
 				return true
 			}

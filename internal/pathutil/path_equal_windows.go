@@ -2,8 +2,11 @@
 
 package pathutil
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 func equalPathOS(left, right string) bool {
-	return strings.EqualFold(left, right)
+	return strings.EqualFold(filepath.Clean(filepath.FromSlash(left)), filepath.Clean(filepath.FromSlash(right)))
 }

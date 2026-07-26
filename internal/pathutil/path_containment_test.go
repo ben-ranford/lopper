@@ -35,7 +35,11 @@ func TestRelativeContainedBranches(t *testing.T) {
 	if RelativeContained(filepath.Join("..", "escape")) {
 		t.Fatal("expected parent traversal to be rejected")
 	}
-	if RelativeContained(filepath.Join(string(filepath.Separator), "absolute")) {
+	absolutePath, err := filepath.Abs(filepath.Join("absolute", "child"))
+	if err != nil {
+		t.Fatalf("resolve absolute fixture: %v", err)
+	}
+	if RelativeContained(absolutePath) {
 		t.Fatal("expected absolute path to be rejected")
 	}
 }

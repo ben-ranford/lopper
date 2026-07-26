@@ -43,6 +43,16 @@ type dependencyReportOptions struct {
 	IncludeRegistryProvenance         bool
 }
 
+type topDependencyOptions struct {
+	RepoPath                          string
+	ScanResult                        ScanResult
+	TopN                              int
+	RuntimeProfile                    string
+	MinUsagePercentForRecommendations int
+	Weights                           report.RemovalCandidateWeights
+	IncludeRegistryProvenance         bool
+}
+
 func buildDependencyReport(ctx context.Context, opts dependencyReportOptions) (report.DependencyReport, []string, error) {
 	warnings := make([]string, 0)
 	if err := ctx.Err(); err != nil {
@@ -442,8 +452,8 @@ func matchesDependency(module, dependency string) bool {
 	return false
 }
 
-func buildTopDependencies(ctx context.Context, repoPath string, scanResult ScanResult, topN int, runtimeProfile string, minUsagePercentForRecommendations int, weights report.RemovalCandidateWeights, includeRegistryProvenance bool) ([]report.DependencyReport, []string, error) {
-	dependencies, dependencyRoots, warnings, err := listDependencies(ctx, repoPath, scanResult)
+func buildTopDependencies(ctx context.Context, opts topDependencyOptions) ([]report.DependencyReport, []string, error) {
+	dependencies, dependencyRoots, warnings, err := listDependencies(ctx, opts.RepoPath, opts.ScanResult)
 	if err != nil {
 		return nil, warnings, err
 	}
@@ -454,14 +464,14 @@ func buildTopDependencies(ctx context.Context, repoPath string, scanResult ScanR
 	reports := make([]report.DependencyReport, 0, len(dependencies))
 	for _, dep := range dependencies {
 		depReport, depWarnings, err := buildDependencyReport(ctx, dependencyReportOptions{
-			RepoPath:                          repoPath,
+			RepoPath:                          opts.RepoPath,
 			Dependency:                        dep,
 			DependencyRootPath:                dependencyRoots[dep],
-			ScanResult:                        scanResult,
-			RuntimeProfile:                    runtimeProfile,
-			MinUsagePercentForRecommendations: minUsagePercentForRecommendations,
+			ScanResult:                        opts.ScanResult,
+			RuntimeProfile:                    opts.RuntimeProfile,
+			MinUsagePercentForRecommendations: opts.MinUsagePercentForRecommendations,
 			SuggestOnly:                       false,
-			IncludeRegistryProvenance:         includeRegistryProvenance,
+			IncludeRegistryProvenance:         opts.IncludeRegistryProvenance,
 		})
 		if err != nil {
 			return nil, warnings, err
@@ -470,10 +480,10 @@ func buildTopDependencies(ctx context.Context, repoPath string, scanResult ScanR
 		warnings = append(warnings, depWarnings...)
 	}
 
-	shared.SortReportsByWaste(reports, weights)
+	shared.SortReportsByWaste(reports, opts.Weights)
 
-	if topN > 0 && topN < len(reports) {
-		reports = reports[:topN]
+	if opts.TopN > 0 && opts.TopN < len(reports) {
+		reports = reports[:opts.TopN]
 	}
 
 	return reports, warnings, nil

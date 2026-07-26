@@ -19,9 +19,7 @@ func WithinRoot(root, candidate string) bool {
 }
 
 func Equal(left, right string) bool {
-	left = filepath.Clean(left)
-	right = filepath.Clean(right)
-	return equalPathOS(left, right)
+	return equalPathOS(filepath.Clean(left), filepath.Clean(right))
 }
 
 func RelativeContained(rel string) bool {

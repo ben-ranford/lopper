@@ -62,7 +62,15 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		}
 		result.Summary = report.ComputeSummary(result.Dependencies)
 	case req.TopN > 0:
-		deps, warnings, err := buildTopDependencies(ctx, repoPath, scanResult, req.TopN, req.RuntimeProfile, resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations), shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights), req.IncludeRegistryProvenance)
+		deps, warnings, err := buildTopDependencies(ctx, topDependencyOptions{
+			RepoPath:                          repoPath,
+			ScanResult:                        scanResult,
+			TopN:                              req.TopN,
+			RuntimeProfile:                    req.RuntimeProfile,
+			MinUsagePercentForRecommendations: resolveMinUsageRecommendationThreshold(req.MinUsagePercentForRecommendations),
+			Weights:                           shared.ResolveRemovalCandidateWeights(req.RemovalCandidateWeights),
+			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
+		})
 		if err != nil {
 			return report.Report{}, err
 		}

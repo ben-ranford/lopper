@@ -257,7 +257,15 @@ func TestResolveSurfaceWarningsBranches(t *testing.T) {
 
 func TestBuildTopDependenciesNoResolvedDependencies(t *testing.T) {
 	repo := t.TempDir()
-	reports, warnings, err := buildTopDependencies(context.Background(), repo, ScanResult{}, 5, "", thresholds.Defaults().MinUsagePercentForRecommendations, report.DefaultRemovalCandidateWeights(), false)
+	reports, warnings, err := buildTopDependencies(context.Background(), topDependencyOptions{
+		RepoPath:                          repo,
+		ScanResult:                        ScanResult{},
+		TopN:                              5,
+		RuntimeProfile:                    "",
+		MinUsagePercentForRecommendations: thresholds.Defaults().MinUsagePercentForRecommendations,
+		Weights:                           report.DefaultRemovalCandidateWeights(),
+		IncludeRegistryProvenance:         false,
+	})
 	if err != nil {
 		t.Fatalf("build top dependencies: %v", err)
 	}
