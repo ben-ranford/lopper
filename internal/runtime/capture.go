@@ -35,7 +35,7 @@ type capturePlan struct {
 }
 
 func DefaultTracePath(repoPath string) string {
-	return filepath.Join(repoPath, defaultTraceRelPath)
+	return filepath.Join(canonicalRuntimeTraceRepoPath(repoPath), defaultTraceRelPath)
 }
 
 func Capture(ctx context.Context, req CaptureRequest) error {
@@ -115,6 +115,14 @@ func normalizeCaptureProvider(provider CaptureProvider) CaptureProvider {
 	default:
 		return ""
 	}
+}
+
+func canonicalRuntimeTraceRepoPath(repoPath string) string {
+	resolvedPath, err := filepath.EvalSymlinks(strings.TrimSpace(repoPath))
+	if err != nil || strings.TrimSpace(resolvedPath) == "" {
+		return repoPath
+	}
+	return resolvedPath
 }
 
 func prepareTracePath(tracePath string) error {

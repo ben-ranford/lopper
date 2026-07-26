@@ -35,6 +35,38 @@ func TestCapture(t *testing.T) {
 	}
 }
 
+func TestCaptureDefaultTracePathCanonicalizesSymlinkedRepo(t *testing.T) {
+	requireRuntimeTracePathOpenSupport(t)
+
+	realRepo := t.TempDir()
+	linkRepo := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(realRepo, linkRepo); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	t.Setenv(runtimeBinDirsEnvKey, setupFakeRuntimeToolScript(t, "npm", "#!/bin/sh\nprintf '{\"module\":\"lodash/map\"}\\n' > \"$LOPPER_RUNTIME_TRACE\"\n"))
+
+	if err := Capture(context.Background(), CaptureRequest{
+		RepoPath: linkRepo,
+		Command:  npmTestCommand,
+	}); err != nil {
+		t.Fatalf("capture runtime trace from symlinked repo: %v", err)
+	}
+
+	tracePath := DefaultTracePath(linkRepo)
+	wantInfo, wantErr := os.Stat(filepath.Join(realRepo, defaultTraceRelPath))
+	gotInfo, gotErr := os.Stat(tracePath)
+	if wantErr != nil || gotErr != nil || !os.SameFile(wantInfo, gotInfo) {
+		t.Fatalf("expected canonical trace destination under %q, got %q (want err=%v got err=%v)", realRepo, tracePath, wantErr, gotErr)
+	}
+	trace, err := Load(tracePath)
+	if err != nil {
+		t.Fatalf("load captured runtime trace from canonical path: %v", err)
+	}
+	if got := trace.DependencyLoads["lodash"]; got != 1 {
+		t.Fatalf("expected canonical symlinked capture trace to load lodash once, got %#v", trace.DependencyLoads)
+	}
+}
+
 func TestCaptureUsesAbsoluteNodeHookPaths(t *testing.T) {
 	repo := t.TempDir()
 	nodeOptionsPath := filepath.Join(repo, "node-options.txt")

@@ -568,7 +568,7 @@ func TestOpenRuntimeTraceFileRejectsFileHandleWithoutStat(t *testing.T) {
 		return &runtimeTraceReadCloser{}, nil
 	}
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -588,7 +588,7 @@ func TestOpenRuntimeTraceFileReturnsStatError(t *testing.T) {
 		}, nil
 	}
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -609,7 +609,7 @@ func TestOpenRuntimeTraceFileRejectsOpenedNonRegularFile(t *testing.T) {
 	}
 	sameFile := func(fs.FileInfo, fs.FileInfo) bool { return true }
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, sameFile)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, sameFile)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -630,35 +630,12 @@ func TestOpenRuntimeTraceFileRejectsPathChangeDuringOpen(t *testing.T) {
 	}
 	sameFile := func(fs.FileInfo, fs.FileInfo) bool { return false }
 
-	restore := stubRuntimeTraceFileOpenState(lstat, open, func() bool { return true }, sameFile)
+	restore := stubRuntimeTraceFileOpenState(lstat, open, sameFile)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
 	if err == nil || !strings.Contains(err.Error(), "changed while opening") {
 		t.Fatalf("expected path change error, got %v", err)
-	}
-}
-
-func TestOpenRuntimeTraceFileFailsClosedWhenNoFollowUnsupported(t *testing.T) {
-	lstatCalled := false
-	lstat := func(string) (fs.FileInfo, error) {
-		lstatCalled = true
-		return &fakeFileInfo{name: "trace.ndjson", mode: 0o600}, nil
-	}
-	noFollowOpen := func(string) (io.ReadCloser, error) {
-		t.Fatal("expected unsupported runtime trace path opening to fail before open")
-		return nil, nil
-	}
-
-	restore := stubRuntimeTraceFileOpenState(lstat, noFollowOpen, func() bool { return false }, nil)
-	t.Cleanup(restore)
-
-	_, err := openRuntimeTraceFile("trace.ndjson")
-	if !errors.Is(err, ErrTraceOpenUnsupported) {
-		t.Fatalf("expected stable unsupported runtime trace open error, got %v", err)
-	}
-	if !lstatCalled {
-		t.Fatal("expected missing-file detection to run before unsupported capability rejection")
 	}
 }
 
@@ -669,7 +646,7 @@ func TestOpenRuntimeTraceFileNormalizesLateNoFollowUnsupported(t *testing.T) {
 	openNoFollow := func(string) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("%w: /proc/self/fd unavailable", safeio.ErrOpenFileNoFollowUnsupported)
 	}
-	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return true }, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -686,7 +663,7 @@ func TestOpenRuntimeTraceFilePreservesLateOperationalOpenError(t *testing.T) {
 	openNoFollow := func(string) (io.ReadCloser, error) {
 		return nil, operationalErr
 	}
-	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return true }, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -706,7 +683,7 @@ func TestOpenRuntimeTraceFileReturnsMissingFileBeforeUnsupportedCapability(t *te
 		t.Fatal("expected missing runtime trace to fail before open")
 		return nil, nil
 	}
-	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return false }, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("missing.ndjson")
@@ -723,7 +700,7 @@ func TestOpenRuntimeTraceFileRejectsNonRegularBeforeLateUnsupported(t *testing.T
 		t.Fatal("expected non-regular file rejection before no-follow open")
 		return nil, safeio.ErrOpenFileNoFollowUnsupported
 	}
-	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, func() bool { return true }, nil)
+	restore := stubRuntimeTraceFileOpenState(lstat, openNoFollow, nil)
 	t.Cleanup(restore)
 
 	_, err := openRuntimeTraceFile("trace.ndjson")
@@ -748,16 +725,14 @@ func stubLoadRuntimeTraceFile(stub func(string) (io.ReadCloser, error)) func() {
 	}
 }
 
-func stubRuntimeTraceFileOpenState(lstat func(string) (fs.FileInfo, error), openNoFollow func(string) (io.ReadCloser, error), noFollowSupported func() bool, sameFile func(fs.FileInfo, fs.FileInfo) bool) func() {
+func stubRuntimeTraceFileOpenState(lstat func(string) (fs.FileInfo, error), openNoFollow func(string) (io.ReadCloser, error), sameFile func(fs.FileInfo, fs.FileInfo) bool) func() {
 	previousLstat := runtimeTraceLstat
 	previousOpenNoFollow := runtimeTraceOpenFileNoFollow
-	previousNoFollowSupported := runtimeTraceOpenFileNoFollowOK
 	previousSameFile := runtimeTraceSameFile
 	previousBeforeOpen := runtimeTraceBeforeOpen
 
 	runtimeTraceLstat = lstat
 	runtimeTraceOpenFileNoFollow = openNoFollow
-	runtimeTraceOpenFileNoFollowOK = noFollowSupported
 	if sameFile != nil {
 		runtimeTraceSameFile = sameFile
 	}
@@ -765,7 +740,6 @@ func stubRuntimeTraceFileOpenState(lstat func(string) (fs.FileInfo, error), open
 	return func() {
 		runtimeTraceLstat = previousLstat
 		runtimeTraceOpenFileNoFollow = previousOpenNoFollow
-		runtimeTraceOpenFileNoFollowOK = previousNoFollowSupported
 		runtimeTraceSameFile = previousSameFile
 		runtimeTraceBeforeOpen = previousBeforeOpen
 	}

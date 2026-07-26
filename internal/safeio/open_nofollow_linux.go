@@ -5,6 +5,7 @@ package safeio
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,12 +21,14 @@ var (
 	closeNoFollowFD        = unix.Close
 	newNoFollowOSFile      = os.NewFile
 	closeNoFollowProbeRoot = (*os.Root).Close
+	openNoFollowProbeRoot  = os.OpenRoot
 	osRootFDResolver       = osRootFD
 	openNoFollowProbe      = probeOpenFileNoFollowSupport
 	openNoFollowProbePath  = defaultOpenNoFollowProbePath
 
-	openNoFollowSupportOnce sync.Once
-	openNoFollowSupported   bool
+	openNoFollowSupportMu     sync.Mutex
+	openNoFollowSupportCached bool
+	openNoFollowSupported     bool
 )
 
 func openRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
@@ -37,32 +40,36 @@ func openRootFileNoFollow(root *os.Root, name string) (*os.File, error) {
 	return openRegularFileNoFollowFromRootFD(rootFD, name)
 }
 
-func probeOpenFileNoFollowSupport() (supported bool) {
+func probeOpenFileNoFollowSupport() (supported bool, cacheable bool) {
 	probePath, err := openNoFollowProbePath()
 	if err != nil {
-		return false
+		return false, false
 	}
 
-	root, err := os.OpenRoot(filepath.Dir(probePath))
+	root, err := openNoFollowProbeRoot(filepath.Dir(probePath))
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer func() {
 		if closeErr := closeNoFollowProbeRoot(root); closeErr != nil {
 			supported = false
+			cacheable = false
 		}
 	}()
 
 	rootFD, err := osRootFDResolver(root)
 	if err != nil {
-		return false
+		return false, isDefinitiveNoFollowSupportProbeError(err)
 	}
 
-	file, err := openRegularFileNoFollowFromRootFD(rootFD, filepath.Base(probePath))
-	if err != nil {
-		return false
+	if file, err := openRegularFileNoFollowFromRootFD(rootFD, filepath.Base(probePath)); err != nil {
+		return false, isDefinitiveNoFollowSupportProbeError(err)
+	} else {
+		if closeErr := file.Close(); closeErr != nil {
+			return false, false
+		}
+		return true, true
 	}
-	return file.Close() == nil
 }
 
 func defaultOpenNoFollowProbePath() (string, error) {
@@ -70,7 +77,30 @@ func defaultOpenNoFollowProbePath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(probePath)
+	probePath, err = filepath.EvalSymlinks(probePath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(probePath)
+	switch {
+	case err != nil:
+		return "", err
+	case info.Mode().IsRegular():
+		return probePath, nil
+	default:
+		return "", fs.ErrNotExist
+	}
+}
+
+func isTransientNoFollowSupportProbeError(err error) bool {
+	return errors.Is(err, unix.EMFILE) ||
+		errors.Is(err, unix.ENFILE) ||
+		errors.Is(err, unix.EINTR) ||
+		errors.Is(err, unix.EAGAIN)
+}
+
+func isDefinitiveNoFollowSupportProbeError(err error) bool {
+	return errors.Is(err, ErrOpenFileNoFollowUnsupported) && !isTransientNoFollowSupportProbeError(err)
 }
 
 func openRegularFileNoFollowFromRootFD(rootFD int, name string) (*os.File, error) {

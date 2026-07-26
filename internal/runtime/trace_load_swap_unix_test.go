@@ -111,7 +111,7 @@ func assertTraceLeafSwapRejectedBeforeOpen(t *testing.T, tc traceSwapMutationCas
 		t.Fatalf("write initial trace: %v", err)
 	}
 
-	restore := stubRuntimeTraceFileOpenState(os.Lstat, runtimeTraceOpenFileNoFollow, runtimeTraceOpenFileNoFollowOK, os.SameFile)
+	restore := stubRuntimeTraceFileOpenState(os.Lstat, runtimeTraceOpenFileNoFollow, os.SameFile)
 	t.Cleanup(restore)
 	runtimeTraceBeforeOpen = func() {
 		tc.mutate(t, tracePath)

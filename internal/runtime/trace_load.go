@@ -32,12 +32,11 @@ var ErrTraceOpenUnsupported = errors.New(runtimeTraceOpenUnsupportedMessage)
 var runtimeTraceEventParseHook func(string)
 
 var (
-	loadRuntimeTraceFile           = openRuntimeTraceFile
-	runtimeTraceLstat              = os.Lstat
-	runtimeTraceOpenFileNoFollow   = safeio.OpenFileNoFollow
-	runtimeTraceOpenFileNoFollowOK = safeio.OpenFileNoFollowSupported
-	runtimeTraceSameFile           = os.SameFile
-	runtimeTraceBeforeOpen         func()
+	loadRuntimeTraceFile         = openRuntimeTraceFile
+	runtimeTraceLstat            = os.Lstat
+	runtimeTraceOpenFileNoFollow = safeio.OpenFileNoFollow
+	runtimeTraceSameFile         = os.SameFile
+	runtimeTraceBeforeOpen       func()
 )
 
 func Load(path string) (_ Trace, err error) {
@@ -167,9 +166,6 @@ func openRuntimeTraceFile(path string) (io.ReadCloser, error) {
 	info, err := runtimeTraceLstat(path)
 	if err != nil {
 		return nil, err
-	}
-	if !runtimeTraceOpenFileNoFollowOK() {
-		return nil, ErrTraceOpenUnsupported
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("runtime trace path is a symlink: %s", path)
