@@ -572,7 +572,7 @@ func TestServiceAnalyseRuntimeCorrelationIntegration(t *testing.T) {
 	}
 }
 
-func TestServiceAnalyseRuntimeCorrelationUsesExplicitTraceAfterCaptureFailure(t *testing.T) {
+func TestServiceAnalyseRuntimeCorrelationTreatsExplicitTraceAsUnavailableAfterCaptureFailure(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, packageJSONFileName), demoPackageJSONContent)
 	writeFile(t, filepath.Join(repo, indexJSFileName), "import { map } from \"lodash\"\nimport { pad } from \""+leftPadDependencyID+"\"\nmap([1], (x) => x)\n")
@@ -603,63 +603,72 @@ func TestServiceAnalyseRuntimeCorrelationUsesExplicitTraceAfterCaptureFailure(t 
 	}
 
 	lodash := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "lodash")
-	if lodash.RuntimeUsage == nil || lodash.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
-		t.Fatalf("expected explicit runtime trace to keep lodash overlap correlation, got %#v", lodash.RuntimeUsage)
+	if lodash.RuntimeUsage != nil {
+		t.Fatalf("expected failed capture to leave lodash runtime usage unavailable, got %#v", lodash.RuntimeUsage)
 	}
-	chalk := dependencyByLanguageName(t, reportData.Dependencies, "js-ts", "chalk")
-	if chalk.RuntimeUsage == nil || chalk.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly {
-		t.Fatalf("expected explicit runtime trace to keep chalk runtime-only correlation, got %#v", chalk.RuntimeUsage)
+	for _, dependency := range reportData.Dependencies {
+		if dependency.Language == "js-ts" && dependency.Name == "chalk" {
+			t.Fatalf("expected failed capture to omit runtime-only chalk dependency, got %#v", dependency)
+		}
 	}
 }
 
 func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
+	repo, tracePath := writePythonRuntimeTraceRepo(t)
+	service := NewService()
+
+	t.Run("feature disabled", func(t *testing.T) {
+		reportData := analysePythonRuntimeTraceReport(t, service, repo, tracePath, mustResolvePythonRuntimeTraceFeatureSet(t, false))
+		assertPythonRuntimeUsageUnavailable(t, reportData.Dependencies, "did not expect Python runtime usage with feature disabled")
+	})
+
+	t.Run("trace feature disabled", func(t *testing.T) {
+		reportData := analysePythonRuntimeTraceReport(t, service, repo, tracePath, mustResolvePythonRuntimeCaptureWithTraceDisabled(t))
+		assertPythonRuntimeUsageUnavailable(t, reportData.Dependencies, "did not expect an explicit Python trace to bypass the disabled trace feature")
+	})
+
+	t.Run("stable defaults", func(t *testing.T) {
+		reportData := analysePythonRuntimeTraceReport(t, service, repo, tracePath, mustResolveStableDefaultsFeatureSet(t))
+		assertPythonRuntimeTraceStableDefaults(t, reportData.Dependencies)
+	})
+}
+
+func writePythonRuntimeTraceRepo(t *testing.T) (string, string) {
+	t.Helper()
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
 	writeFile(t, filepath.Join(repo, "main.py"), "import requests\nrequests.get('https://example.test')\n")
 	tracePath := filepath.Join(repo, ".artifacts", "python-runtime.ndjson")
 	writeFile(t, tracePath, "{\"language\":\"python\",\"module\":\"requests.sessions\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n{\"language\":\"python\",\"module\":\"httpx._client\",\"parent\":\"/repo/main.py\",\"entrypoint\":\"/repo/main.py\"}\n")
+	return repo, tracePath
+}
 
-	service := NewService()
-	disabledFeature, err := service.Analyse(context.Background(), Request{
+func analysePythonRuntimeTraceReport(t *testing.T, service *Service, repo, tracePath string, features featureflags.Set) report.Report {
+	t.Helper()
+	reportData, err := service.Analyse(context.Background(), Request{
 		RepoPath:         repo,
 		TopN:             10,
 		Language:         "python",
 		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeTraceFeatureSet(t, false),
+		Features:         features,
 	})
 	if err != nil {
-		t.Fatalf("analyse python runtime with feature disabled: %v", err)
+		t.Fatalf("analyse python runtime trace: %v", err)
 	}
-	if dep := dependencyByLanguageName(t, disabledFeature.Dependencies, "python", "requests"); dep.RuntimeUsage != nil {
-		t.Fatalf("did not expect Python runtime usage with feature disabled, got %#v", dep.RuntimeUsage)
-	}
+	return reportData
+}
 
-	captureWithTraceDisabled, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolvePythonRuntimeCaptureWithTraceDisabled(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse Python runtime with trace disabled: %v", err)
+func assertPythonRuntimeUsageUnavailable(t *testing.T, dependencies []report.DependencyReport, message string) {
+	t.Helper()
+	requests := dependencyByLanguageName(t, dependencies, "python", "requests")
+	if requests.RuntimeUsage != nil {
+		t.Fatalf("%s, got %#v", message, requests.RuntimeUsage)
 	}
-	if requests := dependencyByLanguageName(t, captureWithTraceDisabled.Dependencies, "python", "requests"); requests.RuntimeUsage != nil {
-		t.Fatalf("did not expect an explicit Python trace to bypass the disabled trace feature, got %#v", requests.RuntimeUsage)
-	}
+}
 
-	stableDefault, err := service.Analyse(context.Background(), Request{
-		RepoPath:         repo,
-		TopN:             10,
-		Language:         "python",
-		RuntimeTracePath: tracePath,
-		Features:         mustResolveStableDefaultsFeatureSet(t),
-	})
-	if err != nil {
-		t.Fatalf("analyse python runtime with stable defaults: %v", err)
-	}
-
-	requests := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "requests")
+func assertPythonRuntimeTraceStableDefaults(t *testing.T, dependencies []report.DependencyReport) {
+	t.Helper()
+	requests := dependencyByLanguageName(t, dependencies, "python", "requests")
 	if requests.RuntimeUsage == nil || requests.RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
 		t.Fatalf("expected Python requests overlap correlation, got %#v", requests.RuntimeUsage)
 	}
@@ -673,7 +682,7 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
 	}
 
-	httpx := dependencyByLanguageName(t, stableDefault.Dependencies, "python", "httpx")
+	httpx := dependencyByLanguageName(t, dependencies, "python", "httpx")
 	if httpx.RuntimeUsage == nil || httpx.RuntimeUsage.Correlation != report.RuntimeCorrelationRuntimeOnly || !httpx.RuntimeUsage.RuntimeOnly {
 		t.Fatalf("expected Python httpx runtime-only row, got %#v", httpx.RuntimeUsage)
 	}

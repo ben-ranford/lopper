@@ -148,9 +148,9 @@ func lookupEnvEntry(env []string, key string) (string, bool) {
 }
 
 func TestTrustedSearchDirs(t *testing.T) {
-	secureA := t.TempDir()
-	secureB := t.TempDir()
-	insecure := filepath.Join(t.TempDir(), "insecure")
+	secureA := testutil.SecureHomeTempDir(t, "runtime-secure-a-")
+	secureB := testutil.SecureHomeTempDir(t, "runtime-secure-b-")
+	insecure := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-insecure-"), "insecure")
 	if err := os.MkdirAll(insecure, 0o700); err != nil {
 		t.Fatalf("mkdir insecure: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestTrustedSearchDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat insecure: %v", err)
 	}
-	insecurePerms := info.Mode().Perm() | 0o020
+	insecurePerms := info.Mode().Perm() | 0o002
 	if err := os.Chmod(insecure, insecurePerms); err != nil {
 		t.Fatalf("chmod insecure: %v", err)
 	}
@@ -371,17 +371,7 @@ func TestMergeEnvAndReadEnvValue(t *testing.T) {
 }
 
 func TestRuntimeNodeHookOptionsReturnsCachedError(t *testing.T) {
-	oldRequire := runtimeRequireHookPath
-	oldLoader := runtimeLoaderHookPath
-	oldErr := runtimeHookPathsErr
-	defer func() {
-		runtimeHookPathsOnce = sync.Once{}
-		runtimeHookPathsOnce.Do(func() {
-			runtimeRequireHookPath = oldRequire
-			runtimeLoaderHookPath = oldLoader
-			runtimeHookPathsErr = oldErr
-		})
-	}()
+	restoreRuntimeHookState(t)
 
 	runtimeHookPathsOnce = sync.Once{}
 	runtimeHookPathsOnce.Do(func() {
@@ -408,19 +398,119 @@ func restoreRuntimeHookPathProviders(t *testing.T) {
 	})
 }
 
+type runtimePythonHookCacheState struct {
+	initialized bool
+	path        string
+	err         error
+}
+
+func snapshotRuntimePythonHookCacheState() runtimePythonHookCacheState {
+	state := runtimePythonHookCacheState{
+		initialized: true,
+		path:        runtimePythonHookDirPath,
+		err:         runtimePythonHookDirErr,
+	}
+	runtimePythonHookDirOnce.Do(func() {
+		state.initialized = false
+	})
+	return state
+}
+
+func applyRuntimePythonHookCacheState(state runtimePythonHookCacheState) {
+	runtimePythonHookDirOnce = sync.Once{}
+	runtimePythonHookDirPath = state.path
+	runtimePythonHookDirErr = state.err
+	if state.initialized {
+		runtimePythonHookDirOnce.Do(func() {})
+	}
+}
+
 func restoreRuntimePythonHookState(t *testing.T) {
 	t.Helper()
 
-	originalPath := runtimePythonHookDirPath
-	originalErr := runtimePythonHookDirErr
-
+	originalState := snapshotRuntimePythonHookCacheState()
 	t.Cleanup(func() {
-		runtimePythonHookDirOnce = sync.Once{}
-		runtimePythonHookDirOnce.Do(func() {
-			runtimePythonHookDirPath = originalPath
-			runtimePythonHookDirErr = originalErr
+		applyRuntimePythonHookCacheState(originalState)
+	})
+}
+
+func TestRuntimeHookCacheTestStubsRestoreUninitializedState(t *testing.T) {
+	originalNodeState := snapshotRuntimeHookCacheState()
+	originalPythonState := snapshotRuntimePythonHookCacheState()
+	t.Cleanup(func() {
+		applyRuntimeHookCacheState(originalNodeState)
+		applyRuntimePythonHookCacheState(originalPythonState)
+	})
+
+	applyRuntimeHookCacheState(runtimeHookCacheState{})
+	t.Run("node", func(t *testing.T) {
+		restoreRuntimeHookState(t)
+		runtimeHookPathsOnce = sync.Once{}
+		runtimeHookPathsOnce.Do(func() {
+			runtimeHookPathsErr = errors.New("stub node hook error")
 		})
 	})
+	requirePath, loaderPath, err := runtimeHookPaths()
+	if err != nil || requirePath == "" || loaderPath == "" {
+		t.Fatalf("expected uninitialized node cache to resolve after stub cleanup, require=%q loader=%q err=%v", requirePath, loaderPath, err)
+	}
+
+	applyRuntimePythonHookCacheState(runtimePythonHookCacheState{})
+	t.Run("python", func(t *testing.T) {
+		restoreRuntimePythonHookState(t)
+		runtimePythonHookDirOnce = sync.Once{}
+		runtimePythonHookDirOnce.Do(func() {
+			runtimePythonHookDirErr = errors.New("stub python hook error")
+		})
+	})
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil || hookDir == "" {
+		t.Fatalf("expected uninitialized Python cache to resolve after stub cleanup, dir=%q err=%v", hookDir, err)
+	}
+}
+
+func TestRuntimeHookCacheTestStubsRestoreInitializedState(t *testing.T) {
+	originalNodeState := snapshotRuntimeHookCacheState()
+	originalPythonState := snapshotRuntimePythonHookCacheState()
+	t.Cleanup(func() {
+		applyRuntimeHookCacheState(originalNodeState)
+		applyRuntimePythonHookCacheState(originalPythonState)
+	})
+
+	nodeState := runtimeHookCacheState{
+		initialized: true,
+		requirePath: "/cached/require.cjs",
+		loaderPath:  "/cached/loader.mjs",
+	}
+	applyRuntimeHookCacheState(nodeState)
+	t.Run("node", func(t *testing.T) {
+		restoreRuntimeHookState(t)
+		runtimeHookPathsOnce = sync.Once{}
+		runtimeHookPathsOnce.Do(func() {
+			runtimeHookPathsErr = errors.New("stub node hook error")
+		})
+	})
+	requirePath, loaderPath, err := runtimeHookPaths()
+	if err != nil || requirePath != nodeState.requirePath || loaderPath != nodeState.loaderPath {
+		t.Fatalf("expected initialized node cache to be restored, require=%q loader=%q err=%v", requirePath, loaderPath, err)
+	}
+
+	pythonState := runtimePythonHookCacheState{
+		initialized: true,
+		path:        "/cached/python-hooks",
+	}
+	applyRuntimePythonHookCacheState(pythonState)
+	t.Run("python", func(t *testing.T) {
+		restoreRuntimePythonHookState(t)
+		runtimePythonHookDirOnce = sync.Once{}
+		runtimePythonHookDirOnce.Do(func() {
+			runtimePythonHookDirErr = errors.New("stub python hook error")
+		})
+	})
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil || hookDir != pythonState.path {
+		t.Fatalf("expected initialized Python cache to be restored, dir=%q err=%v", hookDir, err)
+	}
 }
 
 func TestRuntimeNodeHookOptionsQuotesPathsWithSpaces(t *testing.T) {

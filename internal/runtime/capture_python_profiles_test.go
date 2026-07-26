@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestCapturePythonRunnerProfilesMatchPytestDependencyTrace(t *testing.T) {
@@ -75,7 +77,7 @@ func TestCaptureUsesPATHSelectedPythonExecutable(t *testing.T) {
 	}
 
 	repo := t.TempDir()
-	selectedBin := t.TempDir()
+	selectedBin := testutil.SecureHomeTempDir(t, "runtime-selected-python-")
 	sitePackages := filepath.Join(t.TempDir(), "site-packages")
 	if err := os.MkdirAll(sitePackages, 0o750); err != nil {
 		t.Fatalf("create selected site-packages: %v", err)

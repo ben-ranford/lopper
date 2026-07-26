@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/gitexec"
@@ -120,6 +121,23 @@ func TestWriteTempFile(t *testing.T) {
 	}
 	if string(content) != "abc" {
 		t.Fatalf("unexpected temp file content: %q", content)
+	}
+}
+
+func TestSecureHomeTempDir(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+
+	dir := SecureHomeTempDir(t, "secure-")
+	if !strings.HasPrefix(dir, filepath.Join(homeDir, ".lopper-test-fixtures")+string(os.PathSeparator)) {
+		t.Fatalf("expected secure fixture dir under home fixture root, got %q", dir)
+	}
+	if info, err := os.Stat(dir); err != nil {
+		t.Fatalf("stat secure fixture dir: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("expected secure fixture dir to exist, got mode %v", info.Mode())
 	}
 }
 
@@ -239,6 +257,33 @@ func TestMustIncrementRuntimeHelperCounter(t *testing.T) {
 	MustIncrementRuntimeHelperCounter(counterPath)
 	if got := MustReadTrimmedIntFile(t, counterPath); got != 1 {
 		t.Fatalf("expected malformed counter file to reset to 1, got %d", got)
+	}
+}
+
+func TestMustWriteRuntimeHelperFilePreservesExistingFileIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.ndjson")
+	MustWriteFile(t, path, "stale\n")
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before helper write: %v", err)
+	}
+
+	MustWriteRuntimeHelperFile(path, "{\"module\":\"lodash/map\"}\n")
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after helper write: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatalf("expected runtime helper write to preserve existing file identity")
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read helper-written runtime file: %v", err)
+	}
+	if got := string(content); got != "{\"module\":\"lodash/map\"}\n" {
+		t.Fatalf("expected helper-written runtime file content %q, got %q", "{\"module\":\"lodash/map\"}\n", got)
 	}
 }
 

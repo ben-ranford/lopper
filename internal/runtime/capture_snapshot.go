@@ -35,6 +35,24 @@ func stableRuntimeTraceFileSnapshot(tracePath string) (runtimeTraceSnapshot, err
 	return first, nil
 }
 
+func stableRuntimeTraceFileSnapshotWithinRoot(root safeio.Root, fileName string, tracePath string) (runtimeTraceSnapshot, error) {
+	first, err := snapshotRuntimeTraceFileWithinRoot(root, fileName, tracePath)
+	if err != nil {
+		return runtimeTraceSnapshot{}, err
+	}
+	if stableRuntimeTraceFileAfterFirstSnapshotHook != nil {
+		stableRuntimeTraceFileAfterFirstSnapshotHook()
+	}
+	second, err := snapshotRuntimeTraceFileWithinRoot(root, fileName, tracePath)
+	if err != nil {
+		return runtimeTraceSnapshot{}, err
+	}
+	if !os.SameFile(first.info, second.info) || !sameRuntimeTraceSnapshot(first, second) {
+		return runtimeTraceSnapshot{}, fmt.Errorf("hash runtime trace: trace file changed while hashing: %s", tracePath)
+	}
+	return first, nil
+}
+
 type runtimeTraceSnapshot struct {
 	info   os.FileInfo
 	data   []byte
@@ -51,7 +69,10 @@ func snapshotRuntimeTraceFile(tracePath string) (_ runtimeTraceSnapshot, err err
 			err = errors.Join(err, closeErr)
 		}
 	}()
+	return snapshotRuntimeTraceFileWithinRoot(root, fileName, tracePath)
+}
 
+func snapshotRuntimeTraceFileWithinRoot(root safeio.Root, fileName string, tracePath string) (_ runtimeTraceSnapshot, err error) {
 	_, file, openedInfo, err := openRuntimeTraceFile(root, fileName, tracePath)
 	if err != nil {
 		return runtimeTraceSnapshot{}, err

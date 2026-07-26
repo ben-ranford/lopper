@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const (
@@ -29,7 +31,7 @@ func assertCaptureErrorContains(t *testing.T, req CaptureRequest, wantSubstring 
 func setupFakeRuntimeTools(t *testing.T) string {
 	t.Helper()
 
-	toolDir := t.TempDir()
+	toolDir := testutil.SecureHomeTempDir(t, "runtime-tools-")
 	tools := []string{
 		"npm",
 		"pnpm",

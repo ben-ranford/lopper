@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"syscall"
@@ -19,70 +20,14 @@ const (
 	closeTempFileErrFmt = "close temp file: %v"
 )
 
-type modeOverrideFileInfo struct {
-	fs.FileInfo
-	mode os.FileMode
-}
-
-func (i *modeOverrideFileInfo) Mode() os.FileMode {
-	return i.mode
-}
-
-type truncatingFakeFile struct {
-	*fakeFile
-	truncate func(size int64) error
-}
-
-func (f *truncatingFakeFile) Truncate(size int64) error {
-	return f.truncate(size)
-}
-
-func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
+func requireExactErrorIdentity(t *testing.T, got, want error) {
 	t.Helper()
-	dir := t.TempDir()
-	originalPath := filepath.Join(dir, "original")
-	changedPath := filepath.Join(dir, "changed")
-	if err := os.WriteFile(originalPath, []byte("original"), 0o640); err != nil {
-		t.Fatalf("seed original target: %v", err)
-	}
-	if err := os.WriteFile(changedPath, []byte("changed"), 0o640); err != nil {
-		t.Fatalf("seed changed target: %v", err)
-	}
-	return statTestPath(t, originalPath), statTestPath(t, changedPath)
-}
-
-func assertOverwritePinnedFileRejectsBeforeMutation(t *testing.T, openedInfo fs.FileInfo, lstat func(*testing.T) func(string) (fs.FileInfo, error), beforeRevalidate func(*testing.T) func() error) {
-	t.Helper()
-
-	truncateCalls := 0
-	writeCalls := 0
-	target := &truncatingFakeFile{
-		fakeFile: &fakeFile{
-			stat: func() (fs.FileInfo, error) { return openedInfo, nil },
-			write: func(p []byte) (int, error) {
-				writeCalls++
-				return len(p), nil
-			},
-			close: closeWithoutError,
-		},
-		truncate: func(int64) error {
-			truncateCalls++
-			return nil
-		},
-	}
-	root := &fakeRoot{
-		lstat: lstat(t),
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), beforeRevalidate(t))
-	if err == nil {
-		t.Fatal("expected overwrite rejection before mutation")
-	}
-	if truncateCalls != 0 {
-		t.Fatalf("expected no truncation before rejection, got %d calls", truncateCalls)
-	}
-	if writeCalls != 0 {
-		t.Fatalf("expected no write before rejection, got %d calls", writeCalls)
+	gotValue := reflect.ValueOf(got)
+	wantValue := reflect.ValueOf(want)
+	if !gotValue.IsValid() || !wantValue.IsValid() ||
+		gotValue.Kind() != reflect.Pointer || wantValue.Kind() != reflect.Pointer ||
+		gotValue.Type() != wantValue.Type() || gotValue.Pointer() != wantValue.Pointer() {
+		t.Fatalf("expected exact error identity %p, got %v", want, got)
 	}
 }
 
@@ -368,6 +313,7 @@ func TestPublishFileWithinRootRejectsAbsolutePath(t *testing.T) {
 func TestPublishFileWithinRootReturnsTempCreationError(t *testing.T) {
 	expectedErr := errors.New("open temp failure")
 	root := &fakeRoot{
+		lstat:    func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
 		openFile: func(string, int, os.FileMode) (File, error) { return nil, expectedErr },
 	}
 
@@ -381,6 +327,7 @@ func TestPublishFileWithinRootJoinsWriteErrorWithCleanupFailure(t *testing.T) {
 	writeErr := errors.New("write failure")
 	cleanupErr := errors.New("cleanup failure")
 	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
 			if !strings.HasPrefix(name, atomicTempPrefix) {
 				t.Fatalf("unexpected temp open path %q", name)
@@ -419,6 +366,7 @@ func TestPublishFileWithinRootReturnsRenameErrorWithoutFallback(t *testing.T) {
 	}
 	targetOpened := false
 	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
 			if strings.HasPrefix(name, atomicTempPrefix) {
 				return &fakeFile{
@@ -447,9 +395,7 @@ func TestPublishFileWithinRootReturnsRenameErrorWithoutFallback(t *testing.T) {
 	}
 
 	err := PublishFileWithinRoot(root, writeTestFileName, []byte("after"), 0o640)
-	if !errors.Is(err, renameErr) {
-		t.Fatalf("expected rename error without fallback, got %v", err)
-	}
+	requireExactErrorIdentity(t, err, renameErr)
 	if targetOpened {
 		t.Fatal("expected rename-only publish to avoid reopening the target")
 	}
@@ -1910,8 +1856,13 @@ func TestWriteFileReplacingWithinRootJoinsRenameErrorWithCleanupFailure(t *testi
 	}
 }
 
-func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutFallback(t *testing.T) {
-	renameErr := errors.New("rename failure")
+func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutTargetPreOpen(t *testing.T) {
+	renameErr := &os.LinkError{
+		Op:  "renameat",
+		Old: atomicTempPrefix + "temp",
+		New: writeTestFileName,
+		Err: errors.New("rename failure"),
+	}
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
 		t.Fatalf("seed target info path: %v", err)
@@ -1919,6 +1870,8 @@ func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutFallback(t *testin
 	info := statTestPath(t, targetInfoPath)
 
 	targetOpened := false
+	renameCalls := 0
+	tempCleanupCalls := 0
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name != writeTestFileName {
@@ -1941,472 +1894,25 @@ func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutFallback(t *testin
 			}, nil
 		},
 		rename: func(string, string) error {
+			renameCalls++
 			return renameErr
 		},
-		remove: func(string) error { return nil },
-	}
-
-	err := WriteFileReplacingWithinRoot(root, writeTestFileName, []byte("hello"), 0o600)
-	if !errors.Is(err, renameErr) {
-		t.Fatalf("expected rename error without fallback, got %v", err)
-	}
-	if runtime.GOOS == "windows" && !targetOpened {
-		t.Fatal("expected existing target writability probe on Windows")
-	}
-	if runtime.GOOS != "windows" && targetOpened {
-		t.Fatal("expected non-Windows rename failure to skip pinned target probe")
-	}
-}
-
-func TestWriteAtomicReplacementReturnsPinnedTargetCloseErrorAfterCommit(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
-	closeErr := errors.New("pinned target close failure")
-
-	root := &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name == writeTestFileName {
-				return &fakeFile{
-					stat:  func() (fs.FileInfo, error) { return info, nil },
-					close: func() error { return closeErr },
-				}, nil
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
-		rename: func(string, string) error { return nil },
-		remove: func(string) error { return nil },
-	}
-
-	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, info)
-	if runtime.GOOS == "windows" {
-		if !errors.Is(err, closeErr) {
-			t.Fatalf("expected pinned target close error, got %v", err)
-		}
-		return
-	}
-	if err != nil {
-		t.Fatalf("expected non-Windows commit to succeed without pinned target close, got %v", err)
-	}
-}
-
-func TestWriteAtomicReplacementReturnsPinnedTargetOpenError(t *testing.T) {
-	expectedErr := errors.New("open pinned target failure")
-	root := &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name == writeTestFileName {
-				return nil, expectedErr
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
-		rename: func(string, string) error { return nil },
-		remove: func(string) error { return nil },
-	}
-
-	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
-	if runtime.GOOS == "windows" {
-		if !errors.Is(err, expectedErr) {
-			t.Fatalf("expected pinned target open error, got %v", err)
-		}
-		return
-	}
-	if err != nil {
-		t.Fatalf("expected non-Windows write to skip pinned target open, got %v", err)
-	}
-}
-
-func TestOpenPinnedReplacementTargetReturnsOpenError(t *testing.T) {
-	expectedErr := errors.New("open target failure")
-	root := &fakeRoot{
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return nil, expectedErr
-		},
-	}
-
-	file, err := openPinnedReplacementTarget(root, writeTestFileName, statTestPath(t, t.TempDir()))
-	if file != nil {
-		t.Fatal("expected pinned target file to remain nil")
-	}
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected open target error, got %v", err)
-	}
-}
-
-func TestOpenPinnedReplacementTargetReturnsOpenedFile(t *testing.T) {
-	targetPath := filepath.Join(t.TempDir(), "target")
-	if err := os.WriteFile(targetPath, []byte("target"), 0o600); err != nil {
-		t.Fatalf("seed pinned target: %v", err)
-	}
-	expectedInfo := statTestPath(t, targetPath)
-	root := &fakeRoot{
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return expectedInfo, nil },
-				close: closeWithoutError,
-			}, nil
-		},
-	}
-
-	file, err := openPinnedReplacementTarget(root, writeTestFileName, expectedInfo)
-	if err != nil {
-		t.Fatalf("expected pinned target open success, got %v", err)
-	}
-	if file == nil {
-		t.Fatal("expected opened pinned target file")
-	}
-	if closeErr := file.Close(); closeErr != nil {
-		t.Fatalf("close opened pinned target: %v", closeErr)
-	}
-}
-
-func TestOpenPinnedReplacementTargetKeepsStatErrorWhenCloseAlsoFails(t *testing.T) {
-	statErr := errors.New("stat target failure")
-	closeErr := errors.New("close target failure")
-	root := &fakeRoot{
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return nil, statErr },
-				close: func() error { return closeErr },
-			}, nil
-		},
-	}
-
-	file, err := openPinnedReplacementTarget(root, writeTestFileName, statTestPath(t, t.TempDir()))
-	if file != nil {
-		t.Fatal("expected pinned target file to remain nil")
-	}
-	if !errors.Is(err, statErr) {
-		t.Fatalf("expected stat error, got %v", err)
-	}
-	if errors.Is(err, closeErr) {
-		t.Fatalf("expected close error to remain secondary, got %v", err)
-	}
-}
-
-func TestOpenPinnedReplacementTargetRejectsChangedTarget(t *testing.T) {
-	dir := t.TempDir()
-	originalPath := filepath.Join(dir, "original")
-	changedPath := filepath.Join(dir, "changed")
-	if err := os.WriteFile(originalPath, []byte("original"), 0o640); err != nil {
-		t.Fatalf("seed original target: %v", err)
-	}
-	if err := os.WriteFile(changedPath, []byte("changed"), 0o640); err != nil {
-		t.Fatalf("seed changed target: %v", err)
-	}
-	originalInfo := statTestPath(t, originalPath)
-	changedInfo := statTestPath(t, changedPath)
-
-	tests := []struct {
-		name       string
-		openedInfo fs.FileInfo
-	}{
-		{name: "non-regular", openedInfo: &modeOverrideFileInfo{FileInfo: changedInfo, mode: os.ModeDir | 0o755}},
-		{name: "different identity", openedInfo: changedInfo},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			closeCalls := 0
-			root := &fakeRoot{
-				openFile: func(string, int, os.FileMode) (File, error) {
-					return &fakeFile{
-						stat: func() (fs.FileInfo, error) { return tt.openedInfo, nil },
-						close: func() error {
-							closeCalls++
-							return nil
-						},
-					}, nil
-				},
-			}
-
-			file, err := openPinnedReplacementTarget(root, writeTestFileName, originalInfo)
-			if file != nil {
-				t.Fatal("expected pinned target file to remain nil")
-			}
-			if err == nil || !strings.Contains(err.Error(), "target changed while opening for replacement") {
-				t.Fatalf("expected target change rejection, got %v", err)
-			}
-			if closeCalls != 1 {
-				t.Fatalf("expected rejected pinned target to close once, got %d closes", closeCalls)
-			}
-		})
-	}
-}
-
-func TestOverwritePinnedFileWritesAfterIdentityRevalidation(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
-
-	data := "before"
-	target := &truncatingFakeFile{
-		fakeFile: &fakeFile{
-			stat: func() (fs.FileInfo, error) { return info, nil },
-			write: func(p []byte) (int, error) {
-				data += string(p)
-				return len(p), nil
-			},
-			close: closeWithoutError,
-		},
-		truncate: func(size int64) error {
-			if size != 0 {
-				t.Fatalf("unexpected truncate size: %d", size)
-			}
-			data = ""
+		remove: func(string) error {
+			tempCleanupCalls++
 			return nil
 		},
 	}
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return info, nil },
-	}
 
-	if err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), nil); err != nil {
-		t.Fatalf("overwrite pinned file: %v", err)
+	err := WriteFileReplacingWithinRoot(root, writeTestFileName, []byte("hello"), 0o600)
+	requireExactErrorIdentity(t, err, renameErr)
+	if targetOpened {
+		t.Fatal("expected rename failure to skip target pre-open")
 	}
-	if data != "after" {
-		t.Fatalf("unexpected pinned target data: %q", data)
+	if renameCalls != 1 {
+		t.Fatalf("expected exactly one rename attempt, got %d", renameCalls)
 	}
-}
-
-func TestOverwritePinnedFileReturnsBeforeRevalidateError(t *testing.T) {
-	expectedErr := errors.New("before revalidate failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) {
-			t.Fatal("expected early return before path revalidation")
-			return nil, nil
-		},
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, &fakeFile{}, []byte("after"), func() error {
-		return expectedErr
-	})
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected beforeRevalidate error, got %v", err)
-	}
-}
-
-func TestOverwritePinnedFilePropagatesTargetLookupError(t *testing.T) {
-	expectedErr := errors.New("target lookup failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, expectedErr },
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, &fakeFile{}, []byte("after"), nil)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected target lookup error, got %v", err)
-	}
-}
-
-func TestOverwritePinnedFileRejectsTargetSwapBeforeMutation(t *testing.T) {
-	originalInfo, swappedInfo := writePinnedTargetInfoPair(t)
-
-	tests := []struct {
-		name        string
-		swappedInfo fs.FileInfo
-	}{
-		{name: "symlink", swappedInfo: &modeOverrideFileInfo{FileInfo: swappedInfo, mode: os.ModeSymlink | 0o777}},
-		{name: "different identity", swappedInfo: swappedInfo},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			swapInjected := false
-			lstatAfterSwap := func(t *testing.T) func(string) (fs.FileInfo, error) {
-				t.Helper()
-				return func(string) (fs.FileInfo, error) {
-					if !swapInjected {
-						t.Fatal("target revalidated before swap seam")
-					}
-					return tt.swappedInfo, nil
-				}
-			}
-			injectSwap := func(t *testing.T) func() error {
-				t.Helper()
-				return func() error {
-					swapInjected = true
-					return nil
-				}
-			}
-			assertOverwritePinnedFileRejectsBeforeMutation(t, originalInfo, lstatAfterSwap, injectSwap)
-			if !swapInjected {
-				t.Fatal("expected swap injection seam to run")
-			}
-		})
-	}
-}
-
-func TestOverwritePinnedFileRejectsNonRegularPathBeforeMutation(t *testing.T) {
-	originalPath := filepath.Join(t.TempDir(), "original")
-	if err := os.WriteFile(originalPath, []byte("original"), 0o640); err != nil {
-		t.Fatalf("seed original target: %v", err)
-	}
-	originalInfo := statTestPath(t, originalPath)
-
-	tests := []struct {
-		name     string
-		pathInfo fs.FileInfo
-		want     string
-	}{
-		{name: "directory", pathInfo: &modeOverrideFileInfo{FileInfo: originalInfo, mode: os.ModeDir | 0o755}, want: "not a regular file"},
-		{name: "symlink", pathInfo: &modeOverrideFileInfo{FileInfo: originalInfo, mode: os.ModeSymlink | 0o777}, want: "became a symlink"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			statCalls := 0
-			target := &truncatingFakeFile{
-				fakeFile: &fakeFile{
-					stat: func() (fs.FileInfo, error) {
-						statCalls++
-						return originalInfo, nil
-					},
-					write: func(p []byte) (int, error) { return len(p), nil },
-					close: closeWithoutError,
-				},
-				truncate: func(int64) error { return nil },
-			}
-			root := &fakeRoot{
-				lstat: func(string) (fs.FileInfo, error) { return tt.pathInfo, nil },
-			}
-
-			err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), nil)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("expected %q rejection, got %v", tt.want, err)
-			}
-			if statCalls != 0 {
-				t.Fatalf("expected no opened-file stat after path rejection, got %d calls", statCalls)
-			}
-		})
-	}
-}
-
-func TestOverwritePinnedFilePropagatesOpenedFileStatError(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
-	expectedErr := errors.New("opened target stat failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return info, nil },
-	}
-	target := &fakeFile{
-		stat:  func() (fs.FileInfo, error) { return nil, expectedErr },
-		close: closeWithoutError,
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), nil)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected opened file stat error, got %v", err)
-	}
-}
-
-func TestOverwritePinnedFileRejectsFileWithoutTruncate(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return info, nil },
-	}
-	target := &fakeFile{
-		stat:  func() (fs.FileInfo, error) { return info, nil },
-		close: closeWithoutError,
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), nil)
-	if err == nil || !strings.Contains(err.Error(), "does not support truncation") {
-		t.Fatalf("expected truncation support error, got %v", err)
-	}
-}
-
-func TestOverwritePinnedFilePropagatesTruncateError(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
-	expectedErr := errors.New("truncate target failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return info, nil },
-	}
-	target := &truncatingFakeFile{
-		fakeFile: &fakeFile{
-			stat:  func() (fs.FileInfo, error) { return info, nil },
-			write: func(p []byte) (int, error) { return len(p), nil },
-			close: closeWithoutError,
-		},
-		truncate: func(int64) error { return expectedErr },
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), nil)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected truncate error, got %v", err)
-	}
-}
-
-func TestOverwritePinnedFilePropagatesWriteError(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
-	expectedErr := errors.New("write target failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return info, nil },
-	}
-	target := &truncatingFakeFile{
-		fakeFile: &fakeFile{
-			stat: func() (fs.FileInfo, error) { return info, nil },
-			write: func([]byte) (int, error) {
-				return 0, expectedErr
-			},
-			close: closeWithoutError,
-		},
-		truncate: func(int64) error { return nil },
-	}
-
-	err := overwritePinnedFile(root, writeTestFileName, target, []byte("after"), nil)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected write error, got %v", err)
-	}
-}
-
-func TestCloseFilePreservingPrimaryReturnsCloseErrorWithoutPrimary(t *testing.T) {
-	expectedErr := errors.New("close file failure")
-	file := &fakeFile{
-		close: func() error { return expectedErr },
-	}
-
-	err := closeFilePreservingPrimary(file, nil)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected close error, got %v", err)
-	}
-}
-
-func TestCloseFilePreservingPrimaryKeepsPrimaryError(t *testing.T) {
-	primaryErr := errors.New("primary failure")
-	closeErr := errors.New("close file failure")
-	file := &fakeFile{
-		close: func() error { return closeErr },
-	}
-
-	err := closeFilePreservingPrimary(file, primaryErr)
-	if !errors.Is(err, primaryErr) {
-		t.Fatalf("expected primary error, got %v", err)
-	}
-	if errors.Is(err, closeErr) {
-		t.Fatalf("expected close error to remain secondary, got %v", err)
+	if tempCleanupCalls != 1 {
+		t.Fatalf("expected exactly one staged temp cleanup, got %d", tempCleanupCalls)
 	}
 }
 

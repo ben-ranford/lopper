@@ -96,7 +96,7 @@ func TestRuntimeCaptureRejectsExplicitExternalTracePathWithoutExternalMutation(t
 func setupRuntimeCaptureRegressionTool(t *testing.T) string {
 	t.Helper()
 
-	toolDir := t.TempDir()
+	toolDir := testutil.SecureHomeTempDir(t, "scripts-runtime-tool-")
 	testutil.InstallSelfExecutable(t, toolDir, "npm")
 	t.Setenv(scriptsRuntimeHelperModeEnv, "count-trace")
 	return toolDir

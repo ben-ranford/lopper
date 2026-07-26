@@ -52,16 +52,22 @@ type capturePlan struct {
 }
 
 type explicitTraceCaptureStage struct {
-	root     safeio.Root
-	target   string
-	tempRel  string
-	tempPath string
+	root                  safeio.Root
+	traceDir              string
+	target                string
+	tempRel               string
+	tempPath              string
+	tempInfo              os.FileInfo
+	pendingTempCleanupErr error
 }
 
 var runtimeTraceEnvBuilder = withRuntimeTraceEnv
+var runtimeCommandBuilder = buildRuntimeCommand
 var explicitTraceTempFileCreator = safeio.CreateTempFileWithinRoot
 var explicitTraceTempFileCloseHook = closeExplicitTracePublishFile
 var explicitTracePublishWriteHook = safeio.PublishFileWithinRoot
+var explicitTraceTempCleanupHook = safeio.CleanupTempFileWithinRoot
+var ambientValidatedRuntimeTraceLoader = loadValidatedRuntimeTrace
 
 func DefaultTracePath(repoPath string) string {
 	return filepath.Join(repoPath, defaultTraceRelPath)
@@ -84,8 +90,7 @@ func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (result Capt
 		return result, err
 	}
 
-	capturePath := plan.tracePath
-	explicitStage, err := prepareExplicitTraceCaptureStage(plan)
+	capturePath, explicitStage, err := prepareCapturePath(plan)
 	if err != nil {
 		return result, err
 	}
@@ -95,53 +100,105 @@ func CaptureValidatedTrace(ctx context.Context, req CaptureRequest) (result Capt
 				err = errors.Join(err, cleanupErr)
 			}
 		}()
-		capturePath = explicitStage.tempPath
-	} else if err := prepareTracePath(plan.tracePath); err != nil {
-		return result, err
 	}
 
-	cmd, err := buildRuntimeCommand(ctx, plan.command, commandOptions)
+	cmd, output, err := buildCaptureCommand(ctx, plan, commandOptions, capturePath)
 	if err != nil {
 		return result, err
+	}
+	err = cmd.Run()
+	if err != nil {
+		return result, handleCaptureCommandRunError(ctx, err, cmd.cleanupErr, output)
+	}
+	validatedSnapshot, err := loadCaptureSnapshot(explicitStage, capturePath)
+	if err != nil {
+		return result, err
+	}
+	if validatedSnapshot == nil {
+		return result, nil
+	}
+	if err := publishExplicitCaptureSnapshot(explicitStage, validatedSnapshot); err != nil {
+		return result, err
+	}
+	result.TraceProduced = true
+	result.Snapshot = validatedSnapshot
+	return result, nil
+}
+
+func loadCaptureSnapshot(explicitStage *explicitTraceCaptureStage, capturePath string) (*ValidatedTraceSnapshot, error) {
+	if explicitStage != nil {
+		return explicitStage.loadValidatedRuntimeTrace()
+	}
+	return ambientValidatedRuntimeTraceLoader(capturePath)
+}
+
+func publishExplicitCaptureSnapshot(explicitStage *explicitTraceCaptureStage, snapshot *ValidatedTraceSnapshot) error {
+	if explicitStage == nil || snapshot == nil {
+		return nil
+	}
+	if err := explicitStage.publish(snapshot.data); err != nil {
+		return fmt.Errorf("publish runtime trace: %w", err)
+	}
+	return nil
+}
+
+func prepareCapturePath(plan capturePlan) (string, *explicitTraceCaptureStage, error) {
+	explicitStage, err := prepareExplicitTraceCaptureStage(plan)
+	if err != nil {
+		return "", nil, err
+	}
+	if explicitStage != nil {
+		return explicitStage.tempPath, explicitStage, nil
+	}
+	if err := prepareTracePath(plan.tracePath); err != nil {
+		return "", nil, err
+	}
+	return plan.tracePath, nil, nil
+}
+
+func buildCaptureCommand(ctx context.Context, plan capturePlan, commandOptions CommandOptions, capturePath string) (*runtimeCommand, *boundedRuntimeCommandOutput, error) {
+	cmd, err := runtimeCommandBuilder(ctx, plan.command, commandOptions)
+	if err != nil {
+		return nil, nil, err
 	}
 	cmd.Dir = plan.repoPath
 	cmd.Env, err = runtimeTraceEnvBuilder(os.Environ(), capturePath, plan.provider)
 	if err != nil {
-		return result, err
+		return nil, nil, errors.Join(err, cmd.finish(nil))
 	}
 
 	output := newRuntimeCommandOutput()
 	cmd.Stdout = output
 	cmd.Stderr = output
-	err = cmd.Run()
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return result, ctxErr
+	return cmd, output, nil
+}
+
+func handleCaptureCommandRunError(ctx context.Context, runErr error, cleanupErr error, output *boundedRuntimeCommandOutput) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if cleanupErr == nil {
+			return ctxErr
 		}
-		return result, formatRuntimeCommandError(err, output.diagnostic())
+		return errors.Join(ctxErr, fmt.Errorf("cleanup staged runtime executable: %w", cleanupErr))
 	}
+	return formatRuntimeCommandError(runErr, output.diagnostic())
+}
+
+func loadValidatedRuntimeTrace(capturePath string) (*ValidatedTraceSnapshot, error) {
 	snapshot, err := stableRuntimeTraceFileSnapshot(capturePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return result, nil
+			return nil, nil
 		}
-		return result, fmt.Errorf("validate runtime trace: %w", err)
+		return nil, fmt.Errorf("validate runtime trace: %w", err)
 	}
 	if len(bytes.TrimSpace(snapshot.data)) == 0 {
-		return result, nil
+		return nil, nil
 	}
 	validatedSnapshot := &ValidatedTraceSnapshot{data: snapshot.data}
 	if _, err := validatedSnapshot.Load(); err != nil {
-		return result, fmt.Errorf("validate runtime trace: %w", err)
+		return nil, fmt.Errorf("validate runtime trace: %w", err)
 	}
-	if explicitStage != nil {
-		if err := explicitStage.publish(validatedSnapshot.data); err != nil {
-			return result, fmt.Errorf("publish runtime trace: %w", err)
-		}
-	}
-	result.TraceProduced = true
-	result.Snapshot = validatedSnapshot
-	return result, nil
+	return validatedSnapshot, nil
 }
 
 func resolveCapturePlan(req CaptureRequest) (capturePlan, error) {
@@ -187,14 +244,20 @@ func prepareExplicitTraceCaptureStage(plan capturePlan) (*explicitTraceCaptureSt
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create runtime trace temp file: %w", err), root.Close())
 	}
+	tempInfo, err := tempFile.Stat()
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("stat runtime trace temp file: %w", err), safeio.CleanupTempFileWithinRoot(root, tempRel, tempFile), root.Close())
+	}
 	if err := explicitTraceTempFileCloseHook(tempFile); err != nil {
 		return nil, errors.Join(fmt.Errorf("close runtime trace temp file: %w", err), safeio.CleanupTempFileWithinRoot(root, tempRel, tempFile), root.Close())
 	}
 	return &explicitTraceCaptureStage{
 		root:     root,
+		traceDir: traceDir,
 		target:   filepath.Base(plan.tracePath),
 		tempRel:  tempRel,
 		tempPath: filepath.Join(traceDir, tempRel),
+		tempInfo: tempInfo,
 	}, nil
 }
 
@@ -205,15 +268,102 @@ func (s *explicitTraceCaptureStage) publish(validatedData []byte) error {
 	if len(validatedData) == 0 {
 		return errors.Join(fmt.Errorf("validated runtime trace is empty"), s.cleanupTempOnly())
 	}
+	if err := s.revalidatePathIdentity(); err != nil {
+		return errors.Join(err, s.cleanupTempOnly())
+	}
 	// Publish validated bytes with safeio's rename-only, fail-closed commit.
-	return errors.Join(explicitTracePublishWriteHook(s.root, s.target, validatedData, 0o600), s.cleanupTempOnly())
+	if err := explicitTracePublishWriteHook(s.root, s.target, validatedData, 0o600); err != nil {
+		return errors.Join(err, s.cleanupTempOnly())
+	}
+	if err := s.cleanupTempOnly(); err != nil {
+		s.pendingTempCleanupErr = errors.Join(s.pendingTempCleanupErr, err)
+	}
+	return nil
+}
+
+func (s *explicitTraceCaptureStage) loadValidatedRuntimeTrace() (*ValidatedTraceSnapshot, error) {
+	if s == nil {
+		return nil, errors.New("explicit trace stage is nil")
+	}
+	if err := s.revalidatePathIdentity(); err != nil {
+		return nil, fmt.Errorf("validate runtime trace: %w", err)
+	}
+	if err := s.revalidateTempIdentity(); err != nil {
+		return nil, fmt.Errorf("validate runtime trace: %w", err)
+	}
+	snapshot, err := stableRuntimeTraceFileSnapshotWithinRoot(s.root, s.tempRel, s.tempPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("validate runtime trace: %w", err)
+	}
+	if len(bytes.TrimSpace(snapshot.data)) == 0 {
+		return nil, nil
+	}
+	validatedSnapshot := &ValidatedTraceSnapshot{data: snapshot.data}
+	if _, err := validatedSnapshot.Load(); err != nil {
+		return nil, fmt.Errorf("validate runtime trace: %w", err)
+	}
+	return validatedSnapshot, nil
+}
+
+func (s *explicitTraceCaptureStage) revalidatePathIdentity() (err error) {
+	if s == nil || s.traceDir == "" {
+		return nil
+	}
+	pinnedInfo, err := s.root.Lstat(".")
+	if err != nil {
+		return fmt.Errorf("revalidate runtime trace path: stat pinned root: %w", err)
+	}
+	currentRootPath, err := runtimeTraceRootPath(s.traceDir)
+	if err != nil {
+		return fmt.Errorf("revalidate runtime trace path: open current root: %w", err)
+	}
+	currentRoot, err := safeio.OpenRootNoFollow(currentRootPath)
+	if err != nil {
+		return fmt.Errorf("revalidate runtime trace path: open current root: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, currentRoot.Close())
+	}()
+	currentInfo, err := currentRoot.Lstat(".")
+	if err != nil {
+		return fmt.Errorf("revalidate runtime trace path: stat current root: %w", err)
+	}
+	if !os.SameFile(pinnedInfo, currentInfo) {
+		return fmt.Errorf("revalidate runtime trace path: trace directory changed during capture: %s", s.traceDir)
+	}
+	return nil
+}
+
+func (s *explicitTraceCaptureStage) revalidateTempIdentity() error {
+	if s == nil || s.tempRel == "" {
+		return nil
+	}
+	if s.tempInfo == nil {
+		return errors.New("revalidate runtime trace path: staged temp file identity is unavailable")
+	}
+	currentInfo, err := s.root.Lstat(s.tempRel)
+	if err != nil {
+		return fmt.Errorf("revalidate runtime trace path: stat staged temp file: %w", err)
+	}
+	if !os.SameFile(s.tempInfo, currentInfo) {
+		return fmt.Errorf("revalidate runtime trace path: staged temp file changed during capture: %s", s.tempPath)
+	}
+	return nil
 }
 
 func (s *explicitTraceCaptureStage) cleanup() error {
 	if s == nil {
 		return nil
 	}
-	return errors.Join(s.cleanupTempOnly(), s.root.Close())
+	pendingCleanupErr := s.pendingTempCleanupErr
+	cleanupErr := s.cleanupTempOnly()
+	if cleanupErr != nil {
+		cleanupErr = errors.Join(pendingCleanupErr, cleanupErr)
+	}
+	return errors.Join(cleanupErr, s.root.Close())
 }
 
 func (s *explicitTraceCaptureStage) cleanupTempOnly() error {
@@ -221,9 +371,17 @@ func (s *explicitTraceCaptureStage) cleanupTempOnly() error {
 		return nil
 	}
 	tempRel := s.tempRel
+	tempPath := s.tempPath
+	if err := explicitTraceTempCleanupHook(s.root, tempRel, nil); err != nil {
+		return err
+	}
 	s.tempRel = ""
 	s.tempPath = ""
-	return safeio.CleanupTempFileWithinRoot(s.root, tempRel, nil)
+	s.pendingTempCleanupErr = nil
+	if tempPath != "" {
+		s.tempInfo = nil
+	}
+	return nil
 }
 
 func closeExplicitTracePublishFile(file safeio.File) error {

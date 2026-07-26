@@ -3,7 +3,6 @@ package analysis
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 
@@ -15,7 +14,6 @@ const runtimeTraceCommandWarningPrefix = "runtime trace command failed; continui
 const runtimeTraceMissingWarning = "runtime trace file not found; continuing with static analysis"
 
 var captureRuntimeTraceAfterValidatedLoadHook func()
-var captureRuntimeTraceAfterExplicitFallbackPreloadHook func()
 
 type runtimeTraceCaptureOutcome struct {
 	warnings         []string
@@ -48,7 +46,6 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 
 	outcome.captureAttempted = true
 	outcome.traceFinalized = true
-	preloadedFallback := preloadExplicitRuntimeTraceFallback(req.RuntimeTracePathExplicit, resolvedTracePath)
 
 	provider := captureProviderForRequest(req, command, candidates)
 	captureResult, err := runRuntimeTraceCapture(ctx, req, repoPath, resolvedTracePath, command, provider)
@@ -56,7 +53,7 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 		outcome.tracePath = captureResult.TracePath
 	}
 	if err != nil {
-		return handleRuntimeTraceCaptureError(outcome, preloadedFallback, req.RuntimeTracePathExplicit, resolvedTracePath, err)
+		return handleRuntimeTraceCaptureError(outcome, err)
 	}
 
 	outcome.pythonCaptured = provider == runtime.CaptureProviderPython
@@ -74,11 +71,6 @@ func loadRuntimeTraceSnapshot(tracePath string) (*runtime.Trace, bool, error) {
 	return &traceData, false, nil
 }
 
-type explicitRuntimeTraceFallback struct {
-	trace   *runtime.Trace
-	missing bool
-}
-
 func finalizeRuntimeTraceWithoutCommand(outcome runtimeTraceCaptureOutcome, resolvedTracePath string) (runtimeTraceCaptureOutcome, error) {
 	traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
 	if err != nil {
@@ -94,31 +86,6 @@ func finalizeRuntimeTraceWithoutCommand(outcome runtimeTraceCaptureOutcome, reso
 	return outcome, nil
 }
 
-func loadExplicitRuntimeTraceFallback(explicit bool, resolvedTracePath string) (explicitRuntimeTraceFallback, error) {
-	if !explicit {
-		return explicitRuntimeTraceFallback{}, nil
-	}
-	traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
-	if err != nil {
-		return explicitRuntimeTraceFallback{}, err
-	}
-	return explicitRuntimeTraceFallback{trace: traceData, missing: missing}, nil
-}
-
-func preloadExplicitRuntimeTraceFallback(explicit bool, resolvedTracePath string) explicitRuntimeTraceFallback {
-	if !explicit {
-		return explicitRuntimeTraceFallback{}
-	}
-	traceData, missing, err := loadRuntimeTraceSnapshot(resolvedTracePath)
-	if err != nil || missing {
-		return explicitRuntimeTraceFallback{}
-	}
-	if captureRuntimeTraceAfterExplicitFallbackPreloadHook != nil {
-		captureRuntimeTraceAfterExplicitFallbackPreloadHook()
-	}
-	return explicitRuntimeTraceFallback{trace: traceData}
-}
-
 func runRuntimeTraceCapture(ctx context.Context, req Request, repoPath string, resolvedTracePath string, command string, provider runtime.CaptureProvider) (runtime.CaptureResult, error) {
 	return runtime.CaptureValidatedTrace(ctx, runtime.CaptureRequest{
 		RepoPath:             repoPath,
@@ -130,29 +97,11 @@ func runRuntimeTraceCapture(ctx context.Context, req Request, repoPath string, r
 	})
 }
 
-func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, preloadedFallback explicitRuntimeTraceFallback, explicit bool, resolvedTracePath string, err error) (runtimeTraceCaptureOutcome, error) {
+func handleRuntimeTraceCaptureError(outcome runtimeTraceCaptureOutcome, err error) (runtimeTraceCaptureOutcome, error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return outcome, err
 	}
-	warnings := []string{runtimeTraceCommandWarningPrefix + err.Error()}
-	if preloadedFallback.trace != nil {
-		outcome.warnings = warnings
-		outcome.trace = preloadedFallback.trace
-		return outcome, nil
-	}
-	fallback, fallbackErr := loadExplicitRuntimeTraceFallback(explicit, resolvedTracePath)
-	if fallbackErr != nil {
-		return outcome, errors.Join(fmt.Errorf("%s%s", runtimeTraceCommandWarningPrefix, err.Error()), fallbackErr)
-	}
-	if fallback.trace != nil {
-		outcome.warnings = warnings
-		outcome.trace = fallback.trace
-		return outcome, nil
-	}
-	if fallback.missing {
-		warnings = append(warnings, runtimeTraceMissingWarning)
-	}
-	outcome.warnings = warnings
+	outcome.warnings = []string{runtimeTraceCommandWarningPrefix + err.Error()}
 	return outcome, nil
 }
 

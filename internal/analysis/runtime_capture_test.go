@@ -29,13 +29,13 @@ func TestServicePythonRuntimeCaptureIndependentOfTraceFeature(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "requirements.txt"), "requests==2.32.0\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "main.py"), "import requests\n")
 
-	sitePackages := filepath.Join(t.TempDir(), "lib", "python3.12", "site-packages")
+	sitePackages := filepath.Join(testutil.SecureHomeTempDir(t, "analysis-python-packages-"), "lib", "python3.12", "site-packages")
 	if err := os.MkdirAll(filepath.Join(sitePackages, "requests"), 0o750); err != nil {
 		t.Fatalf("create requests package: %v", err)
 	}
 	testutil.MustWriteFile(t, filepath.Join(sitePackages, "requests", "__init__.py"), "VALUE = 1\n")
 
-	toolDir := t.TempDir()
+	toolDir := testutil.SecureHomeTempDir(t, "analysis-python-tool-")
 	installAnalysisRuntimeTool(t, toolDir, "pytest", "python-import-requests")
 	t.Setenv("LOPPER_TEST_PYTHON", pythonPath)
 	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", toolDir)
@@ -209,52 +209,18 @@ func TestCaptureRuntimeTraceIfNeededWarningAndNoCommandBranches(t *testing.T) {
 	repo := t.TempDir()
 	explicitTrace := filepath.Join(repo, "custom-trace.ndjson")
 
-	explicitReq := Request{
-		RuntimeTestCommand:       "foobar test",
-		RuntimeTracePath:         explicitTrace,
-		RuntimeTracePathExplicit: true,
-	}
-	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), explicitReq, repo, nil)
-	if err != nil {
-		t.Fatalf("capture explicit runtime trace: %v", err)
-	}
-	if len(outcome.warnings) != 2 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) || outcome.warnings[1] != runtimeTraceMissingWarning {
-		t.Fatalf("expected explicit runtime capture warning, got %#v", outcome.warnings)
-	}
-	wantExplicitTrace := filepath.Join(resolvedTestRepoPath(t, repo), filepath.Base(explicitTrace))
-	if outcome.tracePath != wantExplicitTrace {
-		t.Fatalf("expected canonical explicit trace path %q, got %q", wantExplicitTrace, outcome.tracePath)
-	}
-	if !outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
-		t.Fatalf("expected handled failed explicit capture, got %#v", outcome)
-	}
-
-	implicitReq := Request{RuntimeTestCommand: "foobar test"}
-	outcome, err = captureRuntimeTraceIfNeeded(context.Background(), implicitReq, repo, nil)
-	if err != nil {
-		t.Fatalf("capture implicit runtime trace: %v", err)
-	}
-	if len(outcome.warnings) != 1 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) {
-		t.Fatalf("expected implicit runtime capture warning, got %#v", outcome.warnings)
-	}
-	wantImplicitTrace := runtime.DefaultTracePath(resolvedTestRepoPath(t, repo))
-	if outcome.tracePath != wantImplicitTrace {
-		t.Fatalf("expected canonical implicit trace path %q, got %q", wantImplicitTrace, outcome.tracePath)
-	}
-	if !outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
-		t.Fatalf("expected handled failed implicit capture, got %#v", outcome)
-	}
-
-	outcome, err = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil)
-	if err != nil {
-		t.Fatalf("skip empty runtime capture: %v", err)
-	}
-	if len(outcome.warnings) != 0 || outcome.tracePath != "" || outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
-		t.Fatalf("expected empty runtime command to skip capture, got %#v", outcome)
+	for _, tc := range runtimeCaptureWarningCases(repo, explicitTrace) {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome, err := captureRuntimeTraceIfNeeded(context.Background(), tc.req, repo, nil)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.action, err)
+			}
+			tc.assert(t, outcome)
+		})
 	}
 }
 
-func TestMissingExplicitRuntimeFallbackRemainsHandledDuringFinalization(t *testing.T) {
+func TestMissingExplicitRuntimeFallbackStaysUnavailableDuringFinalization(t *testing.T) {
 	repo := t.TempDir()
 	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
 	req := Request{
@@ -277,29 +243,16 @@ func TestMissingExplicitRuntimeFallbackRemainsHandledDuringFinalization(t *testi
 	}
 
 	req.RuntimeTracePath = outcome.tracePath
-	t.Run("missing warning remains single", func(t *testing.T) {
-		reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{
-			Warnings: append([]string(nil), outcome.warnings...),
+	for _, tc := range missingExplicitRuntimeFallbackFinalizationCases(tracePath) {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.before(t)
+			reportData := finalizeMissingExplicitRuntimeFallback(t, req, repo, outcome)
+			assertOnlyRuntimeCommandWarning(t, reportData.Warnings, tc.warningMessage)
+			if tc.expectNoDependencies && len(reportData.Dependencies) != 0 {
+				t.Fatalf("expected late unvalidated runtime trace to be ignored, got %#v", reportData.Dependencies)
+			}
 		})
-		if err != nil {
-			t.Fatalf("finalize handled missing runtime fallback: %v", err)
-		}
-		assertSingleRuntimeTraceMissingWarning(t, reportData.Warnings)
-	})
-
-	t.Run("file appearing later is ignored", func(t *testing.T) {
-		testutil.MustWriteFile(t, tracePath, "{\"module\":\"lodash/map\"}\n")
-		reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{
-			Warnings: append([]string(nil), outcome.warnings...),
-		})
-		if err != nil {
-			t.Fatalf("finalize after runtime trace appears: %v", err)
-		}
-		assertSingleRuntimeTraceMissingWarning(t, reportData.Warnings)
-		if len(reportData.Dependencies) != 0 {
-			t.Fatalf("expected late unvalidated runtime trace to be ignored, got %#v", reportData.Dependencies)
-		}
-	})
+	}
 }
 
 func TestCaptureRuntimeTraceIfNeededRecapturesOverMalformedExplicitStaleTrace(t *testing.T) {
@@ -339,7 +292,7 @@ func TestCaptureRuntimeTraceIfNeededRecapturesOverMalformedExplicitStaleTrace(t 
 	assertRuntimeCounter(t, filepath.Join(repo, "runtime-counter.txt"), 1, "expected runtime capture command to execute once")
 }
 
-func TestCaptureRuntimeTraceIfNeededUsesExplicitTraceAfterCaptureFailure(t *testing.T) {
+func TestCaptureRuntimeTraceIfNeededTreatsExplicitTraceAsUnavailableAfterCaptureFailure(t *testing.T) {
 	repo := t.TempDir()
 	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
 	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
@@ -357,52 +310,29 @@ func TestCaptureRuntimeTraceIfNeededUsesExplicitTraceAfterCaptureFailure(t *test
 	}
 	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
 	if err != nil {
-		t.Fatalf("use explicit runtime trace after capture failure: %v", err)
+		t.Fatalf("capture failure with explicit runtime trace present: %v", err)
 	}
-	if !outcome.captureAttempted || outcome.trace == nil {
-		t.Fatalf("expected capture failure to fall back to explicit runtime trace, got %#v", outcome)
+	if !outcome.captureAttempted || outcome.trace != nil {
+		t.Fatalf("expected capture failure to leave runtime data unavailable, got %#v", outcome)
 	}
 	if len(outcome.warnings) != 1 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) {
-		t.Fatalf("expected single capture warning with explicit fallback trace, got %#v", outcome.warnings)
+		t.Fatalf("expected single capture warning without explicit fallback trace, got %#v", outcome.warnings)
 	}
-	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "lodash", 1, "expected explicit fallback trace to load lodash")
-	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "chalk", 1, "expected explicit fallback trace to load chalk")
 	after, err := os.ReadFile(canonicalTracePath)
 	if err != nil {
 		t.Fatalf("read explicit runtime trace after capture failure: %v", err)
 	}
 	if string(after) != before {
-		t.Fatalf("expected explicit runtime trace to remain unchanged after capture failure, before=%q after=%q", before, after)
+		t.Fatalf("expected explicit runtime trace bytes to remain unchanged after capture failure, before=%q after=%q", before, after)
 	}
 }
 
-func TestCaptureRuntimeTraceIfNeededUsesPreloadedExplicitSnapshotAfterCaptureFailureAcrossPathSwap(t *testing.T) {
+func TestCaptureRuntimeTraceIfNeededIgnoresExplicitTracePathSwapAfterCaptureFailure(t *testing.T) {
 	repo := t.TempDir()
 	tracePath := filepath.Join(repo, ".artifacts", "runtime.ndjson")
 	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
 	testutil.MustWriteFile(t, canonicalTracePath, "{\"module\":\"lodash/map\"}\n")
-	swapPath := canonicalTracePath + ".swap"
-	testutil.MustWriteFile(t, swapPath, "{\"module\":\"chalk/index\"}\n")
-
-	captureRuntimeTraceAfterExplicitFallbackPreloadHook = func() {
-		if err := os.Rename(canonicalTracePath, canonicalTracePath+".validated"); err != nil {
-			t.Fatalf("rename validated explicit runtime trace aside: %v", err)
-		}
-		if err := os.Rename(swapPath, canonicalTracePath); err != nil {
-			t.Fatalf("swap explicit runtime trace into capture path: %v", err)
-		}
-	}
-	t.Cleanup(func() {
-		captureRuntimeTraceAfterExplicitFallbackPreloadHook = nil
-		if _, err := os.Stat(canonicalTracePath + ".validated"); err == nil {
-			if renameErr := os.Rename(canonicalTracePath, swapPath); renameErr != nil {
-				t.Fatalf("restore swapped explicit runtime trace aside: %v", renameErr)
-			}
-			if renameErr := os.Rename(canonicalTracePath+".validated", canonicalTracePath); renameErr != nil {
-				t.Fatalf("restore validated explicit runtime trace path: %v", renameErr)
-			}
-		}
-	})
+	swappedTrace := "{\"module\":\"chalk/index\"}\n"
 
 	req := Request{
 		Language:                 "js-ts",
@@ -410,44 +340,39 @@ func TestCaptureRuntimeTraceIfNeededUsesPreloadedExplicitSnapshotAfterCaptureFai
 		RuntimeTracePath:         tracePath,
 		RuntimeTracePathExplicit: true,
 	}
+	if err := os.WriteFile(canonicalTracePath, []byte(swappedTrace), 0o600); err != nil {
+		t.Fatalf("swap explicit runtime trace bytes before handled failure: %v", err)
+	}
 	outcome, err := captureRuntimeTraceIfNeeded(context.Background(), req, repo, nil)
 	if err != nil {
-		t.Fatalf("use preloaded explicit runtime trace after capture failure across path swap: %v", err)
+		t.Fatalf("capture failure with swapped explicit runtime trace: %v", err)
 	}
-	if !outcome.captureAttempted || outcome.trace == nil {
-		t.Fatalf("expected capture failure to fall back to preloaded explicit runtime trace, got %#v", outcome)
+	if !outcome.captureAttempted || outcome.trace != nil {
+		t.Fatalf("expected capture failure to ignore swapped explicit runtime trace, got %#v", outcome)
 	}
-	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "lodash", 1, "expected preloaded explicit snapshot to preserve original lodash trace")
-	assertTraceLoadCount(t, outcome.trace.DependencyLoads, "chalk", 0, "expected preloaded explicit snapshot to ignore swapped trace path")
+	if len(outcome.warnings) != 1 || !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected single capture warning without swapped explicit trace reuse, got %#v", outcome.warnings)
+	}
 }
 
-func TestHandleRuntimeTraceCaptureErrorSurfacesInvalidExplicitTraceFallback(t *testing.T) {
-	repo := t.TempDir()
-	canonicalTracePath := filepath.Join(resolvedTestRepoPath(t, repo), ".artifacts", "runtime.ndjson")
-	if err := os.MkdirAll(canonicalTracePath, 0o750); err != nil {
-		t.Fatalf("mkdir invalid explicit trace path: %v", err)
-	}
-
+func TestHandleRuntimeTraceCaptureErrorDoesNotReloadExplicitTrace(t *testing.T) {
 	captureOutcome := runtimeTraceCaptureOutcome{captureAttempted: true, traceFinalized: true}
 	captureErr := errors.New(`unsupported runtime test executable "foobar"; use a direct command like 'npm test'`)
-	outcome, err := handleRuntimeTraceCaptureError(captureOutcome, explicitRuntimeTraceFallback{}, true, canonicalTracePath, captureErr)
-	if err == nil {
-		t.Fatal("expected invalid explicit runtime trace to surface when recapture fails")
+	outcome, err := handleRuntimeTraceCaptureError(captureOutcome, captureErr)
+	if err != nil {
+		t.Fatalf("expected handled capture warning without explicit reload, got %v", err)
 	}
-	if len(outcome.warnings) != 0 || outcome.trace != nil {
-		t.Fatalf("expected failing recapture to avoid fallback warnings/trace output, got %#v", outcome)
+	if len(outcome.warnings) != 1 || outcome.trace != nil {
+		t.Fatalf("expected handled recapture failure without fallback trace output, got %#v", outcome)
 	}
 	if !outcome.captureAttempted || !outcome.traceFinalized {
 		t.Fatalf("expected failing recapture attempt to be recorded, got %#v", outcome)
 	}
-	if !strings.Contains(err.Error(), runtimeTraceCommandWarningPrefix) {
-		t.Fatalf("expected capture warning prefix in error, got %v", err)
+	if !strings.Contains(outcome.warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("expected capture warning prefix in warning, got %#v", outcome.warnings)
 	}
-	if !strings.Contains(err.Error(), "unsupported runtime test executable") {
-		t.Fatalf("expected capture command validation failure in error, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "must be regular") {
-		t.Fatalf("expected invalid explicit trace validation failure in error, got %v", err)
+	if !strings.Contains(outcome.warnings[0], "unsupported runtime test executable") {
+		t.Fatalf("expected capture command validation failure in warning, got %#v", outcome.warnings)
 	}
 }
 
@@ -964,7 +889,7 @@ func setupFakeAnalysisRuntimeToolWithoutTrace(t *testing.T) string {
 
 func setupFakeAnalysisRuntimeToolWithTraceMode(t *testing.T, writeTrace bool) string {
 	t.Helper()
-	toolDir := t.TempDir()
+	toolDir := testutil.SecureHomeTempDir(t, "analysis-runtime-tool-")
 	mode := "count-only"
 	if writeTrace {
 		mode = "count-trace"
@@ -1050,6 +975,113 @@ func assertSingleRuntimeTraceMissingWarning(t *testing.T, warnings []string) {
 	}
 }
 
+type runtimeCaptureWarningCase struct {
+	name   string
+	action string
+	req    Request
+	assert func(*testing.T, runtimeTraceCaptureOutcome)
+}
+
+type missingExplicitRuntimeFallbackCase struct {
+	name                 string
+	before               func(*testing.T)
+	warningMessage       string
+	expectNoDependencies bool
+}
+
+func runtimeCaptureWarningCases(repo string, explicitTrace string) []runtimeCaptureWarningCase {
+	resolvedRepo := resolvedTestRepoPathNoFail(repo)
+	return []runtimeCaptureWarningCase{
+		{
+			name:   "explicit command warning",
+			action: "capture explicit runtime trace",
+			req: Request{
+				RuntimeTestCommand:       "foobar test",
+				RuntimeTracePath:         explicitTrace,
+				RuntimeTracePathExplicit: true,
+			},
+			assert: func(t *testing.T, outcome runtimeTraceCaptureOutcome) {
+				wantTracePath := filepath.Join(resolvedRepo, filepath.Base(explicitTrace))
+				assertRuntimeCaptureWarningOutcome(t, outcome, wantTracePath, "expected handled failed explicit capture")
+			},
+		},
+		{
+			name:   "implicit command warning",
+			action: "capture implicit runtime trace",
+			req:    Request{RuntimeTestCommand: "foobar test"},
+			assert: func(t *testing.T, outcome runtimeTraceCaptureOutcome) {
+				wantTracePath := runtime.DefaultTracePath(resolvedRepo)
+				assertRuntimeCaptureWarningOutcome(t, outcome, wantTracePath, "expected handled failed implicit capture")
+			},
+		},
+		{
+			name:   "empty command skips capture",
+			action: "skip empty runtime capture",
+			req:    Request{},
+			assert: func(t *testing.T, outcome runtimeTraceCaptureOutcome) {
+				if len(outcome.warnings) != 0 || outcome.tracePath != "" || outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
+					t.Fatalf("expected empty runtime command to skip capture, got %#v", outcome)
+				}
+			},
+		},
+	}
+}
+
+func missingExplicitRuntimeFallbackFinalizationCases(tracePath string) []missingExplicitRuntimeFallbackCase {
+	return []missingExplicitRuntimeFallbackCase{
+		{
+			name:           "command warning remains single",
+			before:         func(*testing.T) {},
+			warningMessage: "expected only the capture command warning",
+		},
+		{
+			name: "file appearing later is ignored",
+			before: func(t *testing.T) {
+				testutil.MustWriteFile(t, tracePath, "{\"module\":\"lodash/map\"}\n")
+			},
+			warningMessage:       "expected only the capture command warning after late file appearance",
+			expectNoDependencies: true,
+		},
+	}
+}
+
+func assertRuntimeCaptureWarningOutcome(t *testing.T, outcome runtimeTraceCaptureOutcome, wantTracePath string, message string) {
+	t.Helper()
+	assertOnlyRuntimeCommandWarning(t, outcome.warnings, "expected runtime capture warning")
+	if outcome.tracePath != wantTracePath {
+		t.Fatalf("expected canonical runtime trace path %q, got %q", wantTracePath, outcome.tracePath)
+	}
+	if !outcome.captureAttempted || outcome.pythonCaptured || outcome.trace != nil {
+		t.Fatalf("%s, got %#v", message, outcome)
+	}
+}
+
+func assertOnlyRuntimeCommandWarning(t *testing.T, warnings []string, message string) {
+	t.Helper()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], runtimeTraceCommandWarningPrefix) {
+		t.Fatalf("%s, got %#v", message, warnings)
+	}
+}
+
+func finalizeMissingExplicitRuntimeFallback(t *testing.T, req Request, repo string, outcome runtimeTraceCaptureOutcome) report.Report {
+	t.Helper()
+	reportData, err := finalizeReport(req, repo, repo, nil, outcome.trace, outcome.captureAttempted || outcome.traceFinalized, report.Report{
+		Warnings: append([]string(nil), outcome.warnings...),
+	})
+	if err != nil {
+		t.Fatalf("finalize handled missing runtime fallback: %v", err)
+	}
+	return reportData
+}
+
+func resolvedTestRepoPathNoFail(repo string) string {
+	resolved, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		return repo
+	}
+	return resolved
+}
+
 func resolvedTestRepoPath(t *testing.T, repo string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(repo)
@@ -1061,7 +1093,7 @@ func resolvedTestRepoPath(t *testing.T, repo string) string {
 
 func setupFakeAnalysisRuntimeToolReadyBlock(t *testing.T) string {
 	t.Helper()
-	toolDir := t.TempDir()
+	toolDir := testutil.SecureHomeTempDir(t, "analysis-runtime-ready-tool-")
 	installAnalysisRuntimeTool(t, toolDir, "npm", "ready-block")
 	return toolDir
 }

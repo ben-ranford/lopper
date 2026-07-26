@@ -94,6 +94,29 @@ func WriteTempFile(t *testing.T, filename string, content string) string {
 	return path
 }
 
+func SecureHomeTempDir(t *testing.T, prefix string) string {
+	t.Helper()
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+	baseDir := filepath.Join(homeDir, ".lopper-test-fixtures")
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		t.Fatalf("mkdir secure fixture base dir: %v", err)
+	}
+	dir, err := os.MkdirTemp(baseDir, prefix)
+	if err != nil {
+		t.Fatalf("mkdir secure fixture dir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove secure fixture dir: %v", err)
+		}
+	})
+	return dir
+}
+
 func Chdir(t *testing.T, dir string) {
 	t.Helper()
 	originalWD, err := os.Getwd()
@@ -179,12 +202,24 @@ func MustWriteRuntimeHelperFile(path, content string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	root, err := safeio.OpenWriteRoot(parentDir)
+	root, err := os.OpenRoot(parentDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if err := root.WriteFileCreatingParents(filepath.Base(path), []byte(content), 0o600, 0o750); err != nil {
+	file, err := root.OpenFile(filepath.Base(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		closeErr := root.Close()
+		fmt.Fprintln(os.Stderr, errors.Join(err, closeErr))
+		os.Exit(1)
+	}
+	if _, err := file.WriteString(content); err != nil {
+		fileCloseErr := file.Close()
+		rootCloseErr := root.Close()
+		fmt.Fprintln(os.Stderr, errors.Join(err, fileCloseErr, rootCloseErr))
+		os.Exit(1)
+	}
+	if err := file.Close(); err != nil {
 		closeErr := root.Close()
 		fmt.Fprintln(os.Stderr, errors.Join(err, closeErr))
 		os.Exit(1)

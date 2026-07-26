@@ -11,6 +11,7 @@ import (
 	_ "unsafe"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 //go:linkname safeioFileSystem github.com/ben-ranford/lopper/internal/safeio.fileSystem
@@ -101,15 +102,28 @@ func TestValidateTrustedRuntimeExecutableRejectsDescriptorTrustMismatch(t *testi
 		t.Fatalf("stat runtime executable: %v", err)
 	}
 
-	root := &trustedExecutableRootStub{
-		lstatInfo: map[string]fs.FileInfo{"npm": info},
-		files: map[string]safeio.File{
-			"npm": &trustedExecutableFileStub{info: fileInfoWithMode(info, 0o644)},
-		},
-	}
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "close succeeds"},
+		{name: "close fails", closeErr: errors.New("close failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := &trustedExecutableRootStub{
+				lstatInfo: map[string]fs.FileInfo{"npm": info},
+				files: map[string]safeio.File{
+					"npm": &trustedExecutableFileStub{
+						info:     fileInfoWithMode(info, 0o644),
+						closeErr: tc.closeErr,
+					},
+				},
+			}
 
-	if validateTrustedRuntimeExecutable(root, "npm") {
-		t.Fatal("expected descriptor trust mismatch to reject runtime executable")
+			if validateTrustedRuntimeExecutable(root, "npm") {
+				t.Fatal("expected descriptor trust mismatch to reject runtime executable")
+			}
+		})
 	}
 }
 
@@ -123,15 +137,28 @@ func TestValidateTrustedRuntimeExecutableRejectsStatFailure(t *testing.T) {
 		t.Fatalf("stat runtime executable: %v", err)
 	}
 
-	root := &trustedExecutableRootStub{
-		lstatInfo: map[string]fs.FileInfo{"npm": info},
-		files: map[string]safeio.File{
-			"npm": &trustedExecutableFileStub{statErr: errors.New("stat failed")},
-		},
-	}
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "close succeeds"},
+		{name: "close fails", closeErr: errors.New("close failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := &trustedExecutableRootStub{
+				lstatInfo: map[string]fs.FileInfo{"npm": info},
+				files: map[string]safeio.File{
+					"npm": &trustedExecutableFileStub{
+						statErr:  errors.New("stat failed"),
+						closeErr: tc.closeErr,
+					},
+				},
+			}
 
-	if validateTrustedRuntimeExecutable(root, "npm") {
-		t.Fatal("expected stat failure to reject trusted runtime executable")
+			if validateTrustedRuntimeExecutable(root, "npm") {
+				t.Fatal("expected stat failure to reject trusted runtime executable")
+			}
+		})
 	}
 }
 
@@ -204,6 +231,12 @@ func TestOpenTrustedRuntimeSearchRootPropagatesLstatFailure(t *testing.T) {
 	}
 }
 
+func TestOpenTrustedRuntimeSearchRootRejectsInvalidPath(t *testing.T) {
+	if _, err := openTrustedRuntimeSearchRoot(string([]byte{0})); err == nil {
+		t.Fatal("expected invalid runtime search path to be rejected")
+	}
+}
+
 func TestValidateTrustedRuntimeExecutableRejectsOpenedDirectory(t *testing.T) {
 	dirInfo := dirInfoFromTempDir(t)
 	root := &trustedExecutableRootStub{
@@ -212,6 +245,24 @@ func TestValidateTrustedRuntimeExecutableRejectsOpenedDirectory(t *testing.T) {
 
 	if validateTrustedRuntimeExecutable(root, "npm") {
 		t.Fatal("expected directory candidate to be rejected")
+	}
+}
+
+func TestValidateTrustedRuntimeExecutableRejectsSymlinkMetadata(t *testing.T) {
+	path := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-symlink-metadata-"), "npm")
+	writeRuntimeTestExecutable(t, path, "#!/bin/sh\nexit 0\n")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat runtime executable: %v", err)
+	}
+
+	root := &trustedExecutableRootStub{
+		lstatInfo: map[string]fs.FileInfo{
+			"npm": fileInfoWithMode(info, os.ModeSymlink|0o777),
+		},
+	}
+	if validateTrustedRuntimeExecutable(root, "npm") {
+		t.Fatal("expected symlink metadata to reject runtime executable")
 	}
 }
 
@@ -229,8 +280,33 @@ func TestIsTrustedRuntimeSearchDirInfoRejectsNonDirectory(t *testing.T) {
 	}
 }
 
+func TestIsTrustedRuntimeSearchDirInfoRejectsSyntheticSymlinkDirectory(t *testing.T) {
+	info, err := os.Stat(testutil.SecureHomeTempDir(t, "runtime-synthetic-symlink-dir-"))
+	if err != nil {
+		t.Fatalf("stat runtime directory: %v", err)
+	}
+	symlinkDir := fileInfoWithMode(info, os.ModeDir|os.ModeSymlink|0o755)
+	if isTrustedRuntimeSearchDirInfo(symlinkDir) {
+		t.Fatal("expected synthetic symlink directory to be rejected")
+	}
+}
+
+func TestTrustedSearchDirsSkipsRootOpenFailure(t *testing.T) {
+	dir := testutil.SecureHomeTempDir(t, "runtime-open-failure-")
+
+	withSafeioFileSystemTest(t, &safeioFileSystemStub{
+		openRootNoFollow: func(string) (safeio.Root, error) {
+			return nil, os.ErrPermission
+		},
+	})
+
+	if got := trustedSearchDirs(dir); len(got) != 0 {
+		t.Fatalf("expected root open failure to drop trusted search dir, got %v", got)
+	}
+}
+
 func TestTrustedSearchDirsSkipsCloseFailure(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SecureHomeTempDir(t, "runtime-close-failure-")
 
 	withSafeioFileSystemTest(t, &safeioFileSystemStub{
 		openRootNoFollow: func(name string) (safeio.Root, error) {
@@ -243,6 +319,190 @@ func TestTrustedSearchDirsSkipsCloseFailure(t *testing.T) {
 
 	if got := trustedSearchDirs(dir); len(got) != 0 {
 		t.Fatalf("expected close failure to drop trusted search dir, got %v", got)
+	}
+}
+
+func TestValidateTrustedRuntimeAncestorChainRejectsMalformedPaths(t *testing.T) {
+	if validateTrustedRuntimeAncestorChain("relative", false) {
+		t.Fatal("expected relative ancestor chain to be rejected")
+	}
+	if trustedRuntimeAncestorPath(filepath.Join(testutil.SecureHomeTempDir(t, "runtime-missing-ancestor-"), "missing"), false) {
+		t.Fatal("expected missing ancestor to be rejected")
+	}
+	if os.PathSeparator != '\\' && !validateTrustedRuntimeAncestorChain(string(os.PathSeparator), false) {
+		t.Fatal("expected filesystem root to have a trusted ancestor chain")
+	}
+}
+
+func TestResolveRuntimeExecutablePathInDirReturnsCanonicalMatch(t *testing.T) {
+	dir := testutil.SecureHomeTempDir(t, "runtime-direct-match-")
+	path := filepath.Join(dir, "node")
+	writeRuntimeTestExecutable(t, path, "#!/bin/sh\nexit 0\n")
+
+	got, ok := resolveRuntimeExecutablePathInDir("node", dir)
+	if !ok || got != path {
+		t.Fatalf("expected direct canonical match %q, got %q, %v", path, got, ok)
+	}
+}
+
+func TestResolveRuntimeExecutablePropagatesPinnedSourceCloseFailure(t *testing.T) {
+	dir := testutil.SecureHomeTempDir(t, "runtime-resolved-close-failure-")
+	path := filepath.Join(dir, "node")
+	writeRuntimeTestExecutable(t, path, "#!/bin/sh\nexit 0\n")
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat runtime executable: %v", err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat runtime executable directory: %v", err)
+	}
+	wantErr := errors.New("pinned source close failed")
+	withSafeioFileSystemTest(t, &safeioFileSystemStub{
+		openRootNoFollow: func(string) (safeio.Root, error) {
+			return &trustedExecutableRootStub{
+				lstatInfo: map[string]fs.FileInfo{
+					".":    dirInfo,
+					"node": fileInfo,
+				},
+				files: map[string]safeio.File{
+					"node": &trustedExecutableFileStub{info: fileInfo, closeErr: wantErr},
+				},
+			}, nil
+		},
+	})
+
+	resolution, err := resolveRuntimeExecutable("node", []string{dir})
+	if err == nil || resolution.path != "" {
+		t.Fatalf("expected pinned source close failure, resolution=%#v err=%v", resolution, err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected pinned source close error identity, got %v", err)
+	}
+}
+
+func TestOpenTrustedRuntimeExecutableCandidateRejectsExternalIdentityMismatch(t *testing.T) {
+	dir := testutil.SecureHomeTempDir(t, "runtime-candidate-identity-")
+	candidate := filepath.Join(dir, "node")
+	replacement := filepath.Join(dir, "replacement")
+	writeRuntimeTestExecutable(t, candidate, "#!/bin/sh\nexit 0\n")
+	writeRuntimeTestExecutable(t, replacement, "#!/bin/sh\nexit 0\n")
+	replacementInfo, err := os.Stat(replacement)
+	if err != nil {
+		t.Fatalf("stat replacement executable: %v", err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat runtime executable directory: %v", err)
+	}
+	for _, tc := range []struct {
+		name     string
+		closeErr error
+	}{
+		{name: "close succeeds"},
+		{name: "close fails", closeErr: errors.New("close failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withSafeioFileSystemTest(t, &safeioFileSystemStub{
+				openRootNoFollow: func(string) (safeio.Root, error) {
+					return &trustedExecutableRootStub{
+						lstatInfo: map[string]fs.FileInfo{
+							".":    dirInfo,
+							"node": replacementInfo,
+						},
+						files: map[string]safeio.File{
+							"node": &trustedExecutableFileStub{
+								info:     replacementInfo,
+								closeErr: tc.closeErr,
+							},
+						},
+					}, nil
+				},
+			})
+
+			source, trusted := openTrustedRuntimeExecutableCandidate("node", candidate)
+			if trusted || source != nil {
+				t.Fatalf("expected external candidate identity mismatch rejection, source=%#v trusted=%t", source, trusted)
+			}
+		})
+	}
+}
+
+func TestResolvePinnedRuntimeExecutableRejectsInvalidCLIWhenSourceCloseFails(t *testing.T) {
+	if isWindowsRuntime() {
+		t.Skip("Unix symlink fixture is covered here")
+	}
+
+	rootDir := testutil.SecureHomeTempDir(t, "runtime-invalid-cli-close-")
+	searchDir := filepath.Join(rootDir, "tools")
+	canonicalDir := filepath.Join(rootDir, "canonical")
+	if err := os.MkdirAll(searchDir, 0o755); err != nil {
+		t.Fatalf("mkdir runtime launcher directory: %v", err)
+	}
+	if err := os.MkdirAll(canonicalDir, 0o755); err != nil {
+		t.Fatalf("mkdir canonical CLI directory: %v", err)
+	}
+	cliPath := filepath.Join(canonicalDir, "npm-cli.js")
+	writeRuntimeTestExecutable(t, cliPath, "#!/usr/bin/env node\n")
+	if err := os.Symlink(cliPath, filepath.Join(searchDir, "npm")); err != nil {
+		t.Fatalf("symlink invalid CLI launcher: %v", err)
+	}
+
+	dirInfo, err := os.Stat(canonicalDir)
+	if err != nil {
+		t.Fatalf("stat canonical CLI directory: %v", err)
+	}
+	cliInfo, err := os.Stat(cliPath)
+	if err != nil {
+		t.Fatalf("stat canonical CLI: %v", err)
+	}
+	withSafeioFileSystemTest(t, &safeioFileSystemStub{
+		openRootNoFollow: func(string) (safeio.Root, error) {
+			return &trustedExecutableRootStub{
+				lstatInfo: map[string]fs.FileInfo{
+					".":          dirInfo,
+					"npm-cli.js": cliInfo,
+				},
+				files: map[string]safeio.File{
+					"npm-cli.js": &trustedExecutableFileStub{
+						info:     cliInfo,
+						closeErr: errors.New("close failed"),
+					},
+				},
+			}, nil
+		},
+	})
+
+	if resolution, ok := resolvePinnedRuntimeExecutableInDir("npm", searchDir); ok {
+		t.Fatalf("expected invalid CLI layout rejection, got %#v", resolution)
+	}
+}
+
+func TestResolveTrustedRuntimeExecutableCandidateRejectsDanglingSymlink(t *testing.T) {
+	dir := testutil.SecureHomeTempDir(t, "runtime-dangling-candidate-")
+	candidate := filepath.Join(dir, "node")
+	if err := os.Symlink(filepath.Join(dir, "missing-node"), candidate); err != nil {
+		t.Fatalf("symlink dangling runtime candidate: %v", err)
+	}
+
+	if source, trusted := openTrustedRuntimeExecutableCandidate("node", candidate); trusted || source != nil {
+		t.Fatalf("expected dangling runtime candidate to be rejected, got %#v, %v", source, trusted)
+	}
+}
+
+func TestResolveTrustedRuntimeExecutableCandidateRejectsCanonicalRootOpenFailure(t *testing.T) {
+	dir := testutil.SecureHomeTempDir(t, "runtime-canonical-open-failure-")
+	candidate := filepath.Join(dir, "node")
+	writeRuntimeTestExecutable(t, candidate, "#!/bin/sh\nexit 0\n")
+
+	withSafeioFileSystemTest(t, &safeioFileSystemStub{
+		openRootNoFollow: func(string) (safeio.Root, error) {
+			return nil, os.ErrPermission
+		},
+	})
+
+	if source, trusted := openTrustedRuntimeExecutableCandidate("node", candidate); trusted || source != nil {
+		t.Fatalf("expected canonical root open failure to reject candidate, got %#v, %v", source, trusted)
 	}
 }
 
@@ -312,20 +572,23 @@ func TestValidatedRuntimeTraceFileStatPropagatesStatError(t *testing.T) {
 }
 
 func TestResolveRuntimeExecutablePathInDirRejectsRootCloseFailureAfterMatch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "npm")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o500); err != nil {
-		t.Fatalf("write runtime executable: %v", err)
-	}
+	dir := testutil.SecureHomeTempDir(t, "runtime-close-after-match-")
+	path := filepath.Join(dir, "npm")
+	writeRuntimeTestExecutable(t, path, "#!/bin/sh\nexit 0\n")
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat runtime executable: %v", err)
+	}
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat runtime executable root: %v", err)
 	}
 
 	withSafeioFileSystemTest(t, &safeioFileSystemStub{
 		openRootNoFollow: func(name string) (safeio.Root, error) {
 			return &trustedExecutableRootStub{
 				lstatInfo: map[string]fs.FileInfo{
-					".":   dirInfoFromTempDir(t),
+					".":   dirInfo,
 					"npm": info,
 				},
 				files: map[string]safeio.File{
@@ -336,7 +599,6 @@ func TestResolveRuntimeExecutablePathInDirRejectsRootCloseFailureAfterMatch(t *t
 		},
 	})
 
-	dir := t.TempDir()
 	got, ok := resolveRuntimeExecutablePathInDir("npm", dir)
 	if ok || got != "" {
 		t.Fatalf("expected root close failure to clear resolved executable, got %q, %v", got, ok)
@@ -441,6 +703,9 @@ func (r *trustedExecutableRootStub) Chmod(name string, perm os.FileMode) error {
 func (r *trustedExecutableRootStub) MkdirAll(name string, perm os.FileMode) error {
 	return errors.New("unexpected MkdirAll")
 }
+func (r *trustedExecutableRootStub) Link(oldName, newName string) error {
+	return errors.New("unexpected Link")
+}
 func (r *trustedExecutableRootStub) Rename(oldName, newName string) error {
 	return errors.New("unexpected Rename")
 }
@@ -477,6 +742,19 @@ func (f *fileInfoModeOverride) Mode() fs.FileMode {
 
 func fileInfoWithMode(info fs.FileInfo, mode fs.FileMode) fs.FileInfo {
 	return &fileInfoModeOverride{FileInfo: info, mode: mode}
+}
+
+type fileInfoStatOverride struct {
+	fs.FileInfo
+	sys any
+}
+
+func (f *fileInfoStatOverride) Sys() any {
+	return f.sys
+}
+
+func fileInfoWithStat(info fs.FileInfo, sys any) fs.FileInfo {
+	return &fileInfoStatOverride{FileInfo: info, sys: sys}
 }
 
 type fileInfoSizeOverride struct {

@@ -71,6 +71,7 @@ func OpenRootExistingAncestorNoFollow(name string) (Root, string, []string, erro
 		return openRootChildPinnedWith(root, childName, requestedPath, fileSystem.OpenRootNoFollow, os.Stat, os.SameFile)
 	})
 }
+
 type osFileSystem struct{}
 
 func (*osFileSystem) Abs(path string) (string, error) {

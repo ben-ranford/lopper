@@ -3,35 +3,10 @@
 package safeio
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
-
-func TestOpenPinnedReplacementTargetIfNeededSkipsPinnedTargetOnNonWindows(t *testing.T) {
-	openCalls := 0
-	root := &fakeRoot{
-		openFile: func(string, int, os.FileMode) (File, error) {
-			openCalls++
-			return nil, errors.New("unexpected pinned open")
-		},
-	}
-
-	file, closeFile, err := openPinnedReplacementTargetIfNeeded(root, writeTestFileName, statTestPath(t, t.TempDir()))
-	if err != nil {
-		t.Fatalf("expected pinned target open to be skipped, got %v", err)
-	}
-	if file != nil {
-		t.Fatal("expected no pinned target file on non-Windows")
-	}
-	if err := closeFile(); err != nil {
-		t.Fatalf("expected no-op pinned target close, got %v", err)
-	}
-	if openCalls != 0 {
-		t.Fatalf("expected no pinned target open calls, got %d", openCalls)
-	}
-}
 
 func TestWriteFileReplacingUnderReplacesReadOnlyExistingRegularFileOnNonWindows(t *testing.T) {
 	rootDir := t.TempDir()

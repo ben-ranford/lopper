@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const shellPath = "/bin/sh"
@@ -35,12 +36,12 @@ func TestParseRuntimeCommandKeepsBackslashesInSingleQuotes(t *testing.T) {
 }
 
 func TestTrustedSearchDirsSkipsNonDirectories(t *testing.T) {
-	secureDir := t.TempDir()
-	plainFile := filepath.Join(t.TempDir(), "tool")
+	secureDir := testutil.SecureHomeTempDir(t, "runtime-secure-dir-")
+	plainFile := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-plain-file-"), "tool")
 	if err := os.WriteFile(plainFile, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write plain file: %v", err)
 	}
-	missingDir := filepath.Join(t.TempDir(), "missing")
+	missingDir := filepath.Join(testutil.SecureHomeTempDir(t, "runtime-missing-dir-"), "missing")
 
 	got := trustedSearchDirs(strings.Join([]string{plainFile, missingDir, secureDir}, string(os.PathListSeparator)))
 	if len(got) != 1 || got[0] != secureDir {
@@ -122,20 +123,42 @@ func TestConfigureRuntimeCommandCancelBranches(t *testing.T) {
 	})
 }
 
+type runtimeHookCacheState struct {
+	initialized bool
+	requirePath string
+	loaderPath  string
+	err         error
+}
+
+func snapshotRuntimeHookCacheState() runtimeHookCacheState {
+	state := runtimeHookCacheState{
+		initialized: true,
+		requirePath: runtimeRequireHookPath,
+		loaderPath:  runtimeLoaderHookPath,
+		err:         runtimeHookPathsErr,
+	}
+	runtimeHookPathsOnce.Do(func() {
+		state.initialized = false
+	})
+	return state
+}
+
+func applyRuntimeHookCacheState(state runtimeHookCacheState) {
+	runtimeHookPathsOnce = sync.Once{}
+	runtimeRequireHookPath = state.requirePath
+	runtimeLoaderHookPath = state.loaderPath
+	runtimeHookPathsErr = state.err
+	if state.initialized {
+		runtimeHookPathsOnce.Do(func() {})
+	}
+}
+
 func restoreRuntimeHookState(t *testing.T) {
 	t.Helper()
 
-	originalRequire := runtimeRequireHookPath
-	originalLoader := runtimeLoaderHookPath
-	originalErr := runtimeHookPathsErr
-
+	originalState := snapshotRuntimeHookCacheState()
 	t.Cleanup(func() {
-		runtimeHookPathsOnce = sync.Once{}
-		runtimeHookPathsOnce.Do(func() {
-			runtimeRequireHookPath = originalRequire
-			runtimeLoaderHookPath = originalLoader
-			runtimeHookPathsErr = originalErr
-		})
+		applyRuntimeHookCacheState(originalState)
 	})
 }
 
@@ -146,7 +169,7 @@ func TestConfigureRuntimeCommandCancelMapsESRCHToProcessDone(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start process: %v", err)
 	}
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+	if err := killRuntimeCommandProcessGroupForTest(cmd); err != nil {
 		t.Fatalf("kill process group: %v", err)
 	}
 	if err := cmd.Wait(); err != nil && !errors.Is(err, os.ErrProcessDone) && !strings.Contains(err.Error(), "signal: killed") {

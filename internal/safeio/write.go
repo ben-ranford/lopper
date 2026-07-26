@@ -219,7 +219,7 @@ func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMo
 			return err
 		}
 	}
-	return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+	return writeAtomicReplacement(root, target.rel, data, writePerm)
 }
 
 func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {
@@ -247,41 +247,28 @@ func WriteFileWithinRoot(root Root, targetPath string, data []byte, perm os.File
 	if err != nil {
 		return err
 	}
-	return writeAtomicReplacement(root, targetRel, data, perm, nil)
+	return writeAtomicReplacement(root, targetRel, data, perm)
 }
 
 // PublishFileWithinRoot publishes targetPath by staging a temp file inside the
-// already-open confined root and attempting a single rename-only commit.
-// Existing targets are replaced only on platforms/filesystems whose rename
-// contract permits that replacement. When the commit rename fails, publish
-// returns the rename error, cleans up the staged temp file, and never falls
-// back to reopening or overwriting targetPath in place.
+// already-open confined root. Existing regular targets retain their permission
+// bits.
 func PublishFileWithinRoot(root Root, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
 	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
 	if err != nil {
 		return err
 	}
-
-	session, err := newAtomicWriteSession(root, targetRel, perm)
+	target := rootedTarget{rel: targetRel}
+	writePerm, _, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if cleanupErr := session.cleanup(); cleanupErr != nil {
-			returnErr = errors.Join(returnErr, cleanupErr)
-		}
-	}()
 
-	if err := session.writeAndClose(data, perm); err != nil {
-		return err
-	}
-	return session.commit()
+	return writeAtomicReplacement(root, targetRel, data, writePerm)
 }
 
 // WriteFileReplacingUnder atomically writes targetPath only if it resolves
 // under rootDir. Existing regular targets retain their permission bits.
-// On Windows only, writes may fall back to in-place overwrite when the
-// filesystem rejects replace-existing rename semantics for an existing file.
 func WriteFileReplacingUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (returnErr error) {
 	target, err := resolveRootedTarget(rootDir, targetPath, rejectRootTarget)
 	if err != nil {
@@ -300,20 +287,18 @@ func WriteFileReplacingUnder(rootDir, targetPath string, data []byte, perm os.Fi
 }
 
 // WriteFileReplacingWithinRoot atomically writes targetPath using an already-open
-// confined root. Existing regular targets retain their permission bits. On
-// Windows only, writes may fall back to in-place overwrite when the filesystem
-// rejects replace-existing rename semantics for an existing file.
+// confined root. Existing regular targets retain their permission bits.
 func WriteFileReplacingWithinRoot(root Root, targetPath string, data []byte, perm os.FileMode) error {
 	targetRel, err := resolveRelativeTarget(targetPath, rejectRootTarget)
 	if err != nil {
 		return err
 	}
 	target := rootedTarget{rel: targetRel}
-	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
+	writePerm, _, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
-	return writeAtomicReplacement(root, target.rel, data, writePerm, existingInfo)
+	return writeAtomicReplacement(root, target.rel, data, writePerm)
 }
 
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
