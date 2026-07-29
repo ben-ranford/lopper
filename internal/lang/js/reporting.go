@@ -63,6 +63,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 	warnings = append(warnings, riskWarnings...)
 	license, provenance, licenseWarnings := detectLicenseAndProvenance(opts.DependencyRootPath, opts.IncludeRegistryProvenance)
 	warnings = append(warnings, licenseWarnings...)
+	coverageIncomplete := opts.ScanResult.UsageIncomplete || surface.CoverageIncomplete
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
@@ -79,8 +80,17 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 		License:              license,
 		Provenance:           provenance,
 	}
-	depReport.Recommendations = buildRecommendations(opts.Dependency, depReport, opts.MinUsagePercentForRecommendations)
-	if opts.SuggestOnly {
+	if coverageIncomplete {
+		depReport.UsageIncomplete = true
+		depReport.UsedExportsCount = 0
+		depReport.TotalExportsCount = 0
+		depReport.UsedPercent = 0
+		depReport.UnusedExports = nil
+		warnings = append(warnings, fmt.Sprintf("usage or export coverage incomplete for %s; removal signals suppressed", opts.Dependency))
+	} else {
+		depReport.Recommendations = buildRecommendations(opts.Dependency, depReport, opts.MinUsagePercentForRecommendations)
+	}
+	if opts.SuggestOnly && !coverageIncomplete {
 		codemod, codemodWarnings := BuildSubpathCodemodReport(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.ScanResult)
 		depReport.Codemod = codemod
 		warnings = append(warnings, codemodWarnings...)
@@ -452,6 +462,14 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		})
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
+	}
+
+	if scanResult.UsageIncomplete {
+		sort.Slice(reports, func(i, j int) bool {
+			return reports[i].Name < reports[j].Name
+		})
+		warnings = append(warnings, "top-N removal ranking disabled because JS/TS usage coverage is incomplete")
+		return reports, warnings
 	}
 
 	shared.SortReportsByWaste(reports, weights)

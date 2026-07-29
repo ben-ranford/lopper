@@ -15,6 +15,7 @@ func TestAnnotateRemovalCandidateScoresDeterministic(t *testing.T) {
 	deps := []DependencyReport{
 		{Name: "alpha", UsedExportsCount: 5, TotalExportsCount: 10, UsedPercent: 50},
 		{Name: "beta", UsedExportsCount: 1, TotalExportsCount: 10, UsedPercent: 10},
+		{Name: "incomplete", UsageIncomplete: true},
 	}
 
 	AnnotateRemovalCandidateScores(deps)
@@ -24,6 +25,9 @@ func TestAnnotateRemovalCandidateScoresDeterministic(t *testing.T) {
 	}
 	if deps[1].RemovalCandidate.Score <= deps[0].RemovalCandidate.Score {
 		t.Fatalf("expected lower-usage dependency to score higher, alpha=%f beta=%f", deps[0].RemovalCandidate.Score, deps[1].RemovalCandidate.Score)
+	}
+	if deps[2].RemovalCandidate != nil {
+		t.Fatalf("expected incomplete usage to suppress removal scoring, got %#v", deps[2].RemovalCandidate)
 	}
 }
 

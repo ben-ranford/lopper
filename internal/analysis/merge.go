@@ -63,6 +63,7 @@ var dependencyFamilyMergeOrder = []dependencyFamilyMergeFn{
 	mergeDependencyCodemodFamily,
 	mergeDependencyRuntimeFamily,
 	mergeDependencyMetadataFamily,
+	mergeDependencyUsageCompletenessFamily,
 }
 
 func mergeDependencyExportFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
@@ -111,6 +112,22 @@ func mergeDependencyMetadataFamily(merged *report.DependencyReport, _ report.Dep
 	if merged.Provenance == nil {
 		merged.Provenance = right.Provenance
 	}
+}
+
+func mergeDependencyUsageCompletenessFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
+	merged.UsageIncomplete = left.UsageIncomplete || right.UsageIncomplete
+	if !merged.UsageIncomplete {
+		return
+	}
+
+	merged.UsedExportsCount = 0
+	merged.TotalExportsCount = 0
+	merged.UsedPercent = 0
+	merged.EstimatedUnusedBytes = 0
+	merged.UnusedExports = nil
+	merged.Recommendations = nil
+	merged.Codemod = nil
+	merged.RemovalCandidate = nil
 }
 
 func filterUsedOverlaps(unused, used []report.ImportUse) []report.ImportUse {

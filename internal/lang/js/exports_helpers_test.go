@@ -4,11 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const indexJSName = "index.js"
@@ -85,6 +88,27 @@ func TestEntrypointAndPathHelpers(t *testing.T) {
 	}
 	if got, err := dependencyRoot(repo, testMalformedDependency+"/pkg"); err != nil || got != filepath.Join(repo, "node_modules", testMalformedDependency, "pkg") {
 		t.Fatalf("unexpected scoped root: %q err=%v", got, err)
+	}
+}
+
+func TestResolveEntrypointsMarksMissingCoverageIncomplete(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, indexJSName), []byte("export const safe = 1\n"), 0o600); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	entrypoints := map[string]struct{}{
+		indexJSName:    {},
+		"./missing.js": {},
+	}
+	resolved := resolveEntrypoints(depRoot, entrypoints, surface)
+
+	if len(resolved) != 1 {
+		t.Fatalf("expected valid entrypoint to remain resolved, got %#v", resolved)
+	}
+	if !boolFieldForTest(*surface, "CoverageIncomplete") {
+		t.Fatal("expected unresolved declared entrypoint to mark export coverage incomplete")
 	}
 }
 
@@ -193,6 +217,10 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	if err := os.WriteFile(jsFile, []byte("export const value = 1\n"), 0o600); err != nil {
 		t.Fatalf("write index.js: %v", err)
 	}
+	largeFile := filepath.Join(repo, "large.js")
+	if err := os.WriteFile(largeFile, []byte(strings.Repeat("a", oversizedJSFileSize)), 0o600); err != nil {
+		t.Fatalf("write large.js: %v", err)
+	}
 	badFile := filepath.Join(repo, "index.txt")
 	if err := os.WriteFile(badFile, []byte("export const nope = 1\n"), 0o600); err != nil {
 		t.Fatalf("write index.txt: %v", err)
@@ -200,7 +228,7 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	missingFile := filepath.Join(repo, "missing.js")
 
 	surface := &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface(repo, []string{jsFile, jsFile, badFile, missingFile}, surface)
+	parseEntrypointsIntoSurface(repo, []string{jsFile, jsFile, largeFile, badFile, missingFile}, surface)
 
 	if _, ok := surface.Names["value"]; !ok {
 		t.Fatalf("expected parsed export name from valid entrypoint")
@@ -211,6 +239,104 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	warnings := strings.Join(surface.Warnings, "\n")
 	if !strings.Contains(warnings, "failed to parse entrypoint") || !strings.Contains(warnings, "failed to read entrypoint") {
 		t.Fatalf("expected parse/read warnings, got %#v", surface.Warnings)
+	}
+	if !slices.Contains(surface.Warnings, "failed to read entrypoint: "+largeFile) {
+		t.Fatalf("expected oversized entrypoint warning for large.js, got %#v", surface.Warnings)
+	}
+	if !boolFieldForTest(*surface, "CoverageIncomplete") {
+		t.Fatal("expected skipped entrypoints to mark export coverage incomplete")
+	}
+}
+
+func TestParseEntrypointsIntoSurfaceMarksRecoveryTreesIncomplete(t *testing.T) {
+	depRoot := t.TempDir()
+	validFile := filepath.Join(depRoot, indexJSName)
+	if err := os.WriteFile(validFile, []byte("export const safe = 1\n"), 0o600); err != nil {
+		t.Fatalf("write valid entrypoint: %v", err)
+	}
+	brokenFile := filepath.Join(depRoot, "broken.js")
+	if err := os.WriteFile(brokenFile, []byte("export const partial = ;\n"), 0o600); err != nil {
+		t.Fatalf("write broken entrypoint: %v", err)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(depRoot, []string{validFile, brokenFile}, surface)
+
+	if _, ok := surface.Names["safe"]; !ok {
+		t.Fatal("expected valid entrypoint export to remain available")
+	}
+	if !boolFieldForTest(*surface, "CoverageIncomplete") {
+		t.Fatal("expected syntax-recovery tree to mark export coverage incomplete")
+	}
+	if !slices.Contains(surface.Warnings, "failed to parse entrypoint: "+brokenFile) {
+		t.Fatalf("expected syntax-recovery warning, got %#v", surface.Warnings)
+	}
+}
+
+func TestBuildDependencyReportSuppressesIncompleteExportSurface(t *testing.T) {
+	depRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"name":"dep","exports":{".":"./index.js","./large":"./large.js"}}`), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, indexJSName), []byte("export const safe = 1\n"), 0o600); err != nil {
+		t.Fatalf("write index.js: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "large.js"), []byte(strings.Repeat("a", oversizedJSFileSize)), 0o600); err != nil {
+		t.Fatalf("write oversized entrypoint: %v", err)
+	}
+
+	dependency, warnings := buildDependencyReport(dependencyReportOptions{
+		Dependency:                        "dep",
+		DependencyRootPath:                depRoot,
+		ScanResult:                        ScanResult{},
+		MinUsagePercentForRecommendations: 100,
+		SuggestOnly:                       true,
+	})
+
+	if dependency.UsedExportsCount != 0 || dependency.TotalExportsCount != 0 || dependency.UsedPercent != 0 {
+		t.Fatalf("expected partial export metrics to be suppressed, got %#v", dependency)
+	}
+	if len(dependency.UnusedExports) != 0 || len(dependency.Recommendations) != 0 {
+		t.Fatalf("expected partial export removal advice to be suppressed, got %#v", dependency)
+	}
+	if dependency.Codemod != nil {
+		t.Fatalf("expected partial export coverage to suppress codemods, got %#v", dependency.Codemod)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "removal signals suppressed") {
+		t.Fatalf("expected incomplete-export warning, got %#v", warnings)
+	}
+
+	scored := []report.DependencyReport{dependency}
+	report.AnnotateRemovalCandidateScores(scored)
+	if scored[0].RemovalCandidate != nil {
+		t.Fatalf("expected incomplete export surface to suppress removal scoring, got %#v", scored[0].RemovalCandidate)
+	}
+}
+
+func boolFieldForTest(value any, name string) bool {
+	field := reflect.ValueOf(value).FieldByName(name)
+	return field.IsValid() && field.Kind() == reflect.Bool && field.Bool()
+}
+
+func TestParseEntrypointsIntoSurfaceRejectsSymlinkedEntrypoint(t *testing.T) {
+	depPath := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("export const outside = 1\n"), 0o600); err != nil {
+		t.Fatalf("write outside entrypoint: %v", err)
+	}
+	entrypoint := filepath.Join(depPath, indexJSName)
+	if err := os.Symlink(outsidePath, entrypoint); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(depPath, []string{entrypoint}, surface)
+
+	if !slices.Contains(surface.Warnings, "failed to read entrypoint: "+entrypoint) {
+		t.Fatalf("expected symlinked entrypoint warning, got %#v", surface.Warnings)
+	}
+	if len(surface.Names) != 0 {
+		t.Fatalf("expected no exports from outside target, got %#v", surface.Names)
 	}
 }
 

@@ -49,8 +49,9 @@ type FileScan struct {
 }
 
 type ScanResult struct {
-	Files    []FileScan
-	Warnings []string
+	Files           []FileScan
+	Warnings        []string
+	UsageIncomplete bool
 }
 
 var supportedExtensions = map[string]bool{
@@ -100,6 +101,15 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 
 	if len(result.Files) == 0 {
 		result.Warnings = append(result.Warnings, "no JS/TS files found for analysis")
+	}
+
+	if state.oversizedCount > 0 {
+		result.UsageIncomplete = true
+		warning := fmt.Sprintf("skipped %d oversized JS/TS file(s) exceeding the %d-byte limit", state.oversizedCount, maxScannableJSFile)
+		if len(state.oversizedFiles) > 0 {
+			warning = fmt.Sprintf("%s: %s", warning, strings.Join(state.oversizedFiles, ", "))
+		}
+		result.Warnings = append(result.Warnings, warning)
 	}
 
 	if state.parseErrorCount > 0 {

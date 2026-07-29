@@ -3,8 +3,10 @@ package analysis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -21,8 +23,9 @@ const (
 )
 
 type countingAdapter struct {
-	id    string
-	calls int
+	id              string
+	calls           int
+	usageIncomplete bool
 }
 
 func (a *countingAdapter) ID() string { return a.id }
@@ -57,9 +60,21 @@ func (a *countingAdapter) Analyse(_ context.Context, req language.Request) (repo
 			},
 		}
 	}
+	if a.usageIncomplete && !markUsageIncompleteForTest(&dependency) {
+		return report.Report{}, errors.New("usage-incomplete marker unavailable")
+	}
 	return report.Report{
 		Dependencies: []report.DependencyReport{dependency},
 	}, nil
+}
+
+func markUsageIncompleteForTest(dependency *report.DependencyReport) bool {
+	field := reflect.ValueOf(dependency).Elem().FieldByName("UsageIncomplete")
+	if !field.IsValid() || !field.CanSet() {
+		return false
+	}
+	field.SetBool(true)
+	return true
 }
 
 func newCacheTestService(t *testing.T) (*Service, *countingAdapter) {
@@ -129,6 +144,44 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	}
 	if len(third.Cache.Invalidations) == 0 || !strings.Contains(third.Cache.Invalidations[0].Reason, "input-changed") {
 		t.Fatalf("expected input-changed invalidation, got %#v", third.Cache.Invalidations)
+	}
+}
+
+func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")
+
+	svc, adapter := newCacheTestService(t)
+	adapter.usageIncomplete = true
+	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
+
+	first, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first analyse: %v", err)
+	}
+	if len(first.Dependencies) != 1 || first.Dependencies[0].RemovalCandidate != nil {
+		t.Fatalf("expected incomplete first analysis to suppress removal scoring, got %#v", first.Dependencies)
+	}
+
+	second, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second analyse: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected second analysis to use cache, adapter calls=%d", adapter.calls)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 {
+		t.Fatalf("expected cache hit metadata, got %#v", second.Cache)
+	}
+	if len(second.Dependencies) != 1 || second.Dependencies[0].RemovalCandidate != nil {
+		t.Fatalf("expected cached incomplete analysis to suppress removal scoring, got %#v", second.Dependencies)
+	}
+	serialized, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	if strings.Contains(string(serialized), "usageIncomplete") {
+		t.Fatalf("did not expect internal incomplete-usage state in report JSON: %s", serialized)
 	}
 }
 

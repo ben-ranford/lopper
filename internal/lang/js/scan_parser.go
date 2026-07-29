@@ -19,6 +19,8 @@ type sourceParser struct {
 	tsx *sitter.Language
 }
 
+const maxScannableJSFile = 2 * 1024 * 1024
+
 func newSourceParser() *sourceParser {
 	return &sourceParser{
 		js:  javascript.GetLanguage(),
@@ -59,9 +61,9 @@ func readAndParseFile(ctx context.Context, parser *sourceParser, repoPath string
 		readErr error
 	)
 	if strings.TrimSpace(repoPath) == "" {
-		content, readErr = safeio.ReadFile(path)
+		content, readErr = safeio.ReadFileLimit(path, maxScannableJSFile)
 	} else {
-		content, readErr = safeio.ReadFileUnder(repoPath, path)
+		content, readErr = safeio.ReadFileUnderLimit(repoPath, path, maxScannableJSFile)
 	}
 	if readErr != nil {
 		return nil, nil, "", readErr
