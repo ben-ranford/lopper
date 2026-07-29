@@ -113,6 +113,7 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 	}
 
 	if state.parseErrorCount > 0 {
+		result.UsageIncomplete = true
 		warning := fmt.Sprintf("parse errors in %d file(s)", state.parseErrorCount)
 		if len(state.parseErrorFiles) > 0 {
 			warning = fmt.Sprintf("%s: %s", warning, strings.Join(state.parseErrorFiles, ", "))

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -152,6 +153,43 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 	}
 	if report.Dependencies[0].Name != "beta" {
 		t.Fatalf("expected top dependency to be beta, got %q", report.Dependencies[0].Name)
+	}
+}
+
+func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
+	repo, _, _ := setupLodashFixture(t, "import { map } from \"lodash\";\nconst broken =\n")
+
+	reportData := analyseSuggestOnly(t, repo)
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDepFmt, len(reportData.Dependencies))
+	}
+
+	dependency := reportData.Dependencies[0]
+	if !dependency.UsageIncomplete {
+		t.Fatalf("expected syntax-recovery scan to mark dependency usage incomplete, got %#v", dependency)
+	}
+	if len(dependency.UnusedExports) != 0 {
+		t.Fatalf("expected syntax-recovery scan to suppress unused exports, got %#v", dependency.UnusedExports)
+	}
+	if len(dependency.Recommendations) != 0 {
+		t.Fatalf("expected syntax-recovery scan to suppress recommendations, got %#v", dependency.Recommendations)
+	}
+	if dependency.Codemod != nil {
+		t.Fatalf("expected syntax-recovery scan to suppress codemod output, got %#v", dependency.Codemod)
+	}
+
+	scored := []report.DependencyReport{dependency}
+	report.AnnotateRemovalCandidateScores(scored)
+	if scored[0].RemovalCandidate != nil {
+		t.Fatalf("expected syntax-recovery scan to suppress removal score, got %#v", scored[0].RemovalCandidate)
+	}
+
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if !strings.Contains(warnings, "parse errors in 1 file(s)") {
+		t.Fatalf("expected parse-error warning to remain visible, got %#v", reportData.Warnings)
+	}
+	if !strings.Contains(warnings, "removal signals suppressed") {
+		t.Fatalf("expected incomplete-coverage suppression warning, got %#v", reportData.Warnings)
 	}
 }
 

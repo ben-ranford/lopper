@@ -313,6 +313,61 @@ func TestBuildDependencyReportSuppressesIncompleteExportSurface(t *testing.T) {
 	}
 }
 
+func TestBuildDependencyReportSuppressesSignalsForMalformedPackageMetadata(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, indexJSName), []byte("import { broken } from \"broken\"\n"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	depRoot := filepath.Join(repo, "node_modules", "broken")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write malformed package.json: %v", err)
+	}
+
+	scanResult, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	dependency, warnings := buildDependencyReport(dependencyReportOptions{
+		RepoPath:                          repo,
+		Dependency:                        "broken",
+		DependencyRootPath:                depRoot,
+		ScanResult:                        scanResult,
+		MinUsagePercentForRecommendations: 1,
+		SuggestOnly:                       true,
+	})
+
+	if !dependency.UsageIncomplete {
+		t.Fatalf("expected malformed package metadata to mark dependency usage incomplete, got %#v", dependency)
+	}
+	if len(dependency.UnusedExports) != 0 {
+		t.Fatalf("expected malformed package metadata to suppress unused exports, got %#v", dependency.UnusedExports)
+	}
+	if len(dependency.Recommendations) != 0 {
+		t.Fatalf("expected malformed package metadata to suppress recommendations, got %#v", dependency.Recommendations)
+	}
+	if dependency.Codemod != nil {
+		t.Fatalf("expected malformed package metadata to suppress codemod output, got %#v", dependency.Codemod)
+	}
+
+	scored := []report.DependencyReport{dependency}
+	report.AnnotateRemovalCandidateScores(scored)
+	if scored[0].RemovalCandidate != nil {
+		t.Fatalf("expected malformed package metadata to suppress removal scoring, got %#v", scored[0].RemovalCandidate)
+	}
+
+	joinedWarnings := strings.Join(warnings, "\n")
+	if !strings.Contains(joinedWarnings, "failed to parse dependency package.json") {
+		t.Fatalf("expected malformed package metadata warning to remain visible, got %#v", warnings)
+	}
+	if !strings.Contains(joinedWarnings, "removal signals suppressed") {
+		t.Fatalf("expected incomplete-coverage suppression warning, got %#v", warnings)
+	}
+}
+
 func boolFieldForTest(value any, name string) bool {
 	field := reflect.ValueOf(value).FieldByName(name)
 	return field.IsValid() && field.Kind() == reflect.Bool && field.Bool()
