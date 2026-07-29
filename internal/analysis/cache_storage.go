@@ -15,7 +15,8 @@ type cachePointer struct {
 }
 
 type cachedPayload struct {
-	Report report.Report `json:"report"`
+	Report                      report.Report `json:"report"`
+	UsageIncompleteDependencies []int         `json:"usageIncompleteDependencies,omitempty"`
 }
 
 func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool, error) {
@@ -61,6 +62,11 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
 		return report.Report{}, false, nil
 	}
+	if !payload.restoreUsageIncomplete() {
+		c.metadata.Misses++
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
+		return report.Report{}, false, nil
+	}
 	c.metadata.Hits++
 	return payload.Report, true, nil
 }
@@ -69,7 +75,7 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	if c == nil || !c.options.Enabled || !c.cacheable || c.options.ReadOnly {
 		return nil
 	}
-	payload := cachedPayload{Report: data}
+	payload := newCachedPayload(data)
 	serializedPayload, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -96,4 +102,24 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	}
 	c.metadata.Writes++
 	return nil
+}
+
+func newCachedPayload(data report.Report) cachedPayload {
+	payload := cachedPayload{Report: data}
+	for index := range data.Dependencies {
+		if data.Dependencies[index].UsageIncomplete {
+			payload.UsageIncompleteDependencies = append(payload.UsageIncompleteDependencies, index)
+		}
+	}
+	return payload
+}
+
+func (p *cachedPayload) restoreUsageIncomplete() bool {
+	for _, index := range p.UsageIncompleteDependencies {
+		if index < 0 || index >= len(p.Report.Dependencies) {
+			return false
+		}
+		p.Report.Dependencies[index].UsageIncomplete = true
+	}
+	return true
 }
