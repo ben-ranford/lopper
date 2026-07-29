@@ -20,6 +20,7 @@ COVERAGE_PACKAGE_MIN ?= $(COVERAGE_MIN)
 LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
 LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
+GO_BIN ?=
 GO_TOOLCHAIN ?= go1.26.5
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
@@ -208,25 +209,166 @@ bench-gate:
 	@set -eu; \
 	requested_base_ref="$(MEMORY_BENCH_BASE)"; \
 	base_ref="$$requested_base_ref"; \
+	requested_go_bin="$(GO_BIN)"; \
+	requested_go_toolchain="$(GO_TOOLCHAIN)"; \
 	mkdir -p $$(dirname "$(BENCH_BASE_OUTPUT)") $$(dirname "$(BENCH_HEAD_OUTPUT)") $$(dirname "$(MEMORY_BENCH_SUMMARY)") $$(dirname "$(MEMORY_BENCH_STATUS)"); \
 	write_invalid_memory_summary() { \
 		printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark input could not be read for a safe memory comparison.\n" "$(MEMORY_BENCH_MAX_BYTES_PCT)" "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" "$$1" > "$(MEMORY_BENCH_SUMMARY)"; \
 		printf "2\n" > "$(MEMORY_BENCH_STATUS)"; \
 	}; \
 	fail_invalid_memory_gate() { \
-		printf "Memory benchmark gate invalid: %s\n" "$$1" >&2; \
-		write_invalid_memory_summary "$$1"; \
+		diagnostic="$$1"; \
+		summary_error="$$diagnostic"; \
+		if [ "$$#" -gt 1 ]; then summary_error="$$2"; fi; \
+		printf "Memory benchmark gate invalid: %s\n" "$$diagnostic" >&2; \
+		write_invalid_memory_summary "$$summary_error"; \
 		exit 2; \
 	}; \
+	if [ -z "$$requested_go_bin" ]; then \
+		go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOHOSTOS 2>/dev/null || true)"; \
+		derived_go_root="$$(printf '%s\n' "$$go_env_output" | sed -n '1p')"; \
+		derived_go_host_os="$$(printf '%s\n' "$$go_env_output" | sed -n '2p')"; \
+		if [ -z "$$derived_go_root" ]; then \
+			fail_invalid_memory_gate "configured GO command could not resolve GOROOT; set GO_BIN explicitly."; \
+		fi; \
+		derived_go_exe=""; \
+		if [ "$$derived_go_host_os" = "windows" ]; then derived_go_exe=".exe"; fi; \
+		requested_go_bin="$$derived_go_root/bin/go$$derived_go_exe"; \
+	fi; \
+	resolve_go_bin_reference() { \
+		candidate="$$1"; \
+		case "$$candidate" in \
+			*/*) resolved="$$candidate" ;; \
+			*) resolved="$$(command -v "$$candidate" 2>/dev/null || true)" ;; \
+		esac; \
+		if [ -z "$$resolved" ]; then return 1; fi; \
+		case "$$resolved" in \
+			/*) ;; \
+			*) resolved="$$PWD/$$resolved" ;; \
+		esac; \
+		if [ ! -e "$$resolved" ]; then return 1; fi; \
+		printf "%s\n" "$$resolved"; \
+	}; \
+	resolve_go_bin() { \
+		reference_path="$$1"; \
+		resolved_go_bin=""; \
+		resolve_go_bin_error=""; \
+		if [ -z "$$reference_path" ] || [ ! -e "$$reference_path" ]; then return 1; fi; \
+		target_path="$$reference_path"; \
+		case "$$target_path" in \
+			/*) ;; \
+			*) target_path="$$PWD/$$target_path" ;; \
+		esac; \
+		symlink_depth=0; \
+		while [ -L "$$target_path" ]; do \
+			link_parent="$$(CDPATH= cd -P "$$(dirname "$$target_path")" 2>/dev/null && pwd -P)" || { \
+				resolve_go_bin_error="could not canonicalize symlink parent '$$target_path'."; \
+				return 2; \
+			}; \
+			link_target="$$(readlink "$$target_path" 2>/dev/null)" || { \
+				resolve_go_bin_error="could not read symbolic link '$$target_path'."; \
+				return 2; \
+			}; \
+			case "$$link_target" in \
+				/*) target_path="$$link_target" ;; \
+				*) target_path="$$link_parent/$$link_target" ;; \
+			esac; \
+			symlink_depth=$$((symlink_depth + 1)); \
+			if [ "$$symlink_depth" -gt 40 ]; then \
+				resolve_go_bin_error="exceeded symlink resolution depth for '$$reference_path'."; \
+				return 2; \
+			fi; \
+		done; \
+		canonical_parent="$$(CDPATH= cd -P "$$(dirname "$$target_path")" 2>/dev/null && pwd -P)" || { \
+			resolve_go_bin_error="could not canonicalize parent directory '$$target_path'."; \
+			return 2; \
+		}; \
+		canonical_name="$$(basename "$$target_path")" || { \
+			resolve_go_bin_error="could not determine executable name for '$$target_path'."; \
+			return 2; \
+		}; \
+		resolved_go_bin="$$canonical_parent/$$canonical_name"; \
+		return 0; \
+	}; \
+	fingerprint_go_bin() { \
+		cksum "$$1" 2>/dev/null; \
+	}; \
+	go_bin_reference_path="$$(resolve_go_bin_reference "$$requested_go_bin" || true)"; \
+	if resolve_go_bin "$$go_bin_reference_path"; then \
+		go_bin_path="$$resolved_go_bin"; \
+	else \
+		go_bin_status=$$?; \
+		if [ "$$go_bin_status" -eq 1 ]; then \
+			fail_invalid_memory_gate "configured GO_BIN '$$requested_go_bin' is missing or not found." "base benchmark input could not be read: configured GO_BIN '$$requested_go_bin' is missing or not found."; \
+		fi; \
+		fail_invalid_memory_gate "configured GO_BIN '$$requested_go_bin' could not be canonicalized: $$resolve_go_bin_error" "base benchmark input could not be read: configured GO_BIN '$$requested_go_bin' could not be canonicalized: $$resolve_go_bin_error"; \
+	fi; \
+	if [ ! -x "$$go_bin_path" ]; then \
+		fail_invalid_memory_gate "configured GO_BIN '$$go_bin_path' is not executable." "base benchmark input could not be read: configured GO_BIN '$$go_bin_path' is not executable."; \
+	fi; \
+	expected_go_bin_fingerprint="$$(fingerprint_go_bin "$$go_bin_path" || true)"; \
+	if [ -z "$$expected_go_bin_fingerprint" ]; then \
+		fail_invalid_memory_gate "configured GO_BIN '$$go_bin_path' could not be fingerprinted." "base benchmark input could not be read: configured GO_BIN '$$go_bin_path' could not be fingerprinted."; \
+	fi; \
+	validate_go_bin_identity() { \
+		phase="$$1"; \
+		if resolve_go_bin "$$go_bin_reference_path"; then \
+			current_go_bin_path="$$resolved_go_bin"; \
+		else \
+			fail_invalid_memory_gate "configured GO_BIN '$$requested_go_bin' disappeared or became invalid before $$phase." "base benchmark input could not be read: configured GO_BIN '$$requested_go_bin' disappeared or became invalid before $$phase."; \
+		fi; \
+		if [ "$$current_go_bin_path" != "$$go_bin_path" ]; then \
+			fail_invalid_memory_gate "configured GO_BIN '$$requested_go_bin' resolved to '$$current_go_bin_path' during $$phase after validating '$$go_bin_path'." "base benchmark input could not be read: configured GO_BIN '$$requested_go_bin' was substituted during $$phase."; \
+		fi; \
+		if [ ! -x "$$current_go_bin_path" ]; then \
+			fail_invalid_memory_gate "configured GO_BIN '$$current_go_bin_path' is not executable during $$phase." "base benchmark input could not be read: configured GO_BIN '$$current_go_bin_path' is not executable during $$phase."; \
+		fi; \
+		current_go_bin_fingerprint="$$(fingerprint_go_bin "$$current_go_bin_path" || true)"; \
+		if [ -z "$$current_go_bin_fingerprint" ] || [ "$$current_go_bin_fingerprint" != "$$expected_go_bin_fingerprint" ]; then \
+			fail_invalid_memory_gate "configured GO_BIN '$$current_go_bin_path' changed in place before $$phase." "base benchmark input could not be read: configured GO_BIN '$$current_go_bin_path' changed in place before $$phase."; \
+		fi; \
+	}; \
+	validate_go_bin_identity "Go toolchain discovery"; \
+	expected_go_version="$$(GOTOOLCHAIN=$$requested_go_toolchain "$$go_bin_path" env GOVERSION 2>/dev/null || true)"; \
+	if [ -z "$$expected_go_version" ]; then \
+		fail_invalid_memory_gate "configured GO_BIN '$$go_bin_path' could not resolve GOVERSION for GOTOOLCHAIN='$$requested_go_toolchain'." "base benchmark input could not be read: configured GO_BIN '$$go_bin_path' could not resolve GOVERSION for GOTOOLCHAIN='$$requested_go_toolchain'."; \
+	fi; \
+	validate_go_toolchain() { \
+		phase="$$1"; \
+		validate_go_bin_identity "$$phase"; \
+		resolved_go_version="$$(GOTOOLCHAIN=$$requested_go_toolchain "$$go_bin_path" env GOVERSION 2>/dev/null || true)"; \
+		if [ "$$resolved_go_version" != "$$expected_go_version" ]; then \
+			fail_invalid_memory_gate "configured GO_BIN '$$go_bin_path' reported GOVERSION '$$resolved_go_version' during $$phase; expected '$$expected_go_version'." "base benchmark input could not be read: configured GO_BIN '$$go_bin_path' reported GOVERSION '$$resolved_go_version' during $$phase; expected '$$expected_go_version'."; \
+		fi; \
+	}; \
+	run_validated_go() { \
+		phase="$$1"; \
+		shift; \
+		validate_go_toolchain "$$phase"; \
+		GOTOOLCHAIN=$$requested_go_toolchain "$$go_bin_path" "$$@"; \
+	}; \
+	validate_go_toolchain "initial validation"; \
+	go_version_log="$$(GOTOOLCHAIN=$$requested_go_toolchain "$$go_bin_path" version 2>/dev/null || true)"; \
+	reported_go_version="$${go_version_log#go version }"; \
+	if [ "$$reported_go_version" = "$$go_version_log" ]; then \
+		reported_go_version=""; \
+	else \
+		reported_go_version="$${reported_go_version% *}"; \
+	fi; \
+	if [ -z "$$go_version_log" ] || [ "$$reported_go_version" != "$$expected_go_version" ]; then \
+		fail_invalid_memory_gate "configured GO_BIN '$$go_bin_path' reported version '$$reported_go_version' for GOTOOLCHAIN='$$requested_go_toolchain'; expected '$$expected_go_version'." "base benchmark input could not be read: configured GO_BIN '$$go_bin_path' reported version '$$reported_go_version' for GOTOOLCHAIN='$$requested_go_toolchain'; expected '$$expected_go_version'."; \
+	fi; \
+	echo "Memory benchmark GO_BIN: $$go_bin_path"; \
+	echo "Memory benchmark Go toolchain: $$expected_go_version"; \
 	benchmark_harness_fingerprint() { \
 		fingerprint_pkg="$$1"; \
 		fingerprint_files_tmp=$$(mktemp) || return 1; \
 		fingerprint_manifest_tmp=$$(mktemp) || { rm -f "$$fingerprint_files_tmp"; return 1; }; \
-		if ! fingerprint_dir=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list -f '{{.Dir}}' "$$fingerprint_pkg" 2>/dev/null); then \
+		if ! fingerprint_dir=$$(GOFLAGS=-buildvcs=false run_validated_go "benchmark harness directory resolution for '$$fingerprint_pkg'" list -f '{{.Dir}}' "$$fingerprint_pkg" 2>/dev/null); then \
 			rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
 			return 1; \
 		fi; \
-		if ! GOFLAGS=-buildvcs=false $(GO_CMD) list -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$$fingerprint_pkg" > "$$fingerprint_files_tmp" 2>/dev/null; then \
+		if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$$fingerprint_pkg'" list -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$$fingerprint_pkg" > "$$fingerprint_files_tmp" 2>/dev/null; then \
 			rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
 			return 1; \
 		fi; \
@@ -258,7 +400,7 @@ bench-gate:
 		invocation_pkg="$$1"; \
 		invocation_selection="$$2"; \
 		invocation_fingerprint="$$3"; \
-		printf "package=%s selection=%s -run '^$$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false %s test %s -run '^$$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$$invocation_pkg" "$$invocation_selection" "$(subst ",\",$(GO_TEST_LDFLAGS_ARGS))" "$(BENCH_COUNT)" "$(BENCH_TIME)" "$$invocation_fingerprint" "$(GO_CMD)" "$(subst ",\",$(GO_TEST_LDFLAGS_ARGS))" "$$invocation_selection" "$(BENCH_COUNT)" "$(BENCH_TIME)" "$$invocation_pkg"; \
+		printf "package=%s selection=%s -run '^$$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$$invocation_pkg" "$$invocation_selection" "$(subst ",\",$(GO_TEST_LDFLAGS_ARGS))" "$(BENCH_COUNT)" "$(BENCH_TIME)" "$$invocation_fingerprint" "$$requested_go_toolchain" "$$go_bin_path" "$(subst ",\",$(GO_TEST_LDFLAGS_ARGS))" "$$invocation_selection" "$(BENCH_COUNT)" "$(BENCH_TIME)" "$$invocation_pkg"; \
 	}; \
 	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
 		echo "Memory benchmark base ref '$$base_ref' is missing or invalid; failing closed."; \
@@ -280,7 +422,9 @@ bench-gate:
 	: > "$$base_output_tmp"; \
 	: > "$$head_output_tmp"; \
 	: > "$$bench_definitions_tmp"; \
-	if ! GOFLAGS=-buildvcs=false $(GO_CMD) list $(MEMORY_BENCH_PACKAGES) > "$$bench_packages_tmp" 2>&1; then \
+	printf "Memory benchmark GO_BIN: %s\nMemory benchmark Go toolchain: %s\n" "$$go_bin_path" "$$expected_go_version" >> "$$base_output_tmp"; \
+	printf "Memory benchmark GO_BIN: %s\nMemory benchmark Go toolchain: %s\n" "$$go_bin_path" "$$expected_go_version" >> "$$head_output_tmp"; \
+	if ! GOFLAGS=-buildvcs=false run_validated_go "head benchmark package resolution" list $(MEMORY_BENCH_PACKAGES) > "$$bench_packages_tmp" 2>&1; then \
 		cat "$$bench_packages_tmp"; \
 		fail_invalid_memory_gate "head benchmark package targets could not be resolved."; \
 	fi; \
@@ -289,7 +433,7 @@ bench-gate:
 		[ -n "$$bench_pkg" ] || continue; \
 		pkg_bench_tmp=$$(mktemp); \
 		pkg_names_tmp=$$(mktemp); \
-		if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -list '^Benchmark' "$$bench_pkg" > "$$pkg_bench_tmp" 2>&1; then \
+		if ! GOFLAGS=-buildvcs=false run_validated_go "head benchmark discovery for '$$bench_pkg'" test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -list '^Benchmark' "$$bench_pkg" > "$$pkg_bench_tmp" 2>&1; then \
 			cat "$$pkg_bench_tmp"; \
 			rm -f "$$pkg_bench_tmp" "$$pkg_names_tmp"; \
 			fail_invalid_memory_gate "head benchmark definition could not be resolved from package '$$bench_pkg'."; \
@@ -329,7 +473,7 @@ bench-gate:
 		printf "Applied base benchmark definition: %s\n" "$$definition_metadata"; \
 		printf "Applied base benchmark definition: %s\n" "$$definition_metadata" >> "$$base_output_tmp"; \
 		bench_run_output_tmp=$$(mktemp); \
-		if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench "$$bench_selection" -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) "$$bench_pkg") > "$$bench_run_output_tmp" 2>&1; then \
+		if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false run_validated_go "base benchmark execution for '$$bench_pkg'" test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench "$$bench_selection" -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) "$$bench_pkg") > "$$bench_run_output_tmp" 2>&1; then \
 			cat "$$bench_run_output_tmp"; \
 			rm -f "$$bench_run_output_tmp"; \
 			fail_invalid_memory_gate "base benchmark definition for package '$$bench_pkg' with selection '$$bench_selection' could not be applied unchanged."; \
@@ -344,7 +488,7 @@ bench-gate:
 		printf "Applied head benchmark definition: %s\n" "$$definition_metadata"; \
 		printf "Applied head benchmark definition: %s\n" "$$definition_metadata" >> "$$head_output_tmp"; \
 		bench_run_output_tmp=$$(mktemp); \
-		if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench "$$bench_selection" -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) "$$bench_pkg" > "$$bench_run_output_tmp" 2>&1; then \
+		if ! GOFLAGS=-buildvcs=false run_validated_go "head benchmark execution for '$$bench_pkg'" test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench "$$bench_selection" -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) "$$bench_pkg" > "$$bench_run_output_tmp" 2>&1; then \
 			cat "$$bench_run_output_tmp"; \
 			rm -f "$$bench_run_output_tmp"; \
 			fail_invalid_memory_gate "head benchmark definition for package '$$bench_pkg' with selection '$$bench_selection' could not be applied unchanged."; \
@@ -355,7 +499,7 @@ bench-gate:
 	done < "$$bench_definitions_tmp"; \
 	cp "$$head_output_tmp" "$(BENCH_HEAD_OUTPUT)"; \
 	benchdelta_bin="$$bench_dir/benchdelta"; \
-	GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta; \
+	GOFLAGS=-buildvcs=false run_validated_go "benchdelta helper build" build -o "$$benchdelta_bin" ./tools/benchdelta; \
 	set +e; \
 	"$$benchdelta_bin" -base "$(BENCH_BASE_OUTPUT)" -head "$(BENCH_HEAD_OUTPUT)" -max-bytes-pct "$(MEMORY_BENCH_MAX_BYTES_PCT)" -max-allocs-pct "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" -summary-out "$(MEMORY_BENCH_SUMMARY)"; \
 	status=$$?; \
