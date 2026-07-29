@@ -6,10 +6,11 @@ import (
 )
 
 type ExportSurface struct {
-	Names            map[string]struct{}
-	IncludesWildcard bool
-	EntryPoints      []string
-	Warnings         []string
+	Names              map[string]struct{}
+	IncludesWildcard   bool
+	EntryPoints        []string
+	Warnings           []string
+	CoverageIncomplete bool
 }
 
 type packageJSON struct {

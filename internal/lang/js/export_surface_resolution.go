@@ -52,6 +52,7 @@ func resolveEntrypoints(depPath string, entrypoints map[string]struct{}, surface
 	for entry := range entrypoints {
 		path, ok := resolveEntrypoint(depPath, entry)
 		if !ok {
+			surface.CoverageIncomplete = true
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("entrypoint not found: %s", entry))
 			continue
 		}
@@ -71,11 +72,13 @@ func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *Exp
 
 		content, err := safeio.ReadFileUnderLimit(depPath, entry, maxScannableJSFile)
 		if err != nil {
+			surface.CoverageIncomplete = true
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
 			continue
 		}
 		tree, err := parser.Parse(context.Background(), entry, content)
 		if err != nil {
+			surface.CoverageIncomplete = true
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to parse entrypoint: %s", entry))
 			continue
 		}

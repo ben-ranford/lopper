@@ -63,6 +63,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 	warnings = append(warnings, riskWarnings...)
 	license, provenance, licenseWarnings := detectLicenseAndProvenance(opts.DependencyRootPath, opts.IncludeRegistryProvenance)
 	warnings = append(warnings, licenseWarnings...)
+	coverageIncomplete := opts.ScanResult.UsageIncomplete || surface.CoverageIncomplete
 
 	depReport := report.DependencyReport{
 		Language:             "js-ts",
@@ -79,17 +80,17 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 		License:              license,
 		Provenance:           provenance,
 	}
-	if opts.ScanResult.UsageIncomplete {
+	if coverageIncomplete {
 		depReport.UsageIncomplete = true
 		depReport.UsedExportsCount = 0
 		depReport.TotalExportsCount = 0
 		depReport.UsedPercent = 0
 		depReport.UnusedExports = nil
-		warnings = append(warnings, fmt.Sprintf("usage coverage incomplete for %s; removal signals suppressed", opts.Dependency))
+		warnings = append(warnings, fmt.Sprintf("usage or export coverage incomplete for %s; removal signals suppressed", opts.Dependency))
 	} else {
 		depReport.Recommendations = buildRecommendations(opts.Dependency, depReport, opts.MinUsagePercentForRecommendations)
 	}
-	if opts.SuggestOnly && !opts.ScanResult.UsageIncomplete {
+	if opts.SuggestOnly && !coverageIncomplete {
 		codemod, codemodWarnings := BuildSubpathCodemodReport(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.ScanResult)
 		depReport.Codemod = codemod
 		warnings = append(warnings, codemodWarnings...)
