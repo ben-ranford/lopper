@@ -18,6 +18,7 @@ type DependencyReport struct {
 	RuntimeUsage           *RuntimeUsage           `json:"runtimeUsage,omitempty"`
 	ReachabilityConfidence *ReachabilityConfidence `json:"reachabilityConfidence,omitempty"`
 	RemovalCandidate       *RemovalCandidate       `json:"removalCandidate,omitempty"`
+	UsageIncomplete        bool                    `json:"-"`
 	Vulnerabilities        []VulnerabilityFinding  `json:"vulnerabilities,omitempty"`
 	License                *DependencyLicense      `json:"license,omitempty"`
 	Provenance             *DependencyProvenance   `json:"provenance,omitempty"`

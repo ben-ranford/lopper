@@ -30,6 +30,10 @@ func AnnotateRemovalCandidateScoresWithWeights(dependencies []DependencyReport, 
 	weights = NormalizeRemovalCandidateWeights(weights)
 
 	for i := range dependencies {
+		if dependencies[i].UsageIncomplete {
+			dependencies[i].RemovalCandidate = nil
+			continue
+		}
 		dependencies[i].RemovalCandidate = buildRemovalCandidate(dependencies[i], weights)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	sitter "github.com/smacker/go-tree-sitter"
 )
@@ -100,6 +101,9 @@ func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "valid.js"), []byte("export const valid = 1\n"), 0o644); err != nil {
 		t.Fatalf("write valid source: %v", err)
 	}
+	if err := writeDependency(repo, "oversized-only", "export const only = 1\n"); err != nil {
+		t.Fatalf("write dependency: %v", err)
+	}
 
 	result, err := ScanRepo(context.Background(), repo)
 	if err != nil {
@@ -113,16 +117,54 @@ func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 		t.Fatalf("expected oversized source warning, got %#v", result.Warnings)
 	}
 
-	dependencyReport, _ := buildDependencyReport(dependencyReportOptions{
+	dependencyReport, dependencyWarnings := buildDependencyReport(dependencyReportOptions{
 		RepoPath:                          repo,
 		Dependency:                        "oversized-only",
+		DependencyRootPath:                filepath.Join(repo, "node_modules", "oversized-only"),
 		ScanResult:                        result,
 		MinUsagePercentForRecommendations: 1,
 	})
-	for _, recommendation := range dependencyReport.Recommendations {
-		if recommendation.Code == "remove-unused-dependency" {
-			t.Fatalf("did not expect removal advice from an incomplete scan, got %#v", dependencyReport.Recommendations)
+	if len(dependencyReport.UnusedExports) != 0 {
+		t.Fatalf("did not expect unused exports from an incomplete scan, got %#v", dependencyReport.UnusedExports)
+	}
+	if dependencyReport.UsedExportsCount != 0 || dependencyReport.TotalExportsCount != 0 || dependencyReport.UsedPercent != 0 {
+		t.Fatalf("did not expect usage percentages from an incomplete scan, got %#v", dependencyReport)
+	}
+	if len(dependencyReport.Recommendations) != 0 {
+		t.Fatalf("did not expect recommendations from an incomplete scan, got %#v", dependencyReport.Recommendations)
+	}
+	if !strings.Contains(strings.Join(dependencyWarnings, "\n"), "removal signals suppressed") {
+		t.Fatalf("expected incomplete-usage suppression warning, got %#v", dependencyWarnings)
+	}
+	scored := []report.DependencyReport{dependencyReport}
+	report.AnnotateRemovalCandidateScores(scored)
+	if scored[0].RemovalCandidate != nil {
+		t.Fatalf("did not expect a removal score from an incomplete scan, got %#v", scored[0].RemovalCandidate)
+	}
+
+	for _, dependency := range []string{"alpha", "beta"} {
+		if err := writeDependency(repo, dependency, "export const value = 1\n"); err != nil {
+			t.Fatalf("write %s dependency: %v", dependency, err)
 		}
+	}
+	result.Files = []FileScan{{
+		Path: "valid.js",
+		Imports: []ImportBinding{
+			{Module: "beta"},
+			{Module: "alpha"},
+		},
+	}}
+	topReports, topWarnings := buildTopDependencies(repo, result, 1, "", 1, report.DefaultRemovalCandidateWeights(), false)
+	if len(topReports) != 2 || topReports[0].Name != "alpha" || topReports[1].Name != "beta" {
+		t.Fatalf("expected deterministic unranked reports from incomplete usage, got %#v", topReports)
+	}
+	for _, topReport := range topReports {
+		if topReport.RemovalCandidate != nil {
+			t.Fatalf("did not expect incomplete top-N report to be scored, got %#v", topReport)
+		}
+	}
+	if !strings.Contains(strings.Join(topWarnings, "\n"), "top-N removal ranking disabled") {
+		t.Fatalf("expected incomplete top-N warning, got %#v", topWarnings)
 	}
 }
 
