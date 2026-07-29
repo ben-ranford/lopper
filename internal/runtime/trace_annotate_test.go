@@ -117,6 +117,26 @@ func TestAnnotateRuntimeContextRedactsUnsafeVisiblePaths(t *testing.T) {
 	})
 }
 
+func TestLoadAndAnnotateRuntimeContextRedactsFileURLAuthorities(t *testing.T) {
+	trace, err := loadTraceFromContent(t, `{"module":"`+lodashMapModule+`","parent":"file://server/share/private/main.js","entrypoint":"file://localhost/private/start.js"}`+"\n")
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	rep := report.Report{
+		RepoPath: t.TempDir(),
+		Dependencies: []report.DependencyReport{
+			{Name: "lodash"},
+		},
+	}
+
+	usage := Annotate(rep, trace, AnnotateOptions{}).Dependencies[0].RuntimeUsage
+	if usage == nil {
+		t.Fatalf("expected runtime usage annotation")
+	}
+	assertRuntimeContextCounts(t, usage.ParentModules, map[string]int{"external:main.js": 1})
+	assertRuntimeContextCounts(t, usage.Entrypoints, map[string]int{"external:start.js": 1})
+}
+
 func TestAnnotateRuntimeContextPreservesIdentityThroughSymlinkedRepoRoot(t *testing.T) {
 	tempRoot := t.TempDir()
 	physicalRepo := filepath.Join(tempRoot, "physical")
