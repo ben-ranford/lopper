@@ -9,9 +9,10 @@ import (
 )
 
 type resolvedCacheOptions struct {
-	Enabled  bool
-	Path     string
-	ReadOnly bool
+	Enabled      bool
+	Path         string
+	ReadOnly     bool
+	ExplicitPath bool
 }
 
 type analysisCache struct {
@@ -19,6 +20,7 @@ type analysisCache struct {
 	metadata        report.CacheMetadata
 	warnings        []string
 	cacheable       bool
+	rejectReadHits  bool
 	inputDigestMemo map[cacheInputDigestMemoKey]string
 }
 
@@ -30,9 +32,10 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		ReadOnly: options.ReadOnly,
 	}
 	cache := &analysisCache{
-		options:  options,
-		metadata: metadata,
-		warnings: make([]string, 0),
+		options:        options,
+		metadata:       metadata,
+		warnings:       make([]string, 0),
+		rejectReadHits: !options.ExplicitPath,
 	}
 	if !options.Enabled {
 		cache.cacheable = false
@@ -90,6 +93,10 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 	options.Enabled = req.Enabled
 	if strings.TrimSpace(req.Path) != "" {
 		options.Path = strings.TrimSpace(req.Path)
+		options.ExplicitPath = true
+	}
+	if strings.TrimSpace(req.ResolvedPath) != "" {
+		options.Path = strings.TrimSpace(req.ResolvedPath)
 	}
 	options.ReadOnly = req.ReadOnly
 	return options

@@ -443,7 +443,6 @@ func TestCallAnalyseTopUsesInitializedCacheReadOnly(t *testing.T) {
 		"repoPath":      repo,
 		"topN":          1,
 		"language":      "js-ts",
-		"include":       []string{"**/*.js"},
 		"cacheReadOnly": false,
 	})
 	if result.IsError {
@@ -713,11 +712,29 @@ func assertAnalysisRequestBasics(t *testing.T, req analysis.Request) {
 
 func assertAnalysisRequestOptions(t *testing.T, req analysis.Request) {
 	t.Helper()
-	if req.Cache == nil || req.Cache.Enabled || req.Cache.Path != ".cache/lopper" || !req.Cache.ReadOnly {
+	if req.Cache == nil || req.Cache.Enabled || req.Cache.Path != ".cache/lopper" || req.Cache.ResolvedPath != "" || !req.Cache.ReadOnly {
 		t.Fatalf("unexpected cache options: %#v", req.Cache)
 	}
 	if req.RuntimeProfile != "browser-import" || req.RuntimeTracePath != "trace.ndjson" || !req.RuntimeTracePathExplicit {
 		t.Fatalf("unexpected runtime options: %#v", req)
+	}
+}
+
+func TestReadOnlyMCPAnalysisCacheOptionsPreservesImplicitDefaultIntent(t *testing.T) {
+	repo, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp root: %v", err)
+	}
+	cachePath := filepath.Join(repo, ".lopper-cache")
+	for _, dirName := range []string{"keys", "objects"} {
+		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dirName, err)
+		}
+	}
+
+	options := readOnlyMCPAnalysisCacheOptions(repo, nil, "")
+	if options == nil || !options.Enabled || options.Path != "" || options.ResolvedPath != cachePath || !options.ReadOnly {
+		t.Fatalf("unexpected implicit default cache options: %#v", options)
 	}
 }
 

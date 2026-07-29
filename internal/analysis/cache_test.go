@@ -265,6 +265,78 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	}
 }
 
+func TestDefaultRepoLocalCacheForgedEntryMisses(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
+
+	svc, adapter := newCacheTestService(t)
+	cachePath := filepath.Join(repo, ".lopper-cache")
+	req := Request{
+		RepoPath: repo,
+		Language: "cachelang",
+		TopN:     1,
+		Cache: &CacheOptions{
+			Enabled: true,
+		},
+	}
+
+	cache := newAnalysisCache(req, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected resolved default repo-local cache test setup to be cacheable, warnings=%#v", cache.takeWarnings())
+	}
+
+	entry, err := cache.prepareEntry(req, adapter.ID(), repo)
+	if err != nil {
+		t.Fatalf("prepare forged cache entry: %v", err)
+	}
+	objectDigest := "forged-object"
+	mustWriteFile(t, filepath.Join(cachePath, "objects", objectDigest+".json"), []byte(`{"report":{"repoPath":"forged-repo"}}`))
+	writePointerJSON(t, filepath.Join(cachePath, "keys", entry.KeyDigest+".json"), entry.InputDigest, objectDigest)
+
+	got, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse with forged default cache entry: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected forged default cache entry to miss and run adapter, calls=%d", adapter.calls)
+	}
+	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 1 {
+		t.Fatalf("unexpected cache metadata for forged default cache entry: %#v", got.Cache)
+	}
+	if len(got.Cache.Invalidations) == 0 || got.Cache.Invalidations[0].Reason != "default-local-untrusted" {
+		t.Fatalf("expected default-local-untrusted invalidation, got %#v", got.Cache.Invalidations)
+	}
+}
+
+func TestDefaultRepoLocalCacheColdMissHasNoUntrustedInvalidation(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
+
+	svc, adapter := newCacheTestService(t)
+	got, err := svc.Analyse(context.Background(), Request{
+		RepoPath: repo,
+		Language: "cachelang",
+		TopN:     1,
+		Cache: &CacheOptions{
+			Enabled: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("analyse with empty default cache: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected empty default cache to run adapter, calls=%d", adapter.calls)
+	}
+	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 1 {
+		t.Fatalf("unexpected cold-miss cache metadata: %#v", got.Cache)
+	}
+	if len(got.Cache.Invalidations) != 0 {
+		t.Fatalf("expected empty default cache to have no invalidations, got %#v", got.Cache.Invalidations)
+	}
+}
+
 func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")

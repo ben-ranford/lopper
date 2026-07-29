@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -24,6 +25,17 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, nil
 	}
 	pointerPath := filepath.Join(c.options.Path, "keys", entry.KeyDigest+".json")
+	if c.rejectReadHits {
+		pointerExists, err := cachePointerExists(c.options.Path, entry.KeyDigest)
+		if err != nil {
+			return report.Report{}, false, err
+		}
+		c.metadata.Misses++
+		if pointerExists {
+			c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "default-local-untrusted"})
+		}
+		return report.Report{}, false, nil
+	}
 	pointerData, err := safeio.ReadFileUnder(c.options.Path, pointerPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -69,6 +81,25 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	}
 	c.metadata.Hits++
 	return payload.Report, true, nil
+}
+
+func cachePointerExists(cachePath, keyDigest string) (_ bool, err error) {
+	root, err := safeio.OpenRootNoFollow(cachePath)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		err = errors.Join(err, root.Close())
+	}()
+
+	_, err = root.Lstat(filepath.Join("keys", keyDigest+".json"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) error {
