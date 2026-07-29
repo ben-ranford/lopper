@@ -415,7 +415,7 @@ func readOnlyMCPAnalysisCacheOptions(repoPath string, enabled *bool, cachePath s
 	if resolvedPath == "" {
 		resolvedPath = filepath.Join(repoPath, ".lopper-cache")
 	}
-	options.Path = resolvedPath
+	options.ResolvedPath = resolvedPath
 	if !cachePathReadyForReadOnly(resolvedPath) {
 		options.Enabled = false
 	}
