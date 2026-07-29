@@ -1,7 +1,6 @@
 package js
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -9,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const requireToken = "require("
@@ -139,14 +137,22 @@ func TestDetectDynamicLoaderUsageAndErrors(t *testing.T) {
 
 func TestDetectDynamicLoaderUsageRejectsOversizedEntrypoint(t *testing.T) {
 	depRoot := t.TempDir()
-	entry := filepath.Join(depRoot, "index.js")
-	if err := os.WriteFile(entry, []byte(strings.Repeat("a", oversizedJSFileSize)), 0o600); err != nil {
+	oversizedEntry := filepath.Join(depRoot, "oversized.js")
+	oversizedContent := "require(oversizedTarget)\n" + strings.Repeat("a", oversizedJSFileSize)
+	if err := os.WriteFile(oversizedEntry, []byte(oversizedContent), 0o600); err != nil {
 		t.Fatalf("write oversized entrypoint: %v", err)
 	}
+	validEntry := filepath.Join(depRoot, "valid.js")
+	if err := os.WriteFile(validEntry, []byte("require(validTarget)\n"), 0o600); err != nil {
+		t.Fatalf("write valid entrypoint: %v", err)
+	}
 
-	_, _, err := detectDynamicLoaderUsage(depRoot, []string{entry})
-	if !errors.Is(err, safeio.ErrFileTooLarge) {
-		t.Fatalf("expected oversized entrypoint error %v, got %v", safeio.ErrFileTooLarge, err)
+	count, samples, err := detectDynamicLoaderUsage(depRoot, []string{oversizedEntry, validEntry})
+	if err != nil {
+		t.Fatalf("expected oversized entrypoint to be skipped, got %v", err)
+	}
+	if count != 1 || len(samples) != 1 || samples[0] != "valid.js:1" {
+		t.Fatalf("expected only bounded entrypoint dynamic usage, got count=%d samples=%#v", count, samples)
 	}
 }
 

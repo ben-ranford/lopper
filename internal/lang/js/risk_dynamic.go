@@ -1,6 +1,7 @@
 package js
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,9 @@ func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []stri
 		}
 		content, err := safeio.ReadFileUnderLimit(depRoot, entry, maxScannableJSFile)
 		if err != nil {
+			if errors.Is(err, safeio.ErrFileTooLarge) {
+				continue
+			}
 			return 0, nil, err
 		}
 		lines := strings.Split(string(content), "\n")

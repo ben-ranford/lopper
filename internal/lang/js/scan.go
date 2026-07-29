@@ -102,6 +102,14 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 		result.Warnings = append(result.Warnings, "no JS/TS files found for analysis")
 	}
 
+	if state.oversizedCount > 0 {
+		warning := fmt.Sprintf("skipped %d oversized JS/TS file(s) exceeding the %d-byte limit", state.oversizedCount, maxScannableJSFile)
+		if len(state.oversizedFiles) > 0 {
+			warning = fmt.Sprintf("%s: %s", warning, strings.Join(state.oversizedFiles, ", "))
+		}
+		result.Warnings = append(result.Warnings, warning)
+	}
+
 	if state.parseErrorCount > 0 {
 		warning := fmt.Sprintf("parse errors in %d file(s)", state.parseErrorCount)
 		if len(state.parseErrorFiles) > 0 {

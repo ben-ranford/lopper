@@ -93,13 +93,24 @@ class Widget {}
 
 func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(strings.Repeat("a", oversizedJSFileSize)), 0o644); err != nil {
+	oversizedPath := filepath.Join(repo, "index.js")
+	if err := os.WriteFile(oversizedPath, []byte(strings.Repeat("a", oversizedJSFileSize)), 0o644); err != nil {
 		t.Fatalf("write oversized source: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "valid.js"), []byte("export const valid = 1\n"), 0o644); err != nil {
+		t.Fatalf("write valid source: %v", err)
+	}
 
-	_, err := ScanRepo(context.Background(), repo)
-	if !errors.Is(err, safeio.ErrFileTooLarge) {
-		t.Fatalf("expected oversized source error %v, got %v", safeio.ErrFileTooLarge, err)
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected oversized source to be skipped, got %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != "valid.js" {
+		t.Fatalf("expected valid source analysis to continue, got %#v", result.Files)
+	}
+	warnings := strings.Join(result.Warnings, "\n")
+	if !strings.Contains(warnings, "skipped 1 oversized JS/TS file") || !strings.Contains(warnings, filepath.Base(oversizedPath)) {
+		t.Fatalf("expected oversized source warning, got %#v", result.Warnings)
 	}
 }
 
