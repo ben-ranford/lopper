@@ -248,6 +248,31 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	}
 }
 
+func TestParseEntrypointsIntoSurfaceMarksRecoveryTreesIncomplete(t *testing.T) {
+	depRoot := t.TempDir()
+	validFile := filepath.Join(depRoot, indexJSName)
+	if err := os.WriteFile(validFile, []byte("export const safe = 1\n"), 0o600); err != nil {
+		t.Fatalf("write valid entrypoint: %v", err)
+	}
+	brokenFile := filepath.Join(depRoot, "broken.js")
+	if err := os.WriteFile(brokenFile, []byte("export const partial = ;\n"), 0o600); err != nil {
+		t.Fatalf("write broken entrypoint: %v", err)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(depRoot, []string{validFile, brokenFile}, surface)
+
+	if _, ok := surface.Names["safe"]; !ok {
+		t.Fatal("expected valid entrypoint export to remain available")
+	}
+	if !boolFieldForTest(*surface, "CoverageIncomplete") {
+		t.Fatal("expected syntax-recovery tree to mark export coverage incomplete")
+	}
+	if !slices.Contains(surface.Warnings, "failed to parse entrypoint: "+brokenFile) {
+		t.Fatalf("expected syntax-recovery warning, got %#v", surface.Warnings)
+	}
+}
+
 func TestBuildDependencyReportSuppressesIncompleteExportSurface(t *testing.T) {
 	depRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte(`{"name":"dep","exports":{".":"./index.js","./large":"./large.js"}}`), 0o600); err != nil {

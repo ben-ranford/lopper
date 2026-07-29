@@ -77,14 +77,12 @@ func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *Exp
 			continue
 		}
 		tree, err := parser.Parse(context.Background(), entry, content)
-		if err != nil {
+		if err != nil || tree == nil || tree.RootNode().HasError() {
 			surface.CoverageIncomplete = true
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to parse entrypoint: %s", entry))
 			continue
 		}
-		if tree != nil {
-			addCollectedExports(surface, collectExportNames(tree, content))
-		}
+		addCollectedExports(surface, collectExportNames(tree, content))
 	}
 	for entry := range seenEntries {
 		surface.EntryPoints = append(surface.EntryPoints, entry)
