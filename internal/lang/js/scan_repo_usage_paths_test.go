@@ -112,6 +112,18 @@ func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 	if !strings.Contains(warnings, "skipped 1 oversized JS/TS file") || !strings.Contains(warnings, filepath.Base(oversizedPath)) {
 		t.Fatalf("expected oversized source warning, got %#v", result.Warnings)
 	}
+
+	dependencyReport, _ := buildDependencyReport(dependencyReportOptions{
+		RepoPath:                          repo,
+		Dependency:                        "oversized-only",
+		ScanResult:                        result,
+		MinUsagePercentForRecommendations: 1,
+	})
+	for _, recommendation := range dependencyReport.Recommendations {
+		if recommendation.Code == "remove-unused-dependency" {
+			t.Fatalf("did not expect removal advice from an incomplete scan, got %#v", dependencyReport.Recommendations)
+		}
+	}
 }
 
 func TestJSScanRepoRejectsSymlinkedSource(t *testing.T) {

@@ -80,6 +80,11 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 		Provenance:           provenance,
 	}
 	depReport.Recommendations = buildRecommendations(opts.Dependency, depReport, opts.MinUsagePercentForRecommendations)
+	if opts.ScanResult.UsageIncomplete {
+		depReport.Recommendations = slices.DeleteFunc(depReport.Recommendations, func(recommendation report.Recommendation) bool {
+			return recommendation.Code == "remove-unused-dependency"
+		})
+	}
 	if opts.SuggestOnly {
 		codemod, codemodWarnings := BuildSubpathCodemodReport(opts.RepoPath, opts.Dependency, opts.DependencyRootPath, opts.ScanResult)
 		depReport.Codemod = codemod
