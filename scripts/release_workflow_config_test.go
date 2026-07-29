@@ -3108,6 +3108,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`validate_go_bin_identity "Go toolchain discovery"`,
 		`expected_go_version="$$(GOTOOLCHAIN=$$requested_go_toolchain "$$go_bin_path" env GOVERSION`,
 		`run_validated_go() { \`,
+		`reported_go_version="$${go_version_log#go version }"`,
+		`reported_go_version="$${reported_go_version% *}"`,
 		`echo "Memory benchmark GO_BIN: $$go_bin_path"`,
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
@@ -3270,6 +3272,45 @@ esac
 		t.Fatalf("bench-gate output missing exact version mismatch %q:\n%s", want, output)
 	}
 	assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", want}, []string{"Result: memory benchmark gate passed."})
+}
+
+func TestMakefileBenchGateAcceptsDevelopmentGoVersion(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	goBin := filepath.Join(t.TempDir(), "go")
+	writeExecutableFile(t, goBin, `#!/bin/sh
+set -eu
+case "${1:-}" in
+  env)
+    [ "${2:-}" = "GOVERSION" ] || exit 9
+    printf 'devel go1.27-abcdef\n'
+    ;;
+  version)
+    printf 'go version devel go1.27-abcdef fake/host\n'
+    ;;
+  *)
+    exit 9
+    ;;
+esac
+`)
+	vars := map[string]string{
+		"GO_BIN":            goBin,
+		"GO_TOOLCHAIN":      "local",
+		"MEMORY_BENCH_BASE": "refs/heads/does-not-exist",
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	for _, want := range []string{
+		"Memory benchmark Go toolchain: devel go1.27-abcdef",
+		"requested base ref 'refs/heads/does-not-exist' is missing or invalid",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "reported version 'devel'") {
+		t.Fatalf("bench-gate truncated the development Go version:\n%s", output)
+	}
 }
 
 func TestMakefileBenchGateRejectsSubstitutedGoBin(t *testing.T) {

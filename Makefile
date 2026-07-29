@@ -349,7 +349,12 @@ bench-gate:
 	}; \
 	validate_go_toolchain "initial validation"; \
 	go_version_log="$$(GOTOOLCHAIN=$$requested_go_toolchain "$$go_bin_path" version 2>/dev/null || true)"; \
-	reported_go_version="$$(printf '%s\n' "$$go_version_log" | awk 'NR == 1 { print $$3 }')"; \
+	reported_go_version="$${go_version_log#go version }"; \
+	if [ "$$reported_go_version" = "$$go_version_log" ]; then \
+		reported_go_version=""; \
+	else \
+		reported_go_version="$${reported_go_version% *}"; \
+	fi; \
 	if [ -z "$$go_version_log" ] || [ "$$reported_go_version" != "$$expected_go_version" ]; then \
 		fail_invalid_memory_gate "configured GO_BIN '$$go_bin_path' reported version '$$reported_go_version' for GOTOOLCHAIN='$$requested_go_toolchain'; expected '$$expected_go_version'." "base benchmark input could not be read: configured GO_BIN '$$go_bin_path' reported version '$$reported_go_version' for GOTOOLCHAIN='$$requested_go_toolchain'; expected '$$expected_go_version'."; \
 	fi; \
