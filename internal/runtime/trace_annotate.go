@@ -236,9 +236,12 @@ func visibleRuntimeContextModule(value, repoPath string) string {
 	if value == "" {
 		return ""
 	}
-	value, fileURL := normalizeRuntimeContextValue(value)
+	value, fileURL, fileURLAuthority := normalizeRuntimeContextValue(value)
 	if value == "" {
 		return ""
+	}
+	if fileURLAuthority {
+		return safeRuntimeContextBase(value)
 	}
 	if !fileURL && strings.Contains(value, "://") && !runtimeContextWindowsDrivePath(value) {
 		return visibleRuntimeContextLiteral(value)
@@ -311,11 +314,15 @@ func runtimeContextRelativeToRoot(repoPath, candidate string) (string, bool) {
 	return filepath.ToSlash(relative), true
 }
 
-func normalizeRuntimeContextValue(value string) (string, bool) {
+func normalizeRuntimeContextValue(value string) (string, bool, bool) {
 	value = strings.ReplaceAll(value, `\`, "/")
 	fileURL := len(value) >= len(fileURLPrefix) && strings.EqualFold(value[:len(fileURLPrefix)], fileURLPrefix)
+	fileURLAuthority := false
 	if fileURL {
 		value = value[len(fileURLPrefix):]
+		fileURLAuthority = value != "" &&
+			!strings.HasPrefix(value, "/") &&
+			!runtimeContextWindowsDrivePath(value)
 		switch {
 		case strings.HasPrefix(strings.ToLower(value), "localhost/"):
 			value = value[len("localhost"):]
@@ -326,7 +333,7 @@ func normalizeRuntimeContextValue(value string) (string, bool) {
 	if len(value) >= 3 && value[0] == '/' && runtimeContextWindowsDrivePath(value[1:]) {
 		value = value[1:]
 	}
-	return value, fileURL
+	return value, fileURL, fileURLAuthority
 }
 
 func runtimeContextLooksLikePath(value string) bool {

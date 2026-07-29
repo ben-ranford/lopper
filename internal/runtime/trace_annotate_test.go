@@ -118,12 +118,12 @@ func TestAnnotateRuntimeContextRedactsUnsafeVisiblePaths(t *testing.T) {
 }
 
 func TestLoadAndAnnotateRuntimeContextRedactsFileURLAuthorities(t *testing.T) {
-	trace, err := loadTraceFromContent(t, `{"module":"`+lodashMapModule+`","parent":"file://server/share/private/main.js","entrypoint":"file://localhost/private/start.js"}`+"\n")
+	trace, err := loadTraceFromContent(t, `{"module":"`+lodashMapModule+`","parent":"file://server/share/private/main.js","entrypoint":"file://localhost/server/share/start.js"}`+"\n")
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
 	rep := report.Report{
-		RepoPath: t.TempDir(),
+		RepoPath: "/server/share",
 		Dependencies: []report.DependencyReport{
 			{Name: "lodash"},
 		},
