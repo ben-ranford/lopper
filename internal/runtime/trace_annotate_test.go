@@ -118,7 +118,10 @@ func TestAnnotateRuntimeContextRedactsUnsafeVisiblePaths(t *testing.T) {
 }
 
 func TestLoadAndAnnotateRuntimeContextRedactsFileURLAuthorities(t *testing.T) {
-	trace, err := loadTraceFromContent(t, `{"module":"`+lodashMapModule+`","parent":"file://server/share/private/main.js","entrypoint":"file://localhost/server/share/start.js"}`+"\n")
+	content :=
+		`{"module":"` + lodashMapModule + `","parent":"file://server/share/private/main.js","entrypoint":"file://localhost/server/share/start.js"}` + "\n" +
+			`{"module":"` + lodashMapModule + `","parent":"\\\\server\\share\\private\\unc.js","entrypoint":"file:////server/share/unc-start.js"}` + "\n"
+	trace, err := loadTraceFromContent(t, content)
 	if err != nil {
 		t.Fatalf(loadTraceErrFmt, err)
 	}
@@ -133,8 +136,14 @@ func TestLoadAndAnnotateRuntimeContextRedactsFileURLAuthorities(t *testing.T) {
 	if usage == nil {
 		t.Fatalf("expected runtime usage annotation")
 	}
-	assertRuntimeContextCounts(t, usage.ParentModules, map[string]int{"external:main.js": 1})
-	assertRuntimeContextCounts(t, usage.Entrypoints, map[string]int{"external:start.js": 1})
+	assertRuntimeContextCounts(t, usage.ParentModules, map[string]int{
+		"external:main.js": 1,
+		"external:unc.js":  1,
+	})
+	assertRuntimeContextCounts(t, usage.Entrypoints, map[string]int{
+		"external:start.js":     1,
+		"external:unc-start.js": 1,
+	})
 }
 
 func TestAnnotateRuntimeContextPreservesIdentityThroughSymlinkedRepoRoot(t *testing.T) {

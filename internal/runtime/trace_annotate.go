@@ -250,11 +250,14 @@ func visibleRuntimeContextModule(value, repoPath string) string {
 		return visibleRuntimeContextLiteral(value)
 	}
 	uncPath := strings.HasPrefix(value, "//")
+	if uncPath {
+		return safeRuntimeContextBase(value)
+	}
 	value = path.Clean(value)
 	if repoRelative, ok := runtimeContextRepoRelativePath(repoPath, value); ok {
 		return visibleRuntimeContextLiteral(repoRelative)
 	}
-	if fileURL || uncPath || path.IsAbs(value) || runtimeContextWindowsDrivePath(value) || runtimeContextEscapesRoot(value) {
+	if fileURL || path.IsAbs(value) || runtimeContextWindowsDrivePath(value) || runtimeContextEscapesRoot(value) {
 		return safeRuntimeContextBase(value)
 	}
 	return visibleRuntimeContextLiteral(value)
