@@ -156,6 +156,48 @@ func TestDetectDynamicLoaderUsageRejectsOversizedEntrypoint(t *testing.T) {
 	}
 }
 
+func TestBuildDynamicLoaderRiskCueMarksOversizedEntrypointIncomplete(t *testing.T) {
+	depRoot := t.TempDir()
+	oversizedEntry := filepath.Join(depRoot, "oversized.js")
+	oversizedContent := "require(oversizedTarget)\n" + strings.Repeat("a", oversizedJSFileSize)
+	if err := os.WriteFile(oversizedEntry, []byte(oversizedContent), 0o600); err != nil {
+		t.Fatalf("write oversized entrypoint: %v", err)
+	}
+
+	cue, err := buildDynamicLoaderRiskCue(depRoot, []string{oversizedEntry})
+	if err != nil {
+		t.Fatalf("build dynamic-loader risk cue: %v", err)
+	}
+	if cue == nil || cue.Code != riskCodeDynamicLoader {
+		t.Fatalf("expected oversized entrypoint to emit a dynamic-loader uncertainty cue, got %#v", cue)
+	}
+	if !strings.Contains(cue.Message, "could not be verified") || !strings.Contains(cue.Message, "oversized") {
+		t.Fatalf("expected bounded-scan uncertainty in cue message, got %q", cue.Message)
+	}
+
+	reportData := report.Report{
+		Dependencies: []report.DependencyReport{{Name: "oversized", RiskCues: []report.RiskCue{*cue}}},
+	}
+	report.AnnotateReachabilityConfidence(&reportData)
+	reasons := strings.Join(reportData.Dependencies[0].ReachabilityConfidence.RationaleCodes, "\n")
+	if !strings.Contains(reasons, "dependency-dynamic-loader") || strings.Contains(reasons, "dependency-entrypoints-static") {
+		t.Fatalf("expected incomplete entrypoint scan to reduce dynamic-loader confidence, got %q", reasons)
+	}
+
+	validEntry := filepath.Join(depRoot, "valid.js")
+	if err := os.WriteFile(validEntry, []byte("require(validTarget)\n"), 0o600); err != nil {
+		t.Fatalf("write valid entrypoint: %v", err)
+	}
+	mixedCue, err := buildDynamicLoaderRiskCue(depRoot, []string{oversizedEntry, validEntry})
+	if err != nil {
+		t.Fatalf("build mixed dynamic-loader risk cue: %v", err)
+	}
+	if mixedCue == nil || !strings.Contains(mixedCue.Message, "dynamic require/import usage found") ||
+		!strings.Contains(mixedCue.Message, "could not be verified") {
+		t.Fatalf("expected mixed dynamic and incomplete evidence, got %#v", mixedCue)
+	}
+}
+
 func TestDetectNodeBinaryBoundedWalk(t *testing.T) {
 	depRoot := t.TempDir()
 	filesRoot := filepath.Join(depRoot, "files")

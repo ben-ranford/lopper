@@ -11,69 +11,91 @@ import (
 )
 
 func buildDynamicLoaderRiskCue(depRoot string, entrypoints []string) (*report.RiskCue, error) {
-	dynamicCount, samples, err := detectDynamicLoaderUsage(depRoot, entrypoints)
+	scan, err := scanDynamicLoaderUsage(depRoot, entrypoints)
 	if err != nil {
 		return nil, err
 	}
-	if dynamicCount == 0 {
+	if scan.count == 0 && scan.skippedOversized == 0 {
 		return nil, nil
-	}
-
-	msg := fmt.Sprintf("dynamic require/import usage found in %d dependency entrypoint location(s)", dynamicCount)
-	if len(samples) > 0 {
-		msg = fmt.Sprintf("%s (%s)", msg, strings.Join(samples, ", "))
 	}
 
 	return &report.RiskCue{
 		Code:     riskCodeDynamicLoader,
 		Severity: "medium",
-		Message:  msg,
+		Message:  dynamicLoaderRiskMessage(scan),
 	}, nil
 }
 
 func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []string, error) {
-	count := 0
-	samples := make([]string, 0, 3)
-
-	for _, entry := range entrypoints {
-		entryCount, entrySamples, err := detectDynamicLoaderUsageInEntrypoint(depRoot, entry)
-		if err != nil {
-			return 0, nil, err
-		}
-		count += entryCount
-		remaining := 3 - len(samples)
-		if remaining > len(entrySamples) {
-			remaining = len(entrySamples)
-		}
-		samples = append(samples, entrySamples[:remaining]...)
+	scan, err := scanDynamicLoaderUsage(depRoot, entrypoints)
+	if err != nil {
+		return 0, nil, err
 	}
-
-	return count, samples, nil
+	return scan.count, scan.samples, nil
 }
 
-func detectDynamicLoaderUsageInEntrypoint(depRoot, entry string) (int, []string, error) {
+type dynamicLoaderScanResult struct {
+	count            int
+	samples          []string
+	skippedOversized int
+}
+
+func scanDynamicLoaderUsage(depRoot string, entrypoints []string) (dynamicLoaderScanResult, error) {
+	result := dynamicLoaderScanResult{samples: make([]string, 0, 3)}
+	for _, entry := range entrypoints {
+		entryScan, err := scanDynamicLoaderUsageInEntrypoint(depRoot, entry)
+		if err != nil {
+			return dynamicLoaderScanResult{}, err
+		}
+		result.count += entryScan.count
+		result.skippedOversized += entryScan.skippedOversized
+		remaining := 3 - len(result.samples)
+		if remaining > len(entryScan.samples) {
+			remaining = len(entryScan.samples)
+		}
+		result.samples = append(result.samples, entryScan.samples[:remaining]...)
+	}
+
+	return result, nil
+}
+
+func dynamicLoaderRiskMessage(scan dynamicLoaderScanResult) string {
+	if scan.count == 0 {
+		return fmt.Sprintf("dynamic loader usage could not be verified in %d oversized dependency entrypoint(s)", scan.skippedOversized)
+	}
+
+	msg := fmt.Sprintf("dynamic require/import usage found in %d dependency entrypoint location(s)", scan.count)
+	if len(scan.samples) > 0 {
+		msg = fmt.Sprintf("%s (%s)", msg, strings.Join(scan.samples, ", "))
+	}
+	if scan.skippedOversized > 0 {
+		msg = fmt.Sprintf("%s; dynamic loader usage could not be verified in %d oversized dependency entrypoint(s)", msg, scan.skippedOversized)
+	}
+	return msg
+}
+
+func scanDynamicLoaderUsageInEntrypoint(depRoot, entry string) (dynamicLoaderScanResult, error) {
 	if !isLikelyCodeAsset(entry) {
-		return 0, nil, nil
+		return dynamicLoaderScanResult{}, nil
 	}
 	content, err := safeio.ReadFileUnderLimit(depRoot, entry, maxScannableJSFile)
 	if err != nil {
 		if errors.Is(err, safeio.ErrFileTooLarge) {
-			return 0, nil, nil
+			return dynamicLoaderScanResult{skippedOversized: 1}, nil
 		}
-		return 0, nil, err
+		return dynamicLoaderScanResult{}, err
 	}
 
-	count := 0
-	samples := make([]string, 0, 3)
+	result := dynamicLoaderScanResult{samples: make([]string, 0, 3)}
 	for idx, line := range strings.Split(string(content), "\n") {
 		if hasDynamicCall(line, "require(") || hasDynamicCall(line, "import(") {
-			count++
-			if len(samples) < 3 {
-				samples = append(samples, fmt.Sprintf("%s:%d", filepath.Base(entry), idx+1))
+			result.count++
+			if len(result.samples) < 3 {
+				result.samples = append(result.samples, fmt.Sprintf("%s:%d", filepath.Base(entry), idx+1))
 			}
 		}
 	}
-	return count, samples, nil
+	return result, nil
 }
 
 func hasDynamicCall(line, token string) bool {
