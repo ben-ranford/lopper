@@ -25,15 +25,11 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, nil
 	}
 	pointerPath := filepath.Join(c.options.Path, "keys", entry.KeyDigest+".json")
-	if c.rejectReadHits {
-		pointerExists, err := cachePointerExists(c.options.Path, entry.KeyDigest)
-		if err != nil {
-			return report.Report{}, false, err
-		}
-		c.metadata.Misses++
-		if pointerExists {
-			c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "default-local-untrusted"})
-		}
+	rejected, err := c.rejectDefaultCacheRead(entry)
+	if err != nil {
+		return report.Report{}, false, err
+	}
+	if rejected {
 		return report.Report{}, false, nil
 	}
 	pointerData, err := safeio.ReadFileUnder(c.options.Path, pointerPath)
@@ -81,6 +77,21 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	}
 	c.metadata.Hits++
 	return payload.Report, true, nil
+}
+
+func (c *analysisCache) rejectDefaultCacheRead(entry cacheEntryDescriptor) (bool, error) {
+	if !c.rejectReadHits {
+		return false, nil
+	}
+	pointerExists, err := cachePointerExists(c.options.Path, entry.KeyDigest)
+	if err != nil {
+		return false, err
+	}
+	c.metadata.Misses++
+	if pointerExists {
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "default-local-untrusted"})
+	}
+	return true, nil
 }
 
 func cachePointerExists(cachePath, keyDigest string) (_ bool, err error) {
