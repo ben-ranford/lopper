@@ -11,6 +11,7 @@ import (
 const runtimeTraceCommandWarningPrefix = "runtime trace command failed; continuing with static analysis: "
 
 func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath string, cache *analysisCache, candidates []language.Candidate) ([]string, string, bool) {
+	_ = cache
 	tracePath := strings.TrimSpace(req.RuntimeTracePath)
 	command := strings.TrimSpace(req.RuntimeTestCommand)
 	if command == "" {
@@ -27,7 +28,6 @@ func captureRuntimeTraceIfNeeded(ctx context.Context, req Request, repoPath stri
 		TracePath:            tracePath,
 		Command:              command,
 		Provider:             provider,
-		ReuseIfUnchanged:     shouldReuseRuntimeTrace(cache),
 		PythonRunnerProfiles: pythonRunnerProfiles,
 	}); err != nil {
 		warning := runtimeTraceCommandWarningPrefix + err.Error()
@@ -76,15 +76,4 @@ func isExplicitPythonLanguage(languageID string) bool {
 	default:
 		return false
 	}
-}
-
-func shouldReuseRuntimeTrace(cache *analysisCache) bool {
-	if cache == nil {
-		return false
-	}
-	metadata := cache.metadataSnapshot()
-	if metadata == nil {
-		return false
-	}
-	return metadata.Enabled && metadata.Hits > 0 && metadata.Misses == 0
 }
