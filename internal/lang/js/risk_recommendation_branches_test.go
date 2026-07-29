@@ -1,12 +1,15 @@
 package js
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const requireToken = "require("
@@ -131,6 +134,19 @@ func TestDetectDynamicLoaderUsageAndErrors(t *testing.T) {
 
 	if _, _, err := detectDynamicLoaderUsage(depRoot, []string{filepath.Join(depRoot, "missing.js")}); err == nil {
 		t.Fatalf("expected read error for missing dynamic-loader entrypoint")
+	}
+}
+
+func TestDetectDynamicLoaderUsageRejectsOversizedEntrypoint(t *testing.T) {
+	depRoot := t.TempDir()
+	entry := filepath.Join(depRoot, "index.js")
+	if err := os.WriteFile(entry, []byte(strings.Repeat("a", oversizedJSFileSize)), 0o600); err != nil {
+		t.Fatalf("write oversized entrypoint: %v", err)
+	}
+
+	_, _, err := detectDynamicLoaderUsage(depRoot, []string{entry})
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized entrypoint error %v, got %v", safeio.ErrFileTooLarge, err)
 	}
 }
 

@@ -38,7 +38,7 @@ func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []stri
 		if !isLikelyCodeAsset(entry) {
 			continue
 		}
-		content, err := safeio.ReadFileUnder(depRoot, entry)
+		content, err := safeio.ReadFileUnderLimit(depRoot, entry, maxScannableJSFile)
 		if err != nil {
 			return 0, nil, err
 		}
