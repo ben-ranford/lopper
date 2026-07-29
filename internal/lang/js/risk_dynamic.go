@@ -36,27 +36,43 @@ func detectDynamicLoaderUsage(depRoot string, entrypoints []string) (int, []stri
 	samples := make([]string, 0, 3)
 
 	for _, entry := range entrypoints {
-		if !isLikelyCodeAsset(entry) {
-			continue
-		}
-		content, err := safeio.ReadFileUnderLimit(depRoot, entry, maxScannableJSFile)
+		entryCount, entrySamples, err := detectDynamicLoaderUsageInEntrypoint(depRoot, entry)
 		if err != nil {
-			if errors.Is(err, safeio.ErrFileTooLarge) {
-				continue
-			}
 			return 0, nil, err
 		}
-		lines := strings.Split(string(content), "\n")
-		for idx, line := range lines {
-			if hasDynamicCall(line, "require(") || hasDynamicCall(line, "import(") {
-				count++
-				if len(samples) < 3 {
-					samples = append(samples, fmt.Sprintf("%s:%d", filepath.Base(entry), idx+1))
-				}
+		count += entryCount
+		remaining := 3 - len(samples)
+		if remaining > len(entrySamples) {
+			remaining = len(entrySamples)
+		}
+		samples = append(samples, entrySamples[:remaining]...)
+	}
+
+	return count, samples, nil
+}
+
+func detectDynamicLoaderUsageInEntrypoint(depRoot, entry string) (int, []string, error) {
+	if !isLikelyCodeAsset(entry) {
+		return 0, nil, nil
+	}
+	content, err := safeio.ReadFileUnderLimit(depRoot, entry, maxScannableJSFile)
+	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			return 0, nil, nil
+		}
+		return 0, nil, err
+	}
+
+	count := 0
+	samples := make([]string, 0, 3)
+	for idx, line := range strings.Split(string(content), "\n") {
+		if hasDynamicCall(line, "require(") || hasDynamicCall(line, "import(") {
+			count++
+			if len(samples) < 3 {
+				samples = append(samples, fmt.Sprintf("%s:%d", filepath.Base(entry), idx+1))
 			}
 		}
 	}
-
 	return count, samples, nil
 }
 

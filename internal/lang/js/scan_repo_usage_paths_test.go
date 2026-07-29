@@ -93,6 +93,50 @@ class Widget {}
 }
 
 func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
+	repo, oversizedPath := setupOversizedSourceRepo(t)
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected oversized source to be skipped, got %v", err)
+	}
+	assertOversizedSourceSkipped(t, result, oversizedPath)
+	assertIncompleteRemovalSignalsSuppressed(t, repo, result)
+}
+
+func TestJSIncompleteScanDisablesTopNRemovalRanking(t *testing.T) {
+	repo, _ := setupOversizedSourceRepo(t)
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("expected oversized source to be skipped, got %v", err)
+	}
+	for _, dependency := range []string{"alpha", "beta"} {
+		if err := writeDependency(repo, dependency, "export const value = 1\n"); err != nil {
+			t.Fatalf("write %s dependency: %v", dependency, err)
+		}
+	}
+	result.Files = []FileScan{{
+		Path: "valid.js",
+		Imports: []ImportBinding{
+			{Module: "beta"},
+			{Module: "alpha"},
+		},
+	}}
+
+	topReports, topWarnings := buildTopDependencies(repo, result, 1, "", 1, report.DefaultRemovalCandidateWeights(), false)
+	if len(topReports) != 2 || topReports[0].Name != "alpha" || topReports[1].Name != "beta" {
+		t.Fatalf("expected deterministic unranked reports from incomplete usage, got %#v", topReports)
+	}
+	for _, topReport := range topReports {
+		if topReport.RemovalCandidate != nil {
+			t.Fatalf("did not expect incomplete top-N report to be scored, got %#v", topReport)
+		}
+	}
+	if !strings.Contains(strings.Join(topWarnings, "\n"), "top-N removal ranking disabled") {
+		t.Fatalf("expected incomplete top-N warning, got %#v", topWarnings)
+	}
+}
+
+func setupOversizedSourceRepo(t *testing.T) (string, string) {
+	t.Helper()
 	repo := t.TempDir()
 	oversizedPath := filepath.Join(repo, "index.js")
 	if err := os.WriteFile(oversizedPath, []byte(strings.Repeat("a", oversizedJSFileSize)), 0o644); err != nil {
@@ -104,11 +148,11 @@ func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 	if err := writeDependency(repo, "oversized-only", "export const only = 1\n"); err != nil {
 		t.Fatalf("write dependency: %v", err)
 	}
+	return repo, oversizedPath
+}
 
-	result, err := ScanRepo(context.Background(), repo)
-	if err != nil {
-		t.Fatalf("expected oversized source to be skipped, got %v", err)
-	}
+func assertOversizedSourceSkipped(t *testing.T, result ScanResult, oversizedPath string) {
+	t.Helper()
 	if len(result.Files) != 1 || result.Files[0].Path != "valid.js" {
 		t.Fatalf("expected valid source analysis to continue, got %#v", result.Files)
 	}
@@ -116,7 +160,10 @@ func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 	if !strings.Contains(warnings, "skipped 1 oversized JS/TS file") || !strings.Contains(warnings, filepath.Base(oversizedPath)) {
 		t.Fatalf("expected oversized source warning, got %#v", result.Warnings)
 	}
+}
 
+func assertIncompleteRemovalSignalsSuppressed(t *testing.T, repo string, result ScanResult) {
+	t.Helper()
 	dependencyReport, dependencyWarnings := buildDependencyReport(dependencyReportOptions{
 		RepoPath:                          repo,
 		Dependency:                        "oversized-only",
@@ -140,31 +187,6 @@ func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
 	report.AnnotateRemovalCandidateScores(scored)
 	if scored[0].RemovalCandidate != nil {
 		t.Fatalf("did not expect a removal score from an incomplete scan, got %#v", scored[0].RemovalCandidate)
-	}
-
-	for _, dependency := range []string{"alpha", "beta"} {
-		if err := writeDependency(repo, dependency, "export const value = 1\n"); err != nil {
-			t.Fatalf("write %s dependency: %v", dependency, err)
-		}
-	}
-	result.Files = []FileScan{{
-		Path: "valid.js",
-		Imports: []ImportBinding{
-			{Module: "beta"},
-			{Module: "alpha"},
-		},
-	}}
-	topReports, topWarnings := buildTopDependencies(repo, result, 1, "", 1, report.DefaultRemovalCandidateWeights(), false)
-	if len(topReports) != 2 || topReports[0].Name != "alpha" || topReports[1].Name != "beta" {
-		t.Fatalf("expected deterministic unranked reports from incomplete usage, got %#v", topReports)
-	}
-	for _, topReport := range topReports {
-		if topReport.RemovalCandidate != nil {
-			t.Fatalf("did not expect incomplete top-N report to be scored, got %#v", topReport)
-		}
-	}
-	if !strings.Contains(strings.Join(topWarnings, "\n"), "top-N removal ranking disabled") {
-		t.Fatalf("expected incomplete top-N warning, got %#v", topWarnings)
 	}
 }
 
