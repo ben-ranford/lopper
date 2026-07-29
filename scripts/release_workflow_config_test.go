@@ -3457,33 +3457,7 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 		"harness-fingerprint=git-hash-object:",
 	})
 
-	logBytes, err := os.ReadFile(goBinLog)
-	if err != nil {
-		t.Fatalf("read GO_BIN invocation log: %v", err)
-	}
-	benchmarkDirs := map[string]struct{}{}
-	sawHelperBuild := false
-	for _, line := range strings.Split(strings.TrimSpace(string(logBytes)), "\n") {
-		fields := strings.SplitN(line, "\t", 3)
-		if len(fields) != 3 {
-			t.Fatalf("invalid GO_BIN invocation log line %q", line)
-		}
-		if fields[0] != resolvedGoBin {
-			t.Fatalf("GO_BIN invocation path = %q, want canonical path %q", fields[0], resolvedGoBin)
-		}
-		if strings.HasPrefix(fields[2], "test ") && strings.Contains(fields[2], " -bench ") {
-			benchmarkDirs[fields[1]] = struct{}{}
-		}
-		if strings.HasPrefix(fields[2], "build -o ") && strings.HasSuffix(fields[2], " ./tools/benchdelta") {
-			sawHelperBuild = true
-		}
-	}
-	if len(benchmarkDirs) != 2 {
-		t.Fatalf("canonical GO_BIN must benchmark distinct base and head directories, got %v from:\n%s", benchmarkDirs, logBytes)
-	}
-	if !sawHelperBuild {
-		t.Fatalf("canonical GO_BIN did not build the benchmark helper:\n%s", logBytes)
-	}
+	assertPinnedGoBinInvocations(t, goBinLog, resolvedGoBin)
 }
 
 func TestMakefileBenchGateApplicationFailuresExitInvalid(t *testing.T) {
@@ -5607,6 +5581,38 @@ func writeExecutableFile(t *testing.T, path string, contents string) {
 
 	if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
 		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func assertPinnedGoBinInvocations(t *testing.T, logPath string, resolvedGoBin string) {
+	t.Helper()
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read GO_BIN invocation log: %v", err)
+	}
+	benchmarkDirs := map[string]struct{}{}
+	sawHelperBuild := false
+	for _, line := range strings.Split(strings.TrimSpace(string(logBytes)), "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
+			t.Fatalf("invalid GO_BIN invocation log line %q", line)
+		}
+		if fields[0] != resolvedGoBin {
+			t.Fatalf("GO_BIN invocation path = %q, want canonical path %q", fields[0], resolvedGoBin)
+		}
+		if strings.HasPrefix(fields[2], "test ") && strings.Contains(fields[2], " -bench ") {
+			benchmarkDirs[fields[1]] = struct{}{}
+		}
+		if strings.HasPrefix(fields[2], "build -o ") && strings.HasSuffix(fields[2], " ./tools/benchdelta") {
+			sawHelperBuild = true
+		}
+	}
+	if len(benchmarkDirs) != 2 {
+		t.Fatalf("canonical GO_BIN must benchmark distinct base and head directories, got %v from:\n%s", benchmarkDirs, logBytes)
+	}
+	if !sawHelperBuild {
+		t.Fatalf("canonical GO_BIN did not build the benchmark helper:\n%s", logBytes)
 	}
 }
 
