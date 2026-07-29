@@ -20,7 +20,7 @@ COVERAGE_PACKAGE_MIN ?= $(COVERAGE_MIN)
 LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
 LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
-GO_BIN ?= $(GO)
+GO_BIN ?=
 GO_TOOLCHAIN ?= go1.26.5
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
@@ -224,6 +224,15 @@ bench-gate:
 		write_invalid_memory_summary "$$summary_error"; \
 		exit 2; \
 	}; \
+	if [ -z "$$requested_go_bin" ]; then \
+		go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOEXE 2>/dev/null || true)"; \
+		derived_go_root="$$(printf '%s\n' "$$go_env_output" | sed -n '1p')"; \
+		derived_go_exe="$$(printf '%s\n' "$$go_env_output" | sed -n '2p')"; \
+		if [ -z "$$derived_go_root" ]; then \
+			fail_invalid_memory_gate "configured GO command could not resolve GOROOT; set GO_BIN explicitly."; \
+		fi; \
+		requested_go_bin="$$derived_go_root/bin/go$$derived_go_exe"; \
+	fi; \
 	resolve_go_bin_reference() { \
 		candidate="$$1"; \
 		case "$$candidate" in \

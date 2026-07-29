@@ -3089,8 +3089,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	if target == "" {
 		t.Fatal("Makefile must define the bench-gate target")
 	}
-	if !strings.Contains(makefile, "GO_BIN ?= $(GO)") {
-		t.Fatal("Makefile must default GO_BIN to the configured Go command")
+	if !strings.Contains(makefile, "GO_BIN ?=\n") {
+		t.Fatal("Makefile must allow bench-gate to derive GO_BIN independently from the potentially multiword GO command")
 	}
 
 	for _, want := range []string{
@@ -3099,6 +3099,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`printf "2\n" > "$(MEMORY_BENCH_STATUS)"`,
 		`requested_go_bin="$(GO_BIN)"`,
 		`requested_go_toolchain="$(GO_TOOLCHAIN)"`,
+		`go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOEXE`,
+		`requested_go_bin="$$derived_go_root/bin/go$$derived_go_exe"`,
 		`resolve_go_bin_reference() { \`,
 		`resolve_go_bin() { \`,
 		`expected_go_bin_fingerprint="$$(fingerprint_go_bin "$$go_bin_path" || true)"`,
@@ -3199,6 +3201,34 @@ func TestMakefileBenchGateRejectsMissingOrNonExecutableGoBin(t *testing.T) {
 			}
 			assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, []string{"Result: memory benchmark gate passed."})
 		})
+	}
+}
+
+func TestMakefileBenchGateKeepsGoBinIndependentFromMultiwordGo(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	hostGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("resolve host go binary: %v", err)
+	}
+	vars := map[string]string{
+		"GO":                "env " + hostGo,
+		"GO_TOOLCHAIN":      "local",
+		"MEMORY_BENCH_BASE": "refs/heads/does-not-exist",
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	if strings.Contains(output, "configured GO_BIN 'env ") {
+		t.Fatalf("bench-gate treated the multiword GO command as GO_BIN:\n%s", output)
+	}
+	for _, want := range []string{
+		"Memory benchmark GO_BIN:",
+		"Memory benchmark Go toolchain:",
+		"requested base ref 'refs/heads/does-not-exist' is missing or invalid",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+		}
 	}
 }
 
