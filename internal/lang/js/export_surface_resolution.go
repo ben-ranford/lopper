@@ -69,7 +69,7 @@ func parseEntrypointsIntoSurface(depPath string, resolved []string, surface *Exp
 		}
 		seenEntries[entry] = struct{}{}
 
-		content, err := safeio.ReadFileUnder(depPath, entry)
+		content, err := safeio.ReadFileUnderLimit(depPath, entry, maxScannableJSFile)
 		if err != nil {
 			surface.Warnings = append(surface.Warnings, fmt.Sprintf("failed to read entrypoint: %s", entry))
 			continue

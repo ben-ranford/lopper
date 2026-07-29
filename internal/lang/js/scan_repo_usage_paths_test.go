@@ -6,10 +6,14 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	sitter "github.com/smacker/go-tree-sitter"
 )
+
+const oversizedJSFileSize = 2*1024*1024 + 1
 
 func TestJSScanRepoAndReadHelpers(t *testing.T) {
 	if _, err := ScanRepo(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
@@ -85,6 +89,37 @@ class Widget {}
 	assertIdentifierUsageState(t, tree, source, "util", "member_expression", false)
 	assertIdentifierUsageState(t, tree, source, "list", "subscript_expression", false)
 	assertIdentifierUsageState(t, tree, source, "index", "subscript_expression", true)
+}
+
+func TestJSScanRepoRejectsOversizedSource(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(strings.Repeat("a", oversizedJSFileSize)), 0o644); err != nil {
+		t.Fatalf("write oversized source: %v", err)
+	}
+
+	_, err := ScanRepo(context.Background(), repo)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized source error %v, got %v", safeio.ErrFileTooLarge, err)
+	}
+}
+
+func TestJSScanRepoRejectsSymlinkedSource(t *testing.T) {
+	repo := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("export const outside = 1\n"), 0o644); err != nil {
+		t.Fatalf("write outside source: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(repo, "index.js")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if !errors.Is(err, safeio.ErrTargetPathSymlink) {
+		t.Fatalf("expected symlink source error %v, got %v", safeio.ErrTargetPathSymlink, err)
+	}
+	if len(result.Files) != 0 {
+		t.Fatalf("expected outside target not to be parsed, got %#v", result.Files)
+	}
 }
 
 func assertIdentifierUsageState(t *testing.T, tree *sitter.Tree, source []byte, name string, parentType string, want bool) {

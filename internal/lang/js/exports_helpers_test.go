@@ -193,6 +193,10 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	if err := os.WriteFile(jsFile, []byte("export const value = 1\n"), 0o600); err != nil {
 		t.Fatalf("write index.js: %v", err)
 	}
+	largeFile := filepath.Join(repo, "large.js")
+	if err := os.WriteFile(largeFile, []byte(strings.Repeat("a", oversizedJSFileSize)), 0o600); err != nil {
+		t.Fatalf("write large.js: %v", err)
+	}
 	badFile := filepath.Join(repo, "index.txt")
 	if err := os.WriteFile(badFile, []byte("export const nope = 1\n"), 0o600); err != nil {
 		t.Fatalf("write index.txt: %v", err)
@@ -200,7 +204,7 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	missingFile := filepath.Join(repo, "missing.js")
 
 	surface := &ExportSurface{Names: map[string]struct{}{}}
-	parseEntrypointsIntoSurface(repo, []string{jsFile, jsFile, badFile, missingFile}, surface)
+	parseEntrypointsIntoSurface(repo, []string{jsFile, jsFile, largeFile, badFile, missingFile}, surface)
 
 	if _, ok := surface.Names["value"]; !ok {
 		t.Fatalf("expected parsed export name from valid entrypoint")
@@ -211,6 +215,31 @@ func TestParseEntrypointsIntoSurfaceReadAndParseWarnings(t *testing.T) {
 	warnings := strings.Join(surface.Warnings, "\n")
 	if !strings.Contains(warnings, "failed to parse entrypoint") || !strings.Contains(warnings, "failed to read entrypoint") {
 		t.Fatalf("expected parse/read warnings, got %#v", surface.Warnings)
+	}
+	if !slices.Contains(surface.Warnings, "failed to read entrypoint: "+largeFile) {
+		t.Fatalf("expected oversized entrypoint warning for large.js, got %#v", surface.Warnings)
+	}
+}
+
+func TestParseEntrypointsIntoSurfaceRejectsSymlinkedEntrypoint(t *testing.T) {
+	depPath := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.js")
+	if err := os.WriteFile(outsidePath, []byte("export const outside = 1\n"), 0o600); err != nil {
+		t.Fatalf("write outside entrypoint: %v", err)
+	}
+	entrypoint := filepath.Join(depPath, indexJSName)
+	if err := os.Symlink(outsidePath, entrypoint); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	surface := &ExportSurface{Names: map[string]struct{}{}}
+	parseEntrypointsIntoSurface(depPath, []string{entrypoint}, surface)
+
+	if !slices.Contains(surface.Warnings, "failed to read entrypoint: "+entrypoint) {
+		t.Fatalf("expected symlinked entrypoint warning, got %#v", surface.Warnings)
+	}
+	if len(surface.Names) != 0 {
+		t.Fatalf("expected no exports from outside target, got %#v", surface.Names)
 	}
 }
 
