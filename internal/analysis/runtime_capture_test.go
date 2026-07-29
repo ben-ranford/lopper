@@ -73,7 +73,7 @@ func TestServicePythonRuntimeCaptureIndependentOfTraceFeature(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeCaptureReusesTraceOnCacheHit(t *testing.T) {
+func TestServiceRuntimeCaptureRefreshesTraceOnCacheHit(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
@@ -107,8 +107,8 @@ func TestServiceRuntimeCaptureReusesTraceOnCacheHit(t *testing.T) {
 	if adapter.calls != 1 {
 		t.Fatalf("expected second run to be cache hit, adapter calls=%d", adapter.calls)
 	}
-	if got := readRuntimeCounter(t, counterPath); got != 1 {
-		t.Fatalf("expected runtime capture reuse on cache hit, got %d", got)
+	if got := readRuntimeCounter(t, counterPath); got != 2 {
+		t.Fatalf("expected runtime capture refresh on cache hit, got %d", got)
 	}
 	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
 		t.Fatalf("expected second run cache hit metadata, got %#v", second.Cache)
@@ -149,22 +149,6 @@ func TestCaptureRuntimeTraceIfNeededWarningAndReuseBranches(t *testing.T) {
 
 	if warnings, tracePath, captured = captureRuntimeTraceIfNeeded(context.Background(), Request{}, repo, nil, nil); len(warnings) != 0 || tracePath != "" || captured {
 		t.Fatalf("expected empty runtime command to skip capture, got warnings=%#v tracePath=%q captured=%v", warnings, tracePath, captured)
-	}
-
-	reuseCases := []struct {
-		name  string
-		cache *analysisCache
-		want  bool
-	}{
-		{name: "nil cache", cache: nil, want: false},
-		{name: "disabled cache", cache: &analysisCache{metadata: report.CacheMetadata{}}, want: false},
-		{name: "cache miss", cache: &analysisCache{metadata: report.CacheMetadata{Enabled: true, Misses: 1}}, want: false},
-		{name: "cache hit", cache: &analysisCache{metadata: report.CacheMetadata{Enabled: true, Hits: 1}}, want: true},
-	}
-	for _, testCase := range reuseCases {
-		if got := shouldReuseRuntimeTrace(testCase.cache); got != testCase.want {
-			t.Fatalf("%s: expected shouldReuseRuntimeTrace=%v, got %v", testCase.name, testCase.want, got)
-		}
 	}
 }
 
