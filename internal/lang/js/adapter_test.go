@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
-	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -157,7 +156,7 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 }
 
 func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
-	repo, _, _ := setupLodashFixture(t, "import { map } from \"lodash\";\nconst broken =\n")
+	repo, _, _ := setupLodashFixture(t, "import { map, filter } from \"lodash\";\nmap([1], (x) => x)\nconst broken = {\nfilter([1], Boolean)\n")
 
 	reportData := analyseSuggestOnly(t, repo)
 	if len(reportData.Dependencies) != 1 {
@@ -174,52 +173,42 @@ func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
 	if len(dependency.Recommendations) != 0 {
 		t.Fatalf("expected syntax-recovery scan to suppress recommendations, got %#v", dependency.Recommendations)
 	}
-	if dependency.Codemod != nil {
-		t.Fatalf("expected syntax-recovery scan to suppress codemod output, got %#v", dependency.Codemod)
+	if len(dependency.UsedImports) != 1 || dependency.UsedImports[0].Name != "map" || dependency.UsedImports[0].Module != "lodash" {
+		t.Fatalf("expected syntax-recovery scan to preserve confirmed import evidence, got %#v", dependency.UsedImports)
 	}
-
-	scored := []report.DependencyReport{dependency}
-	report.AnnotateRemovalCandidateScores(scored)
-	if scored[0].RemovalCandidate != nil {
-		t.Fatalf("expected syntax-recovery scan to suppress removal score, got %#v", scored[0].RemovalCandidate)
-	}
+	assertRemovalSignalsSuppressed(t, dependency, reportData.Warnings)
 
 	warnings := strings.Join(reportData.Warnings, "\n")
 	if !strings.Contains(warnings, "parse errors in 1 file(s)") {
 		t.Fatalf("expected parse-error warning to remain visible, got %#v", reportData.Warnings)
 	}
-	if !strings.Contains(warnings, "removal signals suppressed") {
-		t.Fatalf("expected incomplete-coverage suppression warning, got %#v", reportData.Warnings)
-	}
 }
 
-func TestAdapterDetectWithPackageJSON(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, testPackageJSONName), []byte("{\"name\":\"fixture\"}\n"), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
+func TestAdapterDetectSignals(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		content string
+	}{
+		{name: "package_json", path: testPackageJSONName, content: "{\"name\":\"fixture\"}\n"},
+		{name: "js_source", path: testIndexJS, content: "export const x = 1\n"},
 	}
 
-	ok, err := NewAdapter().Detect(context.Background(), repo)
-	if err != nil {
-		t.Fatalf(testDetectErrFmt, err)
-	}
-	if !ok {
-		t.Fatalf("expected detect=true when package.json exists")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repo, tt.path), []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("write %s: %v", tt.path, err)
+			}
 
-func TestAdapterDetectWithJSSource(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte("export const x = 1\n"), 0o644); err != nil {
-		t.Fatalf("write index.js: %v", err)
-	}
-
-	ok, err := NewAdapter().Detect(context.Background(), repo)
-	if err != nil {
-		t.Fatalf(testDetectErrFmt, err)
-	}
-	if !ok {
-		t.Fatalf("expected detect=true when JS sources exist")
+			ok, err := NewAdapter().Detect(context.Background(), repo)
+			if err != nil {
+				t.Fatalf(testDetectErrFmt, err)
+			}
+			if !ok {
+				t.Fatalf("expected detect=true when %s exists", tt.path)
+			}
+		})
 	}
 }
 

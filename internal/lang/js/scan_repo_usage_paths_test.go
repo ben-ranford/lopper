@@ -171,6 +171,14 @@ func assertIncompleteRemovalSignalsSuppressed(t *testing.T, repo string, result 
 		ScanResult:                        result,
 		MinUsagePercentForRecommendations: 1,
 	})
+	assertRemovalSignalsSuppressed(t, dependencyReport, dependencyWarnings)
+}
+
+func assertRemovalSignalsSuppressed(t *testing.T, dependencyReport report.DependencyReport, warnings []string) {
+	t.Helper()
+	if len(dependencyReport.UnusedImports) != 0 {
+		t.Fatalf("did not expect unused imports from an incomplete scan, got %#v", dependencyReport.UnusedImports)
+	}
 	if len(dependencyReport.UnusedExports) != 0 {
 		t.Fatalf("did not expect unused exports from an incomplete scan, got %#v", dependencyReport.UnusedExports)
 	}
@@ -180,8 +188,11 @@ func assertIncompleteRemovalSignalsSuppressed(t *testing.T, repo string, result 
 	if len(dependencyReport.Recommendations) != 0 {
 		t.Fatalf("did not expect recommendations from an incomplete scan, got %#v", dependencyReport.Recommendations)
 	}
-	if !strings.Contains(strings.Join(dependencyWarnings, "\n"), "removal signals suppressed") {
-		t.Fatalf("expected incomplete-usage suppression warning, got %#v", dependencyWarnings)
+	if dependencyReport.Codemod != nil {
+		t.Fatalf("did not expect codemod output from an incomplete scan, got %#v", dependencyReport.Codemod)
+	}
+	if !strings.Contains(strings.Join(warnings, "\n"), "removal signals suppressed") {
+		t.Fatalf("expected incomplete-coverage suppression warning, got %#v", warnings)
 	}
 	scored := []report.DependencyReport{dependencyReport}
 	report.AnnotateRemovalCandidateScores(scored)

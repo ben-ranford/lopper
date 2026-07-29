@@ -85,6 +85,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 		depReport.UsedExportsCount = 0
 		depReport.TotalExportsCount = 0
 		depReport.UsedPercent = 0
+		depReport.UnusedImports = nil
 		depReport.UnusedExports = nil
 		warnings = append(warnings, fmt.Sprintf("usage or export coverage incomplete for %s; removal signals suppressed", opts.Dependency))
 	} else {

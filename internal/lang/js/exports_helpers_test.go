@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
-
-	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const indexJSName = "index.js"
@@ -299,18 +297,7 @@ func TestBuildDependencyReportSuppressesIncompleteExportSurface(t *testing.T) {
 	if len(dependency.UnusedExports) != 0 || len(dependency.Recommendations) != 0 {
 		t.Fatalf("expected partial export removal advice to be suppressed, got %#v", dependency)
 	}
-	if dependency.Codemod != nil {
-		t.Fatalf("expected partial export coverage to suppress codemods, got %#v", dependency.Codemod)
-	}
-	if !strings.Contains(strings.Join(warnings, "\n"), "removal signals suppressed") {
-		t.Fatalf("expected incomplete-export warning, got %#v", warnings)
-	}
-
-	scored := []report.DependencyReport{dependency}
-	report.AnnotateRemovalCandidateScores(scored)
-	if scored[0].RemovalCandidate != nil {
-		t.Fatalf("expected incomplete export surface to suppress removal scoring, got %#v", scored[0].RemovalCandidate)
-	}
+	assertRemovalSignalsSuppressed(t, dependency, warnings)
 }
 
 func TestBuildDependencyReportSuppressesSignalsForMalformedPackageMetadata(t *testing.T) {
@@ -349,22 +336,11 @@ func TestBuildDependencyReportSuppressesSignalsForMalformedPackageMetadata(t *te
 	if len(dependency.Recommendations) != 0 {
 		t.Fatalf("expected malformed package metadata to suppress recommendations, got %#v", dependency.Recommendations)
 	}
-	if dependency.Codemod != nil {
-		t.Fatalf("expected malformed package metadata to suppress codemod output, got %#v", dependency.Codemod)
-	}
-
-	scored := []report.DependencyReport{dependency}
-	report.AnnotateRemovalCandidateScores(scored)
-	if scored[0].RemovalCandidate != nil {
-		t.Fatalf("expected malformed package metadata to suppress removal scoring, got %#v", scored[0].RemovalCandidate)
-	}
+	assertRemovalSignalsSuppressed(t, dependency, warnings)
 
 	joinedWarnings := strings.Join(warnings, "\n")
 	if !strings.Contains(joinedWarnings, "failed to parse dependency package.json") {
 		t.Fatalf("expected malformed package metadata warning to remain visible, got %#v", warnings)
-	}
-	if !strings.Contains(joinedWarnings, "removal signals suppressed") {
-		t.Fatalf("expected incomplete-coverage suppression warning, got %#v", warnings)
 	}
 }
 
