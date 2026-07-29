@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -54,8 +55,10 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		RemovalCandidate:     &report.RemovalCandidate{Score: 80},
 	}
 	incomplete := report.DependencyReport{
-		Name:            "lodash",
-		UsageIncomplete: true,
+		Name: "lodash",
+	}
+	if !setUsageIncompleteForMergeTest(&incomplete) {
+		t.Fatal("expected usage-incomplete marker to be available")
 	}
 
 	for _, test := range []struct {
@@ -67,22 +70,40 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		{name: "incomplete right", left: complete, right: incomplete},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			merged := mergeDependency(test.left, test.right)
-
-			if !merged.UsageIncomplete {
-				t.Fatal("expected merged dependency usage to remain incomplete")
-			}
-			if merged.UsedExportsCount != 0 || merged.TotalExportsCount != 0 || merged.UsedPercent != 0 {
-				t.Fatalf("expected incomplete usage aggregates to be suppressed, got %#v", merged)
-			}
-			if merged.EstimatedUnusedBytes != 0 || len(merged.UnusedExports) != 0 {
-				t.Fatalf("expected incomplete unused-export signals to be suppressed, got %#v", merged)
-			}
-			if len(merged.Recommendations) != 0 || merged.Codemod != nil || merged.RemovalCandidate != nil {
-				t.Fatalf("expected incomplete removal advice to be suppressed, got %#v", merged)
-			}
+			assertIncompleteRemovalSignalsSuppressedAfterMerge(t, mergeDependency(test.left, test.right))
 		})
 	}
+}
+
+func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport) {
+	t.Helper()
+
+	if !usageIncompleteForMergeTest(merged) {
+		t.Fatal("expected merged dependency usage to remain incomplete")
+	}
+	if merged.UsedExportsCount != 0 || merged.TotalExportsCount != 0 || merged.UsedPercent != 0 {
+		t.Fatalf("expected incomplete usage aggregates to be suppressed, got %#v", merged)
+	}
+	if merged.EstimatedUnusedBytes != 0 || len(merged.UnusedExports) != 0 {
+		t.Fatalf("expected incomplete unused-export signals to be suppressed, got %#v", merged)
+	}
+	if len(merged.Recommendations) != 0 || merged.Codemod != nil || merged.RemovalCandidate != nil {
+		t.Fatalf("expected incomplete removal advice to be suppressed, got %#v", merged)
+	}
+}
+
+func setUsageIncompleteForMergeTest(dependency *report.DependencyReport) bool {
+	field := reflect.ValueOf(dependency).Elem().FieldByName("UsageIncomplete")
+	if !field.IsValid() || !field.CanSet() {
+		return false
+	}
+	field.SetBool(true)
+	return true
+}
+
+func usageIncompleteForMergeTest(dependency report.DependencyReport) bool {
+	field := reflect.ValueOf(dependency).FieldByName("UsageIncomplete")
+	return field.IsValid() && field.Kind() == reflect.Bool && field.Bool()
 }
 
 func mergeFamilyReport(generatedAt time.Time, warning string, confirmed, uncertain int, samples []string, dependencies ...report.DependencyReport) report.Report {
