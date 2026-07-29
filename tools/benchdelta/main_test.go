@@ -647,6 +647,88 @@ func TestMainSummaryWriteSuccess(t *testing.T) {
 	}
 }
 
+func TestMainRejectsInvalidThresholds(t *testing.T) {
+	if runBenchdeltaMainIfRequested(t) {
+		return
+	}
+
+	dir, basePath, headPath := writeMatchingBenchmarkFixtures(t)
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantOutput []string
+	}{
+		{
+			name:       "bytes nan",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-bytes-pct", "NaN"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-bytes-pct": "NaN" (must be finite and >= 0)`},
+		},
+		{
+			name:       "bytes positive infinity",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-bytes-pct", "+Inf"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-bytes-pct": "+Inf" (must be finite and >= 0)`},
+		},
+		{
+			name:       "bytes negative infinity",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-bytes-pct", "-Inf"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-bytes-pct": "-Inf" (must be finite and >= 0)`},
+		},
+		{
+			name:       "bytes negative",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-bytes-pct", "-0.1"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-bytes-pct": "-0.1" (must be finite and >= 0)`},
+		},
+		{
+			name:       "allocs nan",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-allocs-pct", "NaN"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-allocs-pct": "NaN" (must be finite and >= 0)`},
+		},
+		{
+			name:       "allocs positive infinity",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-allocs-pct", "+Inf"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-allocs-pct": "+Inf" (must be finite and >= 0)`},
+		},
+		{
+			name:       "allocs negative infinity",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-allocs-pct", "-Inf"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-allocs-pct": "-Inf" (must be finite and >= 0)`},
+		},
+		{
+			name:       "allocs negative",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-allocs-pct", "-0.1"},
+			wantOutput: []string{"Comparison status: invalid", "Result: benchmark input could not be read for a safe memory comparison.", `invalid threshold "max-allocs-pct": "-0.1" (must be finite and >= 0)`},
+		},
+		{
+			name:       "zero thresholds remain valid",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-bytes-pct", "0", "-max-allocs-pct", "0"},
+			wantOutput: []string{"Result: memory benchmark gate passed.", "Thresholds: bytes/op <= +0.0%, allocs/op <= +0.0%"},
+		},
+		{
+			name:       "finite nonnegative thresholds remain valid",
+			args:       []string{"-base", basePath, "-head", headPath, "-max-bytes-pct", "1.5", "-max-allocs-pct", "2.5"},
+			wantOutput: []string{"Result: memory benchmark gate passed.", "Thresholds: bytes/op <= +1.5%, allocs/op <= +2.5%"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			summaryPath := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-")+".md")
+			args := append(append([]string{}, tc.args...), "-summary-out", summaryPath)
+			output, exitCode := runBenchdeltaHelper(t, "TestMainRejectsInvalidThresholds", args...)
+			if strings.Contains(tc.name, "remain valid") {
+				assertBenchdeltaHelperExit(t, output, exitCode, exitCodePassed)
+			} else {
+				assertBenchdeltaHelperExit(t, output, exitCode, exitCodeInvalid)
+			}
+			for _, want := range tc.wantOutput {
+				assertBenchdeltaHelperOutput(t, output, want)
+			}
+			assertBenchdeltaSummaryArtifact(t, summaryPath, tc.wantOutput, nil)
+		})
+	}
+}
+
 func TestMainInvalidComparisonsStillWriteDeterministicSummaryArtifacts(t *testing.T) {
 	if runBenchdeltaMainIfRequested(t) {
 		return

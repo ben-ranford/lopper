@@ -33,6 +33,11 @@ type deltaThresholds struct {
 	allocsPct float64
 }
 
+type thresholdFlagValue struct {
+	raw   string
+	value float64
+}
+
 type comparisonRow struct {
 	name            string
 	baseBytes       float64
@@ -85,8 +90,10 @@ type comparisonSummary struct {
 func main() {
 	basePath := flag.String("base", "", "path to base benchmark output")
 	headPath := flag.String("head", "", "path to head benchmark output")
-	maxBytesPct := flag.Float64("max-bytes-pct", 15, "maximum allowed bytes/op increase percentage")
-	maxAllocsPct := flag.Float64("max-allocs-pct", 10, "maximum allowed allocs/op increase percentage")
+	maxBytesPct := newThresholdFlagValue(15)
+	maxAllocsPct := newThresholdFlagValue(10)
+	flag.Var(maxBytesPct, "max-bytes-pct", "maximum allowed bytes/op increase percentage")
+	flag.Var(maxAllocsPct, "max-allocs-pct", "maximum allowed allocs/op increase percentage")
 	summaryOut := flag.String("summary-out", "", "path to write markdown summary")
 	flag.Parse()
 
@@ -95,8 +102,14 @@ func main() {
 	}
 
 	limits := deltaThresholds{
-		bytesPct:  *maxBytesPct,
-		allocsPct: *maxAllocsPct,
+		bytesPct:  maxBytesPct.value,
+		allocsPct: maxAllocsPct.value,
+	}
+	if err := validateThresholdFlag("max-bytes-pct", maxBytesPct); err != nil {
+		exitWithSummary(*summaryOut, invalidInputSummary(limits, "unavailable", "unavailable", err.Error()))
+	}
+	if err := validateThresholdFlag("max-allocs-pct", maxAllocsPct); err != nil {
+		exitWithSummary(*summaryOut, invalidInputSummary(limits, "unavailable", "unavailable", err.Error()))
 	}
 
 	baseInput, err := parseBenchmarkFile(*basePath)
@@ -542,4 +555,38 @@ func percentDelta(base, head, limit float64) (string, bool) {
 		delta := ((head - base) / base) * 100
 		return fmt.Sprintf("%+.1f%%", delta), delta > limit
 	}
+}
+
+func newThresholdFlagValue(defaultValue float64) *thresholdFlagValue {
+	return &thresholdFlagValue{
+		raw:   strconv.FormatFloat(defaultValue, 'f', -1, 64),
+		value: defaultValue,
+	}
+}
+
+func (f *thresholdFlagValue) Set(raw string) error {
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return err
+	}
+	f.raw = raw
+	f.value = value
+	return nil
+}
+
+func (f *thresholdFlagValue) String() string {
+	if f == nil {
+		return ""
+	}
+	return f.raw
+}
+
+func validateThresholdFlag(name string, value *thresholdFlagValue) error {
+	if value == nil {
+		return nil
+	}
+	if !isFinite(value.value) || value.value < 0 {
+		return fmt.Errorf("invalid threshold %q: %q (must be finite and >= 0)", name, value.raw)
+	}
+	return nil
 }

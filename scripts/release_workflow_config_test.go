@@ -3591,6 +3591,44 @@ func BenchmarkConditional(b *testing.B) {
 	}
 }
 
+func TestMakefileBenchGatePreservesInvalidHelperThresholdExitWhenEnforcementDisabled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		envKey   string
+		flagName string
+	}{
+		{name: "bytes", envKey: "MEMORY_BENCH_MAX_BYTES_PCT", flagName: "max-bytes-pct"},
+		{name: "allocs", envKey: "MEMORY_BENCH_MAX_ALLOCS_PCT", flagName: "max-allocs-pct"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo, benchVars := newTempBenchGateGoRepo(t)
+			copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+			copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkThresholdValidation"))
+			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
+			benchVars["MEMORY_BENCH_ENFORCE"] = "0"
+			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
+			benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+			benchVars[tc.envKey] = "NaN"
+			output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+			if exitCode != 2 {
+				t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+			}
+			want := `invalid threshold "` + tc.flagName + `": "NaN" (must be finite and >= 0)`
+			if !strings.Contains(output, want) {
+				t.Fatalf("bench-gate output missing invalid helper threshold diagnostic %q:\n%s", want, output)
+			}
+			assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", want}, []string{"Result: memory benchmark gate passed."})
+		})
+	}
+}
+
 func TestMakefileBenchGateFailsClosedWhenConfiguredPackageLosesAllHeadBenchmarks(t *testing.T) {
 	t.Parallel()
 
