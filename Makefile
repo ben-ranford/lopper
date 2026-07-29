@@ -208,41 +208,151 @@ bench-gate:
 	@set -eu; \
 	requested_base_ref="$(MEMORY_BENCH_BASE)"; \
 	base_ref="$$requested_base_ref"; \
-	mkdir -p $$(dirname "$(BENCH_BASE_OUTPUT)"); \
+	mkdir -p $$(dirname "$(BENCH_BASE_OUTPUT)") $$(dirname "$(BENCH_HEAD_OUTPUT)") $$(dirname "$(MEMORY_BENCH_SUMMARY)") $$(dirname "$(MEMORY_BENCH_STATUS)"); \
 	write_invalid_memory_summary() { \
-		mkdir -p $$(dirname "$(MEMORY_BENCH_SUMMARY)") $$(dirname "$(MEMORY_BENCH_STATUS)"); \
 		printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark input could not be read for a safe memory comparison.\n" "$(MEMORY_BENCH_MAX_BYTES_PCT)" "$(MEMORY_BENCH_MAX_ALLOCS_PCT)" "$$1" > "$(MEMORY_BENCH_SUMMARY)"; \
 		printf "2\n" > "$(MEMORY_BENCH_STATUS)"; \
 	}; \
+	fail_invalid_memory_gate() { \
+		printf "Memory benchmark gate invalid: %s\n" "$$1" >&2; \
+		write_invalid_memory_summary "$$1"; \
+		exit 2; \
+	}; \
+	benchmark_harness_fingerprint() { \
+		fingerprint_pkg="$$1"; \
+		fingerprint_files_tmp=$$(mktemp) || return 1; \
+		fingerprint_manifest_tmp=$$(mktemp) || { rm -f "$$fingerprint_files_tmp"; return 1; }; \
+		if ! fingerprint_dir=$$(GOFLAGS=-buildvcs=false $(GO_CMD) list -f '{{.Dir}}' "$$fingerprint_pkg" 2>/dev/null); then \
+			rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
+			return 1; \
+		fi; \
+		if ! GOFLAGS=-buildvcs=false $(GO_CMD) list -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$$fingerprint_pkg" > "$$fingerprint_files_tmp" 2>/dev/null; then \
+			rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
+			return 1; \
+		fi; \
+		if ! LC_ALL=C sort -u -o "$$fingerprint_files_tmp" "$$fingerprint_files_tmp"; then \
+			rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
+			return 1; \
+		fi; \
+		: > "$$fingerprint_manifest_tmp"; \
+		fingerprint_failed=0; \
+		while IFS=$$(printf '\t') read -r fingerprint_kind fingerprint_file; do \
+			[ -n "$$fingerprint_file" ] || continue; \
+			if ! fingerprint_blob=$$(git hash-object "$$fingerprint_dir/$$fingerprint_file" 2>/dev/null); then \
+				fingerprint_failed=1; \
+				break; \
+			fi; \
+			if ! printf "%s\t%s\t%s\n" "$$fingerprint_kind" "$$fingerprint_file" "$$fingerprint_blob" >> "$$fingerprint_manifest_tmp"; then \
+				fingerprint_failed=1; \
+				break; \
+			fi; \
+		done < "$$fingerprint_files_tmp"; \
+		if [ "$$fingerprint_failed" -ne 0 ] || ! fingerprint_value=$$(git hash-object "$$fingerprint_manifest_tmp" 2>/dev/null); then \
+			rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
+			return 1; \
+		fi; \
+		rm -f "$$fingerprint_files_tmp" "$$fingerprint_manifest_tmp"; \
+		printf "git-hash-object:%s\n" "$$fingerprint_value"; \
+	}; \
+	format_benchmark_definition() { \
+		invocation_pkg="$$1"; \
+		invocation_selection="$$2"; \
+		invocation_fingerprint="$$3"; \
+		printf "package=%s selection=%s -run '^$$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false %s test %s -run '^$$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$$invocation_pkg" "$$invocation_selection" "$(subst ",\",$(GO_TEST_LDFLAGS_ARGS))" "$(BENCH_COUNT)" "$(BENCH_TIME)" "$$invocation_fingerprint" "$(GO_CMD)" "$(subst ",\",$(GO_TEST_LDFLAGS_ARGS))" "$$invocation_selection" "$(BENCH_COUNT)" "$(BENCH_TIME)" "$$invocation_pkg"; \
+	}; \
 	if ! git rev-parse --verify -q "$$base_ref^{commit}" >/dev/null; then \
 		echo "Memory benchmark base ref '$$base_ref' is missing or invalid; failing closed."; \
-		write_invalid_memory_summary "base benchmark input could not be read: requested base ref '$$base_ref' is missing or invalid."; \
-		exit 2; \
+		fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$$base_ref' is missing or invalid."; \
 	fi; \
 	if ! base_commit=$$(git merge-base "$$base_ref" HEAD 2>/dev/null); then \
 		echo "Memory benchmark base ref '$$base_ref' is not related to HEAD; failing closed."; \
-		write_invalid_memory_summary "base benchmark input could not be read: requested base ref '$$base_ref' is not related to HEAD."; \
-		exit 2; \
+		fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$$base_ref' is not related to HEAD."; \
 	fi; \
 	bench_dir=$$(mktemp -d); \
 	base_tree="$$bench_dir/base"; \
 	base_output_tmp=$$(mktemp); \
 	head_output_tmp=$$(mktemp); \
-	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp"; }; \
+	bench_packages_tmp=$$(mktemp); \
+	bench_definitions_tmp=$$(mktemp); \
+	cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$$base_tree" >/dev/null 2>&1 || true); rm -rf "$$bench_dir"; rm -f "$$base_output_tmp" "$$head_output_tmp" "$$bench_packages_tmp" "$$bench_definitions_tmp"; }; \
 	trap cleanup EXIT INT TERM; \
 	echo "Running memory benchmark delta against $$base_ref."; \
-	(unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); \
-	if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES)) > "$$base_output_tmp" 2>&1; then \
-		cat "$$base_output_tmp"; \
-		exit 1; \
+	: > "$$base_output_tmp"; \
+	: > "$$head_output_tmp"; \
+	: > "$$bench_definitions_tmp"; \
+	if ! GOFLAGS=-buildvcs=false $(GO_CMD) list $(MEMORY_BENCH_PACKAGES) > "$$bench_packages_tmp" 2>&1; then \
+		cat "$$bench_packages_tmp"; \
+		fail_invalid_memory_gate "head benchmark package targets could not be resolved."; \
 	fi; \
-	cat "$$base_output_tmp"; \
+	LC_ALL=C sort -u -o "$$bench_packages_tmp" "$$bench_packages_tmp"; \
+	while IFS= read -r bench_pkg; do \
+		[ -n "$$bench_pkg" ] || continue; \
+		pkg_bench_tmp=$$(mktemp); \
+		pkg_names_tmp=$$(mktemp); \
+		if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -list '^Benchmark' "$$bench_pkg" > "$$pkg_bench_tmp" 2>&1; then \
+			cat "$$pkg_bench_tmp"; \
+			rm -f "$$pkg_bench_tmp" "$$pkg_names_tmp"; \
+			fail_invalid_memory_gate "head benchmark definition could not be resolved from package '$$bench_pkg'."; \
+		fi; \
+		awk '/^Benchmark/ { print $$1 }' "$$pkg_bench_tmp" | LC_ALL=C sort -u > "$$pkg_names_tmp"; \
+		if [ ! -s "$$pkg_names_tmp" ]; then \
+			rm -f "$$pkg_bench_tmp" "$$pkg_names_tmp"; \
+			fail_invalid_memory_gate "configured head benchmark package target '$$bench_pkg' resolved zero selected benchmarks."; \
+		fi; \
+		if ! harness_fingerprint=$$(benchmark_harness_fingerprint "$$bench_pkg"); then \
+			rm -f "$$pkg_bench_tmp" "$$pkg_names_tmp"; \
+			fail_invalid_memory_gate "head benchmark harness fingerprint could not be resolved from package '$$bench_pkg'."; \
+		fi; \
+		bench_selection=$$(awk 'BEGIN { separator = "^(" } { printf "%s%s", separator, $$1; separator = "|" } END { print ")$$" }' "$$pkg_names_tmp"); \
+		printf "%s\t%s\t%s\n" "$$bench_pkg" "$$bench_selection" "$$harness_fingerprint" >> "$$bench_definitions_tmp"; \
+		rm -f "$$pkg_bench_tmp" "$$pkg_names_tmp"; \
+	done < "$$bench_packages_tmp"; \
+	LC_ALL=C sort -u "$$bench_definitions_tmp" -o "$$bench_definitions_tmp"; \
+	echo "Resolved head benchmark definitions:"; \
+	while IFS=$$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; do \
+		definition_metadata=$$(format_benchmark_definition "$$bench_pkg" "$$bench_selection" "$$harness_fingerprint"); \
+		printf "  %s\n" "$$definition_metadata"; \
+	done < "$$bench_definitions_tmp"; \
+	if ! (unset GIT_INDEX_FILE; git worktree add --detach "$$base_tree" "$$base_commit" >/dev/null); then \
+		fail_invalid_memory_gate "base benchmark revision '$$base_commit' could not be prepared."; \
+	fi; \
+	while IFS=$$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; do \
+		if ! base_harness_fingerprint=$$(cd "$$base_tree" && benchmark_harness_fingerprint "$$bench_pkg"); then \
+			fail_invalid_memory_gate "base benchmark harness fingerprint could not be resolved for package '$$bench_pkg'."; \
+		fi; \
+		if [ "$$base_harness_fingerprint" != "$$harness_fingerprint" ]; then \
+			fail_invalid_memory_gate "base benchmark definition for package '$$bench_pkg' does not match the resolved head harness fingerprint."; \
+		fi; \
+	done < "$$bench_definitions_tmp"; \
+	while IFS=$$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; do \
+		definition_metadata=$$(format_benchmark_definition "$$bench_pkg" "$$bench_selection" "$$harness_fingerprint"); \
+		printf "Applied base benchmark definition: %s\n" "$$definition_metadata"; \
+		printf "Applied base benchmark definition: %s\n" "$$definition_metadata" >> "$$base_output_tmp"; \
+		bench_run_output_tmp=$$(mktemp); \
+		if ! (cd "$$base_tree" && GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench "$$bench_selection" -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) "$$bench_pkg") > "$$bench_run_output_tmp" 2>&1; then \
+			cat "$$bench_run_output_tmp"; \
+			rm -f "$$bench_run_output_tmp"; \
+			fail_invalid_memory_gate "base benchmark definition for package '$$bench_pkg' with selection '$$bench_selection' could not be applied unchanged."; \
+		fi; \
+		cat "$$bench_run_output_tmp"; \
+		cat "$$bench_run_output_tmp" >> "$$base_output_tmp"; \
+		rm -f "$$bench_run_output_tmp"; \
+	done < "$$bench_definitions_tmp"; \
 	cp "$$base_output_tmp" "$(BENCH_BASE_OUTPUT)"; \
-	if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench . -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) $(MEMORY_BENCH_PACKAGES) > "$$head_output_tmp" 2>&1; then \
-		cat "$$head_output_tmp"; \
-		exit 1; \
-	fi; \
-	cat "$$head_output_tmp"; \
+	while IFS=$$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; do \
+		definition_metadata=$$(format_benchmark_definition "$$bench_pkg" "$$bench_selection" "$$harness_fingerprint"); \
+		printf "Applied head benchmark definition: %s\n" "$$definition_metadata"; \
+		printf "Applied head benchmark definition: %s\n" "$$definition_metadata" >> "$$head_output_tmp"; \
+		bench_run_output_tmp=$$(mktemp); \
+		if ! GOFLAGS=-buildvcs=false $(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -run '^$$' -bench "$$bench_selection" -benchmem -count=$(BENCH_COUNT) -benchtime=$(BENCH_TIME) "$$bench_pkg" > "$$bench_run_output_tmp" 2>&1; then \
+			cat "$$bench_run_output_tmp"; \
+			rm -f "$$bench_run_output_tmp"; \
+			fail_invalid_memory_gate "head benchmark definition for package '$$bench_pkg' with selection '$$bench_selection' could not be applied unchanged."; \
+		fi; \
+		cat "$$bench_run_output_tmp"; \
+		cat "$$bench_run_output_tmp" >> "$$head_output_tmp"; \
+		rm -f "$$bench_run_output_tmp"; \
+	done < "$$bench_definitions_tmp"; \
 	cp "$$head_output_tmp" "$(BENCH_HEAD_OUTPUT)"; \
 	benchdelta_bin="$$bench_dir/benchdelta"; \
 	GOFLAGS=-buildvcs=false $(GO_CMD) build -o "$$benchdelta_bin" ./tools/benchdelta; \
