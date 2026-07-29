@@ -3099,7 +3099,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`printf "2\n" > "$(MEMORY_BENCH_STATUS)"`,
 		`requested_go_bin="$(GO_BIN)"`,
 		`requested_go_toolchain="$(GO_TOOLCHAIN)"`,
-		`go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOEXE`,
+		`go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOHOSTOS`,
+		`if [ "$$derived_go_host_os" = "windows" ]; then derived_go_exe=".exe"; fi`,
 		`requested_go_bin="$$derived_go_root/bin/go$$derived_go_exe"`,
 		`resolve_go_bin_reference() { \`,
 		`resolve_go_bin() { \`,
@@ -3214,6 +3215,7 @@ func TestMakefileBenchGateKeepsGoBinIndependentFromMultiwordGo(t *testing.T) {
 	}
 	vars := map[string]string{
 		"GO":                "env " + hostGo,
+		"GOOS":              "windows",
 		"GO_TOOLCHAIN":      "local",
 		"MEMORY_BENCH_BASE": "refs/heads/does-not-exist",
 	}

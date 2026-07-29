@@ -225,12 +225,14 @@ bench-gate:
 		exit 2; \
 	}; \
 	if [ -z "$$requested_go_bin" ]; then \
-		go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOEXE 2>/dev/null || true)"; \
+		go_env_output="$$(GOTOOLCHAIN=$$requested_go_toolchain $(GO) env GOROOT GOHOSTOS 2>/dev/null || true)"; \
 		derived_go_root="$$(printf '%s\n' "$$go_env_output" | sed -n '1p')"; \
-		derived_go_exe="$$(printf '%s\n' "$$go_env_output" | sed -n '2p')"; \
+		derived_go_host_os="$$(printf '%s\n' "$$go_env_output" | sed -n '2p')"; \
 		if [ -z "$$derived_go_root" ]; then \
 			fail_invalid_memory_gate "configured GO command could not resolve GOROOT; set GO_BIN explicitly."; \
 		fi; \
+		derived_go_exe=""; \
+		if [ "$$derived_go_host_os" = "windows" ]; then derived_go_exe=".exe"; fi; \
 		requested_go_bin="$$derived_go_root/bin/go$$derived_go_exe"; \
 	fi; \
 	resolve_go_bin_reference() { \
