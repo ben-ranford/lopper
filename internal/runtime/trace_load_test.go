@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,23 @@ func TestLoadTraceOversizedFile(t *testing.T) {
 	_, err := loadTraceFromContent(t, oversizedRuntimeTraceContent())
 	if !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized trace to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestLoadTraceTooManyEvents(t *testing.T) {
+	const maxRuntimeTraceEventsForTest = 300000
+
+	var content strings.Builder
+	for i := 0; i <= maxRuntimeTraceEventsForTest; i++ {
+		fmt.Fprintf(&content, "{\"dependency\":\"pkg-%x\"}\n", i)
+	}
+
+	_, err := loadTraceFromContent(t, content.String())
+	if err == nil {
+		t.Fatalf("expected too-many-events error")
+	}
+	if err.Error() != "runtime trace contains too many events" {
+		t.Fatalf("expected stable too-many-events error, got %v", err)
 	}
 }
 
