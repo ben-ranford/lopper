@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -8,6 +10,7 @@ import (
 
 func TestAnnotateRuntimeOnly(t *testing.T) {
 	rep := report.Report{
+		RepoPath: "/repo",
 		Dependencies: []report.DependencyReport{
 			{Name: "alpha"},
 			{
@@ -46,6 +49,207 @@ func TestAnnotateRuntimeOnly(t *testing.T) {
 	}
 	if annotated.Dependencies[1].RuntimeUsage.Correlation != report.RuntimeCorrelationOverlap {
 		t.Fatalf("expected beta overlap correlation, got %#v", annotated.Dependencies[1].RuntimeUsage)
+	}
+}
+
+func TestAnnotateRuntimeContextRedactsUnsafeVisiblePaths(t *testing.T) {
+	repoPath := t.TempDir()
+	repoParent := filepath.Join(repoPath, "src", "index.js")
+	repoRootParent := filepath.Join(repoPath, "outside.js")
+	repoReservedParent := filepath.Join(repoPath, "external:outside.js")
+	repoEntrypoint := filepath.Join(repoPath, "cmd", "main.js")
+	outsideParent := filepath.Join(t.TempDir(), "outside.js")
+	outsideEntrypoint := filepath.Join(t.TempDir(), "launch.js")
+	rep := report.Report{
+		RepoPath: repoPath,
+		Dependencies: []report.DependencyReport{
+			{Name: "alpha"},
+		},
+	}
+
+	trace := Trace{
+		DependencyLoads: map[string]int{"alpha": 4},
+		DependencyParents: map[string]map[string]int{
+			"alpha": {
+				fileURLPrefix + filepath.ToSlash(repoParent): 1,
+				repoParent:                         2,
+				repoRootParent:                     4,
+				repoReservedParent:                 5,
+				"../outside.js":                    1,
+				outsideParent:                      1,
+				`C:\Users\alice\project\secret.js`: 1,
+				"file:///C:/Users/alice/project/secret.js": 2,
+				`D:private\drive.js`:                       1,
+				"node:fs":                                  1,
+				"@scope/pkg":                               1,
+				"literal:marker":                           1,
+			},
+		},
+		DependencyEntrypoints: map[string]map[string]int{
+			"alpha": {
+				fileURLPrefix + filepath.ToSlash(repoEntrypoint): 3,
+				outsideEntrypoint: 1,
+				"file:///C:/Users/alice/project/win-launch.js": 1,
+			},
+		},
+	}
+
+	annotated := Annotate(rep, trace, AnnotateOptions{})
+	usage := annotated.Dependencies[0].RuntimeUsage
+	if usage == nil {
+		t.Fatalf("expected runtime usage annotation")
+	}
+	assertRuntimeContextCounts(t, usage.ParentModules, map[string]int{
+		"src/index.js":                3,
+		"outside.js":                  4,
+		"literal:external:outside.js": 5,
+		"external:outside.js":         2,
+		"external:secret.js":          3,
+		"external:drive.js":           1,
+		"node:fs":                     1,
+		"@scope/pkg":                  1,
+		"literal:literal:marker":      1,
+	})
+	assertRuntimeContextCounts(t, usage.Entrypoints, map[string]int{
+		"cmd/main.js":            3,
+		"external:launch.js":     1,
+		"external:win-launch.js": 1,
+	})
+}
+
+func TestLoadAndAnnotateRuntimeContextRedactsFileURLAuthorities(t *testing.T) {
+	content :=
+		`{"module":"` + lodashMapModule + `","parent":"file://server/share/private/main.js","entrypoint":"file://localhost/server/share/start.js"}` + "\n" +
+			`{"module":"` + lodashMapModule + `","parent":"\\\\server\\share\\private\\unc.js","entrypoint":"file:////server/share/unc-start.js"}` + "\n"
+	trace, err := loadTraceFromContent(t, content)
+	if err != nil {
+		t.Fatalf(loadTraceErrFmt, err)
+	}
+	rep := report.Report{
+		RepoPath: "/server/share",
+		Dependencies: []report.DependencyReport{
+			{Name: "lodash"},
+		},
+	}
+
+	usage := Annotate(rep, trace, AnnotateOptions{}).Dependencies[0].RuntimeUsage
+	if usage == nil {
+		t.Fatalf("expected runtime usage annotation")
+	}
+	assertRuntimeContextCounts(t, usage.ParentModules, map[string]int{
+		"external:main.js": 1,
+		"external:unc.js":  1,
+	})
+	assertRuntimeContextCounts(t, usage.Entrypoints, map[string]int{
+		"external:start.js":     1,
+		"external:unc-start.js": 1,
+	})
+}
+
+func TestAnnotateRuntimeContextPreservesIdentityThroughSymlinkedRepoRoot(t *testing.T) {
+	tempRoot := t.TempDir()
+	physicalRepo := filepath.Join(tempRoot, "physical")
+	physicalParent := filepath.Join(physicalRepo, "src", "index.js")
+	if err := os.MkdirAll(filepath.Dir(physicalParent), 0o750); err != nil {
+		t.Fatalf("create physical repo: %v", err)
+	}
+	if err := os.WriteFile(physicalParent, nil, 0o600); err != nil {
+		t.Fatalf("write physical parent module: %v", err)
+	}
+	linkedRepo := filepath.Join(tempRoot, "linked")
+	if err := os.Symlink(physicalRepo, linkedRepo); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	rep := report.Report{
+		RepoPath: linkedRepo,
+		Dependencies: []report.DependencyReport{
+			{Name: "alpha"},
+		},
+	}
+	trace := Trace{
+		DependencyLoads: map[string]int{"alpha": 3},
+		DependencyParents: map[string]map[string]int{
+			"alpha": {
+				physicalParent: 1,
+				filepath.Join(linkedRepo, "src", "index.js"): 2,
+			},
+		},
+	}
+
+	annotated := Annotate(rep, trace, AnnotateOptions{})
+	usage := annotated.Dependencies[0].RuntimeUsage
+	if usage == nil {
+		t.Fatalf("expected runtime usage annotation")
+	}
+	assertRuntimeContextCounts(t, usage.ParentModules, map[string]int{"src/index.js": 3})
+}
+
+func TestAnnotateRuntimeContextEdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		value    string
+		repoPath string
+		want     string
+	}{
+		{name: "blank", value: "  "},
+		{name: "empty file URL", value: "file://"},
+		{name: "external root", value: "/"},
+		{name: "non-file URL", value: "https://example.test/entry.js", want: "https://example.test/entry.js"},
+		{name: "reserved URL prefix", value: "external://example.test/entry.js", want: "literal:external://example.test/entry.js"},
+		{name: "relative path without repo", value: "src/index.js", want: "src/index.js"},
+		{name: "relative repo root rejected", value: "/repo/main.js", repoPath: "repo", want: "external:main.js"},
+		{name: "localhost Windows file URL", value: "file://localhost/C:/Users/alice/main.js", want: "external:main.js"},
+		{name: "UNC file URL", value: "file://server/share/main.js", want: "external:main.js"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := annotateRuntimeParentModules(t, tt.value, tt.repoPath)
+			if tt.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected %q to be omitted, got %#v", tt.value, got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Module != tt.want || got[0].Count != 1 {
+				t.Fatalf("expected %q to render as %q, got %#v", tt.value, tt.want, got)
+			}
+		})
+	}
+}
+
+func annotateRuntimeParentModules(t *testing.T, value, repoPath string) []report.RuntimeModuleUsage {
+	t.Helper()
+	rep := report.Report{
+		RepoPath: repoPath,
+		Dependencies: []report.DependencyReport{
+			{Name: "alpha"},
+		},
+	}
+	trace := Trace{
+		DependencyLoads: map[string]int{"alpha": 1},
+		DependencyParents: map[string]map[string]int{
+			"alpha": {value: 1},
+		},
+	}
+	usage := Annotate(rep, trace, AnnotateOptions{}).Dependencies[0].RuntimeUsage
+	if usage == nil {
+		t.Fatalf("expected runtime usage for %q", value)
+	}
+	return usage.ParentModules
+}
+
+func assertRuntimeContextCounts(t *testing.T, got []report.RuntimeModuleUsage, want map[string]int) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("expected runtime context %#v, got %#v", want, got)
+	}
+	for _, item := range got {
+		if count, ok := want[item.Module]; !ok || count != item.Count {
+			t.Fatalf("expected runtime context %#v, got %#v", want, got)
+		}
 	}
 }
 

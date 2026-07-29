@@ -1,10 +1,17 @@
 package runtime
 
 import (
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+)
+
+const (
+	externalRuntimeContextPrefix = "external:"
+	literalRuntimeContextPrefix  = "literal:"
 )
 
 func Annotate(rep report.Report, trace Trace, opts AnnotateOptions) report.Report {
@@ -27,12 +34,12 @@ func annotateExistingDependencies(rep *report.Report, trace Trace, supported map
 		}
 		key := DependencyKey{Language: language, Name: dep.Name}
 		seen[key] = struct{}{}
-		annotateDependency(dep, trace, key)
+		annotateDependency(dep, trace, key, rep.RepoPath)
 	}
 	return seen
 }
 
-func annotateDependency(dep *report.DependencyReport, trace Trace, key DependencyKey) {
+func annotateDependency(dep *report.DependencyReport, trace Trace, key DependencyKey, repoPath string) {
 	loads := runtimeLoadCount(trace, key)
 	hasStatic := hasStaticEvidence(*dep)
 	if loads == 0 && !hasStatic && dep.RuntimeUsage == nil {
@@ -44,8 +51,8 @@ func annotateDependency(dep *report.DependencyReport, trace Trace, key Dependenc
 		Correlation:   correlation,
 		RuntimeOnly:   correlation == report.RuntimeCorrelationRuntimeOnly,
 		Modules:       runtimeModules(runtimeModuleCounts(trace, key)),
-		ParentModules: runtimeModules(runtimeParentCounts(trace, key)),
-		Entrypoints:   runtimeModules(runtimeEntrypointCounts(trace, key)),
+		ParentModules: runtimeContextModules(runtimeParentCounts(trace, key), repoPath),
+		Entrypoints:   runtimeContextModules(runtimeEntrypointCounts(trace, key), repoPath),
 		TopSymbols:    runtimeSymbols(runtimeSymbolCounts(trace, key)),
 	}
 }
@@ -67,8 +74,8 @@ func appendRuntimeOnlyDependencies(rep *report.Report, trace Trace, seen map[Dep
 				Correlation:   report.RuntimeCorrelationRuntimeOnly,
 				RuntimeOnly:   true,
 				Modules:       runtimeModules(runtimeModuleCounts(trace, key)),
-				ParentModules: runtimeModules(runtimeParentCounts(trace, key)),
-				Entrypoints:   runtimeModules(runtimeEntrypointCounts(trace, key)),
+				ParentModules: runtimeContextModules(runtimeParentCounts(trace, key), rep.RepoPath),
+				Entrypoints:   runtimeContextModules(runtimeEntrypointCounts(trace, key), rep.RepoPath),
 				TopSymbols:    runtimeSymbols(runtimeSymbolCounts(trace, key)),
 			},
 		})
@@ -207,6 +214,157 @@ func runtimeModules(values map[string]int) []report.RuntimeModuleUsage {
 		return items[i].Count > items[j].Count
 	})
 	return items
+}
+
+func runtimeContextModules(values map[string]int, repoPath string) []report.RuntimeModuleUsage {
+	if len(values) == 0 {
+		return nil
+	}
+	redacted := make(map[string]int, len(values))
+	for module, count := range values {
+		visible := visibleRuntimeContextModule(module, repoPath)
+		if visible == "" {
+			continue
+		}
+		redacted[visible] += count
+	}
+	return runtimeModules(redacted)
+}
+
+func visibleRuntimeContextModule(value, repoPath string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value, fileURL, fileURLAuthority := normalizeRuntimeContextValue(value)
+	if value == "" {
+		return ""
+	}
+	if fileURLAuthority {
+		return safeRuntimeContextBase(value)
+	}
+	if !fileURL && strings.Contains(value, "://") && !runtimeContextWindowsDrivePath(value) {
+		return visibleRuntimeContextLiteral(value)
+	}
+	if !fileURL && !runtimeContextLooksLikePath(value) {
+		return visibleRuntimeContextLiteral(value)
+	}
+	uncPath := strings.HasPrefix(value, "//")
+	if uncPath {
+		return safeRuntimeContextBase(value)
+	}
+	value = path.Clean(value)
+	if repoRelative, ok := runtimeContextRepoRelativePath(repoPath, value); ok {
+		return visibleRuntimeContextLiteral(repoRelative)
+	}
+	if fileURL || path.IsAbs(value) || runtimeContextWindowsDrivePath(value) || runtimeContextEscapesRoot(value) {
+		return safeRuntimeContextBase(value)
+	}
+	return visibleRuntimeContextLiteral(value)
+}
+
+func visibleRuntimeContextLiteral(value string) string {
+	if strings.HasPrefix(value, externalRuntimeContextPrefix) ||
+		strings.HasPrefix(value, literalRuntimeContextPrefix) {
+		return literalRuntimeContextPrefix + value
+	}
+	return value
+}
+
+func runtimeContextRepoRelativePath(repoPath, value string) (string, bool) {
+	repoPath = strings.TrimSpace(repoPath)
+	if repoPath == "" {
+		return "", false
+	}
+	repoPath = filepath.Clean(repoPath)
+	if !filepath.IsAbs(repoPath) {
+		return "", false
+	}
+
+	candidate := filepath.FromSlash(value)
+	if (path.IsAbs(value) || runtimeContextWindowsDrivePath(value)) && !filepath.IsAbs(candidate) {
+		return "", false
+	}
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(repoPath, candidate)
+	} else {
+		candidate = filepath.Clean(candidate)
+	}
+
+	resolvedRepoPath, repoErr := filepath.EvalSymlinks(repoPath)
+	resolvedCandidate, candidateErr := filepath.EvalSymlinks(candidate)
+	if repoErr == nil && candidateErr == nil {
+		return runtimeContextRelativeToRoot(resolvedRepoPath, resolvedCandidate)
+	}
+	if relative, ok := runtimeContextRelativeToRoot(repoPath, candidate); ok {
+		return relative, true
+	}
+	if repoErr == nil {
+		return runtimeContextRelativeToRoot(resolvedRepoPath, candidate)
+	}
+	return "", false
+}
+
+func runtimeContextRelativeToRoot(repoPath, candidate string) (string, bool) {
+	relative, err := filepath.Rel(repoPath, candidate)
+	if err != nil {
+		return "", false
+	}
+	relative = filepath.Clean(relative)
+	if relative == "." || filepath.IsAbs(relative) || runtimeContextEscapesRoot(filepath.ToSlash(relative)) {
+		return "", false
+	}
+	return filepath.ToSlash(relative), true
+}
+
+func normalizeRuntimeContextValue(value string) (string, bool, bool) {
+	value = strings.ReplaceAll(value, `\`, "/")
+	fileURL := len(value) >= len(fileURLPrefix) && strings.EqualFold(value[:len(fileURLPrefix)], fileURLPrefix)
+	fileURLAuthority := false
+	if fileURL {
+		value = value[len(fileURLPrefix):]
+		fileURLAuthority = value != "" &&
+			!strings.HasPrefix(value, "/") &&
+			!runtimeContextWindowsDrivePath(value)
+		switch {
+		case strings.HasPrefix(strings.ToLower(value), "localhost/"):
+			value = value[len("localhost"):]
+		case value != "" && !strings.HasPrefix(value, "/") && !runtimeContextWindowsDrivePath(value):
+			value = "//" + value
+		}
+	}
+	if len(value) >= 3 && value[0] == '/' && runtimeContextWindowsDrivePath(value[1:]) {
+		value = value[1:]
+	}
+	return value, fileURL, fileURLAuthority
+}
+
+func runtimeContextLooksLikePath(value string) bool {
+	return strings.Contains(value, "/") || strings.HasPrefix(value, ".") || runtimeContextWindowsDrivePath(value)
+}
+
+func runtimeContextWindowsDrivePath(value string) bool {
+	value = strings.TrimPrefix(value, "/")
+	return len(value) >= 2 &&
+		((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) &&
+		value[1] == ':'
+}
+
+func runtimeContextEscapesRoot(value string) bool {
+	return value == ".." || strings.HasPrefix(value, "../")
+}
+
+func safeRuntimeContextBase(value string) string {
+	value = strings.TrimRight(value, "/")
+	if runtimeContextWindowsDrivePath(value) {
+		value = strings.TrimPrefix(value, "/")
+		value = value[2:]
+	}
+	base := path.Base(value)
+	if base == "" || base == "." || base == ".." || base == "/" || runtimeContextWindowsDrivePath(base) {
+		return ""
+	}
+	return externalRuntimeContextPrefix + base
 }
 
 func runtimeSymbols(values map[string]int) []report.RuntimeSymbolUsage {

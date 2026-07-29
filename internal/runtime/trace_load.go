@@ -177,6 +177,15 @@ func runtimeContextValue(value string) string {
 	if value == "" {
 		return ""
 	}
-	value = strings.TrimPrefix(value, fileURLPrefix)
-	return filepath.ToSlash(value)
+	value = filepath.ToSlash(value)
+	if !strings.HasPrefix(value, fileURLPrefix) {
+		return value
+	}
+	withoutPrefix := strings.TrimPrefix(value, fileURLPrefix)
+	if withoutPrefix != "" &&
+		!strings.HasPrefix(withoutPrefix, "/") &&
+		!runtimeContextWindowsDrivePath(withoutPrefix) {
+		return value
+	}
+	return withoutPrefix
 }

@@ -629,7 +629,7 @@ func TestServiceAnalysePythonRuntimeTraceIntegration(t *testing.T) {
 	if len(requests.RuntimeUsage.Modules) != 1 || requests.RuntimeUsage.Modules[0].Module != "requests.sessions" {
 		t.Fatalf("expected Python runtime module detail, got %#v", requests.RuntimeUsage.Modules)
 	}
-	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "/repo/main.py" {
+	if len(requests.RuntimeUsage.ParentModules) != 1 || requests.RuntimeUsage.ParentModules[0].Module != "external:main.py" {
 		t.Fatalf("expected Python runtime parent detail, got %#v", requests.RuntimeUsage.ParentModules)
 	}
 
