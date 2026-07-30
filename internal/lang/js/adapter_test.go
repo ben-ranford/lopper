@@ -157,6 +157,9 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 
 func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
 	repo, _, _ := setupLodashFixture(t, "import { map, filter } from \"lodash\";\nmap([1], (x) => x)\nconst broken = {\nfilter([1], Boolean)\n")
+	if err := os.WriteFile(filepath.Join(repo, "unused.js"), []byte("import { map } from \"lodash\";\n"), 0o644); err != nil {
+		t.Fatalf("write same-symbol unused import: %v", err)
+	}
 
 	reportData := analyseSuggestOnly(t, repo)
 	if len(reportData.Dependencies) != 1 {
@@ -173,8 +176,26 @@ func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
 	if len(dependency.Recommendations) != 0 {
 		t.Fatalf("expected syntax-recovery scan to suppress recommendations, got %#v", dependency.Recommendations)
 	}
-	if len(dependency.UsedImports) != 1 || dependency.UsedImports[0].Name != "map" || dependency.UsedImports[0].Module != "lodash" {
-		t.Fatalf("expected syntax-recovery scan to preserve confirmed import evidence, got %#v", dependency.UsedImports)
+	if len(dependency.UsedImports) != 1 {
+		t.Fatalf("expected syntax-recovery scan to preserve only confirmed import evidence, got %#v", dependency.UsedImports)
+	}
+	if len(dependency.UnusedImports) != 0 {
+		t.Fatalf("expected syntax-recovery scan to clear public unused imports, got %#v", dependency.UnusedImports)
+	}
+	mapImport := dependency.UsedImports[0]
+	if mapImport.Name != "map" || mapImport.Module != "lodash" || len(mapImport.Locations) != 1 || mapImport.Locations[0].File != testIndexJS || mapImport.Locations[0].Line != 1 {
+		t.Fatalf("expected syntax-recovery scan to preserve confirmed import location evidence, got %#v", dependency.UsedImports)
+	}
+	if len(dependency.SuppressedUnusedImports) != 2 {
+		t.Fatalf("expected syntax-recovery scan to retain both hidden unused imports, got %#v", dependency.SuppressedUnusedImports)
+	}
+	filterImport := dependency.SuppressedUnusedImports[0]
+	if filterImport.Name != "filter" || filterImport.Module != "lodash" || len(filterImport.Locations) != 1 || filterImport.Locations[0].File != testIndexJS || filterImport.Locations[0].Line != 1 {
+		t.Fatalf("expected syntax-recovery scan to retain suppressed unused import location evidence, got %#v", dependency.SuppressedUnusedImports)
+	}
+	mapUnusedImport := dependency.SuppressedUnusedImports[1]
+	if mapUnusedImport.Name != "map" || mapUnusedImport.Module != "lodash" || len(mapUnusedImport.Locations) != 1 || mapUnusedImport.Locations[0].File != "unused.js" || mapUnusedImport.Locations[0].Line != 1 {
+		t.Fatalf("expected syntax-recovery scan to retain same-symbol unused location evidence, got %#v", dependency.SuppressedUnusedImports)
 	}
 	assertRemovalSignalsSuppressed(t, dependency, reportData.Warnings)
 

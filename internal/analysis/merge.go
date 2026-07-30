@@ -117,6 +117,7 @@ func mergeDependencyMetadataFamily(merged *report.DependencyReport, _ report.Dep
 func mergeDependencyUsageCompletenessFamily(merged *report.DependencyReport, left, right report.DependencyReport) {
 	merged.UsageIncomplete = left.UsageIncomplete || right.UsageIncomplete
 	if !merged.UsageIncomplete {
+		merged.SuppressedUnusedImports = nil
 		return
 	}
 
@@ -124,11 +125,22 @@ func mergeDependencyUsageCompletenessFamily(merged *report.DependencyReport, lef
 	merged.TotalExportsCount = 0
 	merged.UsedPercent = 0
 	merged.EstimatedUnusedBytes = 0
+	merged.SuppressedUnusedImports = mergeIncompletePathEvidence(left, right)
 	merged.UnusedImports = nil
 	merged.UnusedExports = nil
 	merged.Recommendations = nil
 	merged.Codemod = nil
 	merged.RemovalCandidate = nil
+}
+
+func mergeIncompletePathEvidence(left, right report.DependencyReport) []report.ImportUse {
+	hidden := mergeImportUses(left.SuppressedUnusedImports, right.SuppressedUnusedImports)
+	hidden = mergeImportUses(hidden, left.UnusedImports)
+	hidden = mergeImportUses(hidden, right.UnusedImports)
+	if len(hidden) == 0 {
+		return nil
+	}
+	return hidden
 }
 
 func filterUsedOverlaps(unused, used []report.ImportUse) []report.ImportUse {

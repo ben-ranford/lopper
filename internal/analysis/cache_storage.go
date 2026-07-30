@@ -16,8 +16,9 @@ type cachePointer struct {
 }
 
 type cachedPayload struct {
-	Report                      report.Report `json:"report"`
-	UsageIncompleteDependencies []int         `json:"usageIncompleteDependencies,omitempty"`
+	Report                              report.Report              `json:"report"`
+	UsageIncompleteDependencies         []int                      `json:"usageIncompleteDependencies,omitempty"`
+	SuppressedUnusedImportsByDependency map[int][]report.ImportUse `json:"suppressedUnusedImportsByDependency,omitempty"`
 }
 
 func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool, error) {
@@ -71,6 +72,11 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 		return report.Report{}, false, nil
 	}
 	if !payload.restoreUsageIncomplete() {
+		c.metadata.Misses++
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
+		return report.Report{}, false, nil
+	}
+	if !payload.restoreSuppressedUnusedImports() {
 		c.metadata.Misses++
 		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
 		return report.Report{}, false, nil
@@ -152,6 +158,12 @@ func newCachedPayload(data report.Report) cachedPayload {
 		if data.Dependencies[index].UsageIncomplete {
 			payload.UsageIncompleteDependencies = append(payload.UsageIncompleteDependencies, index)
 		}
+		if data.Dependencies[index].UsageIncomplete && len(data.Dependencies[index].SuppressedUnusedImports) > 0 {
+			if payload.SuppressedUnusedImportsByDependency == nil {
+				payload.SuppressedUnusedImportsByDependency = make(map[int][]report.ImportUse)
+			}
+			payload.SuppressedUnusedImportsByDependency[index] = append([]report.ImportUse(nil), data.Dependencies[index].SuppressedUnusedImports...)
+		}
 	}
 	return payload
 }
@@ -162,6 +174,19 @@ func (p *cachedPayload) restoreUsageIncomplete() bool {
 			return false
 		}
 		p.Report.Dependencies[index].UsageIncomplete = true
+	}
+	return true
+}
+
+func (p *cachedPayload) restoreSuppressedUnusedImports() bool {
+	for index, imports := range p.SuppressedUnusedImportsByDependency {
+		if index < 0 || index >= len(p.Report.Dependencies) {
+			return false
+		}
+		if !p.Report.Dependencies[index].UsageIncomplete {
+			return false
+		}
+		p.Report.Dependencies[index].SuppressedUnusedImports = append([]report.ImportUse(nil), imports...)
 	}
 	return true
 }

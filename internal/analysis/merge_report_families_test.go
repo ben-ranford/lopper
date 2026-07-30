@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -49,24 +50,51 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		TotalExportsCount:    3,
 		UsedPercent:          100.0 / 3.0,
 		EstimatedUnusedBytes: 256,
-		UsedImports:          []report.ImportUse{{Module: "lodash", Name: "map"}},
-		UnusedImports:        []report.ImportUse{{Module: "lodash", Name: "filter"}},
-		UnusedExports:        []report.SymbolRef{{Name: "unused"}},
-		Recommendations:      []report.Recommendation{{Code: "remove-unused"}},
-		Codemod:              &report.CodemodReport{},
-		RemovalCandidate:     &report.RemovalCandidate{Score: 80},
+		UsedImports: []report.ImportUse{{
+			Module:    "lodash",
+			Name:      "map",
+			Locations: []report.Location{{File: "src/confirmed.js", Line: 3, Column: 5}},
+		}, {
+			Module:    "lodash",
+			Name:      "filter",
+			Locations: []report.Location{{File: "src/used-filter.js", Line: 5, Column: 4}},
+		}},
+		UnusedImports: []report.ImportUse{{
+			Module:    "lodash",
+			Name:      "chunk",
+			Locations: []report.Location{{File: "src/promoted.js", Line: 9, Column: 2}},
+		}},
+		UnusedExports:    []report.SymbolRef{{Name: "unused"}},
+		Recommendations:  []report.Recommendation{{Code: "remove-unused"}},
+		Codemod:          &report.CodemodReport{},
+		RemovalCandidate: &report.RemovalCandidate{Score: 80},
+		Vulnerabilities:  []report.VulnerabilityFinding{{AdvisoryID: "GHSA-1"}},
 	}
 	incomplete := report.DependencyReport{
-		Name:          "lodash",
-		UsedImports:   []report.ImportUse{{Module: "lodash", Name: "flatten"}},
-		UnusedImports: []report.ImportUse{{Module: "lodash", Name: "chunk"}},
+		Name: "lodash",
+		UsedImports: []report.ImportUse{{
+			Module:    "lodash",
+			Name:      "flatten",
+			Locations: []report.Location{{File: "src/incomplete-used.js", Line: 4, Column: 7}},
+		}},
+		SuppressedUnusedImports: []report.ImportUse{{
+			Module:    "lodash",
+			Name:      "filter",
+			Locations: []report.Location{{File: "src/promoted.js", Line: 7, Column: 11}},
+		}},
+		Vulnerabilities: []report.VulnerabilityFinding{{AdvisoryID: "GHSA-1"}},
 	}
 	if !setUsageIncompleteForMergeTest(&incomplete) {
 		t.Fatal("expected usage-incomplete marker to be available")
 	}
 	wantUsedImports := []report.ImportUse{
-		{Module: "lodash", Name: "flatten"},
-		{Module: "lodash", Name: "map"},
+		{Module: "lodash", Name: "filter", Locations: []report.Location{{File: "src/used-filter.js", Line: 5, Column: 4}}},
+		{Module: "lodash", Name: "flatten", Locations: []report.Location{{File: "src/incomplete-used.js", Line: 4, Column: 7}}},
+		{Module: "lodash", Name: "map", Locations: []report.Location{{File: "src/confirmed.js", Line: 3, Column: 5}}},
+	}
+	wantSuppressedUnused := []report.ImportUse{
+		{Module: "lodash", Name: "chunk", Locations: []report.Location{{File: "src/promoted.js", Line: 9, Column: 2}}},
+		{Module: "lodash", Name: "filter", Locations: []report.Location{{File: "src/promoted.js", Line: 7, Column: 11}}},
 	}
 
 	for _, test := range []struct {
@@ -78,12 +106,55 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		{name: "incomplete right", left: complete, right: incomplete},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			assertIncompleteRemovalSignalsSuppressedAfterMerge(t, mergeDependency(test.left, test.right), wantUsedImports)
+			assertIncompleteRemovalSignalsSuppressedAfterMerge(t, mergeDependency(test.left, test.right), wantUsedImports, wantSuppressedUnused)
 		})
 	}
 }
 
-func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport, wantUsedImports []report.ImportUse) {
+func TestSuppressedUnusedImportsProvidePathEvidenceWithoutAffectingVulnerabilityScoring(t *testing.T) {
+	reportData := report.Report{Dependencies: []report.DependencyReport{{
+		Name: "example-lib",
+		SuppressedUnusedImports: []report.ImportUse{{
+			Name:      "hidden",
+			Module:    "example-lib",
+			Locations: []report.Location{{File: "src/hidden.js", Line: 12}},
+		}},
+	}}}
+	report.AnnotateVulnerabilities(&reportData, []report.VulnerabilityAdvisory{{
+		ID:       "GHSA-hidden",
+		Package:  "example-lib",
+		Severity: "low",
+	}})
+
+	if len(reportData.Dependencies[0].Vulnerabilities) != 1 {
+		t.Fatalf("expected one matching vulnerability, got %#v", reportData.Dependencies[0].Vulnerabilities)
+	}
+	finding := reportData.Dependencies[0].Vulnerabilities[0]
+	if finding.Reachable || finding.Priority != report.VulnerabilityPriorityLow || finding.PriorityScore != 12.5 {
+		t.Fatalf("expected hidden path evidence to leave vulnerability scoring unchanged, got %#v", finding)
+	}
+	if !slices.Contains(finding.Evidence, "static_imports: none observed") {
+		t.Fatalf("expected hidden path evidence to stay out of static evidence, got %#v", finding.Evidence)
+	}
+	if slices.Contains(finding.Evidence, "static_location: src/hidden.js:12") {
+		t.Fatalf("expected hidden path evidence to stay out of static location evidence, got %#v", finding.Evidence)
+	}
+
+	exception := report.VulnerabilityException{
+		VulnerabilityID: "GHSA-hidden",
+		Path:            "src/hidden.js",
+		Status:          "not-affected",
+		Expires:         "2026-12-31",
+	}
+	now := time.Date(2026, time.July, 30, 0, 0, 0, 0, time.UTC)
+	report.ApplyVulnerabilityExceptions(&reportData, []report.VulnerabilityException{exception}, now)
+	decision := reportData.Dependencies[0].Vulnerabilities[0].Decision
+	if decision == nil || decision.Status != "not-affected" {
+		t.Fatalf("expected hidden path evidence to match vulnerability exception, got %#v", decision)
+	}
+}
+
+func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport, wantUsedImports []report.ImportUse, wantSuppressedUnused []report.ImportUse) {
 	t.Helper()
 
 	if !usageIncompleteForMergeTest(merged) {
@@ -101,8 +172,23 @@ func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged rep
 	if !reflect.DeepEqual(merged.UsedImports, wantUsedImports) {
 		t.Fatalf("expected confirmed used imports to remain after incomplete merge, got %#v want %#v", merged.UsedImports, wantUsedImports)
 	}
+	if !reflect.DeepEqual(merged.SuppressedUnusedImports, wantSuppressedUnused) {
+		t.Fatalf("expected hidden unused-import path evidence to be preserved, got %#v want %#v", merged.SuppressedUnusedImports, wantSuppressedUnused)
+	}
 	if len(merged.Recommendations) != 0 || merged.Codemod != nil || merged.RemovalCandidate != nil {
 		t.Fatalf("expected incomplete removal advice to be suppressed, got %#v", merged)
+	}
+
+	reportData := report.Report{Dependencies: []report.DependencyReport{merged}}
+	exceptions := []report.VulnerabilityException{{
+		VulnerabilityID: "GHSA-1",
+		Path:            "src/promoted.js",
+		Status:          "not-affected",
+	}}
+	report.ApplyVulnerabilityExceptions(&reportData, exceptions, time.Date(2026, time.July, 13, 0, 0, 0, 0, time.UTC))
+	decision := reportData.Dependencies[0].Vulnerabilities[0].Decision
+	if decision == nil || decision.Status != "not-affected" {
+		t.Fatalf("expected promoted import location to satisfy path-scoped vulnerability exception, got %#v", decision)
 	}
 }
 

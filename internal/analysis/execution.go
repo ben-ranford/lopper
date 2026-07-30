@@ -136,6 +136,7 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 	for i := range dependencies {
 		adjustImportLocations(prefix, dependencies[i].UsedImports)
 		adjustImportLocations(prefix, dependencies[i].UnusedImports)
+		adjustImportLocations(prefix, dependencies[i].SuppressedUnusedImports)
 	}
 }
 

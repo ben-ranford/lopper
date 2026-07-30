@@ -82,6 +82,7 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 	}
 	if coverageIncomplete {
 		depReport.UsageIncomplete = true
+		depReport.SuppressedUnusedImports = usage.unfilteredUnusedImports
 		depReport.UsedExportsCount = 0
 		depReport.TotalExportsCount = 0
 		depReport.UsedPercent = 0
@@ -101,11 +102,12 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 
 // dependencyUsageSummary captures intermediate usage aggregates for dependency report assembly.
 type dependencyUsageSummary struct {
-	usedExports   map[string]struct{}
-	counts        map[string]int
-	usedImports   []report.ImportUse
-	unusedImports []report.ImportUse
-	warnings      []string
+	usedExports             map[string]struct{}
+	counts                  map[string]int
+	usedImports             []report.ImportUse
+	unusedImports           []report.ImportUse
+	unfilteredUnusedImports []report.ImportUse
+	warnings                []string
 }
 
 type dependencyImportUsage struct {
@@ -124,11 +126,12 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 	warnings := dependencyUsageWarnings(dependency, usage.UsedExports, usage.HasAmbiguousWildcard)
 	warnings = append(warnings, usage.Warnings...)
 	return dependencyUsageSummary{
-		usedExports:   usage.UsedExports,
-		counts:        usage.Counts,
-		usedImports:   usedImportList,
-		unusedImports: unusedImportList,
-		warnings:      warnings,
+		usedExports:             usage.UsedExports,
+		counts:                  usage.Counts,
+		usedImports:             usedImportList,
+		unusedImports:           unusedImportList,
+		unfilteredUnusedImports: flattenImportUses(usage.UnusedImports),
+		warnings:                warnings,
 	}
 }
 
