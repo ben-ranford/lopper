@@ -124,6 +124,7 @@ func mergeDependencyUsageCompletenessFamily(merged *report.DependencyReport, lef
 	merged.TotalExportsCount = 0
 	merged.UsedPercent = 0
 	merged.EstimatedUnusedBytes = 0
+	merged.UnusedImports = nil
 	merged.UnusedExports = nil
 	merged.Recommendations = nil
 	merged.Codemod = nil

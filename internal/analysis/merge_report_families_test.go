@@ -49,16 +49,24 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		TotalExportsCount:    3,
 		UsedPercent:          100.0 / 3.0,
 		EstimatedUnusedBytes: 256,
+		UsedImports:          []report.ImportUse{{Module: "lodash", Name: "map"}},
+		UnusedImports:        []report.ImportUse{{Module: "lodash", Name: "filter"}},
 		UnusedExports:        []report.SymbolRef{{Name: "unused"}},
 		Recommendations:      []report.Recommendation{{Code: "remove-unused"}},
 		Codemod:              &report.CodemodReport{},
 		RemovalCandidate:     &report.RemovalCandidate{Score: 80},
 	}
 	incomplete := report.DependencyReport{
-		Name: "lodash",
+		Name:          "lodash",
+		UsedImports:   []report.ImportUse{{Module: "lodash", Name: "flatten"}},
+		UnusedImports: []report.ImportUse{{Module: "lodash", Name: "chunk"}},
 	}
 	if !setUsageIncompleteForMergeTest(&incomplete) {
 		t.Fatal("expected usage-incomplete marker to be available")
+	}
+	wantUsedImports := []report.ImportUse{
+		{Module: "lodash", Name: "flatten"},
+		{Module: "lodash", Name: "map"},
 	}
 
 	for _, test := range []struct {
@@ -70,12 +78,12 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		{name: "incomplete right", left: complete, right: incomplete},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			assertIncompleteRemovalSignalsSuppressedAfterMerge(t, mergeDependency(test.left, test.right))
+			assertIncompleteRemovalSignalsSuppressedAfterMerge(t, mergeDependency(test.left, test.right), wantUsedImports)
 		})
 	}
 }
 
-func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport) {
+func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged report.DependencyReport, wantUsedImports []report.ImportUse) {
 	t.Helper()
 
 	if !usageIncompleteForMergeTest(merged) {
@@ -86,6 +94,12 @@ func assertIncompleteRemovalSignalsSuppressedAfterMerge(t *testing.T, merged rep
 	}
 	if merged.EstimatedUnusedBytes != 0 || len(merged.UnusedExports) != 0 {
 		t.Fatalf("expected incomplete unused-export signals to be suppressed, got %#v", merged)
+	}
+	if len(merged.UnusedImports) != 0 {
+		t.Fatalf("expected incomplete unused-import signals to be suppressed, got %#v", merged.UnusedImports)
+	}
+	if !reflect.DeepEqual(merged.UsedImports, wantUsedImports) {
+		t.Fatalf("expected confirmed used imports to remain after incomplete merge, got %#v want %#v", merged.UsedImports, wantUsedImports)
 	}
 	if len(merged.Recommendations) != 0 || merged.Codemod != nil || merged.RemovalCandidate != nil {
 		t.Fatalf("expected incomplete removal advice to be suppressed, got %#v", merged)
