@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	reportmodel "github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -186,16 +188,17 @@ func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
 	if mapImport.Name != "map" || mapImport.Module != "lodash" || len(mapImport.Locations) != 1 || mapImport.Locations[0].File != testIndexJS || mapImport.Locations[0].Line != 1 {
 		t.Fatalf("expected syntax-recovery scan to preserve confirmed import location evidence, got %#v", dependency.UsedImports)
 	}
-	if len(dependency.SuppressedUnusedImports) != 2 {
-		t.Fatalf("expected syntax-recovery scan to retain both hidden unused imports, got %#v", dependency.SuppressedUnusedImports)
+	suppressedUnusedImports := suppressedUnusedImportsForTest(t, dependency)
+	if len(suppressedUnusedImports) != 2 {
+		t.Fatalf("expected syntax-recovery scan to retain both hidden unused imports, got %#v", suppressedUnusedImports)
 	}
-	filterImport := dependency.SuppressedUnusedImports[0]
+	filterImport := suppressedUnusedImports[0]
 	if filterImport.Name != "filter" || filterImport.Module != "lodash" || len(filterImport.Locations) != 1 || filterImport.Locations[0].File != testIndexJS || filterImport.Locations[0].Line != 1 {
-		t.Fatalf("expected syntax-recovery scan to retain suppressed unused import location evidence, got %#v", dependency.SuppressedUnusedImports)
+		t.Fatalf("expected syntax-recovery scan to retain suppressed unused import location evidence, got %#v", suppressedUnusedImports)
 	}
-	mapUnusedImport := dependency.SuppressedUnusedImports[1]
+	mapUnusedImport := suppressedUnusedImports[1]
 	if mapUnusedImport.Name != "map" || mapUnusedImport.Module != "lodash" || len(mapUnusedImport.Locations) != 1 || mapUnusedImport.Locations[0].File != "unused.js" || mapUnusedImport.Locations[0].Line != 1 {
-		t.Fatalf("expected syntax-recovery scan to retain same-symbol unused location evidence, got %#v", dependency.SuppressedUnusedImports)
+		t.Fatalf("expected syntax-recovery scan to retain same-symbol unused location evidence, got %#v", suppressedUnusedImports)
 	}
 	assertRemovalSignalsSuppressed(t, dependency, reportData.Warnings)
 
@@ -203,6 +206,20 @@ func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
 	if !strings.Contains(warnings, "parse errors in 1 file(s)") {
 		t.Fatalf("expected parse-error warning to remain visible, got %#v", reportData.Warnings)
 	}
+}
+
+func suppressedUnusedImportsForTest(t *testing.T, dependency any) []reportmodel.ImportUse {
+	t.Helper()
+
+	field := reflect.ValueOf(dependency).FieldByName("SuppressedUnusedImports")
+	if !field.IsValid() {
+		t.Fatal("expected dependency report to expose suppressed unused import evidence")
+	}
+	imports, ok := field.Interface().([]reportmodel.ImportUse)
+	if !ok {
+		t.Fatalf("expected suppressed unused import evidence type, got %T", field.Interface())
+	}
+	return imports
 }
 
 func TestAdapterDetectSignals(t *testing.T) {
