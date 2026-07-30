@@ -262,21 +262,29 @@ func TestAnnotateStaticOnly(t *testing.T) {
 					{Name: "map", Module: "alpha"},
 				},
 			},
+			{
+				Name: "beta",
+				SuppressedUnusedImports: []report.ImportUse{
+					{Name: "filter", Module: "beta"},
+				},
+			},
 		},
 	}
 
 	annotated := Annotate(rep, Trace{DependencyLoads: map[string]int{}}, AnnotateOptions{})
-	if annotated.Dependencies[0].RuntimeUsage == nil {
-		t.Fatalf("expected static-only runtime usage annotation")
-	}
-	if annotated.Dependencies[0].RuntimeUsage.Correlation != report.RuntimeCorrelationStaticOnly {
-		t.Fatalf("expected static-only correlation, got %#v", annotated.Dependencies[0].RuntimeUsage)
-	}
-	if annotated.Dependencies[0].RuntimeUsage.LoadCount != 0 {
-		t.Fatalf("expected zero load count for static-only annotation, got %d", annotated.Dependencies[0].RuntimeUsage.LoadCount)
-	}
-	if annotated.Dependencies[0].RuntimeUsage.RuntimeOnly {
-		t.Fatalf("did not expect runtime-only=true for static-only annotation")
+	for _, dependency := range annotated.Dependencies {
+		if dependency.RuntimeUsage == nil {
+			t.Fatalf("expected static-only runtime usage annotation for %q", dependency.Name)
+		}
+		if dependency.RuntimeUsage.Correlation != report.RuntimeCorrelationStaticOnly {
+			t.Fatalf("expected static-only correlation for %q, got %#v", dependency.Name, dependency.RuntimeUsage)
+		}
+		if dependency.RuntimeUsage.LoadCount != 0 {
+			t.Fatalf("expected zero load count for %q, got %d", dependency.Name, dependency.RuntimeUsage.LoadCount)
+		}
+		if dependency.RuntimeUsage.RuntimeOnly {
+			t.Fatalf("did not expect runtime-only=true for %q", dependency.Name)
+		}
 	}
 }
 

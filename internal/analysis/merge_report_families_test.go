@@ -3,6 +3,7 @@ package analysis
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,7 +112,7 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 	}
 }
 
-func TestSuppressedUnusedImportsProvidePathEvidenceWithoutAffectingVulnerabilityScoring(t *testing.T) {
+func TestSuppressedUnusedImportsPreserveVulnerabilityScoringAndPathEvidence(t *testing.T) {
 	reportData := report.Report{Dependencies: []report.DependencyReport{{
 		Name: "example-lib",
 		SuppressedUnusedImports: []report.ImportUse{{
@@ -119,25 +120,43 @@ func TestSuppressedUnusedImportsProvidePathEvidenceWithoutAffectingVulnerability
 			Module:    "example-lib",
 			Locations: []report.Location{{File: "src/hidden.js", Line: 12}},
 		}},
+		RiskCues: []report.RiskCue{{
+			Code:     "dynamic-loader",
+			Severity: "medium",
+		}},
 	}}}
+	report.AnnotateReachabilityConfidence(&reportData)
 	report.AnnotateVulnerabilities(&reportData, []report.VulnerabilityAdvisory{{
 		ID:       "GHSA-hidden",
 		Package:  "example-lib",
-		Severity: "low",
+		Severity: "critical",
 	}})
 
 	if len(reportData.Dependencies[0].Vulnerabilities) != 1 {
 		t.Fatalf("expected one matching vulnerability, got %#v", reportData.Dependencies[0].Vulnerabilities)
 	}
 	finding := reportData.Dependencies[0].Vulnerabilities[0]
-	if finding.Reachable || finding.Priority != report.VulnerabilityPriorityLow || finding.PriorityScore != 12.5 {
-		t.Fatalf("expected hidden path evidence to leave vulnerability scoring unchanged, got %#v", finding)
+	if !finding.Reachable || finding.Priority != report.VulnerabilityPriorityHigh || finding.PriorityScore != 74.1 {
+		t.Fatalf("expected suppressed static evidence to preserve vulnerability scoring, got %#v", finding)
 	}
-	if !slices.Contains(finding.Evidence, "static_imports: none observed") {
-		t.Fatalf("expected hidden path evidence to stay out of static evidence, got %#v", finding.Evidence)
+	if !slices.Contains(finding.Evidence, "static_imports: conservative evidence retained internally because usage coverage is incomplete") {
+		t.Fatalf("expected suppressed imports to remain redacted security evidence, got %#v", finding.Evidence)
 	}
 	if slices.Contains(finding.Evidence, "static_location: src/hidden.js:12") {
-		t.Fatalf("expected hidden path evidence to stay out of static location evidence, got %#v", finding.Evidence)
+		t.Fatalf("expected suppressed import locations to stay internal, got %#v", finding.Evidence)
+	}
+
+	sarifOutput, err := report.NewFormatter().Format(reportData, report.FormatSARIF)
+	if err != nil {
+		t.Fatalf("format vulnerability SARIF: %v", err)
+	}
+	if !strings.Contains(sarifOutput, `"ruleId": "lopper/vulnerability/ghsa-hidden"`) {
+		t.Fatalf("expected vulnerability result in SARIF, got %s", sarifOutput)
+	}
+	for _, forbidden := range []string{`"ruleId": "lopper/waste/unused-import"`, `"ruleId": "lopper/waste/unused-export"`, "src/hidden.js"} {
+		if strings.Contains(sarifOutput, forbidden) {
+			t.Fatalf("expected suppressed removal details to stay out of SARIF, found %q in %s", forbidden, sarifOutput)
+		}
 	}
 
 	exception := report.VulnerabilityException{
