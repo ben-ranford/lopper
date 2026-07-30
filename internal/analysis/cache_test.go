@@ -185,6 +185,64 @@ func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 	}
 }
 
+func TestAnalysisCacheIgnoresLegacySchemaEntries(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")
+
+	svc, adapter := newCacheTestService(t)
+	adapter.usageIncomplete = true
+	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
+	req := newCacheRequest(repo, cacheDir, false)
+
+	cache := newAnalysisCache(req, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable test setup, warnings=%#v", cache.takeWarnings())
+	}
+	entry, err := cache.prepareEntry(req, adapter.ID(), repo)
+	if err != nil {
+		t.Fatalf("prepare current cache entry: %v", err)
+	}
+	legacyEntry, err := cache.prepareEntryWithSchemaVersion(req, adapter.ID(), repo, "v1")
+	if err != nil {
+		t.Fatalf("prepare legacy cache entry: %v", err)
+	}
+	if legacyEntry.KeyDigest == entry.KeyDigest {
+		t.Fatalf("expected schema version to change cache key digest")
+	}
+
+	legacyReport := report.Report{
+		RepoPath: repo,
+		Dependencies: []report.DependencyReport{{
+			Name:              "dep",
+			UsedExportsCount:  1,
+			TotalExportsCount: 2,
+			UsedPercent:       50,
+			RemovalCandidate:  &report.RemovalCandidate{Score: 99},
+		}},
+	}
+	legacyPayload, err := json.Marshal(cachedPayload{Report: legacyReport})
+	if err != nil {
+		t.Fatalf("marshal legacy payload: %v", err)
+	}
+	legacyObjectDigest := sha256Hex(legacyPayload)
+	mustWriteFile(t, filepath.Join(cacheDir, "objects", legacyObjectDigest+".json"), legacyPayload)
+	writePointerJSON(t, filepath.Join(cacheDir, "keys", legacyEntry.KeyDigest+".json"), legacyEntry.InputDigest, legacyObjectDigest)
+
+	got, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse with legacy cache entry: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected legacy schema cache entry to miss and rerun analysis, calls=%d", adapter.calls)
+	}
+	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 1 {
+		t.Fatalf("unexpected cache metadata for legacy schema miss: %#v", got.Cache)
+	}
+	if len(got.Dependencies) != 1 || got.Dependencies[0].RemovalCandidate != nil {
+		t.Fatalf("expected rerun analysis to suppress removal scoring, got %#v", got.Dependencies)
+	}
+}
+
 func TestAnalysisCacheSeparatesSuggestOnlyEntries(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")

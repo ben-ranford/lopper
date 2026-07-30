@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const analysisCacheSchemaVersion = "v1"
+const analysisCacheSchemaVersion = "v2"
 
 type cacheEntryDescriptor struct {
 	KeyLabel    string
@@ -29,13 +29,17 @@ type cacheInputDigestMemoKey struct {
 }
 
 func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
+	return c.prepareEntryWithSchemaVersion(req, adapterID, normalizedRoot, analysisCacheSchemaVersion)
+}
+
+func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, normalizedRoot, schemaVersion string) (cacheEntryDescriptor, error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return cacheEntryDescriptor{}, nil
 	}
 	adapterID = strings.TrimSpace(adapterID)
 	normalizedRoot = filepath.Clean(normalizedRoot)
 	baseKey := map[string]any{
-		"schema":         analysisCacheSchemaVersion,
+		"schema":         schemaVersion,
 		"adapter":        adapterID,
 		"root":           normalizedRoot,
 		"dependency":     req.Dependency,
