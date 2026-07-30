@@ -193,8 +193,9 @@ func TestRemapAnalyzedRoots(t *testing.T) {
 
 func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 	deps := []report.DependencyReport{{
-		UsedImports:   []report.ImportUse{{Locations: []report.Location{{File: "src/main.js", Line: 1}}}},
-		UnusedImports: []report.ImportUse{{Locations: []report.Location{{File: "/abs/file.js", Line: 2}}}},
+		UsedImports:             []report.ImportUse{{Locations: []report.Location{{File: "src/main.js", Line: 1}}}},
+		UnusedImports:           []report.ImportUse{{Locations: []report.Location{{File: "/abs/file.js", Line: 2}}}},
+		SuppressedUnusedImports: []report.ImportUse{{Locations: []report.Location{{File: "src/hidden.js", Line: 3}, {File: "/abs/hidden.js", Line: 4}}}},
 	}}
 	applyLanguageID(deps, "js-ts")
 	if deps[0].Language != "js-ts" {
@@ -206,6 +207,12 @@ func TestAdjustRelativeLocationsAndLanguage(t *testing.T) {
 	}
 	if deps[0].UnusedImports[0].Locations[0].File != "/abs/file.js" {
 		t.Fatalf("expected absolute file path unchanged")
+	}
+	if deps[0].SuppressedUnusedImports[0].Locations[0].File != "packages/a/src/hidden.js" {
+		t.Fatalf("expected hidden relative file adjustment, got %q", deps[0].SuppressedUnusedImports[0].Locations[0].File)
+	}
+	if deps[0].SuppressedUnusedImports[0].Locations[1].File != "/abs/hidden.js" {
+		t.Fatalf("expected hidden absolute file path unchanged")
 	}
 }
 

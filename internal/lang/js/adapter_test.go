@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	reportmodel "github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -155,33 +157,96 @@ func TestAdapterAnalyseTopN(t *testing.T) {
 	}
 }
 
-func TestAdapterDetectWithPackageJSON(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, testPackageJSONName), []byte("{\"name\":\"fixture\"}\n"), 0o644); err != nil {
-		t.Fatalf("write package.json: %v", err)
+func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
+	repo, _, _ := setupLodashFixture(t, "import { map, filter } from \"lodash\";\nmap([1], (x) => x)\nconst broken = {\nfilter([1], Boolean)\n")
+	if err := os.WriteFile(filepath.Join(repo, "unused.js"), []byte("import { map } from \"lodash\";\n"), 0o644); err != nil {
+		t.Fatalf("write same-symbol unused import: %v", err)
 	}
 
-	ok, err := NewAdapter().Detect(context.Background(), repo)
-	if err != nil {
-		t.Fatalf(testDetectErrFmt, err)
+	reportData := analyseSuggestOnly(t, repo)
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDepFmt, len(reportData.Dependencies))
 	}
-	if !ok {
-		t.Fatalf("expected detect=true when package.json exists")
+
+	dependency := reportData.Dependencies[0]
+	if !dependency.UsageIncomplete {
+		t.Fatalf("expected syntax-recovery scan to mark dependency usage incomplete, got %#v", dependency)
+	}
+	if len(dependency.UnusedExports) != 0 {
+		t.Fatalf("expected syntax-recovery scan to suppress unused exports, got %#v", dependency.UnusedExports)
+	}
+	if len(dependency.Recommendations) != 0 {
+		t.Fatalf("expected syntax-recovery scan to suppress recommendations, got %#v", dependency.Recommendations)
+	}
+	if len(dependency.UsedImports) != 1 {
+		t.Fatalf("expected syntax-recovery scan to preserve only confirmed import evidence, got %#v", dependency.UsedImports)
+	}
+	if len(dependency.UnusedImports) != 0 {
+		t.Fatalf("expected syntax-recovery scan to clear public unused imports, got %#v", dependency.UnusedImports)
+	}
+	mapImport := dependency.UsedImports[0]
+	if mapImport.Name != "map" || mapImport.Module != "lodash" || len(mapImport.Locations) != 1 || mapImport.Locations[0].File != testIndexJS || mapImport.Locations[0].Line != 1 {
+		t.Fatalf("expected syntax-recovery scan to preserve confirmed import location evidence, got %#v", dependency.UsedImports)
+	}
+	suppressedUnusedImports := suppressedUnusedImportsForTest(t, dependency)
+	if len(suppressedUnusedImports) != 2 {
+		t.Fatalf("expected syntax-recovery scan to retain both hidden unused imports, got %#v", suppressedUnusedImports)
+	}
+	filterImport := suppressedUnusedImports[0]
+	if filterImport.Name != "filter" || filterImport.Module != "lodash" || len(filterImport.Locations) != 1 || filterImport.Locations[0].File != testIndexJS || filterImport.Locations[0].Line != 1 {
+		t.Fatalf("expected syntax-recovery scan to retain suppressed unused import location evidence, got %#v", suppressedUnusedImports)
+	}
+	mapUnusedImport := suppressedUnusedImports[1]
+	if mapUnusedImport.Name != "map" || mapUnusedImport.Module != "lodash" || len(mapUnusedImport.Locations) != 1 || mapUnusedImport.Locations[0].File != "unused.js" || mapUnusedImport.Locations[0].Line != 1 {
+		t.Fatalf("expected syntax-recovery scan to retain same-symbol unused location evidence, got %#v", suppressedUnusedImports)
+	}
+	assertRemovalSignalsSuppressed(t, dependency, reportData.Warnings)
+
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if !strings.Contains(warnings, "parse errors in 1 file(s)") {
+		t.Fatalf("expected parse-error warning to remain visible, got %#v", reportData.Warnings)
 	}
 }
 
-func TestAdapterDetectWithJSSource(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte("export const x = 1\n"), 0o644); err != nil {
-		t.Fatalf("write index.js: %v", err)
+func suppressedUnusedImportsForTest(t *testing.T, dependency any) []reportmodel.ImportUse {
+	t.Helper()
+
+	field := reflect.ValueOf(dependency).FieldByName("SuppressedUnusedImports")
+	if !field.IsValid() {
+		t.Fatal("expected dependency report to expose suppressed unused import evidence")
+	}
+	imports, ok := field.Interface().([]reportmodel.ImportUse)
+	if !ok {
+		t.Fatalf("expected suppressed unused import evidence type, got %T", field.Interface())
+	}
+	return imports
+}
+
+func TestAdapterDetectSignals(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		content string
+	}{
+		{name: "package_json", path: testPackageJSONName, content: "{\"name\":\"fixture\"}\n"},
+		{name: "js_source", path: testIndexJS, content: "export const x = 1\n"},
 	}
 
-	ok, err := NewAdapter().Detect(context.Background(), repo)
-	if err != nil {
-		t.Fatalf(testDetectErrFmt, err)
-	}
-	if !ok {
-		t.Fatalf("expected detect=true when JS sources exist")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			if err := os.WriteFile(filepath.Join(repo, tt.path), []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("write %s: %v", tt.path, err)
+			}
+
+			ok, err := NewAdapter().Detect(context.Background(), repo)
+			if err != nil {
+				t.Fatalf(testDetectErrFmt, err)
+			}
+			if !ok {
+				t.Fatalf("expected detect=true when %s exists", tt.path)
+			}
+		})
 	}
 }
 

@@ -185,7 +185,7 @@ func sortDependencies(dependencies []report.DependencyReport) {
 }
 
 func hasStaticEvidence(dep report.DependencyReport) bool {
-	return len(dep.UsedImports)+len(dep.UnusedImports) > 0
+	return len(dep.UsedImports)+len(dep.UnusedImports)+len(dep.SuppressedUnusedImports) > 0
 }
 
 func runtimeCorrelation(hasStatic, hasRuntime bool) report.RuntimeCorrelation {

@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	sitter "github.com/smacker/go-tree-sitter"
-
-	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const indexJSName = "index.js"
@@ -299,17 +297,50 @@ func TestBuildDependencyReportSuppressesIncompleteExportSurface(t *testing.T) {
 	if len(dependency.UnusedExports) != 0 || len(dependency.Recommendations) != 0 {
 		t.Fatalf("expected partial export removal advice to be suppressed, got %#v", dependency)
 	}
-	if dependency.Codemod != nil {
-		t.Fatalf("expected partial export coverage to suppress codemods, got %#v", dependency.Codemod)
-	}
-	if !strings.Contains(strings.Join(warnings, "\n"), "removal signals suppressed") {
-		t.Fatalf("expected incomplete-export warning, got %#v", warnings)
+	assertRemovalSignalsSuppressed(t, dependency, warnings)
+}
+
+func TestBuildDependencyReportSuppressesSignalsForMalformedPackageMetadata(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, indexJSName), []byte("import { broken } from \"broken\"\n"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
 	}
 
-	scored := []report.DependencyReport{dependency}
-	report.AnnotateRemovalCandidateScores(scored)
-	if scored[0].RemovalCandidate != nil {
-		t.Fatalf("expected incomplete export surface to suppress removal scoring, got %#v", scored[0].RemovalCandidate)
+	depRoot := filepath.Join(repo, "node_modules", "broken")
+	if err := os.MkdirAll(depRoot, 0o755); err != nil {
+		t.Fatalf("mkdir dependency root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(depRoot, "package.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write malformed package.json: %v", err)
+	}
+
+	scanResult, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	dependency, warnings := buildDependencyReport(dependencyReportOptions{
+		RepoPath:                          repo,
+		Dependency:                        "broken",
+		DependencyRootPath:                depRoot,
+		ScanResult:                        scanResult,
+		MinUsagePercentForRecommendations: 1,
+		SuggestOnly:                       true,
+	})
+
+	if !dependency.UsageIncomplete {
+		t.Fatalf("expected malformed package metadata to mark dependency usage incomplete, got %#v", dependency)
+	}
+	if len(dependency.UnusedExports) != 0 {
+		t.Fatalf("expected malformed package metadata to suppress unused exports, got %#v", dependency.UnusedExports)
+	}
+	if len(dependency.Recommendations) != 0 {
+		t.Fatalf("expected malformed package metadata to suppress recommendations, got %#v", dependency.Recommendations)
+	}
+	assertRemovalSignalsSuppressed(t, dependency, warnings)
+
+	joinedWarnings := strings.Join(warnings, "\n")
+	if !strings.Contains(joinedWarnings, "failed to parse dependency package.json") {
+		t.Fatalf("expected malformed package metadata warning to remain visible, got %#v", warnings)
 	}
 }
 

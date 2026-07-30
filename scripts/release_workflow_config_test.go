@@ -5507,6 +5507,15 @@ func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) s
 	return value
 }
 
+func TestAnalysisCacheSchemaInvalidatesV3TopNEntries(t *testing.T) {
+	const expectedDeclaration = `const analysisCacheSchemaVersion = "v4"`
+
+	source := readConfig(t, "internal/analysis/cache_entry.go")
+	if !strings.Contains(source, expectedDeclaration) {
+		t.Fatalf("analysis cache schema must invalidate v3 top-N entries; expected %q", expectedDeclaration)
+	}
+}
+
 func readJSONConfig(t *testing.T, path string, target any) {
 	t.Helper()
 

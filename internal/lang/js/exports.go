@@ -106,6 +106,7 @@ func resolveDependencyExports(req dependencyExportRequest) (ExportSurface, error
 
 	pkg, warnings, err := loadPackageJSONForSurface(depPath)
 	if err != nil {
+		surface.CoverageIncomplete = true
 		surface.Warnings = append(surface.Warnings, warnings...)
 		return surface, nil
 	}

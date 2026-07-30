@@ -82,9 +82,11 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 	}
 	if coverageIncomplete {
 		depReport.UsageIncomplete = true
+		depReport.SuppressedUnusedImports = usage.unfilteredUnusedImports
 		depReport.UsedExportsCount = 0
 		depReport.TotalExportsCount = 0
 		depReport.UsedPercent = 0
+		depReport.UnusedImports = nil
 		depReport.UnusedExports = nil
 		warnings = append(warnings, fmt.Sprintf("usage or export coverage incomplete for %s; removal signals suppressed", opts.Dependency))
 	} else {
@@ -100,11 +102,12 @@ func buildDependencyReport(opts dependencyReportOptions) (report.DependencyRepor
 
 // dependencyUsageSummary captures intermediate usage aggregates for dependency report assembly.
 type dependencyUsageSummary struct {
-	usedExports   map[string]struct{}
-	counts        map[string]int
-	usedImports   []report.ImportUse
-	unusedImports []report.ImportUse
-	warnings      []string
+	usedExports             map[string]struct{}
+	counts                  map[string]int
+	usedImports             []report.ImportUse
+	unusedImports           []report.ImportUse
+	unfilteredUnusedImports []report.ImportUse
+	warnings                []string
 }
 
 type dependencyImportUsage struct {
@@ -123,11 +126,12 @@ func collectDependencyUsageSummary(scanResult ScanResult, dependency string) dep
 	warnings := dependencyUsageWarnings(dependency, usage.UsedExports, usage.HasAmbiguousWildcard)
 	warnings = append(warnings, usage.Warnings...)
 	return dependencyUsageSummary{
-		usedExports:   usage.UsedExports,
-		counts:        usage.Counts,
-		usedImports:   usedImportList,
-		unusedImports: unusedImportList,
-		warnings:      warnings,
+		usedExports:             usage.UsedExports,
+		counts:                  usage.Counts,
+		usedImports:             usedImportList,
+		unusedImports:           unusedImportList,
+		unfilteredUnusedImports: flattenImportUses(usage.UnusedImports),
+		warnings:                warnings,
 	}
 }
 
@@ -464,11 +468,13 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		warnings = append(warnings, depWarnings...)
 	}
 
-	if scanResult.UsageIncomplete {
+	if scanResult.UsageIncomplete || slices.ContainsFunc(reports, func(dependency report.DependencyReport) bool {
+		return dependency.UsageIncomplete
+	}) {
 		sort.Slice(reports, func(i, j int) bool {
 			return reports[i].Name < reports[j].Name
 		})
-		warnings = append(warnings, "top-N removal ranking disabled because JS/TS usage coverage is incomplete")
+		warnings = append(warnings, "top-N removal ranking disabled because JS/TS dependency coverage is incomplete")
 		return reports, warnings
 	}
 

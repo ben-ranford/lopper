@@ -22,6 +22,9 @@ type DependencyReport struct {
 	Vulnerabilities        []VulnerabilityFinding  `json:"vulnerabilities,omitempty"`
 	License                *DependencyLicense      `json:"license,omitempty"`
 	Provenance             *DependencyProvenance   `json:"provenance,omitempty"`
+	// SuppressedUnusedImports is conservative static and path evidence for unused findings suppressed by incomplete coverage.
+	// It must not be emitted as removal advice.
+	SuppressedUnusedImports []ImportUse `json:"-"`
 }
 
 type DependencyIdentity struct {

@@ -26,6 +26,7 @@ type countingAdapter struct {
 	id              string
 	calls           int
 	usageIncomplete bool
+	hiddenImport    *report.ImportUse
 }
 
 func (a *countingAdapter) ID() string { return a.id }
@@ -62,6 +63,9 @@ func (a *countingAdapter) Analyse(_ context.Context, req language.Request) (repo
 	}
 	if a.usageIncomplete && !markUsageIncompleteForTest(&dependency) {
 		return report.Report{}, errors.New("usage-incomplete marker unavailable")
+	}
+	if a.hiddenImport != nil {
+		dependency.SuppressedUnusedImports = []report.ImportUse{*a.hiddenImport}
 	}
 	return report.Report{
 		Dependencies: []report.DependencyReport{dependency},
@@ -153,6 +157,14 @@ func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 
 	svc, adapter := newCacheTestService(t)
 	adapter.usageIncomplete = true
+	adapter.hiddenImport = &report.ImportUse{
+		Name:   "filter",
+		Module: "dep",
+		Locations: []report.Location{{
+			File: "src/hidden.js",
+			Line: 8,
+		}},
+	}
 	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
 
 	first, err := svc.Analyse(context.Background(), req)
@@ -161,6 +173,9 @@ func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 	}
 	if len(first.Dependencies) != 1 || first.Dependencies[0].RemovalCandidate != nil {
 		t.Fatalf("expected incomplete first analysis to suppress removal scoring, got %#v", first.Dependencies)
+	}
+	if !reflect.DeepEqual(first.Dependencies[0].SuppressedUnusedImports, []report.ImportUse{*adapter.hiddenImport}) {
+		t.Fatalf("expected first analysis to preserve hidden imports, got %#v", first.Dependencies[0].SuppressedUnusedImports)
 	}
 
 	second, err := svc.Analyse(context.Background(), req)
@@ -176,12 +191,73 @@ func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 	if len(second.Dependencies) != 1 || second.Dependencies[0].RemovalCandidate != nil {
 		t.Fatalf("expected cached incomplete analysis to suppress removal scoring, got %#v", second.Dependencies)
 	}
+	if !reflect.DeepEqual(second.Dependencies[0].SuppressedUnusedImports, []report.ImportUse{*adapter.hiddenImport}) {
+		t.Fatalf("expected cached analysis to preserve hidden imports, got %#v", second.Dependencies[0].SuppressedUnusedImports)
+	}
 	serialized, err := json.Marshal(second)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
-	if strings.Contains(string(serialized), "usageIncomplete") {
+	if strings.Contains(string(serialized), "usageIncomplete") || strings.Contains(string(serialized), "SuppressedUnusedImports") || strings.Contains(string(serialized), "suppressedUnusedImports") || strings.Contains(string(serialized), "src/hidden.js") {
 		t.Fatalf("did not expect internal incomplete-usage state in report JSON: %s", serialized)
+	}
+}
+
+func TestAnalysisCacheIgnoresLegacySchemaEntries(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")
+
+	svc, adapter := newCacheTestService(t)
+	adapter.usageIncomplete = true
+	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
+	req := newCacheRequest(repo, cacheDir, false)
+
+	cache := newAnalysisCache(req, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable test setup, warnings=%#v", cache.takeWarnings())
+	}
+	entry, err := cache.prepareEntry(req, adapter.ID(), repo)
+	if err != nil {
+		t.Fatalf("prepare current cache entry: %v", err)
+	}
+	legacyEntry, err := cache.prepareEntryWithSchemaVersion(req, adapter.ID(), repo, "v3")
+	if err != nil {
+		t.Fatalf("prepare legacy cache entry: %v", err)
+	}
+	if legacyEntry.KeyDigest == entry.KeyDigest {
+		t.Fatalf("expected schema version to change cache key digest")
+	}
+
+	legacyReport := report.Report{
+		RepoPath: repo,
+		Dependencies: []report.DependencyReport{{
+			Name:              "dep",
+			UsedExportsCount:  1,
+			TotalExportsCount: 2,
+			UsedPercent:       50,
+			RemovalCandidate:  &report.RemovalCandidate{Score: 99},
+		}},
+	}
+	legacyPayload, err := json.Marshal(cachedPayload{Report: legacyReport})
+	if err != nil {
+		t.Fatalf("marshal legacy payload: %v", err)
+	}
+	legacyObjectDigest := sha256Hex(legacyPayload)
+	mustWriteFile(t, filepath.Join(cacheDir, "objects", legacyObjectDigest+".json"), legacyPayload)
+	writePointerJSON(t, filepath.Join(cacheDir, "keys", legacyEntry.KeyDigest+".json"), legacyEntry.InputDigest, legacyObjectDigest)
+
+	got, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("analyse with legacy cache entry: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected legacy schema cache entry to miss and rerun analysis, calls=%d", adapter.calls)
+	}
+	if got.Cache == nil || got.Cache.Hits != 0 || got.Cache.Misses != 1 || got.Cache.Writes != 1 {
+		t.Fatalf("unexpected cache metadata for legacy schema miss: %#v", got.Cache)
+	}
+	if len(got.Dependencies) != 1 || got.Dependencies[0].RemovalCandidate != nil {
+		t.Fatalf("expected rerun analysis to suppress removal scoring, got %#v", got.Dependencies)
 	}
 }
 
@@ -711,6 +787,24 @@ func assertLookupMissWithReason(t *testing.T, cache *analysisCache, entry cacheE
 	}
 }
 
+func cacheWithPayloadForLookupTest(t *testing.T, payload cachedPayload, objectDigest string) (*analysisCache, cacheEntryDescriptor) {
+	t.Helper()
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "cache")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable test setup")
+	}
+	entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "digest", InputDigest: "input-a"}
+	serialized, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(cachePath, "objects", objectDigest+".json"), serialized)
+	writePointerJSON(t, filepath.Join(cachePath, "keys", entry.KeyDigest+".json"), entry.InputDigest, objectDigest)
+	return cache, entry
+}
+
 func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "cache")
@@ -742,6 +836,45 @@ func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	}
 	writePointerJSON(t, keyPath, entry.InputDigest, "obj-corrupt")
 	assertLookupMissWithReason(t, cache, entry, "object-corrupt")
+}
+
+func TestAnalysisCacheLookupRejectsSuppressedUnusedSidecarOutOfRangeIndex(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		index        int
+		objectDigest string
+	}{
+		{name: "negative", index: -1, objectDigest: "obj-sidecar-negative"},
+		{name: "past end", index: 1, objectDigest: "obj-sidecar-past-end"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := cachedPayload{
+				Report: report.Report{Dependencies: []report.DependencyReport{{
+					Name: "dep",
+				}}},
+				UsageIncompleteDependencies: []int{0},
+				SuppressedUnusedImportsByDependency: map[int][]report.ImportUse{
+					test.index: []report.ImportUse{{Name: "hidden", Module: "dep"}},
+				},
+			}
+			cache, entry := cacheWithPayloadForLookupTest(t, payload, test.objectDigest)
+			assertLookupMissWithReason(t, cache, entry, cacheObjectCorruptReason)
+		})
+	}
+}
+
+func TestAnalysisCacheLookupRejectsSuppressedUnusedSidecarOnCompleteDependency(t *testing.T) {
+	payload := cachedPayload{
+		Report: report.Report{Dependencies: []report.DependencyReport{{
+			Name: "dep",
+		}}},
+		SuppressedUnusedImportsByDependency: map[int][]report.ImportUse{
+			0: []report.ImportUse{{Name: "hidden", Module: "dep"}},
+		},
+	}
+	objectDigest := "obj-sidecar-complete"
+	cache, entry := cacheWithPayloadForLookupTest(t, payload, objectDigest)
+	assertLookupMissWithReason(t, cache, entry, cacheObjectCorruptReason)
 }
 
 func TestResolveCacheOptionsDefaultsAndOverrides(t *testing.T) {

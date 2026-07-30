@@ -194,7 +194,7 @@ func exportInventoryConfidenceSignal(dep DependencyReport) evaluatedReachability
 
 func importPrecisionConfidenceSignal(dep DependencyReport) evaluatedReachabilitySignal {
 	switch {
-	case hasWildcardImport(dep.UsedImports) || hasWildcardImport(dep.UnusedImports):
+	case hasWildcardImport(dep.UsedImports) || hasWildcardImport(dep.UnusedImports) || hasWildcardImport(dep.SuppressedUnusedImports):
 		return evaluatedReachabilitySignal{
 			signal: ReachabilitySignal{
 				Code:      confidenceReasonWildcardImport,
@@ -340,7 +340,7 @@ func runtimeUsageCorrelation(usage *RuntimeUsage) RuntimeCorrelation {
 }
 
 func hasStaticImportEvidence(dep DependencyReport) bool {
-	return len(dep.UsedImports)+len(dep.UnusedImports) > 0
+	return len(dep.UsedImports)+len(dep.UnusedImports)+len(dep.SuppressedUnusedImports) > 0
 }
 
 func hasRiskCode(cues []RiskCue, code string) bool {
