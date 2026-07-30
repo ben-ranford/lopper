@@ -135,6 +135,48 @@ func TestJSIncompleteScanDisablesTopNRemovalRanking(t *testing.T) {
 	}
 }
 
+func TestJSIncompleteDependencySurfaceDisablesTopNRemovalRanking(t *testing.T) {
+	repo := t.TempDir()
+	source := "import { broken } from \"alpha\"\nimport { used } from \"beta\"\nused()\n"
+	if err := os.WriteFile(filepath.Join(repo, "index.js"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	alphaRoot := filepath.Join(repo, "node_modules", "alpha")
+	if err := os.MkdirAll(alphaRoot, 0o755); err != nil {
+		t.Fatalf("mkdir alpha dependency: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(alphaRoot, "package.json"), []byte("{"), 0o644); err != nil {
+		t.Fatalf("write malformed alpha package metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(alphaRoot, "index.js"), []byte("export const broken = 1\n"), 0o644); err != nil {
+		t.Fatalf("write alpha entrypoint: %v", err)
+	}
+	if err := writeDependency(repo, "beta", "export const used = 1\n"); err != nil {
+		t.Fatalf("write beta dependency: %v", err)
+	}
+
+	result, err := ScanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	topReports, topWarnings := buildTopDependencies(repo, result, 1, "", 1, report.DefaultRemovalCandidateWeights(), false)
+	if len(topReports) != 2 || topReports[0].Name != "alpha" || topReports[1].Name != "beta" {
+		t.Fatalf("expected deterministic unranked reports from incomplete dependency coverage, got %#v", topReports)
+	}
+	if !topReports[0].UsageIncomplete {
+		t.Fatalf("expected malformed alpha metadata to mark its report incomplete, got %#v", topReports[0])
+	}
+	for _, topReport := range topReports {
+		if topReport.RemovalCandidate != nil {
+			t.Fatalf("did not expect incomplete top-N report to be scored, got %#v", topReport)
+		}
+	}
+	if !strings.Contains(strings.Join(topWarnings, "\n"), "top-N removal ranking disabled") {
+		t.Fatalf("expected incomplete top-N warning, got %#v", topWarnings)
+	}
+}
+
 func setupOversizedSourceRepo(t *testing.T) (string, string) {
 	t.Helper()
 	repo := t.TempDir()

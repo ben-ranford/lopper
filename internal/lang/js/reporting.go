@@ -468,11 +468,13 @@ func buildTopDependencies(repoPath string, scanResult ScanResult, topN int, runt
 		warnings = append(warnings, depWarnings...)
 	}
 
-	if scanResult.UsageIncomplete {
+	if scanResult.UsageIncomplete || slices.ContainsFunc(reports, func(dependency report.DependencyReport) bool {
+		return dependency.UsageIncomplete
+	}) {
 		sort.Slice(reports, func(i, j int) bool {
 			return reports[i].Name < reports[j].Name
 		})
-		warnings = append(warnings, "top-N removal ranking disabled because JS/TS usage coverage is incomplete")
+		warnings = append(warnings, "top-N removal ranking disabled because JS/TS dependency coverage is incomplete")
 		return reports, warnings
 	}
 
