@@ -10,6 +10,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+const cacheObjectCorruptReason = "object-corrupt"
+
 type cachePointer struct {
 	InputDigest  string `json:"inputDigest"`
 	ObjectDigest string `json:"objectDigest"`
@@ -68,17 +70,17 @@ func (c *analysisCache) lookup(entry cacheEntryDescriptor) (report.Report, bool,
 	var payload cachedPayload
 	if err = json.Unmarshal(objectData, &payload); err != nil {
 		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: cacheObjectCorruptReason})
 		return report.Report{}, false, nil
 	}
 	if !payload.restoreUsageIncomplete() {
 		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: cacheObjectCorruptReason})
 		return report.Report{}, false, nil
 	}
 	if !payload.restoreSuppressedUnusedImports() {
 		c.metadata.Misses++
-		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: "object-corrupt"})
+		c.metadata.Invalidations = append(c.metadata.Invalidations, report.CacheInvalidation{Key: entry.KeyLabel, Reason: cacheObjectCorruptReason})
 		return report.Report{}, false, nil
 	}
 	c.metadata.Hits++

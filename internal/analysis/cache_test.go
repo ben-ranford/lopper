@@ -787,6 +787,24 @@ func assertLookupMissWithReason(t *testing.T, cache *analysisCache, entry cacheE
 	}
 }
 
+func cacheWithPayloadForLookupTest(t *testing.T, payload cachedPayload, objectDigest string) (*analysisCache, cacheEntryDescriptor) {
+	t.Helper()
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "cache")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable test setup")
+	}
+	entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "digest", InputDigest: "input-a"}
+	serialized, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(cachePath, "objects", objectDigest+".json"), serialized)
+	writePointerJSON(t, filepath.Join(cachePath, "keys", entry.KeyDigest+".json"), entry.InputDigest, objectDigest)
+	return cache, entry
+}
+
 func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "cache")
@@ -830,16 +848,7 @@ func TestAnalysisCacheLookupRejectsSuppressedUnusedSidecarOutOfRangeIndex(t *tes
 		{name: "past end", index: 1, objectDigest: "obj-sidecar-past-end"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repo := t.TempDir()
-			cachePath := filepath.Join(repo, "cache")
-			cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-			if !cache.cacheable {
-				t.Fatalf("expected cacheable test setup")
-			}
-
-			entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "digest", InputDigest: "input-a"}
-			keyPath := filepath.Join(cachePath, "keys", entry.KeyDigest+".json")
-			payload, err := json.Marshal(cachedPayload{
+			payload := cachedPayload{
 				Report: report.Report{Dependencies: []report.DependencyReport{{
 					Name: "dep",
 				}}},
@@ -847,44 +856,25 @@ func TestAnalysisCacheLookupRejectsSuppressedUnusedSidecarOutOfRangeIndex(t *tes
 				SuppressedUnusedImportsByDependency: map[int][]report.ImportUse{
 					test.index: []report.ImportUse{{Name: "hidden", Module: "dep"}},
 				},
-			})
-			if err != nil {
-				t.Fatalf("marshal payload: %v", err)
 			}
-			mustWriteFile(t, filepath.Join(cachePath, "objects", test.objectDigest+".json"), payload)
-			writePointerJSON(t, keyPath, entry.InputDigest, test.objectDigest)
-
-			assertLookupMissWithReason(t, cache, entry, "object-corrupt")
+			cache, entry := cacheWithPayloadForLookupTest(t, payload, test.objectDigest)
+			assertLookupMissWithReason(t, cache, entry, cacheObjectCorruptReason)
 		})
 	}
 }
 
 func TestAnalysisCacheLookupRejectsSuppressedUnusedSidecarOnCompleteDependency(t *testing.T) {
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "cache")
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if !cache.cacheable {
-		t.Fatalf("expected cacheable test setup")
-	}
-
-	entry := cacheEntryDescriptor{KeyLabel: "k", KeyDigest: "digest", InputDigest: "input-a"}
-	keyPath := filepath.Join(cachePath, "keys", entry.KeyDigest+".json")
-	payload, err := json.Marshal(cachedPayload{
+	payload := cachedPayload{
 		Report: report.Report{Dependencies: []report.DependencyReport{{
 			Name: "dep",
 		}}},
 		SuppressedUnusedImportsByDependency: map[int][]report.ImportUse{
 			0: []report.ImportUse{{Name: "hidden", Module: "dep"}},
 		},
-	})
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
 	}
 	objectDigest := "obj-sidecar-complete"
-	mustWriteFile(t, filepath.Join(cachePath, "objects", objectDigest+".json"), payload)
-	writePointerJSON(t, keyPath, entry.InputDigest, objectDigest)
-
-	assertLookupMissWithReason(t, cache, entry, "object-corrupt")
+	cache, entry := cacheWithPayloadForLookupTest(t, payload, objectDigest)
+	assertLookupMissWithReason(t, cache, entry, cacheObjectCorruptReason)
 }
 
 func TestResolveCacheOptionsDefaultsAndOverrides(t *testing.T) {
