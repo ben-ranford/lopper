@@ -1282,6 +1282,35 @@ func TestWriteFileIfAbsentAtRootFallsBackWhenLinkUnsupported(t *testing.T) {
 	}
 }
 
+func TestWriteFileIfAbsentAtRootFallsBackWhenLinkReturnsEPERM(t *testing.T) {
+	var wroteTarget []byte
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			return &fakeFile{
+				write: func(p []byte) (int, error) {
+					if name == writeTestFileName {
+						wroteTarget = append([]byte(nil), p...)
+					}
+					return len(p), nil
+				},
+				chmod: func(os.FileMode) error { return nil },
+				close: func() error { return nil },
+			}, nil
+		},
+		link:   func(string, string) error { return syscall.EPERM },
+		remove: func(string) error { return nil },
+	}
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o640)
+	if err != nil {
+		t.Fatalf("expected EPERM fallback success, got %v", err)
+	}
+	if string(wroteTarget) != "hello" {
+		t.Fatalf("unexpected target content: %q", string(wroteTarget))
+	}
+}
+
 func TestWriteFileIfAbsentAtRootReturnsExistWhenFallbackTargetExists(t *testing.T) {
 	root := makeFakeTempWriteRoot(nil)
 	root.link = func(string, string) error { return errors.ErrUnsupported }

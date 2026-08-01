@@ -275,7 +275,7 @@ func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm o
 		if errors.Is(err, os.ErrExist) {
 			return os.ErrExist
 		}
-		if errors.Is(err, errors.ErrUnsupported) {
+		if errors.Is(err, errors.ErrUnsupported) || errors.Is(err, os.ErrPermission) {
 			return createFileExclusivelyAtRoot(root, target.rel, data, perm)
 		}
 		return err
