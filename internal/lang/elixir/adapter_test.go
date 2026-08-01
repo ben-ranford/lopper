@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	elixirFooBarDependency = "foo-bar"
-	elixirAliasFooBar      = "alias Foo.Bar"
-	elixirDetectErrorFmt   = "detect: %v"
-	elixirApiMixProject    = "defmodule Api.MixProject do\n  use Mix.Project\nend\n"
+	elixirFooBarDependency         = "foo-bar"
+	elixirAliasFooBar              = "alias Foo.Bar"
+	elixirDetectErrorFmt           = "detect: %v"
+	elixirApiMixProject            = "defmodule Api.MixProject do\n  use Mix.Project\nend\n"
+	elixirSpoofedCommentedAppsPath = "# \"\"\"\n# apps_path: \"services\"\n"
 )
 
 func fixturePath(parts ...string) string {
@@ -230,58 +231,24 @@ func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
 
 func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
-	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
-	assertDetectionFixture(t, repo, filepath.Base(repo), "")
-}
-
-func TestDetectWithConfidenceIgnoresCommentedAppsPathAfterQuotedCommentSpoof(t *testing.T) {
-	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # \"\"\"\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  "+elixirSpoofedCommentedAppsPath+"  def project, do: []\nend\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
 }
 
 func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "double quoted hash stays",
-			input: "def project, do: [apps_path: \"ser#vices\"]\n# comment\n",
-			want:  "def project, do: [apps_path: \"ser#vices\"]\n\n",
-		},
-		{
-			name:  "escaped quote and hash stay",
-			input: "def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n# comment\n",
-			want:  "def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n\n",
-		},
-		{
-			name:  "single quoted hash stays",
-			input: "value = 'foo#bar'\n# comment\n",
-			want:  "value = 'foo#bar'\n\n",
-		},
-		{
-			name:  "multiline double quoted hash stays with embedded quote",
-			input: "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n# comment\n",
-			want:  "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n\n",
-		},
-		{
-			name:  "comment quote delimiters do not spoof later strings",
-			input: "value = 1\n# \"\"\"\n# \"\napps_path: \"services\"\n# comment\n",
-			want:  "value = 1\n\n\napps_path: \"services\"\n\n",
-		},
+	assertStripped := func(input, want string) {
+		t.Helper()
+		if got := stripElixirComments([]byte(input)); got != want {
+			t.Fatalf("unexpected stripped output:\nwant: %q\ngot:  %q", want, got)
+		}
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := stripElixirComments([]byte(tc.input)); got != tc.want {
-				t.Fatalf("unexpected stripped output:\nwant: %q\ngot:  %q", tc.want, got)
-			}
-		})
-	}
+	assertStripped("def project, do: [apps_path: \"ser#vices\"]\n# comment\n", "def project, do: [apps_path: \"ser#vices\"]\n\n")
+	assertStripped("def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n# comment\n", "def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n\n")
+	assertStripped("value = 'foo#bar'\n# comment\n", "value = 'foo#bar'\n\n")
+	assertStripped("doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n# comment\n", "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n\n")
+	assertStripped("value = 1\n# \"\"\"\n# \"\napps_path: \"services\"\n# comment\n", "value = 1\n\n\napps_path: \"services\"\n\n")
 }
 
 func TestParseImportsAliasAsSetsLocalName(t *testing.T) {
@@ -332,9 +299,6 @@ func TestDetectUmbrellaAppsPathBranches(t *testing.T) {
 	}
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("# apps_path: \"services\"\ndef project, do: []\n")); umbrella || appsPath != "" {
 		t.Fatalf("expected commented apps_path to be ignored, got umbrella=%v appsPath=%q", umbrella, appsPath)
-	}
-	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("# \"\"\"\n# apps_path: \"services\"\ndef project, do: []\n")); umbrella || appsPath != "" {
-		t.Fatalf("expected commented apps_path after quote spoof to be ignored, got umbrella=%v appsPath=%q", umbrella, appsPath)
 	}
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: [apps_path: \"   \"]\n")); !umbrella || appsPath != "apps" {
 		t.Fatalf("expected blank apps_path to fall back to apps, got umbrella=%v appsPath=%q", umbrella, appsPath)
