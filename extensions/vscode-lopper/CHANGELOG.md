@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.4 (2026-07-31)
+
+- Updated the bundled `tar` dependency to 7.5.22.
+
 ## 1.8.3 (2026-07-22)
 
 - Updated the bundled `tar` dependency to 7.5.21.
