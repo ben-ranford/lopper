@@ -81,6 +81,45 @@ func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
 	return statTestPath(t, originalPath), statTestPath(t, changedPath)
 }
 
+func newPinnedFallbackTargetFile(t *testing.T, info fs.FileInfo, initial string) (File, *[]byte) {
+	t.Helper()
+	targetData := []byte(initial)
+	targetFile := &truncatingFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return info, nil },
+			write: func(p []byte) (int, error) {
+				targetData = append(targetData, p...)
+				return len(p), nil
+			},
+			close: closeWithoutError,
+		},
+		truncate: func(size int64) error {
+			if size != 0 {
+				t.Fatalf("unexpected truncate size: %d", size)
+			}
+			targetData = targetData[:0]
+			return nil
+		},
+	}
+	return targetFile, &targetData
+}
+
+func openTargetOrTempFile(targetName string, openTarget func() (File, error), tempOpenErr error) func(string, int, os.FileMode) (File, error) {
+	return func(name string, flag int, perm os.FileMode) (File, error) {
+		if name == targetName {
+			return openTarget()
+		}
+		if tempOpenErr != nil {
+			return nil, tempOpenErr
+		}
+		return &fakeFile{
+			write: func(p []byte) (int, error) { return len(p), nil },
+			chmod: chmodWithoutError,
+			close: closeWithoutError,
+		}, nil
+	}
+}
+
 func assertOverwritePinnedFileRejectsBeforeMutation(t *testing.T, openedInfo fs.FileInfo, lstat func(*testing.T) func(string) (fs.FileInfo, error), beforeRevalidate func(*testing.T) func() error) {
 	t.Helper()
 
@@ -2218,19 +2257,11 @@ func TestWriteAtomicReplacementReturnsPinnedTargetCloseErrorAfterCommit(t *testi
 
 func TestWriteAtomicReplacementReturnsPinnedTargetOpenError(t *testing.T) {
 	expectedErr := errors.New("open pinned target failure")
+	openTarget := func() (File, error) { return nil, expectedErr }
 	root := &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name == writeTestFileName {
-				return nil, expectedErr
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
-		rename: func(string, string) error { return nil },
-		remove: func(string) error { return nil },
+		openFile: openTargetOrTempFile(writeTestFileName, openTarget, nil),
+		rename:   func(string, string) error { return nil },
+		remove:   func(string) error { return nil },
 	}
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))

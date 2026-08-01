@@ -149,24 +149,7 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 	info := statTestPath(t, infoPath)
 
 	removeCalls := 0
-	targetData := []byte("before")
-	targetFile := &truncatingFakeFile{
-		fakeFile: &fakeFile{
-			stat: func() (fs.FileInfo, error) { return info, nil },
-			write: func(p []byte) (int, error) {
-				targetData = append(targetData, p...)
-				return len(p), nil
-			},
-			close: closeWithoutError,
-		},
-		truncate: func(size int64) error {
-			if size != 0 {
-				t.Fatalf("unexpected truncate size: %d", size)
-			}
-			targetData = targetData[:0]
-			return nil
-		},
-	}
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name != writeTestFileName {
@@ -174,16 +157,9 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 			}
 			return info, nil
 		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name == writeTestFileName {
-				return targetFile, nil
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, nil),
 		rename: func(oldName, newName string) error {
 			return &os.LinkError{
 				Op:  "renameat",
