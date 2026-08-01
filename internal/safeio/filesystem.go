@@ -190,16 +190,16 @@ func trustedRootAliasTarget(requestedPath string) (string, bool) {
 	}
 }
 
-func openRootChildNoFollow(root Root, name, path string) (Root, error) {
-	info, err := root.Lstat(name)
+func openValidatedChildRoot(root Root, name, path string, infoFn func() (fs.FileInfo, error), symlinkMessage, notDirMessage, changedMessage string) (Root, error) {
+	info, err := infoFn()
 	if err != nil {
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("root contains symlink: %s", path)
+		return nil, fmt.Errorf("%s: %s", symlinkMessage, path)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("root is not a directory: %s", path)
+		return nil, fmt.Errorf("%s: %s", notDirMessage, path)
 	}
 
 	next, err := root.OpenRoot(name)
@@ -211,9 +211,13 @@ func openRootChildNoFollow(root Root, name, path string) (Root, error) {
 		return nil, closeRootWithError(next, err)
 	}
 	if !os.SameFile(info, openedInfo) {
-		return nil, closeRootWithError(next, fmt.Errorf("root changed while opening: %s", path))
+		return nil, closeRootWithError(next, fmt.Errorf("%s: %s", changedMessage, path))
 	}
 	return next, nil
+}
+
+func openRootChildNoFollow(root Root, name, path string) (Root, error) {
+	return openValidatedChildRoot(root, name, path, func() (fs.FileInfo, error) { return root.Lstat(name) }, "root contains symlink", "root is not a directory", "root changed while opening")
 }
 
 func openRootExistingAncestorNoFollowWith(name string, absFn func(string) (string, error), relFn func(string, string) (string, error), openRootFn func(string) (Root, error), openRootChildFn func(Root, string, string) (Root, string, error)) (Root, string, []string, error) {

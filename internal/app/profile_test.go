@@ -51,17 +51,7 @@ func TestExecuteProfileWritesConfigWithOverwriteSafeguard(t *testing.T) {
 	req.Profile.OutputPath = outputPath
 	req.Profile.Features = mustProfileFeatureSet(t)
 
-	output, err := application.Execute(context.Background(), req)
-	if err != nil {
-		t.Fatalf("execute profile write: %v", err)
-	}
-	if !strings.Contains(output, outputPath) {
-		t.Fatalf("expected output confirmation to include path, got %q", output)
-	}
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read profile output: %v", err)
-	}
+	data := mustExecuteProfileToFile(t, application, req, outputPath)
 	if !strings.Contains(string(data), "fail_on_increase_percent: 5") {
 		t.Fatalf("expected noise-reduction config, got %q", string(data))
 	}
@@ -75,13 +65,30 @@ func TestExecuteProfileWritesConfigWithOverwriteSafeguard(t *testing.T) {
 	if _, err := application.Execute(context.Background(), req); err != nil {
 		t.Fatalf("execute profile force overwrite: %v", err)
 	}
-	data, err = os.ReadFile(outputPath)
+	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("read forced profile output: %v", err)
 	}
 	if !strings.Contains(string(data), "fail_on_increase_percent: 1") {
 		t.Fatalf("expected strict config after force overwrite, got %q", string(data))
 	}
+}
+
+func mustExecuteProfileToFile(t *testing.T, application *App, req Request, outputPath string) []byte {
+	t.Helper()
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute profile write: %v", err)
+	}
+	if !strings.Contains(output, outputPath) {
+		t.Fatalf("expected output confirmation to include path, got %q", output)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read profile output: %v", err)
+	}
+	return data
 }
 
 func TestExecuteProfileStdoutOutputPath(t *testing.T) {
