@@ -26,7 +26,7 @@ func MaskSource(content []byte) []byte {
 	masked := sanitizeElixirSource(content)
 	maskElixirSigils(content, masked)
 	for index := 0; index < len(content); index++ {
-		if content[index] != '#' || masked[index] != '#' {
+		if !isElixirCommentStart(content, masked, index) {
 			continue
 		}
 		for index < len(content) && content[index] != '\n' {
@@ -181,7 +181,9 @@ func startElixirSanitizedRegion(content []byte, sanitized []byte, index int, sta
 
 	switch content[index] {
 	case '#':
-		state.inComment = true
+		if isElixirCommentStart(content, sanitized, index) {
+			state.inComment = true
+		}
 	case '"':
 		maskElixirSourceByte(sanitized, index)
 		state.inDoubleQuote = true
@@ -203,4 +205,11 @@ func maskElixirSourceByte(content []byte, index int) {
 	if content[index] != '\n' {
 		content[index] = ' '
 	}
+}
+
+func isElixirCommentStart(content, masked []byte, index int) bool {
+	if index < 0 || index >= len(content) || content[index] != '#' || masked[index] != '#' {
+		return false
+	}
+	return index <= 0 || content[index-1] != '?'
 }

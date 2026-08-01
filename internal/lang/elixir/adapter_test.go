@@ -281,6 +281,14 @@ func TestParseImportsIgnoresAliasLikeTextInMultilineStrings(t *testing.T) {
 	}
 }
 
+func TestParseImportsIgnoresAliasLikeTextAfterCharacterLiteralHash(t *testing.T) {
+	content := []byte("defmodule Demo do\n  marker = ?#; doc = \"\"\"\n  alias Foo.Bar\n  \"\"\"\n  alias Foo.Bar, as: Baz\nend\n")
+	imports := parseImports(content, "lib/demo.ex", map[string]struct{}{"foo": {}})
+	if len(imports) != 1 || imports[0].Local != "Baz" || imports[0].Location.Line != 5 {
+		t.Fatalf("expected only the real alias after character literal hash, got %#v", imports)
+	}
+}
+
 func TestResolveWeights(t *testing.T) {
 	defaults := shared.ResolveRemovalCandidateWeights(nil)
 	if defaults != report.DefaultRemovalCandidateWeights() {
