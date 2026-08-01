@@ -156,35 +156,20 @@ func openTargetOrTempFile(targetName string, openTarget func() (File, error), te
 func newCommittedTargetValidationRoot(t *testing.T, tempInfo fs.FileInfo, lstatTarget func() (fs.FileInfo, error), rename func() error, remove func(string) error, tempClosed *bool) *fakeRoot {
 	t.Helper()
 
-	return &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if !strings.HasPrefix(name, atomicTempPrefix) {
-				t.Fatalf("unexpected open path: %s", name)
-			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: func() error {
-					*tempClosed = true
-					return nil
-				},
-			}, nil
-		},
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name != writeTestFileName {
-				t.Fatalf("unexpected lstat path: %s", name)
-			}
-			return lstatTarget()
-		},
-		rename: func(string, string) error {
-			return rename()
-		},
-		remove: remove,
+	lstat := func(string) (fs.FileInfo, error) {
+		return lstatTarget()
 	}
+	renameFn := func(string, string) error {
+		return rename()
+	}
+	closeFn := func() error {
+		*tempClosed = true
+		return nil
+	}
+	return newCommittedTargetTestRoot(t, tempInfo, lstat, renameFn, remove, closeFn)
 }
 
-func newCommittedTargetLstatErrorRoot(t *testing.T, tempInfo fs.FileInfo, expectedErr error, tempClosed *bool) *fakeRoot {
+func newCommittedTargetTestRoot(t *testing.T, tempInfo fs.FileInfo, lstat func(string) (fs.FileInfo, error), rename func(string, string) error, remove func(string) error, closeFn func() error) *fakeRoot {
 	t.Helper()
 
 	return &fakeRoot{
@@ -192,24 +177,42 @@ func newCommittedTargetLstatErrorRoot(t *testing.T, tempInfo fs.FileInfo, expect
 			if !strings.HasPrefix(name, atomicTempPrefix) {
 				t.Fatalf("unexpected open path: %s", name)
 			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: func() error {
-					*tempClosed = true
-					return nil
-				},
-			}, nil
+			return newCommittedTargetTempFile(t, tempInfo, closeFn), nil
 		},
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name != writeTestFileName {
 				t.Fatalf("unexpected lstat path: %s", name)
 			}
-			return nil, expectedErr
+			return lstat(name)
 		},
-		rename: func(string, string) error { return nil },
-		remove: func(string) error { return nil },
+		rename: rename,
+		remove: remove,
+	}
+}
+
+func newCommittedTargetLstatErrorRoot(t *testing.T, tempInfo fs.FileInfo, expectedErr error, tempClosed *bool) *fakeRoot {
+	t.Helper()
+
+	lstatTarget := func() (fs.FileInfo, error) {
+		return nil, expectedErr
+	}
+	rename := func() error {
+		return nil
+	}
+	remove := func(string) error {
+		return nil
+	}
+	return newCommittedTargetValidationRoot(t, tempInfo, lstatTarget, rename, remove, tempClosed)
+}
+
+func newCommittedTargetTempFile(t *testing.T, tempInfo fs.FileInfo, closeFn func() error) *fakeFile {
+	t.Helper()
+
+	return &fakeFile{
+		stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+		write: func(p []byte) (int, error) { return len(p), nil },
+		chmod: chmodWithoutError,
+		close: closeFn,
 	}
 }
 
@@ -2395,37 +2398,23 @@ func TestWriteAtomicReplacementVerifiesCommittedTarget(t *testing.T) {
 	renameCalls := 0
 	removeCalls := 0
 	lstatCalls := 0
-	root := &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if !strings.HasPrefix(name, atomicTempPrefix) {
-				t.Fatalf("unexpected open path: %s", name)
-			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: func() error {
-					tempClosed = true
-					return nil
-				},
-			}, nil
-		},
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name != writeTestFileName {
-				t.Fatalf("unexpected lstat path: %s", name)
-			}
-			lstatCalls++
-			return tempInfo, nil
-		},
-		rename: func(string, string) error {
-			renameCalls++
-			return nil
-		},
-		remove: func(string) error {
-			removeCalls++
-			return nil
-		},
+	lstat := func(string) (fs.FileInfo, error) {
+		lstatCalls++
+		return tempInfo, nil
 	}
+	rename := func(string, string) error {
+		renameCalls++
+		return nil
+	}
+	remove := func(string) error {
+		removeCalls++
+		return nil
+	}
+	closeFn := func() error {
+		tempClosed = true
+		return nil
+	}
+	root := newCommittedTargetTestRoot(t, tempInfo, lstat, rename, remove, closeFn)
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
 	if err != nil {
@@ -2450,36 +2439,22 @@ func TestWriteAtomicReplacementRejectsChangedCommittedTarget(t *testing.T) {
 	tempClosed := false
 	renameCalls := 0
 	removeCalls := 0
-	root := &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if !strings.HasPrefix(name, atomicTempPrefix) {
-				t.Fatalf("unexpected open path: %s", name)
-			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: func() error {
-					tempClosed = true
-					return nil
-				},
-			}, nil
-		},
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name != writeTestFileName {
-				t.Fatalf("unexpected lstat path: %s", name)
-			}
-			return changedInfo, nil
-		},
-		rename: func(string, string) error {
-			renameCalls++
-			return nil
-		},
-		remove: func(string) error {
-			removeCalls++
-			return nil
-		},
+	lstat := func(string) (fs.FileInfo, error) {
+		return changedInfo, nil
 	}
+	rename := func(string, string) error {
+		renameCalls++
+		return nil
+	}
+	remove := func(string) error {
+		removeCalls++
+		return nil
+	}
+	closeFn := func() error {
+		tempClosed = true
+		return nil
+	}
+	root := newCommittedTargetTestRoot(t, tempInfo, lstat, rename, remove, closeFn)
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
 	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
@@ -2501,31 +2476,20 @@ func TestWriteAtomicReplacementReturnsCloseErrorBeforeRename(t *testing.T) {
 	renameCalls := 0
 	lstatCalls := 0
 	removeCalls := 0
-	root := &fakeRoot{
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if !strings.HasPrefix(name, atomicTempPrefix) {
-				t.Fatalf("unexpected open path: %s", name)
-			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return newPinnedTargetInfo(t, "temp"), nil },
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: func() error { return expectedErr },
-			}, nil
-		},
-		lstat: func(string) (fs.FileInfo, error) {
-			lstatCalls++
-			return newPinnedTargetInfo(t, "target"), nil
-		},
-		rename: func(string, string) error {
-			renameCalls++
-			return nil
-		},
-		remove: func(string) error {
-			removeCalls++
-			return nil
-		},
+	lstat := func(string) (fs.FileInfo, error) {
+		lstatCalls++
+		return newPinnedTargetInfo(t, "target"), nil
 	}
+	rename := func(string, string) error {
+		renameCalls++
+		return nil
+	}
+	remove := func(string) error {
+		removeCalls++
+		return nil
+	}
+	closeFn := func() error { return expectedErr }
+	root := newCommittedTargetTestRoot(t, newPinnedTargetInfo(t, "temp"), lstat, rename, remove, closeFn)
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
 	if !errors.Is(err, expectedErr) {
