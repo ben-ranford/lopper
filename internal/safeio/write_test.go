@@ -1707,9 +1707,21 @@ func TestWriteFileAtRootReturnsExistingTargetCloseError(t *testing.T) {
 	expectedErr := errors.New("existing target close failure")
 	root := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return fileInfo, nil },
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return &fakeFile{close: func() error { return expectedErr }}, nil
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				return &fakeFile{
+					write: func(p []byte) (int, error) { return len(p), nil },
+					chmod: chmodWithoutError,
+					close: closeWithoutError,
+				}, nil
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return fileInfo, nil },
+				close: func() error { return expectedErr },
+			}, nil
 		},
+		rename: func(string, string) error { return nil },
+		remove: func(string) error { return nil },
 	}
 	target := rootedTarget{rel: writeTestFileName, abs: targetPath}
 

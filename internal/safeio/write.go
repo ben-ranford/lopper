@@ -233,16 +233,21 @@ func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMo
 	if err != nil {
 		return err
 	}
-	if existingInfo != nil {
-		file, err := root.OpenFile(target.rel, os.O_WRONLY, 0)
-		if err != nil {
-			return err
-		}
-		if err := file.Close(); err != nil {
-			return err
-		}
+	if existingInfo == nil {
+		return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
 	}
-	return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+
+	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+
+	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file)
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
