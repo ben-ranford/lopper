@@ -235,6 +235,13 @@ func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
 }
 
+func TestDetectWithConfidenceIgnoresCommentedAppsPathAfterQuotedCommentSpoof(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # \"\"\"\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
+	assertDetectionFixture(t, repo, filepath.Base(repo), "")
+}
+
 func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -260,6 +267,11 @@ func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
 			name:  "multiline double quoted hash stays with embedded quote",
 			input: "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n# comment\n",
 			want:  "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n\n",
+		},
+		{
+			name:  "comment quote delimiters do not spoof later strings",
+			input: "value = 1\n# \"\"\"\n# \"\napps_path: \"services\"\n# comment\n",
+			want:  "value = 1\n\n\napps_path: \"services\"\n\n",
 		},
 	}
 
@@ -320,6 +332,9 @@ func TestDetectUmbrellaAppsPathBranches(t *testing.T) {
 	}
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("# apps_path: \"services\"\ndef project, do: []\n")); umbrella || appsPath != "" {
 		t.Fatalf("expected commented apps_path to be ignored, got umbrella=%v appsPath=%q", umbrella, appsPath)
+	}
+	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("# \"\"\"\n# apps_path: \"services\"\ndef project, do: []\n")); umbrella || appsPath != "" {
+		t.Fatalf("expected commented apps_path after quote spoof to be ignored, got umbrella=%v appsPath=%q", umbrella, appsPath)
 	}
 	if umbrella, appsPath := detectUmbrellaAppsPath([]byte("def project, do: [apps_path: \"   \"]\n")); !umbrella || appsPath != "apps" {
 		t.Fatalf("expected blank apps_path to fall back to apps, got umbrella=%v appsPath=%q", umbrella, appsPath)

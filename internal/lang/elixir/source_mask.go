@@ -5,6 +5,7 @@ type elixirSourceMaskState struct {
 	inDoubleQuote   bool
 	inSingleHeredoc bool
 	inDoubleHeredoc bool
+	inComment       bool
 	escaped         bool
 }
 
@@ -105,6 +106,8 @@ func isElixirSigilLetter(value byte) bool {
 
 func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	switch {
+	case state.inComment:
+		return sanitizeElixirCommentByte(content, index, state)
 	case state.inDoubleHeredoc:
 		return sanitizeElixirHeredocByte(content, sanitized, index, state, '"')
 	case state.inSingleHeredoc:
@@ -116,6 +119,13 @@ func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *
 	default:
 		return startElixirSanitizedRegion(content, sanitized, index, state)
 	}
+}
+
+func sanitizeElixirCommentByte(content []byte, index int, state *elixirSourceMaskState) int {
+	if content[index] == '\n' {
+		state.inComment = false
+	}
+	return 0
 }
 
 func sanitizeElixirHeredocByte(content []byte, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
@@ -170,6 +180,8 @@ func startElixirSanitizedRegion(content []byte, sanitized []byte, index int, sta
 	}
 
 	switch content[index] {
+	case '#':
+		state.inComment = true
 	case '"':
 		maskElixirSourceByte(sanitized, index)
 		state.inDoubleQuote = true
