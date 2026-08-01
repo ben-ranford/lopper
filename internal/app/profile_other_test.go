@@ -14,8 +14,24 @@ func TestPersistProfileConfigForceOverwritesWritableTargetWhenParentLacksWritePe
 		t.Skip("effective privileges bypass parent write permission checks")
 	}
 
-	workspace := t.TempDir()
-	parentDir := filepath.Join(workspace, "reports")
+	parentDir, outputPath := setupReadOnlyProfileParent(t)
+	requireParentWriteDenied(t, parentDir, ".profile-write-probe")
+	requireWritableTargetReopenable(t, outputPath)
+
+	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, true)
+	if err != nil {
+		t.Fatalf("persist forced profile output: %v", err)
+	}
+	if status != "threshold profile config written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
+}
+
+func setupReadOnlyProfileParent(t *testing.T) (string, string) {
+	t.Helper()
+
+	parentDir := filepath.Join(t.TempDir(), "reports")
 	if err := os.MkdirAll(parentDir, 0o755); err != nil {
 		t.Fatalf("mkdir reports: %v", err)
 	}
@@ -32,39 +48,52 @@ func TestPersistProfileConfigForceOverwritesWritableTargetWhenParentLacksWritePe
 		}
 	})
 
-	probePath := filepath.Join(parentDir, ".profile-write-probe")
-	if err := os.WriteFile(probePath, []byte("probe"), 0o600); err == nil {
+	return parentDir, outputPath
+}
+
+func requireParentWriteDenied(t *testing.T, parentDir, probeName string) {
+	t.Helper()
+
+	probePath := filepath.Join(parentDir, probeName)
+	err := os.WriteFile(probePath, []byte("probe"), 0o600)
+	switch {
+	case err == nil:
 		if removeErr := os.Remove(probePath); removeErr != nil {
 			t.Fatalf("remove write probe: %v", removeErr)
 		}
 		t.Skip("effective privileges bypass missing parent write permission")
-	} else if !os.IsPermission(err) {
+	case os.IsPermission(err):
+		return
+	default:
 		t.Skipf("parent write permission semantics are not testable: %v", err)
 	}
+}
 
-	probe, err := os.OpenFile(outputPath, os.O_WRONLY, 0)
-	if err != nil {
-		t.Skipf("existing writable target cannot be reopened without parent write permission: %v", err)
-	}
-	if err := probe.Close(); err != nil {
-		t.Fatalf("close writable target probe: %v", err)
-	}
+func assertProfileOutput(t *testing.T, outputPath, want string, wantPerm os.FileMode) {
+	t.Helper()
 
-	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, true)
-	if err != nil {
-		t.Fatalf("persist forced profile output: %v", err)
-	}
-	if status != "threshold profile config written to "+outputPath {
-		t.Fatalf("unexpected status: %q", status)
-	}
 	if got, err := os.ReadFile(outputPath); err != nil {
 		t.Fatalf("read forced profile output: %v", err)
-	} else if string(got) != "thresholds:\n  fail_on_increase_percent: 1\n" {
+	} else if string(got) != want {
 		t.Fatalf("unexpected forced profile output: %q", string(got))
 	}
 	if info, err := os.Stat(outputPath); err != nil {
 		t.Fatalf("stat forced profile output: %v", err)
-	} else if info.Mode().Perm() != 0o600 {
-		t.Fatalf("expected output mode 0600 to be preserved, got %#o", info.Mode().Perm())
+	} else if info.Mode().Perm() != wantPerm {
+		t.Fatalf("expected output mode %#o to be preserved, got %#o", wantPerm, info.Mode().Perm())
+	}
+}
+
+func requireWritableTargetReopenable(t *testing.T, outputPath string) {
+	t.Helper()
+
+	probe, err := os.OpenFile(outputPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Skipf("existing writable target cannot be reopened without parent write permission: %v", err)
+		return
+	}
+	closeErr := probe.Close()
+	if closeErr != nil {
+		t.Fatalf("close writable target probe: %v", closeErr)
 	}
 }
