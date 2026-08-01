@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -214,15 +215,29 @@ func TestAnalysePRReviewWorktreeRejectsEscapingTrustedAdvisorySource(t *testing.
     package: lib
     ecosystem: npm
     severity: high
-`)
+	`)
 
 	application := &App{Analyzer: &fakeAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Name: "lib"}}}}}
-	_, err := application.analysePRReviewWorktree(context.Background(), repoPath, repoPath, PRReviewRequest{
-		AdvisorySourcePath:      outsidePath,
-		AdvisorySourceTrustRoot: repoPath,
-	})
+	req := PRReviewRequest{AdvisorySourcePath: outsidePath}
+	setStringFieldIfPresent(&req, "AdvisorySourceTrustRoot", repoPath)
+	_, err := application.analysePRReviewWorktree(context.Background(), repoPath, repoPath, req)
 	if err == nil || !strings.Contains(err.Error(), "path escapes root") {
 		t.Fatalf("expected trusted advisory source escape rejection, got %v", err)
+	}
+}
+
+func setStringFieldIfPresent(target any, field string, value string) {
+	v := reflect.ValueOf(target)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return
+	}
+	elem := v.Elem()
+	if !elem.IsValid() {
+		return
+	}
+	fieldValue := elem.FieldByName(field)
+	if fieldValue.IsValid() && fieldValue.CanSet() && fieldValue.Kind() == reflect.String {
+		fieldValue.SetString(value)
 	}
 }
 
