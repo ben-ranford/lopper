@@ -28,6 +28,7 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 	runCommand(t, repoDir, "git", "commit", "-m", "baseline")
 	runCommand(t, repoDir, "git", "worktree", "add", worktreeDir)
 	runCommand(t, repoDir, "git", "config", "core.bare", "true")
+	indexPath := filepath.Join(repoDir, ".git", "worktrees", filepath.Base(worktreeDir), "index")
 
 	hookDir := filepath.Join(worktreeDir, ".githooks")
 	if err := os.MkdirAll(hookDir, 0o755); err != nil {
@@ -47,13 +48,14 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 
 	fakeMake := "#!/usr/bin/env sh\n" +
 		"set -eu\n" +
-		"printf 'GIT_DIR=%s\\nGIT_WORK_TREE=%s\\nGIT_INDEX_FILE=%s\\nGIT_PREFIX=%s\\nGIT_CONFIG_COUNT=%s\\nGIT_CONFIG_KEY_0=%s\\nGIT_CONFIG_VALUE_0=%s\\n' " +
+		"printf 'GIT_DIR=%s\\nGIT_WORK_TREE=%s\\nGIT_INDEX_FILE=%s\\nGIT_PREFIX=%s\\nGIT_CONFIG_COUNT=%s\\nGIT_CONFIG_KEY_0=%s\\nGIT_CONFIG_VALUE_0=%s\\nGIT_CONFIG_KEY_1=%s\\nGIT_CONFIG_VALUE_1=%s\\n' " +
 		"\"${GIT_DIR-}\" \"${GIT_WORK_TREE-}\" \"${GIT_INDEX_FILE-}\" \"${GIT_PREFIX-}\" " +
-		"\"${GIT_CONFIG_COUNT-}\" \"${GIT_CONFIG_KEY_0-}\" \"${GIT_CONFIG_VALUE_0-}\" >>\"" + logPath + "\"\n" +
+		"\"${GIT_CONFIG_COUNT-}\" \"${GIT_CONFIG_KEY_0-}\" \"${GIT_CONFIG_VALUE_0-}\" " +
+		"\"${GIT_CONFIG_KEY_1-}\" \"${GIT_CONFIG_VALUE_1-}\" >>\"" + logPath + "\"\n" +
 		"git status --short >>\"" + logPath + "\"\n" +
 		"repo_tmp=$(mktemp -d)\n" +
 		"git init -b main \"$repo_tmp/fresh\" >/dev/null\n" +
-		"(cd \"$repo_tmp/fresh\" && git status --short) >>\"" + logPath + "\"\n" +
+		"(unset GIT_INDEX_FILE; cd \"$repo_tmp/fresh\" && git status --short) >>\"" + logPath + "\"\n" +
 		"printf '%s\\n' '--' >>\"" + logPath + "\"\n"
 	writeFileMode(t, filepath.Join(binDir, "make"), fakeMake, 0o755)
 
@@ -64,8 +66,11 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 		"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"GIT_DIR=/tmp/hook-git-dir",
 		"GIT_WORK_TREE=/tmp/hook-worktree",
-		"GIT_INDEX_FILE=/tmp/hook-index",
+		"GIT_INDEX_FILE=" + indexPath,
 		"GIT_PREFIX=subdir/",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=advice.detachedHead",
+		"GIT_CONFIG_VALUE_0=false",
 	}
 	cmd.Env = append(cmd.Env, additionalEnv...)
 	output, err := cmd.CombinedOutput()
@@ -84,7 +89,6 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 	for _, forbidden := range []string{
 		"GIT_DIR=/tmp/hook-git-dir",
 		"GIT_WORK_TREE=/tmp/hook-worktree",
-		"GIT_INDEX_FILE=/tmp/hook-index",
 		"GIT_PREFIX=subdir/",
 	} {
 		if strings.Contains(logOutput, forbidden) {
@@ -92,9 +96,12 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=core.bare",
+		"GIT_INDEX_FILE=" + indexPath,
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=advice.detachedHead",
 		"GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.bare",
+		"GIT_CONFIG_VALUE_1=false",
 	} {
 		if !strings.Contains(logOutput, required) {
 			t.Fatalf("expected hook to export %q before running make, got log:\n%s", required, logOutput)
