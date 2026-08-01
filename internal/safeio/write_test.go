@@ -1227,6 +1227,130 @@ func TestWriteFileIfAbsentAtRootNormalizesLinkExistsError(t *testing.T) {
 	}
 }
 
+func TestWriteFileIfAbsentAtRootFallsBackWhenLinkUnsupported(t *testing.T) {
+	var wroteTarget []byte
+	var chmodTarget os.FileMode
+	targetClosed := false
+
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name == writeTestFileName {
+				if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
+					t.Fatalf("unexpected target open flags: %#x", flag)
+				}
+				if perm != 0o640 {
+					t.Fatalf("unexpected target perm: %#o", perm)
+				}
+				return &fakeFile{
+					write: func(p []byte) (int, error) {
+						wroteTarget = append([]byte(nil), p...)
+						return len(p), nil
+					},
+					chmod: func(mode os.FileMode) error {
+						chmodTarget = mode
+						return nil
+					},
+					close: func() error {
+						targetClosed = true
+						return nil
+					},
+				}, nil
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: func(os.FileMode) error { return nil },
+				close: func() error { return nil },
+			}, nil
+		},
+		link:   func(string, string) error { return errors.ErrUnsupported },
+		remove: func(string) error { return nil },
+	}
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o640)
+	if err != nil {
+		t.Fatalf("expected fallback success, got %v", err)
+	}
+	if string(wroteTarget) != "hello" {
+		t.Fatalf("unexpected target content: %q", string(wroteTarget))
+	}
+	if chmodTarget != 0o640 {
+		t.Fatalf("unexpected target chmod: %#o", chmodTarget)
+	}
+	if !targetClosed {
+		t.Fatal("expected fallback target file to close")
+	}
+}
+
+func TestWriteFileIfAbsentAtRootReturnsExistWhenFallbackTargetExists(t *testing.T) {
+	root := makeFakeTempWriteRoot(nil)
+	root.link = func(string, string) error { return errors.ErrUnsupported }
+	root.openFile = func(name string, flag int, perm os.FileMode) (File, error) {
+		if name == writeTestFileName {
+			return nil, os.ErrExist
+		}
+		return &fakeFile{
+			write: func(p []byte) (int, error) { return len(p), nil },
+			chmod: func(os.FileMode) error { return nil },
+			close: func() error { return nil },
+		}, nil
+	}
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected os.ErrExist from fallback target create, got %v", err)
+	}
+}
+
+func TestWriteFileIfAbsentAtRootRemovesFallbackTargetOnWriteError(t *testing.T) {
+	expectedErr := errors.New("write target failure")
+	var removed []string
+	targetClosed := false
+
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name == writeTestFileName {
+				return &fakeFile{
+					write: func([]byte) (int, error) { return 0, expectedErr },
+					close: func() error {
+						targetClosed = true
+						return nil
+					},
+					chmod: func(os.FileMode) error { return nil },
+				}, nil
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: func(os.FileMode) error { return nil },
+				close: func() error { return nil },
+			}, nil
+		},
+		link: func(string, string) error { return errors.ErrUnsupported },
+		remove: func(name string) error {
+			removed = append(removed, name)
+			return nil
+		},
+	}
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected fallback write error, got %v", err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("expected cleanup for fallback target and temp file, got %v", removed)
+	}
+	if removed[0] != writeTestFileName {
+		t.Fatalf("expected fallback target cleanup first for %q, got %v", writeTestFileName, removed)
+	}
+	if !strings.HasPrefix(removed[1], atomicTempPrefix) {
+		t.Fatalf("expected temp cleanup second, got %v", removed)
+	}
+	if !targetClosed {
+		t.Fatal("expected fallback target file to close before cleanup")
+	}
+}
+
 func TestWriteRootRejectsNonRelativeTargets(t *testing.T) {
 	assertWriteRootRejectsNonRelativeTargets(t, (*WriteRoot).WriteFileCreatingParents)
 }
