@@ -517,7 +517,7 @@ func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
 
 	rootDir := t.TempDir()
 	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
-	if err := root.WriteFileCreatingParents("reports/nested/"+writeTestFileName, []byte("hello"), 0o640, 0o750); err != nil {
+	if err := root.WriteFileCreatingParents(filepath.Join("reports", "nested", writeTestFileName), []byte("hello"), 0o640, 0o750); err != nil {
 		t.Fatalf("WriteFileCreatingParents returned error: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(rootDir, "reports", "nested", writeTestFileName))

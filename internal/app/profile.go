@@ -25,6 +25,9 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 	if trimmedOutputPath == "" || trimmedOutputPath == "-" {
 		return config, nil
 	}
+	if hasDirectoryStyleOutputPath(trimmedOutputPath) {
+		return "", fmt.Errorf("output path must name a file: %s", trimmedOutputPath)
+	}
 	destination, err := openCommandOutputDestination(trimmedOutputPath)
 	if err != nil {
 		return "", err

@@ -125,6 +125,12 @@ func TestExecuteProfileErrorPaths(t *testing.T) {
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected write error when output path is a directory")
 	}
+
+	outputPath := filepath.Join(t.TempDir(), "reports") + string(os.PathSeparator)
+	req.Profile.OutputPath = outputPath
+	if _, err := application.Execute(context.Background(), req); err == nil || !strings.Contains(err.Error(), "output path must name a file") {
+		t.Fatalf("expected directory-style output rejection for %q, got %v", outputPath, err)
+	}
 }
 
 func TestPersistProfileConfigPropagatesParentError(t *testing.T) {
