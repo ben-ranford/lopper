@@ -56,6 +56,24 @@ func (s *atomicWriteSession) commit() error {
 	return nil
 }
 
+func (s *atomicWriteSession) verifyCommittedTarget() error {
+	expectedInfo, err := s.tempFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !expectedInfo.Mode().IsRegular() {
+		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
+	}
+	pathInfo, err := s.root.Lstat(s.targetRel)
+	if err != nil {
+		return fmt.Errorf("committed target changed before validation: %w", err)
+	}
+	if !pathInfo.Mode().IsRegular() || !os.SameFile(expectedInfo, pathInfo) {
+		return fmt.Errorf("committed target changed before validation: %s", s.targetRel)
+	}
+	return nil
+}
+
 func (s *atomicWriteSession) closeTempFile() error {
 	if s.tempFile == nil {
 		return nil
@@ -122,7 +140,10 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		}
 		return fallbackErr
 	}
-	return nil
+	if err := session.verifyCommittedTarget(); err != nil {
+		return err
+	}
+	return session.closeTempFile()
 }
 
 func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {

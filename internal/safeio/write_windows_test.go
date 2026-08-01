@@ -150,16 +150,17 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 
 	removeCalls := 0
 	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
-			if name != writeTestFileName {
-				return nil, os.ErrNotExist
+			if name == writeTestFileName {
+				return info, nil
 			}
-			return info, nil
+			return tempInfo, nil
 		},
 		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
 			return targetFile, nil
-		}, nil),
+		}, tempInfo, nil),
 		rename: func(oldName, newName string) error {
 			return &os.LinkError{
 				Op:  "renameat",

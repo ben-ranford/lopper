@@ -240,15 +240,16 @@ func newFallbackDeniedWriteRoot(t *testing.T, tempOpenErr error, rename func(str
 	t.Helper()
 
 	info, targetFile, targetData := newFallbackPinnedTarget(t)
+	tempInfo := newPinnedTargetInfo(t, "temp")
 	openTarget := func() (File, error) { return targetFile, nil }
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
-			if name != writeTestFileName {
-				return nil, os.ErrNotExist
+			if name == writeTestFileName {
+				return info, nil
 			}
-			return info, nil
+			return tempInfo, nil
 		},
-		openFile: openTargetOrTempFile(writeTestFileName, openTarget, tempOpenErr),
+		openFile: openTargetOrTempFile(writeTestFileName, openTarget, tempInfo, tempOpenErr),
 		rename:   rename,
 	}
 	return root, targetFile, targetData
