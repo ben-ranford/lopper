@@ -58,6 +58,28 @@ func moveFallbackFailureCases() []moveFallbackFailureCase {
 	}
 }
 
+func assertMovedFileResult(t *testing.T, sourcePath, targetPath, wantData, sourceAction string) {
+	t.Helper()
+
+	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source file to %s, got %v", sourceAction, err)
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("read moved file: %v", err)
+	}
+	if string(data) != wantData {
+		t.Fatalf("unexpected moved content %q", string(data))
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat moved file: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("unexpected moved file mode: got %#o", info.Mode().Perm())
+	}
+}
+
 type truncatingFakeFile struct {
 	*fakeFile
 	truncate func(size int64) error
@@ -2856,24 +2878,7 @@ func TestMoveFileUnderRenamesWithinRootAndSetsMode(t *testing.T) {
 	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
 		t.Fatalf("MoveFileUnder returned error: %v", err)
 	}
-
-	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected source file to be moved away, got %v", err)
-	}
-	data, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("read moved file: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("unexpected moved content %q", string(data))
-	}
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		t.Fatalf("stat moved file: %v", err)
-	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("unexpected moved file mode: got %#o", info.Mode().Perm())
-	}
+	assertMovedFileResult(t, sourcePath, targetPath, "hello", "be moved away")
 }
 
 func TestMoveFileUnderFallsBackToCopyAndSetsMode(t *testing.T) {
@@ -2906,24 +2911,7 @@ func TestMoveFileUnderFallsBackToCopyAndSetsMode(t *testing.T) {
 	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
 		t.Fatalf("MoveFileUnder returned error: %v", err)
 	}
-
-	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected source file to be removed after copy fallback, got %v", err)
-	}
-	data, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("read copied file: %v", err)
-	}
-	if string(data) != "copied" {
-		t.Fatalf("unexpected copied content %q", string(data))
-	}
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		t.Fatalf("stat copied file: %v", err)
-	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("unexpected copied file mode: got %#o", info.Mode().Perm())
-	}
+	assertMovedFileResult(t, sourcePath, targetPath, "copied", "be removed after copy fallback")
 }
 
 func TestMoveFileUnderReturnsRenameErrorWithoutFallback(t *testing.T) {
