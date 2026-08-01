@@ -1,6 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
+# Git runs hooks with repository-specific variables such as GIT_DIR and
+# GIT_INDEX_FILE set. Clearing them lets nested git commands rediscover the
+# current worktree instead of leaking the hook context into child processes.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+
+# Some linked-worktree setups inherit shared Git config with core.bare=true.
+# Force hook children back into worktree mode without pinning GIT_DIR.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=core.bare
+export GIT_CONFIG_VALUE_0=false
+
 echo "[pre-commit] running make fmt"
 make fmt
 
