@@ -366,6 +366,34 @@ func TestAdapterAnalyseTopNIgnoresSrcLayoutLocalPackages(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseTopNDoesNotFollowSymlinkedSrcOutsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "pyproject.toml"), "[project]\nname='demo'\nversion='0.1.0'\ndependencies=['requests>=2.0']\n")
+	testutil.MustWriteFile(t, filepath.Join(outside, "app", "__init__.py"), localModuleContent)
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import app\nimport requests\n")
+
+	if err := os.Symlink(outside, filepath.Join(repo, "src")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse symlinked src repo: %v", err)
+	}
+
+	names := dependencyNames(reportData)
+	if !slices.Contains(names, "app") {
+		t.Fatalf("expected escaping symlinked src package to stay external, got %#v", names)
+	}
+	if !slices.Contains(names, "requests") {
+		t.Fatalf("expected external dependency to remain present, got %#v", names)
+	}
+}
+
 func TestAdapterMetadataAndDetect(t *testing.T) {
 	adapter := NewAdapter()
 	if adapter.ID() != "python" {

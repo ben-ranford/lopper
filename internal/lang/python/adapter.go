@@ -412,7 +412,7 @@ func localModuleSearchRoots(repoPath string) []string {
 	roots := []string{repoPath}
 
 	srcRoot := filepath.Join(repoPath, "src")
-	if info, err := os.Stat(srcRoot); err == nil && info.IsDir() {
+	if info, err := os.Lstat(srcRoot); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 		roots = append(roots, srcRoot)
 	}
 

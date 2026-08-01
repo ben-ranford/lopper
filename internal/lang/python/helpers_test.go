@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -81,6 +82,37 @@ func TestPythonModuleResolutionHelpers(t *testing.T) {
 		if got := isLocalModule(repo, tc.module); got != tc.want {
 			t.Fatalf("isLocalModule(%q): expected %v, got %v", tc.module, tc.want, got)
 		}
+	}
+}
+
+func TestPythonLocalModuleSearchRootsSkipSymlinkedSrc(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outside, "app", "__init__.py"), localModuleContent)
+
+	srcPath := filepath.Join(repo, "src")
+	if err := os.Symlink(outside, srcPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if got := localModuleSearchRoots(repo); !slices.Equal(got, []string{repo}) {
+		t.Fatalf("expected symlinked src root to be ignored, got %#v", got)
+	}
+	if isLocalModule(repo, "app") {
+		t.Fatalf("expected symlinked src root outside repo not to be treated as local")
+	}
+}
+
+func TestPythonLocalModuleSearchRootsKeepRealSrc(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "app", "__init__.py"), localModuleContent)
+
+	wantRoots := []string{repo, filepath.Join(repo, "src")}
+	if got := localModuleSearchRoots(repo); !slices.Equal(got, wantRoots) {
+		t.Fatalf("expected real src root to be included, got %#v", got)
+	}
+	if !isLocalModule(repo, "app") {
+		t.Fatalf("expected real src root package to stay local")
 	}
 }
 
