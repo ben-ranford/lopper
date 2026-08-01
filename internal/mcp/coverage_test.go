@@ -469,6 +469,10 @@ func TestSmallHelperBranches(t *testing.T) {
 	if _, _, err := contextForTimeout(context.Background(), maxTimeoutMillis+1); err == nil {
 		t.Fatalf("expected invalid timeout")
 	}
+	repo := t.TempDir()
+	if got, err := validateRepoPath(repo); err != nil || got == "" {
+		t.Fatalf("expected valid repo path, got path=%q err=%v", got, err)
+	}
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
@@ -526,6 +530,15 @@ func TestSummarizeReportBranches(t *testing.T) {
 	withBaseline.BaselineComparison = &report.BaselineComparison{SummaryDelta: report.SummaryDelta{WastePercentDelta: 2.5}}
 	if got := summarizeReport(analysisToolKindCompare, withBaseline); !strings.Contains(got, "Waste delta") {
 		t.Fatalf("unexpected baseline summary: %q", got)
+	}
+	withRuntimeChanges := sampleReport(".")
+	withRuntimeChanges.BaselineComparison = &report.BaselineComparison{
+		SummaryDelta:        report.SummaryDelta{WastePercentDelta: 1.0},
+		RuntimeRegressions:  []report.DependencyDelta{{Name: "dep-a"}},
+		RuntimeImprovements: []report.DependencyDelta{{Name: "dep-b"}},
+	}
+	if got := summarizeReport(analysisToolKindCompare, withRuntimeChanges); !strings.Contains(got, "Runtime regressions: 1. Runtime improvements: 1.") {
+		t.Fatalf("unexpected runtime delta summary: %q", got)
 	}
 }
 

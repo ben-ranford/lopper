@@ -134,6 +134,34 @@ func TestExecuteMCPSaveBaselineMutation(t *testing.T) {
 	}
 }
 
+func TestExecuteMCPSaveBaselineMutationRejectsOutOfRepoStorePath(t *testing.T) {
+	repo, _ := setupMCPGitLodashFixture(t)
+	outsideRoot := t.TempDir()
+
+	response := executeMCPTool(t, "lopper_save_baseline", map[string]any{
+		"repoPath":          repo,
+		"topN":              1,
+		"baselineStorePath": filepath.Join("..", filepath.Base(outsideRoot)),
+		"baselineLabel":     "nightly",
+		"confirmSave":       true,
+		"cacheEnabled":      false,
+		"timeoutMillis":     10000,
+	})
+	if response.Result == nil || !response.Result.IsError {
+		t.Fatalf("expected out-of-repo baseline store rejection, got %#v", response)
+	}
+	if !strings.Contains(response.Result.Content[0].Text, "must resolve within repoPath") {
+		t.Fatalf("expected repo boundary error, got %#v", response.Result.Content)
+	}
+	entries, err := os.ReadDir(outsideRoot)
+	if err != nil {
+		t.Fatalf("read outside store root: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no outside artifacts to be created, found %d entries", len(entries))
+	}
+}
+
 func TestExecuteMCPSaveDashboardBaselineMutation(t *testing.T) {
 	repo, _ := setupMCPGitLodashFixture(t)
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -499,9 +500,53 @@ func resolveLocalMutationPath(repoPath, rawPath, field string) (string, error) {
 		return "", fmt.Errorf("%s contains an invalid NUL byte", field)
 	}
 	if filepath.IsAbs(trimmed) {
-		return filepath.Clean(trimmed), nil
+		return "", fmt.Errorf("%s must be a relative path within repoPath", field)
 	}
-	return filepath.Join(repoPath, trimmed), nil
+
+	repoRoot, err := filepath.EvalSymlinks(repoPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve repoPath: %w", err)
+	}
+	candidate := filepath.Clean(filepath.Join(repoRoot, trimmed))
+	if !pathWithinRoot(repoRoot, candidate) {
+		return "", fmt.Errorf("%s must resolve within repoPath", field)
+	}
+	ancestor, err := nearestExistingAncestor(candidate)
+	if err != nil {
+		return "", fmt.Errorf("inspect %s: %w", field, err)
+	}
+	resolvedAncestor, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", field, err)
+	}
+	if !pathWithinRoot(repoRoot, resolvedAncestor) {
+		return "", fmt.Errorf("%s must resolve within repoPath", field)
+	}
+	return candidate, nil
+}
+
+func nearestExistingAncestor(path string) (string, error) {
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		_, err := os.Lstat(current)
+		if err == nil {
+			return current, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return current, nil
+		}
+	}
+}
+
+func pathWithinRoot(root, target string) bool {
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func resolveMutationCurrentBaselineKey(repoPath string) string {
