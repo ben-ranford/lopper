@@ -298,7 +298,9 @@ func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm 
 			returnErr = errors.Join(returnErr, cleanupAtomicTempFile(root, targetRel, file))
 			return
 		}
-		returnErr = errors.Join(returnErr, closeFilePreservingPrimary(file, nil))
+		if file != nil {
+			returnErr = errors.Join(returnErr, closeFilePreservingPrimary(file, nil))
+		}
 	}()
 
 	if _, err := file.Write(data); err != nil {
@@ -307,7 +309,11 @@ func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm 
 	if err := file.Chmod(perm); err != nil {
 		return err
 	}
+	if err := file.Close(); err != nil {
+		return err
+	}
 	targetCreated = false
+	file = nil
 	return nil
 }
 
