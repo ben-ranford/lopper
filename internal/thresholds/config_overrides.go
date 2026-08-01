@@ -206,8 +206,9 @@ func mergeFeatures(base, higher FeatureConfig) FeatureConfig {
 }
 
 type advisorySourceConfig struct {
-	source string
-	set    bool
+	source    string
+	trustRoot string
+	set       bool
 }
 
 type vulnerabilityExceptionConfig struct {
@@ -215,7 +216,7 @@ type vulnerabilityExceptionConfig struct {
 	set        bool
 }
 
-func (a *rawAdvisories) toAdvisorySourceConfig(configPath string) advisorySourceConfig {
+func (a *rawAdvisories) toAdvisorySourceConfig(configPath string, trustRoot string) advisorySourceConfig {
 	if a == nil || a.Source == nil {
 		return advisorySourceConfig{}
 	}
@@ -224,9 +225,13 @@ func (a *rawAdvisories) toAdvisorySourceConfig(configPath string) advisorySource
 		return advisorySourceConfig{set: true}
 	}
 	if filepath.IsAbs(source) {
-		return advisorySourceConfig{source: filepath.Clean(source), set: true}
+		return advisorySourceConfig{source: filepath.Clean(source), trustRoot: strings.TrimSpace(trustRoot), set: true}
 	}
-	return advisorySourceConfig{source: filepath.Clean(filepath.Join(filepath.Dir(configPath), source)), set: true}
+	return advisorySourceConfig{
+		source:    filepath.Clean(filepath.Join(filepath.Dir(configPath), source)),
+		trustRoot: strings.TrimSpace(trustRoot),
+		set:       true,
+	}
 }
 
 func (a *rawAdvisories) toVulnerabilityExceptionConfig(configPath string) (vulnerabilityExceptionConfig, error) {

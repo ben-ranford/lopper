@@ -134,6 +134,9 @@ thresholds:
 	if req.PRReview.ConfigPath != configPath || req.PRReview.AdvisorySourcePath != advisoryPath {
 		t.Fatalf("expected config policy paths to resolve, got %#v", req.PRReview)
 	}
+	if req.PRReview.AdvisorySourceTrustRoot != repo {
+		t.Fatalf("expected config advisory trust root %q, got %q", repo, req.PRReview.AdvisorySourceTrustRoot)
+	}
 	if got := strings.Join(req.PRReview.IncludePatterns, ","); got != "src/**" {
 		t.Fatalf("expected config include patterns, got %q", got)
 	}
@@ -360,6 +363,9 @@ func assertResolvedPRReviewPolicy(t *testing.T, policy resolvedAnalysisPolicy, w
 	}
 	if policy.advisorySourcePath != want.advisorySourcePath {
 		t.Fatalf("expected advisory source override %q, got %q", want.advisorySourcePath, policy.advisorySourcePath)
+	}
+	if want.advisorySourcePath != "" && policy.advisorySourceTrustRoot != "" {
+		t.Fatalf("expected CLI advisory override to clear trust root, got %q", policy.advisorySourceTrustRoot)
 	}
 	if got := strings.Join(policy.scope.Include, ","); got != want.includePatterns {
 		t.Fatalf("expected config include policy, got %q", got)

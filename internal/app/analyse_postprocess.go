@@ -186,7 +186,7 @@ func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (repo
 	if strings.TrimSpace(req.AdvisorySourcePath) == "" {
 		return reportData, nil
 	}
-	advisories, err := advisory.Load(req.AdvisorySourcePath)
+	advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
 	if err != nil {
 		return reportData, err
 	}

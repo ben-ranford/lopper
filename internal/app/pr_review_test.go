@@ -206,6 +206,26 @@ func TestBuildPRReviewArtifactTreatsUnevaluableReachableFindingsAsRegressionsUnl
 	}
 }
 
+func TestAnalysePRReviewWorktreeRejectsEscapingTrustedAdvisorySource(t *testing.T) {
+	repoPath := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "advisories.yml")
+	testutil.MustWriteFile(t, outsidePath, `advisories:
+  - id: GHSA-outside
+    package: lib
+    ecosystem: npm
+    severity: high
+`)
+
+	application := &App{Analyzer: &fakeAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Name: "lib"}}}}}
+	_, err := application.analysePRReviewWorktree(context.Background(), repoPath, repoPath, PRReviewRequest{
+		AdvisorySourcePath:      outsidePath,
+		AdvisorySourceTrustRoot: repoPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "path escapes root") {
+		t.Fatalf("expected trusted advisory source escape rejection, got %v", err)
+	}
+}
+
 func TestPRReviewArtifactVersionStatusOmittedWhenAbsent(t *testing.T) {
 	artifact := prReviewArtifact{
 		Sections: []prReviewSection{{

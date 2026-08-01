@@ -20,6 +20,7 @@ type LoadResult struct {
 	Scope                   PathScope
 	Features                FeatureConfig
 	AdvisorySourcePath      string
+	AdvisorySourceTrustRoot string
 	VulnerabilityExceptions []report.VulnerabilityException
 	ConfigPath              string
 	PolicySources           []string
@@ -65,6 +66,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 			Scope:                   normalizePathScope(PathScope{}),
 			Features:                normalizeFeatureConfig(FeatureConfig{}),
 			AdvisorySourcePath:      "",
+			AdvisorySourceTrustRoot: "",
 			VulnerabilityExceptions: nil,
 			PolicySources:           []string{defaultPolicySource},
 			PolicyTrace:             policyTraceFromMap(defaultPolicyTrace()),
@@ -91,6 +93,7 @@ func LoadWithPolicy(repoPath, explicitPath string) (LoadResult, error) {
 		Scope:                   normalizePathScope(mergeResult.scope),
 		Features:                normalizeFeatureConfig(mergeResult.features),
 		AdvisorySourcePath:      mergeResult.advisorySource.source,
+		AdvisorySourceTrustRoot: mergeResult.advisorySource.trustRoot,
 		VulnerabilityExceptions: append([]report.VulnerabilityException{}, mergeResult.vulnerabilityExceptions.exceptions...),
 		ConfigPath:              configPath,
 		PolicySources:           mergeResult.policySourcesHighToLow(),

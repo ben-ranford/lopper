@@ -13,6 +13,7 @@ type resolvedAnalysisPolicy struct {
 	policySources           []string
 	policyTrace             []report.PolicyMergeTrace
 	advisorySourcePath      string
+	advisorySourceTrustRoot string
 	vulnerabilityExceptions []report.VulnerabilityException
 	configPath              string
 	features                featureflags.Set
@@ -33,7 +34,7 @@ func resolveAnalysisPolicy(visited map[string]bool, flags analyseFlagValues) (re
 }
 
 func resolveAnalysisPolicyCore(visited map[string]bool, flags analyseFlagValues) (resolvedAnalysisPolicy, error) {
-	resolvedThresholds, resolvedScope, policySources, policyTrace, advisorySourcePath, vulnerabilityExceptions, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
+	resolvedThresholds, resolvedScope, policySources, policyTrace, advisorySourcePath, root, vulnerabilityExceptions, configFeatures, resolvedConfigPath, err := resolveAnalyseThresholds(flags, visited)
 	if err != nil {
 		return resolvedAnalysisPolicy{}, err
 	}
@@ -47,6 +48,7 @@ func resolveAnalysisPolicyCore(visited map[string]bool, flags analyseFlagValues)
 		policySources:           policySources,
 		policyTrace:             policyTrace,
 		advisorySourcePath:      advisorySourcePath,
+		advisorySourceTrustRoot: root,
 		vulnerabilityExceptions: vulnerabilityExceptions,
 		configPath:              resolvedConfigPath,
 		features:                resolvedFeatures,

@@ -53,6 +53,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 	policy := analysisRequestPolicy{
 		thresholds:              req.Analyse.Thresholds,
 		advisorySourcePath:      req.Analyse.AdvisorySourcePath,
+		advisorySourceTrustRoot: req.Analyse.AdvisorySourceTrustRoot,
 		vulnerabilityExceptions: req.Analyse.VulnerabilityExceptions,
 		policySources:           req.Analyse.PolicySources,
 		policyTrace:             req.Analyse.PolicyTrace,

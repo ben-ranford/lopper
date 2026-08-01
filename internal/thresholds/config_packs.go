@@ -118,7 +118,7 @@ func (r *packResolver) resolveFile(path string, trust packTrust) (resolveMergeRe
 	merged = mergeOverrides(merged, selfOverrides)
 	mergedScope = mergeScope(mergedScope, cfg.Scope.toPathScope())
 	mergedFeatures = mergeFeatures(mergedFeatures, cfg.Features.toFeatureConfig())
-	selfAdvisorySource := cfg.Advisories.toAdvisorySourceConfig(canonical)
+	selfAdvisorySource := cfg.Advisories.toAdvisorySourceConfig(canonical, trust.localRoot)
 	mergedAdvisorySource = mergeAdvisorySource(mergedAdvisorySource, selfAdvisorySource)
 	selfVulnerabilityExceptions, err := cfg.Advisories.toVulnerabilityExceptionConfig(canonical)
 	if err != nil {

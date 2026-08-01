@@ -1,11 +1,14 @@
 package advisory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestLoadLocalAdvisoryYAML(t *testing.T) {
@@ -112,6 +115,44 @@ func TestLoadWrapsReadAndDecodeErrors(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid JSON advisory source") {
 		t.Fatalf("expected wrapped JSON parse error, got %v", err)
+	}
+}
+
+func TestLoadWithinRootRejectsTraversalOutsideTrustedRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.yml")
+	if err := os.WriteFile(outsidePath, []byte("advisories: []\n"), 0o600); err != nil {
+		t.Fatalf("write outside advisory fixture: %v", err)
+	}
+
+	_, err := LoadWithinRoot(rootDir, outsidePath)
+	if err == nil {
+		t.Fatal("expected trusted-root traversal to fail")
+	}
+	if !errors.Is(err, safeio.ErrPathEscapesRoot) {
+		t.Fatalf("expected path escapes root error, got %v", err)
+	}
+}
+
+func TestLoadWithinRootRejectsSymlinkEscape(t *testing.T) {
+	rootDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "outside.yml")
+	if err := os.WriteFile(outsidePath, []byte("advisories:\n  - id: GHSA-link\n    package: lib\n    ecosystem: npm\n    severity: high\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target advisory fixture: %v", err)
+	}
+
+	linkPath := filepath.Join(rootDir, "linked.yml")
+	if err := os.Symlink(outsidePath, linkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := LoadWithinRoot(rootDir, linkPath)
+	if err == nil {
+		t.Fatal("expected symlink escape to fail")
+	}
+	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(err.Error(), "escapes root") {
+		t.Fatalf("expected symlink boundary error, got %v", err)
 	}
 }
 

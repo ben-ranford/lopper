@@ -71,11 +71,27 @@ type osvSeverity struct {
 }
 
 func Load(path string) ([]report.VulnerabilityAdvisory, error) {
+	return load("", path)
+}
+
+func LoadWithinRoot(rootPath, path string) ([]report.VulnerabilityAdvisory, error) {
+	return load(strings.TrimSpace(rootPath), path)
+}
+
+func load(rootPath, path string) ([]report.VulnerabilityAdvisory, error) {
 	trimmedPath := strings.TrimSpace(path)
 	if trimmedPath == "" {
 		return nil, nil
 	}
-	data, err := safeio.ReadFileLimit(trimmedPath, maxAdvisorySourceBytes)
+	var (
+		data []byte
+		err  error
+	)
+	if rootPath == "" {
+		data, err = safeio.ReadFileLimit(trimmedPath, maxAdvisorySourceBytes)
+	} else {
+		data, err = safeio.ReadFileUnderLimit(rootPath, trimmedPath, maxAdvisorySourceBytes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read advisory source %s: %w", trimmedPath, err)
 	}

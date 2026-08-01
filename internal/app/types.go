@@ -62,6 +62,7 @@ type AnalyseRequest struct {
 	RuntimeTracePath        string
 	RuntimeTestCommand      string
 	AdvisorySourcePath      string
+	AdvisorySourceTrustRoot string
 	IncludePatterns         []string
 	ExcludePatterns         []string
 	ConfigPath              string
@@ -126,6 +127,7 @@ type PRReviewRequest struct {
 	ScopeMode               string
 	ConfigPath              string
 	AdvisorySourcePath      string
+	AdvisorySourceTrustRoot string
 	PolicySources           []string
 	PolicyTrace             []report.PolicyMergeTrace
 	VulnerabilityExceptions []report.VulnerabilityException
