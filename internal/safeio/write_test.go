@@ -24,8 +24,38 @@ type modeOverrideFileInfo struct {
 	mode os.FileMode
 }
 
+type unsafeTargetModeCase struct {
+	name string
+	mode os.FileMode
+	want string
+}
+
+type moveFallbackFailureCase struct {
+	name  string
+	stage moveFallbackFailureStage
+}
+
 func (i *modeOverrideFileInfo) Mode() os.FileMode {
 	return i.mode
+}
+
+func unsafeTargetModeCases() []unsafeTargetModeCase {
+	return []unsafeTargetModeCase{
+		{name: "directory", mode: os.ModeDir | 0o755, want: "not a regular file"},
+		{name: "symlink", mode: os.ModeSymlink | 0o777, want: "became a symlink"},
+	}
+}
+
+func moveFallbackFailureCases() []moveFallbackFailureCase {
+	return []moveFallbackFailureCase{
+		{name: "open source", stage: moveFallbackFailSourceOpen},
+		{name: "read source", stage: moveFallbackFailSourceRead},
+		{name: "open temp", stage: moveFallbackFailTempOpen},
+		{name: "write temp", stage: moveFallbackFailTempWrite},
+		{name: "chmod temp", stage: moveFallbackFailTempChmod},
+		{name: "close temp", stage: moveFallbackFailTempClose},
+		{name: "rename temp", stage: moveFallbackFailTempRename},
+	}
 }
 
 type truncatingFakeFile struct {
@@ -2492,15 +2522,16 @@ func TestOverwritePinnedFileRejectsNonRegularPathBeforeMutation(t *testing.T) {
 	}
 	originalInfo := statTestPath(t, originalPath)
 
-	tests := []struct {
-		name     string
-		pathInfo fs.FileInfo
-		want     string
-	}{
-		{name: "directory", pathInfo: &modeOverrideFileInfo{FileInfo: originalInfo, mode: os.ModeDir | 0o755}, want: "not a regular file"},
-		{name: "symlink", pathInfo: &modeOverrideFileInfo{FileInfo: originalInfo, mode: os.ModeSymlink | 0o777}, want: "became a symlink"},
-	}
-	for _, tt := range tests {
+	for _, tc := range unsafeTargetModeCases() {
+		tt := struct {
+			name     string
+			pathInfo fs.FileInfo
+			want     string
+		}{
+			name:     tc.name,
+			pathInfo: &modeOverrideFileInfo{FileInfo: originalInfo, mode: tc.mode},
+			want:     tc.want,
+		}
 		t.Run(tt.name, func(t *testing.T) {
 			statCalls := 0
 			target := &truncatingFakeFile{
@@ -3099,18 +3130,7 @@ func TestMoveFileWithinRootReturnsSourceRemovalErrorAfterCopyFallback(t *testing
 }
 
 func TestMoveFileWithinRootPreservesSourceWhenCopyFallbackFails(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		stage moveFallbackFailureStage
-	}{
-		{name: "open source", stage: moveFallbackFailSourceOpen},
-		{name: "read source", stage: moveFallbackFailSourceRead},
-		{name: "open temp", stage: moveFallbackFailTempOpen},
-		{name: "write temp", stage: moveFallbackFailTempWrite},
-		{name: "chmod temp", stage: moveFallbackFailTempChmod},
-		{name: "close temp", stage: moveFallbackFailTempClose},
-		{name: "rename temp", stage: moveFallbackFailTempRename},
-	} {
+	for _, tc := range moveFallbackFailureCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			sentinel := errors.New(tc.name + " failure")
 			state := &moveFallbackState{}

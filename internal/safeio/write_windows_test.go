@@ -210,23 +210,16 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 	}
 	info := statTestPath(t, infoPath)
 
-	tests := []struct {
-		name string
-		info fs.FileInfo
-		want string
-	}{
-		{
-			name: "symlink",
-			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeSymlink | 0o777},
-			want: "became a symlink",
-		},
-		{
-			name: "non-regular",
-			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeDir | 0o755},
-			want: "not a regular file",
-		},
-	}
-	for _, tt := range tests {
+	for _, tc := range unsafeTargetModeCases() {
+		tt := struct {
+			name string
+			info fs.FileInfo
+			want string
+		}{
+			name: tc.name,
+			info: &modeOverrideFileInfo{FileInfo: info, mode: tc.mode},
+			want: tc.want,
+		}
 		t.Run(tt.name, func(t *testing.T) {
 			targetOpened := false
 			root := &fakeRoot{
