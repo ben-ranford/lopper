@@ -2547,6 +2547,44 @@ func TestWriteAtomicReplacementWithPinnedTargetReturnsCloseErrorBeforeRename(t *
 	assertFileContent(t, targetPath, "before")
 }
 
+func TestAtomicWriteSessionVerifyCommittedTargetRejectsMissingSnapshot(t *testing.T) {
+	session := &atomicWriteSession{
+		root:      &fakeRoot{},
+		targetRel: writeTestFileName,
+	}
+
+	err := session.verifyCommittedTarget()
+	if err == nil || !strings.Contains(err.Error(), "temporary file info unavailable after commit") {
+		t.Fatalf("expected missing temp snapshot error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionSnapshotAndCloseTempFileRejectsNonRegularTemp(t *testing.T) {
+	session := &atomicWriteSession{
+		targetRel: writeTestFileName,
+		tempFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) {
+				return &modeOverrideFileInfo{
+					FileInfo: newPinnedTargetInfo(t, "temp"),
+					mode:     os.ModeDir | 0o755,
+				}, nil
+			},
+			close: func() error {
+				t.Fatal("expected non-regular temp file to abort before close")
+				return nil
+			},
+		},
+	}
+
+	err := session.snapshotAndCloseTempFile()
+	if err == nil || !strings.Contains(err.Error(), "temporary file is not regular after commit") {
+		t.Fatalf("expected non-regular temp file error, got %v", err)
+	}
+	if session.tempInfo != nil {
+		t.Fatal("expected no temp snapshot after non-regular temp rejection")
+	}
+}
+
 func TestOpenPinnedReplacementTargetReturnsOpenError(t *testing.T) {
 	expectedErr := errors.New("open target failure")
 	root := &fakeRoot{
