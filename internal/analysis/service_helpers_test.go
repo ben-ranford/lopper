@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -39,6 +40,101 @@ func TestHelperFunctions(t *testing.T) {
 	}
 	if normalizeScopeMode("REPO") != ScopeModeRepo {
 		t.Fatalf("expected repo scope mode normalization")
+	}
+}
+
+func TestNormalizeCandidateRootConfinesPathsToRepo(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	outside := filepath.Join(base, "outside")
+	valid := filepath.Join(repo, "app")
+	if err := os.MkdirAll(valid, 0o755); err != nil {
+		t.Fatalf("mkdir valid root: %v", err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+
+	if got := normalizeCandidateRoot(repo, valid); got != valid {
+		t.Fatalf("expected in-repo absolute root preserved, got %q want %q", got, valid)
+	}
+	if got := normalizeCandidateRoot(repo, filepath.Join("app", "..", "app")); got != valid {
+		t.Fatalf("expected in-repo relative root cleaned, got %q want %q", got, valid)
+	}
+	if got := normalizeCandidateRoot(repo, filepath.Join("..", "outside")); got != "" {
+		t.Fatalf("expected traversal candidate root rejection, got %q", got)
+	}
+	if got := normalizeCandidateRoot(repo, outside); got != "" {
+		t.Fatalf("expected outside absolute root rejection, got %q", got)
+	}
+
+	link := filepath.Join(repo, "linked-outside")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("symlink linked-outside: %v", err)
+	}
+	if got := normalizeCandidateRoot(repo, link); got != "" {
+		t.Fatalf("expected symlink escape root rejection, got %q", got)
+	}
+}
+
+func TestRunCandidateOnRootsConfinesKotlinAndroidRootsToRepo(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	validRoot := filepath.Join(repo, "app")
+	outsideRoot := filepath.Join(base, "outside")
+	if err := os.MkdirAll(validRoot, 0o755); err != nil {
+		t.Fatalf("mkdir valid root: %v", err)
+	}
+	if err := os.MkdirAll(outsideRoot, 0o755); err != nil {
+		t.Fatalf("mkdir outside root: %v", err)
+	}
+	linkedOutside := filepath.Join(repo, "linked-outside")
+	if err := os.Symlink(outsideRoot, linkedOutside); err != nil {
+		t.Fatalf("symlink linked-outside: %v", err)
+	}
+
+	calledRoots := make([]string, 0, 1)
+	candidate := language.Candidate{
+		Adapter: &testServiceAdapter{
+			id: kotlinAndroidLanguageID,
+			analyseFn: func(_ context.Context, req language.Request) (report.Report, error) {
+				calledRoots = append(calledRoots, req.RepoPath)
+				return report.Report{
+					Dependencies: []report.DependencyReport{{Name: "core-ktx"}},
+				}, nil
+			},
+		},
+		Detection: language.Detection{
+			Matched: true,
+			Roots: []string{
+				validRoot,
+				outsideRoot,
+				filepath.Join("..", "outside"),
+				linkedOutside,
+			},
+		},
+	}
+
+	reports, warnings, analyzedRoots, err := (&Service{}).runCandidateOnRoots(context.Background(), Request{RepoPath: repo, Language: kotlinAndroidLanguageID}, repo, candidate, nil)
+	if err != nil {
+		t.Fatalf("runCandidateOnRoots: %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("expected one report from in-repo Kotlin Android root, got %d", len(reports))
+	}
+	if len(calledRoots) != 1 || calledRoots[0] != validRoot {
+		t.Fatalf("expected only in-repo Kotlin Android root analysed, got %#v", calledRoots)
+	}
+	if len(analyzedRoots) != 1 || analyzedRoots[0] != validRoot {
+		t.Fatalf("expected only trusted analyzed root, got %#v", analyzedRoots)
+	}
+	if len(warnings) != 3 {
+		t.Fatalf("expected three candidate-root boundary warnings, got %#v", warnings)
+	}
+	for _, warning := range warnings {
+		if !strings.Contains(warning, "outside repo boundary") {
+			t.Fatalf("expected repo-boundary warning, got %q", warning)
+		}
 	}
 }
 

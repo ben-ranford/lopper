@@ -47,6 +47,10 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 	warnings = append(warnings, rootWarnings...)
 	for _, root := range roots {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)
+		if normalizedRoot == "" {
+			warnings = append(warnings, "skipping candidate root outside repo boundary: "+root)
+			continue
+		}
 		if alreadySeenRoot(rootSeen, normalizedRoot) {
 			continue
 		}

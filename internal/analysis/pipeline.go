@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/runtime"
@@ -306,10 +307,15 @@ func uniqueSorted(values []string) []string {
 }
 
 func normalizeCandidateRoot(repoPath, root string) string {
-	if filepath.IsAbs(root) {
-		return root
+	normalized := root
+	if !filepath.IsAbs(normalized) {
+		normalized = filepath.Join(repoPath, normalized)
 	}
-	return filepath.Join(repoPath, root)
+	normalized = filepath.Clean(normalized)
+	if !shared.IsPathWithin(repoPath, normalized) {
+		return ""
+	}
+	return normalized
 }
 
 func remapAnalyzedRoots(roots []string, fromRepoPath, toRepoPath string) []string {
