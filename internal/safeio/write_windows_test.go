@@ -141,6 +141,74 @@ func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *t
 	}
 }
 
+func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRenameErrorOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+
+	removeCalls := 0
+	targetData := []byte("before")
+	targetFile := &truncatingFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return info, nil },
+			write: func(p []byte) (int, error) {
+				targetData = append(targetData, p...)
+				return len(p), nil
+			},
+			close: closeWithoutError,
+		},
+		truncate: func(size int64) error {
+			if size != 0 {
+				t.Fatalf("unexpected truncate size: %d", size)
+			}
+			targetData = targetData[:0]
+			return nil
+		},
+	}
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != writeTestFileName {
+				return nil, os.ErrNotExist
+			}
+			return info, nil
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name == writeTestFileName {
+				return targetFile, nil
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: closeWithoutError,
+			}, nil
+		},
+		rename: func(oldName, newName string) error {
+			return &os.LinkError{
+				Op:  "renameat",
+				Old: oldName,
+				New: newName,
+				Err: syscall.ERROR_ALREADY_EXISTS,
+			}
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+
+	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
+		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one temp cleanup remove, got %d", removeCalls)
+	}
+	if string(targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(targetData))
+	}
+}
+
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {

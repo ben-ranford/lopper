@@ -109,10 +109,14 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		return err
 	}
 	if err := session.commit(); err != nil {
+		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
+		if fallbackErr == nil {
+			return nil
+		}
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			return overwritePinnedFile(root, targetRel, replacementFile, data, nil)
 		}
-		return err
+		return fallbackErr
 	}
 	return nil
 }

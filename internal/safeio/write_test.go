@@ -237,23 +237,6 @@ func assertWriteRootRejectsNonRelativeTargets(t *testing.T, invoke func(*WriteRo
 	}
 }
 
-func makeFakeTempWriteRoot(err error) *fakeRoot {
-	return &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-		openFile: func(string, int, os.FileMode) (File, error) {
-			if err != nil {
-				return nil, err
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: func(os.FileMode) error { return nil },
-				close: func() error { return nil },
-			}, nil
-		},
-		remove: func(string) error { return nil },
-	}
-}
-
 func makeFakeFallbackWriteRoot(targetFile func() File, remove func(string) error) *fakeRoot {
 	if remove == nil {
 		remove = func(string) error { return nil }
@@ -275,16 +258,13 @@ func makeFakeFallbackWriteRoot(targetFile func() File, remove func(string) error
 	}
 }
 
-func assertFallbackCleanupOrder(t *testing.T, removed []string) {
+func assertExclusiveCreateCleanup(t *testing.T, removed []string) {
 	t.Helper()
-	if len(removed) != 2 {
-		t.Fatalf("expected cleanup for fallback target and temp file, got %v", removed)
+	if len(removed) != 1 {
+		t.Fatalf("expected cleanup for incomplete exclusive-create target, got %v", removed)
 	}
 	if removed[0] != writeTestFileName {
-		t.Fatalf("expected fallback target cleanup first for %q, got %v", writeTestFileName, removed)
-	}
-	if !strings.HasPrefix(removed[1], atomicTempPrefix) {
-		t.Fatalf("expected temp cleanup second, got %v", removed)
+		t.Fatalf("expected exclusive-create target cleanup for %q, got %v", writeTestFileName, removed)
 	}
 }
 
@@ -1260,38 +1240,28 @@ func TestWriteFileIfAbsentAtRootPropagatesUnexpectedLookupError(t *testing.T) {
 	}
 }
 
-func TestWriteFileIfAbsentAtRootPropagatesCreateTempError(t *testing.T) {
-	expectedErr := errors.New("create temp failure")
-	root := makeFakeTempWriteRoot(expectedErr)
+func TestWriteFileIfAbsentAtRootPropagatesExclusiveCreateError(t *testing.T) {
+	expectedErr := errors.New("exclusive create failure")
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected create path: %s", name)
+			}
+			if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
+				t.Fatalf("unexpected create flags: %#x", flag)
+			}
+			return nil, expectedErr
+		},
+	}
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected create temp error, got %v", err)
+		t.Fatalf("expected exclusive create error, got %v", err)
 	}
 }
 
-func TestWriteFileIfAbsentAtRootPropagatesLinkError(t *testing.T) {
-	expectedErr := errors.New("link failure")
-	root := makeFakeTempWriteRoot(nil)
-	root.link = func(string, string) error { return expectedErr }
-
-	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected link error, got %v", err)
-	}
-}
-
-func TestWriteFileIfAbsentAtRootNormalizesLinkExistsError(t *testing.T) {
-	root := makeFakeTempWriteRoot(nil)
-	root.link = func(string, string) error { return os.ErrExist }
-
-	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("expected os.ErrExist, got %v", err)
-	}
-}
-
-func TestWriteFileIfAbsentAtRootFallsBackWhenLinkUnsupported(t *testing.T) {
+func TestWriteFileIfAbsentAtRootCreatesTargetExclusivelyWithoutLinking(t *testing.T) {
 	var wroteTarget []byte
 	var chmodTarget os.FileMode
 	targetClosed := false
@@ -1321,19 +1291,18 @@ func TestWriteFileIfAbsentAtRootFallsBackWhenLinkUnsupported(t *testing.T) {
 					},
 				}, nil
 			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: func(os.FileMode) error { return nil },
-				close: func() error { return nil },
-			}, nil
+			t.Fatalf("unexpected create path: %s", name)
+			return nil, nil
 		},
-		link:   func(string, string) error { return errors.ErrUnsupported },
-		remove: func(string) error { return nil },
+		link: func(string, string) error {
+			t.Fatal("write-if-absent should not link through a replaceable temp pathname")
+			return nil
+		},
 	}
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o640)
 	if err != nil {
-		t.Fatalf("expected fallback success, got %v", err)
+		t.Fatalf("expected exclusive create success, got %v", err)
 	}
 	if string(wroteTarget) != "hello" {
 		t.Fatalf("unexpected target content: %q", string(wroteTarget))
@@ -1342,56 +1311,25 @@ func TestWriteFileIfAbsentAtRootFallsBackWhenLinkUnsupported(t *testing.T) {
 		t.Fatalf("unexpected target chmod: %#o", chmodTarget)
 	}
 	if !targetClosed {
-		t.Fatal("expected fallback target file to close")
+		t.Fatal("expected exclusive-create target file to close")
 	}
 }
 
-func TestWriteFileIfAbsentAtRootFallsBackWhenLinkReturnsEPERM(t *testing.T) {
-	var wroteTarget []byte
+func TestWriteFileIfAbsentAtRootReturnsExistWhenTargetAppearsAfterLookup(t *testing.T) {
 	root := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			return &fakeFile{
-				write: func(p []byte) (int, error) {
-					if name == writeTestFileName {
-						wroteTarget = append([]byte(nil), p...)
-					}
-					return len(p), nil
-				},
-				chmod: func(os.FileMode) error { return nil },
-				close: func() error { return nil },
-			}, nil
-		},
-		link:   func(string, string) error { return syscall.EPERM },
-		remove: func(string) error { return nil },
 	}
-
-	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o640)
-	if err != nil {
-		t.Fatalf("expected EPERM fallback success, got %v", err)
-	}
-	if string(wroteTarget) != "hello" {
-		t.Fatalf("unexpected target content: %q", string(wroteTarget))
-	}
-}
-
-func TestWriteFileIfAbsentAtRootReturnsExistWhenFallbackTargetExists(t *testing.T) {
-	root := makeFakeTempWriteRoot(nil)
-	root.link = func(string, string) error { return errors.ErrUnsupported }
 	root.openFile = func(name string, flag int, perm os.FileMode) (File, error) {
 		if name == writeTestFileName {
 			return nil, os.ErrExist
 		}
-		return &fakeFile{
-			write: func(p []byte) (int, error) { return len(p), nil },
-			chmod: func(os.FileMode) error { return nil },
-			close: func() error { return nil },
-		}, nil
+		t.Fatalf("unexpected create path: %s", name)
+		return nil, nil
 	}
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("expected os.ErrExist from fallback target create, got %v", err)
+		t.Fatalf("expected os.ErrExist from exclusive create, got %v", err)
 	}
 }
 
@@ -1420,7 +1358,7 @@ func TestWriteFileIfAbsentAtRootRemovesFallbackTargetOnWriteError(t *testing.T) 
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected fallback write error, got %v", err)
 	}
-	assertFallbackCleanupOrder(t, removed)
+	assertExclusiveCreateCleanup(t, removed)
 	if !targetClosed {
 		t.Fatal("expected fallback target file to close before cleanup")
 	}
@@ -1451,7 +1389,7 @@ func TestWriteFileIfAbsentAtRootRemovesFallbackTargetOnCloseError(t *testing.T) 
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected fallback close error, got %v", err)
 	}
-	assertFallbackCleanupOrder(t, removed)
+	assertExclusiveCreateCleanup(t, removed)
 	if !targetClosed {
 		t.Fatal("expected fallback target file close attempt before cleanup")
 	}

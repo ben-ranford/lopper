@@ -277,36 +277,7 @@ func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm o
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-
-	tempRel, tempFile, err := CreateTempFileWithinRoot(root, filepath.Dir(target.rel), perm)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, CleanupTempFileWithinRoot(root, tempRel, tempFile))
-	}()
-
-	if _, err := tempFile.Write(data); err != nil {
-		return err
-	}
-	if err := tempFile.Chmod(perm); err != nil {
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	tempFile = nil
-
-	if err := root.Link(tempRel, target.rel); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return os.ErrExist
-		}
-		if errors.Is(err, errors.ErrUnsupported) || errors.Is(err, os.ErrPermission) {
-			return createFileExclusivelyAtRoot(root, target.rel, data, perm)
-		}
-		return err
-	}
-	return nil
+	return createFileExclusivelyAtRoot(root, target.rel, data, perm)
 }
 
 func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
