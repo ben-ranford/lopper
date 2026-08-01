@@ -59,7 +59,7 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return r.writeFileAtTarget(target, data, perm, true, parentPerm)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileAtRoot)
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -85,7 +85,7 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 	if err != nil {
 		return err
 	}
-	return r.writeFileIfAbsentAtTarget(target, data, perm, true, parentPerm)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileIfAbsentAtRoot)
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
@@ -99,15 +99,13 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	return rootedTarget{rootAbs: r.rootAbs, rel: rel, abs: filepath.Join(r.rootAbs, rel)}, nil
 }
 
-func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
-	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
-		return writeFileAtRoot(parent, parentTarget, data, perm)
-	})
+func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) error {
+	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, writeFileAtRoot)
 }
 
-func (r *WriteRoot) writeFileIfAbsentAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
+func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
 	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
-		return writeFileIfAbsentAtRoot(parent, parentTarget, data, perm)
+		return write(parent, parentTarget, data, perm)
 	})
 }
 
@@ -243,29 +241,15 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 	return root.writeFileAtTarget(target, data, perm, false, 0)
 }
 
-func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
-	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
-	if err != nil {
-		return err
-	}
-	if existingInfo == nil {
-		return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
-	}
-
-	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := file.Close(); closeErr != nil {
-			returnErr = errors.Join(returnErr, closeErr)
-		}
-	}()
-
-	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, false)
+func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
+	return writeFileAtRootWithOptions(root, target, data, perm, false)
 }
 
-func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
+	return writeFileAtRootWithOptions(root, target, data, perm, true)
+}
+
+func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool) (returnErr error) {
 	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
@@ -284,7 +268,7 @@ func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data 
 		}
 	}()
 
-	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, true)
+	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, allowPermissionFallback)
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
