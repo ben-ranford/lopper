@@ -385,6 +385,7 @@ func (a *App) analysePRReviewWorktree(ctx context.Context, repoPath, callerRepoP
 	policy := analysisRequestPolicy{
 		thresholds:              req.Thresholds,
 		advisorySourcePath:      req.AdvisorySourcePath,
+		advisorySourceTrustRoot: req.AdvisorySourceTrustRoot,
 		vulnerabilityExceptions: req.VulnerabilityExceptions,
 		policySources:           req.PolicySources,
 		policyTrace:             req.PolicyTrace,
@@ -398,7 +399,7 @@ func (a *App) analysePRReviewWorktree(ctx context.Context, repoPath, callerRepoP
 		reportData.RepoPath = resolvedCallerRepoPath
 	}
 	if strings.TrimSpace(req.AdvisorySourcePath) != "" {
-		advisories, err := advisory.Load(req.AdvisorySourcePath)
+		advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
 		if err != nil {
 			return report.Report{}, err
 		}

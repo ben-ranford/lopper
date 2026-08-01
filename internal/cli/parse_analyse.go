@@ -24,6 +24,7 @@ type analyseParseState struct {
 	policySources           []string
 	policyTrace             []report.PolicyMergeTrace
 	advisorySourcePath      string
+	advisorySourceTrustRoot string
 	vulnerabilityExceptions []report.VulnerabilityException
 	configPath              string
 	features                featureflags.Set
@@ -95,6 +96,7 @@ func parseAnalyseState(fs *flag.FlagSet, flags analyseFlagValues) (analyseParseS
 		policySources:           resolvedPolicy.policySources,
 		policyTrace:             resolvedPolicy.policyTrace,
 		advisorySourcePath:      resolvedPolicy.advisorySourcePath,
+		advisorySourceTrustRoot: resolvedPolicy.advisorySourceTrustRoot,
 		vulnerabilityExceptions: resolvedPolicy.vulnerabilityExceptions,
 		configPath:              resolvedPolicy.configPath,
 		features:                resolvedPolicy.features,
@@ -127,6 +129,7 @@ func buildAnalyseRequest(req app.Request, flags analyseFlagValues, state analyse
 		RuntimeTracePath:        strings.TrimSpace(*flags.runtimeTracePath),
 		RuntimeTestCommand:      strings.TrimSpace(*flags.runtimeTestCommand),
 		AdvisorySourcePath:      state.advisorySourcePath,
+		AdvisorySourceTrustRoot: state.advisorySourceTrustRoot,
 		VulnerabilityExceptions: append([]report.VulnerabilityException{}, state.vulnerabilityExceptions...),
 		IncludePatterns:         resolveScopePatterns(state.visited, "include", flags.includePatterns.Values(), state.scope.Include),
 		ExcludePatterns:         resolveScopePatterns(state.visited, "exclude", flags.excludePatterns.Values(), state.scope.Exclude),

@@ -12,9 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 	"github.com/ben-ranford/lopper/internal/version"
 )
@@ -409,51 +411,19 @@ func TestDefaultServerFeatureBranches(t *testing.T) {
 
 func TestThresholdAndPolicyHelpers(t *testing.T) {
 	repo := t.TempDir()
-	bad := analysisToolArguments{LowConfidenceWarningPercent: intPtr(101)}
-	if _, _, _, _, err := resolveThresholds(repo, bad); err == nil {
-		t.Fatalf("expected threshold override validation error")
-	}
-	if _, _, _, _, err := resolveThresholds(repo, analysisToolArguments{ConfigPath: "missing.yml"}); err == nil {
-		t.Fatalf("expected missing config error")
-	}
+	assertResolveThresholdsErrors(t, repo)
+	assertResolvedThresholdPolicyValues(t, repo)
+	assertAdvisorySourceResolution(t, repo)
+	assertMCPPolicyTraceHelpers(t)
+}
 
-	args := analysisToolArguments{
-		LowConfidenceWarningPercent:       intPtr(35),
-		MinUsagePercentForRecommendations: intPtr(45),
-		MaxUncertainImportCount:           intPtr(3),
-		ScoreWeightUsage:                  floatPtr(0.5),
-		ScoreWeightImpact:                 floatPtr(0.3),
-		ScoreWeightConfidence:             floatPtr(0.2),
-		LicenseDeny:                       []string{"MIT"},
-		LicenseFailOnDeny:                 boolPtr(true),
-		LicenseProvenanceRegistry:         boolPtr(true),
-		ReachableVulnerabilityPriority:    stringPtr(report.VulnerabilityPriorityHigh),
-		AdvisorySourcePath:                "advisories.yml",
-	}
-	_, values, sources, trace, err := resolveThresholds(repo, args)
-	if err != nil {
-		t.Fatalf("resolve thresholds: %v", err)
-	}
-	if sources[0] != "mcp" || policyTraceSource(trace, "license.fail_on_deny") != "mcp" || policyTraceSource(trace, "advisories.source") != "mcp" {
-		t.Fatalf("expected mcp policy metadata, sources=%#v trace=%#v", sources, trace)
-	}
-	if !values.LicenseFailOnDeny || !values.LicenseIncludeRegistryProvenance || values.ReachableVulnerabilityPriority != report.VulnerabilityPriorityHigh {
-		t.Fatalf("expected license policy values, got %#v", values)
-	}
-	if got := resolveAdvisorySourcePath(thresholds.LoadResult{AdvisorySourcePath: "config.yml"}, analysisToolArguments{}); got != "config.yml" {
-		t.Fatalf("expected config advisory source, got %q", got)
-	}
-	if got := resolveAdvisorySourcePath(thresholds.LoadResult{AdvisorySourcePath: "config.yml"}, analysisToolArguments{AdvisorySourcePath: "cli.yml"}); got != "cli.yml" {
-		t.Fatalf("expected argument advisory source, got %q", got)
-	}
-	if got := prependPolicySource("mcp", []string{"mcp", "defaults"}); !slicesEqual(got, []string{"mcp", "defaults"}) {
-		t.Fatalf("unexpected deduped sources: %#v", got)
-	}
-	if got := mergeMCPPolicyTrace([]report.PolicyMergeTrace{{Field: "existing", Source: "defaults"}}, analysisToolArguments{}); len(got) != 1 || got[0].Source != "defaults" {
-		t.Fatalf("unexpected no-op trace merge: %#v", got)
-	}
-	if got := mergeMCPPolicyTrace(nil, analysisToolArguments{LowConfidenceWarningPercent: intPtr(35)}); len(got) != 1 || got[0].Source != "mcp" {
-		t.Fatalf("unexpected appended trace merge: %#v", got)
+func TestResolveAnalysisRequestAdvisoryTrustBoundaries(t *testing.T) {
+	server := NewServer(Options{})
+	for _, tc := range advisoryTrustBoundaryCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, args, assertResolved := tc.prepare(t)
+			assertAdvisoryTrustBoundary(t, server, repo, args, assertResolved)
+		})
 	}
 }
 
@@ -587,6 +557,183 @@ func stringPtr(value string) *string {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func assertResolveThresholdsErrors(t *testing.T, repo string) {
+	t.Helper()
+	bad := analysisToolArguments{LowConfidenceWarningPercent: intPtr(101)}
+	if _, _, _, _, err := resolveThresholds(repo, bad); err == nil {
+		t.Fatalf("expected threshold override validation error")
+	}
+	if _, _, _, _, err := resolveThresholds(repo, analysisToolArguments{ConfigPath: "missing.yml"}); err == nil {
+		t.Fatalf("expected missing config error")
+	}
+}
+
+func assertResolvedThresholdPolicyValues(t *testing.T, repo string) {
+	t.Helper()
+	args := analysisToolArguments{
+		LowConfidenceWarningPercent:       intPtr(35),
+		MinUsagePercentForRecommendations: intPtr(45),
+		MaxUncertainImportCount:           intPtr(3),
+		ScoreWeightUsage:                  floatPtr(0.5),
+		ScoreWeightImpact:                 floatPtr(0.3),
+		ScoreWeightConfidence:             floatPtr(0.2),
+		LicenseDeny:                       []string{"MIT"},
+		LicenseFailOnDeny:                 boolPtr(true),
+		LicenseProvenanceRegistry:         boolPtr(true),
+		ReachableVulnerabilityPriority:    stringPtr(report.VulnerabilityPriorityHigh),
+		AdvisorySourcePath:                "advisories.yml",
+	}
+	_, values, sources, trace, err := resolveThresholds(repo, args)
+	if err != nil {
+		t.Fatalf("resolve thresholds: %v", err)
+	}
+	if sources[0] != "mcp" || policyTraceSource(trace, "license.fail_on_deny") != "mcp" || policyTraceSource(trace, "advisories.source") != "mcp" {
+		t.Fatalf("expected mcp policy metadata, sources=%#v trace=%#v", sources, trace)
+	}
+	if !values.LicenseFailOnDeny || !values.LicenseIncludeRegistryProvenance || values.ReachableVulnerabilityPriority != report.VulnerabilityPriorityHigh {
+		t.Fatalf("expected license policy values, got %#v", values)
+	}
+}
+
+func assertAdvisorySourceResolution(t *testing.T, repo string) {
+	t.Helper()
+	if gotPath, gotRoot := resolveAdvisorySource(thresholds.LoadResult{AdvisorySourcePath: "config.yml", AdvisorySourceTrustRoot: repo}, analysisToolArguments{}); gotPath != "config.yml" || gotRoot != repo {
+		t.Fatalf("expected config advisory source and trust root, got path=%q root=%q", gotPath, gotRoot)
+	}
+	if gotPath, gotRoot := resolveAdvisorySource(thresholds.LoadResult{AdvisorySourcePath: "config.yml", AdvisorySourceTrustRoot: repo}, analysisToolArguments{AdvisorySourcePath: "cli.yml"}); gotPath != "cli.yml" || gotRoot != "" {
+		t.Fatalf("expected argument advisory source to clear trust root, got path=%q root=%q", gotPath, gotRoot)
+	}
+}
+
+func assertMCPPolicyTraceHelpers(t *testing.T) {
+	t.Helper()
+	if got := prependPolicySource("mcp", []string{"mcp", "defaults"}); !slicesEqual(got, []string{"mcp", "defaults"}) {
+		t.Fatalf("unexpected deduped sources: %#v", got)
+	}
+	if got := mergeMCPPolicyTrace([]report.PolicyMergeTrace{{Field: "existing", Source: "defaults"}}, analysisToolArguments{}); len(got) != 1 || got[0].Source != "defaults" {
+		t.Fatalf("unexpected no-op trace merge: %#v", got)
+	}
+	if got := mergeMCPPolicyTrace(nil, analysisToolArguments{LowConfidenceWarningPercent: intPtr(35)}); len(got) != 1 || got[0].Source != "mcp" {
+		t.Fatalf("unexpected appended trace merge: %#v", got)
+	}
+}
+
+func writeAdvisoryFixture(t *testing.T, dir string, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("advisories:\n  - id: GHSA-outside\n    package: lib\n    ecosystem: npm\n    severity: high\n"), 0o600); err != nil {
+		t.Fatalf("write advisories: %v", err)
+	}
+	return path
+}
+
+func writeConfigAdvisorySource(t *testing.T, repo string, source string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, ".lopper.yml"), []byte("advisories:\n  source: "+source+"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+type advisoryTrustBoundaryCase struct {
+	name    string
+	prepare func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest))
+}
+
+func advisoryTrustBoundaryCases() []advisoryTrustBoundaryCase {
+	return []advisoryTrustBoundaryCase{
+		{
+			name: "config advisory source keeps trusted root",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				advisoriesPath := writeAdvisoryFixture(t, repo, "advisories.yml")
+				writeConfigAdvisorySource(t, repo, "advisories.yml")
+				return repo, advisoryFeatureArgs(repo), func(t *testing.T, resolved resolvedToolRequest) {
+					t.Helper()
+					if resolved.advisorySourcePath != advisoriesPath || resolved.advisorySourceRoot != repo {
+						t.Fatalf("expected config advisory trust boundary, got path=%q root=%q", resolved.advisorySourcePath, resolved.advisorySourceRoot)
+					}
+				}
+			},
+		},
+		{
+			name: "explicit MCP override clears trusted root",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				writeConfigAdvisorySource(t, repo, "advisories.yml")
+				args := advisoryFeatureArgs(repo)
+				args.AdvisorySourcePath = "/tmp/override.yml"
+				return repo, args, func(t *testing.T, resolved resolvedToolRequest) {
+					t.Helper()
+					if resolved.advisorySourcePath != "/tmp/override.yml" || resolved.advisorySourceRoot != "" {
+						t.Fatalf("expected explicit override to clear trust root, got path=%q root=%q", resolved.advisorySourcePath, resolved.advisorySourceRoot)
+					}
+				}
+			},
+		},
+		{
+			name: "absolute config advisory path stays confined",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				outsidePath := writeAdvisoryFixture(t, t.TempDir(), "outside.yml")
+				writeConfigAdvisorySource(t, repo, filepath.ToSlash(outsidePath))
+				return repo, advisoryFeatureArgs(repo), assertAdvisoryLoadError(safeio.ErrPathEscapesRoot)
+			},
+		},
+		{
+			name: "parent traversal config advisory path stays confined",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				parent := t.TempDir()
+				repo := filepath.Join(parent, "repo")
+				if err := os.Mkdir(repo, 0o755); err != nil {
+					t.Fatalf("mkdir repo: %v", err)
+				}
+				writeAdvisoryFixture(t, parent, "outside.yml")
+				writeConfigAdvisorySource(t, repo, "../outside.yml")
+				return repo, advisoryFeatureArgs(repo), assertAdvisoryLoadError(safeio.ErrPathEscapesRoot)
+			},
+		},
+		{
+			name: "symlink config advisory path stays confined",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				outsideDir := t.TempDir()
+				outsidePath := writeAdvisoryFixture(t, outsideDir, "outside.yml")
+				linkPath := filepath.Join(repo, "linked.yml")
+				if err := os.Symlink(outsidePath, linkPath); err != nil {
+					t.Skipf("symlink not supported: %v", err)
+				}
+				writeConfigAdvisorySource(t, repo, "linked.yml")
+				return repo, advisoryFeatureArgs(repo), assertAdvisoryLoadError(safeio.ErrTargetPathSymlink)
+			},
+		},
+	}
+}
+
+func advisoryFeatureArgs(repo string) analysisToolArguments {
+	return analysisToolArguments{
+		RepoPath:       repo,
+		EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature},
+	}
+}
+
+func assertAdvisoryTrustBoundary(t *testing.T, server *Server, repo string, args analysisToolArguments, assertResolved func(*testing.T, resolvedToolRequest)) {
+	t.Helper()
+	resolved, err := server.resolveAnalysisRequest(context.Background(), args, analysisToolKindTop)
+	if err != nil {
+		t.Fatalf("resolve analysis request: %v", err)
+	}
+	assertResolved(t, resolved)
+}
+
+func assertAdvisoryLoadError(want error) func(*testing.T, resolvedToolRequest) {
+	return func(t *testing.T, resolved resolvedToolRequest) {
+		t.Helper()
+		if _, err := advisory.LoadWithinRoot(resolved.advisorySourceRoot, resolved.advisorySourcePath); !errors.Is(err, want) {
+			t.Fatalf("expected advisory path to remain confined, got %v", err)
+		}
+	}
 }
 
 func slicesEqual(left, right []string) bool {

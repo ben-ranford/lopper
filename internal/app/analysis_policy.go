@@ -9,6 +9,7 @@ import (
 type analysisRequestPolicy struct {
 	thresholds              thresholds.Values
 	advisorySourcePath      string
+	advisorySourceTrustRoot string
 	vulnerabilityExceptions []report.VulnerabilityException
 	policySources           []string
 	policyTrace             []report.PolicyMergeTrace

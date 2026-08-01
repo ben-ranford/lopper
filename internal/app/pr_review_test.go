@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -203,6 +204,40 @@ func TestBuildPRReviewArtifactTreatsUnevaluableReachableFindingsAsRegressionsUnl
 		if artifact.Summary.RegressionCount != tc.wantRegressions {
 			t.Fatalf("threshold %q regression count = %d, want %d", tc.threshold, artifact.Summary.RegressionCount, tc.wantRegressions)
 		}
+	}
+}
+
+func TestAnalysePRReviewWorktreeRejectsEscapingTrustedAdvisorySource(t *testing.T) {
+	repoPath := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "advisories.yml")
+	testutil.MustWriteFile(t, outsidePath, `advisories:
+  - id: GHSA-outside
+    package: lib
+    ecosystem: npm
+    severity: high
+	`)
+
+	application := &App{Analyzer: &fakeAnalyzer{report: report.Report{Dependencies: []report.DependencyReport{{Name: "lib"}}}}}
+	req := PRReviewRequest{AdvisorySourcePath: outsidePath}
+	setStringFieldIfPresent(&req, "AdvisorySourceTrustRoot", repoPath)
+	_, err := application.analysePRReviewWorktree(context.Background(), repoPath, repoPath, req)
+	if err == nil || !strings.Contains(err.Error(), "path escapes root") {
+		t.Fatalf("expected trusted advisory source escape rejection, got %v", err)
+	}
+}
+
+func setStringFieldIfPresent(target any, field string, value string) {
+	v := reflect.ValueOf(target)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return
+	}
+	elem := v.Elem()
+	if !elem.IsValid() {
+		return
+	}
+	fieldValue := elem.FieldByName(field)
+	if fieldValue.IsValid() && fieldValue.CanSet() && fieldValue.Kind() == reflect.String {
+		fieldValue.SetString(value)
 	}
 }
 

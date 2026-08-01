@@ -113,6 +113,7 @@ func parsePRReview(args []string, req app.Request) (app.Request, error) {
 		ScopeMode:               scopeMode,
 		ConfigPath:              resolvedPolicy.configPath,
 		AdvisorySourcePath:      resolvedPolicy.advisorySourcePath,
+		AdvisorySourceTrustRoot: resolvedPolicy.advisorySourceTrustRoot,
 		PolicySources:           append([]string{}, resolvedPolicy.policySources...),
 		PolicyTrace:             append([]report.PolicyMergeTrace{}, resolvedPolicy.policyTrace...),
 		VulnerabilityExceptions: append([]report.VulnerabilityException{}, resolvedPolicy.vulnerabilityExceptions...),

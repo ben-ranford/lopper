@@ -79,6 +79,9 @@ func TestLoadYAMLConfig(t *testing.T) {
 	if want := filepath.Join(repo, "security", "advisories.yml"); result.AdvisorySourcePath != want {
 		t.Fatalf("expected advisory source path %q, got %q", want, result.AdvisorySourcePath)
 	}
+	if result.AdvisorySourceTrustRoot != repo {
+		t.Fatalf("expected advisory trust root %q, got %q", repo, result.AdvisorySourceTrustRoot)
+	}
 }
 
 func TestLoadYAMLConfigAllowsDisabledSentinelThresholds(t *testing.T) {

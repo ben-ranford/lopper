@@ -557,6 +557,9 @@ func TestParseArgsAnalyseConfigPrecedence(t *testing.T) {
 	if want := filepath.Join(repo, "security", "config-advisories.yml"); req.Analyse.AdvisorySourcePath != want {
 		t.Fatalf("expected config advisory source %q, got %q", want, req.Analyse.AdvisorySourcePath)
 	}
+	if req.Analyse.AdvisorySourceTrustRoot != repo {
+		t.Fatalf("expected config advisory trust root %q, got %q", repo, req.Analyse.AdvisorySourceTrustRoot)
+	}
 }
 
 func TestParseArgsAnalyseScopeConfigPrecedence(t *testing.T) {
