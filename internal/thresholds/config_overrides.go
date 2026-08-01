@@ -216,7 +216,7 @@ type vulnerabilityExceptionConfig struct {
 	set        bool
 }
 
-func (a *rawAdvisories) toAdvisorySourceConfig(configPath string, trustRoot string) advisorySourceConfig {
+func (a *rawAdvisories) toAdvisorySourceConfig(configPath, trustRoot string) advisorySourceConfig {
 	if a == nil || a.Source == nil {
 		return advisorySourceConfig{}
 	}

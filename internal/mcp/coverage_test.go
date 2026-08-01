@@ -419,79 +419,12 @@ func TestThresholdAndPolicyHelpers(t *testing.T) {
 
 func TestResolveAnalysisRequestAdvisoryTrustBoundaries(t *testing.T) {
 	server := NewServer(Options{})
-
-	t.Run("config advisory source keeps trusted root", func(t *testing.T) {
-		repo := t.TempDir()
-		advisoriesPath := writeAdvisoryFixture(t, repo, "advisories.yml")
-		writeConfigAdvisorySource(t, repo, "advisories.yml")
-		resolved, err := server.resolveAnalysisRequest(context.Background(), analysisToolArguments{RepoPath: repo, EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature}}, analysisToolKindTop)
-		if err != nil {
-			t.Fatalf("resolve analysis request: %v", err)
-		}
-		if resolved.advisorySourcePath != advisoriesPath || resolved.advisorySourceRoot != repo {
-			t.Fatalf("expected config advisory trust boundary, got path=%q root=%q", resolved.advisorySourcePath, resolved.advisorySourceRoot)
-		}
-	})
-
-	t.Run("explicit MCP override clears trusted root", func(t *testing.T) {
-		repo := t.TempDir()
-		writeConfigAdvisorySource(t, repo, "advisories.yml")
-		resolved, err := server.resolveAnalysisRequest(context.Background(), analysisToolArguments{RepoPath: repo, AdvisorySourcePath: "/tmp/override.yml", EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature}}, analysisToolKindTop)
-		if err != nil {
-			t.Fatalf("resolve analysis request: %v", err)
-		}
-		if resolved.advisorySourcePath != "/tmp/override.yml" || resolved.advisorySourceRoot != "" {
-			t.Fatalf("expected explicit override to clear trust root, got path=%q root=%q", resolved.advisorySourcePath, resolved.advisorySourceRoot)
-		}
-	})
-
-	t.Run("absolute config advisory path stays confined", func(t *testing.T) {
-		repo := t.TempDir()
-		outsidePath := writeAdvisoryFixture(t, t.TempDir(), "outside.yml")
-		writeConfigAdvisorySource(t, repo, filepath.ToSlash(outsidePath))
-		resolved, err := server.resolveAnalysisRequest(context.Background(), analysisToolArguments{RepoPath: repo, EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature}}, analysisToolKindTop)
-		if err != nil {
-			t.Fatalf("resolve analysis request: %v", err)
-		}
-		if _, err := advisory.LoadWithinRoot(resolved.advisorySourceRoot, resolved.advisorySourcePath); !errors.Is(err, safeio.ErrPathEscapesRoot) {
-			t.Fatalf("expected absolute advisory path to remain confined, got %v", err)
-		}
-	})
-
-	t.Run("parent traversal config advisory path stays confined", func(t *testing.T) {
-		parent := t.TempDir()
-		repo := filepath.Join(parent, "repo")
-		if err := os.Mkdir(repo, 0o755); err != nil {
-			t.Fatalf("mkdir repo: %v", err)
-		}
-		writeAdvisoryFixture(t, parent, "outside.yml")
-		writeConfigAdvisorySource(t, repo, "../outside.yml")
-		resolved, err := server.resolveAnalysisRequest(context.Background(), analysisToolArguments{RepoPath: repo, EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature}}, analysisToolKindTop)
-		if err != nil {
-			t.Fatalf("resolve analysis request: %v", err)
-		}
-		if _, err := advisory.LoadWithinRoot(resolved.advisorySourceRoot, resolved.advisorySourcePath); !errors.Is(err, safeio.ErrPathEscapesRoot) {
-			t.Fatalf("expected traversal advisory path to remain confined, got %v", err)
-		}
-	})
-
-	t.Run("symlink config advisory path stays confined", func(t *testing.T) {
-		repo := t.TempDir()
-		outsideDir := t.TempDir()
-		outsidePath := writeAdvisoryFixture(t, outsideDir, "outside.yml")
-		linkPath := filepath.Join(repo, "linked.yml")
-		if err := os.Symlink(outsidePath, linkPath); err != nil {
-			t.Skipf("symlink not supported: %v", err)
-		}
-		writeConfigAdvisorySource(t, repo, "linked.yml")
-		resolved, err := server.resolveAnalysisRequest(context.Background(), analysisToolArguments{RepoPath: repo, EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature}}, analysisToolKindTop)
-		if err != nil {
-			t.Fatalf("resolve analysis request: %v", err)
-		}
-		if _, err := advisory.LoadWithinRoot(resolved.advisorySourceRoot, resolved.advisorySourcePath); !errors.Is(err, safeio.ErrTargetPathSymlink) {
-			t.Fatalf("expected symlink advisory path to remain confined, got %v", err)
-		}
-	})
+	for _, tc := range advisoryTrustBoundaryCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, args, assertResolved := tc.prepare(t)
+			assertAdvisoryTrustBoundary(t, server, repo, args, assertResolved)
+		})
+	}
 }
 
 func TestBaselineHelpers(t *testing.T) {
@@ -700,6 +633,106 @@ func writeConfigAdvisorySource(t *testing.T, repo string, source string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, ".lopper.yml"), []byte("advisories:\n  source: "+source+"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+}
+
+type advisoryTrustBoundaryCase struct {
+	name    string
+	prepare func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest))
+}
+
+func advisoryTrustBoundaryCases() []advisoryTrustBoundaryCase {
+	return []advisoryTrustBoundaryCase{
+		{
+			name: "config advisory source keeps trusted root",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				advisoriesPath := writeAdvisoryFixture(t, repo, "advisories.yml")
+				writeConfigAdvisorySource(t, repo, "advisories.yml")
+				return repo, advisoryFeatureArgs(repo), func(t *testing.T, resolved resolvedToolRequest) {
+					t.Helper()
+					if resolved.advisorySourcePath != advisoriesPath || resolved.advisorySourceRoot != repo {
+						t.Fatalf("expected config advisory trust boundary, got path=%q root=%q", resolved.advisorySourcePath, resolved.advisorySourceRoot)
+					}
+				}
+			},
+		},
+		{
+			name: "explicit MCP override clears trusted root",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				writeConfigAdvisorySource(t, repo, "advisories.yml")
+				args := advisoryFeatureArgs(repo)
+				args.AdvisorySourcePath = "/tmp/override.yml"
+				return repo, args, func(t *testing.T, resolved resolvedToolRequest) {
+					t.Helper()
+					if resolved.advisorySourcePath != "/tmp/override.yml" || resolved.advisorySourceRoot != "" {
+						t.Fatalf("expected explicit override to clear trust root, got path=%q root=%q", resolved.advisorySourcePath, resolved.advisorySourceRoot)
+					}
+				}
+			},
+		},
+		{
+			name: "absolute config advisory path stays confined",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				outsidePath := writeAdvisoryFixture(t, t.TempDir(), "outside.yml")
+				writeConfigAdvisorySource(t, repo, filepath.ToSlash(outsidePath))
+				return repo, advisoryFeatureArgs(repo), assertAdvisoryLoadError(safeio.ErrPathEscapesRoot)
+			},
+		},
+		{
+			name: "parent traversal config advisory path stays confined",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				parent := t.TempDir()
+				repo := filepath.Join(parent, "repo")
+				if err := os.Mkdir(repo, 0o755); err != nil {
+					t.Fatalf("mkdir repo: %v", err)
+				}
+				writeAdvisoryFixture(t, parent, "outside.yml")
+				writeConfigAdvisorySource(t, repo, "../outside.yml")
+				return repo, advisoryFeatureArgs(repo), assertAdvisoryLoadError(safeio.ErrPathEscapesRoot)
+			},
+		},
+		{
+			name: "symlink config advisory path stays confined",
+			prepare: func(t *testing.T) (string, analysisToolArguments, func(*testing.T, resolvedToolRequest)) {
+				repo := t.TempDir()
+				outsideDir := t.TempDir()
+				outsidePath := writeAdvisoryFixture(t, outsideDir, "outside.yml")
+				linkPath := filepath.Join(repo, "linked.yml")
+				if err := os.Symlink(outsidePath, linkPath); err != nil {
+					t.Skipf("symlink not supported: %v", err)
+				}
+				writeConfigAdvisorySource(t, repo, "linked.yml")
+				return repo, advisoryFeatureArgs(repo), assertAdvisoryLoadError(safeio.ErrTargetPathSymlink)
+			},
+		},
+	}
+}
+
+func advisoryFeatureArgs(repo string) analysisToolArguments {
+	return analysisToolArguments{
+		RepoPath:       repo,
+		EnableFeatures: []string{report.ReachabilityVulnerabilityPrioritizationPreviewFeature},
+	}
+}
+
+func assertAdvisoryTrustBoundary(t *testing.T, server *Server, repo string, args analysisToolArguments, assertResolved func(*testing.T, resolvedToolRequest)) {
+	t.Helper()
+	resolved, err := server.resolveAnalysisRequest(context.Background(), args, analysisToolKindTop)
+	if err != nil {
+		t.Fatalf("resolve analysis request: %v", err)
+	}
+	assertResolved(t, resolved)
+}
+
+func assertAdvisoryLoadError(want error) func(*testing.T, resolvedToolRequest) {
+	return func(t *testing.T, resolved resolvedToolRequest) {
+		t.Helper()
+		if _, err := advisory.LoadWithinRoot(resolved.advisorySourceRoot, resolved.advisorySourcePath); !errors.Is(err, want) {
+			t.Fatalf("expected advisory path to remain confined, got %v", err)
+		}
 	}
 }
 
