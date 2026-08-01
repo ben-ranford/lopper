@@ -85,26 +85,18 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
-	parent, closeParent, err := r.openTargetParent(target, createParents, parentPerm)
-	if err != nil {
-		return err
-	}
-	if closeParent {
-		defer func() {
-			if closeErr := parent.Close(); closeErr != nil {
-				returnErr = errors.Join(returnErr, closeErr)
-			}
-		}()
-	}
-	if err := writeFileParentReadyFn(); err != nil {
-		return err
-	}
-	parentTarget := target
-	parentTarget.rel = filepath.Base(target.rel)
-	return writeFileAtRoot(parent, parentTarget, data, perm)
+	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		return writeFileAtRoot(parent, parentTarget, data, perm)
+	})
 }
 
 func (r *WriteRoot) writeFileIfAbsentAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
+	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		return writeFileIfAbsentAtRoot(parent, parentTarget, data, perm)
+	})
+}
+
+func (r *WriteRoot) withTargetParent(target rootedTarget, createParents bool, parentPerm os.FileMode, write func(parent Root, parentTarget rootedTarget) error) (returnErr error) {
 	parent, closeParent, err := r.openTargetParent(target, createParents, parentPerm)
 	if err != nil {
 		return err
@@ -121,7 +113,7 @@ func (r *WriteRoot) writeFileIfAbsentAtTarget(target rootedTarget, data []byte, 
 	}
 	parentTarget := target
 	parentTarget.rel = filepath.Base(target.rel)
-	return writeFileIfAbsentAtRoot(parent, parentTarget, data, perm)
+	return write(parent, parentTarget)
 }
 
 func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.FileMode) (Root, bool, error) {

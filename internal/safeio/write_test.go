@@ -155,6 +155,75 @@ func assertWriteRootParentLookupError(t *testing.T, invoke func(*WriteRoot) erro
 	}
 }
 
+func assertWriteRootCreatesMissingParentsAndWrites(t *testing.T, writeName string, invoke func(*WriteRoot, string, []byte, os.FileMode, os.FileMode) error) {
+	t.Helper()
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+
+	targetPath := filepath.Join("reports", "nested", writeTestFileName)
+	if err := invoke(root, targetPath, []byte("hello"), 0o640, 0o750); err != nil {
+		t.Fatalf("%s returned error: %v", writeName, err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(rootDir, targetPath))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("unexpected content: %q", string(data))
+	}
+}
+
+func assertWriteRootRejectsExistingTarget(t *testing.T, writeName string, invoke func(*WriteRoot, string, []byte, os.FileMode, os.FileMode) error) {
+	t.Helper()
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+
+	targetPath := filepath.Join("reports", writeTestFileName)
+	if err := invoke(root, targetPath, []byte("before"), 0o600, 0o750); err != nil {
+		t.Fatalf("seed target with %s: %v", writeName, err)
+	}
+	err := invoke(root, targetPath, []byte("after"), 0o600, 0o750)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected os.ErrExist, got %v", err)
+	}
+	if data, readErr := os.ReadFile(filepath.Join(rootDir, targetPath)); readErr != nil {
+		t.Fatalf("read existing target: %v", readErr)
+	} else if string(data) != "before" {
+		t.Fatalf("expected existing target to remain unchanged, got %q", string(data))
+	}
+}
+
+func assertWriteRootRejectsNonRelativeTargets(t *testing.T, invoke func(*WriteRoot, string, []byte, os.FileMode, os.FileMode) error) {
+	t.Helper()
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+
+	for _, targetPath := range []string{rootDir, "..", filepath.Join("..", writeTestFileName), "."} {
+		err := invoke(root, targetPath, []byte("hello"), 0o600, 0o750)
+		if err == nil {
+			t.Fatalf("expected target %q to be rejected", targetPath)
+		}
+	}
+}
+
+func makeFakeTempWriteRoot(err error) *fakeRoot {
+	return &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		openFile: func(string, int, os.FileMode) (File, error) {
+			if err != nil {
+				return nil, err
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: func(os.FileMode) error { return nil },
+				close: func() error { return nil },
+			}, nil
+		},
+		remove: func(string) error { return nil },
+	}
+}
+
 func assertPreservedExistingRegularFileMode(t *testing.T, write func(rootDir, targetPath string, data []byte) error, writeName string) {
 	t.Helper()
 	rootDir := t.TempDir()
@@ -444,22 +513,14 @@ func TestWriteFileUnderReturnsErrorForMissingParentDir(t *testing.T) {
 }
 
 func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
+	assertWriteRootCreatesMissingParentsAndWrites(t, "WriteFileCreatingParents", (*WriteRoot).WriteFileCreatingParents)
+
 	rootDir := t.TempDir()
 	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
-
-	targetPath := filepath.Join("reports", "nested", writeTestFileName)
-	if err := root.WriteFileCreatingParents(targetPath, []byte("hello"), 0o640, 0o750); err != nil {
+	if err := root.WriteFileCreatingParents("reports/nested/"+writeTestFileName, []byte("hello"), 0o640, 0o750); err != nil {
 		t.Fatalf("WriteFileCreatingParents returned error: %v", err)
 	}
-
-	data, err := os.ReadFile(filepath.Join(rootDir, targetPath))
-	if err != nil {
-		t.Fatalf("read written file: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("unexpected content: %q", string(data))
-	}
-	info, err := os.Stat(filepath.Join(rootDir, targetPath))
+	info, err := os.Stat(filepath.Join(rootDir, "reports", "nested", writeTestFileName))
 	if err != nil {
 		t.Fatalf("stat written file: %v", err)
 	}
@@ -478,37 +539,11 @@ func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
 }
 
 func TestWriteRootCreatesMissingParentsAndWritesIfAbsent(t *testing.T) {
-	rootDir := t.TempDir()
-	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
-
-	targetPath := filepath.Join("reports", "nested", writeTestFileName)
-	if err := root.WriteFileCreatingParentsIfAbsent(targetPath, []byte("hello"), 0o640, 0o750); err != nil {
-		t.Fatalf("WriteFileCreatingParentsIfAbsent returned error: %v", err)
-	}
-	if data, err := os.ReadFile(filepath.Join(rootDir, targetPath)); err != nil {
-		t.Fatalf("read written file: %v", err)
-	} else if string(data) != "hello" {
-		t.Fatalf("unexpected content: %q", string(data))
-	}
+	assertWriteRootCreatesMissingParentsAndWrites(t, "WriteFileCreatingParentsIfAbsent", (*WriteRoot).WriteFileCreatingParentsIfAbsent)
 }
 
 func TestWriteRootIfAbsentRejectsExistingTarget(t *testing.T) {
-	rootDir := t.TempDir()
-	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
-
-	targetPath := filepath.Join("reports", writeTestFileName)
-	if err := root.WriteFileCreatingParentsIfAbsent(targetPath, []byte("before"), 0o600, 0o750); err != nil {
-		t.Fatalf("seed target: %v", err)
-	}
-	err := root.WriteFileCreatingParentsIfAbsent(targetPath, []byte("after"), 0o600, 0o750)
-	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("expected os.ErrExist, got %v", err)
-	}
-	if data, readErr := os.ReadFile(filepath.Join(rootDir, targetPath)); readErr != nil {
-		t.Fatalf("read existing target: %v", readErr)
-	} else if string(data) != "before" {
-		t.Fatalf("expected existing target to remain unchanged, got %q", string(data))
-	}
+	assertWriteRootRejectsExistingTarget(t, "WriteFileCreatingParentsIfAbsent", (*WriteRoot).WriteFileCreatingParentsIfAbsent)
 }
 
 func TestWriteRootIfAbsentRejectsDanglingTargetSymlink(t *testing.T) {
@@ -535,15 +570,7 @@ func TestWriteRootIfAbsentRejectsDanglingTargetSymlink(t *testing.T) {
 }
 
 func TestWriteRootIfAbsentRejectsNonRelativeTargets(t *testing.T) {
-	rootDir := t.TempDir()
-	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
-
-	for _, targetPath := range []string{rootDir, "..", filepath.Join("..", writeTestFileName), "."} {
-		err := root.WriteFileCreatingParentsIfAbsent(targetPath, []byte("hello"), 0o600, 0o750)
-		if err == nil {
-			t.Fatalf("expected target %q to be rejected", targetPath)
-		}
-	}
+	assertWriteRootRejectsNonRelativeTargets(t, (*WriteRoot).WriteFileCreatingParentsIfAbsent)
 }
 
 func TestWriteRootIfAbsentPropagatesParentReadyError(t *testing.T) {
@@ -1170,12 +1197,7 @@ func TestWriteFileIfAbsentAtRootPropagatesUnexpectedLookupError(t *testing.T) {
 
 func TestWriteFileIfAbsentAtRootPropagatesCreateTempError(t *testing.T) {
 	expectedErr := errors.New("create temp failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return nil, expectedErr
-		},
-	}
+	root := makeFakeTempWriteRoot(expectedErr)
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {
@@ -1185,18 +1207,8 @@ func TestWriteFileIfAbsentAtRootPropagatesCreateTempError(t *testing.T) {
 
 func TestWriteFileIfAbsentAtRootPropagatesLinkError(t *testing.T) {
 	expectedErr := errors.New("link failure")
-	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-		openFile: func(string, int, os.FileMode) (File, error) {
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: func(os.FileMode) error { return nil },
-				close: func() error { return nil },
-			}, nil
-		},
-		link:   func(string, string) error { return expectedErr },
-		remove: func(string) error { return nil },
-	}
+	root := makeFakeTempWriteRoot(nil)
+	root.link = func(string, string) error { return expectedErr }
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {
@@ -1205,23 +1217,7 @@ func TestWriteFileIfAbsentAtRootPropagatesLinkError(t *testing.T) {
 }
 
 func TestWriteRootRejectsNonRelativeTargets(t *testing.T) {
-	rootDir := t.TempDir()
-	root, err := OpenWriteRoot(rootDir)
-	if err != nil {
-		t.Fatalf("OpenWriteRoot returned error: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			t.Errorf("close write root: %v", closeErr)
-		}
-	})
-
-	for _, targetPath := range []string{rootDir, "..", filepath.Join("..", writeTestFileName), "."} {
-		err := root.WriteFileCreatingParents(targetPath, []byte("hello"), 0o600, 0o750)
-		if err == nil {
-			t.Fatalf("expected target %q to be rejected", targetPath)
-		}
-	}
+	assertWriteRootRejectsNonRelativeTargets(t, (*WriteRoot).WriteFileCreatingParents)
 }
 
 func TestWriteRootRejectsSymlinkedParent(t *testing.T) {
