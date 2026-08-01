@@ -160,29 +160,7 @@ func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.F
 }
 
 func openTargetParentChild(root Root, name, path string, create bool, perm os.FileMode) (Root, error) {
-	info, err := lstatOrCreateDirectory(root, name, create, perm)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("output parent contains symlink: %s", path)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("output parent is not a directory: %s", path)
-	}
-
-	next, err := root.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	openedInfo, err := next.Lstat(".")
-	if err != nil {
-		return nil, closeRootWithError(next, err)
-	}
-	if !os.SameFile(info, openedInfo) {
-		return nil, closeRootWithError(next, fmt.Errorf("output parent changed while opening: %s", path))
-	}
-	return next, nil
+	return openValidatedChildRoot(root, name, path, func() (fs.FileInfo, error) { return lstatOrCreateDirectory(root, name, create, perm) }, "output parent contains symlink", "output parent is not a directory", "output parent changed while opening")
 }
 
 func lstatOrCreateDirectory(root Root, name string, create bool, perm os.FileMode) (fs.FileInfo, error) {
