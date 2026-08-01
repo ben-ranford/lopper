@@ -62,6 +62,17 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	return r.writeFileAtTarget(target, data, perm, true, parentPerm)
 }
 
+// WriteFileCreatingParentsIfAbsent writes a root-relative file only when the
+// target path does not already exist, creating missing parent directories
+// inside the pinned root without following symlinks.
+func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.writeFileIfAbsentAtTarget(target, data, perm, true, parentPerm)
+}
+
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	if filepath.IsAbs(targetPath) {
 		return rootedTarget{}, fmt.Errorf("target path must be relative to root: %s", targetPath)
@@ -91,6 +102,26 @@ func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.
 	parentTarget := target
 	parentTarget.rel = filepath.Base(target.rel)
 	return writeFileAtRoot(parent, parentTarget, data, perm)
+}
+
+func (r *WriteRoot) writeFileIfAbsentAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) (returnErr error) {
+	parent, closeParent, err := r.openTargetParent(target, createParents, parentPerm)
+	if err != nil {
+		return err
+	}
+	if closeParent {
+		defer func() {
+			if closeErr := parent.Close(); closeErr != nil {
+				returnErr = errors.Join(returnErr, closeErr)
+			}
+		}()
+	}
+	if err := writeFileParentReadyFn(); err != nil {
+		return err
+	}
+	parentTarget := target
+	parentTarget.rel = filepath.Base(target.rel)
+	return writeFileIfAbsentAtRoot(parent, parentTarget, data, perm)
 }
 
 func (r *WriteRoot) openTargetParent(target rootedTarget, create bool, perm os.FileMode) (Root, bool, error) {
@@ -220,6 +251,41 @@ func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMo
 		}
 	}
 	return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+}
+
+func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+	if _, err := root.Lstat(target.rel); err == nil {
+		return os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	tempRel, tempFile, err := CreateTempFileWithinRoot(root, filepath.Dir(target.rel), perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, CleanupTempFileWithinRoot(root, tempRel, tempFile))
+	}()
+
+	if _, err := tempFile.Write(data); err != nil {
+		return err
+	}
+	if err := tempFile.Chmod(perm); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	tempFile = nil
+
+	if err := root.Link(tempRel, target.rel); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return os.ErrExist
+		}
+		return err
+	}
+	return nil
 }
 
 func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {

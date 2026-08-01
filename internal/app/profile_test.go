@@ -127,17 +127,16 @@ func TestExecuteProfileErrorPaths(t *testing.T) {
 	}
 }
 
-func TestPersistProfileConfigPropagatesStatError(t *testing.T) {
+func TestPersistProfileConfigPropagatesParentError(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocked")
 	writeBlockedFile(t, blocker)
 
 	_, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), false)
 	if err == nil {
-		t.Fatal("expected stat error under regular file")
+		t.Fatal("expected non-directory parent error")
 	}
-	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || pathErr.Op != "stat" || pathErr.Path != filepath.Join(blocker, "profile.yaml") {
-		t.Fatalf("expected propagated stat path error, got %v", err)
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected non-directory parent rejection, got %v", err)
 	}
 }
 
@@ -147,6 +146,41 @@ func TestPersistProfileConfigPropagatesMkdirAllError(t *testing.T) {
 
 	if _, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), true); err == nil {
 		t.Fatal("expected mkdir error under regular file")
+	}
+}
+
+func TestPersistProfileConfigRejectsParentSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create output parent symlink: %v", err)
+	}
+
+	outputPath := filepath.Join(workspace, "reports", "profile.yaml")
+	_, err := persistProfileConfig("thresholds: {}", outputPath, false)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected parent symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "profile.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside file to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestPersistProfileConfigRejectsDanglingTargetSymlinkWithForce(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	outputPath := filepath.Join(workspace, "profile.yaml")
+	outsideTarget := filepath.Join(outside, "missing", "profile.yaml")
+	if err := os.Symlink(outsideTarget, outputPath); err != nil {
+		t.Fatalf("create dangling output symlink: %v", err)
+	}
+
+	_, err := persistProfileConfig("thresholds: {}", outputPath, true)
+	if err == nil || !strings.Contains(err.Error(), "target path is a symlink") {
+		t.Fatalf("expected dangling symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(outsideTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("expected symlink target to remain absent, got err=%v", statErr)
 	}
 }
 
