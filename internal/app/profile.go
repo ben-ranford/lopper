@@ -45,7 +45,7 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 			}
 			return "", err
 		}
-	} else if err := writeCommandOutputFileFn(destination.root, destination.targetPath, []byte(config), 0o600, 0o750); err != nil {
+	} else if err := destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, []byte(config), 0o600, 0o750); err != nil {
 		return "", err
 	}
 	return "threshold profile config written to " + trimmedOutputPath, nil
