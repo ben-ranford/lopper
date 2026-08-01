@@ -130,6 +130,7 @@ type resolvedToolRequest struct {
 	policySources      []string
 	policyTrace        []report.PolicyMergeTrace
 	advisorySourcePath string
+	advisorySourceRoot string
 	baselinePath       string
 	baselineKey        string
 	currentKey         string
@@ -248,7 +249,7 @@ func (s *Server) runAnalysisTool(ctx context.Context, rawArgs json.RawMessage, k
 		return analysisErrorResult(err)
 	}
 	if resolved.advisorySourcePath != "" {
-		advisories, err := advisory.Load(resolved.advisorySourcePath)
+		advisories, err := advisory.LoadWithinRoot(resolved.advisorySourceRoot, resolved.advisorySourcePath)
 		if err != nil {
 			return analysisErrorResult(err)
 		}
@@ -309,7 +310,7 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 	if err != nil {
 		return resolvedToolRequest{}, err
 	}
-	advisorySourcePath := resolveAdvisorySourcePath(loadResult, args)
+	advisorySourcePath, advisorySourceRoot := resolveAdvisorySource(loadResult, args)
 	if err := validateAnalysisVulnerabilityFeature(features, thresholdsValue, advisorySourcePath); err != nil {
 		return resolvedToolRequest{}, err
 	}
@@ -320,6 +321,7 @@ func (s *Server) resolveAnalysisRequest(ctx context.Context, args analysisToolAr
 		policySources:      policySources,
 		policyTrace:        policyTrace,
 		advisorySourcePath: advisorySourcePath,
+		advisorySourceRoot: advisorySourceRoot,
 		baselinePath:       baselinePath,
 		baselineKey:        baselineKey,
 		currentKey:         currentKey,
@@ -702,11 +704,11 @@ func mcpPolicyTrace(args analysisToolArguments) []report.PolicyMergeTrace {
 	return trace
 }
 
-func resolveAdvisorySourcePath(loadResult thresholds.LoadResult, args analysisToolArguments) string {
+func resolveAdvisorySource(loadResult thresholds.LoadResult, args analysisToolArguments) (string, string) {
 	if path := strings.TrimSpace(args.AdvisorySourcePath); path != "" {
-		return path
+		return path, ""
 	}
-	return strings.TrimSpace(loadResult.AdvisorySourcePath)
+	return strings.TrimSpace(loadResult.AdvisorySourcePath), strings.TrimSpace(loadResult.AdvisorySourceTrustRoot)
 }
 
 func validateAnalysisVulnerabilityFeature(features featureflags.Set, values thresholds.Values, advisorySourcePath string) error {

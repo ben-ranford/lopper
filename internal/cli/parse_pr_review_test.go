@@ -273,6 +273,34 @@ thresholds:
 	})
 }
 
+func TestResolvePRReviewPolicyExplicitEmptyCLIAdvisorySourceClearsTrustRoot(t *testing.T) {
+	repo := t.TempDir()
+	configPath := filepath.Join(repo, ".lopper.yml")
+	testutil.MustWriteFile(t, filepath.Join(repo, "config-advisories.json"), "{}")
+	testutil.MustWriteFile(t, configPath, `
+advisories:
+  source: config-advisories.json
+`)
+
+	policy, err := resolveAnalysisPolicy(map[string]bool{"advisory-source": true}, analyseFlagValues{
+		repoPath:           stringPtr(repo),
+		configPath:         stringPtr(configPath),
+		advisorySourcePath: stringPtr(""),
+	})
+	if err != nil {
+		t.Fatalf("resolve pr-review policy: %v", err)
+	}
+	if policy.advisorySourcePath != "" {
+		t.Fatalf("expected explicit empty CLI advisory source to clear path, got %q", policy.advisorySourcePath)
+	}
+	if policyTraceSource(policy.policyTrace, "advisories.source") != "cli" {
+		t.Fatalf("expected explicit empty CLI advisory source to be traced to cli, got %#v", policy.policyTrace)
+	}
+	if policy.advisorySourceTrustRoot != "" {
+		t.Fatalf("expected explicit empty CLI advisory source to clear trust root, got %q", policy.advisorySourceTrustRoot)
+	}
+}
+
 type expectedPRReviewParse struct {
 	repo                   string
 	baseSHA                string
@@ -364,7 +392,7 @@ func assertResolvedPRReviewPolicy(t *testing.T, policy resolvedAnalysisPolicy, w
 	if policy.advisorySourcePath != want.advisorySourcePath {
 		t.Fatalf("expected advisory source override %q, got %q", want.advisorySourcePath, policy.advisorySourcePath)
 	}
-	if want.advisorySourcePath != "" && policy.advisorySourceTrustRoot != "" {
+	if policyTraceSource(policy.policyTrace, "advisories.source") == "cli" && policy.advisorySourceTrustRoot != "" {
 		t.Fatalf("expected CLI advisory override to clear trust root, got %q", policy.advisorySourceTrustRoot)
 	}
 	if got := strings.Join(policy.scope.Include, ","); got != want.includePatterns {

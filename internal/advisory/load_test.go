@@ -151,8 +151,8 @@ func TestLoadWithinRootRejectsSymlinkEscape(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected symlink escape to fail")
 	}
-	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(err.Error(), "escapes root") {
-		t.Fatalf("expected symlink boundary error, got %v", err)
+	if !errors.Is(err, safeio.ErrTargetPathSymlink) && !errors.Is(err, safeio.ErrPathEscapesRoot) {
+		t.Fatalf("expected wrapped symlink boundary sentinel, got %v", err)
 	}
 }
 
