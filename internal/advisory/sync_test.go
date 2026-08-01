@@ -3397,6 +3397,7 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 	now := time.Date(2026, time.July, 13, 0, 0, 0, 0, time.UTC)
 	cleanupWriteErr := errors.New("write failure")
 	cleanupErr := errors.New("cleanup failure")
+	tempInfo := advisoryTempFileInfo(t)
 	for _, tc := range []struct {
 		name   string
 		root   *advisoryFakeRoot
@@ -3432,6 +3433,7 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 					return &advisoryFakeFile{
 						write: func(p []byte) (int, error) { return len(p), nil },
 						close: func() error { return errors.New("temp close failure") },
+						stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
 						chmod: func(os.FileMode) error { return nil },
 					}, nil
 				},
@@ -3446,6 +3448,7 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 					return &advisoryFakeFile{
 						write: func(p []byte) (int, error) { return len(p), nil },
 						close: func() error { return nil },
+						stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
 						chmod: func(os.FileMode) error { return nil },
 					}, nil
 				},
@@ -3695,6 +3698,19 @@ func advisoryExpectAtomicTempCleanup(t *testing.T) func(string) error {
 		}
 		return nil
 	}
+}
+
+func advisoryTempFileInfo(t *testing.T) fs.FileInfo {
+	t.Helper()
+	tempPath := filepath.Join(t.TempDir(), "temp")
+	if err := os.WriteFile(tempPath, []byte("temp"), 0o600); err != nil {
+		t.Fatalf("write advisory temp fixture: %v", err)
+	}
+	tempInfo, err := os.Stat(tempPath)
+	if err != nil {
+		t.Fatalf("stat advisory temp fixture: %v", err)
+	}
+	return tempInfo
 }
 
 func advisoryOpenTestRoot(t *testing.T, rootDir string) safeio.Root {

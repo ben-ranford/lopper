@@ -124,13 +124,16 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 		returnErr = errors.Join(returnErr, session.cleanup())
 	}()
 
-	if err := session.writeAndClose(data, perm); err != nil {
+	if err := session.writeAndPrepare(data, perm); err != nil {
+		return err
+	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
 	if err := session.commit(); err != nil {
 		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 	}
-	return nil
+	return session.verifyCommittedTarget()
 }
 
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
