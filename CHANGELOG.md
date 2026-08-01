@@ -2,6 +2,35 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.4](https://github.com/ben-ranford/lopper/compare/v1.8.3...v1.8.4) (2026-07-31)
+
+
+### Bug Fixes
+
+* **app:** bound lockfile-drift manifest reads ([#1412](https://github.com/ben-ranford/lopper/issues/1412)) ([2b003e6](https://github.com/ben-ranford/lopper/commit/2b003e63b1fcd40553075c9a2adc86ddc8e4b557))
+* **cache:** distrust default repo-local hits ([#1440](https://github.com/ben-ranford/lopper/issues/1440)) ([7e89b56](https://github.com/ben-ranford/lopper/commit/7e89b56c2bd06e2369768520e56c2395152a3d29))
+* **ci:** fail closed without memory baseline ([#1432](https://github.com/ben-ranford/lopper/issues/1432)) ([322b90b](https://github.com/ben-ranford/lopper/commit/322b90be13abb3fa907fa1eb140c3f65a8d461fe))
+* **ci:** pin benchmark definitions across revisions ([#1442](https://github.com/ben-ranford/lopper/issues/1442)) ([9f4f019](https://github.com/ben-ranford/lopper/commit/9f4f0190d5fd097c684c8ccdb6d9844b652b2208))
+* **ci:** pin memory benchmark Go toolchain ([#1443](https://github.com/ben-ranford/lopper/issues/1443)) ([2140b01](https://github.com/ben-ranford/lopper/commit/2140b01a59b4acb0e7600c19cd91313baa98647c))
+* **ci:** reject incomplete benchmark comparisons ([#1419](https://github.com/ben-ranford/lopper/issues/1419)) ([9a237bd](https://github.com/ben-ranford/lopper/commit/9a237bd1f7524572a4e3b7ee3ff72a11cb53af50))
+* **ci:** reject invalid benchmark thresholds ([#1448](https://github.com/ben-ranford/lopper/issues/1448)) ([6939fa3](https://github.com/ben-ranford/lopper/commit/6939fa3de42db738d5653a3ae4c7ada22e2535f2))
+* **js:** bound untrusted source reads ([#1436](https://github.com/ben-ranford/lopper/issues/1436)) ([5130d7e](https://github.com/ben-ranford/lopper/commit/5130d7e0ff219c7d9fb261e4816e5bd9ce34c978))
+* **js:** suppress removals for incomplete coverage ([#1446](https://github.com/ben-ranford/lopper/issues/1446)) ([5382ce1](https://github.com/ben-ranford/lopper/commit/5382ce100140939c8038f955397acbeea537502a))
+* **jvm:** bound symlinked Gradle and source reads ([#1420](https://github.com/ben-ranford/lopper/issues/1420)) ([4ee1d08](https://github.com/ben-ranford/lopper/commit/4ee1d08dfbe1ba7f0b7f8820cdd1836c9dc0cca6))
+* **mcp:** force analysis cache read-only ([#1431](https://github.com/ben-ranford/lopper/issues/1431)) ([f7f2d68](https://github.com/ben-ranford/lopper/commit/f7f2d68bbf6bb1b90d938902c5320d1526e5c92d))
+* **report:** keep unevaluable OSV matches actionable ([#1417](https://github.com/ben-ranford/lopper/issues/1417)) ([bb9b6b5](https://github.com/ben-ranford/lopper/commit/bb9b6b57446e89be3498fd4e8030775ce33139e0))
+* **runtime:** bound runtime trace loading ([#1413](https://github.com/ben-ranford/lopper/issues/1413)) ([ad1b792](https://github.com/ben-ranford/lopper/commit/ad1b792d4fdf9dea7384bc434db1fca876511b4a))
+* **runtime:** bound trace loading work ([#1441](https://github.com/ben-ranford/lopper/issues/1441)) ([54bbfaa](https://github.com/ben-ranford/lopper/commit/54bbfaa72553901e7467333de50bb65c52a541df))
+* **runtime:** redact absolute runtime context paths ([#1433](https://github.com/ben-ranford/lopper/issues/1433)) ([6bbcf71](https://github.com/ben-ranford/lopper/commit/6bbcf715f66c03599180c96d5e46444b24bd458a))
+* **runtime:** refresh traces on cache hits ([#1439](https://github.com/ben-ranford/lopper/issues/1439)) ([1657e48](https://github.com/ben-ranford/lopper/commit/1657e4832c5a3174905197c34da4092298c0646f))
+* **test:** keep advisory RLIMIT test off Windows ([#1450](https://github.com/ben-ranford/lopper/issues/1450)) ([7366d81](https://github.com/ben-ranford/lopper/commit/7366d8128ebab0406228a6ae090b240755caf7f5))
+
+
+### Code Refactoring
+
+* **analysis:** centralize cache atomic writes ([#1418](https://github.com/ben-ranford/lopper/issues/1418)) ([54f70eb](https://github.com/ben-ranford/lopper/commit/54f70eb219fbd6c71f7d34039af96d398e07e021))
+* **baseline:** share typed snapshot envelope and validation ([#1414](https://github.com/ben-ranford/lopper/issues/1414)) ([62088ba](https://github.com/ben-ranford/lopper/commit/62088ba088a5ffdcb4e665bfe6dad904d1e67554))
+
 ## [1.8.3](https://github.com/ben-ranford/lopper/compare/v1.8.2...v1.8.3) (2026-07-23)
 
 

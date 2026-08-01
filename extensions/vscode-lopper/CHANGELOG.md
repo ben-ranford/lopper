@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.4 (2026-07-31)
+
+- Added vulnerability findings to dependency details and newly reachable vulnerabilities to baseline comparisons, including affected and unevaluable version status.
+- Hid findings covered by active accepted-risk, not-affected, or resolved exception decisions while keeping expired and unresolved findings visible.
+- Updated the bundled `tar` dependency to 7.5.22.
+
 ## 1.8.3 (2026-07-22)
 
 - Updated the bundled `tar` dependency to 7.5.21.
