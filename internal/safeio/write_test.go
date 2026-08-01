@@ -58,6 +58,16 @@ func moveFallbackFailureCases() []moveFallbackFailureCase {
 	}
 }
 
+func newPinnedTargetInfo(t *testing.T, contents string) fs.FileInfo {
+	t.Helper()
+
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte(contents), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	return statTestPath(t, targetInfoPath)
+}
+
 func assertMovedFileResult(t *testing.T, sourcePath, targetPath, wantData, sourceAction string) {
 	t.Helper()
 
@@ -326,6 +336,28 @@ func assertExclusiveCreateCleanup(t *testing.T, removed []string) {
 	}
 	if removed[0] != writeTestFileName {
 		t.Fatalf("expected exclusive-create target cleanup for %q, got %v", writeTestFileName, removed)
+	}
+}
+
+func assertWriteIfAbsentFallbackCleanup(t *testing.T, expectedErr error, targetFile func(*bool) File) {
+	t.Helper()
+
+	var removed []string
+	targetClosed := false
+	remove := func(name string) error {
+		removed = append(removed, name)
+		return nil
+	}
+
+	root := makeFakeFallbackWriteRoot(func() File { return targetFile(&targetClosed) }, remove)
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected fallback error %v, got %v", expectedErr, err)
+	}
+	assertExclusiveCreateCleanup(t, removed)
+	if !targetClosed {
+		t.Fatal("expected fallback target file close attempt before cleanup")
 	}
 }
 
@@ -1396,64 +1428,30 @@ func TestWriteFileIfAbsentAtRootReturnsExistWhenTargetAppearsAfterLookup(t *test
 
 func TestWriteFileIfAbsentAtRootRemovesFallbackTargetOnWriteError(t *testing.T) {
 	expectedErr := errors.New("write target failure")
-	var removed []string
-	targetClosed := false
-	targetFile := func() File {
+	assertWriteIfAbsentFallbackCleanup(t, expectedErr, func(targetClosed *bool) File {
 		return &fakeFile{
 			write: func([]byte) (int, error) { return 0, expectedErr },
 			close: func() error {
-				targetClosed = true
+				*targetClosed = true
 				return nil
 			},
 			chmod: func(os.FileMode) error { return nil },
 		}
-	}
-	remove := func(name string) error {
-		removed = append(removed, name)
-		return nil
-	}
-
-	root := makeFakeFallbackWriteRoot(targetFile, remove)
-
-	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected fallback write error, got %v", err)
-	}
-	assertExclusiveCreateCleanup(t, removed)
-	if !targetClosed {
-		t.Fatal("expected fallback target file to close before cleanup")
-	}
+	})
 }
 
 func TestWriteFileIfAbsentAtRootRemovesFallbackTargetOnCloseError(t *testing.T) {
 	expectedErr := errors.New("close target failure")
-	var removed []string
-	targetClosed := false
-	targetFile := func() File {
+	assertWriteIfAbsentFallbackCleanup(t, expectedErr, func(targetClosed *bool) File {
 		return &fakeFile{
 			write: func(p []byte) (int, error) { return len(p), nil },
 			close: func() error {
-				targetClosed = true
+				*targetClosed = true
 				return expectedErr
 			},
 			chmod: func(os.FileMode) error { return nil },
 		}
-	}
-	remove := func(name string) error {
-		removed = append(removed, name)
-		return nil
-	}
-
-	root := makeFakeFallbackWriteRoot(targetFile, remove)
-
-	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected fallback close error, got %v", err)
-	}
-	assertExclusiveCreateCleanup(t, removed)
-	if !targetClosed {
-		t.Fatal("expected fallback target file close attempt before cleanup")
-	}
+	})
 }
 
 func TestWriteRootRejectsNonRelativeTargets(t *testing.T) {
@@ -2605,11 +2603,7 @@ func TestOverwritePinnedFileRejectsFileWithoutTruncate(t *testing.T) {
 }
 
 func TestOverwritePinnedFilePropagatesTruncateError(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
+	info := newPinnedTargetInfo(t, "before")
 	expectedErr := errors.New("truncate target failure")
 	root := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return info, nil },
@@ -2630,11 +2624,7 @@ func TestOverwritePinnedFilePropagatesTruncateError(t *testing.T) {
 }
 
 func TestOverwritePinnedFilePropagatesWriteError(t *testing.T) {
-	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
-	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target info path: %v", err)
-	}
-	info := statTestPath(t, targetInfoPath)
+	info := newPinnedTargetInfo(t, "before")
 	expectedErr := errors.New("write target failure")
 	root := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return info, nil },
