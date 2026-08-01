@@ -93,10 +93,10 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 	return nil
 }
 
-func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File) (returnErr error) {
+func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {
-		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile) {
+		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			return overwritePinnedFile(root, targetRel, replacementFile, data, nil)
 		}
 		return err
@@ -109,7 +109,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		return err
 	}
 	if err := session.commit(); err != nil {
-		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile) {
+		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			return overwritePinnedFile(root, targetRel, replacementFile, data, nil)
 		}
 		return err
@@ -117,8 +117,8 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 	return nil
 }
 
-func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File) bool {
-	return replacementFile != nil && os.IsPermission(err)
+func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {
+	return allowPermissionFallback && replacementFile != nil && os.IsPermission(err)
 }
 
 func openPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {

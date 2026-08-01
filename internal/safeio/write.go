@@ -62,6 +62,21 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	return r.writeFileAtTarget(target, data, perm, true, parentPerm)
 }
 
+// WriteFileCreatingParentsWithPermissionFallback atomically writes a
+// root-relative file, creating missing parent directories inside the pinned
+// root. When an existing regular target is already open and writable, callers
+// may opt into an in-place overwrite fallback if parent directory permissions
+// reject the atomic temp-file path.
+func (r *WriteRoot) WriteFileCreatingParentsWithPermissionFallback(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.withTargetParent(target, true, parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		return writeFileAtRootWithPermissionFallback(parent, parentTarget, data, perm)
+	})
+}
+
 // WriteFileCreatingParentsIfAbsent writes a root-relative file only when the
 // target path does not already exist, creating missing parent directories
 // inside the pinned root without following symlinks.
@@ -247,7 +262,29 @@ func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMo
 		}
 	}()
 
-	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file)
+	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, false)
+}
+
+func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
+	if err != nil {
+		return err
+	}
+	if existingInfo == nil {
+		return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+	}
+
+	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+
+	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, true)
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {

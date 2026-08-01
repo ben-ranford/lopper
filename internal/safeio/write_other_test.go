@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -47,7 +48,32 @@ func TestWriteFileReplacingUnderReplacesReadOnlyExistingRegularFileOnNonWindows(
 	assertTargetContentAndMode(t, targetPath, "after", 0o444, "replaced")
 }
 
-func TestWriteRootFallsBackToPinnedOverwriteWhenParentLacksWritePermissionOnNonWindows(t *testing.T) {
+func TestWriteRootPermissionFallbackCreatesMissingParentsOnNonWindows(t *testing.T) {
+	assertWriteRootCreatesMissingParentsAndWrites(t, "WriteFileCreatingParentsWithPermissionFallback", (*WriteRoot).WriteFileCreatingParentsWithPermissionFallback)
+}
+
+func TestWriteRootPermissionFallbackRejectsNonRelativeTargetsOnNonWindows(t *testing.T) {
+	assertWriteRootRejectsNonRelativeTargets(t, (*WriteRoot).WriteFileCreatingParentsWithPermissionFallback)
+}
+
+func TestWriteRootPermissionFallbackRejectsExistingDirectoryTargetOnNonWindows(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	targetPath := filepath.Join("reports", writeTestFileName)
+	if err := os.MkdirAll(filepath.Join(rootDir, targetPath), 0o755); err != nil {
+		t.Fatalf("mkdir target directory: %v", err)
+	}
+
+	err := root.WriteFileCreatingParentsWithPermissionFallback(targetPath, []byte("hello"), 0o600, 0o750)
+	if err == nil {
+		t.Fatal("expected existing directory target to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected non-regular target error, got %v", err)
+	}
+}
+
+func TestWriteRootReturnsErrorWithoutMutationWhenParentLacksWritePermissionOnNonWindows(t *testing.T) {
 	if syscall.Geteuid() == 0 {
 		t.Skip("effective privileges bypass parent write permission checks")
 	}
@@ -57,8 +83,31 @@ func TestWriteRootFallsBackToPinnedOverwriteWhenParentLacksWritePermissionOnNonW
 	requireWritableTargetReopenableOnNonWindows(t, targetPath)
 
 	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
-	if err := root.WriteFileCreatingParents(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750); err != nil {
-		t.Fatalf("WriteFileCreatingParents returned error: %v", err)
+	err := root.WriteFileCreatingParents(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("expected permission error, got %v", err)
+	}
+
+	assertTargetContentAndMode(t, targetPath, "before", 0o640, "existing")
+	if entries, err := os.ReadDir(parentDir); err != nil {
+		t.Fatalf("read reports dir: %v", err)
+	} else if len(entries) != 1 || entries[0].Name() != writeTestFileName {
+		t.Fatalf("expected only target file to remain, got %v", entries)
+	}
+}
+
+func TestWriteRootPermissionFallbackOverwritesWhenParentLacksWritePermissionOnNonWindows(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent write permission checks")
+	}
+
+	rootDir, parentDir, targetPath := setupReadOnlyWriteParent(t)
+	requireParentWriteDeniedOnNonWindows(t, parentDir, ".safeio-write-probe")
+	requireWritableTargetReopenableOnNonWindows(t, targetPath)
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	if err := root.WriteFileCreatingParentsWithPermissionFallback(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600, 0o750); err != nil {
+		t.Fatalf("WriteFileCreatingParentsWithPermissionFallback returned error: %v", err)
 	}
 
 	assertTargetContentAndMode(t, targetPath, "after", 0o640, "overwritten")
@@ -72,7 +121,7 @@ func TestWriteRootFallsBackToPinnedOverwriteWhenParentLacksWritePermissionOnNonW
 func TestWriteAtomicReplacementWithPinnedTargetFallsBackWhenTempCreationDeniedOnNonWindows(t *testing.T) {
 	root, targetFile, targetData := newFallbackDeniedWriteRoot(t, os.ErrPermission, nil)
 
-	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile); err != nil {
+	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
 		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
 	}
 	assertFallbackTargetData(t, targetData, "after")
@@ -85,7 +134,7 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackWhenRenameDeniedOnNonWin
 		return nil
 	})
 
-	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile); err != nil {
+	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
 		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
 	}
 	if removeCalls != 1 {

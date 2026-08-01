@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestPersistProfileConfigForceOverwritesWritableTargetWhenParentLacksWritePermission(t *testing.T) {
@@ -17,6 +19,40 @@ func TestPersistProfileConfigForceOverwritesWritableTargetWhenParentLacksWritePe
 	parentDir, outputPath := setupReadOnlyProfileParent(t)
 	requireParentWriteDenied(t, parentDir, ".profile-write-probe")
 	requireWritableTargetReopenable(t, outputPath)
+
+	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, true)
+	if err != nil {
+		t.Fatalf("persist forced profile output: %v", err)
+	}
+	if status != "threshold profile config written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
+}
+
+func TestPersistProfileConfigForceIsOptInWhenParentLacksWritePermission(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent write permission checks")
+	}
+
+	parentDir, outputPath := setupReadOnlyProfileParent(t)
+	requireParentWriteDenied(t, parentDir, ".profile-write-probe")
+	requireWritableTargetReopenable(t, outputPath)
+
+	root, err := safeio.OpenCanonicalWriteRoot(parentDir)
+	if err != nil {
+		t.Fatalf("open canonical write root: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close canonical write root: %v", closeErr)
+		}
+	}()
+
+	if err := root.WriteFileCreatingParents(filepath.Base(outputPath), []byte("shared"), 0o600, 0o750); !os.IsPermission(err) {
+		t.Fatalf("expected shared writer permission error, got %v", err)
+	}
+	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 5\n", 0o600)
 
 	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, true)
 	if err != nil {
