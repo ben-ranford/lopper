@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
@@ -22,14 +20,14 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 		t.Fatalf("mkdir bin dir: %v", err)
 	}
 
-	runPreCommitTestCommand(t, tempDir, "git", "init", "-b", "main", repoDir)
-	runPreCommitTestCommand(t, repoDir, "git", "config", "user.name", "Test User")
-	runPreCommitTestCommand(t, repoDir, "git", "config", "user.email", "test@example.com")
+	runCommand(t, tempDir, "git", "init", "-b", "main", repoDir)
+	runCommand(t, repoDir, "git", "config", "user.name", "Test User")
+	runCommand(t, repoDir, "git", "config", "user.email", "test@example.com")
 	writeFile(t, filepath.Join(repoDir, "tracked.txt"), "baseline\n")
-	runPreCommitTestCommand(t, repoDir, "git", "add", "tracked.txt")
-	runPreCommitTestCommand(t, repoDir, "git", "commit", "-m", "baseline")
-	runPreCommitTestCommand(t, repoDir, "git", "worktree", "add", worktreeDir)
-	runPreCommitTestCommand(t, repoDir, "git", "config", "core.bare", "true")
+	runCommand(t, repoDir, "git", "add", "tracked.txt")
+	runCommand(t, repoDir, "git", "commit", "-m", "baseline")
+	runCommand(t, repoDir, "git", "worktree", "add", worktreeDir)
+	runCommand(t, repoDir, "git", "config", "core.bare", "true")
 
 	hookDir := filepath.Join(worktreeDir, ".githooks")
 	if err := os.MkdirAll(hookDir, 0o755); err != nil {
@@ -108,22 +106,4 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 	if strings.Contains(logOutput, "fatal: not a git repository") {
 		t.Fatalf("expected temporary repo git commands to succeed with hook env, got log:\n%s", logOutput)
 	}
-}
-
-func runPreCommitTestCommand(t *testing.T, dir string, name string, args ...string) string {
-	t.Helper()
-
-	if name == "git" {
-		testutil.RunGit(t, dir, args...)
-		return ""
-	}
-
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Env = withoutGitEnv()
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
-	}
-	return string(output)
 }
