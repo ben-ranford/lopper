@@ -232,31 +232,15 @@ func newFallbackPinnedTarget(t *testing.T) (fs.FileInfo, File, *[]byte) {
 		t.Fatalf("seed target info path: %v", err)
 	}
 	info := statTestPath(t, targetPath)
-	targetData := []byte("before")
-	targetFile := &truncatingFakeFile{
-		fakeFile: &fakeFile{
-			stat: func() (fs.FileInfo, error) { return info, nil },
-			write: func(p []byte) (int, error) {
-				targetData = append(targetData, p...)
-				return len(p), nil
-			},
-			close: closeWithoutError,
-		},
-		truncate: func(size int64) error {
-			if size != 0 {
-				t.Fatalf("unexpected truncate size: %d", size)
-			}
-			targetData = targetData[:0]
-			return nil
-		},
-	}
-	return info, targetFile, &targetData
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	return info, targetFile, targetData
 }
 
 func newFallbackDeniedWriteRoot(t *testing.T, tempOpenErr error, rename func(string, string) error) (*fakeRoot, File, *[]byte) {
 	t.Helper()
 
 	info, targetFile, targetData := newFallbackPinnedTarget(t)
+	openTarget := func() (File, error) { return targetFile, nil }
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name != writeTestFileName {
@@ -264,20 +248,8 @@ func newFallbackDeniedWriteRoot(t *testing.T, tempOpenErr error, rename func(str
 			}
 			return info, nil
 		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name == writeTestFileName {
-				return targetFile, nil
-			}
-			if tempOpenErr != nil {
-				return nil, tempOpenErr
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
-		rename: rename,
+		openFile: openTargetOrTempFile(writeTestFileName, openTarget, tempOpenErr),
+		rename:   rename,
 	}
 	return root, targetFile, targetData
 }
