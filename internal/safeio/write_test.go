@@ -2490,6 +2490,63 @@ func TestWriteAtomicReplacementWithPinnedTargetReturnsCommittedTargetStatError(t
 	}
 }
 
+func TestWriteAtomicReplacementWithPinnedTargetReturnsCloseErrorBeforeRename(t *testing.T) {
+	expectedErr := errors.New("close temp failure")
+	renameCalls := 0
+	lstatCalls := 0
+	removeCalls := 0
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	targetPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	targetInfo := statTestPath(t, targetPath)
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected open path: %s", name)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: func() error { return expectedErr },
+			}, nil
+		},
+		lstat: func(string) (fs.FileInfo, error) {
+			lstatCalls++
+			return targetInfo, nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+	target := &fakeFile{
+		stat:  func() (fs.FileInfo, error) { return targetInfo, nil },
+		close: closeWithoutError,
+	}
+
+	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, target, false)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected temp close error, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no rename after close failure, got %d", renameCalls)
+	}
+	if lstatCalls != 0 {
+		t.Fatalf("expected no committed target lstat after close failure, got %d", lstatCalls)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected temp cleanup after close failure, got %d removes", removeCalls)
+	}
+	assertFileContent(t, targetPath, "before")
+}
+
 func TestOpenPinnedReplacementTargetReturnsOpenError(t *testing.T) {
 	expectedErr := errors.New("open target failure")
 	root := &fakeRoot{

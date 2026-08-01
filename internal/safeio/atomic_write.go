@@ -13,6 +13,7 @@ type atomicWriteSession struct {
 	targetRel string
 	tempRel   string
 	tempFile  File
+	tempInfo  fs.FileInfo
 }
 
 type truncatingFile interface {
@@ -57,20 +58,37 @@ func (s *atomicWriteSession) commit() error {
 }
 
 func (s *atomicWriteSession) verifyCommittedTarget() error {
-	expectedInfo, err := s.tempFile.Stat()
-	if err != nil {
-		return err
+	if s.tempInfo == nil {
+		return fmt.Errorf("temporary file info unavailable after commit: %s", s.targetRel)
 	}
-	if !expectedInfo.Mode().IsRegular() {
+	if !s.tempInfo.Mode().IsRegular() {
 		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
 	}
 	pathInfo, err := s.root.Lstat(s.targetRel)
 	if err != nil {
 		return fmt.Errorf("committed target changed before validation: %w", err)
 	}
-	if !pathInfo.Mode().IsRegular() || !os.SameFile(expectedInfo, pathInfo) {
+	if !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
 		return fmt.Errorf("committed target changed before validation: %s", s.targetRel)
 	}
+	return nil
+}
+
+func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
+	if s.tempFile == nil {
+		return nil
+	}
+	tempInfo, err := s.tempFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !tempInfo.Mode().IsRegular() {
+		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
+	}
+	if err := s.closeTempFile(); err != nil {
+		return err
+	}
+	s.tempInfo = tempInfo
 	return nil
 }
 
@@ -130,6 +148,9 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 	if err := session.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
+		return err
+	}
 	if err := session.commit(); err != nil {
 		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 		if fallbackErr == nil {
@@ -140,10 +161,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		}
 		return fallbackErr
 	}
-	if err := session.verifyCommittedTarget(); err != nil {
-		return err
-	}
-	return session.closeTempFile()
+	return session.verifyCommittedTarget()
 }
 
 func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {
