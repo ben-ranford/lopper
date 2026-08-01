@@ -72,6 +72,10 @@ func TestRunCodemodApplyToolReturnsStructuredPayload(t *testing.T) {
 
 func TestRunBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 	repo := t.TempDir()
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
 	rep := sampleReport(repo)
 	runner := &fakeMutationRunner{baselineReport: rep}
 	server := NewServer(Options{Features: mustMutationFeatureSet(t, true), MutationRunner: runner})
@@ -102,7 +106,7 @@ func TestRunBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 	if !runner.baselineCalled {
 		t.Fatalf("expected baseline runner to be called")
 	}
-	wantStore := filepath.Join(repo, "baselines")
+	wantStore := filepath.Join(resolvedRepo, "baselines")
 	wantPath := report.BaselineSnapshotPath(wantStore, "label:nightly")
 	if runner.lastBaseline.TopN != 3 || runner.lastBaseline.BaselineStorePath != wantStore || runner.lastBaseline.BaselineKey != "label:nightly" {
 		t.Fatalf("unexpected baseline request: %#v", runner.lastBaseline)
@@ -123,7 +127,6 @@ func TestRunBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 func TestRunDashboardBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 	repo := t.TempDir()
 	childRepo := t.TempDir()
-	store := filepath.Join(repo, "dashboard-baselines")
 	runner := &fakeMutationRunner{
 		dashboardReport: dashboard.Report{
 			Summary: dashboard.Summary{
@@ -137,7 +140,7 @@ func TestRunDashboardBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 	result := callToolResult(t, server, toolSaveDashboardBaseline, map[string]any{
 		"repoPath":          repo,
 		"repos":             []map[string]any{{"name": "app", "path": childRepo, "language": "js-ts"}},
-		"baselineStorePath": store,
+		"baselineStorePath": "dashboard-baselines",
 		"baselineKey":       "release/1",
 		"confirmSave":       true,
 		"topN":              4,
@@ -149,8 +152,16 @@ func TestRunDashboardBaselineSaveToolReturnsStructuredPayload(t *testing.T) {
 	if !runner.dashboardCalled {
 		t.Fatalf("expected dashboard runner to be called")
 	}
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+	store := filepath.Join(resolvedRepo, "dashboard-baselines")
 	if runner.lastDashboard.TopN != 4 || runner.lastDashboard.DefaultLanguage != "js-ts" || len(runner.lastDashboard.Repos) != 1 {
 		t.Fatalf("unexpected dashboard request: %#v", runner.lastDashboard)
+	}
+	if runner.lastDashboard.BaselineStorePath != store {
+		t.Fatalf("unexpected dashboard store path: %#v", runner.lastDashboard)
 	}
 
 	payload, ok := result.StructuredContent.(dashboardBaselineSavePayload)
@@ -497,24 +508,156 @@ func TestResolveMutationRequestValidationBranches(t *testing.T) {
 
 func TestResolveLocalMutationPath(t *testing.T) {
 	repo := t.TempDir()
-	absStore := filepath.Join(repo, "store")
-	resolved, err := resolveLocalMutationPath(repo, absStore, "baselineStorePath")
-	if err != nil || resolved != absStore {
-		t.Fatalf("resolve absolute path: path=%q err=%v", resolved, err)
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
 	}
-	for _, rawPath := range []string{"", "https://example.com/store", "bad\x00path"} {
+	resolved, err := resolveLocalMutationPath(repo, "store", "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve relative path: path=%q err=%v", resolved, err)
+	}
+	absoluteInside := filepath.Join(repo, "store")
+	resolved, err = resolveLocalMutationPath(repo, absoluteInside, "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve internal absolute path: path=%q err=%v", resolved, err)
+	}
+	for _, rawPath := range []string{"", "https://example.com/store", "bad\x00path", "../outside"} {
 		if _, err := resolveLocalMutationPath(repo, rawPath, "baselineStorePath"); err == nil {
 			t.Fatalf("expected local path validation error for %q", rawPath)
 		}
+	}
+	if _, err := resolveLocalMutationPath(repo, filepath.Join(t.TempDir(), "store"), "baselineStorePath"); err == nil || !strings.Contains(err.Error(), "must resolve within repoPath") {
+		t.Fatalf("expected outside absolute rejection, got %v", err)
+	}
+}
+
+func TestResolveLocalMutationPathRejectsSymlinkEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(repo, "escape")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := resolveLocalMutationPath(repo, filepath.Join("escape", "store"), "baselineStorePath"); err == nil || !strings.Contains(err.Error(), "must resolve within repoPath") {
+		t.Fatalf("expected symlink escape rejection, got %v", err)
+	}
+}
+
+func TestResolveLocalMutationPathNormalizesAbsoluteRepoSymlink(t *testing.T) {
+	repo := t.TempDir()
+	repoAlias := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(repo, repoAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+
+	resolved, err := resolveLocalMutationPath(repoAlias, filepath.Join(repoAlias, "store"), "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve absolute path within repo symlink: path=%q err=%v", resolved, err)
+	}
+
+	resolved, err = resolveLocalMutationPath(repoAlias, filepath.Join(resolvedRepo, "store"), "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve absolute path within resolved repo root: path=%q err=%v", resolved, err)
+	}
+}
+
+func TestNormalizeLocalMutationCandidate(t *testing.T) {
+	repo := t.TempDir()
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+	existing := filepath.Join(repo, "store")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+
+	normalized, err := normalizeLocalMutationCandidate(resolvedRepo, existing)
+	if err != nil || normalized != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("normalize existing candidate: path=%q err=%v", normalized, err)
+	}
+}
+
+func TestNormalizeLocalMutationCandidateRejectsEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "escape")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := normalizeLocalMutationCandidate(resolvedRepo, filepath.Join(repo, "escape", "store")); !errors.Is(err, errMutationPathEscapesRepo) {
+		t.Fatalf("expected mutation path escape error, got %v", err)
+	}
+}
+
+func TestResolveLocalMutationPathRejectsBrokenSymlinkPath(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), filepath.Join(repo, "broken")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := resolveLocalMutationPath(repo, filepath.Join("broken", "store"), "baselineStorePath"); err == nil || !strings.Contains(err.Error(), "inspect baselineStorePath") {
+		t.Fatalf("expected broken symlink inspection error, got %v", err)
+	}
+}
+
+func TestNearestExistingAncestor(t *testing.T) {
+	repo := t.TempDir()
+	existing := filepath.Join(repo, "existing")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing: %v", err)
+	}
+
+	ancestor, err := nearestExistingAncestor(filepath.Join(existing, "child", "store"))
+	if err != nil || ancestor != existing {
+		t.Fatalf("expected nearest existing ancestor %q, got %q err=%v", existing, ancestor, err)
+	}
+	ancestor, err = nearestExistingAncestor(existing)
+	if err != nil || ancestor != existing {
+		t.Fatalf("expected existing path to resolve to itself, got %q err=%v", ancestor, err)
+	}
+	if _, err := nearestExistingAncestor("bad\x00path"); err == nil {
+		t.Fatalf("expected invalid path error")
+	}
+}
+
+func TestPathWithinRoot(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "tmp", "repo")
+	if !pathWithinRoot(root, root) {
+		t.Fatalf("expected root to be within itself")
+	}
+	if !pathWithinRoot(root, filepath.Join(root, "nested", "store")) {
+		t.Fatalf("expected nested path within root")
+	}
+	if pathWithinRoot(root, filepath.Join(string(filepath.Separator), "tmp", "other")) {
+		t.Fatalf("expected sibling path outside root")
+	}
+	if pathWithinRoot("bad\x00root", filepath.Join(root, "nested")) {
+		t.Fatalf("expected invalid root to return false")
+	}
+	if pathWithinRoot(root, "bad\x00target") {
+		t.Fatalf("expected invalid target to return false")
 	}
 }
 
 func TestResolveBaselineMutationTarget(t *testing.T) {
 	repo := t.TempDir()
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
 	if _, _, err := resolveBaselineMutationTarget(repo, "store", "key", "label", "baseline"); err == nil {
 		t.Fatalf("expected key/label conflict")
 	}
-	if store, key, err := resolveBaselineMutationTarget(repo, "store", "explicit", "", "baseline"); err != nil || store != filepath.Join(repo, "store") || key != "explicit" {
+	if store, key, err := resolveBaselineMutationTarget(repo, "store", "explicit", "", "baseline"); err != nil || store != filepath.Join(resolvedRepo, "store") || key != "explicit" {
 		t.Fatalf("unexpected explicit key resolution: store=%q key=%q err=%v", store, key, err)
 	}
 	if _, _, err := resolveBaselineMutationTarget(repo, "store", "", "", "baseline"); err == nil {
@@ -522,8 +665,12 @@ func TestResolveBaselineMutationTarget(t *testing.T) {
 	}
 	gitRepo := t.TempDir()
 	writeGitFixture(t, gitRepo)
+	resolvedGitRepo, err := filepath.EvalSymlinks(gitRepo)
+	if err != nil {
+		t.Fatalf("resolve git repo symlinks: %v", err)
+	}
 	store, key, err := resolveBaselineMutationTarget(gitRepo, "store", "", "", "baseline")
-	if err != nil || store != filepath.Join(gitRepo, "store") || !strings.HasPrefix(key, "commit:") {
+	if err != nil || store != filepath.Join(resolvedGitRepo, "store") || !strings.HasPrefix(key, "commit:") {
 		t.Fatalf("unexpected current commit key resolution: store=%q key=%q err=%v", store, key, err)
 	}
 }

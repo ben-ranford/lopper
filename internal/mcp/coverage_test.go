@@ -429,26 +429,10 @@ func TestResolveAnalysisRequestAdvisoryTrustBoundaries(t *testing.T) {
 
 func TestBaselineHelpers(t *testing.T) {
 	repo := t.TempDir()
-	if _, _, _, err := resolveBaselineComparison(repo, analysisToolArguments{BaselinePath: "a", BaselineStorePath: "b", BaselineKey: "k"}); err == nil {
-		t.Fatalf("expected baseline conflict")
-	}
-	if _, _, _, err := resolveBaselineComparison(repo, analysisToolArguments{BaselineStorePath: "store"}); err == nil {
-		t.Fatalf("expected missing baseline key")
-	}
-	directPath, directKey, directCurrent, err := resolveBaselineComparison(repo, analysisToolArguments{BaselinePath: "baseline.json", BaselineKey: "ignored"})
-	if err != nil {
-		t.Fatalf("resolve direct baseline: %v", err)
-	}
-	if directPath != "baseline.json" || directKey != "ignored" || directCurrent == "" {
-		t.Fatalf("unexpected direct baseline resolution: path=%q key=%q current=%q", directPath, directKey, directCurrent)
-	}
-	path, key, current, err := resolveBaselineComparison(repo, analysisToolArguments{BaselineStorePath: "store", BaselineKey: "release/1"})
-	if err != nil {
-		t.Fatalf("resolve baseline store: %v", err)
-	}
-	if !strings.Contains(path, "release_1") || key != "release/1" || current == "" {
-		t.Fatalf("unexpected baseline resolution: path=%q key=%q current=%q", path, key, current)
-	}
+	assertResolveBaselineComparisonError(t, repo, analysisToolArguments{BaselinePath: "a", BaselineStorePath: "b", BaselineKey: "k"}, "baseline conflict")
+	assertResolveBaselineComparisonError(t, repo, analysisToolArguments{BaselineStorePath: "store"}, "missing baseline key")
+	assertDirectBaselineResolution(t, repo)
+	assertBaselineStoreResolution(t, repo)
 
 	baselinePath := filepath.Join(repo, "baseline.json")
 	writeJSONFile(t, baselinePath, report.Report{SchemaVersion: report.SchemaVersion, Dependencies: []report.DependencyReport{{Name: "dep", UsedExportsCount: 1, TotalExportsCount: 2, UsedPercent: 50}}})
@@ -465,9 +449,56 @@ func TestBaselineHelpers(t *testing.T) {
 	}
 }
 
+func assertResolveBaselineComparisonError(t *testing.T, repo string, args analysisToolArguments, message string) {
+	t.Helper()
+	if _, _, _, err := resolveBaselineComparison(repo, args); err == nil {
+		t.Fatalf("expected %s", message)
+	}
+}
+
+func assertDirectBaselineResolution(t *testing.T, repo string) {
+	t.Helper()
+	path, key, current, err := resolveBaselineComparison(repo, analysisToolArguments{BaselinePath: "baseline.json", BaselineKey: "ignored"})
+	if err != nil {
+		t.Fatalf("resolve direct baseline: %v", err)
+	}
+	if path != "baseline.json" || key != "ignored" || current == "" {
+		t.Fatalf("unexpected direct baseline resolution: path=%q key=%q current=%q", path, key, current)
+	}
+}
+
+func assertBaselineStoreResolution(t *testing.T, repo string) {
+	t.Helper()
+	path, key, current, err := resolveBaselineComparison(repo, analysisToolArguments{BaselineStorePath: "store", BaselineKey: "release/1"})
+	if err != nil {
+		t.Fatalf("resolve baseline store: %v", err)
+	}
+	if !strings.Contains(path, "release_1") || key != "release/1" || current == "" {
+		t.Fatalf("unexpected baseline resolution: path=%q key=%q current=%q", path, key, current)
+	}
+}
+
 func TestSmallHelperBranches(t *testing.T) {
+	repo := t.TempDir()
+	assertContextForTimeoutRejectsInvalid(t)
+	assertValidateRepoPathBranches(t, repo)
+	assertParseScopeModeBranches(t)
+	assertCacheEnabledDefaults(t)
+	assertMergeStringOptionsBranches(t)
+	decorateReport(nil, defaultThresholdValues(), nil, nil, "")
+}
+
+func assertContextForTimeoutRejectsInvalid(t *testing.T) {
+	t.Helper()
 	if _, _, err := contextForTimeout(context.Background(), maxTimeoutMillis+1); err == nil {
 		t.Fatalf("expected invalid timeout")
+	}
+}
+
+func assertValidateRepoPathBranches(t *testing.T, repo string) {
+	t.Helper()
+	if got, err := validateRepoPath(repo); err != nil || got == "" {
+		t.Fatalf("expected valid repo path, got path=%q err=%v", got, err)
 	}
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -478,6 +509,10 @@ func TestSmallHelperBranches(t *testing.T) {
 			t.Fatalf("expected validateRepoPath(%q) error", path)
 		}
 	}
+}
+
+func assertParseScopeModeBranches(t *testing.T) {
+	t.Helper()
 	for _, mode := range []string{"", analysis.ScopeModePackage, analysis.ScopeModeRepo, analysis.ScopeModeChangedPackages} {
 		if _, err := parseScopeMode(mode); err != nil {
 			t.Fatalf("parse scope %q: %v", mode, err)
@@ -486,9 +521,17 @@ func TestSmallHelperBranches(t *testing.T) {
 	if _, err := parseScopeMode("bad"); err == nil {
 		t.Fatalf("expected bad scope error")
 	}
+}
+
+func assertCacheEnabledDefaults(t *testing.T) {
+	t.Helper()
 	if !cacheEnabled(nil) || cacheEnabled(boolPtr(false)) {
 		t.Fatalf("unexpected cache enabled defaults")
 	}
+}
+
+func assertMergeStringOptionsBranches(t *testing.T) {
+	t.Helper()
 	if got := mergeStringOptions([]string{"config"}, nil); !slicesEqual(got, []string{"config"}) {
 		t.Fatalf("expected config patterns, got %#v", got)
 	}
@@ -498,7 +541,6 @@ func TestSmallHelperBranches(t *testing.T) {
 	if got := mergeStringOptions(nil, nil); len(got) != 0 {
 		t.Fatalf("expected nil patterns, got %#v", got)
 	}
-	decorateReport(nil, defaultThresholdValues(), nil, nil, "")
 }
 
 func TestDecodeStrictBranches(t *testing.T) {
@@ -526,6 +568,15 @@ func TestSummarizeReportBranches(t *testing.T) {
 	withBaseline.BaselineComparison = &report.BaselineComparison{SummaryDelta: report.SummaryDelta{WastePercentDelta: 2.5}}
 	if got := summarizeReport(analysisToolKindCompare, withBaseline); !strings.Contains(got, "Waste delta") {
 		t.Fatalf("unexpected baseline summary: %q", got)
+	}
+	withRuntimeChanges := sampleReport(".")
+	withRuntimeChanges.BaselineComparison = &report.BaselineComparison{
+		SummaryDelta:        report.SummaryDelta{WastePercentDelta: 1.0},
+		RuntimeRegressions:  []report.DependencyDelta{{Name: "dep-a"}},
+		RuntimeImprovements: []report.DependencyDelta{{Name: "dep-b"}},
+	}
+	if got := summarizeReport(analysisToolKindCompare, withRuntimeChanges); !strings.Contains(got, "Runtime regressions: 1. Runtime improvements: 1.") {
+		t.Fatalf("unexpected runtime delta summary: %q", got)
 	}
 }
 
