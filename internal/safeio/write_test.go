@@ -2733,6 +2733,71 @@ func TestAtomicWriteSessionSnapshotAndCloseTempFileRejectsNonRegularTemp(t *test
 	}
 }
 
+func TestAtomicWriteSessionVerifyCommittedTargetRejectsNonRegularSnapshot(t *testing.T) {
+	session := &atomicWriteSession{
+		targetRel: writeTestFileName,
+		tempInfo: &modeOverrideFileInfo{
+			FileInfo: newPinnedTargetInfo(t, "temp"),
+			mode:     os.ModeDir | 0o755,
+		},
+	}
+
+	err := session.verifyCommittedTarget()
+	if err == nil || !strings.Contains(err.Error(), "temporary file is not regular after commit") {
+		t.Fatalf("expected non-regular temp snapshot error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionVerifyCommittedTargetRejectsNonRegularCommittedTarget(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				return &modeOverrideFileInfo{
+					FileInfo: tempInfo,
+					mode:     os.ModeDir | 0o755,
+				}, nil
+			},
+		},
+		targetRel: writeTestFileName,
+		tempInfo:  tempInfo,
+	}
+
+	err := session.verifyCommittedTarget()
+	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+		t.Fatalf("expected non-regular committed target error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionSnapshotAndCloseTempFileAllowsMissingTempFile(t *testing.T) {
+	session := &atomicWriteSession{}
+
+	if err := session.snapshotAndCloseTempFile(); err != nil {
+		t.Fatalf("expected nil snapshotAndCloseTempFile error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionWriteAndCloseReturnsWriteError(t *testing.T) {
+	expectedErr := errors.New("write failure")
+	session := &atomicWriteSession{
+		tempFile: &fakeFile{
+			write: func([]byte) (int, error) { return 0, expectedErr },
+			close: func() error {
+				t.Fatal("expected writeAndClose to abort before close on write error")
+				return nil
+			},
+		},
+	}
+
+	err := session.writeAndClose([]byte("after"), 0o600)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected writeAndClose write error, got %v", err)
+	}
+	if session.tempFile == nil {
+		t.Fatal("expected temp file handle to remain when writeAndClose aborts before close")
+	}
+}
+
 func TestAtomicWriteSessionWriteAndClose(t *testing.T) {
 	tempClosed := false
 	session := &atomicWriteSession{
