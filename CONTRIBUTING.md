@@ -118,6 +118,12 @@ PR descriptions are also validated before merge.
 Keep every heading from `.github/PULL_REQUEST_TEMPLATE.md`, fill every risk field with a concrete value such as `None` or `N/A`, and check every checklist item once it has been considered.
 Generated release-please PRs keep their release-generated changelog body, but their title still has to use `chore(main): release x.y.z`.
 
+Before merging a generated release PR, audit every shipped component against the previous stable tag rather than relying only on the generated root changelog. For the VS Code extension:
+
+- Review `git diff --name-status <previous-tag>..HEAD -- extensions/vscode-lopper` and the corresponding commit log for source, manifest, and dependency changes.
+- Add a dated entry for the release version to `extensions/vscode-lopper/CHANGELOG.md` whenever the extension version changes. Summarize every user-visible behavior change and shipped dependency update; development-only dependency changes do not need user-facing notes.
+- Verify that `extensions/vscode-lopper/package.json`, the root package in `extensions/vscode-lopper/package-lock.json`, and the newest extension changelog entry all use the release version.
+
 ## Adapter docs checklist
 
 If you add a new language adapter, update the contributor-facing docs and user-facing metadata in the same change:
