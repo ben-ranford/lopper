@@ -60,7 +60,7 @@ func (c *rawConfig) toOverrides() (Overrides, error) {
 	if err := applyNestedStringOverride("lockfile_drift_policy", &overrides.LockfileDriftPolicy, c.Thresholds.LockfileDriftPolicy); err != nil {
 		return Overrides{}, err
 	}
-	if err := applyNestedListOverride("license_deny", &overrides.LicenseDenyList, &overrides.licenseDenyListSet, c.Thresholds.LicenseDeny); err != nil {
+	if err := applyNestedListOverride("license_deny", &overrides.LicenseDenyList, c.Thresholds.LicenseDeny, &overrides.licenseDenyListSet); err != nil {
 		return Overrides{}, err
 	}
 	if err := applyNestedBoolOverride("license_fail_on_deny", &overrides.LicenseFailOnDeny, c.Thresholds.LicenseFailOnDeny); err != nil {
@@ -108,7 +108,7 @@ func applyNestedStringOverride(name string, target **string, nested *string) err
 	return nil
 }
 
-func applyNestedListOverride(name string, target *[]string, targetSet *bool, nested *[]string) error {
+func applyNestedListOverride(name string, target *[]string, nested *[]string, targetSet *bool) error {
 	if nested == nil {
 		return nil
 	}
