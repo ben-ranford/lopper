@@ -68,7 +68,7 @@ func TestPreCommitHookNormalizesGitEnvForLinkedWorktrees(t *testing.T) {
 		"GIT_WORK_TREE=/tmp/hook-worktree",
 		"GIT_INDEX_FILE=" + indexPath,
 		"GIT_PREFIX=subdir/",
-		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_COUNT=01",
 		"GIT_CONFIG_KEY_0=advice.detachedHead",
 		"GIT_CONFIG_VALUE_0=false",
 	}
