@@ -52,6 +52,7 @@ type ReadDirFile interface {
 var ErrTargetPathSymlink = errors.New("target path is a symlink")
 
 var fileSystem FileSystem = &osFileSystem{}
+var runtimeGOOS = runtime.GOOS
 
 // OpenRoot opens a confined filesystem root.
 func OpenRoot(name string) (Root, error) {
@@ -175,7 +176,7 @@ func openPinnedRootAliasWith(targetPath string, requestedPath string, openRootNo
 }
 
 func trustedRootAliasTarget(requestedPath string) (string, bool) {
-	if runtime.GOOS != "darwin" {
+	if runtimeGOOS != "darwin" {
 		return "", false
 	}
 

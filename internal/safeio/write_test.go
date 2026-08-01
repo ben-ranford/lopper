@@ -846,21 +846,22 @@ func TestTrustedRootAliasTargetGuards(t *testing.T) {
 		t.Fatalf("expected nested alias path to be rejected, got target=%q ok=%v", untrustedTarget, ok)
 	}
 
+	withRuntimeGOOS(t, "darwin")
 	expectedTmpTarget := filepath.Join(string(os.PathSeparator), "private", "tmp")
 	tmpTarget, tmpOK := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "tmp"))
-	if runtime.GOOS == "darwin" {
-		if !tmpOK || tmpTarget != expectedTmpTarget {
-			t.Fatalf("expected /tmp alias target %q, got target=%q ok=%v", expectedTmpTarget, tmpTarget, tmpOK)
-		}
-		expectedVarTarget := filepath.Join(string(os.PathSeparator), "private", "var")
-		varTarget, varOK := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "var"))
-		if !varOK || varTarget != expectedVarTarget {
-			t.Fatalf("expected /var alias target %q, got target=%q ok=%v", expectedVarTarget, varTarget, varOK)
-		}
-		return
+	if !tmpOK || tmpTarget != expectedTmpTarget {
+		t.Fatalf("expected /tmp alias target %q, got target=%q ok=%v", expectedTmpTarget, tmpTarget, tmpOK)
 	}
+	expectedVarTarget := filepath.Join(string(os.PathSeparator), "private", "var")
+	varTarget, varOK := trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "var"))
+	if !varOK || varTarget != expectedVarTarget {
+		t.Fatalf("expected /var alias target %q, got target=%q ok=%v", expectedVarTarget, varTarget, varOK)
+	}
+
+	withRuntimeGOOS(t, "linux")
+	tmpTarget, tmpOK = trustedRootAliasTarget(filepath.Join(string(os.PathSeparator), "tmp"))
 	if tmpOK || tmpTarget != "" {
-		t.Fatalf("expected trusted aliases to be disabled on %s, got target=%q ok=%v", runtime.GOOS, tmpTarget, tmpOK)
+		t.Fatalf("expected trusted aliases to be disabled on linux, got target=%q ok=%v", tmpTarget, tmpOK)
 	}
 }
 
@@ -1213,6 +1214,16 @@ func TestWriteFileIfAbsentAtRootPropagatesLinkError(t *testing.T) {
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected link error, got %v", err)
+	}
+}
+
+func TestWriteFileIfAbsentAtRootNormalizesLinkExistsError(t *testing.T) {
+	root := makeFakeTempWriteRoot(nil)
+	root.link = func(string, string) error { return os.ErrExist }
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected os.ErrExist, got %v", err)
 	}
 }
 

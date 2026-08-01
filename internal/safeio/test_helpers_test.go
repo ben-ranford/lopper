@@ -67,6 +67,15 @@ func withFileSystem(t *testing.T, fsys FileSystem) {
 	})
 }
 
+func withRuntimeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	originalGOOS := runtimeGOOS
+	runtimeGOOS = goos
+	t.Cleanup(func() {
+		runtimeGOOS = originalGOOS
+	})
+}
+
 func openTestRoot(t *testing.T, rootDir string) Root {
 	t.Helper()
 	root, err := (&osFileSystem{}).OpenRoot(rootDir)
