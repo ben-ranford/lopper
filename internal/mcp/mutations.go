@@ -499,30 +499,54 @@ func resolveLocalMutationPath(repoPath, rawPath, field string) (string, error) {
 	if strings.ContainsRune(trimmed, '\x00') {
 		return "", fmt.Errorf("%s contains an invalid NUL byte", field)
 	}
-	if filepath.IsAbs(trimmed) {
-		return "", fmt.Errorf("%s must be a relative path within repoPath", field)
-	}
-
 	repoRoot, err := filepath.EvalSymlinks(repoPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve repoPath: %w", err)
 	}
 	candidate := filepath.Clean(filepath.Join(repoRoot, trimmed))
-	if !pathWithinRoot(repoRoot, candidate) {
+	if filepath.IsAbs(trimmed) {
+		candidate = filepath.Clean(trimmed)
+		repoAlias := filepath.Clean(repoPath)
+		if !pathWithinRoot(repoAlias, candidate) && !pathWithinRoot(repoRoot, candidate) {
+			return "", fmt.Errorf("%s must resolve within repoPath", field)
+		}
+	}
+
+	normalized, err := normalizeLocalMutationCandidate(repoRoot, candidate)
+	if err != nil {
+		if errors.Is(err, errMutationPathEscapesRepo) {
+			return "", fmt.Errorf("%s must resolve within repoPath", field)
+		}
+		return "", fmt.Errorf("inspect %s: %w", field, err)
+	}
+	if !pathWithinRoot(repoRoot, normalized) {
 		return "", fmt.Errorf("%s must resolve within repoPath", field)
 	}
+	return normalized, nil
+}
+
+var errMutationPathEscapesRepo = errors.New("mutation path escapes repoPath")
+
+func normalizeLocalMutationCandidate(repoRoot, candidate string) (string, error) {
 	ancestor, err := nearestExistingAncestor(candidate)
 	if err != nil {
-		return "", fmt.Errorf("inspect %s: %w", field, err)
+		return "", err
 	}
 	resolvedAncestor, err := filepath.EvalSymlinks(ancestor)
 	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", field, err)
+		return "", err
 	}
 	if !pathWithinRoot(repoRoot, resolvedAncestor) {
-		return "", fmt.Errorf("%s must resolve within repoPath", field)
+		return "", errMutationPathEscapesRepo
 	}
-	return candidate, nil
+	if ancestor == candidate {
+		return resolvedAncestor, nil
+	}
+	suffix, err := filepath.Rel(ancestor, candidate)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(resolvedAncestor, suffix)), nil
 }
 
 func nearestExistingAncestor(path string) (string, error) {

@@ -516,10 +516,18 @@ func TestResolveLocalMutationPath(t *testing.T) {
 	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
 		t.Fatalf("resolve relative path: path=%q err=%v", resolved, err)
 	}
-	for _, rawPath := range []string{"", "https://example.com/store", "bad\x00path", filepath.Join(repo, "store"), "../outside"} {
+	absoluteInside := filepath.Join(repo, "store")
+	resolved, err = resolveLocalMutationPath(repo, absoluteInside, "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve internal absolute path: path=%q err=%v", resolved, err)
+	}
+	for _, rawPath := range []string{"", "https://example.com/store", "bad\x00path", "../outside"} {
 		if _, err := resolveLocalMutationPath(repo, rawPath, "baselineStorePath"); err == nil {
 			t.Fatalf("expected local path validation error for %q", rawPath)
 		}
+	}
+	if _, err := resolveLocalMutationPath(repo, filepath.Join(t.TempDir(), "store"), "baselineStorePath"); err == nil || !strings.Contains(err.Error(), "must resolve within repoPath") {
+		t.Fatalf("expected outside absolute rejection, got %v", err)
 	}
 }
 
@@ -532,6 +540,72 @@ func TestResolveLocalMutationPathRejectsSymlinkEscape(t *testing.T) {
 
 	if _, err := resolveLocalMutationPath(repo, filepath.Join("escape", "store"), "baselineStorePath"); err == nil || !strings.Contains(err.Error(), "must resolve within repoPath") {
 		t.Fatalf("expected symlink escape rejection, got %v", err)
+	}
+}
+
+func TestResolveLocalMutationPathNormalizesAbsoluteRepoSymlink(t *testing.T) {
+	repo := t.TempDir()
+	repoAlias := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(repo, repoAlias); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+
+	resolved, err := resolveLocalMutationPath(repoAlias, filepath.Join(repoAlias, "store"), "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve absolute path within repo symlink: path=%q err=%v", resolved, err)
+	}
+
+	resolved, err = resolveLocalMutationPath(repoAlias, filepath.Join(resolvedRepo, "store"), "baselineStorePath")
+	if err != nil || resolved != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("resolve absolute path within resolved repo root: path=%q err=%v", resolved, err)
+	}
+}
+
+func TestNormalizeLocalMutationCandidate(t *testing.T) {
+	repo := t.TempDir()
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+	existing := filepath.Join(repo, "store")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+
+	normalized, err := normalizeLocalMutationCandidate(resolvedRepo, existing)
+	if err != nil || normalized != filepath.Join(resolvedRepo, "store") {
+		t.Fatalf("normalize existing candidate: path=%q err=%v", normalized, err)
+	}
+}
+
+func TestNormalizeLocalMutationCandidateRejectsEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	resolvedRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve repo symlinks: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repo, "escape")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := normalizeLocalMutationCandidate(resolvedRepo, filepath.Join(repo, "escape", "store")); !errors.Is(err, errMutationPathEscapesRepo) {
+		t.Fatalf("expected mutation path escape error, got %v", err)
+	}
+}
+
+func TestResolveLocalMutationPathRejectsBrokenSymlinkPath(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), filepath.Join(repo, "broken")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if _, err := resolveLocalMutationPath(repo, filepath.Join("broken", "store"), "baselineStorePath"); err == nil || !strings.Contains(err.Error(), "inspect baselineStorePath") {
+		t.Fatalf("expected broken symlink inspection error, got %v", err)
 	}
 }
 
@@ -565,6 +639,12 @@ func TestPathWithinRoot(t *testing.T) {
 	}
 	if pathWithinRoot(root, filepath.Join(string(filepath.Separator), "tmp", "other")) {
 		t.Fatalf("expected sibling path outside root")
+	}
+	if pathWithinRoot("bad\x00root", filepath.Join(root, "nested")) {
+		t.Fatalf("expected invalid root to return false")
+	}
+	if pathWithinRoot(root, "bad\x00target") {
+		t.Fatalf("expected invalid target to return false")
 	}
 }
 

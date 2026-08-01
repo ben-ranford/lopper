@@ -479,10 +479,24 @@ func assertBaselineStoreResolution(t *testing.T, repo string) {
 }
 
 func TestSmallHelperBranches(t *testing.T) {
+	repo := t.TempDir()
+	assertContextForTimeoutRejectsInvalid(t)
+	assertValidateRepoPathBranches(t, repo)
+	assertParseScopeModeBranches(t)
+	assertCacheEnabledDefaults(t)
+	assertMergeStringOptionsBranches(t)
+	decorateReport(nil, defaultThresholdValues(), nil, nil, "")
+}
+
+func assertContextForTimeoutRejectsInvalid(t *testing.T) {
+	t.Helper()
 	if _, _, err := contextForTimeout(context.Background(), maxTimeoutMillis+1); err == nil {
 		t.Fatalf("expected invalid timeout")
 	}
-	repo := t.TempDir()
+}
+
+func assertValidateRepoPathBranches(t *testing.T, repo string) {
+	t.Helper()
 	if got, err := validateRepoPath(repo); err != nil || got == "" {
 		t.Fatalf("expected valid repo path, got path=%q err=%v", got, err)
 	}
@@ -495,6 +509,10 @@ func TestSmallHelperBranches(t *testing.T) {
 			t.Fatalf("expected validateRepoPath(%q) error", path)
 		}
 	}
+}
+
+func assertParseScopeModeBranches(t *testing.T) {
+	t.Helper()
 	for _, mode := range []string{"", analysis.ScopeModePackage, analysis.ScopeModeRepo, analysis.ScopeModeChangedPackages} {
 		if _, err := parseScopeMode(mode); err != nil {
 			t.Fatalf("parse scope %q: %v", mode, err)
@@ -503,9 +521,17 @@ func TestSmallHelperBranches(t *testing.T) {
 	if _, err := parseScopeMode("bad"); err == nil {
 		t.Fatalf("expected bad scope error")
 	}
+}
+
+func assertCacheEnabledDefaults(t *testing.T) {
+	t.Helper()
 	if !cacheEnabled(nil) || cacheEnabled(boolPtr(false)) {
 		t.Fatalf("unexpected cache enabled defaults")
 	}
+}
+
+func assertMergeStringOptionsBranches(t *testing.T) {
+	t.Helper()
 	if got := mergeStringOptions([]string{"config"}, nil); !slicesEqual(got, []string{"config"}) {
 		t.Fatalf("expected config patterns, got %#v", got)
 	}
@@ -515,7 +541,6 @@ func TestSmallHelperBranches(t *testing.T) {
 	if got := mergeStringOptions(nil, nil); len(got) != 0 {
 		t.Fatalf("expected nil patterns, got %#v", got)
 	}
-	decorateReport(nil, defaultThresholdValues(), nil, nil, "")
 }
 
 func TestDecodeStrictBranches(t *testing.T) {
