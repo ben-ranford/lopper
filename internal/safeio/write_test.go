@@ -361,6 +361,55 @@ func assertWriteIfAbsentFallbackCleanup(t *testing.T, expectedErr error, targetF
 	}
 }
 
+func assertAtomicReplacementKeepsTempFileOpenUntilRename(t *testing.T, invoke func(Root) error) {
+	t.Helper()
+
+	tempClosed := false
+	renameCalls := 0
+	removeCalls := 0
+	expectedErr := errors.New("rename failure")
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected open path: %s", name)
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: func() error {
+					tempClosed = true
+					return nil
+				},
+			}, nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			if tempClosed {
+				t.Fatal("expected temp file to remain open during rename attempt")
+			}
+			return expectedErr
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+
+	err := invoke(root)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected rename error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+	}
+	if !tempClosed {
+		t.Fatal("expected cleanup to close temp file after rename failure")
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one temp cleanup remove, got %d", removeCalls)
+	}
+}
+
 func assertPreservedExistingRegularFileMode(t *testing.T, write func(rootDir, targetPath string, data []byte) error, writeName string) {
 	t.Helper()
 	rootDir := t.TempDir()
@@ -2294,6 +2343,16 @@ func TestWriteAtomicReplacementReturnsPinnedTargetOpenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected non-Windows write to skip pinned target open, got %v", err)
 	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetKeepsTempFileOpenUntilRename(t *testing.T) {
+	assertAtomicReplacementKeepsTempFileOpenUntilRename(t, func(root Root) error {
+		target := &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return statTestPath(t, t.TempDir()), nil },
+			close: closeWithoutError,
+		}
+		return writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, target, false)
+	})
 }
 
 func TestOpenPinnedReplacementTargetReturnsOpenError(t *testing.T) {

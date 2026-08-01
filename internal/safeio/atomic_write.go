@@ -35,13 +35,17 @@ func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atom
 }
 
 func (s *atomicWriteSession) writeAndClose(data []byte, perm os.FileMode) error {
-	if _, err := s.tempFile.Write(data); err != nil {
-		return err
-	}
-	if err := s.tempFile.Chmod(perm); err != nil {
+	if err := s.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
 	return s.closeTempFile()
+}
+
+func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) error {
+	if _, err := s.tempFile.Write(data); err != nil {
+		return err
+	}
+	return s.tempFile.Chmod(perm)
 }
 
 func (s *atomicWriteSession) commit() error {
@@ -105,7 +109,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		returnErr = errors.Join(returnErr, session.cleanup())
 	}()
 
-	if err := session.writeAndClose(data, perm); err != nil {
+	if err := session.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
 	if err := session.commit(); err != nil {
