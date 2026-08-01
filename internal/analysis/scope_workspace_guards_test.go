@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ func TestScopeNoOpCleanupIsCallable(t *testing.T) {
 }
 
 func TestScopeApplyPathScopeReturnsWalkErrorForMissingRepo(t *testing.T) {
-	_, _, _, err := applyPathScope(filepath.Join(t.TempDir(), "missing"), []string{scopeJSGlob}, nil)
+	_, _, _, err := applyPathScope(context.Background(), filepath.Join(t.TempDir(), "missing"), []string{scopeJSGlob}, nil)
 	if err == nil {
 		t.Fatalf("expected missing repo to fail applyPathScope")
 	}
@@ -32,10 +33,11 @@ func TestScopeWalkerGuardBranches(t *testing.T) {
 	gitEntry := mustScopeDirEntry(t, repo, ".git")
 
 	walker := &scopeWalker{repoPath: repo, scopedRoot: t.TempDir(), stats: newScopeStats(nil, nil)}
-	if walker.walk("", nil, errors.New("walk failed")) == nil {
+	walk := walker.walkWithContext(context.Background())
+	if walk("", nil, errors.New("walk failed")) == nil {
 		t.Fatalf("expected walkErr to be returned")
 	}
-	if err := walker.walk(gitDir, gitEntry, nil); !errors.Is(err, filepath.SkipDir) {
+	if err := walk(gitDir, gitEntry, nil); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected .git to return SkipDir, got %v", err)
 	}
 }
@@ -68,10 +70,10 @@ func TestScopePatternCompileAndTempWorkspaceFailures(t *testing.T) {
 	if _, err := compileGlobPatterns([]string{invalidPattern}); err == nil {
 		t.Fatalf("expected invalid utf-8 pattern to fail compilation")
 	}
-	if _, _, _, err := applyPathScope(t.TempDir(), []string{invalidPattern}, nil); err == nil {
+	if _, _, _, err := applyPathScope(context.Background(), t.TempDir(), []string{invalidPattern}, nil); err == nil {
 		t.Fatalf("expected include pattern compile error")
 	}
-	if _, _, _, err := applyPathScope(t.TempDir(), nil, []string{invalidPattern}); err == nil {
+	if _, _, _, err := applyPathScope(context.Background(), t.TempDir(), nil, []string{invalidPattern}); err == nil {
 		t.Fatalf("expected exclude pattern compile error")
 	}
 
@@ -81,7 +83,7 @@ func TestScopePatternCompileAndTempWorkspaceFailures(t *testing.T) {
 		t.Fatalf("write tmp file: %v", err)
 	}
 	t.Setenv("TMPDIR", tmpFile)
-	if _, _, _, err := applyPathScope(t.TempDir(), []string{scopeJSGlob}, nil); err == nil {
+	if _, _, _, err := applyPathScope(context.Background(), t.TempDir(), []string{scopeJSGlob}, nil); err == nil {
 		t.Fatalf("expected temp workspace creation to fail")
 	}
 }
@@ -90,8 +92,12 @@ func TestScopeCopyFileAndRelativePathGuards(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", "keep.js")
 	writeScopeFile(t, sourcePath, "export const keep = true\n")
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		t.Fatalf("stat source path: %v", err)
+	}
 
-	if copyFile(repo, t.TempDir(), "..") == nil {
+	if copyFile(context.Background(), repo, t.TempDir(), "..", 0) == nil {
 		t.Fatalf("expected unsafe relative path to fail")
 	}
 
@@ -99,7 +105,7 @@ func TestScopeCopyFileAndRelativePathGuards(t *testing.T) {
 	if err := os.WriteFile(blockedRoot, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write blocked root: %v", err)
 	}
-	if copyFile(repo, blockedRoot, filepath.Join("src", "keep.js")) == nil {
+	if copyFile(context.Background(), repo, blockedRoot, filepath.Join("src", "keep.js"), sourceInfo.Size()) == nil {
 		t.Fatalf("expected blocked scoped root to fail copy")
 	}
 }

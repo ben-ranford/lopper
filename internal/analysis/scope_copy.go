@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,9 +10,14 @@ import (
 	"strings"
 )
 
-func copyFile(repoPath, scopedRoot, relativePath string) (err error) {
+const scopedCopyBufferSize = 32 * 1024
+
+func copyFile(ctx context.Context, repoPath, scopedRoot, relativePath string, expectedSize int64) (err error) {
 	if !isSafeRelativePath(relativePath) {
 		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
+	}
+	if err := scopeContextErr(ctx); err != nil {
+		return err
 	}
 	cleanRelativePath := filepath.Clean(relativePath)
 	sourcePath := filepath.Join(repoPath, cleanRelativePath)
@@ -37,6 +43,16 @@ func copyFile(repoPath, scopedRoot, relativePath string) (err error) {
 		return err
 	}
 	defer joinCloseError(&err, source.Close)
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s", errScopedCopyNonRegularFile, cleanRelativePath)
+	}
+	if sourceInfo.Size() > expectedSize {
+		return fmt.Errorf("analysis scope copy source grew while copying %q: expected at most %d bytes, got %d", cleanRelativePath, expectedSize, sourceInfo.Size())
+	}
 
 	targetRoot, err := os.OpenRoot(scopedRoot)
 	if err != nil {
@@ -49,10 +65,41 @@ func copyFile(repoPath, scopedRoot, relativePath string) (err error) {
 		return err
 	}
 	defer joinCloseError(&err, target.Close)
-	if _, err := io.Copy(target, source); err != nil {
+	written, err := copyScopedFileContents(ctx, target, io.LimitReader(source, expectedSize+1))
+	if err != nil {
 		return err
 	}
+	if written > expectedSize {
+		return fmt.Errorf("analysis scope copy source grew while copying %q: expected at most %d bytes", cleanRelativePath, expectedSize)
+	}
 	return nil
+}
+
+func copyScopedFileContents(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	buffer := make([]byte, scopedCopyBufferSize)
+	var written int64
+	for {
+		if err := scopeContextErr(ctx); err != nil {
+			return written, err
+		}
+		readBytes, readErr := src.Read(buffer)
+		if readBytes > 0 {
+			wroteBytes, writeErr := dst.Write(buffer[:readBytes])
+			written += int64(wroteBytes)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if wroteBytes != readBytes {
+				return written, io.ErrShortWrite
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return written, nil
+		}
+		if readErr != nil {
+			return written, readErr
+		}
+	}
 }
 
 func joinCloseError(target *error, closeFn func() error) {
