@@ -15,7 +15,7 @@ func dashboardPathWithinRoot(rootAbs, targetAbs string) (bool, error) {
 	}
 	rel, err := filepath.Rel(rootAbs, targetAbs)
 	if err != nil {
-		return false, fmt.Errorf("compute dashboard path: %w", err)
+		return false, fmt.Errorf("compute relative dashboard path: %w", err)
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))), nil
 }

@@ -55,8 +55,8 @@ type LoadedConfig struct {
 	Dashboard ConfigDashboard
 }
 
-// ResolveConfigPath resolves a non-empty config-relative path without changing
-// the configured absolute path.
+// ResolveConfigPath trims a configured path and resolves relative paths against
+// the config directory.
 func ResolveConfigPath(configDir, value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" || filepath.IsAbs(trimmed) {
