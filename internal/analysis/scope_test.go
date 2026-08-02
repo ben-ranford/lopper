@@ -213,12 +213,7 @@ func TestApplyPathScopeRejectsOversizedScopedCopy(t *testing.T) {
 		t.Fatalf("close oversized file: %v", err)
 	}
 
-	if _, _, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil); err == nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		t.Fatal("expected oversized scoped copy to fail")
-	}
+	expectScopedJSScopeFailure(t, repo, "expected oversized scoped copy to fail")
 }
 
 func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
@@ -227,12 +222,7 @@ func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 		writeFile(t, filepath.Join(repo, "src", "pkg", fmt.Sprintf("f-%d.js", i)), "export const keep = true\n")
 	}
 
-	if _, _, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil); err == nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		t.Fatal("expected scoped copy file limit to fail")
-	}
+	expectScopedJSScopeFailure(t, repo, "expected scoped copy file limit to fail")
 }
 
 func TestApplyPathScopeSkipsNonRegularFiles(t *testing.T) {
@@ -281,6 +271,17 @@ func applyScopedJSScope(t *testing.T, repo string) (string, []string) {
 	t.Cleanup(cleanup)
 
 	return scopedPath, warnings
+}
+
+func expectScopedJSScopeFailure(t *testing.T, repo, message string) {
+	t.Helper()
+
+	if _, _, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil); err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal(message)
+	}
 }
 
 func makeNamedPipe(path string) error {
