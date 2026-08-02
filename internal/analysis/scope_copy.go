@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,11 @@ import (
 
 const scopedCopyBufferSize = 32 * 1024
 
-func copyFile(ctx context.Context, repoPath, scopedRoot, relativePath string, expectedSize int64) (err error) {
+func copyFile(repoPath, scopedRoot, relativePath string) error {
+	return copyFileWithContext(context.Background(), repoPath, scopedRoot, relativePath, math.MaxInt64-1)
+}
+
+func copyFileWithContext(ctx context.Context, repoPath, scopedRoot, relativePath string, expectedSize int64) (err error) {
 	if !isSafeRelativePath(relativePath) {
 		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
 	}

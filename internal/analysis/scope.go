@@ -89,7 +89,11 @@ func (b *scopeCopyBudget) reserve(path string, size int64) error {
 	return nil
 }
 
-func applyPathScope(ctx context.Context, repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
+func applyPathScope(repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
+	return applyPathScopeWithContext(context.Background(), repoPath, includePatterns, excludePatterns)
+}
+
+func applyPathScopeWithContext(ctx context.Context, repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
 	includePatterns = normalizePatterns(includePatterns)
 	excludePatterns = normalizePatterns(excludePatterns)
 	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
@@ -149,11 +153,15 @@ func applyPathScope(ctx context.Context, repoPath string, includePatterns []stri
 
 func (w *scopeWalker) walkWithContext(ctx context.Context) fs.WalkDirFunc {
 	return func(currentPath string, entry fs.DirEntry, walkErr error) error {
-		return w.walk(ctx, currentPath, entry, walkErr)
+		return w.walkEntry(ctx, currentPath, entry, walkErr)
 	}
 }
 
-func (w *scopeWalker) walk(ctx context.Context, currentPath string, entry fs.DirEntry, walkErr error) error {
+func (w *scopeWalker) walk(currentPath string, entry fs.DirEntry, walkErr error) error {
+	return w.walkEntry(context.Background(), currentPath, entry, walkErr)
+}
+
+func (w *scopeWalker) walkEntry(ctx context.Context, currentPath string, entry fs.DirEntry, walkErr error) error {
 	if err := scopeContextErr(ctx); err != nil {
 		return err
 	}
@@ -212,7 +220,7 @@ func (w *scopeWalker) copyScopedEntry(ctx context.Context, entry fs.DirEntry, re
 	if includeMatched {
 		w.stats.includeMatches[includePattern]++
 	}
-	if err := copyFile(ctx, w.repoPath, w.scopedRoot, relativePath, info.Size()); err != nil {
+	if err := copyFileWithContext(ctx, w.repoPath, w.scopedRoot, relativePath, info.Size()); err != nil {
 		if errors.Is(err, errScopedCopyNonRegularFile) {
 			w.budget.files--
 			w.budget.bytes -= info.Size()

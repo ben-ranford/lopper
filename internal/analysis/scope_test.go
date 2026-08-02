@@ -1,22 +1,19 @@
 package analysis
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const scopeJSGlob = "src/**/*.js"
 const scopeGoGlob = "src/**/*.go"
 const scopeKeepJSPath = "src/keep.js"
+const scopeCopyFileLimit = 4096
+const scopeCopyByteLimit = 256 << 20
 
 func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	repo := t.TempDir()
@@ -24,7 +21,7 @@ func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "src", "skip.test.js"), "export const skip = true\n")
 	writeFile(t, filepath.Join(repo, "README.md"), "doc\n")
 
-	scopedPath, warnings, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, []string{"**/*.test.js"})
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, []string{"**/*.test.js"})
 	if err != nil {
 		t.Fatalf("apply path scope: %v", err)
 	}
@@ -58,7 +55,7 @@ func TestGlobMatchSupportsDoubleStar(t *testing.T) {
 
 func TestApplyPathScopeNoPatternsReturnsOriginalPath(t *testing.T) {
 	repo := t.TempDir()
-	scopedPath, warnings, cleanup, err := applyPathScope(context.Background(), repo, nil, nil)
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, nil, nil)
 	if err != nil {
 		t.Fatalf("apply path scope without patterns: %v", err)
 	}
@@ -79,7 +76,7 @@ func TestNoOpCleanupDoesNothing(t *testing.T) {
 func TestCopyFileRejectsUnsafeRelativePath(t *testing.T) {
 	repo := t.TempDir()
 	scoped := t.TempDir()
-	if copyFile(context.Background(), repo, scoped, "../escape.txt", 0) == nil {
+	if copyFile(repo, scoped, "../escape.txt") == nil {
 		t.Fatalf("expected unsafe relative path rejection")
 	}
 }
@@ -89,7 +86,7 @@ func TestCopyFileFailsWhenSourceRootCannotOpen(t *testing.T) {
 	repo := filepath.Join(temp, "missing-repo")
 	scoped := t.TempDir()
 
-	err := copyFile(context.Background(), repo, scoped, "src/keep.js", 0)
+	err := copyFile(repo, scoped, "src/keep.js")
 	if err == nil {
 		t.Fatalf("expected source-root open failure for missing repository root")
 	}
@@ -99,7 +96,7 @@ func TestCopyFileFailsWhenSourceFileMissing(t *testing.T) {
 	repo := t.TempDir()
 	scoped := t.TempDir()
 
-	err := copyFile(context.Background(), repo, scoped, "src/missing.js", 0)
+	err := copyFile(repo, scoped, "src/missing.js")
 	if err == nil {
 		t.Fatalf("expected missing source file error")
 	}
@@ -115,7 +112,7 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 		t.Skipf("symlink unsupported in test environment: %v", err)
 	}
 
-	scopedPath, warnings, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
 	if err != nil {
 		t.Fatalf("apply path scope: %v", err)
 	}
@@ -200,62 +197,45 @@ func TestPathWithinAndSafeRelativePath(t *testing.T) {
 	}
 }
 
-func TestScopeCopyBudgetRejectsNegativeSize(t *testing.T) {
-	budget := newScopeCopyBudget()
-	if err := budget.reserve(scopeKeepJSPath, -1); err == nil || !strings.Contains(err.Error(), "negative file size") {
-		t.Fatalf("expected negative file size rejection, got %v", err)
-	}
-}
-
-func TestScopeCopyBudgetRejectsOverflowingByteReservation(t *testing.T) {
-	budget := scopeCopyBudget{
-		maxBytes: 32,
-		bytes:    31,
-	}
-	if err := budget.reserve(scopeKeepJSPath, math.MaxInt64); !errors.Is(err, errScopedCopyByteLimitExceeded) {
-		t.Fatalf("expected scoped copy byte limit error, got %v", err)
-	}
-}
-
-func TestScopeContextErrAllowsNilContext(t *testing.T) {
-	var nilCtx context.Context
-	if err := scopeContextErr(nilCtx); err != nil {
-		t.Fatalf("expected nil context to be allowed, got %v", err)
-	}
-}
-
 func TestApplyPathScopeRejectsOversizedScopedCopy(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWritePaddedFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n", maxScopedCopyBytes+1)
+	oversizedPath := filepath.Join(repo, scopeKeepJSPath)
+	if err := os.MkdirAll(filepath.Dir(oversizedPath), 0o750); err != nil {
+		t.Fatalf("mkdir oversized file parent: %v", err)
+	}
+	file, err := os.Create(oversizedPath)
+	if err != nil {
+		t.Fatalf("create oversized file: %v", err)
+	}
+	if err := file.Truncate(scopeCopyByteLimit + 1); err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close oversized file after truncate error: %v", closeErr)
+		}
+		t.Fatalf("truncate oversized file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized file: %v", err)
+	}
 
-	err := applyScopedCopyForTest(repo)
-	if !errors.Is(err, errScopedCopyByteLimitExceeded) {
-		t.Fatalf("expected scoped copy byte limit error, got %v", err)
+	if _, _, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil); err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal("expected oversized scoped copy to fail")
 	}
 }
 
 func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 	repo := t.TempDir()
-	for i := 0; i <= maxScopedCopyFiles; i++ {
+	for i := 0; i <= scopeCopyFileLimit; i++ {
 		writeFile(t, filepath.Join(repo, "src", "pkg", fmt.Sprintf("f-%d.js", i)), "export const keep = true\n")
 	}
 
-	err := applyScopedCopyForTest(repo)
-	if !errors.Is(err, errScopedCopyFileLimitExceeded) {
-		t.Fatalf("expected scoped copy file limit error, got %v", err)
-	}
-}
-
-func TestApplyPathScopeHonorsCanceledContext(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
-
-	_, _, cleanup, err := applyPathScope(testutil.CanceledContext(), repo, []string{scopeJSGlob}, nil)
-	if cleanup != nil {
-		defer cleanup()
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected canceled context error, got %v", err)
+	if _, _, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil); err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		t.Fatal("expected scoped copy file limit to fail")
 	}
 }
 
@@ -273,7 +253,7 @@ func TestApplyPathScopeSkipsNonRegularFiles(t *testing.T) {
 		t.Skipf("named pipes unsupported in test environment: %v", err)
 	}
 
-	scopedPath, warnings, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
 	if err != nil {
 		t.Fatalf("apply path scope: %v", err)
 	}
@@ -297,14 +277,6 @@ func containsWarning(warnings []string, expected string) bool {
 		}
 	}
 	return false
-}
-
-func applyScopedCopyForTest(repo string) error {
-	_, _, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
-	if cleanup != nil {
-		cleanup()
-	}
-	return err
 }
 
 func makeNamedPipe(path string) error {

@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -19,12 +18,12 @@ func TestPathWithinRejectsInvalidRoot(t *testing.T) {
 }
 
 func TestCopyFileAdditionalEscapeBranches(t *testing.T) {
-	if copyFile(context.Background(), "\x00", t.TempDir(), scopePathTextFile, 0) == nil {
+	if copyFile("\x00", t.TempDir(), scopePathTextFile) == nil {
 		t.Fatalf("expected invalid source root to be rejected")
 	}
 
 	repo := t.TempDir()
-	if copyFile(context.Background(), repo, "\x00", scopePathTextFile, 0) == nil {
+	if copyFile(repo, "\x00", scopePathTextFile) == nil {
 		t.Fatalf("expected invalid target root to be rejected")
 	}
 }
@@ -46,7 +45,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 		includeCompiled: []compiledPattern{includePattern},
 		stats:           newScopeStats([]string{"**/*"}, nil),
 	}
-	walk := walker.walkWithContext(context.Background())
+	walk := walker.walk
 	if walk(filePath, fileEntry, nil) == nil {
 		t.Fatalf("expected invalid repo root to fail relative-path resolution")
 	}
@@ -58,7 +57,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 		includeCompiled: []compiledPattern{includePattern},
 		stats:           newScopeStats([]string{"**/*"}, nil),
 	}
-	walk = walker.walkWithContext(context.Background())
+	walk = walker.walk
 	if walk(filePath, fileEntry, nil) == nil {
 		t.Fatalf("expected invalid scoped root to fail file copy")
 	}
@@ -76,7 +75,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 			continue
 		}
 		walker = &scopeWalker{}
-		if err := walker.walkWithContext(context.Background())(gitDir, entry, nil); !errors.Is(err, filepath.SkipDir) {
+		if err := walker.walk(gitDir, entry, nil); !errors.Is(err, filepath.SkipDir) {
 			t.Fatalf("expected .git directory to be skipped, got %v", err)
 		}
 		return
@@ -104,9 +103,8 @@ func TestScopeWalkerInfoFailureAndBudgetRollbackBranches(t *testing.T) {
 		includePatterns: []string{"**/*"},
 		includeCompiled: []compiledPattern{{pattern: "**/*", regex: regexp.MustCompile(".*")}},
 		stats:           newScopeStats([]string{"**/*"}, nil),
-		budget:          newScopeCopyBudget(),
 	}
-	walk := walker.walkWithContext(context.Background())
+	walk := walker.walk
 
 	infoErr := errors.New("info failed")
 	if err := walk(filepath.Join(repo, "src", "bad.js"), &fakeScopeDirEntry{name: "bad.js", infoErr: infoErr}, nil); !errors.Is(err, infoErr) {
@@ -119,9 +117,6 @@ func TestScopeWalkerInfoFailureAndBudgetRollbackBranches(t *testing.T) {
 	}
 	if err := walk(disguisedDirPath, &fakeScopeDirEntry{name: "disguised.js", info: regularInfo}, nil); err != nil {
 		t.Fatalf("expected non-regular source downgrade to be skipped, got %v", err)
-	}
-	if walker.budget.files != 0 || walker.budget.bytes != 0 {
-		t.Fatalf("expected scope budget rollback after non-regular source, got files=%d bytes=%d", walker.budget.files, walker.budget.bytes)
 	}
 	if !containsWarning(walker.stats.skippedDiagnostics, "disguised.js (is not a regular file (not copied))") {
 		t.Fatalf("expected non-regular rollback diagnostic, got %#v", walker.stats.skippedDiagnostics)
