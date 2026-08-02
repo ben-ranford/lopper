@@ -109,7 +109,7 @@ func stripElixirComments(content []byte) string {
 	stripped.Grow(len(content))
 
 	for i := 0; i < len(content); i++ {
-		if content[i] == '#' && masked[i] == '#' {
+		if isElixirCommentStart(content, masked, i) {
 			i = skipElixirComment(content, i, &stripped)
 			continue
 		}

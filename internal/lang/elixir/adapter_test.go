@@ -231,9 +231,27 @@ func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
 
 func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
+	assertDetectionFixture(t, repo, filepath.Base(repo), "")
+}
+
+func TestDetectWithConfidenceIgnoresCommentedAppsPathAfterQuotedCommentSpoof(t *testing.T) {
+	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  "+elixirSpoofedCommentedAppsPath+"  def project, do: []\nend\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
+}
+
+func TestDetectWithConfidencePreservesAppsPathAfterCharacterLiteralHash(t *testing.T) {
+	for _, literal := range []string{"?#", "?\\#"} {
+		t.Run(literal, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  def project, do: [marker: "+literal+", apps_path: \"services\"]\nend\n")
+			testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
+			assertDetectionFixture(t, repo, filepath.Join("services", "api"), filepath.Base(repo))
+		})
+	}
 }
 
 func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
@@ -247,6 +265,8 @@ func TestStripElixirCommentsPreservesQuotedAndEscapedContent(t *testing.T) {
 	assertStripped("def project, do: [apps_path: \"ser#vices\"]\n# comment\n", "def project, do: [apps_path: \"ser#vices\"]\n\n")
 	assertStripped("def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n# comment\n", "def project, do: [apps_path: \"ser\\\"vices\\#x\"]\n\n")
 	assertStripped("value = 'foo#bar'\n# comment\n", "value = 'foo#bar'\n\n")
+	assertStripped("def project, do: [marker: ?#, apps_path: \"services\"]\n# comment\n", "def project, do: [marker: ?#, apps_path: \"services\"]\n\n")
+	assertStripped("def project, do: [marker: ?\\#, apps_path: \"services\"]\n# comment\n", "def project, do: [marker: ?\\#, apps_path: \"services\"]\n\n")
 	assertStripped("doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n# comment\n", "doc = \"\"\"\nline with \\\" quote\n# not a comment\n\"\"\"\n\n")
 	assertStripped("value = 1\n# \"\"\"\n# \"\napps_path: \"services\"\n# comment\n", "value = 1\n\n\napps_path: \"services\"\n\n")
 }
@@ -282,10 +302,14 @@ func TestParseImportsIgnoresAliasLikeTextInMultilineStrings(t *testing.T) {
 }
 
 func TestParseImportsIgnoresAliasLikeTextAfterCharacterLiteralHash(t *testing.T) {
-	content := []byte("defmodule Demo do\n  marker = ?#; doc = \"\"\"\n  alias Foo.Bar\n  \"\"\"\n  alias Foo.Bar, as: Baz\nend\n")
-	imports := parseImports(content, "lib/demo.ex", map[string]struct{}{"foo": {}})
-	if len(imports) != 1 || imports[0].Local != "Baz" || imports[0].Location.Line != 5 {
-		t.Fatalf("expected only the real alias after character literal hash, got %#v", imports)
+	for _, literal := range []string{"?#", "?\\#"} {
+		t.Run(literal, func(t *testing.T) {
+			content := []byte("defmodule Demo do\n  marker = " + literal + "; doc = \"\"\"\n  alias Foo.Bar\n  \"\"\"\n  alias Foo.Bar, as: Baz\nend\n")
+			imports := parseImports(content, "lib/demo.ex", map[string]struct{}{"foo": {}})
+			if len(imports) != 1 || imports[0].Local != "Baz" || imports[0].Location.Line != 5 {
+				t.Fatalf("expected only the real alias after character literal hash, got %#v", imports)
+			}
+		})
 	}
 }
 

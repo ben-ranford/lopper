@@ -211,5 +211,12 @@ func isElixirCommentStart(content, masked []byte, index int) bool {
 	if index < 0 || index >= len(content) || content[index] != '#' || masked[index] != '#' {
 		return false
 	}
-	return index <= 0 || content[index-1] != '?'
+	return !isElixirCharacterLiteralHash(content, index)
+}
+
+func isElixirCharacterLiteralHash(content []byte, hashIndex int) bool {
+	if hashIndex > 0 && content[hashIndex-1] == '?' {
+		return true
+	}
+	return hashIndex > 1 && content[hashIndex-2] == '?' && content[hashIndex-1] == '\\'
 }
