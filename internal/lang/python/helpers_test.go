@@ -116,6 +116,25 @@ func TestPythonLocalModuleSearchRootsKeepRealSrc(t *testing.T) {
 	}
 }
 
+func TestPythonIsLocalModuleSkipsSymlinkedPkgInsideRealSrc(t *testing.T) {
+	repo := t.TempDir()
+	outside := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(outside, "__init__.py"), localModuleContent)
+
+	// repo/src is a real directory; repo/src/app is a symlink to outside.
+	srcPath := filepath.Join(repo, "src")
+	if err := os.MkdirAll(srcPath, 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(srcPath, "app")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if isLocalModule(repo, "app") {
+		t.Fatalf("expected symlinked package dir inside real src to not be treated as local")
+	}
+}
+
 func TestPythonDependencyFromModuleStdlibCoverage(t *testing.T) {
 	repo := t.TempDir()
 	modules := []string{

@@ -398,11 +398,15 @@ func dependencyFromModule(repoPath, moduleName string) string {
 
 func isLocalModule(repoPath, root string) bool {
 	for _, searchRoot := range localModuleSearchRoots(repoPath) {
-		if _, err := os.Stat(filepath.Join(searchRoot, root+".py")); err == nil {
+		// Use Lstat to avoid following symlinks that could escape the repo boundary.
+		if info, err := os.Lstat(filepath.Join(searchRoot, root+".py")); err == nil && info.Mode()&os.ModeSymlink == 0 {
 			return true
 		}
-		if _, err := os.Stat(filepath.Join(searchRoot, root, "__init__.py")); err == nil {
-			return true
+		pkgDir := filepath.Join(searchRoot, root)
+		if info, err := os.Lstat(pkgDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			if _, err := os.Lstat(filepath.Join(pkgDir, "__init__.py")); err == nil {
+				return true
+			}
 		}
 	}
 	return false
