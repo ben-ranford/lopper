@@ -607,6 +607,20 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 }
 
+func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
+	result := newScanResult()
+	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
+	pkg := parsePackage(content)
+	if pkg != "com.example.`when`" {
+		t.Fatalf("unexpected parsed escaped package: %q", pkg)
+	}
+
+	imports := parseImports(content, testMainSourceFileName, pkg, dependencyLookups{Aliases: map[string]string{"com.example": "acme-lib"}}, &result)
+	if len(imports) != 0 {
+		t.Fatalf("expected escaped package-local import to be ignored, got %#v", imports)
+	}
+}
+
 func TestResolveDependencyAndDescriptorBranches(t *testing.T) {
 	lookups := dependencyLookups{
 		Prefixes: map[string]string{"alpha": "dep-alpha", "alpha.beta": testDepBetaDependency},

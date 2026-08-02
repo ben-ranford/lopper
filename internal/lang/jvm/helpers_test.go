@@ -104,6 +104,19 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 }
 
+func TestJVMParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
+	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
+	pkg := parsePackage(content)
+	if pkg != "com.example.`when`" {
+		t.Fatalf("unexpected parsed escaped package: %q", pkg)
+	}
+
+	imports := parseImports(content, "App.kt", pkg, nil, map[string]string{"com.example": acmeLibName})
+	if len(imports) != 0 {
+		t.Fatalf("expected escaped package-local import to be ignored, got %#v", imports)
+	}
+}
+
 func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
 	content := []byte(`package com.example.app;
 import java.util.List;

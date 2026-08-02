@@ -229,7 +229,7 @@ func isSourceFile(path string) bool {
 }
 
 var (
-	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
+	packagePattern = regexp.MustCompile("(?m)^\\s*package\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\r\\n]+`)(?:\\.(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\r\\n]+`))*)\\s*;?\\s*$")
 )
 
 func parsePackage(content []byte) string {
