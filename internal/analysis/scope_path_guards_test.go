@@ -36,7 +36,7 @@ func TestScopeWalkerAdditionalBranches(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	fileEntry := mustScopePathEntry(t, repo, scopePathTextFile)
+	fileEntry := mustScopeDirEntry(t, repo, scopePathTextFile)
 
 	includePattern := compiledPattern{pattern: "**/*", regex: regexp.MustCompile(".*")}
 	walker := &scopeWalker{
@@ -126,22 +126,6 @@ func TestScopeWalkerInfoFailureAndBudgetRollbackBranches(t *testing.T) {
 	if !containsWarning(walker.stats.skippedDiagnostics, "disguised.js (is not a regular file (not copied))") {
 		t.Fatalf("expected non-regular rollback diagnostic, got %#v", walker.stats.skippedDiagnostics)
 	}
-}
-
-func mustScopePathEntry(t *testing.T, dir, name string) os.DirEntry {
-	t.Helper()
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("readdir %s: %v", dir, err)
-	}
-	for _, entry := range entries {
-		if entry.Name() == name {
-			return entry
-		}
-	}
-	t.Fatalf("expected %s entry", name)
-	return nil
 }
 
 type fakeScopeDirEntry struct {

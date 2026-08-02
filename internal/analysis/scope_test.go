@@ -20,9 +20,9 @@ const scopeKeepJSPath = "src/keep.js"
 
 func TestApplyPathScopeFiltersFilesAndReportsDiagnostics(t *testing.T) {
 	repo := t.TempDir()
-	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
-	writeScopeFile(t, filepath.Join(repo, "src", "skip.test.js"), "export const skip = true\n")
-	writeScopeFile(t, filepath.Join(repo, "README.md"), "doc\n")
+	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	writeFile(t, filepath.Join(repo, "src", "skip.test.js"), "export const skip = true\n")
+	writeFile(t, filepath.Join(repo, "README.md"), "doc\n")
 
 	scopedPath, warnings, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, []string{"**/*.test.js"})
 	if err != nil {
@@ -107,9 +107,9 @@ func TestCopyFileFailsWhenSourceFileMissing(t *testing.T) {
 
 func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 	repo := t.TempDir()
-	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
 	target := filepath.Join(repo, "outside.js")
-	writeScopeFile(t, target, "export const outside = true\n")
+	writeFile(t, target, "export const outside = true\n")
 	linkPath := filepath.Join(repo, "src", "linked.js")
 	if err := os.Symlink(target, linkPath); err != nil {
 		t.Skipf("symlink unsupported in test environment: %v", err)
@@ -240,7 +240,7 @@ func TestApplyPathScopeRejectsOversizedScopedCopy(t *testing.T) {
 func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 	repo := t.TempDir()
 	for i := 0; i <= maxScopedCopyFiles; i++ {
-		writeScopeFile(t, filepath.Join(repo, "src", "pkg", fmt.Sprintf("f-%d.js", i)), "export const keep = true\n")
+		writeFile(t, filepath.Join(repo, "src", "pkg", fmt.Sprintf("f-%d.js", i)), "export const keep = true\n")
 	}
 
 	_, _, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
@@ -254,7 +254,7 @@ func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 
 func TestApplyPathScopeHonorsCanceledContext(t *testing.T) {
 	repo := t.TempDir()
-	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
 
 	_, _, cleanup, err := applyPathScope(testutil.CanceledContext(), repo, []string{scopeJSGlob}, nil)
 	if cleanup != nil {
@@ -267,7 +267,7 @@ func TestApplyPathScopeHonorsCanceledContext(t *testing.T) {
 
 func TestApplyPathScopeSkipsNonRegularFiles(t *testing.T) {
 	repo := t.TempDir()
-	writeScopeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
 	pipePath := filepath.Join(repo, "src", "pipe.js")
 	if err := os.MkdirAll(filepath.Dir(pipePath), 0o750); err != nil {
 		t.Fatalf("mkdir pipe dir: %v", err)
@@ -303,16 +303,6 @@ func containsWarning(warnings []string, expected string) bool {
 		}
 	}
 	return false
-}
-
-func writeScopeFile(t *testing.T, path string, content string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
 }
 
 func makeNamedPipe(path string) error {

@@ -149,61 +149,80 @@ func applyPathScope(ctx context.Context, repoPath string, includePatterns []stri
 
 func (w *scopeWalker) walkWithContext(ctx context.Context) fs.WalkDirFunc {
 	return func(currentPath string, entry fs.DirEntry, walkErr error) error {
-		if err := scopeContextErr(ctx); err != nil {
-			return err
+		return w.walk(ctx, currentPath, entry, walkErr)
+	}
+}
+
+func (w *scopeWalker) walk(ctx context.Context, currentPath string, entry fs.DirEntry, walkErr error) error {
+	if err := scopeContextErr(ctx); err != nil {
+		return err
+	}
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		if entry.Name() == ".git" {
+			return filepath.SkipDir
 		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if entry.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		w.stats.totalFiles++
-		relativePath, err := filepath.Rel(w.repoPath, currentPath)
-		if err != nil {
-			return err
-		}
-		slashed := filepath.ToSlash(filepath.Clean(relativePath))
-		includeMatched, includePattern := matchFirstCompiledPattern(slashed, w.includeCompiled)
-		excludeMatched, excludePattern := matchFirstCompiledPattern(slashed, w.excludeCompiled)
-		shouldSkip := (len(w.includePatterns) > 0 && !includeMatched) || excludeMatched
-		if shouldSkip {
-			recordScopeSkip(w.stats, slashed, includeMatched, includePattern, excludeMatched, excludePattern)
-			return nil
-		}
-		if entry.Type()&fs.ModeSymlink != 0 {
-			recordScopeSkipReason(w.stats, slashed, "is symlink (not copied)")
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
+		return nil
+	}
+	return w.walkFile(ctx, currentPath, entry)
+}
+
+func (w *scopeWalker) walkFile(ctx context.Context, currentPath string, entry fs.DirEntry) error {
+	w.stats.totalFiles++
+	relativePath, err := filepath.Rel(w.repoPath, currentPath)
+	if err != nil {
+		return err
+	}
+	slashed := filepath.ToSlash(filepath.Clean(relativePath))
+	includeMatched, includePattern, skip := w.scopePathMatch(slashed)
+	if skip {
+		return nil
+	}
+	return w.copyScopedEntry(ctx, entry, relativePath, slashed, includeMatched, includePattern)
+}
+
+func (w *scopeWalker) scopePathMatch(slashed string) (bool, string, bool) {
+	includeMatched, includePattern := matchFirstCompiledPattern(slashed, w.includeCompiled)
+	excludeMatched, excludePattern := matchFirstCompiledPattern(slashed, w.excludeCompiled)
+	if (len(w.includePatterns) > 0 && !includeMatched) || excludeMatched {
+		recordScopeSkip(w.stats, slashed, includeMatched, includePattern, excludeMatched, excludePattern)
+		return false, "", true
+	}
+	return includeMatched, includePattern, false
+}
+
+func (w *scopeWalker) copyScopedEntry(ctx context.Context, entry fs.DirEntry, relativePath, slashed string, includeMatched bool, includePattern string) error {
+	if entry.Type()&fs.ModeSymlink != 0 {
+		recordScopeSkipReason(w.stats, slashed, "is symlink (not copied)")
+		return nil
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		recordScopeSkipReason(w.stats, slashed, "is not a regular file (not copied)")
+		return nil
+	}
+	if err := w.budget.reserve(slashed, info.Size()); err != nil {
+		return err
+	}
+	if includeMatched {
+		w.stats.includeMatches[includePattern]++
+	}
+	if err := copyFile(ctx, w.repoPath, w.scopedRoot, relativePath, info.Size()); err != nil {
+		if errors.Is(err, errScopedCopyNonRegularFile) {
+			w.budget.files--
+			w.budget.bytes -= info.Size()
 			recordScopeSkipReason(w.stats, slashed, "is not a regular file (not copied)")
 			return nil
 		}
-		if err := w.budget.reserve(slashed, info.Size()); err != nil {
-			return err
-		}
-		if includeMatched {
-			w.stats.includeMatches[includePattern]++
-		}
-		if err := copyFile(ctx, w.repoPath, w.scopedRoot, relativePath, info.Size()); err != nil {
-			if errors.Is(err, errScopedCopyNonRegularFile) {
-				w.budget.files--
-				w.budget.bytes -= info.Size()
-				recordScopeSkipReason(w.stats, slashed, "is not a regular file (not copied)")
-				return nil
-			}
-			return err
-		}
-		w.stats.keptFiles++
-		return nil
+		return err
 	}
+	w.stats.keptFiles++
+	return nil
 }
 
 func recordScopeSkip(stats *scopeStats, slashed string, includeMatched bool, includePattern string, excludeMatched bool, excludePattern string) {

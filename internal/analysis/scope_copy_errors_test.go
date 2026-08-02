@@ -18,7 +18,7 @@ func TestScopeCopyFileAdditionalErrorBranches(t *testing.T) {
 	repo := t.TempDir()
 	scopedRoot := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", scopeKeepJS)
-	writeScopeFile(t, sourcePath, "export const keep = true\n")
+	writeFile(t, sourcePath, "export const keep = true\n")
 
 	targetDir := filepath.Join(scopedRoot, "src", scopeKeepJS)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -51,7 +51,7 @@ func TestCopyFileHonorsCanceledContextBeforeOpen(t *testing.T) {
 	repo := t.TempDir()
 	scopedRoot := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", scopeKeepJS)
-	writeScopeFile(t, sourcePath, "export const keep = true\n")
+	writeFile(t, sourcePath, "export const keep = true\n")
 
 	sourceInfo, err := os.Stat(sourcePath)
 	if err != nil {
@@ -67,7 +67,7 @@ func TestCopyFileRejectsSourceGrowthBeyondReservedSize(t *testing.T) {
 	scopedRoot := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", scopeKeepJS)
 	content := "export const keep = true\n"
-	writeScopeFile(t, sourcePath, content)
+	writeFile(t, sourcePath, content)
 
 	if err := copyFile(context.Background(), repo, scopedRoot, filepath.Join("src", scopeKeepJS), int64(len(content)-1)); err == nil || !strings.Contains(err.Error(), "source grew while copying") {
 		t.Fatalf("expected source growth error, got %v", err)

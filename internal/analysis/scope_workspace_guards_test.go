@@ -91,7 +91,7 @@ func TestScopePatternCompileAndTempWorkspaceFailures(t *testing.T) {
 func TestScopeCopyFileAndRelativePathGuards(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", "keep.js")
-	writeScopeFile(t, sourcePath, "export const keep = true\n")
+	writeFile(t, sourcePath, "export const keep = true\n")
 	sourceInfo, err := os.Stat(sourcePath)
 	if err != nil {
 		t.Fatalf("stat source path: %v", err)
