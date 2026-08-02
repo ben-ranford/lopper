@@ -108,6 +108,10 @@ func TestChangedRootsHandlesRelativeRootsAndNoChangedFiles(t *testing.T) {
 	if empty := changedRoots([]string{relativeRoot}, repo, nil); len(empty) != 0 {
 		t.Fatalf("expected no changed files to select no roots, got %#v", empty)
 	}
+
+	if empty := changedRoots(nil, repo, []string{"packages/a/src/index.ts"}); len(empty) != 0 {
+		t.Fatalf("expected no roots to select no changed roots, got %#v", empty)
+	}
 }
 
 func TestAppendChangedRootAncestorsDeduplicatesIndexedRoots(t *testing.T) {
@@ -173,6 +177,10 @@ func TestRootContainsFileAndUniqueSortedEdges(t *testing.T) {
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("unexpected uniqueSorted output: %#v", got)
 	}
+
+	if rootContainsFile(root, "\x00") {
+		t.Fatalf("expected invalid file path to be excluded")
+	}
 }
 
 func TestRemapAnalyzedRoots(t *testing.T) {
@@ -235,6 +243,19 @@ func TestAdjustImportLocationsSlashNormalizesWindowsPaths(t *testing.T) {
 	}
 	if got := imports[0].Locations[2].File; got != "C:/repo/pkg/abs.js" {
 		t.Fatalf("expected absolute windows import location to remain absolute and slash-normalized, got %q", got)
+	}
+}
+
+func TestAbsolutePathHelpersPreserveAbsoluteInputs(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	absoluteRoot := filepath.Join(repo, "packages", "a")
+	if got := absoluteRootPath(repo, absoluteRoot); got != absoluteRoot {
+		t.Fatalf("expected absolute root to be preserved, got %q", got)
+	}
+
+	absoluteFile := filepath.Join(repo, "packages", "a", "src", "index.ts")
+	if got := absoluteChangedPath(repo, absoluteFile); got != absoluteFile {
+		t.Fatalf("expected absolute changed path to be preserved, got %q", got)
 	}
 }
 

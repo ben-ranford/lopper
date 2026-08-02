@@ -41,7 +41,7 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 	}
 
 	req.ScopeMode = normalizeScopeMode(req.ScopeMode)
-	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScope(repoPath, req.IncludePatterns, req.ExcludePatterns)
+	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScopeWithContext(ctx, repoPath, req.IncludePatterns, req.ExcludePatterns)
 	if err != nil {
 		return nil, err
 	}

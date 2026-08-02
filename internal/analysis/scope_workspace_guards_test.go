@@ -32,10 +32,11 @@ func TestScopeWalkerGuardBranches(t *testing.T) {
 	gitEntry := mustScopeDirEntry(t, repo, ".git")
 
 	walker := &scopeWalker{repoPath: repo, scopedRoot: t.TempDir(), stats: newScopeStats(nil, nil)}
-	if walker.walk("", nil, errors.New("walk failed")) == nil {
+	walk := walker.walk
+	if walk("", nil, errors.New("walk failed")) == nil {
 		t.Fatalf("expected walkErr to be returned")
 	}
-	if err := walker.walk(gitDir, gitEntry, nil); !errors.Is(err, filepath.SkipDir) {
+	if err := walk(gitDir, gitEntry, nil); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected .git to return SkipDir, got %v", err)
 	}
 }
@@ -89,8 +90,7 @@ func TestScopePatternCompileAndTempWorkspaceFailures(t *testing.T) {
 func TestScopeCopyFileAndRelativePathGuards(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", "keep.js")
-	writeScopeFile(t, sourcePath, "export const keep = true\n")
-
+	writeFile(t, sourcePath, "export const keep = true\n")
 	if copyFile(repo, t.TempDir(), "..") == nil {
 		t.Fatalf("expected unsafe relative path to fail")
 	}
