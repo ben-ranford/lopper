@@ -5,6 +5,7 @@ type elixirSourceMaskState struct {
 	inDoubleQuote   bool
 	inSingleHeredoc bool
 	inDoubleHeredoc bool
+	inComment       bool
 	escaped         bool
 }
 
@@ -25,7 +26,7 @@ func MaskSource(content []byte) []byte {
 	masked := sanitizeElixirSource(content)
 	maskElixirSigils(content, masked)
 	for index := 0; index < len(content); index++ {
-		if content[index] != '#' || masked[index] != '#' {
+		if !isElixirCommentStart(content, masked, index) {
 			continue
 		}
 		for index < len(content) && content[index] != '\n' {
@@ -105,6 +106,8 @@ func isElixirSigilLetter(value byte) bool {
 
 func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *elixirSourceMaskState) int {
 	switch {
+	case state.inComment:
+		return sanitizeElixirCommentByte(content, index, state)
 	case state.inDoubleHeredoc:
 		return sanitizeElixirHeredocByte(content, sanitized, index, state, '"')
 	case state.inSingleHeredoc:
@@ -116,6 +119,13 @@ func sanitizeElixirSourceAt(content []byte, sanitized []byte, index int, state *
 	default:
 		return startElixirSanitizedRegion(content, sanitized, index, state)
 	}
+}
+
+func sanitizeElixirCommentByte(content []byte, index int, state *elixirSourceMaskState) int {
+	if content[index] == '\n' {
+		state.inComment = false
+	}
+	return 0
 }
 
 func sanitizeElixirHeredocByte(content []byte, sanitized []byte, index int, state *elixirSourceMaskState, quote byte) int {
@@ -170,6 +180,10 @@ func startElixirSanitizedRegion(content []byte, sanitized []byte, index int, sta
 	}
 
 	switch content[index] {
+	case '#':
+		if isElixirCommentStart(content, sanitized, index) {
+			state.inComment = true
+		}
 	case '"':
 		maskElixirSourceByte(sanitized, index)
 		state.inDoubleQuote = true
@@ -191,4 +205,33 @@ func maskElixirSourceByte(content []byte, index int) {
 	if content[index] != '\n' {
 		content[index] = ' '
 	}
+}
+
+func isElixirCommentStart(content, masked []byte, index int) bool {
+	if index < 0 || index >= len(content) || content[index] != '#' || masked[index] != '#' {
+		return false
+	}
+	return !isElixirCharacterLiteralHash(content, index)
+}
+
+func isElixirCharacterLiteralHash(content []byte, hashIndex int) bool {
+	literalStart := hashIndex - 1
+	if literalStart > 0 && content[literalStart] == '\\' {
+		literalStart--
+	}
+	if literalStart < 0 || content[literalStart] != '?' {
+		return false
+	}
+	return !isElixirCharacterLiteralContinuation(content, literalStart) && (literalStart == 0 || !isElixirIdentifierByte(content[literalStart-1]))
+}
+
+func isElixirCharacterLiteralContinuation(content []byte, index int) bool {
+	if index > 0 && content[index-1] == '?' {
+		return index == 1 || !isElixirIdentifierByte(content[index-2])
+	}
+	return index > 1 && content[index-1] == '\\' && content[index-2] == '?' && (index == 2 || !isElixirIdentifierByte(content[index-3]))
+}
+
+func isElixirIdentifierByte(value byte) bool {
+	return value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value >= 0x80
 }
