@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -113,17 +114,9 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 
 	scopedPath, warnings := applyScopedJSScope(t, repo)
 
-	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
-		t.Fatalf("expected regular in-scope file to be copied: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(scopedPath, "src", "linked.js")); !os.IsNotExist(err) {
-		t.Fatalf("expected symlinked file to be skipped, got err=%v", err)
-	}
+	assertScopedEntryIsSkipped(t, scopedPath, warnings, "src/linked.js", "is symlink (not copied)")
 	if !containsWarning(warnings, "analysis scope include matches: src/**/*.js=1") {
 		t.Fatalf("expected include summary to count only copied files, got %#v", warnings)
-	}
-	if !containsWarning(warnings, "analysis scope skipped file: src/linked.js (is symlink (not copied))") {
-		t.Fatalf("expected symlink skip diagnostic, got %#v", warnings)
 	}
 }
 
@@ -224,6 +217,21 @@ func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 	expectScopedJSScopeFailure(t, repo, "expected scoped copy file limit to fail")
 }
 
+func TestApplyPathScopeSkipsNonRegularFiles(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
+	pipePath := filepath.Join(repo, "src", "pipe.js")
+	if err := os.MkdirAll(filepath.Dir(pipePath), 0o750); err != nil {
+		t.Fatalf("mkdir pipe dir: %v", err)
+	}
+	if err := syscall.Mkfifo(pipePath, 0o600); err != nil {
+		t.Skipf("named pipes unsupported in test environment: %v", err)
+	}
+
+	scopedPath, warnings := applyScopedJSScope(t, repo)
+	assertScopedEntryIsSkipped(t, scopedPath, warnings, "src/pipe.js", "is not a regular file (not copied)")
+}
+
 func containsWarning(warnings []string, expected string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, expected) {
@@ -253,5 +261,19 @@ func expectScopedJSScopeFailure(t *testing.T, repo, message string) {
 			cleanup()
 		}
 		t.Fatal(message)
+	}
+}
+
+func assertScopedEntryIsSkipped(t *testing.T, scopedPath string, warnings []string, relativePath, reason string) {
+	t.Helper()
+
+	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
+		t.Fatalf("expected regular in-scope file to be copied: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(scopedPath, relativePath)); !os.IsNotExist(err) {
+		t.Fatalf("expected skipped scoped entry, got err=%v", err)
+	}
+	if !containsWarning(warnings, "analysis scope skipped file: "+relativePath+" ("+reason+")") {
+		t.Fatalf("expected skipped-entry diagnostic, got %#v", warnings)
 	}
 }

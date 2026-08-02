@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,25 +13,15 @@ import (
 const scopedCopyBufferSize = 32 * 1024
 
 func copyFile(repoPath, scopedRoot, relativePath string) error {
-	return copyFileWithContext(context.Background(), repoPath, scopedRoot, relativePath, math.MaxInt64-1)
+	return copyFileWithContext(context.Background(), repoPath, scopedRoot, relativePath, maxScopedCopyBytes)
 }
 
 func copyFileWithContext(ctx context.Context, repoPath, scopedRoot, relativePath string, expectedSize int64) (err error) {
 	if !isSafeRelativePath(relativePath) {
 		return fmt.Errorf("invalid relative path for scoped copy: %s", relativePath)
 	}
-	if err := scopeContextErr(ctx); err != nil {
-		return err
-	}
 	cleanRelativePath := filepath.Clean(relativePath)
-	sourcePath := filepath.Join(repoPath, cleanRelativePath)
 	targetPath := filepath.Join(scopedRoot, cleanRelativePath)
-	if !pathWithin(repoPath, sourcePath) {
-		return fmt.Errorf("source path escapes repository scope: %s", sourcePath)
-	}
-	if !pathWithin(scopedRoot, targetPath) {
-		return fmt.Errorf("target path escapes scoped workspace: %s", targetPath)
-	}
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
 		return err
 	}
@@ -81,30 +70,19 @@ func copyFileWithContext(ctx context.Context, repoPath, scopedRoot, relativePath
 }
 
 func copyScopedFileContents(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
-	buffer := make([]byte, scopedCopyBufferSize)
-	var written int64
-	for {
-		if err := scopeContextErr(ctx); err != nil {
-			return written, err
-		}
-		readBytes, readErr := src.Read(buffer)
-		if readBytes > 0 {
-			wroteBytes, writeErr := dst.Write(buffer[:readBytes])
-			written += int64(wroteBytes)
-			if writeErr != nil {
-				return written, writeErr
-			}
-			if wroteBytes != readBytes {
-				return written, io.ErrShortWrite
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			return written, nil
-		}
-		if readErr != nil {
-			return written, readErr
-		}
+	return io.CopyBuffer(dst, scopeContextReader{ctx: ctx, source: src}, make([]byte, scopedCopyBufferSize))
+}
+
+type scopeContextReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (r scopeContextReader) Read(buffer []byte) (int, error) {
+	if err := scopeContextErr(r.ctx); err != nil {
+		return 0, err
 	}
+	return r.source.Read(buffer)
 }
 
 func joinCloseError(target *error, closeFn func() error) {

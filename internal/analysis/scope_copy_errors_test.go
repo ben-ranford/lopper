@@ -9,6 +9,7 @@ import (
 )
 
 const scopeKeepJS = "keep.js"
+const scopeCopyTestByteLimit = 256 << 20
 
 func TestScopeCopyFileAdditionalErrorBranches(t *testing.T) {
 	repo := t.TempDir()
@@ -36,5 +37,27 @@ func TestScopeCopyFileAdditionalErrorBranches(t *testing.T) {
 	joinCloseError(&err, func() error { return errors.New("close failed") })
 	if err == nil || !strings.Contains(err.Error(), "close failed") {
 		t.Fatalf("expected joinCloseError to propagate close failure, got %v", err)
+	}
+}
+
+func TestCopyFileRejectsOversizedSource(t *testing.T) {
+	repo := t.TempDir()
+	filePath := filepath.Join(repo, scopeKeepJS)
+	file, err := os.Create(filePath)
+	if err != nil {
+		t.Fatalf("create oversized source: %v", err)
+	}
+	if err := file.Truncate(scopeCopyTestByteLimit + 1); err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close oversized source after truncate error: %v", closeErr)
+		}
+		t.Fatalf("truncate oversized source: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized source: %v", err)
+	}
+
+	if err := copyFile(repo, t.TempDir(), scopeKeepJS); err == nil {
+		t.Fatal("expected oversized source to be rejected")
 	}
 }

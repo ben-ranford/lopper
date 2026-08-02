@@ -21,6 +21,19 @@ func TestAnalysisPipelineAdditionalSetupBranches(t *testing.T) {
 	}
 }
 
+func TestNewAnalysisPipelineStopsBeforeScopedCopyWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	service := &Service{Registry: language.NewRegistry()}
+	if _, err := service.newAnalysisPipeline(ctx, Request{
+		RepoPath:        t.TempDir(),
+		IncludePatterns: []string{"**/*.js"},
+	}); err == nil {
+		t.Fatal("expected cancelled scoped pipeline setup to fail")
+	}
+}
+
 func TestScopedCandidateRootsChangedPackagesSuccessBranch(t *testing.T) {
 	repoRoot := t.TempDir()
 	rootA := filepath.Join(repoRoot, "packages", "a")
