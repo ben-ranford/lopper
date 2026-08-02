@@ -271,13 +271,16 @@ func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm 
 	defer func() {
 		if targetCreated {
 			returnErr = errors.Join(returnErr, cleanupAtomicTempFile(root, targetRel, file))
-			return
-		}
-		if file != nil {
-			returnErr = errors.Join(returnErr, closeFilePreservingPrimary(file, nil))
 		}
 	}()
 
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return fmt.Errorf("exclusive-create target is not a regular file: %s", targetRel)
+	}
 	if _, err := file.Write(data); err != nil {
 		return err
 	}
@@ -287,8 +290,21 @@ func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm 
 	if err := file.Close(); err != nil {
 		return err
 	}
-	targetCreated = false
 	file = nil
+	pathInfo, err := root.Lstat(targetRel)
+	if err != nil {
+		targetCreated = false
+		return fmt.Errorf("exclusive-create target changed before validation: %w", err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		targetCreated = false
+		return fmt.Errorf("exclusive-create target became a symlink before validation: %s", targetRel)
+	}
+	if !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
+		targetCreated = false
+		return fmt.Errorf("exclusive-create target changed before validation: %s", targetRel)
+	}
+	targetCreated = false
 	return nil
 }
 
