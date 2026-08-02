@@ -70,7 +70,7 @@ func TestNormalizeCandidateRootConfinesPathsToRepo(t *testing.T) {
 
 	link := filepath.Join(repo, "linked-outside")
 	if err := os.Symlink(outside, link); err != nil {
-		t.Fatalf("symlink linked-outside: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	if got := normalizeCandidateRoot(repo, link); got != "" {
 		t.Fatalf("expected symlink escape root rejection, got %q", got)
