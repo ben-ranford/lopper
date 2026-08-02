@@ -231,7 +231,7 @@ func TestDetectWithConfidenceIgnoresEscapingAppsPath(t *testing.T) {
 
 func TestDetectWithConfidenceIgnoresCommentedAppsPath(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  # apps_path: \"services\"\n  def project, do: []\nend\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, mixExsName), "defmodule Demo.MixProject do\n  use Mix.Project\n  ready?# apps_path: \"services\"\n  def project, do: []\nend\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "services", "api", mixExsName), elixirApiMixProject)
 	assertDetectionFixture(t, repo, filepath.Base(repo), "")
 }

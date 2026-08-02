@@ -215,8 +215,16 @@ func isElixirCommentStart(content, masked []byte, index int) bool {
 }
 
 func isElixirCharacterLiteralHash(content []byte, hashIndex int) bool {
-	if hashIndex > 0 && content[hashIndex-1] == '?' {
-		return true
+	literalStart := hashIndex - 1
+	if literalStart > 0 && content[literalStart] == '\\' {
+		literalStart--
 	}
-	return hashIndex > 1 && content[hashIndex-2] == '?' && content[hashIndex-1] == '\\'
+	if literalStart < 0 || content[literalStart] != '?' {
+		return false
+	}
+	return literalStart == 0 || !isElixirIdentifierByte(content[literalStart-1])
+}
+
+func isElixirIdentifierByte(value byte) bool {
+	return value == '_' || value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value >= 0x80
 }
