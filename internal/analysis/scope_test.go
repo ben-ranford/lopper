@@ -112,11 +112,7 @@ func TestApplyPathScopeSkipsSymlinkedFiles(t *testing.T) {
 		t.Skipf("symlink unsupported in test environment: %v", err)
 	}
 
-	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
-	if err != nil {
-		t.Fatalf("apply path scope: %v", err)
-	}
-	defer cleanup()
+	scopedPath, warnings := applyScopedJSScope(t, repo)
 
 	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
 		t.Fatalf("expected regular in-scope file to be copied: %v", err)
@@ -253,11 +249,7 @@ func TestApplyPathScopeSkipsNonRegularFiles(t *testing.T) {
 		t.Skipf("named pipes unsupported in test environment: %v", err)
 	}
 
-	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
-	if err != nil {
-		t.Fatalf("apply path scope: %v", err)
-	}
-	defer cleanup()
+	scopedPath, warnings := applyScopedJSScope(t, repo)
 
 	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
 		t.Fatalf("expected regular file to be copied: %v", err)
@@ -277,6 +269,18 @@ func containsWarning(warnings []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func applyScopedJSScope(t *testing.T, repo string) (string, []string) {
+	t.Helper()
+
+	scopedPath, warnings, cleanup, err := applyPathScope(repo, []string{scopeJSGlob}, nil)
+	if err != nil {
+		t.Fatalf("apply path scope: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	return scopedPath, warnings
 }
 
 func makeNamedPipe(path string) error {
