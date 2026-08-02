@@ -833,8 +833,8 @@ func assertDashboardCheckoutName(t *testing.T, input, want string) {
 
 func assertPathWithinDir(t *testing.T, root, candidate string, want bool, message string) {
 	t.Helper()
-	if got := pathWithinDir(root, candidate); got != want {
-		t.Fatalf("%s: pathWithinDir(%q, %q) = %t", message, root, candidate, got)
+	if got := dashboardPathWithinDir(root, candidate); got != want {
+		t.Fatalf("%s: dashboardPathWithinDir(%q, %q) = %t", message, root, candidate, got)
 	}
 }
 

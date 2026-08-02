@@ -48,7 +48,7 @@ func TestDashboardRequestAdditionalBranches(t *testing.T) {
 	}
 
 	absoluteBaselineStore := filepath.Join(t.TempDir(), "baselines")
-	if got := resolveDashboardConfigPath(configDir, absoluteBaselineStore); got != absoluteBaselineStore {
+	if got := dashboard.ResolveConfigPath(configDir, absoluteBaselineStore); got != absoluteBaselineStore {
 		t.Fatalf("expected absolute dashboard config path to pass through, got %q", got)
 	}
 }

@@ -486,7 +486,7 @@ func dashboardCheckoutPath(cacheRoot string, spec dashboardRepoURLSpec, revision
 	sum := sha256.Sum256([]byte(hashInput))
 	hash := hex.EncodeToString(sum[:])[:dashboardRepoCacheHashLength]
 	checkoutPath := filepath.Join(root, checkoutName+"-"+hash)
-	if !pathWithinDir(root, checkoutPath) {
+	if !dashboardPathWithinDir(root, checkoutPath) {
 		return "", fmt.Errorf("dashboard repo checkout path escapes cache root")
 	}
 	return checkoutPath, nil
@@ -513,12 +513,4 @@ func sanitizeDashboardCheckoutName(value string) string {
 		return "repo"
 	}
 	return sanitized
-}
-
-func pathWithinDir(root, child string) bool {
-	rel, err := filepath.Rel(root, child)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
