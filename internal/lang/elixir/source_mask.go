@@ -222,7 +222,14 @@ func isElixirCharacterLiteralHash(content []byte, hashIndex int) bool {
 	if literalStart < 0 || content[literalStart] != '?' {
 		return false
 	}
-	return literalStart == 0 || !isElixirIdentifierByte(content[literalStart-1])
+	return !isElixirCharacterLiteralContinuation(content, literalStart) && (literalStart == 0 || !isElixirIdentifierByte(content[literalStart-1]))
+}
+
+func isElixirCharacterLiteralContinuation(content []byte, index int) bool {
+	if index > 0 && content[index-1] == '?' {
+		return index == 1 || !isElixirIdentifierByte(content[index-2])
+	}
+	return index > 1 && content[index-1] == '\\' && content[index-2] == '?' && (index == 2 || !isElixirIdentifierByte(content[index-3]))
 }
 
 func isElixirIdentifierByte(value byte) bool {
