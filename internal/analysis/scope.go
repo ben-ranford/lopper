@@ -79,8 +79,10 @@ func (b *scopeCopyBudget) reserve(path string, size int64) error {
 	if size < 0 {
 		return fmt.Errorf("analysis scope copy encountered negative file size for %q", path)
 	}
-	if b.maxBytes > 0 && b.bytes+size > b.maxBytes {
-		return fmt.Errorf("%w at %q (maximum bytes: %d)", errScopedCopyByteLimitExceeded, path, b.maxBytes)
+	if b.maxBytes > 0 {
+		if size > b.maxBytes || b.bytes > b.maxBytes-size {
+			return fmt.Errorf("%w at %q (maximum bytes: %d)", errScopedCopyByteLimitExceeded, path, b.maxBytes)
+		}
 	}
 	b.files++
 	b.bytes += size

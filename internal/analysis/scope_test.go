@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,16 @@ func TestScopeCopyBudgetRejectsNegativeSize(t *testing.T) {
 	budget := newScopeCopyBudget()
 	if err := budget.reserve(scopeKeepJSPath, -1); err == nil || !strings.Contains(err.Error(), "negative file size") {
 		t.Fatalf("expected negative file size rejection, got %v", err)
+	}
+}
+
+func TestScopeCopyBudgetRejectsOverflowingByteReservation(t *testing.T) {
+	budget := scopeCopyBudget{
+		maxBytes: 32,
+		bytes:    31,
+	}
+	if err := budget.reserve(scopeKeepJSPath, math.MaxInt64); !errors.Is(err, errScopedCopyByteLimitExceeded) {
+		t.Fatalf("expected scoped copy byte limit error, got %v", err)
 	}
 }
 
