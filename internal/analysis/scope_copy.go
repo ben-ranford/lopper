@@ -70,16 +70,20 @@ func copyFileWithContext(ctx context.Context, repoPath, scopedRoot, relativePath
 }
 
 func copyScopedFileContents(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
-	return io.CopyBuffer(dst, scopeContextReader{ctx: ctx, source: src}, make([]byte, scopedCopyBufferSize))
+	reader := scopeContextReader{
+		check:  func() error { return scopeContextErr(ctx) },
+		source: src,
+	}
+	return io.CopyBuffer(dst, &reader, make([]byte, scopedCopyBufferSize))
 }
 
 type scopeContextReader struct {
-	ctx    context.Context
+	check  func() error
 	source io.Reader
 }
 
-func (r scopeContextReader) Read(buffer []byte) (int, error) {
-	if err := scopeContextErr(r.ctx); err != nil {
+func (r *scopeContextReader) Read(buffer []byte) (int, error) {
+	if err := r.check(); err != nil {
 		return 0, err
 	}
 	return r.source.Read(buffer)
