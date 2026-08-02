@@ -228,10 +228,7 @@ func TestApplyPathScopeRejectsOversizedScopedCopy(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWritePaddedFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n", maxScopedCopyBytes+1)
 
-	_, _, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
-	if cleanup != nil {
-		defer cleanup()
-	}
+	err := applyScopedCopyForTest(repo)
 	if !errors.Is(err, errScopedCopyByteLimitExceeded) {
 		t.Fatalf("expected scoped copy byte limit error, got %v", err)
 	}
@@ -243,10 +240,7 @@ func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 		writeFile(t, filepath.Join(repo, "src", "pkg", fmt.Sprintf("f-%d.js", i)), "export const keep = true\n")
 	}
 
-	_, _, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
-	if cleanup != nil {
-		defer cleanup()
-	}
+	err := applyScopedCopyForTest(repo)
 	if !errors.Is(err, errScopedCopyFileLimitExceeded) {
 		t.Fatalf("expected scoped copy file limit error, got %v", err)
 	}
@@ -303,6 +297,14 @@ func containsWarning(warnings []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func applyScopedCopyForTest(repo string) error {
+	_, _, cleanup, err := applyPathScope(context.Background(), repo, []string{scopeJSGlob}, nil)
+	if cleanup != nil {
+		cleanup()
+	}
+	return err
 }
 
 func makeNamedPipe(path string) error {
