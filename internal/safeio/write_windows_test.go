@@ -141,6 +141,51 @@ func TestWriteFileReplacingWithinRootFallsBackForReplaceExistingRenameError(t *t
 	}
 }
 
+func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRenameErrorOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+
+	removeCalls := 0
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		rename: func(oldName, newName string) error {
+			return &os.LinkError{
+				Op:  "renameat",
+				Old: oldName,
+				New: newName,
+				Err: syscall.ERROR_ALREADY_EXISTS,
+			}
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+
+	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
+		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one temp cleanup remove, got %d", removeCalls)
+	}
+	if string(targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(targetData))
+	}
+}
+
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
@@ -210,23 +255,16 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 	}
 	info := statTestPath(t, infoPath)
 
-	tests := []struct {
-		name string
-		info fs.FileInfo
-		want string
-	}{
-		{
-			name: "symlink",
-			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeSymlink | 0o777},
-			want: "became a symlink",
-		},
-		{
-			name: "non-regular",
-			info: &modeOverrideFileInfo{FileInfo: info, mode: os.ModeDir | 0o755},
-			want: "not a regular file",
-		},
-	}
-	for _, tt := range tests {
+	for _, tc := range unsafeTargetModeCases() {
+		tt := struct {
+			name string
+			info fs.FileInfo
+			want string
+		}{
+			name: tc.name,
+			info: &modeOverrideFileInfo{FileInfo: info, mode: tc.mode},
+			want: tc.want,
+		}
 		t.Run(tt.name, func(t *testing.T) {
 			targetOpened := false
 			root := &fakeRoot{

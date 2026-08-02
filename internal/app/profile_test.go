@@ -51,17 +51,7 @@ func TestExecuteProfileWritesConfigWithOverwriteSafeguard(t *testing.T) {
 	req.Profile.OutputPath = outputPath
 	req.Profile.Features = mustProfileFeatureSet(t)
 
-	output, err := application.Execute(context.Background(), req)
-	if err != nil {
-		t.Fatalf("execute profile write: %v", err)
-	}
-	if !strings.Contains(output, outputPath) {
-		t.Fatalf("expected output confirmation to include path, got %q", output)
-	}
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read profile output: %v", err)
-	}
+	data := mustExecuteProfileToFile(t, application, req, outputPath)
 	if !strings.Contains(string(data), "fail_on_increase_percent: 5") {
 		t.Fatalf("expected noise-reduction config, got %q", string(data))
 	}
@@ -75,13 +65,30 @@ func TestExecuteProfileWritesConfigWithOverwriteSafeguard(t *testing.T) {
 	if _, err := application.Execute(context.Background(), req); err != nil {
 		t.Fatalf("execute profile force overwrite: %v", err)
 	}
-	data, err = os.ReadFile(outputPath)
+	data, err := os.ReadFile(outputPath)
 	if err != nil {
 		t.Fatalf("read forced profile output: %v", err)
 	}
 	if !strings.Contains(string(data), "fail_on_increase_percent: 1") {
 		t.Fatalf("expected strict config after force overwrite, got %q", string(data))
 	}
+}
+
+func mustExecuteProfileToFile(t *testing.T, application *App, req Request, outputPath string) []byte {
+	t.Helper()
+
+	output, err := application.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("execute profile write: %v", err)
+	}
+	if !strings.Contains(output, outputPath) {
+		t.Fatalf("expected output confirmation to include path, got %q", output)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read profile output: %v", err)
+	}
+	return data
 }
 
 func TestExecuteProfileStdoutOutputPath(t *testing.T) {
@@ -125,19 +132,24 @@ func TestExecuteProfileErrorPaths(t *testing.T) {
 	if _, err := application.Execute(context.Background(), req); err == nil {
 		t.Fatalf("expected write error when output path is a directory")
 	}
+
+	outputPath := filepath.Join(t.TempDir(), "reports") + string(os.PathSeparator)
+	req.Profile.OutputPath = outputPath
+	if _, err := application.Execute(context.Background(), req); err == nil || !strings.Contains(err.Error(), "output path must name a file") {
+		t.Fatalf("expected directory-style output rejection for %q, got %v", outputPath, err)
+	}
 }
 
-func TestPersistProfileConfigPropagatesStatError(t *testing.T) {
+func TestPersistProfileConfigPropagatesParentError(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocked")
 	writeBlockedFile(t, blocker)
 
 	_, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), false)
 	if err == nil {
-		t.Fatal("expected stat error under regular file")
+		t.Fatal("expected non-directory parent error")
 	}
-	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) || pathErr.Op != "stat" || pathErr.Path != filepath.Join(blocker, "profile.yaml") {
-		t.Fatalf("expected propagated stat path error, got %v", err)
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected non-directory parent rejection, got %v", err)
 	}
 }
 
@@ -147,6 +159,41 @@ func TestPersistProfileConfigPropagatesMkdirAllError(t *testing.T) {
 
 	if _, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), true); err == nil {
 		t.Fatal("expected mkdir error under regular file")
+	}
+}
+
+func TestPersistProfileConfigRejectsParentSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(workspace, "reports")); err != nil {
+		t.Fatalf("create output parent symlink: %v", err)
+	}
+
+	outputPath := filepath.Join(workspace, "reports", "profile.yaml")
+	_, err := persistProfileConfig("thresholds: {}", outputPath, false)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected parent symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "profile.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside file to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestPersistProfileConfigRejectsDanglingTargetSymlinkWithForce(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	outputPath := filepath.Join(workspace, "profile.yaml")
+	outsideTarget := filepath.Join(outside, "missing", "profile.yaml")
+	if err := os.Symlink(outsideTarget, outputPath); err != nil {
+		t.Fatalf("create dangling output symlink: %v", err)
+	}
+
+	_, err := persistProfileConfig("thresholds: {}", outputPath, true)
+	if err == nil || !strings.Contains(err.Error(), "target path is a symlink") {
+		t.Fatalf("expected dangling symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(outsideTarget); !os.IsNotExist(statErr) {
+		t.Fatalf("expected symlink target to remain absent, got err=%v", statErr)
 	}
 }
 

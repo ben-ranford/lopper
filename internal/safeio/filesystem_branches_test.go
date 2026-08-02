@@ -610,6 +610,16 @@ func TestSplitPinnedPathSkipsEmptyAndDotSegments(t *testing.T) {
 	}
 }
 
+func TestSplitPinnedPathReturnsNilPartsForRootDot(t *testing.T) {
+	cleanName, parts := splitPinnedPath(".")
+	if cleanName != "." {
+		t.Fatalf("unexpected clean name: %q", cleanName)
+	}
+	if len(parts) != 0 {
+		t.Fatalf("expected no parts for dot path, got %#v", parts)
+	}
+}
+
 func TestOpenRootExistingAncestorNoFollowWithPropagatesSetupErrors(t *testing.T) {
 	absErr := errors.New("resolve absolute ancestor path")
 	relErr := errors.New("resolve relative ancestor path")

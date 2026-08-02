@@ -13,6 +13,7 @@ type atomicWriteSession struct {
 	targetRel string
 	tempRel   string
 	tempFile  File
+	tempInfo  fs.FileInfo
 }
 
 type truncatingFile interface {
@@ -35,13 +36,17 @@ func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atom
 }
 
 func (s *atomicWriteSession) writeAndClose(data []byte, perm os.FileMode) error {
-	if _, err := s.tempFile.Write(data); err != nil {
-		return err
-	}
-	if err := s.tempFile.Chmod(perm); err != nil {
+	if err := s.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
 	return s.closeTempFile()
+}
+
+func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) error {
+	if _, err := s.tempFile.Write(data); err != nil {
+		return err
+	}
+	return s.tempFile.Chmod(perm)
 }
 
 func (s *atomicWriteSession) commit() error {
@@ -49,6 +54,41 @@ func (s *atomicWriteSession) commit() error {
 		return err
 	}
 	s.tempRel = ""
+	return nil
+}
+
+func (s *atomicWriteSession) verifyCommittedTarget() error {
+	if s.tempInfo == nil {
+		return fmt.Errorf("temporary file info unavailable after commit: %s", s.targetRel)
+	}
+	if !s.tempInfo.Mode().IsRegular() {
+		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
+	}
+	pathInfo, err := s.root.Lstat(s.targetRel)
+	if err != nil {
+		return fmt.Errorf("committed target changed before validation: %w", err)
+	}
+	if !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
+		return fmt.Errorf("committed target changed before validation: %s", s.targetRel)
+	}
+	return nil
+}
+
+func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
+	if s.tempFile == nil {
+		return nil
+	}
+	tempInfo, err := s.tempFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !tempInfo.Mode().IsRegular() {
+		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
+	}
+	if err := s.closeTempFile(); err != nil {
+		return err
+	}
+	s.tempInfo = tempInfo
 	return nil
 }
 
@@ -84,13 +124,51 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 		returnErr = errors.Join(returnErr, session.cleanup())
 	}()
 
-	if err := session.writeAndClose(data, perm); err != nil {
+	if err := session.writeAndPrepare(data, perm); err != nil {
+		return err
+	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
 	if err := session.commit(); err != nil {
 		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 	}
-	return nil
+	return session.verifyCommittedTarget()
+}
+
+func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
+	session, err := newAtomicWriteSession(root, targetRel, perm)
+	if err != nil {
+		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
+			return overwritePinnedFile(root, targetRel, replacementFile, data, nil)
+		}
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, session.cleanup())
+	}()
+
+	if err := session.writeAndPrepare(data, perm); err != nil {
+		return err
+	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
+		return err
+	}
+	if err := session.commit(); err != nil {
+		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
+		if fallbackErr == nil {
+			return nil
+		}
+		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
+			return overwritePinnedFile(root, targetRel, replacementFile, data, nil)
+		}
+		return fallbackErr
+	}
+	return session.verifyCommittedTarget()
+}
+
+func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {
+	return allowPermissionFallback && replacementFile != nil && os.IsPermission(err)
 }
 
 func openPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {
