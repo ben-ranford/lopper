@@ -404,7 +404,7 @@ func isLocalModule(repoPath, root string) bool {
 		}
 		pkgDir := filepath.Join(searchRoot, root)
 		if info, err := os.Lstat(pkgDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			if _, err := os.Lstat(filepath.Join(pkgDir, "__init__.py")); err == nil {
+			if marker, err := os.Lstat(filepath.Join(pkgDir, "__init__.py")); err == nil && marker.Mode()&os.ModeSymlink == 0 {
 				return true
 			}
 		}

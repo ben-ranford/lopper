@@ -135,6 +135,24 @@ func TestPythonIsLocalModuleSkipsSymlinkedPkgInsideRealSrc(t *testing.T) {
 	}
 }
 
+func TestPythonIsLocalModuleSkipsSymlinkedPackageMarker(t *testing.T) {
+	repo := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "__init__.py")
+	testutil.MustWriteFile(t, outside, localModuleContent)
+
+	pkgDir := filepath.Join(repo, "app")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir package: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(pkgDir, "__init__.py")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	if isLocalModule(repo, "app") {
+		t.Fatalf("expected package with a symlinked marker to not be treated as local")
+	}
+}
+
 func TestPythonDependencyFromModuleStdlibCoverage(t *testing.T) {
 	repo := t.TempDir()
 	modules := []string{
