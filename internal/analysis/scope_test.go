@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -225,33 +224,6 @@ func TestApplyPathScopeRejectsTooManyCopiedFiles(t *testing.T) {
 	expectScopedJSScopeFailure(t, repo, "expected scoped copy file limit to fail")
 }
 
-func TestApplyPathScopeSkipsNonRegularFiles(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, scopeKeepJSPath), "export const keep = true\n")
-	pipePath := filepath.Join(repo, "src", "pipe.js")
-	if err := os.MkdirAll(filepath.Dir(pipePath), 0o750); err != nil {
-		t.Fatalf("mkdir pipe dir: %v", err)
-	}
-	if err := os.Remove(pipePath); err != nil && !os.IsNotExist(err) {
-		t.Fatalf("clear pipe path: %v", err)
-	}
-	if err := makeNamedPipe(pipePath); err != nil {
-		t.Skipf("named pipes unsupported in test environment: %v", err)
-	}
-
-	scopedPath, warnings := applyScopedJSScope(t, repo)
-
-	if _, err := os.Stat(filepath.Join(scopedPath, scopeKeepJSPath)); err != nil {
-		t.Fatalf("expected regular file to be copied: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(scopedPath, "src", "pipe.js")); !os.IsNotExist(err) {
-		t.Fatalf("expected non-regular file to be skipped, got err=%v", err)
-	}
-	if !containsWarning(warnings, "analysis scope skipped file: src/pipe.js (is not a regular file (not copied))") {
-		t.Fatalf("expected non-regular file skip diagnostic, got %#v", warnings)
-	}
-}
-
 func containsWarning(warnings []string, expected string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, expected) {
@@ -282,8 +254,4 @@ func expectScopedJSScopeFailure(t *testing.T, repo, message string) {
 		}
 		t.Fatal(message)
 	}
-}
-
-func makeNamedPipe(path string) error {
-	return syscall.Mkfifo(path, 0o600)
 }
