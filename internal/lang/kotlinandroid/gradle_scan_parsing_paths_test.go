@@ -597,9 +597,13 @@ import com.acme.lib.Widget
 
 func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	result := newScanResult()
-	imports := parseImports([]byte("import com.acme.`when`.Widget as `type`\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "`type`" || imports[0].Dependency != "acme-lib" {
+	content := []byte("import com.acme.`when`.Widget as `type`\nfun use() { `type`() }\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "type" || imports[0].Dependency != "acme-lib" {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := shared.CountUsage(content, imports); usage["type"] != 1 {
+		t.Fatalf("expected escaped Kotlin alias usage to count once, got %#v", usage)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -93,9 +94,13 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 }
 
 func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
-	imports := parseImports([]byte("import com.acme.`when`.Widget as `type`\n"), "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "`type`" || imports[0].Dependency != acmeLibName {
+	content := []byte("import com.acme.`when`.Widget as `type`\nfun use() { `type`() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "type" || imports[0].Dependency != acmeLibName {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := shared.CountUsage(content, imports); usage["type"] != 1 {
+		t.Fatalf("expected escaped Kotlin alias usage to count once, got %#v", usage)
 	}
 }
 

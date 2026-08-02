@@ -284,6 +284,7 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
 		localName = alias
 	}
+	localName = strings.Trim(localName, "`")
 
 	return shared.ImportRecord{
 		Dependency: dependency,
