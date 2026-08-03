@@ -324,15 +324,15 @@ func lastModuleSegment(module string) string {
 
 func countUsage(content []byte, imports []importBinding) map[string]int {
 	usage := shared.CountUsage(content, imports)
+	masked := content
+	if len(imports) > 0 {
+		masked = shared.MaskCommentsAndStringsForFile(content, imports[0].Location.File)
+	}
 	for _, imported := range imports {
-		if !escapedImportLocal(content, imported) {
-			continue
+		marker := "`" + imported.Local + "`"
+		if strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker) {
+			usage[imported.Local] = strings.Count(string(masked), marker) - 1
 		}
-		usage[imported.Local] = strings.Count(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "`"+imported.Local+"`") - 1
 	}
 	return usage
-}
-
-func escapedImportLocal(content []byte, imported importBinding) bool {
-	return strings.Contains(string(content), " as `"+imported.Local+"`") || strings.Contains(string(content), ".`"+imported.Local+"`")
 }
