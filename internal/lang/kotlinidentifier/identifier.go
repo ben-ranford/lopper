@@ -75,8 +75,7 @@ func CountEscapedLocalUses(masked []byte, local string) int {
 	lines := strings.Split(string(masked), "\n")
 	firstCodeLine := 0
 	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "package ") || strings.HasPrefix(trimmed, "import ") {
+		if isHeaderDeclaration(line) {
 			firstCodeLine = index + 1
 		}
 	}
@@ -86,6 +85,11 @@ func CountEscapedLocalUses(masked []byte, local string) int {
 		uses += strings.Count(line, marker)
 	}
 	return uses
+}
+
+func isHeaderDeclaration(line string) bool {
+	fields := strings.Fields(line)
+	return len(fields) > 1 && (fields[0] == "package" || fields[0] == "import")
 }
 
 func MaskForFile(content []byte, filePath string) []byte {

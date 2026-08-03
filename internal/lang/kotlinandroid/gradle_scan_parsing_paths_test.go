@@ -628,7 +628,7 @@ func TestKotlinAndroidCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T
 
 func TestKotlinAndroidCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
 	result := newScanResult()
-	content := []byte("package com.example.`when`\nimport com.acme.Widget as `when`\nimport com.acme.`when`.Other\n")
+	content := []byte("package\tcom.example.`when`\nimport\tcom.acme.Widget as `when`\nimport\tcom.acme.`when`.Other\n")
 	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
 	if usage := countUsage(content, imports); usage["when"] != 0 {
 		t.Fatalf("expected package and import markers not to count as usage, got %#v", usage)

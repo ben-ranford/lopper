@@ -19,7 +19,7 @@ func TestIdentifierHelpers(t *testing.T) {
 			t.Fatalf("escaped import local = %t, want %t", got, want)
 		}
 	}
-	content := []byte("package com.example.`when`\nimport com.acme.Widget as `when`\nimport com.acme.`when`.Other\nfun use() { `when`() }\n")
+	content := []byte("package\tcom.example.`when`\nimport\tcom.acme.Widget as `when`\nimport\tcom.acme.`when`.Other\nfun use() { `when`() }\n")
 	if uses := CountEscapedLocalUses(content, "when"); uses != 1 {
 		t.Fatalf("escaped uses = %d, want 1", uses)
 	}

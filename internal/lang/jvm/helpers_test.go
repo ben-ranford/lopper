@@ -137,7 +137,7 @@ func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
 }
 
 func TestJVMCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
-	content := []byte("package com.example.`when`\nimport com.acme.Widget as `when`\nimport com.acme.`when`.Other\n")
+	content := []byte("package\tcom.example.`when`\nimport\tcom.acme.Widget as `when`\nimport\tcom.acme.`when`.Other\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
 	if usage := countUsage(content, imports); usage["when"] != 0 {
 		t.Fatalf("expected package and import markers not to count as usage, got %#v", usage)
