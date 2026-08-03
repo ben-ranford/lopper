@@ -284,13 +284,13 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
 
   private async resolveLocalBinaryPath(request: BinaryResolutionRequest): Promise<string | undefined> {
     const localBinary = path.join(request.workspaceRoot, "bin", binaryFileName(this.platform));
-    const localBinaryStats = await this.localBinaryStats(localBinary);
-    if (!localBinaryStats) {
+    if (!request.workspaceTrusted) {
+      this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
       return this.resolvePathBinary(request);
     }
 
-    if (!request.workspaceTrusted) {
-      this.output.appendLine(`skipping workspace-local lopper binary in untrusted workspace: ${localBinary}`);
+    const localBinaryStats = await this.localBinaryStats(localBinary);
+    if (!localBinaryStats) {
       return this.resolvePathBinary(request);
     }
 

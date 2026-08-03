@@ -324,6 +324,30 @@ suite("managed binary installer", () => {
     });
   });
 
+  test("skips inaccessible workspace-local bin paths in untrusted workspaces", async function () {
+    if (process.platform === "win32") {
+      this.skip();
+    }
+
+    await withPathFallbackFixture("inaccessible-untrusted", async ({ workspaceRoot, fallbackBinary, lifecycle }) => {
+      const localBinaryDir = path.join(workspaceRoot, "bin");
+      await mkdir(localBinaryDir, { recursive: true });
+      await chmod(localBinaryDir, 0o000);
+
+      try {
+        const resolvedPath = await lifecycle.resolveBinaryPath({
+          workspaceRoot,
+          workspaceTrusted: false,
+          autoDownloadBinary: false,
+        });
+
+        assert.equal(resolvedPath, fallbackBinary);
+      } finally {
+        await chmod(localBinaryDir, 0o755);
+      }
+    });
+  });
+
   test("forwards progress cancellation signals to managed installer", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-signal-"));
     const controller = new AbortController();
