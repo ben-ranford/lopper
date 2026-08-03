@@ -120,6 +120,14 @@ func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
 	}
 }
 
+func TestJVMCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
+	content := []byte("import com.acme.`when`.Widget as `when`\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(content, imports); usage["when"] != 0 {
+		t.Fatalf("expected escaped declaration markers not to count as usage, got %#v", usage)
+	}
+}
+
 func TestJVMParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
 	content := []byte("import com.acme.`when`.Widget\n")
 	imports := parseImports(content, "App.kt", "com.example.app", map[string]string{"com.acme.when": acmeLibName}, nil)
@@ -131,7 +139,7 @@ func TestJVMParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
 func TestJVMParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
 	pkg := parsePackage(content)
-	if pkg != "com.example.`when`" {
+	if pkg != "com.example.when" {
 		t.Fatalf("unexpected parsed escaped package: %q", pkg)
 	}
 

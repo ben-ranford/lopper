@@ -178,7 +178,7 @@ func parsePackage(content []byte) string {
 	if len(matches) != 2 {
 		return ""
 	}
-	return strings.TrimSpace(string(matches[1]))
+	return strings.ReplaceAll(strings.TrimSpace(string(matches[1])), "`", "")
 }
 
 func parseImports(content []byte, filePath string, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
@@ -341,11 +341,26 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 	}
 	for _, imported := range imports {
 		marker := "`" + imported.Local + "`"
-		if strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker) {
-			occurrences := strings.Count(string(masked), marker)
-			if occurrences > 1 {
-				usage[imported.Local] = occurrences - 1
+		keyword := false
+		for _, reserved := range strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while") {
+			keyword = keyword || imported.Local == reserved
+		}
+		escapedOnly := imported.Local == "" || keyword
+		for index, character := range imported.Local {
+			bare := character == '_' || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (index > 0 && character >= '0' && character <= '9')
+			if !bare {
+				escapedOnly = true
 			}
+		}
+		if (strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker)) && escapedOnly {
+			occurrences := 0
+			for line, maskedLine := range strings.Split(string(masked), "\n") {
+				if line+1 == imported.Location.Line {
+					continue
+				}
+				occurrences += strings.Count(maskedLine, marker)
+			}
+			usage[imported.Local] = occurrences
 		}
 	}
 	return usage

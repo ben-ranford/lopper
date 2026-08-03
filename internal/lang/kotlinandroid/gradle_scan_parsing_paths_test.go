@@ -617,6 +617,15 @@ func TestKotlinAndroidCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T
 	}
 }
 
+func TestKotlinAndroidCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import com.acme.`when`.Widget as `when`\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if usage := countUsage(content, imports); usage["when"] != 0 {
+		t.Fatalf("expected escaped declaration markers not to count as usage, got %#v", usage)
+	}
+}
+
 func TestKotlinAndroidParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
 	result := newScanResult()
 	content := []byte("import com.acme.`when`.Widget\n")
@@ -638,7 +647,7 @@ func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	result := newScanResult()
 	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
 	pkg := parsePackage(content)
-	if pkg != "com.example.`when`" {
+	if pkg != "com.example.when" {
 		t.Fatalf("unexpected parsed escaped package: %q", pkg)
 	}
 

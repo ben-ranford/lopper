@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -237,7 +238,7 @@ func parsePackage(content []byte) string {
 	if len(matches) != 2 {
 		return ""
 	}
-	return strings.TrimSpace(string(matches[1]))
+	return strings.ReplaceAll(strings.TrimSpace(string(matches[1])), "`", "")
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
@@ -377,17 +378,35 @@ func firstContentColumn(line string) int {
 func countUsage(content []byte, imports []importBinding) map[string]int {
 	usage := shared.CountUsage(content, imports)
 	for _, imported := range imports {
-		if !escapedImportLocal(content, imported) {
+		if !escapedImportLocal(content, imported) || !escapedOnlyKotlinLocal(imported.Local) {
 			continue
 		}
-		occurrences := strings.Count(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "`"+imported.Local+"`")
-		if occurrences > 1 {
-			usage[imported.Local] = occurrences - 1
+		marker := "`" + imported.Local + "`"
+		occurrences := 0
+		for line, masked := range strings.Split(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "\n") {
+			if line+1 != imported.Location.Line {
+				occurrences += strings.Count(masked, marker)
+			}
 		}
+		usage[imported.Local] = occurrences
 	}
 	return usage
 }
 
 func escapedImportLocal(content []byte, imported importBinding) bool {
 	return strings.Contains(string(content), " as `"+imported.Local+"`") || strings.Contains(string(content), ".`"+imported.Local+"`")
+}
+
+func escapedOnlyKotlinLocal(local string) bool {
+	keywords := strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while")
+	if local == "" || slices.Contains(keywords, local) {
+		return true
+	}
+	for index, character := range local {
+		if character == '_' || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (index > 0 && character >= '0' && character <= '9') {
+			continue
+		}
+		return true
+	}
+	return false
 }
