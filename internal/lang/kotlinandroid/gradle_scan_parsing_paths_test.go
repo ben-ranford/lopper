@@ -643,6 +643,15 @@ func TestKotlinAndroidParseImportsKeepsMappedSamePackageImport(t *testing.T) {
 	}
 }
 
+func TestKotlinAndroidParseImportsKeepsMappedFrameworkImport(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import javax.inject.Inject\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Prefixes: map[string]string{"javax.inject": "javax-inject"}}, &result)
+	if len(imports) != 1 || imports[0].Dependency != "javax-inject" {
+		t.Fatalf("expected mapped framework import to be retained, got %#v", imports)
+	}
+}
+
 func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	result := newScanResult()
 	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")

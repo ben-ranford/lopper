@@ -196,10 +196,14 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 		lookupModule := strings.ReplaceAll(module, "`", "")
 		lookupPackage := strings.ReplaceAll(filePackage, "`", "")
 
-		if shouldIgnoreImport(lookupModule, lookupPackage) && !hasMappedSamePackagePrefix(lookupModule, lookupPackage, lookups.Prefixes) {
+		dependency, ambiguous := resolveDependency(lookupModule, lookups)
+		samePackage := lookupPackage != "" && (lookupModule == lookupPackage || strings.HasPrefix(lookupModule, lookupPackage+"."))
+		if samePackage && !hasMappedSamePackagePrefix(lookupModule, lookupPackage, lookups.Prefixes) {
 			return nil
 		}
-		dependency, ambiguous := resolveDependency(lookupModule, lookups)
+		if shouldIgnoreImport(lookupModule, lookupPackage) && dependency == "" {
+			return nil
+		}
 		if dependency == "" {
 			dependency = fallbackDependency(lookupModule)
 			if dependency == "" {
