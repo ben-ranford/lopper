@@ -399,7 +399,7 @@ func escapedImportLocal(content []byte, imported importBinding) bool {
 }
 
 func escapedOnlyKotlinLocal(local string) bool {
-	keywords := strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while")
+	keywords := strings.Fields("abstract as break catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while")
 	if local == "" || slices.Contains(keywords, local) {
 		return true
 	}

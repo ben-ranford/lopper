@@ -104,10 +104,10 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 }
 
 func TestJVMCountUsageKeepsUnescapedKotlinAliasUse(t *testing.T) {
-	content := []byte("import com.acme.Widget as `WidgetAlias`\nfun use() { WidgetAlias() }\n")
+	content := []byte("import com.acme.Widget as `WidgetAlias`\nimport com.acme.Getter as `get`\nimport com.acme.Setter as `set`\nimport com.acme.Delegate as `by`\nfun use() { WidgetAlias(); get(); set(); by() }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if usage := countUsage(content, imports); usage["WidgetAlias"] != 1 {
-		t.Fatalf("expected unescaped Kotlin alias usage to count once, got %#v", usage)
+	if usage := countUsage(content, imports); usage["WidgetAlias"] != 1 || usage["get"] != 1 || usage["set"] != 1 || usage["by"] != 1 {
+		t.Fatalf("expected unescaped Kotlin aliases, including soft keywords, to count once, got %#v", usage)
 	}
 }
 
