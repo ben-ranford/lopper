@@ -156,8 +156,13 @@ func MaskForFile(content []byte, filePath string) []byte {
 			protected[index] = ' '
 		}
 	}
+	maskRawStringCharacter := func(index int) {
+		if content[index] != '\n' && content[index] != '\r' {
+			protected[index] = ' '
+		}
+	}
 	var ranges [][2]int
-	for index, blockCommentDepth, lineComment, doubleQuote := 0, 0, false, false; index < len(content); index++ {
+	for index, blockCommentDepth, lineComment, doubleQuote, rawString := 0, 0, false, false, false; index < len(content); index++ {
 		if lineComment {
 			if content[index] == '\n' {
 				lineComment = false
@@ -174,6 +179,15 @@ func MaskForFile(content []byte, filePath string) []byte {
 			if index+1 < len(content) && content[index] == '*' && content[index+1] == '/' {
 				maskCommentCharacter(index + 1)
 				blockCommentDepth, index = blockCommentDepth-1, index+1
+			}
+			continue
+		}
+		if rawString {
+			maskRawStringCharacter(index)
+			if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+				maskRawStringCharacter(index + 1)
+				maskRawStringCharacter(index + 2)
+				rawString, index = false, index+2
 			}
 			continue
 		}
@@ -195,6 +209,13 @@ func MaskForFile(content []byte, filePath string) []byte {
 			maskCommentCharacter(index)
 			maskCommentCharacter(index + 1)
 			blockCommentDepth, index = 1, index+1
+			continue
+		}
+		if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+			maskRawStringCharacter(index)
+			maskRawStringCharacter(index + 1)
+			maskRawStringCharacter(index + 2)
+			rawString, index = true, index+2
 			continue
 		}
 		if content[index] == '"' {
