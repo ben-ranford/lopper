@@ -90,7 +90,7 @@ func TestRunCandidateOnRootsConfinesKotlinAndroidRootsToRepo(t *testing.T) {
 	}
 	linkedOutside := filepath.Join(repo, "linked-outside")
 	if err := os.Symlink(outsideRoot, linkedOutside); err != nil {
-		t.Fatalf("symlink linked-outside: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 
 	calledRoots := make([]string, 0, 1)
