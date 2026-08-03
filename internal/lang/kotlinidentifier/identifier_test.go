@@ -47,6 +47,11 @@ func TestIdentifierHelpers(t *testing.T) {
 	if sanitized := string(SanitizeImportContent([]byte("\"`\" /* hidden import */"))); strings.Contains(sanitized, "hidden") {
 		t.Fatalf("comment after string backtick was not masked: %q", sanitized)
 	}
+	for _, content := range []string{"\"escaped \\\" quote\" /* hidden */", "'a' /* hidden */", "\"\"\"raw\"\"\" /* hidden */"} {
+		if sanitized := string(SanitizeImportContent([]byte(content))); strings.Contains(sanitized, "hidden") {
+			t.Fatalf("literal comment was not masked: %q", sanitized)
+		}
+	}
 	if got := NormalizeModuleForLookup("com.acme.`foo.bar`"); got != "com.acme.foo\x00bar" {
 		t.Fatalf("normalized module = %q", got)
 	}
