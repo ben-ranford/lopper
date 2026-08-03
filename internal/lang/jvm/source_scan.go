@@ -377,14 +377,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 		if !escapedImportLocal(content, imported) || !escapedOnlyKotlinLocal(imported.Local) {
 			continue
 		}
-		marker := "`" + imported.Local + "`"
-		occurrences := 0
-		for line, masked := range strings.Split(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "\n") {
-			if line+1 != imported.Location.Line {
-				occurrences += strings.Count(masked, marker)
-			}
-		}
-		usage[imported.Local] = occurrences
+		usage[imported.Local] = kotlinidentifier.CountEscapedLocalUses(shared.MaskCommentsAndStringsForFile(content, imported.Location.File), imported.Local)
 	}
 	return usage
 }

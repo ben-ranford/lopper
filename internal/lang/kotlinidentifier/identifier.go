@@ -59,3 +59,20 @@ func HasEscapedImportLocal(content []byte, local string) bool {
 	}
 	return false
 }
+
+func CountEscapedLocalUses(masked []byte, local string) int {
+	lines := strings.Split(string(masked), "\n")
+	firstCodeLine := 0
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "package ") || strings.HasPrefix(trimmed, "import ") {
+			firstCodeLine = index + 1
+		}
+	}
+	marker := "`" + local + "`"
+	uses := 0
+	for _, line := range lines[firstCodeLine:] {
+		uses += strings.Count(line, marker)
+	}
+	return uses
+}
