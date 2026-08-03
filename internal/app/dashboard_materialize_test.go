@@ -1077,17 +1077,17 @@ func TestPathWithinRoot(t *testing.T) {
 		t.Fatalf("mkdir root: %v", err)
 	}
 
-	within, err := pathWithinRoot(root, filepath.Join(root, "nested", "report.json"))
+	within, err := dashboardPathWithinRoot(root, filepath.Join(root, "nested", "report.json"))
 	if err != nil {
-		t.Fatalf("pathWithinRoot within root: %v", err)
+		t.Fatalf("dashboardPathWithinRoot within root: %v", err)
 	}
 	if !within {
 		t.Fatal("expected nested path to remain within root")
 	}
 
-	within, err = pathWithinRoot(root, filepath.Join(filepath.Dir(root), "outside", "report.json"))
+	within, err = dashboardPathWithinRoot(root, filepath.Join(filepath.Dir(root), "outside", "report.json"))
 	if err != nil {
-		t.Fatalf("pathWithinRoot outside root: %v", err)
+		t.Fatalf("dashboardPathWithinRoot outside root: %v", err)
 	}
 	if within {
 		t.Fatal("expected sibling path to escape root")
@@ -1100,9 +1100,9 @@ func TestPathWithinRootAllowsRootPath(t *testing.T) {
 		t.Fatalf("mkdir root: %v", err)
 	}
 
-	within, err := pathWithinRoot(root, root)
+	within, err := dashboardPathWithinRoot(root, root)
 	if err != nil {
-		t.Fatalf("pathWithinRoot root path: %v", err)
+		t.Fatalf("dashboardPathWithinRoot root path: %v", err)
 	}
 	if !within {
 		t.Fatal("expected root path to remain within root")
@@ -1110,7 +1110,7 @@ func TestPathWithinRootAllowsRootPath(t *testing.T) {
 }
 
 func TestPathWithinRootTreatsDifferentWindowsVolumesAsOutside(t *testing.T) {
-	within, err := pathWithinRoot(`C:\repo`, `D:\reports\output.json`)
+	within, err := dashboardPathWithinRoot(`C:\repo`, `D:\reports\output.json`)
 	if err != nil {
 		t.Fatalf("pathWithinRoot different volumes: %v", err)
 	}
@@ -1120,10 +1120,10 @@ func TestPathWithinRootTreatsDifferentWindowsVolumesAsOutside(t *testing.T) {
 }
 
 func TestPathVolumeNameFallsBackToWindowsDrivePrefix(t *testing.T) {
-	if got := pathVolumeName(`D:\reports\output.json`); got != "d:" {
+	if got := dashboardPathVolumeName(`D:\reports\output.json`); got != "d:" {
 		t.Fatalf("expected windows drive prefix, got %q", got)
 	}
-	if got := pathVolumeName("/tmp/report.json"); got != "" {
+	if got := dashboardPathVolumeName("/tmp/report.json"); got != "" {
 		t.Fatalf("expected no volume for posix path, got %q", got)
 	}
 }

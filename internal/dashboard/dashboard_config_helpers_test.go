@@ -36,6 +36,20 @@ func TestDashboardAdditionalHelperBranches(t *testing.T) {
 	}
 }
 
+func TestResolveConfigPath(t *testing.T) {
+	configDir := t.TempDir()
+	if got := ResolveConfigPath(configDir, "  nested/baselines  "); got != filepath.Join(configDir, "nested", "baselines") {
+		t.Fatalf("expected config-relative path, got %q", got)
+	}
+	absolutePath := filepath.Join(t.TempDir(), "baselines")
+	if got := ResolveConfigPath(configDir, absolutePath); got != absolutePath {
+		t.Fatalf("expected absolute path unchanged, got %q", got)
+	}
+	if got := ResolveConfigPath(configDir, " "); got != "" {
+		t.Fatalf("expected blank path to remain blank, got %q", got)
+	}
+}
+
 func TestLoadConfigMissingFile(t *testing.T) {
 	_, err := LoadConfig(filepath.Join(t.TempDir(), "missing-dashboard.yml"))
 	if !errors.Is(err, os.ErrNotExist) {

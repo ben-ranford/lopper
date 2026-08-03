@@ -55,6 +55,16 @@ type LoadedConfig struct {
 	Dashboard ConfigDashboard
 }
 
+// ResolveConfigPath trims a configured path and resolves relative paths against
+// the config directory.
+func ResolveConfigPath(configDir, value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || filepath.IsAbs(trimmed) {
+		return trimmed
+	}
+	return filepath.Join(configDir, trimmed)
+}
+
 func LoadConfig(path string) (LoadedConfig, error) {
 	trimmedPath := strings.TrimSpace(path)
 	if trimmedPath == "" {

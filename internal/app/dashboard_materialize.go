@@ -248,7 +248,7 @@ func trustedCommandOutputRootBoundary(outputAbs string) (commandOutputRootBounda
 	if err != nil {
 		return commandOutputRootBoundary{}, fmt.Errorf("resolve output workspace: %w", err)
 	}
-	withinWorkspace, err := pathWithinRoot(workspaceRoot, outputAbs)
+	withinWorkspace, err := dashboardPathWithinRoot(workspaceRoot, outputAbs)
 	if err != nil {
 		return commandOutputRootBoundary{}, err
 	}
@@ -297,7 +297,7 @@ func trustedCommandOutputRootBoundaryForRoot(outputAbs, root string) (commandOut
 		}
 		return commandOutputRootBoundary{}, fmt.Errorf("resolve trusted output workspace: %w", err)
 	}
-	withinWorkspace, err := pathWithinRoot(rootAbs, outputAbs)
+	withinWorkspace, err := dashboardPathWithinRoot(rootAbs, outputAbs)
 	if err != nil {
 		return commandOutputRootBoundary{}, err
 	}
@@ -373,7 +373,7 @@ func resolveAliasedWorkspaceRootBoundary(outputAbs, workspaceRoot string) (comma
 			if err != nil {
 				return commandOutputRootBoundary{}, err
 			}
-			withinWorkspace, err := pathWithinRoot(workspaceRoot, resolvedCurrent)
+			withinWorkspace, err := dashboardPathWithinRoot(workspaceRoot, resolvedCurrent)
 			if err != nil {
 				return commandOutputRootBoundary{}, err
 			}
@@ -392,17 +392,6 @@ func resolveAliasedWorkspaceRootBoundary(outputAbs, workspaceRoot string) (comma
 	}
 }
 
-func pathWithinRoot(rootAbs, targetAbs string) (bool, error) {
-	if pathsUseDifferentWindowsVolumes(rootAbs, targetAbs) {
-		return false, nil
-	}
-	rel, err := filepath.Rel(rootAbs, targetAbs)
-	if err != nil {
-		return false, fmt.Errorf("compute output path: %w", err)
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))), nil
-}
-
 func isRootLevelSystemAlias(path string) bool {
 	cleanPath := filepath.Clean(path)
 	if !filepath.IsAbs(cleanPath) {
@@ -418,23 +407,6 @@ func isRootLevelSystemAlias(path string) bool {
 	}
 	targetInfo, err := os.Stat(cleanPath)
 	return err == nil && targetInfo.IsDir()
-}
-
-func pathsUseDifferentWindowsVolumes(rootAbs, targetAbs string) bool {
-	rootVolume := pathVolumeName(rootAbs)
-	targetVolume := pathVolumeName(targetAbs)
-	return rootVolume != "" && targetVolume != "" && rootVolume != targetVolume
-}
-
-func pathVolumeName(path string) string {
-	volume := filepath.VolumeName(path)
-	if volume == "" && len(path) >= 2 && path[1] == ':' {
-		drive := path[0]
-		if ('a' <= drive && drive <= 'z') || ('A' <= drive && drive <= 'Z') {
-			volume = path[:2]
-		}
-	}
-	return strings.ToLower(volume)
 }
 
 func hasTrailingOutputPathSeparator(path string) bool {

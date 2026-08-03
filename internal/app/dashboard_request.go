@@ -32,7 +32,7 @@ func resolveDashboardRequest(req DashboardRequest) (resolvedDashboardRequest, er
 		configFormat = loadedConfig.Dashboard.Output
 		configOwnership = loadedConfig.Dashboard.Ownership
 		if strings.TrimSpace(req.BaselineStorePath) == "" {
-			req.BaselineStorePath = resolveDashboardConfigPath(loadedConfig.ConfigDir, loadedConfig.Dashboard.BaselineStore)
+			req.BaselineStorePath = dashboard.ResolveConfigPath(loadedConfig.ConfigDir, loadedConfig.Dashboard.BaselineStore)
 		}
 		if len(repos) == 0 {
 			repos, err = reposFromDashboardConfig(loadedConfig, &req.Features)
@@ -208,15 +208,4 @@ func inferDashboardRepoName(path string) string {
 		return strings.TrimSpace(path)
 	}
 	return base
-}
-
-func resolveDashboardConfigPath(configDir, value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return ""
-	}
-	if filepath.IsAbs(trimmed) {
-		return trimmed
-	}
-	return filepath.Join(configDir, trimmed)
 }
