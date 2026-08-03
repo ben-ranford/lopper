@@ -666,9 +666,9 @@ func TestKotlinAndroidParseImportsKeepsMappedFrameworkImport(t *testing.T) {
 
 func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	result := newScanResult()
-	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
+	content := []byte("package com.example.`foo.bar`\nimport com.example.`foo.bar`.util.Helper\n")
 	pkg := parsePackage(content)
-	if pkg != "com.example.when" {
+	if pkg != "com.example.foo\x00bar" {
 		t.Fatalf("unexpected parsed escaped package: %q", pkg)
 	}
 

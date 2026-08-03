@@ -238,7 +238,7 @@ func parsePackage(content []byte) string {
 	if len(matches) != 2 {
 		return ""
 	}
-	return strings.ReplaceAll(strings.TrimSpace(string(matches[1])), "`", "")
+	return kotlinidentifier.NormalizeModuleForLookup(strings.TrimSpace(string(matches[1])))
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {

@@ -69,7 +69,7 @@ func escapedAliasTail(tail string) string {
 // SanitizeImportContent masks Kotlin comments while preserving escaped identifiers.
 func SanitizeImportContent(content []byte) []byte {
 	sanitized := append([]byte(nil), content...)
-	for index, blockCommentDepth := 0, 0; index < len(sanitized); index++ {
+	for index, blockCommentDepth, doubleQuote, rawString, characterLiteral := 0, 0, false, false, false; index < len(sanitized); index++ {
 		if blockCommentDepth > 0 {
 			if sanitized[index] != '\n' && sanitized[index] != '\r' {
 				sanitized[index] = ' '
@@ -83,6 +83,34 @@ func SanitizeImportContent(content []byte) []byte {
 				sanitized[index+1] = ' '
 				blockCommentDepth, index = blockCommentDepth-1, index+1
 			}
+			continue
+		}
+		if rawString {
+			if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+				rawString, index = false, index+2
+			}
+			continue
+		}
+		if doubleQuote || characterLiteral {
+			if content[index] == '\\' {
+				index++
+				continue
+			}
+			if (doubleQuote && content[index] == '"') || (characterLiteral && content[index] == '\'') {
+				doubleQuote, characterLiteral = false, false
+			}
+			continue
+		}
+		if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+			rawString, index = true, index+2
+			continue
+		}
+		if content[index] == '"' {
+			doubleQuote = true
+			continue
+		}
+		if content[index] == '\'' {
+			characterLiteral = true
 			continue
 		}
 		if index+1 < len(sanitized) && content[index] == '/' && content[index+1] == '*' {
