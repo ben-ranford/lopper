@@ -398,11 +398,15 @@ func dependencyFromModule(repoPath, moduleName string) string {
 
 func isLocalModule(repoPath, root string) bool {
 	for _, searchRoot := range localModuleSearchRoots(repoPath) {
-		if _, err := os.Stat(filepath.Join(searchRoot, root+".py")); err == nil {
+		// Use Lstat to avoid following symlinks that could escape the repo boundary.
+		if info, err := os.Lstat(filepath.Join(searchRoot, root+".py")); err == nil && info.Mode()&os.ModeSymlink == 0 {
 			return true
 		}
-		if _, err := os.Stat(filepath.Join(searchRoot, root, "__init__.py")); err == nil {
-			return true
+		pkgDir := filepath.Join(searchRoot, root)
+		if info, err := os.Lstat(pkgDir); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			if marker, err := os.Lstat(filepath.Join(pkgDir, "__init__.py")); err == nil && marker.Mode()&os.ModeSymlink == 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -412,7 +416,7 @@ func localModuleSearchRoots(repoPath string) []string {
 	roots := []string{repoPath}
 
 	srcRoot := filepath.Join(repoPath, "src")
-	if info, err := os.Stat(srcRoot); err == nil && info.IsDir() {
+	if info, err := os.Lstat(srcRoot); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 		roots = append(roots, srcRoot)
 	}
 
