@@ -111,6 +111,23 @@ func TestJVMCountUsageKeepsUnescapedKotlinAliasUse(t *testing.T) {
 	}
 }
 
+func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
+	content := []byte("import com.acme.Widget as `foo bar`\nimport com.acme.Gadget as `foo.bar`\nfun use() { `foo bar`(); `foo.bar`() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	usage := countUsage(content, imports)
+	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 {
+		t.Fatalf("expected escaped non-bare Kotlin aliases to count once, got %#v", usage)
+	}
+}
+
+func TestJVMParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
+	content := []byte("import com.acme.`when`.Widget\n")
+	imports := parseImports(content, "App.kt", "com.example.app", map[string]string{"com.acme.when": acmeLibName}, nil)
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != acmeLibName {
+		t.Fatalf("expected escaped module segment to resolve through normalized prefix, got %#v", imports)
+	}
+}
+
 func TestJVMParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
 	pkg := parsePackage(content)

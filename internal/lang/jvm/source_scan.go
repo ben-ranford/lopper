@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"syscall"
 
@@ -250,13 +249,15 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
-		if module == "" || shouldIgnoreImport(module, filePackage) {
+		lookupModule := strings.ReplaceAll(module, "`", "")
+		lookupPackage := strings.ReplaceAll(filePackage, "`", "")
+		if module == "" || shouldIgnoreImport(lookupModule, lookupPackage) {
 			return nil
 		}
 
-		dependency := resolveDependency(module, depPrefixes, depAliases)
+		dependency := resolveDependency(lookupModule, depPrefixes, depAliases)
 		if dependency == "" {
-			dependency = fallbackDependency(module)
+			dependency = fallbackDependency(lookupModule)
 		}
 		if dependency == "" {
 			return nil
@@ -376,19 +377,17 @@ func firstContentColumn(line string) int {
 func countUsage(content []byte, imports []importBinding) map[string]int {
 	usage := shared.CountUsage(content, imports)
 	for _, imported := range imports {
-		if !escapedImportLocal(content, imported) || !escapedOnlyKotlinLocal(imported.Local) {
+		if !escapedImportLocal(content, imported) {
 			continue
 		}
-		usage[imported.Local] = strings.Count(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "`"+imported.Local+"`") - 1
+		occurrences := strings.Count(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "`"+imported.Local+"`")
+		if occurrences > 1 {
+			usage[imported.Local] = occurrences - 1
+		}
 	}
 	return usage
 }
 
 func escapedImportLocal(content []byte, imported importBinding) bool {
 	return strings.Contains(string(content), " as `"+imported.Local+"`") || strings.Contains(string(content), ".`"+imported.Local+"`")
-}
-
-func escapedOnlyKotlinLocal(local string) bool {
-	keywords := strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while")
-	return strings.Contains(local, "-") || slices.Contains(keywords, local)
 }

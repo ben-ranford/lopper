@@ -193,13 +193,15 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 		if module == "" {
 			return nil
 		}
+		lookupModule := strings.ReplaceAll(module, "`", "")
+		lookupPackage := strings.ReplaceAll(filePackage, "`", "")
 
-		if shouldIgnoreImport(module, filePackage) && !hasMappedSamePackagePrefix(module, filePackage, lookups.Prefixes) {
+		if shouldIgnoreImport(lookupModule, lookupPackage) && !hasMappedSamePackagePrefix(lookupModule, lookupPackage, lookups.Prefixes) {
 			return nil
 		}
-		dependency, ambiguous := resolveDependency(module, lookups)
+		dependency, ambiguous := resolveDependency(lookupModule, lookups)
 		if dependency == "" {
-			dependency = fallbackDependency(module)
+			dependency = fallbackDependency(lookupModule)
 			if dependency == "" {
 				return nil
 			}
@@ -339,12 +341,11 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 	}
 	for _, imported := range imports {
 		marker := "`" + imported.Local + "`"
-		keyword := false
-		for _, reserved := range strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while") {
-			keyword = keyword || imported.Local == reserved
-		}
-		if (strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker)) && (strings.Contains(imported.Local, "-") || keyword) {
-			usage[imported.Local] = strings.Count(string(masked), marker) - 1
+		if strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker) {
+			occurrences := strings.Count(string(masked), marker)
+			if occurrences > 1 {
+				usage[imported.Local] = occurrences - 1
+			}
 		}
 	}
 	return usage
