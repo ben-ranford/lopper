@@ -342,7 +342,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 	usage := shared.CountUsage(content, imports)
 	masked := content
 	if len(imports) > 0 {
-		masked = shared.MaskCommentsAndStringsForFile(content, imports[0].Location.File)
+		masked = kotlinidentifier.MaskForFile(content, imports[0].Location.File)
 	}
 	for _, imported := range imports {
 		escapedOnly := !kotlinidentifier.IsBare(imported.Local)

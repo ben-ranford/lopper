@@ -3,6 +3,8 @@ package kotlinidentifier
 import (
 	"strings"
 	"unicode"
+
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 var hardKeywords = map[string]struct{}{
@@ -84,4 +86,37 @@ func CountEscapedLocalUses(masked []byte, local string) int {
 		uses += strings.Count(line, marker)
 	}
 	return uses
+}
+
+func MaskForFile(content []byte, filePath string) []byte {
+	protected := append([]byte(nil), content...)
+	var ranges [][2]int
+	for index := 0; index < len(content); index++ {
+		if content[index] != '`' {
+			continue
+		}
+		lineStart := strings.LastIndex(string(content[:index]), "\n") + 1
+		if strings.Contains(string(content[lineStart:index]), "//") || strings.Contains(string(content[lineStart:index]), "/*") {
+			continue
+		}
+		end := index + 1
+		for end < len(content) && content[end] != '`' {
+			end++
+		}
+		if end == len(content) {
+			break
+		}
+		ranges = append(ranges, [2]int{index, end + 1})
+		for position := index + 1; position < end; position++ {
+			if protected[position] == '\'' || protected[position] == '"' {
+				protected[position] = '_'
+			}
+		}
+		index = end
+	}
+	masked := shared.MaskCommentsAndStringsForFile(protected, filePath)
+	for _, span := range ranges {
+		copy(masked[span[0]:span[1]], content[span[0]:span[1]])
+	}
+	return masked
 }

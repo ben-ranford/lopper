@@ -618,10 +618,10 @@ func TestKotlinAndroidParseImportsKeepsDottedEscapedFinalSegment(t *testing.T) {
 
 func TestKotlinAndroidCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
 	result := newScanResult()
-	content := []byte("import com.acme.Widget as\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nfun use() { `foo bar`(); `foo.bar`() }\n")
+	content := []byte("import com.acme.Widget as\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`() }\n")
 	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
 	usage := countUsage(content, imports)
-	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 {
+	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 {
 		t.Fatalf("expected escaped non-bare Kotlin aliases to count once, got %#v", usage)
 	}
 }
