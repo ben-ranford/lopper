@@ -636,10 +636,10 @@ func TestKotlinAndroidParseImportsNormalizesEscapedModuleSegmentsForLookup(t *te
 }
 
 func TestKotlinAndroidParseImportsKeepsMappedSamePackageImport(t *testing.T) {
-	content := []byte("package com.example.app\nimport com.example.app.sdk.Widget\n")
-	imports := parseImports(content, testMainSourceFileName, "com.example.app", dependencyLookups{Prefixes: map[string]string{"com.example.app.sdk": "sdk-lib"}}, &scanResult{})
-	if len(imports) != 1 || imports[0].Dependency != "sdk-lib" {
-		t.Fatalf("expected mapped same-package import to be retained, got %#v", imports)
+	content := []byte("package com.example.app\nimport com.example.app.sdk.Widget\nimport com.example.app.Service\n")
+	imports := parseImports(content, testMainSourceFileName, "com.example.app", dependencyLookups{Prefixes: map[string]string{"com.example.app.sdk": "sdk-lib", "com.example.app": "app-lib"}}, &scanResult{})
+	if len(imports) != 2 || imports[0].Dependency != "sdk-lib" || imports[1].Dependency != "app-lib" {
+		t.Fatalf("expected mapped same-package imports to be retained, got %#v", imports)
 	}
 }
 

@@ -226,7 +226,7 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 
 func hasMappedSamePackagePrefix(module, filePackage string, prefixes map[string]string) bool {
 	for prefix := range prefixes {
-		if strings.HasPrefix(prefix, filePackage+".") && (module == prefix || strings.HasPrefix(module, prefix+".")) {
+		if (prefix == filePackage || strings.HasPrefix(prefix, filePackage+".")) && (module == prefix || strings.HasPrefix(module, prefix+".")) {
 			return true
 		}
 	}
