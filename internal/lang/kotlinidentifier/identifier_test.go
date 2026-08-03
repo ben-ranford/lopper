@@ -27,4 +27,9 @@ func TestIdentifierHelpers(t *testing.T) {
 	if uses := CountEscapedLocalUses(masked, "foo\"bar"); uses != 1 {
 		t.Fatalf("quoted escaped uses = %d", uses)
 	}
+	masked = MaskForFile([]byte("import com.acme.Widget as `foo`\nval text = \"`foo`\"\n/* `foo` */\n"), "Main.kt")
+	if uses := CountEscapedLocalUses(masked, "foo"); uses != 0 {
+		t.Fatalf("declaration-only escaped uses = %d", uses)
+	}
+	_ = MaskForFile([]byte("val text = \"\\\"\"\n`unfinished"), "Main.kt")
 }

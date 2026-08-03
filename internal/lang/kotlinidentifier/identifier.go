@@ -95,12 +95,42 @@ func isHeaderDeclaration(line string) bool {
 func MaskForFile(content []byte, filePath string) []byte {
 	protected := append([]byte(nil), content...)
 	var ranges [][2]int
-	for index := 0; index < len(content); index++ {
-		if content[index] != '`' {
+	for index, blockComment, lineComment, doubleQuote := 0, false, false, false; index < len(content); index++ {
+		if lineComment {
+			if content[index] == '\n' {
+				lineComment = false
+			}
 			continue
 		}
-		lineStart := strings.LastIndex(string(content[:index]), "\n") + 1
-		if strings.Contains(string(content[lineStart:index]), "//") || strings.Contains(string(content[lineStart:index]), "/*") {
+		if blockComment {
+			if index+1 < len(content) && content[index] == '*' && content[index+1] == '/' {
+				blockComment, index = false, index+1
+			}
+			continue
+		}
+		if doubleQuote {
+			if content[index] == '\\' {
+				index++
+				continue
+			}
+			if content[index] == '"' {
+				doubleQuote = false
+			}
+			continue
+		}
+		if index+1 < len(content) && content[index] == '/' && content[index+1] == '/' {
+			lineComment, index = true, index+1
+			continue
+		}
+		if index+1 < len(content) && content[index] == '/' && content[index+1] == '*' {
+			blockComment, index = true, index+1
+			continue
+		}
+		if content[index] == '"' {
+			doubleQuote = true
+			continue
+		}
+		if content[index] != '`' {
 			continue
 		}
 		end := index + 1
