@@ -63,10 +63,20 @@ func HasEscapedImportLocal(content []byte, local string) bool {
 }
 
 func escapedAliasTail(tail string) string {
-	for _, marker := range []string{"//", "/*"} {
-		if index := strings.Index(tail, marker); index >= 0 {
-			tail = tail[:index]
+	if index := strings.Index(tail, "//"); index >= 0 {
+		tail = tail[:index]
+	}
+	for {
+		start := strings.Index(tail, "/*")
+		if start < 0 {
+			break
 		}
+		end := strings.Index(tail[start+2:], "*/")
+		if end < 0 {
+			tail = tail[:start]
+			break
+		}
+		tail = tail[:start] + tail[start+end+4:]
 	}
 	return strings.TrimSuffix(strings.TrimSpace(tail), ";")
 }
