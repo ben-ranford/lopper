@@ -1,6 +1,9 @@
 package kotlinidentifier
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIdentifierHelpers(t *testing.T) {
 	for local, want := range map[string]bool{"": false, "1value": false, "data": true, "open": true, "value": true, "π": true, "when": false, "foo.bar": false} {
@@ -16,8 +19,11 @@ func TestIdentifierHelpers(t *testing.T) {
 	}
 	for content, want := range map[string]bool{"import com.acme.Widget as\t`foo-bar`": true, "import com.acme.Widget as /* note */ `foo-bar`": true, "import com.acme.Widget as   `foo-bar` // note": true, "import com.acme.Widget as `foo-bar` /* note */": true, "import com.acme.Widget as /* note": false, "import com.acme.`foo-bar`": true, "import com.acme.Widget as Foo": false} {
 		if got := HasEscapedImportLocal([]byte(content), "foo-bar"); got != want {
-			t.Fatalf("escaped import local = %t, want %t", got, want)
+			t.Fatalf("escaped import local for %q = %t, want %t", content, got, want)
 		}
+	}
+	if !HasEscapedImportLocal([]byte("import com.acme.Widget as `foo//bar`"), "foo//bar") {
+		t.Fatal("expected escaped import local with comment marker")
 	}
 	content := []byte("package\tcom.example.`when`\nimport\tcom.acme.Widget as `when`\nimport\tcom.acme.`when`.Other\nfun use() { `when`() }\n")
 	if uses := CountEscapedLocalUses(content, "when"); uses != 1 {
@@ -32,4 +38,13 @@ func TestIdentifierHelpers(t *testing.T) {
 		t.Fatalf("declaration-only escaped uses = %d", uses)
 	}
 	_ = MaskForFile([]byte("val text = \"\\\"\"\n`unfinished"), "Main.kt")
+	if got := string(SanitizeImportContent([]byte("import com.acme.Widget as `foo/*bar` // note\n/* hidden */"))); got != "import com.acme.Widget as `foo/*bar`        \n            " {
+		t.Fatalf("sanitized imports = %q", got)
+	}
+	if sanitized := string(SanitizeImportContent([]byte("/* outer /* inner */ hidden */"))); strings.Contains(sanitized, "hidden") {
+		t.Fatalf("nested comment was not masked: %q", sanitized)
+	}
+	if got := NormalizeModuleForLookup("com.acme.`foo.bar`"); got != "com.acme.foo\x00bar" {
+		t.Fatalf("normalized module = %q", got)
+	}
 }

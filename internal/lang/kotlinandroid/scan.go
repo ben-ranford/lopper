@@ -183,9 +183,8 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := kotlinidentifier.SanitizeImportContent(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
-		line = stripLineComment(line)
 		matches := shared.MatchJVMImport(line)
 		if len(matches) != shared.JVMImportMatchGroups {
 			return nil
@@ -194,8 +193,8 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 		if module == "" {
 			return nil
 		}
-		lookupModule := strings.ReplaceAll(module, "`", "")
-		lookupPackage := strings.ReplaceAll(filePackage, "`", "")
+		lookupModule := kotlinidentifier.NormalizeModuleForLookup(module)
+		lookupPackage := kotlinidentifier.NormalizeModuleForLookup(filePackage)
 
 		dependency, ambiguous := resolveDependency(lookupModule, lookups)
 		samePackage := lookupPackage != "" && (lookupModule == lookupPackage || strings.HasPrefix(lookupModule, lookupPackage+"."))
@@ -261,10 +260,6 @@ func resolvedImportSymbol(matches []string, module string) (string, bool) {
 		return "*", true
 	}
 	return lastModuleSegment(module), false
-}
-
-func stripLineComment(line string) string {
-	return shared.StripLineComment(line, "//")
 }
 
 func shouldIgnoreImport(module, filePackage string) bool {

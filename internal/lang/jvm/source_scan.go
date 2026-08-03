@@ -242,16 +242,15 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := kotlinidentifier.SanitizeImportContent(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
-		line = stripLineComment(line)
 		matches := shared.MatchJVMImport(line)
 		if len(matches) != shared.JVMImportMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
-		lookupModule := strings.ReplaceAll(module, "`", "")
-		lookupPackage := strings.ReplaceAll(filePackage, "`", "")
+		lookupModule := kotlinidentifier.NormalizeModuleForLookup(module)
+		lookupPackage := kotlinidentifier.NormalizeModuleForLookup(filePackage)
 		if module == "" || shouldIgnoreImport(lookupModule, lookupPackage) {
 			return nil
 		}

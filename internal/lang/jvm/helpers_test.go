@@ -128,10 +128,10 @@ func TestJVMCountUsageKeepsUnescapedUnicodeKotlinAliasUse(t *testing.T) {
 }
 
 func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
-	content := []byte("import com.acme.Widget as /* note */\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`() }\n")
+	content := []byte("import com.acme.Widget as /* note */\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nimport com.acme.Slashed as `foo//bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`(); `foo//bar`() }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
 	usage := countUsage(content, imports)
-	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 {
+	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 || usage["foo//bar"] != 1 {
 		t.Fatalf("expected escaped non-bare Kotlin aliases to count once, got %#v", usage)
 	}
 }
@@ -145,9 +145,9 @@ func TestJVMCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
 }
 
 func TestJVMParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
-	content := []byte("import com.acme.`when`.Widget\n")
-	imports := parseImports(content, "App.kt", "com.example.app", map[string]string{"com.acme.when": acmeLibName}, nil)
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != acmeLibName {
+	content := []byte("import com.acme.`when`.Widget\nimport com.acme.`foo.bar`\n")
+	imports := parseImports(content, "App.kt", "com.example.app", map[string]string{"com.acme.when": acmeLibName, "com.acme": acmeLibName, "com.acme.foo": "wrong-lib"}, nil)
+	if len(imports) != 2 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != acmeLibName || imports[1].Dependency != acmeLibName {
 		t.Fatalf("expected escaped module segment to resolve through normalized prefix, got %#v", imports)
 	}
 }

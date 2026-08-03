@@ -618,10 +618,10 @@ func TestKotlinAndroidParseImportsKeepsDottedEscapedFinalSegment(t *testing.T) {
 
 func TestKotlinAndroidCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
 	result := newScanResult()
-	content := []byte("import com.acme.Widget as /* note */\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`() }\n")
+	content := []byte("import com.acme.Widget as /* note */\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nimport com.acme.Slashed as `foo//bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`(); `foo//bar`() }\n")
 	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
 	usage := countUsage(content, imports)
-	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 {
+	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 || usage["foo//bar"] != 1 {
 		t.Fatalf("expected escaped non-bare Kotlin aliases to count once, got %#v", usage)
 	}
 }
@@ -637,9 +637,9 @@ func TestKotlinAndroidCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testi
 
 func TestKotlinAndroidParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
 	result := newScanResult()
-	content := []byte("import com.acme.`when`.Widget\n")
-	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Prefixes: map[string]string{"com.acme.when": "acme-lib"}}, &result)
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != "acme-lib" {
+	content := []byte("import com.acme.`when`.Widget\nimport com.acme.`foo.bar`\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Prefixes: map[string]string{"com.acme.when": "acme-lib", "com.acme": "acme-lib", "com.acme.foo": "wrong-lib"}}, &result)
+	if len(imports) != 2 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != "acme-lib" || imports[1].Dependency != "acme-lib" {
 		t.Fatalf("expected escaped module segment to resolve through normalized prefix, got %#v", imports)
 	}
 }

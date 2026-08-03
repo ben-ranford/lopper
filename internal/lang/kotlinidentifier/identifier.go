@@ -42,7 +42,7 @@ func LastModuleSegment(module string) string {
 
 func HasEscapedImportLocal(content []byte, local string) bool {
 	marker := "`" + local + "`"
-	for _, line := range strings.Split(string(content), "\n") {
+	for _, line := range strings.Split(string(SanitizeImportContent(content)), "\n") {
 		if strings.Contains(line, "."+marker) {
 			return true
 		}
@@ -63,22 +63,69 @@ func HasEscapedImportLocal(content []byte, local string) bool {
 }
 
 func escapedAliasTail(tail string) string {
-	if index := strings.Index(tail, "//"); index >= 0 {
-		tail = tail[:index]
-	}
-	for {
-		start := strings.Index(tail, "/*")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(tail[start+2:], "*/")
-		if end < 0 {
-			tail = tail[:start]
-			break
-		}
-		tail = tail[:start] + tail[start+end+4:]
-	}
 	return strings.TrimSuffix(strings.TrimSpace(tail), ";")
+}
+
+// SanitizeImportContent masks Kotlin comments while preserving escaped identifiers.
+func SanitizeImportContent(content []byte) []byte {
+	sanitized := append([]byte(nil), content...)
+	for index, blockCommentDepth := 0, 0; index < len(sanitized); index++ {
+		if blockCommentDepth > 0 {
+			if sanitized[index] != '\n' && sanitized[index] != '\r' {
+				sanitized[index] = ' '
+			}
+			if index+1 < len(sanitized) && content[index] == '/' && content[index+1] == '*' {
+				sanitized[index+1] = ' '
+				blockCommentDepth, index = blockCommentDepth+1, index+1
+				continue
+			}
+			if index+1 < len(sanitized) && content[index] == '*' && content[index+1] == '/' {
+				sanitized[index+1] = ' '
+				blockCommentDepth, index = blockCommentDepth-1, index+1
+			}
+			continue
+		}
+		if index+1 < len(sanitized) && content[index] == '/' && content[index+1] == '*' {
+			sanitized[index], sanitized[index+1] = ' ', ' '
+			blockCommentDepth, index = 1, index+1
+			continue
+		}
+		if index+1 < len(sanitized) && content[index] == '/' && content[index+1] == '/' {
+			for index < len(sanitized) && sanitized[index] != '\n' {
+				sanitized[index] = ' '
+				index++
+			}
+			continue
+		}
+		if content[index] != '`' {
+			continue
+		}
+		index++
+		for index < len(sanitized) && content[index] != '`' {
+			index++
+		}
+	}
+	return sanitized
+}
+
+// NormalizeModuleForLookup removes Kotlin escaping without turning dots inside
+// an escaped identifier into package separators.
+func NormalizeModuleForLookup(module string) string {
+	var normalized strings.Builder
+	normalized.Grow(len(module))
+	escaped := false
+	for _, character := range module {
+		if character == '`' {
+			escaped = !escaped
+			continue
+		}
+		if escaped && character == '.' {
+			normalized.WriteByte(0)
+			continue
+		}
+		normalized.WriteRune(character)
+	}
+	return normalized.String()
 }
 
 func CountEscapedLocalUses(masked []byte, local string) int {
