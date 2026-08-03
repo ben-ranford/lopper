@@ -92,6 +92,79 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 	}
 }
 
+func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
+	content := []byte("import com.acme.`when`.Widget as `foo-bar`\nfun use() { `foo-bar`() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "foo-bar" || imports[0].Dependency != acmeLibName {
+		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := countUsage(content, imports); usage["foo-bar"] != 1 {
+		t.Fatalf("expected escaped Kotlin alias usage to count once, got %#v", usage)
+	}
+}
+
+func TestJVMCountUsageKeepsUnescapedKotlinAliasUse(t *testing.T) {
+	content := []byte("import com.acme.Widget as `WidgetAlias`\nimport com.acme.Getter as `get`\nimport com.acme.Setter as `set`\nimport com.acme.Delegate as `by`\nimport com.acme.Record as `data`\nimport com.acme.Access as `open`\nimport com.acme.Value as `value`\nfun use() { WidgetAlias(); get(); set(); by(); data(); open(); value() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(content, imports); usage["WidgetAlias"] != 1 || usage["get"] != 1 || usage["set"] != 1 || usage["by"] != 1 || usage["data"] != 1 || usage["open"] != 1 || usage["value"] != 1 {
+		t.Fatalf("expected unescaped Kotlin aliases, including soft keywords, to count once, got %#v", usage)
+	}
+}
+
+func TestJVMParseImportsKeepsDottedEscapedFinalSegment(t *testing.T) {
+	content := []byte("import com.acme.`foo.bar`\nfun use() { `foo.bar`() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Name != "`foo.bar`" || imports[0].Local != "foo.bar" || countUsage(content, imports)["foo.bar"] != 1 {
+		t.Fatalf("expected dotted escaped final segment to be preserved, got %#v", imports)
+	}
+}
+
+func TestJVMCountUsageKeepsUnescapedUnicodeKotlinAliasUse(t *testing.T) {
+	content := []byte("import com.acme.Widget as `π`\nfun use() { π() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(content, imports); usage["π"] != 1 {
+		t.Fatalf("expected unescaped Unicode Kotlin alias usage to count once, got %#v", usage)
+	}
+}
+
+func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
+	content := []byte("import com.acme.Widget as /* note */\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nimport com.acme.Slashed as `foo//bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`(); `foo//bar`() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	usage := countUsage(content, imports)
+	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 || usage["foo//bar"] != 1 {
+		t.Fatalf("expected escaped non-bare Kotlin aliases to count once, got %#v", usage)
+	}
+}
+
+func TestJVMCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
+	content := []byte("package\tcom.example.`when`\nimport\tcom.acme.Widget as `when`\nimport\tcom.acme.`when`.Other\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(content, imports); usage["when"] != 0 {
+		t.Fatalf("expected package and import markers not to count as usage, got %#v", usage)
+	}
+}
+
+func TestJVMParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
+	content := []byte("import com.acme.`when`.Widget\nimport com.acme.`foo.bar`\n")
+	imports := parseImports(content, "App.kt", "com.example.app", map[string]string{"com.acme.when": acmeLibName, "com.acme": acmeLibName, "com.acme.foo": "wrong-lib"}, nil)
+	if len(imports) != 2 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != acmeLibName || imports[1].Dependency != acmeLibName {
+		t.Fatalf("expected escaped module segment to resolve through normalized prefix, got %#v", imports)
+	}
+}
+
+func TestJVMParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
+	content := []byte("package com.example.`foo.bar`\nimport com.example.`foo.bar`.util.Helper\n")
+	pkg := parsePackage(content)
+	if pkg != "com.example.foo\x00bar" {
+		t.Fatalf("unexpected parsed escaped package: %q", pkg)
+	}
+
+	imports := parseImports(content, "App.kt", pkg, nil, map[string]string{"com.example": acmeLibName})
+	if len(imports) != 0 {
+		t.Fatalf("expected escaped package-local import to be ignored, got %#v", imports)
+	}
+}
+
 func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
 	content := []byte(`package com.example.app;
 import java.util.List;

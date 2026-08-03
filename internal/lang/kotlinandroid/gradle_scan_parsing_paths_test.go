@@ -595,6 +595,89 @@ import com.acme.lib.Widget
 	}
 }
 
+func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import com.acme.`when`.Widget as `type`\nimport com.acme.Gadget as `π`\nimport com.acme.Getter as `get`\nimport com.acme.Setter as `set`\nimport com.acme.Delegate as `by`\nimport com.acme.Record as `data`\nimport com.acme.Access as `open`\nimport com.acme.Value as `value`\nfun use() { `type`(); π(); get(); set(); by(); data(); open(); value() }\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if len(imports) != 8 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "type" || imports[0].Dependency != "acme-lib" {
+		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := countUsage(content, imports); usage["type"] != 1 || usage["π"] != 1 || usage["get"] != 1 || usage["set"] != 1 || usage["by"] != 1 || usage["data"] != 1 || usage["open"] != 1 || usage["value"] != 1 {
+		t.Fatalf("expected escaped, Unicode, and soft-keyword Kotlin aliases to count once, got %#v", usage)
+	}
+}
+
+func TestKotlinAndroidParseImportsKeepsDottedEscapedFinalSegment(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import com.acme.`foo.bar`\nfun use() { `foo.bar`() }\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if len(imports) != 1 || imports[0].Name != "`foo.bar`" || imports[0].Local != "foo.bar" || countUsage(content, imports)["foo.bar"] != 1 {
+		t.Fatalf("expected dotted escaped final segment to be preserved, got %#v", imports)
+	}
+}
+
+func TestKotlinAndroidCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import com.acme.Widget as /* note */\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nimport com.acme.Quoted as `foo\"bar`\nimport com.acme.Slashed as `foo//bar`\nfun use() { `foo bar`(); `foo.bar`(); `foo\"bar`(); `foo//bar`() }\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	usage := countUsage(content, imports)
+	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 || usage["foo\"bar"] != 1 || usage["foo//bar"] != 1 {
+		t.Fatalf("expected escaped non-bare Kotlin aliases to count once, got %#v", usage)
+	}
+}
+
+func TestKotlinAndroidCountUsageExcludesEscapedMarkersOnDeclarationLine(t *testing.T) {
+	result := newScanResult()
+	content := []byte("package\tcom.example.`when`\nimport\tcom.acme.Widget as `when`\nimport\tcom.acme.`when`.Other\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if usage := countUsage(content, imports); usage["when"] != 0 {
+		t.Fatalf("expected package and import markers not to count as usage, got %#v", usage)
+	}
+}
+
+func TestKotlinAndroidParseImportsNormalizesEscapedModuleSegmentsForLookup(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import com.acme.`when`.Widget\nimport com.acme.`foo.bar`\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Prefixes: map[string]string{"com.acme.when": "acme-lib", "com.acme": "acme-lib", "com.acme.foo": "wrong-lib"}}, &result)
+	if len(imports) != 2 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Dependency != "acme-lib" || imports[1].Dependency != "acme-lib" {
+		t.Fatalf("expected escaped module segment to resolve through normalized prefix, got %#v", imports)
+	}
+}
+
+func TestKotlinAndroidParseImportsKeepsMappedSamePackageImport(t *testing.T) {
+	content := []byte("package com.example.app\nimport com.example.app.sdk.Widget\nimport com.example.app.AliasService\n")
+	imports := parseImports(content, testMainSourceFileName, "com.example.app", dependencyLookups{Prefixes: map[string]string{"com.example.app.sdk": "sdk-lib"}, Aliases: map[string]string{"com.example.app": "alias-lib"}}, &scanResult{})
+	if len(imports) != 2 || imports[0].Dependency != "sdk-lib" || imports[1].Dependency != "alias-lib" {
+		t.Fatalf("expected mapped same-package imports to be retained, got %#v", imports)
+	}
+	if unmapped := parseImports([]byte("import com.example.app.Local\n"), testMainSourceFileName, "com.example.app", dependencyLookups{}, &scanResult{}); len(unmapped) != 0 {
+		t.Fatalf("expected unmapped same-package import to be ignored, got %#v", unmapped)
+	}
+}
+
+func TestKotlinAndroidParseImportsKeepsMappedFrameworkImport(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import javax.inject.Inject\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Prefixes: map[string]string{"javax.inject": "javax-inject"}}, &result)
+	if len(imports) != 1 || imports[0].Dependency != "javax-inject" {
+		t.Fatalf("expected mapped framework import to be retained, got %#v", imports)
+	}
+}
+
+func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
+	result := newScanResult()
+	content := []byte("package com.example.`foo.bar`\nimport com.example.`foo.bar`.util.Helper\n")
+	pkg := parsePackage(content)
+	if pkg != "com.example.foo\x00bar" {
+		t.Fatalf("unexpected parsed escaped package: %q", pkg)
+	}
+
+	imports := parseImports(content, testMainSourceFileName, pkg, dependencyLookups{Aliases: map[string]string{"com.example": "acme-lib"}}, &result)
+	if len(imports) != 1 || imports[0].Dependency != "acme-lib" {
+		t.Fatalf("expected mapped escaped package-local import to be retained, got %#v", imports)
+	}
+}
+
 func TestResolveDependencyAndDescriptorBranches(t *testing.T) {
 	lookups := dependencyLookups{
 		Prefixes: map[string]string{"alpha": "dep-alpha", "alpha.beta": testDepBetaDependency},

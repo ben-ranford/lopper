@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/ben-ranford/lopper/internal/lang/kotlinidentifier"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
@@ -229,36 +230,34 @@ func isSourceFile(path string) bool {
 }
 
 var (
-	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
+	packagePattern = regexp.MustCompile("(?m)^\\s*package\\s+((?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\r\\n]+`)(?:\\.(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\r\\n]+`))*)\\s*;?\\s*$")
 )
-
-const importPatternMatchGroups = 4
 
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
 	if len(matches) != 2 {
 		return ""
 	}
-	return strings.TrimSpace(string(matches[1]))
+	return kotlinidentifier.NormalizeModuleForLookup(strings.TrimSpace(string(matches[1])))
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
-	sanitized := shared.StripBlockComments(content)
+	sanitized := kotlinidentifier.SanitizeJVMImportContent(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
-		line = stripLineComment(line)
-		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != importPatternMatchGroups {
+		matches := shared.MatchJVMImport(line)
+		if len(matches) != shared.JVMImportMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
-		if module == "" || shouldIgnoreImport(module, filePackage) {
+		lookupModule := kotlinidentifier.NormalizeModuleForLookup(module)
+		lookupPackage := kotlinidentifier.NormalizeModuleForLookup(filePackage)
+		if module == "" || shouldIgnoreImport(lookupModule, lookupPackage) {
 			return nil
 		}
 
-		dependency := resolveDependency(module, depPrefixes, depAliases)
+		dependency := resolveDependency(lookupModule, depPrefixes, depAliases)
 		if dependency == "" {
-			dependency = fallbackDependency(module)
+			dependency = fallbackDependency(lookupModule)
 		}
 		if dependency == "" {
 			return nil
@@ -287,6 +286,7 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
 		localName = alias
 	}
+	localName = strings.Trim(localName, "`")
 
 	return shared.ImportRecord{
 		Dependency: dependency,
@@ -363,11 +363,7 @@ func fallbackDependency(module string) string {
 }
 
 func lastModuleSegment(module string) string {
-	parts := strings.Split(module, ".")
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(parts[len(parts)-1])
+	return kotlinidentifier.LastModuleSegment(module)
 }
 
 func firstContentColumn(line string) int {
@@ -375,5 +371,20 @@ func firstContentColumn(line string) int {
 }
 
 func countUsage(content []byte, imports []importBinding) map[string]int {
-	return shared.CountUsage(content, imports)
+	usage := shared.CountUsage(content, imports)
+	for _, imported := range imports {
+		if !escapedImportLocal(content, imported) || !escapedOnlyKotlinLocal(imported.Local) {
+			continue
+		}
+		usage[imported.Local] = kotlinidentifier.CountEscapedLocalUses(kotlinidentifier.MaskForFile(content, imported.Location.File), imported.Local)
+	}
+	return usage
+}
+
+func escapedImportLocal(content []byte, imported importBinding) bool {
+	return kotlinidentifier.HasEscapedImportLocal(content, imported.Local)
+}
+
+func escapedOnlyKotlinLocal(local string) bool {
+	return !kotlinidentifier.IsBare(local)
 }
