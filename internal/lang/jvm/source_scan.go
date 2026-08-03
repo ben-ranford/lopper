@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -403,7 +404,7 @@ func escapedOnlyKotlinLocal(local string) bool {
 		return true
 	}
 	for index, character := range local {
-		if character == '_' || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (index > 0 && character >= '0' && character <= '9') {
+		if character == '_' || unicode.IsLetter(character) || (index > 0 && unicode.IsDigit(character)) {
 			continue
 		}
 		return true

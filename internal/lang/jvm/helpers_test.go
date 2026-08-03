@@ -111,6 +111,14 @@ func TestJVMCountUsageKeepsUnescapedKotlinAliasUse(t *testing.T) {
 	}
 }
 
+func TestJVMCountUsageKeepsUnescapedUnicodeKotlinAliasUse(t *testing.T) {
+	content := []byte("import com.acme.Widget as `π`\nfun use() { π() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(content, imports); usage["π"] != 1 {
+		t.Fatalf("expected unescaped Unicode Kotlin alias usage to count once, got %#v", usage)
+	}
+}
+
 func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
 	content := []byte("import com.acme.Widget as `foo bar`\nimport com.acme.Gadget as `foo.bar`\nfun use() { `foo bar`(); `foo.bar`() }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})

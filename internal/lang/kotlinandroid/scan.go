@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -351,7 +352,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 		}
 		escapedOnly := imported.Local == "" || keyword
 		for index, character := range imported.Local {
-			bare := character == '_' || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (index > 0 && character >= '0' && character <= '9')
+			bare := character == '_' || unicode.IsLetter(character) || (index > 0 && unicode.IsDigit(character))
 			if !bare {
 				escapedOnly = true
 			}
