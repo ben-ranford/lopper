@@ -104,17 +104,29 @@ func isHeaderDeclaration(line string) bool {
 
 func MaskForFile(content []byte, filePath string) []byte {
 	protected := append([]byte(nil), content...)
+	maskCommentCharacter := func(index int) {
+		if content[index] != '\n' {
+			protected[index] = ' '
+		}
+	}
 	var ranges [][2]int
-	for index, blockComment, lineComment, doubleQuote := 0, false, false, false; index < len(content); index++ {
+	for index, blockCommentDepth, lineComment, doubleQuote := 0, 0, false, false; index < len(content); index++ {
 		if lineComment {
 			if content[index] == '\n' {
 				lineComment = false
 			}
 			continue
 		}
-		if blockComment {
+		if blockCommentDepth > 0 {
+			maskCommentCharacter(index)
+			if index+1 < len(content) && content[index] == '/' && content[index+1] == '*' {
+				maskCommentCharacter(index + 1)
+				blockCommentDepth, index = blockCommentDepth+1, index+1
+				continue
+			}
 			if index+1 < len(content) && content[index] == '*' && content[index+1] == '/' {
-				blockComment, index = false, index+1
+				maskCommentCharacter(index + 1)
+				blockCommentDepth, index = blockCommentDepth-1, index+1
 			}
 			continue
 		}
@@ -133,7 +145,9 @@ func MaskForFile(content []byte, filePath string) []byte {
 			continue
 		}
 		if index+1 < len(content) && content[index] == '/' && content[index+1] == '*' {
-			blockComment, index = true, index+1
+			maskCommentCharacter(index)
+			maskCommentCharacter(index + 1)
+			blockCommentDepth, index = 1, index+1
 			continue
 		}
 		if content[index] == '"' {
