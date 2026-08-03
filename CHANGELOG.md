@@ -2,6 +2,26 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.5](https://github.com/ben-ranford/lopper/compare/v1.8.4...v1.8.5) (2026-08-03)
+
+
+### Bug Fixes
+
+* **advisory:** confine repo-config advisory sources ([#1456](https://github.com/ben-ranford/lopper/issues/1456)) ([0a0fcee](https://github.com/ben-ranford/lopper/commit/0a0fceef61e3e9fec30c57243303f594c407ba25))
+* **analysis:** bound scoped workspace copies ([#1464](https://github.com/ben-ranford/lopper/issues/1464)) ([7f81899](https://github.com/ben-ranford/lopper/commit/7f818991174b933334d0e78ba0cdd31a16775fbd))
+* **analysis:** confine Kotlin Android candidate roots ([#1463](https://github.com/ben-ranford/lopper/issues/1463)) ([d784bbd](https://github.com/ben-ranford/lopper/commit/d784bbdd0f1bcc33be8a1641ec5448cc656a1905))
+* **elixir:** ignore quote spoofing inside comments ([#1460](https://github.com/ben-ranford/lopper/issues/1460)) ([5eae2f2](https://github.com/ben-ranford/lopper/commit/5eae2f2527793d300d94cf7cdecbd7b556cd0808))
+* **mcp:** confine baseline store paths to repo ([#1458](https://github.com/ben-ranford/lopper/issues/1458)) ([137eb90](https://github.com/ben-ranford/lopper/commit/137eb90e5d1469d88cf11bf86bafa4179c972b68))
+* **profile:** block symlink-followed output writes ([#1459](https://github.com/ben-ranford/lopper/issues/1459)) ([6b88668](https://github.com/ben-ranford/lopper/commit/6b8866862fb500b3bff93165a4b6b15eec26b5c6))
+* **python:** reject symlinked src roots ([#1465](https://github.com/ben-ranford/lopper/issues/1465)) ([3e6bdf6](https://github.com/ben-ranford/lopper/commit/3e6bdf69e4eb0b7d15011331b88ef9729e3d48ba))
+* **vscode:** short-circuit untrusted local binary checks ([#1282](https://github.com/ben-ranford/lopper/issues/1282)) ([9490979](https://github.com/ben-ranford/lopper/commit/9490979f1bbd1eaefa437aef50443d8460c22f37))
+* **vscode:** short-circuit untrusted local binary checks ([#1466](https://github.com/ben-ranford/lopper/issues/1466)) ([9490979](https://github.com/ben-ranford/lopper/commit/9490979f1bbd1eaefa437aef50443d8460c22f37))
+
+
+### Code Refactoring
+
+* **dashboard:** share path containment guards ([#1467](https://github.com/ben-ranford/lopper/issues/1467)) ([b395b8a](https://github.com/ben-ranford/lopper/commit/b395b8a5b2a913b14297ca8a838365fc02e829ca))
+
 ## [1.8.4](https://github.com/ben-ranford/lopper/compare/v1.8.3...v1.8.4) (2026-07-31)
 
 
