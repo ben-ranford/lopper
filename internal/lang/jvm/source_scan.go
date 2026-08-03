@@ -242,7 +242,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
-	sanitized := kotlinidentifier.SanitizeImportContent(content)
+	sanitized := kotlinidentifier.SanitizeJVMImportContent(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		matches := shared.MatchJVMImport(line)
 		if len(matches) != shared.JVMImportMatchGroups {

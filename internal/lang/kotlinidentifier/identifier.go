@@ -63,18 +63,27 @@ func HasEscapedImportLocal(content []byte, local string) bool {
 }
 
 func escapedAliasTail(tail string) string {
-	return strings.TrimSuffix(strings.TrimSpace(tail), ";")
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(tail), ";"))
 }
 
 // SanitizeImportContent masks Kotlin comments while preserving escaped identifiers.
 func SanitizeImportContent(content []byte) []byte {
+	return sanitizeImportContent(content, true)
+}
+
+// SanitizeJVMImportContent masks Java/Kotlin comments with Java block-comment semantics.
+func SanitizeJVMImportContent(content []byte) []byte {
+	return sanitizeImportContent(content, false)
+}
+
+func sanitizeImportContent(content []byte, nestedBlockComments bool) []byte {
 	sanitized := append([]byte(nil), content...)
 	for index, blockCommentDepth, doubleQuote, rawString, characterLiteral := 0, 0, false, false, false; index < len(sanitized); index++ {
 		if blockCommentDepth > 0 {
 			if sanitized[index] != '\n' && sanitized[index] != '\r' {
 				sanitized[index] = ' '
 			}
-			if index+1 < len(sanitized) && content[index] == '/' && content[index+1] == '*' {
+			if nestedBlockComments && index+1 < len(sanitized) && content[index] == '/' && content[index+1] == '*' {
 				sanitized[index+1] = ' '
 				blockCommentDepth, index = blockCommentDepth+1, index+1
 				continue

@@ -17,7 +17,7 @@ func TestIdentifierHelpers(t *testing.T) {
 	if got := LastModuleSegment(""); got != "" {
 		t.Fatalf("empty segment = %q", got)
 	}
-	for content, want := range map[string]bool{"import com.acme.Widget as\t`foo-bar`": true, "import com.acme.Widget as /* note */ `foo-bar`": true, "import com.acme.Widget as   `foo-bar` // note": true, "import com.acme.Widget as `foo-bar` /* note */": true, "import com.acme.Widget as /* note": false, "import com.acme.`foo-bar`": true, "import com.acme.Widget as Foo": false} {
+	for content, want := range map[string]bool{"import com.acme.Widget as\t`foo-bar`": true, "import com.acme.Widget as /* note */ `foo-bar`": true, "import com.acme.Widget as   `foo-bar` // note": true, "import com.acme.Widget as `foo-bar` /* note */": true, "import com.acme.Widget as `foo-bar`;  ": true, "import com.acme.Widget as /* note": false, "import com.acme.`foo-bar`": true, "import com.acme.Widget as Foo": false} {
 		if got := HasEscapedImportLocal([]byte(content), "foo-bar"); got != want {
 			t.Fatalf("escaped import local for %q = %t, want %t", content, got, want)
 		}
@@ -43,6 +43,9 @@ func TestIdentifierHelpers(t *testing.T) {
 	}
 	if sanitized := string(SanitizeImportContent([]byte("/* outer /* inner */ hidden */"))); strings.Contains(sanitized, "hidden") {
 		t.Fatalf("nested comment was not masked: %q", sanitized)
+	}
+	if sanitized := string(SanitizeJVMImportContent([]byte("/* outer /* inner */ visible"))); !strings.Contains(sanitized, "visible") {
+		t.Fatalf("Java block comment did not close at first terminator: %q", sanitized)
 	}
 	if sanitized := string(SanitizeImportContent([]byte("\"`\" /* hidden import */"))); strings.Contains(sanitized, "hidden") {
 		t.Fatalf("comment after string backtick was not masked: %q", sanitized)
