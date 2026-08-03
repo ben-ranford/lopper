@@ -52,12 +52,21 @@ func HasEscapedImportLocal(content []byte, local string) bool {
 			for index < len(line) && !unicode.IsSpace(rune(line[index])) {
 				index++
 			}
-			if line[start:index] == "as" && strings.TrimSuffix(strings.TrimSpace(line[index:]), ";") == marker {
+			if line[start:index] == "as" && escapedAliasTail(line[index:]) == marker {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func escapedAliasTail(tail string) string {
+	for _, marker := range []string{"//", "/*"} {
+		if index := strings.Index(tail, marker); index >= 0 {
+			tail = tail[:index]
+		}
+	}
+	return strings.TrimSuffix(strings.TrimSpace(tail), ";")
 }
 
 func CountEscapedLocalUses(masked []byte, local string) int {

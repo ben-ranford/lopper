@@ -128,7 +128,7 @@ func TestJVMCountUsageKeepsUnescapedUnicodeKotlinAliasUse(t *testing.T) {
 }
 
 func TestJVMCountUsageSupportsEscapedNonBareKotlinAliases(t *testing.T) {
-	content := []byte("import com.acme.Widget as\t`foo bar`\nimport com.acme.Gadget as   `foo.bar`\nfun use() { `foo bar`(); `foo.bar`() }\n")
+	content := []byte("import com.acme.Widget as\t`foo bar` // note\nimport com.acme.Gadget as   `foo.bar` /* note */\nfun use() { `foo bar`(); `foo.bar`() }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
 	usage := countUsage(content, imports)
 	if usage["foo bar"] != 1 || usage["foo.bar"] != 1 {
