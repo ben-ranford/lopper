@@ -645,10 +645,13 @@ func TestKotlinAndroidParseImportsNormalizesEscapedModuleSegmentsForLookup(t *te
 }
 
 func TestKotlinAndroidParseImportsKeepsMappedSamePackageImport(t *testing.T) {
-	content := []byte("package com.example.app\nimport com.example.app.sdk.Widget\nimport com.example.app.Service\n")
-	imports := parseImports(content, testMainSourceFileName, "com.example.app", dependencyLookups{Prefixes: map[string]string{"com.example.app.sdk": "sdk-lib", "com.example.app": "app-lib"}}, &scanResult{})
-	if len(imports) != 2 || imports[0].Dependency != "sdk-lib" || imports[1].Dependency != "app-lib" {
+	content := []byte("package com.example.app\nimport com.example.app.sdk.Widget\nimport com.example.app.AliasService\n")
+	imports := parseImports(content, testMainSourceFileName, "com.example.app", dependencyLookups{Prefixes: map[string]string{"com.example.app.sdk": "sdk-lib"}, Aliases: map[string]string{"com.example.app": "alias-lib"}}, &scanResult{})
+	if len(imports) != 2 || imports[0].Dependency != "sdk-lib" || imports[1].Dependency != "alias-lib" {
 		t.Fatalf("expected mapped same-package imports to be retained, got %#v", imports)
+	}
+	if unmapped := parseImports([]byte("import com.example.app.Local\n"), testMainSourceFileName, "com.example.app", dependencyLookups{}, &scanResult{}); len(unmapped) != 0 {
+		t.Fatalf("expected unmapped same-package import to be ignored, got %#v", unmapped)
 	}
 }
 
@@ -670,8 +673,8 @@ func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	}
 
 	imports := parseImports(content, testMainSourceFileName, pkg, dependencyLookups{Aliases: map[string]string{"com.example": "acme-lib"}}, &result)
-	if len(imports) != 0 {
-		t.Fatalf("expected escaped package-local import to be ignored, got %#v", imports)
+	if len(imports) != 1 || imports[0].Dependency != "acme-lib" {
+		t.Fatalf("expected mapped escaped package-local import to be retained, got %#v", imports)
 	}
 }
 
