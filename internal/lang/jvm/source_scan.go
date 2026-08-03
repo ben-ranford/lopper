@@ -390,7 +390,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 }
 
 func escapedImportLocal(content []byte, imported importBinding) bool {
-	return strings.Contains(string(content), " as `"+imported.Local+"`") || strings.Contains(string(content), ".`"+imported.Local+"`")
+	return kotlinidentifier.HasEscapedImportLocal(content, imported.Local)
 }
 
 func escapedOnlyKotlinLocal(local string) bool {

@@ -37,3 +37,25 @@ func LastModuleSegment(module string) string {
 	}
 	return strings.TrimSpace(module[last:])
 }
+
+func HasEscapedImportLocal(content []byte, local string) bool {
+	marker := "`" + local + "`"
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.Contains(line, "."+marker) {
+			return true
+		}
+		for index := 0; index < len(line); {
+			for index < len(line) && unicode.IsSpace(rune(line[index])) {
+				index++
+			}
+			start := index
+			for index < len(line) && !unicode.IsSpace(rune(line[index])) {
+				index++
+			}
+			if line[start:index] == "as" && strings.TrimSuffix(strings.TrimSpace(line[index:]), ";") == marker {
+				return true
+			}
+		}
+	}
+	return false
+}

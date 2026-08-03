@@ -347,7 +347,7 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 	for _, imported := range imports {
 		marker := "`" + imported.Local + "`"
 		escapedOnly := !kotlinidentifier.IsBare(imported.Local)
-		if (strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker)) && escapedOnly {
+		if kotlinidentifier.HasEscapedImportLocal(content, imported.Local) && escapedOnly {
 			occurrences := 0
 			for line, maskedLine := range strings.Split(string(masked), "\n") {
 				if line+1 == imported.Location.Line {

@@ -14,4 +14,9 @@ func TestIdentifierHelpers(t *testing.T) {
 	if got := LastModuleSegment(""); got != "" {
 		t.Fatalf("empty segment = %q", got)
 	}
+	for content, want := range map[string]bool{"import com.acme.Widget as\t`foo-bar`": true, "import com.acme.Widget as   `foo-bar`": true, "import com.acme.`foo-bar`": true, "import com.acme.Widget as Foo": false} {
+		if got := HasEscapedImportLocal([]byte(content), "foo-bar"); got != want {
+			t.Fatalf("escaped import local = %t, want %t", got, want)
+		}
+	}
 }
