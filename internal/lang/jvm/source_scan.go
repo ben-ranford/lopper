@@ -8,11 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"syscall"
-	"unicode"
 
+	"github.com/ben-ranford/lopper/internal/lang/kotlinidentifier"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
@@ -365,11 +364,7 @@ func fallbackDependency(module string) string {
 }
 
 func lastModuleSegment(module string) string {
-	parts := strings.Split(module, ".")
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.TrimSpace(parts[len(parts)-1])
+	return kotlinidentifier.LastModuleSegment(module)
 }
 
 func firstContentColumn(line string) int {
@@ -399,15 +394,5 @@ func escapedImportLocal(content []byte, imported importBinding) bool {
 }
 
 func escapedOnlyKotlinLocal(local string) bool {
-	keywords := strings.Fields("abstract as break catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while")
-	if local == "" || slices.Contains(keywords, local) {
-		return true
-	}
-	for index, character := range local {
-		if character == '_' || unicode.IsLetter(character) || (index > 0 && unicode.IsDigit(character)) {
-			continue
-		}
-		return true
-	}
-	return false
+	return !kotlinidentifier.IsBare(local)
 }

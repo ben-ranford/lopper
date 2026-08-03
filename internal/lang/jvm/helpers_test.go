@@ -104,10 +104,18 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 }
 
 func TestJVMCountUsageKeepsUnescapedKotlinAliasUse(t *testing.T) {
-	content := []byte("import com.acme.Widget as `WidgetAlias`\nimport com.acme.Getter as `get`\nimport com.acme.Setter as `set`\nimport com.acme.Delegate as `by`\nfun use() { WidgetAlias(); get(); set(); by() }\n")
+	content := []byte("import com.acme.Widget as `WidgetAlias`\nimport com.acme.Getter as `get`\nimport com.acme.Setter as `set`\nimport com.acme.Delegate as `by`\nimport com.acme.Record as `data`\nimport com.acme.Access as `open`\nimport com.acme.Value as `value`\nfun use() { WidgetAlias(); get(); set(); by(); data(); open(); value() }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if usage := countUsage(content, imports); usage["WidgetAlias"] != 1 || usage["get"] != 1 || usage["set"] != 1 || usage["by"] != 1 {
+	if usage := countUsage(content, imports); usage["WidgetAlias"] != 1 || usage["get"] != 1 || usage["set"] != 1 || usage["by"] != 1 || usage["data"] != 1 || usage["open"] != 1 || usage["value"] != 1 {
 		t.Fatalf("expected unescaped Kotlin aliases, including soft keywords, to count once, got %#v", usage)
+	}
+}
+
+func TestJVMParseImportsKeepsDottedEscapedFinalSegment(t *testing.T) {
+	content := []byte("import com.acme.`foo.bar`\nfun use() { `foo.bar`() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Name != "`foo.bar`" || imports[0].Local != "foo.bar" || countUsage(content, imports)["foo.bar"] != 1 {
+		t.Fatalf("expected dotted escaped final segment to be preserved, got %#v", imports)
 	}
 }
 
