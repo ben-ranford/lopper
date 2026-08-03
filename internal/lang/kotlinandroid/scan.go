@@ -194,7 +194,7 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 			return nil
 		}
 
-		if shouldIgnoreImport(module, filePackage) {
+		if shouldIgnoreImport(module, filePackage) && !hasMappedSamePackagePrefix(module, filePackage, lookups.Prefixes) {
 			return nil
 		}
 		dependency, ambiguous := resolveDependency(module, lookups)
@@ -215,6 +215,15 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 		}
 		return []shared.ImportRecord{record}
 	})
+}
+
+func hasMappedSamePackagePrefix(module, filePackage string, prefixes map[string]string) bool {
+	for prefix := range prefixes {
+		if strings.HasPrefix(prefix, filePackage+".") && (module == prefix || strings.HasPrefix(module, prefix+".")) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {

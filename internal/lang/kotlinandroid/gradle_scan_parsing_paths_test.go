@@ -607,6 +607,14 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 }
 
+func TestKotlinAndroidParseImportsKeepsMappedSamePackageImport(t *testing.T) {
+	content := []byte("package com.example.app\nimport com.example.app.sdk.Widget\n")
+	imports := parseImports(content, testMainSourceFileName, "com.example.app", dependencyLookups{Prefixes: map[string]string{"com.example.app.sdk": "sdk-lib"}}, &scanResult{})
+	if len(imports) != 1 || imports[0].Dependency != "sdk-lib" {
+		t.Fatalf("expected mapped same-package import to be retained, got %#v", imports)
+	}
+}
+
 func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	result := newScanResult()
 	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
