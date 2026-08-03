@@ -103,6 +103,14 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 }
 
+func TestJVMCountUsageKeepsUnescapedKotlinAliasUse(t *testing.T) {
+	content := []byte("import com.acme.Widget as `WidgetAlias`\nfun use() { WidgetAlias() }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(content, imports); usage["WidgetAlias"] != 1 {
+		t.Fatalf("expected unescaped Kotlin alias usage to count once, got %#v", usage)
+	}
+}
+
 func TestJVMParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	content := []byte("package com.example.`when`\nimport com.example.`when`.util.Helper\n")
 	pkg := parsePackage(content)

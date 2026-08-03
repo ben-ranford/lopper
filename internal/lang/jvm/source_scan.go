@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -375,7 +376,7 @@ func firstContentColumn(line string) int {
 func countUsage(content []byte, imports []importBinding) map[string]int {
 	usage := shared.CountUsage(content, imports)
 	for _, imported := range imports {
-		if !escapedImportLocal(content, imported) {
+		if !escapedImportLocal(content, imported) || !escapedOnlyKotlinLocal(imported.Local) {
 			continue
 		}
 		usage[imported.Local] = strings.Count(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "`"+imported.Local+"`") - 1
@@ -385,4 +386,9 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 
 func escapedImportLocal(content []byte, imported importBinding) bool {
 	return strings.Contains(string(content), " as `"+imported.Local+"`") || strings.Contains(string(content), ".`"+imported.Local+"`")
+}
+
+func escapedOnlyKotlinLocal(local string) bool {
+	keywords := strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while")
+	return strings.Contains(local, "-") || slices.Contains(keywords, local)
 }

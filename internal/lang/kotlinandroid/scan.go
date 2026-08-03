@@ -330,7 +330,11 @@ func countUsage(content []byte, imports []importBinding) map[string]int {
 	}
 	for _, imported := range imports {
 		marker := "`" + imported.Local + "`"
-		if strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker) {
+		keyword := false
+		for _, reserved := range strings.Fields("abstract as break by catch class companion constructor continue crossinline data delegate do dynamic else enum expect external false final finally for fun get if import in infix init inline inner interface internal is lateinit noinline null object open operator out override package private property protected public receiver reified return sealed set setparam suspend super tailrec this throw true try typealias typeof val value var vararg when where while") {
+			keyword = keyword || imported.Local == reserved
+		}
+		if (strings.Contains(string(content), " as "+marker) || strings.Contains(string(content), "."+marker)) && (strings.Contains(imported.Local, "-") || keyword) {
 			usage[imported.Local] = strings.Count(string(masked), marker) - 1
 		}
 	}
