@@ -602,7 +602,7 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Local != "type" || imports[0].Dependency != "acme-lib" {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
 	}
-	if usage := shared.CountUsage(content, imports); usage["type"] != 1 {
+	if usage := countUsage(content, imports); usage["type"] != 1 {
 		t.Fatalf("expected escaped Kotlin alias usage to count once, got %#v", usage)
 	}
 }

@@ -373,5 +373,16 @@ func firstContentColumn(line string) int {
 }
 
 func countUsage(content []byte, imports []importBinding) map[string]int {
-	return shared.CountUsage(content, imports)
+	usage := shared.CountUsage(content, imports)
+	for _, imported := range imports {
+		if !escapedImportLocal(content, imported) {
+			continue
+		}
+		usage[imported.Local] = strings.Count(string(shared.MaskCommentsAndStringsForFile(content, imported.Location.File)), "`"+imported.Local+"`") - 1
+	}
+	return usage
+}
+
+func escapedImportLocal(content []byte, imported importBinding) bool {
+	return strings.Contains(string(content), " as `"+imported.Local+"`") || strings.Contains(string(content), ".`"+imported.Local+"`")
 }
