@@ -18,10 +18,11 @@ const (
 )
 
 type testServiceAdapter struct {
-	id      string
-	detect  language.Detection
-	analyse report.Report
-	err     error
+	id        string
+	detect    language.Detection
+	analyse   report.Report
+	analyseFn func(context.Context, language.Request) (report.Report, error)
+	err       error
 }
 
 func (a *testServiceAdapter) ID() string        { return a.id }
@@ -32,7 +33,10 @@ func (a *testServiceAdapter) Detect(context.Context, string) (bool, error) {
 func (a *testServiceAdapter) DetectWithConfidence(context.Context, string) (language.Detection, error) {
 	return a.detect, nil
 }
-func (a *testServiceAdapter) Analyse(context.Context, language.Request) (report.Report, error) {
+func (a *testServiceAdapter) Analyse(ctx context.Context, req language.Request) (report.Report, error) {
+	if a.analyseFn != nil {
+		return a.analyseFn(ctx, req)
+	}
 	if a.err != nil {
 		return report.Report{}, a.err
 	}
