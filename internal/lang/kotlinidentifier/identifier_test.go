@@ -55,6 +55,9 @@ func TestIdentifierHelpers(t *testing.T) {
 			t.Fatalf("literal comment was not masked: %q", sanitized)
 		}
 	}
+	if sanitized := string(SanitizeImportContent([]byte("\"\"\"\nimport com.acme.`fake.import`\n\"\"\"\nimport com.acme.Real"))); strings.Contains(sanitized, "fake.import") || !strings.Contains(sanitized, "com.acme.Real") {
+		t.Fatalf("raw-string import sanitization = %q", sanitized)
+	}
 	if got := NormalizeModuleForLookup("com.acme.`foo.bar`"); got != "com.acme.foo\x00bar" {
 		t.Fatalf("normalized module = %q", got)
 	}

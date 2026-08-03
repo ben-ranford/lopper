@@ -95,7 +95,11 @@ func sanitizeImportContent(content []byte, nestedBlockComments bool) []byte {
 			continue
 		}
 		if rawString {
+			if sanitized[index] != '\n' && sanitized[index] != '\r' {
+				sanitized[index] = ' '
+			}
 			if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+				sanitized[index+1], sanitized[index+2] = ' ', ' '
 				rawString, index = false, index+2
 			}
 			continue
@@ -111,6 +115,7 @@ func sanitizeImportContent(content []byte, nestedBlockComments bool) []byte {
 			continue
 		}
 		if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+			sanitized[index], sanitized[index+1], sanitized[index+2] = ' ', ' ', ' '
 			rawString, index = true, index+2
 			continue
 		}
