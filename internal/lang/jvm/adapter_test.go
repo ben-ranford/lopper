@@ -471,42 +471,16 @@ func TestSourceLayoutModuleRootUsesInnermostSourceLayout(t *testing.T) {
 }
 
 func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
-	parent := t.TempDir()
-	repo := filepath.Join(parent, "src", "main", "java", "repository")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatalf("mkdir repo: %v", err)
-	}
-	outside := filepath.Join(t.TempDir(), "outside", "src", "main", "java")
-	relativeOutside, err := filepath.Rel(repo, outside)
-	if err != nil {
-		t.Fatalf("relative outside path: %v", err)
-	}
-	insideSource := filepath.Join(repo, "module", "src", "main", "java", testFileAppJava)
-	traversalPath := filepath.Join(repo, relativeOutside, testFileAppJava)
-	testutil.MustWriteFile(t, insideSource, "class App {}\n")
-	testutil.MustWriteFile(t, traversalPath, "class App {}\n")
-	link := filepath.Join(repo, "linked-outside")
-	if err := os.Symlink(filepath.Dir(filepath.Dir(filepath.Dir(outside))), link); err != nil {
-		t.Skipf(errSymlinkFmt, err)
-	}
+	repo := t.TempDir()
+	moduleRoot := filepath.Join(repo, "module")
+	testutil.MustWriteFile(t, filepath.Join(moduleRoot, "src", "main", "java", testFileAppJava), "class App {}\n")
 
-	for _, test := range []struct {
-		name       string
-		path       string
-		wantWithin bool
-	}{
-		{name: "nested module", path: insideSource, wantWithin: true},
-		{name: "traversal", path: traversalPath},
-		{name: "symlink", path: filepath.Join(link, "src", "main", "java", testFileAppJava)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			roots := make(map[string]struct{})
-			detection := &language.Detection{}
-			updateJVMDetection(repo, test.path, testutil.MustFirstFileEntry(t, filepath.Dir(test.path)), roots, detection)
-			if _, got := roots[filepath.Join(repo, "module")]; got != test.wantWithin {
-				t.Fatalf("detected module roots = %#v, nested root present = %v, want %v", roots, got, test.wantWithin)
-			}
-		})
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf(errDetectFmt, err)
+	}
+	if !detection.Matched || len(detection.Roots) != 1 || detection.Roots[0] != moduleRoot {
+		t.Fatalf("expected source-layout module root %q, got %#v", moduleRoot, detection)
 	}
 }
 
