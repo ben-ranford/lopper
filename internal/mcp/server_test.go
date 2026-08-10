@@ -743,17 +743,25 @@ func TestTrustedReadOnlyCacheAliasAllowsOnlyMacOSTempAlias(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("macOS filesystem aliases are not available")
 	}
-	cachePath := filepath.Join("/tmp", filepath.Base(t.TempDir()), ".lopper-cache")
+	fixtureDir, err := os.MkdirTemp("/tmp", "lopper-cache-alias-")
+	if err != nil {
+		t.Fatalf("create alias fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(fixtureDir); err != nil {
+			t.Errorf("remove alias fixture: %v", err)
+		}
+	})
+	resolvedPath, err := filepath.EvalSymlinks(fixtureDir)
+	if err != nil || resolvedPath != "/private"+fixtureDir {
+		t.Skip("macOS /tmp is not a /private/tmp alias")
+	}
+	cachePath := filepath.Join(fixtureDir, ".lopper-cache")
 	for _, dirName := range []string{"keys", "objects"} {
 		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dirName, err)
 		}
 	}
-	defer func() {
-		if err := os.RemoveAll(filepath.Dir(cachePath)); err != nil {
-			t.Errorf("remove alias fixture: %v", err)
-		}
-	}()
 	if !trustedReadOnlyCacheAlias(cachePath) {
 		t.Fatal("expected macOS /tmp alias to be trusted")
 	}
@@ -769,28 +777,15 @@ func TestTrustedReadOnlyCacheAliasRejectsNonTempPaths(t *testing.T) {
 }
 
 func TestTrustedReadOnlyCacheAliasForGOOS(t *testing.T) {
-	cachePath := filepath.Join("/tmp", filepath.Base(t.TempDir()), ".lopper-cache")
-	for _, dirName := range []string{"keys", "objects"} {
-		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dirName, err)
-		}
-	}
-	defer func() {
-		if err := os.RemoveAll(filepath.Dir(cachePath)); err != nil {
-			t.Errorf("remove alias fixture: %v", err)
-		}
-	}()
-
 	for name, test := range map[string]struct {
 		goos string
 		path string
 		want bool
 	}{
-		"non-Darwin":       {goos: "linux", path: cachePath},
-		"relative path":    {goos: "darwin", path: "tmp/.lopper-cache"},
-		"outside temp":     {goos: "darwin", path: t.TempDir()},
-		"missing cache":    {goos: "darwin", path: filepath.Join(cachePath, "missing")},
-		"macOS temp alias": {goos: "darwin", path: cachePath, want: true},
+		"non-Darwin":    {goos: "linux", path: "/tmp/.lopper-cache"},
+		"relative path": {goos: "darwin", path: "tmp/.lopper-cache"},
+		"outside temp":  {goos: "darwin", path: t.TempDir()},
+		"missing cache": {goos: "darwin", path: "/tmp/lopper-cache-does-not-exist"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := trustedReadOnlyCacheAliasForGOOS(test.goos, test.path); got != test.want {
