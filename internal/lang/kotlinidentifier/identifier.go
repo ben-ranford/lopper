@@ -1,6 +1,7 @@
 package kotlinidentifier
 
 import (
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -74,6 +75,13 @@ func SanitizeImportContent(content []byte) []byte {
 // SanitizeJVMImportContent masks Java/Kotlin comments with Java block-comment semantics.
 func SanitizeJVMImportContent(content []byte) []byte {
 	return sanitizeImportContent(content, false)
+}
+
+func SanitizeImportContentForFile(content []byte, filePath string) []byte {
+	if strings.EqualFold(filepath.Ext(filePath), ".java") {
+		return SanitizeJVMImportContent(content)
+	}
+	return SanitizeImportContent(content)
 }
 
 func sanitizeImportContent(content []byte, nestedBlockComments bool) []byte {
@@ -170,6 +178,10 @@ func NormalizeModuleForLookup(module string) string {
 	return normalized.String()
 }
 
+func RestoreModuleLookup(module string) string {
+	return strings.ReplaceAll(module, "\x00", ".")
+}
+
 func CountEscapedLocalUses(masked []byte, local string) int {
 	lines := strings.Split(string(masked), "\n")
 	firstCodeLine := 0
@@ -226,6 +238,12 @@ func MaskForFile(content []byte, filePath string) []byte {
 		}
 		if rawString {
 			maskRawStringCharacter(index)
+			if index+1 < len(content) && content[index] == '$' && content[index+1] == '{' {
+				end, templateRanges := escapedTemplateIdentifierRanges(content, index+2)
+				ranges = append(ranges, templateRanges...)
+				index = end
+				continue
+			}
 			if index+2 < len(content) && content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
 				maskRawStringCharacter(index + 1)
 				maskRawStringCharacter(index + 2)
@@ -234,6 +252,12 @@ func MaskForFile(content []byte, filePath string) []byte {
 			continue
 		}
 		if doubleQuote {
+			if index+1 < len(content) && content[index] == '$' && content[index+1] == '{' {
+				end, templateRanges := escapedTemplateIdentifierRanges(content, index+2)
+				ranges = append(ranges, templateRanges...)
+				index = end
+				continue
+			}
 			if content[index] == '\\' {
 				index++
 				continue
@@ -287,4 +311,55 @@ func MaskForFile(content []byte, filePath string) []byte {
 		copy(masked[span[0]:span[1]], content[span[0]:span[1]])
 	}
 	return masked
+}
+
+func escapedTemplateIdentifierRanges(content []byte, start int) (int, [][2]int) {
+	depth := 1
+	ranges := make([][2]int, 0)
+	for index := start; index < len(content); index++ {
+		switch content[index] {
+		case '`':
+			end := index + 1
+			for end < len(content) && content[end] != '`' {
+				end++
+			}
+			if end == len(content) {
+				return len(content) - 1, ranges
+			}
+			ranges = append(ranges, [2]int{index, end + 1})
+			index = end
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return index, ranges
+			}
+		case '\'', '"':
+			index = skipQuotedTemplateLiteral(content, index)
+		}
+	}
+	return len(content) - 1, ranges
+}
+
+func skipQuotedTemplateLiteral(content []byte, start int) int {
+	quote := content[start]
+	if quote == '"' && start+2 < len(content) && content[start+1] == '"' && content[start+2] == '"' {
+		for index := start + 3; index+2 < len(content); index++ {
+			if content[index] == '"' && content[index+1] == '"' && content[index+2] == '"' {
+				return index + 2
+			}
+		}
+		return len(content) - 1
+	}
+	for index := start + 1; index < len(content); index++ {
+		if content[index] == '\\' {
+			index++
+			continue
+		}
+		if content[index] == quote {
+			return index
+		}
+	}
+	return len(content) - 1
 }

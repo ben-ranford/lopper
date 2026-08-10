@@ -62,3 +62,56 @@ func TestIdentifierHelpers(t *testing.T) {
 		t.Fatalf("normalized module = %q", got)
 	}
 }
+
+func TestRestoreModuleLookup(t *testing.T) {
+	if got := RestoreModuleLookup("com.acme\x00lib"); got != "com.acme.lib" {
+		t.Fatalf("restored module = %q", got)
+	}
+}
+
+func TestMaskForFileKeepsEscapedIdentifiersInStringTemplates(t *testing.T) {
+	for _, content := range [][]byte{
+		[]byte("import com.acme.Widget as `foo-bar`\nval text = \"${`foo-bar`()}\"\n"),
+		[]byte("import com.acme.Widget as `foo-bar`\nval text = \"\"\"${`foo-bar`()}\"\"\"\n"),
+	} {
+		masked := MaskForFile(content, "Main.kt")
+		if uses := CountEscapedLocalUses(masked, "foo-bar"); uses != 1 {
+			t.Fatalf("template escaped uses = %d, masked = %q", uses, masked)
+		}
+	}
+}
+
+func TestTemplateHelperBranches(t *testing.T) {
+	if sanitized := string(SanitizeImportContentForFile([]byte("/* outer /* inner */ visible"), "Main.java")); !strings.Contains(sanitized, "visible") {
+		t.Fatalf("Java sanitizer = %q", sanitized)
+	}
+	if sanitized := string(SanitizeImportContentForFile([]byte("/* outer /* inner */ hidden */"), "Main.kt")); strings.Contains(sanitized, "hidden") {
+		t.Fatalf("Kotlin sanitizer = %q", sanitized)
+	}
+	end, ranges := escapedTemplateIdentifierRanges([]byte("`first` + { `second` } }"), 0)
+	if end != len("`first` + { `second` } ") || len(ranges) != 2 {
+		t.Fatalf("template ranges = end %d, ranges %#v", end, ranges)
+	}
+	end, ranges = escapedTemplateIdentifierRanges([]byte("`unfinished"), 0)
+	if end != len("`unfinished")-1 || len(ranges) != 0 {
+		t.Fatalf("unfinished template ranges = end %d, ranges %#v", end, ranges)
+	}
+}
+
+func TestSkipQuotedTemplateLiteralBranches(t *testing.T) {
+	for _, test := range []struct {
+		content string
+		start   int
+		want    int
+	}{
+		{content: "'a'", want: 2},
+		{content: "\"a\\\"b\"", want: 5},
+		{content: "\"\"\"raw\"\"\"", want: 8},
+		{content: "'unfinished", want: len("'unfinished") - 1},
+		{content: "\"\"\"unfinished", want: len("\"\"\"unfinished") - 1},
+	} {
+		if got := skipQuotedTemplateLiteral([]byte(test.content), test.start); got != test.want {
+			t.Fatalf("skip %q = %d, want %d", test.content, got, test.want)
+		}
+	}
+}

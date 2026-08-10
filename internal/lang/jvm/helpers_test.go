@@ -165,6 +165,34 @@ func TestJVMParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	}
 }
 
+func TestJVMParsePackageIgnoresCommentedDeclarations(t *testing.T) {
+	content := []byte("/* package com.fake.`pkg` */\npackage com.real\n")
+	if got := parsePackageForFile(content, "App.kt"); got != "com.real" {
+		t.Fatalf("Kotlin package = %q", got)
+	}
+	if got := parsePackageForFile(content, "App.java"); got != "com.real" {
+		t.Fatalf("Java package = %q", got)
+	}
+}
+
+func TestJVMParseImportsUsesSourceCommentRules(t *testing.T) {
+	kotlin := []byte("/* outer /* inner */ import com.fake.Hidden */\nimport com.acme.Real\n")
+	if imports := parseImports(kotlin, "App.kt", "com.example", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 1 || imports[0].Module != "com.acme.Real" {
+		t.Fatalf("Kotlin nested comments parsed imports = %#v", imports)
+	}
+	java := []byte("/* outer /* literal */\nimport com.acme.Real;\n")
+	if imports := parseImports(java, "App.java", "com.example", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 1 || imports[0].Module != "com.acme.Real" {
+		t.Fatalf("Java non-nested comments parsed imports = %#v", imports)
+	}
+}
+
+func TestJVMFallbackDependencyRestoresEscapedLookupDots(t *testing.T) {
+	imports := parseImports([]byte("import com.`acme.lib`\n"), "App.kt", "com.example", nil, nil)
+	if len(imports) != 1 || imports[0].Dependency != "com.acme.lib" {
+		t.Fatalf("escaped fallback import = %#v", imports)
+	}
+}
+
 func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
 	content := []byte(`package com.example.app;
 import java.util.List;

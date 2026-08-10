@@ -131,7 +131,7 @@ func scanKotlinAndroidSourceFile(repoPath string, path string, lookups dependenc
 	if err != nil {
 		return err
 	}
-	filePackage := parsePackage(content)
+	filePackage := parsePackageForFile(content, relativePath)
 	imports := parseImports(content, relativePath, filePackage, lookups, result)
 	result.Files = append(result.Files, fileScan{
 		Path:    relativePath,
@@ -175,7 +175,11 @@ var (
 )
 
 func parsePackage(content []byte) string {
-	matches := packagePattern.FindSubmatch(content)
+	return parsePackageForFile(content, "")
+}
+
+func parsePackageForFile(content []byte, filePath string) string {
+	matches := packagePattern.FindSubmatch(kotlinidentifier.SanitizeImportContentForFile(content, filePath))
 	if len(matches) != 2 {
 		return ""
 	}
@@ -183,7 +187,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
-	sanitized := kotlinidentifier.SanitizeImportContent(content)
+	sanitized := kotlinidentifier.SanitizeImportContentForFile(content, filePath)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		matches := shared.MatchJVMImport(line)
 		if len(matches) != shared.JVMImportMatchGroups {
@@ -205,7 +209,7 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 			return nil
 		}
 		if dependency == "" {
-			dependency = fallbackDependency(lookupModule)
+			dependency = kotlinidentifier.RestoreModuleLookup(fallbackDependency(lookupModule))
 			if dependency == "" {
 				return nil
 			}

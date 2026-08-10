@@ -678,6 +678,35 @@ func TestKotlinAndroidParsePackageSupportsKotlinBacktickSegments(t *testing.T) {
 	}
 }
 
+func TestKotlinAndroidParsePackageIgnoresCommentedDeclarations(t *testing.T) {
+	content := []byte("/* package com.fake.`pkg` */\npackage com.real\n")
+	if got := parsePackageForFile(content, "App.kt"); got != "com.real" {
+		t.Fatalf("Kotlin package = %q", got)
+	}
+	if got := parsePackageForFile(content, "App.java"); got != "com.real" {
+		t.Fatalf("Java package = %q", got)
+	}
+}
+
+func TestKotlinAndroidParseImportsUsesSourceCommentRules(t *testing.T) {
+	kotlin := []byte("/* outer /* inner */ import com.fake.Hidden */\nimport com.acme.Real\n")
+	if imports := parseImports(kotlin, "App.kt", "com.example", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &scanResult{}); len(imports) != 1 || imports[0].Module != "com.acme.Real" {
+		t.Fatalf("Kotlin nested comments parsed imports = %#v", imports)
+	}
+	java := []byte("/* outer /* literal */\nimport com.acme.Real;\n")
+	if imports := parseImports(java, "App.java", "com.example", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &scanResult{}); len(imports) != 1 || imports[0].Module != "com.acme.Real" {
+		t.Fatalf("Java non-nested comments parsed imports = %#v", imports)
+	}
+}
+
+func TestKotlinAndroidFallbackDependencyRestoresEscapedLookupDots(t *testing.T) {
+	result := newScanResult()
+	imports := parseImports([]byte("import com.`acme.lib`\n"), testMainSourceFileName, "com.example", dependencyLookups{}, &result)
+	if len(imports) != 1 || imports[0].Dependency != "com.acme.lib" {
+		t.Fatalf("escaped fallback import = %#v", imports)
+	}
+}
+
 func TestResolveDependencyAndDescriptorBranches(t *testing.T) {
 	lookups := dependencyLookups{
 		Prefixes: map[string]string{"alpha": "dep-alpha", "alpha.beta": testDepBetaDependency},

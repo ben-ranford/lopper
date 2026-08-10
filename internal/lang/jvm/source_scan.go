@@ -157,7 +157,7 @@ func scanJVMSourceFileWithReader(repoPath string, path string, entry fs.DirEntry
 		relativePath = path
 	}
 
-	filePackage := parsePackage(content)
+	filePackage := parsePackageForFile(content, relativePath)
 	imports := parseImports(content, relativePath, filePackage, depPrefixes, depAliases)
 	result.Files = append(result.Files, fileScan{
 		Path:    relativePath,
@@ -234,7 +234,11 @@ var (
 )
 
 func parsePackage(content []byte) string {
-	matches := packagePattern.FindSubmatch(content)
+	return parsePackageForFile(content, "")
+}
+
+func parsePackageForFile(content []byte, filePath string) string {
+	matches := packagePattern.FindSubmatch(kotlinidentifier.SanitizeImportContentForFile(content, filePath))
 	if len(matches) != 2 {
 		return ""
 	}
@@ -242,7 +246,7 @@ func parsePackage(content []byte) string {
 }
 
 func parseImports(content []byte, filePath string, filePackage string, depPrefixes map[string]string, depAliases map[string]string) []importBinding {
-	sanitized := kotlinidentifier.SanitizeJVMImportContent(content)
+	sanitized := kotlinidentifier.SanitizeImportContentForFile(content, filePath)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		matches := shared.MatchJVMImport(line)
 		if len(matches) != shared.JVMImportMatchGroups {
@@ -257,7 +261,7 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 
 		dependency := resolveDependency(lookupModule, depPrefixes, depAliases)
 		if dependency == "" {
-			dependency = fallbackDependency(lookupModule)
+			dependency = kotlinidentifier.RestoreModuleLookup(fallbackDependency(lookupModule))
 		}
 		if dependency == "" {
 			return nil
