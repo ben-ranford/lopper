@@ -439,14 +439,14 @@ func cachePathReadyForReadOnly(cachePath string) bool {
 }
 
 func trustedReadOnlyCacheAlias(cachePath string) bool {
-	if runtime.GOOS != "darwin" {
+	return trustedReadOnlyCacheAliasForGOOS(runtime.GOOS, cachePath)
+}
+
+func trustedReadOnlyCacheAliasForGOOS(goos, cachePath string) bool {
+	if goos != "darwin" || !filepath.IsAbs(cachePath) {
 		return false
 	}
-	absPath, err := filepath.Abs(cachePath)
-	if err != nil {
-		return false
-	}
-	absPath = filepath.Clean(absPath)
+	absPath := filepath.Clean(cachePath)
 	if absPath != "/tmp" && !strings.HasPrefix(absPath, "/tmp/") {
 		return false
 	}
