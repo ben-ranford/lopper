@@ -1,7 +1,6 @@
 package baseline
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -112,117 +111,219 @@ func decodeTypedSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (
 }
 
 func inspectSnapshotEnvelope(data []byte) (version string, typed bool, returnErr error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	token, err := decoder.Token()
-	if err != nil {
+	index := skipSnapshotJSONWhitespace(data, 0)
+	if index == len(data) || data[index] != '{' {
 		return "", false, nil
 	}
-	delimiter, ok := token.(json.Delim)
-	if !ok || delimiter != '{' {
-		return "", false, nil
-	}
-
-	var hasVersion, hasTypedFields bool
-	for decoder.More() {
-		fieldToken, err := decoder.Token()
+	state := snapshotEnvelopeState{}
+	index++
+	for {
+		next, done, err := inspectSnapshotEnvelopeField(data, index, &state)
 		if err != nil {
-			return "", false, nil
-		}
-		field, ok := fieldToken.(string)
-		if !ok {
-			return "", false, nil
-		}
-		switch {
-		case strings.EqualFold(field, "baselineSchemaVersion"):
-			if hasVersion {
-				return "", false, fmt.Errorf("invalid baseline schema version discriminator: duplicate case-folded field")
-			}
-			hasVersion = true
-			version, err = decodeSnapshotVersionToken(decoder)
-			if err != nil {
+			if strings.HasPrefix(err.Error(), "invalid baseline schema version discriminator:") {
 				return "", false, err
 			}
-		case isTypedSnapshotField(field):
-			hasTypedFields = true
-			if err := skipJSONValue(decoder); err != nil {
-				return "", false, nil
-			}
-		default:
-			if err := skipJSONValue(decoder); err != nil {
-				return "", false, nil
-			}
+			return snapshotEnvelopeInspectionError(state.hasVersion || state.hasTypedFields, err)
+		}
+		index = next
+		if done {
+			break
 		}
 	}
-	if _, err := decoder.Token(); err != nil {
-		return "", false, nil
+	if skipSnapshotJSONWhitespace(data, index) != len(data) {
+		return snapshotEnvelopeInspectionError(state.hasVersion || state.hasTypedFields, fmt.Errorf("unexpected trailing JSON data"))
 	}
-	if !hasVersion {
-		if hasTypedFields {
+	return snapshotEnvelopeResult(state)
+}
+
+func snapshotEnvelopeResult(state snapshotEnvelopeState) (string, bool, error) {
+	if !state.hasVersion {
+		if state.hasTypedFields {
 			return "", false, fmt.Errorf("invalid baseline schema version discriminator: typed envelope requires a version")
 		}
 		return "", false, nil
 	}
-	if strings.TrimSpace(version) == "" {
-		if hasTypedFields {
+	if strings.TrimSpace(state.version) == "" {
+		if state.hasTypedFields {
 			return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
 		}
 		return "", false, nil
 	}
-	return version, true, nil
+	return state.version, true, nil
 }
 
-func decodeSnapshotVersionToken(decoder *json.Decoder) (string, error) {
-	token, err := decoder.Token()
+type snapshotEnvelopeState struct {
+	version        string
+	hasVersion     bool
+	hasTypedFields bool
+}
+
+func inspectSnapshotEnvelopeField(data []byte, index int, state *snapshotEnvelopeState) (int, bool, error) {
+	index = skipSnapshotJSONWhitespace(data, index)
+	if index >= len(data) {
+		return index, false, fmt.Errorf("unexpected end of JSON object")
+	}
+	if data[index] == '}' {
+		return index + 1, true, nil
+	}
+	field, next, err := decodeSnapshotJSONString(data, index)
 	if err != nil {
-		return "", err
+		return index, false, err
 	}
-	if delimiter, ok := token.(json.Delim); ok {
-		if err := skipJSONDelimitedValue(decoder, delimiter); err != nil {
-			return "", err
+	index = skipSnapshotJSONWhitespace(data, next)
+	if index >= len(data) || data[index] != ':' {
+		return index, false, fmt.Errorf("expected colon after field %q", field)
+	}
+	index++
+	if strings.EqualFold(field, "baselineSchemaVersion") {
+		if state.hasVersion {
+			return index, false, fmt.Errorf("invalid baseline schema version discriminator: duplicate case-folded field")
 		}
-		return "", fmt.Errorf("invalid baseline schema version discriminator: must be a string")
+		state.hasVersion = true
+		state.version, index, err = decodeSnapshotVersion(data, index)
+	} else {
+		state.hasTypedFields = state.hasTypedFields || isTypedSnapshotField(field)
+		index, err = skipSnapshotJSONValue(data, index)
 	}
-	if token == nil {
-		return "", fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+	if err != nil {
+		return index, false, err
 	}
-	if _, ok := token.(float64); ok {
-		return "", fmt.Errorf("invalid baseline schema version discriminator: json: cannot unmarshal number into Go value of type string")
+	return finishSnapshotEnvelopeField(data, index)
+}
+
+func finishSnapshotEnvelopeField(data []byte, index int) (int, bool, error) {
+	index = skipSnapshotJSONWhitespace(data, index)
+	if index >= len(data) {
+		return index, false, fmt.Errorf("unexpected end of JSON object")
 	}
-	version, ok := token.(string)
-	if !ok {
-		return "", fmt.Errorf("invalid baseline schema version discriminator: must be a string")
+	if data[index] == ',' {
+		return index + 1, false, nil
 	}
-	return version, nil
+	if data[index] == '}' {
+		return index + 1, true, nil
+	}
+	return index, false, fmt.Errorf("expected comma or closing brace")
+}
+
+func snapshotEnvelopeInspectionError(typed bool, err error) (string, bool, error) {
+	if typed {
+		return "", false, fmt.Errorf("inspect typed baseline snapshot envelope: %w", err)
+	}
+	return "", false, nil
+}
+
+func decodeSnapshotVersion(data []byte, index int) (string, int, error) {
+	index = skipSnapshotJSONWhitespace(data, index)
+	if index >= len(data) {
+		return "", index, fmt.Errorf("invalid baseline schema version discriminator: unexpected end of JSON")
+	}
+	if len(data)-index >= len("null") && string(data[index:index+len("null")]) == "null" {
+		return "", index + len("null"), fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+	}
+	if data[index] != '"' {
+		next, err := skipSnapshotJSONValue(data, index)
+		if err != nil {
+			return "", index, fmt.Errorf("invalid baseline schema version discriminator: %w", err)
+		}
+		if data[index] == '-' || (data[index] >= '0' && data[index] <= '9') {
+			return "", next, fmt.Errorf("invalid baseline schema version discriminator: json: cannot unmarshal number into Go value of type string")
+		}
+		return "", next, fmt.Errorf("invalid baseline schema version discriminator: must be a string")
+	}
+	version, next, err := decodeSnapshotJSONString(data, index)
+	if err != nil {
+		return "", index, fmt.Errorf("invalid baseline schema version discriminator: %w", err)
+	}
+	return version, next, nil
+}
+
+func skipSnapshotJSONWhitespace(data []byte, index int) int {
+	for index < len(data) && (data[index] == ' ' || data[index] == '\n' || data[index] == '\r' || data[index] == '\t') {
+		index++
+	}
+	return index
+}
+
+func decodeSnapshotJSONString(data []byte, index int) (string, int, error) {
+	next, err := skipSnapshotJSONString(data, index)
+	if err != nil {
+		return "", index, err
+	}
+	var value string
+	if err := json.Unmarshal(data[index:next], &value); err != nil {
+		return "", index, err
+	}
+	return value, next, nil
+}
+
+func skipSnapshotJSONString(data []byte, index int) (int, error) {
+	if index >= len(data) || data[index] != '"' {
+		return index, fmt.Errorf("expected JSON string")
+	}
+	for index++; index < len(data); index++ {
+		switch data[index] {
+		case '"':
+			return index + 1, nil
+		case '\\':
+			index++
+			if index >= len(data) {
+				return index, fmt.Errorf("unterminated JSON string escape")
+			}
+		case '\n', '\r':
+			return index, fmt.Errorf("invalid control character in JSON string")
+		}
+	}
+	return index, fmt.Errorf("unterminated JSON string")
+}
+
+func skipSnapshotJSONValue(data []byte, index int) (int, error) {
+	index = skipSnapshotJSONWhitespace(data, index)
+	if index >= len(data) {
+		return index, fmt.Errorf("unexpected end of JSON value")
+	}
+	depth := 0
+	for current := index; current < len(data); current++ {
+		if data[current] == '"' {
+			next, err := skipSnapshotJSONString(data, current)
+			if err != nil {
+				return next, err
+			}
+			current = next - 1
+			continue
+		}
+		next, done := skipSnapshotJSONValueDelimiter(data[current], current, &depth)
+		if done {
+			return next, nil
+		}
+	}
+	if depth != 0 {
+		return len(data), fmt.Errorf("unexpected end of JSON value")
+	}
+	return len(data), nil
+}
+
+func skipSnapshotJSONValueDelimiter(value byte, index int, depth *int) (int, bool) {
+	switch value {
+	case '{', '[':
+		*depth++
+	case '}', ']':
+		if *depth == 0 {
+			return index, true
+		}
+		*depth--
+		if *depth == 0 {
+			return index + 1, true
+		}
+	case ',', ' ', '\n', '\r', '\t':
+		if *depth == 0 {
+			return index, true
+		}
+	}
+	return 0, false
 }
 
 func isTypedSnapshotField(field string) bool {
 	return strings.EqualFold(field, "key") || strings.EqualFold(field, "savedAt") || strings.EqualFold(field, "report")
-}
-
-func skipJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	if delimiter, ok := token.(json.Delim); ok {
-		return skipJSONDelimitedValue(decoder, delimiter)
-	}
-	return nil
-}
-
-func skipJSONDelimitedValue(decoder *json.Decoder, delimiter json.Delim) error {
-	for decoder.More() {
-		if delimiter == '{' {
-			if _, err := decoder.Token(); err != nil {
-				return err
-			}
-		}
-		if err := skipJSONValue(decoder); err != nil {
-			return err
-		}
-	}
-	_, err := decoder.Token()
-	return err
 }
 
 func LoadConfiguredSnapshot[T any](path string, store SnapshotStore[T]) (T, string, error) {

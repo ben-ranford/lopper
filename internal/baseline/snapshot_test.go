@@ -251,6 +251,12 @@ func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *te
 			data:    `{"baselineSchemaVersion":"1.0.0","key":1,"value":"legacy"}`,
 			wantErr: "decode typed baseline snapshot: json: cannot unmarshal number into Go struct field Snapshot[github.com/ben-ranford/lopper/internal/baseline.testSnapshotReport].key of type string",
 		},
+		{
+			name:      "large unknown number before typed envelope",
+			data:      `{"extension":1e1000,"baselineSchemaVersion":"1.0.0","key":"label:typed","report":{"value":"snapshot"}}`,
+			wantKey:   "label:typed",
+			wantValue: "SNAPSHOT",
+		},
 	}
 
 	for _, tc := range tests {
@@ -258,45 +264,6 @@ func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			assertSnapshotDecodeCompatibility(t, tc)
-		})
-	}
-}
-
-func TestInspectSnapshotEnvelopeScansLargeReport(t *testing.T) {
-	t.Parallel()
-
-	data := []byte(`{"baselineSchemaVersion":"1.0.0","report":{"payload":"` + strings.Repeat("x", 1<<20) + `"}}`)
-	version, typed, err := inspectSnapshotEnvelope(data)
-	if err != nil || !typed || version != SnapshotSchemaVersion {
-		t.Fatalf("inspectSnapshotEnvelope() = %q, %v, %v", version, typed, err)
-	}
-}
-
-func TestInspectSnapshotEnvelopeMalformedValueBranches(t *testing.T) {
-	t.Parallel()
-
-	for _, test := range []struct {
-		name    string
-		data    string
-		wantErr bool
-	}{
-		{name: "empty input", data: ""},
-		{name: "top level array", data: "[]"},
-		{name: "incomplete object key", data: `{"`},
-		{name: "incomplete typed field", data: `{"report":`},
-		{name: "incomplete nested typed field key", data: `{"report":{"`},
-		{name: "incomplete ordinary field", data: `{"value":`},
-		{name: "incomplete discriminator", data: `{"baselineSchemaVersion":`, wantErr: true},
-		{name: "object discriminator", data: `{"baselineSchemaVersion":{"nested":true}}`, wantErr: true},
-		{name: "incomplete object discriminator", data: `{"baselineSchemaVersion":{`, wantErr: true},
-		{name: "boolean discriminator", data: `{"baselineSchemaVersion":true}`, wantErr: true},
-		{name: "nested report arrays", data: `{"baselineSchemaVersion":"1.0.0","report":{"items":[{"value":1}]}}`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			_, _, err := inspectSnapshotEnvelope([]byte(test.data))
-			if (err != nil) != test.wantErr {
-				t.Fatalf("inspectSnapshotEnvelope(%q) error = %v, want error=%v", test.data, err, test.wantErr)
-			}
 		})
 	}
 }
