@@ -169,7 +169,22 @@ func isSourceFile(path string) bool {
 	}
 }
 
-var escapedPackagePattern = regexp.MustCompile(`(?m)^\s*package\s+((?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `))*)\s*;?\s*$`)
+const (
+	importPatternMatchGroups   = 4
+	jvmImportIdentifierPattern = "(?:[A-Za-z_][A-Za-z0-9_]*|`[A-Za-z_][A-Za-z0-9_]*`)"
+)
+
+var (
+	escapedPackagePattern = regexp.MustCompile(`(?m)^\s*package\s+((?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `))*)\s*;?\s*$`)
+	importPattern         = regexp.MustCompile(`^\s*import\s+(?:static\s+)?(` + jvmImportIdentifierPattern + `(?:\.` + jvmImportIdentifierPattern + `)*)(\.\*)?(?:\s+as\s+(` + jvmImportIdentifierPattern + `))?\s*;?\s*$`)
+)
+
+var kotlinHardKeywords = map[string]struct{}{
+	"as": {}, "break": {}, "class": {}, "continue": {}, "do": {}, "else": {}, "false": {},
+	"for": {}, "fun": {}, "if": {}, "in": {}, "interface": {}, "is": {}, "null": {}, "object": {},
+	"package": {}, "return": {}, "super": {}, "this": {}, "throw": {}, "true": {}, "try": {},
+	"typealias": {}, "typeof": {}, "val": {}, "var": {}, "when": {}, "while": {},
+}
 
 func parsePackage(content []byte) string {
 	if match := escapedPackagePattern.FindSubmatch(content); len(match) > 1 {
@@ -182,8 +197,8 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 	sanitized := shared.StripBlockComments(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
-		matches := shared.MatchJVMImport(line)
-		if len(matches) != shared.JVMImportMatchGroups {
+		matches := importPattern.FindStringSubmatch(line)
+		if len(matches) != importPatternMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
@@ -227,18 +242,24 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 	if alias != "" && !wildcard {
 		localName = alias
 	}
-	escapedLocal := shared.IsKotlinEscapedKeyword(localName)
 	if len(localName) > 1 && localName[0] == '`' && localName[len(localName)-1] == '`' {
 		localName = localName[1 : len(localName)-1]
 	}
 	return shared.ImportRecord{
-		Dependency:   dependency,
-		Module:       module,
-		Name:         symbol,
-		Local:        localName,
-		Wildcard:     wildcard,
-		EscapedLocal: escapedLocal,
+		Dependency: dependency,
+		Module:     module,
+		Name:       symbol,
+		Local:      localName,
+		Wildcard:   wildcard,
 	}, true
+}
+
+func isKotlinEscapedKeyword(local string) bool {
+	if len(local) < 3 || local[0] != '`' || local[len(local)-1] != '`' {
+		return false
+	}
+	_, ok := kotlinHardKeywords[local[1:len(local)-1]]
+	return ok
 }
 
 func resolvedImportSymbol(matches []string, module string) (string, bool) {
@@ -324,5 +345,94 @@ func lastModuleSegment(module string) string {
 }
 
 func countUsage(content []byte, imports []importBinding) map[string]int {
-	return shared.CountUsage(content, imports)
+	scannable := maskKotlinDirectiveLines(shared.MaskCommentsAndStringsForFile(content, "source.kt"))
+	escapedLocals := escapedKotlinImportLocals(content, imports)
+	if len(escapedLocals) == 0 {
+		return shared.CountUsage(scannable, imports)
+	}
+
+	bareImports := make([]shared.ImportRecord, 0, len(imports))
+	for _, imported := range imports {
+		if _, escaped := escapedLocals[imported.Local]; !escaped {
+			bareImports = append(bareImports, imported)
+		}
+	}
+	usage := shared.CountUsage(scannable, bareImports)
+	for index := 0; index < len(scannable); index++ {
+		local, end, ok := escapedIdentifierAt(scannable, index)
+		if !ok {
+			continue
+		}
+		if _, escaped := escapedLocals[local]; escaped {
+			usage[local]++
+		}
+		index = end
+	}
+	return usage
+}
+
+func escapedKotlinImportLocals(content []byte, imports []importBinding) map[string]struct{} {
+	imported := make(map[string]struct{}, len(imports))
+	for _, record := range imports {
+		imported[record.Local] = struct{}{}
+	}
+	escaped := make(map[string]struct{})
+	bare := make(map[string]struct{})
+	for _, line := range strings.Split(string(shared.StripBlockComments(content)), "\n") {
+		matches := importPattern.FindStringSubmatch(stripLineComment(line))
+		if len(matches) != importPatternMatchGroups || strings.TrimSpace(matches[2]) == ".*" {
+			continue
+		}
+		local := strings.TrimSpace(matches[3])
+		if local == "" {
+			local = lastModuleSegment(strings.TrimSpace(matches[1]))
+		}
+		if isKotlinEscapedKeyword(local) {
+			local = strings.Trim(local, "`")
+			if _, ok := imported[local]; ok {
+				escaped[local] = struct{}{}
+			}
+			continue
+		}
+		local = strings.Trim(local, "`")
+		if _, ok := imported[local]; ok {
+			bare[local] = struct{}{}
+		}
+	}
+	for local := range bare {
+		delete(escaped, local)
+	}
+	return escaped
+}
+
+func maskKotlinDirectiveLines(content []byte) []byte {
+	masked := append([]byte(nil), content...)
+	for start := 0; start < len(masked); {
+		end := start
+		for end < len(masked) && masked[end] != '\n' {
+			end++
+		}
+		fields := strings.Fields(string(masked[start:end]))
+		if len(fields) > 0 && (fields[0] == "import" || fields[0] == "package") {
+			for index := start; index < end; index++ {
+				masked[index] = ' '
+			}
+		}
+		start = end + 1
+	}
+	return masked
+}
+
+func escapedIdentifierAt(content []byte, start int) (string, int, bool) {
+	if content[start] != '`' {
+		return "", start, false
+	}
+	end := start + 1
+	for end < len(content) && (content[end] == '_' || content[end] >= 'a' && content[end] <= 'z' || content[end] >= 'A' && content[end] <= 'Z' || content[end] >= '0' && content[end] <= '9') {
+		end++
+	}
+	if end == start+1 || end >= len(content) || content[end] != '`' {
+		return "", start, false
+	}
+	return string(content[start+1 : end]), end, true
 }

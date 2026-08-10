@@ -95,7 +95,7 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	content := []byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> `when`() } }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || !imports[0].EscapedLocal || imports[0].Dependency != acmeLibName {
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || imports[0].Dependency != acmeLibName {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
 	}
 	if usage := countUsage(content, imports); usage["when"] != 1 {
@@ -106,8 +106,8 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 	directContent := []byte("import com.acme.`when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
 	directImports := parseImports(directContent, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if len(directImports) != 1 || directImports[0].Local != "when" || !directImports[0].EscapedLocal {
-		t.Fatalf("expected escaped terminal import to retain escaped usage metadata, got %#v", directImports)
+	if len(directImports) != 1 || directImports[0].Local != "when" {
+		t.Fatalf("expected escaped terminal import, got %#v", directImports)
 	}
 	if usage := countUsage(directContent, directImports); usage["when"] != 0 {
 		t.Fatalf("expected bare Kotlin keyword to leave escaped terminal import unused, got %d", usage["when"])
@@ -122,8 +122,8 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 	legalAliasContent := []byte("import com.Alias.Widget as `Alias`\nAlias()\n")
 	legalAliasImports := parseImports(legalAliasContent, "App.kt", "com.example.app", nil, map[string]string{"com.Alias": acmeLibName})
-	if len(legalAliasImports) != 1 || legalAliasImports[0].EscapedLocal {
-		t.Fatalf("expected legal bare alias to avoid escaped-only usage, got %#v", legalAliasImports)
+	if len(legalAliasImports) != 1 {
+		t.Fatalf("expected legal bare alias import, got %#v", legalAliasImports)
 	}
 	if usage := countUsage(legalAliasContent, legalAliasImports); usage["Alias"] != 1 {
 		t.Fatalf("expected legal bare alias usage 1, got %d", usage["Alias"])

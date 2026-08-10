@@ -605,7 +605,7 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	result := newScanResult()
 	content := []byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> `when`() } }\n")
 	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || !imports[0].EscapedLocal || imports[0].Dependency != "acme-lib" {
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || imports[0].Dependency != "acme-lib" {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
 	}
 	if usage := countUsage(content, imports); usage["when"] != 1 {

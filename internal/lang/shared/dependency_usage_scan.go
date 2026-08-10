@@ -9,98 +9,25 @@ import (
 
 func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	importCount := make(map[string]int)
-	bareImportCount := make(map[string]int)
-	escapedOnlyLocals := make(map[string]struct{})
 	hasUnicodeLocal := false
 	for _, imported := range imports {
 		if imported.Wildcard || imported.Local == "" {
 			continue
 		}
 		importCount[imported.Local]++
-		if imported.EscapedLocal {
-			if _, hasBareBinding := bareImportCount[imported.Local]; !hasBareBinding {
-				escapedOnlyLocals[imported.Local] = struct{}{}
-			}
-		} else {
-			bareImportCount[imported.Local]++
-			delete(escapedOnlyLocals, imported.Local)
-		}
 		hasUnicodeLocal = hasUnicodeLocal || containsNonASCII(imported.Local)
 	}
 
 	usage := make(map[string]int, len(importCount))
 	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
-	if hasKotlinSource(imports) {
-		scannable = maskKotlinDirectiveLines(scannable)
-	}
 	if hasUnicodeLocal || containsNonASCIIBytes(scannable) {
-		scanUnicodeTokenUsage(scannable, bareImportCount, usage)
+		scanUnicodeTokenUsage(scannable, importCount, usage)
 	} else {
-		scanTokenUsage(scannable, bareImportCount, usage)
+		scanTokenUsage(scannable, importCount, usage)
 	}
-	scanEscapedTokenUsage(scannable, escapedOnlyLocals, usage)
 	subtractDeclarationTokenHits(scannable, imports, usage)
 	clampUsageCounts(importCount, usage)
 	return usage
-}
-
-func scanEscapedTokenUsage(content []byte, escapedLocals map[string]struct{}, usage map[string]int) {
-	for index := 0; index < len(content); index++ {
-		local, end, ok := escapedIdentifierAt(content, index)
-		if !ok {
-			continue
-		}
-		if _, ok := escapedLocals[local]; ok {
-			usage[local]++
-		}
-		index = end
-	}
-}
-
-func hasKotlinSource(imports []ImportRecord) bool {
-	for _, imported := range imports {
-		switch strings.ToLower(filepath.Ext(imported.Location.File)) {
-		case ".kt", ".kts":
-			return true
-		}
-	}
-	return false
-}
-
-func maskKotlinDirectiveLines(content []byte) []byte {
-	masked := append([]byte(nil), content...)
-	for start := 0; start < len(masked); {
-		end := start
-		for end < len(masked) && masked[end] != '\n' {
-			end++
-		}
-		if isKotlinDirective(masked[start:end]) {
-			for index := start; index < end; index++ {
-				masked[index] = ' '
-			}
-		}
-		start = end + 1
-	}
-	return masked
-}
-
-func isKotlinDirective(line []byte) bool {
-	fields := strings.Fields(string(line))
-	return len(fields) > 0 && (fields[0] == "import" || fields[0] == "package")
-}
-
-func escapedIdentifierAt(content []byte, start int) (string, int, bool) {
-	if content[start] != '`' {
-		return "", start, false
-	}
-	end := start + 1
-	for end < len(content) && isWordByte(content[end]) {
-		end++
-	}
-	if end == start+1 || end >= len(content) || content[end] != '`' {
-		return "", start, false
-	}
-	return string(content[start+1 : end]), end, true
 }
 
 func scanTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
@@ -137,7 +64,7 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 	var lineStarts []int
 	haveLineStarts := false
 	for _, imported := range imports {
-		if imported.Wildcard || imported.Local == "" || imported.EscapedLocal {
+		if imported.Wildcard || imported.Local == "" {
 			continue
 		}
 		declarationHits := imported.DeclarationTokenHits
