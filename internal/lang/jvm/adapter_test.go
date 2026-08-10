@@ -470,6 +470,34 @@ func TestSourceLayoutModuleRootUsesInnermostSourceLayout(t *testing.T) {
 	}
 }
 
+func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
+	repo := t.TempDir()
+	moduleRoot := filepath.Join(repo, "module")
+	testutil.MustWriteFile(t, filepath.Join(moduleRoot, "src", "main", "java", testFileAppJava), "class App {}\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf(errDetectFmt, err)
+	}
+	if !detection.Matched || len(detection.Roots) != 1 || detection.Roots[0] != moduleRoot {
+		t.Fatalf("expected source-layout module root %q, got %#v", moduleRoot, detection)
+	}
+}
+
+func TestAdapterDetectConfinesAbsoluteSourceLayoutAncestor(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "src", "main", "java", "repository")
+	testutil.MustWriteFile(t, filepath.Join(repo, "module", testFileAppJava), "class App {}\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf(errDetectFmt, err)
+	}
+	if !detection.Matched || len(detection.Roots) != 1 || detection.Roots[0] != repo {
+		t.Fatalf("expected fallback root to remain confined to repository, got %#v", detection)
+	}
+}
+
 func analyseJVMReport(t *testing.T, req language.Request) report.Result {
 	t.Helper()
 
