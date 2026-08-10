@@ -282,7 +282,7 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
 		localName = alias
 	}
-	escapedLocal := strings.HasPrefix(localName, "`") && strings.HasSuffix(localName, "`")
+	escapedLocal := shared.IsKotlinEscapedKeyword(localName)
 	localName = strings.TrimPrefix(strings.TrimSuffix(localName, "`"), "`")
 
 	return shared.ImportRecord{

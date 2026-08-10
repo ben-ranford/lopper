@@ -120,6 +120,14 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if usage := countUsage(packageContent, packageImports); usage["when"] != 0 {
 		t.Fatalf("expected escaped package declaration to leave alias unused, got %d", usage["when"])
 	}
+	legalAliasContent := []byte("import com.acme.Widget as `WidgetAlias`\nWidgetAlias()\n")
+	legalAliasImports := parseImports(legalAliasContent, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(legalAliasImports) != 1 || legalAliasImports[0].EscapedLocal {
+		t.Fatalf("expected legal bare alias to avoid escaped-only usage, got %#v", legalAliasImports)
+	}
+	if usage := countUsage(legalAliasContent, legalAliasImports); usage["WidgetAlias"] != 1 {
+		t.Fatalf("expected legal bare alias usage 1, got %d", usage["WidgetAlias"])
+	}
 
 	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
 	if imports := parseImports(unsupportedAlias, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 0 {
