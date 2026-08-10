@@ -2,9 +2,12 @@ package shared
 
 import "regexp"
 
-const JVMImportMatchGroups = 4
+const (
+	JVMImportMatchGroups       = 4
+	jvmImportIdentifierPattern = "(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\r\\n]+`)"
+)
 
-var jvmImportPattern = regexp.MustCompile(`^\s*import\s+(?:static\s+)?((?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `))*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `))?\s*;?\s*$`)
+var jvmImportPattern = regexp.MustCompile(`^\s*import\s+(?:static\s+)?(` + jvmImportIdentifierPattern + `(?:\.` + jvmImportIdentifierPattern + `)*)(\.\*)?(?:\s+as\s+(` + jvmImportIdentifierPattern + `))?\s*;?\s*$`)
 
 // MatchJVMImport recognizes Java imports plus Kotlin escaped identifier and
 // alias segments. JVM and Kotlin Android scanners share this grammar.
