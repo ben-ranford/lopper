@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,6 +77,74 @@ func TestCurrentCommitSHADetachedHead(t *testing.T) {
 	}
 	if sha != shaTopic {
 		t.Fatalf(expectedGotFmt, shaTopic, sha)
+	}
+}
+
+func TestCurrentCommitSHASupportsSHA256References(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, gitDir string)
+	}{
+		{
+			name: "loose ref",
+			setup: func(t *testing.T, gitDir string) {
+				mustWrite(t, filepath.Join(gitDir, "HEAD"), "ref: "+mainRefPath+"\n")
+				mustWrite(t, filepath.Join(gitDir, "refs", "heads", "main"), sha256Main+"\n")
+			},
+		},
+		{
+			name: "packed ref",
+			setup: func(t *testing.T, gitDir string) {
+				mustWrite(t, filepath.Join(gitDir, "HEAD"), "ref: "+mainRefPath+"\n")
+				mustWrite(t, filepath.Join(gitDir, packedRefsFile), sha256Main+" "+mainRefPath+"\n")
+			},
+		},
+		{
+			name: "detached HEAD",
+			setup: func(t *testing.T, gitDir string) {
+				mustWrite(t, filepath.Join(gitDir, "HEAD"), sha256Main+"\n")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitDir := filepath.Join(repo, ".git")
+			tc.setup(t, gitDir)
+
+			sha, err := CurrentCommitSHA(repo)
+			if err != nil {
+				t.Fatalf("resolve SHA-256 commit: %v", err)
+			}
+			if sha != sha256Main {
+				t.Fatalf(expectedGotFmt, sha256Main, sha)
+			}
+		})
+	}
+}
+
+func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "init", "--object-format=sha256", repo).CombinedOutput(); err != nil {
+		t.Skipf("Git does not support SHA-256 repositories: %v\n%s", err, output)
+	}
+	for _, args := range [][]string{
+		{"-C", repo, "config", "user.email", "test@example.com"},
+		{"-C", repo, "config", "user.name", "Lopper Test"},
+		{"-C", repo, "commit", "--allow-empty", "-m", "initial"},
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+
+	sha, err := CurrentCommitSHA(repo)
+	if err != nil {
+		t.Fatalf("resolve SHA-256 repository commit: %v", err)
+	}
+	if len(sha) != 64 || !validSHA(sha) {
+		t.Fatalf("SHA-256 repository commit = %q, want valid 64-character object ID", sha)
 	}
 }
 
@@ -232,5 +301,8 @@ func TestValidSHA(t *testing.T) {
 	}
 	if validSHA("abc123") {
 		t.Fatalf("expected short sha to be invalid")
+	}
+	if !validSHA(sha256Main) {
+		t.Fatalf("expected valid SHA-256 commit ID")
 	}
 }

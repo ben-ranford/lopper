@@ -11,6 +11,7 @@ const (
 	shaMain        = "1111111111111111111111111111111111111111"
 	shaTopic       = "2222222222222222222222222222222222222222"
 	shaHex         = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sha256Main     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	expectedGotFmt = "expected %q, got %q"
 	packedRefsFile = "packed-refs"
 	mainRefPath    = "refs/heads/main"
