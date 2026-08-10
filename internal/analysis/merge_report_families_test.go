@@ -44,6 +44,55 @@ func TestMergeReportsCoordinatesFamiliesInStableOrder(t *testing.T) {
 	assertMergedDependencies(t, merged)
 }
 
+func TestMergeImportUsesPreservesProvenanceDeterministically(t *testing.T) {
+	left := []report.ImportUse{{
+		Module:    "lodash",
+		Name:      "map",
+		Locations: []report.Location{{File: "src/z.ts", Line: 3, Column: 1}, {File: "src/a.ts", Line: 9, Column: 2}},
+		Provenance: []string{
+			"workspace/root-b",
+			"shared/barrel",
+		},
+		ConfidenceScore:       82.5,
+		ConfidenceReasonCodes: []string{"static-import", "shared-evidence"},
+	}}
+	right := []report.ImportUse{{
+		Module:    "lodash",
+		Name:      "map",
+		Locations: []report.Location{{File: "src/m.ts", Line: 5, Column: 4}, {File: "src/a.ts", Line: 1, Column: 8}, {File: "src/a.ts", Line: 1, Column: 7}},
+		Provenance: []string{
+			"workspace/root-a",
+			"shared/barrel",
+			"workspace/root-a",
+		},
+		ConfidenceScore:       61.4,
+		ConfidenceReasonCodes: []string{"runtime-evidence", "shared-evidence", "runtime-evidence"},
+	}}
+	want := []report.ImportUse{{
+		Module:                "lodash",
+		Name:                  "map",
+		Locations:             []report.Location{{File: "src/a.ts", Line: 1, Column: 7}, {File: "src/a.ts", Line: 1, Column: 8}, {File: "src/a.ts", Line: 9, Column: 2}, {File: "src/m.ts", Line: 5, Column: 4}, {File: "src/z.ts", Line: 3, Column: 1}},
+		Provenance:            []string{"shared/barrel", "workspace/root-a", "workspace/root-b"},
+		ConfidenceScore:       61.4,
+		ConfidenceReasonCodes: []string{"runtime-evidence", "shared-evidence", "static-import"},
+	}}
+
+	for _, test := range []struct {
+		name  string
+		left  []report.ImportUse
+		right []report.ImportUse
+	}{
+		{name: "left then right", left: left, right: right},
+		{name: "right then left", left: right, right: left},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := mergeImportUses(test.left, test.right); !reflect.DeepEqual(got, want) {
+				t.Fatalf("mergeImportUses() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing.T) {
 	complete := report.DependencyReport{
 		Name:                 "lodash",

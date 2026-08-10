@@ -455,6 +455,12 @@ func mergeImportUses(left, right []report.ImportUse) []report.ImportUse {
 		key := item.Module + "\x00" + item.Name
 		if current, ok := merged[key]; ok {
 			current.Locations = append(current.Locations, item.Locations...)
+			current.Provenance = append(current.Provenance, item.Provenance...)
+			current.ConfidenceReasonCodes = append(current.ConfidenceReasonCodes, item.ConfidenceReasonCodes...)
+			// Zero is unset; otherwise preserve the lowest non-zero contributing score.
+			if current.ConfidenceScore == 0 || (item.ConfidenceScore > 0 && item.ConfidenceScore < current.ConfidenceScore) {
+				current.ConfidenceScore = item.ConfidenceScore
+			}
 			merged[key] = current
 			continue
 		}
@@ -462,6 +468,9 @@ func mergeImportUses(left, right []report.ImportUse) []report.ImportUse {
 	}
 	items := make([]report.ImportUse, 0, len(merged))
 	for _, item := range merged {
+		item.Locations = sortedImportUseLocations(item.Locations)
+		item.Provenance = uniqueSorted(item.Provenance)
+		item.ConfidenceReasonCodes = uniqueSorted(item.ConfidenceReasonCodes)
 		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -469,6 +478,20 @@ func mergeImportUses(left, right []report.ImportUse) []report.ImportUse {
 			return items[i].Name < items[j].Name
 		}
 		return items[i].Module < items[j].Module
+	})
+	return items
+}
+
+func sortedImportUseLocations(locations []report.Location) []report.Location {
+	items := append([]report.Location(nil), locations...)
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].File != items[j].File {
+			return items[i].File < items[j].File
+		}
+		if items[i].Line != items[j].Line {
+			return items[i].Line < items[j].Line
+		}
+		return items[i].Column < items[j].Column
 	})
 	return items
 }
