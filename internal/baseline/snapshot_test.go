@@ -206,10 +206,72 @@ func TestDecodeSnapshotSchemaVersionCompatibility(t *testing.T) {
 	}
 }
 
+func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []snapshotDecodeCompatibilityCase{
+		{
+			name:    "number discriminator",
+			data:    `{"baselineSchemaVersion":1,"value":"legacy"}`,
+			wantErr: "invalid baseline schema version discriminator: json: cannot unmarshal number into Go value of type string",
+		},
+		{
+			name:    "null discriminator",
+			data:    `{"baselineSchemaVersion":null,"value":"legacy"}`,
+			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
+		},
+		{
+			name:    "case insensitive null discriminator",
+			data:    `{"BaselineSchemaVersion":null,"value":"legacy"}`,
+			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
+		},
+		{
+			name:      "case insensitive typed discriminator",
+			data:      `{"BaselineSchemaVersion":"1.0.0","Key":"label:case","Report":{"value":"snapshot"}}`,
+			wantValue: "SNAPSHOT",
+			wantKey:   "label:case",
+		},
+		{
+			name:    "duplicate case folded discriminator",
+			data:    `{"baselineSchemaVersion":"1.0.0","BaselineSchemaVersion":"9.9.9","report":{"value":"snapshot"}}`,
+			wantErr: "invalid baseline schema version discriminator: duplicate case-folded field",
+		},
+		{
+			name:    "typed envelope missing discriminator",
+			data:    `{"key":"label:missing","report":{"value":"snapshot"}}`,
+			wantErr: "invalid baseline schema version discriminator: typed envelope requires a version",
+		},
+		{
+			name:    "blank typed discriminator",
+			data:    `{"baselineSchemaVersion":" ","report":{"value":"snapshot"}}`,
+			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
+		},
+		{
+			name:    "malformed typed envelope",
+			data:    `{"baselineSchemaVersion":"1.0.0","key":1,"value":"legacy"}`,
+			wantErr: "decode typed baseline snapshot: json: cannot unmarshal number into Go struct field Snapshot[github.com/ben-ranford/lopper/internal/baseline.testSnapshotReport].key of type string",
+		},
+		{
+			name:      "large unknown number before typed envelope",
+			data:      `{"extension":1e1000,"baselineSchemaVersion":"1.0.0","key":"label:typed","report":{"value":"snapshot"}}`,
+			wantKey:   "label:typed",
+			wantValue: "SNAPSHOT",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertSnapshotDecodeCompatibility(t, tc)
+		})
+	}
+}
+
 func TestDecodeSnapshotRejectsUnsupportedSchemaWithCustomError(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := DecodeSnapshot([]byte(`{"baselineSchemaVersion":"9.9.9","key":"label:bad","report":{"value":"x"}}`), SnapshotDecodeOptions[testSnapshotReport]{
+	_, _, err := DecodeSnapshot([]byte(`{"baselineSchemaVersion":"9.9.9","key":1,"report":{"value":"x"}}`), SnapshotDecodeOptions[testSnapshotReport]{
 		DecodeLegacy: decodeTestSnapshotReport,
 		UnsupportedSchema: func(version string) error {
 			return fmt.Errorf("unsupported custom baseline schema version: %s", version)
