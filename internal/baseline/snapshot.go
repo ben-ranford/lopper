@@ -80,12 +80,12 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 			var zero T
 			return zero, "", err
 		}
-	if typed {
-		if version != SnapshotSchemaVersion {
-			var zero T
-			return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
-		}
-		return decodeTypedSnapshot(data, version, options)
+		if typed {
+			if version != SnapshotSchemaVersion {
+				var zero T
+				return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
+			}
+			return decodeTypedSnapshot(data, version, options)
 		}
 	}
 
