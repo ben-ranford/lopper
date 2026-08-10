@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -425,7 +426,7 @@ func readOnlyMCPAnalysisCacheOptions(repoPath string, enabled *bool, cachePath s
 }
 
 func cachePathReadyForReadOnly(cachePath string) bool {
-	if pathContainsSymlink(cachePath) {
+	if pathContainsSymlink(cachePath) && !trustedReadOnlyCacheAlias(cachePath) {
 		return false
 	}
 	for _, dirName := range []string{"keys", "objects"} {
@@ -435,6 +436,25 @@ func cachePathReadyForReadOnly(cachePath string) bool {
 		}
 	}
 	return true
+}
+
+func trustedReadOnlyCacheAlias(cachePath string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	absPath, err := filepath.Abs(cachePath)
+	if err != nil {
+		return false
+	}
+	absPath = filepath.Clean(absPath)
+	if absPath != "/tmp" && !strings.HasPrefix(absPath, "/tmp/") {
+		return false
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return false
+	}
+	return resolvedPath == "/private"+absPath
 }
 
 func pathContainsSymlink(path string) bool {

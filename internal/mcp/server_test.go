@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -735,6 +736,35 @@ func TestReadOnlyMCPAnalysisCacheOptionsPreservesImplicitDefaultIntent(t *testin
 	options := readOnlyMCPAnalysisCacheOptions(repo, nil, "")
 	if options == nil || !options.Enabled || options.Path != "" || options.ResolvedPath != cachePath || !options.ReadOnly {
 		t.Fatalf("unexpected implicit default cache options: %#v", options)
+	}
+}
+
+func TestTrustedReadOnlyCacheAliasAllowsOnlyMacOSTempAlias(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS filesystem aliases are not available")
+	}
+	cachePath := filepath.Join("/tmp", filepath.Base(t.TempDir()), ".lopper-cache")
+	for _, dirName := range []string{"keys", "objects"} {
+		if err := os.MkdirAll(filepath.Join(cachePath, dirName), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dirName, err)
+		}
+	}
+	defer func() {
+		if err := os.RemoveAll(filepath.Dir(cachePath)); err != nil {
+			t.Errorf("remove alias fixture: %v", err)
+		}
+	}()
+	if !trustedReadOnlyCacheAlias(cachePath) {
+		t.Fatal("expected macOS /tmp alias to be trusted")
+	}
+	if !cachePathReadyForReadOnly(cachePath) {
+		t.Fatal("expected initialized cache through macOS /tmp alias to be reusable")
+	}
+}
+
+func TestTrustedReadOnlyCacheAliasRejectsNonTempPaths(t *testing.T) {
+	if trustedReadOnlyCacheAlias(t.TempDir()) {
+		t.Fatal("unexpected trusted alias outside the fixed macOS temp path")
 	}
 }
 
