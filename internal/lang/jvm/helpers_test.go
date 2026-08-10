@@ -92,6 +92,68 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 	}
 }
 
+func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
+	content := []byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> `when`() } }\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || imports[0].Dependency != acmeLibName {
+		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := countUsage(content, imports); usage["when"] != 1 {
+		t.Fatalf("expected Kotlin backtick alias usage 1 without bare keyword hits, got %d", usage["when"])
+	}
+	if usage := countUsage([]byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n"), imports); usage["when"] != 0 {
+		t.Fatalf("expected bare Kotlin keyword to leave escaped alias unused, got %d", usage["when"])
+	}
+	directContent := []byte("import com.acme.`when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	directImports := parseImports(directContent, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(directImports) != 1 || directImports[0].Local != "when" {
+		t.Fatalf("expected escaped terminal import, got %#v", directImports)
+	}
+	if usage := countUsage(directContent, directImports); usage["when"] != 0 {
+		t.Fatalf("expected bare Kotlin keyword to leave escaped terminal import unused, got %d", usage["when"])
+	}
+	if usage := countUsage([]byte("import com.acme.`when`\n`when`()\n"), directImports); usage["when"] != 1 {
+		t.Fatalf("expected escaped terminal import usage 1, got %d", usage["when"])
+	}
+	packageContent := []byte("package com.example.`when`\nimport com.acme.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	packageImports := parseImports(packageContent, "App.kt", "com.example.`when`", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(packageContent, packageImports); usage["when"] != 0 {
+		t.Fatalf("expected escaped package declaration to leave alias unused, got %d", usage["when"])
+	}
+	legalAliasContent := []byte("import com.Alias.Widget as `Alias`\nAlias()\n")
+	legalAliasImports := parseImports(legalAliasContent, "App.kt", "com.example.app", nil, map[string]string{"com.Alias": acmeLibName})
+	if len(legalAliasImports) != 1 {
+		t.Fatalf("expected legal bare alias import, got %#v", legalAliasImports)
+	}
+	if usage := countUsage(legalAliasContent, legalAliasImports); usage["Alias"] != 1 {
+		t.Fatalf("expected legal bare alias usage 1, got %d", usage["Alias"])
+	}
+	if usage := countUsage([]byte("import com.Alias.Widget as `Alias`\n"), legalAliasImports); usage["Alias"] != 0 {
+		t.Fatalf("expected declaration-only legal alias to remain unused, got %d", usage["Alias"])
+	}
+	tabDirective := []byte("import\tcom.acme.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	tabImports := parseImports(tabDirective, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(tabDirective, tabImports); usage["when"] != 0 {
+		t.Fatalf("expected tab-separated import directive to leave escaped alias unused, got %d", usage["when"])
+	}
+
+	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
+	if imports := parseImports(unsupportedAlias, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 0 {
+		t.Fatalf("expected unsupported escaped alias to be ignored, got %#v", imports)
+	}
+}
+
+func TestJVMParsePackageSupportsKotlinEscapedSegment(t *testing.T) {
+	pkg := parsePackage([]byte("package com.example.`when`\n"))
+	if pkg != "com.example.`when`" {
+		t.Fatalf("expected Kotlin escaped package, got %q", pkg)
+	}
+	imports := parseImports([]byte("import com.example.`when`.Widget\n"), "App.kt", pkg, nil, nil)
+	if len(imports) != 0 {
+		t.Fatalf("expected escaped same-package import to be ignored, got %#v", imports)
+	}
+}
+
 func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
 	content := []byte(`package com.example.app;
 import java.util.List;

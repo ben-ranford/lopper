@@ -593,6 +593,31 @@ import com.acme.lib.Widget
 	if !shouldIgnoreImport("pkg.demo.service", "pkg.demo") {
 		t.Fatalf("expected package-local import to be ignored")
 	}
+	escapedPackage := parsePackage([]byte("package pkg.demo.`when`\n"))
+	escapedResult := newScanResult()
+	escapedImports := parseImports([]byte("import pkg.demo.`when`.Widget\n"), testMainSourceFileName, escapedPackage, dependencyLookups{}, &escapedResult)
+	if escapedPackage != "pkg.demo.`when`" || len(escapedImports) != 0 {
+		t.Fatalf("expected escaped same-package import to be ignored, got package %q imports %#v", escapedPackage, escapedImports)
+	}
+}
+
+func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
+	result := newScanResult()
+	content := []byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> `when`() } }\n")
+	imports := parseImports(content, testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || imports[0].Dependency != "acme-lib" {
+		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := countUsage(content, imports); usage["when"] != 1 {
+		t.Fatalf("expected Kotlin backtick alias usage 1 without bare keyword hits, got %d", usage["when"])
+	}
+	if usage := countUsage([]byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n"), imports); usage["when"] != 0 {
+		t.Fatalf("expected bare Kotlin keyword to leave escaped alias unused, got %d", usage["when"])
+	}
+	unsupportedSymbol := parseImports([]byte("import com.acme.`my type`\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if len(unsupportedSymbol) != 0 {
+		t.Fatalf("expected unsupported escaped symbol to be ignored, got %#v", unsupportedSymbol)
+	}
 }
 
 func TestResolveDependencyAndDescriptorBranches(t *testing.T) {

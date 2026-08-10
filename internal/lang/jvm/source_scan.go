@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	kotlinlang "github.com/ben-ranford/lopper/internal/lang/kotlin"
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
@@ -228,12 +229,7 @@ func isSourceFile(path string) bool {
 	}
 }
 
-var (
-	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
-)
-
-const importPatternMatchGroups = 4
+var packagePattern = regexp.MustCompile(`(?m)^\s*package\s+((?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `))*)\s*;?\s*$`)
 
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
@@ -247,8 +243,8 @@ func parseImports(content []byte, filePath string, filePackage string, depPrefix
 	sanitized := shared.StripBlockComments(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
-		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != importPatternMatchGroups {
+		matches := kotlinlang.MatchImport(line)
+		if !kotlinlang.IsImportMatch(matches) {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
@@ -283,16 +279,11 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 		return shared.ImportRecord{}, false
 	}
 
-	localName := symbol
-	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
-		localName = alias
-	}
-
 	return shared.ImportRecord{
 		Dependency: dependency,
 		Module:     module,
 		Name:       symbol,
-		Local:      localName,
+		Local:      kotlinlang.LocalName(matches, module),
 		Wildcard:   wildcard,
 	}, true
 }
@@ -375,5 +366,5 @@ func firstContentColumn(line string) int {
 }
 
 func countUsage(content []byte, imports []importBinding) map[string]int {
-	return shared.CountUsage(content, imports)
+	return kotlinlang.CountUsage(content, imports)
 }
