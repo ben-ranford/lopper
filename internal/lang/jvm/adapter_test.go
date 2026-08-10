@@ -481,10 +481,11 @@ func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("relative outside path: %v", err)
 	}
+	insideSource := filepath.Join(repo, "module", "src", "main", "java", testFileAppJava)
+	traversalPath := filepath.Join(repo, relativeOutside, testFileAppJava)
+	testutil.MustWriteFile(t, insideSource, "class App {}\n")
+	testutil.MustWriteFile(t, traversalPath, "class App {}\n")
 	link := filepath.Join(repo, "linked-outside")
-	if err := os.MkdirAll(outside, 0o755); err != nil {
-		t.Fatalf("mkdir outside source layout: %v", err)
-	}
 	if err := os.Symlink(filepath.Dir(filepath.Dir(filepath.Dir(outside))), link); err != nil {
 		t.Skipf(errSymlinkFmt, err)
 	}
@@ -494,14 +495,16 @@ func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
 		path       string
 		wantWithin bool
 	}{
-		{name: "nested module", path: filepath.Join(repo, "module", "src", "main", "java", testFileAppJava), wantWithin: true},
-		{name: "traversal", path: filepath.Join(repo, relativeOutside, testFileAppJava)},
+		{name: "nested module", path: insideSource, wantWithin: true},
+		{name: "traversal", path: traversalPath},
 		{name: "symlink", path: filepath.Join(link, "src", "main", "java", testFileAppJava)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			root := sourceLayoutModuleRoot(test.path)
-			if got := shared.IsPathWithin(repo, root); got != test.wantWithin {
-				t.Fatalf("source-layout root %q within repository = %v, want %v", root, got, test.wantWithin)
+			roots := make(map[string]struct{})
+			detection := &language.Detection{}
+			updateJVMDetection(repo, test.path, testutil.MustFirstFileEntry(t, filepath.Dir(test.path)), roots, detection)
+			if _, got := roots[filepath.Join(repo, "module")]; got != test.wantWithin {
+				t.Fatalf("detected module roots = %#v, nested root present = %v, want %v", roots, got, test.wantWithin)
 			}
 		})
 	}
