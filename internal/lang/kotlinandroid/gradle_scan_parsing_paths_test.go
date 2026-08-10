@@ -607,6 +607,11 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "type" || imports[0].Dependency != "acme-lib" {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
 	}
+
+	unsupportedSymbol := parseImports([]byte("import com.acme.`my type`\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if len(unsupportedSymbol) != 0 {
+		t.Fatalf("expected unsupported escaped symbol to be ignored, got %#v", unsupportedSymbol)
+	}
 }
 
 func TestResolveDependencyAndDescriptorBranches(t *testing.T) {

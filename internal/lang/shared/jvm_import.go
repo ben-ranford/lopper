@@ -4,7 +4,7 @@ import "regexp"
 
 const (
 	JVMImportMatchGroups       = 4
-	jvmImportIdentifierPattern = "(?:[A-Za-z_][A-Za-z0-9_]*|`[^`\\r\\n]+`)"
+	jvmImportIdentifierPattern = "(?:[A-Za-z_][A-Za-z0-9_]*|`[A-Za-z_][A-Za-z0-9_]*`)"
 )
 
 var jvmImportPattern = regexp.MustCompile(`^\s*import\s+(?:static\s+)?(` + jvmImportIdentifierPattern + `(?:\.` + jvmImportIdentifierPattern + `)*)(\.\*)?(?:\s+as\s+(` + jvmImportIdentifierPattern + `))?\s*;?\s*$`)

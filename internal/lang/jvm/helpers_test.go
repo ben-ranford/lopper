@@ -101,6 +101,11 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if usage := countUsage(content, imports); usage["type"] != 1 {
 		t.Fatalf("expected Kotlin backtick alias usage 1, got %d", usage["type"])
 	}
+
+	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
+	if imports := parseImports(unsupportedAlias, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 0 {
+		t.Fatalf("expected unsupported escaped alias to be ignored, got %#v", imports)
+	}
 }
 
 func TestJVMParsePackageSupportsKotlinEscapedSegment(t *testing.T) {
