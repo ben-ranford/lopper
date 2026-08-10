@@ -61,6 +61,28 @@ func TestNewAnalysisPipelineExcludesRepositoryCacheFromScopedWorkspace(t *testin
 	}
 }
 
+func TestNewAnalysisPipelineIncludesConfiguredCachePathWhenCachingIsDisabled(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", "index.js"), "export const value = 1\n")
+	writeFile(t, filepath.Join(repo, "src", "generated", "cached.js"), "export const cached = true\n")
+
+	service, _ := newCacheTestService(t)
+	pipeline, err := service.newAnalysisPipeline(context.Background(), Request{
+		RepoPath:        repo,
+		Language:        "cachelang",
+		IncludePatterns: []string{"**"},
+		Cache:           &CacheOptions{Enabled: false, Path: filepath.Join("src", "generated")},
+	})
+	if err != nil {
+		t.Fatalf("create scoped pipeline: %v", err)
+	}
+	defer pipeline.cleanup()
+
+	if _, err := os.Stat(filepath.Join(pipeline.analysisRepoPath, "src", "generated", "cached.js")); err != nil {
+		t.Fatalf("expected configured cache path to remain in scoped workspace when caching is disabled: %v", err)
+	}
+}
+
 func TestNewAnalysisPipelineStopsBeforeScopedCopyWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
