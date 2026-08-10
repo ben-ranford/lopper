@@ -93,9 +93,24 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 }
 
 func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
-	imports := parseImports([]byte("import com.acme.`when`.Widget as `type`\n"), "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "`type`" || imports[0].Dependency != acmeLibName {
+	content := []byte("import com.acme.`when`.Widget as `type`\n`type`()\n")
+	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "type" || imports[0].Dependency != acmeLibName {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+	if usage := countUsage(content, imports); usage["type"] != 1 {
+		t.Fatalf("expected Kotlin backtick alias usage 1, got %d", usage["type"])
+	}
+}
+
+func TestJVMParsePackageSupportsKotlinEscapedSegment(t *testing.T) {
+	pkg := parsePackage([]byte("package com.example.`when`\n"))
+	if pkg != "com.example.`when`" {
+		t.Fatalf("expected Kotlin escaped package, got %q", pkg)
+	}
+	imports := parseImports([]byte("import com.example.`when`.Widget\n"), "App.kt", pkg, nil, nil)
+	if len(imports) != 0 {
+		t.Fatalf("expected escaped same-package import to be ignored, got %#v", imports)
 	}
 }
 

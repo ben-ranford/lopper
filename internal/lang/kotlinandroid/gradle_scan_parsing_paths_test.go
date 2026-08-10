@@ -593,12 +593,18 @@ import com.acme.lib.Widget
 	if !shouldIgnoreImport("pkg.demo.service", "pkg.demo") {
 		t.Fatalf("expected package-local import to be ignored")
 	}
+	escapedPackage := parsePackage([]byte("package pkg.demo.`when`\n"))
+	escapedResult := newScanResult()
+	escapedImports := parseImports([]byte("import pkg.demo.`when`.Widget\n"), testMainSourceFileName, escapedPackage, dependencyLookups{}, &escapedResult)
+	if escapedPackage != "pkg.demo.`when`" || len(escapedImports) != 0 {
+		t.Fatalf("expected escaped same-package import to be ignored, got package %q imports %#v", escapedPackage, escapedImports)
+	}
 }
 
 func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	result := newScanResult()
 	imports := parseImports([]byte("import com.acme.`when`.Widget as `type`\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "`type`" || imports[0].Dependency != "acme-lib" {
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "type" || imports[0].Dependency != "acme-lib" {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
 	}
 }

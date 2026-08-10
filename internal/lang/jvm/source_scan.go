@@ -228,9 +228,7 @@ func isSourceFile(path string) bool {
 	}
 }
 
-var (
-	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-)
+var packagePattern = regexp.MustCompile(`(?m)^\s*package\s+((?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|` + "`[^`\\r\\n]+`" + `))*)\s*;?\s*$`)
 
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
@@ -284,6 +282,7 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
 		localName = alias
 	}
+	localName = strings.TrimPrefix(strings.TrimSuffix(localName, "`"), "`")
 
 	return shared.ImportRecord{
 		Dependency: dependency,
