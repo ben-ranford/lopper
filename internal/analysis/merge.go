@@ -457,8 +457,8 @@ func mergeImportUses(left, right []report.ImportUse) []report.ImportUse {
 			current.Locations = append(current.Locations, item.Locations...)
 			current.Provenance = append(current.Provenance, item.Provenance...)
 			current.ConfidenceReasonCodes = append(current.ConfidenceReasonCodes, item.ConfidenceReasonCodes...)
-			// A merged import is only as certain as its least-certain contributing root.
-			if current.ConfidenceScore == 0 || item.ConfidenceScore > 0 && item.ConfidenceScore < current.ConfidenceScore {
+			// Zero is unset; otherwise preserve the lowest non-zero contributing score.
+			if current.ConfidenceScore == 0 || (item.ConfidenceScore > 0 && item.ConfidenceScore < current.ConfidenceScore) {
 				current.ConfidenceScore = item.ConfidenceScore
 			}
 			merged[key] = current
