@@ -104,6 +104,17 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if usage := countUsage([]byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n"), imports); usage["when"] != 0 {
 		t.Fatalf("expected bare Kotlin keyword to leave escaped alias unused, got %d", usage["when"])
 	}
+	directContent := []byte("import com.acme.`when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	directImports := parseImports(directContent, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(directImports) != 1 || directImports[0].Local != "when" || !directImports[0].EscapedLocal {
+		t.Fatalf("expected escaped terminal import to retain escaped usage metadata, got %#v", directImports)
+	}
+	if usage := countUsage(directContent, directImports); usage["when"] != 0 {
+		t.Fatalf("expected bare Kotlin keyword to leave escaped terminal import unused, got %d", usage["when"])
+	}
+	if usage := countUsage([]byte("import com.acme.`when`\n`when`()\n"), directImports); usage["when"] != 1 {
+		t.Fatalf("expected escaped terminal import usage 1, got %d", usage["when"])
+	}
 
 	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
 	if imports := parseImports(unsupportedAlias, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 0 {
