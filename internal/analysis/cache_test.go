@@ -151,6 +151,34 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	}
 }
 
+func TestScopedAnalysisReusesRepositoryRelativeCache(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", cacheTestJSIndexFileName), "export const value = 1\n")
+
+	service, adapter := newCacheTestService(t)
+	req := newCacheRequest(repo, "  .cache/lopper  ", false)
+	req.IncludePatterns = []string{"**"}
+
+	first, err := service.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first scoped analysis: %v", err)
+	}
+	if first.Cache == nil || first.Cache.Path != filepath.Join(repo, ".cache", "lopper") || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
+		t.Fatalf("unexpected first scoped cache metadata: %#v", first.Cache)
+	}
+
+	second, err := service.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second scoped analysis: %v", err)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 || second.Cache.Writes != 0 {
+		t.Fatalf("expected second scoped analysis to reuse the cache, got %#v", second.Cache)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected cached scoped analysis to call adapter once, got %d", adapter.calls)
+	}
+}
+
 func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")
@@ -891,6 +919,27 @@ func TestResolveCacheOptionsDefaultsAndOverrides(t *testing.T) {
 	overrides := resolveCacheOptions(requested, "/repo")
 	if overrides.Enabled || overrides.Path != "/tmp/cache" || !overrides.ReadOnly {
 		t.Fatalf("unexpected override cache options: %#v", overrides)
+	}
+}
+
+func TestNormalizeCacheOptionsForRepositoryNormalizesRelativeAndWhitespacePaths(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	for _, tc := range []struct {
+		name         string
+		options      *CacheOptions
+		wantPath     string
+		wantResolved string
+	}{
+		{name: "whitespace only", options: &CacheOptions{Enabled: true, Path: "  ", ResolvedPath: "  "}},
+		{name: "relative configured path", options: &CacheOptions{Enabled: true, Path: "  .cache/lopper  "}, wantPath: ".cache/lopper", wantResolved: filepath.Join(repo, ".cache", "lopper")},
+		{name: "relative pinned path", options: &CacheOptions{Enabled: true, ResolvedPath: "  .cache/pinned  "}, wantResolved: filepath.Join(repo, ".cache", "pinned")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeCacheOptionsForRepository(tc.options, repo)
+			if got.Path != tc.wantPath || got.ResolvedPath != tc.wantResolved {
+				t.Fatalf("normalized options = %#v, want path=%q resolved=%q", got, tc.wantPath, tc.wantResolved)
+			}
+		})
 	}
 }
 
