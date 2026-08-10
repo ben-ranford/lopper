@@ -48,6 +48,15 @@ func TestCountUsageForEscapedImports(t *testing.T) {
 	}
 }
 
+func TestCountUsageForDirectEscapedTerminalImport(t *testing.T) {
+	imports := []shared.ImportRecord{{Local: "when", Location: report.Location{File: "App.kt", Line: 1}}}
+	content := []byte("import com.acme.`when`\n`when`()\n")
+	usage := CountUsage(content, imports)
+	if usage["when"] != 1 {
+		t.Fatalf("direct escaped terminal import usage = %d, want 1", usage["when"])
+	}
+}
+
 func TestCountUsageHandlesNoEscapedBindingsAndMixedBindings(t *testing.T) {
 	if usage := CountUsage([]byte("import com.acme.Widget as Alias\nAlias()\n"), []shared.ImportRecord{{Local: "Alias", Location: report.Location{File: "App.kt", Line: 1}}}); usage["Alias"] != 1 {
 		t.Fatalf("bare alias usage = %d, want 1", usage["Alias"])
