@@ -118,6 +118,25 @@ func TestResolveCurrentBaselineKeyBranches(t *testing.T) {
 	}
 }
 
+func TestResolveCurrentBaselineKeySupportsSHA256Repository(t *testing.T) {
+	repo := t.TempDir()
+	sha := strings.Repeat("a", 64)
+	gitDir := filepath.Join(repo, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "refs", "heads"), 0o755); err != nil {
+		t.Fatalf("create SHA-256 git refs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+		t.Fatalf("write SHA-256 HEAD: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "refs", "heads", "main"), []byte(sha+"\n"), 0o600); err != nil {
+		t.Fatalf("write SHA-256 ref: %v", err)
+	}
+
+	if got := resolveCurrentBaselineKey(repo); got != "commit:"+sha {
+		t.Fatalf("SHA-256 baseline key = %q, want %q", got, "commit:"+sha)
+	}
+}
+
 func TestSaveBaselineIfNeededAlreadyExistsError(t *testing.T) {
 	application := &App{Formatter: report.NewFormatter()}
 	base := report.Report{SchemaVersion: "0.1.0", RepoPath: "."}
