@@ -181,8 +181,8 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 	if removeCalls != 1 {
 		t.Fatalf("expected one temp cleanup remove, got %d", removeCalls)
 	}
-	if string(targetData) != "after" {
-		t.Fatalf("expected fallback overwrite data, got %q", string(targetData))
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
 	}
 }
 
