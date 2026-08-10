@@ -399,7 +399,7 @@ func walkJVMDetectionEntry(repoPath, path string, entry fs.DirEntry, roots map[s
 	if err := budget.countConfinedCandidate(); err != nil {
 		return err
 	}
-	updateJVMDetection(path, entry, roots, detection)
+	updateJVMDetection(repoPath, path, entry, roots, detection)
 	return nil
 }
 
@@ -457,7 +457,7 @@ var jvmRootSignals = []shared.RootSignal{
 	{Name: buildGradleKTSName, Confidence: 45},
 }
 
-func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
+func updateJVMDetection(repoPath, path string, entry fs.DirEntry, roots map[string]struct{}, detection *language.Detection) {
 	switch strings.ToLower(entry.Name()) {
 	case pomXMLName, buildGradleName, buildGradleKTSName:
 		detection.Matched = true
@@ -468,10 +468,18 @@ func updateJVMDetection(path string, entry fs.DirEntry, roots map[string]struct{
 	case ".java", ".kt", ".kts":
 		detection.Matched = true
 		detection.Confidence += 2
-		if root := sourceLayoutModuleRoot(path); root != "" {
+		if root := sourceLayoutModuleRootWithinRepo(repoPath, path); root != "" {
 			roots[root] = struct{}{}
 		}
 	}
+}
+
+func sourceLayoutModuleRootWithinRepo(repoPath, path string) string {
+	root := sourceLayoutModuleRoot(path)
+	if root == "" || !shared.IsPathWithin(repoPath, root) {
+		return ""
+	}
+	return root
 }
 
 func sourceLayoutModuleRoot(path string) string {

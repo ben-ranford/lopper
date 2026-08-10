@@ -470,6 +470,53 @@ func TestSourceLayoutModuleRootUsesInnermostSourceLayout(t *testing.T) {
 	}
 }
 
+func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "src", "main", "java", "repository")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	insideSource := filepath.Join(repo, "module", "src", "main", "java", testFileAppJava)
+	if got, want := sourceLayoutModuleRootWithinRepo(repo, insideSource), filepath.Join(repo, "module"); got != want {
+		t.Fatalf("inside source-layout root = %q, want %q", got, want)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside", "src", "main", "java")
+	relativeOutside, err := filepath.Rel(repo, outside)
+	if err != nil {
+		t.Fatalf("relative outside path: %v", err)
+	}
+	traversalPath := filepath.Join(repo, relativeOutside, testFileAppJava)
+	if got := sourceLayoutModuleRootWithinRepo(repo, traversalPath); got != "" {
+		t.Fatalf("expected traversal-derived source root to be rejected, got %q", got)
+	}
+
+	link := filepath.Join(repo, "linked-outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("mkdir outside source layout: %v", err)
+	}
+	if err := os.Symlink(filepath.Dir(filepath.Dir(filepath.Dir(outside))), link); err != nil {
+		t.Skipf(errSymlinkFmt, err)
+	}
+	if got := sourceLayoutModuleRootWithinRepo(repo, filepath.Join(link, "src", "main", "java", testFileAppJava)); got != "" {
+		t.Fatalf("expected symlink-derived source root to be rejected, got %q", got)
+	}
+}
+
+func TestAdapterDetectConfinesAbsoluteSourceLayoutAncestor(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "src", "main", "java", "repository")
+	testutil.MustWriteFile(t, filepath.Join(repo, "module", testFileAppJava), "class App {}\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf(errDetectFmt, err)
+	}
+	if !detection.Matched || len(detection.Roots) != 1 || detection.Roots[0] != repo {
+		t.Fatalf("expected fallback root to remain confined to repository, got %#v", detection)
+	}
+}
+
 func analyseJVMReport(t *testing.T, req language.Request) report.Result {
 	t.Helper()
 
