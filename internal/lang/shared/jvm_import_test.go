@@ -12,7 +12,7 @@ func TestIsKotlinEscapedKeyword(t *testing.T) {
 	}
 	for local, want := range tests {
 		if got := IsKotlinEscapedKeyword(local); got != want {
-			t.Errorf("IsKotlinEscapedKeyword(%q) = %t, want %t", local, got, want)
+			t.Errorf("isKotlinEscapedKeyword(%q) = %t, want %t", local, got, want)
 		}
 	}
 }
