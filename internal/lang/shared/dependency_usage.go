@@ -9,12 +9,14 @@ import (
 )
 
 type ImportRecord struct {
-	Dependency           string
-	Module               string
-	Name                 string
-	Local                string
-	Location             report.Location
-	Wildcard             bool
+	Dependency string
+	Module     string
+	Name       string
+	Local      string
+	Location   report.Location
+	Wildcard   bool
+	// EscapedLocal requires an escaped identifier reference (for example, Kotlin `when`).
+	EscapedLocal         bool
 	DeclarationTokenHits int
 }
 

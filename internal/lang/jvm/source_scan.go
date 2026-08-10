@@ -279,17 +279,20 @@ func buildImportRecord(matches []string, module string, dependency string) (shar
 	}
 
 	localName := symbol
+	escapedLocal := false
 	if alias := strings.TrimSpace(matches[3]); alias != "" && !wildcard {
 		localName = alias
+		escapedLocal = strings.HasPrefix(alias, "`") && strings.HasSuffix(alias, "`")
 	}
 	localName = strings.TrimPrefix(strings.TrimSuffix(localName, "`"), "`")
 
 	return shared.ImportRecord{
-		Dependency: dependency,
-		Module:     module,
-		Name:       symbol,
-		Local:      localName,
-		Wildcard:   wildcard,
+		Dependency:   dependency,
+		Module:       module,
+		Name:         symbol,
+		Local:        localName,
+		Wildcard:     wildcard,
+		EscapedLocal: escapedLocal,
 	}, true
 }
 

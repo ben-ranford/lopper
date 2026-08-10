@@ -9,25 +9,71 @@ import (
 
 func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	importCount := make(map[string]int)
+	bareImportCount := make(map[string]int)
+	escapedOnlyLocals := make(map[string]struct{})
 	hasUnicodeLocal := false
 	for _, imported := range imports {
 		if imported.Wildcard || imported.Local == "" {
 			continue
 		}
 		importCount[imported.Local]++
+		if imported.EscapedLocal {
+			if _, hasBareBinding := bareImportCount[imported.Local]; !hasBareBinding {
+				escapedOnlyLocals[imported.Local] = struct{}{}
+			}
+		} else {
+			bareImportCount[imported.Local]++
+			delete(escapedOnlyLocals, imported.Local)
+		}
 		hasUnicodeLocal = hasUnicodeLocal || containsNonASCII(imported.Local)
 	}
 
 	usage := make(map[string]int, len(importCount))
 	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
 	if hasUnicodeLocal || containsNonASCIIBytes(scannable) {
-		scanUnicodeTokenUsage(scannable, importCount, usage)
+		scanUnicodeTokenUsage(scannable, bareImportCount, usage)
 	} else {
-		scanTokenUsage(scannable, importCount, usage)
+		scanTokenUsage(scannable, bareImportCount, usage)
 	}
+	scanEscapedTokenUsage(scannable, imports, escapedOnlyLocals, usage)
 	subtractDeclarationTokenHits(scannable, imports, usage)
 	clampUsageCounts(importCount, usage)
 	return usage
+}
+
+func scanEscapedTokenUsage(content []byte, imports []ImportRecord, escapedLocals map[string]struct{}, usage map[string]int) {
+	declarationLines := make(map[int]struct{})
+	for _, imported := range imports {
+		if imported.EscapedLocal && imported.Location.Line > 0 {
+			declarationLines[imported.Location.Line] = struct{}{}
+		}
+	}
+
+	line := 1
+	for index := 0; index < len(content); index++ {
+		if content[index] == '\n' {
+			line++
+			continue
+		}
+		if _, isDeclarationLine := declarationLines[line]; isDeclarationLine {
+			continue
+		}
+		if content[index] != '`' {
+			continue
+		}
+		end := index + 1
+		for end < len(content) && isWordByte(content[end]) {
+			end++
+		}
+		if end == index+1 || end >= len(content) || content[end] != '`' {
+			continue
+		}
+		local := string(content[index+1 : end])
+		if _, ok := escapedLocals[local]; ok {
+			usage[local]++
+		}
+		index = end
+	}
 }
 
 func scanTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
@@ -64,7 +110,7 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 	var lineStarts []int
 	haveLineStarts := false
 	for _, imported := range imports {
-		if imported.Wildcard || imported.Local == "" {
+		if imported.Wildcard || imported.Local == "" || imported.EscapedLocal {
 			continue
 		}
 		declarationHits := imported.DeclarationTokenHits

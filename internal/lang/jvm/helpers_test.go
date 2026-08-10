@@ -93,13 +93,16 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 }
 
 func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
-	content := []byte("import com.acme.`when`.Widget as `type`\n`type`()\n")
+	content := []byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> `when`() } }\n")
 	imports := parseImports(content, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
-	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "type" || imports[0].Dependency != acmeLibName {
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "when" || !imports[0].EscapedLocal || imports[0].Dependency != acmeLibName {
 		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
 	}
-	if usage := countUsage(content, imports); usage["type"] != 1 {
-		t.Fatalf("expected Kotlin backtick alias usage 1, got %d", usage["type"])
+	if usage := countUsage(content, imports); usage["when"] != 1 {
+		t.Fatalf("expected Kotlin backtick alias usage 1 without bare keyword hits, got %d", usage["when"])
+	}
+	if usage := countUsage([]byte("import com.acme.`when`.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n"), imports); usage["when"] != 0 {
+		t.Fatalf("expected bare Kotlin keyword to leave escaped alias unused, got %d", usage["when"])
 	}
 
 	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
