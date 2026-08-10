@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import atexit
 import importlib.machinery
 import importlib.util
 import json
@@ -177,8 +178,21 @@ def _real_path(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(candidate)))
 
 
+def _remove_hook_bytecode() -> None:
+    cached = globals().get("__cached__", "")
+    if not cached:
+        return
+    try:
+        os.unlink(cached)
+        os.rmdir(os.path.dirname(cached))
+    except OSError:
+        return
+
+
 if TRACE_PATH:
     ENTRYPOINT = _entrypoint()
+    _remove_hook_bytecode()
+    atexit.register(_remove_hook_bytecode)
     _chain_project_sitecustomize()
     ORIGINAL_IMPORT = builtins.__import__
     builtins.__import__ = _patched_import

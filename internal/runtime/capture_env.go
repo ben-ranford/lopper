@@ -68,9 +68,8 @@ func withPythonRuntimeTraceEnv(base []string, tracePath string) ([]string, error
 		pythonPath += string(os.PathListSeparator) + existing
 	}
 	return mergeEnv(base, map[string]string{
-		"LOPPER_RUNTIME_TRACE":    tracePath,
-		"PYTHONDONTWRITEBYTECODE": "1",
-		"PYTHONPATH":              pythonPath,
+		"LOPPER_RUNTIME_TRACE": tracePath,
+		"PYTHONPATH":           pythonPath,
 	}), nil
 }
 

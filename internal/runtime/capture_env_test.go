@@ -39,7 +39,7 @@ func TestWithPythonRuntimeTraceEnv(t *testing.T) {
 	}
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
-	assertEnvEntryValue(t, env, "PYTHONDONTWRITEBYTECODE", "1")
+	assertEnvEntryAbsent(t, env, "PYTHONDONTWRITEBYTECODE")
 	pythonPath, ok := lookupEnvEntry(env, "PYTHONPATH")
 	if !ok {
 		t.Fatalf("expected PYTHONPATH to be set")
@@ -66,7 +66,7 @@ func TestWithPythonRuntimeTraceEnvWithoutExistingPythonPath(t *testing.T) {
 	}
 
 	assertEnvEntryValue(t, env, "LOPPER_RUNTIME_TRACE", tracePath)
-	assertEnvEntryValue(t, env, "PYTHONDONTWRITEBYTECODE", "1")
+	assertEnvEntryAbsent(t, env, "PYTHONDONTWRITEBYTECODE")
 	assertEnvEntryValue(t, env, "PYTHONPATH", hookDir)
 }
 
@@ -98,6 +98,14 @@ func assertEnvEntryValue(t *testing.T, env []string, key, want string) {
 	}
 	if got != want {
 		t.Fatalf("expected %s=%q, got %q", key, want, got)
+	}
+}
+
+func assertEnvEntryAbsent(t *testing.T, env []string, key string) {
+	t.Helper()
+
+	if value, ok := lookupEnvEntry(env, key); ok {
+		t.Fatalf("expected %s to be absent, got %q", key, value)
 	}
 }
 
