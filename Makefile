@@ -172,6 +172,14 @@ fuzz-corpus-check:
 
 ci: fuzz-corpus-check
 
+.PHONY: runtime-pycache-check
+runtime-pycache-check:
+	@if [ -d scripts/runtime/__pycache__ ]; then \
+		echo "runtime Python bytecode artifacts must not be left in scripts/runtime"; \
+		find scripts/runtime/__pycache__ -type f -print; \
+		exit 1; \
+	fi
+
 cyclonedx-schema-check:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/report -run '^TestCycloneDXSchema'
 
@@ -557,7 +565,7 @@ build:
 manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov
+ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
 
 smoke: mod-check test-race build
 

@@ -122,6 +122,14 @@ func TestCapturePythonRuntimeImports(t *testing.T) {
 	if trace.DependencyLoadsByLanguage[key] == 0 {
 		t.Fatalf("expected thirdparty load in parsed trace, got %#v", trace.DependencyLoadsByLanguage)
 	}
+
+	hookDir, err := runtimePythonHookDirectory()
+	if err != nil {
+		t.Fatalf("runtime python hook directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(hookDir, "__pycache__")); !os.IsNotExist(err) {
+		t.Fatalf("expected runtime hook bytecode cache to be removed, stat error: %v", err)
+	}
 }
 
 func TestCaptureCommandFailure(t *testing.T) {
