@@ -476,21 +476,11 @@ func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatalf("mkdir repo: %v", err)
 	}
-	insideSource := filepath.Join(repo, "module", "src", "main", "java", testFileAppJava)
-	if got, want := sourceLayoutModuleRootWithinRepo(repo, insideSource), filepath.Join(repo, "module"); got != want {
-		t.Fatalf("inside source-layout root = %q, want %q", got, want)
-	}
-
 	outside := filepath.Join(t.TempDir(), "outside", "src", "main", "java")
 	relativeOutside, err := filepath.Rel(repo, outside)
 	if err != nil {
 		t.Fatalf("relative outside path: %v", err)
 	}
-	traversalPath := filepath.Join(repo, relativeOutside, testFileAppJava)
-	if got := sourceLayoutModuleRootWithinRepo(repo, traversalPath); got != "" {
-		t.Fatalf("expected traversal-derived source root to be rejected, got %q", got)
-	}
-
 	link := filepath.Join(repo, "linked-outside")
 	if err := os.MkdirAll(outside, 0o755); err != nil {
 		t.Fatalf("mkdir outside source layout: %v", err)
@@ -498,8 +488,22 @@ func TestSourceLayoutModuleRootStaysWithinRepository(t *testing.T) {
 	if err := os.Symlink(filepath.Dir(filepath.Dir(filepath.Dir(outside))), link); err != nil {
 		t.Skipf(errSymlinkFmt, err)
 	}
-	if got := sourceLayoutModuleRootWithinRepo(repo, filepath.Join(link, "src", "main", "java", testFileAppJava)); got != "" {
-		t.Fatalf("expected symlink-derived source root to be rejected, got %q", got)
+
+	for _, test := range []struct {
+		name       string
+		path       string
+		wantWithin bool
+	}{
+		{name: "nested module", path: filepath.Join(repo, "module", "src", "main", "java", testFileAppJava), wantWithin: true},
+		{name: "traversal", path: filepath.Join(repo, relativeOutside, testFileAppJava)},
+		{name: "symlink", path: filepath.Join(link, "src", "main", "java", testFileAppJava)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := sourceLayoutModuleRoot(test.path)
+			if got := shared.IsPathWithin(repo, root); got != test.wantWithin {
+				t.Fatalf("source-layout root %q within repository = %v, want %v", root, got, test.wantWithin)
+			}
+		})
 	}
 }
 
