@@ -30,6 +30,9 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 
 	usage := make(map[string]int, len(importCount))
 	scannable := MaskCommentsAndStringsWithProfile(content, inferMaskProfile(imports))
+	if hasKotlinSource(imports) {
+		scannable = maskKotlinDirectiveLines(scannable)
+	}
 	if hasUnicodeLocal || containsNonASCIIBytes(scannable) {
 		scanUnicodeTokenUsage(scannable, bareImportCount, usage)
 	} else {
@@ -42,17 +45,7 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 }
 
 func scanEscapedTokenUsage(content []byte, escapedLocals map[string]struct{}, usage map[string]int) {
-	directiveLines := kotlinDirectiveLines(content)
-
-	line := 1
 	for index := 0; index < len(content); index++ {
-		if content[index] == '\n' {
-			line++
-			continue
-		}
-		if directiveLines[line] {
-			continue
-		}
 		local, end, ok := escapedIdentifierAt(content, index)
 		if !ok {
 			continue
@@ -64,21 +57,36 @@ func scanEscapedTokenUsage(content []byte, escapedLocals map[string]struct{}, us
 	}
 }
 
-func kotlinDirectiveLines(content []byte) map[int]bool {
-	lines := make(map[int]bool)
-	line := 1
-	for start := 0; start < len(content); line++ {
+func hasKotlinSource(imports []ImportRecord) bool {
+	for _, imported := range imports {
+		switch strings.ToLower(filepath.Ext(imported.Location.File)) {
+		case ".kt", ".kts":
+			return true
+		}
+	}
+	return false
+}
+
+func maskKotlinDirectiveLines(content []byte) []byte {
+	masked := append([]byte(nil), content...)
+	for start := 0; start < len(masked); {
 		end := start
-		for end < len(content) && content[end] != '\n' {
+		for end < len(masked) && masked[end] != '\n' {
 			end++
 		}
-		trimmed := strings.TrimSpace(string(content[start:end]))
-		if strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "package ") {
-			lines[line] = true
+		if isKotlinDirective(masked[start:end]) {
+			for index := start; index < end; index++ {
+				masked[index] = ' '
+			}
 		}
 		start = end + 1
 	}
-	return lines
+	return masked
+}
+
+func isKotlinDirective(line []byte) bool {
+	fields := strings.Fields(string(line))
+	return len(fields) > 0 && (fields[0] == "import" || fields[0] == "package")
 }
 
 func escapedIdentifierAt(content []byte, start int) (string, int, bool) {

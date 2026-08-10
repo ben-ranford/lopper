@@ -120,13 +120,21 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if usage := countUsage(packageContent, packageImports); usage["when"] != 0 {
 		t.Fatalf("expected escaped package declaration to leave alias unused, got %d", usage["when"])
 	}
-	legalAliasContent := []byte("import com.acme.Widget as `WidgetAlias`\nWidgetAlias()\n")
-	legalAliasImports := parseImports(legalAliasContent, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	legalAliasContent := []byte("import com.Alias.Widget as `Alias`\nAlias()\n")
+	legalAliasImports := parseImports(legalAliasContent, "App.kt", "com.example.app", nil, map[string]string{"com.Alias": acmeLibName})
 	if len(legalAliasImports) != 1 || legalAliasImports[0].EscapedLocal {
 		t.Fatalf("expected legal bare alias to avoid escaped-only usage, got %#v", legalAliasImports)
 	}
-	if usage := countUsage(legalAliasContent, legalAliasImports); usage["WidgetAlias"] != 1 {
-		t.Fatalf("expected legal bare alias usage 1, got %d", usage["WidgetAlias"])
+	if usage := countUsage(legalAliasContent, legalAliasImports); usage["Alias"] != 1 {
+		t.Fatalf("expected legal bare alias usage 1, got %d", usage["Alias"])
+	}
+	if usage := countUsage([]byte("import com.Alias.Widget as `Alias`\n"), legalAliasImports); usage["Alias"] != 0 {
+		t.Fatalf("expected declaration-only legal alias to remain unused, got %d", usage["Alias"])
+	}
+	tabDirective := []byte("import\tcom.acme.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	tabImports := parseImports(tabDirective, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(tabDirective, tabImports); usage["when"] != 0 {
+		t.Fatalf("expected tab-separated import directive to leave escaped alias unused, got %d", usage["when"])
 	}
 
 	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
