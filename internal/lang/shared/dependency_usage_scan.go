@@ -42,12 +42,7 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 }
 
 func scanEscapedTokenUsage(content []byte, imports []ImportRecord, escapedLocals map[string]struct{}, usage map[string]int) {
-	declarationLines := make(map[int]struct{})
-	for _, imported := range imports {
-		if imported.EscapedLocal && imported.Location.Line > 0 {
-			declarationLines[imported.Location.Line] = struct{}{}
-		}
-	}
+	declarationLines := escapedImportDeclarationLines(imports)
 
 	line := 1
 	for index := 0; index < len(content); index++ {
@@ -55,25 +50,42 @@ func scanEscapedTokenUsage(content []byte, imports []ImportRecord, escapedLocals
 			line++
 			continue
 		}
-		if _, isDeclarationLine := declarationLines[line]; isDeclarationLine {
+		if declarationLines[line] {
 			continue
 		}
-		if content[index] != '`' {
+		local, end, ok := escapedIdentifierAt(content, index)
+		if !ok {
 			continue
 		}
-		end := index + 1
-		for end < len(content) && isWordByte(content[end]) {
-			end++
-		}
-		if end == index+1 || end >= len(content) || content[end] != '`' {
-			continue
-		}
-		local := string(content[index+1 : end])
 		if _, ok := escapedLocals[local]; ok {
 			usage[local]++
 		}
 		index = end
 	}
+}
+
+func escapedImportDeclarationLines(imports []ImportRecord) map[int]bool {
+	lines := make(map[int]bool)
+	for _, imported := range imports {
+		if imported.EscapedLocal && imported.Location.Line > 0 {
+			lines[imported.Location.Line] = true
+		}
+	}
+	return lines
+}
+
+func escapedIdentifierAt(content []byte, start int) (string, int, bool) {
+	if content[start] != '`' {
+		return "", start, false
+	}
+	end := start + 1
+	for end < len(content) && isWordByte(content[end]) {
+		end++
+	}
+	if end == start+1 || end >= len(content) || content[end] != '`' {
+		return "", start, false
+	}
+	return string(content[start+1 : end]), end, true
 }
 
 func scanTokenUsage(content []byte, importCount map[string]int, usage map[string]int) {
