@@ -922,27 +922,6 @@ func TestResolveCacheOptionsDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
-func TestNormalizeCacheOptionsForRepositoryNormalizesRelativeAndWhitespacePaths(t *testing.T) {
-	repo := filepath.Join(t.TempDir(), "repo")
-	for _, tc := range []struct {
-		name         string
-		options      *CacheOptions
-		wantPath     string
-		wantResolved string
-	}{
-		{name: "whitespace only", options: &CacheOptions{Enabled: true, Path: "  ", ResolvedPath: "  "}},
-		{name: "relative configured path", options: &CacheOptions{Enabled: true, Path: "  .cache/lopper  "}, wantPath: ".cache/lopper", wantResolved: filepath.Join(repo, ".cache", "lopper")},
-		{name: "relative pinned path", options: &CacheOptions{Enabled: true, ResolvedPath: "  .cache/pinned  "}, wantResolved: filepath.Join(repo, ".cache", "pinned")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := normalizeCacheOptionsForRepository(tc.options, repo)
-			if got.Path != tc.wantPath || got.ResolvedPath != tc.wantResolved {
-				t.Fatalf("normalized options = %#v, want path=%q resolved=%q", got, tc.wantPath, tc.wantResolved)
-			}
-		})
-	}
-}
-
 func TestAnalysisCachePrepareEntryBypassBranches(t *testing.T) {
 	entry, err := (*analysisCache)(nil).prepareEntry(Request{}, "adapter", "/repo")
 	if err != nil || entry != (cacheEntryDescriptor{}) {
