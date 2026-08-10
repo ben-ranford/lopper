@@ -1,6 +1,7 @@
 package baseline
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -73,20 +74,17 @@ func LoadSnapshotFile[T any](path string, options SnapshotDecodeOptions[T]) (T, 
 }
 
 func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, string, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err == nil {
-		version, typed, err := typedSnapshotVersion(fields)
-		if err != nil {
+	version, typed, err := inspectSnapshotEnvelope(data)
+	if err != nil {
+		var zero T
+		return zero, "", err
+	}
+	if typed {
+		if version != SnapshotSchemaVersion {
 			var zero T
-			return zero, "", err
+			return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
 		}
-		if typed {
-			if version != SnapshotSchemaVersion {
-				var zero T
-				return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
-			}
-			return decodeTypedSnapshot(data, version, options)
-		}
+		return decodeTypedSnapshot(data, options)
 	}
 
 	v, err := decodeLegacySnapshot(data, options.DecodeLegacy)
@@ -100,29 +98,7 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 	return v, "", nil
 }
 
-func typedSnapshotVersion(fields map[string]json.RawMessage) (string, bool, error) {
-	rawVersion, ok := snapshotField(fields, "baselineSchemaVersion")
-	if !ok {
-		return "", false, nil
-	}
-
-	if strings.TrimSpace(string(rawVersion)) == "null" {
-		return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
-	}
-	var version string
-	if err := json.Unmarshal(rawVersion, &version); err != nil {
-		return "", false, fmt.Errorf("invalid baseline schema version discriminator: %w", err)
-	}
-	if strings.TrimSpace(version) == "" {
-		if hasTypedSnapshotFields(fields) {
-			return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
-		}
-		return "", false, nil
-	}
-	return version, true, nil
-}
-
-func decodeTypedSnapshot[T any](data []byte, version string, options SnapshotDecodeOptions[T]) (T, string, error) {
+func decodeTypedSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, string, error) {
 	var snapshot Snapshot[T]
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		var zero T
@@ -135,22 +111,118 @@ func decodeTypedSnapshot[T any](data []byte, version string, options SnapshotDec
 	return v, strings.TrimSpace(snapshot.Key), nil
 }
 
-func hasTypedSnapshotFields(fields map[string]json.RawMessage) bool {
-	for _, field := range []string{"key", "savedAt", "report"} {
-		if _, ok := snapshotField(fields, field); ok {
-			return true
+func inspectSnapshotEnvelope(data []byte) (version string, typed bool, returnErr error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return "", false, nil
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok || delimiter != '{' {
+		return "", false, nil
+	}
+
+	var hasVersion, hasTypedFields bool
+	for decoder.More() {
+		fieldToken, err := decoder.Token()
+		if err != nil {
+			return "", false, nil
+		}
+		field, ok := fieldToken.(string)
+		if !ok {
+			return "", false, nil
+		}
+		switch {
+		case strings.EqualFold(field, "baselineSchemaVersion"):
+			if hasVersion {
+				return "", false, fmt.Errorf("invalid baseline schema version discriminator: duplicate case-folded field")
+			}
+			hasVersion = true
+			version, err = decodeSnapshotVersionToken(decoder)
+			if err != nil {
+				return "", false, err
+			}
+		case isTypedSnapshotField(field):
+			hasTypedFields = true
+			if err := skipJSONValue(decoder); err != nil {
+				return "", false, nil
+			}
+		default:
+			if err := skipJSONValue(decoder); err != nil {
+				return "", false, nil
+			}
 		}
 	}
-	return false
+	if _, err := decoder.Token(); err != nil {
+		return "", false, nil
+	}
+	if !hasVersion {
+		if hasTypedFields {
+			return "", false, fmt.Errorf("invalid baseline schema version discriminator: typed envelope requires a version")
+		}
+		return "", false, nil
+	}
+	if strings.TrimSpace(version) == "" {
+		if hasTypedFields {
+			return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+		}
+		return "", false, nil
+	}
+	return version, true, nil
 }
 
-func snapshotField(fields map[string]json.RawMessage, name string) (json.RawMessage, bool) {
-	for field, value := range fields {
-		if strings.EqualFold(field, name) {
-			return value, true
+func decodeSnapshotVersionToken(decoder *json.Decoder) (string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return "", err
+	}
+	if delimiter, ok := token.(json.Delim); ok {
+		if err := skipJSONDelimitedValue(decoder, delimiter); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("invalid baseline schema version discriminator: must be a string")
+	}
+	if token == nil {
+		return "", fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+	}
+	if _, ok := token.(float64); ok {
+		return "", fmt.Errorf("invalid baseline schema version discriminator: json: cannot unmarshal number into Go value of type string")
+	}
+	version, ok := token.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid baseline schema version discriminator: must be a string")
+	}
+	return version, nil
+}
+
+func isTypedSnapshotField(field string) bool {
+	return strings.EqualFold(field, "key") || strings.EqualFold(field, "savedAt") || strings.EqualFold(field, "report")
+}
+
+func skipJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if delimiter, ok := token.(json.Delim); ok {
+		return skipJSONDelimitedValue(decoder, delimiter)
+	}
+	return nil
+}
+
+func skipJSONDelimitedValue(decoder *json.Decoder, delimiter json.Delim) error {
+	for decoder.More() {
+		if delimiter == '{' {
+			if _, err := decoder.Token(); err != nil {
+				return err
+			}
+		}
+		if err := skipJSONValue(decoder); err != nil {
+			return err
 		}
 	}
-	return nil, false
+	_, err := decoder.Token()
+	return err
 }
 
 func LoadConfiguredSnapshot[T any](path string, store SnapshotStore[T]) (T, string, error) {

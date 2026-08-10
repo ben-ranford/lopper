@@ -232,6 +232,16 @@ func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *te
 			wantKey:   "label:case",
 		},
 		{
+			name:    "duplicate case folded discriminator",
+			data:    `{"baselineSchemaVersion":"1.0.0","BaselineSchemaVersion":"9.9.9","report":{"value":"snapshot"}}`,
+			wantErr: "invalid baseline schema version discriminator: duplicate case-folded field",
+		},
+		{
+			name:    "typed envelope missing discriminator",
+			data:    `{"key":"label:missing","report":{"value":"snapshot"}}`,
+			wantErr: "invalid baseline schema version discriminator: typed envelope requires a version",
+		},
+		{
 			name:    "blank typed discriminator",
 			data:    `{"baselineSchemaVersion":" ","report":{"value":"snapshot"}}`,
 			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
@@ -248,6 +258,45 @@ func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			assertSnapshotDecodeCompatibility(t, tc)
+		})
+	}
+}
+
+func TestInspectSnapshotEnvelopeScansLargeReport(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"baselineSchemaVersion":"1.0.0","report":{"payload":"` + strings.Repeat("x", 1<<20) + `"}}`)
+	version, typed, err := inspectSnapshotEnvelope(data)
+	if err != nil || !typed || version != SnapshotSchemaVersion {
+		t.Fatalf("inspectSnapshotEnvelope() = %q, %v, %v", version, typed, err)
+	}
+}
+
+func TestInspectSnapshotEnvelopeMalformedValueBranches(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		data    string
+		wantErr bool
+	}{
+		{name: "empty input", data: ""},
+		{name: "top level array", data: "[]"},
+		{name: "incomplete object key", data: `{"`},
+		{name: "incomplete typed field", data: `{"report":`},
+		{name: "incomplete nested typed field key", data: `{"report":{"`},
+		{name: "incomplete ordinary field", data: `{"value":`},
+		{name: "incomplete discriminator", data: `{"baselineSchemaVersion":`, wantErr: true},
+		{name: "object discriminator", data: `{"baselineSchemaVersion":{"nested":true}}`, wantErr: true},
+		{name: "incomplete object discriminator", data: `{"baselineSchemaVersion":{`, wantErr: true},
+		{name: "boolean discriminator", data: `{"baselineSchemaVersion":true}`, wantErr: true},
+		{name: "nested report arrays", data: `{"baselineSchemaVersion":"1.0.0","report":{"items":[{"value":1}]}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := inspectSnapshotEnvelope([]byte(test.data))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("inspectSnapshotEnvelope(%q) error = %v, want error=%v", test.data, err, test.wantErr)
+			}
 		})
 	}
 }
