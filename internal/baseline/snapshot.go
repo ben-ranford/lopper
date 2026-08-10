@@ -80,8 +80,12 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 			var zero T
 			return zero, "", err
 		}
-		if typed {
-			return decodeTypedSnapshot(data, version, options)
+	if typed {
+		if version != SnapshotSchemaVersion {
+			var zero T
+			return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
+		}
+		return decodeTypedSnapshot(data, version, options)
 		}
 	}
 
@@ -97,17 +101,17 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 }
 
 func typedSnapshotVersion(fields map[string]json.RawMessage) (string, bool, error) {
-	rawVersion, ok := fields["baselineSchemaVersion"]
+	rawVersion, ok := snapshotField(fields, "baselineSchemaVersion")
 	if !ok {
 		return "", false, nil
 	}
 
+	if strings.TrimSpace(string(rawVersion)) == "null" {
+		return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+	}
 	var version string
 	if err := json.Unmarshal(rawVersion, &version); err != nil {
 		return "", false, fmt.Errorf("invalid baseline schema version discriminator: %w", err)
-	}
-	if strings.TrimSpace(string(rawVersion)) == "null" {
-		return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
 	}
 	if strings.TrimSpace(version) == "" {
 		if hasTypedSnapshotFields(fields) {
@@ -124,10 +128,6 @@ func decodeTypedSnapshot[T any](data []byte, version string, options SnapshotDec
 		var zero T
 		return zero, "", fmt.Errorf("decode typed baseline snapshot: %w", err)
 	}
-	if version != SnapshotSchemaVersion {
-		var zero T
-		return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
-	}
 	v := snapshot.Report
 	if options.Repair != nil {
 		v = options.Repair(v)
@@ -137,11 +137,20 @@ func decodeTypedSnapshot[T any](data []byte, version string, options SnapshotDec
 
 func hasTypedSnapshotFields(fields map[string]json.RawMessage) bool {
 	for _, field := range []string{"key", "savedAt", "report"} {
-		if _, ok := fields[field]; ok {
+		if _, ok := snapshotField(fields, field); ok {
 			return true
 		}
 	}
 	return false
+}
+
+func snapshotField(fields map[string]json.RawMessage, name string) (json.RawMessage, bool) {
+	for field, value := range fields {
+		if strings.EqualFold(field, name) {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func LoadConfiguredSnapshot[T any](path string, store SnapshotStore[T]) (T, string, error) {

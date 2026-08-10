@@ -221,6 +221,17 @@ func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *te
 			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
 		},
 		{
+			name:    "case insensitive null discriminator",
+			data:    `{"BaselineSchemaVersion":null,"value":"legacy"}`,
+			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
+		},
+		{
+			name:      "case insensitive typed discriminator",
+			data:      `{"BaselineSchemaVersion":"1.0.0","Key":"label:case","Report":{"value":"snapshot"}}`,
+			wantValue: "SNAPSHOT",
+			wantKey:   "label:case",
+		},
+		{
 			name:    "blank typed discriminator",
 			data:    `{"baselineSchemaVersion":" ","report":{"value":"snapshot"}}`,
 			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
@@ -244,7 +255,7 @@ func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *te
 func TestDecodeSnapshotRejectsUnsupportedSchemaWithCustomError(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := DecodeSnapshot([]byte(`{"baselineSchemaVersion":"9.9.9","key":"label:bad","report":{"value":"x"}}`), SnapshotDecodeOptions[testSnapshotReport]{
+	_, _, err := DecodeSnapshot([]byte(`{"baselineSchemaVersion":"9.9.9","key":1,"report":{"value":"x"}}`), SnapshotDecodeOptions[testSnapshotReport]{
 		DecodeLegacy: decodeTestSnapshotReport,
 		UnsupportedSchema: func(version string) error {
 			return fmt.Errorf("unsupported custom baseline schema version: %s", version)
