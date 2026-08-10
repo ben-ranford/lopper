@@ -206,6 +206,41 @@ func TestDecodeSnapshotSchemaVersionCompatibility(t *testing.T) {
 	}
 }
 
+func TestDecodeSnapshotRejectsMalformedDiscriminatorsWithoutLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []snapshotDecodeCompatibilityCase{
+		{
+			name:    "number discriminator",
+			data:    `{"baselineSchemaVersion":1,"value":"legacy"}`,
+			wantErr: "invalid baseline schema version discriminator: json: cannot unmarshal number into Go value of type string",
+		},
+		{
+			name:    "null discriminator",
+			data:    `{"baselineSchemaVersion":null,"value":"legacy"}`,
+			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
+		},
+		{
+			name:    "blank typed discriminator",
+			data:    `{"baselineSchemaVersion":" ","report":{"value":"snapshot"}}`,
+			wantErr: "invalid baseline schema version discriminator: must be a non-empty string",
+		},
+		{
+			name:    "malformed typed envelope",
+			data:    `{"baselineSchemaVersion":"1.0.0","key":1,"value":"legacy"}`,
+			wantErr: "decode typed baseline snapshot: json: cannot unmarshal number into Go struct field Snapshot[github.com/ben-ranford/lopper/internal/baseline.testSnapshotReport].key of type string",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertSnapshotDecodeCompatibility(t, tc)
+		})
+	}
+}
+
 func TestDecodeSnapshotRejectsUnsupportedSchemaWithCustomError(t *testing.T) {
 	t.Parallel()
 

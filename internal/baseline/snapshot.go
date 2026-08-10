@@ -73,18 +73,16 @@ func LoadSnapshotFile[T any](path string, options SnapshotDecodeOptions[T]) (T, 
 }
 
 func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, string, error) {
-	var snapshot Snapshot[T]
-	if err := json.Unmarshal(data, &snapshot); err == nil && strings.TrimSpace(snapshot.BaselineSchemaVersion) != "" {
-		version := snapshot.BaselineSchemaVersion
-		if version != SnapshotSchemaVersion {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err == nil {
+		version, typed, err := typedSnapshotVersion(fields)
+		if err != nil {
 			var zero T
-			return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
+			return zero, "", err
 		}
-		v := snapshot.Report
-		if options.Repair != nil {
-			v = options.Repair(v)
+		if typed {
+			return decodeTypedSnapshot(data, version, options)
 		}
-		return v, strings.TrimSpace(snapshot.Key), nil
 	}
 
 	v, err := decodeLegacySnapshot(data, options.DecodeLegacy)
@@ -96,6 +94,54 @@ func DecodeSnapshot[T any](data []byte, options SnapshotDecodeOptions[T]) (T, st
 		v = options.Repair(v)
 	}
 	return v, "", nil
+}
+
+func typedSnapshotVersion(fields map[string]json.RawMessage) (string, bool, error) {
+	rawVersion, ok := fields["baselineSchemaVersion"]
+	if !ok {
+		return "", false, nil
+	}
+
+	var version string
+	if err := json.Unmarshal(rawVersion, &version); err != nil {
+		return "", false, fmt.Errorf("invalid baseline schema version discriminator: %w", err)
+	}
+	if strings.TrimSpace(string(rawVersion)) == "null" {
+		return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+	}
+	if strings.TrimSpace(version) == "" {
+		if hasTypedSnapshotFields(fields) {
+			return "", false, fmt.Errorf("invalid baseline schema version discriminator: must be a non-empty string")
+		}
+		return "", false, nil
+	}
+	return version, true, nil
+}
+
+func decodeTypedSnapshot[T any](data []byte, version string, options SnapshotDecodeOptions[T]) (T, string, error) {
+	var snapshot Snapshot[T]
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		var zero T
+		return zero, "", fmt.Errorf("decode typed baseline snapshot: %w", err)
+	}
+	if version != SnapshotSchemaVersion {
+		var zero T
+		return zero, "", snapshotSchemaError(version, options.UnsupportedSchema)
+	}
+	v := snapshot.Report
+	if options.Repair != nil {
+		v = options.Repair(v)
+	}
+	return v, strings.TrimSpace(snapshot.Key), nil
+}
+
+func hasTypedSnapshotFields(fields map[string]json.RawMessage) bool {
+	for _, field := range []string{"key", "savedAt", "report"} {
+		if _, ok := fields[field]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func LoadConfiguredSnapshot[T any](path string, store SnapshotStore[T]) (T, string, error) {
