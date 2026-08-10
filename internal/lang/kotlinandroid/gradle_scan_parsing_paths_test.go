@@ -625,6 +625,11 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if usage := countUsage([]byte("import com.acme.`when`\n`when`()\n"), directImports); usage["when"] != 1 {
 		t.Fatalf("expected escaped terminal import usage 1, got %d", usage["when"])
 	}
+	packageContent := []byte("package pkg.demo.`when`\nimport com.acme.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	packageImports := parseImports(packageContent, testMainSourceFileName, "pkg.demo.`when`", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
+	if usage := countUsage(packageContent, packageImports); usage["when"] != 0 {
+		t.Fatalf("expected escaped package declaration to leave alias unused, got %d", usage["when"])
+	}
 
 	unsupportedSymbol := parseImports([]byte("import com.acme.`my type`\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
 	if len(unsupportedSymbol) != 0 {

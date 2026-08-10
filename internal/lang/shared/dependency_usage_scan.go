@@ -35,14 +35,14 @@ func CountUsage(content []byte, imports []ImportRecord) map[string]int {
 	} else {
 		scanTokenUsage(scannable, bareImportCount, usage)
 	}
-	scanEscapedTokenUsage(scannable, imports, escapedOnlyLocals, usage)
+	scanEscapedTokenUsage(scannable, escapedOnlyLocals, usage)
 	subtractDeclarationTokenHits(scannable, imports, usage)
 	clampUsageCounts(importCount, usage)
 	return usage
 }
 
-func scanEscapedTokenUsage(content []byte, imports []ImportRecord, escapedLocals map[string]struct{}, usage map[string]int) {
-	declarationLines := escapedImportDeclarationLines(imports)
+func scanEscapedTokenUsage(content []byte, escapedLocals map[string]struct{}, usage map[string]int) {
+	directiveLines := kotlinDirectiveLines(content)
 
 	line := 1
 	for index := 0; index < len(content); index++ {
@@ -50,7 +50,7 @@ func scanEscapedTokenUsage(content []byte, imports []ImportRecord, escapedLocals
 			line++
 			continue
 		}
-		if declarationLines[line] {
+		if directiveLines[line] {
 			continue
 		}
 		local, end, ok := escapedIdentifierAt(content, index)
@@ -64,12 +64,19 @@ func scanEscapedTokenUsage(content []byte, imports []ImportRecord, escapedLocals
 	}
 }
 
-func escapedImportDeclarationLines(imports []ImportRecord) map[int]bool {
+func kotlinDirectiveLines(content []byte) map[int]bool {
 	lines := make(map[int]bool)
-	for _, imported := range imports {
-		if imported.EscapedLocal && imported.Location.Line > 0 {
-			lines[imported.Location.Line] = true
+	line := 1
+	for start := 0; start < len(content); line++ {
+		end := start
+		for end < len(content) && content[end] != '\n' {
+			end++
 		}
+		trimmed := strings.TrimSpace(string(content[start:end]))
+		if strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "package ") {
+			lines[line] = true
+		}
+		start = end + 1
 	}
 	return lines
 }

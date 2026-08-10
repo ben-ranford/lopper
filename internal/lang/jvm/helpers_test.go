@@ -115,6 +115,11 @@ func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	if usage := countUsage([]byte("import com.acme.`when`\n`when`()\n"), directImports); usage["when"] != 1 {
 		t.Fatalf("expected escaped terminal import usage 1, got %d", usage["when"])
 	}
+	packageContent := []byte("package com.example.`when`\nimport com.acme.Widget as `when`\nfun call(value: Boolean) { if (value) when { else -> Unit } }\n")
+	packageImports := parseImports(packageContent, "App.kt", "com.example.`when`", nil, map[string]string{"com.acme": acmeLibName})
+	if usage := countUsage(packageContent, packageImports); usage["when"] != 0 {
+		t.Fatalf("expected escaped package declaration to leave alias unused, got %d", usage["when"])
+	}
 
 	unsupportedAlias := []byte("import com.acme.Widget as `my type`\n`my type`()\n")
 	if imports := parseImports(unsupportedAlias, "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName}); len(imports) != 0 {
