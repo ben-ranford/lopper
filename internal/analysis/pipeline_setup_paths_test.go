@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -18,6 +19,67 @@ func TestAnalysisPipelineAdditionalSetupBranches(t *testing.T) {
 		IncludePatterns: []string{invalidPattern},
 	}); err == nil {
 		t.Fatalf("expected newAnalysisPipeline to surface applyPathScope failures")
+	}
+}
+
+func TestNewAnalysisPipelineExcludesRepositoryCacheFromScopedWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cachePath string
+		include   []string
+		exclude   []string
+		cacheDir  string
+	}{
+		{name: "default cache with broad include", include: []string{"**"}, cacheDir: cacheDirName},
+		{name: "configured relative cache with exclude-only scope", cachePath: "  .cache/lopper  ", exclude: []string{"ignored/**"}, cacheDir: filepath.Join(".cache", "lopper")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, "src", "index.js"), "export const value = 1\n")
+			writeFile(t, filepath.Join(repo, tc.cacheDir, "objects", "seed.js"), "export const cached = true\n")
+
+			service, _ := newCacheTestService(t)
+			pipeline, err := service.newAnalysisPipeline(context.Background(), Request{
+				RepoPath:        filepath.Join(repo, "."),
+				Language:        "cachelang",
+				IncludePatterns: tc.include,
+				ExcludePatterns: tc.exclude,
+				Cache:           &CacheOptions{Enabled: true, Path: tc.cachePath},
+			})
+			if err != nil {
+				t.Fatalf("create scoped pipeline: %v", err)
+			}
+			defer pipeline.cleanup()
+
+			if got, want := pipeline.cache.options.Path, filepath.Join(repo, tc.cacheDir); got != want {
+				t.Fatalf("cache root = %q, want %q", got, want)
+			}
+			if _, err := os.Stat(filepath.Join(pipeline.analysisRepoPath, tc.cacheDir)); !os.IsNotExist(err) {
+				t.Fatalf("expected scoped workspace to omit configured cache root, stat err=%v", err)
+			}
+		})
+	}
+}
+
+func TestNewAnalysisPipelineIncludesConfiguredCachePathWhenCachingIsDisabled(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", "index.js"), "export const value = 1\n")
+	writeFile(t, filepath.Join(repo, "src", "generated", "cached.js"), "export const cached = true\n")
+
+	service, _ := newCacheTestService(t)
+	pipeline, err := service.newAnalysisPipeline(context.Background(), Request{
+		RepoPath:        repo,
+		Language:        "cachelang",
+		IncludePatterns: []string{"**"},
+		Cache:           &CacheOptions{Enabled: false, Path: filepath.Join("src", "generated")},
+	})
+	if err != nil {
+		t.Fatalf("create scoped pipeline: %v", err)
+	}
+	defer pipeline.cleanup()
+
+	if _, err := os.Stat(filepath.Join(pipeline.analysisRepoPath, "src", "generated", "cached.js")); err != nil {
+		t.Fatalf("expected configured cache path to remain in scoped workspace when caching is disabled: %v", err)
 	}
 }
 

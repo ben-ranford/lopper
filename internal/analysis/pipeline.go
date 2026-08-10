@@ -42,7 +42,13 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 	}
 
 	req.ScopeMode = normalizeScopeMode(req.ScopeMode)
-	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScopeWithContext(ctx, repoPath, req.IncludePatterns, req.ExcludePatterns)
+	req.Cache = normalizeCacheOptionsForRepository(req.Cache, repoPath)
+	cacheOptions := resolveCacheOptions(req.Cache, repoPath)
+	cacheRoot := ""
+	if cacheOptions.Enabled {
+		cacheRoot = cacheOptions.Path
+	}
+	analysisRepoPath, scopeWarnings, cleanupFn, err := applyPathScopeWithContext(ctx, repoPath, req.IncludePatterns, req.ExcludePatterns, cacheRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +66,7 @@ func (s *Service) newAnalysisPipeline(ctx context.Context, req Request) (*analys
 		scopeWarnings:    scopeWarnings,
 		cleanupFn:        cleanupFn,
 		candidates:       candidates,
-		cache:            newAnalysisCache(req, analysisRepoPath),
+		cache:            newAnalysisCache(req, repoPath, analysisRepoPath),
 	}, nil
 }
 

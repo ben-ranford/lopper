@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 const (
@@ -51,6 +52,7 @@ type scopeWalker struct {
 	excludeCompiled []compiledPattern
 	stats           *scopeStats
 	budget          scopeCopyBudget
+	skippedDirs     map[string]struct{}
 }
 
 type compiledPattern struct {
@@ -93,7 +95,7 @@ func applyPathScope(repoPath string, includePatterns []string, excludePatterns [
 	return applyPathScopeWithContext(context.Background(), repoPath, includePatterns, excludePatterns)
 }
 
-func applyPathScopeWithContext(ctx context.Context, repoPath string, includePatterns []string, excludePatterns []string) (string, []string, func(), error) {
+func applyPathScopeWithContext(ctx context.Context, repoPath string, includePatterns []string, excludePatterns []string, skippedDirs ...string) (string, []string, func(), error) {
 	includePatterns = normalizePatterns(includePatterns)
 	excludePatterns = normalizePatterns(excludePatterns)
 	if len(includePatterns) == 0 && len(excludePatterns) == 0 {
@@ -128,6 +130,7 @@ func applyPathScopeWithContext(ctx context.Context, repoPath string, includePatt
 		excludeCompiled: excludeCompiled,
 		stats:           stats,
 		budget:          newScopeCopyBudget(),
+		skippedDirs:     scopedCopySkippedDirs(repoPath, skippedDirs),
 	}
 
 	walkErr := filepath.WalkDir(repoPath, walker.walkWithContext(ctx))
@@ -172,9 +175,30 @@ func (w *scopeWalker) walkEntry(ctx context.Context, currentPath string, entry f
 		if entry.Name() == ".git" {
 			return filepath.SkipDir
 		}
+		if _, skip := w.skippedDirs[filepath.Clean(currentPath)]; skip {
+			return filepath.SkipDir
+		}
 		return nil
 	}
 	return w.walkFile(ctx, currentPath, entry)
+}
+
+func scopedCopySkippedDirs(repoPath string, paths []string) map[string]struct{} {
+	skipped := make(map[string]struct{}, len(paths))
+	repoPath = filepath.Clean(repoPath)
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		rel, err := filepath.Rel(repoPath, path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		skipped[path] = struct{}{}
+	}
+	return skipped
 }
 
 func (w *scopeWalker) walkFile(ctx context.Context, currentPath string, entry fs.DirEntry) error {

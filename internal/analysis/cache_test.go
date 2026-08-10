@@ -151,6 +151,34 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 	}
 }
 
+func TestScopedAnalysisReusesRepositoryRelativeCache(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", cacheTestJSIndexFileName), "export const value = 1\n")
+
+	service, adapter := newCacheTestService(t)
+	req := newCacheRequest(repo, "  .cache/lopper  ", false)
+	req.IncludePatterns = []string{"**"}
+
+	first, err := service.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first scoped analysis: %v", err)
+	}
+	if first.Cache == nil || first.Cache.Path != filepath.Join(repo, ".cache", "lopper") || first.Cache.Misses != 1 || first.Cache.Writes != 1 {
+		t.Fatalf("unexpected first scoped cache metadata: %#v", first.Cache)
+	}
+
+	second, err := service.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second scoped analysis: %v", err)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 || second.Cache.Misses != 0 || second.Cache.Writes != 0 {
+		t.Fatalf("expected second scoped analysis to reuse the cache, got %#v", second.Cache)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected cached scoped analysis to call adapter once, got %d", adapter.calls)
+	}
+}
+
 func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")

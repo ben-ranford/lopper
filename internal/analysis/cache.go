@@ -16,15 +16,17 @@ type resolvedCacheOptions struct {
 }
 
 type analysisCache struct {
-	options         resolvedCacheOptions
-	metadata        report.CacheMetadata
-	warnings        []string
-	cacheable       bool
-	rejectReadHits  bool
-	inputDigestMemo map[cacheInputDigestMemoKey]string
+	options          resolvedCacheOptions
+	metadata         report.CacheMetadata
+	warnings         []string
+	cacheable        bool
+	rejectReadHits   bool
+	inputDigestMemo  map[cacheInputDigestMemoKey]string
+	stableRepoPath   string
+	analysisRepoPath string
 }
 
-func newAnalysisCache(req Request, repoPath string) *analysisCache {
+func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
 	metadata := report.CacheMetadata{
 		Enabled:  options.Enabled,
@@ -32,10 +34,15 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 		ReadOnly: options.ReadOnly,
 	}
 	cache := &analysisCache{
-		options:        options,
-		metadata:       metadata,
-		warnings:       make([]string, 0),
-		rejectReadHits: !options.ExplicitPath,
+		options:          options,
+		metadata:         metadata,
+		warnings:         make([]string, 0),
+		rejectReadHits:   !options.ExplicitPath,
+		stableRepoPath:   filepath.Clean(repoPath),
+		analysisRepoPath: filepath.Clean(repoPath),
+	}
+	if len(analysisRepoPaths) > 0 && strings.TrimSpace(analysisRepoPaths[0]) != "" {
+		cache.analysisRepoPath = filepath.Clean(analysisRepoPaths[0])
 	}
 	if !options.Enabled {
 		cache.cacheable = false
@@ -60,6 +67,18 @@ func newAnalysisCache(req Request, repoPath string) *analysisCache {
 	}
 	cache.cacheable = true
 	return cache
+}
+
+func (c *analysisCache) stableCacheRoot(rootPath string) string {
+	if c == nil {
+		return rootPath
+	}
+	rootPath = filepath.Clean(rootPath)
+	rel, err := filepath.Rel(c.analysisRepoPath, rootPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return rootPath
+	}
+	return filepath.Join(c.stableRepoPath, rel)
 }
 
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
@@ -100,6 +119,31 @@ func resolveCacheOptions(req *CacheOptions, repoPath string) resolvedCacheOption
 	}
 	options.ReadOnly = req.ReadOnly
 	return options
+}
+
+func normalizeCacheOptionsForRepository(req *CacheOptions, repoPath string) *CacheOptions {
+	if req == nil {
+		return nil
+	}
+
+	options := *req
+	options.Path = strings.TrimSpace(options.Path)
+	options.ResolvedPath = resolveCachePathForRepository(repoPath, options.ResolvedPath)
+	if options.ResolvedPath == "" {
+		options.ResolvedPath = resolveCachePathForRepository(repoPath, options.Path)
+	}
+	return &options
+}
+
+func resolveCachePathForRepository(repoPath, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(repoPath, path)
 }
 
 func (c *analysisCache) warn(message string) {

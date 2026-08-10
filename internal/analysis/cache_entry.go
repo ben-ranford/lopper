@@ -38,10 +38,11 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 	}
 	adapterID = strings.TrimSpace(adapterID)
 	normalizedRoot = filepath.Clean(normalizedRoot)
+	stableRoot := c.stableCacheRoot(normalizedRoot)
 	baseKey := map[string]any{
 		"schema":         schemaVersion,
 		"adapter":        adapterID,
-		"root":           normalizedRoot,
+		"root":           stableRoot,
 		"dependency":     req.Dependency,
 		"language":       normalizeCacheLanguage(req.Language),
 		"topN":           req.TopN,
@@ -71,6 +72,9 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 	if len(req.LicenseDenyList) > 0 {
 		baseKey["licenseDeny"] = req.LicenseDenyList
 	}
+	if scopeIdentity := normalizedScopeCacheIdentity(req); scopeIdentity != nil {
+		baseKey["pathScope"] = scopeIdentity
+	}
 	baseKey["includeRegistryProvenance"] = req.IncludeRegistryProvenance
 	baseDigest, err := hashJSON(baseKey)
 	if err != nil {
@@ -81,10 +85,26 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 		return cacheEntryDescriptor{}, err
 	}
 	return cacheEntryDescriptor{
-		KeyLabel:    adapterID + ":" + normalizedRoot,
+		KeyLabel:    adapterID + ":" + stableRoot,
 		KeyDigest:   baseDigest,
 		InputDigest: inputDigest,
 	}, nil
+}
+
+type scopeCacheIdentity struct {
+	Include []string `json:"include,omitempty"`
+	Exclude []string `json:"exclude,omitempty"`
+}
+
+func normalizedScopeCacheIdentity(req Request) *scopeCacheIdentity {
+	identity := &scopeCacheIdentity{
+		Include: normalizePatterns(req.IncludePatterns),
+		Exclude: normalizePatterns(req.ExcludePatterns),
+	}
+	if len(identity.Include) == 0 && len(identity.Exclude) == 0 {
+		return nil
+	}
+	return identity
 }
 
 func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string, error) {
