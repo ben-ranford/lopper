@@ -92,6 +92,13 @@ func TestJVMParsePackageAndImports(t *testing.T) {
 	}
 }
 
+func TestJVMParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
+	imports := parseImports([]byte("import com.acme.`when`.Widget as `type`\n"), "App.kt", "com.example.app", nil, map[string]string{"com.acme": acmeLibName})
+	if len(imports) != 1 || imports[0].Module != "com.acme.`when`.Widget" || imports[0].Name != "Widget" || imports[0].Local != "`type`" || imports[0].Dependency != acmeLibName {
+		t.Fatalf("expected Kotlin backtick alias import, got %#v", imports)
+	}
+}
+
 func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
 	content := []byte(`package com.example.app;
 import java.util.List;

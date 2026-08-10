@@ -171,10 +171,7 @@ func isSourceFile(path string) bool {
 
 var (
 	packagePattern = regexp.MustCompile(`(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_\.]*)\s*;?\s*$`)
-	importPattern  = regexp.MustCompile(`(?m)^\s*import\s+(?:static\s+)?([A-Za-z_][A-Za-z0-9_\.]*)(\.\*)?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$`)
 )
-
-const importPatternMatchGroups = 4
 
 func parsePackage(content []byte) string {
 	matches := packagePattern.FindSubmatch(content)
@@ -188,8 +185,8 @@ func parseImports(content []byte, filePath string, filePackage string, lookups d
 	sanitized := shared.StripBlockComments(content)
 	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
 		line = stripLineComment(line)
-		matches := importPattern.FindStringSubmatch(line)
-		if len(matches) != importPatternMatchGroups {
+		matches := shared.MatchJVMImport(line)
+		if len(matches) != shared.JVMImportMatchGroups {
 			return nil
 		}
 		module := strings.TrimSpace(matches[1])
