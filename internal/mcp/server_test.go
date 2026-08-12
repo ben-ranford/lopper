@@ -784,7 +784,7 @@ func TestTrustedReadOnlyCacheAliasForGOOS(t *testing.T) {
 	}{
 		"non-Darwin":    {goos: "linux", path: "/tmp/.lopper-cache"},
 		"relative path": {goos: "darwin", path: "tmp/.lopper-cache"},
-		"outside temp":  {goos: "darwin", path: t.TempDir()},
+		"outside temp":  {goos: "darwin", path: "/var/empty/lopper-cache"},
 		"missing cache": {goos: "darwin", path: "/tmp/lopper-cache-does-not-exist"},
 	} {
 		t.Run(name, func(t *testing.T) {
