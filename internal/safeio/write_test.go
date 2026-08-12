@@ -1007,6 +1007,46 @@ func TestOpenOrCreatePinnedDirectoryPropagatesFailures(t *testing.T) {
 	if _, err := OpenOrCreatePinnedDirectory(openFailureRoot, "/root", "child", 0o750); !errors.Is(err, expectedErr) {
 		t.Fatalf("open child error = %v, want %v", err, expectedErr)
 	}
+	t.Run("rejects child replaced while opening", func(t *testing.T) {
+		changedInfo, err := os.Stat(t.TempDir())
+		if err != nil {
+			t.Fatalf("stat changed directory: %v", err)
+		}
+		closed := false
+		openedChild := &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil },
+			close: func() error { closed = true; return nil },
+		}
+		root := &fakeRoot{
+			lstat:    func(string) (fs.FileInfo, error) { return info, nil },
+			openRoot: func(string) (Root, error) { return openedChild, nil },
+		}
+
+		if _, err := OpenOrCreatePinnedDirectory(root, "/root", "child", 0o750); err == nil || !strings.Contains(err.Error(), "directory changed while opening") {
+			t.Fatalf("changed child error = %v, want directory identity rejection", err)
+		}
+		if !closed {
+			t.Fatal("expected changed child handle to close")
+		}
+	})
+	t.Run("closes child when identity check fails", func(t *testing.T) {
+		closed := false
+		openedChild := &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return nil, expectedErr },
+			close: func() error { closed = true; return nil },
+		}
+		root := &fakeRoot{
+			lstat:    func(string) (fs.FileInfo, error) { return info, nil },
+			openRoot: func(string) (Root, error) { return openedChild, nil },
+		}
+
+		if _, err := OpenOrCreatePinnedDirectory(root, "/root", "child", 0o750); !errors.Is(err, expectedErr) {
+			t.Fatalf("opened child lstat error = %v, want %v", err, expectedErr)
+		}
+		if !closed {
+			t.Fatal("expected child handle to close after identity check failure")
+		}
+	})
 }
 
 func TestWriteRootIfAbsentRejectsExistingTarget(t *testing.T) {
