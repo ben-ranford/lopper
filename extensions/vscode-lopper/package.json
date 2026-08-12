@@ -64,6 +64,7 @@
     "onView:lopperExplorer"
   ],
   "main": "./out/extension.js",
+  "icon": "images/lopper-icon.png",
   "contributes": {
     "commands": [
       {
