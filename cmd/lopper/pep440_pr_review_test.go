@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
@@ -86,9 +88,19 @@ func createPEP440PRReviewGitRepo(t *testing.T) (string, string, string) {
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "src", "app.txt"), "base\n")
 	testutil.RunGit(t, repoPath, "add", ".")
 	testutil.RunGit(t, repoPath, "-c", "user.email=pep440-test@example.com", "-c", "user.name=PEP 440 Test", "commit", "-m", "base")
-	baseSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
+	baseSHA := gitHeadSHA(t, repoPath)
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "src", "app.txt"), "head\n")
 	testutil.RunGit(t, repoPath, "add", ".")
 	testutil.RunGit(t, repoPath, "-c", "user.email=pep440-test@example.com", "-c", "user.name=PEP 440 Test", "commit", "-m", "head")
-	return repoPath, baseSHA, testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
+	return repoPath, baseSHA, gitHeadSHA(t, repoPath)
+}
+
+func gitHeadSHA(t *testing.T, repoPath string) string {
+	t.Helper()
+
+	output, err := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("resolve HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(output))
 }
