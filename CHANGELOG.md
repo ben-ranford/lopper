@@ -26,6 +26,7 @@ Unreleased feature-flag migration guidance is maintained in the [v2 stable alias
 * **python:** reject symlinked src roots ([#1465](https://github.com/ben-ranford/lopper/issues/1465)) ([3e6bdf6](https://github.com/ben-ranford/lopper/commit/3e6bdf69e4eb0b7d15011331b88ef9729e3d48ba))
 * **release:** generate VS Code extension release notes ([#1482](https://github.com/ben-ranford/lopper/issues/1482)) ([1148bf8](https://github.com/ben-ranford/lopper/commit/1148bf872253b9d9e100d6e184960a4873ab2b5c))
 * **release:** harden VS Code release notes ([1148bf8](https://github.com/ben-ranford/lopper/commit/1148bf872253b9d9e100d6e184960a4873ab2b5c))
+* **release:** scope release notes push credentials ([#1499](https://github.com/ben-ranford/lopper/issues/1499)) ([abbc768](https://github.com/ben-ranford/lopper/commit/abbc768983bf2c545e2364dee501a534cabae2a8))
 * **vscode:** short-circuit untrusted local binary checks ([#1466](https://github.com/ben-ranford/lopper/issues/1466)) ([9490979](https://github.com/ben-ranford/lopper/commit/9490979f1bbd1eaefa437aef50443d8460c22f37))
 * **workspace:** support SHA-256 baseline keys ([#1480](https://github.com/ben-ranford/lopper/issues/1480)) ([b7f7211](https://github.com/ben-ranford/lopper/commit/b7f721116635e7539fc6877f2d3ea1c25e32c013))
 
