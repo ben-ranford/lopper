@@ -65,6 +65,54 @@ func OpenRootNoFollow(name string) (Root, error) {
 	return fileSystem.OpenRootNoFollow(name)
 }
 
+// VerifyDirectoryIdentity reports whether path still names the expected
+// non-symlink directory.
+func VerifyDirectoryIdentity(path string, expected fs.FileInfo) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !os.SameFile(expected, info) {
+		return fmt.Errorf("directory identity changed: %s", path)
+	}
+	return nil
+}
+
+// OpenOrCreatePinnedDirectory opens a direct child directory without following
+// symlinks, creating it if absent and verifying that the opened handle still
+// identifies the observed directory.
+func OpenOrCreatePinnedDirectory(root Root, parentPath, name string, perm os.FileMode) (Root, error) {
+	childPath := filepath.Join(parentPath, name)
+	info, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkdirErr := root.Mkdir(name, perm); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
+			return nil, mkdirErr
+		}
+		info, err = root.Lstat(name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("directory contains symlink: %s", childPath)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("directory is not a directory: %s", childPath)
+	}
+	next, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := next.Lstat(".")
+	if err != nil {
+		return nil, errors.Join(err, next.Close())
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, errors.Join(fmt.Errorf("directory changed while opening: %s", childPath), next.Close())
+	}
+	return next, nil
+}
+
 // OpenRootExistingAncestorNoFollow opens the deepest existing ancestor for
 // name without following untrusted symlinks. It returns the opened ancestor,
 // that ancestor's canonical path, and any remaining missing path components.

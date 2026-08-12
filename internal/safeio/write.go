@@ -52,6 +52,23 @@ func (r *WriteRoot) Close() error {
 	return r.root.Close()
 }
 
+// RootInfo returns identity information for the pinned root directory.
+func (r *WriteRoot) RootInfo() (fs.FileInfo, error) {
+	return r.root.Lstat(".")
+}
+
+// VerifyIdentity reports whether the pinned root retains the expected identity.
+func (r *WriteRoot) VerifyIdentity(expected fs.FileInfo) error {
+	actual, err := r.RootInfo()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(expected, actual) {
+		return fmt.Errorf("pinned root identity changed")
+	}
+	return nil
+}
+
 // WriteFileCreatingParents atomically writes a root-relative file, creating
 // missing parent directories inside the pinned root.
 func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
@@ -86,6 +103,19 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 		return err
 	}
 	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileIfAbsentAtRoot)
+}
+
+// WriteFileCreatingParentsAtomicallyIfAbsent atomically publishes a
+// root-relative file only if its target is absent, creating missing parent
+// directories inside the pinned root without following symlinks.
+func (r *WriteRoot) WriteFileCreatingParentsAtomicallyIfAbsent(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.withTargetParent(target, true, parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		return writeFileAtomicallyIfAbsentAtRoot(parent, parentTarget.rel, data, perm)
+	})
 }
 
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {

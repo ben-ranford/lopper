@@ -111,6 +111,212 @@ func TestNewAnalysisCacheRejectsBrokenSymlinkedDefaultPathOutsideRepo(t *testing
 	assertSymlinkedDefaultCachePathRejected(t, repo, outside, "broken symlinked")
 }
 
+func TestNewAnalysisCacheRejectsRootReplacementAfterValidation(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, cachePath); err != nil {
+		t.Skipf("replace cache root with symlink: %v", err)
+	}
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if cache.cacheable {
+		t.Fatal("expected replaced cache root to fail closed")
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheObjectsDirName))
+}
+
+func TestNewAnalysisCacheRejectsSymlinkedCacheChild(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	outside := t.TempDir()
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("create cache root: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(cachePath, cacheKeysDirName)); err != nil {
+		t.Skipf("create cache child symlink: %v", err)
+	}
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if cache.cacheable {
+		t.Fatal("expected symlinked cache child to fail closed")
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, "key.json"))
+}
+
+func TestNewAnalysisCacheRejectsSymlinkedAncestorAndCleansTraversal(t *testing.T) {
+	t.Run("symlinked ancestor", func(t *testing.T) {
+		repo := t.TempDir()
+		outside := t.TempDir()
+		ancestor := filepath.Join(repo, "ancestor")
+		if err := os.Symlink(outside, ancestor); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+		cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: filepath.Join(ancestor, "cache")}}, repo)
+		if cache.cacheable {
+			t.Fatal("expected symlinked cache ancestry to fail closed")
+		}
+		assertAnalysisCachePathAbsent(t, filepath.Join(outside, "cache"))
+	})
+
+	t.Run("traversal is cleaned before initialization", func(t *testing.T) {
+		repo := t.TempDir()
+		cachePath := filepath.Join(repo, "nested", "..", cacheDirName)
+		cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+		if !cache.cacheable {
+			t.Fatalf("expected cleaned cache path to remain usable, warnings=%#v", cache.takeWarnings())
+		}
+		if _, err := os.Stat(filepath.Join(repo, cacheDirName, cacheKeysDirName)); err != nil {
+			t.Fatalf("expected keys under cleaned cache root: %v", err)
+		}
+	})
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	outside := t.TempDir()
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
+	}
+	if err := os.Rename(cachePath, filepath.Join(repo, "cache-holding")); err != nil {
+		t.Fatalf("move cache root: %v", err)
+	}
+	if err := os.Symlink(outside, cachePath); err != nil {
+		t.Skipf("replace cache root with symlink: %v", err)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement before cache mutation to fail")
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheObjectsDirName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName))
+}
+
+func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
+	}
+	reportData := report.Report{RepoPath: repo}
+	serializedPayload, err := json.Marshal(newCachedPayload(reportData))
+	if err != nil {
+		t.Fatalf("marshal cache payload: %v", err)
+	}
+	objectPath := filepath.Join(cachePath, cacheObjectsDirName, sha256Hex(serializedPayload)+".json")
+	if err := os.WriteFile(objectPath, []byte("existing complete object"), 0o640); err != nil {
+		t.Fatalf("seed cache object: %v", err)
+	}
+
+	if err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, reportData); err != nil {
+		t.Fatalf("store cache report: %v", err)
+	}
+	if got, err := os.ReadFile(objectPath); err != nil {
+		t.Fatalf("read preserved cache object: %v", err)
+	} else if string(got) != "existing complete object" {
+		t.Fatalf("existing cache object = %q, want preserved content", got)
+	}
+}
+
+func TestCachePathEscapesRepoHandlesResolvedAndMissingPaths(t *testing.T) {
+	repo := t.TempDir()
+	inside := filepath.Join(repo, cacheDirName)
+	if err := os.Mkdir(inside, 0o750); err != nil {
+		t.Fatalf("create inside cache path: %v", err)
+	}
+	if cachePathEscapesRepo(inside, repo) {
+		t.Fatal("expected cache path inside repository to be accepted")
+	}
+	if !cachePathEscapesRepo(t.TempDir(), repo) {
+		t.Fatal("expected cache path outside repository to be rejected")
+	}
+	if !cachePathEscapesRepo(inside, filepath.Join(repo, "missing-repository")) {
+		t.Fatal("expected cache path to be rejected when its repository root is missing")
+	}
+}
+
+func TestResolveCacheOptionsUsesResolvedPath(t *testing.T) {
+	resolvedPath := filepath.Join(t.TempDir(), "resolved-cache")
+	options := resolveCacheOptions(&CacheOptions{Enabled: true, Path: "requested-cache", ResolvedPath: resolvedPath}, "repository")
+	if options.Path != resolvedPath {
+		t.Fatalf("cache path = %q, want resolved path %q", options.Path, resolvedPath)
+	}
+}
+
+func TestAnalysisCacheDigestSerializationErrors(t *testing.T) {
+	dir := t.TempDir()
+	existingPath := filepath.Join(dir, "cache-input.go")
+	if err := os.WriteFile(existingPath, []byte("cache input"), 0o600); err != nil {
+		t.Fatalf("write cache input: %v", err)
+	}
+	if _, err := hashJSON(make(chan struct{})); err == nil {
+		t.Fatal("expected unsupported digest value to fail JSON serialization")
+	}
+	if err := writeFileDigest(&cacheFailAfterWriter{failOn: 1}, existingPath); err == nil {
+		t.Fatal("expected digest write failure")
+	}
+	if err := writeFileDigestOrMissing(&cacheFailAfterWriter{failOn: 1}, filepath.Join(t.TempDir(), cacheMissingFileName)); err == nil {
+		t.Fatal("expected missing digest marker write failure")
+	}
+	if _, err := hashFile(filepath.Join(dir, cacheMissingFileName)); err == nil {
+		t.Fatal("expected missing file hash to fail")
+	}
+	if _, err := hashFileDigest(dir); err == nil {
+		t.Fatal("expected directory digest to fail")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read cache input directory: %v", err)
+	}
+	files := make([]cacheRelevantFile, 0)
+	if err := collectRelevantFile("\x00", existingPath, entries[0], nil, &files); err == nil {
+		t.Fatal("expected invalid cache root to reject relevant file")
+	}
+}
+
+func TestAnalysisCacheLookupRejectsMissingDefaultCacheRoot(t *testing.T) {
+	cache := &analysisCache{
+		options:         resolvedCacheOptions{Enabled: true, Path: filepath.Join(t.TempDir(), cacheDirName)},
+		cacheable:       true,
+		rejectReadHits:  true,
+		metadata:        report.CacheMetadata{},
+		inputDigestMemo: make(map[cacheInputDigestMemoKey]string),
+	}
+
+	if _, hit, err := cache.lookup(cacheEntryDescriptor{KeyDigest: "key", KeyLabel: "adapter:root"}); err == nil || hit {
+		t.Fatalf("lookup with a missing no-follow cache root = hit=%v err=%v, want error", hit, err)
+	}
+}
+
+func TestAnalysisCacheLookupRejectsUsageIncompleteIndexOutsideReport(t *testing.T) {
+	cache, entry := cacheWithPayloadForLookupTest(t, cachedPayload{UsageIncompleteDependencies: []int{0}}, "invalid-usage-incomplete-index")
+
+	assertLookupMissWithReason(t, cache, entry, cacheObjectCorruptReason)
+}
+
+func TestCachePointerExistsRejectsNonDirectoryKeysPath(t *testing.T) {
+	cachePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cachePath, cacheKeysDirName), []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("write keys path: %v", err)
+	}
+
+	if _, err := cachePointerExists(cachePath, "key"); err == nil {
+		t.Fatal("expected non-directory keys path to fail cache pointer lookup")
+	}
+}
+
+func assertAnalysisCachePathAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %q to remain absent, stat err=%v", path, err)
+	}
+}
+
 func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {
 	t.Helper()
 

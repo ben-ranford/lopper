@@ -1,6 +1,7 @@
 package safeio
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"io/fs"
@@ -880,6 +881,132 @@ func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
 
 func TestWriteRootCreatesMissingParentsAndWritesIfAbsent(t *testing.T) {
 	assertWriteRootCreatesMissingParentsAndWrites(t, "WriteFileCreatingParentsIfAbsent", (*WriteRoot).WriteFileCreatingParentsIfAbsent)
+}
+
+func TestWriteRootCreatesMissingParentsAndPublishesAtomicallyIfAbsent(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", writeTestFileName)
+	data := []byte("complete cache object")
+
+	if err := root.WriteFileCreatingParentsAtomicallyIfAbsent(target, data, 0o640, 0o750); err != nil {
+		t.Fatalf("WriteFileCreatingParentsAtomicallyIfAbsent returned error: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(rootDir, target)); err != nil {
+		t.Fatalf("read published target: %v", err)
+	} else if !bytes.Equal(got, data) {
+		t.Fatalf("published target = %q, want %q", got, data)
+	}
+	if err := root.WriteFileCreatingParentsAtomicallyIfAbsent(target, []byte("replacement"), 0o640, 0o750); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second atomic publish error = %v, want exist", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(rootDir, target)); err != nil {
+		t.Fatalf("read preserved target: %v", err)
+	} else if !bytes.Equal(got, data) {
+		t.Fatalf("preserved target = %q, want %q", got, data)
+	}
+}
+
+func TestWriteRootVerifyIdentity(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expected, err := os.Stat(rootDir)
+	if err != nil {
+		t.Fatalf("stat root: %v", err)
+	}
+	if err := root.VerifyIdentity(expected); err != nil {
+		t.Fatalf("VerifyIdentity returned error: %v", err)
+	}
+	other, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatalf("stat different root: %v", err)
+	}
+	if err := root.VerifyIdentity(other); err == nil {
+		t.Fatal("expected different root identity to be rejected")
+	}
+}
+
+func TestVerifyDirectoryIdentity(t *testing.T) {
+	rootDir := t.TempDir()
+	expected, err := os.Stat(rootDir)
+	if err != nil {
+		t.Fatalf("stat root: %v", err)
+	}
+	if err := VerifyDirectoryIdentity(rootDir, expected); err != nil {
+		t.Fatalf("VerifyDirectoryIdentity returned error: %v", err)
+	}
+	if err := VerifyDirectoryIdentity(t.TempDir(), expected); err == nil {
+		t.Fatal("expected different directory identity to be rejected")
+	}
+	if err := VerifyDirectoryIdentity(filepath.Join(rootDir, "missing"), expected); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing directory identity error = %v, want not exist", err)
+	}
+}
+
+func TestOpenOrCreatePinnedDirectory(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := OpenRootNoFollow(rootDir)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	}()
+
+	child, err := OpenOrCreatePinnedDirectory(root, rootDir, "cache", 0o750)
+	if err != nil {
+		t.Fatalf("create pinned child: %v", err)
+	}
+	if err := child.Close(); err != nil {
+		t.Fatalf("close created child: %v", err)
+	}
+	existing, err := OpenOrCreatePinnedDirectory(root, rootDir, "cache", 0o750)
+	if err != nil {
+		t.Fatalf("open existing pinned child: %v", err)
+	}
+	if err := existing.Close(); err != nil {
+		t.Fatalf("close existing child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "file"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write non-directory child: %v", err)
+	}
+	if _, err := OpenOrCreatePinnedDirectory(root, rootDir, "file", 0o750); err == nil {
+		t.Fatal("expected non-directory child to be rejected")
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(rootDir, "link")); err != nil {
+		t.Skipf("create directory symlink: %v", err)
+	}
+	if _, err := OpenOrCreatePinnedDirectory(root, rootDir, "link", 0o750); err == nil {
+		t.Fatal("expected symlinked child to be rejected")
+	}
+}
+
+func TestOpenOrCreatePinnedDirectoryPropagatesFailures(t *testing.T) {
+	expectedErr := errors.New("directory operation failed")
+	info, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatalf("stat directory: %v", err)
+	}
+
+	if _, err := OpenOrCreatePinnedDirectory(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, expectedErr }}, "/root", "child", 0o750); !errors.Is(err, expectedErr) {
+		t.Fatalf("lstat error = %v, want %v", err, expectedErr)
+	}
+	missingChildRoot := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		mkdir: func(string, os.FileMode) error { return expectedErr },
+	}
+	if _, err := OpenOrCreatePinnedDirectory(missingChildRoot, "/root", "child", 0o750); !errors.Is(err, expectedErr) {
+		t.Fatalf("mkdir error = %v, want %v", err, expectedErr)
+	}
+	openFailureRoot := &fakeRoot{
+		lstat:    func(string) (fs.FileInfo, error) { return info, nil },
+		openRoot: func(string) (Root, error) { return nil, expectedErr },
+	}
+	if _, err := OpenOrCreatePinnedDirectory(openFailureRoot, "/root", "child", 0o750); !errors.Is(err, expectedErr) {
+		t.Fatalf("open child error = %v, want %v", err, expectedErr)
+	}
 }
 
 func TestWriteRootIfAbsentRejectsExistingTarget(t *testing.T) {

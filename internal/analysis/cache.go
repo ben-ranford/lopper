@@ -1,11 +1,14 @@
 package analysis
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 type resolvedCacheOptions struct {
@@ -20,6 +23,7 @@ type analysisCache struct {
 	metadata         report.CacheMetadata
 	warnings         []string
 	cacheable        bool
+	rootIdentity     fs.FileInfo
 	rejectReadHits   bool
 	inputDigestMemo  map[cacheInputDigestMemoKey]string
 	stableRepoPath   string
@@ -55,16 +59,18 @@ func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string)
 			return cache
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(options.Path, "keys"), 0o750); err != nil {
+	rootIdentity, err := prepareWritableAnalysisCacheRoot(options.Path)
+	if err != nil {
 		cache.cacheable = false
 		cache.warn("analysis cache unavailable: " + err.Error())
 		return cache
 	}
-	if err := os.MkdirAll(filepath.Join(options.Path, "objects"), 0o750); err != nil {
+	if err := validateAnalysisCacheRoot(options.Path, rootIdentity); err != nil {
 		cache.cacheable = false
 		cache.warn("analysis cache unavailable: " + err.Error())
 		return cache
 	}
+	cache.rootIdentity = rootIdentity
 	cache.cacheable = true
 	return cache
 }
@@ -79,6 +85,78 @@ func (c *analysisCache) stableCacheRoot(rootPath string) string {
 		return rootPath
 	}
 	return filepath.Join(c.stableRepoPath, rel)
+}
+
+func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, returnErr error) {
+	root, currentPath, missingParts, err := safeio.OpenRootExistingAncestorNoFollow(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	roots := []safeio.Root{root}
+	defer func() {
+		for index := len(roots) - 1; index >= 0; index-- {
+			returnErr = errors.Join(returnErr, roots[index].Close())
+		}
+	}()
+	current := root
+	for _, part := range missingParts {
+		next, err := openOrCreatePinnedAnalysisCacheChild(current, currentPath, part)
+		if err != nil {
+			return nil, err
+		}
+		roots = append(roots, next)
+		current = next
+		currentPath = filepath.Join(currentPath, part)
+	}
+	info, err := current.Lstat(".")
+	if err != nil {
+		return nil, err
+	}
+	if err := safeio.VerifyDirectoryIdentity(currentPath, info); err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"keys", "objects"} {
+		child, err := openOrCreatePinnedAnalysisCacheChild(current, currentPath, name)
+		if err != nil {
+			return nil, err
+		}
+		if closeErr := child.Close(); closeErr != nil {
+			return nil, closeErr
+		}
+	}
+	return info, nil
+}
+
+func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name string) (safeio.Root, error) {
+	return safeio.OpenOrCreatePinnedDirectory(root, parentPath, name, 0o750)
+}
+
+func validateAnalysisCacheRoot(cachePath string, expected fs.FileInfo) error {
+	return safeio.VerifyDirectoryIdentity(cachePath, expected)
+}
+
+func (c *analysisCache) openWriteRoot() (*safeio.WriteRoot, error) {
+	if c.rootIdentity == nil {
+		identity, err := prepareWritableAnalysisCacheRoot(c.options.Path)
+		if err != nil {
+			return nil, err
+		}
+		c.rootIdentity = identity
+	}
+	if err := validateAnalysisCacheRoot(c.options.Path, c.rootIdentity); err != nil {
+		return nil, err
+	}
+	root, err := safeio.OpenCanonicalWriteRoot(c.options.Path)
+	if err != nil {
+		return nil, err
+	}
+	if err := root.VerifyIdentity(c.rootIdentity); err != nil {
+		return nil, errors.Join(err, root.Close())
+	}
+	if err := validateAnalysisCacheRoot(c.options.Path, c.rootIdentity); err != nil {
+		return nil, errors.Join(err, root.Close())
+	}
+	return root, nil
 }
 
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
