@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"path"
 	"strings"
 	"testing"
 )
@@ -71,14 +72,83 @@ func hasTransparentAndOpaquePixels(icon image.Image) bool {
 }
 
 func excludesExtensionIcon(ignore string) bool {
-	patterns := make(map[string]struct{})
+	excluded := false
 	for _, line := range strings.Split(ignore, "\n") {
-		patterns[strings.TrimSpace(line)] = struct{}{}
-	}
-	for _, excluded := range []string{"images/", "images/lopper-icon.png", "*.png"} {
-		if _, exists := patterns[excluded]; exists {
-			return true
+		pattern := strings.TrimSpace(line)
+		if pattern == "" || strings.HasPrefix(pattern, "#") {
+			continue
+		}
+
+		include := strings.HasPrefix(pattern, "!")
+		if include {
+			pattern = strings.TrimPrefix(pattern, "!")
+		}
+		if extensionIgnorePatternMatchesPath(pattern, "images/lopper-icon.png") {
+			excluded = !include
 		}
 	}
-	return false
+	return excluded
+}
+
+func extensionIgnorePatternMatchesPath(pattern, filePath string) bool {
+	pattern = strings.TrimPrefix(pattern, "/")
+	directoryPattern := strings.HasSuffix(pattern, "/")
+	pattern = strings.TrimSuffix(pattern, "/")
+	if pattern == "" {
+		return false
+	}
+
+	patternParts := strings.Split(pattern, "/")
+	fileParts := strings.Split(filePath, "/")
+	if len(patternParts) == 1 {
+		for _, filePart := range fileParts {
+			matched, err := path.Match(pattern, filePart)
+			if err == nil && matched {
+				return true
+			}
+		}
+		return false
+	}
+
+	if directoryPattern {
+		patternParts = append(patternParts, "**")
+	}
+	return extensionIgnorePathPartsMatch(patternParts, fileParts)
+}
+
+func extensionIgnorePathPartsMatch(patternParts, fileParts []string) bool {
+	if len(patternParts) == 0 {
+		return len(fileParts) == 0
+	}
+	if patternParts[0] == "**" {
+		return extensionIgnorePathPartsMatch(patternParts[1:], fileParts) ||
+			(len(fileParts) > 0 && extensionIgnorePathPartsMatch(patternParts, fileParts[1:]))
+	}
+	if len(fileParts) == 0 {
+		return false
+	}
+	matched, err := path.Match(patternParts[0], fileParts[0])
+	return err == nil && matched && extensionIgnorePathPartsMatch(patternParts[1:], fileParts[1:])
+}
+
+func TestExcludesExtensionIcon(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		ignore string
+		want   bool
+	}{
+		{name: "literal icon", ignore: "images/lopper-icon.png", want: true},
+		{name: "directory glob", ignore: "images/**", want: true},
+		{name: "extension glob", ignore: "**/*.png", want: true},
+		{name: "unexcluded icon", ignore: "images/**\n!images/lopper-icon.png", want: false},
+		{name: "unrelated pattern", ignore: "**/*.map", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := excludesExtensionIcon(tc.ignore); got != tc.want {
+				t.Fatalf("excludesExtensionIcon(%q) = %t, want %t", tc.ignore, got, tc.want)
+			}
+		})
+	}
 }
