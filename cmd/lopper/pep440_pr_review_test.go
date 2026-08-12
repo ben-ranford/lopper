@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/app"
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -98,7 +98,17 @@ func createPEP440PRReviewGitRepo(t *testing.T) (string, string, string) {
 func gitHeadSHA(t *testing.T, repoPath string) string {
 	t.Helper()
 
-	output, err := exec.Command("git", "-C", repoPath, "rev-parse", "HEAD").Output()
+	gitPath, err := gitexec.ResolveBinaryPath()
+	if err != nil {
+		t.Fatalf("resolve git path: %v", err)
+	}
+	command, err := gitexec.CommandContext(context.Background(), gitPath, "-C", repoPath, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("construct git command: %v", err)
+	}
+	command.Env = gitexec.SanitizedEnv()
+
+	output, err := command.Output()
 	if err != nil {
 		t.Fatalf("resolve HEAD: %v", err)
 	}
