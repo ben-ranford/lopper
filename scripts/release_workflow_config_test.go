@@ -3307,15 +3307,16 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *test
 	}{
 		{name: "count", emptyVariable: "BENCH_COUNT", want: "base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' with selection '^(BenchmarkConfiguration)$' could not be applied unchanged."},
 		{name: "time", emptyVariable: "BENCH_TIME", want: "base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' with selection '^(BenchmarkConfiguration)$' could not be applied unchanged."},
-		{name: "packages", emptyVariable: "MEMORY_BENCH_PACKAGES", want: "head benchmark package targets could not be resolved."},
+		{name: "packages", emptyVariable: "MEMORY_BENCH_PACKAGES", want: "configured MEMORY_BENCH_PACKAGES must not be empty."},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			repo, benchVars := newTempBenchGateGoRepo(t)
+			writeFile(t, filepath.Join(repo, "bench_test.go"), benchmarkTestSource("lopper", "BenchmarkRootConfiguration"))
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkConfiguration"))
-			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go")
+			runGitCommand(t, repo, "add", "go.mod", "bench_test.go", "benchpkg/bench_test.go")
 			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
 			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
 			benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
@@ -3325,8 +3326,9 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *test
 			if exitCode != 2 {
 				t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
 			}
-			if !strings.Contains(output, tc.want) {
-				t.Fatalf("bench-gate output missing %q:\n%s", tc.want, output)
+			wantDiagnostic := "Memory benchmark gate invalid: " + tc.want
+			if !strings.Contains(output, wantDiagnostic) {
+				t.Fatalf("bench-gate output missing %q:\n%s", wantDiagnostic, output)
 			}
 			assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", tc.want}, []string{"Result: memory benchmark gate passed."})
 		})

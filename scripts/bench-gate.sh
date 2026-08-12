@@ -286,6 +286,9 @@ echo "Running memory benchmark delta against $base_ref.";
 : > "$bench_definitions_tmp";
 printf "Memory benchmark GO_BIN: %s\nMemory benchmark Go toolchain: %s\n" "$go_bin_path" "$expected_go_version" >> "$base_output_tmp";
 printf "Memory benchmark GO_BIN: %s\nMemory benchmark Go toolchain: %s\n" "$go_bin_path" "$expected_go_version" >> "$head_output_tmp";
+if [ -z "$MEMORY_BENCH_PACKAGES" ]; then
+	fail_invalid_memory_gate "configured MEMORY_BENCH_PACKAGES must not be empty.";
+fi;
 # shellcheck disable=SC2086 # MEMORY_BENCH_PACKAGES is a space-delimited package list.
 if ! GOFLAGS=-buildvcs=false run_validated_go "head benchmark package resolution" list $MEMORY_BENCH_PACKAGES > "$bench_packages_tmp" 2>&1; then
 	cat "$bench_packages_tmp";
