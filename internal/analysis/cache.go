@@ -136,10 +136,11 @@ func verifyPinnedAnalysisCacheDirectory(root safeio.Root, path string) (fs.FileI
 }
 
 func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name string) (safeio.Root, error) {
-	if _, err := verifyPinnedAnalysisCacheDirectory(root, parentPath); err != nil {
+	expected, err := root.Lstat(".")
+	if err != nil {
 		return nil, err
 	}
-	return safeio.OpenOrCreatePinnedDirectory(root, parentPath, name, 0o750)
+	return safeio.OpenOrCreatePinnedDirectoryAtPath(parentPath, expected, name, 0o750)
 }
 
 func validateAnalysisCacheRoot(cachePath string, expected fs.FileInfo) error {

@@ -993,6 +993,66 @@ func TestOpenOrCreatePinnedDirectory(t *testing.T) {
 	}
 }
 
+func TestOpenOrCreatePinnedDirectoryAtPathRollsBackChildAfterParentReplacement(t *testing.T) {
+	parentInfo, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatalf("stat parent: %v", err)
+	}
+	childInfo, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatalf("stat child: %v", err)
+	}
+
+	created := false
+	removed := false
+	parentClosed := false
+	childClosed := false
+	child := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return childInfo, nil },
+		close: func() error { childClosed = true; return nil },
+	}
+	parent := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "." {
+				return parentInfo, nil
+			}
+			if !created {
+				return nil, os.ErrNotExist
+			}
+			return childInfo, nil
+		},
+		mkdir:    func(string, os.FileMode) error { created = true; return nil },
+		openRoot: func(string) (Root, error) { return child, nil },
+		remove: func(name string) error {
+			if name != "child" {
+				t.Fatalf("removed %q, want child", name)
+			}
+			removed = true
+			return nil
+		},
+		close: func() error { parentClosed = true; return nil },
+	}
+	verifyCalls := 0
+	openParent := func(string) (Root, error) { return parent, nil }
+	verifyParent := func(Root, string, fs.FileInfo) error {
+		verifyCalls++
+		if verifyCalls == 2 {
+			return errors.New("directory identity changed")
+		}
+		return nil
+	}
+	_, err = openOrCreatePinnedDirectoryAtPathWith("/trusted/cache", parentInfo, "child", 0o750, openParent, verifyParent)
+	if err == nil {
+		t.Fatal("expected parent replacement to be rejected")
+	}
+	if !removed {
+		t.Fatal("expected newly created child to be removed after parent replacement")
+	}
+	if !childClosed || !parentClosed {
+		t.Fatalf("expected child and parent handles to close, child=%t parent=%t", childClosed, parentClosed)
+	}
+}
+
 func TestOpenOrCreatePinnedDirectoryPropagatesFailures(t *testing.T) {
 	expectedErr := errors.New("directory operation failed")
 	info, err := os.Stat(t.TempDir())
