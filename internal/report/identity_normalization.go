@@ -77,6 +77,13 @@ func CompareSemanticVersions(left, right string) (int, bool) {
 	return semver.Compare(normalizedLeft, normalizedRight), true
 }
 
+func CompareVersionsForEcosystem(ecosystem, left, right string) (int, bool) {
+	if CanonicalPackageEcosystem(ecosystem) == "pypi" {
+		return ComparePEP440Versions(left, right)
+	}
+	return CompareSemanticVersions(left, right)
+}
+
 func normalizeSemanticVersion(value string) (string, bool) {
 	normalized := strings.TrimSpace(value)
 	if normalized == "" {

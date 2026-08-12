@@ -520,7 +520,11 @@ func prReviewVersionRows(baseReport, headReport report.Report, category string) 
 		if baseVersion == "" || headVersion == "" || baseVersion == headVersion {
 			continue
 		}
-		versionCategory := prReviewVersionCategory(baseVersion, headVersion)
+		ecosystem := dependencyIdentityEcosystem(baseDep)
+		if ecosystem == "" {
+			ecosystem = dependencyIdentityEcosystem(headDep)
+		}
+		versionCategory := prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion)
 		if versionCategory != category {
 			continue
 		}
@@ -535,7 +539,11 @@ func prReviewVersionRows(baseReport, headReport report.Report, category string) 
 }
 
 func prReviewVersionCategory(baseVersion, headVersion string) string {
-	cmp, comparableVersion := report.CompareSemanticVersions(baseVersion, headVersion)
+	return prReviewVersionCategoryForEcosystem("", baseVersion, headVersion)
+}
+
+func prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion string) string {
+	cmp, comparableVersion := report.CompareVersionsForEcosystem(ecosystem, baseVersion, headVersion)
 	if !comparableVersion {
 		return prReviewCategoryVersionChanged
 	}
