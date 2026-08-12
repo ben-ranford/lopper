@@ -136,6 +136,31 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 	return session.verifyCommittedTarget()
 }
 
+func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
+	session, err := newAtomicWriteSession(root, targetRel, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, session.cleanup())
+	}()
+
+	if err := session.writeAndPrepare(data, perm); err != nil {
+		return err
+	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
+		return err
+	}
+	if err := root.Link(session.tempRel, targetRel); err != nil {
+		return err
+	}
+	if err := root.Remove(session.tempRel); err != nil {
+		return err
+	}
+	session.tempRel = ""
+	return session.verifyCommittedTarget()
+}
+
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {

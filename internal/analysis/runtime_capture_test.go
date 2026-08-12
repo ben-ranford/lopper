@@ -83,7 +83,7 @@ func TestServiceRuntimeCaptureRefreshesTraceOnCacheHit(t *testing.T) {
 	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
 
 	svc, adapter := newCacheTestService(t)
-	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
+	req := newCacheRequest(t, repo, filepath.Join(repo, cacheTestDirectoryName), false)
 	req.RuntimeTestCommand = "npm test"
 
 	first, err := svc.Analyse(context.Background(), req)

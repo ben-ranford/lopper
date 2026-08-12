@@ -121,7 +121,7 @@ func cachePointerExists(cachePath, keyDigest string) (_ bool, err error) {
 	return false, err
 }
 
-func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) error {
+func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (returnErr error) {
 	if c == nil || !c.options.Enabled || !c.cacheable || c.options.ReadOnly {
 		return nil
 	}
@@ -131,14 +131,15 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 		return err
 	}
 	objectDigest := sha256Hex(serializedPayload)
-	objectPath := filepath.Join(c.options.Path, "objects", objectDigest+".json")
-	if _, err := os.Stat(objectPath); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		if err := writeFileAtomic(objectPath, serializedPayload); err != nil {
-			return err
-		}
+	writeRoot, err := c.openWriteRoot()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, writeRoot.Close())
+	}()
+	if err := writeRoot.WriteFileCreatingParentsAtomicallyIfAbsent(filepath.Join("objects", objectDigest+".json"), serializedPayload, 0o640, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
 	}
 
 	pointer := cachePointer{InputDigest: entry.InputDigest, ObjectDigest: objectDigest}
@@ -146,8 +147,7 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) er
 	if err != nil {
 		return err
 	}
-	pointerPath := filepath.Join(c.options.Path, "keys", entry.KeyDigest+".json")
-	if err := writeFileAtomic(pointerPath, serializedPointer); err != nil {
+	if err := writeRoot.WriteFileCreatingParents(filepath.Join("keys", entry.KeyDigest+".json"), serializedPointer, 0o640, 0o750); err != nil {
 		return err
 	}
 	c.metadata.Writes++

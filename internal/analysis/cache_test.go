@@ -91,7 +91,13 @@ func newCacheTestService(t *testing.T) (*Service, *countingAdapter) {
 	return &Service{Registry: reg}, adapter
 }
 
-func newCacheRequest(repo, cacheDir string, readOnly bool) Request {
+func newCacheRequest(t *testing.T, repo, cacheDir string, readOnly bool) Request {
+	t.Helper()
+	cacheDir = strings.TrimSpace(cacheDir)
+	if !filepath.IsAbs(cacheDir) {
+		cacheDir = filepath.Join(repo, cacheDir)
+	}
+	mustMkdirCacheLayout(t, cacheDir)
 	return Request{
 		RepoPath: repo,
 		Language: "cachelang",
@@ -111,7 +117,7 @@ func TestAnalysisCacheHitAndInvalidation(t *testing.T) {
 
 	svc, adapter := newCacheTestService(t)
 	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
-	req := newCacheRequest(repo, cacheDir, false)
+	req := newCacheRequest(t, repo, cacheDir, false)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -156,7 +162,7 @@ func TestScopedAnalysisReusesRepositoryRelativeCache(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", cacheTestJSIndexFileName), "export const value = 1\n")
 
 	service, adapter := newCacheTestService(t)
-	req := newCacheRequest(repo, "  .cache/lopper  ", false)
+	req := newCacheRequest(t, repo, "  .cache/lopper  ", false)
 	req.IncludePatterns = []string{"**"}
 
 	first, err := service.Analyse(context.Background(), req)
@@ -193,7 +199,7 @@ func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 			Line: 8,
 		}},
 	}
-	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), false)
+	req := newCacheRequest(t, repo, filepath.Join(repo, cacheTestDirectoryName), false)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -238,7 +244,7 @@ func TestAnalysisCacheIgnoresLegacySchemaEntries(t *testing.T) {
 	svc, adapter := newCacheTestService(t)
 	adapter.usageIncomplete = true
 	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
-	req := newCacheRequest(repo, cacheDir, false)
+	req := newCacheRequest(t, repo, cacheDir, false)
 
 	cache := newAnalysisCache(req, repo)
 	if !cache.cacheable {
@@ -296,7 +302,7 @@ func TestAnalysisCacheSeparatesSuggestOnlyEntries(t *testing.T) {
 	svc, adapter := newCacheTestService(t)
 	cacheDir := filepath.Join(repo, cacheTestDirectoryName)
 
-	baseReq := newCacheRequest(repo, cacheDir, false)
+	baseReq := newCacheRequest(t, repo, cacheDir, false)
 	baseReq.Dependency = "dep"
 
 	first, err := svc.Analyse(context.Background(), baseReq)
@@ -347,7 +353,7 @@ func TestAnalysisCacheReadOnlySkipsWrites(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 
 	svc, adapter := newCacheTestService(t)
-	req := newCacheRequest(repo, filepath.Join(repo, cacheTestDirectoryName), true)
+	req := newCacheRequest(t, repo, filepath.Join(repo, cacheTestDirectoryName), true)
 
 	first, err := svc.Analyse(context.Background(), req)
 	if err != nil {
@@ -376,6 +382,7 @@ func TestDefaultRepoLocalCacheForgedEntryMisses(t *testing.T) {
 
 	svc, adapter := newCacheTestService(t)
 	cachePath := filepath.Join(repo, ".lopper-cache")
+	mustMkdirCacheLayout(t, cachePath)
 	req := Request{
 		RepoPath: repo,
 		Language: "cachelang",
@@ -419,6 +426,7 @@ func TestDefaultRepoLocalCacheColdMissHasNoUntrustedInvalidation(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
 
 	svc, adapter := newCacheTestService(t)
+	mustMkdirCacheLayout(t, filepath.Join(repo, ".lopper-cache"))
 	got, err := svc.Analyse(context.Background(), Request{
 		RepoPath: repo,
 		Language: "cachelang",
@@ -451,6 +459,7 @@ func TestAnalysisCachePrepareEntryIncludesLicensePolicyInputs(t *testing.T) {
 			Path:    filepath.Join(repo, cacheTestDirectoryName),
 		},
 	}
+	mustMkdirCacheLayout(t, req.Cache.Path)
 	cache := newAnalysisCache(req, repo)
 
 	baseReq := Request{
@@ -484,6 +493,7 @@ func TestAnalysisCachePrepareEntryIncludesFeatureFlags(t *testing.T) {
 			Path:    filepath.Join(repo, cacheTestDirectoryName),
 		},
 	}
+	mustMkdirCacheLayout(t, req.Cache.Path)
 	cache := newAnalysisCache(req, repo)
 
 	disabledSet := mustResolveFeatureSet(t, false)
@@ -512,6 +522,7 @@ func TestAnalysisCachePrepareEntryIncludesRuntimeCaptureRequestScope(t *testing.
 			Path:    filepath.Join(repo, cacheTestDirectoryName),
 		},
 	}
+	mustMkdirCacheLayout(t, req.Cache.Path)
 	cache := newAnalysisCache(req, repo)
 
 	baseReq := Request{
@@ -569,6 +580,7 @@ func TestAnalysisCachePrepareEntryMemoizesInputDigestForSameRootAndConfig(t *tes
 		TopN:       1,
 		Cache:      &CacheOptions{Enabled: true, Path: filepath.Join(repo, cacheTestDirectoryName)},
 	}
+	mustMkdirCacheLayout(t, req.Cache.Path)
 	cache := newAnalysisCache(req, repo)
 
 	firstEntry, err := cache.prepareEntry(req, "adapter-a", root)
@@ -608,6 +620,7 @@ func TestAnalysisCachePrepareEntryDoesNotReuseInputDigestForDifferentConfigPath(
 		TopN:     1,
 		Cache:    &CacheOptions{Enabled: true, Path: filepath.Join(repo, cacheTestDirectoryName)},
 	}
+	mustMkdirCacheLayout(t, baseReq.Cache.Path)
 	cache := newAnalysisCache(baseReq, repo)
 
 	reqA := baseReq
@@ -640,6 +653,7 @@ func TestAnalysisCachePrepareEntryDoesNotReuseInputDigestForDifferentRoot(t *tes
 		TopN:       1,
 		Cache:      &CacheOptions{Enabled: true, Path: filepath.Join(repo, cacheTestDirectoryName)},
 	}
+	mustMkdirCacheLayout(t, req.Cache.Path)
 	cache := newAnalysisCache(req, repo)
 
 	if _, err := cache.prepareEntry(req, "adapter-a", rootA); err != nil {
@@ -819,6 +833,7 @@ func cacheWithPayloadForLookupTest(t *testing.T, payload cachedPayload, objectDi
 	t.Helper()
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "cache")
+	mustMkdirCacheLayout(t, cachePath)
 	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
 	if !cache.cacheable {
 		t.Fatalf("expected cacheable test setup")
@@ -836,6 +851,7 @@ func cacheWithPayloadForLookupTest(t *testing.T, payload cachedPayload, objectDi
 func TestAnalysisCacheLookupInvalidationBranches(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "cache")
+	mustMkdirCacheLayout(t, cachePath)
 	cacheReq := Request{
 		Cache: &CacheOptions{Enabled: true, Path: cachePath},
 	}
