@@ -1,4 +1,5 @@
-package report
+// Package pep440 compares Python package versions using PEP 440 ordering.
+package pep440
 
 import (
 	"regexp"
@@ -21,10 +22,10 @@ type pep440Version struct {
 	hasLocal   bool
 }
 
-// ComparePEP440Versions compares valid Python PEP 440 public and local versions.
+// CompareVersions compares valid Python PEP 440 public and local versions.
 // It deliberately rejects values outside the supported PEP 440 grammar so callers
 // can retain their unordered-version behavior instead of guessing an ordering.
-func ComparePEP440Versions(left, right string) (int, bool) {
+func CompareVersions(left, right string) (int, bool) {
 	leftVersion, ok := parsePEP440Version(left)
 	if !ok {
 		return 0, false

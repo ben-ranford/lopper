@@ -1,8 +1,8 @@
-package report
+package pep440
 
 import "testing"
 
-func TestComparePEP440Versions(t *testing.T) {
+func TestCompareVersions(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		left        string
@@ -27,9 +27,9 @@ func TestComparePEP440Versions(t *testing.T) {
 		{name: "invalid", left: "release-a", right: "2.0", wantOrdered: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, ordered := ComparePEP440Versions(test.left, test.right)
+			got, ordered := CompareVersions(test.left, test.right)
 			if ordered != test.wantOrdered || got != test.want {
-				t.Fatalf("ComparePEP440Versions(%q, %q) = (%d, %t), want (%d, %t)", test.left, test.right, got, ordered, test.want, test.wantOrdered)
+				t.Fatalf("CompareVersions(%q, %q) = (%d, %t), want (%d, %t)", test.left, test.right, got, ordered, test.want, test.wantOrdered)
 			}
 		})
 	}
