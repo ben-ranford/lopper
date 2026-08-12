@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/ben-ranford/lopper/internal/report/pep440"
 	"golang.org/x/mod/semver"
 )
 
@@ -76,13 +75,6 @@ func CompareSemanticVersions(left, right string) (int, bool) {
 		return 0, false
 	}
 	return semver.Compare(normalizedLeft, normalizedRight), true
-}
-
-func CompareVersionsForEcosystem(ecosystem, left, right string) (int, bool) {
-	if CanonicalPackageEcosystem(ecosystem) == "pypi" {
-		return pep440.CompareVersions(left, right)
-	}
-	return CompareSemanticVersions(left, right)
 }
 
 func normalizeSemanticVersion(value string) (string, bool) {

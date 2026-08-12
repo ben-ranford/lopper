@@ -379,6 +379,9 @@ func TestPRReviewVersionCategoryClassifiesOrderedAndUnorderedVersions(t *testing
 	if got := prReviewVersionCategory("1.0.0", "1.0.0"); got != prReviewCategoryVersionChanged {
 		t.Fatalf("expected equal versions to avoid upgrade/downgrade labels, got %q", got)
 	}
+	if got := prReviewVersionCategoryForEcosystem(" PyPI ", "1.0", "1.0rc1"); got != prReviewCategoryDowngraded {
+		t.Fatalf("expected PEP 440 prerelease decrease to be a downgrade, got %q", got)
+	}
 }
 
 func TestFindPRReviewDependencyByOrdinalUsesVersionlessKeyOrdering(t *testing.T) {

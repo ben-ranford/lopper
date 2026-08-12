@@ -16,6 +16,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/report/pep440"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -543,7 +544,15 @@ func prReviewVersionCategory(baseVersion, headVersion string) string {
 }
 
 func prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion string) string {
-	cmp, comparableVersion := report.CompareVersionsForEcosystem(ecosystem, baseVersion, headVersion)
+	var (
+		cmp               int
+		comparableVersion bool
+	)
+	if report.CanonicalPackageEcosystem(ecosystem) == "pypi" {
+		cmp, comparableVersion = pep440.CompareVersions(baseVersion, headVersion)
+	} else {
+		cmp, comparableVersion = report.CompareSemanticVersions(baseVersion, headVersion)
+	}
 	if !comparableVersion {
 		return prReviewCategoryVersionChanged
 	}
