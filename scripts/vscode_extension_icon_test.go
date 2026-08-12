@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"errors"
+	"image"
 	"image/png"
 	"os"
 	"strings"
@@ -43,6 +44,21 @@ func TestVSCodeExtensionIconPackageContract(t *testing.T) {
 		t.Fatalf("VS Code extension icon dimensions = %dx%d, want 256x256", bounds.Dx(), bounds.Dy())
 	}
 
+	if !hasTransparentAndOpaquePixels(icon) {
+		t.Fatal("VS Code extension icon must contain transparent padding and a near-opaque visible mark")
+	}
+
+	if excludesExtensionIcon(readConfig(t, "extensions/vscode-lopper/.vscodeignore")) {
+		t.Fatalf(".vscodeignore excludes the VS Code extension icon")
+	}
+	if _, err := os.Stat(repoPath(t, "extensions/vscode-lopper/images/lopper-icon.svg")); err == nil {
+		t.Fatal("the extension package must ship the PNG icon, not an SVG icon")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat SVG icon path: %v", err)
+	}
+}
+
+func hasTransparentAndOpaquePixels(icon image.Image) bool {
 	transparent, opaque := false, false
 	for y := icon.Bounds().Min.Y; y < icon.Bounds().Max.Y && (!transparent || !opaque); y++ {
 		for x := icon.Bounds().Min.X; x < icon.Bounds().Max.X; x++ {
@@ -51,23 +67,18 @@ func TestVSCodeExtensionIconPackageContract(t *testing.T) {
 			opaque = opaque || alpha >= 0xff00
 		}
 	}
-	if !transparent || !opaque {
-		t.Fatal("VS Code extension icon must contain transparent padding and a near-opaque visible mark")
-	}
+	return transparent && opaque
+}
 
-	ignore := readConfig(t, "extensions/vscode-lopper/.vscodeignore")
-	ignorePatterns := make(map[string]struct{})
+func excludesExtensionIcon(ignore string) bool {
+	patterns := make(map[string]struct{})
 	for _, line := range strings.Split(ignore, "\n") {
-		ignorePatterns[strings.TrimSpace(line)] = struct{}{}
+		patterns[strings.TrimSpace(line)] = struct{}{}
 	}
 	for _, excluded := range []string{"images/", "images/lopper-icon.png", "*.png"} {
-		if _, exists := ignorePatterns[excluded]; exists {
-			t.Fatalf(".vscodeignore excludes the VS Code extension icon via %q", excluded)
+		if _, exists := patterns[excluded]; exists {
+			return true
 		}
 	}
-	if _, err := os.Stat(repoPath(t, "extensions/vscode-lopper/images/lopper-icon.svg")); err == nil {
-		t.Fatal("the extension package must ship the PNG icon, not an SVG icon")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stat SVG icon path: %v", err)
-	}
+	return false
 }
