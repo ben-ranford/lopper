@@ -924,6 +924,16 @@ func TestWriteRootVerifyIdentity(t *testing.T) {
 	if err := root.VerifyIdentity(other); err == nil {
 		t.Fatal("expected different root identity to be rejected")
 	}
+	t.Run("propagates root lookup errors", func(t *testing.T) {
+		expectedErr := errors.New("root lookup failure")
+		root := &WriteRoot{root: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return nil, expectedErr },
+		}}
+
+		if err := root.VerifyIdentity(expected); !errors.Is(err, expectedErr) {
+			t.Fatalf("VerifyIdentity error = %v, want %v", err, expectedErr)
+		}
+	})
 }
 
 func TestVerifyDirectoryIdentity(t *testing.T) {
@@ -1077,7 +1087,12 @@ func TestWriteRootIfAbsentRejectsDanglingTargetSymlink(t *testing.T) {
 }
 
 func TestWriteRootIfAbsentRejectsNonRelativeTargets(t *testing.T) {
-	assertWriteRootRejectsNonRelativeTargets(t, (*WriteRoot).WriteFileCreatingParentsIfAbsent)
+	for _, write := range []func(*WriteRoot, string, []byte, os.FileMode, os.FileMode) error{
+		(*WriteRoot).WriteFileCreatingParentsIfAbsent,
+		(*WriteRoot).WriteFileCreatingParentsAtomicallyIfAbsent,
+	} {
+		assertWriteRootRejectsNonRelativeTargets(t, write)
+	}
 }
 
 func TestWriteRootIfAbsentPropagatesParentReadyError(t *testing.T) {
