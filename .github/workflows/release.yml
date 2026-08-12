@@ -113,10 +113,12 @@ jobs:
         run: |
           set -euo pipefail
           git_bin=/usr/bin/git
+          bash_bin=/bin/bash
+          env_bin=/usr/bin/env
           base64_bin=/usr/bin/base64
           tr_bin=/usr/bin/tr
           mktemp_bin=/usr/bin/mktemp
-          if [ ! -x "${git_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+          if [ ! -x "${git_bin}" ] || [ ! -x "${bash_bin}" ] || [ ! -x "${env_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
             echo "::error::Trusted binaries are unavailable for the release-notes push step." >&2
             exit 1
           fi
@@ -124,15 +126,31 @@ jobs:
           trap '/bin/rm -rf "${git_home}"' EXIT
 
           git_network() (
-            export HOME="${git_home}" PATH=/usr/bin:/bin GIT_TERMINAL_PROMPT=0
-            export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=5
-            export GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null
-            export GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1=
-            export GIT_CONFIG_KEY_2=protocol.file.allow GIT_CONFIG_VALUE_2=never
-            export GIT_CONFIG_KEY_3=protocol.ext.allow GIT_CONFIG_VALUE_3=never
-            export GIT_CONFIG_KEY_4=http.https://github.com/.extraheader
-            export GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"
-            exec "${git_bin}" "$@"
+            exec 3<<<"${auth_header}"
+            # shellcheck disable=SC2016 # expand the authorization header only in the clean child shell.
+            "${env_bin}" -i \
+              HOME="${git_home}" \
+              PATH=/usr/bin:/bin \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              "${bash_bin}" -c '
+                IFS= read -r auth_header <&3
+                exec 3<&-
+                export GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"
+                unset auth_header
+                exec /usr/bin/git "$@"
+              ' git_network "$@"
           )
 
           release_pr_branch="$(jq -er '.[0].headBranchName' <<<"${RELEASE_PLEASE_PRS}")"
