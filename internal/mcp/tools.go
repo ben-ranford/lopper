@@ -443,6 +443,10 @@ func trustedReadOnlyCacheAlias(cachePath string) bool {
 }
 
 func trustedReadOnlyCacheAliasForGOOS(goos, cachePath string) bool {
+	return trustedReadOnlyCacheAliasForGOOSWithResolver(goos, cachePath, filepath.EvalSymlinks)
+}
+
+func trustedReadOnlyCacheAliasForGOOSWithResolver(goos, cachePath string, resolveSymlinks func(string) (string, error)) bool {
 	if goos != "darwin" || !filepath.IsAbs(cachePath) {
 		return false
 	}
@@ -450,7 +454,7 @@ func trustedReadOnlyCacheAliasForGOOS(goos, cachePath string) bool {
 	if absPath != "/tmp" && !strings.HasPrefix(absPath, "/tmp/") {
 		return false
 	}
-	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	resolvedPath, err := resolveSymlinks(absPath)
 	if err != nil {
 		return false
 	}

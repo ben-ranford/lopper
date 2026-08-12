@@ -771,7 +771,7 @@ func TestTrustedReadOnlyCacheAliasAllowsOnlyMacOSTempAlias(t *testing.T) {
 }
 
 func TestTrustedReadOnlyCacheAliasRejectsNonTempPaths(t *testing.T) {
-	if trustedReadOnlyCacheAlias(t.TempDir()) {
+	if trustedReadOnlyCacheAlias("/var/empty/lopper-cache") {
 		t.Fatal("unexpected trusted alias outside the fixed macOS temp path")
 	}
 }
@@ -792,6 +792,20 @@ func TestTrustedReadOnlyCacheAliasForGOOS(t *testing.T) {
 				t.Fatalf("trustedReadOnlyCacheAliasForGOOS(%q, %q) = %v, want %v", test.goos, test.path, got, test.want)
 			}
 		})
+	}
+}
+
+func TestTrustedReadOnlyCacheAliasForGOOSAcceptsMacOSTempAlias(t *testing.T) {
+	const cachePath = "/tmp/lopper-cache"
+	resolver := func(path string) (string, error) {
+		if path != cachePath {
+			t.Fatalf("resolver path = %q, want %q", path, cachePath)
+		}
+		return "/private" + path, nil
+	}
+
+	if !trustedReadOnlyCacheAliasForGOOSWithResolver("darwin", cachePath, resolver) {
+		t.Fatal("expected trusted macOS /tmp alias")
 	}
 }
 
