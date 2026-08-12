@@ -225,9 +225,13 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 		`unset PUSH_TOKEN`,
 		`GIT_CONFIG_KEY_4=http.https://github.com/.extraheader`,
 		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
+		`exec "${git_bin}" "$@"`,
 		`git_network push origin "HEAD:${release_pr_branch}"`,
 	})
 	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, push, "release notes push")
+	if strings.Contains(push.Run, `"${env_bin}" -i`) {
+		t.Fatal("release notes push must not pass its authorization header through env argv")
+	}
 	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh VS Code extension release notes", "Push refreshed VS Code extension release notes", "Checkout release metadata")
 }
 
