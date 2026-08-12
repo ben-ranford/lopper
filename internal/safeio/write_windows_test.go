@@ -538,3 +538,49 @@ func TestWindowsReplaceExistingRenameFallbackMatchesOnlyExpectedShape(t *testing
 		})
 	}
 }
+
+func TestPublishAtomicFileIfAbsentFallsBackToNoReplaceRenameWithoutHardLinks(t *testing.T) {
+	const tempName = ".safeio-atomic-temp"
+	renamed := false
+	root := &fakeRoot{
+		link: func(oldName, newName string) error {
+			if oldName != tempName || newName != writeTestFileName {
+				t.Fatalf("link = %q -> %q, want %q -> %q", oldName, newName, tempName, writeTestFileName)
+			}
+			return &os.LinkError{Op: "link", Old: oldName, New: newName, Err: windowsErrorNotSupported}
+		},
+		rename: func(oldName, newName string) error {
+			if oldName != tempName || newName != writeTestFileName {
+				t.Fatalf("rename = %q -> %q, want %q -> %q", oldName, newName, tempName, writeTestFileName)
+			}
+			renamed = true
+			return nil
+		},
+	}
+
+	usedRename, err := publishAtomicFileIfAbsent(root, tempName, writeTestFileName)
+	if err != nil {
+		t.Fatalf("publishAtomicFileIfAbsent: %v", err)
+	}
+	if !usedRename || !renamed {
+		t.Fatalf("expected no-replace rename fallback, usedRename=%t renamed=%t", usedRename, renamed)
+	}
+}
+
+func TestPublishAtomicFileIfAbsentPreservesNoClobberWhenFallbackRenameFindsTarget(t *testing.T) {
+	const tempName = ".safeio-atomic-temp"
+	root := &fakeRoot{
+		link: func(string, string) error {
+			return &os.LinkError{Op: "link", Old: tempName, New: writeTestFileName, Err: windowsErrorNotSupported}
+		},
+		rename: func(string, string) error { return fs.ErrExist },
+	}
+
+	usedRename, err := publishAtomicFileIfAbsent(root, tempName, writeTestFileName)
+	if usedRename {
+		t.Fatal("expected existing target to prevent rename publication")
+	}
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("expected no-clobber existence error, got %v", err)
+	}
+}

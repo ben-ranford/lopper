@@ -151,11 +151,14 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
-	if err := root.Link(session.tempRel, targetRel); err != nil {
+	renamed, err := publishAtomicFileIfAbsent(root, session.tempRel, targetRel)
+	if err != nil {
 		return err
 	}
-	if err := root.Remove(session.tempRel); err != nil {
-		return err
+	if !renamed {
+		if err := root.Remove(session.tempRel); err != nil {
+			return err
+		}
 	}
 	session.tempRel = ""
 	return session.verifyCommittedTarget()
