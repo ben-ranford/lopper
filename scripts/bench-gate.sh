@@ -87,7 +87,7 @@ run_configured_go_env() {
 		eval "set -- $configured_go"
 		while [ "$#" -gt 0 ]; do
 			case "$1" in
-				[A-Za-z_][A-Za-z0-9_]*=*) export "$1"; shift ;;
+				[A-Za-z_]=*|[A-Za-z_][A-Za-z0-9_]*=*) export "$1"; shift ;;
 				*) break ;;
 			esac
 		done

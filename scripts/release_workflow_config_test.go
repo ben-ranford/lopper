@@ -3244,6 +3244,7 @@ func TestMakefileBenchGateKeepsGoBinIndependentFromMultiwordGo(t *testing.T) {
 		{name: "wrapper", goCmd: "env " + hostGo},
 		{name: "quoted executable", goCmd: strconv.Quote(hostGo)},
 		{name: "assignment prefixed quoted executable", goCmd: "CGO_ENABLED=0 " + strconv.Quote(hostGo)},
+		{name: "one-letter assignment prefixed quoted executable", goCmd: "X=1 " + strconv.Quote(hostGo)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
