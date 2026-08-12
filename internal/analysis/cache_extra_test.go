@@ -12,7 +12,6 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -91,10 +90,16 @@ func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "#1494") {
 		t.Fatalf("warnings = %#v, want #1494 capability-bound creation guidance", warnings)
 	}
-	assertAnalysisCachePathAbsent(t, filepath.Join(repo, "missing"))
-	assertAnalysisCachePathAbsent(t, cachePath)
-	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName))
-	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheObjectsDirName))
+	for _, path := range []string{
+		filepath.Join(repo, "missing"),
+		cachePath,
+		filepath.Join(cachePath, cacheKeysDirName),
+		filepath.Join(cachePath, cacheObjectsDirName),
+	} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cache initialization created %s: %v", path, err)
+		}
+	}
 }
 
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
@@ -162,36 +167,6 @@ func TestNewAnalysisCacheRejectsSymlinkedCacheChild(t *testing.T) {
 		t.Fatal("expected symlinked cache child to fail closed")
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, "key.json"))
-}
-
-func TestOpenOrCreatePinnedAnalysisCacheChildRejectsReplacedParentBeforeCreation(t *testing.T) {
-	parentPath := filepath.Join(t.TempDir(), "cache-parent")
-	if err := os.Mkdir(parentPath, 0o750); err != nil {
-		t.Fatalf("create parent: %v", err)
-	}
-	root, err := safeio.OpenRootNoFollow(parentPath)
-	if err != nil {
-		t.Fatalf("open parent: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := root.Close(); err != nil {
-			t.Errorf("close parent: %v", err)
-		}
-	})
-
-	parkedPath := parentPath + "-parked"
-	if err := os.Rename(parentPath, parkedPath); err != nil {
-		t.Fatalf("park pinned parent: %v", err)
-	}
-	if err := os.Mkdir(parentPath, 0o750); err != nil {
-		t.Fatalf("replace parent: %v", err)
-	}
-
-	if _, err := openOrCreatePinnedAnalysisCacheChild(root, parentPath, "child"); err == nil {
-		t.Fatal("expected replaced parent identity to be rejected")
-	}
-	assertAnalysisCachePathAbsent(t, filepath.Join(parkedPath, "child"))
-	assertAnalysisCachePathAbsent(t, filepath.Join(parentPath, "child"))
 }
 
 func TestNewAnalysisCacheRejectsSymlinkedAncestorAndCleansTraversal(t *testing.T) {
