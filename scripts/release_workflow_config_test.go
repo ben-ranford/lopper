@@ -3297,6 +3297,29 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBase(t *testing.T) {
 	assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", want}, []string{"Result: memory benchmark gate passed."})
 }
 
+func TestMakefileBenchGateFailsClosedForExplicitlyEmptyGo(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	benchVars := map[string]string{
+		"GO":     "",
+		"GO_BIN": "",
+	}
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+	if exitCode != 2 {
+		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+	}
+	want := "configured GO command could not resolve GOROOT; set GO_BIN explicitly."
+	if !strings.Contains(output, "Memory benchmark gate invalid: "+want) {
+		t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+	}
+	wantContains := []string{
+		"Comparison status: invalid",
+		want,
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, []string{"Result: memory benchmark gate passed."})
+}
+
 func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *testing.T) {
 	t.Parallel()
 

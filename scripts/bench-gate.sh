@@ -4,7 +4,9 @@ set -eu
 if [ "${MEMORY_BENCH_BASE+x}" != x ]; then
 	MEMORY_BENCH_BASE="origin/main"
 fi
-: "${GO:=go}"
+if [ "${GO+x}" != x ]; then
+	GO="go"
+fi
 : "${GO_BIN:=}"
 : "${GO_TOOLCHAIN:=go1.26.5}"
 if [ "${BENCH_COUNT+x}" != x ]; then
