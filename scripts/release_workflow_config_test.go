@@ -3297,6 +3297,69 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBase(t *testing.T) {
 	assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", want}, []string{"Result: memory benchmark gate passed."})
 }
 
+func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		emptyVariable string
+		want          string
+	}{
+		{name: "count", emptyVariable: "BENCH_COUNT", want: "base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' with selection '^(BenchmarkConfiguration)$' could not be applied unchanged."},
+		{name: "time", emptyVariable: "BENCH_TIME", want: "base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' with selection '^(BenchmarkConfiguration)$' could not be applied unchanged."},
+		{name: "packages", emptyVariable: "MEMORY_BENCH_PACKAGES", want: "head benchmark package targets could not be resolved."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo, benchVars := newTempBenchGateGoRepo(t)
+			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkConfiguration"))
+			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go")
+			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
+			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
+			benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+			benchVars[tc.emptyVariable] = ""
+
+			output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+			if exitCode != 2 {
+				t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+			}
+			if !strings.Contains(output, tc.want) {
+				t.Fatalf("bench-gate output missing %q:\n%s", tc.want, output)
+			}
+			assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", tc.want}, []string{"Result: memory benchmark gate passed."})
+		})
+	}
+}
+
+func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeFile(t, filepath.Join(repo, "internal", "lang", "shared", "bench_test.go"), benchmarkTestSource("shared", "BenchmarkDefaultConfiguration"))
+	writeFile(t, filepath.Join(repo, "internal", "report", "bench_test.go"), benchmarkTestSource("report", "BenchmarkDefaultConfiguration"))
+	runGitCommand(t, repo, "add", "go.mod", "internal/lang/shared/bench_test.go", "internal/report/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "commit", "-m", "add default benchmark packages")
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD"
+	delete(benchVars, "BENCH_COUNT")
+	delete(benchVars, "BENCH_TIME")
+	delete(benchVars, "MEMORY_BENCH_PACKAGES")
+
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0", exitCode)
+	}
+	for _, want := range []string{"-count=3 -benchtime=200ms", "package=github.com/ben-ranford/lopper/internal/lang/shared", "package=github.com/ben-ranford/lopper/internal/report"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bench-gate output missing default configuration %q:\n%s", want, output)
+		}
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
+}
+
 func TestMakefileBenchGateRejectsMismatchedGoVersion(t *testing.T) {
 	t.Parallel()
 

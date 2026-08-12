@@ -7,9 +7,15 @@ fi
 : "${GO:=go}"
 : "${GO_BIN:=}"
 : "${GO_TOOLCHAIN:=go1.26.5}"
-: "${BENCH_COUNT:=3}"
-: "${BENCH_TIME:=200ms}"
-: "${MEMORY_BENCH_PACKAGES:=./internal/lang/shared ./internal/report}"
+if [ "${BENCH_COUNT+x}" != x ]; then
+	BENCH_COUNT="3"
+fi
+if [ "${BENCH_TIME+x}" != x ]; then
+	BENCH_TIME="200ms"
+fi
+if [ "${MEMORY_BENCH_PACKAGES+x}" != x ]; then
+	MEMORY_BENCH_PACKAGES="./internal/lang/shared ./internal/report"
+fi
 if [ "${MEMORY_BENCH_MAX_BYTES_PCT+x}" != x ]; then
 	MEMORY_BENCH_MAX_BYTES_PCT="15"
 fi
