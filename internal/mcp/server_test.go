@@ -778,17 +778,27 @@ func TestTrustedReadOnlyCacheAliasRejectsNonTempPaths(t *testing.T) {
 
 func TestTrustedReadOnlyCacheAliasForGOOS(t *testing.T) {
 	for name, test := range map[string]struct {
-		goos string
-		path string
-		want bool
+		goos            string
+		path            string
+		want            bool
+		resolveSymlinks func(string) (string, error)
 	}{
 		"non-Darwin":    {goos: "linux", path: "/tmp/.lopper-cache"},
 		"relative path": {goos: "darwin", path: "tmp/.lopper-cache"},
 		"outside temp":  {goos: "darwin", path: "/var/empty/lopper-cache"},
-		"missing cache": {goos: "darwin", path: "/tmp/lopper-cache-does-not-exist"},
+		"missing cache": {
+			goos: "darwin", path: "/tmp/lopper-cache-missing",
+			resolveSymlinks: func(string) (string, error) {
+				return "", os.ErrNotExist
+			},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := trustedReadOnlyCacheAliasForGOOS(test.goos, test.path); got != test.want {
+			got := trustedReadOnlyCacheAliasForGOOS(test.goos, test.path)
+			if test.resolveSymlinks != nil {
+				got = trustedReadOnlyCacheAliasForGOOSWithResolver(test.goos, test.path, test.resolveSymlinks)
+			}
+			if got != test.want {
 				t.Fatalf("trustedReadOnlyCacheAliasForGOOS(%q, %q) = %v, want %v", test.goos, test.path, got, test.want)
 			}
 		})
