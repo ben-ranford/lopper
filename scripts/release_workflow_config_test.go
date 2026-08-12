@@ -3320,6 +3320,49 @@ func TestMakefileBenchGateFailsClosedForExplicitlyEmptyGo(t *testing.T) {
 	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, []string{"Result: memory benchmark gate passed."})
 }
 
+func TestMakefileBenchGatePreservesExplicitlyEmptyGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	goBin := filepath.Join(t.TempDir(), "go")
+	writeExecutableFile(t, goBin, `#!/bin/sh
+set -eu
+[ "${GOTOOLCHAIN+x}" = x ]
+[ -z "$GOTOOLCHAIN" ]
+case "${1:-}" in
+  env)
+    [ "${2:-}" = "GOVERSION" ] || exit 9
+    printf 'go1.empty-toolchain\n'
+    ;;
+  version)
+    printf 'go version go1.empty-toolchain fake/empty\n'
+    ;;
+  *)
+    exit 9
+    ;;
+esac
+`)
+	benchVars := map[string]string{
+		"GO":                goBin,
+		"GO_BIN":            goBin,
+		"GO_TOOLCHAIN":      "",
+		"MEMORY_BENCH_BASE": "refs/heads/does-not-exist",
+	}
+
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+	if exitCode != 2 {
+		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+	}
+	for _, want := range []string{
+		"Memory benchmark Go toolchain: go1.empty-toolchain",
+		"requested base ref 'refs/heads/does-not-exist' is missing or invalid",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -3355,6 +3398,64 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *test
 			}
 			assertMemoryBenchArtifacts(t, repo, "2\n", []string{"Comparison status: invalid", tc.want}, []string{"Result: memory benchmark gate passed."})
 		})
+	}
+}
+
+func TestMakefileBenchGateFailsClosedForExplicitlyEmptyArtifactDestination(t *testing.T) {
+	t.Parallel()
+
+	for _, emptyVariable := range []string{
+		"BENCH_BASE_OUTPUT",
+		"BENCH_HEAD_OUTPUT",
+		"MEMORY_BENCH_SUMMARY",
+		"MEMORY_BENCH_STATUS",
+	} {
+		emptyVariable := emptyVariable
+		t.Run(emptyVariable, func(t *testing.T) {
+			t.Parallel()
+
+			repo := newTempBenchGateRepo(t)
+			hostGo, err := exec.LookPath("go")
+			if err != nil {
+				t.Fatalf("resolve host go binary: %v", err)
+			}
+			benchVars := map[string]string{
+				"GO":                hostGo,
+				"GO_BIN":            hostGo,
+				"GO_TOOLCHAIN":      "local",
+				"MEMORY_BENCH_BASE": "refs/heads/does-not-exist",
+				emptyVariable:       "",
+			}
+
+			output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+			if exitCode != 2 {
+				t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+			}
+			want := "Memory benchmark gate invalid: benchmark artifact destinations must not be empty."
+			if !strings.Contains(output, want) {
+				t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+			}
+			for _, defaultArtifact := range []string{
+				".artifacts/bench-base.out",
+				".artifacts/bench-head.out",
+				".artifacts/memory-bench-summary.md",
+				".artifacts/memory-bench-status.txt",
+			} {
+				assertPathAbsent(t, filepath.Join(repo, defaultArtifact))
+			}
+		})
+	}
+}
+
+func TestMakefileBenchGateUsesDefaultEnforcementOnlyWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	benchGateScript := readConfig(t, "scripts/bench-gate.sh")
+	if !strings.Contains(benchGateScript, `if [ "${MEMORY_BENCH_ENFORCE+x}" != x ]; then`+"\n\tMEMORY_BENCH_ENFORCE=\"1\"") {
+		t.Fatal("bench-gate must default MEMORY_BENCH_ENFORCE only when it is unset")
+	}
+	if strings.Contains(benchGateScript, `: "${MEMORY_BENCH_ENFORCE:=1}"`) {
+		t.Fatal("bench-gate must not replace an explicitly empty MEMORY_BENCH_ENFORCE with the default")
 	}
 }
 

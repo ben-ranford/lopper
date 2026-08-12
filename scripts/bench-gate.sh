@@ -8,7 +8,9 @@ if [ "${GO+x}" != x ]; then
 	GO="go"
 fi
 : "${GO_BIN:=}"
-: "${GO_TOOLCHAIN:=go1.26.5}"
+if [ "${GO_TOOLCHAIN+x}" != x ]; then
+	GO_TOOLCHAIN="go1.26.5"
+fi
 if [ "${BENCH_COUNT+x}" != x ]; then
 	BENCH_COUNT="3"
 fi
@@ -24,11 +26,21 @@ fi
 if [ "${MEMORY_BENCH_MAX_ALLOCS_PCT+x}" != x ]; then
 	MEMORY_BENCH_MAX_ALLOCS_PCT="10"
 fi
-: "${BENCH_BASE_OUTPUT:=.artifacts/bench-base.out}"
-: "${BENCH_HEAD_OUTPUT:=.artifacts/bench-head.out}"
-: "${MEMORY_BENCH_SUMMARY:=.artifacts/memory-bench-summary.md}"
-: "${MEMORY_BENCH_STATUS:=.artifacts/memory-bench-status.txt}"
-: "${MEMORY_BENCH_ENFORCE:=1}"
+if [ "${BENCH_BASE_OUTPUT+x}" != x ]; then
+	BENCH_BASE_OUTPUT=".artifacts/bench-base.out"
+fi
+if [ "${BENCH_HEAD_OUTPUT+x}" != x ]; then
+	BENCH_HEAD_OUTPUT=".artifacts/bench-head.out"
+fi
+if [ "${MEMORY_BENCH_SUMMARY+x}" != x ]; then
+	MEMORY_BENCH_SUMMARY=".artifacts/memory-bench-summary.md"
+fi
+if [ "${MEMORY_BENCH_STATUS+x}" != x ]; then
+	MEMORY_BENCH_STATUS=".artifacts/memory-bench-status.txt"
+fi
+if [ "${MEMORY_BENCH_ENFORCE+x}" != x ]; then
+	MEMORY_BENCH_ENFORCE="1"
+fi
 if [ "${GO_TEST_LDFLAGS+x}" != x ]; then
 	GO_TEST_LDFLAGS="-X github.com/ben-ranford/lopper/internal/version.buildChannel=${BUILD_CHANNEL:-dev}"
 fi
@@ -44,6 +56,12 @@ requested_base_ref="$MEMORY_BENCH_BASE";
 base_ref="$requested_base_ref";
 requested_go_bin="$GO_BIN";
 requested_go_toolchain="$GO_TOOLCHAIN";
+for artifact_destination in "$BENCH_BASE_OUTPUT" "$BENCH_HEAD_OUTPUT" "$MEMORY_BENCH_SUMMARY" "$MEMORY_BENCH_STATUS"; do
+	if [ -z "$artifact_destination" ]; then
+		printf "Memory benchmark gate invalid: benchmark artifact destinations must not be empty.\n" >&2;
+		exit 2;
+	fi;
+done
 # shellcheck disable=SC2046 # Each dirname is a single, intentionally unquoted path argument.
 mkdir -p $(dirname "$BENCH_BASE_OUTPUT") $(dirname "$BENCH_HEAD_OUTPUT") $(dirname "$MEMORY_BENCH_SUMMARY") $(dirname "$MEMORY_BENCH_STATUS");
 write_invalid_memory_summary() {
