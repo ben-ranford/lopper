@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -143,6 +144,36 @@ func TestNewAnalysisCacheRejectsSymlinkedCacheChild(t *testing.T) {
 		t.Fatal("expected symlinked cache child to fail closed")
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, "key.json"))
+}
+
+func TestOpenOrCreatePinnedAnalysisCacheChildRejectsReplacedParentBeforeCreation(t *testing.T) {
+	parentPath := filepath.Join(t.TempDir(), "cache-parent")
+	if err := os.Mkdir(parentPath, 0o750); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	root, err := safeio.OpenRootNoFollow(parentPath)
+	if err != nil {
+		t.Fatalf("open parent: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close parent: %v", err)
+		}
+	})
+
+	parkedPath := parentPath + "-parked"
+	if err := os.Rename(parentPath, parkedPath); err != nil {
+		t.Fatalf("park pinned parent: %v", err)
+	}
+	if err := os.Mkdir(parentPath, 0o750); err != nil {
+		t.Fatalf("replace parent: %v", err)
+	}
+
+	if _, err := openOrCreatePinnedAnalysisCacheChild(root, parentPath, "child"); err == nil {
+		t.Fatal("expected replaced parent identity to be rejected")
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(parkedPath, "child"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(parentPath, "child"))
 }
 
 func TestNewAnalysisCacheRejectsSymlinkedAncestorAndCleansTraversal(t *testing.T) {

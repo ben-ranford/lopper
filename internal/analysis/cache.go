@@ -108,11 +108,8 @@ func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, r
 		current = next
 		currentPath = filepath.Join(currentPath, part)
 	}
-	info, err := current.Lstat(".")
+	info, err := verifyPinnedAnalysisCacheDirectory(current, currentPath)
 	if err != nil {
-		return nil, err
-	}
-	if err := safeio.VerifyDirectoryIdentity(currentPath, info); err != nil {
 		return nil, err
 	}
 	for _, name := range []string{"keys", "objects"} {
@@ -127,7 +124,21 @@ func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, r
 	return info, nil
 }
 
+func verifyPinnedAnalysisCacheDirectory(root safeio.Root, path string) (fs.FileInfo, error) {
+	info, err := root.Lstat(".")
+	if err != nil {
+		return nil, err
+	}
+	if err := safeio.VerifyDirectoryIdentity(path, info); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
 func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name string) (safeio.Root, error) {
+	if _, err := verifyPinnedAnalysisCacheDirectory(root, parentPath); err != nil {
+		return nil, err
+	}
 	return safeio.OpenOrCreatePinnedDirectory(root, parentPath, name, 0o750)
 }
 
