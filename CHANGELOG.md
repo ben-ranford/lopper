@@ -2,6 +2,40 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.5](https://github.com/ben-ranford/lopper/compare/v1.8.4...v1.8.5) (2026-08-12)
+
+
+### Bug Fixes
+
+* **advisory:** confine repo-config advisory sources ([#1456](https://github.com/ben-ranford/lopper/issues/1456)) ([0a0fcee](https://github.com/ben-ranford/lopper/commit/0a0fceef61e3e9fec30c57243303f594c407ba25))
+* **analysis:** bound scoped workspace copies ([#1464](https://github.com/ben-ranford/lopper/issues/1464)) ([7f81899](https://github.com/ben-ranford/lopper/commit/7f818991174b933334d0e78ba0cdd31a16775fbd))
+* **analysis:** confine Kotlin Android candidate roots ([#1463](https://github.com/ben-ranford/lopper/issues/1463)) ([d784bbd](https://github.com/ben-ranford/lopper/commit/d784bbdd0f1bcc33be8a1641ec5448cc656a1905))
+* **analysis:** preserve duplicate import provenance ([#1473](https://github.com/ben-ranford/lopper/issues/1473)) ([580df3a](https://github.com/ben-ranford/lopper/commit/580df3ac68d38b3a03cda017b891c8124019f62b))
+* **analysis:** reject replaced existing cache roots ([#1481](https://github.com/ben-ranford/lopper/issues/1481)) ([52a5a1b](https://github.com/ben-ranford/lopper/commit/52a5a1bc87551a11080a9da6f0c860b494b2db67))
+* **baseline:** reject malformed typed snapshot discriminators ([#1471](https://github.com/ben-ranford/lopper/issues/1471)) ([ccbea11](https://github.com/ben-ranford/lopper/commit/ccbea11862e48aeda640169410c52e7ae2b619a2))
+* **cache:** preserve scoped CLI cache roots ([#1483](https://github.com/ben-ranford/lopper/issues/1483)) ([76bf4e8](https://github.com/ben-ranford/lopper/commit/76bf4e86454e761cba4fa12f7d32ec4fe79eff04))
+* **deps:** update module golang.org/x/mod to v0.39.0 ([#1488](https://github.com/ben-ranford/lopper/issues/1488)) ([53332b1](https://github.com/ben-ranford/lopper/commit/53332b1e2af9f3cab431e897e57f830739a25388))
+* **elixir:** ignore quote spoofing inside comments ([#1460](https://github.com/ben-ranford/lopper/issues/1460)) ([5eae2f2](https://github.com/ben-ranford/lopper/commit/5eae2f2527793d300d94cf7cdecbd7b556cd0808))
+* **jvm:** confine detected module roots ([#1484](https://github.com/ben-ranford/lopper/issues/1484)) ([8459ad7](https://github.com/ben-ranford/lopper/commit/8459ad756969221495564c638135cdd16dc16e4c))
+* **kotlin:** parse backtick import aliases ([#1478](https://github.com/ben-ranford/lopper/issues/1478)) ([8772bcc](https://github.com/ben-ranford/lopper/commit/8772bcc70d051a0fe54de0840f849aadf6ba3ac3))
+* **mcp:** confine baseline store paths to repo ([#1458](https://github.com/ben-ranford/lopper/issues/1458)) ([137eb90](https://github.com/ben-ranford/lopper/commit/137eb90e5d1469d88cf11bf86bafa4179c972b68))
+* **mcp:** reuse trusted read-only cache aliases ([#1485](https://github.com/ben-ranford/lopper/issues/1485)) ([80c2c55](https://github.com/ben-ranford/lopper/commit/80c2c551e7275cff84ee1c2d5283bceff822104a))
+* **portability:** define Windows test compilation boundary ([#1475](https://github.com/ben-ranford/lopper/issues/1475)) ([e1e97fb](https://github.com/ben-ranford/lopper/commit/e1e97fbeacc7ae4b139ec54a1b26fb61ad076f36))
+* **pr-review:** gate PEP 440 downgrades ([#1479](https://github.com/ben-ranford/lopper/issues/1479)) ([9303d0a](https://github.com/ben-ranford/lopper/commit/9303d0a3d2f6fc6b2e55b3a1cb14abe8f0bc819d))
+* **profile:** block symlink-followed output writes ([#1459](https://github.com/ben-ranford/lopper/issues/1459)) ([6b88668](https://github.com/ben-ranford/lopper/commit/6b8866862fb500b3bff93165a4b6b15eec26b5c6))
+* **python:** reject symlinked src roots ([#1465](https://github.com/ben-ranford/lopper/issues/1465)) ([3e6bdf6](https://github.com/ben-ranford/lopper/commit/3e6bdf69e4eb0b7d15011331b88ef9729e3d48ba))
+* **release:** generate VS Code extension release notes ([#1482](https://github.com/ben-ranford/lopper/issues/1482)) ([1148bf8](https://github.com/ben-ranford/lopper/commit/1148bf872253b9d9e100d6e184960a4873ab2b5c))
+* **release:** harden VS Code release notes ([1148bf8](https://github.com/ben-ranford/lopper/commit/1148bf872253b9d9e100d6e184960a4873ab2b5c))
+* **release:** scope release notes push credentials ([#1499](https://github.com/ben-ranford/lopper/issues/1499)) ([abbc768](https://github.com/ben-ranford/lopper/commit/abbc768983bf2c545e2364dee501a534cabae2a8))
+* **vscode:** short-circuit untrusted local binary checks ([#1466](https://github.com/ben-ranford/lopper/issues/1466)) ([9490979](https://github.com/ben-ranford/lopper/commit/9490979f1bbd1eaefa437aef50443d8460c22f37))
+* **workspace:** support SHA-256 baseline keys ([#1480](https://github.com/ben-ranford/lopper/issues/1480)) ([b7f7211](https://github.com/ben-ranford/lopper/commit/b7f721116635e7539fc6877f2d3ea1c25e32c013))
+
+
+### Code Refactoring
+
+* **dashboard:** share path containment guards ([#1467](https://github.com/ben-ranford/lopper/issues/1467)) ([b395b8a](https://github.com/ben-ranford/lopper/commit/b395b8a5b2a913b14297ca8a838365fc02e829ca))
+* extract bench gate script ([#1476](https://github.com/ben-ranford/lopper/issues/1476)) ([6b1378c](https://github.com/ben-ranford/lopper/commit/6b1378c88a34fc44f9d6961a17d26a030f4cc79c))
+
 ## [1.8.4](https://github.com/ben-ranford/lopper/compare/v1.8.3...v1.8.4) (2026-07-31)
 
 

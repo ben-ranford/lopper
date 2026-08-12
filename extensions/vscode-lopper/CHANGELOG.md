@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.5 (2026-08-12)
+
+- Updated VS Code behavior: chore(vscode): add extension icon (#1477).
+- Updated VS Code behavior: short-circuit untrusted local binary checks
+
 ## 1.8.4 (2026-07-31)
 
 - Added vulnerability findings to dependency details and newly reachable vulnerabilities to baseline comparisons, including affected and unevaluable version status.
