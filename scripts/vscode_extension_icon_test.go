@@ -5,7 +5,8 @@ import (
 	"image"
 	"image/png"
 	"os"
-	"path"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,8 +50,8 @@ func TestVSCodeExtensionIconPackageContract(t *testing.T) {
 		t.Fatal("VS Code extension icon must contain transparent padding and a near-opaque visible mark")
 	}
 
-	if excludesExtensionIcon(readConfig(t, "extensions/vscode-lopper/.vscodeignore")) {
-		t.Fatalf(".vscodeignore excludes the VS Code extension icon")
+	if !extensionPackageContains(t, repoPath(t, "extensions/vscode-lopper"), manifest.Icon) {
+		t.Fatalf("VS Code extension package does not contain %q", manifest.Icon)
 	}
 	if _, err := os.Stat(repoPath(t, "extensions/vscode-lopper/images/lopper-icon.svg")); err == nil {
 		t.Fatal("the extension package must ship the PNG icon, not an SVG icon")
@@ -71,84 +72,45 @@ func hasTransparentAndOpaquePixels(icon image.Image) bool {
 	return transparent && opaque
 }
 
-func excludesExtensionIcon(ignore string) bool {
-	excluded := false
-	for _, line := range strings.Split(ignore, "\n") {
-		pattern := strings.TrimSpace(line)
-		if pattern == "" || strings.HasPrefix(pattern, "#") {
-			continue
-		}
+func extensionPackageContains(t *testing.T, extensionDir, file string) bool {
+	t.Helper()
 
-		include := strings.HasPrefix(pattern, "!")
-		if include {
-			pattern = strings.TrimPrefix(pattern, "!")
-		}
-		if extensionIgnorePatternMatchesPath(pattern, "images/lopper-icon.png") {
-			excluded = !include
+	vsce := repoPath(t, "extensions/vscode-lopper/node_modules/.bin/vsce")
+	command := exec.Command(vsce, "ls")
+	command.Dir = extensionDir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list VS Code extension package files: %v\n%s", err, output)
+	}
+	for _, packagedFile := range strings.Fields(string(output)) {
+		if packagedFile == file {
+			return true
 		}
 	}
-	return excluded
+	return false
 }
 
-func extensionIgnorePatternMatchesPath(pattern, filePath string) bool {
-	pattern = strings.TrimPrefix(pattern, "/")
-	directoryPattern := strings.HasSuffix(pattern, "/")
-	pattern = strings.TrimSuffix(pattern, "/")
-	if pattern == "" {
-		return false
-	}
-
-	patternParts := strings.Split(pattern, "/")
-	fileParts := strings.Split(filePath, "/")
-	if len(patternParts) == 1 {
-		for _, filePart := range fileParts {
-			matched, err := path.Match(pattern, filePart)
-			if err == nil && matched {
-				return true
-			}
-		}
-		return false
-	}
-
-	if directoryPattern {
-		patternParts = append(patternParts, "**")
-	}
-	return extensionIgnorePathPartsMatch(patternParts, fileParts)
-}
-
-func extensionIgnorePathPartsMatch(patternParts, fileParts []string) bool {
-	if len(patternParts) == 0 {
-		return len(fileParts) == 0
-	}
-	if patternParts[0] == "**" {
-		return extensionIgnorePathPartsMatch(patternParts[1:], fileParts) ||
-			(len(fileParts) > 0 && extensionIgnorePathPartsMatch(patternParts, fileParts[1:]))
-	}
-	if len(fileParts) == 0 {
-		return false
-	}
-	matched, err := path.Match(patternParts[0], fileParts[0])
-	return err == nil && matched && extensionIgnorePathPartsMatch(patternParts[1:], fileParts[1:])
-}
-
-func TestExcludesExtensionIcon(t *testing.T) {
+func TestVSCodeExtensionPackagingHonorsBraceGlobIgnore(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name   string
-		ignore string
-		want   bool
-	}{
-		{name: "literal icon", ignore: "images/lopper-icon.png", want: true},
-		{name: "directory glob", ignore: "images/**", want: true},
-		{name: "extension glob", ignore: "**/*.png", want: true},
-		{name: "unexcluded icon", ignore: "images/**\n!images/lopper-icon.png", want: false},
-		{name: "unrelated pattern", ignore: "**/*.map", want: false},
+	extensionDir := t.TempDir()
+	for name, contents := range map[string]string{
+		"package.json":  `{"name":"icon-fixture","displayName":"Icon fixture","version":"1.0.0","publisher":"lopper","engines":{"vscode":"^1.85.0"},"icon":"images/lopper-icon.png"}`,
+		"README.md":     "# Icon fixture\n",
+		".vscodeignore": "images/*.{png,jpg}\n",
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := excludesExtensionIcon(tc.ignore); got != tc.want {
-				t.Fatalf("excludesExtensionIcon(%q) = %t, want %t", tc.ignore, got, tc.want)
-			}
-		})
+		if err := os.WriteFile(filepath.Join(extensionDir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(extensionDir, "images"), 0o700); err != nil {
+		t.Fatalf("create fixture images directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(extensionDir, "images", "lopper-icon.png"), []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write fixture icon: %v", err)
+	}
+
+	if extensionPackageContains(t, extensionDir, "images/lopper-icon.png") {
+		t.Fatal("VSCE must omit an icon matched by a brace glob in .vscodeignore")
 	}
 }
