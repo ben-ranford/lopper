@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -92,28 +93,18 @@ func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, r
 	if err != nil {
 		return nil, err
 	}
-	roots := []safeio.Root{root}
 	defer func() {
-		for index := len(roots) - 1; index >= 0; index-- {
-			returnErr = errors.Join(returnErr, roots[index].Close())
-		}
+		returnErr = errors.Join(returnErr, root.Close())
 	}()
-	current := root
-	for _, part := range missingParts {
-		next, err := openOrCreatePinnedAnalysisCacheChild(current, currentPath, part)
-		if err != nil {
-			return nil, err
-		}
-		roots = append(roots, next)
-		current = next
-		currentPath = filepath.Join(currentPath, part)
+	if len(missingParts) > 0 {
+		return nil, fmt.Errorf("analysis cache root is missing; capability-bound creation is deferred to #1494")
 	}
-	info, err := verifyPinnedAnalysisCacheDirectory(current, currentPath)
+	info, err := verifyPinnedAnalysisCacheDirectory(root, currentPath)
 	if err != nil {
 		return nil, err
 	}
 	for _, name := range []string{"keys", "objects"} {
-		child, err := openOrCreatePinnedAnalysisCacheChild(current, currentPath, name)
+		child, err := openOrCreatePinnedAnalysisCacheChild(root, currentPath, name)
 		if err != nil {
 			return nil, err
 		}
@@ -136,11 +127,10 @@ func verifyPinnedAnalysisCacheDirectory(root safeio.Root, path string) (fs.FileI
 }
 
 func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name string) (safeio.Root, error) {
-	expected, err := root.Lstat(".")
-	if err != nil {
+	if _, err := verifyPinnedAnalysisCacheDirectory(root, parentPath); err != nil {
 		return nil, err
 	}
-	return safeio.OpenOrCreatePinnedDirectoryAtPath(parentPath, expected, name, 0o750)
+	return safeio.OpenOrCreatePinnedDirectory(root, parentPath, name, 0o750)
 }
 
 func validateAnalysisCacheRoot(cachePath string, expected fs.FileInfo) error {

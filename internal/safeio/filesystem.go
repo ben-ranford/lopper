@@ -115,48 +115,6 @@ func OpenOrCreatePinnedDirectory(root Root, parentPath, name string, perm os.Fil
 	return next, nil
 }
 
-// OpenOrCreatePinnedDirectoryAtPath creates or opens a direct child only when
-// parentPath still names expected. It opens a fresh no-follow parent traversal
-// rather than reusing a possibly stale root handle, and verifies the mapping
-// again after creation before returning the child handle.
-func OpenOrCreatePinnedDirectoryAtPath(parentPath string, expected fs.FileInfo, name string, perm os.FileMode) (Root, error) {
-	return openOrCreatePinnedDirectoryAtPathWith(parentPath, expected, name, perm, OpenRootNoFollow, verifyPinnedRootAtPath)
-}
-
-func openOrCreatePinnedDirectoryAtPathWith(parentPath string, expected fs.FileInfo, name string, perm os.FileMode, openRootNoFollowFn func(string) (Root, error), verifyRootFn func(Root, string, fs.FileInfo) error) (returnRoot Root, returnErr error) {
-	root, err := openRootNoFollowFn(parentPath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, root.Close())
-	}()
-
-	if err := verifyRootFn(root, parentPath, expected); err != nil {
-		return nil, err
-	}
-	child, err := OpenOrCreatePinnedDirectory(root, parentPath, name, perm)
-	if err != nil {
-		return nil, err
-	}
-	if err := verifyRootFn(root, parentPath, expected); err != nil {
-		return nil, errors.Join(err, child.Close())
-	}
-	returnRoot = child
-	return
-}
-
-func verifyPinnedRootAtPath(root Root, path string, expected fs.FileInfo) error {
-	info, err := root.Lstat(".")
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(expected, info) {
-		return fmt.Errorf("directory identity changed: %s", path)
-	}
-	return VerifyDirectoryIdentity(path, expected)
-}
-
 // OpenRootExistingAncestorNoFollow opens the deepest existing ancestor for
 // name without following untrusted symlinks. It returns the opened ancestor,
 // that ancestor's canonical path, and any remaining missing path components.

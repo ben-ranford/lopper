@@ -79,6 +79,24 @@ func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
 	}
 }
 
+func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "missing", cacheDirName)
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if cache.cacheable {
+		t.Fatal("expected missing cache root to be unavailable pending capability-bound creation")
+	}
+	warnings := cache.takeWarnings()
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "#1494") {
+		t.Fatalf("warnings = %#v, want #1494 capability-bound creation guidance", warnings)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, "missing"))
+	assertAnalysisCachePathAbsent(t, cachePath)
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheObjectsDirName))
+}
+
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, cacheDirName)
@@ -194,6 +212,7 @@ func TestNewAnalysisCacheRejectsSymlinkedAncestorAndCleansTraversal(t *testing.T
 	t.Run("traversal is cleaned before initialization", func(t *testing.T) {
 		repo := t.TempDir()
 		cachePath := filepath.Join(repo, "nested", "..", cacheDirName)
+		mustMkdirCacheLayout(t, filepath.Join(repo, cacheDirName))
 		cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
 		if !cache.cacheable {
 			t.Fatalf("expected cleaned cache path to remain usable, warnings=%#v", cache.takeWarnings())
@@ -207,6 +226,7 @@ func TestNewAnalysisCacheRejectsSymlinkedAncestorAndCleansTraversal(t *testing.T
 func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
 	outside := t.TempDir()
 	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
 	if !cache.cacheable {
@@ -230,6 +250,7 @@ func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
 func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
 	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
 	if !cache.cacheable {
 		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
