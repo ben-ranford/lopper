@@ -185,6 +185,45 @@ func TestReleasePleaseWritesRootChangelog(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/release.yml", &workflow)
+	preparation := workflowJobByName(t, workflow.Jobs, "prepare-release")
+	checkout := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout release-please PR")
+	trustedTooling := workflowStepByName(t, workflow.Jobs, "prepare-release", "Checkout trusted release-notes tooling")
+	refresh := workflowStepByName(t, workflow.Jobs, "prepare-release", "Refresh VS Code extension release notes")
+	push := workflowStepByName(t, workflow.Jobs, "prepare-release", "Push refreshed VS Code extension release notes")
+
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "release notes checkout action", got: checkout.Uses, want: "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"},
+		{label: "release notes checkout depth", got: checkout.With["fetch-depth"], want: "0"},
+		{label: "release notes checkout ref", got: checkout.With["ref"], want: "${{ fromJSON(steps.release.outputs.prs)[0].headBranchName }}"},
+		{label: "release notes checkout token", got: checkout.With["token"], want: "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}"},
+		{label: "release notes checkout credential persistence", got: checkout.With["persist-credentials"], want: "false"},
+		{label: "trusted tooling ref", got: trustedTooling.With["ref"], want: "${{ steps.trusted_main.outputs.trusted_main_sha }}"},
+		{label: "trusted tooling path", got: trustedTooling.With["path"], want: ".trusted-release-notes-tooling"},
+		{label: "trusted tooling credential persistence", got: trustedTooling.With["persist-credentials"], want: "false"},
+		{label: "release notes refresh condition", got: refresh.If, want: "${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' }}"},
+	})
+	assertWorkflowStepEnv(t, refresh, "release notes refresh", map[string]string{"RELEASE_PLEASE_PRS": "${{ steps.release.outputs.prs }}"})
+	assertWorkflowStepRunContainsAll(t, refresh, "release notes refresh", []string{
+		`jq -er '.[0].headBranchName' <<<"${RELEASE_PLEASE_PRS}"`,
+		`expected_branch="release-please--branches--${GITHUB_REF_NAME}"`,
+		`git tag --merged HEAD --sort=-version:refname`,
+		`grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'`,
+		`python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}" --date "$(date -u +%F)"`,
+		`python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --check`,
+		`git diff --quiet -- extensions/vscode-lopper/CHANGELOG.md`,
+		`git add extensions/vscode-lopper/CHANGELOG.md`,
+		`git commit -m "docs(vscode): refresh release notes"`,
+	})
+	assertWorkflowStepEnv(t, push, "release notes push", map[string]string{"PUSH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}", "RELEASE_PLEASE_PRS": "${{ steps.release.outputs.prs }}"})
+	assertWorkflowStepRunContainsAll(t, push, "release notes push", []string{`git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${release_pr_branch}"`})
+	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh VS Code extension release notes", "Push refreshed VS Code extension release notes", "Checkout release metadata")
+}
+
 func assertPreviewChangelogSection(t *testing.T, sections []releasePleaseChangelogSection) {
 	t.Helper()
 
@@ -562,8 +601,8 @@ func TestReleaseWorkflowConfinesMainSyncPATToReleasePleaseAndTrustedFeatureHisto
 	}
 
 	workflowText := readConfig(t, ".github/workflows/release.yml")
-	if got := strings.Count(workflowText, "secrets.MAIN_SYNC_PAT"); got != 2 {
-		t.Fatalf("release workflow MAIN_SYNC_PAT references = %d, want release-please and trusted feature history push fallbacks only", got)
+	if got := strings.Count(workflowText, "secrets.MAIN_SYNC_PAT"); got != 4 {
+		t.Fatalf("release workflow MAIN_SYNC_PAT references = %d, want release-please, release-notes checkout and push, and trusted feature history push fallbacks only", got)
 	}
 	if !strings.Contains(workflowText, "PUSH_TOKEN: ${{ secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}") {
 		t.Fatal("trusted feature history push must retain MAIN_SYNC_PAT fallback to GITHUB_TOKEN")
@@ -1221,6 +1260,8 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 
 	want := []string{
 		"jobs.prepare-release.steps.Run release-please#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Checkout release-please PR#1.with.token=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
+		"jobs.prepare-release.steps.Push refreshed VS Code extension release notes#1.env.PUSH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Checkout release metadata#1.with.token=${{ secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-release.steps.Prepare manual release#1.env.GH_TOKEN=${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}",
 		"jobs.prepare-marketplace-toolchain.steps.Detect Marketplace token#1.env.VSCE_PUBLISH=${{ secrets.VSCE_PUBLISH }}",
@@ -1262,6 +1303,8 @@ func TestReleaseWorkflowScopesPublicationSecretsToNamedSteps(t *testing.T) {
 		"jobs.prepare-release-publication.steps.Download feature flag release report#1.uses",
 		"jobs.prepare-release-publication.steps.Upload release publication inputs#1.uses",
 		"jobs.prepare-release.steps.Checkout release metadata#1.uses",
+		"jobs.prepare-release.steps.Checkout release-please PR#1.uses",
+		"jobs.prepare-release.steps.Checkout trusted release-notes tooling#1.uses",
 		"jobs.prepare-release.steps.Run release-please#1.uses",
 		"jobs.publish-marketplace.steps.Download Marketplace toolchain#1.uses",
 		"jobs.publish-marketplace.steps.Download release publication inputs#1.uses",

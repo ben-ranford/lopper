@@ -58,6 +58,63 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      - name: Checkout release-please PR
+        if: ${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ fromJSON(steps.release.outputs.prs)[0].headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Checkout trusted release-notes tooling
+        if: ${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          ref: ${{ steps.trusted_main.outputs.trusted_main_sha }}
+          path: .trusted-release-notes-tooling
+
+      - name: Refresh VS Code extension release notes
+        if: ${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' }}
+        id: refresh_release_notes
+        env:
+          RELEASE_PLEASE_PRS: ${{ steps.release.outputs.prs }}
+        run: |
+          set -euo pipefail
+          release_pr_branch="$(jq -er '.[0].headBranchName' <<<"${RELEASE_PLEASE_PRS}")"
+          expected_branch="release-please--branches--${GITHUB_REF_NAME}"
+          if [ "${release_pr_branch}" != "${expected_branch}" ]; then
+            echo "::error::Refusing to update unexpected release-please branch ${release_pr_branch}." >&2
+            exit 1
+          fi
+          previous_tag="$(git tag --merged HEAD --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)"
+          if [ -z "${previous_tag}" ]; then
+            echo "::error::No previous stable tag is reachable from the release-please PR." >&2
+            exit 1
+          fi
+          python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --previous-tag "${previous_tag}" --date "$(date -u +%F)"
+          python3 .trusted-release-notes-tooling/scripts/vscode_release_notes.py --repo "$GITHUB_WORKSPACE" --check
+          if git diff --quiet -- extensions/vscode-lopper/CHANGELOG.md; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extensions/vscode-lopper/CHANGELOG.md
+          git commit -m "docs(vscode): refresh release notes"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Push refreshed VS Code extension release notes
+        if: ${{ github.event_name != 'workflow_dispatch' && steps.release.outputs.prs_created == 'true' && steps.refresh_release_notes.outputs.changed == 'true' }}
+        env:
+          PUSH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}
+          RELEASE_PLEASE_PRS: ${{ steps.release.outputs.prs }}
+        run: |
+          set -euo pipefail
+          release_pr_branch="$(jq -er '.[0].headBranchName' <<<"${RELEASE_PLEASE_PRS}")"
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${release_pr_branch}"
+
       - name: Checkout release metadata
         if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
