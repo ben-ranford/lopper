@@ -281,6 +281,20 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	})
 }
 
+func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
+	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
+	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension package contract", got: contract.Run, want: "go test ./scripts -run '^(TestVSCodeExtensionIconPackageContract|TestVSCodeExtensionPackagingHonorsBraceGlobIgnore)$' -count=1"},
+	})
+}
+
 func TestPRMetadataWorkflowPassesMaintainerExemptionLabel(t *testing.T) {
 	t.Parallel()
 	assertPullRequestTriggerTypes(t, ".github/workflows/pr-metadata.yml")
