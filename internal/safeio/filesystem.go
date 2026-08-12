@@ -82,45 +82,37 @@ func VerifyDirectoryIdentity(path string, expected fs.FileInfo) error {
 // symlinks, creating it if absent and verifying that the opened handle still
 // identifies the observed directory.
 func OpenOrCreatePinnedDirectory(root Root, parentPath, name string, perm os.FileMode) (Root, error) {
-	child, _, err := openOrCreatePinnedDirectory(root, parentPath, name, perm)
-	return child, err
-}
-
-func openOrCreatePinnedDirectory(root Root, parentPath, name string, perm os.FileMode) (Root, bool, error) {
 	childPath := filepath.Join(parentPath, name)
 	info, err := root.Lstat(name)
-	created := false
 	if errors.Is(err, os.ErrNotExist) {
 		if mkdirErr := root.Mkdir(name, perm); mkdirErr != nil {
 			if !errors.Is(mkdirErr, fs.ErrExist) {
-				return nil, false, mkdirErr
+				return nil, mkdirErr
 			}
-		} else {
-			created = true
 		}
 		info, err = root.Lstat(name)
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, false, fmt.Errorf("directory contains symlink: %s", childPath)
+		return nil, fmt.Errorf("directory contains symlink: %s", childPath)
 	}
 	if !info.IsDir() {
-		return nil, false, fmt.Errorf("directory is not a directory: %s", childPath)
+		return nil, fmt.Errorf("directory is not a directory: %s", childPath)
 	}
 	next, err := root.OpenRoot(name)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	openedInfo, err := next.Lstat(".")
 	if err != nil {
-		return nil, false, errors.Join(err, next.Close())
+		return nil, errors.Join(err, next.Close())
 	}
 	if !os.SameFile(info, openedInfo) {
-		return nil, false, errors.Join(fmt.Errorf("directory changed while opening: %s", childPath), next.Close())
+		return nil, errors.Join(fmt.Errorf("directory changed while opening: %s", childPath), next.Close())
 	}
-	return next, created, nil
+	return next, nil
 }
 
 // OpenOrCreatePinnedDirectoryAtPath creates or opens a direct child only when
@@ -143,24 +135,12 @@ func openOrCreatePinnedDirectoryAtPathWith(parentPath string, expected fs.FileIn
 	if err := verifyRootFn(root, parentPath, expected); err != nil {
 		return nil, err
 	}
-	child, created, err := openOrCreatePinnedDirectory(root, parentPath, name, perm)
+	child, err := OpenOrCreatePinnedDirectory(root, parentPath, name, perm)
 	if err != nil {
 		return nil, err
 	}
 	if err := verifyRootFn(root, parentPath, expected); err != nil {
-		removeChild := false
-		if created {
-			if childInfo, lstatErr := root.Lstat(name); lstatErr == nil {
-				if openedInfo, statErr := child.Lstat("."); statErr == nil && os.SameFile(childInfo, openedInfo) {
-					removeChild = true
-				}
-			}
-		}
-		closeErr := child.Close()
-		if removeChild {
-			closeErr = errors.Join(closeErr, root.Remove(name))
-		}
-		return nil, errors.Join(err, closeErr)
+		return nil, errors.Join(err, child.Close())
 	}
 	returnRoot = child
 	return child, nil

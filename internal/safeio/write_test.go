@@ -993,7 +993,7 @@ func TestOpenOrCreatePinnedDirectory(t *testing.T) {
 	}
 }
 
-func TestOpenOrCreatePinnedDirectoryAtPathRollsBackChildAfterParentReplacement(t *testing.T) {
+func TestOpenOrCreatePinnedDirectoryAtPathDoesNotRemoveChildAfterParentReplacement(t *testing.T) {
 	parentInfo, err := os.Stat(t.TempDir())
 	if err != nil {
 		t.Fatalf("stat parent: %v", err)
@@ -1004,7 +1004,6 @@ func TestOpenOrCreatePinnedDirectoryAtPathRollsBackChildAfterParentReplacement(t
 	}
 
 	created := false
-	removed := false
 	parentClosed := false
 	childClosed := false
 	child := &fakeRoot{
@@ -1023,14 +1022,8 @@ func TestOpenOrCreatePinnedDirectoryAtPathRollsBackChildAfterParentReplacement(t
 		},
 		mkdir:    func(string, os.FileMode) error { created = true; return nil },
 		openRoot: func(string) (Root, error) { return child, nil },
-		remove: func(name string) error {
-			if name != "child" {
-				t.Fatalf("removed %q, want child", name)
-			}
-			removed = true
-			return nil
-		},
-		close: func() error { parentClosed = true; return nil },
+		remove:   func(string) error { t.Fatal("must not remove a concurrently replaced child"); return nil },
+		close:    func() error { parentClosed = true; return nil },
 	}
 	verifyCalls := 0
 	openParent := func(string) (Root, error) { return parent, nil }
@@ -1044,9 +1037,6 @@ func TestOpenOrCreatePinnedDirectoryAtPathRollsBackChildAfterParentReplacement(t
 	_, err = openOrCreatePinnedDirectoryAtPathWith("/trusted/cache", parentInfo, "child", 0o750, openParent, verifyParent)
 	if err == nil {
 		t.Fatal("expected parent replacement to be rejected")
-	}
-	if !removed {
-		t.Fatal("expected newly created child to be removed after parent replacement")
 	}
 	if !childClosed || !parentClosed {
 		t.Fatalf("expected child and parent handles to close, child=%t parent=%t", childClosed, parentClosed)
