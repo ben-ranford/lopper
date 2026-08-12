@@ -220,7 +220,20 @@ func TestReleaseWorkflowRefreshesVSCodeReleaseNotesOnReleasePleasePR(t *testing.
 		`git commit -m "docs(vscode): refresh release notes"`,
 	})
 	assertWorkflowStepEnv(t, push, "release notes push", map[string]string{"PUSH_TOKEN": "${{ secrets.RELEASE_PLEASE_TOKEN || secrets.MAIN_SYNC_PAT || secrets.GITHUB_TOKEN }}", "RELEASE_PLEASE_PRS": "${{ steps.release.outputs.prs }}"})
-	assertWorkflowStepRunContainsAll(t, push, "release notes push", []string{`git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${release_pr_branch}"`})
+	assertWorkflowStepRunContainsAll(t, push, "release notes push", []string{
+		`push_token="${PUSH_TOKEN}"`,
+		`unset PUSH_TOKEN`,
+		`exec 3<<<"${auth_header}"`,
+		`"${env_bin}" -i`,
+		`GIT_CONFIG_KEY_4=http.https://github.com/.extraheader`,
+		`GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}"`,
+		`exec /usr/bin/git "$@"`,
+		`git_network push origin "HEAD:${release_pr_branch}"`,
+	})
+	assertWorkflowStepKeepsGitCredentialsCommandScoped(t, push, "release notes push")
+	if strings.Contains(push.Run, `GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \\`) {
+		t.Fatal("release notes push must not pass its authorization header through env argv")
+	}
 	assertWorkflowStepOrder(t, preparation, "Run release-please", "Checkout release-please PR", "Checkout trusted release-notes tooling", "Refresh VS Code extension release notes", "Push refreshed VS Code extension release notes", "Checkout release metadata")
 }
 
