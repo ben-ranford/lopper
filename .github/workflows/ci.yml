@@ -842,6 +842,9 @@ jobs:
       - name: Install extension dependencies
         run: make vscode-extension-install
 
+      - name: Verify VS Code extension package contract
+        run: go test ./scripts -run '^(TestVSCodeExtensionIconPackageContract|TestVSCodeExtensionPackagingHonorsBraceGlobIgnore)$' -count=1
+
       - name: Run VS Code smoke tests
         run: |
           if [ "${RUNNER_OS}" = "Linux" ]; then
