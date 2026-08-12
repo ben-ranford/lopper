@@ -146,6 +146,16 @@ func MustFirstFileEntry(t *testing.T, dir string) fs.DirEntry {
 
 func RunGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
+	gitOutput(t, repo, args...)
+}
+
+func GitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	return gitOutput(t, repo, args...)
+}
+
+func gitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
 	gitPath, err := gitexec.ResolveBinaryPath()
 	if err != nil {
 		t.Fatalf("resolve git path: %v", err)
@@ -159,4 +169,5 @@ func RunGit(t *testing.T, repo string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))
 	}
+	return strings.TrimSpace(string(output))
 }

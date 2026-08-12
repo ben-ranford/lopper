@@ -16,6 +16,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/report/pep440"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
@@ -520,7 +521,11 @@ func prReviewVersionRows(baseReport, headReport report.Report, category string) 
 		if baseVersion == "" || headVersion == "" || baseVersion == headVersion {
 			continue
 		}
-		versionCategory := prReviewVersionCategory(baseVersion, headVersion)
+		ecosystem := dependencyIdentityEcosystem(baseDep)
+		if ecosystem == "" {
+			ecosystem = dependencyIdentityEcosystem(headDep)
+		}
+		versionCategory := prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion)
 		if versionCategory != category {
 			continue
 		}
@@ -535,7 +540,19 @@ func prReviewVersionRows(baseReport, headReport report.Report, category string) 
 }
 
 func prReviewVersionCategory(baseVersion, headVersion string) string {
-	cmp, comparableVersion := report.CompareSemanticVersions(baseVersion, headVersion)
+	return prReviewVersionCategoryForEcosystem("", baseVersion, headVersion)
+}
+
+func prReviewVersionCategoryForEcosystem(ecosystem, baseVersion, headVersion string) string {
+	var (
+		cmp               int
+		comparableVersion bool
+	)
+	if report.CanonicalPackageEcosystem(ecosystem) == "pypi" {
+		cmp, comparableVersion = pep440.CompareVersions(baseVersion, headVersion)
+	} else {
+		cmp, comparableVersion = report.CompareSemanticVersions(baseVersion, headVersion)
+	}
 	if !comparableVersion {
 		return prReviewCategoryVersionChanged
 	}

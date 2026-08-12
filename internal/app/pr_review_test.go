@@ -379,6 +379,9 @@ func TestPRReviewVersionCategoryClassifiesOrderedAndUnorderedVersions(t *testing
 	if got := prReviewVersionCategory("1.0.0", "1.0.0"); got != prReviewCategoryVersionChanged {
 		t.Fatalf("expected equal versions to avoid upgrade/downgrade labels, got %q", got)
 	}
+	if got := prReviewVersionCategoryForEcosystem(" PyPI ", "1.0", "1.0rc1"); got != prReviewCategoryDowngraded {
+		t.Fatalf("expected PEP 440 prerelease decrease to be a downgrade, got %q", got)
+	}
 }
 
 func TestFindPRReviewDependencyByOrdinalUsesVersionlessKeyOrdering(t *testing.T) {
@@ -844,12 +847,12 @@ func TestAnalysePRReviewRevisionsUsesExplicitChangedPackageRangeForBothSides(t *
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "packages", "a", "file.txt"), "base change\n")
 	testutil.RunGit(t, repoPath, "add", ".")
 	testutil.RunGit(t, repoPath, "commit", "-m", "change a")
-	baseSHA := prReviewGitOutput(t, repoPath, "rev-parse", "HEAD")
+	baseSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "packages", "b", "file.txt"), "head change\n")
 	testutil.RunGit(t, repoPath, "add", ".")
 	testutil.RunGit(t, repoPath, "commit", "-m", "change b")
-	headSHA := prReviewGitOutput(t, repoPath, "rev-parse", "HEAD")
+	headSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 
 	analyzer := &pathAwarePRReviewAnalyzer{}
 	req := PRReviewRequest{ScopeMode: ScopeModeChangedPackages}
@@ -878,13 +881,13 @@ func TestAnalysePRReviewRevisionsPreservesSubdirectoryScope(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repoRoot, "services", "web", "app.txt"), "base\n")
 	testutil.RunGit(t, repoRoot, "add", ".")
 	testutil.RunGit(t, repoRoot, "commit", "-m", "base")
-	baseSHA := prReviewGitOutput(t, repoRoot, "rev-parse", "HEAD")
+	baseSHA := testutil.GitOutput(t, repoRoot, "rev-parse", "HEAD")
 
 	testutil.MustWriteFile(t, filepath.Join(apiPath, "app.txt"), "head\n")
 	testutil.MustWriteFile(t, filepath.Join(repoRoot, "services", "web", "app.txt"), "unrelated head\n")
 	testutil.RunGit(t, repoRoot, "add", ".")
 	testutil.RunGit(t, repoRoot, "commit", "-m", "head")
-	headSHA := prReviewGitOutput(t, repoRoot, "rev-parse", "HEAD")
+	headSHA := testutil.GitOutput(t, repoRoot, "rev-parse", "HEAD")
 
 	analyzer := &pathAwarePRReviewAnalyzer{}
 	_, _, _, err := (&App{Analyzer: analyzer}).analysePRReviewRevisions(context.Background(), apiPath, PRReviewRequest{ScopeMode: ScopeModeChangedPackages}, baseSHA, headSHA)
@@ -934,13 +937,13 @@ func runMissingSubdirectoryScopeTest(t *testing.T, baseHasScope, headHasScope bo
 	testutil.MustWriteFile(t, filepath.Join(repoRoot, "README.md"), "base\n")
 	testutil.RunGit(t, repoRoot, "add", ".")
 	testutil.RunGit(t, repoRoot, "commit", "-m", "base")
-	baseSHA := prReviewGitOutput(t, repoRoot, "rev-parse", "HEAD")
+	baseSHA := testutil.GitOutput(t, repoRoot, "rev-parse", "HEAD")
 
 	setPRReviewScopeState(t, apiPath, "head\n", headHasScope)
 	testutil.MustWriteFile(t, filepath.Join(repoRoot, "README.md"), "head\n")
 	testutil.RunGit(t, repoRoot, "add", "-A")
 	testutil.RunGit(t, repoRoot, "commit", "-m", "head")
-	headSHA := prReviewGitOutput(t, repoRoot, "rev-parse", "HEAD")
+	headSHA := testutil.GitOutput(t, repoRoot, "rev-parse", "HEAD")
 
 	analyzer := &existingPathPRReviewAnalyzer{}
 	baseReport, headReport, _, err := (&App{Analyzer: analyzer}).analysePRReviewRevisions(context.Background(), apiPath, PRReviewRequest{}, baseSHA, headSHA)
@@ -1605,31 +1608,12 @@ func createPRReviewGitRepo(t *testing.T) (string, string, string) {
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "src", "app.txt"), "base\n")
 	testutil.RunGit(t, repoPath, "add", ".")
 	testutil.RunGit(t, repoPath, "commit", "-m", "base")
-	baseSHA := prReviewGitOutput(t, repoPath, "rev-parse", "HEAD")
+	baseSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "src", "app.txt"), "head\n")
 	testutil.RunGit(t, repoPath, "add", ".")
 	testutil.RunGit(t, repoPath, "commit", "-m", "head")
-	headSHA := prReviewGitOutput(t, repoPath, "rev-parse", "HEAD")
+	headSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 	return repoPath, baseSHA, headSHA
-}
-
-func prReviewGitOutput(t *testing.T, repoPath string, args ...string) string {
-	t.Helper()
-
-	gitPath, err := gitexec.ResolveBinaryPath()
-	if err != nil {
-		t.Fatalf("resolve git path: %v", err)
-	}
-	command, err := gitexec.CommandContext(context.Background(), gitPath, append([]string{"-C", repoPath}, args...)...)
-	if err != nil {
-		t.Fatalf("construct git %s: %v", strings.Join(args, " "), err)
-	}
-	command.Env = gitexec.SanitizedEnv()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
-	}
-	return strings.TrimSpace(string(output))
 }
 
 func mustResolveAppTestFeatures(t *testing.T, enabled ...string) featureflags.Set {
