@@ -83,14 +83,12 @@ func createPEP440PRReviewGitRepo(t *testing.T) (string, string, string) {
 
 	repoPath := t.TempDir()
 	testutil.RunGit(t, repoPath, "init")
-	testutil.RunGit(t, repoPath, "config", "user.email", "pep440-test@example.com")
-	testutil.RunGit(t, repoPath, "config", "user.name", "PEP 440 Test")
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "src", "app.txt"), "base\n")
 	testutil.RunGit(t, repoPath, "add", ".")
-	testutil.RunGit(t, repoPath, "commit", "-m", "base")
+	testutil.RunGit(t, repoPath, "-c", "user.email=pep440-test@example.com", "-c", "user.name=PEP 440 Test", "commit", "-m", "base")
 	baseSHA := testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 	testutil.MustWriteFile(t, filepath.Join(repoPath, "src", "app.txt"), "head\n")
 	testutil.RunGit(t, repoPath, "add", ".")
-	testutil.RunGit(t, repoPath, "commit", "-m", "head")
+	testutil.RunGit(t, repoPath, "-c", "user.email=pep440-test@example.com", "-c", "user.name=PEP 440 Test", "commit", "-m", "head")
 	return repoPath, baseSHA, testutil.GitOutput(t, repoPath, "rev-parse", "HEAD")
 }
