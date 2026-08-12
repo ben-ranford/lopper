@@ -143,7 +143,7 @@ func openOrCreatePinnedDirectoryAtPathWith(parentPath string, expected fs.FileIn
 		return nil, errors.Join(err, child.Close())
 	}
 	returnRoot = child
-	return child, nil
+	return
 }
 
 func verifyPinnedRootAtPath(root Root, path string, expected fs.FileInfo) error {
