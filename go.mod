@@ -10,7 +10,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/mod v0.39.0
+	golang.org/x/mod v0.40.0
 )
 
 require (
