@@ -10,6 +10,21 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
+// summaryActionReportedError records a backend failure after its safe,
+// user-facing message has already been written. Legacy input treats it as
+// handled; typed Stave actions preserve the failure for callers and transcripts.
+type summaryActionReportedError struct{ err error }
+
+func (e *summaryActionReportedError) Error() string { return e.err.Error() }
+func (e *summaryActionReportedError) Unwrap() error { return e.err }
+
+func reportSummaryActionFailure(writer io.Writer, prefix string, cause error) error {
+	if err := writeSummaryActionMessage(writer, fmt.Sprintf("%s: %s\n", prefix, sanitizeTerminalString(cause.Error()))); err != nil {
+		return err
+	}
+	return &summaryActionReportedError{err: cause}
+}
+
 const defaultTUIBaselineStorePath = ".artifacts/lopper-baselines"
 
 type summaryActionKind string
@@ -240,7 +255,7 @@ func (s *Summary) runSummaryCodemodApply(ctx context.Context, opts *Options, rep
 		}
 	}
 	if runErr != nil {
-		return writeSummaryActionMessage(s.Out, fmt.Sprintf("Codemod apply failed: %s\n", sanitizeTerminalString(runErr.Error())))
+		return reportSummaryActionFailure(s.Out, "Codemod apply failed", runErr)
 	}
 	return nil
 }
@@ -256,7 +271,7 @@ func (s *Summary) runSummaryBaselineSave(ctx context.Context, opts *Options, rep
 
 	reportData, savedPath, runErr := s.Actions.SaveBaseline(ctx, request)
 	if runErr != nil {
-		return writeSummaryActionMessage(s.Out, fmt.Sprintf("Baseline save failed: %s\n", sanitizeTerminalString(runErr.Error())))
+		return reportSummaryActionFailure(s.Out, "Baseline save failed", runErr)
 	}
 	if savedPath == "" {
 		savedPath = report.BaselineSnapshotPath(request.BaselineStorePath, displayKey)
@@ -275,7 +290,7 @@ func (s *Summary) runSummaryBaselineCompare(ctx context.Context, opts *Options, 
 	}
 	nextReportView, err := s.analyseSummaryView(ctx, nextOpts)
 	if err != nil {
-		return writeSummaryActionMessage(s.Out, fmt.Sprintf("Baseline compare failed: %s\n", sanitizeTerminalString(err.Error())))
+		return reportSummaryActionFailure(s.Out, "Baseline compare failed", err)
 	}
 	*opts = nextOpts
 	if reportView != nil {

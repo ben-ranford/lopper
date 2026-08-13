@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -126,16 +125,20 @@ func TestCurrentCommitSHASupportsSHA256References(t *testing.T) {
 
 func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
 	repo := t.TempDir()
-	if output, err := exec.Command("git", "init", "--object-format=sha256", repo).CombinedOutput(); err != nil {
-		t.Skipf("Git does not support SHA-256 repositories: %v\n%s", err, output)
+	gitPath, err := resolveGitBinaryPath()
+	if err != nil {
+		t.Skipf("Git is unavailable: %v", err)
+	}
+	if _, err := runGit(gitPath, repo, "init", "--object-format=sha256", "."); err != nil {
+		t.Skipf("Git does not support SHA-256 repositories: %v", err)
 	}
 	for _, args := range [][]string{
-		{"-C", repo, "config", "user.email", "test@example.com"},
-		{"-C", repo, "config", "user.name", "Lopper Test"},
-		{"-C", repo, "commit", "--allow-empty", "-m", "initial"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Lopper Test"},
+		{"commit", "--allow-empty", "-m", "initial"},
 	} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
+		if _, err := runGit(gitPath, repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
 		}
 	}
 

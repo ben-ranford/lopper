@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head stave-ui-check bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -204,6 +204,12 @@ test-race:
 test-race-lockfiledrift-head:
 	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) -race -tags "$(LOCKFILEDRIFT_HEAD_TAG)" $(LOCKFILEDRIFT_HEAD_PACKAGE)
 
+# Focused proof for the opt-in Stave UI. Keep this bounded and deterministic:
+# the regular test/race/leak/coverage targets remain the repository-wide gates.
+stave-ui-check:
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./internal/ui -run '^(TestStave|TestCompareParity|TestLopperStave|TestNewStaveRenderer)'
+	$(GO_CMD) test $(GO_TEST_LDFLAGS_ARGS) ./cmd/lopper -run '^(TestStaveTUI|TestTUIWithoutStaveFlag)'
+
 bench-mem:
 	@mkdir -p $$(dirname "$(BENCH_OUTPUT)"); \
 	bench_output_tmp=$$(mktemp); \
@@ -267,9 +273,9 @@ build:
 manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check stave-ui-check test test-leaks test-race bench-gate build cov runtime-pycache-check
 
-smoke: mod-check test-race build
+smoke: mod-check stave-ui-check test-race build
 
 demos:
 	./scripts/demos/render.sh
