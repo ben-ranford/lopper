@@ -239,5 +239,12 @@
     "description": "Enable preview base/head dependency-surface pull request review reports.",
     "lifecycle": "preview",
     "firstStableRelease": "v1.8.3"
+  },
+  {
+    "code": "LOP-FEAT-0029",
+    "name": "stave-tui-preview",
+    "description": "Enable the interactive Stave-backed TUI preview with legacy rollback.",
+    "lifecycle": "preview",
+    "explicitOnly": true
   }
 ]

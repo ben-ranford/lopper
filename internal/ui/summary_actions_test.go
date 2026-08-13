@@ -303,8 +303,8 @@ func TestSummaryCodemodApplyCommandUnavailableAndFailureMessages(t *testing.T) {
 
 	out.Reset()
 	summary.Actions = &stubSummaryActionRunner{applyErr: errors.New("dirty worktree")}
-	if err := summary.runSummaryCodemodApply(context.Background(), &opts, &reportView, summaryAction{kind: summaryActionApplyCodemod, dependency: "lodash", confirm: true}); err != nil {
-		t.Fatalf("failed action message: %v", err)
+	if err := summary.runSummaryCodemodApply(context.Background(), &opts, &reportView, summaryAction{kind: summaryActionApplyCodemod, dependency: "lodash", confirm: true}); err == nil {
+		t.Fatal("failed action did not propagate typed error")
 	}
 	output := out.String()
 	if strings.Contains(output, "No safe codemod apply results") || !strings.Contains(output, "dirty worktree") {
@@ -481,8 +481,8 @@ func TestSummaryBaselineActionMessagesAndErrors(t *testing.T) {
 
 	out.Reset()
 	summary.Actions = &stubSummaryActionRunner{saveErr: errors.New("disk full")}
-	if err := summary.runSummaryBaselineSave(context.Background(), &opts, &reportView, summaryAction{kind: summaryActionSaveBaseline, baselineLabel: "nightly"}); err != nil {
-		t.Fatalf("failed save message: %v", err)
+	if err := summary.runSummaryBaselineSave(context.Background(), &opts, &reportView, summaryAction{kind: summaryActionSaveBaseline, baselineLabel: "nightly"}); err == nil {
+		t.Fatal("failed save did not propagate typed error")
 	}
 	if !strings.Contains(out.String(), "Baseline save failed: disk full") {
 		t.Fatalf("expected save failure message, got %q", out.String())
@@ -517,8 +517,8 @@ func TestSummaryBaselineCompareErrorMessages(t *testing.T) {
 
 	out.Reset()
 	summary.Analyzer = &stubAnalyzer{err: errors.New("analysis failed")}
-	if err := summary.runSummaryBaselineCompare(context.Background(), &opts, &reportView, &state, summaryAction{kind: summaryActionCompareBaseline, baselineKey: "label:base"}); err != nil {
-		t.Fatalf("failed compare message: %v", err)
+	if err := summary.runSummaryBaselineCompare(context.Background(), &opts, &reportView, &state, summaryAction{kind: summaryActionCompareBaseline, baselineKey: "label:base"}); err == nil {
+		t.Fatal("failed compare did not propagate typed error")
 	}
 	if !strings.Contains(out.String(), "Baseline compare failed: analysis failed") {
 		t.Fatalf("expected compare failure message, got %q", out.String())

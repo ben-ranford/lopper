@@ -33,6 +33,10 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 	baselinePath := fs.String("baseline", req.TUI.BaselinePath, "baseline report path")
 	baselineStorePath := fs.String("baseline-store", req.TUI.BaselineStorePath, "baseline snapshot directory")
 	baselineKey := fs.String("baseline-key", req.TUI.BaselineKey, "baseline snapshot key for comparison")
+	enableFeatures := newPatternListFlag(nil)
+	disableFeatures := newPatternListFlag(nil)
+	fs.Var(enableFeatures, "enable-feature", "comma-separated feature flag names to enable (repeatable)")
+	fs.Var(disableFeatures, "disable-feature", "comma-separated feature flag names to disable (repeatable)")
 
 	if err := parseFlagSet(fs, args); err != nil {
 		return req, err
@@ -68,8 +72,25 @@ func parseTUI(args []string, req app.Request) (app.Request, error) {
 		BaselineStorePath: strings.TrimSpace(*baselineStorePath),
 		BaselineKey:       strings.TrimSpace(*baselineKey),
 	}
+	features, err := resolveFeatureRefs(enableFeatures.Values(), disableFeatures.Values())
+	if err != nil {
+		return req, err
+	}
+	req.TUI.Features = features
+	req.TUI.UseStavePreview = featureExplicitlyEnabled(enableFeatures.Values(), "stave-tui-preview")
 
 	return req, nil
+}
+
+func featureExplicitlyEnabled(refs []string, canonical string) bool {
+	registry := featureRegistryProvider()
+	for _, ref := range refs {
+		resolved, ok := registry.LookupReference(ref)
+		if ok && resolved.Flag.Name == canonical {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveTUISnapshotPath(snapshotPath, outputPath string) (string, error) {

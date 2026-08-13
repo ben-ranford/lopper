@@ -808,7 +808,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run smoke checks
+      - name: Run smoke checks (including focused Stave UI proof)
         run: make smoke
 
   vscode-smoke:

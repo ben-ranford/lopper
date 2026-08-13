@@ -19,11 +19,6 @@ func SanitizeString(value string) string {
 		r, size := utf8.DecodeRuneInString(value[i:])
 		if r == utf8.RuneError && size == 1 {
 			b := value[i]
-			if !isControlRune(rune(b)) {
-				output.WriteByte(b)
-				i++
-				continue
-			}
 			writeEscapedByte(&output, b, hex)
 			i++
 			continue
@@ -43,11 +38,7 @@ func firstControlIndex(value string) int {
 	for i := 0; i < len(value); {
 		r, size := utf8.DecodeRuneInString(value[i:])
 		if r == utf8.RuneError && size == 1 {
-			if isControlRune(rune(value[i])) {
-				return i
-			}
-			i++
-			continue
+			return i
 		}
 		if isControlRune(r) {
 			return i

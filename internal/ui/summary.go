@@ -144,7 +144,12 @@ func (s *Summary) handleSummaryActionInput(ctx context.Context, opts *Options, r
 	if err != nil {
 		return true, writeSummaryActionError(s.Out, err)
 	}
-	return true, s.runSummaryAction(ctx, opts, reportView, state, action)
+	err = s.runSummaryAction(ctx, opts, reportView, state, action)
+	var reported *summaryActionReportedError
+	if errors.As(err, &reported) {
+		return true, nil
+	}
+	return true, err
 }
 
 func (s *Summary) handleSummaryCommandInput(reportView *summaryReportView, state *summaryState, input string) error {
