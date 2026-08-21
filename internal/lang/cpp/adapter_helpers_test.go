@@ -225,6 +225,8 @@ func TestMapIncludeToDependencyIgnoresRepoHeaderFromIncludeDir(t *testing.T) {
 }
 
 func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, testMainCPPFileName)
 	if got := dependencyFromIncludePath("openssl/ssl.h"); got != "openssl" {
 		t.Fatalf("expected openssl, got %q", got)
 	}
@@ -242,6 +244,12 @@ func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	}
 	if !isLikelyStdHeader("sys/types.h") {
 		t.Fatalf("expected sys/types.h to be std header")
+	}
+	if !isLikelyStdHeader("experimental/filesystem") {
+		t.Fatalf("expected experimental/filesystem to be std header")
+	}
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "experimental/filesystem", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
+		t.Fatalf("expected experimental/filesystem to be ignored as std, got dep=%q unresolved=%v", dep, unresolved)
 	}
 	if isLikelyStdHeader("boost/regex.hpp") {
 		t.Fatalf("did not expect qualified boost header to be std header")

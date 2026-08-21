@@ -405,7 +405,7 @@ func isLikelyStdHeader(header string) bool {
 	if header == "" {
 		return false
 	}
-	if strings.HasPrefix(header, "sys/") || strings.HasPrefix(header, "bits/") || strings.HasPrefix(header, "linux/") {
+	if hasLikelyStdHeaderPrefix(header) {
 		return true
 	}
 	if strings.Contains(header, "/") {
@@ -419,6 +419,15 @@ func isLikelyStdHeader(header string) bool {
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	_, ok := cppStdHeaderSet[strings.ToLower(base)]
 	return ok
+}
+
+func hasLikelyStdHeaderPrefix(header string) bool {
+	for _, prefix := range []string{"sys/", "bits/", "linux/", "experimental/"} {
+		if strings.HasPrefix(header, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func relOrBase(repoPath, value string) string {
