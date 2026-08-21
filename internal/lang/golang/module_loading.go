@@ -12,6 +12,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 var errNilModuleInfo = errors.New("module info is nil")
@@ -119,17 +120,26 @@ func isPureGoModSizeLimit(err error) bool {
 func scanGoModModulePath(reader io.Reader) (string, error) {
 	scanner := goModModuleScanner{
 		buffered: bufio.NewReaderSize(reader, 32*1024),
+		maxBytes: maxGoModModuleScanBytes,
 	}
 	return scanner.scan()
 }
 
-const goModModuleDirectivePrefix = "module "
+const (
+	goModModuleDirectivePrefix = "module "
+	maxGoModModuleScanBytes    = maxGoModBytes + 512*1024
+)
+
+var errGoModModuleScanTooLarge = errors.New("go.mod module scanner read limit exceeded")
 
 type goModModuleScanner struct {
 	buffered         *bufio.Reader
+	bytesRead        int
+	maxBytes         int
 	line             strings.Builder
 	modulePath       string
 	blockDirective   string
+	pendingRetracts  []string
 	seenSingletons   map[string]struct{}
 	invalid          bool
 	lineInvalid      bool
@@ -145,7 +155,7 @@ type goModModuleScanner struct {
 
 func (s *goModModuleScanner) scan() (string, error) {
 	for {
-		b, err := s.buffered.ReadByte()
+		b, err := s.readByte()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if s.inBlockComment {
@@ -158,12 +168,30 @@ func (s *goModModuleScanner) scan() (string, error) {
 				}
 				return s.modulePath, nil
 			}
+			if errors.Is(err, errGoModModuleScanTooLarge) {
+				return "", nil
+			}
 			return "", err
 		}
 		if err := s.consumeByte(b); err != nil {
+			if errors.Is(err, errGoModModuleScanTooLarge) {
+				return "", nil
+			}
 			return "", err
 		}
 	}
+}
+
+func (s *goModModuleScanner) readByte() (byte, error) {
+	b, err := s.buffered.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	s.bytesRead++
+	if s.maxBytes > 0 && s.bytesRead > s.maxBytes {
+		return 0, errGoModModuleScanTooLarge
+	}
+	return b, nil
 }
 
 func (s *goModModuleScanner) consumeByte(b byte) error {
@@ -263,11 +291,11 @@ func (s *goModModuleScanner) tryStartComment() (bool, error) {
 	}
 	switch next[0] {
 	case '/':
-		_, err = s.buffered.ReadByte()
+		_, err = s.readByte()
 		s.inLineComment = err == nil
 		return true, err
 	case '*':
-		_, err = s.buffered.ReadByte()
+		_, err = s.readByte()
 		s.inBlockComment = err == nil
 		s.invalid = true
 		s.lineInvalid = true
@@ -346,6 +374,9 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 	if !s.consumeGoModSingletonLine(lineText) {
 		return
 	}
+	if s.deferRetractUntilModule(lineText) {
+		return
+	}
 	if !isValidGoModDirectiveLine(s.validationModulePath(), lineText) {
 		s.invalid = true
 	}
@@ -384,6 +415,9 @@ func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
 	}
 	if s.blockDirective == "module" {
 		s.consumeGoModModuleLine(goModModuleDirectivePrefix + lineText)
+		return
+	}
+	if s.blockDirective == "retract" && s.deferRetractUntilModule("retract "+lineText) {
 		return
 	}
 	if strings.HasPrefix(lineText, goModModuleDirectivePrefix) || !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
@@ -425,6 +459,25 @@ func (s *goModModuleScanner) consumeGoModModuleLine(lineText string) {
 		return
 	}
 	s.modulePath = file.Module.Mod.Path
+	s.validatePendingRetracts()
+}
+
+func (s *goModModuleScanner) deferRetractUntilModule(lineText string) bool {
+	if s.modulePath != "" || firstToken(lineText) != "retract" {
+		return false
+	}
+	s.pendingRetracts = append(s.pendingRetracts, lineText)
+	return true
+}
+
+func (s *goModModuleScanner) validatePendingRetracts() {
+	for _, lineText := range s.pendingRetracts {
+		if !isValidGoModDirectiveLine(s.modulePath, lineText) {
+			s.invalid = true
+			break
+		}
+	}
+	s.pendingRetracts = nil
 }
 
 func isValidGoModDirectiveLine(modulePath, lineText string) bool {
@@ -440,8 +493,28 @@ func isValidGoModBlockLine(modulePath, directive, lineText string) bool {
 }
 
 func parseSyntheticGoMod(modulePath, body string) bool {
-	_, err := modfile.Parse(goModName, []byte(goModModuleDirectivePrefix+modulePath+"\n"+body), nil)
-	return err == nil
+	file, err := modfile.Parse(goModName, []byte(goModModuleDirectivePrefix+modulePath+"\n"+body), nil)
+	return err == nil && hasValidRetracts(file)
+}
+
+func hasValidRetracts(file *modfile.File) bool {
+	if file == nil || file.Module == nil || len(file.Retract) == 0 {
+		return true
+	}
+	_, pathMajor, ok := module.SplitPathVersion(file.Module.Mod.Path)
+	if !ok {
+		return false
+	}
+	for _, retraction := range file.Retract {
+		if !isValidRetractVersionMajor(retraction.Low, pathMajor) || !isValidRetractVersionMajor(retraction.High, pathMajor) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidRetractVersionMajor(version, pathMajor string) bool {
+	return version == "" || module.CheckPathMajor(version, pathMajor) == nil
 }
 
 func loadWorkspaceModules(repoPath string, info *moduleInfo) error {
