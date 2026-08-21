@@ -177,7 +177,7 @@ func nextUnicodeIdentifier(content []byte, index int) (int, int, bool) {
 }
 
 func isUnicodeIdentifierRune(value rune) bool {
-	if value < utf8.RuneSelf {
+	if value >= 0 && value <= 0x7f {
 		return isWordByte(byte(value))
 	}
 	return unicode.IsLetter(value) ||
