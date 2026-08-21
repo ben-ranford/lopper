@@ -148,7 +148,7 @@ func loadComposerLockMappings(repoPath string, data *composerData) error {
 
 func readOptionalRepoFile(repoPath, filename string) ([]byte, bool, error) {
 	path := filepath.Join(repoPath, filename)
-	bytes, err := safeio.ReadFileUnder(repoPath, path)
+	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, composerInputByteLimit(filename))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, false, nil
@@ -156,6 +156,13 @@ func readOptionalRepoFile(repoPath, filename string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return bytes, true, nil
+}
+
+func composerInputByteLimit(filename string) int64 {
+	if filename == composerLockName {
+		return maxComposerLockBytes
+	}
+	return maxComposerManifestBytes
 }
 
 func unmarshalRepoJSON(filename string, bytes []byte, dest any) error {
