@@ -238,6 +238,15 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 	if m.multilineQuote == "" {
 		return false
 	}
+	if line[*index] == '\\' {
+		builder.WriteByte(' ')
+		*index++
+		if *index < len(line) {
+			builder.WriteByte(' ')
+			*index++
+		}
+		return true
+	}
 	if strings.HasPrefix(line[*index:], m.multilineQuote) {
 		writeSpaces(builder, len(m.multilineQuote))
 		*index += len(m.multilineQuote)

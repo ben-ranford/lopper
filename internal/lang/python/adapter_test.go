@@ -129,9 +129,13 @@ func TestAdapterAnalyseSuggestOnlyPythonSkipsImportLikeMultilineStrings(t *testi
 	source := "\"\"\"\n" +
 		"import requests\n" +
 		"from requests import Session\n" +
+		`not closed by escaped delimiter: \"\""` + "\n" +
+		"import requests as escaped_double\n" +
 		"\"\"\"\n" +
 		"value = '''\n" +
 		"import requests as rq\n" +
+		`not closed by escaped delimiter: \'''` + "\n" +
+		"from requests import escaped_single\n" +
 		"'''\n" +
 		strings.Join([]string{
 			`normal = "not an import \`,
@@ -220,7 +224,13 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 		"'''\n" +
 		"message = \"\"\"ignore this too\n" +
 		"import pandas as pd\n" +
+		`not closed by escaped delimiter: \"\""` + "\n" +
+		"import requests as escaped_double\n" +
 		"\"\"\"\n" +
+		"other = '''ignore this too\n" +
+		`not closed by escaped delimiter: \'''` + "\n" +
+		"from requests import escaped_single\n" +
+		"'''\n" +
 		strings.Join([]string{
 			`normal = "not an import \`,
 			`import requests"`,
@@ -236,8 +246,8 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 		t.Fatalf("expected only the real import binding, got %#v", imports)
 	}
 	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
-	if imports[0].Location.Line != 14 {
-		t.Fatalf("expected real import on line 14, got location %+v", imports[0].Location)
+	if imports[0].Location.Line != 20 {
+		t.Fatalf("expected real import on line 20, got location %+v", imports[0].Location)
 	}
 }
 
