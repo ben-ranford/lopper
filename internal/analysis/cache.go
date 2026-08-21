@@ -2,7 +2,6 @@ package analysis
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,6 +29,8 @@ type analysisCache struct {
 	stableRepoPath   string
 	analysisRepoPath string
 }
+
+var analysisBeforeMissingCachePartCreateHook func(currentPath, name string)
 
 func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
@@ -60,7 +61,15 @@ func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string)
 			return cache
 		}
 	}
-	rootIdentity, err := prepareWritableAnalysisCacheRoot(options.Path)
+	var (
+		rootIdentity fs.FileInfo
+		err          error
+	)
+	if options.ReadOnly {
+		rootIdentity, err = prepareReadableAnalysisCacheRoot(options.Path)
+	} else {
+		rootIdentity, err = prepareWritableAnalysisCacheRoot(options.Path)
+	}
 	if err != nil {
 		cache.cacheable = false
 		cache.warn("analysis cache unavailable: " + err.Error())
@@ -74,6 +83,20 @@ func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string)
 	cache.rootIdentity = rootIdentity
 	cache.cacheable = true
 	return cache
+}
+
+func prepareReadableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, returnErr error) {
+	root, currentPath, missingParts, err := safeio.OpenRootExistingAncestorNoFollow(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, root.Close())
+	}()
+	if len(missingParts) > 0 {
+		return nil, os.ErrNotExist
+	}
+	return verifyPinnedAnalysisCacheDirectory(root, currentPath)
 }
 
 func (c *analysisCache) stableCacheRoot(rootPath string) string {
@@ -93,18 +116,39 @@ func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, r
 	if err != nil {
 		return nil, err
 	}
+	openedRoots := []safeio.Root{root}
 	defer func() {
-		returnErr = errors.Join(returnErr, root.Close())
+		for index := len(openedRoots) - 1; index >= 0; index-- {
+			returnErr = errors.Join(returnErr, openedRoots[index].Close())
+		}
 	}()
-	if len(missingParts) > 0 {
-		return nil, fmt.Errorf("analysis cache root is missing; capability-bound creation is deferred to #1494")
+
+	current := root
+	for _, name := range missingParts {
+		if analysisBeforeMissingCachePartCreateHook != nil {
+			analysisBeforeMissingCachePartCreateHook(currentPath, name)
+		}
+		if _, err := verifyPinnedAnalysisCacheDirectory(current, currentPath); err != nil {
+			return nil, err
+		}
+		child, err := safeio.OpenOrCreatePinnedDirectory(current, currentPath, name, 0o750)
+		if err != nil {
+			return nil, err
+		}
+		openedRoots = append(openedRoots, child)
+		current = child
+		currentPath = filepath.Join(currentPath, name)
+		if _, err := verifyPinnedAnalysisCacheDirectory(current, currentPath); err != nil {
+			return nil, err
+		}
 	}
-	info, err := verifyPinnedAnalysisCacheDirectory(root, currentPath)
+
+	info, err := verifyPinnedAnalysisCacheDirectory(current, currentPath)
 	if err != nil {
 		return nil, err
 	}
 	for _, name := range []string{"keys", "objects"} {
-		child, err := openOrCreatePinnedAnalysisCacheChild(root, currentPath, name)
+		child, err := openOrCreatePinnedAnalysisCacheChild(current, currentPath, name)
 		if err != nil {
 			return nil, err
 		}

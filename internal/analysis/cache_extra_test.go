@@ -78,17 +78,36 @@ func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
 	}
 }
 
-func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
+func TestNewAnalysisCacheCreatesMissingRootWithinPinnedAncestor(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, "missing", cacheDirName)
 
 	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected missing cache root to be created, warnings=%#v", cache.takeWarnings())
+	}
+	for _, path := range []string{
+		cachePath,
+		filepath.Join(cachePath, cacheKeysDirName),
+		filepath.Join(cachePath, cacheObjectsDirName),
+	} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("expected cache initialization to create directory %s, info=%#v err=%v", path, info, err)
+		}
+	}
+}
+
+func TestNewAnalysisCacheReadOnlyMissingRootDoesNotCreate(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, "missing", cacheDirName)
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath, ReadOnly: true}}, repo)
 	if cache.cacheable {
-		t.Fatal("expected missing cache root to be unavailable pending capability-bound creation")
+		t.Fatal("expected missing read-only cache root to be unavailable")
 	}
 	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "#1494") {
-		t.Fatalf("warnings = %#v, want #1494 capability-bound creation guidance", warnings)
+	if len(warnings) == 0 {
+		t.Fatal("expected missing read-only cache root warning")
 	}
 	for _, path := range []string{
 		filepath.Join(repo, "missing"),
@@ -96,10 +115,49 @@ func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
 		filepath.Join(cachePath, cacheKeysDirName),
 		filepath.Join(cachePath, cacheObjectsDirName),
 	} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("cache initialization created %s: %v", path, err)
+		assertAnalysisCachePathAbsent(t, path)
+	}
+}
+
+func TestNewAnalysisCacheRejectsAncestorSwapBeforeMissingRootCreate(t *testing.T) {
+	repo := t.TempDir()
+	ancestorPath := filepath.Join(repo, "missing")
+	if err := os.Mkdir(ancestorPath, 0o750); err != nil {
+		t.Fatalf("mkdir cache ancestor: %v", err)
+	}
+	canonicalAncestorPath, err := filepath.EvalSymlinks(ancestorPath)
+	if err != nil {
+		t.Fatalf("canonicalize cache ancestor: %v", err)
+	}
+	renamedAncestorPath := filepath.Join(repo, "missing-renamed")
+	cachePath := filepath.Join(ancestorPath, cacheDirName)
+
+	originalHook := analysisBeforeMissingCachePartCreateHook
+	analysisBeforeMissingCachePartCreateHook = func(currentPath, name string) {
+		if currentPath != canonicalAncestorPath || name != cacheDirName {
+			t.Fatalf("unexpected missing cache hook current=%q name=%q", currentPath, name)
+		}
+		if err := os.Rename(canonicalAncestorPath, renamedAncestorPath); err != nil {
+			t.Fatalf("rename cache ancestor: %v", err)
+		}
+		if err := os.Mkdir(canonicalAncestorPath, 0o750); err != nil {
+			t.Fatalf("replace cache ancestor: %v", err)
 		}
 	}
+	t.Cleanup(func() {
+		analysisBeforeMissingCachePartCreateHook = originalHook
+	})
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if cache.cacheable {
+		t.Fatal("expected swapped cache ancestor to fail closed")
+	}
+	warnings := cache.takeWarnings()
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "directory identity changed") {
+		t.Fatalf("expected directory identity warning, got %#v", warnings)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(renamedAncestorPath, cacheDirName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(ancestorPath, cacheDirName))
 }
 
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
