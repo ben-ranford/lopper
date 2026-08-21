@@ -123,15 +123,21 @@ func scanGoModModulePath(reader io.Reader) (string, error) {
 	return scanner.scan()
 }
 
+const goModModuleDirectivePrefix = "module "
+
 type goModModuleScanner struct {
 	buffered         *bufio.Reader
 	line             strings.Builder
 	modulePath       string
 	blockDirective   string
+	seenSingletons   map[string]struct{}
 	invalid          bool
 	lineInvalid      bool
 	lineTooLarge     bool
 	lineLastSpace    bool
+	inQuotedString   bool
+	quoteByte        byte
+	quoteEscaped     bool
 	inBlockComment   bool
 	blockCommentStar bool
 	inLineComment    bool
@@ -169,6 +175,10 @@ func (s *goModModuleScanner) consumeByte(b byte) error {
 		s.consumeBlockCommentByte(b)
 		return nil
 	}
+	if s.inQuotedString {
+		s.consumeQuotedStringByte(b)
+		return nil
+	}
 	if b == '\n' {
 		s.finishLine()
 		return nil
@@ -193,7 +203,42 @@ func (s *goModModuleScanner) consumeBlockCommentByte(b byte) {
 	s.blockCommentStar = b == '*'
 }
 
+func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
+	if b == '\n' {
+		s.lineInvalid = true
+		s.inQuotedString = false
+		s.quoteByte = 0
+		s.quoteEscaped = false
+		s.finishLine()
+		return
+	}
+	s.appendRawLineByte(b)
+	if s.quoteByte == '`' {
+		if b == '`' {
+			s.inQuotedString = false
+			s.quoteByte = 0
+		}
+		return
+	}
+	if s.quoteEscaped {
+		s.quoteEscaped = false
+		return
+	}
+	if b == '\\' {
+		s.quoteEscaped = true
+		return
+	}
+	if b == s.quoteByte {
+		s.inQuotedString = false
+		s.quoteByte = 0
+	}
+}
+
 func (s *goModModuleScanner) consumeCodeByte(b byte) error {
+	if b == '"' || b == '`' {
+		s.startQuotedString(b)
+		return nil
+	}
 	if b == '/' {
 		consumed, err := s.tryStartComment()
 		if consumed || err != nil {
@@ -202,6 +247,13 @@ func (s *goModModuleScanner) consumeCodeByte(b byte) error {
 	}
 	s.appendLineByte(b)
 	return nil
+}
+
+func (s *goModModuleScanner) startQuotedString(quote byte) {
+	s.inQuotedString = true
+	s.quoteByte = quote
+	s.quoteEscaped = false
+	s.appendRawLineByte(quote)
 }
 
 func (s *goModModuleScanner) tryStartComment() (bool, error) {
@@ -243,6 +295,15 @@ func (s *goModModuleScanner) appendLineByte(b byte) {
 	s.line.WriteByte(b)
 }
 
+func (s *goModModuleScanner) appendRawLineByte(b byte) {
+	s.lineLastSpace = false
+	if s.line.Len() >= 64*1024 {
+		s.lineTooLarge = true
+		return
+	}
+	s.line.WriteByte(b)
+}
+
 func (s *goModModuleScanner) finishLine() {
 	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid || s.lineTooLarge)
 	s.lineInvalid = false
@@ -265,9 +326,9 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 		s.invalid = true
 		return
 	}
-	lineText := line.String()
+	lineText := strings.TrimSpace(line.String())
 	line.Reset()
-	if strings.TrimSpace(lineText) == "" {
+	if lineText == "" {
 		return
 	}
 	if s.blockDirective != "" {
@@ -278,12 +339,41 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 		s.startGoModBlock(strings.TrimSuffix(lineText, " ("))
 		return
 	}
-	if strings.HasPrefix(lineText, modulePrefix) {
+	if strings.HasPrefix(lineText, goModModuleDirectivePrefix) {
 		s.consumeGoModModuleLine(lineText)
+		return
+	}
+	if !s.consumeGoModSingletonLine(lineText) {
 		return
 	}
 	if !isValidGoModDirectiveLine(s.validationModulePath(), lineText) {
 		s.invalid = true
+	}
+}
+
+func (s *goModModuleScanner) consumeGoModSingletonLine(lineText string) bool {
+	directive, ok := goModSingletonDirective(lineText)
+	if !ok {
+		return true
+	}
+	if s.seenSingletons == nil {
+		s.seenSingletons = make(map[string]struct{})
+	}
+	if _, exists := s.seenSingletons[directive]; exists {
+		s.invalid = true
+		return false
+	}
+	s.seenSingletons[directive] = struct{}{}
+	return true
+}
+
+func goModSingletonDirective(lineText string) (string, bool) {
+	directive := firstToken(lineText)
+	switch directive {
+	case "go", "toolchain":
+		return directive, true
+	default:
+		return "", false
 	}
 }
 
@@ -292,12 +382,24 @@ func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
 		s.blockDirective = ""
 		return
 	}
-	if strings.HasPrefix(lineText, modulePrefix) || !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
+	if s.blockDirective == "module" {
+		s.consumeGoModModuleLine(goModModuleDirectivePrefix + lineText)
+		return
+	}
+	if strings.HasPrefix(lineText, goModModuleDirectivePrefix) || !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
 		s.invalid = true
 	}
 }
 
 func (s *goModModuleScanner) startGoModBlock(directive string) {
+	if directive == "module" {
+		if s.modulePath != "" {
+			s.invalid = true
+			return
+		}
+		s.blockDirective = directive
+		return
+	}
 	if !isValidGoModBlockDirective(s.validationModulePath(), directive) {
 		s.invalid = true
 		return
@@ -338,7 +440,7 @@ func isValidGoModBlockLine(modulePath, directive, lineText string) bool {
 }
 
 func parseSyntheticGoMod(modulePath, body string) bool {
-	_, err := modfile.Parse(goModName, []byte(modulePrefix+modulePath+"\n"+body), nil)
+	_, err := modfile.Parse(goModName, []byte(goModModuleDirectivePrefix+modulePath+"\n"+body), nil)
 	return err == nil
 }
 

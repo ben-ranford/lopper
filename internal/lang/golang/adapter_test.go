@@ -1557,6 +1557,13 @@ func TestOversizedRootGoModRejectsRawQuotedModuleDirective(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
+func TestOversizedRootGoModRejectsTruncatedModuleDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModWithModuleLine(t, repo, "", "module ")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func TestOversizedRootGoModKeepsPhysicalEOFFinalModuleLine(t *testing.T) {
 	repo := t.TempDir()
 	prefix := strings.Repeat("// x\n", (goModSizeLimitTest+70*1024)/5)
@@ -1572,9 +1579,39 @@ func TestOversizedRootGoModScansBeyondFallbackProbeForModulePath(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction beyond fallback probe")
 }
 
+func TestOversizedRootGoModKeepsModuleBlock(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module (",
+		"example.com/root",
+		")",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction from module block")
+}
+
+func TestOversizedRootGoModRejectsRepeatedModuleBlockLine(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module (",
+		"example.com/root",
+		"example.com/other",
+		")",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func TestOversizedRootGoModRejectsModuleDirectiveWithUnterminatedBlockComment(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModWithModuleLine(t, repo, "", "module example.com/root /*")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsModuleDirectiveWithTruncatedCommentStart(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModWithModuleLine(t, repo, "", "module example.com/root /")
 
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
@@ -1597,6 +1634,48 @@ func TestOversizedRootGoModAcceptsKnownDirectiveBeforeModule(t *testing.T) {
 	)
 
 	requireOversizedRootModulePath(t, repo, "module path extraction after known directive")
+}
+
+func TestOversizedRootGoModAcceptsCommentedRequireBlockDelimiters(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"require ( // dependencies",
+		"\tgithub.com/google/uuid v1.6.0",
+		") // dependencies",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with commented require block delimiters")
+}
+
+func TestOversizedRootGoModKeepsQuotedReplacementLineCommentMarker(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "./a//b"`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with quoted line-comment marker")
+}
+
+func TestOversizedRootGoModKeepsQuotedReplacementBlockCommentMarker(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "./a/*b"`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with quoted block-comment marker")
+}
+
+func TestOversizedRootGoModKeepsQuotedReplacementWhitespace(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "./a  b"`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with quoted replacement whitespace")
 }
 
 func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
@@ -1631,6 +1710,97 @@ func TestOversizedRootGoModRejectsDuplicateModuleDirective(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
+func TestOversizedRootGoModRejectsDuplicateGoDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"go 1.23.0",
+		"go 1.24.0",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsDuplicateToolchainDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"go 1.23.0",
+		"toolchain go1.24.0",
+		"toolchain go1.25.0",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsUnknownBlockDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"unknown (",
+		")",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsInvalidRequireBlockLine(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"require (",
+		"not-a-valid-require-line",
+		")",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestScanGoModModulePathReturnsReaderError(t *testing.T) {
+	readErr := errors.New("read failure")
+	_, err := scanGoModModulePath(&errReader{err: readErr})
+	if !errors.Is(err, readErr) {
+		t.Fatalf("expected reader error, got %v", err)
+	}
+}
+
+func TestScanGoModModulePathRejectsClosedBlockComment(t *testing.T) {
+	modulePath, err := scanGoModModulePath(strings.NewReader("/* invalid */\nmodule example.com/root\n"))
+	if err != nil {
+		t.Fatalf("scanGoModModulePath: %v", err)
+	}
+	if modulePath != "" {
+		t.Fatalf("expected block-comment go.mod probe to trust no module path, got %q", modulePath)
+	}
+}
+
+func TestScanGoModModulePathFinishesSlashAtEOF(t *testing.T) {
+	modulePath, err := scanGoModModulePath(strings.NewReader("notmodule/"))
+	if err != nil {
+		t.Fatalf("scanGoModModulePath: %v", err)
+	}
+	if modulePath != "" {
+		t.Fatalf("expected non-module line with EOF slash to trust no module path, got %q", modulePath)
+	}
+}
+
+func TestGoModFallbackNormalizationStopsAtLineLimitAndEOF(t *testing.T) {
+	if goModFallbackNeedsNormalization([]byte(strings.Repeat("module example.com/root\n", maxGoModFallbackLines+1))) {
+		t.Fatal("expected fallback normalization probe to stop at the line limit")
+	}
+	if goModFallbackNeedsNormalization([]byte("module example.com/root")) {
+		t.Fatal("expected fallback normalization probe to stop cleanly at EOF")
+	}
+}
+
+type errReader struct {
+	err error
+}
+
+func (r *errReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
 func requireNoTrustedOversizedRootModuleMetadata(t *testing.T, repo string) {
 	t.Helper()
 	info, err := loadGoModuleInfo(repo)
@@ -1656,6 +1826,9 @@ func requireOversizedRootModulePath(t *testing.T, repo, context string) {
 	}
 	if slices.Contains(info.DeclaredDependencies, depUUID) {
 		t.Fatalf("expected oversized root dependencies not to be trusted, got %#v", info.DeclaredDependencies)
+	}
+	if len(info.ReplacementImports) != 0 {
+		t.Fatalf("expected oversized root replacements not to be trusted, got %#v", info.ReplacementImports)
 	}
 }
 
