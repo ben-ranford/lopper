@@ -1,11 +1,13 @@
 package golang
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -107,15 +109,158 @@ func readOversizedGoModModulePath(repoPath, goModPath string) (_ string, err err
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	content, err := io.ReadAll(io.LimitReader(file, maxGoModBytes))
-	if err != nil {
-		return "", err
-	}
-	return modfile.ModulePath(content), nil
+	return scanGoModModulePath(io.LimitReader(file, maxGoModModulePathProbeBytes))
 }
 
 func isPureGoModSizeLimit(err error) bool {
 	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
+}
+
+func scanGoModModulePath(reader io.Reader) (string, error) {
+	scanner := goModModuleScanner{
+		buffered: bufio.NewReaderSize(reader, 32*1024),
+	}
+	return scanner.scan()
+}
+
+type goModModuleScanner struct {
+	buffered         *bufio.Reader
+	line             strings.Builder
+	lineTooLarge     bool
+	lineLastSpace    bool
+	inBlockComment   bool
+	blockCommentStar bool
+	inLineComment    bool
+}
+
+func (s *goModModuleScanner) scan() (string, error) {
+	for {
+		b, err := s.buffered.ReadByte()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return s.finishLine(), nil
+			}
+			return "", err
+		}
+		if modulePath, found, err := s.consumeByte(b); found || err != nil {
+			return modulePath, err
+		}
+	}
+}
+
+func (s *goModModuleScanner) consumeByte(b byte) (string, bool, error) {
+	if s.inLineComment {
+		modulePath := s.consumeLineCommentByte(b)
+		return modulePath, modulePath != "", nil
+	}
+	if s.inBlockComment {
+		s.consumeBlockCommentByte(b)
+		return "", false, nil
+	}
+	if b == '\n' {
+		modulePath := s.finishLine()
+		return modulePath, modulePath != "", nil
+	}
+	return s.consumeCodeByte(b)
+}
+
+func (s *goModModuleScanner) consumeLineCommentByte(b byte) string {
+	if b != '\n' {
+		return ""
+	}
+	modulePath := s.finishLine()
+	s.inLineComment = false
+	return modulePath
+}
+
+func (s *goModModuleScanner) consumeBlockCommentByte(b byte) {
+	if s.blockCommentStar && b == '/' {
+		s.inBlockComment = false
+		s.blockCommentStar = false
+		return
+	}
+	s.blockCommentStar = b == '*'
+}
+
+func (s *goModModuleScanner) consumeCodeByte(b byte) (string, bool, error) {
+	if b == '/' {
+		consumed, err := s.tryStartComment()
+		if consumed || err != nil {
+			return "", false, err
+		}
+	}
+	s.appendLineByte(b)
+	return "", false, nil
+}
+
+func (s *goModModuleScanner) tryStartComment() (bool, error) {
+	next, err := s.buffered.Peek(1)
+	if err != nil {
+		return false, nil
+	}
+	switch next[0] {
+	case '/':
+		_, err = s.buffered.ReadByte()
+		s.inLineComment = err == nil
+		return true, err
+	case '*':
+		_, err = s.buffered.ReadByte()
+		s.inBlockComment = err == nil
+		s.blockCommentStar = false
+		return true, err
+	default:
+		return false, nil
+	}
+}
+
+func (s *goModModuleScanner) appendLineByte(b byte) {
+	if isGoModDirectiveSpace(b) {
+		if s.line.Len() == 0 || s.lineLastSpace {
+			return
+		}
+		b = ' '
+		s.lineLastSpace = true
+	} else {
+		s.lineLastSpace = false
+	}
+	if s.line.Len() >= 64*1024 {
+		s.lineTooLarge = true
+		return
+	}
+	s.line.WriteByte(b)
+}
+
+func (s *goModModuleScanner) finishLine() string {
+	modulePath := parseScannedGoModLine(&s.line, s.lineTooLarge)
+	s.lineTooLarge = false
+	s.lineLastSpace = false
+	return modulePath
+}
+
+func isGoModDirectiveSpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\r', '\f':
+		return true
+	default:
+		return false
+	}
+}
+
+func parseScannedGoModLine(line *strings.Builder, tooLarge bool) string {
+	if tooLarge {
+		line.Reset()
+		return ""
+	}
+	lineText := line.String()
+	line.Reset()
+	if strings.TrimSpace(lineText) == "" {
+		return ""
+	}
+	file, err := modfile.Parse(goModName, []byte(lineText+"\n"), nil)
+	if err != nil || file.Module == nil {
+		return ""
+	}
+	return file.Module.Mod.Path
 }
 
 func loadWorkspaceModules(repoPath string, info *moduleInfo) error {

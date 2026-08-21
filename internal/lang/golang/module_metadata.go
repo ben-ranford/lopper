@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	maxGoModBytes         = 2 * 1024 * 1024
-	maxGoModFallbackLines = 8192
+	maxGoModBytes = 2 * 1024 * 1024
+	// Allow a small bounded identity probe past the normal go.mod read limit.
+	maxGoModModulePathProbeBytes = maxGoModBytes + 128*1024
+	maxGoModFallbackLines        = 8192
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
