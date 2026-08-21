@@ -81,24 +81,17 @@ func parseNamespaceReferencesText(text string, filePath string, resolver compose
 }
 
 func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex) namespaceReferenceParseResult {
-	matches := namespaceRefPattern.FindAllStringIndex(text, maxPHPNamespaceReferenceCandidatesPerFile()+1)
+	namespaceText := maskUseStatementRanges(text)
+	matches := namespaceRefPattern.FindAllStringIndex(namespaceText, maxPHPNamespaceReferencesPerFile+1)
 	result := namespaceReferenceParseResult{}
-	if len(matches) > maxPHPNamespaceReferenceCandidatesPerFile() {
+	if len(matches) > maxPHPNamespaceReferencesPerFile {
 		result.limitHit = true
-		matches = matches[:maxPHPNamespaceReferenceCandidatesPerFile()]
+		matches = matches[:maxPHPNamespaceReferencesPerFile]
 	}
 	result.imports = make([]importBinding, 0, len(matches))
 	seen := make(map[string]struct{})
-	checkedReferences := 0
 	for _, match := range matches {
-		binding, unresolvedInc, checked, ok := parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, lineIndex)
-		if checked {
-			checkedReferences++
-			if checkedReferences > maxPHPNamespaceReferencesPerFile {
-				result.limitHit = true
-				break
-			}
-		}
+		binding, unresolvedInc, ok := parseNamespaceReferenceWithLineIndex(namespaceText, match, filePath, resolver, seen, lineIndex)
 		result.unresolvedCount += unresolvedInc
 		if !ok {
 			continue
@@ -109,33 +102,44 @@ func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, res
 }
 
 func parseNamespaceReference(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}) (importBinding, int, bool) {
-	binding, unresolvedCount, _, ok := parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, newPHPLineIndex(text))
-	return binding, unresolvedCount, ok
+	return parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, newPHPLineIndex(text))
 }
 
-func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}, lineIndex phpLineIndex) (importBinding, int, bool, bool) {
+func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}, lineIndex phpLineIndex) (importBinding, int, bool) {
 	module, line, local, ok := parseNamespaceReferenceMetadataWithLineIndex(text, match, lineIndex)
 	if !ok {
-		return importBinding{}, 0, false, false
+		return importBinding{}, 0, false
 	}
 	if isUseLineWithLineIndex(lineIndex, line) {
-		return importBinding{}, 0, false, false
+		return importBinding{}, 0, false
 	}
 	dependency, resolved := resolver.dependencyFromModule(module)
 	if dependency == "" {
 		if resolved {
-			return importBinding{}, 1, true, false
+			return importBinding{}, 1, false
 		}
-		return importBinding{}, 0, true, false
+		return importBinding{}, 0, false
 	}
 	if isDuplicateNamespaceReference(seen, module, line) {
-		return importBinding{}, 0, true, false
+		return importBinding{}, 0, false
 	}
-	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true, true
+	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true
 }
 
-func maxPHPNamespaceReferenceCandidatesPerFile() int {
-	return maxPHPNamespaceReferencesPerFile + maxPHPUseStatementsPerFile
+func maskUseStatementRanges(text string) string {
+	matches := useStmtPattern.FindAllStringIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+	masked := []byte(text)
+	for _, match := range matches {
+		for i := match[0]; i < match[1]; i++ {
+			if masked[i] != '\n' && masked[i] != '\r' {
+				masked[i] = ' '
+			}
+		}
+	}
+	return string(masked)
 }
 
 func parseNamespaceReferenceMetadata(text string, match []int) (string, int, string, bool) {
