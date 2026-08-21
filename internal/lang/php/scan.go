@@ -31,10 +31,13 @@ type fileScan struct {
 }
 
 type scanState struct {
-	visited              int
-	unresolvedNamespaces int
-	foundPHP             bool
-	skippedNestedPackage int
+	visited                     int
+	unresolvedNamespaces        int
+	foundPHP                    bool
+	skippedLargeFiles           int
+	skippedNestedPackage        int
+	useStatementLimitHits       int
+	namespaceReferenceLimitHits int
 }
 
 type scanCoordinator struct {
@@ -116,6 +119,10 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.foundPHP = true
 
 	content, relPath, err := readPHPFile(c.repoPath, path)
+	if errors.Is(err, safeio.ErrFileTooLarge) {
+		c.state.skippedLargeFiles++
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -129,6 +136,12 @@ func (c *scanCoordinator) scanFile(path string) error {
 		incrementDynamicUsage(c.result.DynamicUsageByDependency, parsed.imports)
 	}
 	c.state.unresolvedNamespaces += parsed.unresolvedCount
+	if parsed.useStatementLimitHit {
+		c.state.useStatementLimitHits++
+	}
+	if parsed.namespaceReferenceLimitHit {
+		c.state.namespaceReferenceLimitHits++
+	}
 	c.result.Files = append(c.result.Files, fileScan{
 		Path:    relPath,
 		Imports: parsed.imports,
@@ -180,6 +193,15 @@ func appendScanWarnings(result *scanResult, state scanState) {
 	if state.skippedNestedPackage > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d nested composer package directory(ies) while scanning", state.skippedNestedPackage))
 	}
+	if state.skippedLargeFiles > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d large PHP file(s) above %d bytes", state.skippedLargeFiles, maxScannablePHPFile))
+	}
+	if state.useStatementLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP use import scan after %d statement(s) in %d file(s) to keep analysis bounded", maxPHPUseStatementsPerFile, state.useStatementLimitHits))
+	}
+	if state.namespaceReferenceLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace reference scan after %d match(es) in %d file(s) to keep analysis bounded", maxPHPNamespaceReferencesPerFile, state.namespaceReferenceLimitHits))
+	}
 	if len(result.DynamicUsageByDependency) > 0 {
 		result.Warnings = append(result.Warnings, "dynamic loading/reflection patterns detected; dependency usage may be under-reported")
 	}
@@ -197,7 +219,7 @@ func dependenciesInFile(imports []importBinding) map[string]struct{} {
 }
 
 func readPHPFile(repoPath, path string) ([]byte, string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannablePHPFile)
 	if err != nil {
 		return nil, "", err
 	}

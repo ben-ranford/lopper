@@ -3,6 +3,7 @@ package php
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -10,9 +11,22 @@ import (
 )
 
 type importParseResult struct {
+	imports                    []importBinding
+	groupedByDep               map[string]int
+	unresolvedCount            int
+	useStatementLimitHit       bool
+	namespaceReferenceLimitHit bool
+}
+
+type namespaceReferenceParseResult struct {
 	imports         []importBinding
-	groupedByDep    map[string]int
 	unresolvedCount int
+	limitHit        bool
+}
+
+type phpLineIndex struct {
+	text   string
+	starts []int
 }
 
 var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+([^;]+);`)
@@ -27,15 +41,20 @@ func parseImports(content []byte, filePath string, resolver composerResolver) ([
 func parsePHPImports(content []byte, filePath string, resolver composerResolver) importParseResult {
 	sanitized := shared.MaskCommentsAndStringsForFile(content, filePath)
 	text := string(sanitized)
-	matches := useStmtPattern.FindAllStringSubmatchIndex(text, -1)
+	lineIndex := newPHPLineIndex(text)
+	matches := useStmtPattern.FindAllStringSubmatchIndex(text, maxPHPUseStatementsPerFile+1)
 	result := importParseResult{
 		imports:      make([]importBinding, 0),
 		groupedByDep: make(map[string]int),
 	}
+	if len(matches) > maxPHPUseStatementsPerFile {
+		result.useStatementLimitHit = true
+		matches = matches[:maxPHPUseStatementsPerFile]
+	}
 
 	for _, match := range matches {
 		statement := strings.TrimSpace(text[match[2]:match[3]])
-		line := lineNumberAt(text, match[2])
+		line := lineIndex.lineNumberAt(match[2])
 		bindings, groupedDeps, unresolvedCount := parseUseStatement(statement, filePath, line, resolver)
 		result.imports = append(result.imports, bindings...)
 		for dep := range groupedDeps {
@@ -44,9 +63,10 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		result.unresolvedCount += unresolvedCount
 	}
 
-	namespaceImports, unresolvedNamespaces := parseNamespaceReferencesText(text, filePath, resolver)
-	result.imports = append(result.imports, namespaceImports...)
-	result.unresolvedCount += unresolvedNamespaces
+	namespaceResult := parseNamespaceReferencesTextWithLineIndex(text, filePath, resolver, lineIndex)
+	result.imports = append(result.imports, namespaceResult.imports...)
+	result.unresolvedCount += namespaceResult.unresolvedCount
+	result.namespaceReferenceLimitHit = namespaceResult.limitHit
 	return result
 }
 
@@ -56,27 +76,40 @@ func parseNamespaceReferences(content []byte, filePath string, resolver composer
 }
 
 func parseNamespaceReferencesText(text string, filePath string, resolver composerResolver) ([]importBinding, int) {
-	matches := namespaceRefPattern.FindAllStringIndex(text, -1)
-	imports := make([]importBinding, 0)
-	unresolved := 0
+	result := parseNamespaceReferencesTextWithLineIndex(text, filePath, resolver, newPHPLineIndex(text))
+	return result.imports, result.unresolvedCount
+}
+
+func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex) namespaceReferenceParseResult {
+	matches := namespaceRefPattern.FindAllStringIndex(text, maxPHPNamespaceReferencesPerFile+1)
+	result := namespaceReferenceParseResult{}
+	if len(matches) > maxPHPNamespaceReferencesPerFile {
+		result.limitHit = true
+		matches = matches[:maxPHPNamespaceReferencesPerFile]
+	}
+	result.imports = make([]importBinding, 0, len(matches))
 	seen := make(map[string]struct{})
 	for _, match := range matches {
-		binding, unresolvedInc, ok := parseNamespaceReference(text, match, filePath, resolver, seen)
-		unresolved += unresolvedInc
+		binding, unresolvedInc, ok := parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, lineIndex)
+		result.unresolvedCount += unresolvedInc
 		if !ok {
 			continue
 		}
-		imports = append(imports, binding)
+		result.imports = append(result.imports, binding)
 	}
-	return imports, unresolved
+	return result
 }
 
 func parseNamespaceReference(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}) (importBinding, int, bool) {
-	module, line, local, ok := parseNamespaceReferenceMetadata(text, match)
+	return parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, newPHPLineIndex(text))
+}
+
+func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}, lineIndex phpLineIndex) (importBinding, int, bool) {
+	module, line, local, ok := parseNamespaceReferenceMetadataWithLineIndex(text, match, lineIndex)
 	if !ok {
 		return importBinding{}, 0, false
 	}
-	if isUseLine(text, line) {
+	if isUseLineWithLineIndex(lineIndex, line) {
 		return importBinding{}, 0, false
 	}
 	dependency, resolved := resolver.dependencyFromModule(module)
@@ -93,6 +126,10 @@ func parseNamespaceReference(text string, match []int, filePath string, resolver
 }
 
 func parseNamespaceReferenceMetadata(text string, match []int) (string, int, string, bool) {
+	return parseNamespaceReferenceMetadataWithLineIndex(text, match, newPHPLineIndex(text))
+}
+
+func parseNamespaceReferenceMetadataWithLineIndex(text string, match []int, lineIndex phpLineIndex) (string, int, string, bool) {
 	if len(match) != 2 {
 		return "", 0, "", false
 	}
@@ -103,13 +140,13 @@ func parseNamespaceReferenceMetadata(text string, match []int) (string, int, str
 	if module == "" {
 		return "", 0, "", false
 	}
-	line := lineNumberAt(text, start)
+	line := lineIndex.lineNumberAt(start)
 	local := lastNamespaceSegment(module)
 	return module, line, local, true
 }
 
-func isUseLine(text string, line int) bool {
-	lineText := lineTextAt(text, line)
+func isUseLineWithLineIndex(lineIndex phpLineIndex, line int) bool {
+	lineText := lineIndex.lineTextAt(line)
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(lineText)), "use ")
 }
 
@@ -145,27 +182,50 @@ func newImportBinding(filePath string, line int, dependency, module, local, name
 }
 
 func lineTextAt(text string, targetLine int) string {
-	if targetLine <= 0 {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	index := targetLine - 1
-	if index < 0 || index >= len(lines) {
-		return ""
-	}
-	return lines[index]
+	lineIndex := newPHPLineIndex(text)
+	return lineIndex.lineTextAt(targetLine)
 }
 
 func lineNumberAt(text string, offset int) int {
+	lineIndex := newPHPLineIndex(text)
+	return lineIndex.lineNumberAt(offset)
+}
+
+func newPHPLineIndex(text string) phpLineIndex {
+	starts := []int{0}
+	for i := 0; i < len(text); i++ {
+		if text[i] == '\n' {
+			starts = append(starts, i+1)
+		}
+	}
+	return phpLineIndex{text: text, starts: starts}
+}
+
+func (l *phpLineIndex) lineTextAt(targetLine int) string {
+	if targetLine <= 0 || targetLine > len(l.starts) {
+		return ""
+	}
+	start := l.starts[targetLine-1]
+	end := len(l.text)
+	if targetLine < len(l.starts) {
+		end = l.starts[targetLine] - 1
+	}
+	if end < start {
+		end = start
+	}
+	return l.text[start:end]
+}
+
+func (l *phpLineIndex) lineNumberAt(offset int) int {
 	if offset <= 0 {
 		return 1
 	}
-	line := 1
-	for i := 0; i < len(text) && i < offset; i++ {
-		if text[i] == '\n' {
-			line++
-		}
+	if offset > len(l.text) {
+		offset = len(l.text)
 	}
+	line := sort.Search(len(l.starts), func(i int) bool {
+		return l.starts[i] > offset
+	})
 	return line
 }
 
