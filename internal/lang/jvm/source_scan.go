@@ -371,11 +371,7 @@ func fallbackDependency(module string) string {
 }
 
 func normalizeJVMModuleForLookup(module string) string {
-	parts := strings.Split(strings.TrimSpace(module), ".")
-	for index, part := range parts {
-		parts[index] = strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(part), "`"), "`")
-	}
-	return strings.Join(parts, ".")
+	return shared.NormalizeEscapedModuleSegments(module)
 }
 
 func lastModuleSegment(module string) string {

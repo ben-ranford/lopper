@@ -22,6 +22,7 @@ const (
 	testMainSourceFileName    = "Main.kt"
 	testGradleDirectoryName   = ".gradle"
 	testKotlinAndroidLanguage = "kotlin-android"
+	testKotlinEscapedWhen     = "`when`"
 	testOkHTTPGroup           = "com.squareup.okhttp3"
 	testAlphaCoreDependency   = "alpha-core"
 	testManifestFallbackDir   = "manifest-fallback"

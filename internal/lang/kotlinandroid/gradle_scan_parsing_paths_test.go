@@ -39,6 +39,12 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 	if got := fallbackDependency("foo.bar.Baz"); got != "foo.bar" {
 		t.Fatalf("unexpected fallback dependency: %q", got)
 	}
+	if got := normalizeKotlinAndroidModuleForLookup("foo.`when`.Baz"); got != "foo.when.Baz" {
+		t.Fatalf("expected escaped module segments to normalize for lookup, got %q", got)
+	}
+	if got := fallbackDependency("foo.`when`.Baz"); got != "foo.when" {
+		t.Fatalf("unexpected escaped fallback dependency: %q", got)
+	}
 	if got := lastModuleSegment("a.b.C"); got != "C" {
 		t.Fatalf("unexpected last module segment: %q", got)
 	}
@@ -592,6 +598,9 @@ import com.acme.lib.Widget
 	}
 	if !shouldIgnoreImport("pkg.demo.service", "pkg.demo") {
 		t.Fatalf("expected package-local import to be ignored")
+	}
+	if shouldIgnoreImport("pkg.demo.`when`.Widget", "other.pkg") {
+		t.Fatalf("expected escaped dependency package to remain external to unrelated packages")
 	}
 	escapedPackage := parsePackage([]byte("package pkg.demo.`when`\n"))
 	escapedResult := newScanResult()
