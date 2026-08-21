@@ -28,6 +28,60 @@ function safeError(error) {
   return message.replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, 1200);
 }
 
+function queuePauseError(message) {
+  const error = new Error(message);
+  error.queuePauseMessage = message;
+  return error;
+}
+
+function isBotIdentity(identity) {
+  const login = String(identity?.login || '').toLowerCase();
+  const name = String(identity?.name || '').toLowerCase();
+  const email = String(identity?.email || '').toLowerCase();
+  return (
+    login.endsWith('[bot]') ||
+    name.endsWith('[bot]') ||
+    email.includes('[bot]@') ||
+    email === 'noreply@github.com'
+  );
+}
+
+function commitIdentityFailure(commit) {
+  const author = commit?.commit?.author || {};
+  const committer = commit?.commit?.committer || {};
+  const authorName = String(author.name || '').trim();
+  const authorEmail = String(author.email || '').trim();
+  const committerName = String(committer.name || '').trim();
+  const committerEmail = String(committer.email || '').trim();
+  const sha = shortSHA(commit?.sha);
+
+  if (!authorName || !authorEmail || !committerName || !committerEmail) {
+    return `${sha}: author and committer metadata must both be present`;
+  }
+  if (isBotIdentity(commit?.committer) || isBotIdentity(committer)) {
+    return `${sha}: committer is a bot identity`;
+  }
+  if (authorName !== committerName || authorEmail !== committerEmail) {
+    return `${sha}: author and committer identities differ`;
+  }
+  return '';
+}
+
+function assertCanonicalCommitIdentity(comparison) {
+  const commits = comparison?.commits || [];
+  if (comparison?.total_commits > commits.length) {
+    throw queuePauseError(
+      `Queue identity audit failed: GitHub returned ${commits.length} of ${comparison.total_commits} PR-unique commits, so the queue cannot prove canonical author and committer identity.`,
+    );
+  }
+  const failures = commits.map(commitIdentityFailure).filter(Boolean);
+  if (failures.length > 0) {
+    throw queuePauseError(
+      `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. ${failures.join('; ')}.`,
+    );
+  }
+}
+
 async function ensureQueueLabel(github, owner, repo, queueLabel) {
   try {
     await github.rest.issues.getLabel({ owner, repo, name: queueLabel });
@@ -142,45 +196,21 @@ async function disableAutoMerge(github, owner, repo, number) {
   );
 }
 
-async function rebaseOntoDefault(
+async function verifyHeadForQueue(
   github,
   pull,
   defaultBranchSHA,
-  { canUpdateBranch = true } = {},
 ) {
   const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
     owner: pull.base.repo.owner.login,
     repo: pull.base.repo.name,
     basehead: `${defaultBranchSHA}...${pull.head.sha}`,
   });
+  assertCanonicalCommitIdentity(comparison);
   if (isBranchCurrent(comparison.status)) {
-    return { headSHA: pull.head.sha, rebased: false };
+    return { headSHA: pull.head.sha, needsCurrentBase: false };
   }
-  if (!canUpdateBranch) {
-    return { headSHA: pull.head.sha, rebased: false, needsManualRebase: true };
-  }
-  const result = await github.graphql(
-    `mutation RebaseQueuedPull($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
-      updatePullRequestBranch(input: {
-        pullRequestId: $pullRequestId
-        expectedHeadOid: $expectedHeadOid
-        updateMethod: REBASE
-      }) {
-        pullRequest {
-          headRefOid
-          number
-        }
-      }
-    }`,
-    {
-      pullRequestId: pull.node_id,
-      expectedHeadOid: pull.head.sha,
-    },
-  );
-  return {
-    headSHA: result.updatePullRequestBranch.pullRequest.headRefOid,
-    rebased: true,
-  };
+  return { headSHA: pull.head.sha, needsCurrentBase: true };
 }
 
 async function mergeNow(github, pullRequestId, expectedHeadOid) {
@@ -390,28 +420,30 @@ async function runController({
   });
   let update;
   try {
-    update = await rebaseOntoDefault(github, leader, branch.commit.sha, {
-      canUpdateBranch: leader.head.repo?.full_name === repository.full_name,
-    });
+    update = await verifyHeadForQueue(github, leader, branch.commit.sha);
   } catch (error) {
+    const pauseMessage = error?.queuePauseMessage ||
+      `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
     await syncStatusComment(
       github,
       owner,
       repo,
       leader.number,
-      `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
+      `## Queue status\n\nQueue paused: ${pauseMessage}\n\n\`${safeError(error)}\``,
     );
     throw error;
   }
-  if (update.needsManualRebase) {
+  if (update.needsCurrentBase) {
+    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
+    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. Push a history that contains current \`${defaultBranch}\` while preserving canonical author and committer identity; \`${queueLabel}\` will retry after the clean identity audit.`;
     await syncStatusComment(
       github,
       owner,
       repo,
       leader.number,
-      `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
+      `## Queue status\n\nQueue paused: ${message}`,
     );
-    return;
+    throw new Error(`Queue paused: ${message}`);
   }
 
   try {
@@ -435,9 +467,7 @@ async function runController({
       expectedBaseRefName: defaultBranch,
       expectedBaseRefOid: branch.commit.sha,
     });
-    const rebaseSummary = update.rebased
-      ? `Rebased \`${shortSHA(leader.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
-      : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
+    const queueSummary = `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit.`;
     const mergeSummary = result === 'merged'
       ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
       : 'Squash auto-merge is armed and will wait for the repository ruleset.';
@@ -446,7 +476,7 @@ async function runController({
       owner,
       repo,
       leader.number,
-      `## Queue status\n\n${rebaseSummary}\n\n${mergeSummary}`,
+      `## Queue status\n\n${queueSummary}\n\n${mergeSummary}`,
     );
   } catch (error) {
     await syncStatusComment(
@@ -462,10 +492,14 @@ async function runController({
 
 module.exports = runController;
 module.exports.testables = {
+  assertCanonicalCommitIdentity,
+  commitIdentityFailure,
   hasLabel,
   isBranchCurrent,
+  isBotIdentity,
   labelName,
   safeError,
   shortSHA,
   sortQueuedPulls,
+  verifyHeadForQueue,
 };
