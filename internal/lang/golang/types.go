@@ -33,6 +33,7 @@ type moduleInfo struct {
 	VendoredDependencies       map[string]vendoredDependencyMetadata
 	VendoringWarnings          []string
 	VendoredProvenanceEnabled  bool
+	RootGoModTooLarge          bool
 }
 
 type goDependencyProvenance struct {

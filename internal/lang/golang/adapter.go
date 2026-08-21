@@ -66,6 +66,10 @@ func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scan
 	if repoPath == "" {
 		return result, fs.ErrInvalid
 	}
+	if moduleInfo.RootGoModTooLarge {
+		appendScanWarnings(&result, moduleInfo)
+		return result, nil
+	}
 	if err := walkGoFiles(ctx, repoPath, moduleInfo, &result); err != nil {
 		return result, err
 	}
@@ -110,8 +114,11 @@ func appendScanWarnings(result *scanResult, moduleInfo moduleInfo) {
 	if result == nil {
 		return
 	}
-	if len(result.Files) == 0 {
+	if len(result.Files) == 0 && !moduleInfo.RootGoModTooLarge {
 		result.Warnings = append(result.Warnings, "no Go source files found for analysis")
+	}
+	if moduleInfo.RootGoModTooLarge {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped Go source dependency attribution because root go.mod exceeds %d bytes", maxGoModBytes))
 	}
 	if len(moduleInfo.DeclaredDependencies) == 0 && len(moduleInfo.VendoredDependencies) == 0 {
 		result.Warnings = append(result.Warnings, "no Go dependencies discovered from go.mod")

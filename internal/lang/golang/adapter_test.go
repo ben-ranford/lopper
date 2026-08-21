@@ -1209,6 +1209,18 @@ func writeRootUUIDModule(t *testing.T, repo string) {
 	writeRepoMainLines(t, repo, packageMainLine, "", "import \""+depUUID+"\"", "", "func main() { _ = uuid.NewString() }", "")
 }
 
+func writeOversizedValidRootGoMod(t *testing.T, repo string) {
+	t.Helper()
+	prefix := modulePrefix + "example.com/root\n\n" + requirePrefix + depUUID + versionV160 + "\n"
+	commentPrefix := "//"
+	suffix := "\n"
+	paddingLen := goModSizeLimitTest + 1 - len(prefix) - len(commentPrefix) - len(suffix)
+	if paddingLen < 0 {
+		t.Fatalf("oversized go.mod prefix exceeds test limit")
+	}
+	writeFile(t, filepath.Join(repo, fileGoMod), prefix+commentPrefix+strings.Repeat("x", paddingLen)+suffix)
+}
+
 func writeNestedLoModule(t *testing.T, repo string, path ...string) string {
 	t.Helper()
 	nestedDir := filepath.Join(append([]string{repo}, path...)...)
@@ -1493,12 +1505,53 @@ func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 	if info.ModulePath != "" || len(info.DeclaredDependencies) != 0 {
 		t.Fatalf("expected oversized root go.mod to produce empty module info, got %#v", info)
 	}
+	if !info.RootGoModTooLarge {
+		t.Fatal("expected oversized root go.mod to be tracked as incomplete module metadata")
+	}
 
 	nestedRepo := t.TempDir()
 	nestedDir := filepath.Join(nestedRepo, "nested")
 	writeFile(t, filepath.Join(nestedDir, fileGoMod), strings.Repeat("b", goModSizeLimitTest+1))
 	if _, _, _, err := loadGoModFromDir(nestedRepo, nestedDir); !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized nested go.mod to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedValidRootGoMod(t, repo)
+	writeRepoMainLines(
+		t,
+		repo,
+		packageMainLine,
+		"",
+		"import (",
+		"\t_ \""+depUUID+"\"",
+		"\t_ \"example.com/root/pkg\"",
+		")",
+		"",
+		"func main() {}",
+		"",
+	)
+	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     5,
+	})
+
+	if len(reportData.Dependencies) != 0 {
+		t.Fatalf("expected oversized root go.mod to suppress dependency attribution, got %#v", dependencyNames(reportData.Dependencies))
+	}
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if !strings.Contains(warnings, "root go.mod exceeds") {
+		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
+	}
+	if strings.Contains(warnings, "no Go source files found") {
+		t.Fatalf("expected skipped scan not to claim absent Go sources, got %#v", reportData.Warnings)
+	}
+	if strings.Contains(warnings, "example.com/root/pkg") || strings.Contains(warnings, "declare-go-module-requirement") {
+		t.Fatalf("expected no misleading local-module undeclared warning, got %#v", reportData.Warnings)
 	}
 }
 

@@ -60,6 +60,7 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	}
 	content, err := safeio.ReadFileUnderLimit(repoPath, goModPath, maxGoModBytes)
 	if isPureGoModSizeLimit(err) {
+		info.RootGoModTooLarge = true
 		return nil
 	}
 	if err != nil {
