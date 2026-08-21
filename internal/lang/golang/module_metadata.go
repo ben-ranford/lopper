@@ -95,7 +95,7 @@ func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct
 	oversizedDirs := make(map[string]struct{})
 	for dir := range nestedDirs {
 		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
-		if isPureGoModSizeLimit(err) {
+		if isPureGoModSizeLimit(err) && !isOversizedRootDir(repoPath, dir) {
 			oversizedDirs[dir] = struct{}{}
 			continue
 		}
