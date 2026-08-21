@@ -16,6 +16,7 @@ import (
 )
 
 const coverageDepPath = "github.com/x/y"
+const goModFallbackLineLimitForRegressionTest = 8192
 
 func TestGoAdapterCoverageHelpers(t *testing.T) {
 	assertGoFinalizeDetection(t)
@@ -139,6 +140,9 @@ func assertGoModHelpers(t *testing.T) {
 	assertParseGoModStandardFile(t)
 	assertParseGoModInlineRequireBlock(t)
 	assertParseGoModCommentedInlineRequireBlock(t)
+	assertParseGoModInlineRequireAtLineLimitWithTrailingNewline(t)
+	assertParseGoModInlineRequireAtLineLimitWithoutTrailingNewline(t)
+	assertParseGoModSkipsFallbackBeyondLineLimit(t)
 	assertParseGoModSkipsFallbackForOversizedMalformedInput(t)
 	assertNormalizeInlineGoModRequireLineWithComment(t)
 	assertNormalizeInlineGoModRequireLineEmpty(t)
@@ -202,12 +206,69 @@ func assertParseGoModCommentedInlineRequireBlock(t *testing.T) {
 	})
 }
 
+func assertParseGoModInlineRequireAtLineLimitWithTrailingNewline(t *testing.T) {
+	t.Helper()
+	lines := make([]string, goModFallbackLineLimitForRegressionTest)
+	lines[0] = "module example.com/root"
+	for i := 1; i < goModFallbackLineLimitForRegressionTest-1; i++ {
+		lines[i] = "// filler"
+	}
+	lines[goModFallbackLineLimitForRegressionTest-1] = "require ( github.com/acme/dep v1.2.3 )"
+
+	assertParsedGoMod(t, strings.Join(lines, "\n")+"\n", parsedGoModExpectation{
+		modulePath:         "example.com/root",
+		dependencies:       []string{"github.com/acme/dep"},
+		replacements:       map[string]string{},
+		moduleMessage:      "expected max-line trailing-newline go.mod module path",
+		dependencyMessage:  "expected max-line trailing-newline inline dependency",
+		replacementMessage: "expected no replacements from max-line trailing-newline go.mod",
+	})
+}
+
+func assertParseGoModInlineRequireAtLineLimitWithoutTrailingNewline(t *testing.T) {
+	t.Helper()
+	lines := make([]string, goModFallbackLineLimitForRegressionTest)
+	lines[0] = "module example.com/root"
+	for i := 1; i < goModFallbackLineLimitForRegressionTest-1; i++ {
+		lines[i] = "// filler"
+	}
+	lines[goModFallbackLineLimitForRegressionTest-1] = "require ( github.com/acme/dep v1.2.3 )"
+
+	assertParsedGoMod(t, strings.Join(lines, "\n"), parsedGoModExpectation{
+		modulePath:         "example.com/root",
+		dependencies:       []string{"github.com/acme/dep"},
+		replacements:       map[string]string{},
+		moduleMessage:      "expected max-line go.mod without trailing newline module path",
+		dependencyMessage:  "expected max-line go.mod without trailing newline dependency",
+		replacementMessage: "expected no replacements from max-line go.mod without trailing newline",
+	})
+}
+
+func assertParseGoModSkipsFallbackBeyondLineLimit(t *testing.T) {
+	t.Helper()
+	lines := make([]string, goModFallbackLineLimitForRegressionTest+1)
+	lines[0] = "module example.com/root"
+	lines[1] = "require ( github.com/acme/dep v1.2.3 )"
+	for i := 2; i < len(lines); i++ {
+		lines[i] = "// filler"
+	}
+
+	assertParsedGoMod(t, strings.Join(lines, "\n"), parsedGoModExpectation{
+		modulePath:         "",
+		dependencies:       nil,
+		replacements:       map[string]string{},
+		moduleMessage:      "expected over-line-limit malformed go.mod to skip fallback parsing",
+		dependencyMessage:  "expected over-line-limit malformed go.mod to skip fallback dependencies",
+		replacementMessage: "expected over-line-limit malformed go.mod to skip fallback replacements",
+	})
+}
+
 func assertParseGoModSkipsFallbackForOversizedMalformedInput(t *testing.T) {
 	t.Helper()
 	goMod := strings.Join([]string{
 		"module example.com/root",
 		"require ( github.com/acme/dep v1.2.3 )",
-		strings.Repeat("x", maxGoModBytes),
+		strings.Repeat("x", goModSizeLimitTest),
 		"",
 	}, "\n")
 	assertParsedGoMod(t, goMod, parsedGoModExpectation{

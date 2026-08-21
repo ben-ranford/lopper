@@ -169,7 +169,7 @@ func normalizeInlineGoModRequireBlocks(content []byte) []byte {
 }
 
 func goModFallbackNeedsNormalization(content []byte) bool {
-	for cursor, lineCount := 0, 0; cursor <= len(content); lineCount++ {
+	for cursor, lineCount := 0, 0; cursor < len(content); lineCount++ {
 		if lineCount >= maxGoModFallbackLines {
 			return false
 		}
@@ -190,7 +190,7 @@ func goModFallbackNeedsNormalization(content []byte) bool {
 func buildNormalizedInlineGoModRequireBlocks(content []byte) ([]byte, bool) {
 	var normalized strings.Builder
 	normalized.Grow(len(content))
-	for cursor, lineCount := 0, 0; cursor <= len(content); lineCount++ {
+	for cursor, lineCount := 0, 0; cursor < len(content); lineCount++ {
 		if lineCount >= maxGoModFallbackLines {
 			return nil, false
 		}

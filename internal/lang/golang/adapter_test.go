@@ -41,6 +41,7 @@ const (
 	packageMainLine     = "package main"
 	exampleModuleA      = "example.com/a"
 	exampleModuleX      = "example.com/x"
+	goModSizeLimitTest  = 2 * 1024 * 1024
 	workspaceSvcALine   = "\t./svc/a"
 	sharedForkImport    = "github.com/shared/fork"
 	pkgErrorsDependency = "github.com/pkg/errors"
@@ -1483,7 +1484,7 @@ func TestLoadGoModFromDirError(t *testing.T) {
 
 func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, fileGoMod), strings.Repeat("a", maxGoModBytes+1))
+	writeFile(t, filepath.Join(repo, fileGoMod), strings.Repeat("a", goModSizeLimitTest+1))
 
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {
@@ -1495,7 +1496,7 @@ func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 
 	nestedRepo := t.TempDir()
 	nestedDir := filepath.Join(nestedRepo, "nested")
-	writeFile(t, filepath.Join(nestedDir, fileGoMod), strings.Repeat("b", maxGoModBytes+1))
+	writeFile(t, filepath.Join(nestedDir, fileGoMod), strings.Repeat("b", goModSizeLimitTest+1))
 	if _, _, _, err := loadGoModFromDir(nestedRepo, nestedDir); !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized nested go.mod to fail with ErrFileTooLarge, got %v", err)
 	}
