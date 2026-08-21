@@ -183,6 +183,34 @@ func TestMapIncludeToDependencyBranches(t *testing.T) {
 	}
 }
 
+func TestMapIncludeToDependencyKeepsQualifiedThirdPartyStdBasenames(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	testutil.MustWriteFile(t, source, "#include <boost/regex.hpp>\n")
+
+	tests := []struct {
+		header     string
+		declared   string
+		dependency string
+	}{
+		{header: "boost/regex.hpp", declared: "boost-regex", dependency: "boost-regex"},
+		{header: "boost/chrono.hpp", declared: "boost-chrono", dependency: "boost-chrono"},
+		{header: "absl/types/optional.h", declared: "absl", dependency: "absl"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.header, func(t *testing.T) {
+			catalog := newDependencyCatalog()
+			catalog.add(tt.declared, "vcpkg manifest")
+
+			dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: tt.header, Delimiter: '<'}, nil, catalog)
+			if dep != tt.dependency || unresolved {
+				t.Fatalf("expected mapped dependency %q, got dep=%q unresolved=%v", tt.dependency, dep, unresolved)
+			}
+		})
+	}
+}
+
 func TestMapIncludeToDependencyIgnoresRepoHeaderFromIncludeDir(t *testing.T) {
 	repo := t.TempDir()
 	source := filepath.Join(repo, "src", testMainCPPFileName)
@@ -214,6 +242,12 @@ func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	}
 	if !isLikelyStdHeader("sys/types.h") {
 		t.Fatalf("expected sys/types.h to be std header")
+	}
+	if isLikelyStdHeader("boost/regex.hpp") {
+		t.Fatalf("did not expect qualified boost header to be std header")
+	}
+	if isLikelyStdHeader("absl/types/optional.h") {
+		t.Fatalf("did not expect qualified absl header to be std header")
 	}
 	if isLikelyStdHeader("thirdparty/custom.hpp") {
 		t.Fatalf("did not expect thirdparty/custom.hpp to be std header")

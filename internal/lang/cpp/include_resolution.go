@@ -408,6 +408,9 @@ func isLikelyStdHeader(header string) bool {
 	if strings.HasPrefix(header, "sys/") || strings.HasPrefix(header, "bits/") || strings.HasPrefix(header, "linux/") {
 		return true
 	}
+	if strings.Contains(header, "/") {
+		return false
+	}
 
 	base := strings.TrimSpace(filepath.Base(header))
 	if base == "" {
