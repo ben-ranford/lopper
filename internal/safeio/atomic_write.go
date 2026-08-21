@@ -50,11 +50,21 @@ func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) erro
 }
 
 func (s *atomicWriteSession) commit() error {
+	if err := s.verifyPreparedSourcePath(); err != nil {
+		return err
+	}
 	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
 		return err
 	}
 	s.tempRel = ""
 	return nil
+}
+
+func (s *atomicWriteSession) verifyPreparedSourcePath() error {
+	if s.tempInfo == nil {
+		return fmt.Errorf("temporary file info unavailable before commit: %s", s.tempRel)
+	}
+	return verifyPublishedPathMatchesInfo(s.root, s.tempRel, s.tempInfo, "temporary file changed before commit")
 }
 
 func (s *atomicWriteSession) verifyCommittedTarget() error {
@@ -64,12 +74,22 @@ func (s *atomicWriteSession) verifyCommittedTarget() error {
 	if !s.tempInfo.Mode().IsRegular() {
 		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
 	}
-	pathInfo, err := s.root.Lstat(s.targetRel)
-	if err != nil {
-		return fmt.Errorf("committed target changed before validation: %w", err)
+	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, s.tempInfo, "committed target changed before validation")
+}
+
+func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo, message string) error {
+	if expected == nil {
+		return fmt.Errorf("%s: %s", message, rel)
 	}
-	if !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
-		return fmt.Errorf("committed target changed before validation: %s", s.targetRel)
+	if !expected.Mode().IsRegular() {
+		return fmt.Errorf("%s: %s", message, rel)
+	}
+	pathInfo, err := root.Lstat(rel)
+	if err != nil {
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	if !pathInfo.Mode().IsRegular() || !os.SameFile(expected, pathInfo) {
+		return fmt.Errorf("%s: %s", message, rel)
 	}
 	return nil
 }
@@ -149,6 +169,9 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 		return err
 	}
 	if err := session.snapshotAndCloseTempFile(); err != nil {
+		return err
+	}
+	if err := session.verifyPreparedSourcePath(); err != nil {
 		return err
 	}
 	if err := root.Link(session.tempRel, targetRel); err != nil {

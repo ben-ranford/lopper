@@ -3444,6 +3444,12 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 		{
 			name: "rename",
 			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+				lstat: func(name string) (fs.FileInfo, error) {
+					if strings.Contains(name, ".safeio-atomic-") {
+						return tempInfo, nil
+					}
+					return nil, os.ErrNotExist
+				},
 				openFile: func(string, int, os.FileMode) (safeio.File, error) {
 					return &advisoryFakeFile{
 						write: func(p []byte) (int, error) { return len(p), nil },
