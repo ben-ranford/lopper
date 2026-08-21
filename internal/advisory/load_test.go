@@ -101,6 +101,23 @@ func TestLoadEmptyPathReturnsNil(t *testing.T) {
 	}
 }
 
+func TestLoadWithinRoot(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "advisories.yml")
+	content := "advisories:\n  - id: GHSA-rooted\n    package: example-lib\n    ecosystem: npm\n    severity: high\n    fixedVersion: 1.2.3\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write rooted advisory fixture: %v", err)
+	}
+
+	advisories, err := LoadWithinRoot(root, path)
+	if err != nil {
+		t.Fatalf("load rooted advisory fixture: %v", err)
+	}
+	if len(advisories) != 1 || advisories[0].ID != "GHSA-rooted" {
+		t.Fatalf("unexpected rooted advisories: %#v", advisories)
+	}
+}
+
 func TestLoadWrapsReadAndDecodeErrors(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "missing.yml")); err == nil || !strings.Contains(err.Error(), "read advisory source") {
 		t.Fatalf("expected wrapped read error, got %v", err)
