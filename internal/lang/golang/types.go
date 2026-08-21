@@ -19,6 +19,7 @@ type scanResult struct {
 	SkippedGeneratedFiles         int
 	SkippedBuildTaggedFiles       int
 	SkippedLargeFiles             int
+	SkippedOversizedMetadataFiles int
 	SkippedNestedModuleDirs       int
 }
 

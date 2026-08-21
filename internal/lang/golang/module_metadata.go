@@ -71,12 +71,20 @@ func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) 
 			return nil
 		}
 		dirs[path] = struct{}{}
+		if isOversizedModuleDir(repoPath, path) {
+			return nil
+		}
 		return filepath.SkipDir
 	})
 	if err != nil {
 		return nil, err
 	}
 	return dirs, nil
+}
+
+func isOversizedModuleDir(repoPath, dir string) bool {
+	_, _, _, err := loadGoModFromDir(repoPath, dir)
+	return isPureGoModSizeLimit(err)
 }
 
 func discoverNestedModules(repoPath string) ([]string, []string, map[string]string, error) {

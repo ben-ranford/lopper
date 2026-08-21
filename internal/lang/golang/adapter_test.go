@@ -1607,6 +1607,34 @@ func TestAnalyseSkipsAttributionWhenNestedGoModIsOversized(t *testing.T) {
 		t.Fatalf("expected oversized nested go.mod to suppress nested source attribution, got %#v", names)
 	}
 	requireOversizedModuleWarning(t, reportData)
+	requireOversizedMetadataSkipWarning(t, reportData)
+	requireNoAbsentSourceWarning(t, reportData)
+}
+
+func TestAnalysePreservesNestedModuleBelowOversizedGoMod(t *testing.T) {
+	repo := t.TempDir()
+	writeRootUUIDModule(t, repo)
+	oversizedDir := filepath.Join(repo, "services", "api")
+	writeOversizedModuleGoMod(t, oversizedDir, "example.com/service")
+	writeFile(t, filepath.Join(oversizedDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+	nestedDir := filepath.Join(oversizedDir, "tools", "nested")
+	writeFile(t, filepath.Join(nestedDir, fileGoMod), goModDemoWithUUID)
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), mainUUIDNoopProgram)
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+
+	names := dependencyNames(reportData.Dependencies)
+	if !slices.Contains(names, depUUID) {
+		t.Fatalf("expected valid nested module dependency %s in %#v", depUUID, names)
+	}
+	if slices.Contains(names, depLo) {
+		t.Fatalf("expected oversized parent module attribution to stay suppressed, got %#v", names)
+	}
+	requireOversizedMetadataSkipWarning(t, reportData)
+	requireNoAbsentSourceWarning(t, reportData)
 }
 
 func TestAnalyseSkipsAttributionWhenWorkspaceGoModIsOversized(t *testing.T) {
@@ -1625,6 +1653,34 @@ func TestAnalyseSkipsAttributionWhenWorkspaceGoModIsOversized(t *testing.T) {
 		t.Fatalf("expected oversized workspace go.mod to suppress workspace source attribution, got %#v", names)
 	}
 	requireOversizedModuleWarning(t, reportData)
+	requireOversizedMetadataSkipWarning(t, reportData)
+	requireNoAbsentSourceWarning(t, reportData)
+}
+
+func TestAnalysePreservesNestedModuleBelowOversizedWorkspaceGoMod(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc\n")
+	workspaceDir := filepath.Join(repo, "svc")
+	writeOversizedModuleGoMod(t, workspaceDir, "example.com/workspace")
+	writeFile(t, filepath.Join(workspaceDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+	nestedDir := filepath.Join(workspaceDir, "tools", "nested")
+	writeFile(t, filepath.Join(nestedDir, fileGoMod), goModDemoWithUUID)
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), mainUUIDNoopProgram)
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+
+	names := dependencyNames(reportData.Dependencies)
+	if !slices.Contains(names, depUUID) {
+		t.Fatalf("expected valid nested module dependency %s in %#v", depUUID, names)
+	}
+	if slices.Contains(names, depLo) {
+		t.Fatalf("expected oversized workspace module attribution to stay suppressed, got %#v", names)
+	}
+	requireOversizedMetadataSkipWarning(t, reportData)
+	requireNoAbsentSourceWarning(t, reportData)
 }
 
 func analyseOversizedRootFixture(t *testing.T, repo string, mainLines ...string) report.Report {
@@ -1646,6 +1702,20 @@ func requireOversizedModuleWarning(t *testing.T, reportData report.Report) {
 	t.Helper()
 	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "module(s) because go.mod exceeds") {
 		t.Fatalf("expected transparent oversized module warning, got %#v", reportData.Warnings)
+	}
+}
+
+func requireOversizedMetadataSkipWarning(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "because module metadata exceeded") {
+		t.Fatalf("expected transparent oversized metadata source-skip warning, got %#v", reportData.Warnings)
+	}
+}
+
+func requireNoAbsentSourceWarning(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "no Go source files found") {
+		t.Fatalf("expected skipped metadata not to claim absent Go sources, got %#v", reportData.Warnings)
 	}
 }
 
