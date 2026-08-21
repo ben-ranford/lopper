@@ -2,6 +2,7 @@ package php
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,7 +59,9 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
 
-	if err := loadComposerLockMappings(repoPath, &data); err != nil {
+	if err := loadComposerLockMappings(repoPath, &data); errors.Is(err, safeio.ErrFileTooLarge) {
+		warnings = append(warnings, fmt.Sprintf("skipped composer.lock because it exceeds %d bytes", maxComposerLockBytes))
+	} else if err != nil {
 		return data, nil, err
 	}
 	return data, warnings, nil

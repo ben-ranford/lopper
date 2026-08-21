@@ -214,6 +214,23 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	}
 }
 
+func TestLoadComposerDataWarnsAndContinuesWhenLockIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, helpersComposerLock), "{}", maxComposerLockBytes+1)
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("expected oversized optional composer.lock to warn and continue, got %v", err)
+	}
+	if _, ok := data.DeclaredDependencies[helpersVendorLibDependency]; !ok {
+		t.Fatalf("expected manifest dependency to be retained, got %#v", data.DeclaredDependencies)
+	}
+	if !containsWarning(warnings, "skipped composer.lock because it exceeds") {
+		t.Fatalf("expected oversized lock warning, got %#v", warnings)
+	}
+}
+
 func TestNamespaceAndUseHelpers(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Monolog": helpersMonologDependency},
