@@ -1502,6 +1502,16 @@ func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 	}
 }
 
+func TestRootGoModSizeLimitSkipRequiresPureSizeError(t *testing.T) {
+	if !isPureGoModSizeLimit(safeio.ErrFileTooLarge) {
+		t.Fatalf("expected pure size-limit error to be skippable")
+	}
+	closeErr := errors.New("close root: input/output error")
+	if isPureGoModSizeLimit(errors.Join(safeio.ErrFileTooLarge, closeErr)) {
+		t.Fatalf("expected joined size-limit and close error not to be skippable")
+	}
+}
+
 func TestDetectWithConfidenceCanceledContext(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemo)
