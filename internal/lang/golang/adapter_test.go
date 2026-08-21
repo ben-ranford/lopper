@@ -1519,10 +1519,7 @@ func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 
 func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
-	writeOversizedValidRootGoMod(t, repo)
-	writeRepoMainLines(
-		t,
-		repo,
+	reportData := analyseOversizedRootFixture(t, repo,
 		packageMainLine,
 		"",
 		"import (",
@@ -1533,20 +1530,12 @@ func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T)
 		"func main() {}",
 		"",
 	)
-	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
-
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     5,
-	})
 
 	if len(reportData.Dependencies) != 0 {
 		t.Fatalf("expected oversized root go.mod to suppress dependency attribution, got %#v", dependencyNames(reportData.Dependencies))
 	}
+	requireOversizedRootWarning(t, reportData)
 	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "root go.mod exceeds") {
-		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
-	}
 	if strings.Contains(warnings, "no Go source files found") {
 		t.Fatalf("expected skipped scan not to claim absent Go sources, got %#v", reportData.Warnings)
 	}
@@ -1557,13 +1546,10 @@ func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T)
 
 func TestAnalysePreservesWorkspaceAttributionWhenRootGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
-	writeOversizedValidRootGoMod(t, repo)
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
 	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
 	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
-	writeRepoMainLines(
-		t,
-		repo,
+	reportData := analyseOversizedRootFixture(t, repo,
 		packageMainLine,
 		"",
 		"import _ \"example.com/root/pkg\"",
@@ -1571,12 +1557,6 @@ func TestAnalysePreservesWorkspaceAttributionWhenRootGoModIsOversized(t *testing
 		"func main() {}",
 		"",
 	)
-	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
-
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     5,
-	})
 
 	names := dependencyNames(reportData.Dependencies)
 	if !slices.Contains(names, depUUID) {
@@ -1585,19 +1565,13 @@ func TestAnalysePreservesWorkspaceAttributionWhenRootGoModIsOversized(t *testing
 	if slices.Contains(names, "example.com/root/pkg") || slices.Contains(names, "example.com/root") {
 		t.Fatalf("expected oversized root module imports to stay unattributed, got %#v", names)
 	}
-	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "root go.mod exceeds") {
-		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
-	}
+	requireOversizedRootWarning(t, reportData)
 }
 
 func TestAnalyseDoesNotTrustRootWorkspaceEntryWhenRootGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
-	writeOversizedValidRootGoMod(t, repo)
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./\n")
-	writeRepoMainLines(
-		t,
-		repo,
+	reportData := analyseOversizedRootFixture(t, repo,
 		packageMainLine,
 		"",
 		"import _ \"example.com/root/pkg\"",
@@ -1605,22 +1579,29 @@ func TestAnalyseDoesNotTrustRootWorkspaceEntryWhenRootGoModIsOversized(t *testin
 		"func main() {}",
 		"",
 	)
-	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
-
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     5,
-	})
 
 	if len(reportData.Dependencies) != 0 {
 		t.Fatalf("expected oversized root go.mod to suppress root workspace attribution, got %#v", dependencyNames(reportData.Dependencies))
 	}
+	requireOversizedRootWarning(t, reportData)
 	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "root go.mod exceeds") {
-		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
-	}
 	if strings.Contains(warnings, "example.com/root/pkg") || strings.Contains(warnings, "declare-go-module-requirement") {
 		t.Fatalf("expected no misleading root workspace undeclared warning, got %#v", reportData.Warnings)
+	}
+}
+
+func analyseOversizedRootFixture(t *testing.T, repo string, mainLines ...string) report.Report {
+	t.Helper()
+	writeOversizedValidRootGoMod(t, repo)
+	writeRepoMainLines(t, repo, mainLines...)
+	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
+	return analyseReport(t, language.Request{RepoPath: repo, TopN: 5})
+}
+
+func requireOversizedRootWarning(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "root go.mod exceeds") {
+		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
 	}
 }
 

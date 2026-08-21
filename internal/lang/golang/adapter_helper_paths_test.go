@@ -208,40 +208,41 @@ func assertParseGoModCommentedInlineRequireBlock(t *testing.T) {
 
 func assertParseGoModInlineRequireAtLineLimitWithTrailingNewline(t *testing.T) {
 	t.Helper()
-	lines := make([]string, goModFallbackLineLimitForRegressionTest)
-	lines[0] = "module example.com/root"
-	for i := 1; i < goModFallbackLineLimitForRegressionTest-1; i++ {
-		lines[i] = "// filler"
-	}
-	lines[goModFallbackLineLimitForRegressionTest-1] = "require ( github.com/acme/dep v1.2.3 )"
-
-	assertParsedGoMod(t, strings.Join(lines, "\n")+"\n", parsedGoModExpectation{
-		modulePath:         "example.com/root",
-		dependencies:       []string{"github.com/acme/dep"},
-		replacements:       map[string]string{},
-		moduleMessage:      "expected max-line trailing-newline go.mod module path",
-		dependencyMessage:  "expected max-line trailing-newline inline dependency",
-		replacementMessage: "expected no replacements from max-line trailing-newline go.mod",
-	})
+	assertParsedGoMod(t, inlineRequireGoModAtLineLimit()+"\n", successfulInlineRequireExpectation(
+		"expected max-line trailing-newline go.mod module path",
+		"expected max-line trailing-newline inline dependency",
+		"expected no replacements from max-line trailing-newline go.mod",
+	))
 }
 
 func assertParseGoModInlineRequireAtLineLimitWithoutTrailingNewline(t *testing.T) {
 	t.Helper()
+	assertParsedGoMod(t, inlineRequireGoModAtLineLimit(), successfulInlineRequireExpectation(
+		"expected max-line go.mod without trailing newline module path",
+		"expected max-line go.mod without trailing newline dependency",
+		"expected no replacements from max-line go.mod without trailing newline",
+	))
+}
+
+func inlineRequireGoModAtLineLimit() string {
 	lines := make([]string, goModFallbackLineLimitForRegressionTest)
 	lines[0] = "module example.com/root"
 	for i := 1; i < goModFallbackLineLimitForRegressionTest-1; i++ {
 		lines[i] = "// filler"
 	}
 	lines[goModFallbackLineLimitForRegressionTest-1] = "require ( github.com/acme/dep v1.2.3 )"
+	return strings.Join(lines, "\n")
+}
 
-	assertParsedGoMod(t, strings.Join(lines, "\n"), parsedGoModExpectation{
+func successfulInlineRequireExpectation(moduleMessage, dependencyMessage, replacementMessage string) parsedGoModExpectation {
+	return parsedGoModExpectation{
 		modulePath:         "example.com/root",
 		dependencies:       []string{"github.com/acme/dep"},
 		replacements:       map[string]string{},
-		moduleMessage:      "expected max-line go.mod without trailing newline module path",
-		dependencyMessage:  "expected max-line go.mod without trailing newline dependency",
-		replacementMessage: "expected no replacements from max-line go.mod without trailing newline",
-	})
+		moduleMessage:      moduleMessage,
+		dependencyMessage:  dependencyMessage,
+		replacementMessage: replacementMessage,
+	}
 }
 
 func assertParseGoModSkipsFallbackBeyondLineLimit(t *testing.T) {
