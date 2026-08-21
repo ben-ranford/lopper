@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -114,6 +115,75 @@ func TestPythonManifestEvidenceDoesNotOverrideLockEvidence(t *testing.T) {
 	})
 }
 
+func TestPythonIdentityUsesOptionalDependencyExactPinsWithoutAddingInventory(t *testing.T) {
+	repoPath := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repoPath, pythonProjectFileName), `[project]
+dependencies = ["runtime-only>=1.0"]
+
+[project.optional-dependencies]
+docs = [
+  "Requests_Security[security] == 2.32.3 ; python_version >= '3.10'",
+  "Duplicate_Exact == 5.0.0",
+  "Conflict_Name == 1.0.0",
+  "Range_Only >= 1.0",
+  "Wildcard == 2.*",
+  "Direct @ https://example.test/direct.whl",
+  "Optional_Only == 9.9.9",
+]
+test = [
+  "duplicate-exact == 5.0.0",
+  "conflict-name == 1.1.0 ; extra == 'test'",
+  "parenthesized (== 1.7.0)",
+]
+`)
+	reportData := report.Report{Dependencies: []report.DependencyReport{
+		{Language: "python", Name: "requests-security"},
+		{Language: "python", Name: "duplicate-exact"},
+		{Language: "python", Name: "conflict-name"},
+		{Language: "python", Name: "parenthesized"},
+		{Language: "python", Name: "range-only"},
+		{Language: "python", Name: "wildcard"},
+		{Language: "python", Name: "direct"},
+	}}
+
+	annotateDependencyIdentities(repoPath, &reportData)
+
+	if len(reportData.Dependencies) != 7 {
+		t.Fatalf("optional dependency identity enrichment must not add inventory entries, got %#v", reportData.Dependencies)
+	}
+	for _, dependency := range reportData.Dependencies {
+		if dependency.Name == "optional-only" {
+			t.Fatalf("optional-only dependency was added to inventory: %#v", reportData.Dependencies)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		version string
+	}{
+		{name: "requests-security", version: "2.32.3"},
+		{name: "duplicate-exact", version: "5.0.0"},
+		{name: "parenthesized", version: "1.7.0"},
+	} {
+		assertIdentity(t, findIdentityDependency(t, reportData, "python", test.name), report.DependencyIdentity{
+			Ecosystem: "pypi", Name: test.name, Version: test.version, VersionStatus: identityStatusDeclared,
+			PURL: "pkg:pypi/" + test.name + "@" + test.version, PURLStatus: identityStatusResolved,
+			Source: pythonProjectFileName, Confidence: "high",
+		})
+	}
+
+	conflict := findIdentityDependency(t, reportData, "python", "conflict-name").Identity
+	if conflict.VersionStatus != identityStatusConflicting || conflict.PURLStatus != identityPURLUnavailable || conflict.Version != "" {
+		t.Fatalf("expected conflicting optional dependency identity, got %#v", conflict)
+	}
+	wantConflicts := []string{"1.0.0 from pyproject.toml", "1.1.0 from pyproject.toml"}
+	if strings.Join(conflict.Conflicts, "\n") != strings.Join(wantConflicts, "\n") {
+		t.Fatalf("unexpected optional dependency conflicts: got %#v want %#v", conflict.Conflicts, wantConflicts)
+	}
+	for _, name := range []string{"range-only", "wildcard", "direct"} {
+		assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", name), "pypi", name)
+	}
+}
+
 func TestPythonManifestDiscoveryMatchesAdapterDirectories(t *testing.T) {
 	repoPath := t.TempDir()
 	for _, dir := range []string{".git", ".idea", "node_modules", "dist", "build", "vendor", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache"} {
@@ -148,6 +218,23 @@ func TestPythonManifestDiscoveryIsGatedByReportLanguage(t *testing.T) {
 	if len(reportData.Warnings) != 0 {
 		t.Fatalf("expected a non-Python report to ignore Python manifests, got %#v", reportData.Warnings)
 	}
+}
+
+func TestPythonManifestIdentityReadIsBounded(t *testing.T) {
+	repoPath := t.TempDir()
+	path := filepath.Join(repoPath, pythonProjectFileName)
+	body := "[project]\ndependencies = [\"requests==2.32.3\"]\n" +
+		strings.Repeat("# filler\n", int(pythonIdentityManifestReadLimit)/len("# filler\n")+1)
+	testutil.MustWriteFile(t, path, body)
+	warnings := newIdentityWarningCollector(repoPath)
+
+	if document, ok := readPythonManifestDocument(repoPath, path, warnings); ok || document != nil {
+		t.Fatalf("expected oversized pyproject manifest read to be rejected, got ok=%t document=%#v", ok, document)
+	}
+
+	assertWarningsExact(t, repoPath, warnings.list(), []string{
+		"identity manifest read failed for pyproject.toml: file exceeds size limit",
+	})
 }
 
 func TestPythonManifestEvidenceWarnsOnMalformedTOML(t *testing.T) {

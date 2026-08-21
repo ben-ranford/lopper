@@ -51,6 +51,9 @@ dev-dependencies = ["mypy>=1.0"]
 			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
 		}
 	}
+	if _, ok := dependencies["mkdocs"]; ok {
+		t.Fatalf("optional project dependency must not be added to inventory, got %#v", dependencies)
+	}
 	joinedWarnings := strings.Join(warnings, "\n")
 	if !strings.Contains(joinedWarnings, "project.optional-dependencies") {
 		t.Fatalf("expected optional dependency warning, got %#v", warnings)
