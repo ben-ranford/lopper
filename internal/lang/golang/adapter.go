@@ -225,10 +225,14 @@ func mostSpecificModuleBoundary(repoPath, path string, moduleInfo moduleInfo) (s
 		consider(repoPath)
 	}
 	for dir := range moduleInfo.WorkspaceModuleExclusions {
-		consider(dir)
+		if _, trusted := moduleInfo.TrustedModuleDirs[filepath.Clean(dir)]; trusted {
+			consider(dir)
+		}
 	}
 	for dir := range moduleInfo.NestedModuleDirs {
-		consider(dir)
+		if _, trusted := moduleInfo.TrustedModuleDirs[filepath.Clean(dir)]; trusted {
+			consider(dir)
+		}
 	}
 	for dir := range moduleInfo.OversizedModuleDirs {
 		consider(dir)

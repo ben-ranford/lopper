@@ -92,23 +92,25 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	modules, dependencies, replacements, _, err := discoverNestedModulesFromDirs(repoPath, nestedDirs)
+	modules, dependencies, replacements, _, _, err := discoverNestedModulesFromDirs(repoPath, nestedDirs)
 	return modules, dependencies, replacements, err
 }
 
-func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, map[string]struct{}, error) {
+func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, map[string]struct{}, map[string]struct{}, error) {
 	modules := make([]string, 0, len(nestedDirs))
 	dependencies := make([]string, 0)
 	replacements := make(map[string]string)
 	oversizedDirs := make(map[string]struct{})
+	trustedDirs := make(map[string]struct{})
 	for dir := range nestedDirs {
 		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
 		if isPureGoModSizeLimit(err) && !isOversizedRootDir(repoPath, dir) {
 			oversizedDirs[dir] = struct{}{}
 			if modulePath, pathErr := readOversizedGoModModulePath(repoPath, filepath.Join(dir, goModName)); pathErr != nil {
-				return nil, nil, nil, nil, pathErr
+				return nil, nil, nil, nil, nil, pathErr
 			} else if modulePath != "" {
 				modules = append(modules, modulePath)
+				trustedDirs[dir] = struct{}{}
 			}
 			continue
 		}
@@ -117,6 +119,7 @@ func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct
 		}
 		if modulePath != "" {
 			modules = append(modules, modulePath)
+			trustedDirs[dir] = struct{}{}
 		}
 		dependencies = append(dependencies, deps...)
 		for replacementImport, dependency := range moduleReplacements {
@@ -126,7 +129,7 @@ func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct
 		}
 	}
 
-	return uniqueStrings(modules), uniqueStrings(dependencies), replacements, oversizedDirs, nil
+	return uniqueStrings(modules), uniqueStrings(dependencies), replacements, oversizedDirs, trustedDirs, nil
 }
 
 func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {
@@ -162,7 +165,7 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 			file, err = modfile.Parse(goModName, normalized, nil)
 		}
 	}
-	if err != nil && file == nil {
+	if err != nil {
 		return "", []string{}, map[string]string{}
 	}
 	if file == nil {

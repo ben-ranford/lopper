@@ -548,13 +548,14 @@ func loadNestedModules(repoPath string, info *moduleInfo) error {
 	info.NestedModuleDirs = normalizedDirSet(scanNestedDirs)
 
 	metadataNestedDirs := unionDirSet(info.NestedModuleDirs, info.WorkspaceModuleExclusions)
-	nestedModules, nestedDeps, nestedReplacements, oversizedModuleDirs, err := discoverNestedModulesFromDirs(repoPath, metadataNestedDirs)
+	nestedModules, nestedDeps, nestedReplacements, oversizedModuleDirs, trustedModuleDirs, err := discoverNestedModulesFromDirs(repoPath, metadataNestedDirs)
 	if err != nil {
 		return err
 	}
 	info.LocalModulePaths = append(info.LocalModulePaths, nestedModules...)
 	info.DeclaredDependencies = append(info.DeclaredDependencies, nestedDeps...)
 	info.OversizedModuleDirs = normalizedDirSet(oversizedModuleDirs)
+	info.TrustedModuleDirs = normalizedDirSet(trustedModuleDirs)
 	for replacementImport, dependency := range nestedReplacements {
 		if _, ok := info.ReplacementImports[replacementImport]; !ok {
 			info.ReplacementImports[replacementImport] = dependency

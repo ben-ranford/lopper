@@ -29,6 +29,7 @@ type moduleInfo struct {
 	DeclaredDependencies       []string
 	NestedModuleDirs           map[string]struct{}
 	WorkspaceModuleExclusions  map[string]struct{}
+	TrustedModuleDirs          map[string]struct{}
 	OversizedModuleDirs        map[string]struct{}
 	ReplacementImports         map[string]string
 	VendoredImportDependencies map[string]string
