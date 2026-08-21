@@ -161,6 +161,13 @@ func (c *analysisCache) openWriteRoot() (*safeio.WriteRoot, error) {
 	return root, nil
 }
 
+func (c *analysisCache) validateWriteRoot(writeRoot *safeio.WriteRoot) error {
+	if err := validateAnalysisCacheRoot(c.options.Path, c.rootIdentity); err != nil {
+		return err
+	}
+	return writeRoot.VerifyIdentity(c.rootIdentity)
+}
+
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
 	if info, err := os.Lstat(cachePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return true

@@ -12,6 +12,8 @@ import (
 
 const cacheObjectCorruptReason = "object-corrupt"
 
+var analysisCacheStoreAfterObjectWriteFn = func() error { return nil }
+
 type cachePointer struct {
 	InputDigest  string `json:"inputDigest"`
 	ObjectDigest string `json:"objectDigest"`
@@ -138,7 +140,16 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	defer func() {
 		returnErr = errors.Join(returnErr, writeRoot.Close())
 	}()
+	if err := c.validateWriteRoot(writeRoot); err != nil {
+		return err
+	}
 	if err := writeRoot.WriteFileCreatingParentsAtomicallyIfAbsent(filepath.Join("objects", objectDigest+".json"), serializedPayload, 0o640, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if err := analysisCacheStoreAfterObjectWriteFn(); err != nil {
+		return err
+	}
+	if err := c.validateWriteRoot(writeRoot); err != nil {
 		return err
 	}
 
