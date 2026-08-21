@@ -2157,6 +2157,32 @@ func TestAnalyseSkipsAttributionWhenWorkspaceGoModIsOversized(t *testing.T) {
 	requireNoAbsentSourceWarning(t, reportData)
 }
 
+func TestAnalyseTreatsOversizedWorkspaceModuleInSkippedDirAsLocal(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoGoMod(t, repo, goModDemo)
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./bin/tool\n")
+	writeOversizedModuleGoMod(t, filepath.Join(repo, "bin", "tool"), "example.com/tool")
+	writeRepoMainLines(t, repo,
+		packageMainLine,
+		"",
+		"import _ \"example.com/tool/pkg\"",
+		"",
+		"func main() {}",
+		"",
+	)
+
+	reportData := analyseTopGoDependencies(t, repo)
+
+	names := dependencyNames(reportData.Dependencies)
+	if slices.Contains(names, "example.com/tool") || slices.Contains(names, "example.com/tool/pkg") {
+		t.Fatalf("expected go.work module under skipped dir to stay local, got %#v", names)
+	}
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if strings.Contains(warnings, "example.com/tool/pkg") || strings.Contains(warnings, "declare-go-module-requirement") {
+		t.Fatalf("expected no misleading workspace-local import warning, got %#v", reportData.Warnings)
+	}
+}
+
 func TestAnalysePreservesNestedModuleBelowOversizedWorkspaceGoMod(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc\n")

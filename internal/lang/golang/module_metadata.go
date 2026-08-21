@@ -381,6 +381,9 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 			continue
 		}
 		modulePath, _, _, err := loadGoModFromDir(repoPath, resolved)
+		if isPureGoModSizeLimit(err) {
+			modulePath, err = readOversizedGoModModulePath(repoPath, filepath.Join(resolved, goModName))
+		}
 		if err != nil || modulePath == "" {
 			continue
 		}
