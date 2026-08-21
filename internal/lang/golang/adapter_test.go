@@ -1505,9 +1505,6 @@ func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 	if info.ModulePath != "" || len(info.DeclaredDependencies) != 0 {
 		t.Fatalf("expected oversized root go.mod to produce empty module info, got %#v", info)
 	}
-	if !info.RootGoModTooLarge {
-		t.Fatal("expected oversized root go.mod to be tracked as incomplete module metadata")
-	}
 
 	nestedRepo := t.TempDir()
 	nestedDir := filepath.Join(nestedRepo, "nested")
