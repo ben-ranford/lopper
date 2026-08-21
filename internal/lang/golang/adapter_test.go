@@ -1594,13 +1594,9 @@ func TestAnalyseSkipsAttributionWhenNestedGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
 	writeRootUUIDModule(t, repo)
 	nestedDir := filepath.Join(repo, "services", "api")
-	writeOversizedModuleGoMod(t, nestedDir, "example.com/service")
-	writeFile(t, filepath.Join(nestedDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+	writeOversizedModuleWithLoImport(t, nestedDir, "example.com/service")
 
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     10,
-	})
+	reportData := analyseTopGoDependencies(t, repo)
 
 	names := dependencyNames(reportData.Dependencies)
 	if slices.Contains(names, depLo) {
@@ -1615,39 +1611,20 @@ func TestAnalysePreservesDependencyOnlyFromNestedModuleBelowOversizedGoMod(t *te
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemo)
 	oversizedDir := filepath.Join(repo, "services", "api")
-	writeOversizedModuleGoMod(t, oversizedDir, "example.com/service")
-	writeFile(t, filepath.Join(oversizedDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
-	nestedDir := filepath.Join(oversizedDir, "tools", "nested")
-	writeFile(t, filepath.Join(nestedDir, fileGoMod), goModDemoWithUUID)
-	writeFile(t, filepath.Join(nestedDir, fileMainGo), mainUUIDNoopProgram)
+	writeOversizedModuleWithLoImport(t, oversizedDir, "example.com/service")
+	writeNestedUUIDModule(t, oversizedDir)
 
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     10,
-	})
-
-	names := dependencyNames(reportData.Dependencies)
-	if !slices.Contains(names, depUUID) {
-		t.Fatalf("expected dependency only declared by valid nested module %s in %#v", depUUID, names)
-	}
-	if slices.Contains(names, depLo) {
-		t.Fatalf("expected oversized parent module attribution to stay suppressed, got %#v", names)
-	}
-	requireOversizedMetadataSkipWarning(t, reportData)
-	requireNoAbsentSourceWarning(t, reportData)
+	reportData := analyseTopGoDependencies(t, repo)
+	requireNestedBelowOversizedModuleAttribution(t, reportData, "oversized parent module")
 }
 
 func TestAnalyseSkipsAttributionWhenWorkspaceGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
 	workspaceDir := filepath.Join(repo, "svc", "a")
-	writeOversizedModuleGoMod(t, workspaceDir, "example.com/workspace")
-	writeFile(t, filepath.Join(workspaceDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+	writeOversizedModuleWithLoImport(t, workspaceDir, "example.com/workspace")
 
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     10,
-	})
+	reportData := analyseTopGoDependencies(t, repo)
 
 	if names := dependencyNames(reportData.Dependencies); len(names) != 0 {
 		t.Fatalf("expected oversized workspace go.mod to suppress workspace source attribution, got %#v", names)
@@ -1661,23 +1638,21 @@ func TestAnalysePreservesNestedModuleBelowOversizedWorkspaceGoMod(t *testing.T) 
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc\n")
 	workspaceDir := filepath.Join(repo, "svc")
-	writeOversizedModuleGoMod(t, workspaceDir, "example.com/workspace")
-	writeFile(t, filepath.Join(workspaceDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
-	nestedDir := filepath.Join(workspaceDir, "tools", "nested")
-	writeFile(t, filepath.Join(nestedDir, fileGoMod), goModDemoWithUUID)
-	writeFile(t, filepath.Join(nestedDir, fileMainGo), mainUUIDNoopProgram)
+	writeOversizedModuleWithLoImport(t, workspaceDir, "example.com/workspace")
+	writeNestedUUIDModule(t, workspaceDir)
 
-	reportData := analyseReport(t, language.Request{
-		RepoPath: repo,
-		TopN:     10,
-	})
+	reportData := analyseTopGoDependencies(t, repo)
+	requireNestedBelowOversizedModuleAttribution(t, reportData, "oversized workspace module")
+}
 
+func requireNestedBelowOversizedModuleAttribution(t *testing.T, reportData report.Report, skippedContext string) {
+	t.Helper()
 	names := dependencyNames(reportData.Dependencies)
 	if !slices.Contains(names, depUUID) {
 		t.Fatalf("expected valid nested module dependency %s in %#v", depUUID, names)
 	}
 	if slices.Contains(names, depLo) {
-		t.Fatalf("expected oversized workspace module attribution to stay suppressed, got %#v", names)
+		t.Fatalf("expected %s attribution to stay suppressed, got %#v", skippedContext, names)
 	}
 	requireOversizedMetadataSkipWarning(t, reportData)
 	requireNoAbsentSourceWarning(t, reportData)
@@ -1689,6 +1664,11 @@ func analyseOversizedRootFixture(t *testing.T, repo string, mainLines ...string)
 	writeRepoMainLines(t, repo, mainLines...)
 	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
 	return analyseReport(t, language.Request{RepoPath: repo, TopN: 5})
+}
+
+func analyseTopGoDependencies(t *testing.T, repo string) report.Report {
+	t.Helper()
+	return analyseReport(t, language.Request{RepoPath: repo, TopN: 10})
 }
 
 func requireOversizedRootWarning(t *testing.T, reportData report.Report) {
@@ -1727,6 +1707,19 @@ func writeOversizedModuleGoMod(t *testing.T, dir, modulePath string) {
 		t.Fatalf("oversized module go.mod prefix exceeds test limit")
 	}
 	writeFile(t, filepath.Join(dir, fileGoMod), prefix+strings.Repeat("x", paddingLen))
+}
+
+func writeOversizedModuleWithLoImport(t *testing.T, dir, modulePath string) {
+	t.Helper()
+	writeOversizedModuleGoMod(t, dir, modulePath)
+	writeFile(t, filepath.Join(dir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+}
+
+func writeNestedUUIDModule(t *testing.T, parentDir string) {
+	t.Helper()
+	nestedDir := filepath.Join(parentDir, "tools", "nested")
+	writeFile(t, filepath.Join(nestedDir, fileGoMod), goModDemoWithUUID)
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), mainUUIDNoopProgram)
 }
 
 func TestDetectWithConfidenceCanceledContext(t *testing.T) {
