@@ -157,58 +157,72 @@ func normalizeInlineGoModRequireBlocks(content []byte) []byte {
 	if len(content) > maxGoModBytes {
 		return content
 	}
-
-	changed := false
-	lineCount := 0
-	for start := 0; start <= len(content); {
-		if lineCount >= maxGoModFallbackLines {
-			return content
-		}
-		end := start
-		for end < len(content) && content[end] != '\n' {
-			end++
-		}
-		lineCount++
-		rawLine := string(content[start:end])
-		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
-		if ok && normalizedLine != rawLine {
-			changed = true
-			break
-		}
-		if end == len(content) {
-			break
-		}
-		start = end + 1
-	}
-	if !changed {
+	if !goModFallbackNeedsNormalization(content) {
 		return content
 	}
 
+	normalized, ok := buildNormalizedInlineGoModRequireBlocks(content)
+	if !ok {
+		return content
+	}
+	return normalized
+}
+
+func goModFallbackNeedsNormalization(content []byte) bool {
+	for cursor, lineCount := 0, 0; cursor <= len(content); lineCount++ {
+		if lineCount >= maxGoModFallbackLines {
+			return false
+		}
+		line, nextCursor := nextGoModFallbackLine(content, cursor)
+		rawLine := string(line)
+		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
+		if ok && normalizedLine != rawLine {
+			return true
+		}
+		if nextCursor < 0 {
+			break
+		}
+		cursor = nextCursor
+	}
+	return false
+}
+
+func buildNormalizedInlineGoModRequireBlocks(content []byte) ([]byte, bool) {
 	var normalized strings.Builder
 	normalized.Grow(len(content))
-	lineCount = 0
-	for start := 0; start <= len(content); {
+	for cursor, lineCount := 0, 0; cursor <= len(content); lineCount++ {
 		if lineCount >= maxGoModFallbackLines {
-			return content
+			return nil, false
 		}
-		end := start
-		for end < len(content) && content[end] != '\n' {
-			end++
-		}
-		lineCount++
-		rawLine := string(content[start:end])
-		if normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine); ok {
-			normalized.WriteString(normalizedLine)
-		} else {
-			normalized.Write(content[start:end])
-		}
-		if end == len(content) {
+		line, nextCursor := nextGoModFallbackLine(content, cursor)
+		writeNormalizedGoModFallbackLine(&normalized, line)
+		if nextCursor < 0 {
 			break
 		}
 		normalized.WriteByte('\n')
-		start = end + 1
+		cursor = nextCursor
 	}
-	return []byte(normalized.String())
+	return []byte(normalized.String()), true
+}
+
+func nextGoModFallbackLine(content []byte, cursor int) ([]byte, int) {
+	end := cursor
+	for end < len(content) && content[end] != '\n' {
+		end++
+	}
+	if end == len(content) {
+		return content[cursor:end], -1
+	}
+	return content[cursor:end], end + 1
+}
+
+func writeNormalizedGoModFallbackLine(builder *strings.Builder, line []byte) {
+	rawLine := string(line)
+	if normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine); ok {
+		builder.WriteString(normalizedLine)
+		return
+	}
+	builder.Write(line)
 }
 
 func normalizeInlineGoModRequireLine(rawLine string) (string, bool) {
