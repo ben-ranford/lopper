@@ -54,6 +54,38 @@ func TestFeatureFlagCommentResolverUsesTrustedPullIdentity(t *testing.T) {
 	}
 }
 
+func TestFeatureFlagCommentResolverSkipsMergedPullRequests(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	pull := featureFlagPull(7, "closed")
+	pull["merged"] = true
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+		"pulls":           []map[string]any{pull},
+		"associatedPulls": []map[string]any{},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+		"jobs": featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected already-merged pull request: %s", result.Error)
+	}
+	if got := result.Outputs["skip-comments"]; got != "true" {
+		t.Fatalf("skip-comments = %q, want true", got)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if result.Calls["artifacts"] != 0 {
+		t.Fatal("merged pull request no-op must not inspect comment artifacts")
+	}
+	if result.Calls["jobs"] != 0 {
+		t.Fatal("merged pull request no-op must not inspect enforcement jobs")
+	}
+}
+
 func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
 	t.Parallel()
 
@@ -606,6 +638,7 @@ const context = {
 };
 const core = {
   exportVariable: (name, value) => { exported[name] = String(value); },
+  info: () => {},
   setOutput: (name, value) => { outputs[name] = String(value); },
 };
 (async () => {
@@ -782,9 +815,13 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		"candidateNumbers.length !== 1",
 		"github.rest.actions.listWorkflowRunArtifacts",
 		"const expectedArtifactName = `feature-flag-comment-inputs-${prNumber}`",
+		"matchesMergedRun(pull)",
+		"core.setOutput('skip-comments', 'true')",
 		"candidate.name === expectedArtifactName",
 		"github.rest.pulls.get",
 		"pull.state === 'open'",
+		"pull.state === 'closed'",
+		"pull.merged === true",
 		"pull.head.sha === run.head_sha",
 		"pull.head.ref === run.head_branch",
 		"pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository",
@@ -811,8 +848,10 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment download decompression", got: download.With["skip-decompress"], want: "true"},
 	})
+	assertFeatureFlagPublicationSkipGuard(t, download)
 
 	extractDownload := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Extract bounded comment inputs")
+	assertFeatureFlagPublicationSkipGuard(t, extractDownload)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag publication extraction shell", got: extractDownload.Shell, want: hardenedShell},
 	})
@@ -835,6 +874,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	validateDownload := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Validate bounded comment inputs")
+	assertFeatureFlagPublicationSkipGuard(t, validateDownload)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag publication validation shell", got: validateDownload.Shell, want: hardenedShell},
 	})
@@ -850,6 +890,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	renderBodies := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Render inert comment bodies")
+	assertFeatureFlagPublicationSkipGuard(t, renderBodies)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag trusted rendering shell", got: renderBodies.Shell, want: hardenedShell},
 	})
@@ -873,6 +914,8 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 
 	featureComment := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Sync feature flag enforcement comment on PR")
 	releaseComment := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Sync release feature guidance comment on PR")
+	assertFeatureFlagPublicationSkipGuard(t, featureComment)
+	assertFeatureFlagPublicationSkipGuard(t, releaseComment)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment action", got: featureComment.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
 		{label: "release feature comment action", got: releaseComment.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
@@ -916,5 +959,13 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		if strings.Contains(publicationText, forbidden) {
 			t.Fatalf("trusted feature flag publisher contains unsafe fragment %q", forbidden)
 		}
+	}
+}
+
+func assertFeatureFlagPublicationSkipGuard(t *testing.T, step workflowStepConfig) {
+	t.Helper()
+
+	if step.If != "${{ steps.resolve_pr.outputs.skip-comments != 'true' }}" {
+		t.Fatalf("%s skip guard = %q, want merged-PR no-op guard", step.Name, step.If)
 	}
 }

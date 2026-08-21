@@ -29,12 +29,17 @@ jobs:
             if (!expectedHeadRepository) {
               throw new Error('workflow_run did not provide a head repository');
             }
-            const matchesRun = (pull) =>
-              pull.state === 'open' &&
+            const matchesRunSource = (pull) =>
               pull.base.repo.full_name.toLowerCase() === expectedRepository &&
               pull.head.sha === run.head_sha &&
               pull.head.ref === run.head_branch &&
               pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository;
+            const matchesPublishableRun = (pull) =>
+              pull.state === 'open' && matchesRunSource(pull);
+            const matchesMergedRun = (pull) =>
+              pull.state === 'closed' &&
+              pull.merged === true &&
+              matchesRunSource(pull);
 
             let candidateNumbers;
             if ((run.pull_requests ?? []).length > 0) {
@@ -54,7 +59,7 @@ jobs:
               candidateNumbers = [
                 ...new Set(
                   associatedPulls
-                    .filter(matchesRun)
+                    .filter((candidate) => matchesPublishableRun(candidate) || matchesMergedRun(candidate))
                     .map((candidate) => candidate.number),
                 ),
               ];
@@ -75,7 +80,13 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber,
             });
-            if (!matchesRun(pull)) {
+            if (matchesMergedRun(pull)) {
+              core.info(`Pull request #${prNumber} was already merged; skipping feature flag comments.`);
+              core.setOutput('skip-comments', 'true');
+              core.exportVariable('PR_NUMBER', String(prNumber));
+              return;
+            }
+            if (!matchesPublishableRun(pull)) {
               throw new Error('resolved pull request does not match the triggering workflow');
             }
 
@@ -139,6 +150,7 @@ jobs:
 
             core.setOutput('artifact-id', String(artifact.id));
             core.setOutput('artifact-size', String(artifact.size_in_bytes));
+            core.setOutput('skip-comments', 'false');
             core.exportVariable('PR_NUMBER', String(prNumber));
             core.exportVariable(
               'ENFORCEMENT_FAILED',
@@ -154,6 +166,7 @@ jobs:
             );
 
       - name: Download bounded comment inputs
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           artifact-ids: ${{ steps.resolve_pr.outputs.artifact-id }}
@@ -164,6 +177,7 @@ jobs:
           skip-decompress: "true"
 
       - name: Extract bounded comment inputs
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         env:
           ARCHIVE_DIR: ${{ runner.temp }}/feature-flag-comment-archive
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
@@ -243,6 +257,7 @@ jobs:
           PY
 
       - name: Validate bounded comment inputs
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         env:
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
           PATH: /usr/bin:/bin
@@ -311,6 +326,7 @@ jobs:
           : "${payload_version:?missing comment payload version}"
 
       - name: Render inert comment bodies
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         env:
           COMMENT_DIR: ${{ runner.temp }}/feature-flag-comment-inputs
           RENDERED_DIR: ${{ runner.temp }}/feature-flag-comment-bodies
@@ -400,6 +416,7 @@ jobs:
           PY
 
       - name: Sync feature flag enforcement comment on PR
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         continue-on-error: true
         env:
           FEATURE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/feature-flag-enforcement.md
@@ -479,6 +496,7 @@ jobs:
             }
 
       - name: Sync release feature guidance comment on PR
+        if: ${{ steps.resolve_pr.outputs.skip-comments != 'true' }}
         continue-on-error: true
         env:
           RELEASE_COMMENT_BODY_PATH: ${{ runner.temp }}/feature-flag-comment-bodies/release-feature-flag-comment.md
