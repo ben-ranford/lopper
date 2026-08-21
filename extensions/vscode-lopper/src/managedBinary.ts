@@ -115,7 +115,7 @@ export class ManagedBinaryInstaller {
   }
 
   async findInstalledBinary(releaseTag?: string): Promise<string | undefined> {
-    const explicitTag = normalizeReleaseTag(releaseTag);
+    const explicitTag = normalizeConfiguredReleaseTag(releaseTag);
     const metadata = await this.readMetadata();
     const binaryPath = explicitTag ? this.binaryPathFor(explicitTag) : metadata?.binaryPath;
 
@@ -141,13 +141,13 @@ export class ManagedBinaryInstaller {
 
   async ensureInstalled(releaseTag?: string, signal?: AbortSignal): Promise<ManagedBinaryInstallResult> {
     throwIfAborted(signal);
-    const cachedBinary = await this.findInstalledBinary(releaseTag);
+    const requestedTag = normalizeConfiguredReleaseTag(releaseTag);
+    const cachedBinary = await this.findInstalledBinary(requestedTag);
     if (cachedBinary) {
-      const tag = normalizeReleaseTag(releaseTag) ?? (await this.readMetadata())?.tag ?? "unknown";
+      const tag = requestedTag ?? (await this.readMetadata())?.tag ?? "unknown";
       return { binaryPath: cachedBinary, tag, downloaded: false };
     }
 
-    const requestedTag = normalizeReleaseTag(releaseTag);
     const release = await this.deps.fetchRelease(requestedTag, signal);
     throwIfAborted(signal);
     const asset = selectReleaseAsset(release, this.deps.host);
@@ -325,7 +325,7 @@ export class LopperBinaryLifecycleManager implements BinaryLifecycleManager {
       );
     }
 
-    const releaseTag = normalizeReleaseTag(request.managedBinaryTag);
+    const releaseTag = normalizeConfiguredReleaseTag(request.managedBinaryTag);
     const cachedBinary = await this.installer.findInstalledBinary(releaseTag);
     if (cachedBinary) {
       return cachedBinary;
@@ -491,12 +491,23 @@ function normalizeReleaseTag(releaseTag?: string): string | undefined {
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeConfiguredReleaseTag(releaseTag?: string): string | undefined {
+  const normalizedTag = normalizeReleaseTag(releaseTag);
+  if (!normalizedTag || normalizedTag.startsWith("v")) {
+    return normalizedTag;
+  }
+  if (/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(normalizedTag)) {
+    return `v${normalizedTag}`;
+  }
+  return normalizedTag;
+}
+
 export async function fetchRelease(
   releaseTag?: string,
   signal?: AbortSignal,
   timeoutMs = defaultManagedBinaryHttpTimeoutMs,
 ): Promise<GitHubRelease> {
-  const normalizedTag = normalizeReleaseTag(releaseTag);
+  const normalizedTag = normalizeConfiguredReleaseTag(releaseTag);
   const endpoint = normalizedTag
     ? `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/tags/${encodeURIComponent(normalizedTag)}`
     : `https://api.github.com/repos/${releaseOwner}/${releaseRepo}/releases/latest`;
