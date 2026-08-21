@@ -128,11 +128,189 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsInvalidTargets(t *t
 	})
 
 	t.Run("invalid directory path", func(t *testing.T) {
-		err := verifyCanonicalExistingDirectory(string([]byte{'b', 'a', 'd', 0}))
+		_, _, err := openSearchOnlyCanonicalDirectory(string([]byte{'b', 'a', 'd', 0}))
 		if err == nil {
 			t.Fatal("expected invalid directory path to fail")
 		}
 	})
+}
+
+func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsRacedIntermediateSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	racedParent := filepath.Join(workspace, "race")
+	nestedParent := filepath.Join(racedParent, "nested")
+	if err := os.MkdirAll(nestedParent, 0o755); err != nil {
+		t.Fatalf("mkdir nested parent: %v", err)
+	}
+	outside := t.TempDir()
+
+	originalHook := afterOpenSearchAncestorFn
+	t.Cleanup(func() {
+		afterOpenSearchAncestorFn = originalHook
+	})
+	triggerPath := canonicalSearchDirectoryPath(workspace)
+	swapped := false
+	afterOpenSearchAncestorFn = func(path string) error {
+		if swapped || filepath.Clean(path) != filepath.Clean(triggerPath) {
+			return nil
+		}
+		swapped = true
+		if err := os.RemoveAll(racedParent); err != nil {
+			return err
+		}
+		return os.Symlink(outside, racedParent)
+	}
+
+	target := filepath.Join(nestedParent, writeTestFileName)
+	err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(target, []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "directory contains symlink") {
+		t.Fatalf("expected raced intermediate symlink rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "nested", writeTestFileName)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside target to remain absent, got err=%v", statErr)
+	}
+}
+
+func TestOpenSearchOnlyCanonicalDirectoryOpensVolumeRoot(t *testing.T) {
+	rootPath := filepath.VolumeName(filepath.Clean(t.TempDir())) + string(os.PathSeparator)
+	root, fd, err := openSearchOnlyCanonicalDirectory(rootPath)
+	if err != nil {
+		t.Fatalf("openSearchOnlyCanonicalDirectory returned error: %v", err)
+	}
+	if fd < 0 {
+		t.Fatalf("expected valid root descriptor, got %d", fd)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close root descriptor: %v", err)
+	}
+}
+
+func TestOpenSearchOnlyDirectoryPartsPropagatesHookError(t *testing.T) {
+	rootPath := filepath.VolumeName(filepath.Clean(t.TempDir())) + string(os.PathSeparator)
+	root, err := openSearchOnlyDirectory(rootPath)
+	if err != nil {
+		t.Fatalf("open root descriptor: %v", err)
+	}
+
+	originalHook := afterOpenSearchAncestorFn
+	t.Cleanup(func() {
+		afterOpenSearchAncestorFn = originalHook
+	})
+	afterOpenSearchAncestorFn = func(string) error {
+		return errors.New("ancestor hook failed")
+	}
+
+	opened, fd, err := openSearchOnlyDirectoryParts(root, rootPath, []string{"tmp"})
+	if err == nil || !strings.Contains(err.Error(), "ancestor hook failed") {
+		if opened != nil {
+			if closeErr := opened.Close(); closeErr != nil {
+				t.Fatalf("close unexpected opened descriptor: %v", closeErr)
+			}
+		}
+		t.Fatalf("expected hook error, got fd=%d err=%v", fd, err)
+	}
+}
+
+func TestOpenSearchOnlyChildDirectoryValidationBranches(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
+	if err != nil {
+		t.Fatalf("open parent descriptor: %v", err)
+	}
+	defer func() {
+		if err := parentFile.Close(); err != nil {
+			t.Errorf("close parent descriptor: %v", err)
+		}
+	}()
+
+	originalOpenAt := openSearchOnlyDirectoryAtFn
+	originalStat := descriptorStatFn
+	t.Cleanup(func() {
+		openSearchOnlyDirectoryAtFn = originalOpenAt
+		descriptorStatFn = originalStat
+	})
+
+	t.Run("open failure after lstat", func(t *testing.T) {
+		openSearchOnlyDirectoryAtFn = func(int, string) (*os.File, error) {
+			return nil, errors.New("openat failed")
+		}
+		descriptorStatFn = originalStat
+		file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
+		if err == nil || !strings.Contains(err.Error(), "openat failed") {
+			if file != nil {
+				if closeErr := file.Close(); closeErr != nil {
+					t.Fatalf("close unexpected child descriptor: %v", closeErr)
+				}
+			}
+			t.Fatalf("expected openat failure, got %v", err)
+		}
+	})
+
+	t.Run("stat failure after open", func(t *testing.T) {
+		openSearchOnlyDirectoryAtFn = originalOpenAt
+		descriptorStatFn = func(int) (descriptorFileInfo, error) {
+			return descriptorFileInfo{}, errors.New("descriptor stat failed")
+		}
+		file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
+		if err == nil || !strings.Contains(err.Error(), "descriptor stat failed") {
+			if file != nil {
+				if closeErr := file.Close(); closeErr != nil {
+					t.Fatalf("close unexpected child descriptor: %v", closeErr)
+				}
+			}
+			t.Fatalf("expected descriptor stat failure, got %v", err)
+		}
+	})
+
+	t.Run("changed after open", func(t *testing.T) {
+		openSearchOnlyDirectoryAtFn = originalOpenAt
+		descriptorStatFn = func(int) (descriptorFileInfo, error) {
+			return descriptorFileInfo{dev: "changed", ino: "changed", mode: unix.S_IFDIR}, nil
+		}
+		file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
+		if err == nil || !strings.Contains(err.Error(), "directory changed while opening") {
+			if file != nil {
+				if closeErr := file.Close(); closeErr != nil {
+					t.Fatalf("close unexpected child descriptor: %v", closeErr)
+				}
+			}
+			t.Fatalf("expected changed-directory failure, got %v", err)
+		}
+	})
+}
+
+func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
+	separator := string(os.PathSeparator)
+	tmpAlias := filepath.Join(separator, "tmp")
+	tmpTarget, tmpOK := trustedRootAliasTarget(tmpAlias)
+	gotTmp := canonicalSearchDirectoryPath(tmpAlias)
+	if tmpOK {
+		if gotTmp != tmpTarget {
+			t.Fatalf("expected trusted tmp alias target %q, got %q", tmpTarget, gotTmp)
+		}
+		nested := filepath.Join(tmpAlias, "lopper", "profile")
+		wantNested := filepath.Join(tmpTarget, "lopper", "profile")
+		if got := canonicalSearchDirectoryPath(nested); got != wantNested {
+			t.Fatalf("expected nested trusted tmp alias target %q, got %q", wantNested, got)
+		}
+	} else if gotTmp != tmpAlias {
+		t.Fatalf("expected non-darwin tmp path to remain unchanged, got %q", gotTmp)
+	}
+
+	regular := filepath.Join(separator, "usr", "local")
+	if got := canonicalSearchDirectoryPath(regular); got != regular {
+		t.Fatalf("expected regular path to remain unchanged, got %q", got)
+	}
+}
+
+func TestDescriptorStatRejectsInvalidDescriptor(t *testing.T) {
+	if _, err := descriptorStat(-1); err == nil {
+		t.Fatal("expected invalid descriptor stat to fail")
+	}
 }
 
 func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathWritesSearchOnlyParent(t *testing.T) {

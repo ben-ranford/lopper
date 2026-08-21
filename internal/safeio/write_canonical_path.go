@@ -7,12 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-var descriptorLstatFn = descriptorLstat
+var (
+	descriptorLstatFn           = descriptorLstat
+	descriptorStatFn            = descriptorStat
+	afterOpenSearchAncestorFn   = func(string) error { return nil }
+	openSearchOnlyDirectoryAtFn = openSearchOnlyDirectoryAt
+)
 
 // WriteFileAtomicallyIfAbsentUnderCanonicalPath publishes targetPath only when
 // the target is absent. It is a narrow fallback for Unix directories that allow
@@ -24,9 +30,6 @@ func WriteFileAtomicallyIfAbsentUnderCanonicalPath(targetPath string, data []byt
 		return err
 	}
 	parent := filepath.Dir(targetAbs)
-	if err := verifyCanonicalExistingDirectory(parent); err != nil {
-		return err
-	}
 
 	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
 	if err != nil {
@@ -46,22 +49,88 @@ func WriteFileAtomicallyIfAbsentUnderCanonicalPath(targetPath string, data []byt
 }
 
 func openSearchOnlyCanonicalDirectory(path string) (*os.File, int, error) {
-	file, err := openSearchOnlyDirectory(path)
+	absPath, err := resolveAbsolutePath("directory", path)
 	if err != nil {
 		return nil, -1, err
 	}
-	info, err := file.Stat()
+	absPath = canonicalSearchDirectoryPath(absPath)
+	volumeRoot := filepath.VolumeName(absPath) + string(os.PathSeparator)
+	root, err := openSearchOnlyDirectory(volumeRoot)
 	if err != nil {
-		return nil, -1, closeFileWithError(file, err)
+		return nil, -1, err
 	}
-	pathInfo, err := os.Lstat(path)
+	rel, err := filepath.Rel(volumeRoot, absPath)
 	if err != nil {
-		return nil, -1, closeFileWithError(file, err)
+		return nil, -1, closeFileWithError(root, err)
 	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.IsDir() || !os.SameFile(info, pathInfo) {
-		return nil, -1, closeFileWithError(file, fmt.Errorf("directory changed while opening: %s", path))
+	if rel == "." {
+		return root, int(root.Fd()), nil
 	}
-	return file, int(file.Fd()), nil
+	_, parts := splitPinnedPath(rel)
+	return openSearchOnlyDirectoryParts(root, volumeRoot, parts)
+}
+
+func canonicalSearchDirectoryPath(path string) string {
+	cleanPath := filepath.Clean(path)
+	separator := string(os.PathSeparator)
+	for _, alias := range []string{filepath.Join(separator, "tmp"), filepath.Join(separator, "var")} {
+		target, ok := trustedRootAliasTarget(alias)
+		if !ok {
+			continue
+		}
+		if cleanPath == alias {
+			return target
+		}
+		if strings.HasPrefix(cleanPath, alias+separator) {
+			return filepath.Join(target, strings.TrimPrefix(cleanPath, alias+separator))
+		}
+	}
+	return cleanPath
+}
+
+func openSearchOnlyDirectoryParts(current *os.File, currentPath string, parts []string) (_ *os.File, _ int, returnErr error) {
+	for _, part := range parts {
+		if err := afterOpenSearchAncestorFn(currentPath); err != nil {
+			return nil, -1, closeFileWithError(current, err)
+		}
+		nextPath := filepath.Join(currentPath, part)
+		next, err := openSearchOnlyChildDirectory(int(current.Fd()), part, nextPath)
+		if err != nil {
+			return nil, -1, closeFileWithError(current, err)
+		}
+		if err := current.Close(); err != nil {
+			return nil, -1, closeFileWithError(next, err)
+		}
+		current = next
+		currentPath = nextPath
+	}
+	return current, int(current.Fd()), nil
+}
+
+func openSearchOnlyChildDirectory(parentFD int, name, path string) (*os.File, error) {
+	info, err := descriptorLstat(parentFD, name)
+	if err != nil {
+		return nil, err
+	}
+	if descriptorInfoIsSymlink(info) {
+		return nil, fmt.Errorf("directory contains symlink: %s", path)
+	}
+	if !descriptorInfoIsDirectory(info) {
+		return nil, fmt.Errorf("directory is not a directory: %s", path)
+	}
+
+	file, err := openSearchOnlyDirectoryAtFn(parentFD, name)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := descriptorStatFn(int(file.Fd()))
+	if err != nil {
+		return nil, closeFileWithError(file, err)
+	}
+	if !descriptorInfoIsDirectory(openedInfo) || !sameDescriptorInfos(info, openedInfo) {
+		return nil, closeFileWithError(file, fmt.Errorf("directory changed while opening: %s", path))
+	}
+	return file, nil
 }
 
 func writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD int, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
@@ -118,38 +187,6 @@ func writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD int, targetRel stri
 	return nil
 }
 
-func verifyCanonicalExistingDirectory(path string) error {
-	absPath, err := resolveAbsolutePath("directory", path)
-	if err != nil {
-		return err
-	}
-	ancestors := []string{filepath.Clean(absPath)}
-	for {
-		parent := filepath.Dir(ancestors[len(ancestors)-1])
-		if parent == ancestors[len(ancestors)-1] {
-			break
-		}
-		ancestors = append(ancestors, parent)
-	}
-
-	for idx := len(ancestors) - 1; idx >= 0; idx-- {
-		info, err := os.Lstat(ancestors[idx])
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			if _, ok := trustedRootAliasTarget(ancestors[idx]); ok {
-				continue
-			}
-			return fmt.Errorf("directory contains symlink: %s", ancestors[idx])
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("directory is not a directory: %s", ancestors[idx])
-		}
-	}
-	return nil
-}
-
 func rejectExistingDescriptorPath(parentFD int, targetRel string) error {
 	info, err := descriptorLstat(parentFD, targetRel)
 	switch {
@@ -185,6 +222,22 @@ func descriptorInfoIsRegular(info descriptorFileInfo) bool {
 
 func descriptorInfoIsSymlink(info descriptorFileInfo) bool {
 	return info.mode&unix.S_IFMT == unix.S_IFLNK
+}
+
+func descriptorInfoIsDirectory(info descriptorFileInfo) bool {
+	return info.mode&unix.S_IFMT == unix.S_IFDIR
+}
+
+func descriptorStat(fd int) (descriptorFileInfo, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return descriptorFileInfo{}, err
+	}
+	return descriptorFileInfo{dev: fmt.Sprint(stat.Dev), ino: fmt.Sprint(stat.Ino), mode: uint32(stat.Mode)}, nil
+}
+
+func sameDescriptorInfos(left, right descriptorFileInfo) bool {
+	return left.dev == right.dev && left.ino == right.ino
 }
 
 func sameDescriptorFileInfo(tempInfo os.FileInfo, targetInfo descriptorFileInfo) bool {
