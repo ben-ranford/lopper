@@ -1555,6 +1555,42 @@ func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T)
 	}
 }
 
+func TestAnalysePreservesWorkspaceAttributionWhenRootGoModIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedValidRootGoMod(t, repo)
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
+	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
+	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
+	writeRepoMainLines(
+		t,
+		repo,
+		packageMainLine,
+		"",
+		"import _ \"example.com/root/pkg\"",
+		"",
+		"func main() {}",
+		"",
+	)
+	writeFile(t, filepath.Join(repo, "pkg", "pkg.go"), packageMainLine+"\n")
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     5,
+	})
+
+	names := dependencyNames(reportData.Dependencies)
+	if !slices.Contains(names, depUUID) {
+		t.Fatalf("expected workspace dependency %s in %#v", depUUID, names)
+	}
+	if slices.Contains(names, "example.com/root/pkg") || slices.Contains(names, "example.com/root") {
+		t.Fatalf("expected oversized root module imports to stay unattributed, got %#v", names)
+	}
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if !strings.Contains(warnings, "root go.mod exceeds") {
+		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
+	}
+}
+
 func TestDetectWithConfidenceCanceledContext(t *testing.T) {
 	repo := t.TempDir()
 	writeRepoGoMod(t, repo, goModDemo)

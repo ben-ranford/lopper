@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -65,10 +66,6 @@ func scanRepo(ctx context.Context, repoPath string, moduleInfo moduleInfo) (scan
 	result := newScanResult()
 	if repoPath == "" {
 		return result, fs.ErrInvalid
-	}
-	if moduleInfo.RootGoModTooLarge {
-		appendScanWarnings(&result, moduleInfo)
-		return result, nil
 	}
 	if err := walkGoFiles(ctx, repoPath, moduleInfo, &result); err != nil {
 		return result, err
@@ -156,6 +153,9 @@ func appendUndeclaredDependencyWarnings(result *scanResult) {
 }
 
 func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scanResult) error {
+	if shouldSkipSourceForOversizedRoot(path, moduleInfo) {
+		return nil
+	}
 	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableGoFile)
 	if errors.Is(err, safeio.ErrFileTooLarge) {
 		if result != nil {
@@ -191,6 +191,37 @@ func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scan
 	})
 	applyImportMetadata(metadata, result)
 	return nil
+}
+
+func shouldSkipSourceForOversizedRoot(path string, moduleInfo moduleInfo) bool {
+	if !moduleInfo.RootGoModTooLarge {
+		return false
+	}
+	return !pathInKnownModuleDir(path, moduleInfo)
+}
+
+func pathInKnownModuleDir(path string, moduleInfo moduleInfo) bool {
+	for dir := range moduleInfo.WorkspaceModuleExclusions {
+		if pathWithinCleanDir(path, dir) {
+			return true
+		}
+	}
+	for dir := range moduleInfo.NestedModuleDirs {
+		if pathWithinCleanDir(path, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithinCleanDir(path, dir string) bool {
+	dir = filepath.Clean(dir)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")
 }
 
 type importMetadata struct {
