@@ -1565,14 +1565,11 @@ func TestOversizedRootGoModKeepsPhysicalEOFFinalModuleLine(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction from physical EOF final line")
 }
 
-func TestOversizedRootGoModRejectsModuleDirectiveTruncatedByProbe(t *testing.T) {
+func TestOversizedRootGoModScansBeyondFallbackProbeForModulePath(t *testing.T) {
 	repo := t.TempDir()
-	truncatedDirective := "module example"
-	prefixLen := goModSizeLimitTest + 128*1024 - len(truncatedDirective)
-	prefix := strings.Repeat("\n", prefixLen)
-	writeFile(t, filepath.Join(repo, fileGoMod), prefix+truncatedDirective+"\n")
+	writeOversizedRootGoModWithLeadingComments(t, repo, goModSizeLimitTest+256*1024)
 
-	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+	requireOversizedRootModulePath(t, repo, "module path extraction beyond fallback probe")
 }
 
 func TestOversizedRootGoModRejectsModuleDirectiveWithUnterminatedBlockComment(t *testing.T) {
