@@ -23,6 +23,7 @@ const (
 	parseRequirementsErrFmt    = "parse requirements dependencies: %v"
 	packagingTestDirMode       = 0o700
 	packagingBlockedDirMode    = 0o000
+	requirementsTxtSizeTest    = 1 * 1024 * 1024
 )
 
 func TestParsePyprojectDependenciesModernSections(t *testing.T) {
@@ -203,7 +204,7 @@ func TestParseRequirementsDependenciesAcceptsExactSizeLimit(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonRequirementsTxt)
 	requirement := "requests==2.32.0"
-	testutil.MustWriteFile(t, path, requirement+strings.Repeat(" ", int(maxRequirementsTxtBytes)-len(requirement)))
+	testutil.MustWriteFile(t, path, requirement+strings.Repeat(" ", requirementsTxtSizeTest-len(requirement)))
 
 	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
 	if err != nil {
@@ -220,7 +221,7 @@ func TestParseRequirementsDependenciesAcceptsExactSizeLimit(t *testing.T) {
 func TestParseRequirementsDependenciesSkipsOversizedFile(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonRequirementsTxt)
-	content := "requests==2.32.0\n" + strings.Repeat("#", int(maxRequirementsTxtBytes)+1-len("requests==2.32.0\n"))
+	content := "requests==2.32.0\n" + strings.Repeat("#", requirementsTxtSizeTest+1-len("requests==2.32.0\n"))
 	testutil.MustWriteFile(t, path, content)
 
 	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
