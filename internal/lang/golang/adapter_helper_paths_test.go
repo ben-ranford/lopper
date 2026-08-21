@@ -139,6 +139,7 @@ func assertGoModHelpers(t *testing.T) {
 	assertParseGoModStandardFile(t)
 	assertParseGoModInlineRequireBlock(t)
 	assertParseGoModCommentedInlineRequireBlock(t)
+	assertParseGoModSkipsFallbackForOversizedMalformedInput(t)
 	assertNormalizeInlineGoModRequireLineWithComment(t)
 	assertNormalizeInlineGoModRequireLineEmpty(t)
 	assertParseGoModMalformedInput(t)
@@ -198,6 +199,24 @@ func assertParseGoModCommentedInlineRequireBlock(t *testing.T) {
 		moduleMessage:      "expected commented inline require block module path",
 		dependencyMessage:  "expected commented inline require block dependency",
 		replacementMessage: "expected no replacements from commented inline require block",
+	})
+}
+
+func assertParseGoModSkipsFallbackForOversizedMalformedInput(t *testing.T) {
+	t.Helper()
+	goMod := strings.Join([]string{
+		"module example.com/root",
+		"require ( github.com/acme/dep v1.2.3 )",
+		strings.Repeat("x", maxGoModBytes),
+		"",
+	}, "\n")
+	assertParsedGoMod(t, goMod, parsedGoModExpectation{
+		modulePath:         "",
+		dependencies:       nil,
+		replacements:       map[string]string{},
+		moduleMessage:      "expected oversized malformed go.mod to skip fallback parsing",
+		dependencyMessage:  "expected oversized malformed go.mod to skip fallback dependencies",
+		replacementMessage: "expected oversized malformed go.mod to skip fallback replacements",
 	})
 }
 

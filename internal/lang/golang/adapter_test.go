@@ -14,6 +14,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -1477,6 +1478,26 @@ func TestLoadGoModFromDirError(t *testing.T) {
 	_, _, _, err := loadGoModFromDir(repo, filepath.Join(repo, "missing"))
 	if err == nil {
 		t.Fatalf("expected loadGoModFromDir error for missing file")
+	}
+}
+
+func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoMod), strings.Repeat("a", maxGoModBytes+1))
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("oversized root go.mod should be skipped, got %v", err)
+	}
+	if info.ModulePath != "" || len(info.DeclaredDependencies) != 0 {
+		t.Fatalf("expected oversized root go.mod to produce empty module info, got %#v", info)
+	}
+
+	nestedRepo := t.TempDir()
+	nestedDir := filepath.Join(nestedRepo, "nested")
+	writeFile(t, filepath.Join(nestedDir, fileGoMod), strings.Repeat("b", maxGoModBytes+1))
+	if _, _, _, err := loadGoModFromDir(nestedRepo, nestedDir); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized nested go.mod to fail with ErrFileTooLarge, got %v", err)
 	}
 }
 

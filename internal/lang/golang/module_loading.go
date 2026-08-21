@@ -57,7 +57,10 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	if !exists {
 		return nil
 	}
-	content, err := safeio.ReadFileUnder(repoPath, goModPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, goModPath, maxGoModBytes)
+	if errors.Is(err, safeio.ErrFileTooLarge) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

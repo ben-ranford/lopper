@@ -1,6 +1,7 @@
 package golang
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -9,6 +10,11 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"golang.org/x/mod/modfile"
+)
+
+const (
+	maxGoModBytes         = 2 * 1024 * 1024
+	maxGoModFallbackLines = 8192
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
@@ -133,7 +139,7 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 	file, err := modfile.Parse(goModName, content, nil)
 	if err != nil && file == nil {
 		normalized := normalizeInlineGoModRequireBlocks(content)
-		if string(normalized) != string(content) {
+		if !bytes.Equal(normalized, content) {
 			file, err = modfile.Parse(goModName, normalized, nil)
 		}
 	}
@@ -148,20 +154,61 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 }
 
 func normalizeInlineGoModRequireBlocks(content []byte) []byte {
-	lines := strings.Split(string(content), "\n")
+	if len(content) > maxGoModBytes {
+		return content
+	}
+
 	changed := false
-	for i, rawLine := range lines {
-		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
-		if !ok {
-			continue
+	lineCount := 0
+	for start := 0; start <= len(content); {
+		if lineCount >= maxGoModFallbackLines {
+			return content
 		}
-		lines[i] = normalizedLine
-		changed = true
+		end := start
+		for end < len(content) && content[end] != '\n' {
+			end++
+		}
+		lineCount++
+		rawLine := string(content[start:end])
+		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
+		if ok && normalizedLine != rawLine {
+			changed = true
+			break
+		}
+		if end == len(content) {
+			break
+		}
+		start = end + 1
 	}
 	if !changed {
 		return content
 	}
-	return []byte(strings.Join(lines, "\n"))
+
+	var normalized strings.Builder
+	normalized.Grow(len(content))
+	lineCount = 0
+	for start := 0; start <= len(content); {
+		if lineCount >= maxGoModFallbackLines {
+			return content
+		}
+		end := start
+		for end < len(content) && content[end] != '\n' {
+			end++
+		}
+		lineCount++
+		rawLine := string(content[start:end])
+		if normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine); ok {
+			normalized.WriteString(normalizedLine)
+		} else {
+			normalized.Write(content[start:end])
+		}
+		if end == len(content) {
+			break
+		}
+		normalized.WriteByte('\n')
+		start = end + 1
+	}
+	return []byte(normalized.String())
 }
 
 func normalizeInlineGoModRequireLine(rawLine string) (string, bool) {
@@ -355,7 +402,7 @@ func normalizeGoWorkPath(value string) string {
 
 func loadGoModFromDir(repoPath, dir string) (string, []string, map[string]string, error) {
 	goModPath := filepath.Join(dir, goModName)
-	content, err := safeio.ReadFileUnder(repoPath, goModPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, goModPath, maxGoModBytes)
 	if err != nil {
 		return "", nil, nil, err
 	}
