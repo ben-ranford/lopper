@@ -132,7 +132,15 @@ func TestAdapterAnalyseSuggestOnlyPythonSkipsImportLikeMultilineStrings(t *testi
 		"\"\"\"\n" +
 		"value = '''\n" +
 		"import requests as rq\n" +
-		"'''\n"
+		"'''\n" +
+		strings.Join([]string{
+			`normal = "not an import \`,
+			`import requests"`,
+			`raw_value = r"not an import \`,
+			`from requests import Session"`,
+			`formatted = f"not an import \`,
+			`import requests as rq"`,
+		}, "\n") + "\n"
 
 	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "requests", true)
 	if dep.TotalExportsCount != 0 || len(dep.UnusedImports) != 0 {
@@ -213,6 +221,14 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 		"message = \"\"\"ignore this too\n" +
 		"import pandas as pd\n" +
 		"\"\"\"\n" +
+		strings.Join([]string{
+			`normal = "not an import \`,
+			`import requests"`,
+			`raw_value = r"not an import \`,
+			`from requests import Session"`,
+			`formatted = f"not an import \`,
+			`import pandas as pd"`,
+		}, "\n") + "\n" +
 		"import numpy as np\n"
 
 	imports := parseImports([]byte(source), testMainPy, repo)
@@ -220,8 +236,8 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 		t.Fatalf("expected only the real import binding, got %#v", imports)
 	}
 	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
-	if imports[0].Location.Line != 8 {
-		t.Fatalf("expected real import on line 8, got location %+v", imports[0].Location)
+	if imports[0].Location.Line != 14 {
+		t.Fatalf("expected real import on line 14, got location %+v", imports[0].Location)
 	}
 }
 

@@ -195,25 +195,21 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 
 type pythonStringMask struct {
 	multilineQuote string
+	shortQuote     byte
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
-	if line == "" || (!strings.Contains(line, "'") && !strings.Contains(line, "\"") && m.multilineQuote == "") {
+	if line == "" || (!strings.Contains(line, "'") && !strings.Contains(line, "\"") && m.multilineQuote == "" && m.shortQuote == 0) {
 		return line
 	}
 
 	var builder strings.Builder
 	builder.Grow(len(line))
 	for index := 0; index < len(line); {
-		if m.multilineQuote != "" {
-			if strings.HasPrefix(line[index:], m.multilineQuote) {
-				writeSpaces(&builder, len(m.multilineQuote))
-				index += len(m.multilineQuote)
-				m.multilineQuote = ""
-				continue
-			}
-			builder.WriteByte(' ')
-			index++
+		if m.maskMultilineString(line, &index, &builder) {
+			continue
+		}
+		if m.maskShortString(line, &index, &builder) {
 			continue
 		}
 
@@ -229,19 +225,57 @@ func (m *pythonStringMask) codeLine(line string) string {
 		}
 
 		if quote := line[index : index+1]; strings.HasPrefix(line[index:], quote+quote+quote) {
-			m.multilineQuote = quote + quote + quote
-			writeSpaces(&builder, len(m.multilineQuote))
-			index += len(m.multilineQuote)
+			m.startMultilineString(quote, &index, &builder)
 			continue
 		}
 
-		index = maskPythonShortString(line, index, &builder)
+		m.startShortString(current, line, &index, &builder)
 	}
 	return builder.String()
 }
 
-func maskPythonShortString(line string, index int, builder *strings.Builder) int {
-	quote := line[index]
+func (m *pythonStringMask) maskMultilineString(line string, index *int, builder *strings.Builder) bool {
+	if m.multilineQuote == "" {
+		return false
+	}
+	if strings.HasPrefix(line[*index:], m.multilineQuote) {
+		writeSpaces(builder, len(m.multilineQuote))
+		*index += len(m.multilineQuote)
+		m.multilineQuote = ""
+		return true
+	}
+	builder.WriteByte(' ')
+	*index++
+	return true
+}
+
+func (m *pythonStringMask) maskShortString(line string, index *int, builder *strings.Builder) bool {
+	if m.shortQuote == 0 {
+		return false
+	}
+	next, closed := maskPythonShortStringContent(line, *index, m.shortQuote, builder)
+	*index = next
+	if closed {
+		m.shortQuote = 0
+	}
+	return true
+}
+
+func (m *pythonStringMask) startMultilineString(quote string, index *int, builder *strings.Builder) {
+	m.multilineQuote = quote + quote + quote
+	writeSpaces(builder, len(m.multilineQuote))
+	*index += len(m.multilineQuote)
+}
+
+func (m *pythonStringMask) startShortString(quote byte, line string, index *int, builder *strings.Builder) {
+	next, closed := maskPythonShortStringContent(line, *index, quote, builder)
+	*index = next
+	if !closed {
+		m.shortQuote = quote
+	}
+}
+
+func maskPythonShortStringContent(line string, index int, quote byte, builder *strings.Builder) (int, bool) {
 	builder.WriteByte(' ')
 	index++
 	escaped := false
@@ -258,10 +292,10 @@ func maskPythonShortString(line string, index int, builder *strings.Builder) int
 			continue
 		}
 		if current == quote {
-			break
+			return index, true
 		}
 	}
-	return index
+	return index, false
 }
 
 func writeSpaces(builder *strings.Builder, count int) {
