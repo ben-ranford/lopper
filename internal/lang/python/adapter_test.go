@@ -125,6 +125,27 @@ func TestAdapterAnalyseSuggestOnlyPythonUnsafeSkips(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseSuggestOnlyPythonSkipsImportLikeMultilineStrings(t *testing.T) {
+	source := "\"\"\"\n" +
+		"import requests\n" +
+		"from requests import Session\n" +
+		"\"\"\"\n" +
+		"value = '''\n" +
+		"import requests as rq\n" +
+		"'''\n"
+
+	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "requests", true)
+	if dep.TotalExportsCount != 0 || len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected import-like multiline string contents to be ignored, got %#v", dep)
+	}
+	if dep.Codemod == nil {
+		t.Fatal("expected python codemod report")
+	}
+	if len(dep.Codemod.Suggestions) != 0 || len(dep.Codemod.Skips) != 0 {
+		t.Fatalf("expected no codemod actions for string contents, got %#v", dep.Codemod)
+	}
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -180,6 +201,27 @@ func TestParseImportsHandlesParenthesizedFromImports(t *testing.T) {
 		if strings.ContainsAny(imported.Name, "()") || strings.ContainsAny(imported.Local, "()") {
 			t.Fatalf("expected sanitized symbol names without parentheses, got %#v", imported)
 		}
+	}
+}
+
+func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
+	repo := t.TempDir()
+	source := "'''module docs\n" +
+		"import requests\n" +
+		"from requests import Session\n" +
+		"'''\n" +
+		"message = \"\"\"ignore this too\n" +
+		"import pandas as pd\n" +
+		"\"\"\"\n" +
+		"import numpy as np\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
+	if imports[0].Location.Line != 8 {
+		t.Fatalf("expected real import on line 8, got location %+v", imports[0].Location)
 	}
 }
 

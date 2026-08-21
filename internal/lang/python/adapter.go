@@ -178,9 +178,11 @@ var (
 
 func parseImports(content []byte, filePath string, repoPath string) []importBinding {
 	var pending *pendingFromImport
+	var stringMask pythonStringMask
 
 	return shared.ParseImportLines(content, filePath, func(line string, index int) []shared.ImportRecord {
-		lineNoComment := stripComment(line)
+		codeLine := stringMask.codeLine(line)
+		lineNoComment := stripComment(codeLine)
 		trimmed := strings.TrimSpace(lineNoComment)
 
 		if records, handled := continuePendingFromImport(&pending, trimmed, lineNoComment, filePath, repoPath, index); handled {
@@ -189,6 +191,83 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 
 		return parseImportRecord(trimmed, lineNoComment, filePath, repoPath, index, &pending)
 	})
+}
+
+type pythonStringMask struct {
+	multilineQuote string
+}
+
+func (m *pythonStringMask) codeLine(line string) string {
+	if line == "" || (!strings.Contains(line, "'") && !strings.Contains(line, "\"") && m.multilineQuote == "") {
+		return line
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(line))
+	for index := 0; index < len(line); {
+		if m.multilineQuote != "" {
+			if strings.HasPrefix(line[index:], m.multilineQuote) {
+				writeSpaces(&builder, len(m.multilineQuote))
+				index += len(m.multilineQuote)
+				m.multilineQuote = ""
+				continue
+			}
+			builder.WriteByte(' ')
+			index++
+			continue
+		}
+
+		current := line[index]
+		if current == '#' {
+			builder.WriteString(line[index:])
+			break
+		}
+		if current != '\'' && current != '"' {
+			builder.WriteByte(current)
+			index++
+			continue
+		}
+
+		if quote := line[index : index+1]; strings.HasPrefix(line[index:], quote+quote+quote) {
+			m.multilineQuote = quote + quote + quote
+			writeSpaces(&builder, len(m.multilineQuote))
+			index += len(m.multilineQuote)
+			continue
+		}
+
+		index = maskPythonShortString(line, index, &builder)
+	}
+	return builder.String()
+}
+
+func maskPythonShortString(line string, index int, builder *strings.Builder) int {
+	quote := line[index]
+	builder.WriteByte(' ')
+	index++
+	escaped := false
+	for index < len(line) {
+		current := line[index]
+		builder.WriteByte(' ')
+		index++
+		if escaped {
+			escaped = false
+			continue
+		}
+		if current == '\\' {
+			escaped = true
+			continue
+		}
+		if current == quote {
+			break
+		}
+	}
+	return index
+}
+
+func writeSpaces(builder *strings.Builder, count int) {
+	for range count {
+		builder.WriteByte(' ')
+	}
 }
 
 func continuePendingFromImport(pending **pendingFromImport, trimmed string, lineNoComment string, filePath string, repoPath string, index int) ([]importBinding, bool) {
