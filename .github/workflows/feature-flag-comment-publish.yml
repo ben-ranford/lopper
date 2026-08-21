@@ -36,9 +36,11 @@ jobs:
               pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository;
             const matchesPublishableRun = (pull) =>
               pull.state === 'open' && matchesRunSource(pull);
+            const isMergedPull = (pull) =>
+              pull.merged === true || pull.merged_at != null;
             const matchesMergedRun = (pull) =>
               pull.state === 'closed' &&
-              pull.merged === true &&
+              isMergedPull(pull) &&
               matchesRunSource(pull);
 
             let candidateNumbers;

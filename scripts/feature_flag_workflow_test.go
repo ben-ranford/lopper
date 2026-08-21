@@ -156,6 +156,43 @@ func TestFeatureFlagCommentResolverFiltersCommitAssociationFallback(t *testing.T
 	}
 }
 
+func TestFeatureFlagCommentResolverSkipsMergedCommitAssociationFallback(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	associatedPull := featureFlagPull(7, "closed")
+	associatedPull["merged_at"] = "2026-08-21T00:00:00Z"
+	pull := featureFlagPull(7, "closed")
+	pull["merged"] = true
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun(nil),
+		"pulls":           []map[string]any{pull},
+		"associatedPulls": []map[string]any{associatedPull},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+		"jobs": featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected merged associated pull request: %s", result.Error)
+	}
+	if got := result.Outputs["skip-comments"]; got != "true" {
+		t.Fatalf("skip-comments = %q, want true", got)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if result.Calls["associatedPulls"] != 1 {
+		t.Fatal("resolver did not use commit association fallback exactly once")
+	}
+	if result.Calls["artifacts"] != 0 {
+		t.Fatal("merged associated pull request no-op must not inspect comment artifacts")
+	}
+	if result.Calls["jobs"] != 0 {
+		t.Fatal("merged associated pull request no-op must not inspect enforcement jobs")
+	}
+}
+
 func TestFeatureFlagCommentResolverRejectsOversizedArtifactBeforeDownload(t *testing.T) {
 	t.Parallel()
 
