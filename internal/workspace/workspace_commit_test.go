@@ -126,7 +126,8 @@ func TestCurrentCommitSHASupportsSHA256References(t *testing.T) {
 
 func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
 	repo := t.TempDir()
-	if output, err := exec.Command("git", "init", "--object-format=sha256", repo).CombinedOutput(); err != nil {
+	t.Setenv("GIT_INDEX_FILE", sha1IndexFixture(t))
+	if output, err := runSHA256FixtureGit("init", "--object-format=sha256", repo); err != nil {
 		t.Skipf("Git does not support SHA-256 repositories: %v\n%s", err, output)
 	}
 	for _, args := range [][]string{
@@ -134,7 +135,7 @@ func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
 		{"-C", repo, "config", "user.name", "Lopper Test"},
 		{"-C", repo, "commit", "--allow-empty", "-m", "initial"},
 	} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		if output, err := runSHA256FixtureGit(args...); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
@@ -146,6 +147,40 @@ func TestCurrentCommitSHASupportsSHA256Repository(t *testing.T) {
 	if len(sha) != 64 || !validSHA(sha) {
 		t.Fatalf("SHA-256 repository commit = %q, want valid 64-character object ID", sha)
 	}
+}
+
+func runSHA256FixtureGit(args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Env = withoutEnvKey(os.Environ(), "GIT_INDEX_FILE")
+	return cmd.CombinedOutput()
+}
+
+func sha1IndexFixture(t *testing.T) string {
+	t.Helper()
+
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "init", repo).CombinedOutput(); err != nil {
+		t.Fatalf("init SHA-1 index fixture: %v\n%s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatalf("write SHA-1 index fixture file: %v", err)
+	}
+	if output, err := exec.Command("git", "-C", repo, "add", "tracked.txt").CombinedOutput(); err != nil {
+		t.Fatalf("populate SHA-1 index fixture: %v\n%s", err, output)
+	}
+	return filepath.Join(repo, ".git", "index")
+}
+
+func withoutEnvKey(env []string, key string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func TestCurrentCommitSHAInvalidHeadCases(t *testing.T) {

@@ -242,6 +242,12 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
+		`git fetch --no-tags origin "${base_sha}"`,
+		`git fetch --no-tags origin "${base_ref}"`,
+		`git merge-base -- "${base_sha}" HEAD >/dev/null`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, fetchBase, "fetch PR base", []string{
 		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
 		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
 	})
