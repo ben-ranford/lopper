@@ -307,6 +307,10 @@ func (s *goModModuleScanner) tryStartComment() (bool, error) {
 }
 
 func (s *goModModuleScanner) appendLineByte(b byte) {
+	if b == '\f' {
+		s.lineInvalid = true
+		return
+	}
 	if isGoModDirectiveSpace(b) {
 		if s.line.Len() == 0 || s.lineLastSpace {
 			return
@@ -341,7 +345,7 @@ func (s *goModModuleScanner) finishLine() {
 
 func isGoModDirectiveSpace(b byte) bool {
 	switch b {
-	case ' ', '\t', '\r', '\f':
+	case ' ', '\t', '\r':
 		return true
 	default:
 		return false
@@ -363,8 +367,8 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 		s.consumeGoModBlockLine(lineText)
 		return
 	}
-	if strings.HasSuffix(lineText, " (") {
-		s.startGoModBlock(strings.TrimSuffix(lineText, " ("))
+	if directive, ok := goModBlockDirective(lineText); ok {
+		s.startGoModBlock(directive)
 		return
 	}
 	if strings.HasPrefix(lineText, goModModuleDirectivePrefix) {
@@ -380,6 +384,16 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 	if !isValidGoModDirectiveLine(s.validationModulePath(), lineText) {
 		s.invalid = true
 	}
+}
+
+func goModBlockDirective(lineText string) (string, bool) {
+	if strings.HasSuffix(lineText, " (") {
+		return strings.TrimSuffix(lineText, " ("), true
+	}
+	if strings.HasSuffix(lineText, "(") {
+		return strings.TrimSuffix(lineText, "("), true
+	}
+	return "", false
 }
 
 func (s *goModModuleScanner) consumeGoModSingletonLine(lineText string) bool {

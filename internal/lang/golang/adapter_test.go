@@ -1,7 +1,6 @@
 package golang
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"go/ast"
@@ -1552,6 +1551,13 @@ func TestOversizedRootGoModKeepsLongModuleDirectiveWhitespace(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction from long valid module directive")
 }
 
+func TestOversizedRootGoModRejectsFormFeedModuleWhitespace(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModWithModuleLine(t, repo, "", "module\fexample.com/root")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func TestOversizedRootGoModStopsModuleProbeForUnterminatedCommentWithoutModule(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoMod), "/*"+strings.Repeat("x", goModSizeLimitTest+198*1024))
@@ -1664,6 +1670,18 @@ func TestOversizedRootGoModAcceptsCommentedRequireBlockDelimiters(t *testing.T) 
 	requireOversizedRootModulePath(t, repo, "module path extraction with commented require block delimiters")
 }
 
+func TestOversizedRootGoModAcceptsCompactRequireBlockDelimiter(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"require(",
+		"\tgithub.com/google/uuid v1.6.0",
+		")",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with compact require block delimiter")
+}
+
 func TestOversizedRootGoModKeepsQuotedReplacementLineCommentMarker(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
@@ -1694,68 +1712,64 @@ func TestOversizedRootGoModKeepsQuotedReplacementWhitespace(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction with quoted replacement whitespace")
 }
 
-func TestScanGoModModulePathKeepsEscapedQuotedReplacement(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("module example.com/root\nreplace example.com/a => \"./a\\\"b\"\n"))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "example.com/root" {
-		t.Fatalf("expected module path through escaped quoted replacement, got %q", modulePath)
-	}
+func TestOversizedRootGoModKeepsEscapedQuotedReplacement(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "./a\"b"`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with escaped quoted replacement")
 }
 
-func TestScanGoModModulePathRejectsNewlineInsideQuotedReplacement(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("module example.com/root\nreplace example.com/a => \"./a\nmodule example.com/other\n"))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "" {
-		t.Fatalf("expected newline inside quoted replacement to reject module identity, got %q", modulePath)
-	}
+func TestOversizedRootGoModRejectsNewlineInsideQuotedReplacement(t *testing.T) {
+	repo := t.TempDir()
+	body := strings.Join([]string{
+		"module example.com/root",
+		`replace example.com/a => "./a`,
+		"module example.com/other",
+	}, "\n") + "\n"
+	writeFile(t, filepath.Join(repo, fileGoMod), body+"// "+strings.Repeat("x", goModSizeLimitTest+1-len(body)-len("// ")))
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestScanGoModModulePathRejectsOversizedRawQuotedLine(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("module example.com/root\nreplace example.com/a => \"" + strings.Repeat("x", 70*1024) + "\"\n"))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "" {
-		t.Fatalf("expected oversized quoted line to reject module identity, got %q", modulePath)
-	}
+func TestOversizedRootGoModRejectsOversizedRawQuotedLine(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "`+strings.Repeat("x", 70*1024)+`"`,
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestScanGoModModulePathRejectsModuleBlockAfterModuleDirective(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("module example.com/root\nmodule (\nexample.com/other\n)\n"))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "" {
-		t.Fatalf("expected duplicate module block to reject module identity, got %q", modulePath)
-	}
+func TestOversizedRootGoModRejectsClosedBlockComment(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoMod), "/* invalid */\nmodule example.com/root\n// "+strings.Repeat("x", goModSizeLimitTest+1))
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestScanGoModModulePathDefersRetractBlockUntilModule(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("retract (\nv1.0.0\n)\nmodule example.com/root\n"))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "example.com/root" {
-		t.Fatalf("expected module path through deferred retract block, got %q", modulePath)
-	}
+func TestOversizedRootGoModRejectsSlashAtPhysicalEOF(t *testing.T) {
+	repo := t.TempDir()
+	prefix := strings.Repeat("// x\n", (goModSizeLimitTest+70*1024)/5)
+	writeFile(t, filepath.Join(repo, fileGoMod), prefix+"notmodule/")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestGoModModuleScannerConsumeByteCap(t *testing.T) {
-	scanner := goModModuleScanner{
-		buffered: bufio.NewReader(strings.NewReader("//")),
-		maxBytes: 1,
+func TestOversizedRootGoModTrustsNoModulePathWhenCommentStartHitsScanCap(t *testing.T) {
+	repo := t.TempDir()
+	moduleLine := "module example.com/root\n"
+	scanCap := goModSizeLimitTest + 512*1024
+	paddingLen := scanCap - len(moduleLine) - 1
+	if paddingLen < 0 {
+		t.Fatalf("unexpected negative padding length")
 	}
-	modulePath, err := scanner.scan()
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if modulePath != "" {
-		t.Fatalf("expected exhausted consume-byte scanner to trust no module path, got %q", modulePath)
-	}
+	writeFile(t, filepath.Join(repo, fileGoMod), moduleLine+strings.Repeat(" ", paddingLen)+"//")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
 func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
@@ -1785,6 +1799,18 @@ func TestOversizedRootGoModRejectsDuplicateModuleDirective(t *testing.T) {
 	writeOversizedRootGoModLines(t, repo,
 		"module example.com/root",
 		"module example.com/other",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsModuleBlockAfterModuleDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"module (",
+		"example.com/other",
+		")",
 	)
 
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
@@ -1862,60 +1888,30 @@ func TestOversizedRootGoModKeepsValidRetractBeforeV2Module(t *testing.T) {
 	}
 }
 
-func TestScanGoModModulePathReturnsReaderError(t *testing.T) {
-	readErr := errors.New("read failure")
-	_, err := scanGoModModulePath(&errReader{err: readErr})
-	if !errors.Is(err, readErr) {
-		t.Fatalf("expected reader error, got %v", err)
+func TestParseGoModFallbackStopsAtLineLimit(t *testing.T) {
+	content := moduleDemoLine + "\n" + strings.Repeat("// filler\n", 8192) + "require (" + depUUID + versionV160 + ")\n"
+	modulePath, dependencies, replacements := parseGoMod([]byte(content))
+	if modulePath != "" || len(dependencies) != 0 || len(replacements) != 0 {
+		t.Fatalf("expected over-limit malformed fallback to trust no metadata, got %q %#v %#v", modulePath, dependencies, replacements)
 	}
 }
 
-func TestScanGoModModulePathRejectsClosedBlockComment(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("/* invalid */\nmodule example.com/root\n"))
+func TestOversizedRootGoModKeepsRetractBlockBeforeV2Module(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"retract (",
+		"v2.0.0",
+		")",
+		"module example.com/root/v2",
+	)
+
+	info, err := loadGoModuleInfo(repo)
 	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
+		t.Fatalf("loadGoModuleInfo: %v", err)
 	}
-	if modulePath != "" {
-		t.Fatalf("expected block-comment go.mod probe to trust no module path, got %q", modulePath)
+	if info.ModulePath != "example.com/root/v2" {
+		t.Fatalf("expected oversized root v2 module path through retract block, got %#v", info)
 	}
-}
-
-func TestScanGoModModulePathFinishesSlashAtEOF(t *testing.T) {
-	modulePath, err := scanGoModModulePath(strings.NewReader("notmodule/"))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "" {
-		t.Fatalf("expected non-module line with EOF slash to trust no module path, got %q", modulePath)
-	}
-}
-
-func TestScanGoModModulePathTrustsNoModulePathAfterReadCap(t *testing.T) {
-	body := modulePrefix + "example.com/root\n// " + strings.Repeat("x", goModSizeLimitTest+600*1024)
-	modulePath, err := scanGoModModulePath(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("scanGoModModulePath: %v", err)
-	}
-	if modulePath != "" {
-		t.Fatalf("expected capped go.mod probe to trust no module path, got %q", modulePath)
-	}
-}
-
-func TestGoModFallbackNormalizationStopsAtLineLimitAndEOF(t *testing.T) {
-	if goModFallbackNeedsNormalization([]byte(strings.Repeat("module example.com/root\n", maxGoModFallbackLines+1))) {
-		t.Fatal("expected fallback normalization probe to stop at the line limit")
-	}
-	if goModFallbackNeedsNormalization([]byte("module example.com/root")) {
-		t.Fatal("expected fallback normalization probe to stop cleanly at EOF")
-	}
-}
-
-type errReader struct {
-	err error
-}
-
-func (r *errReader) Read([]byte) (int, error) {
-	return 0, r.err
 }
 
 func requireNoTrustedOversizedRootModuleMetadata(t *testing.T, repo string) {
@@ -2035,57 +2031,6 @@ func TestAnalysePreservesTrustedNestedAttributionWhenRootGoModIsOversized(t *tes
 		t.Fatalf("expected trusted nested module dependency %s in %#v", depUUID, names)
 	}
 	requireOversizedRootWarning(t, reportData)
-}
-
-func TestShouldSkipSourceForOversizedModuleMetadataRequiresTrustedBoundary(t *testing.T) {
-	repo := t.TempDir()
-	untrustedNested := filepath.Join(repo, "svc", "bad")
-	trustedNested := filepath.Join(repo, "svc", "good")
-	oversizedNested := filepath.Join(repo, "svc", "large")
-	info := moduleInfo{
-		RootGoModTooLarge: true,
-		NestedModuleDirs: map[string]struct{}{
-			untrustedNested: {},
-			trustedNested:   {},
-		},
-		TrustedModuleDirs: map[string]struct{}{
-			trustedNested: {},
-		},
-		OversizedModuleDirs: map[string]struct{}{
-			oversizedNested: {},
-		},
-	}
-
-	if !shouldSkipSourceForOversizedModuleMetadata(repo, filepath.Join(untrustedNested, fileMainGo), info) {
-		t.Fatalf("expected untrusted nested go.mod below oversized root to stay skipped")
-	}
-	if shouldSkipSourceForOversizedModuleMetadata(repo, filepath.Join(trustedNested, fileMainGo), info) {
-		t.Fatalf("expected trusted nested go.mod below oversized root to be scanned")
-	}
-	if !shouldSkipSourceForOversizedModuleMetadata(repo, filepath.Join(oversizedNested, fileMainGo), info) {
-		t.Fatalf("expected oversized nested go.mod to be skipped")
-	}
-}
-
-func TestShouldSkipSourceForOversizedModuleMetadataRequiresTrustedWorkspaceBoundary(t *testing.T) {
-	repo := t.TempDir()
-	workspaceDir := filepath.Join(repo, "workspace")
-	info := moduleInfo{
-		RootGoModTooLarge: true,
-		WorkspaceModuleExclusions: map[string]struct{}{
-			workspaceDir: {},
-		},
-	}
-
-	if !shouldSkipSourceForOversizedModuleMetadata(repo, filepath.Join(workspaceDir, fileMainGo), info) {
-		t.Fatalf("expected untrusted workspace go.mod below oversized root to stay skipped")
-	}
-	info.TrustedModuleDirs = map[string]struct{}{
-		workspaceDir: {},
-	}
-	if shouldSkipSourceForOversizedModuleMetadata(repo, filepath.Join(workspaceDir, fileMainGo), info) {
-		t.Fatalf("expected trusted workspace go.mod below oversized root to be scanned")
-	}
 }
 
 func TestAnalyseDoesNotTrustRootWorkspaceEntryWhenRootGoModIsOversized(t *testing.T) {
