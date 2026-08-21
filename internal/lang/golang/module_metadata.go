@@ -84,15 +84,21 @@ func discoverNestedModules(repoPath string) ([]string, []string, map[string]stri
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return discoverNestedModulesFromDirs(repoPath, nestedDirs)
+	modules, dependencies, replacements, _, err := discoverNestedModulesFromDirs(repoPath, nestedDirs)
+	return modules, dependencies, replacements, err
 }
 
-func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, error) {
+func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, map[string]struct{}, error) {
 	modules := make([]string, 0, len(nestedDirs))
 	dependencies := make([]string, 0)
 	replacements := make(map[string]string)
+	oversizedDirs := make(map[string]struct{})
 	for dir := range nestedDirs {
 		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
+		if isPureGoModSizeLimit(err) {
+			oversizedDirs[dir] = struct{}{}
+			continue
+		}
 		if err != nil {
 			continue
 		}
@@ -107,7 +113,7 @@ func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct
 		}
 	}
 
-	return uniqueStrings(modules), uniqueStrings(dependencies), replacements, nil
+	return uniqueStrings(modules), uniqueStrings(dependencies), replacements, oversizedDirs, nil
 }
 
 func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {

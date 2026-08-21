@@ -1590,6 +1590,43 @@ func TestAnalyseDoesNotTrustRootWorkspaceEntryWhenRootGoModIsOversized(t *testin
 	}
 }
 
+func TestAnalyseSkipsAttributionWhenNestedGoModIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeRootUUIDModule(t, repo)
+	nestedDir := filepath.Join(repo, "services", "api")
+	writeOversizedModuleGoMod(t, nestedDir, "example.com/service")
+	writeFile(t, filepath.Join(nestedDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+
+	names := dependencyNames(reportData.Dependencies)
+	if slices.Contains(names, depLo) {
+		t.Fatalf("expected oversized nested go.mod to suppress nested source attribution, got %#v", names)
+	}
+	requireOversizedModuleWarning(t, reportData)
+}
+
+func TestAnalyseSkipsAttributionWhenWorkspaceGoModIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
+	workspaceDir := filepath.Join(repo, "svc", "a")
+	writeOversizedModuleGoMod(t, workspaceDir, "example.com/workspace")
+	writeFile(t, filepath.Join(workspaceDir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+
+	reportData := analyseReport(t, language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+
+	if names := dependencyNames(reportData.Dependencies); len(names) != 0 {
+		t.Fatalf("expected oversized workspace go.mod to suppress workspace source attribution, got %#v", names)
+	}
+	requireOversizedModuleWarning(t, reportData)
+}
+
 func analyseOversizedRootFixture(t *testing.T, repo string, mainLines ...string) report.Report {
 	t.Helper()
 	writeOversizedValidRootGoMod(t, repo)
@@ -1603,6 +1640,23 @@ func requireOversizedRootWarning(t *testing.T, reportData report.Report) {
 	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "root go.mod exceeds") {
 		t.Fatalf("expected transparent oversized go.mod warning, got %#v", reportData.Warnings)
 	}
+}
+
+func requireOversizedModuleWarning(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "module(s) because go.mod exceeds") {
+		t.Fatalf("expected transparent oversized module warning, got %#v", reportData.Warnings)
+	}
+}
+
+func writeOversizedModuleGoMod(t *testing.T, dir, modulePath string) {
+	t.Helper()
+	prefix := modulePrefix + modulePath + "\n\n" + requirePrefix + depLo + " v1.47.0\n"
+	paddingLen := goModSizeLimitTest + 1 - len(prefix)
+	if paddingLen < 0 {
+		t.Fatalf("oversized module go.mod prefix exceeds test limit")
+	}
+	writeFile(t, filepath.Join(dir, fileGoMod), prefix+strings.Repeat("x", paddingLen))
 }
 
 func TestDetectWithConfidenceCanceledContext(t *testing.T) {

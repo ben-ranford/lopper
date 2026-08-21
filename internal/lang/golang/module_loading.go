@@ -2,6 +2,7 @@ package golang
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 
@@ -110,12 +111,13 @@ func loadNestedModules(repoPath string, info *moduleInfo) error {
 	info.NestedModuleDirs = normalizedDirSet(scanNestedDirs)
 
 	metadataNestedDirs := unionDirSet(info.NestedModuleDirs, info.WorkspaceModuleExclusions)
-	nestedModules, nestedDeps, nestedReplacements, err := discoverNestedModulesFromDirs(repoPath, metadataNestedDirs)
+	nestedModules, nestedDeps, nestedReplacements, oversizedModuleDirs, err := discoverNestedModulesFromDirs(repoPath, metadataNestedDirs)
 	if err != nil {
 		return err
 	}
 	info.LocalModulePaths = append(info.LocalModulePaths, nestedModules...)
 	info.DeclaredDependencies = append(info.DeclaredDependencies, nestedDeps...)
+	info.OversizedModuleDirs = normalizedDirSet(oversizedModuleDirs)
 	for replacementImport, dependency := range nestedReplacements {
 		if _, ok := info.ReplacementImports[replacementImport]; !ok {
 			info.ReplacementImports[replacementImport] = dependency
@@ -157,6 +159,14 @@ func finalizeGoModuleInfo(info *moduleInfo) error {
 	info.DeclaredDependencies = uniqueStrings(info.DeclaredDependencies)
 	sort.Strings(info.LocalModulePaths)
 	sort.Strings(info.DeclaredDependencies)
+	info.VendoringWarnings = append(info.VendoringWarnings, oversizedModuleWarnings(info.OversizedModuleDirs)...)
 	sort.Strings(info.VendoringWarnings)
 	return nil
+}
+
+func oversizedModuleWarnings(dirs map[string]struct{}) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("skipped Go source dependency attribution for %d module(s) because go.mod exceeds %d bytes", len(dirs), maxGoModBytes)}
 }
