@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func collectManifestDependencies(repoPath, dir string, files map[string]struct{}) (map[string]struct{}, []string, error) {
@@ -92,21 +94,23 @@ func parsePipfileDependencies(repoPath, path string) (map[string]struct{}, []str
 }
 
 func parseRequirementsDependencies(repoPath, path string) (map[string]struct{}, []string, error) {
-	content, err := readOptionalFileContent(repoPath, path)
+	pathLabel := relativePackagingPath(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxRequirementsTxtBytes)
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
 		return make(map[string]struct{}), nil, nil
+	case errors.Is(err, safeio.ErrFileTooLarge):
+		return make(map[string]struct{}), []string{fmt.Sprintf("%s: skipped requirements.txt above %d bytes", pathLabel, maxRequirementsTxtBytes)}, nil
 	default:
-		return nil, nil, fmt.Errorf("read %s: %w", relativePackagingPath(repoPath, path), err)
+		return nil, nil, fmt.Errorf("read %s: %w", pathLabel, err)
 	}
 
 	dependencies := make(map[string]struct{})
 	warnings := make([]string, 0)
 	skipped := 0
-	pathLabel := relativePackagingPath(repoPath, path)
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 64*1024), len(content))
+	scanner.Buffer(make([]byte, 0, 64*1024), len(content)+1)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		switch {

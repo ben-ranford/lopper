@@ -199,6 +199,40 @@ func TestParseRequirementsDependenciesAcceptsLongLines(t *testing.T) {
 	}
 }
 
+func TestParseRequirementsDependenciesAcceptsExactSizeLimit(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	requirement := "requests==2.32.0"
+	testutil.MustWriteFile(t, path, requirement+strings.Repeat(" ", int(maxRequirementsTxtBytes)-len(requirement)))
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+}
+
+func TestParseRequirementsDependenciesSkipsOversizedFile(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, pythonRequirementsTxt)
+	content := "requests==2.32.0\n" + strings.Repeat("#", int(maxRequirementsTxtBytes)+1-len("requests==2.32.0\n"))
+	testutil.MustWriteFile(t, path, content)
+
+	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
+	if err != nil {
+		t.Fatalf(parseRequirementsErrFmt, err)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf(expectedNoDependenciesFmt, dependencies)
+	}
+	assertWarningContains(t, warnings, "skipped requirements.txt above 1048576 bytes")
+}
+
 func TestCollectDirectoryDeclaredDependenciesFromRequirementsTxt(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), `
