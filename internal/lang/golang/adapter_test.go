@@ -1558,6 +1558,27 @@ func TestOversizedRootGoModRejectsFormFeedModuleWhitespace(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
+func TestOversizedRootGoModRejectsVerticalTabModuleWhitespace(t *testing.T) {
+	for name, moduleLine := range map[string]string{
+		"leading":  "\vmodule example.com/root",
+		"trailing": "module example.com/root\v",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModWithModuleLine(t, repo, "", moduleLine)
+
+			requireNoTrustedOversizedRootModuleMetadata(t, repo)
+		})
+	}
+}
+
+func TestOversizedRootGoModRejectsNonASCIIWhitespace(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModWithModuleLine(t, repo, "", "\u00a0module example.com/root")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func TestOversizedRootGoModStopsModuleProbeForUnterminatedCommentWithoutModule(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoMod), "/*"+strings.Repeat("x", goModSizeLimitTest+198*1024))

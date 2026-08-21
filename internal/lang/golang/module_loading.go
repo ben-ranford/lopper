@@ -352,13 +352,19 @@ func isGoModDirectiveSpace(b byte) bool {
 	}
 }
 
+func trimGoModDirectiveSpace(lineText string) string {
+	return strings.Trim(lineText, goModDirectiveSpaceCutset)
+}
+
+const goModDirectiveSpaceCutset = " \t\r"
+
 func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, tooLarge bool) {
 	if tooLarge {
 		line.Reset()
 		s.invalid = true
 		return
 	}
-	lineText := strings.TrimSpace(line.String())
+	lineText := trimGoModDirectiveSpace(line.String())
 	line.Reset()
 	if lineText == "" {
 		return
