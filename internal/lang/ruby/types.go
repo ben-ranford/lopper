@@ -10,6 +10,7 @@ const (
 	gemfileName     = "Gemfile"
 	gemfileLockName = "Gemfile.lock"
 	gemspecExt      = ".gemspec"
+	maxGemspecBytes = 1 * 1024 * 1024
 	maxDetectFiles  = 1024
 )
 

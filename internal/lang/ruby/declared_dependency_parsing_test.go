@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -48,6 +49,26 @@ func testRubyLoadGemspecDependenciesReturnsReadError(t *testing.T) {
 
 	if warnings, err := loadGemspecDependencies(context.Background(), repo, map[string]struct{}{}); err == nil || len(warnings) != 0 {
 		t.Fatalf("expected loadGemspecDependencies read error, warnings=%#v err=%v", warnings, err)
+	}
+}
+
+func TestRubyLoadGemspecDependenciesSkipsOversizedGemspec(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "oversized.gemspec"), "spec.add_dependency 'oversized'\n", maxGemspecBytes+1)
+
+	out := map[string]struct{}{}
+	warnings, err := loadGemspecDependencies(context.Background(), repo, out)
+	if err != nil {
+		t.Fatalf("loadGemspecDependencies: %v", err)
+	}
+	if _, ok := out["oversized"]; ok {
+		t.Fatalf("expected oversized gemspec dependency to be skipped, got %#v", out)
+	}
+	joinedWarnings := strings.Join(warnings, "\n")
+	if !strings.Contains(joinedWarnings, "skipped oversized.gemspec") || !strings.Contains(joinedWarnings, "exceeds") {
+		t.Fatalf("expected oversized gemspec warning, got %#v", warnings)
 	}
 }
 
