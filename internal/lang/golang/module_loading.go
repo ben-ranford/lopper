@@ -109,7 +109,7 @@ func readOversizedGoModModulePath(repoPath, goModPath string) (_ string, err err
 			err = errors.Join(err, closeErr)
 		}
 	}()
-	return scanGoModModulePath(io.LimitReader(file, maxGoModModulePathProbeBytes))
+	return scanGoModModulePath(file)
 }
 
 func isPureGoModSizeLimit(err error) bool {
@@ -126,6 +126,7 @@ func scanGoModModulePath(reader io.Reader) (string, error) {
 type goModModuleScanner struct {
 	buffered         *bufio.Reader
 	line             strings.Builder
+	lineInvalid      bool
 	lineTooLarge     bool
 	lineLastSpace    bool
 	inBlockComment   bool
@@ -206,6 +207,7 @@ func (s *goModModuleScanner) tryStartComment() (bool, error) {
 	case '*':
 		_, err = s.buffered.ReadByte()
 		s.inBlockComment = err == nil
+		s.lineInvalid = s.lineInvalid || s.line.Len() > 0
 		s.blockCommentStar = false
 		return true, err
 	default:
@@ -231,7 +233,8 @@ func (s *goModModuleScanner) appendLineByte(b byte) {
 }
 
 func (s *goModModuleScanner) finishLine() string {
-	modulePath := parseScannedGoModLine(&s.line, s.lineTooLarge)
+	modulePath := parseScannedGoModLine(&s.line, s.lineInvalid || s.lineTooLarge)
+	s.lineInvalid = false
 	s.lineTooLarge = false
 	s.lineLastSpace = false
 	return modulePath

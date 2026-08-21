@@ -1557,6 +1557,31 @@ func TestOversizedRootGoModRejectsRawQuotedModuleDirective(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
+func TestOversizedRootGoModKeepsPhysicalEOFFinalModuleLine(t *testing.T) {
+	repo := t.TempDir()
+	prefix := strings.Repeat("// x\n", (goModSizeLimitTest+70*1024)/5)
+	writeFile(t, filepath.Join(repo, fileGoMod), prefix+"module example.com/root")
+
+	requireOversizedRootModulePath(t, repo, "module path extraction from physical EOF final line")
+}
+
+func TestOversizedRootGoModRejectsModuleDirectiveTruncatedByProbe(t *testing.T) {
+	repo := t.TempDir()
+	truncatedDirective := "module example"
+	prefixLen := goModSizeLimitTest + 128*1024 - len(truncatedDirective)
+	prefix := strings.Repeat("\n", prefixLen)
+	writeFile(t, filepath.Join(repo, fileGoMod), prefix+truncatedDirective+"\n")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsModuleDirectiveWithUnterminatedBlockComment(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModWithModuleLine(t, repo, "", "module example.com/root /*")
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func requireNoTrustedOversizedRootModuleMetadata(t *testing.T, repo string) {
 	t.Helper()
 	info, err := loadGoModuleInfo(repo)
@@ -1564,7 +1589,7 @@ func requireNoTrustedOversizedRootModuleMetadata(t *testing.T, repo string) {
 		t.Fatalf("loadGoModuleInfo: %v", err)
 	}
 	if info.ModulePath != "" || len(info.LocalModulePaths) != 0 || len(info.DeclaredDependencies) != 0 {
-		t.Fatalf("expected capped oversized root module probe to trust no metadata, got %#v", info)
+		t.Fatalf("expected oversized root module probe to trust no metadata, got %#v", info)
 	}
 }
 
