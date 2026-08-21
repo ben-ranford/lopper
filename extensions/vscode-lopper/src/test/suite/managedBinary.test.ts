@@ -273,6 +273,59 @@ suite("managed binary installer", () => {
     }
   });
 
+  test("preserves non-bare configured release tags during managed install", async () => {
+    for (const managedBinaryTag of ["1.2.3-alpha/beta", "1.2.3+meta/build"]) {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-tag-"));
+      const previousPath = process.env.PATH;
+      const cacheLookupTags: Array<string | undefined> = [];
+      const progressTags: Array<string | undefined> = [];
+      const installTags: Array<string | undefined> = [];
+
+      try {
+        process.env.PATH = "";
+        const lifecycle = new LopperBinaryLifecycleManager(
+          {
+            findInstalledBinary: async (releaseTag) => {
+              cacheLookupTags.push(releaseTag);
+              return undefined;
+            },
+            ensureInstalled: async (releaseTag) => {
+              installTags.push(releaseTag);
+              return {
+                binaryPath: path.join(tempRoot, "managed", "lopper"),
+                tag: releaseTag ?? "latest",
+                downloaded: true,
+              };
+            },
+          },
+          { appendLine: () => undefined },
+          {
+            install: async (releaseTag, install) => {
+              progressTags.push(releaseTag);
+              return install();
+            },
+          },
+          "linux",
+        );
+
+        const binaryPath = await lifecycle.resolveBinaryPath({
+          workspaceRoot: tempRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: true,
+          managedBinaryTag,
+        });
+
+        assert.equal(binaryPath, path.join(tempRoot, "managed", "lopper"));
+        assert.deepEqual(cacheLookupTags, [managedBinaryTag]);
+        assert.deepEqual(progressTags, [managedBinaryTag]);
+        assert.deepEqual(installTags, [managedBinaryTag]);
+      } finally {
+        restoreEnv("PATH", previousPath);
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("falls back to PATH when workspace-local bin binary is missing", async () => {
     await withPathFallbackFixture("missing", async ({ workspaceRoot, fallbackBinary, lifecycle }) => {
       const resolvedPath = await lifecycle.resolveBinaryPath({

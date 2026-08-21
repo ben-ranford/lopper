@@ -496,7 +496,7 @@ function normalizeConfiguredReleaseTag(releaseTag?: string): string | undefined 
   if (!normalizedTag || normalizedTag.startsWith("v")) {
     return normalizedTag;
   }
-  if (/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(normalizedTag)) {
+  if (/^\d+\.\d+\.\d+$/.test(normalizedTag)) {
     return `v${normalizedTag}`;
   }
   return normalizedTag;
