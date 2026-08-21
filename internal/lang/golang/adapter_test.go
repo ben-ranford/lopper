@@ -1579,6 +1579,58 @@ func TestOversizedRootGoModRejectsModuleDirectiveWithUnterminatedBlockComment(t 
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
+func TestOversizedRootGoModRejectsUnknownDirectiveBeforeModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"unknown example.com/bad",
+		"module example.com/root",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModAcceptsKnownDirectiveBeforeModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"go 1.23.0",
+		"module example.com/root",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction after known directive")
+}
+
+func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"unknown example.com/bad",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsModuleDirectiveInsideRequireBlock(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"require (",
+		"module example.com/bad",
+		")",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsDuplicateModuleDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"module example.com/other",
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func requireNoTrustedOversizedRootModuleMetadata(t *testing.T, repo string) {
 	t.Helper()
 	info, err := loadGoModuleInfo(repo)
@@ -1843,11 +1895,12 @@ func requireNoAbsentSourceWarning(t *testing.T, reportData report.Report) {
 func writeOversizedModuleGoMod(t *testing.T, dir, modulePath string) {
 	t.Helper()
 	prefix := modulePrefix + modulePath + "\n\n" + requirePrefix + depLo + " v1.47.0\n"
-	paddingLen := goModSizeLimitTest + 1 - len(prefix)
+	commentPrefix := "// "
+	paddingLen := goModSizeLimitTest + 1 - len(prefix) - len(commentPrefix)
 	if paddingLen < 0 {
 		t.Fatalf("oversized module go.mod prefix exceeds test limit")
 	}
-	writeFile(t, filepath.Join(dir, fileGoMod), prefix+strings.Repeat("x", paddingLen))
+	writeFile(t, filepath.Join(dir, fileGoMod), prefix+commentPrefix+strings.Repeat("x", paddingLen))
 }
 
 func writeOversizedModuleWithLoImport(t *testing.T, dir, modulePath string) {
@@ -1881,6 +1934,16 @@ func writeOversizedRootGoModWithModuleLine(t *testing.T, repo, prefix, moduleLin
 		paddingLen = 0
 	}
 	writeFile(t, filepath.Join(repo, fileGoMod), prefix+body+"// "+strings.Repeat("x", paddingLen))
+}
+
+func writeOversizedRootGoModLines(t *testing.T, repo string, lines ...string) {
+	t.Helper()
+	body := strings.Join(lines, "\n") + "\n"
+	paddingLen := goModSizeLimitTest + 1 - len(body) - len("// ")
+	if paddingLen < 0 {
+		t.Fatalf("oversized go.mod body exceeds test limit")
+	}
+	writeFile(t, filepath.Join(repo, fileGoMod), body+"// "+strings.Repeat("x", paddingLen))
 }
 
 func writeOversizedModuleGoModWithLeadingComments(t *testing.T, dir, modulePath string, commentBytes int) {

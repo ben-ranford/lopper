@@ -126,6 +126,9 @@ func scanGoModModulePath(reader io.Reader) (string, error) {
 type goModModuleScanner struct {
 	buffered         *bufio.Reader
 	line             strings.Builder
+	modulePath       string
+	blockDirective   string
+	invalid          bool
 	lineInvalid      bool
 	lineTooLarge     bool
 	lineLastSpace    bool
@@ -139,39 +142,46 @@ func (s *goModModuleScanner) scan() (string, error) {
 		b, err := s.buffered.ReadByte()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return s.finishLine(), nil
+				if s.inBlockComment {
+					s.invalid = true
+				} else {
+					s.finishLine()
+				}
+				if s.invalid || s.blockDirective != "" {
+					return "", nil
+				}
+				return s.modulePath, nil
 			}
 			return "", err
 		}
-		if modulePath, found, err := s.consumeByte(b); found || err != nil {
-			return modulePath, err
+		if err := s.consumeByte(b); err != nil {
+			return "", err
 		}
 	}
 }
 
-func (s *goModModuleScanner) consumeByte(b byte) (string, bool, error) {
+func (s *goModModuleScanner) consumeByte(b byte) error {
 	if s.inLineComment {
-		modulePath := s.consumeLineCommentByte(b)
-		return modulePath, modulePath != "", nil
+		s.consumeLineCommentByte(b)
+		return nil
 	}
 	if s.inBlockComment {
 		s.consumeBlockCommentByte(b)
-		return "", false, nil
+		return nil
 	}
 	if b == '\n' {
-		modulePath := s.finishLine()
-		return modulePath, modulePath != "", nil
+		s.finishLine()
+		return nil
 	}
 	return s.consumeCodeByte(b)
 }
 
-func (s *goModModuleScanner) consumeLineCommentByte(b byte) string {
+func (s *goModModuleScanner) consumeLineCommentByte(b byte) {
 	if b != '\n' {
-		return ""
+		return
 	}
-	modulePath := s.finishLine()
+	s.finishLine()
 	s.inLineComment = false
-	return modulePath
 }
 
 func (s *goModModuleScanner) consumeBlockCommentByte(b byte) {
@@ -183,15 +193,15 @@ func (s *goModModuleScanner) consumeBlockCommentByte(b byte) {
 	s.blockCommentStar = b == '*'
 }
 
-func (s *goModModuleScanner) consumeCodeByte(b byte) (string, bool, error) {
+func (s *goModModuleScanner) consumeCodeByte(b byte) error {
 	if b == '/' {
 		consumed, err := s.tryStartComment()
 		if consumed || err != nil {
-			return "", false, err
+			return err
 		}
 	}
 	s.appendLineByte(b)
-	return "", false, nil
+	return nil
 }
 
 func (s *goModModuleScanner) tryStartComment() (bool, error) {
@@ -207,7 +217,8 @@ func (s *goModModuleScanner) tryStartComment() (bool, error) {
 	case '*':
 		_, err = s.buffered.ReadByte()
 		s.inBlockComment = err == nil
-		s.lineInvalid = s.lineInvalid || s.line.Len() > 0
+		s.invalid = true
+		s.lineInvalid = true
 		s.blockCommentStar = false
 		return true, err
 	default:
@@ -232,12 +243,11 @@ func (s *goModModuleScanner) appendLineByte(b byte) {
 	s.line.WriteByte(b)
 }
 
-func (s *goModModuleScanner) finishLine() string {
-	modulePath := parseScannedGoModLine(&s.line, s.lineInvalid || s.lineTooLarge)
+func (s *goModModuleScanner) finishLine() {
+	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid || s.lineTooLarge)
 	s.lineInvalid = false
 	s.lineTooLarge = false
 	s.lineLastSpace = false
-	return modulePath
 }
 
 func isGoModDirectiveSpace(b byte) bool {
@@ -249,21 +259,87 @@ func isGoModDirectiveSpace(b byte) bool {
 	}
 }
 
-func parseScannedGoModLine(line *strings.Builder, tooLarge bool) string {
+func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, tooLarge bool) {
 	if tooLarge {
 		line.Reset()
-		return ""
+		s.invalid = true
+		return
 	}
 	lineText := line.String()
 	line.Reset()
 	if strings.TrimSpace(lineText) == "" {
-		return ""
+		return
+	}
+	if s.blockDirective != "" {
+		s.consumeGoModBlockLine(lineText)
+		return
+	}
+	if strings.HasSuffix(lineText, " (") {
+		s.startGoModBlock(strings.TrimSuffix(lineText, " ("))
+		return
+	}
+	if strings.HasPrefix(lineText, modulePrefix) {
+		s.consumeGoModModuleLine(lineText)
+		return
+	}
+	if !isValidGoModDirectiveLine(s.validationModulePath(), lineText) {
+		s.invalid = true
+	}
+}
+
+func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
+	if lineText == ")" {
+		s.blockDirective = ""
+		return
+	}
+	if strings.HasPrefix(lineText, modulePrefix) || !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
+		s.invalid = true
+	}
+}
+
+func (s *goModModuleScanner) startGoModBlock(directive string) {
+	if !isValidGoModBlockDirective(s.validationModulePath(), directive) {
+		s.invalid = true
+		return
+	}
+	s.blockDirective = directive
+}
+
+func (s *goModModuleScanner) validationModulePath() string {
+	if s.modulePath != "" {
+		return s.modulePath
+	}
+	return "example.com/lopper-oversized-gomod-scan"
+}
+
+func (s *goModModuleScanner) consumeGoModModuleLine(lineText string) {
+	if s.modulePath != "" {
+		s.invalid = true
+		return
 	}
 	file, err := modfile.Parse(goModName, []byte(lineText+"\n"), nil)
 	if err != nil || file.Module == nil {
-		return ""
+		s.invalid = true
+		return
 	}
-	return file.Module.Mod.Path
+	s.modulePath = file.Module.Mod.Path
+}
+
+func isValidGoModDirectiveLine(modulePath, lineText string) bool {
+	return parseSyntheticGoMod(modulePath, lineText+"\n")
+}
+
+func isValidGoModBlockDirective(modulePath, directive string) bool {
+	return parseSyntheticGoMod(modulePath, directive+" (\n)\n")
+}
+
+func isValidGoModBlockLine(modulePath, directive, lineText string) bool {
+	return parseSyntheticGoMod(modulePath, directive+" (\n"+lineText+"\n)\n")
+}
+
+func parseSyntheticGoMod(modulePath, body string) bool {
+	_, err := modfile.Parse(goModName, []byte(modulePrefix+modulePath+"\n"+body), nil)
+	return err == nil
 }
 
 func loadWorkspaceModules(repoPath string, info *moduleInfo) error {
