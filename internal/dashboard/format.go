@@ -565,7 +565,7 @@ func formatTeamSummary(reportData Report, _ string) string {
 	var buffer strings.Builder
 	buffer.WriteString("Lopper remediation summary")
 	buffer.WriteString("\n")
-	buffer.WriteString(fmt.Sprintf("Repos: %d | Items: %d | Reachable vulnerabilities: %d\n", reportData.Summary.TotalRepos, len(items), reportData.Summary.ReachableVulnerabilities))
+	fmt.Fprintf(&buffer, "Repos: %d | Items: %d | Reachable vulnerabilities: %d\n", reportData.Summary.TotalRepos, len(items), reportData.Summary.ReachableVulnerabilities)
 	grouped := remediationByTeam(items)
 	teams := make([]string, 0, len(grouped))
 	for team := range grouped {

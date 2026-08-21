@@ -486,6 +486,9 @@ func pathContainsTraversalComponent(path string) bool {
 	}
 	path = path[len(filepath.VolumeName(path)):]
 	parts := strings.FieldsFunc(path, func(r rune) bool {
+		if r < 0 || r > 0xff {
+			return false
+		}
 		return os.IsPathSeparator(uint8(r))
 	})
 	return slices.Contains(parts, "..")

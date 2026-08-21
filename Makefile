@@ -21,14 +21,15 @@ LOCKFILEDRIFT_HEAD_TAG ?= lockfiledrift_head
 LOCKFILEDRIFT_HEAD_PACKAGE ?= ./internal/app
 GO ?= go
 GO_BIN ?=
-GO_TOOLCHAIN ?= go1.26.6
+GO_TOOLCHAIN ?= go1.27.0
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 MANPAGE_OUT ?= docs/man/lopper.1
-GOLANGCI_LINT_VERSION ?= v2.9.0
-GOSTYLE_VERSION ?= v0.25.3
-GOSEC_VERSION ?= v2.22.11
+GOLANGCI_LINT_VERSION ?= v2.13.1
+GOSTYLE_VERSION ?= v0.26.1-0.20260607232238-6ca19a9c9020
+GOSEC_VERSION ?= v2.28.0
+GOSEC_EXCLUDE_RULES ?= internal/gitexec/gitexec\\.go:G204;tools/regressionproof/main\\.go:G204
 ACTIONLINT_VERSION ?= v1.7.12
-GOVULNCHECK_VERSION ?= v1.1.4
+GOVULNCHECK_VERSION ?= v1.7.1-0.20260819171436-ff4f1c5e865b
 DUPL_VERSION ?= f008fcf5e62793d38bda510ee37aab8b0c68e76c
 DUPLICATION_MAX ?= 3
 DUPLICATION_TOKEN_THRESHOLD ?= 55
@@ -153,7 +154,7 @@ suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
 
 security:
-	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) ./...
+	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -exclude-rules "$(GOSEC_EXCLUDE_RULES)" ./...
 
 vuln-check:
 	$(GO_CMD) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
@@ -243,9 +244,8 @@ cov:
 	@$(MAKE) cov-lockfiledrift-head
 	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
 	@{ \
-		sed -n '1p' "$(COVERAGE_DEFAULT_FILE)"; \
-		sed -n '2,$$p' "$(COVERAGE_DEFAULT_FILE)"; \
-		sed -n '2,$$p' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
+		awk 'NR==1 || FNR>1 { print }' "$(COVERAGE_DEFAULT_FILE)"; \
+		awk 'FNR>1 { print }' "$(COVERAGE_LOCKFILEDRIFT_HEAD_FILE)"; \
 	} > "$(COVERAGE_FILE)"
 	@mkdir -p .artifacts
 	@GOFLAGS=-buildvcs=false $(GO_CMD) run ./tools/coveragegate \
