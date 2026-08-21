@@ -53,7 +53,7 @@ func loadGemspecDependencies(ctx context.Context, repoPath string, out map[strin
 func parseGemspecDependencies(content []byte, filePath string, out map[string]struct{}) []string {
 	var warnings []string
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	scanner.Buffer(make([]byte, 0, 64*1024), maxGemspecBytes)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxGemspecBytes+1)
 	for index := 0; scanner.Scan(); index++ {
 		line := scanner.Text()
 		line = shared.StripLineComment(line, "#")

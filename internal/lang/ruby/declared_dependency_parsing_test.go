@@ -72,6 +72,25 @@ func TestRubyLoadGemspecDependenciesSkipsOversizedGemspec(t *testing.T) {
 	}
 }
 
+func TestRubyLoadGemspecDependenciesParsesExactLimitOneLineGemspec(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "exact.gemspec"), "spec.add_dependency 'exact_limit'", maxGemspecBytes)
+
+	out := map[string]struct{}{}
+	warnings, err := loadGemspecDependencies(context.Background(), repo, out)
+	if err != nil {
+		t.Fatalf("loadGemspecDependencies: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for exact-limit gemspec, got %#v", warnings)
+	}
+	if _, ok := out["exact-limit"]; !ok {
+		t.Fatalf("expected exact-limit dependency from exact-limit gemspec, got %#v", out)
+	}
+}
+
 func TestRubyLoadGemspecDependenciesRespectsContextCancellation(t *testing.T) {
 	t.Helper()
 
