@@ -153,7 +153,7 @@ func appendUndeclaredDependencyWarnings(result *scanResult) {
 }
 
 func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scanResult) error {
-	if shouldSkipSourceForOversizedRoot(path, moduleInfo) {
+	if shouldSkipSourceForOversizedRoot(repoPath, path, moduleInfo) {
 		return nil
 	}
 	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannableGoFile)
@@ -193,25 +193,35 @@ func scanGoSourceFile(repoPath, path string, moduleInfo moduleInfo, result *scan
 	return nil
 }
 
-func shouldSkipSourceForOversizedRoot(path string, moduleInfo moduleInfo) bool {
+func shouldSkipSourceForOversizedRoot(repoPath, path string, moduleInfo moduleInfo) bool {
 	if !moduleInfo.RootGoModTooLarge {
 		return false
 	}
-	return !pathInKnownModuleDir(path, moduleInfo)
+	return !pathInKnownModuleDir(repoPath, path, moduleInfo)
 }
 
-func pathInKnownModuleDir(path string, moduleInfo moduleInfo) bool {
+func pathInKnownModuleDir(repoPath, path string, moduleInfo moduleInfo) bool {
 	for dir := range moduleInfo.WorkspaceModuleExclusions {
+		if isOversizedRootDir(repoPath, dir) {
+			continue
+		}
 		if pathWithinCleanDir(path, dir) {
 			return true
 		}
 	}
 	for dir := range moduleInfo.NestedModuleDirs {
+		if isOversizedRootDir(repoPath, dir) {
+			continue
+		}
 		if pathWithinCleanDir(path, dir) {
 			return true
 		}
 	}
 	return false
+}
+
+func isOversizedRootDir(repoPath, dir string) bool {
+	return filepath.Clean(repoPath) == filepath.Clean(dir)
 }
 
 func pathWithinCleanDir(path, dir string) bool {
