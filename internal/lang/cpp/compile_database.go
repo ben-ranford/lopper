@@ -3,6 +3,7 @@ package cpp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -115,14 +116,19 @@ func collectCompileDatabase(path, repoPath string, includeDirSet, sourceFileSet 
 }
 
 func readCompileDatabase(path, repoPath string) ([]compileCommandEntry, []string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, path)
-	if err != nil {
+	relPath := relOrBase(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxCompileDatabaseBytes)
+	switch {
+	case err == nil:
+	case errors.Is(err, safeio.ErrFileTooLarge):
+		return nil, []string{oversizedCPPInputWarning(relPath, maxCompileDatabaseBytes)}, nil
+	default:
 		return nil, nil, err
 	}
 
 	var entries []compileCommandEntry
 	if err := json.Unmarshal(content, &entries); err != nil {
-		return nil, []string{fmt.Sprintf("failed to parse %s: %v", relOrBase(repoPath, path), err)}, nil
+		return nil, []string{fmt.Sprintf("failed to parse %s: %v", relPath, err)}, nil
 	}
 	return entries, nil, nil
 }

@@ -2,6 +2,7 @@ package cpp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -42,6 +43,7 @@ type scanResult struct {
 	Warnings          []string
 	UnresolvedCount   int
 	UnresolvedSamples []string
+	SkippedLargeFiles int
 	Catalog           dependencyCatalog
 }
 
@@ -86,6 +88,7 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, 
 			return stage.result, err
 		}
 	}
+	stage.result.appendLargeFileWarning()
 	stage.result.appendUnresolvedSummaryWarning()
 	return stage.result, nil
 }
@@ -149,6 +152,10 @@ func (s *scanStage) process(ctx context.Context, path string) error {
 
 	scanFile, unresolvedSamples, unresolvedCount, err := s.scanner.scanFile(path)
 	if err != nil {
+		if errors.Is(err, safeio.ErrFileTooLarge) {
+			s.result.SkippedLargeFiles++
+			return nil
+		}
 		if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
 			s.result.Warnings = append(s.result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
 			return nil
@@ -170,6 +177,13 @@ func (r *scanResult) appendSampleWarnings(samples []string) {
 		}
 		r.UnresolvedSamples = append(r.UnresolvedSamples, sample)
 	}
+}
+
+func (r *scanResult) appendLargeFileWarning() {
+	if r.SkippedLargeFiles == 0 {
+		return
+	}
+	r.Warnings = append(r.Warnings, fmt.Sprintf("skipped %d large C/C++ source file(s) above %d bytes", r.SkippedLargeFiles, maxScannableCPPFile))
 }
 
 func (r *scanResult) appendUnresolvedSummaryWarning() {
@@ -200,7 +214,7 @@ func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 
 func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error) {
 	scan := fileScan{}
-	content, err := safeio.ReadFileUnder(r.repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(r.repoPath, path, maxScannableCPPFile)
 	if err != nil {
 		return scan, nil, 0, err
 	}

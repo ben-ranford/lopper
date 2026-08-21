@@ -108,12 +108,20 @@ func loadDependencyCatalog(repoPath string) (dependencyCatalog, []string, error)
 }
 
 func loadDependencyManifest(repoPath, path string, catalog *dependencyCatalog) ([]string, error) {
+	filename := filepath.Base(path)
+	limit, ok := cppDependencyManifestByteLimit(filename)
+	if !ok {
+		return nil, nil
+	}
+
 	relPath := relOrBase(repoPath, path)
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, limit)
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
 		return nil, nil
+	case errors.Is(err, safeio.ErrFileTooLarge):
+		return []string{oversizedCPPInputWarning(relPath, limit)}, nil
 	default:
 		return nil, fmt.Errorf("read %s: %w", relPath, err)
 	}
@@ -124,7 +132,7 @@ func loadDependencyManifest(repoPath, path string, catalog *dependencyCatalog) (
 		source       string
 	)
 
-	switch filepath.Base(path) {
+	switch filename {
 	case vcpkgManifestFile:
 		dependencies, warnings = parseVcpkgManifest(content)
 		source = "vcpkg manifest"
