@@ -20,6 +20,7 @@ const (
 	testFilePomXML         = "pom.xml"
 	testFileBuildGradleKTS = "build.gradle.kts"
 	testFileMainKT         = "Main.kt"
+	testKotlinEscapedWhen  = "`when`"
 	errDetectFmt           = "detect: %v"
 	errAnalyseFmt          = "analyse: %v"
 	errSymlinkFmt          = "symlink not supported: %v"
@@ -167,6 +168,59 @@ import okhttp3.OkHttpClient
 	unexpectedWarning := "unable to resolve Gradle version catalog"
 	usageFailure := "expected catalog-backed dependency usage to be recorded"
 	assertSingleUsedDependencyReportWithoutWarning(t, req, unexpectedWarning, usageFailure)
+}
+
+func TestAdapterAnalyseDependencyNormalizesEscapedKotlinPackageLookup(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testFileBuildGradleKTS), `
+dependencies {
+  implementation("com.example.when:widgets:1.0.0")
+}
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
+package app.consumer
+
+import com.example.`+testKotlinEscapedWhen+`.Widget
+
+fun run() {
+  Widget()
+}
+`)
+
+	reportData := analyseJVMReport(t, language.Request{RepoPath: repo, Dependency: "widgets"})
+	assertSingleDependencyUsage(t, reportData.Dependencies, "widgets", "expected escaped Kotlin package segment to resolve to declared dependency")
+	dependency := reportData.Dependencies[0]
+	if len(dependency.UsedImports) != 1 {
+		t.Fatalf("expected one used import, got %#v", dependency.UsedImports)
+	}
+	if dependency.UsedImports[0].Module != "com.example.`when`.Widget" {
+		t.Fatalf("expected report module to preserve source spelling, got %#v", dependency.UsedImports[0])
+	}
+}
+
+func TestAdapterTopNNormalizesEscapedKotlinFallbackDependency(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
+package app.consumer
+
+import custom.`+testKotlinEscapedWhen+`.Widget
+
+fun run() {
+  Widget()
+}
+`)
+
+	reportData := analyseJVMReport(t, language.Request{RepoPath: repo, TopN: 5})
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one fallback dependency report, got %#v", reportData.Dependencies)
+	}
+	dependency := reportData.Dependencies[0]
+	if dependency.Name != "custom.when" || dependency.UsedExportsCount == 0 {
+		t.Fatalf("expected normalized fallback dependency usage, got %#v", dependency)
+	}
+	if len(dependency.UsedImports) != 1 || dependency.UsedImports[0].Module != "custom.`when`.Widget" {
+		t.Fatalf("expected fallback import report to preserve source spelling, got %#v", dependency.UsedImports)
+	}
 }
 
 func TestAdapterMetadataAndDetect(t *testing.T) {
