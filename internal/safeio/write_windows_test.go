@@ -325,6 +325,175 @@ func TestFallbackAtomicReplacementRejectsTargetChangedAfterLatePin(t *testing.T)
 	}
 }
 
+func TestWriteFileAtomicallyIfAbsentFallsBackToWindowsNoReplaceRename(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	root := newWindowsNoReplaceIfAbsentRoot(t, rootInfo, tempInfo)
+
+	renameCalls := 0
+	restoreWindowsNoReplaceRename(t, func(rootName string, gotRootInfo fs.FileInfo, tempRel, targetRel string, gotTempInfo fs.FileInfo) error {
+		renameCalls++
+		if rootName != `C:\safe-root` {
+			t.Fatalf("unexpected root name: %q", rootName)
+		}
+		if !os.SameFile(rootInfo, gotRootInfo) {
+			t.Fatal("fallback received the wrong root identity")
+		}
+		if tempRel != ".safeio-atomic-temp" || targetRel != writeTestFileName {
+			t.Fatalf("unexpected rename paths: %s -> %s", tempRel, targetRel)
+		}
+		if !os.SameFile(tempInfo, gotTempInfo) {
+			t.Fatal("fallback received the wrong temp identity")
+		}
+		root.targetPublished = true
+		return nil
+	})
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if err != nil {
+		t.Fatalf("writeFileAtomicallyIfAbsentAtRoot returned error: %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one no-replace rename fallback, got %d", renameCalls)
+	}
+	if root.removeCalls != 0 {
+		t.Fatalf("expected no temp removal after no-replace rename, got %d", root.removeCalls)
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentNoReplaceFallbackPreservesExistingTarget(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	root := newWindowsNoReplaceIfAbsentRoot(t, rootInfo, tempInfo)
+
+	restoreWindowsNoReplaceRename(t, func(string, fs.FileInfo, string, string, fs.FileInfo) error {
+		return os.ErrExist
+	})
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing target error, got %v", err)
+	}
+	if root.targetPublished {
+		t.Fatal("target was marked published despite existing destination")
+	}
+	if root.removeCalls != 1 {
+		t.Fatalf("expected temp cleanup after failed no-replace rename, got %d", root.removeCalls)
+	}
+}
+
+func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T) {
+	const tempName = ".safeio-atomic-temp"
+	linkError := func(op, oldName, newName string, err error) error {
+		return &os.LinkError{Op: op, Old: oldName, New: newName, Err: err}
+	}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "unsupported", err: linkError("linkat", tempName, writeTestFileName, errors.ErrUnsupported), want: true},
+		{name: "windows unsupported", err: linkError("linkat", tempName, writeTestFileName, syscall.EWINDOWS), want: true},
+		{name: "privilege not held", err: linkError("linkat", tempName, writeTestFileName, syscall.ERROR_PRIVILEGE_NOT_HELD), want: true},
+		{name: "invalid function", err: linkError("linkat", tempName, writeTestFileName, syscall.Errno(1)), want: true},
+		{name: "target exists", err: linkError("linkat", tempName, writeTestFileName, syscall.ERROR_ALREADY_EXISTS)},
+		{name: "wrong operation", err: linkError("link", tempName, writeTestFileName, errors.ErrUnsupported)},
+		{name: "wrong source", err: linkError("linkat", "other-temp", writeTestFileName, errors.ErrUnsupported)},
+		{name: "wrong target", err: linkError("linkat", tempName, "other-target", errors.ErrUnsupported)},
+		{name: "raw unsupported", err: errors.ErrUnsupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := windowsHardLinkUnsupported(tt.err, tempName, writeTestFileName)
+			if got != tt.want {
+				t.Fatalf("unexpected fallback decision: got %t want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+type windowsNoReplaceIfAbsentRoot struct {
+	*fakeRoot
+	name            string
+	rootInfo        fs.FileInfo
+	tempInfo        fs.FileInfo
+	targetPublished bool
+	removeCalls     int
+}
+
+func newWindowsNoReplaceIfAbsentRoot(t *testing.T, rootInfo, tempInfo fs.FileInfo) *windowsNoReplaceIfAbsentRoot {
+	t.Helper()
+	root := &windowsNoReplaceIfAbsentRoot{
+		name:     `C:\safe-root`,
+		rootInfo: rootInfo,
+		tempInfo: tempInfo,
+	}
+	root.fakeRoot = &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case ".":
+				return root.rootInfo, nil
+			case writeTestFileName:
+				if root.targetPublished {
+					return root.tempInfo, nil
+				}
+				return nil, os.ErrNotExist
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != ".safeio-atomic-temp" {
+				t.Fatalf("unexpected temp path: %s", name)
+			}
+			if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
+				t.Fatalf("unexpected temp flags: %#x", flag)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return root.tempInfo, nil },
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: closeWithoutError,
+			}, nil
+		},
+		link: func(oldName, newName string) error {
+			return &os.LinkError{
+				Op:  "linkat",
+				Old: oldName,
+				New: newName,
+				Err: errors.ErrUnsupported,
+			}
+		},
+		rename: func(string, string) error {
+			t.Fatal("if-absent fallback must not use replace-capable Root.Rename")
+			return nil
+		},
+		remove: func(name string) error {
+			root.removeCalls++
+			if name != ".safeio-atomic-temp" {
+				t.Fatalf("unexpected cleanup path: %s", name)
+			}
+			return nil
+		},
+	}
+	return root
+}
+
+func (r *windowsNoReplaceIfAbsentRoot) rootName() string {
+	return r.name
+}
+
+func restoreWindowsNoReplaceRename(t *testing.T, fn func(string, fs.FileInfo, string, string, fs.FileInfo) error) {
+	t.Helper()
+	previousRename := windowsNoReplaceRenameFn
+	previousTempName := randomTempNameFn
+	windowsNoReplaceRenameFn = fn
+	randomTempNameFn = func() (string, error) { return ".safeio-atomic-temp", nil }
+	t.Cleanup(func() {
+		windowsNoReplaceRenameFn = previousRename
+		randomTempNameFn = previousTempName
+	})
+}
+
 type windowsFallbackTarget struct {
 	data          []byte
 	closeErr      error
