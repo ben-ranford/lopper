@@ -1533,6 +1533,25 @@ func TestOversizedRootGoModPreservesOnlyLocalModulePath(t *testing.T) {
 	}
 }
 
+func TestOversizedRootGoModScansBeyondInitialProbeForModulePath(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModWithLeadingComments(t, repo, 70*1024)
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if info.ModulePath != "example.com/root" {
+		t.Fatalf("expected bounded root module path extraction beyond initial probe, got %q", info.ModulePath)
+	}
+	if !slices.Contains(info.LocalModulePaths, "example.com/root") {
+		t.Fatalf("expected root module path in local modules, got %#v", info.LocalModulePaths)
+	}
+	if slices.Contains(info.DeclaredDependencies, depUUID) {
+		t.Fatalf("expected oversized root dependencies not to be trusted, got %#v", info.DeclaredDependencies)
+	}
+}
+
 func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
 	reportData := analyseOversizedRootFixture(t, repo,
@@ -1625,6 +1644,35 @@ func TestAnalyseSkipsAttributionWhenNestedGoModIsOversized(t *testing.T) {
 	requireOversizedModuleWarning(t, reportData)
 	requireOversizedMetadataSkipWarning(t, reportData)
 	requireNoAbsentSourceWarning(t, reportData)
+}
+
+func TestAnalyseTreatsOversizedNestedModuleIdentityAsLocalForExternalImporter(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoGoMod(t, repo, goModDemo)
+	writeRepoMainLines(t, repo,
+		packageMainLine,
+		"",
+		"import _ \"example.com/service/pkg\"",
+		"",
+		"func main() {}",
+		"",
+	)
+	nestedDir := filepath.Join(repo, "services", "api")
+	writeOversizedModuleGoMod(t, nestedDir, "example.com/service")
+	writeFile(t, filepath.Join(nestedDir, "pkg", "pkg.go"), "package pkg\n")
+
+	reportData := analyseTopGoDependencies(t, repo)
+
+	names := dependencyNames(reportData.Dependencies)
+	if slices.Contains(names, "example.com/service") || slices.Contains(names, "example.com/service/pkg") {
+		t.Fatalf("expected oversized nested module import to stay local, got %#v", names)
+	}
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if strings.Contains(warnings, "example.com/service/pkg") || strings.Contains(warnings, "declare-go-module-requirement") {
+		t.Fatalf("expected no misleading nested module undeclared warning, got %#v", reportData.Warnings)
+	}
+	requireOversizedModuleWarning(t, reportData)
+	requireOversizedMetadataSkipWarning(t, reportData)
 }
 
 func TestAnalysePreservesDependencyOnlyFromNestedModuleBelowOversizedGoMod(t *testing.T) {
@@ -1733,6 +1781,17 @@ func writeOversizedModuleWithLoImport(t *testing.T, dir, modulePath string) {
 	t.Helper()
 	writeOversizedModuleGoMod(t, dir, modulePath)
 	writeFile(t, filepath.Join(dir, fileMainGo), "package main\n\nimport _ \""+depLo+"/subpkg\"\n\nfunc main() {}\n")
+}
+
+func writeOversizedRootGoModWithLeadingComments(t *testing.T, repo string, commentBytes int) {
+	t.Helper()
+	prefix := strings.Repeat("// x\n", commentBytes/5)
+	body := modulePrefix + "example.com/root\n\n" + requirePrefix + depUUID + versionV160 + "\n"
+	paddingLen := goModSizeLimitTest + 1 - len(prefix) - len(body)
+	if paddingLen < 0 {
+		t.Fatalf("oversized go.mod prefix exceeds test limit")
+	}
+	writeFile(t, filepath.Join(repo, fileGoMod), prefix+body+"// "+strings.Repeat("x", paddingLen))
 }
 
 func writeNestedUUIDModule(t *testing.T, parentDir string) {

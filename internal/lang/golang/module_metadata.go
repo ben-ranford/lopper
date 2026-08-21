@@ -13,9 +13,8 @@ import (
 )
 
 const (
-	maxGoModBytes                    = 2 * 1024 * 1024
-	maxGoModFallbackLines            = 8192
-	maxGoModRootModulePathProbeBytes = 64 * 1024
+	maxGoModBytes         = 2 * 1024 * 1024
+	maxGoModFallbackLines = 8192
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
@@ -106,6 +105,11 @@ func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct
 		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
 		if isPureGoModSizeLimit(err) && !isOversizedRootDir(repoPath, dir) {
 			oversizedDirs[dir] = struct{}{}
+			if modulePath, pathErr := readOversizedGoModModulePath(repoPath, filepath.Join(dir, goModName)); pathErr != nil {
+				return nil, nil, nil, nil, pathErr
+			} else if modulePath != "" {
+				modules = append(modules, modulePath)
+			}
 			continue
 		}
 		if err != nil {
