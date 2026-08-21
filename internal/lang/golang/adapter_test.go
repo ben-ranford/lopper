@@ -1612,6 +1612,17 @@ func TestOversizedRootGoModKeepsModuleBlock(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction from module block")
 }
 
+func TestOversizedRootGoModAcceptsEmptyModuleBlockAfterModuleDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"module (",
+		")",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with empty module block after module directive")
+}
+
 func TestOversizedRootGoModRejectsRepeatedModuleBlockLine(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,

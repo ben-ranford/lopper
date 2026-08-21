@@ -441,10 +441,6 @@ func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
 
 func (s *goModModuleScanner) startGoModBlock(directive string) {
 	if directive == "module" {
-		if s.modulePath != "" {
-			s.invalid = true
-			return
-		}
 		s.blockDirective = directive
 		return
 	}
