@@ -617,6 +617,30 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	}
 }
 
+func TestParseNamespaceReferencesDoesNotLetUseLinesExhaustReferenceLimit(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < maxPHPUseStatementsPerFile; i++ {
+		content.WriteString("use Monolog\\Logger;\n")
+	}
+	content.WriteString("$logger = new \\Monolog\\Logger(\"app\");\n")
+
+	imports, unresolved := parseNamespaceReferences([]byte(content.String()), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected namespace reference after bounded use lines to be preserved, got %#v", imports)
+	}
+	if imports[0].Module != helpersMonologLogger {
+		t.Fatalf("expected module %q, got %#v", helpersMonologLogger, imports[0])
+	}
+	if imports[0].Location.Line != maxPHPUseStatementsPerFile+2 {
+		t.Fatalf("expected namespace reference after use block on line %d, got %#v", maxPHPUseStatementsPerFile+2, imports[0])
+	}
+}
+
 func TestParseNamespaceReferencesIgnoresCommentAndStringMentions(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	content := helpersPHPHeader +
