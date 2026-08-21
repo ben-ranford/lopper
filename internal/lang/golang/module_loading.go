@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -58,7 +59,7 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 		return nil
 	}
 	content, err := safeio.ReadFileUnderLimit(repoPath, goModPath, maxGoModBytes)
-	if errors.Is(err, safeio.ErrFileTooLarge) {
+	if isPureGoModSizeLimit(err) {
 		return nil
 	}
 	if err != nil {
@@ -71,6 +72,10 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	info.ReplacementImports = replacements
 	info.LocalModulePaths = append(info.LocalModulePaths, modulePath)
 	return nil
+}
+
+func isPureGoModSizeLimit(err error) bool {
+	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
 }
 
 func loadWorkspaceModules(repoPath string, info *moduleInfo) error {
