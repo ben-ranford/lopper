@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	maxGoModBytes         = 2 * 1024 * 1024
-	maxGoModFallbackLines = 8192
+	maxGoModBytes                    = 2 * 1024 * 1024
+	maxGoModFallbackLines            = 8192
+	maxGoModRootModulePathProbeBytes = 64 * 1024
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {

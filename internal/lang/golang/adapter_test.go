@@ -1514,6 +1514,25 @@ func TestGoModLoadsEnforceSizeLimit(t *testing.T) {
 	}
 }
 
+func TestOversizedRootGoModPreservesOnlyLocalModulePath(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedValidRootGoMod(t, repo)
+
+	info, err := loadGoModuleInfo(repo)
+	if err != nil {
+		t.Fatalf("loadGoModuleInfo: %v", err)
+	}
+	if info.ModulePath != "example.com/root" {
+		t.Fatalf("expected bounded root module path extraction, got %q", info.ModulePath)
+	}
+	if !slices.Contains(info.LocalModulePaths, "example.com/root") {
+		t.Fatalf("expected root module path in local modules, got %#v", info.LocalModulePaths)
+	}
+	if slices.Contains(info.DeclaredDependencies, depUUID) {
+		t.Fatalf("expected oversized root dependencies not to be trusted, got %#v", info.DeclaredDependencies)
+	}
+}
+
 func TestAnalyseSkipsDependencyAttributionWhenRootGoModIsOversized(t *testing.T) {
 	repo := t.TempDir()
 	reportData := analyseOversizedRootFixture(t, repo,
@@ -1545,7 +1564,7 @@ func TestAnalysePreservesWorkspaceAttributionWhenRootGoModIsOversized(t *testing
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/a\n")
 	writeFile(t, filepath.Join(repo, "svc", "a", fileGoMod), goModDemoWithUUID)
-	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), mainUUIDNoopProgram)
+	writeFile(t, filepath.Join(repo, "svc", "a", fileMainGo), packageMainLine+"\n\nimport (\n\t_ \""+depUUID+"\"\n\t_ \"example.com/root/pkg\"\n)\n\nfunc main() {}\n")
 	reportData := analyseOversizedRootFixture(t, repo,
 		packageMainLine,
 		"",
@@ -1563,6 +1582,10 @@ func TestAnalysePreservesWorkspaceAttributionWhenRootGoModIsOversized(t *testing
 		t.Fatalf("expected oversized root module imports to stay unattributed, got %#v", names)
 	}
 	requireOversizedRootWarning(t, reportData)
+	warnings := strings.Join(reportData.Warnings, "\n")
+	if strings.Contains(warnings, "example.com/root/pkg") || strings.Contains(warnings, "declare-go-module-requirement") {
+		t.Fatalf("expected no misleading nested import warning for root module, got %#v", reportData.Warnings)
+	}
 }
 
 func TestAnalyseDoesNotTrustRootWorkspaceEntryWhenRootGoModIsOversized(t *testing.T) {

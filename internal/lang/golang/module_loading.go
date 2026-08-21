@@ -3,11 +3,13 @@ package golang
 import (
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
+	"golang.org/x/mod/modfile"
 )
 
 var errNilModuleInfo = errors.New("module info is nil")
@@ -62,6 +64,12 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	content, err := safeio.ReadFileUnderLimit(repoPath, goModPath, maxGoModBytes)
 	if isPureGoModSizeLimit(err) {
 		info.RootGoModTooLarge = true
+		if modulePath, pathErr := readOversizedRootModulePath(goModPath); pathErr != nil {
+			return pathErr
+		} else if modulePath != "" {
+			info.ModulePath = modulePath
+			info.LocalModulePaths = append(info.LocalModulePaths, modulePath)
+		}
 		return nil
 	}
 	if err != nil {
@@ -74,6 +82,23 @@ func loadRootModuleInfo(repoPath string, info *moduleInfo) error {
 	info.ReplacementImports = replacements
 	info.LocalModulePaths = append(info.LocalModulePaths, modulePath)
 	return nil
+}
+
+func readOversizedRootModulePath(goModPath string) (modulePath string, err error) {
+	file, err := safeio.OpenFile(goModPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	content, err := io.ReadAll(io.LimitReader(file, maxGoModRootModulePathProbeBytes))
+	if err != nil {
+		return "", err
+	}
+	return modfile.ModulePath(content), nil
 }
 
 func isPureGoModSizeLimit(err error) bool {
