@@ -20,6 +20,7 @@ const (
 	vcpkgLockFile     = "vcpkg-lock.json"
 	conanManifestFile = "conanfile.txt"
 	conanLockFile     = "conan.lock"
+	maxManifestBytes  = 2 << 20
 	maxManifestFiles  = 64
 	parseWarningFmt   = "failed to parse %s: %v"
 )
@@ -109,11 +110,13 @@ func loadDependencyCatalog(repoPath string) (dependencyCatalog, []string, error)
 
 func loadDependencyManifest(repoPath, path string, catalog *dependencyCatalog) ([]string, error) {
 	relPath := relOrBase(repoPath, path)
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxManifestBytes)
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
 		return nil, nil
+	case shared.IsPureSentinelError(err, safeio.ErrFileTooLarge):
+		return []string{fmt.Sprintf("skipped oversized %s: %v", relPath, err)}, nil
 	default:
 		return nil, fmt.Errorf("read %s: %w", relPath, err)
 	}

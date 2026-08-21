@@ -83,6 +83,59 @@ func TestLoadDependencyCatalogInvalidManifestWarning(t *testing.T) {
 	}
 }
 
+func TestLoadDependencyCatalogSkipsOversizedManifests(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		vcpkgManifestFile,
+		vcpkgLockFile,
+		conanManifestFile,
+		conanLockFile,
+	}
+	for _, manifestName := range tests {
+		t.Run(manifestName, func(t *testing.T) {
+			t.Parallel()
+
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, manifestName), strings.Repeat("x", maxManifestBytes+1))
+
+			catalog, warnings, err := loadDependencyCatalog(repo)
+			if err != nil {
+				t.Fatalf("loadDependencyCatalog: %v", err)
+			}
+			if got := catalog.list(); len(got) != 0 {
+				t.Fatalf("expected oversized manifest to add no dependencies, got %#v", got)
+			}
+			if !hasWarning(warnings, "skipped oversized "+manifestName) {
+				t.Fatalf("expected oversized manifest warning for %s, got %#v", manifestName, warnings)
+			}
+			if !hasWarning(warnings, "file exceeds size limit") {
+				t.Fatalf("expected size-limit warning for %s, got %#v", manifestName, warnings)
+			}
+		})
+	}
+}
+
+func TestLoadDependencyCatalogAcceptsExactSizeManifestLimit(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	content := "[requires]\nfmt/10.2.1\n"
+	content += strings.Repeat("#", maxManifestBytes-len(content))
+	testutil.MustWriteFile(t, filepath.Join(repo, conanManifestFile), content)
+
+	catalog, warnings, err := loadDependencyCatalog(repo)
+	if err != nil {
+		t.Fatalf("loadDependencyCatalog: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected exact-limit manifest to parse without warnings, got %#v", warnings)
+	}
+	if !catalog.contains("fmt") {
+		t.Fatalf("expected exact-limit manifest dependency, got %#v", catalog.list())
+	}
+}
+
 func TestAnalyseWithVcpkgManifestIncludesDeclaredDepsAndUnresolvedWarnings(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, vcpkgManifestFile), `{
