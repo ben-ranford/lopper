@@ -620,6 +620,30 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	}
 }
 
+func TestKotlinAndroidParseImportsTracksFallbackAndAmbiguity(t *testing.T) {
+	result := newScanResult()
+	lookups := dependencyLookups{
+		Prefixes: map[string]string{"com.acme": "acme-core"},
+		Ambiguous: map[string][]string{
+			"com.acme": {"acme-core", "acme-alt"},
+		},
+		DeclaredDependencies: map[string]struct{}{},
+	}
+	imports := parseImports([]byte("import com.acme.Widget\nimport com.unknown.Widget\n"), testMainSourceFileName, "pkg.demo", lookups, &result)
+	if len(imports) != 2 {
+		t.Fatalf("expected mapped and fallback imports, got %#v", imports)
+	}
+	if imports[0].Dependency != "acme-core" || imports[1].Dependency != "com.unknown" {
+		t.Fatalf("expected mapped and fallback dependencies, got %#v", imports)
+	}
+	if _, ok := result.AmbiguousDependencies["acme-core"]; !ok {
+		t.Fatalf("expected ambiguous dependency metadata, got %#v", result.AmbiguousDependencies)
+	}
+	if _, ok := result.UndeclaredDependencies["com.unknown"]; !ok {
+		t.Fatalf("expected undeclared fallback dependency metadata, got %#v", result.UndeclaredDependencies)
+	}
+}
+
 func TestResolveDependencyAndDescriptorBranches(t *testing.T) {
 	lookups := dependencyLookups{
 		Prefixes: map[string]string{"alpha": "dep-alpha", "alpha.beta": testDepBetaDependency},
