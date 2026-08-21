@@ -30,6 +30,44 @@ func TestPersistProfileConfigForceOverwritesWritableTargetWhenParentLacksWritePe
 	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
 }
 
+func TestPersistProfileConfigWritesIntoSearchOnlyParent(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+
+	parentDir := filepath.Join(t.TempDir(), "dropbox")
+	if err := os.Mkdir(parentDir, 0o333); err != nil {
+		t.Fatalf("mkdir dropbox: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parentDir, 0o755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore dropbox permissions: %v", err)
+		}
+	})
+	outputPath := filepath.Join(parentDir, "profile.yaml")
+	requireParentReadDenied(t, parentDir)
+	requireParentWriteAllowed(t, parentDir, ".profile-write-probe")
+
+	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, false)
+	if err != nil {
+		t.Fatalf("persist profile output: %v", err)
+	}
+	if status != "threshold profile config written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
+	if err := os.Chmod(parentDir, 0o755); err != nil {
+		t.Fatalf("restore dropbox permissions before listing: %v", err)
+	}
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		t.Fatalf("read dropbox entries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "profile.yaml" {
+		t.Fatalf("expected temp file to be cleaned up beside target, got %v", entries)
+	}
+}
+
 func TestPersistProfileConfigForceIsOptInWhenParentLacksWritePermission(t *testing.T) {
 	if syscall.Geteuid() == 0 {
 		t.Skip("effective privileges bypass parent write permission checks")
@@ -102,6 +140,32 @@ func requireParentWriteDenied(t *testing.T, parentDir, probeName string) {
 		return
 	default:
 		t.Skipf("parent write permission semantics are not testable: %v", err)
+	}
+}
+
+func requireParentWriteAllowed(t *testing.T, parentDir, probeName string) {
+	t.Helper()
+
+	probePath := filepath.Join(parentDir, probeName)
+	if err := os.WriteFile(probePath, []byte("probe"), 0o600); err != nil {
+		t.Skipf("parent write permission semantics are not testable: %v", err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		t.Fatalf("remove write probe: %v", err)
+	}
+}
+
+func requireParentReadDenied(t *testing.T, parentDir string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(parentDir)
+	switch {
+	case err == nil:
+		t.Skipf("parent read permission is still available; entries=%d", len(entries))
+	case os.IsPermission(err):
+		return
+	default:
+		t.Skipf("parent read permission semantics are not testable: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
@@ -28,6 +29,16 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 	if hasDirectoryStyleOutputPath(trimmedOutputPath) {
 		return "", fmt.Errorf("output path must name a file: %s", trimmedOutputPath)
 	}
+	if !force {
+		if err := persistProfileConfigIfAbsent(config, trimmedOutputPath); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return "", fmt.Errorf("%s already exists; pass --force to overwrite", trimmedOutputPath)
+			}
+			return "", err
+		}
+		return "threshold profile config written to " + trimmedOutputPath, nil
+	}
+
 	destination, err := openCommandOutputDestination(trimmedOutputPath)
 	if err != nil {
 		return "", err
@@ -38,15 +49,23 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 		}
 	}()
 
-	if !force {
-		if err := destination.root.WriteFileCreatingParentsIfAbsent(destination.targetPath, []byte(config), 0o600, 0o750); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				return "", fmt.Errorf("%s already exists; pass --force to overwrite", trimmedOutputPath)
-			}
-			return "", err
-		}
-	} else if err := destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, []byte(config), 0o600, 0o750); err != nil {
+	if err := destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, []byte(config), 0o600, 0o750); err != nil {
 		return "", err
 	}
 	return "threshold profile config written to " + trimmedOutputPath, nil
+}
+
+func persistProfileConfigIfAbsent(config, outputPath string) error {
+	destination, err := openCommandOutputDestination(outputPath)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath(outputPath, []byte(config), 0o600)
+		}
+		return err
+	}
+	returnErr := destination.root.WriteFileCreatingParentsIfAbsent(destination.targetPath, []byte(config), 0o600, 0o750)
+	if closeErr := destination.root.Close(); closeErr != nil {
+		returnErr = errors.Join(returnErr, closeErr)
+	}
+	return returnErr
 }

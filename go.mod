@@ -8,6 +8,7 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/mod v0.40.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
