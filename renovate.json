@@ -31,6 +31,35 @@
       "postUpdateOptions": [
         "gomodTidy"
       ]
+    },
+    {
+      "description": "Keep Go compatibility and CI toolchain releases aligned",
+      "matchManagers": [
+        "gomod",
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "groupName": "Go toolchain",
+      "rangeStrategy": "bump"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update the Go toolchain used by CI commands",
+      "managerFilePatterns": [
+        "/(^|/)Makefile$/",
+        "/(^|/)scripts/bench-gate\\.sh$/"
+      ],
+      "matchStrings": [
+        "GO_TOOLCHAIN \\?= go(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "GO_TOOLCHAIN=\"go(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go",
+      "versioningTemplate": "loose"
     }
   ]
 }

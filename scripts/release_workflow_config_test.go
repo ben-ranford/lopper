@@ -3516,6 +3516,49 @@ func TestMakefileBenchGateUsesDefaultEnforcementOnlyWhenUnset(t *testing.T) {
 	}
 }
 
+func TestGoToolchainPinsAvoidKnownVulnerableRelease(t *testing.T) {
+	t.Parallel()
+
+	const minimumGoPatch = 6
+	type toolchainPin struct {
+		name    string
+		content string
+		pattern string
+	}
+	pins := []toolchainPin{
+		{name: "go.mod", content: readConfig(t, "go.mod"), pattern: `(?m)^go (\d+)\.(\d+)\.(\d+)$`},
+		{name: "Makefile", content: readConfig(t, "Makefile"), pattern: `(?m)^GO_TOOLCHAIN \?= go(\d+)\.(\d+)\.(\d+)$`},
+		{name: "bench-gate", content: readConfig(t, "scripts/bench-gate.sh"), pattern: `(?m)^\s*GO_TOOLCHAIN="go(\d+)\.(\d+)\.(\d+)"$`},
+	}
+
+	var expected [3]int
+	for index, pin := range pins {
+		matches := regexp.MustCompile(pin.pattern).FindStringSubmatch(pin.content)
+		if len(matches) == 0 {
+			t.Fatalf("%s must declare a Go toolchain patch version", pin.name)
+		}
+
+		var version [3]int
+		for component := range version {
+			value, err := strconv.Atoi(matches[component+1])
+			if err != nil {
+				t.Fatalf("parse %s Go version component %q: %v", pin.name, matches[component+1], err)
+			}
+			version[component] = value
+		}
+		if version[0] < 1 || version[0] == 1 && (version[1] < 26 || version[1] == 26 && version[2] < minimumGoPatch) {
+			t.Fatalf("%s Go version %d.%d.%d is below the 1.26.6 security baseline", pin.name, version[0], version[1], version[2])
+		}
+		if index == 0 {
+			expected = version
+			continue
+		}
+		if version != expected {
+			t.Fatalf("%s Go version %d.%d.%d does not match go.mod version %d.%d.%d", pin.name, version[0], version[1], version[2], expected[0], expected[1], expected[2])
+		}
+	}
+}
+
 func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *testing.T) {
 	t.Parallel()
 
