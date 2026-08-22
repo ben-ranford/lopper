@@ -365,6 +365,39 @@ func TestCanonicalSearchDirectoryPathUsesResolvedRootLevelAliases(t *testing.T) 
 	}
 }
 
+func TestSearchDirectoryAliasTargetRequiresSymlinkForTrustedAlias(t *testing.T) {
+	originalGOOS := runtimeGOOS
+	originalLstat := searchDirectoryLstatFn
+	originalStat := searchDirectoryStatFn
+	t.Cleanup(func() {
+		runtimeGOOS = originalGOOS
+		searchDirectoryLstatFn = originalLstat
+		searchDirectoryStatFn = originalStat
+	})
+
+	runtimeGOOS = "darwin"
+	dirInfo := statTestPath(t, t.TempDir())
+	searchDirectoryStatFn = func(string) (fs.FileInfo, error) {
+		return dirInfo, nil
+	}
+	searchDirectoryLstatFn = func(string) (fs.FileInfo, error) {
+		return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeDir | 0o755}, nil
+	}
+
+	tmpAlias := filepath.Join(string(os.PathSeparator), "tmp")
+	if target, ok := searchDirectoryAliasTarget(tmpAlias); ok {
+		t.Fatalf("expected ordinary trusted alias directory to remain unchanged, got target=%q", target)
+	}
+
+	searchDirectoryLstatFn = func(string) (fs.FileInfo, error) {
+		return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeSymlink | 0o777}, nil
+	}
+	want := filepath.Join(string(os.PathSeparator), "private", "tmp")
+	if target, ok := searchDirectoryAliasTarget(tmpAlias); !ok || target != want {
+		t.Fatalf("expected symlinked trusted alias target %q, got target=%q ok=%v", want, target, ok)
+	}
+}
+
 func TestOpenSearchOnlyDirectoryRejectsMissingPath(t *testing.T) {
 	file, err := openSearchOnlyDirectory(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {

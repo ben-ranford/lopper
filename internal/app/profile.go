@@ -11,13 +11,11 @@ import (
 )
 
 var (
-	writeProfileConfigCanonicalIfAbsentFn   = safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath
-	writeProfileConfigCanonicalReplacingFn  = safeio.WriteFileAtomicallyReplacingUnderCanonicalPath
 	writeProfileConfigPinnedRootIfAbsentFn  = (*safeio.WriteRoot).WriteFileAtomicallyIfAbsentUnderPinnedRoot
 	writeProfileConfigPinnedRootReplacingFn = (*safeio.WriteRoot).WriteFileAtomicallyReplacingUnderPinnedRoot
+	openProfileSearchOnlyWriteRootFn        = safeio.OpenCanonicalSearchOnlyWriteRoot
 )
 
-type profileConfigCanonicalWriter func(string, []byte, os.FileMode) error
 type profileConfigPinnedRootWriter func(*safeio.WriteRoot, string, []byte, os.FileMode) error
 
 func (a *App) executeProfile(req Request) (string, error) {
@@ -58,20 +56,24 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 func persistProfileConfigForced(config, outputPath string) error {
 	return persistProfileConfigThroughDestination(outputPath, []byte(config), func(destination commandOutputDestination, data []byte) error {
 		return destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, data, 0o600, 0o750)
-	}, writeProfileConfigPinnedRootReplacingFn, writeProfileConfigCanonicalReplacingFn)
+	}, writeProfileConfigPinnedRootReplacingFn)
 }
 
 func persistProfileConfigIfAbsent(config, outputPath string) error {
 	return persistProfileConfigThroughDestination(outputPath, []byte(config), func(destination commandOutputDestination, data []byte) error {
 		return destination.root.WriteFileCreatingParentsIfAbsent(destination.targetPath, data, 0o600, 0o750)
-	}, writeProfileConfigPinnedRootIfAbsentFn, writeProfileConfigCanonicalIfAbsentFn)
+	}, writeProfileConfigPinnedRootIfAbsentFn)
 }
 
-func persistProfileConfigThroughDestination(outputPath string, data []byte, write func(commandOutputDestination, []byte) error, writePinnedRoot profileConfigPinnedRootWriter, writeCanonical profileConfigCanonicalWriter) (returnErr error) {
-	destination, err := openCommandOutputDestination(outputPath)
+func persistProfileConfigThroughDestination(outputPath string, data []byte, write func(commandOutputDestination, []byte) error, writePinnedRoot profileConfigPinnedRootWriter) (returnErr error) {
+	resolvedDestination, err := resolveCommandOutputDestination(outputPath)
+	if err != nil {
+		return err
+	}
+	destination, err := openResolvedCommandOutputDestination(resolvedDestination, openCommandOutputWriteRootFn)
 	if err != nil {
 		if profilePermissionError(err) {
-			return persistProfileConfigCanonical(data, outputPath, "", err, writeCanonical)
+			return persistProfileConfigSearchOnlyThroughResolvedDestination(resolvedDestination, data, err, writePinnedRoot)
 		}
 		return err
 	}
@@ -83,29 +85,40 @@ func persistProfileConfigThroughDestination(outputPath string, data []byte, writ
 
 	if err := write(destination, data); err != nil {
 		if profilePermissionError(err) {
-			return persistProfileConfigCanonicalThroughDestination(data, destination, err, writePinnedRoot)
+			return persistProfileConfigPinnedRootFallback(data, destination, err, writePinnedRoot)
 		}
 		return err
 	}
 	return returnErr
 }
 
-func persistProfileConfigCanonicalThroughDestination(data []byte, destination commandOutputDestination, primaryErr error, write profileConfigPinnedRootWriter) error {
+func persistProfileConfigSearchOnlyThroughResolvedDestination(destination commandOutputDestination, data []byte, primaryErr error, write profileConfigPinnedRootWriter) (returnErr error) {
+	destination, err := openResolvedCommandOutputDestination(destination, openProfileSearchOnlyWriteRootFn)
+	if err != nil {
+		if errors.Is(err, safeio.ErrSearchOnlyWriteRootUnsupported) {
+			return primaryErr
+		}
+		return errors.Join(primaryErr, err)
+	}
+	defer func() {
+		if closeErr := destination.root.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	return persistProfileConfigPinnedRootFallback(data, destination, primaryErr, write)
+}
+
+func persistProfileConfigPinnedRootFallback(data []byte, destination commandOutputDestination, primaryErr error, write profileConfigPinnedRootWriter) error {
 	if err := destination.root.VerifyIdentity(destination.rootInfo); err != nil {
 		return errors.Join(primaryErr, err)
 	}
-	return write(destination.root, destination.targetPath, data, 0o600)
-}
-
-func persistProfileConfigCanonical(data []byte, outputPath, outputAbs string, primaryErr error, write profileConfigCanonicalWriter) error {
-	if outputAbs == "" {
-		resolvedOutputPath, resolveErr := absoluteCommandOutputPath(outputPath)
-		if resolveErr != nil {
-			return errors.Join(primaryErr, resolveErr)
+	if err := write(destination.root, destination.targetPath, data, 0o600); err != nil {
+		if errors.Is(err, safeio.ErrSearchOnlyWriteRootUnsupported) {
+			return primaryErr
 		}
-		outputAbs = resolvedOutputPath
+		return err
 	}
-	return write(outputAbs, data, 0o600)
+	return nil
 }
 
 func profilePermissionError(err error) bool {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/featureflags"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
@@ -159,6 +160,48 @@ func TestPersistProfileConfigPropagatesMkdirAllError(t *testing.T) {
 
 	if _, err := persistProfileConfig("thresholds: {}", filepath.Join(blocker, "profile.yaml"), true); err == nil {
 		t.Fatal("expected mkdir error under regular file")
+	}
+}
+
+func TestPersistProfileConfigKeepsOpenPermissionErrorWhenSearchOnlyFallbackUnavailable(t *testing.T) {
+	originalOpen := openCommandOutputWriteRootFn
+	originalSearchOnlyOpen := openProfileSearchOnlyWriteRootFn
+	openCommandOutputWriteRootFn = func(string) (*safeio.WriteRoot, error) {
+		return nil, os.ErrPermission
+	}
+	openProfileSearchOnlyWriteRootFn = func(string) (*safeio.WriteRoot, error) {
+		return nil, safeio.ErrSearchOnlyWriteRootUnsupported
+	}
+	t.Cleanup(func() {
+		openCommandOutputWriteRootFn = originalOpen
+		openProfileSearchOnlyWriteRootFn = originalSearchOnlyOpen
+	})
+
+	for _, force := range []bool{false, true} {
+		t.Run(profileForceName(force), func(t *testing.T) {
+			_, err := persistProfileConfig("thresholds: {}\n", filepath.Join(t.TempDir(), "profile.yaml"), force)
+			if !errors.Is(err, os.ErrPermission) {
+				t.Fatalf("expected original permission error, got %v", err)
+			}
+			if errors.Is(err, safeio.ErrSearchOnlyWriteRootUnsupported) {
+				t.Fatalf("expected unsupported fallback error to remain hidden, got %v", err)
+			}
+		})
+	}
+}
+
+func TestPersistProfileConfigKeepsWritePermissionErrorWhenSearchOnlyFallbackUnavailable(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "profile.yaml")
+	err := persistProfileConfigThroughDestination(outputPath, []byte("thresholds: {}\n"), func(commandOutputDestination, []byte) error {
+		return os.ErrPermission
+	}, func(*safeio.WriteRoot, string, []byte, os.FileMode) error {
+		return safeio.ErrSearchOnlyWriteRootUnsupported
+	})
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected original permission error, got %v", err)
+	}
+	if errors.Is(err, safeio.ErrSearchOnlyWriteRootUnsupported) {
+		t.Fatalf("expected unsupported fallback error to remain hidden, got %v", err)
 	}
 }
 

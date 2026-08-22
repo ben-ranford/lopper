@@ -165,10 +165,7 @@ func TestPersistProfileConfigFallbackWritesThroughPinnedRootWhenPathIsRetargeted
 
 	err := persistProfileConfigThroughDestination(replacementOutput, []byte(profileConfigAfter), func(commandOutputDestination, []byte) error {
 		return os.ErrPermission
-	}, (*safeio.WriteRoot).WriteFileAtomicallyIfAbsentUnderPinnedRoot, func(targetPath string, data []byte, perm os.FileMode) error {
-		t.Fatalf("path-based canonical fallback must not run for accepted destinations: %s", targetPath)
-		return nil
-	})
+	}, (*safeio.WriteRoot).WriteFileAtomicallyIfAbsentUnderPinnedRoot)
 
 	if err != nil {
 		t.Fatalf("persist profile through retargeted pinned root: %v", err)
@@ -198,15 +195,50 @@ func TestPersistProfileConfigFallbackDoesNotPathRewalkAfterPinnedRootVerificatio
 			return err
 		}
 		return root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(targetPath, data, perm)
-	}, func(targetPath string, data []byte, perm os.FileMode) error {
-		t.Fatalf("path-based canonical fallback must not run for accepted destinations: %s", targetPath)
-		return nil
 	})
 
 	if err != nil {
 		t.Fatalf("persist profile through post-verify retargeted pinned root: %v", err)
 	}
 	if _, statErr := os.Stat(replacementOutput); !os.IsNotExist(statErr) {
+		t.Fatalf("expected replacement output to remain absent, got err=%v", statErr)
+	}
+	assertProfileOutput(t, filepath.Join(retargetedWorkspace, "dropbox", "profile.yaml"), profileConfigAfter, 0o600)
+}
+
+func TestPersistProfileConfigInitialPermissionFallbackPinsResolvedRootWhenPathRetargeted(t *testing.T) {
+	baseDir := t.TempDir()
+	workspace := filepath.Join(baseDir, "workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	retargetedWorkspace := filepath.Join(baseDir, "workspace-retargeted")
+	outputPath := filepath.Join(workspace, "dropbox", "profile.yaml")
+
+	originalOpen := openCommandOutputWriteRootFn
+	originalAccepted := commandOutputBoundaryAcceptedFn
+	openCommandOutputWriteRootFn = func(string) (*safeio.WriteRoot, error) {
+		return nil, os.ErrPermission
+	}
+	commandOutputBoundaryAcceptedFn = func() error {
+		if err := os.Rename(workspace, retargetedWorkspace); err != nil {
+			return err
+		}
+		return os.MkdirAll(filepath.Dir(outputPath), 0o755)
+	}
+	t.Cleanup(func() {
+		openCommandOutputWriteRootFn = originalOpen
+		commandOutputBoundaryAcceptedFn = originalAccepted
+	})
+
+	status, err := persistProfileConfig(profileConfigAfter, outputPath, false)
+	if err != nil {
+		t.Fatalf("persist profile through initial permission fallback: %v", err)
+	}
+	if status != "threshold profile config written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
 		t.Fatalf("expected replacement output to remain absent, got err=%v", statErr)
 	}
 	assertProfileOutput(t, filepath.Join(retargetedWorkspace, "dropbox", "profile.yaml"), profileConfigAfter, 0o600)

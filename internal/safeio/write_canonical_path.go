@@ -19,6 +19,8 @@ var (
 	afterOpenSearchAncestorFn    = func(string) error { return nil }
 	openSearchOnlyDirectoryAtFn  = openSearchOnlyDirectoryAt
 	searchDirectoryAliasTargetFn = searchDirectoryAliasTarget
+	searchDirectoryLstatFn       = os.Lstat
+	searchDirectoryStatFn        = os.Stat
 	descriptorMkdiratFn          = unix.Mkdirat
 	descriptorLinkatFn           = unix.Linkat
 	descriptorUnlinkatFn         = unix.Unlinkat
@@ -29,6 +31,80 @@ var (
 )
 
 const canonicalPathParentPerm os.FileMode = 0o750
+
+type searchOnlyWriteRoot struct {
+	file *os.File
+}
+
+// OpenCanonicalSearchOnlyWriteRoot pins a canonical root that may grant search
+// permission without read permission. It supports the descriptor fallback
+// writers, not general WriteRoot operations.
+func OpenCanonicalSearchOnlyWriteRoot(rootDir string) (*WriteRoot, error) {
+	rootAbs, err := resolveAbsolutePath("root", rootDir)
+	if err != nil {
+		return nil, err
+	}
+	rootAbs = canonicalSearchDirectoryPath(rootAbs)
+	file, _, err := openSearchOnlyCanonicalDirectory(rootAbs)
+	if err != nil {
+		return nil, fmt.Errorf("open search-only canonical root: %w", err)
+	}
+	return &WriteRoot{root: &searchOnlyWriteRoot{file: file}, rootAbs: rootAbs}, nil
+}
+
+func (r *searchOnlyWriteRoot) Open(string) (File, error) {
+	return nil, fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
+	if name != "." {
+		return nil, fmt.Errorf("search-only write root only supports root descriptor access")
+	}
+	fd, err := unix.Dup(int(r.file.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), r.file.Name()), nil
+}
+
+func (r *searchOnlyWriteRoot) OpenRoot(string) (Root, error) {
+	return nil, fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) Lstat(name string) (os.FileInfo, error) {
+	if name != "." {
+		return nil, fmt.Errorf("search-only write root only supports root descriptor stat")
+	}
+	return r.file.Stat()
+}
+
+func (r *searchOnlyWriteRoot) Mkdir(string, os.FileMode) error {
+	return fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) Chmod(string, os.FileMode) error {
+	return fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) MkdirAll(string, os.FileMode) error {
+	return fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) Link(string, string) error {
+	return fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) Rename(string, string) error {
+	return fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) Remove(string) error {
+	return fmt.Errorf("search-only write root only supports descriptor fallback")
+}
+
+func (r *searchOnlyWriteRoot) Close() error {
+	return r.file.Close()
+}
 
 // WriteFileAtomicallyIfAbsentUnderCanonicalPath publishes targetPath only when
 // the target is absent. It is a narrow fallback for Unix directories that allow
@@ -207,11 +283,11 @@ func canonicalSearchDirectoryPath(path string) string {
 }
 
 func searchDirectoryAliasTarget(path string) (string, bool) {
-	if target, ok := trustedRootAliasTarget(path); ok {
-		return target, true
-	}
 	if !isSearchDirectoryRootLevelAlias(path) {
 		return "", false
+	}
+	if target, ok := trustedRootAliasTarget(path); ok {
+		return target, true
 	}
 	target, err := filepath.EvalSymlinks(path)
 	if err != nil {
@@ -229,11 +305,11 @@ func isSearchDirectoryRootLevelAlias(path string) bool {
 	if parent == cleanPath || filepath.Dir(parent) != parent {
 		return false
 	}
-	linkInfo, err := os.Lstat(cleanPath)
+	linkInfo, err := searchDirectoryLstatFn(cleanPath)
 	if err != nil || linkInfo.Mode()&os.ModeSymlink == 0 {
 		return false
 	}
-	targetInfo, err := os.Stat(cleanPath)
+	targetInfo, err := searchDirectoryStatFn(cleanPath)
 	return err == nil && targetInfo.IsDir()
 }
 

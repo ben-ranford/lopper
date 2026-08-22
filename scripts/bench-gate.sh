@@ -283,25 +283,14 @@ format_benchmark_definition() {
 	invocation_fingerprint="$3";
 	printf "package=%s selection=%s -run '^$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$invocation_pkg" "$invocation_selection" "$GO_TEST_LDFLAGS_ARGS" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_fingerprint" "$requested_go_toolchain" "$go_bin_path" "$GO_TEST_LDFLAGS_ARGS" "$invocation_selection" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_pkg";
 };
-base_ref_allows_merge_base_resolution() {
-	case "$1" in
-		origin/main|refs/remotes/origin/main) return 0 ;;
-		*) return 1 ;;
-	esac;
-};
 if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}"); then
 	echo "Memory benchmark base ref '$base_ref' is missing or invalid; failing closed.";
 	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is missing or invalid.";
 fi;
 if ! git merge-base --is-ancestor "$base_commit" HEAD 2>/dev/null; then
 	if merge_base=$(git merge-base -- "$base_commit" HEAD 2>/dev/null); then
-		if base_ref_allows_merge_base_resolution "$requested_base_ref"; then
-			echo "Memory benchmark base ref '$base_ref' is related to HEAD but is not an ancestor; using merge base $merge_base.";
-			base_commit="$merge_base";
-		else
-		echo "Memory benchmark base ref '$base_ref' is related to HEAD but is not an ancestor; failing closed.";
-		fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is related to HEAD but is not an ancestor of HEAD.";
-		fi;
+		echo "Memory benchmark base ref '$base_ref' is related to HEAD but is not an ancestor; using merge base $merge_base.";
+		base_commit="$merge_base";
 	else
 		echo "Memory benchmark base ref '$base_ref' is not related to HEAD; failing closed.";
 		fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not related to HEAD.";

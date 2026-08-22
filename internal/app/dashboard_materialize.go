@@ -66,6 +66,14 @@ func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error
 }
 
 func openCommandOutputDestination(outputPath string, trustedRoots ...string) (commandOutputDestination, error) {
+	destination, err := resolveCommandOutputDestination(outputPath, trustedRoots...)
+	if err != nil {
+		return commandOutputDestination{}, err
+	}
+	return openResolvedCommandOutputDestination(destination, openCommandOutputWriteRootFn)
+}
+
+func resolveCommandOutputDestination(outputPath string, trustedRoots ...string) (commandOutputDestination, error) {
 	root, outputAbs, err := commandOutputRootBoundaryForPath(outputPath, trustedRoots...)
 	if err != nil {
 		return commandOutputDestination{}, err
@@ -77,7 +85,11 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 	if targetPath == ".." || strings.HasPrefix(targetPath, ".."+string(os.PathSeparator)) {
 		return commandOutputDestination{}, fmt.Errorf("output path escapes workspace: %s", outputPath)
 	}
-	writeRoot, err := openCommandOutputWriteRootFn(root.resolved)
+	return commandOutputDestination{rootAbs: root.resolved, targetPath: targetPath, outputAbs: outputAbs}, nil
+}
+
+func openResolvedCommandOutputDestination(destination commandOutputDestination, openRoot func(string) (*safeio.WriteRoot, error)) (commandOutputDestination, error) {
+	writeRoot, err := openRoot(destination.rootAbs)
 	if err != nil {
 		return commandOutputDestination{}, err
 	}
@@ -94,7 +106,9 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 		}
 		return commandOutputDestination{}, err
 	}
-	return commandOutputDestination{root: writeRoot, rootAbs: root.resolved, rootInfo: rootInfo, targetPath: targetPath, outputAbs: outputAbs}, nil
+	destination.root = writeRoot
+	destination.rootInfo = rootInfo
+	return destination, nil
 }
 
 func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string) (commandOutputRootBoundary, string, error) {
