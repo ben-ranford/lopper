@@ -4037,95 +4037,143 @@ func TestMoveFileWithinRootReturnsSourceRemovalErrorAfterCopyFallback(t *testing
 }
 
 func TestMoveFileWithinRootPreservesReplacedSourceAfterCopyFallback(t *testing.T) {
-	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
-	tempInfo := newPinnedTargetInfo(t, "temp")
-	sourceInfo := originalInfo
-	tempExists := false
-	targetExists := false
-	removeCalls := 0
-	published := ""
+	state := newReplacedSourceMoveFallbackState(t)
 
-	root := &fakeRoot{
-		mkdirAll: func(string, os.FileMode) error { return nil },
-		lstat: func(name string) (fs.FileInfo, error) {
-			switch {
-			case name == "source":
-				return sourceInfo, nil
-			case isMoveFallbackTempPath(name) && tempExists:
-				return tempInfo, nil
-			case name == "target" && targetExists:
-				return tempInfo, nil
-			default:
-				return nil, os.ErrNotExist
-			}
-		},
-		open: func(name string) (File, error) {
-			if name != "source" {
-				t.Fatalf("unexpected source open %q", name)
-			}
-			reader := strings.NewReader("original")
-			return &fakeFile{
-				read: func(p []byte) (int, error) {
-					sourceInfo = replacementInfo
-					return reader.Read(p)
-				},
-				stat:  func() (fs.FileInfo, error) { return originalInfo, nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
-		chmod: chmodNameWithoutError(t, "source"),
-		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
-			if !isMoveFallbackTempPath(name) {
-				t.Fatalf("unexpected temp open %q", name)
-			}
-			tempExists = true
-			return &fakeFile{
-				write: func(p []byte) (int, error) {
-					published += string(p)
-					return len(p), nil
-				},
-				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
-		rename: func(oldName, newName string) error {
-			if oldName == "source" {
-				return syscall.EXDEV
-			}
-			if !isMoveFallbackTempPath(oldName) || newName != "target" {
-				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
-			}
-			tempExists = false
-			targetExists = true
-			return nil
-		},
-		remove: func(name string) error {
-			if isMoveFallbackTempPath(name) {
-				tempExists = false
-				return nil
-			}
-			if name != "source" {
-				t.Fatalf("unexpected removal %q", name)
-			}
-			removeCalls++
-			return nil
-		},
-	}
-
+	root := newReplacedSourceMoveFallbackRoot(t, state)
 	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
 	if err == nil || !strings.Contains(err.Error(), "move source changed before cleanup") {
 		t.Fatalf("expected changed source cleanup rejection, got %v", err)
 	}
-	if published != "original" {
-		t.Fatalf("expected pinned original data to be published, got %q", published)
+	if state.published != "original" {
+		t.Fatalf("expected pinned original data to be published, got %q", state.published)
 	}
-	if !os.SameFile(sourceInfo, replacementInfo) {
-		t.Fatalf("expected replacement source to remain published at source path, got %v", sourceInfo)
+	if !os.SameFile(state.sourceInfo, state.replacementInfo) {
+		t.Fatalf("expected replacement source to remain published at source path, got %v", state.sourceInfo)
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected replacement source not to be removed, got %d remove calls", removeCalls)
+	if state.removeCalls != 0 {
+		t.Fatalf("expected replacement source not to be removed, got %d remove calls", state.removeCalls)
+	}
+}
+
+type replacedSourceMoveFallbackState struct {
+	originalInfo    fs.FileInfo
+	replacementInfo fs.FileInfo
+	tempInfo        fs.FileInfo
+	sourceInfo      fs.FileInfo
+	tempExists      bool
+	targetExists    bool
+	removeCalls     int
+	published       string
+}
+
+func newReplacedSourceMoveFallbackState(t *testing.T) *replacedSourceMoveFallbackState {
+	t.Helper()
+
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	return &replacedSourceMoveFallbackState{
+		originalInfo:    originalInfo,
+		replacementInfo: replacementInfo,
+		tempInfo:        newPinnedTargetInfo(t, "temp"),
+		sourceInfo:      originalInfo,
+	}
+}
+
+func newReplacedSourceMoveFallbackRoot(t *testing.T, state *replacedSourceMoveFallbackState) *fakeRoot {
+	t.Helper()
+
+	return &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    state.lstat,
+		open:     state.openSource(t),
+		chmod:    chmodNameWithoutError(t, "source"),
+		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
+			return state.openTemp(t, name)
+		},
+		rename: state.rename(t),
+		remove: state.remove(t),
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) lstat(name string) (fs.FileInfo, error) {
+	switch {
+	case name == "source":
+		return s.sourceInfo, nil
+	case isMoveFallbackTempPath(name) && s.tempExists:
+		return s.tempInfo, nil
+	case name == "target" && s.targetExists:
+		return s.tempInfo, nil
+	default:
+		return nil, os.ErrNotExist
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) openSource(t *testing.T) func(string) (File, error) {
+	t.Helper()
+
+	return func(name string) (File, error) {
+		if name != "source" {
+			t.Fatalf("unexpected source open %q", name)
+		}
+		reader := strings.NewReader("original")
+		return &fakeFile{
+			read: func(p []byte) (int, error) {
+				s.sourceInfo = s.replacementInfo
+				return reader.Read(p)
+			},
+			stat:  func() (fs.FileInfo, error) { return s.originalInfo, nil },
+			chmod: chmodWithoutError,
+			close: closeWithoutError,
+		}, nil
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) openTemp(t *testing.T, name string) (File, error) {
+	t.Helper()
+
+	if !isMoveFallbackTempPath(name) {
+		t.Fatalf("unexpected temp open %q", name)
+	}
+	s.tempExists = true
+	return &fakeFile{
+		write: func(p []byte) (int, error) {
+			s.published += string(p)
+			return len(p), nil
+		},
+		stat:  func() (fs.FileInfo, error) { return s.tempInfo, nil },
+		chmod: chmodWithoutError,
+		close: closeWithoutError,
+	}, nil
+}
+
+func (s *replacedSourceMoveFallbackState) rename(t *testing.T) func(string, string) error {
+	t.Helper()
+
+	return func(oldName, newName string) error {
+		if oldName == "source" {
+			return syscall.EXDEV
+		}
+		if !isMoveFallbackTempPath(oldName) || newName != "target" {
+			t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+		}
+		s.tempExists = false
+		s.targetExists = true
+		return nil
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) remove(t *testing.T) func(string) error {
+	t.Helper()
+
+	return func(name string) error {
+		if isMoveFallbackTempPath(name) {
+			s.tempExists = false
+			return nil
+		}
+		if name != "source" {
+			t.Fatalf("unexpected removal %q", name)
+		}
+		s.removeCalls++
+		return nil
 	}
 }
 
