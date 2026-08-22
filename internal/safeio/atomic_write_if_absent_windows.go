@@ -148,10 +148,11 @@ type fileRenameInformation struct {
 	fileName        [1]uint16
 }
 
-var procNtOpenFile = syscall.NewLazyDLL("ntdll.dll").NewProc("NtOpenFile")
-var procNtSetInformationFile = syscall.NewLazyDLL("ntdll.dll").NewProc("NtSetInformationFile")
-var procRtlNtStatusToDosError = syscall.NewLazyDLL("ntdll.dll").NewProc("RtlNtStatusToDosError")
+var procNtOpenFile = syscall.NewLazyDLL(windowsNTDLLName).NewProc("NtOpenFile")
+var procNtSetInformationFile = syscall.NewLazyDLL(windowsNTDLLName).NewProc("NtSetInformationFile")
+var procRtlNtStatusToDosError = syscall.NewLazyDLL(windowsNTDLLName).NewProc("RtlNtStatusToDosError")
 
+const windowsNTDLLName = "ntdll.dll"
 const fileRenameInformationClass = 10
 const windowsDeleteAccess = 0x00010000
 const maxWindowsRenameTargetUTF16 = 32767
