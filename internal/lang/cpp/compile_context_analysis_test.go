@@ -292,7 +292,7 @@ func TestCPPAdditionalZeroHitBranches(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "outside.cpp")
 	testutil.MustWriteFile(t, outside, "#include <fmt/core.h>\n")
 	stage := scanStage{scanner: includeResolver{repoPath: repo}}
-	if err := stage.process(context.Background(), outside); err != nil {
+	if err := stage.process(context.Background(), scanInput{Path: outside}); err != nil {
 		t.Fatalf("expected escaped-path scan errors to be downgraded into warnings, got %v", err)
 	}
 	if len(stage.result.Warnings) != 1 || !strings.Contains(stage.result.Warnings[0], "outside repo boundary") {

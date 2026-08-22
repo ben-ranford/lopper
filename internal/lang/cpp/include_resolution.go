@@ -48,11 +48,19 @@ type scanResult struct {
 }
 
 type includeResolver struct {
-	repoPath           string
-	includeDirs        []string
-	includeSearchPaths []includeSearchPath
-	sourceIncludeDirs  map[string][]includeSearchPath
-	catalog            dependencyCatalog
+	repoPath                  string
+	includeDirs               []string
+	includeSearchPaths        []includeSearchPath
+	sourceIncludeDirs         map[string][]includeSearchPath
+	sourceIncludeSearchPaths  []includeSearchPath
+	hasSourceIncludeSearchSet bool
+	catalog                   dependencyCatalog
+}
+
+type scanInput struct {
+	Path               string
+	IncludeSearchPaths []includeSearchPath
+	HasCompileCommand  bool
 }
 
 type includeLookup struct {
@@ -92,18 +100,18 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, 
 		result: scanResult{Catalog: catalog},
 	}
 
-	files, warnings, err := resolveScanFiles(ctx, repoPath, compileInfo)
+	inputs, warnings, err := resolveScanInputs(ctx, repoPath, compileInfo)
 	if err != nil {
 		return stage.result, err
 	}
 	stage.result.Warnings = append(stage.result.Warnings, warnings...)
-	if len(files) == 0 {
+	if len(inputs) == 0 {
 		stage.result.Warnings = append(stage.result.Warnings, "no C/C++ source files found for analysis")
 		return stage.result, nil
 	}
 
-	for _, path := range files {
-		if err := stage.process(ctx, path); err != nil {
+	for _, input := range inputs {
+		if err := stage.process(ctx, input); err != nil {
 			return stage.result, err
 		}
 	}
@@ -112,21 +120,33 @@ func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, 
 	return stage.result, nil
 }
 
-func resolveScanFiles(ctx context.Context, repoPath string, compileInfo compileContext) ([]string, []string, error) {
+func resolveScanInputs(ctx context.Context, repoPath string, compileInfo compileContext) ([]scanInput, []string, error) {
+	if len(compileInfo.SourceContexts) > 0 {
+		inputs, warnings, err := filterCompileSourceContexts(repoPath, compileInfo.SourceContexts)
+		if err != nil {
+			return nil, warnings, err
+		}
+		if len(inputs) > 0 {
+			return inputs, warnings, nil
+		}
+		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
+		files, err := walkCPPFiles(ctx, repoPath)
+		return scanInputsForFiles(files), warnings, err
+	}
 	if len(compileInfo.SourceFiles) > 0 {
 		files, warnings, err := filterCompileSourceHints(repoPath, compileInfo.SourceFiles)
 		if err != nil {
 			return nil, warnings, err
 		}
 		if len(files) > 0 {
-			return files, warnings, nil
+			return scanInputsForFiles(files), warnings, nil
 		}
 		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
 		files, err = walkCPPFiles(ctx, repoPath)
-		return files, warnings, err
+		return scanInputsForFiles(files), warnings, err
 	}
 	files, err := walkCPPFiles(ctx, repoPath)
-	return files, nil, err
+	return scanInputsForFiles(files), nil, err
 }
 
 func filterCompileSourceHints(repoPath string, sourceFiles []string) ([]string, []string, error) {
@@ -164,19 +184,66 @@ func filterCompileSourceHints(repoPath string, sourceFiles []string) ([]string, 
 	return files, warnings, nil
 }
 
-func (s *scanStage) process(ctx context.Context, path string) error {
+func filterCompileSourceContexts(repoPath string, contexts []compileSourceContext) ([]scanInput, []string, error) {
+	inputs := make([]scanInput, 0, len(contexts))
+	warnings := make([]string, 0)
+
+	for _, context := range contexts {
+		sourcePath := filepath.Clean(context.Path)
+		if !shared.IsPathWithin(repoPath, sourcePath) {
+			warnings = append(warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", sourcePath))
+			continue
+		}
+
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				warnings = append(warnings, fmt.Sprintf("skipping compile database file missing from repo: %s", relOrBase(repoPath, sourcePath)))
+				continue
+			}
+			return nil, warnings, err
+		}
+		if info.IsDir() {
+			warnings = append(warnings, fmt.Sprintf("skipping compile database path that is not a file: %s", relOrBase(repoPath, sourcePath)))
+			continue
+		}
+
+		inputs = append(inputs, scanInput{
+			Path:               sourcePath,
+			IncludeSearchPaths: append([]includeSearchPath(nil), context.IncludeSearchPaths...),
+			HasCompileCommand:  true,
+		})
+	}
+
+	return inputs, warnings, nil
+}
+
+func scanInputsForFiles(files []string) []scanInput {
+	inputs := make([]scanInput, 0, len(files))
+	for _, file := range files {
+		inputs = append(inputs, scanInput{Path: file})
+	}
+	return inputs
+}
+
+func (s *scanStage) process(ctx context.Context, input scanInput) error {
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	scanFile, unresolvedSamples, unresolvedCount, err := s.scanner.scanFile(path)
+	scanner := s.scanner
+	if input.HasCompileCommand {
+		scanner.sourceIncludeSearchPaths = input.IncludeSearchPaths
+		scanner.hasSourceIncludeSearchSet = true
+	}
+	scanFile, unresolvedSamples, unresolvedCount, err := scanner.scanFile(input.Path)
 	if err != nil {
 		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
 			s.result.SkippedLargeFiles++
 			return nil
 		}
 		if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
-			s.result.Warnings = append(s.result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
+			s.result.Warnings = append(s.result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", input.Path))
 			return nil
 		}
 		return err
@@ -365,7 +432,7 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if include.Delimiter != '<' && include.Delimiter != '"' {
 		return "", true
 	}
-	if include.Delimiter == '<' && !strings.Contains(cleanIncludeHeader(header), "/") && isLikelyStdHeader(header) {
+	if isAngleStdHeader(header, include.Delimiter) {
 		return "", false
 	}
 	resolution := r.resolveIncludePath(includeLookup{
@@ -376,25 +443,31 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if resolution.Resolved && shared.IsPathWithin(r.repoPath, resolution.Path) {
 		return "", false
 	}
-	if isLikelyStdHeader(header) {
-		if shouldSuppressQualifiedStdHeader(header, resolution) {
-			if !resolution.Resolved && strings.Contains(cleanIncludeHeader(header), "/") {
-				if declaredDependency := declaredIncludeDependency(header, r.catalog); declaredDependency != "" {
-					return declaredDependency, false
-				}
-			}
-			return "", false
-		}
-	}
 	if include.Delimiter == '"' {
-		return "", true
+		return "", !resolution.Resolved
 	}
-
+	if dependency, handled := r.suppressedStdHeaderDependency(header, resolution); handled {
+		return dependency, false
+	}
 	dependency := dependencyFromIncludePath(header)
 	if dependency == "" {
 		return "", true
 	}
 	return correlateDeclaredDependency(dependency, r.catalog), false
+}
+
+func isAngleStdHeader(header string, delimiter byte) bool {
+	return delimiter == '<' && !strings.Contains(cleanIncludeHeader(header), "/") && isLikelyStdHeader(header)
+}
+
+func (r *includeResolver) suppressedStdHeaderDependency(header string, resolution includeResolution) (string, bool) {
+	if !isLikelyStdHeader(header) || !shouldSuppressQualifiedStdHeader(header, resolution) {
+		return "", false
+	}
+	if !resolution.Resolved && strings.Contains(cleanIncludeHeader(header), "/") {
+		return declaredIncludeDependency(header, r.catalog), true
+	}
+	return "", true
 }
 
 func (r *includeResolver) resolveIncludePath(include includeLookup) includeResolution {
@@ -426,6 +499,9 @@ func (r *includeResolver) resolveIncludePath(include includeLookup) includeResol
 }
 
 func (r *includeResolver) includeSearchPathsForSource(sourcePath string, delimiter byte) []includeSearchPath {
+	if r.hasSourceIncludeSearchSet {
+		return filterIncludeSearchPathsForDelimiter(r.sourceIncludeSearchPaths, delimiter)
+	}
 	if len(r.sourceIncludeDirs) > 0 {
 		if paths, ok := r.sourceIncludeDirs[filepath.Clean(sourcePath)]; ok {
 			return filterIncludeSearchPathsForDelimiter(paths, delimiter)
