@@ -30,8 +30,6 @@ type analysisCache struct {
 	analysisRepoPath string
 }
 
-var analysisBeforeMissingCachePartCreateHook func(currentPath, name string)
-
 func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
 	metadata := report.CacheMetadata{
@@ -125,9 +123,6 @@ func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, r
 
 	current := root
 	for _, name := range missingParts {
-		if analysisBeforeMissingCachePartCreateHook != nil {
-			analysisBeforeMissingCachePartCreateHook(currentPath, name)
-		}
 		if _, err := verifyPinnedAnalysisCacheDirectory(current, currentPath); err != nil {
 			return nil, err
 		}
