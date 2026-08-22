@@ -64,18 +64,39 @@ for artifact_destination in "$BENCH_BASE_OUTPUT" "$BENCH_HEAD_OUTPUT" "$MEMORY_B
 done
 # shellcheck disable=SC2046 # Each dirname is a single, intentionally unquoted path argument.
 mkdir -p $(dirname "$BENCH_BASE_OUTPUT") $(dirname "$BENCH_HEAD_OUTPUT") $(dirname "$MEMORY_BENCH_SUMMARY") $(dirname "$MEMORY_BENCH_STATUS");
+write_memory_bench_status() {
+	status_code="$1";
+	printf "%s\n" "$status_code" > "$MEMORY_BENCH_STATUS";
+};
 write_invalid_memory_summary() {
 	summary_error="$1";
 	printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark input could not be read for a safe memory comparison.\n" "$MEMORY_BENCH_MAX_BYTES_PCT" "$MEMORY_BENCH_MAX_ALLOCS_PCT" "$summary_error" > "$MEMORY_BENCH_SUMMARY";
-	printf "2\n" > "$MEMORY_BENCH_STATUS";
+	write_memory_bench_status "2";
+};
+write_harness_change_requires_approval_summary() {
+	summary_error="$1";
+	printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition.\n" "$MEMORY_BENCH_MAX_BYTES_PCT" "$MEMORY_BENCH_MAX_ALLOCS_PCT" "$summary_error" > "$MEMORY_BENCH_SUMMARY";
+	write_memory_bench_status "1";
 };
 fail_invalid_memory_gate() {
 	diagnostic="$1";
 	summary_error="$diagnostic";
-	if [ "$#" -gt 1 ]; then summary_error="$2"; fi;
 	printf "Memory benchmark gate invalid: %s\n" "$diagnostic" >&2;
+	if [ "$#" -gt 1 ]; then
+		summary_error="$2";
+	fi;
 	write_invalid_memory_summary "$summary_error";
 	exit 2;
+};
+report_harness_change_requires_approval() {
+	diagnostic="$1";
+	summary_error="$diagnostic";
+	printf "Memory benchmark approval required: %s\n" "$diagnostic" >&2;
+	if [ "$#" -gt 1 ]; then
+		summary_error="$2";
+	fi;
+	write_harness_change_requires_approval_summary "$summary_error";
+	exit 0;
 };
 run_configured_go_env() {
 	configured_go="$1"
@@ -351,6 +372,9 @@ while IFS=$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; 
 		fail_invalid_memory_gate "base benchmark harness fingerprint could not be resolved for package '$bench_pkg'.";
 	fi;
 	if [ "$base_harness_fingerprint" != "$harness_fingerprint" ]; then
+		if [ "$MEMORY_BENCH_ENFORCE" = "0" ]; then
+			report_harness_change_requires_approval "base benchmark definition for package '$bench_pkg' does not match the resolved head harness fingerprint.";
+		fi;
 		fail_invalid_memory_gate "base benchmark definition for package '$bench_pkg' does not match the resolved head harness fingerprint.";
 	fi;
 done < "$bench_definitions_tmp";
@@ -390,7 +414,7 @@ set +e;
 "$benchdelta_bin" -base "$BENCH_BASE_OUTPUT" -head "$BENCH_HEAD_OUTPUT" -max-bytes-pct "$MEMORY_BENCH_MAX_BYTES_PCT" -max-allocs-pct "$MEMORY_BENCH_MAX_ALLOCS_PCT" -summary-out "$MEMORY_BENCH_SUMMARY";
 status=$?;
 set -e;
-printf "%s\n" "$status" > "$MEMORY_BENCH_STATUS";
+write_memory_bench_status "$status";
 if [ "$MEMORY_BENCH_ENFORCE" = "0" ] && [ "$status" -eq 1 ]; then
 	exit 0;
 fi;

@@ -310,18 +310,20 @@ func shouldIgnoreImport(module, filePackage string) bool {
 	if module == "" {
 		return true
 	}
+	lookupModule := normalizeJVMModuleForLookup(module)
 
 	stdlibPrefixes := []string{
 		"java.", "javax.", "kotlin.", "jdk.", "sun.",
 	}
 	for _, prefix := range stdlibPrefixes {
-		if strings.HasPrefix(module, prefix) {
+		if strings.HasPrefix(lookupModule, prefix) {
 			return true
 		}
 	}
 
 	if filePackage != "" {
-		if module == filePackage || strings.HasPrefix(module, filePackage+".") {
+		lookupPackage := normalizeJVMModuleForLookup(filePackage)
+		if lookupModule == lookupPackage || strings.HasPrefix(lookupModule, lookupPackage+".") {
 			return true
 		}
 	}
@@ -329,6 +331,7 @@ func shouldIgnoreImport(module, filePackage string) bool {
 }
 
 func resolveDependency(module string, depPrefixes map[string]string, depAliases map[string]string) string {
+	module = normalizeJVMModuleForLookup(module)
 	best := ""
 	bestLen := 0
 
@@ -356,6 +359,7 @@ func resolveDependency(module string, depPrefixes map[string]string, depAliases 
 }
 
 func fallbackDependency(module string) string {
+	module = normalizeJVMModuleForLookup(module)
 	parts := strings.Split(module, ".")
 	if len(parts) >= 2 {
 		return normalizeDependencyID(parts[0] + "." + parts[1])
@@ -364,6 +368,10 @@ func fallbackDependency(module string) string {
 		return normalizeDependencyID(parts[0])
 	}
 	return ""
+}
+
+func normalizeJVMModuleForLookup(module string) string {
+	return shared.NormalizeEscapedModuleSegments(module)
 }
 
 func lastModuleSegment(module string) string {

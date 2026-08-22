@@ -276,18 +276,20 @@ func shouldIgnoreImport(module, filePackage string) bool {
 	if module == "" {
 		return true
 	}
+	lookupModule := normalizeKotlinAndroidModuleForLookup(module)
 
 	frameworkPrefixes := []string{
 		"java.", "javax.", "kotlin.", "jdk.", "sun.", "android.",
 	}
 	for _, prefix := range frameworkPrefixes {
-		if strings.HasPrefix(module, prefix) {
+		if strings.HasPrefix(lookupModule, prefix) {
 			return true
 		}
 	}
 
 	if filePackage != "" {
-		if module == filePackage || strings.HasPrefix(module, filePackage+".") {
+		lookupPackage := normalizeKotlinAndroidModuleForLookup(filePackage)
+		if lookupModule == lookupPackage || strings.HasPrefix(lookupModule, lookupPackage+".") {
 			return true
 		}
 	}
@@ -295,6 +297,7 @@ func shouldIgnoreImport(module, filePackage string) bool {
 }
 
 func resolveDependency(module string, lookups dependencyLookups) (string, []string) {
+	module = normalizeKotlinAndroidModuleForLookup(module)
 	best := ""
 	bestLen := 0
 	bestAmbiguous := []string(nil)
@@ -335,7 +338,12 @@ func resolveDependency(module string, lookups dependencyLookups) (string, []stri
 }
 
 func fallbackDependency(module string) string {
+	module = normalizeKotlinAndroidModuleForLookup(module)
 	return shared.FallbackDependency(module, normalizeDependencyID)
+}
+
+func normalizeKotlinAndroidModuleForLookup(module string) string {
+	return shared.NormalizeEscapedModuleSegments(module)
 }
 
 func lastModuleSegment(module string) string {
