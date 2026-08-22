@@ -469,10 +469,19 @@ func (s *goModModuleScanner) isValidLongQuotedReplaceLine(lineText string) bool 
 
 func longQuotedGoModLineSurrogate(lineText string) (string, bool) {
 	quoteIndex := strings.IndexByte(lineText, '"')
-	if quoteIndex < 0 {
+	if quoteIndex < 0 || !hasLongQuotedLocalReplaceTargetPrefix(lineText[quoteIndex+1:]) {
 		return "", false
 	}
 	return lineText[:quoteIndex] + `"./lopper-long-quoted-replacement"`, true
+}
+
+// hasLongQuotedLocalReplaceTargetPrefix verifies the portion of an oversized
+// replacement target that the bounded scanner retains. Long replacement lines
+// may only omit the target's body when it is an unversioned local directory
+// replacement: the scanner rejects a version suffix after the closing quote.
+// Do not turn an untrusted module-looking target into a local-path surrogate.
+func hasLongQuotedLocalReplaceTargetPrefix(target string) bool {
+	return strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") || strings.HasPrefix(target, "/")
 }
 
 func goModBlockDirective(lineText string) (string, bool) {

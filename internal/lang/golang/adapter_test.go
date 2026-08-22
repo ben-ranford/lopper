@@ -1789,21 +1789,31 @@ func TestOversizedRootGoModRejectsNewlineInsideQuotedReplacement(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestOversizedRootGoModKeepsLongQuotedNonModuleDirective(t *testing.T) {
+func TestOversizedRootGoModKeepsLongQuotedLocalReplacement(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "./`+strings.Repeat("x", 70*1024)+`"`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted local replacement")
+}
+
+func TestOversizedRootGoModRejectsLongQuotedNonDirectoryReplacement(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
 		"module example.com/root",
 		`replace example.com/a => "`+strings.Repeat("x", 70*1024)+`"`,
 	)
 
-	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted non-module directive")
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
 func TestOversizedRootGoModKeepsLongQuotedReplacementLineCommentSuffix(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
 		"module example.com/root",
-		`replace example.com/a => "`+strings.Repeat("x", 70*1024)+`" // comment`,
+		`replace example.com/a => "./`+strings.Repeat("x", 70*1024)+`" // comment`,
 	)
 
 	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted replacement comment suffix")
@@ -2265,6 +2275,13 @@ func TestAnalyseTreatsOversizedNestedModuleIdentityWithLongQuotedDirectiveAsLoca
 	requireOversizedNestedModuleImportStaysLocal(t, reportData)
 }
 
+func TestAnalyseDoesNotTreatOversizedNestedModuleIdentityWithLongQuotedNonDirectoryReplacementAsLocal(t *testing.T) {
+	reportData := analyseOversizedNestedModuleImportedFromRoot(t, func(nestedDir string) {
+		writeOversizedModuleGoModWithLongQuotedReplaceTargetSuffix(t, nestedDir, "example.com/service", "", "")
+	})
+	requireMalformedOversizedModuleImportIsExternal(t, reportData)
+}
+
 func TestAnalyseDoesNotTreatOversizedNestedModuleIdentityWithTrailingTokenQuotedDirectiveAsLocal(t *testing.T) {
 	reportData := analyseOversizedNestedModuleImportedFromRoot(t, func(nestedDir string) {
 		writeOversizedModuleGoModWithLongQuotedReplaceSuffix(t, nestedDir, "example.com/service", " module example.com/other")
@@ -2552,8 +2569,12 @@ func writeOversizedModuleGoModWithLongQuotedReplace(t *testing.T, dir, modulePat
 }
 
 func writeOversizedModuleGoModWithLongQuotedReplaceSuffix(t *testing.T, dir, modulePath, suffix string) {
+	writeOversizedModuleGoModWithLongQuotedReplaceTargetSuffix(t, dir, modulePath, "./", suffix)
+}
+
+func writeOversizedModuleGoModWithLongQuotedReplaceTargetSuffix(t *testing.T, dir, modulePath, targetPrefix, suffix string) {
 	t.Helper()
-	body := modulePrefix + modulePath + "\nreplace example.com/a => \"" + strings.Repeat("x", 70*1024) + "\"" + suffix + "\n"
+	body := modulePrefix + modulePath + "\nreplace example.com/a => \"" + targetPrefix + strings.Repeat("x", 70*1024) + "\"" + suffix + "\n"
 	paddingLen := goModSizeLimitTest + 1 - len(body) - len("// ")
 	if paddingLen < 0 {
 		t.Fatalf("oversized module go.mod body exceeds test limit")
