@@ -3610,15 +3610,6 @@ func newAtomicIfAbsentRoot(t *testing.T, tempFile File, link func(string, string
 	}
 }
 
-func assertAtomicIfAbsentPublishPath(t *testing.T, oldName, newName string) {
-	t.Helper()
-
-	assertAtomicTempPath(t, "hard-link source", oldName)
-	if newName != writeTestFileName {
-		t.Fatalf("unexpected hard-link target: %s", newName)
-	}
-}
-
 func assertAtomicTempPath(t *testing.T, label, name string) {
 	t.Helper()
 
@@ -7167,29 +7158,29 @@ func TestBasicRootRenameTargetRestoreBranches(t *testing.T) {
 func TestBasicRootRenameLeftoverStagingBranch(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 
-	t.Run("rename leftover changed staging", func(t *testing.T) {
-		useRandomTempNames(t, atomicTempPrefix+"quarantine")
-		files := map[string]fs.FileInfo{"source": sourceInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			rename: func(oldName, newName string) error {
-				if oldName == "source" {
-					files[newName] = sourceInfo
-					delete(files, oldName)
-					return nil
-				}
-				if strings.HasSuffix(oldName, "entry") && newName == "target" {
-					files[newName] = sourceInfo
-					files[oldName] = changedInfo
-					return nil
-				}
-				return nil
-			},
-		})
-		consumed, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
-		if err == nil || consumed || !strings.Contains(err.Error(), sourceChangedMsg) {
-			t.Fatalf("expected leftover staging mismatch, consumed=%t err=%v", consumed, err)
-		}
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		rename: renameSourceThenLeaveChangedStaging(files, sourceInfo, changedInfo),
 	})
+	consumed, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if err == nil || consumed || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected leftover staging mismatch, consumed=%t err=%v", consumed, err)
+	}
+}
+
+func renameSourceThenLeaveChangedStaging(files map[string]fs.FileInfo, sourceInfo, changedInfo fs.FileInfo) func(string, string) error {
+	return func(oldName, newName string) error {
+		switch {
+		case oldName == "source":
+			files[newName] = sourceInfo
+			delete(files, oldName)
+		case strings.HasSuffix(oldName, "entry") && newName == "target":
+			files[newName] = sourceInfo
+			files[oldName] = changedInfo
+		}
+		return nil
+	}
 }
 
 func TestBasicRootRemoveErrorBranches(t *testing.T) {
@@ -7447,169 +7438,192 @@ func TestIdentityHelperQuarantineBranches(t *testing.T) {
 	})
 }
 
-func TestMoveLinklessFallbackBranches(t *testing.T) {
+func TestTargetAliasSkipsUnrelatedSpelling(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
-	dirInfo := statTestPath(t, t.TempDir())
-	changedDirInfo := statTestPath(t, t.TempDir())
 	lstatErr := errors.New("lstat failed")
 
-	t.Run("target alias skips unrelated spelling", func(t *testing.T) {
-		called := false
-		aliases, err := targetAliasesSource(&fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) {
-				called = true
-				return nil, lstatErr
+	called := false
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			called = true
+			return nil, lstatErr
+		},
+	}, "source", "target", sourceInfo)
+	if err != nil || aliases || called {
+		t.Fatalf("unrelated spelling should skip alias probing, aliases=%t called=%t err=%v", aliases, called, err)
+	}
+
+	aliases, err = targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, changedInfo, "SOURCE"),
+	}, "source", "SOURCE", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasMissingTarget(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+	}, "source", "source", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("missing alias target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasLstatError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	if _, err := targetAliasesSource(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}, "source", "source", sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected alias lstat error, got %v", err)
+	}
+}
+
+func TestTargetAliasExactSelf(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, sourceInfo, "source"),
+	}, "source", "source", sourceInfo)
+	if err != nil || !aliases {
+		t.Fatalf("exact path should alias itself, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasRejectsNonregularTarget(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, dirInfo, "SOURCE"),
+	}, "source", "SOURCE", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("nonregular target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasSourceParentLstatError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{filepath.Join("b", "é"): sourceInfo},
+			map[string]error{"a": lstatErr},
+		),
+	}
+	if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected source parent lstat error, got %v", err)
+	}
+}
+
+func TestTargetAliasTargetParentLstatError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	lstatErr := errors.New("lstat failed")
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				filepath.Join("b", "é"): sourceInfo,
+				"a":                     dirInfo,
 			},
-		}, "source", "target", sourceInfo)
-		if err != nil || aliases || called {
-			t.Fatalf("unrelated spelling should skip alias probing, aliases=%t called=%t err=%v", aliases, called, err)
-		}
-	})
+			map[string]error{"b": lstatErr},
+		),
+	}
+	if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected target parent lstat error, got %v", err)
+	}
+}
 
-	t.Run("target alias missing and lstat error", func(t *testing.T) {
-		root := &fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-		}
-		aliases, err := targetAliasesSource(root, "source", "source", sourceInfo)
-		if err != nil || aliases {
-			t.Fatalf("missing alias target should not alias, aliases=%t err=%v", aliases, err)
-		}
-		root.lstat = func(string) (fs.FileInfo, error) { return nil, lstatErr }
-		if _, err := targetAliasesSource(root, "source", "source", sourceInfo); !errors.Is(err, lstatErr) {
-			t.Fatalf("expected alias lstat error, got %v", err)
-		}
-	})
+func TestTargetAliasRejectsDifferentParentDirectory(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	changedDirInfo := statTestPath(t, t.TempDir())
 
-	t.Run("target alias exact self", func(t *testing.T) {
-		aliases, err := targetAliasesSource(&fakeRoot{
-			lstat: lstatOriginalForNames(t, sourceInfo, "source"),
-		}, "source", "source", sourceInfo)
-		if err != nil || !aliases {
-			t.Fatalf("exact path should alias itself, aliases=%t err=%v", aliases, err)
-		}
-	})
-
-	t.Run("target alias rejects nonregular and distinct targets", func(t *testing.T) {
-		aliases, err := targetAliasesSource(&fakeRoot{
-			lstat: lstatOriginalForNames(t, dirInfo, "SOURCE"),
-		}, "source", "SOURCE", sourceInfo)
-		if err != nil || aliases {
-			t.Fatalf("nonregular target should not alias, aliases=%t err=%v", aliases, err)
-		}
-		aliases, err = targetAliasesSource(&fakeRoot{
-			lstat: lstatOriginalForNames(t, changedInfo, "SOURCE"),
-		}, "source", "SOURCE", sourceInfo)
-		if err != nil || aliases {
-			t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
-		}
-	})
-
-	t.Run("target alias parent lookup and mismatch branches", func(t *testing.T) {
-		root := &fakeRoot{
-			lstat: func(name string) (fs.FileInfo, error) {
-				switch name {
-				case filepath.Join("b", "é"):
-					return sourceInfo, nil
-				case "a":
-					return nil, lstatErr
-				default:
-					t.Fatalf("unexpected source-parent error lstat path: %s", name)
-					return nil, os.ErrNotExist
-				}
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				filepath.Join("b", "é"): sourceInfo,
+				"a":                     dirInfo,
+				"b":                     changedDirInfo,
 			},
-		}
-		if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
-			t.Fatalf("expected source parent lstat error, got %v", err)
-		}
+			nil,
+		),
+	}
+	aliases, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("different parent directories should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
 
-		root.lstat = func(name string) (fs.FileInfo, error) {
-			switch name {
-			case filepath.Join("b", "é"):
-				return sourceInfo, nil
-			case "a":
-				return dirInfo, nil
-			case "b":
-				return nil, lstatErr
-			default:
-				t.Fatalf("unexpected target-parent error lstat path: %s", name)
-				return nil, os.ErrNotExist
-			}
-		}
-		if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
-			t.Fatalf("expected target parent lstat error, got %v", err)
-		}
+func TestTargetAliasPropagatesDirectoryCountError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	countErr := errors.New("count directory failed")
 
-		root.lstat = func(name string) (fs.FileInfo, error) {
-			switch name {
-			case filepath.Join("b", "é"):
-				return sourceInfo, nil
-			case "a":
-				return dirInfo, nil
-			case "b":
-				return changedDirInfo, nil
-			default:
-				t.Fatalf("unexpected parent mismatch lstat path: %s", name)
-				return nil, os.ErrNotExist
-			}
-		}
-		aliases, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo)
-		if err != nil || aliases {
-			t.Fatalf("different parent directories should not alias, aliases=%t err=%v", aliases, err)
-		}
-	})
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"SOURCE": sourceInfo,
+				".":      dirInfo,
+			},
+			nil,
+		),
+		open: func(string) (File, error) { return nil, countErr },
+	}, "source", "SOURCE", sourceInfo)
+	if !errors.Is(err, countErr) || aliases {
+		t.Fatalf("expected count error without alias, aliases=%t err=%v", aliases, err)
+	}
+}
 
-	t.Run("target alias propagates directory count error", func(t *testing.T) {
-		countErr := errors.New("count directory failed")
-		aliases, err := targetAliasesSource(&fakeRoot{
-			lstat: func(name string) (fs.FileInfo, error) {
-				switch name {
-				case "SOURCE":
-					return sourceInfo, nil
-				case ".":
-					return dirInfo, nil
-				default:
-					t.Fatalf("unexpected count error lstat path: %s", name)
-					return nil, os.ErrNotExist
-				}
-			},
-			open: func(string) (File, error) { return nil, countErr },
-		}, "source", "SOURCE", sourceInfo)
-		if !errors.Is(err, countErr) || aliases {
-			t.Fatalf("expected count error without alias, aliases=%t err=%v", aliases, err)
-		}
-	})
+func TestPrepareFallsBackToLinklessRename(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
 
-	t.Run("prepare falls back to linkless rename", func(t *testing.T) {
-		root := &fakeRoot{
-			mkdirAll: func(string, os.FileMode) error { return nil },
-			lstat: func(name string) (fs.FileInfo, error) {
-				switch name {
-				case "source", "target":
-					return sourceInfo, nil
-				default:
-					t.Fatalf("unexpected lstat path: %s", name)
-					return nil, os.ErrNotExist
-				}
-			},
-			chmod: chmodNameWithoutError(t, "source"),
-			linkIfMatches: func(string, string, fs.FileInfo, string) error {
-				return errIdentityBoundLinkUnavailable
-			},
-			open: func(string) (File, error) {
-				return nil, errors.ErrUnsupported
-			},
-			renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-				if oldName != "source" || newName != "target" {
-					t.Fatalf("unexpected linkless rename %q -> %q", oldName, newName)
-				}
-				requireSameFileInfo(t, expected, sourceInfo, oldName)
-				return nil
-			},
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    lstatOriginalForNames(t, sourceInfo, "source", "target"),
+		chmod:    chmodNameWithoutError(t, "source"),
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return errIdentityBoundLinkUnavailable
+		},
+		open: func(string) (File, error) {
+			return nil, errors.ErrUnsupported
+		},
+		renameIfMatches: assertLinklessRename(t, sourceInfo),
+	}
+	if _, err := prepareAndRenameWithinRoot(root, "source", "target", 0o600); err != nil {
+		t.Fatalf("expected linkless rename fallback success, got %v", err)
+	}
+}
+
+func lstatMappedPaths(t *testing.T, infos map[string]fs.FileInfo, errs map[string]error) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	return func(name string) (fs.FileInfo, error) {
+		if err, ok := errs[name]; ok {
+			return nil, err
 		}
-		if _, err := prepareAndRenameWithinRoot(root, "source", "target", 0o600); err != nil {
-			t.Fatalf("expected linkless rename fallback success, got %v", err)
+		if info, ok := infos[name]; ok {
+			return info, nil
 		}
-	})
+		t.Fatalf("unexpected lstat path: %s", name)
+		return nil, os.ErrNotExist
+	}
+}
+
+func assertLinklessRename(t *testing.T, sourceInfo fs.FileInfo) func(string, string, fs.FileInfo, string) error {
+	t.Helper()
+	return func(oldName, newName string, expected fs.FileInfo, message string) error {
+		if oldName != "source" || newName != "target" {
+			t.Fatalf("unexpected linkless rename %q -> %q", oldName, newName)
+		}
+		requireSameFileInfo(t, expected, sourceInfo, oldName)
+		return nil
+	}
 }
 
 func TestFinalSafeIOCoverageBranches(t *testing.T) {

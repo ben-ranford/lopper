@@ -564,82 +564,138 @@ func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expecte
 }
 
 func renameFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expected fs.FileInfo, message string) (_ bool, returnErr error) {
+	renameState, err := newBasicRootRenameState(root, oldName, newName, message)
+	if err != nil {
+		return false, err
+	}
+	defer renameState.cleanup(&returnErr)
+
+	if err := root.Rename(oldName, renameState.quarantineRel); err != nil {
+		return false, err
+	}
+	if err := renameState.snapshotQuarantine(); err != nil {
+		return false, err
+	}
+	if !sameRegularFile(expected, renameState.quarantineInfo) {
+		return false, renameState.restoreSourceMismatch()
+	}
+	if err := renameState.publishToTarget(); err != nil {
+		return false, err
+	}
+	return renameState.finishAfterTargetRename()
+}
+
+type basicRootRenameState struct {
+	root                   Root
+	oldName                string
+	newName                string
+	message                string
+	quarantineDir          string
+	quarantineRel          string
+	quarantineInfo         fs.FileInfo
+	cleanupDir             bool
+	cleanupQuarantineEntry bool
+}
+
+func newBasicRootRenameState(root Root, oldName, newName, message string) (*basicRootRenameState, error) {
 	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, oldName)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	cleanupDir := true
-	cleanupQuarantineEntry := false
-	var quarantineInfo fs.FileInfo
-	defer func() {
-		if cleanupQuarantineEntry {
-			returnErr = errors.Join(returnErr, retryCleanupAtomicTempFileIfStillMatches(root, quarantineRel, quarantineInfo, message))
-		}
-		if cleanupDir {
-			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
-		}
-	}()
+	return &basicRootRenameState{
+		root:          root,
+		oldName:       oldName,
+		newName:       newName,
+		message:       message,
+		quarantineDir: quarantineDir,
+		quarantineRel: quarantineRel,
+		cleanupDir:    true,
+	}, nil
+}
 
-	if err := root.Rename(oldName, quarantineRel); err != nil {
-		return false, err
+func (s *basicRootRenameState) cleanup(returnErr *error) {
+	if s.cleanupQuarantineEntry {
+		*returnErr = errors.Join(*returnErr, retryCleanupAtomicTempFileIfStillMatches(s.root, s.quarantineRel, s.quarantineInfo, s.message))
 	}
+	if s.cleanupDir {
+		*returnErr = errors.Join(*returnErr, ignoreRemoveNotExist(s.root.Remove(s.quarantineDir)))
+	}
+}
 
-	quarantineInfo, err = publishedRegularFileInfo(root, quarantineRel, message)
+func (s *basicRootRenameState) snapshotQuarantine() error {
+	info, err := publishedRegularFileInfo(s.root, s.quarantineRel, s.message)
 	if err != nil {
-		cleanupDir = false
-		return false, withPublishRenameSource(err, quarantineRel)
+		s.cleanupDir = false
+		return withPublishRenameSource(err, s.quarantineRel)
 	}
-	cleanupQuarantineEntry = true
-	if !sameRegularFile(expected, quarantineInfo) {
-		restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, oldName, message, quarantineInfo)
-		if !restored {
-			cleanupDir = false
-			cleanupQuarantineEntry = false
-		}
-		if restored && restoreErr == nil {
-			cleanupQuarantineEntry = false
-		}
-		return false, withPublishRenameSource(errors.Join(fmt.Errorf("%s: %s", message, oldName), restoreErr), quarantineRel)
-	}
+	s.quarantineInfo = info
+	s.cleanupQuarantineEntry = true
+	return nil
+}
 
-	if err := root.Rename(quarantineRel, newName); err != nil {
-		if errors.Is(err, syscall.EXDEV) {
-			cleanupDir = false
-			cleanupQuarantineEntry = false
-			return false, withPublishRenameSource(err, quarantineRel)
-		}
-		restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, oldName, message, quarantineInfo)
-		if !restored {
-			cleanupDir = false
-			cleanupQuarantineEntry = false
-		}
-		if restored && restoreErr == nil {
-			cleanupQuarantineEntry = false
-		}
-		return false, withPublishRenameSource(errors.Join(err, restoreErr), quarantineRel)
-	}
+func (s *basicRootRenameState) restoreSourceMismatch() error {
+	restoreErr := s.restoreOriginalFromQuarantine()
+	err := errors.Join(fmt.Errorf("%s: %s", s.message, s.oldName), restoreErr)
+	return withPublishRenameSource(err, s.quarantineRel)
+}
 
-	stagedInfo, err := root.Lstat(quarantineRel)
+func (s *basicRootRenameState) publishToTarget() error {
+	if err := s.root.Rename(s.quarantineRel, s.newName); err != nil {
+		return s.handleTargetRenameError(err)
+	}
+	return nil
+}
+
+func (s *basicRootRenameState) handleTargetRenameError(err error) error {
+	if errors.Is(err, syscall.EXDEV) {
+		s.disableQuarantineCleanup()
+		return withPublishRenameSource(err, s.quarantineRel)
+	}
+	restoreErr := s.restoreOriginalFromQuarantine()
+	return withPublishRenameSource(errors.Join(err, restoreErr), s.quarantineRel)
+}
+
+func (s *basicRootRenameState) restoreOriginalFromQuarantine() error {
+	restored, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.quarantineInfo)
+	if !restored {
+		s.disableQuarantineCleanup()
+	}
+	if restored && restoreErr == nil {
+		s.cleanupQuarantineEntry = false
+	}
+	return restoreErr
+}
+
+func (s *basicRootRenameState) disableQuarantineCleanup() {
+	s.cleanupDir = false
+	s.cleanupQuarantineEntry = false
+}
+
+func (s *basicRootRenameState) finishAfterTargetRename() (bool, error) {
+	stagedInfo, err := s.root.Lstat(s.quarantineRel)
 	if errors.Is(err, os.ErrNotExist) {
-		cleanupQuarantineEntry = false
+		s.cleanupQuarantineEntry = false
 		return true, nil
 	}
 	if err != nil {
-		cleanupDir = false
-		return false, withPublishRenameSource(err, quarantineRel)
+		s.cleanupDir = false
+		return false, withPublishRenameSource(err, s.quarantineRel)
 	}
-	if sameRegularFile(quarantineInfo, stagedInfo) {
-		_, cleanupErr := finishRestoredQuarantinedPath(root, quarantineRel, message, quarantineInfo)
-		if cleanupErr != nil {
-			cleanupDir = false
-			return false, cleanupErr
-		}
-		cleanupQuarantineEntry = false
-		return false, nil
+	if !sameRegularFile(s.quarantineInfo, stagedInfo) {
+		s.disableQuarantineCleanup()
+		return false, withPublishRenameSource(fmt.Errorf("%s: %s", s.message, s.quarantineRel), s.quarantineRel)
 	}
-	cleanupDir = false
-	cleanupQuarantineEntry = false
-	return false, withPublishRenameSource(fmt.Errorf("%s: %s", message, quarantineRel), quarantineRel)
+	return s.removeUnconsumedQuarantineEntry()
+}
+
+func (s *basicRootRenameState) removeUnconsumedQuarantineEntry() (bool, error) {
+	_, cleanupErr := finishRestoredQuarantinedPath(s.root, s.quarantineRel, s.message, s.quarantineInfo)
+	if cleanupErr != nil {
+		s.cleanupDir = false
+		return false, cleanupErr
+	}
+	s.cleanupQuarantineEntry = false
+	return false, nil
 }
 
 func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileInfo, message string) (returnErr error) {
