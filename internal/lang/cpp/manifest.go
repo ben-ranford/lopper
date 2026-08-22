@@ -323,7 +323,7 @@ func normalizeCPPDependencyID(value string) string {
 
 func correlateDeclaredDependency(token string, catalog dependencyCatalog) string {
 	token = normalizeCPPDependencyID(token)
-	if token == "" || len(catalog.Declarations) == 0 {
+	if token == "" || catalog.Incomplete || len(catalog.Declarations) == 0 {
 		return token
 	}
 	if catalog.contains(token) {

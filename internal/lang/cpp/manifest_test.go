@@ -415,6 +415,16 @@ func TestCorrelateDeclaredDependencyReturnsOriginalWhenMatchIsAmbiguous(t *testi
 	}
 }
 
+func TestCorrelateDeclaredDependencyReturnsOriginalWhenCatalogIncomplete(t *testing.T) {
+	catalog := newDependencyCatalog()
+	catalog.add("boost-asio", testVcpkgManifestSource)
+	catalog.Incomplete = true
+
+	if got := correlateDeclaredDependency("boost", catalog); got != "boost" {
+		t.Fatalf("expected incomplete catalog to keep original token, got %q", got)
+	}
+}
+
 func dependencyNames(dependencies []report.DependencyReport) []string {
 	names := make([]string, 0, len(dependencies))
 	for _, dependency := range dependencies {
