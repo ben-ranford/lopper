@@ -134,6 +134,12 @@ type analysisCacheSwapFixture struct {
 	cachePath       string
 }
 
+type analysisCacheWriteRootFixture struct {
+	repo      string
+	cachePath string
+	cache     *analysisCache
+}
+
 func newAnalysisCacheSwapFixture(t *testing.T) analysisCacheSwapFixture {
 	t.Helper()
 	parent := t.TempDir()
@@ -162,6 +168,22 @@ func (f *analysisCacheSwapFixture) assertMissingPartsAbsent(t *testing.T) {
 	t.Helper()
 	assertAnalysisCachePathAbsent(t, filepath.Join(f.repo, "missing"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(f.renamedRepoPath, "missing"))
+}
+
+func newAnalysisCacheWriteRootFixture(t *testing.T) analysisCacheWriteRootFixture {
+	t.Helper()
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	rootInfo, err := os.Lstat(cachePath)
+	if err != nil {
+		t.Fatalf("stat cache root: %v", err)
+	}
+	return analysisCacheWriteRootFixture{
+		repo:      repo,
+		cachePath: cachePath,
+		cache:     &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, rootIdentity: rootInfo},
+	}
 }
 
 func hookMkdirAnalysisCacheDir(t *testing.T, hook func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error)) {
@@ -194,6 +216,21 @@ func hookValidateAnalysisCacheRoot(t *testing.T, hook func(validate func(string,
 	}
 	t.Cleanup(func() {
 		validateAnalysisCacheRoot = original
+	})
+}
+
+func hookValidateAnalysisCacheRootCall(t *testing.T, cachePath string, hook func(call int) (bool, error)) {
+	t.Helper()
+	validateCalls := 0
+	hookValidateAnalysisCacheRoot(t, func(validate func(string, fs.FileInfo) error, path string, expected fs.FileInfo) error {
+		if path == cachePath {
+			validateCalls++
+			handled, err := hook(validateCalls)
+			if handled || err != nil {
+				return err
+			}
+		}
+		return validate(path, expected)
 	})
 }
 
@@ -1025,58 +1062,36 @@ func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 
 func TestAnalysisCacheOpenWriteRootFailureBranches(t *testing.T) {
 	t.Run("open canonical write root failure after validation", func(t *testing.T) {
-		repo := t.TempDir()
-		cachePath := filepath.Join(repo, cacheDirName)
-		mustMkdirCacheLayout(t, cachePath)
-		rootInfo, err := os.Lstat(cachePath)
-		if err != nil {
-			t.Fatalf("stat cache root: %v", err)
-		}
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, rootIdentity: rootInfo}
-		renamedPath := filepath.Join(repo, "cache-renamed")
-		validateCalls := 0
+		fixture := newAnalysisCacheWriteRootFixture(t)
+		renamedPath := filepath.Join(fixture.repo, "cache-renamed")
 
-		hookValidateAnalysisCacheRoot(t, func(validate func(string, fs.FileInfo) error, path string, expected fs.FileInfo) error {
-			if path == cachePath {
-				validateCalls++
-				if validateCalls == 1 {
-					if err := os.Rename(cachePath, renamedPath); err != nil {
-						t.Fatalf("rename cache root before canonical open: %v", err)
-					}
-					return nil
-				}
+		hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+			if call != 1 {
+				return false, nil
 			}
-			return validate(path, expected)
+			if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+				t.Fatalf("rename cache root before canonical open: %v", err)
+			}
+			return true, nil
 		})
 
-		if _, err := cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "open canonical root") {
+		if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "open canonical root") {
 			t.Fatalf("open write root error = %v, want canonical open failure", err)
 		}
 	})
 
 	t.Run("second validation after opening write root fails closed", func(t *testing.T) {
-		repo := t.TempDir()
-		cachePath := filepath.Join(repo, cacheDirName)
-		mustMkdirCacheLayout(t, cachePath)
-		rootInfo, err := os.Lstat(cachePath)
-		if err != nil {
-			t.Fatalf("stat cache root: %v", err)
-		}
-		cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, rootIdentity: rootInfo}
+		fixture := newAnalysisCacheWriteRootFixture(t)
 		validationErr := errors.New("post-open validation failed")
-		validateCalls := 0
 
-		hookValidateAnalysisCacheRoot(t, func(validate func(string, fs.FileInfo) error, path string, expected fs.FileInfo) error {
-			if path == cachePath {
-				validateCalls++
-				if validateCalls == 2 {
-					return validationErr
-				}
+		hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+			if call == 2 {
+				return true, validationErr
 			}
-			return validate(path, expected)
+			return false, nil
 		})
 
-		if _, err := cache.openWriteRoot(); !errors.Is(err, validationErr) {
+		if _, err := fixture.cache.openWriteRoot(); !errors.Is(err, validationErr) {
 			t.Fatalf("open write root error = %v, want %v", err, validationErr)
 		}
 	})
