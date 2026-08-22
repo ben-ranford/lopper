@@ -57,11 +57,13 @@ type includeResolver struct {
 type includeLookup struct {
 	sourcePath string
 	header     string
+	delimiter  byte
 }
 
 type includeSearchPath struct {
 	Path            string
 	System          bool
+	QuoteOnly       bool
 	ProvenanceKnown bool
 }
 
@@ -356,6 +358,7 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	resolution := r.resolveIncludePath(includeLookup{
 		sourcePath: sourcePath,
 		header:     header,
+		delimiter:  include.Delimiter,
 	})
 	if resolution.Resolved && shared.IsPathWithin(r.repoPath, resolution.Path) {
 		return "", false
@@ -377,11 +380,14 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 func (r *includeResolver) resolveIncludePath(include includeLookup) includeResolution {
 	sourceDir := filepath.Dir(include.sourcePath)
 	header := filepath.FromSlash(cleanIncludeHeader(include.header))
-	candidates := []includeResolution{{
-		Path:            filepath.Join(sourceDir, header),
-		ProvenanceKnown: true,
-	}}
-	for _, includePath := range r.includeSearchPathsForSource(include.sourcePath) {
+	candidates := make([]includeResolution, 0)
+	if include.delimiter == '"' {
+		candidates = append(candidates, includeResolution{
+			Path:            filepath.Join(sourceDir, header),
+			ProvenanceKnown: true,
+		})
+	}
+	for _, includePath := range r.includeSearchPathsForSource(include.sourcePath, include.delimiter) {
 		candidates = append(candidates, includeResolution{
 			Path:            filepath.Join(includePath.Path, header),
 			System:          includePath.System,
@@ -399,14 +405,14 @@ func (r *includeResolver) resolveIncludePath(include includeLookup) includeResol
 	return includeResolution{}
 }
 
-func (r *includeResolver) includeSearchPathsForSource(sourcePath string) []includeSearchPath {
+func (r *includeResolver) includeSearchPathsForSource(sourcePath string, delimiter byte) []includeSearchPath {
 	if len(r.sourceIncludeDirs) > 0 {
 		if paths := r.sourceIncludeDirs[filepath.Clean(sourcePath)]; len(paths) > 0 {
-			return paths
+			return filterIncludeSearchPathsForDelimiter(paths, delimiter)
 		}
 	}
 	if len(r.includeSearchPaths) > 0 {
-		return r.includeSearchPaths
+		return filterIncludeSearchPathsForDelimiter(r.includeSearchPaths, delimiter)
 	}
 	if len(r.includeDirs) == 0 {
 		return nil
@@ -416,6 +422,23 @@ func (r *includeResolver) includeSearchPathsForSource(sourcePath string) []inclu
 		paths = append(paths, includeSearchPath{Path: includeDir})
 	}
 	return paths
+}
+
+func filterIncludeSearchPathsForDelimiter(paths []includeSearchPath, delimiter byte) []includeSearchPath {
+	if delimiter == '"' {
+		return paths
+	}
+	if delimiter != '<' {
+		return nil
+	}
+	filtered := make([]includeSearchPath, 0, len(paths))
+	for _, includePath := range paths {
+		if includePath.QuoteOnly {
+			continue
+		}
+		filtered = append(filtered, includePath)
+	}
+	return filtered
 }
 
 func dependencyFromIncludePath(header string) string {
@@ -489,7 +512,7 @@ func shouldSuppressQualifiedStdHeader(header string, resolution includeResolutio
 		return true
 	}
 	if resolution.ProvenanceKnown {
-		return resolution.System
+		return resolution.System && isLikelySystemIncludePath(resolution.Path)
 	}
 	return isLikelySystemIncludePath(resolution.Path)
 }
@@ -518,7 +541,43 @@ func isKnownOSCompilerQualifiedHeader(header string) bool {
 
 func isLikelyMultiarchIncludePrefix(prefix string) bool {
 	prefix = strings.TrimSpace(prefix)
-	return strings.Contains(prefix, "-linux-") || strings.HasSuffix(prefix, "-w64-mingw32")
+	if prefix == "" || strings.ContainsAny(prefix, `/\`) {
+		return false
+	}
+	parts := strings.Split(prefix, "-")
+	if len(parts) < 3 {
+		return false
+	}
+	if len(parts) == 3 && parts[1] == "w64" && parts[2] == "mingw32" {
+		return isKnownMultiarchCPU(parts[0])
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		if parts[i] != "linux" {
+			continue
+		}
+		arch := strings.Join(parts[:i], "-")
+		abi := strings.Join(parts[i+1:], "-")
+		return isKnownMultiarchCPU(arch) && isKnownLinuxMultiarchABI(abi)
+	}
+	return false
+}
+
+func isKnownMultiarchCPU(arch string) bool {
+	switch arch {
+	case "aarch64", "alpha", "arm", "arm64", "armel", "armhf", "hppa", "i386", "i486", "i586", "i686", "loongarch64", "m68k", "mips", "mips64", "mips64el", "mipsel", "powerpc", "powerpc64", "powerpc64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "x86_64":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownLinuxMultiarchABI(abi string) bool {
+	switch abi {
+	case "android", "gnu", "gnuabin32", "gnuabi64", "gnueabi", "gnueabihf", "gnux32", "musl", "musleabi", "musleabihf":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLikelySystemIncludePath(path string) bool {
@@ -528,9 +587,6 @@ func isLikelySystemIncludePath(path string) bool {
 	path = strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
 	for _, prefix := range []string{
 		"/usr/include/",
-		"/usr/local/include/",
-		"/opt/homebrew/include/",
-		"/opt/local/include/",
 		"/mingw/include/",
 		"/mingw64/include/",
 	} {
