@@ -27,16 +27,18 @@ var (
 )
 
 type pinnedReplacementChecks struct {
-	commitReady  func() error
-	postWrite    func() error
-	commitRename atomicRenameFunc
+	commitReady                func() error
+	postWrite                  func() error
+	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
 }
 
 type atomicReplacementOptions struct {
-	replacementInfo fs.FileInfo
-	commitReady     func() error
-	postWrite       func() error
-	commitRename    atomicRenameFunc
+	replacementInfo            fs.FileInfo
+	commitReady                func() error
+	postWrite                  func() error
+	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
 }
 
 func newPinnedReplacementChecks(checks []func() error) pinnedReplacementChecks {
@@ -119,14 +121,37 @@ func (s *atomicWriteSession) verifyCommittedTarget() error {
 	return nil
 }
 
-func (s *atomicWriteSession) verifyCommittedTargetAndPostWrite(postWrite func() error) error {
+func (s *atomicWriteSession) verifyCommittedTargetAndPostWrite(postWrite func() error, rollbackOnPostWriteFailure bool) error {
 	if err := s.verifyCommittedTarget(); err != nil {
 		return err
 	}
 	if postWrite == nil {
 		return nil
 	}
-	return postWrite()
+	if err := postWrite(); err != nil {
+		if rollbackOnPostWriteFailure {
+			return s.rollbackCommittedTargetWithError(err)
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *atomicWriteSession) rollbackCommittedTargetWithError(primaryErr error) error {
+	pathInfo, err := s.root.Lstat(s.targetRel)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return primaryErr
+		}
+		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
+	}
+	if s.tempInfo == nil || !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
+		return errors.Join(primaryErr, fmt.Errorf("committed target changed before rollback: %s", s.targetRel))
+	}
+	if err := s.root.Remove(s.targetRel); err != nil && !os.IsNotExist(err) {
+		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
+	}
+	return primaryErr
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
@@ -220,7 +245,7 @@ func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, 
 		}
 		return runPostWriteCheck(options.postWrite)
 	}
-	return session.verifyCommittedTargetAndPostWrite(options.postWrite)
+	return session.verifyCommittedTargetAndPostWrite(options.postWrite, options.rollbackOnPostWriteFailure)
 }
 
 func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
@@ -303,7 +328,7 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 		}
 		return fallbackErr
 	}
-	return session.verifyCommittedTargetAndPostWrite(callbacks.postWrite)
+	return session.verifyCommittedTargetAndPostWrite(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure)
 }
 
 func runPostWriteCheck(postWrite func() error) error {

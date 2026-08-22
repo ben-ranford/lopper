@@ -211,22 +211,24 @@ func (r *WriteRoot) writeFileCreatingParentsAfterParentReadyWithOptions(targetPa
 type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, options writeFileAtRootOptions) error
 
 type writeFileAtRootOptions struct {
-	allowPermissionFallback bool
-	commitReady             func() error
-	postWrite               func() error
-	commitRename            atomicRenameFunc
+	allowPermissionFallback    bool
+	commitReady                func() error
+	postWrite                  func() error
+	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
 }
 
 type writeToTargetParentOptions struct {
-	createParents bool
-	parentPerm    os.FileMode
-	parentReady   func() error
-	preWrite      func() error
-	commitReady   func() error
-	postWrite     func() error
-	publishParent func(parentPath string, parentIdentity fs.FileInfo) error
-	commitRename  atomicRenameFunc
-	write         writeAtRootFunc
+	createParents              bool
+	parentPerm                 os.FileMode
+	parentReady                func() error
+	preWrite                   func() error
+	commitReady                func() error
+	postWrite                  func() error
+	publishParent              func(parentPath string, parentIdentity fs.FileInfo) error
+	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
+	write                      writeAtRootFunc
 }
 
 func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, options writeToTargetParentOptions) (returnErr error) {
@@ -260,6 +262,7 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 			}
 			commitReady = nil
 			postWrite = parentCheck
+			options.rollbackOnPostWriteFailure = true
 			options.commitRename = func(oldName, newName string) error {
 				if err := parentCheck(); err != nil {
 					return err
@@ -277,9 +280,10 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 			}
 		}
 		return options.write(parent, parentTarget, data, perm, writeFileAtRootOptions{
-			commitReady:  commitReady,
-			postWrite:    postWrite,
-			commitRename: options.commitRename,
+			commitReady:                commitReady,
+			postWrite:                  postWrite,
+			commitRename:               options.commitRename,
+			rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
 		})
 	})
 }
@@ -448,9 +452,10 @@ func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, per
 	}
 	if existingInfo == nil {
 		return writeAtomicReplacementWithChecks(root, target.rel, data, writePerm, atomicReplacementOptions{
-			commitReady:  options.commitReady,
-			postWrite:    options.postWrite,
-			commitRename: options.commitRename,
+			commitReady:                options.commitReady,
+			postWrite:                  options.postWrite,
+			commitRename:               options.commitRename,
+			rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
 		})
 	}
 
@@ -465,9 +470,10 @@ func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, per
 	}()
 
 	return writeAtomicReplacementWithPinnedTargetCallbacks(root, target.rel, data, writePerm, file, options.allowPermissionFallback, pinnedReplacementChecks{
-		commitReady:  options.commitReady,
-		postWrite:    options.postWrite,
-		commitRename: options.commitRename,
+		commitReady:                options.commitReady,
+		postWrite:                  options.postWrite,
+		commitRename:               options.commitRename,
+		rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
 	})
 }
 

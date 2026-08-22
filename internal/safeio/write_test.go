@@ -1168,7 +1168,9 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndR
 	if renameReadyCalls != 1 {
 		t.Fatalf("expected one rename-ready hook call, got %d", renameReadyCalls)
 	}
-	assertFileContent(t, filepath.Join(relocatedParent, writeTestFileName), "hello")
+	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected relocated parent target to be rolled back, got %v", statErr)
+	}
 	if _, statErr := os.Stat(filepath.Join(replacementParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
 	}
