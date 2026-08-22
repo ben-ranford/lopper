@@ -304,6 +304,11 @@ func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *i
 		m.maskFStringReplacementString(line, index, builder)
 		return true
 	}
+	if current == '#' {
+		writeSpaces(builder, len(line)-*index)
+		*index = len(line)
+		return true
+	}
 	builder.WriteByte(' ')
 	*index++
 	switch current {
