@@ -196,21 +196,22 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 type pythonStringMask struct {
 	multilineQuote              string
 	multilineFString            bool
-	multilineFormatSpec         bool
-	multilineReplacementDepth   int
-	multilineBracketDepth       int
+	multilineReplacementFields  []pythonReplacementFieldState
 	multilineReplacementStrings []pythonReplacementStringState
 	shortFStringLineContinued   bool
 	shortQuote                  byte
 }
 
+type pythonReplacementFieldState struct {
+	formatSpec   bool
+	bracketDepth int
+}
+
 type pythonReplacementStringState struct {
-	delimiter        string
-	fString          bool
-	formatSpec       bool
-	replacementDepth int
-	bracketDepth     int
-	lineContinued    bool
+	delimiter         string
+	fString           bool
+	replacementFields []pythonReplacementFieldState
+	lineContinued     bool
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
@@ -268,7 +269,7 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 	if m.maskMultilineFStringReplacement(line, index, builder) {
 		return true
 	}
-	if m.multilineReplacementDepth == 0 && strings.HasPrefix(line[*index:], m.multilineQuote) {
+	if len(m.multilineReplacementFields) == 0 && strings.HasPrefix(line[*index:], m.multilineQuote) {
 		m.closeMultilineString(index, builder)
 		return true
 	}
@@ -293,10 +294,10 @@ func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *i
 	if !m.multilineFString {
 		return false
 	}
-	if m.multilineReplacementDepth == 0 {
-		return startFStringReplacementField(line, index, builder, &m.multilineReplacementDepth, &m.multilineBracketDepth)
+	if len(m.multilineReplacementFields) == 0 {
+		return startFStringReplacementField(line, index, builder, &m.multilineReplacementFields)
 	}
-	return m.maskFStringReplacementExpression(line, index, builder, &m.multilineReplacementDepth, &m.multilineFormatSpec, &m.multilineBracketDepth)
+	return m.maskFStringReplacementExpression(line, index, builder, &m.multilineReplacementFields)
 }
 
 func (m *pythonStringMask) maskMultilineFStringReplacementString(line string, index *int, builder *strings.Builder) bool {
@@ -343,10 +344,10 @@ func (m *pythonStringMask) maskNestedFStringReplacementString(line string, index
 	if state.lineContinued {
 		state.lineContinued = false
 	}
-	if state.replacementDepth == 0 {
+	if len(state.replacementFields) == 0 {
 		return m.maskNestedFStringText(line, index, builder, state)
 	}
-	return m.maskFStringReplacementExpression(line, index, builder, &state.replacementDepth, &state.formatSpec, &state.bracketDepth)
+	return m.maskFStringReplacementExpression(line, index, builder, &state.replacementFields)
 }
 
 func (m *pythonStringMask) maskNestedFStringText(line string, index *int, builder *strings.Builder, state *pythonReplacementStringState) bool {
@@ -365,7 +366,7 @@ func (m *pythonStringMask) maskNestedFStringText(line string, index *int, builde
 	}
 	current := line[*index]
 	if current == '{' {
-		return startFStringReplacementField(line, index, builder, &state.replacementDepth, &state.bracketDepth)
+		return startFStringReplacementField(line, index, builder, &state.replacementFields)
 	}
 	if current == '}' {
 		maskByte(line, index, builder)
@@ -376,45 +377,49 @@ func (m *pythonStringMask) maskNestedFStringText(line string, index *int, builde
 	return true
 }
 
-func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *int, builder *strings.Builder, depth *int, formatSpec *bool, bracketDepth *int) bool {
+func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *int, builder *strings.Builder, fields *[]pythonReplacementFieldState) bool {
 	current := line[*index]
-	inFormatSpecText := *formatSpec && *depth == 1
+	inFormatSpecText := isCurrentReplacementFieldFormatSpec(*fields)
 	if !inFormatSpecText && (current == '\'' || current == '"') {
 		m.startFStringReplacementString(line, index, builder)
 		return true
 	}
-	if current == '#' && !*formatSpec {
+	if current == '#' && !inFormatSpecText {
 		writeSpaces(builder, len(line)-*index)
 		*index = len(line)
 		return true
 	}
 	builder.WriteByte(' ')
 	*index++
-	updateFStringReplacementExpressionState(current, inFormatSpecText, depth, formatSpec, bracketDepth)
+	updateFStringReplacementExpressionState(current, inFormatSpecText, fields)
 	return true
 }
 
-func updateFStringReplacementExpressionState(current byte, inFormatSpecText bool, depth *int, formatSpec *bool, bracketDepth *int) {
+func isCurrentReplacementFieldFormatSpec(fields []pythonReplacementFieldState) bool {
+	return len(fields) > 0 && fields[len(fields)-1].formatSpec
+}
+
+func updateFStringReplacementExpressionState(current byte, inFormatSpecText bool, fields *[]pythonReplacementFieldState) {
+	if len(*fields) == 0 {
+		return
+	}
+	field := &(*fields)[len(*fields)-1]
 	switch current {
 	case '(', '[':
 		if !inFormatSpecText {
-			(*bracketDepth)++
+			field.bracketDepth++
 		}
 	case ')', ']':
-		if !inFormatSpecText && *bracketDepth > 0 {
-			(*bracketDepth)--
+		if !inFormatSpecText && field.bracketDepth > 0 {
+			field.bracketDepth--
 		}
 	case '{':
-		(*depth)++
+		*fields = append(*fields, pythonReplacementFieldState{})
 	case '}':
-		(*depth)--
-		if *depth == 0 {
-			*formatSpec = false
-			*bracketDepth = 0
-		}
+		*fields = (*fields)[:len(*fields)-1]
 	case ':':
-		if *depth == 1 && *bracketDepth == 0 {
-			*formatSpec = true
+		if !field.formatSpec && field.bracketDepth == 0 {
+			field.formatSpec = true
 		}
 	}
 }
@@ -427,7 +432,7 @@ func (m *pythonStringMask) maskFStringBraceBackslash(line string, index *int, bu
 	return true
 }
 
-func startFStringReplacementField(line string, index *int, builder *strings.Builder, depth *int, bracketDepth *int) bool {
+func startFStringReplacementField(line string, index *int, builder *strings.Builder, fields *[]pythonReplacementFieldState) bool {
 	if line[*index] != '{' {
 		return false
 	}
@@ -435,8 +440,7 @@ func startFStringReplacementField(line string, index *int, builder *strings.Buil
 	if consumeRepeatedByte('{', line, index, builder) {
 		return true
 	}
-	*depth = 1
-	*bracketDepth = 0
+	*fields = append(*fields, pythonReplacementFieldState{})
 	return true
 }
 
@@ -473,7 +477,7 @@ func (m *pythonStringMask) popReplacementString() {
 func (m *pythonStringMask) finishReplacementStringLine() {
 	for len(m.multilineReplacementStrings) > 0 {
 		state := &m.multilineReplacementStrings[len(m.multilineReplacementStrings)-1]
-		if !state.fString || len(state.delimiter) != 1 || state.replacementDepth > 0 || state.lineContinued {
+		if !state.fString || len(state.delimiter) != 1 || len(state.replacementFields) > 0 || state.lineContinued {
 			return
 		}
 		m.popReplacementString()
@@ -481,7 +485,7 @@ func (m *pythonStringMask) finishReplacementStringLine() {
 }
 
 func (m *pythonStringMask) finishShortFStringLine() {
-	if len(m.multilineQuote) != 1 || m.multilineReplacementDepth > 0 || len(m.multilineReplacementStrings) > 0 || m.shortFStringLineContinued {
+	if len(m.multilineQuote) != 1 || len(m.multilineReplacementFields) > 0 || len(m.multilineReplacementStrings) > 0 || m.shortFStringLineContinued {
 		return
 	}
 	m.resetMultilineString()
@@ -494,9 +498,7 @@ func (m *pythonStringMask) startMultilineString(quote string, line string, index
 func (m *pythonStringMask) startFStringAwareString(delimiter string, line string, index *int, builder *strings.Builder) {
 	m.multilineQuote = delimiter
 	m.multilineFString = hasPythonFStringPrefix(line, *index)
-	m.multilineFormatSpec = false
-	m.multilineReplacementDepth = 0
-	m.multilineBracketDepth = 0
+	m.multilineReplacementFields = nil
 	m.multilineReplacementStrings = nil
 	m.shortFStringLineContinued = false
 	writeSpaces(builder, len(m.multilineQuote))
@@ -524,9 +526,7 @@ func (m *pythonStringMask) closeMultilineString(index *int, builder *strings.Bui
 func (m *pythonStringMask) resetMultilineString() {
 	m.multilineQuote = ""
 	m.multilineFString = false
-	m.multilineFormatSpec = false
-	m.multilineReplacementDepth = 0
-	m.multilineBracketDepth = 0
+	m.multilineReplacementFields = nil
 	m.multilineReplacementStrings = nil
 	m.shortFStringLineContinued = false
 }

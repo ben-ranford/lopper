@@ -276,6 +276,23 @@ func TestAdapterAnalyseFindsImportsAfterMultilineFStringSliceComment(t *testing.
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseFindsImportsAfterNestedFStringFormatSpecs(t *testing.T) {
+	cases := map[string]string{
+		"nested hash format spec": `value = f"{42:{3:#x}}"`,
+		"nested quote fill":       `value = f"""{42:{3:'<10}}"""`,
+		"nested comment": "value = f\"\"\"{42:{(\n" +
+			"3 # }} \"\"\" comment\n" +
+			")}}\"\"\"",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			source := value + "\nimport requests\n"
+			dep := analysePythonDependency(t, source, "requests")
+			assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+		})
+	}
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -546,6 +563,29 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 				"\"\"\"\n" +
 				"import numpy as np\n",
 			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
+		{
+			name: "nested format spec hash preserves outer state",
+			source: `value = f"{42:{3:#x}}"` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "nested format spec quote fill preserves outer state",
+			source: `value = f"""{42:{3:'<10}}"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "nested format field comment preserves outer state",
+			source: "value = f\"\"\"{42:{(\n" +
+				"3 # }} \"\"\" comment\n" +
+				")}}\"\"\"\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
 			wantLine: 4,
 		},
 	}
