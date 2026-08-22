@@ -107,9 +107,14 @@ function makeHarness(options = {}) {
           calls.branchReads.push(sha);
           return { data: { commit: { sha } } };
         },
-        compareCommitsWithBasehead: async () => ({
-          data: { status: options.comparisonStatus || 'ahead' },
-        }),
+        compareCommitsWithBasehead: async ({ basehead }) => {
+          const pull = allPulls.find((candidate) => basehead.endsWith(`...${candidate.head.sha}`));
+          return {
+            data: {
+              status: options.comparisonStatuses?.[pull?.number] || options.comparisonStatus || 'ahead',
+            },
+          };
+        },
       },
     },
     paginate: async (_method, input) => {
@@ -139,10 +144,11 @@ function makeHarness(options = {}) {
         return { disablePullRequestAutoMerge: { pullRequest: { number: state.number } } };
       }
       if (query.includes('RebaseQueuedPull')) {
-        if (options.rebaseError) {
-          throw options.rebaseError;
-        }
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
+        const rebaseError = options.rebaseErrors?.[state.number] || options.rebaseError;
+        if (rebaseError) {
+          throw rebaseError;
+        }
         state.headRefOid = options.rebasedHead || `rebased-${state.number}`;
         calls.rebased.push(state.number);
         return { updatePullRequestBranch: { pullRequest: state } };
@@ -227,6 +233,8 @@ test('status helpers bound untrusted API text', () => {
   const sanitized = testables.safeError(new Error('bad `branch`\r\ntry again'));
   assert.equal(sanitized, "bad 'branch' try again");
   assert.equal(testables.safeError('x'.repeat(1300)).length, 1200);
+  assert.equal(testables.isMergeConflict(new Error('merge conflict')), true);
+  assert.equal(testables.isMergeConflict(new Error('rate limited')), false);
 });
 
 test('controller creates the queue label and exits cleanly for an empty queue', async () => {
@@ -364,19 +372,34 @@ test('a current fork branch can arm auto-merge without a branch update', async (
   assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
 });
 
-test('a rebase conflict pauses the queue with a bounded status message', async () => {
+test('a rebase conflict advances the queue and retries the blocked pull request after an update', async () => {
   const leader = makePull(10);
+  const follower = makePull(20);
   const harness = makeHarness({
-    pulls: [leader],
-    comparisonStatus: 'behind',
-    rebaseError: new Error('conflict in `workflow`'),
+    pulls: [leader, follower],
+    comparisonStatuses: { 10: 'behind', 20: 'ahead' },
+    rebaseErrors: { 10: new Error('conflict in `workflow`') },
   });
 
-  await assert.rejects(runController(harness.args), /conflict/);
+  await runController(harness.args);
 
-  assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.comments[0].body, /could not rebase/);
-  assert.match(harness.calls.comments[0].body, /conflict in 'workflow'/);
+  assert.deepEqual(harness.calls.armed, [20]);
+  assert.match(commentsFor(harness, 10), /because of merge conflicts/);
+  assert.match(commentsFor(harness, 10), /retried after its branch is updated/);
+  assert.match(commentsFor(harness, 10), /conflict in 'workflow'/);
+  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
+
+  const updatedLeader = makePull(10, { head: { sha: 'updated-head-10', repo: { full_name: 'octo/lopper' } } });
+  const retry = makeHarness({
+    pulls: [updatedLeader, follower],
+    eventPull: updatedLeader,
+    action: 'synchronize',
+    comparisonStatuses: { 10: 'ahead' },
+  });
+
+  await runController(retry.args);
+
+  assert.deepEqual(retry.calls.armed, [10]);
 });
 
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
@@ -528,7 +551,8 @@ test('manually enabling auto-merge on a follower restores queue ordering', async
   assert.deepEqual(harness.calls.armed, [10]);
 });
 
-test("the queue App's leader auto-merge event does not trigger a disable-enable loop", async () => {
+test("the queue App's auto-merge event does not trigger a disable-enable loop", async (t) => {
+  await t.test('leader', async () => {
   const leader = makePull(10);
   const harness = makeHarness({
     pulls: [leader],
@@ -546,4 +570,26 @@ test("the queue App's leader auto-merge event does not trigger a disable-enable 
   assert.deepEqual(harness.calls.disabled, []);
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event/);
+  });
+
+  await t.test('follower advanced after a conflicted pull request', async () => {
+    const leader = makePull(10);
+    const follower = makePull(20);
+    const harness = makeHarness({
+      pulls: [leader, follower],
+      eventPull: follower,
+      action: 'auto_merge_enabled',
+      queueAppSlug: 'queue-app',
+      sender: { login: 'queue-app[bot]', type: 'Bot' },
+      initialStates: {
+        20: { autoMergeRequest: { enabledAt: 'controller', mergeMethod: 'SQUASH' } },
+      },
+    });
+
+    await runController(harness.args);
+
+    assert.deepEqual(harness.calls.disabled, []);
+    assert.deepEqual(harness.calls.armed, []);
+    assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event for #20/);
+  });
 });

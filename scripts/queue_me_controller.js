@@ -28,6 +28,10 @@ function safeError(error) {
   return message.replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, 1200);
 }
 
+function isMergeConflict(error) {
+  return /\bconflict(?:s|ed|ing)?\b/i.test(safeError(error));
+}
+
 async function ensureQueueLabel(github, owner, repo, queueLabel) {
   try {
     await github.rest.issues.getLabel({ owner, repo, name: queueLabel });
@@ -304,11 +308,10 @@ async function reconcileEventPull({
   );
 }
 
-function isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug }) {
+function isQueueAppAutoMergeEvent({ context, eventPull, queueAppSlug }) {
   return (
     context.eventName === 'pull_request_target' &&
     context.payload.action === 'auto_merge_enabled' &&
-    eventPull?.number === leader.number &&
     queueAppSlug &&
     context.payload.sender?.login === `${queueAppSlug}[bot]`
   );
@@ -353,8 +356,8 @@ async function runController({
   }
 
   const leader = queued[0];
-  if (isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug })) {
-    core.notice(`Ignoring the queue App's auto-merge event for leader #${leader.number}.`);
+  if (isQueueAppAutoMergeEvent({ context, eventPull, queueAppSlug })) {
+    core.notice(`Ignoring the queue App's auto-merge event for #${eventPull.number}.`);
     return;
   }
   const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
@@ -372,98 +375,121 @@ async function runController({
       },
     );
   }
-  await disableAutoMerge(github, owner, repo, leader.number);
-  if (leader.draft) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: the oldest queued pull request is still a draft.`,
-    );
-    return;
-  }
   const { data: branch } = await github.rest.repos.getBranch({
     owner,
     repo,
     branch: defaultBranch,
   });
-  let update;
-  try {
-    update = await rebaseOntoDefault(github, leader, branch.commit.sha, {
-      canUpdateBranch: leader.head.repo?.full_name === repository.full_name,
-    });
-  } catch (error) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
-    );
-    throw error;
-  }
-  if (update.needsManualRebase) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
-    );
-    return;
+  for (const [index, candidate] of queued.entries()) {
+    if (index === 0) {
+      await disableAutoMerge(github, owner, repo, candidate.number);
+    }
+    if (candidate.draft) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: the oldest eligible queued pull request is still a draft.`,
+      );
+      return;
+    }
+
+    let update;
+    try {
+      update = await rebaseOntoDefault(github, candidate, branch.commit.sha, {
+        canUpdateBranch: candidate.head.repo?.full_name === repository.full_name,
+      });
+    } catch (error) {
+      if (!isMergeConflict(error)) {
+        await syncStatusComment(
+          github,
+          owner,
+          repo,
+          candidate.number,
+          `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`.\n\n\`${safeError(error)}\``,
+        );
+        throw error;
+      }
+      const retrySummary = index + 1 < queued.length
+        ? 'The queue will continue with the next queued pull request. This pull request will be retried after its branch is updated.'
+        : 'This pull request will be retried after its branch is updated.';
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nGitHub could not rebase this pull request onto \`${defaultBranch}\` because of merge conflicts. ${retrySummary}\n\n\`${safeError(error)}\``,
+      );
+      continue;
+    }
+    if (update.needsManualRebase) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
+      );
+      return;
+    }
+
+    try {
+      const { data: latestBranch } = await github.rest.repos.getBranch({
+        owner,
+        repo,
+        branch: defaultBranch,
+      });
+      if (latestBranch.commit.sha !== branch.commit.sha) {
+        throw new Error(
+          `Default branch ${defaultBranch} moved from ${shortSHA(branch.commit.sha)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
+        );
+      }
+      const state = await pullState(github, owner, repo, candidate.number);
+      if (state.headRefOid !== update.headSHA) {
+        throw new Error(
+          `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
+        );
+      }
+      const result = await armOrMerge(github, state, {
+        expectedBaseRefName: defaultBranch,
+        expectedBaseRefOid: branch.commit.sha,
+      });
+      const rebaseSummary = update.rebased
+        ? `Rebased \`${shortSHA(candidate.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
+        : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
+      const mergeSummary = result === 'merged'
+        ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
+        : 'Squash auto-merge is armed and will wait for the repository ruleset.';
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\n${rebaseSummary}\n\n${mergeSummary}`,
+      );
+      return;
+    } catch (error) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused while enabling or completing squash auto-merge.\n\n\`${safeError(error)}\``,
+      );
+      throw error;
+    }
   }
 
-  try {
-    const { data: latestBranch } = await github.rest.repos.getBranch({
-      owner,
-      repo,
-      branch: defaultBranch,
-    });
-    if (latestBranch.commit.sha !== branch.commit.sha) {
-      throw new Error(
-        `Default branch ${defaultBranch} moved from ${shortSHA(branch.commit.sha)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
-      );
-    }
-    const state = await pullState(github, owner, repo, leader.number);
-    if (state.headRefOid !== update.headSHA) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
-      );
-    }
-    const result = await armOrMerge(github, state, {
-      expectedBaseRefName: defaultBranch,
-      expectedBaseRefOid: branch.commit.sha,
-    });
-    const rebaseSummary = update.rebased
-      ? `Rebased \`${shortSHA(leader.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
-      : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
-    const mergeSummary = result === 'merged'
-      ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
-      : 'Squash auto-merge is armed and will wait for the repository ruleset.';
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\n${rebaseSummary}\n\n${mergeSummary}`,
-    );
-  } catch (error) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused while enabling or completing squash auto-merge.\n\n\`${safeError(error)}\``,
-    );
-    throw error;
-  }
+  core.notice('Every queued pull request is waiting for a branch update after a rebase conflict.');
 }
 
 module.exports = runController;
 module.exports.testables = {
   hasLabel,
   isBranchCurrent,
+  isMergeConflict,
+  isQueueAppAutoMergeEvent,
   labelName,
   safeError,
   shortSHA,
