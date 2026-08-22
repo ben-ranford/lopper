@@ -260,13 +260,25 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"ext/algorithm",
 		"ext/numeric",
 		"parallel/algorithm",
+		"parallel/base.h",
+		"parallel/basic_iterator.h",
+		"parallel/features.h",
 		"parallel/iterator.h",
+		"parallel/parallel.h",
 		"debug/map",
 		"debug/map.h",
+		"debug/safe_iterator.h",
 		"debug/vector",
+		"ext/alloc_traits.h",
+		"ext/pb_ds/assoc_container.hpp",
+		"ext/pb_ds/priority_queue.hpp",
+		"ext/pb_ds/tree_policy.hpp",
+		"ext/type_traits.h",
 		"backward/strstream",
+		"backward/auto_ptr.h",
 		"tr2/type_traits",
 		"tr1/math.h",
+		"tr1/type_traits.h",
 		"asm/errno.h",
 		"asm-generic/errno.h",
 	} {
@@ -293,6 +305,8 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"debug/vector.hpp",
 		"debug/map.hpp",
 		"debug/logger.h",
+		"debug/safe_iterator.hpp",
+		"debug/safe_iterator_extra.h",
 		"experimental/logger.hpp",
 		"experimental/filesystem.hpp",
 		"experimental/optional.hpp",
@@ -305,7 +319,11 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"ext/algorithm.hpp",
 		"ext/numeric.hpp",
 		"ext/logger.hpp",
+		"ext/pb_ds/custom.hpp",
+		"ext/pb_ds/assoc_container_extra.hpp",
 		"parallel/algorithm.hpp",
+		"parallel/base.hpp",
+		"parallel/custom_base.h",
 		"parallel/logger.h",
 		"parallel/logger.hpp",
 		"backward/strstream.hpp",
@@ -326,6 +344,29 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 				t.Fatalf("expected third-party header %s to map to %q, got dep=%q unresolved=%v", header, want, dep, unresolved)
 			}
 		})
+	}
+}
+
+func TestAnalyseTopNIgnoresGNUQualifiedCompilerHeaders(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/safe_iterator.h>
+#include <parallel/base.h>
+#include <ext/pb_ds/assoc_container.hpp>
+int main() { return 0; }
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse topN: %v", err)
+	}
+	for _, dependency := range reportData.Dependencies {
+		switch dependency.Name {
+		case "debug", "parallel", "ext":
+			t.Fatalf("expected GNU compiler header to be ignored, got dependency row %#v", dependency)
+		}
 	}
 }
 
