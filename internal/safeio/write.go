@@ -325,6 +325,10 @@ func writeFileExclusivelyIfAbsentAtRoot(root Root, targetRel string, data []byte
 	if err := targetFile.Chmod(perm); err != nil {
 		return err
 	}
+	targetInfo, err = targetFile.Stat()
+	if err != nil {
+		return err
+	}
 	if err := targetFile.Close(); err != nil {
 		targetFile = nil
 		return err

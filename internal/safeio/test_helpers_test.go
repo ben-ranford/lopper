@@ -231,6 +231,9 @@ func (r *fakeRoot) Open(name string) (File, error) {
 	if r.open != nil {
 		return r.open(name)
 	}
+	if r.Root == nil {
+		return nil, errors.ErrUnsupported
+	}
 	return r.Root.Open(name)
 }
 

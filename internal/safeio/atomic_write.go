@@ -161,7 +161,10 @@ func (s *atomicWriteSession) commitPreparedSource(sourceMessage, targetMessage s
 		return withPublishRenameSource(err, stagedRel)
 	}
 	if !stagedConsumed {
-		return cleanupAtomicTempFileIfMatches(s.root, stagedRel, stagedInfo)
+		return errors.Join(
+			verifyPublishedPathMatchesInfo(s.root, s.targetRel, stagedInfo, targetMessage),
+			cleanupAtomicTempFileIfMatches(s.root, stagedRel, stagedInfo),
+		)
 	}
 	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, stagedInfo, targetMessage)
 }
@@ -376,10 +379,17 @@ func openStagingCopySource(root Root, sourceRel string, expected fs.FileInfo, me
 			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
 				return nil, false, err
 			}
+			return liveSource, false, nil
 		} else {
-			return nil, false, fmt.Errorf("live source does not support rewind: %s", sourceRel)
+			source, err := root.Open(sourceRel)
+			if err != nil {
+				return nil, false, err
+			}
+			if _, err := validateLiveSourceInfo(source, sourceRel, expected, message); err != nil {
+				return nil, false, errors.Join(err, source.Close())
+			}
+			return source, true, nil
 		}
-		return liveSource, false, nil
 	}
 
 	source, err := OpenPinnedFile(root, sourceRel)
