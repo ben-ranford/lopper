@@ -96,7 +96,9 @@ int main() { return 0; }
 		repoPath := filepath.Join(workspaceRoot, "cpp-canonical")
 		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <asm/errno.h>
 #include <asm-generic/errno.h>
+#include <asm-generic/bitops/atomic.h>
 #include <backward/hash_map>
+#include <linux/netfilter_ipv4/ip_tables.h>
 #include <parallel/base.h>
 int main() { return 0; }
 `)
@@ -112,6 +114,7 @@ int main() { return 0; }
 		assertDependencyCount(t, report, "asm", 0)
 		assertDependencyCount(t, report, "asm-generic", 0)
 		assertDependencyCount(t, report, "backward", 0)
+		assertDependencyCount(t, report, "linux", 0)
 		assertDependencyCount(t, report, "parallel", 0)
 	})
 }
