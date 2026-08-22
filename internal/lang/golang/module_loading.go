@@ -131,9 +131,11 @@ func scanGoModModulePathWithParser(reader io.Reader, parseSynthetic func(string,
 }
 
 const (
-	goModModuleDirectivePrefix = "module "
-	maxGoModModuleScanBytes    = maxGoModBytes + 512*1024
-	maxGoModModuleLineBytes    = 64 * 1024
+	goModModuleDirectivePrefix    = "module "
+	maxGoModModuleScanBytes       = maxGoModBytes + 512*1024
+	maxGoModModuleLineBytes       = 64 * 1024
+	maxLongQuotedGoModTargetBytes = 512 * 1024
+	maxLongQuotedGoModSuffixBytes = 1024
 )
 
 var errGoModModuleScanTooLarge = errors.New("go.mod module scanner read limit exceeded")
@@ -153,8 +155,9 @@ type goModModuleScanner struct {
 	lineTooLarge        bool
 	lineTooLargeInQuote bool
 	lineQuoteClosed     bool
-	lineQuoteSuffixBad  bool
 	lineLastSpace       bool
+	longQuotedTarget    strings.Builder
+	longQuotedSuffix    strings.Builder
 	inQuotedString      bool
 	quoteByte           byte
 	quoteEscaped        bool
@@ -246,33 +249,48 @@ func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
 		s.finishLine()
 		return
 	}
-	s.appendRawLineByte(b)
 	if s.quoteByte == '`' {
 		if b == '`' {
+			if s.lineTooLargeInQuote {
+				s.finishLongQuotedTarget()
+				return
+			}
+			s.appendRawLineByte(b)
 			s.inQuotedString = false
 			s.quoteByte = 0
+		}
+		if s.inQuotedString {
+			s.appendRawLineByte(b)
 		}
 		return
 	}
 	if s.quoteEscaped {
+		s.appendRawLineByte(b)
 		s.quoteEscaped = false
 		return
 	}
 	if b == '\\' {
+		s.appendRawLineByte(b)
 		s.quoteEscaped = true
 		return
 	}
 	if b == s.quoteByte {
+		if s.lineTooLargeInQuote {
+			s.finishLongQuotedTarget()
+			return
+		}
+		s.appendRawLineByte(b)
 		s.inQuotedString = false
 		s.quoteByte = 0
 		s.lineQuoteClosed = true
+		return
 	}
+	s.appendRawLineByte(b)
 }
 
 func (s *goModModuleScanner) consumeCodeByte(b byte) error {
-	if s.isInvalidLongQuotedLineSuffix(b) {
-		s.lineQuoteSuffixBad = true
-		return nil
+	if s.acceptingLongQuotedLineSuffix() {
+		return s.consumeLongQuotedLineSuffix(b)
 	}
 	if b == '"' || b == '`' {
 		s.startQuotedString(b)
@@ -288,22 +306,23 @@ func (s *goModModuleScanner) consumeCodeByte(b byte) error {
 	return nil
 }
 
-func (s *goModModuleScanner) isInvalidLongQuotedLineSuffix(b byte) bool {
-	if !s.lineTooLarge || !s.lineTooLargeInQuote || !s.lineQuoteClosed {
-		return false
-	}
-	if isGoModDirectiveSpace(b) {
-		return false
-	}
-	if b == '/' {
-		return !s.isNextLineComment()
-	}
-	return true
+func (s *goModModuleScanner) acceptingLongQuotedLineSuffix() bool {
+	return s.lineTooLarge && s.lineTooLargeInQuote && s.lineQuoteClosed
 }
 
-func (s *goModModuleScanner) isNextLineComment() bool {
-	next, err := s.buffered.Peek(1)
-	return err == nil && len(next) == 1 && next[0] == '/'
+func (s *goModModuleScanner) consumeLongQuotedLineSuffix(b byte) error {
+	if b == '/' {
+		consumed, err := s.tryStartComment()
+		if consumed || err != nil {
+			return err
+		}
+	}
+	if s.longQuotedSuffix.Len() >= maxLongQuotedGoModSuffixBytes {
+		s.lineInvalid = true
+		return nil
+	}
+	s.longQuotedSuffix.WriteByte(b)
+	return nil
 }
 
 func (s *goModModuleScanner) startQuotedString(quote byte) {
@@ -362,19 +381,57 @@ func (s *goModModuleScanner) appendRawLineByte(b byte) {
 	if s.line.Len() >= maxGoModModuleLineBytes {
 		s.lineTooLarge = true
 		s.lineTooLargeInQuote = true
+		s.startLongQuotedTarget()
+		s.appendLongQuotedTargetByte(b)
 		return
 	}
 	s.line.WriteByte(b)
 }
 
+func (s *goModModuleScanner) startLongQuotedTarget() {
+	if s.longQuotedTarget.Len() != 0 || s.lineInvalid {
+		return
+	}
+	quoteIndex := strings.IndexByte(s.line.String(), s.quoteByte)
+	if quoteIndex < 0 {
+		s.lineInvalid = true
+		return
+	}
+	s.appendLongQuotedTargetString(s.line.String()[quoteIndex+1:])
+}
+
+func (s *goModModuleScanner) appendLongQuotedTargetByte(b byte) {
+	if s.longQuotedTarget.Len() >= maxLongQuotedGoModTargetBytes {
+		s.lineInvalid = true
+		return
+	}
+	s.longQuotedTarget.WriteByte(b)
+}
+
+func (s *goModModuleScanner) appendLongQuotedTargetString(value string) {
+	if len(value) > maxLongQuotedGoModTargetBytes-s.longQuotedTarget.Len() {
+		s.lineInvalid = true
+		return
+	}
+	s.longQuotedTarget.WriteString(value)
+}
+
+func (s *goModModuleScanner) finishLongQuotedTarget() {
+	s.inQuotedString = false
+	s.quoteByte = 0
+	s.quoteEscaped = false
+	s.lineQuoteClosed = true
+}
+
 func (s *goModModuleScanner) finishLine() {
-	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid || s.lineQuoteSuffixBad, s.lineTooLarge, s.lineTooLargeInQuote, s.lineQuoteClosed)
+	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid, s.lineTooLarge, s.lineTooLargeInQuote, s.lineQuoteClosed)
 	s.lineInvalid = false
 	s.lineTooLarge = false
 	s.lineTooLargeInQuote = false
 	s.lineQuoteClosed = false
-	s.lineQuoteSuffixBad = false
 	s.lineLastSpace = false
+	s.longQuotedTarget.Reset()
+	s.longQuotedSuffix.Reset()
 }
 
 func isGoModDirectiveSpace(b byte) bool {
@@ -463,25 +520,12 @@ func (s *goModModuleScanner) isValidLongGoModBlockLine(directive, lineText strin
 }
 
 func (s *goModModuleScanner) isValidLongQuotedReplaceLine(lineText string) bool {
-	surrogate, ok := longQuotedGoModLineSurrogate(lineText)
-	return ok && parseSyntheticGoMod(s.modulePath, surrogate+"\n")
-}
-
-func longQuotedGoModLineSurrogate(lineText string) (string, bool) {
 	quoteIndex := strings.IndexByte(lineText, '"')
-	if quoteIndex < 0 || !hasLongQuotedLocalReplaceTargetPrefix(lineText[quoteIndex+1:]) {
-		return "", false
+	if quoteIndex < 0 || s.longQuotedTarget.Len() == 0 {
+		return false
 	}
-	return lineText[:quoteIndex] + `"./lopper-long-quoted-replacement"`, true
-}
-
-// hasLongQuotedLocalReplaceTargetPrefix verifies the portion of an oversized
-// replacement target that the bounded scanner retains. Long replacement lines
-// may only omit the target's body when it is an unversioned local directory
-// replacement: the scanner rejects a version suffix after the closing quote.
-// Do not turn an untrusted module-looking target into a local-path surrogate.
-func hasLongQuotedLocalReplaceTargetPrefix(target string) bool {
-	return strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") || strings.HasPrefix(target, "/")
+	lineText = lineText[:quoteIndex] + `"` + s.longQuotedTarget.String() + `"` + s.longQuotedSuffix.String()
+	return parseSyntheticGoMod(s.modulePath, lineText+"\n")
 }
 
 func goModBlockDirective(lineText string) (string, bool) {

@@ -1819,6 +1819,26 @@ func TestOversizedRootGoModKeepsLongQuotedReplacementLineCommentSuffix(t *testin
 	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted replacement comment suffix")
 }
 
+func TestOversizedRootGoModKeepsLongQuotedVersionedModuleReplacement(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "example.com/`+strings.Repeat("x", 70*1024)+`" v1.2.3`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted versioned module replacement")
+}
+
+func TestOversizedRootGoModKeepsLongQuotedWindowsRootedReplacement(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`replace example.com/a => "C:/`+strings.Repeat("x", 70*1024)+`"`,
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted Windows-rooted replacement")
+}
+
 func TestOversizedRootGoModRejectsTrailingTokenAfterLongQuotedReplacement(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
