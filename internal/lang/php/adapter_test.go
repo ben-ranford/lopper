@@ -356,6 +356,88 @@ final class Service `+strings.Repeat(" ", 2200)+`
 	}
 }
 
+func TestPHPAdapterCountsAnonymousClassTraitUseAsActiveDependency(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+namespace App;
+
+function makeService($factory) {
+    return new class($factory, function () { return new \stdClass(); }) extends \stdClass {
+        use \Vendor\Package\FeatureTrait;
+    };
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
+	if containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("did not expect no-import warning for anonymous class trait use: %#v", reportData.Warnings)
+	}
+}
+
+func TestPHPAdapterCountsTraitAdaptationBlocksAsActiveDependency(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		source      string
+		wantModules []string
+	}{
+		{
+			name: "alias",
+			source: testPHPHeader + `
+final class Service
+{
+    use Vendor\Package\FeatureTrait {
+        handle as public handleFeature;
+    }
+}
+`,
+			wantModules: []string{`Vendor\Package\FeatureTrait`},
+		},
+		{
+			name: "insteadof",
+			source: testPHPHeader + `
+final class Service
+{
+    use Vendor\Package\FeatureTrait, Vendor\Package\OtherTrait {
+        Vendor\Package\FeatureTrait::handle insteadof Vendor\Package\OtherTrait;
+        Vendor\Package\OtherTrait::handle as otherHandle;
+    }
+}
+`,
+			wantModules: []string{`Vendor\Package\FeatureTrait`, `Vendor\Package\OtherTrait`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			const dependency = "vendor/package"
+			writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+			writeFile(t, filepath.Join(repo, "src", testIndexPHP), tc.source)
+
+			reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+				RepoPath:   repo,
+				Dependency: dependency,
+			})
+			if err != nil {
+				t.Fatalf(testAnalyseErrFmt, err)
+			}
+			dep := singlePHPDependencyReport(t, reportData.Dependencies)
+			assertActivePHPTraitDependency(t, dep, tc.wantModules)
+			if containsWarning(reportData.Warnings, "no imports found") {
+				t.Fatalf("did not expect no-import warning for trait adaptation block: %#v", reportData.Warnings)
+			}
+		})
+	}
+}
+
 func TestPHPAdapterKeepsSemicolonSeparatedUseImportUnused(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
@@ -669,6 +751,40 @@ func hasRecommendation(dep report.DependencyReport, code string) bool {
 		}
 	}
 	return false
+}
+
+func singlePHPDependencyReport(t *testing.T, deps []report.DependencyReport) report.DependencyReport {
+	t.Helper()
+	if len(deps) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(deps))
+	}
+	return deps[0]
+}
+
+func assertActivePHPTraitDependency(t *testing.T, dep report.DependencyReport, wantModules []string) {
+	t.Helper()
+	if dep.UsedExportsCount != len(wantModules) || dep.TotalExportsCount != len(wantModules) || dep.UsedPercent != 100 {
+		t.Fatalf("expected trait use to count as full dependency usage, report=%#v", dep)
+	}
+	if len(dep.UsedImports) != len(wantModules) {
+		t.Fatalf("expected used trait imports %v, got %#v", wantModules, dep.UsedImports)
+	}
+	gotModules := make([]string, 0, len(dep.UsedImports))
+	for _, used := range dep.UsedImports {
+		gotModules = append(gotModules, used.Module)
+	}
+	wantModules = slices.Clone(wantModules)
+	slices.Sort(gotModules)
+	slices.Sort(wantModules)
+	if !slices.Equal(gotModules, wantModules) {
+		t.Fatalf("expected used trait modules %v, got %v", wantModules, gotModules)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("did not expect unused imports for active trait use, got %#v", dep.UnusedImports)
+	}
+	if hasRecommendation(dep, "remove-unused-dependency") || hasRecommendation(dep, "low-usage-dependency") {
+		t.Fatalf("did not expect dependency removal or low-usage recommendation for trait use, got %#v", dep.Recommendations)
+	}
 }
 
 func containsWarning(warnings []string, needle string) bool {

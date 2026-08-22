@@ -956,7 +956,7 @@ func TestParseNamespaceReferencesSkipsSemicolonSeparatedUseDeclarations(t *testi
 	}
 }
 
-func TestImportParserHelperBranches(t *testing.T) {
+func TestImportParserUseStatementHelperBranches(t *testing.T) {
 	if got := maskUseStatementRanges(""); got != "" {
 		t.Fatalf("expected empty mask result, got %q", got)
 	}
@@ -973,7 +973,9 @@ func TestImportParserHelperBranches(t *testing.T) {
 			t.Fatalf("expected %q not to parse as same-line use declaration, got %#v", text, match)
 		}
 	}
+}
 
+func TestImportParserContextTrackerHelperBranches(t *testing.T) {
 	trackerText := "namespace App { class C {} }"
 	tracker := newPHPContextTracker(trackerText)
 	if context := tracker.advanceTo(len(trackerText) + 10); context.namespace != "" || context.classBody {
@@ -984,6 +986,36 @@ func TestImportParserHelperBranches(t *testing.T) {
 	}
 	tracker.popBraceFrame()
 
+	anonymousClass := "return new class($factory, function () { return new \\stdClass(); }) extends \\stdClass {"
+	if isClassLikeDeclarationBeforeBrace(anonymousClass, strings.IndexByte(anonymousClass, '{')) {
+		t.Fatalf("expected closure argument body not to be class-like")
+	}
+	if !isClassLikeDeclarationBeforeBrace(anonymousClass, len(anonymousClass)-1) {
+		t.Fatalf("expected anonymous class with closure argument to be class-like")
+	}
+	if got := traitUseList("Vendor\\Package\\FeatureTrait { handle as alias"); got != "Vendor\\Package\\FeatureTrait" {
+		t.Fatalf("expected trait adaptation list to keep only trait names, got %q", got)
+	}
+}
+
+func TestClassLikeDeclarationScanStartDelimiterBranches(t *testing.T) {
+	balancedBracket := "return new class([function () { return 1; }]) {"
+	if !isClassLikeDeclarationBeforeBrace(balancedBracket, len(balancedBracket)-1) {
+		t.Fatalf("expected balanced bracket expression inside anonymous class declaration to stay class-like")
+	}
+
+	bracketBoundary := "prefix [class C {"
+	if got := classLikeDeclarationScanStart(bracketBoundary, len(bracketBoundary)-1); got != strings.IndexByte(bracketBoundary, '[')+1 {
+		t.Fatalf("expected unmatched bracket to bound declaration scan, got %d", got)
+	}
+
+	parenBoundary := "prefix (class C {"
+	if got := classLikeDeclarationScanStart(parenBoundary, len(parenBoundary)-1); got != strings.IndexByte(parenBoundary, '(')+1 {
+		t.Fatalf("expected unmatched parenthesis to bound declaration scan, got %d", got)
+	}
+}
+
+func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
 	if _, ok := parseNamespaceDeclarationCandidate("namespace App;", []int{0}); ok {
 		t.Fatalf("expected malformed namespace candidate range to fail")
 	}
@@ -999,6 +1031,9 @@ func TestImportParserHelperBranches(t *testing.T) {
 	if !isClassLikeDeclarationBeforeBrace("class C {", len("class C ")) {
 		t.Fatalf("expected declaration at start of text to be class-like")
 	}
+}
+
+func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
 	if masked := maskMatchedGroup("abc", nil, [][]int{{0}}); len(masked) != 0 {
 		t.Fatalf("expected malformed mask range to be ignored, got %q", string(masked))
 	}
@@ -1009,7 +1044,9 @@ func TestImportParserHelperBranches(t *testing.T) {
 	if parts, limitHit := splitUseParts("Vendor\\Lib\\A", 0); !limitHit || len(parts) != 0 {
 		t.Fatalf("expected non-positive part limit to hit limit, parts=%#v limit=%v", parts, limitHit)
 	}
+}
 
+func TestImportParserUseResolutionLimitHelperBranches(t *testing.T) {
 	hugeModule := exactSegmentNamespaceWithHugeSegmentForTest(maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes+1)
 	limitResolver := composerResolver{}
 	if _, _, _, resolutionLimitHit := parseUseParts([]string{hugeModule}, "", "x.php", 1, limitResolver, false); !resolutionLimitHit {

@@ -48,7 +48,7 @@ var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+((?:(?:fun
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
 var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)*\s*(?:;|\{)`)
 var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
-var classLikeDeclarationBeforeBracePattern = regexp.MustCompile(`(?is)\b(?:class|interface|trait|enum)\b[^;{}]*$`)
+var classLikeDeclarationBeforeBracePattern = regexp.MustCompile(`(?is)\b(?:class|interface|trait|enum)\b.*$`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
 
 func parseImports(content []byte, filePath string, resolver composerResolver) ([]importBinding, map[string]int, int) {
@@ -452,13 +452,58 @@ func isClassLikeDeclarationBeforeBrace(text string, braceOffset int) bool {
 	if braceOffset <= 0 {
 		return false
 	}
-	start := strings.LastIndexAny(text[:braceOffset], ";{}")
-	if start < 0 {
-		start = 0
-	} else {
-		start++
-	}
+	start := classLikeDeclarationScanStart(text, braceOffset)
 	return classLikeDeclarationBeforeBracePattern.MatchString(text[start:braceOffset])
+}
+
+func classLikeDeclarationScanStart(text string, braceOffset int) int {
+	if braceOffset > len(text) {
+		braceOffset = len(text)
+	}
+	minStart := braceOffset - maxPHPNamespaceAncestorBytes
+	if minStart < 0 {
+		minStart = 0
+	}
+	parenDepth, bracketDepth, braceDepth := 0, 0, 0
+	for i := braceOffset - 1; i >= minStart; i-- {
+		switch text[i] {
+		case ')':
+			parenDepth++
+		case '(':
+			if parenDepth > 0 {
+				parenDepth--
+				continue
+			}
+			if bracketDepth == 0 && braceDepth == 0 {
+				return i + 1
+			}
+		case ']':
+			bracketDepth++
+		case '[':
+			if bracketDepth > 0 {
+				bracketDepth--
+				continue
+			}
+			if parenDepth == 0 && braceDepth == 0 {
+				return i + 1
+			}
+		case '}':
+			braceDepth++
+		case '{':
+			if braceDepth > 0 {
+				braceDepth--
+				continue
+			}
+			if parenDepth == 0 && bracketDepth == 0 {
+				return i + 1
+			}
+		case ';':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return minStart
 }
 
 func maskMatchedRanges(text string, groups ...[][]int) string {
@@ -651,9 +696,18 @@ func parseFlatUseStatement(statement, filePath string, line int, resolver compos
 }
 
 func parseClassBodyUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int, currentNamespace string) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
+	statement = traitUseList(statement)
 	parts, limitHit := splitUseParts(statement, partLimit)
 	imports, groupedDeps, unresolved, resolutionLimitHit := parseClassBodyUseParts(parts, filePath, line, resolver, currentNamespace)
 	return imports, groupedDeps, unresolved, len(parts), limitHit, resolutionLimitHit
+}
+
+func traitUseList(statement string) string {
+	statement = strings.TrimSpace(statement)
+	if open := strings.IndexByte(statement, '{'); open >= 0 {
+		return strings.TrimSpace(statement[:open])
+	}
+	return statement
 }
 
 func splitUseParts(statement string, partLimit int) ([]string, bool) {
