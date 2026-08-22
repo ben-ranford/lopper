@@ -57,6 +57,9 @@ func (s *atomicWriteSession) commit() error {
 		return err
 	}
 	s.tempRel = ""
+	if err := s.verifyCommittedTarget(); err != nil {
+		return errors.Join(err, s.removeMismatchedCommittedTarget())
+	}
 	return nil
 }
 
@@ -75,6 +78,13 @@ func (s *atomicWriteSession) verifyCommittedTarget() error {
 		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
 	}
 	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, s.tempInfo, "committed target changed before validation")
+}
+
+func (s *atomicWriteSession) removeMismatchedCommittedTarget() error {
+	if err := s.root.Remove(s.targetRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo, message string) error {
@@ -153,7 +163,7 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 	if err := session.commit(); err != nil {
 		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 	}
-	return session.verifyCommittedTarget()
+	return nil
 }
 
 func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
@@ -181,7 +191,10 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 		return err
 	}
 	session.tempRel = ""
-	return session.verifyCommittedTarget()
+	if err := session.verifyCommittedTarget(); err != nil {
+		return errors.Join(err, session.removeMismatchedCommittedTarget())
+	}
+	return nil
 }
 
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
@@ -212,7 +225,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		}
 		return fallbackErr
 	}
-	return session.verifyCommittedTarget()
+	return nil
 }
 
 func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {

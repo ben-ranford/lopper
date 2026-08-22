@@ -2817,8 +2817,8 @@ func TestWriteAtomicReplacementRejectsChangedCommittedTarget(t *testing.T) {
 	if !tempClosed {
 		t.Fatal("expected temp file close before committed target mismatch")
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no cleanup remove after committed target mismatch, got %d", removeCalls)
+	if removeCalls != 1 {
+		t.Fatalf("expected substituted target cleanup after committed target mismatch, got %d", removeCalls)
 	}
 }
 
@@ -2919,8 +2919,8 @@ func TestWriteAtomicReplacementWithPinnedTargetRejectsChangedCommittedTarget(t *
 	if !tempClosed {
 		t.Fatal("expected temp file to be closed during cleanup")
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no cleanup remove after committed target mismatch, got %d", removeCalls)
+	if removeCalls != 1 {
+		t.Fatalf("expected substituted target cleanup after committed target mismatch, got %d", removeCalls)
 	}
 	if string(*targetData) != "before" {
 		t.Fatalf("expected no fallback overwrite after committed target mismatch, got %q", string(*targetData))
@@ -3085,6 +3085,55 @@ func TestAtomicWriteSessionCommitRejectsChangedTempPathBeforePublish(t *testing.
 	}
 	if renameCalls != 0 {
 		t.Fatalf("expected no rename after temp substitution, got %d", renameCalls)
+	}
+}
+
+func TestAtomicWriteSessionCommitRemovesSubstitutedTargetAfterRename(t *testing.T) {
+	tempInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	removed := ""
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				switch name {
+				case ".safeio-atomic-test":
+					return tempInfo, nil
+				case writeTestFileName:
+					return changedInfo, nil
+				default:
+					t.Fatalf("unexpected lstat path: %s", name)
+					return nil, os.ErrNotExist
+				}
+			},
+			rename: func(oldName, newName string) error {
+				if oldName != ".safeio-atomic-test" || newName != writeTestFileName {
+					t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+				}
+				renameCalls++
+				return nil
+			},
+			remove: func(name string) error {
+				removed = name
+				return nil
+			},
+		},
+		targetRel: writeTestFileName,
+		tempRel:   ".safeio-atomic-test",
+		tempInfo:  tempInfo,
+	}
+
+	err := session.commit()
+	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+		t.Fatalf("expected committed target validation error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+	}
+	if removed != writeTestFileName {
+		t.Fatalf("expected substituted target cleanup, removed %q", removed)
+	}
+	if session.tempRel != "" {
+		t.Fatalf("expected temp path cleared after rename, got %q", session.tempRel)
 	}
 }
 
