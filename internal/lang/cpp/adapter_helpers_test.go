@@ -268,6 +268,7 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"debug/map",
 		"debug/map.h",
 		"debug/safe_iterator.h",
+		"debug/set.h",
 		"debug/vector",
 		"ext/alloc_traits.h",
 		"ext/pb_ds/assoc_container.hpp",
@@ -278,7 +279,9 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"backward/auto_ptr.h",
 		"tr2/type_traits",
 		"tr1/math.h",
+		"tr1/stdio.h",
 		"tr1/type_traits.h",
+		"tr1/unordered_map.h",
 		"asm/errno.h",
 		"asm-generic/errno.h",
 	} {
@@ -307,11 +310,14 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"debug/logger.h",
 		"debug/safe_iterator.hpp",
 		"debug/safe_iterator_extra.h",
+		"debug/set.hpp",
+		"debug/set_extra.h",
 		"experimental/logger.hpp",
 		"experimental/filesystem.hpp",
 		"experimental/optional.hpp",
 		"tr1/regex.hpp",
 		"tr1/unordered_map.hpp",
+		"tr1/unordered_map_extra.h",
 		"tr1/logger.hpp",
 		"tr1/logger.h",
 		"tr2/type_traits.hpp",
@@ -350,8 +356,11 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 func TestAnalyseTopNIgnoresGNUQualifiedCompilerHeaders(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/safe_iterator.h>
+#include <debug/set.h>
 #include <parallel/base.h>
 #include <ext/pb_ds/assoc_container.hpp>
+#include <tr1/stdio.h>
+#include <tr1/unordered_map.h>
 int main() { return 0; }
 `)
 
@@ -364,7 +373,7 @@ int main() { return 0; }
 	}
 	for _, dependency := range reportData.Dependencies {
 		switch dependency.Name {
-		case "debug", "parallel", "ext":
+		case "debug", "parallel", "ext", "tr1":
 			t.Fatalf("expected GNU compiler header to be ignored, got dependency row %#v", dependency)
 		}
 	}
