@@ -3452,7 +3452,9 @@ func updateManifestCloseFailureCase(t *testing.T, tempInfo fs.FileInfo) updateMa
 	return updateManifestRootLocalWriteFailureCase{
 		name: "close",
 		root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+			lstat:    advisoryAtomicTempLstat(tempInfo),
 			openFile: advisorySuccessfulWriteTempFile(tempInfo, errors.New("temp close failure")),
+			link:     advisoryExpectIdentityBoundAtomicTempLink(t),
 			remove:   advisoryExpectAtomicTempCleanup(t),
 		}),
 		expect: errorContains("temp close failure"),

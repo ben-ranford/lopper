@@ -76,6 +76,9 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	}
 	sourceConsumed, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, "move source changed before rename", "move target changed before validation")
 	if err != nil {
+		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
+			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+		}
 		return sourceInfo, err
 	}
 	if sourceConsumed || aliasesTarget {
@@ -85,6 +88,17 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		return sourceInfo, err
 	}
 	return sourceInfo, nil
+}
+
+func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) error {
+	sourceConsumed, err := renameFileIfMatches(root, sourceRel, targetRel, sourceInfo, "move source changed before rename")
+	if err != nil {
+		return err
+	}
+	if sourceConsumed {
+		return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, "move target changed before validation")
+	}
+	return removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup")
 }
 
 func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
@@ -185,7 +199,7 @@ func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message st
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		if identityBoundLinkUnsupported(err) {
+		if errors.Is(err, errIdentityBoundLinkUnavailable) || identityBoundLinkUnsupported(err) {
 			return removeFileIfMatches(root, rel, expected, message)
 		}
 		return err

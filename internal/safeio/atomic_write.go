@@ -132,14 +132,38 @@ func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) erro
 }
 
 func (s *atomicWriteSession) commit() error {
-	return publishIdentityBoundReplacing(
-		s.root,
-		s.tempRel,
-		s.targetRel,
-		s.tempInfo,
-		temporaryFileChangedBeforeCommit,
-		committedTargetChangedBeforeValidation,
-	)
+	return s.commitPreparedSource(temporaryFileChangedBeforeCommit, committedTargetChangedBeforeValidation)
+}
+
+func (s *atomicWriteSession) commitPreparedSource(sourceMessage, targetMessage string) (returnErr error) {
+	stagedRel, stagedInfo, err := stageIdentityBoundFileKeepingSourceLive(s.root, s.tempRel, s.tempInfo, sourceMessage, s.tempFile)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cleanupErr := cleanupAtomicTempFileIfMatches(s.root, stagedRel, stagedInfo); cleanupErr != nil {
+			var publishErr *publishRenameError
+			if errors.As(returnErr, &publishErr) {
+				publishErr.cleanupErr = errors.Join(publishErr.cleanupErr, cleanupErr)
+			} else {
+				returnErr = errors.Join(returnErr, cleanupErr)
+			}
+		}
+	}()
+	if err := s.closeTempFile(); err != nil {
+		return err
+	}
+	if err := verifyPublishedPathMatchesInfo(s.root, stagedRel, stagedInfo, sourceMessage); err != nil {
+		return err
+	}
+	stagedConsumed, err := renameFileIfMatches(s.root, stagedRel, s.targetRel, stagedInfo, sourceMessage)
+	if err != nil {
+		return withPublishRenameSource(err, stagedRel)
+	}
+	if !stagedConsumed {
+		return cleanupAtomicTempFileIfMatches(s.root, stagedRel, stagedInfo)
+	}
+	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, stagedInfo, targetMessage)
 }
 
 func (s *atomicWriteSession) verifyCommittedTarget() error {
@@ -175,7 +199,7 @@ func publishIdentityBoundReplacing(root Root, sourceRel, targetRel string, expec
 }
 
 func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string) (_ bool, returnErr error) {
-	stagedRel, stagedInfo, err := stageIdentityBoundFile(root, sourceRel, expected, sourceMessage)
+	stagedRel, stagedInfo, err := stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, sourceMessage, nil)
 	if err != nil {
 		return false, err
 	}
@@ -242,6 +266,14 @@ func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, m
 }
 
 func stageIdentityBoundFile(root Root, sourceRel string, expected fs.FileInfo, message string) (string, fs.FileInfo, error) {
+	return stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, message, nil)
+}
+
+func stageIdentityBoundFileKeepingSourceLive(root Root, sourceRel string, expected fs.FileInfo, message string, liveSource File) (string, fs.FileInfo, error) {
+	expected, err := validateLiveSourceInfo(liveSource, sourceRel, expected, message)
+	if err != nil {
+		return "", nil, err
+	}
 	stagedRel, err := stageIdentityBoundLink(root, sourceRel, expected, message)
 	if err == nil {
 		return stagedRel, expected, nil
@@ -249,32 +281,38 @@ func stageIdentityBoundFile(root Root, sourceRel string, expected fs.FileInfo, m
 	if !errors.Is(err, errIdentityBoundLinkUnavailable) {
 		return "", nil, err
 	}
-	stagedRel, stagedInfo, copyErr := stageIdentityBoundCopy(root, sourceRel, expected, message)
+	stagedRel, stagedInfo, copyErr := stageIdentityBoundCopy(root, sourceRel, expected, message, liveSource)
 	if copyErr != nil {
 		return "", nil, fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, sourceRel, copyErr)
 	}
 	return stagedRel, stagedInfo, nil
 }
 
-func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, message string) (_ string, _ fs.FileInfo, returnErr error) {
-	source, err := OpenPinnedFile(root, sourceRel)
+func validateLiveSourceInfo(liveSource File, sourceRel string, expected fs.FileInfo, message string) (fs.FileInfo, error) {
+	if liveSource == nil {
+		return expected, nil
+	}
+	liveInfo, err := liveSource.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !sameRegularFile(expected, liveInfo) {
+		return nil, fmt.Errorf("%s: %s", message, sourceRel)
+	}
+	return liveInfo, nil
+}
+
+func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, message string, liveSource File) (_ string, _ fs.FileInfo, returnErr error) {
+	source, closeSource, err := openStagingCopySource(root, sourceRel, expected, message, liveSource)
 	if err != nil {
 		return "", nil, err
 	}
-	sourceClosed := false
 	defer func() {
-		if !sourceClosed {
+		if closeSource {
 			closeErr := source.Close()
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
-	sourceInfo, err := source.Stat()
-	if err != nil {
-		return "", nil, err
-	}
-	if !sourceInfo.Mode().IsRegular() || !os.SameFile(expected, sourceInfo) {
-		return "", nil, fmt.Errorf("%s: %s", message, sourceRel)
-	}
 
 	for range 10 {
 		stagedRel, err := identityBoundStagingPath(sourceRel)
@@ -310,15 +348,40 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		if err := staged.Close(); err != nil {
 			return "", nil, err
 		}
-		if err := source.Close(); err != nil {
-			sourceClosed = true
-			return "", nil, err
-		}
-		sourceClosed = true
 		stagedReady = true
 		return stagedRel, stagedInfo, nil
 	}
 	return "", nil, fmt.Errorf("create identity-bound staging copy: too many collisions")
+}
+
+func openStagingCopySource(root Root, sourceRel string, expected fs.FileInfo, message string, liveSource File) (File, bool, error) {
+	if liveSource != nil {
+		_, err := validateLiveSourceInfo(liveSource, sourceRel, expected, message)
+		if err != nil {
+			return nil, false, err
+		}
+		if seeker, ok := liveSource.(io.Seeker); ok {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, false, err
+			}
+		} else {
+			return nil, false, fmt.Errorf("live source does not support rewind: %s", sourceRel)
+		}
+		return liveSource, false, nil
+	}
+
+	source, err := OpenPinnedFile(root, sourceRel)
+	if err != nil {
+		return nil, false, err
+	}
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return nil, false, closeFilePreservingPrimary(source, err)
+	}
+	if !sameRegularFile(expected, sourceInfo) {
+		return nil, false, closeFilePreservingPrimary(source, fmt.Errorf("%s: %s", message, sourceRel))
+	}
+	return source, true, nil
 }
 
 func identityBoundLinkUnsupported(err error) bool {
@@ -353,11 +416,13 @@ func publishedRegularFileInfo(root Root, rel, message string) (fs.FileInfo, erro
 }
 
 func sameRegularFile(expected fs.FileInfo, actual fs.FileInfo) bool {
-	return expected != nil &&
-		actual != nil &&
-		expected.Mode().IsRegular() &&
-		actual.Mode().IsRegular() &&
-		os.SameFile(expected, actual)
+	if expected == nil || actual == nil {
+		return false
+	}
+	if !expected.Mode().IsRegular() || !actual.Mode().IsRegular() {
+		return false
+	}
+	return os.SameFile(expected, actual)
 }
 
 func closeAndCleanupCreatedFile(root Root, file File, rel string, primaryErr error) error {
@@ -373,6 +438,13 @@ func closeAndCleanupCreatedFile(root Root, file File, rel string, primaryErr err
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
+	if err := s.snapshotTempFile(); err != nil {
+		return err
+	}
+	return s.closeTempFile()
+}
+
+func (s *atomicWriteSession) snapshotTempFile() error {
 	if s.tempFile == nil {
 		return nil
 	}
@@ -382,9 +454,6 @@ func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
 	}
 	if !tempInfo.Mode().IsRegular() {
 		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
-	}
-	if err := s.closeTempFile(); err != nil {
-		return err
 	}
 	s.tempInfo = tempInfo
 	return nil
@@ -428,7 +497,7 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 	if err := session.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
-	if err := session.snapshotAndCloseTempFile(); err != nil {
+	if err := session.snapshotTempFile(); err != nil {
 		return err
 	}
 	if err := session.commit(); err != nil {
@@ -453,17 +522,32 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 	if err := session.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
-	if err := session.snapshotAndCloseTempFile(); err != nil {
+	if err := session.snapshotTempFile(); err != nil {
 		return err
 	}
-	return publishIdentityBoundIfAbsent(root, session.tempRel, targetRel, session.tempInfo)
+	return session.publishIfAbsent()
 }
 
 func publishIdentityBoundIfAbsent(root Root, sourceRel, targetRel string, expected fs.FileInfo) (returnErr error) {
-	stagedRel, stagedInfo, err := stageIdentityBoundFile(root, sourceRel, expected, temporaryFileChangedBeforeCommit)
+	stagedRel, stagedInfo, err := stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, temporaryFileChangedBeforeCommit, nil)
 	if err != nil {
 		return err
 	}
+	return publishStagedIdentityBoundIfAbsent(root, sourceRel, stagedRel, targetRel, stagedInfo)
+}
+
+func (s *atomicWriteSession) publishIfAbsent() error {
+	stagedRel, stagedInfo, err := stageIdentityBoundFileKeepingSourceLive(s.root, s.tempRel, s.tempInfo, temporaryFileChangedBeforeCommit, s.tempFile)
+	if err != nil {
+		return err
+	}
+	if err := s.closeTempFile(); err != nil {
+		return errors.Join(err, cleanupAtomicTempFileIfMatches(s.root, stagedRel, stagedInfo))
+	}
+	return publishStagedIdentityBoundIfAbsent(s.root, s.tempRel, stagedRel, s.targetRel, stagedInfo)
+}
+
+func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetRel string, stagedInfo fs.FileInfo) (returnErr error) {
 	defer func() {
 		returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
 	}()
@@ -494,7 +578,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 	if err := session.writeAndPrepare(data, perm); err != nil {
 		return err
 	}
-	if err := session.snapshotAndCloseTempFile(); err != nil {
+	if err := session.snapshotTempFile(); err != nil {
 		return err
 	}
 	if err := session.commit(); err != nil {

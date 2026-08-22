@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -153,21 +152,6 @@ func assertPathAbsent(t *testing.T, path string) {
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected %s to be absent, got %v", path, err)
 	}
-}
-
-func findAtomicEntryPath(t *testing.T, dir string) string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), atomicTempPrefix) {
-			return filepath.Join(dir, entry.Name())
-		}
-	}
-	t.Fatalf("expected atomic entry in %s", dir)
-	return ""
 }
 
 func statTestPath(t *testing.T, path string) fs.FileInfo {
