@@ -101,6 +101,7 @@ int main() { return 0; }
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <parallel/base.h>
 #include <tr1/float.h>
+#include <tr1/random.h>
 #include <tr1/stdarg.h>
 #include <tr1/stdlib.h>
 #include <tr1/wchar.h>

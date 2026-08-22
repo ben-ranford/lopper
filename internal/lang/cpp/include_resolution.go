@@ -962,6 +962,7 @@ var cppTR1QualifiedStdHeaderHStemSet = makeStringSet(
 	"inttypes",
 	"limits",
 	"math",
+	"random",
 	"stdarg",
 	"stdio",
 	"stdint",
