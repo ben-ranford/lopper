@@ -518,6 +518,7 @@ var cppQualifiedStdHeaderWithExtensionSet = map[string]struct{}{
 	"debug/map.h":                   {},
 	"debug/safe_base.h":             {},
 	"debug/safe_iterator.h":         {},
+	"debug/set.h":                   {},
 	"ext/aligned_buffer.h":          {},
 	"ext/alloc_traits.h":            {},
 	"ext/atomicity.h":               {},
@@ -537,5 +538,7 @@ var cppQualifiedStdHeaderWithExtensionSet = map[string]struct{}{
 	"parallel/tags.h":               {},
 	"parallel/types.h":              {},
 	"tr1/math.h":                    {},
+	"tr1/stdio.h":                   {},
 	"tr1/type_traits.h":             {},
+	"tr1/unordered_map.h":           {},
 }
