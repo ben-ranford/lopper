@@ -1568,27 +1568,7 @@ func TestWriteAtomicReplacementWithPinnedTargetPermissionFallbackRejectsRollback
 			return nil, nil
 		},
 	}
-	postWriteCalls := 0
-
-	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, target, true, pinnedReplacementChecks{
-		postWrite: func() error {
-			postWriteCalls++
-			return nil
-		},
-		rollbackOnPostWriteFailure: true,
-	})
-	if !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("expected original permission error, got %v", err)
-	}
-	if err == nil || !strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
-		t.Fatalf("expected rollback-required fallback rejection, got %v", err)
-	}
-	if postWriteCalls != 0 {
-		t.Fatalf("expected post-write check to be skipped after fallback rejection, got %d", postWriteCalls)
-	}
-	if string(*targetData) != "before" {
-		t.Fatalf("expected fallback target data to remain unchanged, got %q", string(*targetData))
-	}
+	assertPinnedReplacementPermissionFallbackRejectsRollbackBeforeMutation(t, root, target, targetData)
 }
 
 func TestWriteAtomicReplacementCommitReadyErrorPreventsRename(t *testing.T) {
@@ -1670,6 +1650,13 @@ func TestWriteAtomicReplacementWithPinnedTargetCommitPermissionFallbackRejectsRo
 	tempInfo := newPinnedTargetInfo(t, "temp")
 	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
 	root := newCommitPermissionFallbackRoot(info, tempInfo, target)
+
+	assertPinnedReplacementPermissionFallbackRejectsRollbackBeforeMutation(t, root, target, targetData)
+}
+
+func assertPinnedReplacementPermissionFallbackRejectsRollbackBeforeMutation(t *testing.T, root Root, target File, targetData *[]byte) {
+	t.Helper()
+
 	postWriteCalls := 0
 
 	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, target, true, pinnedReplacementChecks{

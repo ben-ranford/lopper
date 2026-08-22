@@ -442,26 +442,7 @@ func TestValidateObservedAnalysisCacheDirectoryIdentityRejectsRetargetedPinnedRo
 }
 
 func TestVerifyPinnedAnalysisCacheDirectoryRejectsRetargetedPath(t *testing.T) {
-	cachePath := filepath.Join(t.TempDir(), cacheDirName)
-	if err := os.Mkdir(cachePath, 0o750); err != nil {
-		t.Fatalf("mkdir cache root: %v", err)
-	}
-	root, err := safeio.OpenRootNoFollow(cachePath)
-	if err != nil {
-		t.Fatalf("open cache root: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Errorf("close cache root: %v", closeErr)
-		}
-	})
-	movedRoot := filepath.Join(filepath.Dir(cachePath), "cache-moved")
-	if err := os.Rename(cachePath, movedRoot); err != nil {
-		t.Fatalf("move cache root: %v", err)
-	}
-	if err := os.Mkdir(cachePath, 0o750); err != nil {
-		t.Fatalf("replace cache root: %v", err)
-	}
+	cachePath, root := retargetPinnedAnalysisCacheRoot(t)
 
 	if _, err := verifyPinnedAnalysisCacheDirectory(root, cachePath); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
 		t.Fatalf("expected retargeted cache root to be rejected, got %v", err)
@@ -469,6 +450,16 @@ func TestVerifyPinnedAnalysisCacheDirectoryRejectsRetargetedPath(t *testing.T) {
 }
 
 func TestOpenOrCreatePinnedAnalysisCacheChildRejectsRetargetedParentPath(t *testing.T) {
+	cachePath, root := retargetPinnedAnalysisCacheRoot(t)
+
+	if _, err := openOrCreatePinnedAnalysisCacheChild(root, cachePath, cacheKeysDirName); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted parent path to be rejected, got %v", err)
+	}
+}
+
+func retargetPinnedAnalysisCacheRoot(t *testing.T) (string, safeio.Root) {
+	t.Helper()
+
 	cachePath := filepath.Join(t.TempDir(), cacheDirName)
 	if err := os.Mkdir(cachePath, 0o750); err != nil {
 		t.Fatalf("mkdir cache root: %v", err)
@@ -490,9 +481,7 @@ func TestOpenOrCreatePinnedAnalysisCacheChildRejectsRetargetedParentPath(t *test
 		t.Fatalf("replace cache root: %v", err)
 	}
 
-	if _, err := openOrCreatePinnedAnalysisCacheChild(root, cachePath, cacheKeysDirName); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected retargeted parent path to be rejected, got %v", err)
-	}
+	return cachePath, root
 }
 
 func TestAnalysisCacheValidateWriteRootRejectsClosedAndMismatchedRoots(t *testing.T) {
