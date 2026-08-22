@@ -266,7 +266,71 @@ func addIncludeSearchPath(path string, system, quoteOnly bool, items *[]includeS
 		return
 	}
 	path = filepath.Clean(path)
+	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(path) {
+		system = true
+	}
 	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})
+}
+
+func isCompilerDefaultSystemIncludeRoot(path string) bool {
+	path = strings.ToLower(filepath.ToSlash(filepath.Clean(strings.TrimSpace(path))))
+	if path == "" {
+		return false
+	}
+	switch path {
+	case "/usr/include", "/mingw/include", "/mingw64/include":
+		return true
+	}
+	return isDefaultUsrIncludeSubroot(path) ||
+		isDefaultCompilerRuntimeIncludeRoot(path) ||
+		isDefaultAppleSDKIncludeRoot(path)
+}
+
+func isDefaultUsrIncludeSubroot(path string) bool {
+	const prefix = "/usr/include/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(suffix, "/")
+	switch {
+	case len(parts) == 1:
+		return isLikelyMultiarchIncludePrefix(parts[0])
+	case len(parts) >= 2 && parts[0] == "c++" && parts[1] != "":
+		return true
+	case len(parts) >= 3 && isLikelyMultiarchIncludePrefix(parts[0]) && parts[1] == "c++" && parts[2] != "":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDefaultCompilerRuntimeIncludeRoot(path string) bool {
+	if !strings.HasSuffix(path, "/include") && !strings.HasSuffix(path, "/include-fixed") {
+		return false
+	}
+	for _, prefix := range []string{
+		"/usr/lib/gcc/",
+		"/usr/lib/clang/",
+		"/usr/local/lib/gcc/",
+		"/usr/local/lib/clang/",
+		"/library/developer/commandlinetools/usr/lib/clang/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return (strings.HasPrefix(path, "/opt/homebrew/") || strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/")) &&
+		(strings.Contains(path, "/lib/gcc/") || strings.Contains(path, "/lib/clang/")) ||
+		strings.Contains(path, ".xctoolchain/usr/lib/clang/")
+}
+
+func isDefaultAppleSDKIncludeRoot(path string) bool {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, ".sdk/usr/include") {
+		return false
+	}
+	return strings.HasSuffix(path, ".sdk/usr/include") ||
+		strings.Contains(path, ".sdk/usr/include/c++/")
 }
 
 func normalizeCompileSearchPaths(paths []includeSearchPath) []includeSearchPath {

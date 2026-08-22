@@ -335,6 +335,28 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 	}
 }
 
+func TestExtractIncludeSearchPathsPromotesCompilerDefaultsPassedWithDashI(t *testing.T) {
+	appleSDKRoot := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
+	searchPaths := extractIncludeSearchPaths([]string{
+		"-I", "/usr/include",
+		"-I", "/usr/include/x86_64-linux-gnu",
+		"-I", appleSDKRoot,
+		"-I", "/opt/acme/include",
+		"-iquote", "/mingw/include",
+	}, "/repo")
+
+	wantSearchPaths := []includeSearchPath{
+		{Path: "/mingw/include", QuoteOnly: true, ProvenanceKnown: true},
+		{Path: "/opt/acme/include", ProvenanceKnown: true},
+		{Path: "/usr/include", System: true, ProvenanceKnown: true},
+		{Path: "/usr/include/x86_64-linux-gnu", System: true, ProvenanceKnown: true},
+		{Path: appleSDKRoot, System: true, ProvenanceKnown: true},
+	}
+	if !slices.Equal(searchPaths, wantSearchPaths) {
+		t.Fatalf("unexpected compiler-default include provenance: got %#v want %#v", searchPaths, wantSearchPaths)
+	}
+}
+
 func TestParseIncludesBranches(t *testing.T) {
 	content := []byte(`#include <` + fmtCoreHeader + `>
 #include "local/header.hpp"
@@ -511,6 +533,9 @@ func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
 	if !isLikelyMultiarchIncludePrefix("x86_64-linux-android") {
 		t.Fatalf("expected android multiarch prefix to be recognized")
 	}
+	if isLikelyMultiarchIncludePrefix("x86_64-linux-unknownabi") {
+		t.Fatalf("expected unknown linux multiarch ABI to be rejected")
+	}
 	if isLikelyMultiarchIncludePrefix("x86_64-darwin-gnu") {
 		t.Fatalf("expected non-linux multiarch prefix to be rejected")
 	}
@@ -519,6 +544,33 @@ func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
 	}
 	if isKnownOSCompilerQualifiedHeader("sys/") {
 		t.Fatalf("expected empty OS header leaf to be rejected")
+	}
+	if isCompilerDefaultSystemIncludeRoot("") {
+		t.Fatalf("expected blank include root not to be compiler default")
+	}
+	for _, path := range []string{
+		"/usr/include/c++/13",
+		"/usr/include/x86_64-linux-gnu/c++/13",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/include",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed",
+		"/usr/lib/clang/18/include",
+		"/opt/homebrew/Cellar/llvm/18.1.8/lib/clang/18/include",
+		"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/18/include",
+		filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include", "c++", "v1"),
+	} {
+		if !isCompilerDefaultSystemIncludeRoot(path) {
+			t.Fatalf("expected %s to be compiler default system include root", path)
+		}
+	}
+	for _, path := range []string{
+		"/usr/include/not-a-multiarch",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
+		"/opt/acme/include",
+		"/opt/acme/lib/clang/18/include",
+	} {
+		if isCompilerDefaultSystemIncludeRoot(path) {
+			t.Fatalf("did not expect %s to be compiler default system include root", path)
+		}
 	}
 	if !isLikelySystemIncludePath("/opt/toolchain/lib/gcc/x86_64-linux-gnu/13/include/stddef.h") {
 		t.Fatalf("expected GCC include path to be system")
@@ -893,6 +945,34 @@ int main() { return 0; }
 			t.Fatalf("expected %s to be suppressed by trusted compiler provenance, got %#v", suppressed, reportData.Dependencies)
 		}
 	}
+}
+
+func TestAnalyseDashICompilerDefaultRootKeepsSystemHeaderSemantics(t *testing.T) {
+	repo := t.TempDir()
+	compilerDefaultRoot := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
+	userRoot := filepath.Join(t.TempDir(), "acme-sdk", "include")
+	testutil.MustWriteFile(t, filepath.Join(compilerDefaultRoot, "linux", "if.h"), "// compiler default header\n")
+	testutil.MustWriteFile(t, filepath.Join(userRoot, "sys", "types.h"), "// user supplied lookalike\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include <linux/if.h>
+#include <sys/types.h>
+int main() { return 0; }
+`)
+	sourceRel := filepath.ToSlash(filepath.Join("src", testMainCPPFileName))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":%q,"arguments":["c++","-I",%q,"-I",%q,"-c",%q]}
+]`, sourceRel, compilerDefaultRoot, userRoot, sourceRel))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"linux": 0,
+		"sys":   1,
+	})
 }
 
 func TestAnalyseTopNReportsNonCanonicalQualifiedLookalikes(t *testing.T) {
