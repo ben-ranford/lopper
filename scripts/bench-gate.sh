@@ -65,7 +65,8 @@ done
 # shellcheck disable=SC2046 # Each dirname is a single, intentionally unquoted path argument.
 mkdir -p $(dirname "$BENCH_BASE_OUTPUT") $(dirname "$BENCH_HEAD_OUTPUT") $(dirname "$MEMORY_BENCH_SUMMARY") $(dirname "$MEMORY_BENCH_STATUS");
 write_memory_bench_status() {
-	printf "%s\n" "$1" > "$MEMORY_BENCH_STATUS";
+	status_code="$1";
+	printf "%s\n" "$status_code" > "$MEMORY_BENCH_STATUS";
 };
 write_invalid_memory_summary() {
 	summary_error="$1";
@@ -79,22 +80,22 @@ write_harness_change_requires_approval_summary() {
 };
 fail_invalid_memory_gate() {
 	diagnostic="$1";
+	summary_error="$diagnostic";
 	printf "Memory benchmark gate invalid: %s\n" "$diagnostic" >&2;
 	if [ "$#" -gt 1 ]; then
-		write_invalid_memory_summary "$2";
-	else
-		write_invalid_memory_summary "$diagnostic";
+		summary_error="$2";
 	fi;
+	write_invalid_memory_summary "$summary_error";
 	exit 2;
 };
 report_harness_change_requires_approval() {
 	diagnostic="$1";
+	summary_error="$diagnostic";
 	printf "Memory benchmark approval required: %s\n" "$diagnostic" >&2;
 	if [ "$#" -gt 1 ]; then
-		write_harness_change_requires_approval_summary "$2";
-	else
-		write_harness_change_requires_approval_summary "$diagnostic";
+		summary_error="$2";
 	fi;
+	write_harness_change_requires_approval_summary "$summary_error";
 	exit 0;
 };
 run_configured_go_env() {
