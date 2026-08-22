@@ -32,6 +32,18 @@ type phpLineIndex struct {
 	starts []int
 }
 
+type phpUseStatementMatch struct {
+	start          int
+	end            int
+	statementStart int
+	statementEnd   int
+}
+
+type phpUseContext struct {
+	classBody bool
+	namespace string
+}
+
 var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+((?:(?:function|const)\s+)?\\?[A-Za-z_\x{80}-\x{10FFFF}][^;]*);`)
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
 var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)*\s*(?:;|\{)`)
@@ -48,7 +60,8 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	sanitized := shared.MaskCommentsAndStringsForFile(content, filePath)
 	text := string(sanitized)
 	lineIndex := newPHPLineIndex(text)
-	matches := useStmtPattern.FindAllStringSubmatchIndex(text, maxPHPUseStatementsPerFile+1)
+	matches := findPHPUseStatementMatches(text, maxPHPUseStatementsPerFile+1)
+	contextTracker := newPHPContextTracker(text)
 	result := importParseResult{
 		imports:      make([]importBinding, 0),
 		groupedByDep: make(map[string]int),
@@ -65,9 +78,10 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 			result.useBindingLimitHit = true
 			break
 		}
-		statement := strings.TrimSpace(text[match[2]:match[3]])
-		line := lineIndex.lineNumberAt(match[2])
-		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, text, match[0])
+		statement := strings.TrimSpace(text[match.statementStart:match.statementEnd])
+		line := lineIndex.lineNumberAt(match.statementStart)
+		context := contextTracker.advanceTo(match.start)
+		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, context)
 		if bindingLimitHit {
 			result.useBindingLimitHit = true
 		}
@@ -93,9 +107,9 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	return result
 }
 
-func parseUseStatementByContext(statement, filePath string, line int, resolver composerResolver, partLimit int, text string, offset int) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
-	if isClassBodyUseStatement(text, offset) {
-		bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit := parseFlatUseStatement(statement, filePath, line, resolver, partLimit)
+func parseUseStatementByContext(statement, filePath string, line int, resolver composerResolver, partLimit int, context phpUseContext) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
+	if context.classBody {
+		bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit := parseClassBodyUseStatement(statement, filePath, line, resolver, partLimit, context.namespace)
 		for i := range bindings {
 			bindings[i].Wildcard = true
 		}
@@ -167,24 +181,126 @@ func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath str
 }
 
 func maskUseStatementRanges(text string) string {
-	masked := maskMatchedRanges(text, useStmtPattern.FindAllStringIndex(text, -1), findNamespaceDeclarationRanges(text))
+	masked := maskMatchedRanges(text, findPHPUseStatementRanges(text), findNamespaceDeclarationRanges(text))
 	if masked == "" {
 		return text
 	}
 	return masked
 }
 
-func findNamespaceDeclarationRanges(text string) [][]int {
-	candidates := namespaceDeclCandidatePattern.FindAllStringIndex(text, -1)
-	if len(candidates) == 0 {
+func findPHPUseStatementRanges(text string) [][]int {
+	matches := findPHPUseStatementMatches(text, 0)
+	ranges := make([][]int, 0, len(matches))
+	for _, match := range matches {
+		ranges = append(ranges, []int{match.start, match.end})
+	}
+	return ranges
+}
+
+func findPHPUseStatementMatches(text string, limit int) []phpUseStatementMatch {
+	rawMatches := useStmtPattern.FindAllStringSubmatchIndex(text, -1)
+	if len(rawMatches) == 0 {
 		return nil
 	}
-	ranges := make([][]int, 0, len(candidates))
-	for _, candidate := range candidates {
-		if !isMaskableRange(candidate) || !isNamespaceDeclarationCandidate(text, candidate[0]) {
-			continue
+	matches := make([]phpUseStatementMatch, 0, len(rawMatches))
+	for _, raw := range rawMatches {
+		matches = appendPHPUseStatementMatch(matches, phpUseStatementMatch{
+			start:          raw[0],
+			end:            raw[1],
+			statementStart: raw[2],
+			statementEnd:   raw[3],
+		}, limit)
+		if limit > 0 && len(matches) >= limit {
+			return matches
 		}
-		ranges = append(ranges, candidate)
+		matches = appendFollowingSameLineUseStatements(text, raw[1], matches, limit)
+		if limit > 0 && len(matches) >= limit {
+			return matches
+		}
+	}
+	return matches
+}
+
+func appendFollowingSameLineUseStatements(text string, offset int, matches []phpUseStatementMatch, limit int) []phpUseStatementMatch {
+	for {
+		match, ok := nextSameLineUseStatement(text, offset)
+		if !ok {
+			return matches
+		}
+		matches = appendPHPUseStatementMatch(matches, match, limit)
+		if limit > 0 && len(matches) >= limit {
+			return matches
+		}
+		offset = match.end
+	}
+}
+
+func appendPHPUseStatementMatch(matches []phpUseStatementMatch, match phpUseStatementMatch, limit int) []phpUseStatementMatch {
+	if limit > 0 && len(matches) >= limit {
+		return matches
+	}
+	return append(matches, match)
+}
+
+func nextSameLineUseStatement(text string, offset int) (phpUseStatementMatch, bool) {
+	start := skipHorizontalWhitespace(text, offset)
+	if start >= len(text) || isLineBreak(text[start]) || !hasKeywordAt(text, start, "use") {
+		return phpUseStatementMatch{}, false
+	}
+	afterUse := start + len("use")
+	if afterUse >= len(text) || !isHorizontalWhitespace(text[afterUse]) {
+		return phpUseStatementMatch{}, false
+	}
+	statementStart := skipHorizontalWhitespace(text, afterUse)
+	if statementStart >= len(text) || isLineBreak(text[statementStart]) || text[statementStart] == '(' || text[statementStart] == '$' {
+		return phpUseStatementMatch{}, false
+	}
+	statementEnd := statementStart
+	for statementEnd < len(text) && !isLineBreak(text[statementEnd]) && text[statementEnd] != ';' {
+		statementEnd++
+	}
+	if statementEnd >= len(text) || text[statementEnd] != ';' {
+		return phpUseStatementMatch{}, false
+	}
+	return phpUseStatementMatch{
+		start:          start,
+		end:            statementEnd + 1,
+		statementStart: statementStart,
+		statementEnd:   statementEnd,
+	}, true
+}
+
+func skipHorizontalWhitespace(text string, offset int) int {
+	for offset < len(text) && isHorizontalWhitespace(text[offset]) {
+		offset++
+	}
+	return offset
+}
+
+func isHorizontalWhitespace(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\f' || ch == '\v'
+}
+
+func hasKeywordAt(text string, offset int, keyword string) bool {
+	end := offset + len(keyword)
+	if end > len(text) || !strings.EqualFold(text[offset:end], keyword) {
+		return false
+	}
+	return (offset == 0 || !isPHPIdentifierByte(text[offset-1])) && (end == len(text) || !isPHPIdentifierByte(text[end]))
+}
+
+func isPHPIdentifierByte(ch byte) bool {
+	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= 0x80
+}
+
+func findNamespaceDeclarationRanges(text string) [][]int {
+	declarations := findNamespaceDeclarations(text)
+	if len(declarations) == 0 {
+		return nil
+	}
+	ranges := make([][]int, 0, len(declarations))
+	for _, declaration := range declarations {
+		ranges = append(ranges, []int{declaration.start, declaration.end})
 	}
 	return ranges
 }
@@ -196,32 +312,143 @@ func isNamespaceDeclarationCandidate(text string, start int) bool {
 }
 
 type phpBraceFrame struct {
-	classLike bool
+	classLike         bool
+	namespaceFrame    bool
+	previousNamespace string
 }
 
-func isClassBodyUseStatement(text string, offset int) bool {
-	if offset <= 0 {
-		return false
+type phpNamespaceDeclaration struct {
+	start       int
+	end         int
+	braceOffset int
+	name        string
+	bracketed   bool
+}
+
+type phpContextTracker struct {
+	text                      string
+	offset                    int
+	frames                    []phpBraceFrame
+	currentNamespace          string
+	semicolonNamespaceByStart map[int]string
+	bracketedNamespaceByBrace map[int]string
+}
+
+func newPHPContextTracker(text string) phpContextTracker {
+	declarations := findNamespaceDeclarations(text)
+	semicolonNamespaceByStart := make(map[int]string)
+	bracketedNamespaceByBrace := make(map[int]string)
+	for _, declaration := range declarations {
+		if declaration.bracketed {
+			bracketedNamespaceByBrace[declaration.braceOffset] = declaration.name
+			continue
+		}
+		semicolonNamespaceByStart[declaration.start] = declaration.name
 	}
-	if offset > len(text) {
-		offset = len(text)
+	return phpContextTracker{
+		text:                      text,
+		frames:                    make([]phpBraceFrame, 0, 8),
+		semicolonNamespaceByStart: semicolonNamespaceByStart,
+		bracketedNamespaceByBrace: bracketedNamespaceByBrace,
 	}
-	frames := make([]phpBraceFrame, 0, 8)
-	for i := 0; i < offset; i++ {
-		switch text[i] {
+}
+
+func (t *phpContextTracker) advanceTo(offset int) phpUseContext {
+	if offset > len(t.text) {
+		offset = len(t.text)
+	}
+	if offset < t.offset {
+		return t.currentContext()
+	}
+	for i := t.offset; i < offset; i++ {
+		if namespace, ok := t.semicolonNamespaceByStart[i]; ok {
+			t.currentNamespace = namespace
+		}
+		switch t.text[i] {
 		case '{':
-			frames = append(frames, phpBraceFrame{classLike: isClassLikeDeclarationBeforeBrace(text, i)})
+			t.pushBraceFrame(i)
 		case '}':
-			if len(frames) > 0 {
-				frames = frames[:len(frames)-1]
-			}
+			t.popBraceFrame()
 		}
 	}
-	return len(frames) > 0 && frames[len(frames)-1].classLike
+	t.offset = offset
+	return t.currentContext()
+}
+
+func (t *phpContextTracker) currentContext() phpUseContext {
+	return phpUseContext{
+		classBody: len(t.frames) > 0 && t.frames[len(t.frames)-1].classLike,
+		namespace: t.currentNamespace,
+	}
+}
+
+func (t *phpContextTracker) pushBraceFrame(offset int) {
+	if namespace, ok := t.bracketedNamespaceByBrace[offset]; ok {
+		t.frames = append(t.frames, phpBraceFrame{
+			namespaceFrame:    true,
+			previousNamespace: t.currentNamespace,
+		})
+		t.currentNamespace = namespace
+		return
+	}
+	t.frames = append(t.frames, phpBraceFrame{classLike: isClassLikeDeclarationBeforeBrace(t.text, offset)})
+}
+
+func (t *phpContextTracker) popBraceFrame() {
+	if len(t.frames) == 0 {
+		return
+	}
+	frame := t.frames[len(t.frames)-1]
+	t.frames = t.frames[:len(t.frames)-1]
+	if frame.namespaceFrame {
+		t.currentNamespace = frame.previousNamespace
+	}
+}
+
+func findNamespaceDeclarations(text string) []phpNamespaceDeclaration {
+	candidates := namespaceDeclCandidatePattern.FindAllStringIndex(text, -1)
+	if len(candidates) == 0 {
+		return nil
+	}
+	declarations := make([]phpNamespaceDeclaration, 0, len(candidates))
+	for _, candidate := range candidates {
+		declaration, ok := parseNamespaceDeclarationCandidate(text, candidate)
+		if ok {
+			declarations = append(declarations, declaration)
+		}
+	}
+	return declarations
+}
+
+func parseNamespaceDeclarationCandidate(text string, candidate []int) (phpNamespaceDeclaration, bool) {
+	if !isMaskableRange(candidate) || !isNamespaceDeclarationCandidate(text, candidate[0]) {
+		return phpNamespaceDeclaration{}, false
+	}
+	raw := text[candidate[0]:candidate[1]]
+	keywordIndex := strings.Index(strings.ToLower(raw), "namespace")
+	if keywordIndex < 0 {
+		return phpNamespaceDeclaration{}, false
+	}
+	body := strings.TrimSpace(raw[keywordIndex+len("namespace"):])
+	bracketed := strings.HasSuffix(body, "{")
+	name := normalizeNamespace(strings.TrimRight(body, " \t\r\n;{"))
+	if name == "" {
+		return phpNamespaceDeclaration{}, false
+	}
+	braceOffset := -1
+	if bracketed {
+		braceOffset = candidate[0] + strings.LastIndexByte(raw, '{')
+	}
+	return phpNamespaceDeclaration{
+		start:       candidate[0],
+		end:         candidate[1],
+		braceOffset: braceOffset,
+		name:        name,
+		bracketed:   bracketed,
+	}, true
 }
 
 func isClassLikeDeclarationBeforeBrace(text string, braceOffset int) bool {
-	const maxDeclarationContextBytes = 2048
 	if braceOffset <= 0 {
 		return false
 	}
@@ -230,9 +457,6 @@ func isClassLikeDeclarationBeforeBrace(text string, braceOffset int) bool {
 		start = 0
 	} else {
 		start++
-	}
-	if braceOffset-start > maxDeclarationContextBytes {
-		start = braceOffset - maxDeclarationContextBytes
 	}
 	return classLikeDeclarationBeforeBracePattern.MatchString(text[start:braceOffset])
 }
@@ -426,6 +650,12 @@ func parseFlatUseStatement(statement, filePath string, line int, resolver compos
 	return imports, map[string]struct{}{}, unresolved, len(parts), limitHit, resolutionLimitHit
 }
 
+func parseClassBodyUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int, currentNamespace string) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
+	parts, limitHit := splitUseParts(statement, partLimit)
+	imports, groupedDeps, unresolved, resolutionLimitHit := parseClassBodyUseParts(parts, filePath, line, resolver, currentNamespace)
+	return imports, groupedDeps, unresolved, len(parts), limitHit, resolutionLimitHit
+}
+
 func splitUseParts(statement string, partLimit int) ([]string, bool) {
 	if partLimit <= 0 {
 		return nil, true
@@ -458,6 +688,56 @@ func parseUseParts(parts []string, base, filePath string, line int, resolver com
 		}
 	}
 	return imports, groupedDeps, unresolved, false
+}
+
+func parseClassBodyUseParts(parts []string, filePath string, line int, resolver composerResolver, currentNamespace string) ([]importBinding, map[string]struct{}, int, bool) {
+	imports := make([]importBinding, 0)
+	groupedDeps := make(map[string]struct{})
+	unresolved := 0
+	for _, part := range parts {
+		binding, dep, ok, unresolvedImport, resolutionLimitHit := parseClassBodyUsePart(strings.TrimSpace(part), filePath, line, resolver, currentNamespace)
+		if resolutionLimitHit {
+			return imports, groupedDeps, unresolved, true
+		}
+		if unresolvedImport {
+			unresolved++
+		}
+		if !ok {
+			continue
+		}
+		imports = append(imports, binding)
+		if dep != "" {
+			groupedDeps[dep] = struct{}{}
+		}
+	}
+	return imports, groupedDeps, unresolved, false
+}
+
+func parseClassBodyUsePart(part, filePath string, line int, resolver composerResolver, currentNamespace string) (importBinding, string, bool, bool, bool) {
+	raw := stripUseImportQualifier(part)
+	absolute := strings.HasPrefix(strings.TrimSpace(raw), `\`)
+	module, local := splitAlias(raw)
+	module = normalizeNamespace(module)
+	if module == "" {
+		return importBinding{}, "", false, false, false
+	}
+	if !absolute && currentNamespace != "" {
+		module = normalizeNamespace(currentNamespace + `\` + module)
+	}
+	if local == "" {
+		local = lastNamespaceSegment(module)
+	}
+	resolution := resolver.resolveModule(module)
+	dependency, resolved := resolution.dependency, resolution.resolved
+	if resolution.limitHit {
+		return importBinding{}, "", false, false, true
+	}
+	if dependency == "" {
+		return importBinding{}, "", false, resolved, false
+	}
+
+	binding := newImportBinding(filePath, line, dependency, module, local, lastNamespaceSegment(module), false)
+	return binding, normalizeDependencyID(dependency), true, false, false
 }
 
 func parseUsePart(part, base, filePath string, line int, resolver composerResolver) (importBinding, string, bool, bool, bool) {

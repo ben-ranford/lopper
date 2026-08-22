@@ -334,6 +334,36 @@ func TestParsePHPImportsBoundsAdversarialUseStatements(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsTracksClassContextNearLinearly(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	padding := strings.Repeat(" ", 400)
+	for i := 0; i < testMaxPHPUseStatementsPerFile; i++ {
+		content.WriteString(padding)
+		fmt.Fprintf(&content, "use Vendor\\Lib\\Thing%d;\n", i)
+	}
+
+	start := time.Now()
+	parsed := parsePHPImports([]byte(content.String()), "distributed-use.php", resolver)
+	elapsed := time.Since(start)
+
+	if elapsed > 12*time.Second {
+		t.Fatalf("expected bounded context tracking to finish quickly, took %s", elapsed)
+	}
+	if len(parsed.imports) != testMaxPHPUseStatementsPerFile {
+		t.Fatalf("expected %d use imports, got %d", testMaxPHPUseStatementsPerFile, len(parsed.imports))
+	}
+	for _, imp := range parsed.imports {
+		if imp.Wildcard {
+			t.Fatalf("did not expect top-level imports to be treated as class-body trait uses, got %#v", imp)
+		}
+	}
+}
+
 func TestParsePHPImportsBoundsGroupedUseBindings(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
@@ -769,6 +799,32 @@ func TestComposerResolverBoundsCumulativeAncestorBytes(t *testing.T) {
 	}
 }
 
+func TestComposerResolverLimitAndPrefixBranches(t *testing.T) {
+	module := exactSegmentNamespaceWithHugeSegmentForTest(maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes+1)
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"App\\Lib\\": helpersVendorLibDependency},
+		localNamespace: map[string]struct{}{"App\\": {}},
+	}
+	if resolver.isLocalNamespace(module) {
+		t.Fatalf("expected namespace limit hit not to report local namespace")
+	}
+	if got := resolver.resolveWithPSR4(module); got != "" {
+		t.Fatalf("expected namespace limit hit not to resolve PSR-4 dependency, got %q", got)
+	}
+	if !hasNamespacePrefix([]string{"App"}, resolver.localNamespace) {
+		t.Fatalf("expected trailing-backslash namespace prefix to match")
+	}
+	if ancestors, limitHit := namespaceAncestors("", maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes); limitHit || len(ancestors) != 0 {
+		t.Fatalf("expected empty namespace to return no ancestors without limit, ancestors=%#v limit=%v", ancestors, limitHit)
+	}
+	if ancestors, limitHit := namespaceAncestors("App\\Lib", 0, maxPHPNamespaceAncestorBytes); !limitHit || len(ancestors) != 0 {
+		t.Fatalf("expected non-positive segment limit to hit, ancestors=%#v limit=%v", ancestors, limitHit)
+	}
+	if ancestors, limitHit := namespaceAncestors("A\\B\\C", 10, len("A\\B\\C")+1); !limitHit || len(ancestors) != 0 {
+		t.Fatalf("expected cumulative ancestor byte limit to hit, ancestors=%#v limit=%v", ancestors, limitHit)
+	}
+}
+
 func TestLineNumberAtBoundaries(t *testing.T) {
 	if got := lineNumberAt(helpersABLines, 0); got != 1 {
 		t.Fatalf("expected line 1 at offset 0, got %d", got)
@@ -881,6 +937,103 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	}
 	if len(imports) != 0 {
 		t.Fatalf("expected no namespace imports from use-line, got %#v", imports)
+	}
+}
+
+func TestParseNamespaceReferencesSkipsSemicolonSeparatedUseDeclarations(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{
+			"Foo":             "foo/a",
+			"Vendor\\Package": "vendor/package",
+		},
+	}
+	imports, unresolved := parseNamespaceReferences([]byte(helpersPHPHeader+"use Foo\\A; use Vendor\\Package\\B;\n"), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 0 {
+		t.Fatalf("expected no namespace imports from semicolon-separated use declarations, got %#v", imports)
+	}
+}
+
+func TestImportParserHelperBranches(t *testing.T) {
+	if got := maskUseStatementRanges(""); got != "" {
+		t.Fatalf("expected empty mask result, got %q", got)
+	}
+	chained := findPHPUseStatementMatches("<?php use Foo\\A; use Foo\\B;", 2)
+	if len(chained) != 2 {
+		t.Fatalf("expected capped same-line use chain to return two matches, got %#v", chained)
+	}
+	kept := appendPHPUseStatementMatch([]phpUseStatementMatch{{start: 1}}, phpUseStatementMatch{start: 2}, 1)
+	if len(kept) != 1 || kept[0].start != 1 {
+		t.Fatalf("expected append to respect existing limit, got %#v", kept)
+	}
+	for _, text := range []string{"use", "use ($capture);", "use Foo\\A"} {
+		if match, ok := nextSameLineUseStatement(text, 0); ok || match != (phpUseStatementMatch{}) {
+			t.Fatalf("expected %q not to parse as same-line use declaration, got %#v", text, match)
+		}
+	}
+
+	trackerText := "namespace App { class C {} }"
+	tracker := newPHPContextTracker(trackerText)
+	if context := tracker.advanceTo(len(trackerText) + 10); context.namespace != "" || context.classBody {
+		t.Fatalf("expected bracketed namespace context to restore after close, got %#v", context)
+	}
+	if context := tracker.advanceTo(1); context.namespace != "" || context.classBody {
+		t.Fatalf("expected backward context lookup to keep current context, got %#v", context)
+	}
+	tracker.popBraceFrame()
+
+	if _, ok := parseNamespaceDeclarationCandidate("namespace App;", []int{0}); ok {
+		t.Fatalf("expected malformed namespace candidate range to fail")
+	}
+	if _, ok := parseNamespaceDeclarationCandidate("xxx", []int{0, 3}); ok {
+		t.Fatalf("expected namespace candidate without keyword to fail")
+	}
+	if _, ok := parseNamespaceDeclarationCandidate("namespace ;", []int{0, len("namespace ;")}); ok {
+		t.Fatalf("expected namespace candidate without name to fail")
+	}
+	if isClassLikeDeclarationBeforeBrace("", 0) {
+		t.Fatalf("expected non-positive brace offset not to be class-like")
+	}
+	if !isClassLikeDeclarationBeforeBrace("class C {", len("class C ")) {
+		t.Fatalf("expected declaration at start of text to be class-like")
+	}
+	if masked := maskMatchedGroup("abc", nil, [][]int{{0}}); len(masked) != 0 {
+		t.Fatalf("expected malformed mask range to be ignored, got %q", string(masked))
+	}
+	lineIndex := newPHPLineIndex("abc")
+	if got := lineIndex.lineNumberAt(99); got != 1 {
+		t.Fatalf("expected out-of-range offset to clamp to line 1, got %d", got)
+	}
+	if parts, limitHit := splitUseParts("Vendor\\Lib\\A", 0); !limitHit || len(parts) != 0 {
+		t.Fatalf("expected non-positive part limit to hit limit, parts=%#v limit=%v", parts, limitHit)
+	}
+
+	hugeModule := exactSegmentNamespaceWithHugeSegmentForTest(maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes+1)
+	limitResolver := composerResolver{}
+	if _, _, _, resolutionLimitHit := parseUseParts([]string{hugeModule}, "", "x.php", 1, limitResolver, false); !resolutionLimitHit {
+		t.Fatalf("expected ordinary use part to report namespace resolution limit")
+	}
+	if _, _, _, resolutionLimitHit := parseClassBodyUseParts([]string{hugeModule}, "x.php", 1, limitResolver, ""); !resolutionLimitHit {
+		t.Fatalf("expected class-body use part to report namespace resolution limit")
+	}
+	if _, _, _, unresolved, _ := parseClassBodyUsePart("Unknown\\Pkg\\Trait", "x.php", 1, composerResolver{}, ""); !unresolved {
+		t.Fatalf("expected unresolved class-body trait use to be counted")
+	}
+	if _, _, unresolved, resolutionLimitHit := parseClassBodyUseParts([]string{"Unknown\\Pkg\\Trait"}, "x.php", 1, composerResolver{}, ""); unresolved == 0 || resolutionLimitHit {
+		t.Fatalf("expected class-body use parts to count unresolved trait without limit, unresolved=%d limit=%v", unresolved, resolutionLimitHit)
+	}
+	if binding, dep, ok, unresolved, limitHit := parseClassBodyUsePart("", "x.php", 1, composerResolver{}, ""); ok || unresolved || limitHit || dep != "" || binding != (importBinding{}) {
+		t.Fatalf("expected empty class-body use part to be ignored, binding=%#v dep=%q unresolved=%v limit=%v ok=%v", binding, dep, unresolved, limitHit, ok)
+	}
+	if binding, dep, ok, unresolved, limitHit := parseUsePart(hugeModule, "", "x.php", 1, limitResolver); ok || unresolved || !limitHit || dep != "" || binding != (importBinding{}) {
+		t.Fatalf("expected ordinary use part limit hit, binding=%#v dep=%q unresolved=%v limit=%v ok=%v", binding, dep, unresolved, limitHit, ok)
+	}
+
+	parsed := parsePHPImports([]byte(helpersPHPHeader+"use "+hugeModule+";\n"), "x.php", limitResolver)
+	if !parsed.namespaceResolutionLimitHit {
+		t.Fatalf("expected parse result to record namespace resolution limit")
 	}
 }
 

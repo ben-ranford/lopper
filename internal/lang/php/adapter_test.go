@@ -321,6 +321,127 @@ final class Service
 	}
 }
 
+func TestPHPAdapterCountsClassBodyTraitUseAfterLongDeclaration(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+namespace App;
+
+final class Service `+strings.Repeat(" ", 2200)+`
+{
+    use \Vendor\Package\FeatureTrait;
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 || dep.UsedPercent != 100 {
+		t.Fatalf("expected long class declaration trait use to count as active usage, report=%#v", dep)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("did not expect long declaration trait use to be marked unused, got %#v", dep.UnusedImports)
+	}
+	if hasRecommendation(dep, "remove-unused-dependency") || hasRecommendation(dep, "low-usage-dependency") {
+		t.Fatalf("did not expect dependency removal or low-usage recommendation for long declaration trait use, got %#v", dep.Recommendations)
+	}
+}
+
+func TestPHPAdapterKeepsSemicolonSeparatedUseImportUnused(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, testComposerLock), `{
+  "packages": [
+    {
+      "name": "foo/a",
+      "autoload": {"psr-4": {"Foo\\": "src/Foo"}}
+    },
+    {
+      "name": "vendor/package",
+      "autoload": {"psr-4": {"Vendor\\Package\\": "src/Vendor"}}
+    }
+  ]
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+use Foo\A; use Vendor\Package\B;
+
+$a = new A();
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 1 {
+		t.Fatalf("expected same-line second use declaration to remain unused, report=%#v", dep)
+	}
+	if len(dep.UnusedImports) != 1 || dep.UnusedImports[0].Module != `Vendor\Package\B` {
+		t.Fatalf("expected unused same-line import for vendor package, got %#v", dep.UnusedImports)
+	}
+	if !hasRecommendation(dep, "remove-unused-dependency") {
+		t.Fatalf("expected remove-unused recommendation for unused same-line import, got %#v", dep.Recommendations)
+	}
+}
+
+func TestPHPAdapterResolvesNamespaceRelativeTraitUseAsLocal(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{
+  "require": {%q: "^1.0"},
+  "autoload": {"psr-4": {"App\\": "src/"}}
+}`, dependency))
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+namespace App;
+
+use Vendor\Package\UnusedExternal;
+
+final class Service
+{
+    use Vendor\Package\FeatureTrait;
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 1 {
+		t.Fatalf("expected namespace-relative trait use to stay local and leave only the unused external import, report=%#v", dep)
+	}
+	if len(dep.UnusedImports) != 1 || dep.UnusedImports[0].Module != `Vendor\Package\UnusedExternal` {
+		t.Fatalf("expected only the external import to be unused, got %#v", dep.UnusedImports)
+	}
+	if !hasRecommendation(dep, "remove-unused-dependency") {
+		t.Fatalf("expected remove-unused recommendation when namespace-relative trait use is local, got %#v", dep.Recommendations)
+	}
+}
+
 func TestPHPAdapterIgnoresNamespaceDeclarationAsDependencyUsage(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
@@ -535,6 +656,15 @@ $className = "\\Monolog\\Logger";
 func hasRiskCueCode(dep report.DependencyReport, code string) bool {
 	for _, cue := range dep.RiskCues {
 		if cue.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRecommendation(dep report.DependencyReport, code string) bool {
+	for _, recommendation := range dep.Recommendations {
+		if recommendation.Code == code {
 			return true
 		}
 	}
