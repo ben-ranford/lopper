@@ -45,8 +45,24 @@ func goWorkModuleDirs(repoPath string) (map[string]struct{}, error) {
 	return workspaceRoots, nil
 }
 
+type nestedModuleDirDiscovery struct {
+	dirs          map[string]struct{}
+	oversizedDirs map[string]struct{}
+}
+
 func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) (map[string]struct{}, error) {
-	dirs := make(map[string]struct{})
+	discovery, err := discoverNestedModuleDirs(repoPath, workspaceModuleDirs)
+	if err != nil {
+		return nil, err
+	}
+	return discovery.dirs, nil
+}
+
+func discoverNestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) (nestedModuleDirDiscovery, error) {
+	discovery := nestedModuleDirDiscovery{
+		dirs:          make(map[string]struct{}),
+		oversizedDirs: make(map[string]struct{}),
+	}
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -70,16 +86,17 @@ func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) 
 		if _, ok := workspaceModuleDirs[path]; ok {
 			return nil
 		}
-		dirs[path] = struct{}{}
+		discovery.dirs[path] = struct{}{}
 		if isOversizedModuleDir(repoPath, path) {
+			discovery.oversizedDirs[path] = struct{}{}
 			return nil
 		}
 		return filepath.SkipDir
 	})
 	if err != nil {
-		return nil, err
+		return nestedModuleDirDiscovery{}, err
 	}
-	return dirs, nil
+	return discovery, nil
 }
 
 func isOversizedModuleDir(repoPath, dir string) bool {
@@ -118,21 +135,31 @@ func goModExceedsReadLimit(repoPath, goModPath string, maxBytes int64) (_ bool, 
 }
 
 func discoverNestedModules(repoPath string) ([]string, []string, map[string]string, error) {
-	nestedDirs, err := nestedModuleDirs(repoPath, nil)
+	discovery, err := discoverNestedModuleDirs(repoPath, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	modules, dependencies, replacements, _, _, err := discoverNestedModulesFromDirs(repoPath, nestedDirs)
+	modules, dependencies, replacements, _, _, err := discoverNestedModulesFromDirsWithKnownOversized(repoPath, discovery.dirs, discovery.oversizedDirs)
 	return modules, dependencies, replacements, err
 }
 
-func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, map[string]struct{}, map[string]struct{}, error) {
+func discoverNestedModulesFromDirsWithKnownOversized(repoPath string, nestedDirs, knownOversizedDirs map[string]struct{}) ([]string, []string, map[string]string, map[string]struct{}, map[string]struct{}, error) {
 	modules := make([]string, 0, len(nestedDirs))
 	dependencies := make([]string, 0)
 	replacements := make(map[string]string)
 	oversizedDirs := make(map[string]struct{})
 	trustedDirs := make(map[string]struct{})
 	for dir := range nestedDirs {
+		if _, knownOversized := knownOversizedDirs[dir]; knownOversized && !isOversizedRootDir(repoPath, dir) {
+			oversizedDirs[dir] = struct{}{}
+			if modulePath, pathErr := readOversizedGoModModulePath(repoPath, filepath.Join(dir, goModName)); pathErr != nil {
+				return nil, nil, nil, nil, nil, pathErr
+			} else if modulePath != "" {
+				modules = append(modules, modulePath)
+				trustedDirs[dir] = struct{}{}
+			}
+			continue
+		}
 		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
 		if isPureGoModSizeLimit(err) && !isOversizedRootDir(repoPath, dir) {
 			oversizedDirs[dir] = struct{}{}

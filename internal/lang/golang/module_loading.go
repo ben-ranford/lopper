@@ -858,14 +858,14 @@ func loadNestedModules(repoPath string, info *moduleInfo) error {
 	}
 	info.WorkspaceModuleExclusions = normalizedDirSet(workspaceModuleDirs)
 
-	scanNestedDirs, err := nestedModuleDirs(repoPath, workspaceModuleDirs)
+	scanDiscovery, err := discoverNestedModuleDirs(repoPath, workspaceModuleDirs)
 	if err != nil {
 		return err
 	}
-	info.NestedModuleDirs = normalizedDirSet(scanNestedDirs)
+	info.NestedModuleDirs = normalizedDirSet(scanDiscovery.dirs)
 
 	metadataNestedDirs := unionDirSet(info.NestedModuleDirs, info.WorkspaceModuleExclusions)
-	nestedModules, nestedDeps, nestedReplacements, oversizedModuleDirs, trustedModuleDirs, err := discoverNestedModulesFromDirs(repoPath, metadataNestedDirs)
+	nestedModules, nestedDeps, nestedReplacements, oversizedModuleDirs, trustedModuleDirs, err := discoverNestedModulesFromDirsWithKnownOversized(repoPath, metadataNestedDirs, scanDiscovery.oversizedDirs)
 	if err != nil {
 		return err
 	}

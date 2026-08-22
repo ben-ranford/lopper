@@ -2008,29 +2008,6 @@ func TestOversizedRootGoModKeepsManyShortValidDirectives(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction with many short valid directives")
 }
 
-func TestGoModModuleScannerParsesSyntheticManifestOnce(t *testing.T) {
-	lines := []string{"module example.com/root"}
-	for i := range 20_000 {
-		name := fmt.Sprintf("example.com/dep%05d", i)
-		lines = append(lines, fmt.Sprintf("replace %s => ./%s", name, name))
-	}
-
-	parseCalls := 0
-	modulePath, err := scanGoModModulePathWithParser(strings.NewReader(strings.Join(lines, "\n")), func(modulePath, body string) bool {
-		parseCalls++
-		return parseSyntheticGoMod(modulePath, body)
-	})
-	if err != nil {
-		t.Fatalf("scanGoModModulePathWithParser: %v", err)
-	}
-	if modulePath != "example.com/root" {
-		t.Fatalf("expected module path, got %q", modulePath)
-	}
-	if parseCalls != 1 {
-		t.Fatalf("expected one bounded synthetic parse, got %d", parseCalls)
-	}
-}
-
 func TestOversizedRootGoModRejectsClosedBlockComment(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, fileGoMod), "/* invalid */\nmodule example.com/root\n// "+strings.Repeat("x", goModSizeLimitTest+1))

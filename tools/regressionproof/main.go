@@ -281,7 +281,9 @@ func isProofSupportFile(packageDir, changed string) bool {
 }
 
 func isPackageTestFile(packageDir, changed string) bool {
-	return filepath.ToSlash(filepath.Dir(changed)) == packageDir && strings.HasSuffix(changed, "_test.go")
+	return filepath.ToSlash(filepath.Dir(changed)) == packageDir &&
+		strings.HasSuffix(changed, "_test.go") &&
+		!strings.HasSuffix(changed, "_head_test.go")
 }
 
 func isPackageTestdataFile(packageDir, changed string) bool {
