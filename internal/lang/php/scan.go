@@ -121,7 +121,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.foundPHP = true
 
 	content, relPath, err := readPHPFile(c.repoPath, path)
-	if errors.Is(err, safeio.ErrFileTooLarge) {
+	if isPureOversizedFileError(err) {
 		c.state.skippedLargeFiles++
 		c.result.UsageIncomplete = true
 		return nil
@@ -141,6 +141,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.unresolvedNamespaces += parsed.unresolvedCount
 	if parsed.useStatementLimitHit {
 		c.state.useStatementLimitHits++
+		c.result.UsageIncomplete = true
 	}
 	if parsed.useBindingLimitHit {
 		c.state.useBindingLimitHits++

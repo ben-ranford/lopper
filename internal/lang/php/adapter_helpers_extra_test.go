@@ -119,6 +119,19 @@ func TestReadComposerInputsRejectOversizedFiles(t *testing.T) {
 	}
 }
 
+func TestPureOversizedFileErrorPreservesJoinedOperationalErrors(t *testing.T) {
+	if !isPureOversizedFileError(safeio.ErrFileTooLarge) {
+		t.Fatalf("expected direct oversized sentinel to be classified as skippable")
+	}
+	if !isPureOversizedFileError(fmt.Errorf("wrapped: %w", safeio.ErrFileTooLarge)) {
+		t.Fatalf("expected wrapped oversized sentinel to be classified as skippable")
+	}
+	closeErr := errors.New("close failed")
+	if isPureOversizedFileError(errors.Join(safeio.ErrFileTooLarge, closeErr)) {
+		t.Fatalf("expected joined operational error to be preserved")
+	}
+}
+
 func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -495,6 +508,42 @@ func TestScanRepoSkipsOversizedPHPSourceWithWarning(t *testing.T) {
 	}
 	if !scan.UsageIncomplete {
 		t.Fatal("expected oversized PHP source to mark scan usage incomplete")
+	}
+}
+
+func TestScanRepoMarksUsageIncompleteWhenUseStatementLimitHit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < maxPHPUseStatementsPerFile+1; i++ {
+		fmt.Fprintf(&content, "use Vendor\\Lib\\Thing%d;\n", i)
+	}
+	writeFile(t, filepath.Join(repo, "src", "adversarial-use.php"), content.String())
+
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if !scan.UsageIncomplete {
+		t.Fatal("expected use statement cap to mark scan usage incomplete")
+	}
+	if !containsWarning(scan.Warnings, "stopped PHP use import scan") {
+		t.Fatalf("expected use statement cap warning, got %#v", scan.Warnings)
+	}
+
+	dep, _ := buildDependencyReport(helpersVendorLibDependency, scan, 100)
+	if !dep.UsageIncomplete {
+		t.Fatal("expected dependency report to be marked usage incomplete")
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect definitive usage recommendation with incomplete scan: %#v", dep.Recommendations)
+		}
 	}
 }
 
