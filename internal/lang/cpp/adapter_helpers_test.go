@@ -93,7 +93,7 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	}
 }
 
-func TestCompileContextCollectorMergesRepeatedSourceIncludeDirs(t *testing.T) {
+func TestCompileContextCollectorPreservesRepeatedSourceContexts(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), `[
   {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I","first","-I","shared","-c","src/`+testMainCPPFileName+`"]},
@@ -117,6 +117,54 @@ func TestCompileContextCollectorMergesRepeatedSourceIncludeDirs(t *testing.T) {
 	if !slices.Equal(ctx.SourceFiles, []string{filepath.Join(repo, "src", testMainCPPFileName)}) {
 		t.Fatalf("unexpected source files from repeated compile entries: %#v", ctx.SourceFiles)
 	}
+	if len(ctx.SourceContexts) != 2 {
+		t.Fatalf("expected repeated compile entries to keep per-command contexts, got %#v", ctx.SourceContexts)
+	}
+	first := filepath.Join(repo, "first")
+	second := filepath.Join(repo, "second")
+	if !slices.ContainsFunc(ctx.SourceContexts[0].IncludeSearchPaths, func(path includeSearchPath) bool {
+		return path.Path == first
+	}) {
+		t.Fatalf("expected first compile context to keep first include root, got %#v", ctx.SourceContexts[0].IncludeSearchPaths)
+	}
+	if slices.ContainsFunc(ctx.SourceContexts[0].IncludeSearchPaths, func(path includeSearchPath) bool {
+		return path.Path == second
+	}) {
+		t.Fatalf("expected first compile context not to inherit second include root, got %#v", ctx.SourceContexts[0].IncludeSearchPaths)
+	}
+	if !slices.ContainsFunc(ctx.SourceContexts[1].IncludeSearchPaths, func(path includeSearchPath) bool {
+		return path.Path == second
+	}) {
+		t.Fatalf("expected second compile context to keep second include root, got %#v", ctx.SourceContexts[1].IncludeSearchPaths)
+	}
+}
+
+func TestAnalyseRepeatedCompileEntriesDoNotShareIncludeRoots(t *testing.T) {
+	repo := t.TempDir()
+	first := filepath.Join(repo, "first")
+	second := filepath.Join(repo, "second")
+	testutil.MustWriteFile(t, filepath.Join(first, "firstlib", "only.hpp"), "// first only\n")
+	testutil.MustWriteFile(t, filepath.Join(second, "secondlib", "only.hpp"), "// second only\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include <firstlib/only.hpp>
+#include <secondlib/only.hpp>
+int main() { return 0; }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I",%q,"-c","src/`+testMainCPPFileName+`"]},
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I",%q,"-c","src/`+testMainCPPFileName+`"]}
+]`, first, second))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"firstlib":  1,
+		"secondlib": 1,
+	})
 }
 
 func TestAnalyseDoesNotLetFlaglessCompileEntriesInheritOtherIncludeDirs(t *testing.T) {
@@ -248,6 +296,10 @@ func TestMapIncludeToDependencyBranches(t *testing.T) {
 	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "missing.hpp", Delimiter: '"'}, nil, catalog); dep != "" || !unresolved {
 		t.Fatalf("expected unresolved quoted include")
 	}
+	catalog.add("parallel", "vcpkg manifest")
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "parallel/base.h", Delimiter: '"'}, nil, catalog); dep != "" || !unresolved {
+		t.Fatalf("expected unresolved quoted include not to use declared override, got dep=%q unresolved=%v", dep, unresolved)
+	}
 	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "openssl/ssl.h", Delimiter: '<'}, nil, catalog); dep != "openssl" || unresolved {
 		t.Fatalf("expected mapped dependency openssl, got dep=%q unresolved=%v", dep, unresolved)
 	}
@@ -373,7 +425,7 @@ func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
 		t.Fatalf("expected ordinary duplicate path to replace quote-only provenance")
 	}
 
-	if got := filterIncludeSearchPathsForDelimiter([]includeSearchPath{{Path: "/repo/include"}}, '#'); got != nil {
+	if got := filterIncludeSearchPathsForDelimiter([]includeSearchPath{{Path: "/repo/include"}}, '#'); len(got) != 0 {
 		t.Fatalf("expected invalid delimiter to yield nil search paths, got %#v", got)
 	}
 	if shouldSuppressQualifiedStdHeader("debug/map", includeResolution{Resolved: true, ProvenanceKnown: true, Path: "/tmp/debug/map"}) {
@@ -891,6 +943,34 @@ func TestScanRepoWithOutsideCompileSourceWarning(t *testing.T) {
 	}
 	if !hasWarning(result.Warnings, "falling back to repo scan") {
 		t.Fatalf("expected fallback warning, got %#v", result.Warnings)
+	}
+}
+
+func TestScanRepoFallsBackWhenCompileSourceContextsAreInvalid(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), fmtCoreIncludeLine+"int main() { return 0; }\n")
+	outside := filepath.Join(t.TempDir(), "outside.cpp")
+	testutil.MustWriteFile(t, outside, fmtCoreIncludeLine)
+	compileInfo := compileContext{
+		HasCompileDatabase: true,
+		SourceContexts: []compileSourceContext{
+			{Path: outside},
+			{Path: filepath.Join(repo, "src", "missing.cpp")},
+			{Path: filepath.Join(repo, "src")},
+		},
+	}
+
+	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != filepath.Join("src", testMainCPPFileName) {
+		t.Fatalf("expected repo source fallback to scan in-repo file, got %#v", result.Files)
+	}
+	for _, want := range []string{"outside repo boundary", "missing from repo", "not a file", "falling back to repo scan"} {
+		if !hasWarning(result.Warnings, want) {
+			t.Fatalf("expected warning containing %q, got %#v", want, result.Warnings)
+		}
 	}
 }
 
