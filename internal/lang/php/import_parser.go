@@ -39,10 +39,26 @@ type phpUseStatementMatch struct {
 	statementEnd   int
 }
 
+type phpUseStatementScan struct {
+	matches []phpUseStatementMatch
+	ranges  [][]int
+}
+
 type phpUseContext struct {
 	classBody bool
 	namespace string
 }
+
+type phpCodeState uint8
+
+const (
+	phpStateCode phpCodeState = iota
+	phpStateLineComment
+	phpStateBlockComment
+	phpStateSingleQuote
+	phpStateDoubleQuote
+	phpStateBacktick
+)
 
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
 var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)*\s*(?:;|\{)`)
@@ -60,7 +76,8 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	text := string(sanitized)
 	lineIndex := newPHPLineIndex(text)
-	matches := findPHPUseStatementMatches(text, maxPHPUseStatementsPerFile+1)
+	useScan := scanPHPUseStatements(text, 0)
+	matches := useScan.matches
 	contextTracker := newPHPContextTracker(text)
 	result := importParseResult{
 		imports:      make([]importBinding, 0),
@@ -99,7 +116,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		}
 	}
 
-	namespaceResult := parseNamespaceReferencesTextWithLineIndex(text, filePath, resolver, lineIndex)
+	namespaceResult := parseNamespaceReferencesTextWithLineIndexAndUseRanges(text, filePath, resolver, lineIndex, useScan.ranges)
 	result.imports = append(result.imports, namespaceResult.imports...)
 	result.unresolvedCount += namespaceResult.unresolvedCount
 	result.namespaceReferenceLimitHit = namespaceResult.limitHit
@@ -130,7 +147,11 @@ func parseNamespaceReferencesText(text string, filePath string, resolver compose
 }
 
 func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex) namespaceReferenceParseResult {
-	namespaceText := maskUseStatementRanges(text)
+	return parseNamespaceReferencesTextWithLineIndexAndUseRanges(text, filePath, resolver, lineIndex, findPHPUseStatementRanges(text))
+}
+
+func parseNamespaceReferencesTextWithLineIndexAndUseRanges(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex, useRanges [][]int) namespaceReferenceParseResult {
+	namespaceText := maskUseStatementRanges(text, useRanges)
 	matches := namespaceRefPattern.FindAllStringIndex(namespaceText, maxPHPNamespaceReferencesPerFile+1)
 	result := namespaceReferenceParseResult{}
 	if len(matches) > maxPHPNamespaceReferencesPerFile {
@@ -181,8 +202,8 @@ func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath str
 	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true, false
 }
 
-func maskUseStatementRanges(text string) string {
-	masked := maskMatchedRanges(text, findPHPUseStatementRanges(text), findNamespaceDeclarationRanges(text))
+func maskUseStatementRanges(text string, useRanges [][]int) string {
+	masked := maskMatchedRanges(text, useRanges, findNamespaceDeclarationRanges(text))
 	if masked == "" {
 		return text
 	}
@@ -190,31 +211,40 @@ func maskUseStatementRanges(text string) string {
 }
 
 func findPHPUseStatementRanges(text string) [][]int {
-	matches := findPHPUseStatementMatches(text, 0)
-	ranges := make([][]int, 0, len(matches))
-	for _, match := range matches {
-		ranges = append(ranges, []int{match.start, match.end})
-	}
-	return ranges
+	return scanPHPUseStatements(text, 0).ranges
 }
 
 func findPHPUseStatementMatches(text string, limit int) []phpUseStatementMatch {
+	return scanPHPUseStatements(text, limit).matches
+}
+
+func scanPHPUseStatements(text string, limit int) phpUseStatementScan {
 	matches := make([]phpUseStatementMatch, 0)
-	for offset := 0; offset < len(text); offset++ {
+	ranges := make([][]int, 0)
+	for offset := 0; offset < len(text); {
 		if !hasKeywordAt(text, offset, "use") {
+			offset++
 			continue
 		}
-		match, ok := phpUseStatementAt(text, offset)
+		match, nextOffset, ok := scanPHPUseStatementAt(text, offset)
+		if nextOffset <= offset {
+			nextOffset = offset + 1
+		}
 		if !ok {
+			if match.end > match.start {
+				ranges = append(ranges, []int{match.start, match.end})
+			}
+			offset = nextOffset
 			continue
 		}
+		ranges = append(ranges, []int{match.start, match.end})
 		matches = appendPHPUseStatementMatch(matches, match, limit)
 		if limit > 0 && len(matches) >= limit {
-			return matches
+			return phpUseStatementScan{matches: matches, ranges: ranges}
 		}
-		offset = match.end - 1
+		offset = match.end
 	}
-	return matches
+	return phpUseStatementScan{matches: matches, ranges: ranges}
 }
 
 func appendPHPUseStatementMatch(matches []phpUseStatementMatch, match phpUseStatementMatch, limit int) []phpUseStatementMatch {
@@ -233,30 +263,59 @@ func nextSameLineUseStatement(text string, offset int) (phpUseStatementMatch, bo
 }
 
 func phpUseStatementAt(text string, start int) (phpUseStatementMatch, bool) {
-	if !hasKeywordAt(text, start, "use") {
+	match, _, ok := scanPHPUseStatementAt(text, start)
+	if !ok {
 		return phpUseStatementMatch{}, false
+	}
+	return match, ok
+}
+
+func scanPHPUseStatementAt(text string, start int) (phpUseStatementMatch, int, bool) {
+	if !hasKeywordAt(text, start, "use") {
+		return phpUseStatementMatch{}, start + 1, false
 	}
 	afterUse := start + len("use")
-	if afterUse >= len(text) || !isHorizontalWhitespace(text[afterUse]) {
-		return phpUseStatementMatch{}, false
+	if afterUse >= len(text) || !isPHPWhitespace(text[afterUse]) {
+		return phpUseStatementMatch{}, afterUse, false
 	}
-	statementStart := skipHorizontalWhitespace(text, afterUse)
-	if statementStart >= len(text) || isLineBreak(text[statementStart]) || text[statementStart] == '(' || text[statementStart] == '$' {
-		return phpUseStatementMatch{}, false
+	statementStart := skipPHPWhitespace(text, afterUse)
+	if statementStart >= len(text) || text[statementStart] == '(' || text[statementStart] == '$' {
+		return phpUseStatementMatch{}, statementStart, false
 	}
-	statementEnd := statementStart
-	for statementEnd < len(text) && !isLineBreak(text[statementEnd]) && text[statementEnd] != ';' {
-		statementEnd++
-	}
-	if statementEnd >= len(text) || text[statementEnd] != ';' {
-		return phpUseStatementMatch{}, false
-	}
-	return phpUseStatementMatch{
+	statementEnd, nextOffset, ok := findPHPUseStatementEnd(text, statementStart)
+	match := phpUseStatementMatch{
 		start:          start,
-		end:            statementEnd + 1,
+		end:            nextOffset,
 		statementStart: statementStart,
 		statementEnd:   statementEnd,
-	}, true
+	}
+	if !ok {
+		return match, nextOffset, false
+	}
+	return match, nextOffset, true
+}
+
+func findPHPUseStatementEnd(text string, statementStart int) (int, int, bool) {
+	for offset := statementStart; offset < len(text); offset++ {
+		switch text[offset] {
+		case ';':
+			return offset, offset + 1, true
+		case '\n', '\r':
+			lineStart := nextPHPLineStart(text, nextPHPLineEnd(text, offset))
+			nextToken := skipHorizontalWhitespace(text, lineStart)
+			if hasKeywordAt(text, nextToken, "use") {
+				return offset, lineStart, false
+			}
+		}
+	}
+	return len(text), len(text), false
+}
+
+func skipPHPWhitespace(text string, offset int) int {
+	for offset < len(text) && isPHPWhitespace(text[offset]) {
+		offset++
+	}
+	return offset
 }
 
 func skipHorizontalWhitespace(text string, offset int) int {
@@ -268,6 +327,10 @@ func skipHorizontalWhitespace(text string, offset int) int {
 
 func isHorizontalWhitespace(ch byte) bool {
 	return ch == ' ' || ch == '\t' || ch == '\f' || ch == '\v'
+}
+
+func isPHPWhitespace(ch byte) bool {
+	return isHorizontalWhitespace(ch) || isLineBreak(ch)
 }
 
 func hasKeywordAt(text string, offset int, keyword string) bool {
@@ -526,9 +589,10 @@ func (b *phpReverseDelimiterBalance) atTopLevel() bool {
 
 func maskPHPHeredocNowdocBodies(text string) string {
 	var masked []byte
+	state := phpStateCode
 	for lineStart := 0; lineStart < len(text); {
 		lineEnd := nextPHPLineEnd(text, lineStart)
-		label, ok := heredocNowdocLabel(text[lineStart:lineEnd])
+		label, ok := heredocNowdocLabelWithState(text[lineStart:lineEnd], &state)
 		if !ok {
 			lineStart = nextPHPLineStart(text, lineEnd)
 			continue
@@ -540,6 +604,7 @@ func maskPHPHeredocNowdocBodies(text string) string {
 			return string(masked)
 		}
 		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, bodyEnd)
+		state = phpStateCode
 		lineStart = nextPHPLineStart(text, bodyEnd)
 	}
 	if len(masked) == 0 {
@@ -558,11 +623,89 @@ func withMaskedPHPHeredocRange(text string, masked []byte, start, end int) []byt
 }
 
 func heredocNowdocLabel(line string) (string, bool) {
-	marker := strings.Index(line, "<<<")
-	if marker < 0 {
-		return "", false
+	state := phpStateCode
+	return heredocNowdocLabelWithState(line, &state)
+}
+
+func heredocNowdocLabelWithState(line string, state *phpCodeState) (string, bool) {
+	for offset := 0; offset < len(line); {
+		if *state == phpStateCode && strings.HasPrefix(line[offset:], "<<<") {
+			return parseHeredocNowdocLabelAfterMarker(line[offset+len("<<<"):])
+		}
+		offset = advancePHPCodeState(line, offset, state)
 	}
-	rest := strings.TrimLeft(line[marker+len("<<<"):], " \t")
+	if *state == phpStateLineComment {
+		*state = phpStateCode
+	}
+	return "", false
+}
+
+func advancePHPCodeState(text string, offset int, state *phpCodeState) int {
+	switch *state {
+	case phpStateCode:
+		return advancePHPCodeStateFromCode(text, offset, state)
+	case phpStateLineComment:
+		if isLineBreak(text[offset]) {
+			*state = phpStateCode
+		}
+		return offset + 1
+	case phpStateBlockComment:
+		if offset+1 < len(text) && text[offset] == '*' && text[offset+1] == '/' {
+			*state = phpStateCode
+			return offset + 2
+		}
+		return offset + 1
+	case phpStateSingleQuote:
+		return advancePHPQuotedState(text, offset, '\'', state)
+	case phpStateDoubleQuote:
+		return advancePHPQuotedState(text, offset, '"', state)
+	case phpStateBacktick:
+		return advancePHPQuotedState(text, offset, '`', state)
+	default:
+		*state = phpStateCode
+		return offset + 1
+	}
+}
+
+func advancePHPCodeStateFromCode(text string, offset int, state *phpCodeState) int {
+	if offset+1 < len(text) {
+		switch {
+		case text[offset] == '/' && text[offset+1] == '/':
+			*state = phpStateLineComment
+			return offset + 2
+		case text[offset] == '/' && text[offset+1] == '*':
+			*state = phpStateBlockComment
+			return offset + 2
+		case text[offset] == '#' && text[offset+1] != '[':
+			*state = phpStateLineComment
+			return offset + 1
+		}
+	}
+	switch text[offset] {
+	case '\'':
+		*state = phpStateSingleQuote
+	case '"':
+		*state = phpStateDoubleQuote
+	case '`':
+		*state = phpStateBacktick
+	}
+	return offset + 1
+}
+
+func advancePHPQuotedState(text string, offset int, quote byte, state *phpCodeState) int {
+	switch text[offset] {
+	case '\\':
+		if offset+1 < len(text) {
+			return offset + 2
+		}
+	case quote:
+		*state = phpStateCode
+	}
+	return offset + 1
+}
+
+func parseHeredocNowdocLabelAfterMarker(rest string) (string, bool) {
+	rest = strings.TrimLeft(rest, " \t")
 	if rest == "" {
 		return "", false
 	}
@@ -595,7 +738,7 @@ func findHeredocNowdocTerminator(text string, start int, label string) int {
 	return -1
 }
 
-func isHeredocNowdocTerminatorLine(line string, label string) bool {
+func isHeredocNowdocTerminatorLine(line, label string) bool {
 	line = strings.TrimLeft(line, " \t")
 	if !strings.HasPrefix(line, label) {
 		return false
@@ -902,7 +1045,7 @@ func parseClassBodyUsePart(part, filePath string, line int, resolver composerRes
 		return importBinding{}, "", false, resolved, false
 	}
 
-	binding := newImportBinding(filePath, line, dependency, module, local, lastNamespaceSegment(module), false)
+	binding := newImportBinding(filePath, usePartLocalLine(part, line, local), dependency, module, local, lastNamespaceSegment(module), false)
 	return binding, normalizeDependencyID(dependency), true, false, false
 }
 
@@ -920,8 +1063,18 @@ func parseUsePart(part, base, filePath string, line int, resolver composerResolv
 		return importBinding{}, "", false, resolved, false
 	}
 
-	binding := newImportBinding(filePath, line, dependency, module, local, lastNamespaceSegment(module), false)
+	binding := newImportBinding(filePath, usePartLocalLine(part, line, local), dependency, module, local, lastNamespaceSegment(module), false)
 	return binding, normalizeDependencyID(dependency), true, false, false
+}
+
+func usePartLocalLine(part string, baseLine int, local string) int {
+	if baseLine <= 0 || local == "" {
+		return baseLine
+	}
+	if localOffset := strings.LastIndex(part, local); localOffset >= 0 {
+		return baseLine + strings.Count(part[:localOffset], "\n")
+	}
+	return baseLine
 }
 
 func parseUsePartModuleAndLocal(part, base string) (string, string, bool) {

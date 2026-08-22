@@ -308,6 +308,85 @@ func TestParsePHPImportsStructuredResult(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsIgnoresFakeHeredocMarkersBeforeImports(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		declared:       map[string]struct{}{"vendor/package": {}},
+	}
+	content := []byte(helpersPHPHeader +
+		"// <<<TXT\n" +
+		"$label = \"<<<DOC\";\n" +
+		"use Vendor\\Package\\Client;\n" +
+		"$client = new Client();\n")
+
+	parsed := parsePHPImports(content, "fake-heredoc.php", resolver)
+
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected import after comment/string fake heredoc markers, got %#v", parsed.imports)
+	}
+	if parsed.imports[0].Module != `Vendor\Package\Client` || parsed.imports[0].Wildcard {
+		t.Fatalf("expected normal use import after fake heredoc markers, got %#v", parsed.imports[0])
+	}
+}
+
+func TestParsePHPImportsParsesMultilineUseAliasDeclaration(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		declared:       map[string]struct{}{"vendor/package": {}},
+	}
+	content := []byte(helpersPHPHeader +
+		"use Vendor\\Package\\Client\n" +
+		"    as Alias;\n" +
+		"$client = new Alias();\n")
+
+	parsed := parsePHPImports(content, "multiline-use.php", resolver)
+
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected one multiline use import, got %#v", parsed.imports)
+	}
+	got := parsed.imports[0]
+	if got.Module != `Vendor\Package\Client` || got.Local != "Alias" || got.Wildcard {
+		t.Fatalf("expected multiline alias use import, got %#v", got)
+	}
+	usage := shared.CountUsage(content, parsed.imports)
+	if usage["Alias"] != 1 {
+		t.Fatalf("expected alias usage to be counted once, got usage=%#v imports=%#v", usage, parsed.imports)
+	}
+}
+
+func TestParsePHPImportsBoundsMalformedUseScan(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		declared:       map[string]struct{}{"vendor/package": {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < 2500; i++ {
+		content.WriteString("use Vendor\\Package\\Missing")
+	}
+	content.WriteString("\nuse Vendor\\Package\\Client;\n")
+
+	start := time.Now()
+	parsed := parsePHPImports([]byte(content.String()), "malformed-use.php", resolver)
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Fatalf("expected malformed use scan to stay bounded, took %s", elapsed)
+	}
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 || parsed.imports[0].Module != `Vendor\Package\Client` {
+		t.Fatalf("expected valid import after malformed use line, got %#v", parsed.imports)
+	}
+}
+
 func TestParsePHPImportsBoundsAdversarialUseStatements(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
@@ -957,7 +1036,7 @@ func TestParseNamespaceReferencesSkipsSemicolonSeparatedUseDeclarations(t *testi
 }
 
 func TestImportParserUseStatementHelperBranches(t *testing.T) {
-	if got := maskUseStatementRanges(""); got != "" {
+	if got := maskUseStatementRanges("", nil); got != "" {
 		t.Fatalf("expected empty mask result, got %q", got)
 	}
 	chained := findPHPUseStatementMatches("<?php use Foo\\A; use Foo\\B;", 2)
@@ -978,6 +1057,13 @@ func TestImportParserUseStatementHelperBranches(t *testing.T) {
 	}
 	if match, ok := phpUseStatementAt("abuse Foo\\A;", 2); ok || match != (phpUseStatementMatch{}) {
 		t.Fatalf("expected embedded use keyword to be rejected, got %#v", match)
+	}
+	if match, ok := nextSameLineUseStatement("\nuse Foo\\A;", 0); ok || match != (phpUseStatementMatch{}) {
+		t.Fatalf("expected next same-line use to reject a line break, got %#v ok=%v", match, ok)
+	}
+	malformed := scanPHPUseStatements("<?php use Vendor\\Package\\Missing\nuse Vendor\\Package\\Client;", 0)
+	if len(malformed.ranges) != 2 || len(malformed.matches) != 1 {
+		t.Fatalf("expected malformed use range plus valid match, got %#v", malformed)
 	}
 }
 
@@ -1029,6 +1115,10 @@ func TestClassLikeDeclarationScanStartDelimiterBranches(t *testing.T) {
 	if boundary, ok := balance.openingDelimiterBoundary(&balance.paren); ok || boundary != 0 || balance.paren != 0 {
 		t.Fatalf("expected nested opening delimiter to reduce depth, boundary=%d ok=%v balance=%#v", boundary, ok, balance)
 	}
+	nestedBalance := phpReverseDelimiterBalance{brace: 1}
+	if boundary, ok := nestedBalance.scanReverse('('); boundary != 0 || ok {
+		t.Fatalf("expected nested opening delimiter not to produce boundary, boundary=%d ok=%v", boundary, ok)
+	}
 }
 
 func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
@@ -1053,8 +1143,14 @@ func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
 	if !followsCompletedNamespaceDeclaration("namespace A { class C {} } ") {
 		t.Fatalf("expected completed namespace block to allow following same-line namespace")
 	}
+	if !followsCompletedNamespaceDeclaration("declare(strict_types=1); namespace A; ") {
+		t.Fatalf("expected namespace after previous same-line statement to allow following namespace")
+	}
 	if followsCompletedNamespaceDeclaration("doWork(); ") {
 		t.Fatalf("expected arbitrary same-line statement not to allow following namespace")
+	}
+	if followsCompletedNamespaceDeclaration("namespace A ") {
+		t.Fatalf("expected incomplete namespace declaration not to allow following namespace")
 	}
 }
 
@@ -1071,6 +1167,21 @@ func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
 	}
 	if got := lineTextAt("a\nb", 3); got != "" {
 		t.Fatalf("expected out-of-range line text to be empty, got %q", got)
+	}
+	if start := classLikeDeclarationScanStart("class C {", len("class C {")+10); start != len("class C {") {
+		t.Fatalf("expected oversized brace offset to clamp before scanning, got %d", start)
+	}
+	if masked := withMaskedPHPHeredocRange("abc", nil, 2, 2); len(masked) != 0 {
+		t.Fatalf("expected empty heredoc mask range to stay nil, got %q", string(masked))
+	}
+	if got := usePartLocalLine("Thing as Alias", 0, "Alias"); got != 0 {
+		t.Fatalf("expected non-positive base line to remain unchanged, got %d", got)
+	}
+	if got := usePartLocalLine("Thing as Alias", 7, "Missing"); got != 7 {
+		t.Fatalf("expected missing local token to keep base line, got %d", got)
+	}
+	if got := usePartLocalLine("Thing as Alias", 7, ""); got != 7 {
+		t.Fatalf("expected empty local token to keep base line, got %d", got)
 	}
 }
 
@@ -1102,6 +1213,9 @@ func TestPHPHeredocNowdocMaskingHelperBranches(t *testing.T) {
 	if label, ok := heredocNowdocLabel("return <<<'TXT'"); !ok || label != "TXT" {
 		t.Fatalf("expected nowdoc label to parse, label=%q ok=%v", label, ok)
 	}
+	if label, ok := parseHeredocNowdocLabelAfterMarker(""); ok || label != "" {
+		t.Fatalf("expected empty heredoc marker suffix to be rejected, label=%q ok=%v", label, ok)
+	}
 	if end := findHeredocNowdocTerminator("body\n", 0, "TXT"); end != -1 {
 		t.Fatalf("expected missing heredoc terminator to return -1, got %d", end)
 	}
@@ -1113,6 +1227,28 @@ func TestPHPHeredocNowdocMaskingHelperBranches(t *testing.T) {
 	}
 	if start := nextPHPLineStart("abc", 3); start != 3 {
 		t.Fatalf("expected terminal line start to remain at end, got %d", start)
+	}
+}
+
+func TestPHPCodeStateHelperBranches(t *testing.T) {
+	state := phpStateLineComment
+	if next := advancePHPCodeState("\n", 0, &state); next != 1 || state != phpStateCode {
+		t.Fatalf("expected line comment newline to reset state, next=%d state=%v", next, state)
+	}
+	state = phpStateBlockComment
+	if next := advancePHPCodeState("*/", 0, &state); next != 2 || state != phpStateCode {
+		t.Fatalf("expected block comment terminator to reset state, next=%d state=%v", next, state)
+	}
+	state = phpStateCode
+	if next := advancePHPCodeState("`cmd`", 0, &state); next != 1 || state != phpStateBacktick {
+		t.Fatalf("expected backtick to enter quoted state, next=%d state=%v", next, state)
+	}
+	if next := advancePHPCodeState("`cmd`", 4, &state); next != 5 || state != phpStateCode {
+		t.Fatalf("expected backtick terminator to reset state, next=%d state=%v", next, state)
+	}
+	state = phpCodeState(99)
+	if next := advancePHPCodeState("x", 0, &state); next != 1 || state != phpStateCode {
+		t.Fatalf("expected unknown state to reset to code, next=%d state=%v", next, state)
 	}
 }
 
