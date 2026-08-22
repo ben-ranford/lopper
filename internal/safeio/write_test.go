@@ -52,6 +52,15 @@ type exclusiveCreatedTargetCase struct {
 	cleanup   bool
 }
 
+type namedFakeRoot struct {
+	*fakeRoot
+	name string
+}
+
+func (r *namedFakeRoot) rootName() string {
+	return r.name
+}
+
 func (i *modeOverrideFileInfo) Mode() os.FileMode {
 	return i.mode
 }
@@ -2017,6 +2026,38 @@ func TestOpenTargetParentReturnsExistingRootForTopLevelTarget(t *testing.T) {
 	}
 	if closeParent {
 		t.Fatal("expected top-level target parent to remain caller-owned")
+	}
+}
+
+func TestOpenTargetParentPreservesAbsoluteNameForNamedChildRoot(t *testing.T) {
+	childInfo := statTestPath(t, t.TempDir())
+	child := &namedFakeRoot{
+		fakeRoot: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return childInfo, nil },
+			close: closeWithoutError,
+		},
+		name: "objects",
+	}
+	root := &fakeRoot{
+		lstat:    func(string) (fs.FileInfo, error) { return childInfo, nil },
+		openRoot: func(string) (Root, error) { return child, nil },
+	}
+	writeRoot := &WriteRoot{root: root, rootAbs: "/root"}
+	target := rootedTarget{rootAbs: "/root", rel: filepath.Join("objects", writeTestFileName)}
+
+	parent, closeParent, err := writeRoot.openTargetParent(target, false, 0)
+	if err != nil {
+		t.Fatalf("expected nested target parent lookup to succeed, got %v", err)
+	}
+	if !closeParent {
+		t.Fatal("expected nested target parent to be caller-owned")
+	}
+	named, ok := parent.(interface{ rootName() string })
+	if !ok {
+		t.Fatalf("expected named parent root, got %T", parent)
+	}
+	if got, want := named.rootName(), filepath.Join("/root", "objects"); got != want {
+		t.Fatalf("unexpected target parent root name: got %q want %q", got, want)
 	}
 }
 

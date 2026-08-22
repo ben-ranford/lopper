@@ -14,15 +14,6 @@ import (
 
 var windowsNoReplaceRenameFn = windowsNoReplaceRename
 
-type namedRoot interface {
-	Root
-	rootName() string
-}
-
-func (r *osRoot) rootName() string {
-	return r.root.Name()
-}
-
 func fallbackAtomicIfAbsent(root Root, tempRel, targetRel string, tempInfo fs.FileInfo, linkErr error) error {
 	if !windowsHardLinkUnsupported(linkErr, tempRel, targetRel) {
 		return linkErr
