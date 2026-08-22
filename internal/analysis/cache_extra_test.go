@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -62,7 +63,7 @@ func newAnalysisCacheSwapFixture(t *testing.T) analysisCacheSwapFixture {
 	}
 }
 
-func (f analysisCacheSwapFixture) swapRepo(t *testing.T, description string) {
+func (f *analysisCacheSwapFixture) swapRepo(t *testing.T, description string) {
 	t.Helper()
 	if err := os.Rename(f.repo, f.renamedRepoPath); err != nil {
 		t.Fatalf("rename repo %s: %v", description, err)
@@ -72,7 +73,7 @@ func (f analysisCacheSwapFixture) swapRepo(t *testing.T, description string) {
 	}
 }
 
-func (f analysisCacheSwapFixture) assertMissingPartsAbsent(t *testing.T) {
+func (f *analysisCacheSwapFixture) assertMissingPartsAbsent(t *testing.T) {
 	t.Helper()
 	assertAnalysisCachePathAbsent(t, filepath.Join(f.repo, "missing"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(f.renamedRepoPath, "missing"))
@@ -188,6 +189,42 @@ func TestNewAnalysisCacheReadOnlyMissingRootDoesNotCreate(t *testing.T) {
 	}
 }
 
+func TestNewAnalysisCacheReadOnlyExistingRootUsesPinnedIdentity(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath, ReadOnly: true}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected existing read-only cache root to be usable, warnings=%#v", cache.takeWarnings())
+	}
+	if cache.rootIdentity == nil {
+		t.Fatal("expected read-only cache root identity to be pinned")
+	}
+}
+
+func TestPrepareAnalysisCacheRootReturnsOpenAncestorErrors(t *testing.T) {
+	openErr := errors.New("open ancestor failed")
+	hookOpenAnalysisCacheAncestor(t, func(func(string) (safeio.Root, string, []string, error), string) (safeio.Root, string, []string, error) {
+		return nil, "", nil, openErr
+	})
+
+	if _, err := prepareReadableAnalysisCacheRoot(filepath.Join(t.TempDir(), cacheDirName)); !errors.Is(err, openErr) {
+		t.Fatalf("readable root error = %v, want %v", err, openErr)
+	}
+	if _, err := prepareWritableAnalysisCacheRoot(filepath.Join(t.TempDir(), cacheDirName)); !errors.Is(err, openErr) {
+		t.Fatalf("writable root error = %v, want %v", err, openErr)
+	}
+}
+
+func TestAnalysisCacheStableCacheRootNilReceiver(t *testing.T) {
+	rootPath := filepath.Join(t.TempDir(), "repo", cacheDirName)
+	var cache *analysisCache
+	if got := cache.stableCacheRoot(rootPath); got != rootPath {
+		t.Fatalf("nil cache stable root = %q, want %q", got, rootPath)
+	}
+}
+
 func TestNewAnalysisCacheRejectsAncestorSwapBeforeMissingRootCreate(t *testing.T) {
 	fixture := newAnalysisCacheSwapFixture(t)
 	swapped := false
@@ -281,6 +318,39 @@ func TestNewAnalysisCacheRollsBackMissingRootWhenAncestorSwapsAfterCreate(t *tes
 	fixture.assertMissingPartsAbsent(t)
 }
 
+func TestNewAnalysisCacheRejectsExistingRootSwapAfterOpen(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	renamedCachePath := filepath.Join(parent, "cache-renamed")
+	swapped := false
+	hookOpenAnalysisCacheAncestor(t, func(open func(string) (safeio.Root, string, []string, error), name string) (safeio.Root, string, []string, error) {
+		root, currentPath, missingParts, err := open(name)
+		if err == nil && name == cachePath && !swapped {
+			swapped = true
+			if err := os.Rename(cachePath, renamedCachePath); err != nil {
+				t.Fatalf("rename cache root after open: %v", err)
+			}
+			if err := os.Mkdir(cachePath, 0o750); err != nil {
+				t.Fatalf("replace cache root after open: %v", err)
+			}
+		}
+		return root, currentPath, missingParts, err
+	})
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if cache.cacheable {
+		t.Fatal("expected swapped existing cache root to be unavailable")
+	}
+	if !swapped {
+		t.Fatal("expected test hook to swap cache root after open")
+	}
+	if warnings := cache.takeWarnings(); len(warnings) == 0 || !strings.Contains(warnings[0], "directory identity changed") {
+		t.Fatalf("expected directory identity warning, got %#v", warnings)
+	}
+}
+
 func TestOpenOrCreatePinnedAnalysisCacheChildPreservesOpenRootError(t *testing.T) {
 	repo := t.TempDir()
 	root, err := safeio.OpenRoot(repo)
@@ -299,6 +369,158 @@ func TestOpenOrCreatePinnedAnalysisCacheChildPreservesOpenRootError(t *testing.T
 		t.Fatalf("expected OpenRoot error to be preserved, got %v", err)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, "keys"))
+}
+
+func TestOpenOrCreatePinnedAnalysisCacheChildReturnsLstatAfterConcurrentCreateError(t *testing.T) {
+	repo := t.TempDir()
+	root, err := safeio.OpenRoot(repo)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	}()
+	hookMkdirAnalysisCacheDir(t, func(safeio.Root, string, os.FileMode, func(safeio.Root, string, os.FileMode) error) error {
+		return fs.ErrExist
+	})
+
+	_, err = openOrCreatePinnedAnalysisCacheChild(root, repo, cacheKeysDirName)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("child lstat after fs.ErrExist = %v, want not-exist", err)
+	}
+}
+
+func TestOpenOrCreatePinnedAnalysisCacheChildHandlesConcurrentCreate(t *testing.T) {
+	repo := t.TempDir()
+	root, err := safeio.OpenRoot(repo)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	}()
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) error) error {
+		if err := mkdir(root, name, perm); err != nil {
+			return err
+		}
+		return fs.ErrExist
+	})
+
+	child, err := openOrCreatePinnedAnalysisCacheChild(root, repo, cacheKeysDirName)
+	if err != nil {
+		t.Fatalf("open concurrently created child: %v", err)
+	}
+	if child.created {
+		t.Fatal("expected fs.ErrExist path to preserve non-created rollback state")
+	}
+	if err := child.root.Close(); err != nil {
+		t.Fatalf("close child: %v", err)
+	}
+}
+
+func TestRollbackCreatedAnalysisCacheChildNoopsForUncreatedChild(t *testing.T) {
+	repo := t.TempDir()
+	root, err := safeio.OpenRoot(repo)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	}()
+	childPath := filepath.Join(repo, cacheKeysDirName)
+	if err := os.Mkdir(childPath, 0o750); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	childInfo, err := os.Lstat(childPath)
+	if err != nil {
+		t.Fatalf("stat child: %v", err)
+	}
+
+	if err := rollbackCreatedAnalysisCacheChild(root, cacheKeysDirName, nil, childInfo, false); err != nil {
+		t.Fatalf("rollback uncreated child: %v", err)
+	}
+	if info, err := os.Stat(childPath); err != nil || !info.IsDir() {
+		t.Fatalf("expected uncreated child to remain, info=%#v err=%v", info, err)
+	}
+}
+
+func TestRollbackCreatedAnalysisCacheChildSkipsMissingOrReplacedChild(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
+		repo := t.TempDir()
+		root, err := safeio.OpenRoot(repo)
+		if err != nil {
+			t.Fatalf("open root: %v", err)
+		}
+		defer func() {
+			if err := root.Close(); err != nil {
+				t.Fatalf("close root: %v", err)
+			}
+		}()
+		childPath := filepath.Join(repo, cacheKeysDirName)
+		if err := os.Mkdir(childPath, 0o750); err != nil {
+			t.Fatalf("create child: %v", err)
+		}
+		childInfo, err := os.Lstat(childPath)
+		if err != nil {
+			t.Fatalf("stat child: %v", err)
+		}
+		child, err := safeio.OpenRoot(childPath)
+		if err != nil {
+			t.Fatalf("open child: %v", err)
+		}
+		if err := os.Remove(childPath); err != nil {
+			t.Fatalf("remove child before rollback: %v", err)
+		}
+
+		if err := rollbackCreatedAnalysisCacheChild(root, cacheKeysDirName, child, childInfo, true); err != nil {
+			t.Fatalf("rollback missing child: %v", err)
+		}
+		assertAnalysisCachePathAbsent(t, childPath)
+	})
+
+	t.Run("replaced", func(t *testing.T) {
+		repo := t.TempDir()
+		root, err := safeio.OpenRoot(repo)
+		if err != nil {
+			t.Fatalf("open root: %v", err)
+		}
+		defer func() {
+			if err := root.Close(); err != nil {
+				t.Fatalf("close root: %v", err)
+			}
+		}()
+		childPath := filepath.Join(repo, cacheKeysDirName)
+		if err := os.Mkdir(childPath, 0o750); err != nil {
+			t.Fatalf("create child: %v", err)
+		}
+		childInfo, err := os.Lstat(childPath)
+		if err != nil {
+			t.Fatalf("stat child: %v", err)
+		}
+		child, err := safeio.OpenRoot(childPath)
+		if err != nil {
+			t.Fatalf("open child: %v", err)
+		}
+		if err := os.Rename(childPath, filepath.Join(repo, "renamed-child")); err != nil {
+			t.Fatalf("rename child before rollback: %v", err)
+		}
+		if err := os.Mkdir(childPath, 0o750); err != nil {
+			t.Fatalf("replace child before rollback: %v", err)
+		}
+
+		if err := rollbackCreatedAnalysisCacheChild(root, cacheKeysDirName, child, childInfo, true); err != nil {
+			t.Fatalf("rollback replaced child: %v", err)
+		}
+		if info, err := os.Stat(childPath); err != nil || !info.IsDir() {
+			t.Fatalf("expected replacement child to remain, info=%#v err=%v", info, err)
+		}
+	})
 }
 
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
