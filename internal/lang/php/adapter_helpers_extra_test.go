@@ -1120,6 +1120,51 @@ func TestParsePHPImportsKeepsPHPActiveAfterFlexibleHeredocTerminators(t *testing
 	}
 }
 
+func TestParsePHPImportsReturnsToTemplateAfterHeredocTerminatorCloseTag(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	tests := []struct {
+		name   string
+		opener string
+		closer string
+	}{
+		{
+			name:   "semicolon close tag",
+			opener: "$html = <<<TXT\n",
+			closer: "TXT; ?>",
+		},
+		{
+			name:   "line comment close tag",
+			opener: "$html = <<<TXT\n",
+			closer: "TXT; // done ?>",
+		},
+		{
+			name:   "hash comment close tag",
+			opener: "$html = <<<'TXT'\n",
+			closer: "    TXT; # done ?>",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte("<?php\n" +
+				tc.opener +
+				"<div>use Vendor\\Package\\HeredocBody;</div>\n" +
+				tc.closer + "\n" +
+				"<template>use Vendor\\Package\\TemplateOnly;</template>\n" +
+				"<?php use Vendor\\Package\\Client;\n")
+
+			parsed := parsePHPImports(content, tc.name+".php", resolver)
+			if parsed.unresolvedCount != 0 {
+				t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+			}
+			if len(parsed.imports) != 1 {
+				t.Fatalf("expected only the reopened active PHP import, got %#v", parsed.imports)
+			}
+			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+		})
+	}
+}
+
 func TestParsePHPImportsDoesNotTreatArbitraryHeredocLabelTailAsTerminator(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<?php\n" +
@@ -1151,6 +1196,37 @@ func TestParsePHPImportsParsesConfiguredShortOpenTags(t *testing.T) {
 		t.Fatalf("expected short-open PHP imports and references to be active, got %#v", parsed.imports)
 	}
 	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"})
+}
+
+func TestParsePHPImportsReturnsToTemplateAfterCommentCloseTags(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	tests := []struct {
+		name   string
+		region string
+	}{
+		{name: "php line comment", region: "<?php // done ?>"},
+		{name: "php hash comment", region: "<?php # done ?>"},
+		{name: "php block comment", region: "<?php /* done */ ?>"},
+		{name: "php string before close", region: "<?php echo '?>'; ?>"},
+		{name: "short tag line comment", region: "<? // done ?>"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte(tc.region + "\n" +
+				"<template>use Vendor\\Package\\TemplateOnly;</template>\n" +
+				"<?php use Vendor\\Package\\Client;\n")
+
+			parsed := parsePHPImports(content, tc.name+".php", resolver)
+			if parsed.unresolvedCount != 0 {
+				t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+			}
+			if len(parsed.imports) != 1 {
+				t.Fatalf("expected template namespace after close tag to stay inactive, got %#v", parsed.imports)
+			}
+			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+		})
+	}
 }
 
 func TestParsePHPImportsExcludesXMLDeclarationsWhenShortOpenTagsAreSupported(t *testing.T) {

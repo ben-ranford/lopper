@@ -639,7 +639,7 @@ func isXMLDeclarationOpenTag(text string, start int) bool {
 func findPHPRegionEnd(text string, offset int) (int, int) {
 	state := phpStateCode
 	for offset < len(text) {
-		if state == phpStateCode && strings.HasPrefix(text[offset:], "?>") {
+		if isPHPRegionCloseTagAt(text, offset, state) {
 			return offset, offset + len("?>")
 		}
 		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
@@ -653,6 +653,13 @@ func findPHPRegionEnd(text string, offset int) (int, int) {
 	return len(text), len(text)
 }
 
+func isPHPRegionCloseTagAt(text string, offset int, state phpCodeState) bool {
+	if !strings.HasPrefix(text[offset:], "?>") {
+		return false
+	}
+	return state == phpStateCode || state == phpStateLineComment
+}
+
 func skipHeredocNowdocBody(text string, markerOffset int) (int, bool) {
 	lineEnd := nextPHPLineEnd(text, markerOffset)
 	label, ok := parseHeredocNowdocLabelAfterMarker(text[markerOffset+len("<<<") : lineEnd])
@@ -660,11 +667,11 @@ func skipHeredocNowdocBody(text string, markerOffset int) (int, bool) {
 		return 0, false
 	}
 	bodyStart := nextPHPLineStart(text, lineEnd)
-	bodyEnd := findHeredocNowdocTerminator(text, bodyStart, label)
-	if bodyEnd < 0 {
+	terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
+	if !ok {
 		return len(text), true
 	}
-	return nextPHPLineStart(text, bodyEnd), true
+	return terminatorStart, true
 }
 
 func maskPHPHeredocNowdocBodies(text string) string {
@@ -678,14 +685,14 @@ func maskPHPHeredocNowdocBodies(text string) string {
 			continue
 		}
 		bodyStart := nextPHPLineStart(text, lineEnd)
-		bodyEnd := findHeredocNowdocTerminator(text, bodyStart, label)
-		if bodyEnd < 0 {
+		terminatorStart, terminatorEnd, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
+		if !ok {
 			masked = withMaskedPHPHeredocRange(text, masked, bodyStart, len(text))
 			return string(masked)
 		}
-		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, bodyEnd)
+		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, terminatorStart)
 		state = phpStateCode
-		lineStart = nextPHPLineStart(text, bodyEnd)
+		lineStart = nextPHPLineStart(text, terminatorEnd)
 	}
 	if len(masked) == 0 {
 		return text
@@ -808,14 +815,22 @@ func parseHeredocNowdocLabelAfterMarker(rest string) (string, bool) {
 }
 
 func findHeredocNowdocTerminator(text string, start int, label string) int {
+	_, lineEnd, ok := findHeredocNowdocTerminatorRange(text, start, label)
+	if !ok {
+		return -1
+	}
+	return lineEnd
+}
+
+func findHeredocNowdocTerminatorRange(text string, start int, label string) (int, int, bool) {
 	for lineStart := start; lineStart < len(text); {
 		lineEnd := nextPHPLineEnd(text, lineStart)
 		if isHeredocNowdocTerminatorLine(text[lineStart:lineEnd], label) {
-			return lineEnd
+			return lineStart, lineEnd, true
 		}
 		lineStart = nextPHPLineStart(text, lineEnd)
 	}
-	return -1
+	return 0, 0, false
 }
 
 func isHeredocNowdocTerminatorLine(line, label string) bool {
