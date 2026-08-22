@@ -34,33 +34,39 @@ func (r *composerResolver) dependencyFromModule(module string) (string, bool) {
 }
 
 func (r *composerResolver) isLocalNamespace(module string) bool {
-	for namespace := range r.localNamespace {
-		if namespace == "" {
-			continue
+	return containsNamespacePrefix(r.localNamespace, module)
+}
+
+func (r *composerResolver) resolveWithPSR4(module string) string {
+	for candidate := normalizeNamespace(module); candidate != ""; candidate = namespaceParent(candidate) {
+		if dependency := r.namespaceToDep[candidate]; dependency != "" {
+			return dependency
 		}
-		if module == namespace || strings.HasPrefix(module, namespace+`\`) {
+		if dependency := r.namespaceToDep[candidate+`\`]; dependency != "" {
+			return dependency
+		}
+	}
+	return ""
+}
+
+func containsNamespacePrefix(namespaces map[string]struct{}, module string) bool {
+	for candidate := normalizeNamespace(module); candidate != ""; candidate = namespaceParent(candidate) {
+		if _, ok := namespaces[candidate]; ok {
+			return true
+		}
+		if _, ok := namespaces[candidate+`\`]; ok {
 			return true
 		}
 	}
 	return false
 }
 
-func (r *composerResolver) resolveWithPSR4(module string) string {
-	longest := ""
-	selected := ""
-	for prefix, dependency := range r.namespaceToDep {
-		normalizedPrefix := normalizeNamespace(prefix)
-		if normalizedPrefix == "" {
-			continue
-		}
-		if module == normalizedPrefix || strings.HasPrefix(module, normalizedPrefix+`\`) {
-			if len(normalizedPrefix) > len(longest) {
-				longest = normalizedPrefix
-				selected = dependency
-			}
-		}
+func namespaceParent(namespace string) string {
+	separator := strings.LastIndex(namespace, `\`)
+	if separator < 0 {
+		return ""
 	}
-	return selected
+	return namespace[:separator]
 }
 
 func (r *composerResolver) resolveByNamespaceHeuristic(module string) string {

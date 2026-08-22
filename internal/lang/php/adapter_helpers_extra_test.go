@@ -675,6 +675,31 @@ func TestResolveWithPSR4LongestPrefix(t *testing.T) {
 	}
 }
 
+func TestComposerResolverUsesNamespaceAncestorsForPrefixLookup(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{
+			"Vendor":          "vendor/root",
+			"Vendor\\Package": "vendor/package",
+		},
+		localNamespace: map[string]struct{}{
+			"App": {},
+		},
+	}
+
+	if got := resolver.resolveWithPSR4(`Vendor\Package\Service\Client`); got != "vendor/package" {
+		t.Fatalf("expected most-specific namespace dependency, got %q", got)
+	}
+	if got := resolver.resolveWithPSR4(`Vendor\Other\Client`); got != "vendor/root" {
+		t.Fatalf("expected ancestor namespace dependency, got %q", got)
+	}
+	if resolver.isLocalNamespace(`Application\Service`) {
+		t.Fatal("local namespace lookup must require a namespace boundary")
+	}
+	if !resolver.isLocalNamespace(`App\Service\Client`) {
+		t.Fatal("expected local namespace ancestor to match")
+	}
+}
+
 func TestLineNumberAtBoundaries(t *testing.T) {
 	if got := lineNumberAt(helpersABLines, 0); got != 1 {
 		t.Fatalf("expected line 1 at offset 0, got %d", got)
