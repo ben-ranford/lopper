@@ -59,7 +59,11 @@ func persistProfileConfigIfAbsent(config, outputPath string) error {
 	destination, err := openCommandOutputDestination(outputPath)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath(outputPath, []byte(config), 0o600)
+			resolvedOutputPath, resolveErr := absoluteCommandOutputPath(outputPath)
+			if resolveErr != nil {
+				return errors.Join(err, resolveErr)
+			}
+			return safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath(resolvedOutputPath, []byte(config), 0o600)
 		}
 		return err
 	}

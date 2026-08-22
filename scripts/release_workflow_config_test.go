@@ -6038,15 +6038,12 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	cacheDir := filepath.Join(t.TempDir(), "gocache")
-	moduleCacheDir := filepath.Join(t.TempDir(), "gomodcache")
-	for _, dir := range []string{homeDir, cacheDir, moduleCacheDir} {
+	moduleCacheDir := currentGoModuleCache(t, goPath)
+	for _, dir := range []string{homeDir, cacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create Go environment directory: %v", err)
 		}
 	}
-	t.Cleanup(func() {
-		makeTreeWritable(t, moduleCacheDir)
-	})
 	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire "+currentGoModRequirement(t, "golang.org/x/sys")+"\n")
 	writeFile(t, filepath.Join(repo, "go.sum"), currentGoSumEntries(t, "golang.org/x/sys"))
 	runGitCommand(t, repo, "add", "go.mod", "go.sum")
@@ -6063,6 +6060,21 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
 	}
+}
+
+func currentGoModuleCache(t *testing.T, goPath string) string {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "env", "GOMODCACHE")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("resolve current GOMODCACHE: %v", err)
+	}
+	moduleCacheDir := strings.TrimSpace(string(output))
+	if moduleCacheDir == "" {
+		t.Fatal("go env GOMODCACHE returned an empty path")
+	}
+	return moduleCacheDir
 }
 
 func makeTreeWritable(t *testing.T, root string) {

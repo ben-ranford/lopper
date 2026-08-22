@@ -26,6 +26,7 @@ type commandOutputRootBoundary struct {
 type commandOutputDestination struct {
 	root       *safeio.WriteRoot
 	targetPath string
+	outputAbs  string
 }
 
 func persistDashboardOutput(formatted, outputPath string, trustedRoots ...string) (string, error) {
@@ -83,7 +84,7 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 		}
 		return commandOutputDestination{}, err
 	}
-	return commandOutputDestination{root: writeRoot, targetPath: targetPath}, nil
+	return commandOutputDestination{root: writeRoot, targetPath: targetPath, outputAbs: outputAbs}, nil
 }
 
 func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string) (commandOutputRootBoundary, string, error) {
