@@ -227,6 +227,28 @@ func TestAdapterAnalyseSkipsImportsInsideNestedFStringReplacementField(t *testin
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseFindsImportsAfterNestedShortFStringReplacementField(t *testing.T) {
+	source := `value = f"""{f'{'"""'}'}"""` + "\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
+func TestAdapterAnalyseSkipsImportsInsideShortFStringMultilineReplacementField(t *testing.T) {
+	source := "value = f\"{'''\n" +
+		"import requests\n" +
+		"'''}\"\n" +
+		"import numpy as np\n"
+
+	reportData := analysePythonTopN(t, source, 5)
+	names := dependencyNames(reportData)
+	if slices.Contains(names, "requests") {
+		t.Fatalf("expected short f-string replacement string contents to stay out of top-N imports, got %#v", names)
+	}
+	assertDependencyNamesInclude(t, names, "numpy")
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -320,102 +342,94 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 	}
 }
 
-func TestParseImportsSkipsImportLikeCRLFContinuedShortString(t *testing.T) {
-	repo := t.TempDir()
-	source := "value = \"not an import \\\r\n" +
-		"import requests\"\r\n" +
-		"import numpy as np\r\n"
-
-	imports := parseImports([]byte(source), testMainPy, repo)
-	if len(imports) != 1 {
-		t.Fatalf("expected only the real import binding, got %#v", imports)
+func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
+	cases := []struct {
+		name     string
+		source   string
+		want     importBinding
+		wantLine int
+	}{
+		{
+			name: "CRLF continued short string closes before real import",
+			source: "value = \"not an import \\\r\n" +
+				"import requests\"\r\n" +
+				"import numpy as np\r\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 3,
+		},
+		{
+			name: "f-string replacement delimiter does not close outer string",
+			source: `value = f"""{'"""'}"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "multiline replacement string resumes outer f-string",
+			source: "value = f\"\"\"{'''\n" +
+				"}\n" +
+				"\"\"\"\n" +
+				"'''}\"\"\"\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 5,
+		},
+		{
+			name: "replacement comment brace does not unbalance depth",
+			source: "value = f\"\"\"{(\n" +
+				"1 # {\n" +
+				")}\"\"\"\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 4,
+		},
+		{
+			name: "continued replacement short string hides import-like content",
+			source: "value = f\"\"\"{'not an import \\\r\n" +
+				"}\"\"\"\\\r\n" +
+				"import requests\\\r\n" +
+				"'}\"\"\"\r\n" +
+				"import numpy as np\r\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 5,
+		},
+		{
+			name: "nested f-string replacement preserves outer state",
+			source: `value = f"""{f'''{"'''"}'''}"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "nested short f-string replacement preserves outer state",
+			source: `value = f"""{f'{'"""'}'}"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "short f-string multiline replacement hides import-like content",
+			source: "value = f\"{'''\n" +
+				"import requests\n" +
+				"'''}\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
 	}
-	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
-	if imports[0].Location.Line != 3 {
-		t.Fatalf("expected real import on line 3, got location %+v", imports[0].Location)
-	}
-}
 
-func TestParseImportsFindsImportAfterFStringReplacementFieldDelimiter(t *testing.T) {
-	repo := t.TempDir()
-	source := `value = f"""{'"""'}"""` + "\n" +
-		"import requests\n"
-
-	imports := parseImports([]byte(source), testMainPy, repo)
-	if len(imports) != 1 {
-		t.Fatalf("expected only the real import binding, got %#v", imports)
-	}
-	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
-	if imports[0].Location.Line != 2 {
-		t.Fatalf("expected real import on line 2, got location %+v", imports[0].Location)
-	}
-}
-
-func TestParseImportsFindsImportAfterMultilineFStringReplacementString(t *testing.T) {
-	repo := t.TempDir()
-	source := "value = f\"\"\"{'''\n" +
-		"}\n" +
-		"\"\"\"\n" +
-		"'''}\"\"\"\n" +
-		"import requests\n"
-
-	imports := parseImports([]byte(source), testMainPy, repo)
-	if len(imports) != 1 {
-		t.Fatalf("expected only the real import binding, got %#v", imports)
-	}
-	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
-	if imports[0].Location.Line != 5 {
-		t.Fatalf("expected real import on line 5, got location %+v", imports[0].Location)
-	}
-}
-
-func TestParseImportsFindsImportAfterFStringReplacementCommentBrace(t *testing.T) {
-	repo := t.TempDir()
-	source := "value = f\"\"\"{(\n" +
-		"1 # {\n" +
-		")}\"\"\"\n" +
-		"import requests\n"
-
-	imports := parseImports([]byte(source), testMainPy, repo)
-	if len(imports) != 1 {
-		t.Fatalf("expected only the real import binding, got %#v", imports)
-	}
-	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
-	if imports[0].Location.Line != 4 {
-		t.Fatalf("expected real import on line 4, got location %+v", imports[0].Location)
-	}
-}
-
-func TestParseImportsSkipsFStringReplacementContinuedShortString(t *testing.T) {
-	repo := t.TempDir()
-	source := "value = f\"\"\"{'not an import \\\r\n" +
-		"}\"\"\"\\\r\n" +
-		"import requests\\\r\n" +
-		"'}\"\"\"\r\n" +
-		"import numpy as np\r\n"
-
-	imports := parseImports([]byte(source), testMainPy, repo)
-	if len(imports) != 1 {
-		t.Fatalf("expected only the real import binding, got %#v", imports)
-	}
-	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
-	if imports[0].Location.Line != 5 {
-		t.Fatalf("expected real import on line 5, got location %+v", imports[0].Location)
-	}
-}
-
-func TestParseImportsKeepsOuterStateThroughNestedFStringReplacementField(t *testing.T) {
-	repo := t.TempDir()
-	source := `value = f"""{f'''{"'''"}'''}"""` + "\n" +
-		"import requests\n"
-
-	imports := parseImports([]byte(source), testMainPy, repo)
-	if len(imports) != 1 {
-		t.Fatalf("expected only the real import binding, got %#v", imports)
-	}
-	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
-	if imports[0].Location.Line != 2 {
-		t.Fatalf("expected real import on line 2, got location %+v", imports[0].Location)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			imports := parseImports([]byte(tc.source), testMainPy, repo)
+			if len(imports) != 1 {
+				t.Fatalf("expected only the real import binding, got %#v", imports)
+			}
+			assertImportBinding(t, imports[0], tc.want)
+			if imports[0].Location.Line != tc.wantLine {
+				t.Fatalf("expected real import on line %d, got location %+v", tc.wantLine, imports[0].Location)
+			}
+		})
 	}
 }
 
