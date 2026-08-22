@@ -420,20 +420,31 @@ func rollbackCreatedAnalysisCacheChild(root safeio.Root, name string, child safe
 }
 
 func conditionallyRemoveAnalysisCacheChild(root safeio.Root, name string, childInfo fs.FileInfo) error {
-	if childInfo == nil {
-		return nil
-	}
-	currentInfo, lstatErr := root.Lstat(name)
-	if lstatErr == nil {
-		if !sameAnalysisCacheRollbackTarget(currentInfo, childInfo) {
-			return nil
-		}
-	} else if errors.Is(lstatErr, os.ErrNotExist) {
+	shouldRemove, lstatErr := analysisCacheRollbackCandidate(root, name, childInfo)
+	if !shouldRemove {
 		return nil
 	}
 	quarantineName, err := quarantineAnalysisCacheChild(root, name, childInfo)
-	if err != nil {
-		return errors.Join(lstatErr, err)
+	return finishConditionalAnalysisCacheRemoval(root, quarantineName, lstatErr, err)
+}
+
+func analysisCacheRollbackCandidate(root safeio.Root, name string, childInfo fs.FileInfo) (bool, error) {
+	if childInfo == nil {
+		return false, nil
+	}
+	currentInfo, err := root.Lstat(name)
+	if err == nil {
+		return sameAnalysisCacheRollbackTarget(currentInfo, childInfo), nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return true, err
+}
+
+func finishConditionalAnalysisCacheRemoval(root safeio.Root, quarantineName string, lstatErr, quarantineErr error) error {
+	if quarantineErr != nil {
+		return errors.Join(lstatErr, quarantineErr)
 	}
 	if quarantineName == "" {
 		return nil
@@ -449,37 +460,92 @@ func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.Fi
 		return "", nil
 	}
 	for attempt := 0; attempt < 16; attempt++ {
-		reservationName := fmt.Sprintf(".lopper-cache-rollback-%s-%d", filepath.Base(name), attempt)
-		quarantineName := filepath.Join(reservationName, filepath.Base(name))
-		if err := root.Mkdir(reservationName, 0o700); err != nil {
-			if errors.Is(err, os.ErrExist) || errors.Is(err, fs.ErrExist) {
-				continue
-			}
+		quarantineName, retry, err := quarantineAnalysisCacheChildAttempt(root, name, childInfo, attempt)
+		if err != nil {
 			return "", err
 		}
-		if err := root.Rename(name, quarantineName); err != nil {
-			removeReservationErr := root.Remove(reservationName)
-			if errors.Is(err, os.ErrNotExist) {
-				return "", removeReservationErr
-			}
-			if errors.Is(err, os.ErrExist) || analysisCacheQuarantineDestinationExists(root, name, quarantineName, childInfo) {
-				if removeReservationErr != nil && !errors.Is(removeReservationErr, os.ErrNotExist) {
-					return "", errors.Join(err, removeReservationErr)
-				}
-				continue
-			}
-			return "", errors.Join(err, removeReservationErr)
+		if retry {
+			continue
 		}
-		quarantineInfo, infoErr := root.Lstat(quarantineName)
-		if infoErr == nil && sameAnalysisCacheRollbackTarget(quarantineInfo, childInfo) {
-			return quarantineName, nil
-		}
-		if infoErr == nil {
-			infoErr = errors.New("rollback target changed while quarantining: " + name)
-		}
-		return "", infoErr
+		return quarantineName, nil
 	}
 	return "", fmt.Errorf("unable to reserve rollback quarantine for %s", name)
+}
+
+func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInfo fs.FileInfo, attempt int) (string, bool, error) {
+	reservationName := fmt.Sprintf(".lopper-cache-rollback-%s-%d", filepath.Base(name), attempt)
+	quarantineName := filepath.Join(reservationName, filepath.Base(name))
+	if retry, err := reserveAnalysisCacheQuarantine(root, reservationName, quarantineName); retry || err != nil {
+		return "", retry, err
+	}
+	if err := root.Rename(name, quarantineName); err != nil {
+		return handleAnalysisCacheQuarantineRenameError(root, reservationName, name, quarantineName, childInfo, err)
+	}
+	return verifyAnalysisCacheQuarantine(root, reservationName, name, quarantineName, childInfo)
+}
+
+func reserveAnalysisCacheQuarantine(root safeio.Root, reservationName, quarantineName string) (bool, error) {
+	if err := root.Mkdir(reservationName, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) || errors.Is(err, fs.ErrExist) {
+			return true, nil
+		}
+		return false, err
+	}
+	if _, err := root.Lstat(quarantineName); err == nil {
+		return true, removeAnalysisCacheQuarantineReservation(root, quarantineName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, errors.Join(err, removeAnalysisCacheQuarantineReservation(root, quarantineName))
+	}
+	return false, nil
+}
+
+func handleAnalysisCacheQuarantineRenameError(root safeio.Root, reservationName, name, quarantineName string, childInfo fs.FileInfo, renameErr error) (string, bool, error) {
+	removeReservationErr := root.Remove(reservationName)
+	if errors.Is(renameErr, os.ErrNotExist) {
+		return "", false, removeReservationErr
+	}
+	if errors.Is(renameErr, os.ErrExist) || analysisCacheQuarantineDestinationExists(root, name, quarantineName, childInfo) {
+		if removeReservationErr != nil && !errors.Is(removeReservationErr, os.ErrNotExist) {
+			return "", false, errors.Join(renameErr, removeReservationErr)
+		}
+		return "", true, nil
+	}
+	return "", false, errors.Join(renameErr, removeReservationErr)
+}
+
+func verifyAnalysisCacheQuarantine(root safeio.Root, reservationName, name, quarantineName string, childInfo fs.FileInfo) (string, bool, error) {
+	quarantineInfo, infoErr := root.Lstat(quarantineName)
+	if infoErr == nil && sameAnalysisCacheRollbackTarget(quarantineInfo, childInfo) {
+		return quarantineName, false, nil
+	}
+	if infoErr == nil {
+		infoErr = errors.New("rollback target changed while quarantining: " + name)
+		restoreErr := restoreMovedAnalysisCacheReplacement(root, reservationName, name, quarantineName, quarantineInfo)
+		return "", false, errors.Join(infoErr, restoreErr)
+	}
+	return "", false, infoErr
+}
+
+func restoreMovedAnalysisCacheReplacement(root safeio.Root, reservationName, name, quarantineName string, movedInfo fs.FileInfo) error {
+	if movedInfo == nil {
+		return nil
+	}
+	if _, err := root.Lstat(name); err == nil {
+		return errors.New("rollback replacement restore target occupied: " + name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := root.Rename(quarantineName, name); err != nil {
+		return err
+	}
+	restoredInfo, err := root.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if !sameAnalysisCacheRollbackTarget(restoredInfo, movedInfo) {
+		return errors.New("rollback replacement changed while restoring: " + name)
+	}
+	return removeAnalysisCacheQuarantineReservation(root, filepath.Join(reservationName, filepath.Base(name)))
 }
 
 func removeAnalysisCacheQuarantineReservation(root safeio.Root, quarantineName string) error {
