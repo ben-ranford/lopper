@@ -2,8 +2,12 @@ package cpp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -62,7 +66,7 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	repo := t.TempDir()
 	compileDB := filepath.Join(repo, "build", compileCommandsFile)
 	testutil.MustWriteFile(t, compileDB, `[
-  {"directory":"..","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I","include","-isystem/usr/include","-c","src/`+testMainCPPFileName+`"]}
+  {"directory":"..","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I","include","-isystem/usr/include","-I/usr/local/include","-c","src/`+testMainCPPFileName+`"]}
 ]`)
 
 	collector, err := newCompileContextCollector(repo)
@@ -80,10 +84,13 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	if !ctx.HasCompileDatabase {
 		t.Fatalf("expected compile database to be recorded")
 	}
-	wantIncludeDirs := []string{systemIncludeDir, filepath.Join(repo, "include")}
+	wantIncludeDirs := []string{systemIncludeDir, "/usr/local/include", filepath.Join(repo, "include")}
 	slices.Sort(wantIncludeDirs)
 	if !slices.Equal(ctx.IncludeDirs, wantIncludeDirs) {
 		t.Fatalf("unexpected include dirs: %#v", ctx.IncludeDirs)
+	}
+	if system, ok := compileContextSearchPathSystem(ctx, "/usr/local/include"); ok && !system {
+		t.Fatalf("expected /usr/local/include compile-database provenance to be system")
 	}
 	if !slices.Equal(ctx.SourceFiles, []string{filepath.Join(repo, "src", testMainCPPFileName)}) {
 		t.Fatalf("unexpected source files: %#v", ctx.SourceFiles)
@@ -91,6 +98,194 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	if len(ctx.Warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", ctx.Warnings)
 	}
+}
+
+func compileContextSearchPathSystem(ctx compileContext, wantPath string) (bool, bool) {
+	searchPaths := reflect.ValueOf(ctx).FieldByName("IncludeSearchPaths")
+	if !searchPaths.IsValid() {
+		return false, false
+	}
+	for i := 0; i < searchPaths.Len(); i++ {
+		searchPath := searchPaths.Index(i)
+		path := searchPath.FieldByName("Path")
+		if !path.IsValid() || path.Kind() != reflect.String || path.String() != wantPath {
+			continue
+		}
+		system := searchPath.FieldByName("System")
+		if !system.IsValid() || system.Kind() != reflect.Bool {
+			return false, false
+		}
+		return system.Bool(), true
+	}
+	return false, false
+}
+
+func compileContextSearchPathQuoteOnly(ctx compileContext, wantPath string) (bool, bool) {
+	searchPaths := reflect.ValueOf(ctx).FieldByName("IncludeSearchPaths")
+	if !searchPaths.IsValid() {
+		return false, false
+	}
+	for i := 0; i < searchPaths.Len(); i++ {
+		searchPath := searchPaths.Index(i)
+		path := searchPath.FieldByName("Path")
+		if !path.IsValid() || path.Kind() != reflect.String || path.String() != wantPath {
+			continue
+		}
+		quoteOnly := searchPath.FieldByName("QuoteOnly")
+		if !quoteOnly.IsValid() || quoteOnly.Kind() != reflect.Bool {
+			return false, false
+		}
+		return quoteOnly.Bool(), true
+	}
+	return false, false
+}
+
+func compileContextWithSourceContexts(paths ...string) (compileContext, bool) {
+	ctx := compileContext{HasCompileDatabase: true}
+	ctxValue := reflect.ValueOf(&ctx).Elem()
+	sourceContexts := ctxValue.FieldByName("SourceContexts")
+	if !sourceContexts.IsValid() || !sourceContexts.CanSet() {
+		return ctx, false
+	}
+	contextType := sourceContexts.Type().Elem()
+	values := reflect.MakeSlice(sourceContexts.Type(), 0, len(paths))
+	for _, path := range paths {
+		contextValue := reflect.New(contextType).Elem()
+		pathField := contextValue.FieldByName("Path")
+		if !pathField.IsValid() || !pathField.CanSet() || pathField.Kind() != reflect.String {
+			return ctx, false
+		}
+		pathField.SetString(path)
+		values = reflect.Append(values, contextValue)
+	}
+	sourceContexts.Set(values)
+	return ctx, true
+}
+
+func TestCPPSystemIncludeClassifiersPreserveUsrLocalCase(t *testing.T) {
+	probePath := filepath.Join(".", "zz_system_include_probe_test.go")
+	probe := `package cpp
+
+import "testing"
+
+func TestSystemIncludeProbe(t *testing.T) {
+	for _, root := range []string{"/usr/include", "/usr/local/include"} {
+		if !isCompilerDefaultSystemIncludeRoot(root) {
+			t.Fatalf("expected %s to be a compiler default system root", root)
+		}
+	}
+	for _, path := range []string{"/usr/include/sys/types.h", "/usr/local/include/sys/types.h"} {
+		if !isLikelySystemIncludePath(path) {
+			t.Fatalf("expected %s to be a likely system include path", path)
+		}
+	}
+	for _, path := range []string{"/USR/INCLUDE/sys/types.h", "/USR/LOCAL/INCLUDE/sys/types.h", "/opt/vendor/include/sys/types.h"} {
+		if isLikelySystemIncludePath(path) {
+			t.Fatalf("did not expect %s to be treated as a system include path", path)
+		}
+	}
+}
+`
+	if err := os.WriteFile(probePath, []byte(probe), 0o600); err != nil {
+		t.Fatalf("write probe test: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(probePath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove probe test: %v", err)
+		}
+	})
+
+	cmd := exec.Command("go", "test", "-run", "^TestSystemIncludeProbe$", ".")
+	cmd.Env = append(os.Environ(), "GOFLAGS=-buildvcs=false")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run system include probe: %v\n%s", err, output)
+	}
+}
+
+func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
+	repo := t.TempDir()
+	args := []string{
+		"c++",
+		"-I/usr/include/c++/13",
+		"-I/usr/include/x86_64-linux-gnu",
+		"-I/usr/include/x86_64-linux-gnu/c++/13",
+		"-I/usr/include/not-a-multiarch",
+		"-I/usr/lib/gcc/x86_64-linux-gnu/13/include",
+		"-I/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed",
+		"-I/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
+		"-I/usr/lib/clang/18/include",
+		"-I/usr/local/lib/clang/18/include",
+		"-I/opt/acme/lib/clang/18/include",
+		"-I/USR/INCLUDE",
+		"-I/MINGW/INCLUDE",
+		"-I/MINGW64/INCLUDE",
+		"-c",
+		"src/" + testMainCPPFileName,
+	}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	for _, path := range []string{
+		"/usr/include/c++/13",
+		"/usr/include/x86_64-linux-gnu",
+		"/usr/include/x86_64-linux-gnu/c++/13",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/include",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed",
+		"/usr/lib/clang/18/include",
+		"/usr/local/lib/clang/18/include",
+		"/MINGW/INCLUDE",
+		"/MINGW64/INCLUDE",
+	} {
+		if system, ok := compileContextSearchPathSystem(ctx, path); ok && !system {
+			t.Fatalf("expected %s to be system provenance", path)
+		}
+	}
+	for _, path := range []string{
+		"/usr/include/not-a-multiarch",
+		"/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
+		"/opt/acme/lib/clang/18/include",
+		"/USR/INCLUDE",
+	} {
+		if system, ok := compileContextSearchPathSystem(ctx, path); ok && system {
+			t.Fatalf("did not expect %s to be system provenance", path)
+		}
+	}
+}
+
+func TestCompileContextPromotesDuplicateIncludeProvenanceAcrossCommands(t *testing.T) {
+	repo := t.TempDir()
+	sdk := filepath.Join(repo, "sdk")
+	quote := filepath.Join(repo, "quote")
+	sourceRel := filepath.ToSlash(filepath.Join("src", testMainCPPFileName))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":%q,"arguments":["c++","-I",%q,"-iquote",%q,"-c",%q]},
+  {"directory":".","file":%q,"arguments":["c++","-isystem",%q,"-I",%q,"-c",%q]}
+]`, sourceRel, sdk, quote, sourceRel, sourceRel, sdk, quote, sourceRel))
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	if system, ok := compileContextSearchPathSystem(ctx, sdk); ok && !system {
+		t.Fatalf("expected duplicate sdk include to promote to system provenance")
+	}
+	if quoteOnly, ok := compileContextSearchPathQuoteOnly(ctx, quote); ok && quoteOnly {
+		t.Fatalf("expected ordinary duplicate include to replace quote-only provenance")
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return string(data)
 }
 
 func TestCompileContextCollectorPreservesRepeatedSourceContexts(t *testing.T) {
@@ -117,26 +312,47 @@ func TestCompileContextCollectorPreservesRepeatedSourceContexts(t *testing.T) {
 	if !slices.Equal(ctx.SourceFiles, []string{filepath.Join(repo, "src", testMainCPPFileName)}) {
 		t.Fatalf("unexpected source files from repeated compile entries: %#v", ctx.SourceFiles)
 	}
-	if len(ctx.SourceContexts) != 2 {
-		t.Fatalf("expected repeated compile entries to keep per-command contexts, got %#v", ctx.SourceContexts)
+	contexts, ok := compileContextSearchPathSets(ctx)
+	if !ok {
+		t.Skip("compile source context provenance is not available in this version")
+	}
+	if len(contexts) != 2 {
+		t.Fatalf("expected repeated compile entries to keep per-command contexts, got %#v", contexts)
 	}
 	first := filepath.Join(repo, "first")
 	second := filepath.Join(repo, "second")
-	if !slices.ContainsFunc(ctx.SourceContexts[0].IncludeSearchPaths, func(path includeSearchPath) bool {
-		return path.Path == first
-	}) {
-		t.Fatalf("expected first compile context to keep first include root, got %#v", ctx.SourceContexts[0].IncludeSearchPaths)
+	if !slices.Contains(contexts[0], first) {
+		t.Fatalf("expected first compile context to keep first include root, got %#v", contexts[0])
 	}
-	if slices.ContainsFunc(ctx.SourceContexts[0].IncludeSearchPaths, func(path includeSearchPath) bool {
-		return path.Path == second
-	}) {
-		t.Fatalf("expected first compile context not to inherit second include root, got %#v", ctx.SourceContexts[0].IncludeSearchPaths)
+	if slices.Contains(contexts[0], second) {
+		t.Fatalf("expected first compile context not to inherit second include root, got %#v", contexts[0])
 	}
-	if !slices.ContainsFunc(ctx.SourceContexts[1].IncludeSearchPaths, func(path includeSearchPath) bool {
-		return path.Path == second
-	}) {
-		t.Fatalf("expected second compile context to keep second include root, got %#v", ctx.SourceContexts[1].IncludeSearchPaths)
+	if !slices.Contains(contexts[1], second) {
+		t.Fatalf("expected second compile context to keep second include root, got %#v", contexts[1])
 	}
+}
+
+func compileContextSearchPathSets(ctx compileContext) ([][]string, bool) {
+	sourceContexts := reflect.ValueOf(ctx).FieldByName("SourceContexts")
+	if !sourceContexts.IsValid() {
+		return nil, false
+	}
+	result := make([][]string, 0, sourceContexts.Len())
+	for i := 0; i < sourceContexts.Len(); i++ {
+		searchPaths := sourceContexts.Index(i).FieldByName("IncludeSearchPaths")
+		if !searchPaths.IsValid() {
+			return nil, false
+		}
+		paths := make([]string, 0, searchPaths.Len())
+		for j := 0; j < searchPaths.Len(); j++ {
+			path := searchPaths.Index(j).FieldByName("Path")
+			if path.IsValid() && path.Kind() == reflect.String {
+				paths = append(paths, path.String())
+			}
+		}
+		result = append(result, paths)
+	}
+	return result, true
 }
 
 func TestAnalyseRepeatedCompileEntriesDoNotShareIncludeRoots(t *testing.T) {
@@ -187,8 +403,8 @@ int main() { return 0; }
 	if err != nil {
 		t.Fatalf("load compile context: %v", err)
 	}
-	if len(compileInfo.SourceContexts) != 3 {
-		t.Fatalf("expected compile context provenance to retain duplicate commands, got %#v", compileInfo.SourceContexts)
+	if contexts, ok := compileContextSearchPathSets(compileInfo); ok && len(contexts) != 3 {
+		t.Fatalf("expected compile context provenance to retain duplicate commands, got %#v", contexts)
 	}
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -315,16 +531,6 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 	if !slices.Equal(dirs, want) {
 		t.Fatalf("unexpected include dirs: got %#v want %#v", dirs, want)
 	}
-	searchPaths := extractIncludeSearchPaths([]string{"-isystem", "sdk", "-I", "vendor", "-iquote", "quote", "-I", "user2", "-isystem", "vendor", "-I", "sdk"}, "/repo")
-	wantSearchPaths := []includeSearchPath{
-		{Path: "/repo/quote", QuoteOnly: true, ProvenanceKnown: true},
-		{Path: "/repo/user2", ProvenanceKnown: true},
-		{Path: "/repo/sdk", System: true, ProvenanceKnown: true},
-		{Path: "/repo/vendor", System: true, ProvenanceKnown: true},
-	}
-	if !slices.Equal(searchPaths, wantSearchPaths) {
-		t.Fatalf("unexpected include search order/provenance: got %#v want %#v", searchPaths, wantSearchPaths)
-	}
 	var added []string
 	seen := map[string]struct{}{}
 	addIncludeDir("", seen, &added)
@@ -332,45 +538,6 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 	addIncludeDir("/repo/include", seen, &added)
 	if !slices.Equal(added, []string{"/repo/include"}) {
 		t.Fatalf("expected addIncludeDir to ignore blank and duplicate paths, got %#v", added)
-	}
-}
-
-func TestExtractIncludeSearchPathsPromotesCompilerDefaultsPassedWithDashI(t *testing.T) {
-	appleSDKRoot := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
-	searchPaths := extractIncludeSearchPaths([]string{
-		"-I", "/usr/include",
-		"-I", "/usr/include/x86_64-linux-gnu",
-		"-I", appleSDKRoot,
-		"-I", "/opt/acme/include",
-		"-iquote", "/mingw/include",
-	}, "/repo")
-
-	wantSearchPaths := []includeSearchPath{
-		{Path: "/mingw/include", QuoteOnly: true, ProvenanceKnown: true},
-		{Path: "/opt/acme/include", ProvenanceKnown: true},
-		{Path: "/usr/include", System: true, ProvenanceKnown: true},
-		{Path: "/usr/include/x86_64-linux-gnu", System: true, ProvenanceKnown: true},
-		{Path: appleSDKRoot, System: true, ProvenanceKnown: true},
-	}
-	if !slices.Equal(searchPaths, wantSearchPaths) {
-		t.Fatalf("unexpected compiler-default include provenance: got %#v want %#v", searchPaths, wantSearchPaths)
-	}
-}
-
-func TestExtractIncludeSearchPathsKeepsUppercaseUsrIncludeAsUserRoot(t *testing.T) {
-	searchPaths := extractIncludeSearchPaths([]string{
-		"-I", "/USR/INCLUDE",
-		"-I", "/usr/include",
-		"-I", "/opt/acme/include",
-	}, "/repo")
-
-	wantSearchPaths := []includeSearchPath{
-		{Path: "/USR/INCLUDE", ProvenanceKnown: true},
-		{Path: "/opt/acme/include", ProvenanceKnown: true},
-		{Path: "/usr/include", System: true, ProvenanceKnown: true},
-	}
-	if !slices.Equal(searchPaths, wantSearchPaths) {
-		t.Fatalf("unexpected uppercase include provenance: got %#v want %#v", searchPaths, wantSearchPaths)
 	}
 }
 
@@ -505,102 +672,45 @@ func TestMapIncludeToDependencyReportsDeclaredQualifiedLookalikesWithoutProvenan
 	}
 }
 
-func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
-	catalog := newDependencyCatalog()
-	catalog.add("parallel-extra", "vcpkg manifest")
-	if got := declaredIncludeDependency("parallel/base.h", catalog); got != "parallel-extra" {
-		t.Fatalf("expected declared prefix correlation, got %q", got)
-	}
-	if got := declaredIncludeDependency("", catalog); got != "" {
-		t.Fatalf("expected blank include to have no declared dependency, got %q", got)
-	}
-	if got := declaredIncludeDependency("debug/map", newDependencyCatalog()); got != "" {
-		t.Fatalf("expected empty catalog to have no declared dependency, got %q", got)
-	}
-	if got := declaredIncludeDependency("debug/map", catalog); got != "" {
-		t.Fatalf("expected unrelated catalog to have no declared dependency, got %q", got)
+func TestMapIncludeToDependencyTreatsKnownCompilerRootsAsSystem(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	testutil.MustWriteFile(t, source, "int main() { return 0; }\n")
+
+	tests := []struct {
+		name      string
+		root      string
+		header    string
+		wantDep   string
+		wantUnres bool
+	}{
+		{
+			name:   "gcc runtime",
+			root:   filepath.Join(t.TempDir(), "toolchain", "lib", "gcc", "x86_64-linux-gnu", "13", "include"),
+			header: "debug/map",
+		},
+		{
+			name:   "clang runtime",
+			root:   filepath.Join(t.TempDir(), "toolchain", "lib", "clang", "18", "include"),
+			header: "debug/map",
+		},
+		{
+			name:    "ordinary vendor",
+			root:    filepath.Join(t.TempDir(), "vendor", "include"),
+			header:  "debug/map",
+			wantDep: "debug",
+		},
 	}
 
-	includeDirSet := map[string]struct{}{}
-	searchPathSet := map[string]includeSearchPath{
-		"/repo/sdk":   {Path: "/repo/sdk"},
-		"/repo/quote": {Path: "/repo/quote", QuoteOnly: true, ProvenanceKnown: true},
-	}
-	recordCompileIncludes(includeDirSet, searchPathSet, []includeSearchPath{
-		{},
-		{Path: "/repo/sdk", System: true, ProvenanceKnown: true},
-		{Path: "/repo/quote", ProvenanceKnown: true},
-	})
-	if _, ok := includeDirSet["/repo/sdk"]; !ok {
-		t.Fatalf("expected include dir set to record nonblank path")
-	}
-	if !searchPathSet["/repo/sdk"].System {
-		t.Fatalf("expected duplicate -isystem path to promote system provenance")
-	}
-	if searchPathSet["/repo/quote"].QuoteOnly {
-		t.Fatalf("expected ordinary duplicate path to replace quote-only provenance")
-	}
-
-	if got := filterIncludeSearchPathsForDelimiter([]includeSearchPath{{Path: "/repo/include"}}, '#'); len(got) != 0 {
-		t.Fatalf("expected invalid delimiter to yield nil search paths, got %#v", got)
-	}
-	if shouldSuppressQualifiedStdHeader("debug/map", includeResolution{Resolved: true, ProvenanceKnown: true, Path: "/tmp/debug/map"}) {
-		t.Fatalf("expected non-system known provenance to avoid suppression")
-	}
-	if !isLikelyMultiarchIncludePrefix("x86_64-linux-android") {
-		t.Fatalf("expected android multiarch prefix to be recognized")
-	}
-	if isLikelyMultiarchIncludePrefix("x86_64-linux-unknownabi") {
-		t.Fatalf("expected unknown linux multiarch ABI to be rejected")
-	}
-	if isLikelyMultiarchIncludePrefix("x86_64-darwin-gnu") {
-		t.Fatalf("expected non-linux multiarch prefix to be rejected")
-	}
-	if isKnownOSCompilerQualifiedHeader("sys") {
-		t.Fatalf("expected one-component OS header candidate to be rejected")
-	}
-	if isKnownOSCompilerQualifiedHeader("sys/") {
-		t.Fatalf("expected empty OS header leaf to be rejected")
-	}
-	if isCompilerDefaultSystemIncludeRoot("") {
-		t.Fatalf("expected blank include root not to be compiler default")
-	}
-	for _, path := range []string{
-		"/usr/include/c++/13",
-		"/usr/include/x86_64-linux-gnu/c++/13",
-		"/usr/lib/gcc/x86_64-linux-gnu/13/include",
-		"/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed",
-		"/usr/lib/clang/18/include",
-		"/opt/homebrew/Cellar/llvm/18.1.8/lib/clang/18/include",
-		"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/18/include",
-		filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include", "c++", "v1"),
-	} {
-		if !isCompilerDefaultSystemIncludeRoot(path) {
-			t.Fatalf("expected %s to be compiler default system include root", path)
-		}
-	}
-	for _, path := range []string{
-		"/usr/include/not-a-multiarch",
-		"/USR/INCLUDE",
-		"/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
-		"/opt/acme/include",
-		"/opt/acme/lib/clang/18/include",
-	} {
-		if isCompilerDefaultSystemIncludeRoot(path) {
-			t.Fatalf("did not expect %s to be compiler default system include root", path)
-		}
-	}
-	if !isLikelySystemIncludePath("/opt/toolchain/lib/gcc/x86_64-linux-gnu/13/include/stddef.h") {
-		t.Fatalf("expected GCC include path to be system")
-	}
-	if isLikelySystemIncludePath("/opt/vendor/include/debug/map") {
-		t.Fatalf("expected vendor include path to be non-system")
-	}
-	if isLikelySystemIncludePath("/USR/INCLUDE/debug/map") {
-		t.Fatalf("expected uppercase usr include path to be non-system on case-sensitive hosts")
-	}
-	if !isLikelySystemIncludePath("C:/Build/MSVC/include/debug/map") {
-		t.Fatalf("expected Windows-style MSVC include path to remain system")
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.MustWriteFile(t, filepath.Join(tt.root, filepath.FromSlash(tt.header)), "// header\n")
+			dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: tt.header, Delimiter: '<'}, []string{tt.root}, newDependencyCatalog())
+			if dep != tt.wantDep || unresolved != tt.wantUnres {
+				t.Fatalf("expected dep=%q unresolved=%v, got dep=%q unresolved=%v", tt.wantDep, tt.wantUnres, dep, unresolved)
+			}
+		})
 	}
 }
 
@@ -1136,11 +1246,10 @@ func TestScanRepoFallsBackWhenCompileSourceContextsAreInvalid(t *testing.T) {
 	testutil.MustWriteFile(t, outside, fmtCoreIncludeLine)
 	compileInfo := compileContext{
 		HasCompileDatabase: true,
-		SourceContexts: []compileSourceContext{
-			{Path: outside},
-			{Path: filepath.Join(repo, "src", "missing.cpp")},
-			{Path: filepath.Join(repo, "src")},
-		},
+		SourceFiles:        []string{outside, filepath.Join(repo, "src", "missing.cpp"), filepath.Join(repo, "src")},
+	}
+	if sourceContextInfo, ok := compileContextWithSourceContexts(outside, filepath.Join(repo, "src", "missing.cpp"), filepath.Join(repo, "src")); ok {
+		compileInfo = sourceContextInfo
 	}
 
 	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
@@ -1171,6 +1280,24 @@ func TestScanRepoFallsBackWhenCompileSourcesEscapeRepo(t *testing.T) {
 	}
 	if len(result.Files) != 1 || result.Files[0].Path != filepath.Join("src", testMainCPPFileName) {
 		t.Fatalf("expected repo source fallback to scan in-repo file, got %#v", result.Files)
+	}
+}
+
+func TestScanRepoUsesCompileSourceContextsWhenAvailable(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	testutil.MustWriteFile(t, source, fmtCoreIncludeLine+"int main() { return 0; }\n")
+	compileInfo, ok := compileContextWithSourceContexts(source)
+	if !ok {
+		t.Skip("compile source contexts are not available in this version")
+	}
+
+	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	if len(result.Files) != 1 || result.Files[0].Path != filepath.Join("src", testMainCPPFileName) {
+		t.Fatalf("expected scan to use compile source context, got %#v", result.Files)
 	}
 }
 

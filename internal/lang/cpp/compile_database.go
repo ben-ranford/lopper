@@ -278,7 +278,7 @@ func isCompilerDefaultSystemIncludeRoot(path string) bool {
 		return false
 	}
 	switch path {
-	case "/usr/include", "/mingw/include", "/mingw64/include":
+	case "/usr/include", "/usr/local/include", "/mingw/include", "/mingw64/include":
 		return true
 	}
 	switch strings.ToLower(path) {
