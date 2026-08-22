@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -61,7 +62,7 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 		return errors.Join(renameErr, copyErr)
 	}
 
-	return removeCopiedMoveSource(root, sourceRel, sourceInfo)
+	return errors.Join(publishRenameCleanup(renameErr), removeCopiedMoveSource(root, sourceRel, sourceInfo))
 }
 
 func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (fs.FileInfo, error) {
@@ -69,17 +70,35 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return nil, err
 	}
+	aliasesTarget, err := targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
+	if err != nil {
+		return sourceInfo, err
+	}
 	sourceConsumed, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, "move source changed before rename", "move target changed before validation")
 	if err != nil {
 		return sourceInfo, err
 	}
-	if sourceConsumed {
+	if sourceConsumed || aliasesTarget {
 		return sourceInfo, nil
 	}
 	if err := removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup"); err != nil {
 		return sourceInfo, err
 	}
 	return sourceInfo, nil
+}
+
+func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
+	if !strings.EqualFold(filepath.Clean(sourceRel), filepath.Clean(targetRel)) {
+		return false, nil
+	}
+	targetInfo, err := root.Lstat(targetRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return targetInfo.Mode().IsRegular() && os.SameFile(sourceInfo, targetInfo), nil
 }
 
 func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMode) (os.FileInfo, error) {
@@ -167,7 +186,7 @@ func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message st
 			return nil
 		}
 		if identityBoundLinkUnsupported(err) {
-			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, rel, err)
+			return removeFileIfMatches(root, rel, expected, message)
 		}
 		return err
 	}

@@ -397,7 +397,7 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 			return nil
 		}
 		if identityBoundLinkUnsupported(err) {
-			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, tempRel, err)
+			return removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval)
 		}
 		return err
 	}
