@@ -385,6 +385,28 @@ version = "0.1.0"
 	}
 }
 
+func TestCollectDirectoryDeclaredDependenciesUsesLargePackageLockFallback(t *testing.T) {
+	for _, lockName := range []string{pythonPoetryLockName, pythonUVLockName} {
+		t.Run(lockName, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, lockName), `
+[[package]]
+name = "Requests"
+version = "2.32.3"
+`+strings.Repeat("# filler\n", int(ManifestReadLimitBytes)/len("# filler\n")+1))
+
+			dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+			if err != nil {
+				t.Fatalf(collectDirectoryErrFmt, err)
+			}
+			if _, ok := dependencies["requests"]; !ok {
+				t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+			}
+			assertWarningContains(t, warnings, "using "+lockName+" package entries as a fallback")
+		})
+	}
+}
+
 func TestPythonPackagingNormalizationUsesSharedPEP503Authority(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), "My__Package==1.2.3\nmy_.package>=1.2.3\n")
