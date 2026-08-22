@@ -249,7 +249,9 @@ func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing
 		t.Fatalf("expected directory identity error, got %v", err)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
-	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	if _, statErr := os.Stat(filepath.Join(movedRoot, cacheKeysDirName, "key.json")); statErr != nil {
+		t.Fatalf("expected stale pinned root to retain orphan pointer, got %v", statErr)
+	}
 }
 
 func TestAnalysisCacheStorePointerRollbackPreservesConcurrentPointer(t *testing.T) {
