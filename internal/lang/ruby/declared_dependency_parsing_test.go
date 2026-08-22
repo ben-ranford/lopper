@@ -11,6 +11,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const gemspecRegressionLimitBytes int64 = 1 * 1024 * 1024
+
 func TestRubyDeclaredDependencyAdditionalBranches(t *testing.T) {
 	t.Run("load declared dependencies returns bundler error", func(t *testing.T) {
 		testRubyLoadDeclaredDependenciesReturnsBundlerError(t)
@@ -56,7 +58,7 @@ func TestRubyLoadGemspecDependenciesSkipsOversizedGemspec(t *testing.T) {
 	t.Helper()
 
 	repo := t.TempDir()
-	testutil.MustWritePaddedFile(t, filepath.Join(repo, "oversized.gemspec"), "spec.add_dependency 'oversized'\n", maxGemspecBytes+1)
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "oversized.gemspec"), "spec.add_dependency 'oversized'\n", gemspecRegressionLimitBytes+1)
 
 	out := map[string]struct{}{}
 	warnings, err := loadGemspecDependencies(context.Background(), repo, out)
@@ -76,7 +78,7 @@ func TestRubyLoadGemspecDependenciesParsesExactLimitOneLineGemspec(t *testing.T)
 	t.Helper()
 
 	repo := t.TempDir()
-	testutil.MustWritePaddedFile(t, filepath.Join(repo, "exact.gemspec"), "spec.add_dependency 'exact_limit'", maxGemspecBytes)
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "exact.gemspec"), "spec.add_dependency 'exact_limit'", gemspecRegressionLimitBytes)
 
 	out := map[string]struct{}{}
 	warnings, err := loadGemspecDependencies(context.Background(), repo, out)
