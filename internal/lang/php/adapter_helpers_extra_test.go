@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -570,6 +571,35 @@ func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionSegmentLimitHit(t *t
 	}
 }
 
+func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionByteLimitHit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	module := exactSegmentNamespaceWithHugeSegmentForTest(maxPHPNamespaceSegmentsPerLookup, int(maxScannablePHPFile)-4096)
+	content := helpersPHPHeader + "$client = new \\" + module + "();\n"
+	if int64(len(content)) >= maxScannablePHPFile {
+		t.Fatalf("test fixture must stay below PHP file scan limit, got %d", len(content))
+	}
+	writeFile(t, filepath.Join(repo, "src", "wide-namespace.php"), content)
+
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       map[string]string{"Vendor": helpersVendorLibDependency},
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if !usageIncompleteForTest(t, scan) {
+		t.Fatal("expected wide namespace resolution cap to mark scan usage incomplete")
+	}
+	if !containsWarning(scan.Warnings, "stopped PHP namespace resolution after") {
+		t.Fatalf("expected namespace resolution warning, got %#v", scan.Warnings)
+	}
+	if containsWarning(scan.Warnings, "unable to map 1 PHP import namespace(s)") {
+		t.Fatalf("did not expect bounded namespace resolution to be reported as unresolved mapping, got %#v", scan.Warnings)
+	}
+}
+
 func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *testing.T) {
 	scan := scanResult{
 		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
@@ -725,6 +755,31 @@ func TestComposerResolverUsesNamespaceAncestorsForPrefixLookup(t *testing.T) {
 	}
 }
 
+func TestComposerResolverBoundsCumulativeAncestorBytes(t *testing.T) {
+	module := exactSegmentNamespaceWithHugeSegmentForTest(maxPHPNamespaceSegmentsPerLookup, int(maxScannablePHPFile)-4096)
+	if segments := strings.Count(module, `\`) + 1; segments != maxPHPNamespaceSegmentsPerLookup {
+		t.Fatalf("expected exact segment limit fixture, got %d segment(s)", segments)
+	}
+
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Nope": helpersVendorLibDependency},
+		localNamespace: map[string]struct{}{"Local": {}},
+	}
+	start := time.Now()
+	for i := 0; i < 20; i++ {
+		if resolution := resolver.resolveModule(module); !resolution.limitHit {
+			t.Fatalf("expected namespace byte-work limit hit, got %#v", resolution)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("expected bounded namespace lookup to finish quickly, took %s", elapsed)
+	}
+
+	if ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes); !limitHit || len(ancestors) != 0 {
+		t.Fatalf("expected ancestor byte-work limit hit without ancestors, limitHit=%v ancestors=%d", limitHit, len(ancestors))
+	}
+}
+
 func TestLineNumberAtBoundaries(t *testing.T) {
 	if got := lineNumberAt(helpersABLines, 0); got != 1 {
 		t.Fatalf("expected line 1 at offset 0, got %d", got)
@@ -760,6 +815,21 @@ func TestParseUseStatementFunctionAndConstImports(t *testing.T) {
 	}
 	if len(imports) != 2 {
 		t.Fatalf("expected 2 imports, got %d", len(imports))
+	}
+}
+
+func TestParseUseStatementAcceptsNonASCIINamespaceInitial(t *testing.T) {
+	const dependency = "editeur/package"
+	resolver := composerResolver{namespaceToDep: map[string]string{"Éditeur\\Package": dependency}}
+	imports, _, unresolved := parseUseStatement("Éditeur\\Package\\Client", "x.php", 1, resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected one import, got %#v", imports)
+	}
+	if imports[0].Dependency != dependency || imports[0].Module != "Éditeur\\Package\\Client" {
+		t.Fatalf("expected non-ASCII namespace import to resolve, got %#v", imports[0])
 	}
 }
 
@@ -930,6 +1000,21 @@ func TestParseNamespaceReferencesIgnoresCommentAndStringMentions(t *testing.T) {
 	}
 	if imports[0].Location.Line != 6 {
 		t.Fatalf("expected code namespace import on line 6, got %d", imports[0].Location.Line)
+	}
+}
+
+func TestParseNamespaceReferencesAcceptsNonASCIINamespaceInitial(t *testing.T) {
+	const dependency = "editeur/package"
+	resolver := composerResolver{namespaceToDep: map[string]string{"Éditeur\\Package": dependency}}
+	imports, unresolved := parseNamespaceReferences([]byte(helpersPHPHeader+"$client = new \\Éditeur\\Package\\Client();\n"), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected one namespace import, got %#v", imports)
+	}
+	if imports[0].Dependency != dependency || imports[0].Module != "Éditeur\\Package\\Client" {
+		t.Fatalf("expected non-ASCII namespace reference to resolve, got %#v", imports[0])
 	}
 }
 
@@ -1290,6 +1375,18 @@ func deepNamespaceForTest(prefix string, totalSegments int) string {
 		builder.WriteString(`\Seg`)
 	}
 	return builder.String()
+}
+
+func exactSegmentNamespaceWithHugeSegmentForTest(totalSegments int, hugeSegmentBytes int) string {
+	if totalSegments < 2 {
+		totalSegments = 2
+	}
+	segments := make([]string, 0, totalSegments)
+	segments = append(segments, "Vendor", strings.Repeat("A", hugeSegmentBytes))
+	for len(segments) < totalSegments {
+		segments = append(segments, "S")
+	}
+	return strings.Join(segments, `\`)
 }
 
 func usageIncompleteForTest(t *testing.T, value any) bool {

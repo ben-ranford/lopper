@@ -8,4 +8,5 @@ const (
 	maxPHPUseStatementsPerFile       = 4096
 	maxPHPNamespaceReferencesPerFile = 4096
 	maxPHPNamespaceSegmentsPerLookup = 256
+	maxPHPNamespaceAncestorBytes     = 256 * 1024
 )

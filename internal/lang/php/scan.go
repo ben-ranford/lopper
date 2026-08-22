@@ -222,7 +222,7 @@ func appendScanWarnings(result *scanResult, state scanState) {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace reference scan after %d match(es) in %d file(s) to keep analysis bounded", maxPHPNamespaceReferencesPerFile, state.namespaceReferenceLimitHits))
 	}
 	if state.namespaceResolutionLimitHits > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace resolution after %d segment(s) in %d file(s) to keep analysis bounded", maxPHPNamespaceSegmentsPerLookup, state.namespaceResolutionLimitHits))
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace resolution after %d segment(s) or %d ancestor lookup byte(s) in %d file(s) to keep analysis bounded", maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes, state.namespaceResolutionLimitHits))
 	}
 	if len(result.DynamicUsageByDependency) > 0 {
 		result.Warnings = append(result.Warnings, "dynamic loading/reflection patterns detected; dependency usage may be under-reported")

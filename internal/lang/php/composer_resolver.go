@@ -32,7 +32,7 @@ func (r *composerResolver) resolveModule(module string) dependencyResolution {
 	if module == "" {
 		return dependencyResolution{}
 	}
-	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup)
+	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes)
 	if limitHit {
 		return dependencyResolution{limitHit: true}
 	}
@@ -49,7 +49,7 @@ func (r *composerResolver) resolveModule(module string) dependencyResolution {
 }
 
 func (r *composerResolver) isLocalNamespace(module string) bool {
-	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup)
+	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes)
 	if limitHit {
 		return false
 	}
@@ -57,7 +57,7 @@ func (r *composerResolver) isLocalNamespace(module string) bool {
 }
 
 func (r *composerResolver) resolveWithPSR4(module string) string {
-	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup)
+	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes)
 	if limitHit {
 		return ""
 	}
@@ -120,12 +120,16 @@ func hasNamespacePrefix(ancestors []string, namespaces map[string]struct{}) bool
 	return false
 }
 
-func namespaceAncestors(module string, segmentLimit int) ([]string, bool) {
+func namespaceAncestors(module string, segmentLimit int, byteLimit int) ([]string, bool) {
 	module = normalizeNamespace(module)
 	if module == "" {
 		return nil, false
 	}
-	if segmentLimit <= 0 {
+	if segmentLimit <= 0 || byteLimit <= 0 {
+		return nil, true
+	}
+	lookupBytes := len(module)
+	if lookupBytes > byteLimit {
 		return nil, true
 	}
 	segments := 1
@@ -143,6 +147,10 @@ func namespaceAncestors(module string, segmentLimit int) ([]string, bool) {
 	ancestors := make([]string, 0, len(separators)+1)
 	ancestors = append(ancestors, module)
 	for i := len(separators) - 1; i >= 0; i-- {
+		lookupBytes += separators[i]
+		if lookupBytes > byteLimit {
+			return nil, true
+		}
 		ancestors = append(ancestors, module[:separators[i]])
 	}
 	return ancestors, false
