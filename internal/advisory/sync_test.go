@@ -3458,7 +3458,16 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 						chmod: func(os.FileMode) error { return nil },
 					}, nil
 				},
+				link: func(oldName, newName string) error {
+					if !strings.Contains(oldName, ".safeio-atomic-") || !strings.Contains(newName, ".safeio-atomic-") {
+						t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+					}
+					return nil
+				},
 				rename: func(oldName, newName string) error {
+					if !strings.Contains(oldName, ".safeio-atomic-") {
+						t.Fatalf("expected staged rename source, got %q", oldName)
+					}
 					if newName != manifestFileName {
 						t.Fatalf("expected rename target %q, got %q", manifestFileName, newName)
 					}

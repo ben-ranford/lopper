@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -43,7 +44,7 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 		return err
 	}
 
-	renameErr := prepareAndRenameWithinRoot(root, sourceRel, targetRel, filePerm)
+	sourceInfo, renameErr := prepareAndRenameWithinRoot(root, sourceRel, targetRel, filePerm)
 	if renameErr == nil {
 		return nil
 	}
@@ -51,7 +52,7 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 		return renameErr
 	}
 
-	sourceInfo, copyErr := copyFileWithinRoot(root, sourceRel, targetRel, filePerm)
+	sourceInfo, copyErr := copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
 	if copyErr != nil {
 		return errors.Join(renameErr, copyErr)
 	}
@@ -59,15 +60,18 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 	return removeCopiedMoveSource(root, sourceRel, sourceInfo)
 }
 
-func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) error {
+func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (fs.FileInfo, error) {
 	sourceInfo, err := chmodAndSnapshotMoveSource(root, sourceRel, filePerm)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := root.Rename(sourceRel, targetRel); err != nil {
-		return err
+	if err := publishIdentityBoundReplacing(root, sourceRel, targetRel, sourceInfo, "move source changed before rename", "move target changed before validation"); err != nil {
+		return sourceInfo, err
 	}
-	return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, "move target changed before validation")
+	if err := removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup"); err != nil {
+		return sourceInfo, err
+	}
+	return sourceInfo, nil
 }
 
 func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMode) (os.FileInfo, error) {
@@ -91,7 +95,11 @@ func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMod
 	return updatedSourceInfo, nil
 }
 
-func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (_ os.FileInfo, returnErr error) {
+func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode, expectedSourceInfos ...fs.FileInfo) (_ os.FileInfo, returnErr error) {
+	var expectedSourceInfo fs.FileInfo
+	if len(expectedSourceInfos) > 0 {
+		expectedSourceInfo = expectedSourceInfos[0]
+	}
 	source, err := OpenPinnedFile(root, sourceRel)
 	if err != nil {
 		return nil, err
@@ -107,6 +115,9 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 	}
 	if !sourceInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("move source is not a regular file: %s", sourceRel)
+	}
+	if expectedSourceInfo != nil && !os.SameFile(expectedSourceInfo, sourceInfo) {
+		return nil, fmt.Errorf("move source changed before fallback copy: %s", sourceRel)
 	}
 
 	session, err := newAtomicWriteSession(root, targetRel, filePerm)
@@ -131,21 +142,38 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 	if err := session.commit(); err != nil {
 		return nil, err
 	}
-	if err := session.verifyCommittedTarget(); err != nil {
-		return nil, err
-	}
 	return sourceInfo, nil
 }
 
 func removeCopiedMoveSource(root Root, sourceRel string, sourceInfo os.FileInfo) error {
-	if err := verifyPublishedPathMatchesInfo(root, sourceRel, sourceInfo, "move source changed before cleanup"); err != nil {
+	return removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup")
+}
+
+func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message string) error {
+	if expected == nil {
+		return fmt.Errorf("%s: %s", message, rel)
+	}
+	stagedRel, err := identityBoundStagingPath(rel)
+	if err != nil {
+		return err
+	}
+	if err := root.Rename(rel, stagedRel); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	if err := root.Remove(sourceRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+	stagedInfo, err := root.Lstat(stagedRel)
+	if err != nil {
 		return err
+	}
+	if !stagedInfo.Mode().IsRegular() || !os.SameFile(expected, stagedInfo) {
+		restoreErr := root.Rename(stagedRel, rel)
+		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+	}
+	if err := cleanupAtomicTempFile(root, stagedRel, nil); err != nil {
+		restoreErr := root.Rename(stagedRel, rel)
+		return errors.Join(err, restoreErr)
 	}
 	return nil
 }
