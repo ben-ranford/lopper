@@ -305,7 +305,7 @@ Inline suppression tracking:
 
 - New inline analysis suppressions must include same-line metadata: `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`.
 - `make suppression-check` defaults to read-only detection. It validates the metadata and, when `SUPPRESSION_TRACKING_OUTPUT` is set, writes a bounded `lopper-inline-suppressions-v1` JSON artifact whose fingerprint is stable across ordinary line moves while retaining the current line as display metadata.
-- GitHub Actions jobs that execute PR-controlled code must not provide issue-write credentials to `make ci` or `make suppression-check`. The repository CI verify job uploads the bounded suppression artifact, and the separate trusted `publish-pr-reports` job uses `issues: write` without checking out or executing PR code to create or update one tracking issue per suppression fingerprint.
+- GitHub Actions jobs that execute PR-controlled code must not provide issue-write credentials to `make ci` or `make suppression-check`. The repository CI verify job uploads the bounded suppression artifact as tokenless detection evidence, and the separate trusted `publish-pr-reports` job recomputes authoritative records from the PR diff before using `issues: write` to create or update one tracking issue per suppression fingerprint.
 - Trusted manual callers may set `SUPPRESSION_TRACKING_MODE=track` with an authenticated `gh` CLI to create or update issues directly. Read-only CI, release, and rolling validation should keep the default detection mode.
 - Existing suppressions outside the current diff remain governed by the existing diff-scoped check and are not backfilled by this gate.
 

@@ -18,10 +18,9 @@ tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
 tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
 
 create_temp_file() {
-	local template="${TMPDIR:-/tmp}/inline-suppressions.XXXXXX"
 	local temp_file=""
 
-	if temp_file="$(mktemp "$template" 2>/dev/null)"; then
+	if temp_file="$(mktemp "${TMPDIR:-/tmp}/inline-suppressions.XXXXXX" 2>/dev/null)"; then
 		printf '%s\n' "$temp_file"
 		return 0
 	fi

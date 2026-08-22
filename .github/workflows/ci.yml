@@ -399,65 +399,132 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
+            const crypto = require('node:crypto');
 
             const reportPath = 'pr-report-inputs/inline-suppressions.json';
-            if (!fs.existsSync(reportPath)) {
-              core.info('No inline suppression records were produced.');
-              return;
+            let uploadedCount = 0;
+            if (fs.existsSync(reportPath)) {
+              const raw = fs.readFileSync(reportPath, 'utf8');
+              if (Buffer.byteLength(raw, 'utf8') > 131072) {
+                throw new Error('Inline suppression records exceed the 128 KiB publication limit.');
+              }
+
+              const payload = JSON.parse(raw);
+              if (payload?.schema !== 'lopper-inline-suppressions-v1' || !Array.isArray(payload.suppressions)) {
+                throw new Error('Inline suppression records use an unsupported schema.');
+              }
+              if (payload.suppressions.length > 100) {
+                throw new Error('Inline suppression records exceed the 100-record publication limit.');
+              }
+              uploadedCount = payload.suppressions.length;
             }
 
-            const raw = fs.readFileSync(reportPath, 'utf8');
-            if (Buffer.byteLength(raw, 'utf8') > 131072) {
-              throw new Error('Inline suppression records exceed the 128 KiB publication limit.');
-            }
-
-            const payload = JSON.parse(raw);
-            if (payload?.schema !== 'lopper-inline-suppressions-v1' || !Array.isArray(payload.suppressions)) {
-              throw new Error('Inline suppression records use an unsupported schema.');
-            }
-            if (payload.suppressions.length > 100) {
-              throw new Error('Inline suppression records exceed the 100-record publication limit.');
-            }
-
-            const requireString = (record, key, maxBytes) => {
-              const value = record?.[key];
+            const markerPattern = /(^|\s)((\/\/|\/\*+|#)\s*(@?(no(sec|sonar|lint|qa)|eslint-disable(-next-line|-line)?|ts-(ignore|expect-error)|pragma:\s*no\s+cover|coverage:\s*ignore)))([^A-Za-z0-9_-]|$)/iu;
+            const sourceFilePattern = /^(?:\.githooks\/|.*\.(?:go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml))$/u;
+            const trim = (value) => value.trim();
+            const metadataValue = (content, keyPattern) => {
+              const match = new RegExp(`(^|[\\s;,])(${keyPattern})\\s*[:=]\\s*([^;]+)`, 'iu').exec(content);
+              return match ? trim(match[3]) : '';
+            };
+            const fingerprintFor = (file, content) => crypto.createHash('sha256').update(`${file}\n${content}`).digest('hex');
+            const validateString = (value, label, maxBytes) => {
               if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > maxBytes || /[\u0000-\u0008\u000a-\u001f\u007f]/u.test(value)) {
-                throw new Error(`Invalid inline suppression ${key}.`);
+                throw new Error(`Invalid inline suppression ${label}.`);
               }
               return value;
             };
             const escapeFence = (value) => value.replaceAll('```', '``\u200b`');
-            const unique = new Map();
-
-            for (const record of payload.suppressions) {
-              const fingerprint = requireString(record, 'fingerprint', 64);
-              if (!/^[0-9a-f]{64}$/u.test(fingerprint)) {
-                throw new Error('Invalid inline suppression fingerprint.');
-              }
-              const file = requireString(record, 'file', 512);
+            const addSuppression = (records, file, line, content, headSha) => {
+              validateString(file, 'file', 512);
               if (file.startsWith('/') || file.split('/').includes('..')) {
                 throw new Error('Invalid inline suppression file path.');
               }
-              const line = record?.line;
               if (!Number.isInteger(line) || line < 1 || line > 1000000) {
                 throw new Error('Invalid inline suppression line.');
               }
+              validateString(content, 'content', 4096);
+              const rationale = validateString(metadataValue(content, 'rationale|reason'), 'rationale', 1024);
+              const owner = validateString(metadataValue(content, 'owner'), 'owner', 256);
+              const remove_when = validateString(metadataValue(content, 'remove-when|removal-condition|removal'), 'remove_when', 1024);
+              const fingerprint = fingerprintFor(file, content);
               const normalized = {
                 fingerprint,
                 file,
                 line,
-                source: requireString(record, 'source', 1024),
-                content: requireString(record, 'content', 4096),
-                rationale: requireString(record, 'rationale', 1024),
-                owner: requireString(record, 'owner', 256),
-                remove_when: requireString(record, 'remove_when', 1024),
+                source: `${process.env.GITHUB_SERVER_URL || 'https://github.com'}/${context.repo.owner}/${context.repo.repo}/blob/${headSha}/${file}#L${line}`,
+                content,
+                rationale,
+                owner,
+                remove_when,
               };
-              if (!unique.has(fingerprint)) {
-                unique.set(fingerprint, normalized);
+              if (!records.has(fingerprint)) {
+                records.set(fingerprint, normalized);
               }
+            };
+            const scanPatch = (records, file, patch, headSha) => {
+              let line = 0;
+              for (const rawLine of patch.split('\n')) {
+                if (rawLine.startsWith('@@ ')) {
+                  const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(rawLine);
+                  if (!hunk) {
+                    throw new Error(`Unable to parse inline suppression diff hunk for ${file}.`);
+                  }
+                  line = Number.parseInt(hunk[1], 10);
+                  continue;
+                }
+                if (rawLine.startsWith('+++')) {
+                  continue;
+                }
+                if (rawLine.startsWith('+')) {
+                  const content = rawLine.slice(1);
+                  if (markerPattern.test(content)) {
+                    addSuppression(records, file, line, content, headSha);
+                  }
+                  line += 1;
+                  continue;
+                }
+                if (!rawLine.startsWith('-') && !rawLine.startsWith('\\')) {
+                  line += 1;
+                }
+              }
+            };
+            const recomputeSuppressionRecords = async () => {
+              const pull = context.payload.pull_request;
+              if (!pull?.number || !pull?.base?.sha || !pull?.head?.sha) {
+                throw new Error('Pull request base and head SHAs are required to recompute inline suppression records.');
+              }
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pull.number,
+                per_page: 100,
+              });
+              const records = new Map();
+              for (const file of files) {
+                if (!['added', 'modified'].includes(file.status) || !sourceFilePattern.test(file.filename)) {
+                  continue;
+                }
+                if (typeof file.patch !== 'string') {
+                  throw new Error(`Inline suppression diff patch is unavailable for ${file.filename}; refusing to publish tracking mutations.`);
+                }
+                scanPatch(records, file.filename, file.patch, pull.head.sha);
+              }
+              return records;
+            };
+
+            const records = await recomputeSuppressionRecords();
+            if (records.size > 100) {
+              throw new Error('Inline suppression records exceed the 100-record publication limit.');
+            }
+            if (uploadedCount !== records.size) {
+              core.warning(`Uploaded inline suppression count ${uploadedCount} differs from trusted recomputation count ${records.size}; using recomputed records.`);
+            }
+            if (records.size === 0) {
+              core.info('No inline suppression records were produced.');
+              return;
             }
 
-            for (const record of unique.values()) {
+            for (const record of records.values()) {
               const marker = `lopper-inline-suppression:${record.fingerprint}`;
               const title = `ci: track inline suppression in ${record.file}:${record.line}`;
               const body = [

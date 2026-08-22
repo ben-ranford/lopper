@@ -139,7 +139,9 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`const reportPath = 'pr-report-inputs/inline-suppressions.json';`,
 		`payload?.schema !== 'lopper-inline-suppressions-v1'`,
 		`payload.suppressions.length > 100`,
-		`unique.set(fingerprint, normalized);`,
+		`github.rest.pulls.listFiles`,
+		`const records = await recomputeSuppressionRecords();`,
+		`core.warning(`,
 		`repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
 		`await github.rest.issues.update({`,
 		`await github.rest.issues.create({`,
@@ -175,6 +177,44 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 
 	assertWorkflowStepAbsent(t, workflow.Jobs, "publish-pr-reports", "Post SonarQube review comments (PR)")
 	assertWorkflowEnvKeyAbsent(t, workflow.Jobs, "SONAR_TOKEN")
+}
+
+func TestCIWorkflowDoesNotTrustForgedInlineSuppressionArtifact(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	trackSuppressions := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Track inline suppressions")
+	script := trackSuppressions.With["script"]
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: script}, "inline suppression forged artifact guard", []string{
+		`uploadedCount = payload.suppressions.length;`,
+		`const recomputeSuppressionRecords = async () => {`,
+		`pull?.base?.sha || !pull?.head?.sha`,
+		`scanPatch(records, file.filename, file.patch, pull.head.sha);`,
+		`for (const record of records.values()) {`,
+	})
+	assertWorkflowStepRunOmitsAll(t, workflowStepConfig{Run: script}, "inline suppression forged artifact guard", []string{
+		`for (const record of payload.suppressions)`,
+		`unique.set(fingerprint, normalized);`,
+		`record?.fingerprint`,
+		`record?.file`,
+	})
+	assertWorkflowMutationAfter(t, script, "const records = await recomputeSuppressionRecords();", "await github.rest.issues.update({")
+	assertWorkflowMutationAfter(t, script, "const records = await recomputeSuppressionRecords();", "await github.rest.issues.create({")
+}
+
+func assertWorkflowMutationAfter(t *testing.T, script string, recomputeMarker string, mutationMarker string) {
+	t.Helper()
+
+	recomputeIndex := strings.Index(script, recomputeMarker)
+	mutationIndex := strings.Index(script, mutationMarker)
+	if recomputeIndex == -1 || mutationIndex == -1 {
+		t.Fatalf("workflow script missing recompute marker %q or mutation marker %q", recomputeMarker, mutationMarker)
+	}
+	if mutationIndex < recomputeIndex {
+		t.Fatalf("workflow mutates before recomputing authoritative inline suppression records")
+	}
 }
 
 func assertCIArtifactAction(t *testing.T, step workflowStepConfig, label string, wantUses string, wantInputs map[string]string) {
