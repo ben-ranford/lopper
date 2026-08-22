@@ -263,9 +263,11 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"parallel/base.h",
 		"parallel/basic_iterator.h",
 		"parallel/features.h",
+		"parallel/find.h",
 		"parallel/iterator.h",
 		"parallel/parallel.h",
 		"parallel/queue.h",
+		"parallel/search.h",
 		"debug/map",
 		"debug/map.h",
 		"debug/safe_iterator.h",
@@ -273,10 +275,16 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"debug/vector",
 		"ext/alloc_traits.h",
 		"ext/pb_ds/assoc_container.hpp",
+		"ext/pb_ds/exception.hpp",
+		"ext/pb_ds/hash_policy.hpp",
+		"ext/pb_ds/list_update_policy.hpp",
 		"ext/pb_ds/priority_queue.hpp",
 		"ext/pb_ds/tree_policy.hpp",
+		"ext/pb_ds/trie_policy.hpp",
 		"ext/type_traits.h",
 		"backward/strstream",
+		"backward/hash_map",
+		"backward/hash_set",
 		"backward/auto_ptr.h",
 		"tr2/type_traits",
 		"tr1/math.h",
@@ -330,12 +338,18 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"ext/logger.hpp",
 		"ext/pb_ds/custom.hpp",
 		"ext/pb_ds/assoc_container_extra.hpp",
+		"ext/pb_ds/exception.h",
+		"ext/pb_ds/hash_policy_extra.hpp",
+		"parallel/algorithm.h",
 		"parallel/algorithm.hpp",
 		"parallel/base.hpp",
 		"parallel/custom_base.h",
+		"parallel/find.hpp",
 		"parallel/logger.h",
 		"parallel/logger.hpp",
+		"backward/hash_map.h",
 		"backward/strstream.hpp",
+		"backward/hash_map.hpp",
 		"debug/logger.hpp",
 		"backward/logger.hpp",
 	} {
@@ -360,9 +374,12 @@ func TestAnalyseTopNIgnoresGNUQualifiedCompilerHeaders(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/safe_iterator.h>
 #include <debug/set.h>
+#include <backward/hash_map>
 #include <parallel/base.h>
+#include <parallel/find.h>
 #include <parallel/queue.h>
 #include <ext/pb_ds/assoc_container.hpp>
+#include <ext/pb_ds/exception.hpp>
 #include <tr1/complex.h>
 #include <tr1/stdio.h>
 #include <tr1/unordered_map.h>

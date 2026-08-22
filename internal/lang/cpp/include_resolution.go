@@ -431,22 +431,66 @@ func hasOSCompilerHeaderPrefix(header string) bool {
 }
 
 func isKnownCompilerQualifiedStdHeader(header string) bool {
+	header = strings.ToLower(strings.TrimSpace(filepath.ToSlash(header)))
 	if !hasCompilerQualifiedStdHeaderPrefix(header) {
 		return false
+	}
+	if isKnownCompilerQualifiedStdHeaderPath(header) {
+		return true
 	}
 	base := header[strings.LastIndex(header, "/")+1:]
 	if base == "" {
 		return false
 	}
-	if filepath.Ext(base) != "" {
-		return isKnownCompilerQualifiedStdHeaderPath(header)
+	ext := strings.ToLower(filepath.Ext(base))
+	stem := strings.TrimSuffix(base, ext)
+	if stem == "" {
+		return false
 	}
-	_, ok := cppStdHeaderSet[strings.ToLower(base)]
-	return ok
+	switch ext {
+	case "":
+		return isKnownCompilerQualifiedStdHeaderStem(header, stem)
+	case ".h":
+		return isKnownCompilerQualifiedStdHHeader(header, stem)
+	case ".hpp":
+		return isKnownCompilerQualifiedStdHPPHeader(header, stem)
+	default:
+		return false
+	}
 }
 
 func isKnownCompilerQualifiedStdHeaderPath(header string) bool {
 	_, ok := cppQualifiedStdHeaderWithExtensionSet[strings.ToLower(strings.TrimSpace(header))]
+	return ok
+}
+
+func isKnownCompilerQualifiedStdHeaderStem(header, stem string) bool {
+	if _, ok := cppStdHeaderSet[stem]; ok {
+		return true
+	}
+	if strings.HasPrefix(header, "backward/") {
+		_, ok := cppBackwardQualifiedStdHeaderStemSet[stem]
+		return ok
+	}
+	return false
+}
+
+func isKnownCompilerQualifiedStdHHeader(header, stem string) bool {
+	if strings.HasPrefix(header, "parallel/") {
+		_, ok := cppParallelQualifiedStdHeaderStemSet[stem]
+		return ok
+	}
+	return false
+}
+
+func isKnownCompilerQualifiedStdHPPHeader(header, stem string) bool {
+	if !strings.HasPrefix(header, "ext/pb_ds/") {
+		return false
+	}
+	if _, ok := cppStdHeaderSet[stem]; ok {
+		return true
+	}
+	_, ok := cppExtPBDSQualifiedStdHeaderStemSet[stem]
 	return ok
 }
 
@@ -531,4 +575,58 @@ var cppQualifiedStdHeaderWithExtensionSet = map[string]struct{}{
 	"tr1/type_traits.h":             {},
 	"tr1/unordered_map.h":           {},
 	"tr1/unordered_set.h":           {},
+}
+
+var cppBackwardQualifiedStdHeaderStemSet = map[string]struct{}{
+	"hash_map": {},
+	"hash_set": {},
+}
+
+var cppParallelQualifiedStdHeaderStemSet = map[string]struct{}{
+	"algorithmfwd":         {},
+	"balanced_quicksort":   {},
+	"base":                 {},
+	"basic_iterator":       {},
+	"checkers":             {},
+	"compiletime_settings": {},
+	"equally_split":        {},
+	"features":             {},
+	"find":                 {},
+	"find_selectors":       {},
+	"for_each":             {},
+	"for_each_selectors":   {},
+	"iterator":             {},
+	"list_partition":       {},
+	"losertree":            {},
+	"merge":                {},
+	"multiseq_selection":   {},
+	"multiway_merge":       {},
+	"multiway_mergesort":   {},
+	"numericfwd":           {},
+	"omp_loop":             {},
+	"omp_loop_static":      {},
+	"par_loop":             {},
+	"partial_sum":          {},
+	"partition":            {},
+	"quicksort":            {},
+	"random_number":        {},
+	"random_shuffle":       {},
+	"search":               {},
+	"set_operations":       {},
+	"settings":             {},
+	"sort":                 {},
+	"tags":                 {},
+	"types":                {},
+	"unique_copy":          {},
+	"workstealing":         {},
+}
+
+var cppExtPBDSQualifiedStdHeaderStemSet = map[string]struct{}{
+	"assoc_container":    {},
+	"hash_policy":        {},
+	"list_update_policy": {},
+	"priority_queue":     {},
+	"tag_and_trait":      {},
+	"tree_policy":        {},
+	"trie_policy":        {},
 }
