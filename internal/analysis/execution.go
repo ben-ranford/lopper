@@ -10,7 +10,6 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
-	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 // ErrIncompleteCoverage reports that an enforced analysis policy cannot trust partial dependency coverage.
@@ -85,7 +84,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
 		})
 		if err != nil {
-			if shouldFailAdapterCoverageError(req, err) {
+			if shouldFailAdapterError(req) {
 				return nil, nil, nil, err
 			}
 			if isMultiLanguage(req.Language) {
@@ -105,12 +104,12 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 	return reports, warnings, analyzedRoots, nil
 }
 
-func shouldFailAdapterCoverageError(req Request, err error) bool {
-	return req.RequireCompleteCoverage && isAggregateCoverageLanguage(req.Language) && errors.Is(err, safeio.ErrFileTooLarge)
+func shouldFailAdapterError(req Request) bool {
+	return req.RequireCompleteCoverage
 }
 
 func incompleteCoverageReportError(req Request, adapterID, root string, reportData report.Report) error {
-	if !req.RequireCompleteCoverage || !isAggregateCoverageLanguage(req.Language) {
+	if !req.RequireCompleteCoverage {
 		return nil
 	}
 	dependencies := incompleteCoverageDependencies(reportData.Dependencies)

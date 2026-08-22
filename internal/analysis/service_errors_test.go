@@ -95,6 +95,30 @@ func TestRunCandidateOnRootsMultiLanguageCoverageErrorIsFatalWhenRequired(t *tes
 	}
 }
 
+func TestRunCandidateOnRootsMultiLanguageAdapterErrorIsFatalWhenCoverageRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			expected := errors.New("composer scan incomplete")
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				err:    expected,
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, expected) {
+				t.Fatalf("expected matched adapter error to be fatal when coverage is required, got %v", err)
+			}
+		})
+	}
+}
+
 func TestRunCandidateOnRootsMultiLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
 	adapter := &testServiceAdapter{
 		id:     "php",
@@ -114,6 +138,31 @@ func TestRunCandidateOnRootsMultiLanguageIncompleteCoverageReportIsFatalWhenRequ
 	}, ".", candidate, nil)
 	if !errors.Is(err, ErrIncompleteCoverage) {
 		t.Fatalf("expected incomplete coverage report to be fatal when coverage is required, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "php:vendor/lib") {
+		t.Fatalf("expected incomplete dependency details in error, got %v", err)
+	}
+}
+
+func TestRunCandidateOnRootsExplicitLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
+	adapter := &testServiceAdapter{
+		id:     "php",
+		detect: language.Detection{Matched: true, Confidence: 90},
+		analyse: report.Report{Dependencies: []report.DependencyReport{{
+			Name:            "vendor/lib",
+			UsageIncomplete: true,
+		}}},
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                ".",
+		Language:                "php",
+		RequireCompleteCoverage: true,
+	}, ".", candidate, nil)
+	if !errors.Is(err, ErrIncompleteCoverage) {
+		t.Fatalf("expected explicit-language incomplete coverage report to be fatal when coverage is required, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "php:vendor/lib") {
 		t.Fatalf("expected incomplete dependency details in error, got %v", err)
@@ -156,8 +205,8 @@ func TestRunCandidateOnRootsIncompleteCoverageReportPreservesOrdinaryPartialBeha
 			req:  Request{RepoPath: ".", Language: "all"},
 		},
 		{
-			name: "single language with complete coverage requirement",
-			req:  Request{RepoPath: ".", Language: "php", RequireCompleteCoverage: true},
+			name: "single language without complete coverage requirement",
+			req:  Request{RepoPath: ".", Language: "php"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
