@@ -520,20 +520,8 @@ func TestScanRepoMarksUsageIncompleteWhenUseStatementLimitHit(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(repo, "src", "adversarial-use.php"), content.String())
 
-	scan, err := scanRepo(context.Background(), repo, composerData{
-		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
-		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
-		LocalNamespaces:      map[string]struct{}{},
-	})
-	if err != nil {
-		t.Fatalf(helpersScanRepoErr, err)
-	}
-	if !usageIncompleteForTest(t, scan) {
-		t.Fatal("expected use statement cap to mark scan usage incomplete")
-	}
-	if !containsWarning(scan.Warnings, "stopped PHP use import scan") {
-		t.Fatalf("expected use statement cap warning, got %#v", scan.Warnings)
-	}
+	scan := scanVendorLibRepo(t, repo, map[string]string{"Vendor\\Lib": helpersVendorLibDependency})
+	assertIncompleteScanWarning(t, scan, "use statement cap", "stopped PHP use import scan")
 
 	dep, _ := buildDependencyReport(helpersVendorLibDependency, scan, 100)
 	if !dep.UsageIncomplete {
@@ -552,23 +540,8 @@ func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionSegmentLimitHit(t *t
 	content := helpersPHPHeader + "$client = new \\" + deepNamespaceForTest("Vendor\\Lib", maxPHPNamespaceSegmentsPerLookup+1) + "();\n"
 	writeFile(t, filepath.Join(repo, "src", "deep-namespace.php"), content)
 
-	scan, err := scanRepo(context.Background(), repo, composerData{
-		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
-		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
-		LocalNamespaces:      map[string]struct{}{},
-	})
-	if err != nil {
-		t.Fatalf(helpersScanRepoErr, err)
-	}
-	if !usageIncompleteForTest(t, scan) {
-		t.Fatal("expected deep namespace resolution cap to mark scan usage incomplete")
-	}
-	if !containsWarning(scan.Warnings, "stopped PHP namespace resolution after") {
-		t.Fatalf("expected deep namespace resolution warning, got %#v", scan.Warnings)
-	}
-	if containsWarning(scan.Warnings, "unable to map 1 PHP import namespace(s)") {
-		t.Fatalf("did not expect bounded namespace resolution to be reported as unresolved mapping, got %#v", scan.Warnings)
-	}
+	scan := scanVendorLibRepo(t, repo, map[string]string{"Vendor\\Lib": helpersVendorLibDependency})
+	assertBoundedNamespaceResolutionWarning(t, scan, "deep namespace resolution cap")
 }
 
 func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionByteLimitHit(t *testing.T) {
@@ -581,23 +554,8 @@ func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionByteLimitHit(t *test
 	}
 	writeFile(t, filepath.Join(repo, "src", "wide-namespace.php"), content)
 
-	scan, err := scanRepo(context.Background(), repo, composerData{
-		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
-		NamespaceToDep:       map[string]string{"Vendor": helpersVendorLibDependency},
-		LocalNamespaces:      map[string]struct{}{},
-	})
-	if err != nil {
-		t.Fatalf(helpersScanRepoErr, err)
-	}
-	if !usageIncompleteForTest(t, scan) {
-		t.Fatal("expected wide namespace resolution cap to mark scan usage incomplete")
-	}
-	if !containsWarning(scan.Warnings, "stopped PHP namespace resolution after") {
-		t.Fatalf("expected namespace resolution warning, got %#v", scan.Warnings)
-	}
-	if containsWarning(scan.Warnings, "unable to map 1 PHP import namespace(s)") {
-		t.Fatalf("did not expect bounded namespace resolution to be reported as unresolved mapping, got %#v", scan.Warnings)
-	}
+	scan := scanVendorLibRepo(t, repo, map[string]string{"Vendor": helpersVendorLibDependency})
+	assertBoundedNamespaceResolutionWarning(t, scan, "wide namespace resolution cap")
 }
 
 func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *testing.T) {
@@ -631,6 +589,37 @@ func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *test
 		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
 			t.Fatalf("did not expect removal recommendation with incomplete usage: %#v", dep.Recommendations)
 		}
+	}
+}
+
+func scanVendorLibRepo(t *testing.T, repo string, namespaceToDep map[string]string) scanResult {
+	t.Helper()
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       namespaceToDep,
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	return scan
+}
+
+func assertIncompleteScanWarning(t *testing.T, scan scanResult, reason string, warning string) {
+	t.Helper()
+	if !usageIncompleteForTest(t, scan) {
+		t.Fatalf("expected %s to mark scan usage incomplete", reason)
+	}
+	if !containsWarning(scan.Warnings, warning) {
+		t.Fatalf("expected %s warning %q, got %#v", reason, warning, scan.Warnings)
+	}
+}
+
+func assertBoundedNamespaceResolutionWarning(t *testing.T, scan scanResult, reason string) {
+	t.Helper()
+	assertIncompleteScanWarning(t, scan, reason, "stopped PHP namespace resolution after")
+	if containsWarning(scan.Warnings, "unable to map 1 PHP import namespace(s)") {
+		t.Fatalf("did not expect bounded namespace resolution to be reported as unresolved mapping, got %#v", scan.Warnings)
 	}
 }
 
@@ -951,6 +940,22 @@ func TestParseNamespaceReferencesDoesNotMaskClosureUseCapture(t *testing.T) {
 	}
 	if imports[0].Location.Line != 4 {
 		t.Fatalf("expected closure body namespace import on line 4, got %#v", imports[0])
+	}
+}
+
+func TestParseNamespaceReferencesKeepsSameLineReferenceAfterUseImport(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
+	content := helpersPHPHeader + "use Monolog\\Logger; $logger = new \\Monolog\\Logger(\"app\");\n"
+
+	imports, unresolved := parseNamespaceReferences([]byte(content), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected one post-import namespace reference, got %#v", imports)
+	}
+	if imports[0].Module != helpersMonologLogger {
+		t.Fatalf("expected module %q, got %#v", helpersMonologLogger, imports[0])
 	}
 }
 

@@ -16,6 +16,38 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
+func reachableLibReport(repoPath string, version string) report.Report {
+	dep := report.DependencyReport{
+		Language:          "js-ts",
+		Name:              "reachable-lib",
+		UsedExportsCount:  1,
+		TotalExportsCount: 1,
+		UsedPercent:       100,
+		UsedImports:       []report.ImportUse{{Name: "default", Module: "reachable-lib"}},
+	}
+	if version != "" {
+		dep.Identity = &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: version}
+	}
+	return report.Report{
+		RepoPath:     repoPath,
+		Dependencies: []report.DependencyReport{dep},
+	}
+}
+
+func enforcedPHPCoverageRequest(repo string, language string) Request {
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Language = language
+	req.Analyse.ScopeMode = ScopeModeRepo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.CacheEnabled = false
+	req.Analyse.Thresholds.LicenseDenyList = []string{deniedLicenseSPDX}
+	req.Analyse.Thresholds.LicenseFailOnDeny = true
+	return req
+}
+
 func TestExecuteAnalyseFailOnIncreaseZeroToleranceThreshold(t *testing.T) {
 	delta := 0.1
 	analyzer := &fakeAnalyzer{
@@ -321,21 +353,7 @@ func TestExecuteAnalyseReachableVulnerabilityThresholdError(t *testing.T) {
 		t.Fatalf("write advisory source: %v", err)
 	}
 	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			RepoPath: tmp,
-			Dependencies: []report.DependencyReport{
-				{
-					Language:          "js-ts",
-					Name:              "reachable-lib",
-					UsedExportsCount:  1,
-					TotalExportsCount: 1,
-					UsedPercent:       100,
-					UsedImports: []report.ImportUse{
-						{Name: "default", Module: "reachable-lib"},
-					},
-				},
-			},
-		},
+		report: reachableLibReport(tmp, ""),
 	}
 	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
 
@@ -421,16 +439,7 @@ func TestExecuteAnalyseAllLanguageIncompletePHPCoverageFailsClosedForEnforcedGat
 			testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}}`+"\n")
 			tt.setup(t, repo)
 
-			req := DefaultRequest()
-			req.Mode = ModeAnalyse
-			req.RepoPath = repo
-			req.Analyse.Language = "all"
-			req.Analyse.ScopeMode = ScopeModeRepo
-			req.Analyse.TopN = 1
-			req.Analyse.Format = report.FormatJSON
-			req.Analyse.CacheEnabled = false
-			req.Analyse.Thresholds.LicenseDenyList = []string{deniedLicenseSPDX}
-			req.Analyse.Thresholds.LicenseFailOnDeny = true
+			req := enforcedPHPCoverageRequest(repo, "all")
 
 			_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
 			if !errors.Is(err, analysis.ErrIncompleteCoverage) {
@@ -448,16 +457,7 @@ func TestExecuteAnalyseAllLanguageIncompletePHPCoverageWithoutDependencyRowsFail
 	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{}}`+"\n")
 	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), "<?php\n", (2*1024*1024)+1)
 
-	req := DefaultRequest()
-	req.Mode = ModeAnalyse
-	req.RepoPath = repo
-	req.Analyse.Language = "all"
-	req.Analyse.ScopeMode = ScopeModeRepo
-	req.Analyse.TopN = 1
-	req.Analyse.Format = report.FormatJSON
-	req.Analyse.CacheEnabled = false
-	req.Analyse.Thresholds.LicenseDenyList = []string{deniedLicenseSPDX}
-	req.Analyse.Thresholds.LicenseFailOnDeny = true
+	req := enforcedPHPCoverageRequest(repo, "all")
 
 	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
 	if !errors.Is(err, analysis.ErrIncompleteCoverage) {
@@ -470,15 +470,7 @@ func TestExecuteAnalyseAutoIncompletePHPCoverageFailsClosedForEnforcedGate(t *te
 	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}}`+"\n")
 	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), "<?php\n", (2*1024*1024)+1)
 
-	req := DefaultRequest()
-	req.Mode = ModeAnalyse
-	req.RepoPath = repo
-	req.Analyse.ScopeMode = ScopeModeRepo
-	req.Analyse.TopN = 1
-	req.Analyse.Format = report.FormatJSON
-	req.Analyse.CacheEnabled = false
-	req.Analyse.Thresholds.LicenseDenyList = []string{deniedLicenseSPDX}
-	req.Analyse.Thresholds.LicenseFailOnDeny = true
+	req := enforcedPHPCoverageRequest(repo, "")
 
 	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
 	if !errors.Is(err, analysis.ErrIncompleteCoverage) {
@@ -597,22 +589,7 @@ func assertReachableVulnerabilityThresholdFromAdvisoryVersion(t *testing.T, file
 		t.Fatalf("write advisory source: %v", err)
 	}
 	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			RepoPath: tmp,
-			Dependencies: []report.DependencyReport{
-				{
-					Language:          "js-ts",
-					Name:              "reachable-lib",
-					Identity:          &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: version},
-					UsedExportsCount:  1,
-					TotalExportsCount: 1,
-					UsedPercent:       100,
-					UsedImports: []report.ImportUse{
-						{Name: "default", Module: "reachable-lib"},
-					},
-				},
-			},
-		},
+		report: reachableLibReport(tmp, version),
 	}
 	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
 

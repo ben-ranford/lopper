@@ -21,6 +21,20 @@ const testPHPHeader = "<?php\n"
 const testExpectedOneDependencyReportFmt = "expected one dependency report, got %d"
 const testAnalyseErrFmt = "analyse: %v"
 
+func writeTestComposerPackage(t *testing.T, repo string, dependency string, namespace string) {
+	t.Helper()
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), fmt.Sprintf(`{
+  "packages": [
+    {
+      "name": %q,
+      "autoload": {"psr-4": {%q: "src/"}}
+    }
+  ]
+}
+`, dependency, namespace+`\`))
+}
+
 func TestPHPAdapterDetectWithConfidence(t *testing.T) {
 	repo := t.TempDir()
 	composerTemplate := `{
@@ -237,16 +251,7 @@ $logger = new \Monolog\Logger("app");
 func TestPHPAdapterCountsNamespaceReferenceInsideClosureUseCapture(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), `{
-  "packages": [
-    {
-      "name": "vendor/package",
-      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
-    }
-  ]
-}
-`)
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
 $callback = function ()
     use ($service) {
@@ -276,16 +281,7 @@ $callback = function ()
 func TestPHPAdapterIgnoresNamespaceDeclarationAsDependencyUsage(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), `{
-  "packages": [
-    {
-      "name": "vendor/package",
-      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
-    }
-  ]
-}
-`)
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
 namespace Vendor\Package;
 
@@ -314,16 +310,7 @@ final class LocalThing {}
 func TestPHPAdapterIgnoresSameLineDeclareNamespaceDeclarationAsDependencyUsage(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), `{
-  "packages": [
-    {
-      "name": "vendor/package",
-      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
-    }
-  ]
-}
-`)
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php declare(strict_types=1); namespace Vendor\Package;
 
 final class LocalThing {}
@@ -351,16 +338,7 @@ final class LocalThing {}
 func TestPHPAdapterIgnoresMalformedGroupedUseStatement(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
-	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), `{
-  "packages": [
-    {
-      "name": "vendor/package",
-      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
-    }
-  ]
-}
-`)
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
 use Vendor\Package\{Client, Broken;
 `)

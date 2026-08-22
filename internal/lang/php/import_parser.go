@@ -137,9 +137,6 @@ func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath str
 	if !ok {
 		return importBinding{}, 0, false, false
 	}
-	if isUseLineWithLineIndex(lineIndex, line) {
-		return importBinding{}, 0, false, false
-	}
 	resolution := resolver.resolveModule(module)
 	dependency, resolved := resolution.dependency, resolution.resolved
 	if resolution.limitHit {
@@ -250,10 +247,6 @@ func parseNamespaceReferenceMetadataWithLineIndex(text string, match []int, line
 	line := lineIndex.lineNumberAt(start)
 	local := lastNamespaceSegment(module)
 	return module, line, local, true
-}
-
-func isUseLineWithLineIndex(lineIndex phpLineIndex, line int) bool {
-	return isImportUseLine(lineIndex.lineTextAt(line))
 }
 
 func isDuplicateNamespaceReference(seen map[string]struct{}, module string, line int) bool {
@@ -481,35 +474,4 @@ func lastNamespaceSegment(module string) string {
 
 func hasDynamicPatterns(content []byte) bool {
 	return dynamicPattern.Match(content)
-}
-
-func isImportUseLine(lineText string) bool {
-	trimmed := strings.TrimSpace(lineText)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	if strings.HasPrefix(lower, "<?php") {
-		trimmed = strings.TrimSpace(trimmed[len("<?php"):])
-		lower = strings.ToLower(trimmed)
-	}
-	if !strings.HasPrefix(lower, "use ") {
-		return false
-	}
-	rest := strings.TrimSpace(trimmed[len("use "):])
-	restLower := strings.ToLower(rest)
-	switch {
-	case strings.HasPrefix(restLower, "function "):
-		rest = strings.TrimSpace(rest[len("function "):])
-	case strings.HasPrefix(restLower, "const "):
-		rest = strings.TrimSpace(rest[len("const "):])
-	}
-	if rest == "" {
-		return false
-	}
-	return rest[0] == '\\' || isPHPIdentifierStart(rest[0])
-}
-
-func isPHPIdentifierStart(ch byte) bool {
-	return ch == '_' || ch >= 0x80 || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
