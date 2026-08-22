@@ -120,31 +120,16 @@ func TestRunCandidateOnRootsMultiLanguageAdapterErrorIsFatalWhenCoverageRequired
 }
 
 func TestRunCandidateOnRootsMultiLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
-	adapter := &testServiceAdapter{
-		id:     "php",
-		detect: language.Detection{Matched: true, Confidence: 90},
-		analyse: report.Report{Dependencies: []report.DependencyReport{{
-			Name:            "vendor/lib",
-			UsageIncomplete: true,
-		}}},
-	}
-	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
-	svc := &Service{}
-
-	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
-		RepoPath:                ".",
-		Language:                "all",
-		RequireCompleteCoverage: true,
-	}, ".", candidate, nil)
-	if !errors.Is(err, ErrIncompleteCoverage) {
-		t.Fatalf("expected incomplete coverage report to be fatal when coverage is required, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "php:vendor/lib") {
-		t.Fatalf("expected incomplete dependency details in error, got %v", err)
-	}
+	assertIncompleteCoverageReportFatal(t, "all", "expected incomplete coverage report to be fatal when coverage is required")
 }
 
 func TestRunCandidateOnRootsExplicitLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
+	assertIncompleteCoverageReportFatal(t, "php", "expected explicit-language incomplete coverage report to be fatal when coverage is required")
+}
+
+func assertIncompleteCoverageReportFatal(t *testing.T, languageID, wantMessage string) {
+	t.Helper()
+
 	adapter := &testServiceAdapter{
 		id:     "php",
 		detect: language.Detection{Matched: true, Confidence: 90},
@@ -158,11 +143,11 @@ func TestRunCandidateOnRootsExplicitLanguageIncompleteCoverageReportIsFatalWhenR
 
 	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
 		RepoPath:                ".",
-		Language:                "php",
+		Language:                languageID,
 		RequireCompleteCoverage: true,
 	}, ".", candidate, nil)
 	if !errors.Is(err, ErrIncompleteCoverage) {
-		t.Fatalf("expected explicit-language incomplete coverage report to be fatal when coverage is required, got %v", err)
+		t.Fatalf("%s, got %v", wantMessage, err)
 	}
 	if !strings.Contains(err.Error(), "php:vendor/lib") {
 		t.Fatalf("expected incomplete dependency details in error, got %v", err)

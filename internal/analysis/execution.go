@@ -122,11 +122,6 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
 }
 
-func isAggregateCoverageLanguage(languageID string) bool {
-	languageID = strings.TrimSpace(strings.ToLower(languageID))
-	return languageID == "" || languageID == language.Auto || languageID == language.All
-}
-
 func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {
 	incomplete := make([]string, 0)
 	for _, dependency := range dependencies {

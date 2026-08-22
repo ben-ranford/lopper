@@ -372,8 +372,8 @@ func TestSaveSnapshotRejectsIncompleteUsageCoverage(t *testing.T) {
 
 			dir := t.TempDir()
 			path, err := SaveSnapshot(dir, "label:partial", tc.rep, now)
-			if !errors.Is(err, ErrIncompleteBaselineReport) {
-				t.Fatalf("SaveSnapshot() error = %v, want %v", err, ErrIncompleteBaselineReport)
+			if !errors.Is(err, ErrIncompleteUsageCoverage) {
+				t.Fatalf("SaveSnapshot() error = %v, want %v", err, ErrIncompleteUsageCoverage)
 			}
 			if path != "" {
 				t.Fatalf("SaveSnapshot() path = %q, want empty path on rejected save", path)
