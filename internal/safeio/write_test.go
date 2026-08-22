@@ -930,6 +930,111 @@ func TestWriteRootAfterParentReadyRejectsNonRelativeTarget(t *testing.T) {
 	}
 }
 
+func TestWriteRootCreatesParentsAfterParentReadyWithPreWriteCheck(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", "nested", writeTestFileName)
+	var calls []string
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		calls = append(calls, "parentReady")
+		if _, statErr := os.Stat(filepath.Join(rootDir, "reports", "nested")); statErr != nil {
+			t.Fatalf("expected parent to be created before parentReady: %v", statErr)
+		}
+		return nil
+	}, func() error {
+		calls = append(calls, "preWrite")
+		if len(calls) == 2 {
+			if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected target to remain absent before preWrite, got %v", statErr)
+			}
+			return nil
+		}
+		if _, statErr := os.Stat(filepath.Join(rootDir, target)); statErr != nil {
+			t.Fatalf("expected target to exist during post-write check, got %v", statErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck returned error: %v", err)
+	}
+	if got, want := strings.Join(calls, ","), "parentReady,preWrite,preWrite"; got != want {
+		t.Fatalf("callback order = %s, want %s", got, want)
+	}
+	assertFileContent(t, filepath.Join(rootDir, target), "hello")
+}
+
+func TestWriteRootPreWriteReadinessErrorPreventsCallerPreWriteAndWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expectedErr := errors.New("root no longer ready")
+	originalReady := writeFilePreWriteReadyFn
+	writeFilePreWriteReadyFn = func() error { return expectedErr }
+	t.Cleanup(func() {
+		writeFilePreWriteReadyFn = originalReady
+	})
+	target := filepath.Join("reports", writeTestFileName)
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		return nil
+	}, func() error {
+		t.Fatal("preWrite should not run after readiness error")
+		return nil
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected readiness error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPreWriteErrorPreventsWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expectedErr := errors.New("target changed before write")
+	target := filepath.Join("reports", writeTestFileName)
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		return nil
+	}, func() error {
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected preWrite error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPreWriteCheckRejectsNonRelativeTarget(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(filepath.Join(t.TempDir(), writeTestFileName), []byte("hello"), 0o640, 0o750, func() error {
+		t.Fatal("parentReady should not run for invalid target")
+		return nil
+	}, func() error {
+		t.Fatal("preWrite should not run for invalid target")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected absolute target to be rejected")
+	}
+}
+
+func TestWriteRootLstatAndRemoveRejectNonRelativeTargets(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+	absoluteTarget := filepath.Join(t.TempDir(), writeTestFileName)
+
+	if _, err := root.Lstat(absoluteTarget); err == nil {
+		t.Fatal("expected Lstat absolute target to be rejected")
+	}
+	if err := root.Remove(absoluteTarget); err == nil {
+		t.Fatal("expected Remove absolute target to be rejected")
+	}
+}
+
 func TestWriteRootLstatAndRemove(t *testing.T) {
 	rootDir := t.TempDir()
 	target := filepath.Join(rootDir, writeTestFileName)
