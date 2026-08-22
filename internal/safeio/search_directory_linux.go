@@ -10,6 +10,10 @@ import (
 
 const linuxSearchDirectoryFlags = unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
 
+func searchOnlyDirectoryOpenFlags() int {
+	return linuxSearchDirectoryFlags
+}
+
 func openSearchOnlyDirectory(path string) (*os.File, error) {
 	fd, err := unix.Open(path, linuxSearchDirectoryFlags, 0)
 	if err != nil {

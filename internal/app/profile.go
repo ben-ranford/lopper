@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -12,11 +11,14 @@ import (
 )
 
 var (
-	writeProfileConfigCanonicalIfAbsentFn  = safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath
-	writeProfileConfigCanonicalReplacingFn = safeio.WriteFileAtomicallyReplacingUnderCanonicalPath
+	writeProfileConfigCanonicalIfAbsentFn   = safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath
+	writeProfileConfigCanonicalReplacingFn  = safeio.WriteFileAtomicallyReplacingUnderCanonicalPath
+	writeProfileConfigPinnedRootIfAbsentFn  = (*safeio.WriteRoot).WriteFileAtomicallyIfAbsentUnderPinnedRoot
+	writeProfileConfigPinnedRootReplacingFn = (*safeio.WriteRoot).WriteFileAtomicallyReplacingUnderPinnedRoot
 )
 
 type profileConfigCanonicalWriter func(string, []byte, os.FileMode) error
+type profileConfigPinnedRootWriter func(*safeio.WriteRoot, string, []byte, os.FileMode) error
 
 func (a *App) executeProfile(req Request) (string, error) {
 	if !req.Profile.Features.Enabled(thresholds.ProfilesPreviewFeature) {
@@ -56,16 +58,16 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 func persistProfileConfigForced(config, outputPath string) error {
 	return persistProfileConfigThroughDestination(outputPath, []byte(config), func(destination commandOutputDestination, data []byte) error {
 		return destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, data, 0o600, 0o750)
-	}, writeProfileConfigCanonicalReplacingFn)
+	}, writeProfileConfigPinnedRootReplacingFn, writeProfileConfigCanonicalReplacingFn)
 }
 
 func persistProfileConfigIfAbsent(config, outputPath string) error {
 	return persistProfileConfigThroughDestination(outputPath, []byte(config), func(destination commandOutputDestination, data []byte) error {
 		return destination.root.WriteFileCreatingParentsIfAbsent(destination.targetPath, data, 0o600, 0o750)
-	}, writeProfileConfigCanonicalIfAbsentFn)
+	}, writeProfileConfigPinnedRootIfAbsentFn, writeProfileConfigCanonicalIfAbsentFn)
 }
 
-func persistProfileConfigThroughDestination(outputPath string, data []byte, write func(commandOutputDestination, []byte) error, writeCanonical profileConfigCanonicalWriter) (returnErr error) {
+func persistProfileConfigThroughDestination(outputPath string, data []byte, write func(commandOutputDestination, []byte) error, writePinnedRoot profileConfigPinnedRootWriter, writeCanonical profileConfigCanonicalWriter) (returnErr error) {
 	destination, err := openCommandOutputDestination(outputPath)
 	if err != nil {
 		if profilePermissionError(err) {
@@ -81,18 +83,18 @@ func persistProfileConfigThroughDestination(outputPath string, data []byte, writ
 
 	if err := write(destination, data); err != nil {
 		if profilePermissionError(err) {
-			return persistProfileConfigCanonicalThroughDestination(data, destination, err, writeCanonical)
+			return persistProfileConfigCanonicalThroughDestination(data, destination, err, writePinnedRoot)
 		}
 		return err
 	}
 	return returnErr
 }
 
-func persistProfileConfigCanonicalThroughDestination(data []byte, destination commandOutputDestination, primaryErr error, write profileConfigCanonicalWriter) error {
-	if err := safeio.VerifyDirectoryIdentity(destination.rootAbs, destination.rootInfo); err != nil {
+func persistProfileConfigCanonicalThroughDestination(data []byte, destination commandOutputDestination, primaryErr error, write profileConfigPinnedRootWriter) error {
+	if err := destination.root.VerifyIdentity(destination.rootInfo); err != nil {
 		return errors.Join(primaryErr, err)
 	}
-	return write(filepath.Join(destination.rootAbs, destination.targetPath), data, 0o600)
+	return write(destination.root, destination.targetPath, data, 0o600)
 }
 
 func persistProfileConfigCanonical(data []byte, outputPath, outputAbs string, primaryErr error, write profileConfigCanonicalWriter) error {

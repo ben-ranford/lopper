@@ -75,6 +75,77 @@ func WriteFileAtomicallyReplacingUnderCanonicalPath(targetPath string, data []by
 	return writeFileAtomicallyReplacingUnderDescriptorPath(parentFD, targetRel, data, perm)
 }
 
+// WriteFileAtomicallyIfAbsentUnderPinnedRoot publishes targetPath only when
+// absent, using the already-open root descriptor as the lookup anchor.
+func (r *WriteRoot) WriteFileAtomicallyIfAbsentUnderPinnedRoot(targetPath string, data []byte, perm os.FileMode) (returnErr error) {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	parentFile, parentFD, targetRel, err := r.openOrCreateSearchOnlyTargetParent(target, canonicalPathParentPerm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := parentFile.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	if err := rejectExistingDescriptorPath(parentFD, targetRel); err != nil {
+		return err
+	}
+	return writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, targetRel, data, perm)
+}
+
+// WriteFileAtomicallyReplacingUnderPinnedRoot publishes targetPath under an
+// already-open root descriptor. Existing targets fail closed for the same
+// descriptor-stability reason as WriteFileAtomicallyReplacingUnderCanonicalPath.
+func (r *WriteRoot) WriteFileAtomicallyReplacingUnderPinnedRoot(targetPath string, data []byte, perm os.FileMode) (returnErr error) {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	parentFile, parentFD, targetRel, err := r.openOrCreateSearchOnlyTargetParent(target, canonicalPathParentPerm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := parentFile.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	return writeFileAtomicallyReplacingUnderDescriptorPath(parentFD, targetRel, data, perm)
+}
+
+func (r *WriteRoot) openOrCreateSearchOnlyTargetParent(target rootedTarget, perm os.FileMode) (*os.File, int, string, error) {
+	rootFile, rootFD, err := r.openSearchOnlyRootDescriptor()
+	if err != nil {
+		return nil, -1, "", err
+	}
+	parentRel := filepath.Dir(target.rel)
+	if parentRel == "." {
+		return rootFile, rootFD, filepath.Base(target.rel), nil
+	}
+	_, parts := splitPinnedPath(parentRel)
+	parentFile, parentFD, err := openSearchOnlyDirectoryParts(rootFile, r.rootAbs, parts, true, perm)
+	if err != nil {
+		return nil, -1, "", err
+	}
+	return parentFile, parentFD, filepath.Base(target.rel), nil
+}
+
+func (r *WriteRoot) openSearchOnlyRootDescriptor() (*os.File, int, error) {
+	file, err := r.root.OpenFile(".", searchOnlyDirectoryOpenFlags(), 0)
+	if err != nil {
+		return nil, -1, err
+	}
+	osFile, ok := file.(*os.File)
+	if !ok {
+		return nil, -1, closeFileWithError(file, fmt.Errorf("pinned root does not expose a file descriptor"))
+	}
+	return osFile, int(osFile.Fd()), nil
+}
+
 func openSearchOnlyCanonicalDirectory(path string) (*os.File, int, error) {
 	return openSearchOnlyCanonicalDirectoryWithOptions(path, false, 0)
 }
