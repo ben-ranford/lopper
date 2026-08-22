@@ -262,16 +262,17 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
 		`if [ -z "${base_sha}" ]; then`,
-		`echo "PR base SHA is required for pull_request CI."`,
-		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
-		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+		`echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2`,
+		`git fetch --no-tags origin "${base_sha}"`,
+		`git fetch --no-tags origin "${base_ref}"`,
+		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
+		`git merge-base -- "${base_sha}" HEAD`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 
 	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify immutable memory bench base", []string{
-		`base_sha="${BASE_SHA:-}"`,
-		`echo "PR base SHA is required for memory benchmark comparison."`,
-		`export MEMORY_BENCH_BASE="${base_sha}"`,
+		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify immutable memory bench base", []string{
 		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
@@ -297,6 +298,7 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 
 	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify run target", []string{
+		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci`,
 	})
