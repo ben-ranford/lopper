@@ -43,6 +43,21 @@ func (r *openRootErrorAnalysisCacheRoot) OpenRoot(string) (safeio.Root, error) {
 	return nil, r.err
 }
 
+type failOnceLstatAnalysisCacheRoot struct {
+	safeio.Root
+	name string
+	err  error
+	fail bool
+}
+
+func (r *failOnceLstatAnalysisCacheRoot) Lstat(name string) (fs.FileInfo, error) {
+	if r.fail && name == r.name {
+		r.fail = false
+		return nil, r.err
+	}
+	return r.Root.Lstat(name)
+}
+
 type analysisCacheSwapFixture struct {
 	repo            string
 	renamedRepoPath string
@@ -79,14 +94,36 @@ func (f *analysisCacheSwapFixture) assertMissingPartsAbsent(t *testing.T) {
 	assertAnalysisCachePathAbsent(t, filepath.Join(f.renamedRepoPath, "missing"))
 }
 
-func hookMkdirAnalysisCacheDir(t *testing.T, hook func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) error) error) {
+func hookMkdirAnalysisCacheDir(t *testing.T, hook func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error)) {
 	t.Helper()
 	original := mkdirAnalysisCacheDir
-	mkdirAnalysisCacheDir = func(root safeio.Root, name string, perm os.FileMode) error {
+	mkdirAnalysisCacheDir = func(root safeio.Root, name string, perm os.FileMode) (fs.FileInfo, error) {
 		return hook(root, name, perm, original)
 	}
 	t.Cleanup(func() {
 		mkdirAnalysisCacheDir = original
+	})
+}
+
+func hookCloseAnalysisCacheRoot(t *testing.T, hook func(closeRoot func(safeio.Root) error, root safeio.Root) error) {
+	t.Helper()
+	original := closeAnalysisCacheRoot
+	closeAnalysisCacheRoot = func(root safeio.Root) error {
+		return hook(original, root)
+	}
+	t.Cleanup(func() {
+		closeAnalysisCacheRoot = original
+	})
+}
+
+func hookValidateAnalysisCacheRoot(t *testing.T, hook func(validate func(string, fs.FileInfo) error, path string, expected fs.FileInfo) error) {
+	t.Helper()
+	original := validateAnalysisCacheRoot
+	validateAnalysisCacheRoot = func(path string, expected fs.FileInfo) error {
+		return hook(original, path, expected)
+	}
+	t.Cleanup(func() {
+		validateAnalysisCacheRoot = original
 	})
 }
 
@@ -268,7 +305,7 @@ func TestNewAnalysisCacheRejectsAncestorSwapBeforeMissingRootCreate(t *testing.T
 		}
 		return root, currentPath, missingParts, err
 	})
-	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) error) error {
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
 		createdMissingPart = true
 		return mkdir(root, name, perm)
 	})
@@ -298,13 +335,13 @@ func TestNewAnalysisCacheRejectsAncestorSwapBeforeMissingRootCreate(t *testing.T
 func TestNewAnalysisCacheRollsBackAllCreatedMissingPartsWhenLaterAncestorSwapFails(t *testing.T) {
 	fixture := newAnalysisCacheSwapFixture(t)
 	swapped := false
-	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) error) error {
-		err := mkdir(root, name, perm)
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
+		info, err := mkdir(root, name, perm)
 		if err == nil && name == cacheDirName && !swapped {
 			swapped = true
 			fixture.swapRepo(t, "after nested cache root create")
 		}
-		return err
+		return info, err
 	})
 
 	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: fixture.cachePath}}, fixture.repo)
@@ -323,13 +360,13 @@ func TestNewAnalysisCacheRollsBackAllCreatedMissingPartsWhenLaterAncestorSwapFai
 func TestNewAnalysisCacheRollsBackMissingRootWhenAncestorSwapsAfterCreate(t *testing.T) {
 	fixture := newAnalysisCacheSwapFixture(t)
 	swapped := false
-	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) error) error {
-		err := mkdir(root, name, perm)
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
+		info, err := mkdir(root, name, perm)
 		if err == nil && name == "missing" && !swapped {
 			swapped = true
 			fixture.swapRepo(t, "after missing cache root create")
 		}
-		return err
+		return info, err
 	})
 
 	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: fixture.cachePath}}, fixture.repo)
@@ -341,6 +378,72 @@ func TestNewAnalysisCacheRollsBackMissingRootWhenAncestorSwapsAfterCreate(t *tes
 	}
 	if warnings := cache.takeWarnings(); len(warnings) == 0 || !strings.Contains(warnings[0], "directory identity changed") {
 		t.Fatalf("expected directory identity warning, got %#v", warnings)
+	}
+	fixture.assertMissingPartsAbsent(t)
+}
+
+func TestNewAnalysisCacheRollsBackAllCreatedPartsWhenCleanupCloseFails(t *testing.T) {
+	fixture := newAnalysisCacheSwapFixture(t)
+	closeErr := errors.New("close ancestor failed")
+	var ancestor safeio.Root
+	ancestorCloseFailed := false
+	hookOpenAnalysisCacheAncestor(t, func(open func(string) (safeio.Root, string, []string, error), name string) (safeio.Root, string, []string, error) {
+		root, currentPath, missingParts, err := open(name)
+		if err == nil && name == fixture.cachePath {
+			ancestor = root
+		}
+		return root, currentPath, missingParts, err
+	})
+	hookCloseAnalysisCacheRoot(t, func(closeRoot func(safeio.Root) error, root safeio.Root) error {
+		if root == ancestor {
+			ancestorCloseFailed = true
+			return closeErr
+		}
+		return closeRoot(root)
+	})
+	t.Cleanup(func() {
+		if ancestorCloseFailed {
+			if err := ancestor.Close(); err != nil {
+				t.Fatalf("close test ancestor: %v", err)
+			}
+		}
+	})
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: fixture.cachePath}}, fixture.repo)
+	if cache.cacheable {
+		t.Fatal("expected close failure to make the cache unavailable")
+	}
+	if !ancestorCloseFailed {
+		t.Fatal("expected cache initialization to close the opened ancestor")
+	}
+	if warnings := cache.takeWarnings(); len(warnings) == 0 || !strings.Contains(warnings[0], closeErr.Error()) {
+		t.Fatalf("expected close failure warning, got %#v", warnings)
+	}
+	fixture.assertMissingPartsAbsent(t)
+}
+
+func TestNewAnalysisCacheRollsBackCreatedPartsWhenFinalPathValidationFails(t *testing.T) {
+	fixture := newAnalysisCacheSwapFixture(t)
+	validationErr := errors.New("final cache path validation failed")
+	validated := false
+	hookValidateAnalysisCacheRoot(t, func(validate func(string, fs.FileInfo) error, path string, expected fs.FileInfo) error {
+		if path == fixture.cachePath && !validated {
+			validated = true
+			fixture.swapRepo(t, "before final cache root validation")
+			return validationErr
+		}
+		return validate(path, expected)
+	})
+
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: fixture.cachePath}}, fixture.repo)
+	if cache.cacheable {
+		t.Fatal("expected final validation failure to make the cache unavailable")
+	}
+	if !validated {
+		t.Fatal("expected writable cache initialization to validate the final cache path")
+	}
+	if warnings := cache.takeWarnings(); len(warnings) == 0 || !strings.Contains(warnings[0], validationErr.Error()) {
+		t.Fatalf("expected final validation warning, got %#v", warnings)
 	}
 	fixture.assertMissingPartsAbsent(t)
 }
@@ -390,11 +493,77 @@ func TestOpenOrCreatePinnedAnalysisCacheChildPreservesOpenRootError(t *testing.T
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, "keys"))
 }
 
+func TestOpenOrCreatePinnedAnalysisCacheChildRollsBackAfterPostCreateLstatError(t *testing.T) {
+	repo := t.TempDir()
+	root, err := safeio.OpenRoot(repo)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	}()
+	lstatErr := errors.New("post-create lstat failed")
+	failingRoot := &failOnceLstatAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
+		info, err := mkdir(root, name, perm)
+		if err == nil {
+			failingRoot.fail = true
+		}
+		return info, err
+	})
+
+	_, err = openOrCreatePinnedAnalysisCacheChild(failingRoot, repo, cacheKeysDirName)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected post-create Lstat error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, cacheKeysDirName))
+}
+
+func TestOpenOrCreatePinnedAnalysisCacheChildDoesNotRemovePostMkdirReplacement(t *testing.T) {
+	repo := t.TempDir()
+	root, err := safeio.OpenRoot(repo)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close root: %v", err)
+		}
+	}()
+	childPath := filepath.Join(repo, cacheKeysDirName)
+	renamedChildPath := filepath.Join(repo, "created-child")
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
+		info, err := mkdir(root, name, perm)
+		if err != nil {
+			return info, err
+		}
+		if err := os.Rename(childPath, renamedChildPath); err != nil {
+			t.Fatalf("rename created child: %v", err)
+		}
+		if err := os.Mkdir(childPath, 0o750); err != nil {
+			t.Fatalf("replace created child: %v", err)
+		}
+		return info, nil
+	})
+
+	_, err = openOrCreatePinnedAnalysisCacheChild(root, repo, cacheKeysDirName)
+	if err == nil || !strings.Contains(err.Error(), "directory changed after creation") {
+		t.Fatalf("expected replacement to fail closed, got %v", err)
+	}
+	for _, path := range []string{childPath, renamedChildPath} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("expected %q to remain intact, info=%#v err=%v", path, info, err)
+		}
+	}
+}
+
 func TestOpenOrCreatePinnedAnalysisCacheChildReturnsLstatAfterConcurrentCreateError(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
-	hookMkdirAnalysisCacheDir(t, func(safeio.Root, string, os.FileMode, func(safeio.Root, string, os.FileMode) error) error {
-		return fs.ErrExist
+	hookMkdirAnalysisCacheDir(t, func(safeio.Root, string, os.FileMode, func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
+		return nil, fs.ErrExist
 	})
 
 	_, err := openOrCreatePinnedAnalysisCacheChild(root, repo, cacheKeysDirName)
@@ -406,11 +575,12 @@ func TestOpenOrCreatePinnedAnalysisCacheChildReturnsLstatAfterConcurrentCreateEr
 func TestOpenOrCreatePinnedAnalysisCacheChildHandlesConcurrentCreate(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
-	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) error) error {
-		if err := mkdir(root, name, perm); err != nil {
-			return err
+	hookMkdirAnalysisCacheDir(t, func(root safeio.Root, name string, perm os.FileMode, mkdir func(safeio.Root, string, os.FileMode) (fs.FileInfo, error)) (fs.FileInfo, error) {
+		info, err := mkdir(root, name, perm)
+		if err != nil {
+			return nil, err
 		}
-		return fs.ErrExist
+		return info, fs.ErrExist
 	})
 
 	child, err := openOrCreatePinnedAnalysisCacheChild(root, repo, cacheKeysDirName)
@@ -428,9 +598,8 @@ func TestOpenOrCreatePinnedAnalysisCacheChildHandlesConcurrentCreate(t *testing.
 func TestRollbackCreatedAnalysisCacheChildNoopsForUncreatedChild(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
-	childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
-
-	if err := rollbackCreatedAnalysisCacheChild(root, cacheKeysDirName, nil, childInfo, false); err != nil {
+	childPath, _ := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	if err := removeCreatedAnalysisCacheChild(root, cacheKeysDirName, nil); err != nil {
 		t.Fatalf("rollback uncreated child: %v", err)
 	}
 	if info, err := os.Stat(childPath); err != nil || !info.IsDir() {
@@ -451,7 +620,7 @@ func TestRollbackCreatedAnalysisCacheChildSkipsMissingOrReplacedChild(t *testing
 			t.Fatalf("remove child before rollback: %v", err)
 		}
 
-		if err := rollbackCreatedAnalysisCacheChild(root, cacheKeysDirName, child, childInfo, true); err != nil {
+		if err := errors.Join(closeAnalysisCacheRoot(child), removeCreatedAnalysisCacheChild(root, cacheKeysDirName, childInfo)); err != nil {
 			t.Fatalf("rollback missing child: %v", err)
 		}
 		assertAnalysisCachePathAbsent(t, childPath)
@@ -472,7 +641,7 @@ func TestRollbackCreatedAnalysisCacheChildSkipsMissingOrReplacedChild(t *testing
 			t.Fatalf("replace child before rollback: %v", err)
 		}
 
-		if err := rollbackCreatedAnalysisCacheChild(root, cacheKeysDirName, child, childInfo, true); err != nil {
+		if err := errors.Join(closeAnalysisCacheRoot(child), removeCreatedAnalysisCacheChild(root, cacheKeysDirName, childInfo)); err != nil {
 			t.Fatalf("rollback replaced child: %v", err)
 		}
 		if info, err := os.Stat(childPath); err != nil || !info.IsDir() {
