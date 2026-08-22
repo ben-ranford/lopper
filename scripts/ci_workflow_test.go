@@ -314,35 +314,34 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	})
 }
 
-func TestCIWorkflowRollingMemoryBenchUsesImmutablePRBaseSHA(t *testing.T) {
+func TestCIWorkflowRollingUsesImmutablePullRequestBaseSHA(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "rolling fetch PR base SHA env", got: fetchBase.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
+	assertWorkflowStepEnv(t, fetchBase, "ci rolling fetch PR base", map[string]string{
+		"PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+		"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
 	})
-	assertWorkflowStepRunContainsAll(t, fetchBase, "rolling fetch PR base", []string{
+	assertWorkflowStepRunContainsAll(t, fetchBase, "ci rolling fetch PR base", []string{
 		`base_sha="${PR_BASE_SHA:-}"`,
 		`if [ -z "${base_sha}" ]; then`,
-		`echo "PR base SHA is required for pull_request CI."`,
-		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
+		`echo "::error::PR base SHA is unavailable; cannot prepare rolling memory benchmark base." >&2`,
+		`git fetch --no-tags origin "${base_sha}"`,
 		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+		`git merge-base -- "${base_sha}" HEAD`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 
 	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "rolling run CI PR base SHA env", got: runCI.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
+	assertWorkflowStepRunContainsAll(t, runCI, "ci rolling run target", []string{
+		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared rolling PR memory benchmark base is required}"`,
 	})
-	assertWorkflowStepRunContainsAll(t, runCI, "rolling immutable memory bench base", []string{
-		`base_sha="${PR_BASE_SHA:-}"`,
-		`echo "PR base SHA is required for memory benchmark comparison."`,
-		`export MEMORY_BENCH_BASE="${base_sha}"`,
-	})
-	assertWorkflowStepRunOmitsAll(t, runCI, "rolling immutable memory bench base", []string{
-		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci rolling run target", []string{
+		`origin/${base_ref}`,
+		`PR_BASE_REF`,
 	})
 }
 
