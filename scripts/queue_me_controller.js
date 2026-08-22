@@ -212,11 +212,13 @@ async function verifyHeadForQueue(
     page: 1,
   });
   const commits = [...(firstComparison.commits || [])];
-  for (let page = 2; firstComparison.total_commits > commits.length; page++) {
+  let page = 2;
+  while (commits.length < firstComparison.total_commits) {
     const { data: comparisonPage } = await github.rest.repos.compareCommitsWithBasehead({
       ...comparisonRequest,
       page,
     });
+    page += 1;
     commits.push(...(comparisonPage.commits || []));
     if (!comparisonPage.commits?.length) {
       break;
