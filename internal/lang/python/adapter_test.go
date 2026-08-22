@@ -183,6 +183,17 @@ func TestAdapterAnalyseFindsImportsAfterFStringReplacementFieldDelimiter(t *test
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseFindsImportsAfterMultilineFStringReplacementString(t *testing.T) {
+	source := "value = f\"\"\"{'''\n" +
+		"}\n" +
+		"\"\"\"\n" +
+		"'''}\"\"\"\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -304,6 +315,24 @@ func TestParseImportsFindsImportAfterFStringReplacementFieldDelimiter(t *testing
 	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
 	if imports[0].Location.Line != 2 {
 		t.Fatalf("expected real import on line 2, got location %+v", imports[0].Location)
+	}
+}
+
+func TestParseImportsFindsImportAfterMultilineFStringReplacementString(t *testing.T) {
+	repo := t.TempDir()
+	source := "value = f\"\"\"{'''\n" +
+		"}\n" +
+		"\"\"\"\n" +
+		"'''}\"\"\"\n" +
+		"import requests\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
+	if imports[0].Location.Line != 5 {
+		t.Fatalf("expected real import on line 5, got location %+v", imports[0].Location)
 	}
 }
 

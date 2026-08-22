@@ -194,10 +194,11 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 }
 
 type pythonStringMask struct {
-	multilineQuote            string
-	multilineFString          bool
-	multilineReplacementDepth int
-	shortQuote                byte
+	multilineQuote                  string
+	multilineFString                bool
+	multilineReplacementDepth       int
+	multilineReplacementStringQuote string
+	shortQuote                      byte
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
@@ -240,6 +241,9 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 	if m.multilineQuote == "" {
 		return false
 	}
+	if m.maskMultilineFStringReplacementString(line, index, builder) {
+		return true
+	}
 	if line[*index] == '\\' {
 		builder.WriteByte(' ')
 		*index++
@@ -257,6 +261,7 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 		*index += len(m.multilineQuote)
 		m.multilineQuote = ""
 		m.multilineFString = false
+		m.multilineReplacementStringQuote = ""
 		return true
 	}
 	builder.WriteByte(' ')
@@ -310,6 +315,30 @@ func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *i
 	return true
 }
 
+func (m *pythonStringMask) maskMultilineFStringReplacementString(line string, index *int, builder *strings.Builder) bool {
+	if m.multilineReplacementStringQuote == "" {
+		return false
+	}
+	if line[*index] == '\\' {
+		builder.WriteByte(' ')
+		*index++
+		if *index < len(line) {
+			builder.WriteByte(' ')
+			*index++
+		}
+		return true
+	}
+	if strings.HasPrefix(line[*index:], m.multilineReplacementStringQuote) {
+		writeSpaces(builder, len(m.multilineReplacementStringQuote))
+		*index += len(m.multilineReplacementStringQuote)
+		m.multilineReplacementStringQuote = ""
+		return true
+	}
+	builder.WriteByte(' ')
+	*index++
+	return true
+}
+
 func (m *pythonStringMask) maskFStringReplacementString(line string, index *int, builder *strings.Builder) {
 	quote := line[*index]
 	if delimiter := line[*index : *index+1]; strings.HasPrefix(line[*index:], delimiter+delimiter+delimiter) {
@@ -341,12 +370,14 @@ func (m *pythonStringMask) maskFStringReplacementTripleString(line string, index
 		builder.WriteByte(' ')
 		*index++
 	}
+	m.multilineReplacementStringQuote = delimiter
 }
 
 func (m *pythonStringMask) startMultilineString(quote string, line string, index *int, builder *strings.Builder) {
 	m.multilineQuote = quote + quote + quote
 	m.multilineFString = hasPythonFStringPrefix(line, *index)
 	m.multilineReplacementDepth = 0
+	m.multilineReplacementStringQuote = ""
 	writeSpaces(builder, len(m.multilineQuote))
 	*index += len(m.multilineQuote)
 }
