@@ -371,6 +371,15 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 				"import numpy as np\n",
 			4,
 		),
+		numpyCase(
+			"short f-string multiline replacement survives blank line",
+			"value = f\"{'''\n"+
+				"\n"+
+				"import requests\n"+
+				"'''}\"\n"+
+				"import numpy as np\n",
+			5,
+		),
 		requestsCase(
 			"format spec hash does not mask rest of line",
 			`value = f"{42:#08x}"`+"\n"+

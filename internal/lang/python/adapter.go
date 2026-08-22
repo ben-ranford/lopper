@@ -262,7 +262,7 @@ func (m *pythonStringMask) resetShortStringOnBlankLine(line string) bool {
 		return false
 	}
 	m.shortQuote = 0
-	if len(m.multilineQuote) == 1 {
+	if len(m.multilineQuote) == 1 && len(m.multilineReplacementStrings) == 0 {
 		m.resetMultilineString()
 	}
 	return true
