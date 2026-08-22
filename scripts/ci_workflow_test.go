@@ -46,7 +46,6 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		{"verify", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},
 		{"verify", "Upload binary artifact", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify binary upload"},
 		{"publish-pr-reports", "Download PR report inputs", "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "PR report download"},
-		{"publish-pr-reports", "Track inline suppressions", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "inline suppression tracking"},
 		{"publish-pr-reports", "Comment memory benchmark report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "memory benchmark comment"},
 		{"publish-pr-reports", "Comment lopper report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "lopper report comment"},
 		{"publish-pr-reports", "Comment on coverage failure", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "coverage failure comment"},
@@ -129,28 +128,11 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		"./extensions/",
 		"git ",
 	})
-	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Track inline suppressions", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Comment on coverage failure")
+	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Comment on coverage failure")
 	coverageComment := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Comment on coverage failure")
 	if !coverageComment.ContinueOnError {
 		t.Fatal("coverage comment publication must not fail an otherwise-green CI run")
 	}
-	trackSuppressions := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Track inline suppressions")
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: trackSuppressions.With["script"]}, "inline suppression publication", []string{
-		`const reportPath = 'pr-report-inputs/inline-suppressions.json';`,
-		`payload?.schema !== 'lopper-inline-suppressions-v1'`,
-		`payload.suppressions.length > 100`,
-		`github.rest.pulls.listFiles`,
-		`const changedFileCount = await loadChangedFileCount(pull);`,
-		`files.length !== changedFileCount`,
-		`refusing to publish tracking mutations`,
-		`const isForkPullRequest = Boolean(`,
-		`Inline suppression tracking mutation skipped for fork pull request`,
-		`const records = await recomputeSuppressionRecords();`,
-		`core.warning(`,
-		`repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
-		`await github.rest.issues.update({`,
-		`await github.rest.issues.create({`,
-	})
 
 	downloadInputs := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Download PR report inputs")
 	assertWorkflowArtifactDownloadByID(t, downloadInputs, workflowArtifactDownloadExpectation{
@@ -184,78 +166,79 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 	assertWorkflowEnvKeyAbsent(t, workflow.Jobs, "SONAR_TOKEN")
 }
 
-func TestCIWorkflowDoesNotTrustForgedInlineSuppressionArtifact(t *testing.T) {
+func TestInlineSuppressionTrackingWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	readYAMLConfig(t, ".github/workflows/inline-suppression-tracking.yml", &workflow)
+	workflowText := readConfig(t, ".github/workflows/inline-suppression-tracking.yml")
 
-	trackSuppressions := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Track inline suppressions")
-	script := trackSuppressions.With["script"]
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: script}, "inline suppression forged artifact guard", []string{
-		`uploadedCount = payload.suppressions.length;`,
-		`const recomputeSuppressionRecords = async () => {`,
-		`pull?.base?.sha || !pull?.head?.sha`,
-		`scanPatch(records, file.filename, file.patch, pull.head.sha);`,
-		`for (const record of records.values()) {`,
+	for _, fragment := range []string{
+		"pull_request_target:",
+		"contents: read",
+		"issues: write",
+		"pull-requests: read",
+		"TRUSTED_TRACKER_REF: ${{ github.workflow_sha }}",
+		"path: 'scripts/inline_suppression_tracker.js'",
+		"ref: process.env.TRUSTED_TRACKER_REF",
+		"flag: 'wx'",
+		"require(process.env.SUPPRESSION_TRACKER_PATH)",
+	} {
+		if !strings.Contains(workflowText, fragment) {
+			t.Fatalf("inline suppression tracking workflow missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{
+		"actions/checkout@",
+		"actions/download-artifact@",
+		"pr-report-inputs",
+		"pull_request:\n",
+		"github.event.pull_request.head",
+	} {
+		if strings.Contains(workflowText, forbidden) {
+			t.Fatalf("inline suppression tracking workflow contains unsafe fragment %q", forbidden)
+		}
+	}
+
+	track := workflowJobByName(t, workflow.Jobs, "track")
+	assertWorkflowJobOmitsCheckout(t, track, "inline suppression tracking")
+	assertWorkflowJobStepRunsOmitAllFold(t, track, "inline suppression tracking", []string{
+		"go run ./",
+		"make ",
+		"npm ",
+		"npx ",
+		"git ",
+		"scripts/",
+		"./extensions/",
 	})
-	assertWorkflowStepRunOmitsAll(t, workflowStepConfig{Run: script}, "inline suppression forged artifact guard", []string{
-		`for (const record of payload.suppressions)`,
-		`unique.set(fingerprint, normalized);`,
-		`record?.fingerprint`,
-		`record?.file`,
-	})
-	assertWorkflowMutationAfter(t, script, "const records = await recomputeSuppressionRecords();", "await github.rest.issues.update({")
-	assertWorkflowMutationAfter(t, script, "const records = await recomputeSuppressionRecords();", "await github.rest.issues.create({")
+	assertWorkflowStepOrder(t, track, "Materialize trusted suppression tracker", "Track inline suppressions from trusted diff")
 }
 
-func TestCIWorkflowFailsClosedWhenInlineSuppressionRecomputeIsTruncated(t *testing.T) {
+func TestInlineSuppressionTrackerControllerFailsClosedBeforeMutations(t *testing.T) {
 	t.Parallel()
 
-	script := ciInlineSuppressionTrackingScript(t)
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: script}, "inline suppression pagination boundary guard", []string{
-		`const loadChangedFileCount = async (pull) => {`,
-		`Number.isInteger(pull.changed_files)`,
-		`github.rest.pulls.get({`,
-		`const changedFileCount = await loadChangedFileCount(pull);`,
-		`files.length !== changedFileCount`,
-		`Trusted inline suppression recomputation saw ${files.length} changed files but GitHub reports ${changedFileCount}`,
-		`refusing to publish tracking mutations`,
+	controller := readConfig(t, "scripts/inline_suppression_tracker.js")
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: controller}, "inline suppression tracker controller", []string{
+		"MAX_CHANGED_FILES = 3000",
+		"count > MAX_CHANGED_FILES",
+		"files.length !== count",
+		"diff patch is unavailable",
+		"refusing to publish tracking mutations",
+		"records.size > MAX_RECORDS",
+		"pull.state && pull.state !== 'open'",
+		"github.rest.pulls.listFiles",
+		"github.rest.search.issuesAndPullRequests",
+		"github.rest.issues.update",
+		"github.rest.issues.create",
 	})
-	assertWorkflowMarkerOrder(t, script, "const changedFileCount = await loadChangedFileCount(pull);", "const records = new Map();")
-	assertWorkflowMarkerOrder(t, script, "files.length !== changedFileCount", "scanPatch(records, file.filename, file.patch, pull.head.sha);")
-	assertWorkflowMutationAfter(t, script, "files.length !== changedFileCount", "await github.rest.issues.update({")
-	assertWorkflowMutationAfter(t, script, "files.length !== changedFileCount", "await github.rest.issues.create({")
-}
-
-func TestCIWorkflowSkipsInlineSuppressionMutationsForForkPullRequests(t *testing.T) {
-	t.Parallel()
-
-	script := ciInlineSuppressionTrackingScript(t)
-	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: script}, "inline suppression fork mutation guard", []string{
-		`pull?.head?.repo?.fork === true`,
-		`pull.head.repo.full_name !== pull.base.repo.full_name`,
-		`if (isForkPullRequest) {`,
-		`Inline suppression tracking mutation skipped for fork pull request; metadata was validated without mutating issues.`,
-		`return;`,
+	assertWorkflowMarkerOrder(t, controller, "records.size > MAX_RECORDS", "return records;")
+	assertWorkflowMarkerOrder(t, controller, "const records = await recomputeSuppressionRecords({ github, context });", "await upsertTrackingIssue({ github, context, record });")
+	assertWorkflowStepRunOmitsAll(t, workflowStepConfig{Run: controller}, "inline suppression tracker controller", []string{
+		"inline-suppressions.json",
+		"pr-report-inputs",
+		"isForkPullRequest",
+		"skipped for fork pull request",
 	})
-	assertWorkflowMarkerOrder(t, script, "const records = await recomputeSuppressionRecords();", "const isForkPullRequest = Boolean(")
-	assertWorkflowMarkerOrder(t, script, "if (isForkPullRequest) {", "await github.rest.issues.update({")
-	assertWorkflowMarkerOrder(t, script, "if (isForkPullRequest) {", "await github.rest.issues.create({")
-}
-
-func ciInlineSuppressionTrackingScript(t *testing.T) string {
-	t.Helper()
-
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	return workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Track inline suppressions").With["script"]
-}
-
-func assertWorkflowMutationAfter(t *testing.T, script string, recomputeMarker string, mutationMarker string) {
-	t.Helper()
-
-	assertWorkflowMarkerOrder(t, script, recomputeMarker, mutationMarker)
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
@@ -465,6 +448,9 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
+	if vscodeSmoke.If != "" || len(vscodeSmoke.Needs) != 0 {
+		t.Fatalf("vscode-smoke must execute without a path-filter skip: if=%q needs=%v", vscodeSmoke.If, vscodeSmoke.Needs)
+	}
 	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
 	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
 	assertWorkflowStringValues(t, []workflowStringValue{
