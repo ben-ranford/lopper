@@ -216,11 +216,7 @@ type pythonReplacementStringState struct {
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
-	if line == "" {
-		m.shortQuote = 0
-		if len(m.multilineQuote) == 1 {
-			m.resetMultilineString()
-		}
+	if m.resetShortStringOnBlankLine(line) {
 		return line
 	}
 	if !strings.Contains(line, "'") && !strings.Contains(line, "\"") && m.multilineQuote == "" && m.shortQuote == 0 {
@@ -259,6 +255,17 @@ func (m *pythonStringMask) codeLine(line string) string {
 	m.finishReplacementStringLine()
 	m.finishShortFStringLine()
 	return builder.String()
+}
+
+func (m *pythonStringMask) resetShortStringOnBlankLine(line string) bool {
+	if line != "" {
+		return false
+	}
+	m.shortQuote = 0
+	if len(m.multilineQuote) == 1 {
+		m.resetMultilineString()
+	}
+	return true
 }
 
 func (m *pythonStringMask) maskMultilineString(line string, index *int, builder *strings.Builder) bool {
