@@ -108,15 +108,37 @@ jobs:
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
           if [ -z "${base_sha}" ]; then
             if [ -n "${ACT:-}" ]; then
-              if ! base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"; then
-                echo "::error::ACT pull_request event payload omitted PR base SHA and HEAD^ is unavailable; cannot prepare memory benchmark base." >&2
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
                 exit 1
               fi
-              echo "ACT pull_request event payload omitted PR base SHA; using immutable HEAD^ fallback ${base_sha}."
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
             else
               echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
               exit 1
@@ -179,9 +201,9 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         run: |
-          base_ref="${BASE_REF:-main}"
+          base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
           mkdir -p .artifacts
-          git worktree add --detach .artifacts/base "origin/${base_ref}"
+          git worktree add --detach .artifacts/base "${base_sha}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
@@ -794,15 +816,37 @@ jobs:
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
           if [ -z "${base_sha}" ]; then
             if [ -n "${ACT:-}" ]; then
-              if ! base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"; then
-                echo "::error::ACT pull_request event payload omitted PR base SHA and HEAD^ is unavailable; cannot prepare memory benchmark base." >&2
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
                 exit 1
               fi
-              echo "ACT pull_request event payload omitted PR base SHA; using immutable HEAD^ fallback ${base_sha}."
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
             else
               echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
               exit 1

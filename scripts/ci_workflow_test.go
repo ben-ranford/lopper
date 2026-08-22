@@ -246,14 +246,24 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
+		`resolve_act_merge_base() {`,
 		`base_sha="${BASE_SHA:-}"`,
 		`if [ -z "${base_sha}" ]; then`,
-		`base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"`,
+		`base_sha="$(resolve_act_merge_base "${base_ref}")"`,
 		`git fetch --no-tags origin "${base_sha}"`,
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
 		`git merge-base --is-ancestor "${base_sha}" HEAD`,
 		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
+	})
+
+	lopperBase := workflowStepByName(t, workflow.Jobs, "verify", "Run lopper self-analysis (base branch)")
+	assertWorkflowStepRunContainsAll(t, lopperBase, "lopper immutable base", []string{
+		`base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
+		`git worktree add --detach .artifacts/base "${base_sha}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, lopperBase, "lopper immutable base", []string{
+		`git worktree add --detach .artifacts/base "origin/${base_ref}"`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
@@ -268,7 +278,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	})
 }
 
-func TestCIWorkflowUsesActOnlyImmutablePRBaseFallback(t *testing.T) {
+func TestCIWorkflowUsesActOnlyMergeBasePRBaseFallback(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
@@ -277,9 +287,10 @@ func TestCIWorkflowUsesActOnlyImmutablePRBaseFallback(t *testing.T) {
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base act fallback", []string{
 		`if [ -n "${ACT:-}" ]; then`,
-		`base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"`,
-		`ACT pull_request event payload omitted PR base SHA; using immutable HEAD^ fallback ${base_sha}.`,
-		`echo "::error::ACT pull_request event payload omitted PR base SHA and HEAD^ is unavailable; cannot prepare memory benchmark base." >&2`,
+		`base_sha="$(resolve_act_merge_base "${base_ref}")"`,
+		`ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}.`,
+		`echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2`,
+		`echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2`,
 	})
 }
 
@@ -342,7 +353,9 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch rolling PR base", []string{
+		`resolve_act_merge_base() {`,
 		`base_sha="${BASE_SHA:-}"`,
+		`base_sha="$(resolve_act_merge_base "${base_ref}")"`,
 		`git fetch --no-tags origin "${base_sha}"`,
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null`,
@@ -364,14 +377,63 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 	})
 }
 
-func TestCIWorkflowVerifyRollingExportsImmutableBaseSHAWhenBaseRefDrifts(t *testing.T) {
+func TestCIWorkflowVerifyUsesMergeBaseFallbackAndImmutableBaseWhenPRBaseRefDrifts(t *testing.T) {
 	t.Parallel()
+	exercisePRBaseWorkflowJob(t, prBaseWorkflowJobConfig{
+		jobName:     "verify",
+		runStepName: "Run CI target",
+		runLabel:    "verify",
+		checkLopper: true,
+	})
+}
+
+func TestCIWorkflowVerifyRollingUsesMergeBaseFallbackWhenPRBaseRefDrifts(t *testing.T) {
+	t.Parallel()
+	exercisePRBaseWorkflowJob(t, prBaseWorkflowJobConfig{
+		jobName:      "verify-rolling",
+		runStepName:  "Run CI target with rolling defaults",
+		runLabel:     "verify-rolling",
+		buildChannel: "rolling",
+	})
+}
+
+type prBaseScenario struct {
+	baseSHA       string
+	driftSHA      string
+	headParentSHA string
+	worktree      string
+}
+
+type prBaseWorkflowJobConfig struct {
+	jobName      string
+	runStepName  string
+	runLabel     string
+	buildChannel string
+	checkLopper  bool
+}
+
+func exercisePRBaseWorkflowJob(t *testing.T, cfg prBaseWorkflowJobConfig) {
+	t.Helper()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
-	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+	fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
+	runCI := workflowStepByName(t, workflow.Jobs, cfg.jobName, cfg.runStepName)
+
+	scenario := newPRBaseScenario(t)
+	assertScenarioUsesDistinctMergeBase(t, scenario)
+	assertActFetchStepResolvesImmutableBase(t, scenario, fetchBase.Run, cfg.runLabel)
+	assertRunStepUsesImmutableBase(t, scenario, runCI.Run, cfg)
+
+	if cfg.checkLopper {
+		lopperBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Run lopper self-analysis (base branch)")
+		assertLopperStepUsesImmutableBase(t, scenario, lopperBase.Run, cfg.runLabel)
+	}
+}
+
+func newPRBaseScenario(t *testing.T) prBaseScenario {
+	t.Helper()
 
 	origin := filepath.Join(t.TempDir(), "origin.git")
 	runGitCommand(t, t.TempDir(), "init", "--bare", origin)
@@ -393,6 +455,7 @@ func TestCIWorkflowVerifyRollingExportsImmutableBaseSHAWhenBaseRefDrifts(t *test
 	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-1\n")
 	runGitCommand(t, seed, "add", "feature.txt")
 	runGitCommand(t, seed, "commit", "-m", "feature commit one")
+	headParentSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
 	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-2\n")
 	runGitCommand(t, seed, "add", "feature.txt")
 	runGitCommand(t, seed, "commit", "-m", "feature commit two")
@@ -410,71 +473,149 @@ func TestCIWorkflowVerifyRollingExportsImmutableBaseSHAWhenBaseRefDrifts(t *test
 	runGitCommand(t, t.TempDir(), "clone", origin, worktree)
 	runGitCommand(t, worktree, "checkout", "feature")
 
-	if baseSHA == driftSHA {
+	return prBaseScenario{
+		baseSHA:       baseSHA,
+		driftSHA:      driftSHA,
+		headParentSHA: headParentSHA,
+		worktree:      worktree,
+	}
+}
+
+func readFileText(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func assertScenarioUsesDistinctMergeBase(t *testing.T, scenario prBaseScenario) {
+	t.Helper()
+
+	if scenario.baseSHA == scenario.headParentSHA {
+		t.Fatal("test setup must keep merge base distinct from HEAD^ for multi-commit PRs")
+	}
+	if scenario.baseSHA == scenario.driftSHA {
 		t.Fatal("test setup must drift the PR base ref")
 	}
-	if output, err := runShellCommand(worktree, `git merge-base --is-ancestor "$DRIFT_SHA" HEAD`, map[string]string{"DRIFT_SHA": driftSHA}); err == nil {
+	if output, err := runShellCommand(scenario.worktree, `git merge-base --is-ancestor "$DRIFT_SHA" HEAD`, map[string]string{"DRIFT_SHA": scenario.driftSHA}); err == nil {
 		t.Fatalf("drifted base ref unexpectedly remained an ancestor of the PR head:\n%s", output)
 	}
+}
+
+func assertActFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string) {
+	t.Helper()
 
 	githubEnv := filepath.Join(t.TempDir(), "github.env")
-	runnerTemp := filepath.Join(t.TempDir(), "runner-temp")
-	if err := os.MkdirAll(runnerTemp, 0o755); err != nil {
-		t.Fatalf("create runner temp: %v", err)
-	}
-	if output, err := runShellCommand(worktree, fetchBase.Run, map[string]string{
+	output, err := runShellCommand(scenario.worktree, script, map[string]string{
+		"ACT":        "1",
 		"BASE_REF":   "main",
-		"BASE_SHA":   baseSHA,
 		"GITHUB_ENV": githubEnv,
-	}); err != nil {
-		t.Fatalf("run verify-rolling fetch step: %v\n%s", err, output)
-	}
-
-	envBytes, err := os.ReadFile(githubEnv)
+	})
 	if err != nil {
-		t.Fatalf("read exported workflow env: %v", err)
+		t.Fatalf("run %s fetch step: %v\n%s", runLabel, err, output)
 	}
-	envText := string(envBytes)
-	if !strings.Contains(envText, "MEMORY_BENCH_BASE="+baseSHA+"\n") {
-		t.Fatalf("verify-rolling exported env missing immutable base SHA %q:\n%s", baseSHA, envText)
-	}
-	if strings.Contains(envText, driftSHA) {
-		t.Fatalf("verify-rolling exported env must not contain drifted base ref SHA %q:\n%s", driftSHA, envText)
+	if !strings.Contains(output, "resolved immutable merge base "+scenario.baseSHA+" from main") {
+		t.Fatalf("%s fetch step did not report resolved merge base %q:\n%s", runLabel, scenario.baseSHA, output)
 	}
 
-	makeLog := filepath.Join(runnerTemp, "make-env.txt")
+	envText := readFileText(t, githubEnv)
+	assertImmutableBaseValue(t, envText, scenario.baseSHA, scenario.headParentSHA, scenario.driftSHA, runLabel+" exported env")
+}
+
+func assertRunStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, script string, cfg prBaseWorkflowJobConfig) {
+	t.Helper()
+
 	fakeBin := filepath.Join(t.TempDir(), "fakebin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 		t.Fatalf("create fake bin dir: %v", err)
 	}
-	writeExecutableFile(t, filepath.Join(fakeBin, "make"), "#!/bin/sh\nset -eu\nprintf 'MEMORY_BENCH_BASE=%s\\n' \"$MEMORY_BENCH_BASE\" > "+shellQuote(makeLog)+"\nprintf 'MEMORY_BENCH_ENFORCE=%s\\n' \"$MEMORY_BENCH_ENFORCE\" >> "+shellQuote(makeLog)+"\nprintf 'BUILD_CHANNEL=%s\\n' \"$BUILD_CHANNEL\" >> "+shellQuote(makeLog)+"\n")
+	makeLog := filepath.Join(t.TempDir(), "make-env.txt")
+	writeExecutableFile(t, filepath.Join(fakeBin, "make"), buildFakeMakeScript(makeLog, cfg.buildChannel != ""))
 
-	if output, err := runShellCommand(worktree, runCI.Run, map[string]string{
+	env := map[string]string{
 		"GH_EVENT_NAME":     "pull_request",
-		"BUILD_CHANNEL":     "rolling",
-		"MEMORY_BENCH_BASE": baseSHA,
-		"RUNNER_TEMP":       runnerTemp,
+		"MEMORY_BENCH_BASE": scenario.baseSHA,
 		"PATH":              fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
-	}); err != nil {
-		t.Fatalf("run verify-rolling CI step: %v\n%s", err, output)
+	}
+	if cfg.buildChannel != "" {
+		runnerTemp := filepath.Join(t.TempDir(), "runner-temp")
+		if err := os.MkdirAll(runnerTemp, 0o755); err != nil {
+			t.Fatalf("create runner temp: %v", err)
+		}
+		env["BUILD_CHANNEL"] = cfg.buildChannel
+		env["RUNNER_TEMP"] = runnerTemp
 	}
 
-	makeEnv, err := os.ReadFile(makeLog)
-	if err != nil {
-		t.Fatalf("read fake make env log: %v", err)
+	if output, err := runShellCommand(scenario.worktree, script, env); err != nil {
+		t.Fatalf("run %s CI step: %v\n%s", cfg.runLabel, err, output)
 	}
-	makeEnvText := string(makeEnv)
+
+	makeEnvText := readFileText(t, makeLog)
 	for _, want := range []string{
-		"MEMORY_BENCH_BASE=" + baseSHA,
+		"MEMORY_BENCH_BASE=" + scenario.baseSHA,
 		"MEMORY_BENCH_ENFORCE=0",
-		"BUILD_CHANNEL=rolling",
 	} {
 		if !strings.Contains(makeEnvText, want+"\n") {
-			t.Fatalf("verify-rolling run step missing %q:\n%s", want, makeEnvText)
+			t.Fatalf("%s run step missing %q:\n%s", cfg.runLabel, want, makeEnvText)
 		}
 	}
-	if strings.Contains(makeEnvText, driftSHA) {
-		t.Fatalf("verify-rolling run step must not pass drifted base ref SHA %q:\n%s", driftSHA, makeEnvText)
+	if cfg.buildChannel != "" && !strings.Contains(makeEnvText, "BUILD_CHANNEL="+cfg.buildChannel+"\n") {
+		t.Fatalf("%s run step missing build channel %q:\n%s", cfg.runLabel, cfg.buildChannel, makeEnvText)
+	}
+	assertImmutableBaseValue(t, makeEnvText, scenario.baseSHA, scenario.headParentSHA, scenario.driftSHA, cfg.runLabel+" run step")
+}
+
+func assertLopperStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string) {
+	t.Helper()
+
+	lopperLog := filepath.Join(t.TempDir(), "lopper.log")
+	if err := os.MkdirAll(filepath.Join(scenario.worktree, "bin"), 0o755); err != nil {
+		t.Fatalf("create fake lopper bin dir: %v", err)
+	}
+	writeExecutableFile(t, filepath.Join(scenario.worktree, "bin", "lopper"), buildFakeLopperScript(lopperLog))
+
+	if output, err := runShellCommand(scenario.worktree, script, map[string]string{"MEMORY_BENCH_BASE": scenario.baseSHA}); err != nil {
+		t.Fatalf("run %s lopper base step: %v\n%s", runLabel, err, output)
+	}
+
+	lopperText := readFileText(t, lopperLog)
+	if !strings.Contains(lopperText, "repo=.artifacts/base\n") {
+		t.Fatalf("%s lopper step did not analyse the detached base worktree:\n%s", runLabel, lopperText)
+	}
+	assertImmutableBaseValue(t, lopperText, scenario.baseSHA, scenario.headParentSHA, scenario.driftSHA, runLabel+" lopper base step")
+}
+
+func buildFakeMakeScript(logPath string, includeBuildChannel bool) string {
+	script := "#!/bin/sh\nset -eu\nprintf 'MEMORY_BENCH_BASE=%s\\n' \"$MEMORY_BENCH_BASE\" > " + shellQuote(logPath) + "\nprintf 'MEMORY_BENCH_ENFORCE=%s\\n' \"$MEMORY_BENCH_ENFORCE\" >> " + shellQuote(logPath) + "\n"
+	if includeBuildChannel {
+		script += "printf 'BUILD_CHANNEL=%s\\n' \"$BUILD_CHANNEL\" >> " + shellQuote(logPath) + "\n"
+	}
+	return script
+}
+
+func buildFakeLopperScript(logPath string) string {
+	return "#!/bin/sh\nset -eu\nrepo=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --repo)\n      repo=\"$2\"\n      shift 2\n      ;;\n    *)\n      shift\n      ;;\n  esac\ndone\nprintf 'repo=%s\\nsha=%s\\n' \"$repo\" \"$(git -C \"$repo\" rev-parse HEAD)\" >> " + shellQuote(logPath) + "\nprintf '{}\\n'\n"
+}
+
+func assertImmutableBaseValue(t *testing.T, text string, wantBaseSHA string, forbiddenHeadParentSHA string, forbiddenDriftSHA string, label string) {
+	t.Helper()
+
+	if !strings.Contains(text, wantBaseSHA) {
+		t.Fatalf("%s missing immutable base SHA %q:\n%s", label, wantBaseSHA, text)
+	}
+	for _, forbidden := range []struct {
+		label string
+		sha   string
+	}{
+		{label: "HEAD^", sha: forbiddenHeadParentSHA},
+		{label: "drifted base ref", sha: forbiddenDriftSHA},
+	} {
+		if strings.Contains(text, forbidden.sha) {
+			t.Fatalf("%s must not contain %s SHA %q:\n%s", label, forbidden.label, forbidden.sha, text)
+		}
 	}
 }
 
