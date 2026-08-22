@@ -387,6 +387,7 @@ func (s *goModModuleScanner) startLongUnquotedQuotedString(quote byte) {
 	s.longUnquotedInQuote = true
 	s.longUnquotedQuote = quote
 	s.longUnquotedEscaped = false
+	s.lineLastSpace = false
 	s.appendLongUnquotedLineByte(quote)
 }
 

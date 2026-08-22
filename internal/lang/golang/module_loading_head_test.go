@@ -406,6 +406,18 @@ func requireLongRecoveryRejectsBadQuoteState(t *testing.T) {
 		t.Fatalf("expected opening-quote overflow recovery to stay valid, got %#v", openingQuoteOverflow)
 	}
 
+	quotedAfterOverflowSpace := goModModuleScanner{
+		lineTooLarge:  true,
+		lineLastSpace: true,
+	}
+	quotedAfterOverflowSpace.startLongUnquotedQuotedString('"')
+	if quotedAfterOverflowSpace.lineLastSpace {
+		t.Fatalf("expected overflow quote start to clear retained whitespace state")
+	}
+	if got := quotedAfterOverflowSpace.longUnquotedLine.String(); got != `"` {
+		t.Fatalf("expected overflow quote start to retain only the quote, got %q", got)
+	}
+
 	var missingQuoteStart goModModuleScanner
 	missingQuoteStart.quoteByte = '"'
 	missingQuoteStart.startLongQuotedTarget()
