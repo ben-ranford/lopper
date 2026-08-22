@@ -163,7 +163,7 @@ func inheritedSHA1IndexFile(t *testing.T) string {
 	t.Helper()
 
 	repo := t.TempDir()
-	if output, err := runTestGit("init", "--object-format=sha1", repo); err != nil {
+	if output, err := runTestGit("init", repo); err != nil {
 		t.Fatalf("create SHA-1 repository for inherited index: %v\n%s", err, output)
 	}
 	mustWrite(t, filepath.Join(repo, "fixture.txt"), "fixture\n")
