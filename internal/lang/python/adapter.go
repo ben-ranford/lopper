@@ -196,6 +196,7 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 type pythonStringMask struct {
 	multilineQuote              string
 	multilineFString            bool
+	multilineFormatSpec         bool
 	multilineReplacementDepth   int
 	multilineReplacementStrings []pythonReplacementStringState
 	shortFStringLineContinued   bool
@@ -205,6 +206,7 @@ type pythonStringMask struct {
 type pythonReplacementStringState struct {
 	delimiter        string
 	fString          bool
+	formatSpec       bool
 	replacementDepth int
 	lineContinued    bool
 }
@@ -289,7 +291,7 @@ func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *i
 	if m.multilineReplacementDepth == 0 {
 		return startFStringReplacementField(line, index, builder, &m.multilineReplacementDepth)
 	}
-	return m.maskFStringReplacementExpression(line, index, builder, &m.multilineReplacementDepth)
+	return m.maskFStringReplacementExpression(line, index, builder, &m.multilineReplacementDepth, &m.multilineFormatSpec)
 }
 
 func (m *pythonStringMask) maskMultilineFStringReplacementString(line string, index *int, builder *strings.Builder) bool {
@@ -339,7 +341,7 @@ func (m *pythonStringMask) maskNestedFStringReplacementString(line string, index
 	if state.replacementDepth == 0 {
 		return m.maskNestedFStringText(line, index, builder, state)
 	}
-	return m.maskFStringReplacementExpression(line, index, builder, &state.replacementDepth)
+	return m.maskFStringReplacementExpression(line, index, builder, &state.replacementDepth, &state.formatSpec)
 }
 
 func (m *pythonStringMask) maskNestedFStringText(line string, index *int, builder *strings.Builder, state *pythonReplacementStringState) bool {
@@ -365,13 +367,13 @@ func (m *pythonStringMask) maskNestedFStringText(line string, index *int, builde
 	return true
 }
 
-func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *int, builder *strings.Builder, depth *int) bool {
+func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *int, builder *strings.Builder, depth *int, formatSpec *bool) bool {
 	current := line[*index]
 	if current == '\'' || current == '"' {
 		m.startFStringReplacementString(line, index, builder)
 		return true
 	}
-	if current == '#' {
+	if current == '#' && !*formatSpec {
 		writeSpaces(builder, len(line)-*index)
 		*index = len(line)
 		return true
@@ -383,6 +385,13 @@ func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *
 		(*depth)++
 	case '}':
 		(*depth)--
+		if *depth == 0 {
+			*formatSpec = false
+		}
+	case ':':
+		if *depth == 1 {
+			*formatSpec = true
+		}
 	}
 	return true
 }
@@ -453,6 +462,7 @@ func (m *pythonStringMask) startMultilineString(quote string, line string, index
 func (m *pythonStringMask) startFStringAwareString(delimiter string, line string, index *int, builder *strings.Builder) {
 	m.multilineQuote = delimiter
 	m.multilineFString = hasPythonFStringPrefix(line, *index)
+	m.multilineFormatSpec = false
 	m.multilineReplacementDepth = 0
 	m.multilineReplacementStrings = nil
 	m.shortFStringLineContinued = false
@@ -481,6 +491,7 @@ func (m *pythonStringMask) closeMultilineString(index *int, builder *strings.Bui
 func (m *pythonStringMask) resetMultilineString() {
 	m.multilineQuote = ""
 	m.multilineFString = false
+	m.multilineFormatSpec = false
 	m.multilineReplacementDepth = 0
 	m.multilineReplacementStrings = nil
 	m.shortFStringLineContinued = false

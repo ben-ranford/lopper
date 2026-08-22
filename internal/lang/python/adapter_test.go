@@ -249,6 +249,14 @@ func TestAdapterAnalyseSkipsImportsInsideShortFStringMultilineReplacementField(t
 	assertDependencyNamesInclude(t, names, "numpy")
 }
 
+func TestAdapterAnalyseFindsImportsAfterFStringFormatSpecHash(t *testing.T) {
+	source := `value = f"{42:#08x}"` + "\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -415,6 +423,13 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 				"import numpy as np\n",
 			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
 			wantLine: 4,
+		},
+		{
+			name: "format spec hash does not mask rest of line",
+			source: `value = f"{42:#08x}"` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
 		},
 	}
 
