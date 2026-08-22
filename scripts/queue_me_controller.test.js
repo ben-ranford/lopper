@@ -464,6 +464,34 @@ test('an unchanged conflicted pull request is skipped until its head or base cha
   assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
 
+test('refreshing follower status preserves conflict markers and does not retry unchanged blocked followers', async () => {
+  const retried = makePull(10, { head: { sha: 'updated-head-10', repo: { full_name: 'octo/lopper' } } });
+  const stillBlocked = makePull(20);
+  const selected = makePull(30);
+  const harness = makeHarness({
+    pulls: [retried, stillBlocked, selected],
+    initialComments: {
+      20: [
+        '<!-- queue-me-controller -->\n## Queue status\n\nGitHub could not rebase this pull request onto `main` because of merge conflicts.\n\n<!-- queue-me-conflict-block head=head-20 base=base-sha -->',
+      ],
+    },
+    comparisonStatuses: { 10: 'behind', 20: 'behind', 30: 'ahead' },
+    rebaseErrors: {
+      10: new Error('Pull Request is not mergeable'),
+      20: new Error('unchanged blocked pull request should not be retried'),
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.armed, [30]);
+  assert.match(commentsFor(harness, 20), /Queued behind #10/);
+  assert.match(
+    commentsFor(harness, 20),
+    /<!-- queue-me-conflict-block head=head-20 base=base-sha -->/,
+  );
+});
+
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
   const harness = makeHarness({
     pulls: [makePull(10)],

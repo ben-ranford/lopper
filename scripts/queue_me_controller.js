@@ -41,7 +41,7 @@ function parseConflictBlock(body) {
   if (typeof body !== 'string') {
     return null;
   }
-  const match = body.match(CONFLICT_BLOCK_RE);
+  const match = CONFLICT_BLOCK_RE.exec(body);
   if (!match) {
     return null;
   }
@@ -124,10 +124,14 @@ async function syncStatusComment(
   repo,
   number,
   body,
-  { createIfMissing = true } = {},
+  { createIfMissing = true, preserveConflictBlock = false } = {},
 ) {
   const existing = await statusComment(github, owner, repo, number);
-  const nextBody = `${COMMENT_MARKER}\n${body}`;
+  const existingBlock = preserveConflictBlock ? parseConflictBlock(existing?.body) : null;
+  const bodyWithPreservedBlock = existingBlock
+    ? `${body}\n\n${conflictBlockMarker(existingBlock.headSHA, existingBlock.baseSHA)}`
+    : body;
+  const nextBody = `${COMMENT_MARKER}\n${bodyWithPreservedBlock}`;
   if (existing?.body === nextBody) {
     return;
   }
@@ -197,6 +201,7 @@ async function syncFollowerStatuses({
       {
         createIfMissing:
           eventQueueEntry?.number === follower.number && eventAction === 'labeled',
+        preserveConflictBlock: true,
       },
     );
   }
@@ -592,19 +597,24 @@ async function runController({
     core.notice('Every queued pull request is waiting for a branch update after a rebase conflict.');
     return;
   }
-  await syncFollowerStatuses({
-    github,
-    owner,
-    repo,
-    followers: queued.slice(activeIndex + 1),
-    leaderNumber: queued[activeIndex].number,
-    eventQueueEntry,
-    eventAction: context.payload.action,
-    conflictSkipped: activeIndex > 0,
-    disableFollowers: true,
-  });
+  let conflictSkipped = activeIndex > 0;
   for (let index = activeIndex; index < queued.length; index += 1) {
     const candidate = queued[index];
+    if (await isBlockedOnSameHead(github, owner, repo, candidate, branch.commit.sha)) {
+      conflictSkipped = true;
+      continue;
+    }
+    await syncFollowerStatuses({
+      github,
+      owner,
+      repo,
+      followers: queued.slice(index + 1),
+      leaderNumber: candidate.number,
+      eventQueueEntry,
+      eventAction: context.payload.action,
+      conflictSkipped,
+      disableFollowers: index === activeIndex,
+    });
     const shouldAdvance = await advanceQueuedPull({
       github,
       owner,
@@ -619,19 +629,7 @@ async function runController({
     if (!shouldAdvance) {
       return;
     }
-    const nextCandidate = queued[index + 1];
-    if (nextCandidate) {
-      await syncFollowerStatuses({
-        github,
-        owner,
-        repo,
-        followers: queued.slice(index + 2),
-        leaderNumber: nextCandidate.number,
-        eventQueueEntry,
-        eventAction: context.payload.action,
-        conflictSkipped: true,
-      });
-    }
+    conflictSkipped = true;
   }
 
   core.notice('Every queued pull request is waiting for a branch update after a rebase conflict.');
