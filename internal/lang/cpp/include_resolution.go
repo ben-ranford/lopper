@@ -45,6 +45,8 @@ type scanResult struct {
 	UnresolvedSamples []string
 	SkippedLargeFiles int
 	Catalog           dependencyCatalog
+
+	seenUnresolvedEvidence map[unresolvedIncludeEvidence]struct{}
 }
 
 type includeResolver struct {
@@ -81,6 +83,11 @@ type includeResolution struct {
 	Resolved        bool
 	System          bool
 	ProvenanceKnown bool
+}
+
+type unresolvedIncludeEvidence struct {
+	Header   string
+	Location report.Location
 }
 
 type scanStage struct {
@@ -236,7 +243,7 @@ func (s *scanStage) process(ctx context.Context, input scanInput) error {
 		scanner.sourceIncludeSearchPaths = input.IncludeSearchPaths
 		scanner.hasSourceIncludeSearchSet = true
 	}
-	scanFile, unresolvedSamples, unresolvedCount, err := scanner.scanFile(input.Path)
+	scanFile, unresolvedEvidence, err := scanner.scanFile(input.Path)
 	if err != nil {
 		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
 			s.result.SkippedLargeFiles++
@@ -251,9 +258,29 @@ func (s *scanStage) process(ctx context.Context, input scanInput) error {
 	if len(scanFile.Includes) > 0 {
 		s.result.Files = append(s.result.Files, scanFile)
 	}
-	s.result.UnresolvedCount += unresolvedCount
-	s.result.appendSampleWarnings(unresolvedSamples)
+	s.result.recordUnresolvedEvidence(unresolvedEvidence)
 	return nil
+}
+
+func (r *scanResult) recordUnresolvedEvidence(evidence []unresolvedIncludeEvidence) {
+	for _, item := range evidence {
+		if !r.recordUnresolvedItem(item) {
+			continue
+		}
+		r.UnresolvedCount++
+		r.appendSampleWarnings([]string{item.sample()})
+	}
+}
+
+func (r *scanResult) recordUnresolvedItem(item unresolvedIncludeEvidence) bool {
+	if r.seenUnresolvedEvidence == nil {
+		r.seenUnresolvedEvidence = make(map[unresolvedIncludeEvidence]struct{})
+	}
+	if _, ok := r.seenUnresolvedEvidence[item]; ok {
+		return false
+	}
+	r.seenUnresolvedEvidence[item] = struct{}{}
+	return true
 }
 
 func (r *scanResult) appendSampleWarnings(samples []string) {
@@ -283,6 +310,10 @@ func (r *scanResult) appendUnresolvedSummaryWarning() {
 	r.Warnings = append(r.Warnings, message)
 }
 
+func (e *unresolvedIncludeEvidence) sample() string {
+	return fmt.Sprintf("%s:%d:%s", e.Location.File, e.Location.Line, e.Header)
+}
+
 func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	files := make([]string, 0)
 	err := shared.WalkRepoFiles(ctx, repoPath, maxScanFiles, shared.ShouldSkipCommonDir, func(path string, entry fs.DirEntry) error {
@@ -298,11 +329,11 @@ func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	return files, nil
 }
 
-func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error) {
+func (r *includeResolver) scanFile(path string) (fileScan, []unresolvedIncludeEvidence, error) {
 	scan := fileScan{}
 	content, err := safeio.ReadFileUnderLimit(r.repoPath, path, maxScannableCPPFile)
 	if err != nil {
-		return scan, nil, 0, err
+		return scan, nil, err
 	}
 
 	relative, err := filepath.Rel(r.repoPath, path)
@@ -312,16 +343,19 @@ func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error)
 	scan.Path = relative
 
 	parsed := parseIncludes(content)
-	unresolvedSamples := make([]string, 0)
-	unresolvedCount := 0
+	unresolvedEvidence := make([]unresolvedIncludeEvidence, 0)
 	for _, include := range parsed {
 		dependency, unresolved := r.mapIncludeToDependency(path, include)
 		if dependency == "" {
 			if unresolved {
-				unresolvedCount++
-				if len(unresolvedSamples) < maxWarningSamples {
-					unresolvedSamples = append(unresolvedSamples, fmt.Sprintf("%s:%d:%s", relative, include.Line, include.Path))
-				}
+				unresolvedEvidence = append(unresolvedEvidence, unresolvedIncludeEvidence{
+					Header: include.Path,
+					Location: report.Location{
+						File:   relative,
+						Line:   include.Line,
+						Column: include.Column,
+					},
+				})
 			}
 			continue
 		}
@@ -336,7 +370,7 @@ func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error)
 		})
 	}
 
-	return scan, unresolvedSamples, unresolvedCount, nil
+	return scan, unresolvedEvidence, nil
 }
 
 func parseIncludes(content []byte) []parsedInclude {

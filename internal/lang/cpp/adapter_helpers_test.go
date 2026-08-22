@@ -213,6 +213,37 @@ int main() { return 0; }
 	}
 }
 
+func TestAnalyseRepeatedIdenticalCompileEntriesDedupesUnresolvedEvidence(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include "missing_header.hpp"
+int main() { return 0; }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), `[
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-c","src/`+testMainCPPFileName+`"]},
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-c","src/`+testMainCPPFileName+`"]}
+]`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+
+	warning := warningContaining(reportData.Warnings, "include mapping unresolved")
+	if warning == "" {
+		t.Fatalf("expected unresolved mapping warning, got %#v", reportData.Warnings)
+	}
+	if !strings.Contains(warning, "1 directive(s)") {
+		t.Fatalf("expected duplicate compile commands to count one unresolved directive, got %q", warning)
+	}
+	sample := filepath.Join("src", testMainCPPFileName) + ":1:missing_header.hpp"
+	if strings.Count(warning, sample) != 1 {
+		t.Fatalf("expected unresolved sample once, got %q", warning)
+	}
+}
+
 func TestAnalyseDoesNotLetFlaglessCompileEntriesInheritOtherIncludeDirs(t *testing.T) {
 	repo := t.TempDir()
 	includeRoot := filepath.Join(repo, "include")
@@ -1120,6 +1151,15 @@ func hasWarning(warnings []string, needle string) bool {
 	return slices.ContainsFunc(warnings, func(warning string) bool {
 		return strings.Contains(strings.ToLower(warning), strings.ToLower(needle))
 	})
+}
+
+func warningContaining(warnings []string, needle string) string {
+	for _, warning := range warnings {
+		if strings.Contains(strings.ToLower(warning), strings.ToLower(needle)) {
+			return warning
+		}
+	}
+	return ""
 }
 
 func assertQualifiedHeaderMapsAsDependency(t *testing.T, repo, source, header string) {
