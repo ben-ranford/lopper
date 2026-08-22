@@ -181,6 +181,62 @@ suite("managed binary installer", () => {
     }
   });
 
+  test("normalizes unprefixed prerelease and build managed binary tags", async () => {
+    for (const [managedBinaryTag, normalizedTag] of [
+      ["1.8.2-rc.1", "v1.8.2-rc.1"],
+      ["1.8.2+meta", "v1.8.2+meta"],
+    ]) {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-tag-"));
+      const previousPath = process.env.PATH;
+      const cacheLookupTags: Array<string | undefined> = [];
+      const progressTags: Array<string | undefined> = [];
+      const installTags: Array<string | undefined> = [];
+
+      try {
+        process.env.PATH = "";
+        const lifecycle = new LopperBinaryLifecycleManager(
+          {
+            findInstalledBinary: async (releaseTag) => {
+              cacheLookupTags.push(releaseTag);
+              return undefined;
+            },
+            ensureInstalled: async (releaseTag) => {
+              installTags.push(releaseTag);
+              return {
+                binaryPath: path.join(tempRoot, "managed", "lopper"),
+                tag: releaseTag ?? "latest",
+                downloaded: true,
+              };
+            },
+          },
+          { appendLine: () => undefined },
+          {
+            install: async (releaseTag, install) => {
+              progressTags.push(releaseTag);
+              return install();
+            },
+          },
+          "linux",
+        );
+
+        const binaryPath = await lifecycle.resolveBinaryPath({
+          workspaceRoot: tempRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: true,
+          managedBinaryTag,
+        });
+
+        assert.equal(binaryPath, path.join(tempRoot, "managed", "lopper"));
+        assert.deepEqual(cacheLookupTags, [normalizedTag]);
+        assert.deepEqual(progressTags, [normalizedTag]);
+        assert.deepEqual(installTags, [normalizedTag]);
+      } finally {
+        restoreEnv("PATH", previousPath);
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("rejects managed binary archive downloads with checksum mismatch", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
     try {

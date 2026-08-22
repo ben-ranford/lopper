@@ -92,6 +92,8 @@ export interface ManagedBinaryDeps {
 }
 
 const metadataFileName = "managed-binary.json";
+const unprefixedSemverReleaseTagPattern =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const releaseOwner = "ben-ranford";
 const releaseRepo = "lopper";
 
@@ -496,7 +498,7 @@ function normalizeConfiguredReleaseTag(releaseTag?: string): string | undefined 
   if (!normalizedTag || normalizedTag.startsWith("v")) {
     return normalizedTag;
   }
-  if (/^\d+\.\d+\.\d+$/.test(normalizedTag)) {
+  if (unprefixedSemverReleaseTagPattern.test(normalizedTag)) {
     return `v${normalizedTag}`;
   }
   return normalizedTag;
