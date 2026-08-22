@@ -143,6 +143,80 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackWhenRenameDeniedOnNonWin
 	assertFallbackTargetData(t, targetData, "after")
 }
 
+func TestWriteAtomicReplacementWithPinnedTargetReturnsRenameErrorWhenFallbackDisabledOnNonWindows(t *testing.T) {
+	removeCalls := 0
+	root, targetFile, targetData := newFallbackRenameRoot(t, func(string) error {
+		removeCalls++
+		return nil
+	})
+
+	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, false)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected rename permission error without pinned overwrite fallback, got %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected temp cleanup after rejected fallback, got %d removes", removeCalls)
+	}
+	assertFallbackTargetData(t, targetData, "before")
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootReturnsLinkErrorAndCleansTempOnNonWindows(t *testing.T) {
+	linkErr := errors.New("link unavailable")
+	cleanupErr := errors.New("temp cleanup failure")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	tempClosed := false
+	linkCalls := 0
+	removeCalls := 0
+
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected temp path: %s", name)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: func() error {
+					tempClosed = true
+					return nil
+				},
+			}, nil
+		},
+		link: func(oldName, newName string) error {
+			linkCalls++
+			if !strings.HasPrefix(oldName, atomicTempPrefix) || newName != writeTestFileName {
+				t.Fatalf("unexpected hard-link publish paths: %s -> %s", oldName, newName)
+			}
+			return linkErr
+		},
+		remove: func(name string) error {
+			removeCalls++
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected temp cleanup path: %s", name)
+			}
+			return cleanupErr
+		},
+	}
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("expected link error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
+	}
+	if linkCalls != 1 {
+		t.Fatalf("expected one hard-link publish attempt, got %d", linkCalls)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one temp cleanup, got %d", removeCalls)
+	}
+	if !tempClosed {
+		t.Fatal("expected temp file to close before publish fallback")
+	}
+}
+
 func seedReadOnlyTargetFile(t *testing.T, rootDir string, perm os.FileMode) string {
 	t.Helper()
 

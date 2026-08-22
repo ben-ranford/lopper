@@ -261,8 +261,12 @@ func TestCPPAdditionalZeroHitBranches(t *testing.T) {
 	for i := 0; i <= maxManifestFiles; i++ {
 		testutil.MustWriteFile(t, filepath.Join(repo, fmt.Sprintf("pkg-%03d", i), vcpkgManifestFile), `{"dependencies":["fmt"]}`)
 	}
-	if _, _, err := loadDependencyCatalog(repo); err != nil {
+	_, warnings, err := loadDependencyCatalog(repo)
+	if err != nil {
 		t.Fatalf("expected manifest discovery cap to stop cleanly, got %v", err)
+	}
+	if !hasWarning(warnings, "dependency catalog is incomplete") {
+		t.Fatalf("expected incomplete catalog warning when manifest cap is reached, got %#v", warnings)
 	}
 
 	outside := filepath.Join(t.TempDir(), "outside.cpp")

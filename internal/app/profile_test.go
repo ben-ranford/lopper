@@ -205,6 +205,67 @@ func TestPersistProfileConfigKeepsWritePermissionErrorWhenSearchOnlyFallbackUnav
 	}
 }
 
+func TestPersistProfileConfigPinnedRootFallbackReportsIdentityDrift(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenCanonicalWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open canonical write root: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close canonical write root: %v", closeErr)
+		}
+	}()
+	otherInfo, err := os.Lstat(t.TempDir())
+	if err != nil {
+		t.Fatalf("stat different root: %v", err)
+	}
+
+	err = persistProfileConfigPinnedRootFallback([]byte("thresholds: {}\n"), commandOutputDestination{
+		root:       root,
+		rootInfo:   otherInfo,
+		targetPath: "profile.yaml",
+	}, os.ErrPermission, func(*safeio.WriteRoot, string, []byte, os.FileMode) error {
+		t.Fatal("write fallback must not run after identity drift")
+		return nil
+	})
+	if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "pinned root identity changed") {
+		t.Fatalf("expected joined permission and identity drift error, got %v", err)
+	}
+}
+
+func TestPersistProfileConfigPinnedRootFallbackReturnsWriteError(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := safeio.OpenCanonicalWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("open canonical write root: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close canonical write root: %v", closeErr)
+		}
+	}()
+	rootInfo, err := root.RootInfo()
+	if err != nil {
+		t.Fatalf("stat canonical write root: %v", err)
+	}
+	writeErr := errors.New("write fallback failed")
+
+	err = persistProfileConfigPinnedRootFallback([]byte("thresholds: {}\n"), commandOutputDestination{
+		root:       root,
+		rootInfo:   rootInfo,
+		targetPath: "profile.yaml",
+	}, os.ErrPermission, func(*safeio.WriteRoot, string, []byte, os.FileMode) error {
+		return writeErr
+	})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected write fallback error, got %v", err)
+	}
+	if errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected write fallback error without primary permission error, got %v", err)
+	}
+}
+
 func TestPersistProfileConfigRejectsParentSymlink(t *testing.T) {
 	workspace := t.TempDir()
 	outside := t.TempDir()

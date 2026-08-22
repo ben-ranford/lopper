@@ -715,6 +715,33 @@ func TestOpenCommandOutputDestinationClosesRootOnBoundaryError(t *testing.T) {
 	}
 }
 
+func TestOpenResolvedCommandOutputDestinationClosesRootOnIdentityError(t *testing.T) {
+	workspace := t.TempDir()
+	openedRoot, err := safeio.OpenWriteRoot(workspace)
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	if err := openedRoot.Close(); err != nil {
+		t.Fatalf("pre-close write root: %v", err)
+	}
+
+	destination, err := openResolvedCommandOutputDestination(commandOutputDestination{rootAbs: workspace}, func(rootPath string) (*safeio.WriteRoot, error) {
+		if rootPath != workspace {
+			t.Fatalf("unexpected root path: %q", rootPath)
+		}
+		return openedRoot, nil
+	})
+	if destination.root != nil {
+		if closeErr := destination.root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected destination root: %v", closeErr)
+		}
+		t.Fatal("expected destination root to remain nil")
+	}
+	if err == nil {
+		t.Fatal("expected root identity error")
+	}
+}
+
 func TestTrustedCommandOutputRootIgnoresRelativeRootWhenCWDUnavailable(t *testing.T) {
 	withRemovedWorkingDirectory(t, func() {
 		root, err := trustedCommandOutputRootBoundaryForRoot(filepath.Join(string(os.PathSeparator), "output.json"), "relative-root")

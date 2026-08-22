@@ -13,8 +13,19 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
+const ManifestReadLimitBytes int64 = 16 << 20
+
 func readOptionalTOMLDocument(repoPath, path string) (map[string]any, []string, error) {
 	content, err := readOptionalTOMLContent(repoPath, path)
+	return parseOptionalTOMLDocument(repoPath, path, content, err)
+}
+
+func readOptionalLockTOMLDocument(repoPath, path string) (map[string]any, []string, error) {
+	content, err := readOptionalFileContent(repoPath, path)
+	return parseOptionalTOMLDocument(repoPath, path, content, err)
+}
+
+func parseOptionalTOMLDocument(repoPath, path string, content []byte, err error) (map[string]any, []string, error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
@@ -31,11 +42,15 @@ func readOptionalTOMLDocument(repoPath, path string) (map[string]any, []string, 
 }
 
 func readOptionalTOMLContent(repoPath, path string) ([]byte, error) {
-	return readOptionalFileContent(repoPath, path)
+	return ReadManifestFile(repoPath, path)
 }
 
 func readOptionalJSONContent(repoPath, path string) ([]byte, error) {
 	return readOptionalFileContent(repoPath, path)
+}
+
+func ReadManifestFile(repoPath, path string) ([]byte, error) {
+	return safeio.ReadFileUnderLimit(repoPath, path, ManifestReadLimitBytes)
 }
 
 func readOptionalFileContent(repoPath, path string) ([]byte, error) {

@@ -152,7 +152,11 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 		return err
 	}
 	if err := root.Link(session.tempRel, targetRel); err != nil {
-		return err
+		if fallbackErr := fallbackAtomicIfAbsent(root, session.tempRel, targetRel, session.tempInfo, err); fallbackErr != nil {
+			return fallbackErr
+		}
+		session.tempRel = ""
+		return session.verifyCommittedTarget()
 	}
 	if err := root.Remove(session.tempRel); err != nil {
 		return err

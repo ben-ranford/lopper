@@ -189,6 +189,77 @@ func TestOpenSearchOnlyCanonicalDirectoryOpensVolumeRoot(t *testing.T) {
 	}
 }
 
+func TestOpenCanonicalSearchOnlyWriteRootOnlyExposesDescriptorFallback(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := OpenCanonicalSearchOnlyWriteRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenCanonicalSearchOnlyWriteRoot returned error: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close search-only write root: %v", closeErr)
+		}
+	}()
+	searchRoot, ok := root.root.(*searchOnlyWriteRoot)
+	if !ok {
+		t.Fatalf("expected search-only root implementation, got %T", root.root)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		wantError string
+		run       func() error
+	}{
+		{name: "Open", wantError: "descriptor fallback", run: func() error {
+			_, err := searchRoot.Open(writeTestFileName)
+			return err
+		}},
+		{name: "OpenRoot", wantError: "descriptor fallback", run: func() error {
+			_, err := searchRoot.OpenRoot(".")
+			return err
+		}},
+		{name: "Mkdir", wantError: "descriptor fallback", run: func() error { return searchRoot.Mkdir("child", 0o750) }},
+		{name: "Chmod", wantError: "descriptor fallback", run: func() error { return searchRoot.Chmod("child", 0o700) }},
+		{name: "MkdirAll", wantError: "descriptor fallback", run: func() error { return searchRoot.MkdirAll("child", 0o750) }},
+		{name: "Link", wantError: "descriptor fallback", run: func() error { return searchRoot.Link("old", "new") }},
+		{name: "Rename", wantError: "descriptor fallback", run: func() error { return searchRoot.Rename("old", "new") }},
+		{name: "Remove", wantError: "descriptor fallback", run: func() error { return searchRoot.Remove("child") }},
+		{name: "OpenFile child", wantError: "root descriptor access", run: func() error {
+			_, err := searchRoot.OpenFile("child", os.O_RDONLY, 0)
+			return err
+		}},
+		{name: "Lstat child", wantError: "root descriptor stat", run: func() error {
+			_, err := searchRoot.Lstat("child")
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run(); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("expected descriptor fallback error, got %v", err)
+			}
+		})
+	}
+
+	file, err := searchRoot.OpenFile(".", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile root descriptor returned error: %v", err)
+	}
+	if info, err := file.Stat(); err != nil {
+		t.Fatalf("stat duplicated root descriptor: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("expected duplicated root descriptor to stat as directory, got mode %v", info.Mode())
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close duplicated root descriptor: %v", err)
+	}
+
+	if info, err := searchRoot.Lstat("."); err != nil {
+		t.Fatalf("Lstat root descriptor returned error: %v", err)
+	} else if !info.IsDir() {
+		t.Fatalf("expected root descriptor stat to be directory, got mode %v", info.Mode())
+	}
+}
+
 func TestOpenSearchOnlyDirectoryPartsPropagatesHookError(t *testing.T) {
 	rootPath := filepath.VolumeName(filepath.Clean(t.TempDir())) + string(os.PathSeparator)
 	root, err := openSearchOnlyDirectory(rootPath)
@@ -398,6 +469,60 @@ func TestSearchDirectoryAliasTargetRequiresSymlinkForTrustedAlias(t *testing.T) 
 	}
 }
 
+func TestSearchDirectoryRootLevelAliasRejectionBranches(t *testing.T) {
+	originalLstat := searchDirectoryLstatFn
+	originalStat := searchDirectoryStatFn
+	t.Cleanup(func() {
+		searchDirectoryLstatFn = originalLstat
+		searchDirectoryStatFn = originalStat
+	})
+
+	if isSearchDirectoryRootLevelAlias("relative") {
+		t.Fatal("relative path must not be a root-level alias")
+	}
+	if isSearchDirectoryRootLevelAlias(filepath.Join(string(os.PathSeparator), "alias", "nested")) {
+		t.Fatal("nested path must not be a root-level alias")
+	}
+
+	dirInfo := statTestPath(t, t.TempDir())
+	rootAlias := filepath.Join(string(os.PathSeparator), "alias")
+	searchDirectoryLstatFn = func(string) (fs.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+	if isSearchDirectoryRootLevelAlias(rootAlias) {
+		t.Fatal("missing alias path must not be accepted")
+	}
+
+	searchDirectoryLstatFn = func(string) (fs.FileInfo, error) {
+		return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeDir | 0o755}, nil
+	}
+	if isSearchDirectoryRootLevelAlias(rootAlias) {
+		t.Fatal("ordinary directory must not be accepted as alias")
+	}
+
+	searchDirectoryLstatFn = func(string) (fs.FileInfo, error) {
+		return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeSymlink | 0o777}, nil
+	}
+	searchDirectoryStatFn = func(string) (fs.FileInfo, error) {
+		return nil, os.ErrNotExist
+	}
+	if isSearchDirectoryRootLevelAlias(rootAlias) {
+		t.Fatal("symlink with missing target must not be accepted")
+	}
+
+	fileTarget := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(fileTarget, []byte("target"), 0o600); err != nil {
+		t.Fatalf("write regular alias target: %v", err)
+	}
+	fileInfo := statTestPath(t, fileTarget)
+	searchDirectoryStatFn = func(string) (fs.FileInfo, error) {
+		return fileInfo, nil
+	}
+	if isSearchDirectoryRootLevelAlias(rootAlias) {
+		t.Fatal("symlink to a regular file must not be accepted")
+	}
+}
+
 func TestOpenSearchOnlyDirectoryRejectsMissingPath(t *testing.T) {
 	file, err := openSearchOnlyDirectory(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
@@ -405,6 +530,15 @@ func TestOpenSearchOnlyDirectoryRejectsMissingPath(t *testing.T) {
 			t.Fatalf("close unexpected missing directory descriptor: %v", closeErr)
 		}
 		t.Fatal("expected missing directory open to fail")
+	}
+}
+
+func TestOpenCanonicalSearchOnlyWriteRootRejectsInvalidRootPath(t *testing.T) {
+	if root, err := OpenCanonicalSearchOnlyWriteRoot(string([]byte{'b', 'a', 'd', 0})); err == nil {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected invalid root: %v", closeErr)
+		}
+		t.Fatal("expected invalid root path to fail")
 	}
 }
 

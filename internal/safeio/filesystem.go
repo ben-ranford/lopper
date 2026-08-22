@@ -142,7 +142,7 @@ func (*osFileSystem) OpenRoot(name string) (Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &osRoot{root: root}, nil
+	return &osRoot{root: root, name: name}, nil
 }
 
 func (f *osFileSystem) OpenRootNoFollow(name string) (Root, error) {
@@ -266,7 +266,7 @@ func openValidatedChildRoot(root Root, name, path string, infoFn func() (fs.File
 	if !os.SameFile(info, openedInfo) {
 		return nil, closeRootWithError(next, fmt.Errorf("%s: %s", changedMessage, path))
 	}
-	return next, nil
+	return rootWithName(next, path), nil
 }
 
 func openRootChildNoFollow(root Root, name, path string) (Root, error) {
@@ -338,6 +338,31 @@ func closeRootWithError(root Root, err error) error {
 
 type osRoot struct {
 	root *os.Root
+	name string
+}
+
+type namedRoot interface {
+	Root
+	rootName() string
+}
+
+type namedRootAt struct {
+	Root
+	name string
+}
+
+func rootWithName(root Root, name string) Root {
+	if !filepath.IsAbs(name) {
+		return root
+	}
+	if _, ok := root.(namedRoot); !ok {
+		return root
+	}
+	return &namedRootAt{Root: root, name: name}
+}
+
+func (r *namedRootAt) rootName() string {
+	return r.name
 }
 
 func OpenPinnedFile(root Root, name string) (_ File, err error) {
@@ -529,7 +554,14 @@ func (r *osRoot) OpenRoot(name string) (Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &osRoot{root: root}, nil
+	return &osRoot{root: root, name: filepath.Join(r.rootName(), name)}, nil
+}
+
+func (r *osRoot) rootName() string {
+	if r.name != "" {
+		return r.name
+	}
+	return r.root.Name()
 }
 
 func (r *osRoot) Lstat(name string) (fs.FileInfo, error) {
