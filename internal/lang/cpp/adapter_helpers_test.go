@@ -260,6 +260,8 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"ext/algorithm",
 		"ext/numeric",
 		"parallel/algorithm",
+		"parallel/algo.h",
+		"parallel/algobase.h",
 		"parallel/base.h",
 		"parallel/basic_iterator.h",
 		"parallel/features.h",
@@ -340,8 +342,12 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"ext/pb_ds/assoc_container_extra.hpp",
 		"ext/pb_ds/exception.h",
 		"ext/pb_ds/hash_policy_extra.hpp",
+		"ext/pb_ds/map.hpp",
+		"ext/pb_ds/vector.hpp",
 		"parallel/algorithm.h",
 		"parallel/algorithm.hpp",
+		"parallel/algo.hpp",
+		"parallel/algobase.hpp",
 		"parallel/base.hpp",
 		"parallel/custom_base.h",
 		"parallel/find.hpp",
@@ -375,6 +381,8 @@ func TestAnalyseTopNIgnoresGNUQualifiedCompilerHeaders(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/safe_iterator.h>
 #include <debug/set.h>
 #include <backward/hash_map>
+#include <parallel/algo.h>
+#include <parallel/algobase.h>
 #include <parallel/base.h>
 #include <parallel/find.h>
 #include <parallel/queue.h>
@@ -399,6 +407,40 @@ int main() { return 0; }
 		case "debug", "parallel", "ext", "tr1":
 			t.Fatalf("expected GNU compiler header to be ignored, got dependency row %#v", dependency)
 		}
+	}
+}
+
+func TestAnalyseTopNReportsQualifiedThirdPartyLookalikes(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <ext/pb_ds/map.hpp>
+#include <ext/pb_ds/vector.hpp>
+#include <parallel/algo.hpp>
+#include <parallel/algobase.hpp>
+int main() { return 0; }
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse topN: %v", err)
+	}
+
+	var extCount, parallelCount int
+	for _, dependency := range reportData.Dependencies {
+		switch dependency.Name {
+		case "ext":
+			extCount = dependency.TotalExportsCount
+		case "parallel":
+			parallelCount = dependency.TotalExportsCount
+		}
+	}
+	if extCount != 2 {
+		t.Fatalf("expected ext lookalikes to be reported twice, got %d with deps %#v", extCount, reportData.Dependencies)
+	}
+	if parallelCount != 2 {
+		t.Fatalf("expected parallel lookalikes to be reported twice, got %d with deps %#v", parallelCount, reportData.Dependencies)
 	}
 }
 

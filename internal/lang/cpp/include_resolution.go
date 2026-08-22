@@ -500,9 +500,6 @@ func isKnownCompilerQualifiedStdHPPHeader(header, stem string) bool {
 	if !strings.HasPrefix(header, "ext/pb_ds/") {
 		return false
 	}
-	if _, ok := cppStdHeaderSet[stem]; ok {
-		return true
-	}
 	_, ok := cppExtPBDSQualifiedStdHeaderStemSet[stem]
 	return ok
 }
@@ -596,6 +593,8 @@ var cppBackwardQualifiedStdHeaderStemSet = map[string]struct{}{
 }
 
 var cppParallelQualifiedStdHeaderStemSet = map[string]struct{}{
+	"algo":                 {},
+	"algobase":             {},
 	"algorithmfwd":         {},
 	"balanced_quicksort":   {},
 	"base":                 {},
@@ -636,6 +635,7 @@ var cppParallelQualifiedStdHeaderStemSet = map[string]struct{}{
 
 var cppExtPBDSQualifiedStdHeaderStemSet = map[string]struct{}{
 	"assoc_container":    {},
+	"exception":          {},
 	"hash_policy":        {},
 	"list_update_policy": {},
 	"priority_queue":     {},
