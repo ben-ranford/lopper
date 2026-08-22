@@ -192,6 +192,24 @@ func TestValidateReachableVulnerabilityThreshold(t *testing.T) {
 	}
 }
 
+func TestValidateReachableVulnerabilityThresholdFailsClosedForOversizedRubyGemspecCoverage(t *testing.T) {
+	oversized := report.Report{
+		Warnings: []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"},
+	}
+	if err := validateReachableVulnerabilityThreshold(oversized, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected oversized gemspec coverage to fail closed under reachable-vulnerability threshold, got %v", err)
+	}
+
+	if err := validateReachableVulnerabilityThreshold(oversized, report.VulnerabilityPriorityOff); err != nil {
+		t.Fatalf("expected off threshold to allow oversized gemspec warning, got %v", err)
+	}
+
+	exactLimit := report.Report{}
+	if err := validateReachableVulnerabilityThreshold(exactLimit, report.VulnerabilityPriorityHigh); err != nil {
+		t.Fatalf("expected exact-limit gemspec coverage without warning to pass, got %v", err)
+	}
+}
+
 func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testing.T) {
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{

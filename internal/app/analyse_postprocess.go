@@ -276,6 +276,12 @@ func validateReachableVulnerabilityThreshold(reportData report.Report, threshold
 	if !report.ValidVulnerabilityPriorityThreshold(threshold) {
 		return fmt.Errorf("invalid reachable vulnerability priority threshold: %s", threshold)
 	}
+	if !reachableVulnerabilityThresholdEnabled(threshold) {
+		return nil
+	}
+	if hasOversizedRubyGemspecDeclarationWarning(reportData.Warnings) {
+		return ErrReachableVulnerabilities
+	}
 	if !hasReachableVulnerabilityAtOrAbove(reportData, threshold) {
 		return nil
 	}
@@ -283,13 +289,26 @@ func validateReachableVulnerabilityThreshold(reportData report.Report, threshold
 }
 
 func hasReachableVulnerabilityAtOrAbove(reportData report.Report, threshold string) bool {
-	if strings.TrimSpace(threshold) == "" || report.NormalizeVulnerabilityPriorityThreshold(threshold) == report.VulnerabilityPriorityOff {
+	if !reachableVulnerabilityThresholdEnabled(threshold) {
 		return false
 	}
 	if reportData.BaselineComparison != nil {
 		return baselineHasReachableVulnerabilityAtOrAbove(reportData.BaselineComparison.NewReachableVulnerabilities, threshold)
 	}
 	return dependencyHasReachableVulnerabilityAtOrAbove(reportData.Dependencies, threshold)
+}
+
+func reachableVulnerabilityThresholdEnabled(threshold string) bool {
+	return strings.TrimSpace(threshold) != "" && report.NormalizeVulnerabilityPriorityThreshold(threshold) != report.VulnerabilityPriorityOff
+}
+
+func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
+	for _, warning := range warnings {
+		if strings.HasPrefix(warning, "skipped ") && strings.Contains(warning, ".gemspec because it exceeds ") {
+			return true
+		}
+	}
+	return false
 }
 
 func baselineHasReachableVulnerabilityAtOrAbove(findings []report.VulnerabilityDelta, threshold string) bool {
