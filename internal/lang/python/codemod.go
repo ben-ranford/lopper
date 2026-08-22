@@ -50,7 +50,6 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 	skips := make([]report.CodemodSkip, 0)
 	warnings := make([]string, 0)
 
-	importsByLine := pythonImportsByLine(file.Imports)
 	lines, warning, loaded := shared.LoadCodemodSourceLines(repoPath, file.Path, lineCache)
 	if !loaded {
 		if warning != "" {
@@ -58,6 +57,7 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 		}
 		return suggestions, skips, warnings
 	}
+	importsByLine := pythonImportsByLine(lines, file.Imports)
 
 	for _, line := range pythonSortedImportLines(importsByLine) {
 		lineImports := importsByLine[line]
@@ -99,15 +99,50 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 	return suggestions, skips, warnings
 }
 
-func pythonImportsByLine(imports []importBinding) map[int][]importBinding {
+func pythonImportsByLine(lines []string, imports []importBinding) map[int][]importBinding {
 	grouped := make(map[int][]importBinding)
 	for _, imported := range imports {
 		if imported.Location.Line <= 0 {
 			continue
 		}
-		grouped[imported.Location.Line] = append(grouped[imported.Location.Line], imported)
+		statementLine := pythonImportStatementLine(lines, imported)
+		normalized := imported
+		normalized.Location.Line = statementLine
+		grouped[statementLine] = append(grouped[statementLine], normalized)
 	}
 	return grouped
+}
+
+func pythonImportStatementLine(lines []string, imported importBinding) int {
+	if imported.Location.Line <= 0 {
+		return imported.Location.Line
+	}
+	sourceLine, ok := pythonSourceLine(lines, imported.Location.Line)
+	if !ok {
+		return imported.Location.Line
+	}
+	if pythonLineStartsImport(sourceLine) {
+		return imported.Location.Line
+	}
+	for line := imported.Location.Line - 1; line >= 1; line-- {
+		candidate, ok := pythonSourceLine(lines, line)
+		if !ok {
+			break
+		}
+		matches := fromLinePattern.FindStringSubmatch(stripComment(candidate))
+		if len(matches) != 3 || strings.TrimSpace(matches[1]) != imported.Module {
+			continue
+		}
+		if fromImportParenthesisDelta(strings.TrimSpace(matches[2])) > 0 {
+			return line
+		}
+	}
+	return imported.Location.Line
+}
+
+func pythonLineStartsImport(sourceLine string) bool {
+	lineNoComment := stripComment(sourceLine)
+	return len(importLinePattern.FindStringSubmatch(lineNoComment)) == 2 || len(fromLinePattern.FindStringSubmatch(lineNoComment)) == 3
 }
 
 func pythonSortedImportLines(importsByLine map[int][]importBinding) []int {
