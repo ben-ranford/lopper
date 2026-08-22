@@ -15,6 +15,8 @@ var (
 	writeProfileConfigCanonicalReplacingFn = safeio.WriteFileAtomicallyReplacingUnderCanonicalPath
 )
 
+type profileConfigCanonicalWriter func(string, []byte, os.FileMode) error
+
 func (a *App) executeProfile(req Request) (string, error) {
 	if !req.Profile.Features.Enabled(thresholds.ProfilesPreviewFeature) {
 		return "", ErrProfileFeatureDisabled
@@ -50,11 +52,23 @@ func persistProfileConfig(config, outputPath string, force bool) (result string,
 	return "threshold profile config written to " + trimmedOutputPath, nil
 }
 
-func persistProfileConfigForced(config, outputPath string) (returnErr error) {
+func persistProfileConfigForced(config, outputPath string) error {
+	return persistProfileConfigThroughDestination(outputPath, []byte(config), func(destination commandOutputDestination, data []byte) error {
+		return destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, data, 0o600, 0o750)
+	}, writeProfileConfigCanonicalReplacingFn)
+}
+
+func persistProfileConfigIfAbsent(config, outputPath string) error {
+	return persistProfileConfigThroughDestination(outputPath, []byte(config), func(destination commandOutputDestination, data []byte) error {
+		return destination.root.WriteFileCreatingParentsIfAbsent(destination.targetPath, data, 0o600, 0o750)
+	}, writeProfileConfigCanonicalIfAbsentFn)
+}
+
+func persistProfileConfigThroughDestination(outputPath string, data []byte, write func(commandOutputDestination, []byte) error, writeCanonical profileConfigCanonicalWriter) (returnErr error) {
 	destination, err := openCommandOutputDestination(outputPath)
 	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return persistProfileConfigCanonicalReplacing(config, outputPath, err)
+		if profilePermissionError(err) {
+			return persistProfileConfigCanonical(data, outputPath, "", err, writeCanonical)
 		}
 		return err
 	}
@@ -64,39 +78,26 @@ func persistProfileConfigForced(config, outputPath string) (returnErr error) {
 		}
 	}()
 
-	if err := destination.root.WriteFileCreatingParentsWithPermissionFallback(destination.targetPath, []byte(config), 0o600, 0o750); err != nil {
-		return err
-	}
-	return returnErr
-}
-
-func persistProfileConfigIfAbsent(config, outputPath string) error {
-	destination, err := openCommandOutputDestination(outputPath)
-	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return persistProfileConfigCanonicalIfAbsent(config, outputPath, err)
+	if err := write(destination, data); err != nil {
+		if profilePermissionError(err) {
+			return persistProfileConfigCanonical(data, outputPath, destination.outputAbs, err, writeCanonical)
 		}
 		return err
 	}
-	returnErr := destination.root.WriteFileCreatingParentsIfAbsent(destination.targetPath, []byte(config), 0o600, 0o750)
-	if closeErr := destination.root.Close(); closeErr != nil {
-		returnErr = errors.Join(returnErr, closeErr)
-	}
 	return returnErr
 }
 
-func persistProfileConfigCanonicalIfAbsent(config, outputPath string, primaryErr error) error {
-	resolvedOutputPath, resolveErr := absoluteCommandOutputPath(outputPath)
-	if resolveErr != nil {
-		return errors.Join(primaryErr, resolveErr)
+func persistProfileConfigCanonical(data []byte, outputPath, outputAbs string, primaryErr error, write profileConfigCanonicalWriter) error {
+	if outputAbs == "" {
+		resolvedOutputPath, resolveErr := absoluteCommandOutputPath(outputPath)
+		if resolveErr != nil {
+			return errors.Join(primaryErr, resolveErr)
+		}
+		outputAbs = resolvedOutputPath
 	}
-	return writeProfileConfigCanonicalIfAbsentFn(resolvedOutputPath, []byte(config), 0o600)
+	return write(outputAbs, data, 0o600)
 }
 
-func persistProfileConfigCanonicalReplacing(config, outputPath string, primaryErr error) error {
-	resolvedOutputPath, resolveErr := absoluteCommandOutputPath(outputPath)
-	if resolveErr != nil {
-		return errors.Join(primaryErr, resolveErr)
-	}
-	return writeProfileConfigCanonicalReplacingFn(resolvedOutputPath, []byte(config), 0o600)
+func profilePermissionError(err error) bool {
+	return errors.Is(err, os.ErrPermission) || os.IsPermission(err)
 }

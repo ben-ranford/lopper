@@ -288,10 +288,6 @@ func descriptorInfoIsDirectory(info descriptorFileInfo) bool {
 	return info.mode&unix.S_IFMT == unix.S_IFDIR
 }
 
-func descriptorInfoPerm(info descriptorFileInfo) os.FileMode {
-	return os.FileMode(info.mode).Perm()
-}
-
 func descriptorStat(fd int) (descriptorFileInfo, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {

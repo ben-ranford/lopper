@@ -6090,22 +6090,6 @@ func ensureCurrentGoModuleCached(t *testing.T, goPath, moduleCacheDir, modulePat
 	}
 }
 
-func makeTreeWritable(t *testing.T, root string) {
-	t.Helper()
-
-	if err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() {
-			return os.Chmod(path, 0o755)
-		}
-		return os.Chmod(path, 0o644)
-	}); err != nil && !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("make tree writable %s: %v", root, err)
-	}
-}
-
 func currentGoModRequirement(t *testing.T, modulePath string) string {
 	t.Helper()
 
