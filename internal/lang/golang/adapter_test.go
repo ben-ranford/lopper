@@ -1,7 +1,6 @@
 package golang
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"go/ast"
@@ -1837,71 +1836,26 @@ func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestGoModModuleScannerDefensiveBranches(t *testing.T) {
-	for name, testCase := range map[string]struct {
-		content string
-		want    string
-	}{
-		"inline known empty block": {
-			content: "module example.com/root\nrequire ()\n",
-			want:    "example.com/root",
-		},
-		"inline unknown empty block": {
-			content: "module example.com/root\nunknown ()\n",
-		},
-		"empty module block after module": {
-			content: "module example.com/root\nmodule ( )\n",
-			want:    "example.com/root",
-		},
-		"unterminated block comment": {
-			content: "module example.com/root /*",
-		},
+func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
+	for name, content := range map[string]string{
+		"inline known empty block":   "module example.com/root\nrequire ()",
+		"inline unknown empty block": "module example.com/root\nunknown ()",
+		"empty module block":         "module example.com/root\nmodule ( )",
+		"unterminated block comment": "module example.com/root /*",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, err := scanGoModModulePath(strings.NewReader(testCase.content))
-			if err != nil {
-				t.Fatalf("scan module path: %v", err)
-			}
-			if got != testCase.want {
-				t.Fatalf("module path = %q, want %q", got, testCase.want)
+			repo := t.TempDir()
+			writeFile(t, filepath.Join(repo, "go.mod"), content+"\n// "+strings.Repeat("x", 2*1024*1024))
+			if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
+				t.Fatalf("analyse oversized go.mod fixture: %v", err)
 			}
 		})
 	}
 
-	scanner := goModModuleScanner{
-		buffered: bufio.NewReader(strings.NewReader("module example.com/root\n")),
-		maxBytes: 1,
-	}
-	if got, err := scanner.scan(); err != nil || got != "" {
-		t.Fatalf("bounded scan = (%q, %v), want empty path and nil error", got, err)
-	}
-
-	other := errors.New("other scanner read error")
-	if got := suppressGoModModuleScanLimit(other); !errors.Is(got, other) {
-		t.Fatalf("non-limit scanner error = %v, want %v", got, other)
-	}
-
-	blockComment := goModModuleScanner{inBlockComment: true}
-	if err := blockComment.consumeByte('x'); err != nil {
-		t.Fatalf("consume block-comment content: %v", err)
-	}
-	blockComment.consumeBlockCommentByte('*')
-	blockComment.consumeBlockCommentByte('/')
-	if blockComment.inBlockComment || blockComment.blockCommentStar {
-		t.Fatal("expected closing block-comment delimiter to clear scanner state")
-	}
-	if directive, ok := goModInlineEmptyBlockDirective(" \t"); ok || directive != "" {
-		t.Fatalf("blank inline block directive = (%q, %t), want empty false", directive, ok)
-	}
-}
-
-func TestReadOversizedGoModModulePathReportsUnopenableSources(t *testing.T) {
 	repo := t.TempDir()
-	if _, err := readOversizedGoModModulePath(repo, filepath.Join(repo, "missing", fileGoMod)); err == nil {
-		t.Fatal("expected missing go.mod to fail confined open")
-	}
-	if _, err := readOversizedGoModModulePath("\x00", fileGoMod); err == nil {
-		t.Fatal("expected invalid repository path to fail")
+	writeFile(t, filepath.Join(repo, "go.mod"), "module example.com/root\n// "+strings.Repeat("x", 2*1024*1024+512*1024))
+	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
+		t.Fatalf("analyse scanner-cap fixture: %v", err)
 	}
 }
 

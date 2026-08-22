@@ -133,24 +133,22 @@ const (
 var errGoModModuleScanTooLarge = errors.New("go.mod module scanner read limit exceeded")
 
 type goModModuleScanner struct {
-	buffered         *bufio.Reader
-	bytesRead        int
-	maxBytes         int
-	line             strings.Builder
-	modulePath       string
-	blockDirective   string
-	pendingRetracts  []string
-	seenSingletons   map[string]struct{}
-	invalid          bool
-	lineInvalid      bool
-	lineTooLarge     bool
-	lineLastSpace    bool
-	inQuotedString   bool
-	quoteByte        byte
-	quoteEscaped     bool
-	inBlockComment   bool
-	blockCommentStar bool
-	inLineComment    bool
+	buffered        *bufio.Reader
+	bytesRead       int
+	maxBytes        int
+	line            strings.Builder
+	modulePath      string
+	blockDirective  string
+	pendingRetracts []string
+	seenSingletons  map[string]struct{}
+	invalid         bool
+	lineInvalid     bool
+	lineTooLarge    bool
+	lineLastSpace   bool
+	inQuotedString  bool
+	quoteByte       byte
+	quoteEscaped    bool
+	inLineComment   bool
 }
 
 func (s *goModModuleScanner) scan() (string, error) {
@@ -176,11 +174,7 @@ func (s *goModModuleScanner) finishScanWithReadError(err error) (string, error) 
 }
 
 func (s *goModModuleScanner) finishScanAtEOF() string {
-	if s.inBlockComment {
-		s.invalid = true
-	} else {
-		s.finishLine()
-	}
+	s.finishLine()
 	if s.invalid || s.blockDirective != "" {
 		return ""
 	}
@@ -211,10 +205,6 @@ func (s *goModModuleScanner) consumeByte(b byte) error {
 		s.consumeLineCommentByte(b)
 		return nil
 	}
-	if s.inBlockComment {
-		s.consumeBlockCommentByte(b)
-		return nil
-	}
 	if s.inQuotedString {
 		s.consumeQuotedStringByte(b)
 		return nil
@@ -232,15 +222,6 @@ func (s *goModModuleScanner) consumeLineCommentByte(b byte) {
 	}
 	s.finishLine()
 	s.inLineComment = false
-}
-
-func (s *goModModuleScanner) consumeBlockCommentByte(b byte) {
-	if s.blockCommentStar && b == '/' {
-		s.inBlockComment = false
-		s.blockCommentStar = false
-		return
-	}
-	s.blockCommentStar = b == '*'
 }
 
 func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
@@ -308,10 +289,11 @@ func (s *goModModuleScanner) tryStartComment() (bool, error) {
 		return true, err
 	case '*':
 		_, err = s.readByte()
-		s.inBlockComment = err == nil
+		// Block comments make the bounded fallback scan untrustworthy. The
+		// caller returns as soon as it observes invalid, so do not consume the
+		// rest of the comment.
 		s.invalid = true
 		s.lineInvalid = true
-		s.blockCommentStar = false
 		return true, err
 	default:
 		return false, nil
@@ -420,9 +402,6 @@ func goModBlockDirective(lineText string) (string, bool) {
 
 func goModInlineEmptyBlockDirective(lineText string) (string, bool) {
 	directive := firstToken(lineText)
-	if directive == "" {
-		return "", false
-	}
 	rest := trimGoModDirectiveSpace(strings.TrimPrefix(lineText, directive))
 	return directive, rest == "()" || rest == "( )"
 }
