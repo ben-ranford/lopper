@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -33,7 +32,7 @@ func loadGemspecDependencies(ctx context.Context, repoPath string, out map[strin
 		}
 		displayPath := filepath.ToSlash(relPath)
 		content, err := safeio.ReadFileUnderLimit(repoPath, path, maxGemspecBytes)
-		if errors.Is(err, safeio.ErrFileTooLarge) {
+		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
 			warnings = append(warnings, fmt.Sprintf("skipped %s because it exceeds %d bytes", displayPath, maxGemspecBytes))
 			return nil
 		}
