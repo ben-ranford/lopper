@@ -563,6 +563,35 @@ func TestAdapterAnalyseDependencyWithParenthesizedFromImports(t *testing.T) {
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", used: 1, total: 2})
 }
 
+func TestAdapterAnalyseDependencyWithParenthesizedFromImportsAfterNestedBlankLineReplacement(t *testing.T) {
+	source := "value = f\"{f'''{\"\"\"\n" +
+		"\n" +
+		"import requests\n" +
+		"\"\"\"}'''}\"\n" +
+		"from numpy import (\n" +
+		"    array,\n" +
+		")\n" +
+		"array([1])\n"
+
+	repo := t.TempDir()
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the multiline from-import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{
+		Dependency: "numpy",
+		Module:     "numpy",
+		Name:       "array",
+		Local:      "array",
+	})
+	if imports[0].Location.Line != 6 {
+		t.Fatalf("expected multiline from-import symbol on line 6, got location %+v", imports[0].Location)
+	}
+
+	dep := analysePythonDependency(t, source, "numpy")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "numpy", used: 1, total: 1})
+}
+
 type dependencyReportExpectation struct {
 	name     string
 	language string
