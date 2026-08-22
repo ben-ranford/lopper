@@ -431,73 +431,78 @@ func hasOSCompilerHeaderPrefix(header string) bool {
 }
 
 func isKnownCompilerQualifiedStdHeader(header string) bool {
-	header = strings.ToLower(strings.TrimSpace(filepath.ToSlash(header)))
-	if !hasCompilerQualifiedStdHeaderPrefix(header) {
-		return false
-	}
-	if isKnownCompilerQualifiedStdHeaderPath(header) {
-		return true
-	}
-	base := header[strings.LastIndex(header, "/")+1:]
-	if base == "" {
-		return false
-	}
-	ext := strings.ToLower(filepath.Ext(base))
-	stem := strings.TrimSuffix(base, ext)
-	if stem == "" {
-		return false
-	}
-	switch ext {
-	case "":
-		return isKnownCompilerQualifiedStdHeaderStem(header, stem)
-	case ".h":
-		return isKnownCompilerQualifiedStdHHeader(header, stem)
-	case ".hpp":
-		return isKnownCompilerQualifiedStdHPPHeader(header, stem)
+	header = strings.TrimSpace(filepath.ToSlash(header))
+	parts := strings.Split(header, "/")
+	switch len(parts) {
+	case 2:
+		return isKnownCompilerQualifiedStdHeaderLeaf(parts[0], parts[1])
+	case 3:
+		return isKnownNestedCompilerQualifiedStdHeader(parts[0], parts[1], parts[2])
 	default:
 		return false
 	}
 }
 
-func isKnownCompilerQualifiedStdHeaderPath(header string) bool {
-	_, ok := cppQualifiedStdHeaderWithExtensionSet[strings.ToLower(strings.TrimSpace(header))]
-	return ok
+func isKnownCompilerQualifiedStdHeaderLeaf(namespace, leaf string) bool {
+	if _, ok := cppQualifiedStdHeaderNamespaceSet[namespace]; !ok {
+		return false
+	}
+	ext := filepath.Ext(leaf)
+	stem := strings.TrimSuffix(leaf, ext)
+	if stem == "" {
+		return false
+	}
+	switch ext {
+	case "":
+		return isKnownCompilerQualifiedStdHeaderStem(namespace, stem)
+	case ".h":
+		return isKnownCompilerQualifiedStdHHeader(namespace, stem)
+	default:
+		return false
+	}
 }
 
-func isKnownCompilerQualifiedStdHeaderStem(header, stem string) bool {
+func isKnownCompilerQualifiedStdHeaderStem(namespace, stem string) bool {
 	if _, ok := cppStdHeaderSet[stem]; ok {
 		return true
 	}
-	if strings.HasPrefix(header, "backward/") {
-		_, ok := cppBackwardQualifiedStdHeaderStemSet[stem]
-		return ok
-	}
-	return false
-}
-
-func isKnownCompilerQualifiedStdHHeader(header, stem string) bool {
-	if strings.HasPrefix(header, "parallel/") {
-		_, ok := cppParallelQualifiedStdHeaderStemSet[stem]
-		return ok
-	}
-	return false
-}
-
-func isKnownCompilerQualifiedStdHPPHeader(header, stem string) bool {
-	if !strings.HasPrefix(header, "ext/pb_ds/") {
+	if namespace != "backward" {
 		return false
 	}
-	_, ok := cppExtPBDSQualifiedStdHeaderStemSet[stem]
+	_, ok := cppBackwardQualifiedStdHeaderStemSet[stem]
 	return ok
 }
 
-func hasCompilerQualifiedStdHeaderPrefix(header string) bool {
-	for _, prefix := range []string{"backward/", "debug/", "experimental/", "ext/", "parallel/", "tr1/", "tr2/"} {
-		if strings.HasPrefix(header, prefix) {
-			return true
-		}
+func isKnownCompilerQualifiedStdHHeader(namespace, stem string) bool {
+	var set map[string]struct{}
+	switch namespace {
+	case "backward":
+		set = cppBackwardQualifiedStdHeaderHStemSet
+	case "debug":
+		set = cppDebugQualifiedStdHeaderHStemSet
+	case "ext":
+		set = cppExtQualifiedStdHeaderHStemSet
+	case "parallel":
+		set = cppParallelQualifiedStdHeaderHStemSet
+	case "tr1":
+		set = cppTR1QualifiedStdHeaderHStemSet
+	default:
+		return false
 	}
-	return false
+	_, ok := set[stem]
+	return ok
+}
+
+func isKnownNestedCompilerQualifiedStdHeader(namespace, subdir, leaf string) bool {
+	if namespace != "ext" || subdir != "pb_ds" || filepath.Ext(leaf) != ".hpp" {
+		return false
+	}
+	stem := strings.TrimSuffix(leaf, ".hpp")
+	if stem == "" {
+		return false
+	}
+	_, ok := cppExtPBDSQualifiedStdHeaderHPPStemSet[stem]
+	return ok
 }
 
 func relOrBase(repoPath, value string) string {
@@ -541,45 +546,14 @@ var cppStdHeaderSet = map[string]struct{}{
 	"assert": {}, "ctype": {}, "errno": {}, "float": {}, "inttypes": {}, "math": {}, "setjmp": {}, "signal": {}, "stdarg": {}, "stddef": {}, "stdint": {}, "stdio": {}, "stdlib": {}, "time": {}, "wchar": {}, "wctype": {},
 }
 
-var cppQualifiedStdHeaderWithExtensionSet = makeStringSet(
-	"backward/auto_ptr.h",
-	"backward/backward_warning.h",
-	"backward/binders.h",
-	"backward/hash_fun.h",
-	"backward/hashtable.h",
-	"debug/assertions.h",
-	"debug/debug.h",
-	"debug/functions.h",
-	"debug/macros.h",
-	"debug/map.h",
-	"debug/safe_base.h",
-	"debug/safe_iterator.h",
-	"debug/set.h",
-	"ext/aligned_buffer.h",
-	"ext/alloc_traits.h",
-	"ext/atomicity.h",
-	"ext/numeric_traits.h",
-	"ext/pb_ds/assoc_container.hpp",
-	"ext/pb_ds/priority_queue.hpp",
-	"ext/pb_ds/tag_and_trait.hpp",
-	"ext/pb_ds/tree_policy.hpp",
-	"ext/type_traits.h",
-	"parallel/base.h",
-	"parallel/basic_iterator.h",
-	"parallel/compatibility.h",
-	"parallel/features.h",
-	"parallel/iterator.h",
-	"parallel/parallel.h",
-	"parallel/queue.h",
-	"parallel/settings.h",
-	"parallel/tags.h",
-	"parallel/types.h",
-	"tr1/complex.h",
-	"tr1/math.h",
-	"tr1/stdio.h",
-	"tr1/type_traits.h",
-	"tr1/unordered_map.h",
-	"tr1/unordered_set.h",
+var cppQualifiedStdHeaderNamespaceSet = makeStringSet(
+	"backward",
+	"debug",
+	"experimental",
+	"ext",
+	"parallel",
+	"tr1",
+	"tr2",
 )
 
 var cppBackwardQualifiedStdHeaderStemSet = makeStringSet(
@@ -587,7 +561,34 @@ var cppBackwardQualifiedStdHeaderStemSet = makeStringSet(
 	"hash_set",
 )
 
-var cppParallelQualifiedStdHeaderStemSet = makeStringSet(
+var cppBackwardQualifiedStdHeaderHStemSet = makeStringSet(
+	"auto_ptr",
+	"backward_warning",
+	"binders",
+	"hash_fun",
+	"hashtable",
+)
+
+var cppDebugQualifiedStdHeaderHStemSet = makeStringSet(
+	"assertions",
+	"debug",
+	"functions",
+	"macros",
+	"map",
+	"safe_base",
+	"safe_iterator",
+	"set",
+)
+
+var cppExtQualifiedStdHeaderHStemSet = makeStringSet(
+	"aligned_buffer",
+	"alloc_traits",
+	"atomicity",
+	"numeric_traits",
+	"type_traits",
+)
+
+var cppParallelQualifiedStdHeaderHStemSet = makeStringSet(
 	"algo",
 	"algobase",
 	"algorithmfwd",
@@ -595,6 +596,7 @@ var cppParallelQualifiedStdHeaderStemSet = makeStringSet(
 	"base",
 	"basic_iterator",
 	"checkers",
+	"compatibility",
 	"compiletime_settings",
 	"equally_split",
 	"features",
@@ -615,7 +617,9 @@ var cppParallelQualifiedStdHeaderStemSet = makeStringSet(
 	"par_loop",
 	"partial_sum",
 	"partition",
+	"parallel",
 	"quicksort",
+	"queue",
 	"random_number",
 	"random_shuffle",
 	"search",
@@ -628,7 +632,16 @@ var cppParallelQualifiedStdHeaderStemSet = makeStringSet(
 	"workstealing",
 )
 
-var cppExtPBDSQualifiedStdHeaderStemSet = makeStringSet(
+var cppTR1QualifiedStdHeaderHStemSet = makeStringSet(
+	"complex",
+	"math",
+	"stdio",
+	"type_traits",
+	"unordered_map",
+	"unordered_set",
+)
+
+var cppExtPBDSQualifiedStdHeaderHPPStemSet = makeStringSet(
 	"assoc_container",
 	"exception",
 	"hash_policy",

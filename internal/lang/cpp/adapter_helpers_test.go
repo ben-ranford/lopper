@@ -376,11 +376,67 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 	}
 }
 
-func TestAnalyseTopNIgnoresGNUQualifiedCompilerHeaders(t *testing.T) {
+func TestIsLikelyStdHeaderRejectsNonCanonicalQualifiedHeaders(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, testMainCPPFileName)
+
+	for _, tc := range []struct {
+		name    string
+		headers []string
+	}{
+		{
+			name: "nested third-party",
+			headers: []string{
+				"debug/vendor/vector",
+				"debug/vendor/map.h",
+				"experimental/vendor/filesystem",
+				"experimental/vendor/optional",
+				"ext/vendor/algorithm",
+				"ext/pb_ds/vendor/assoc_container.hpp",
+				"ext/pb_ds/vendor/exception.hpp",
+				"parallel/vendor/base.h",
+				"parallel/vendor/search.h",
+				"tr1/vendor/complex.h",
+			},
+		},
+		{
+			name: "mixed-case",
+			headers: []string{
+				"Asm/errno.h",
+				"Bits/stdc++.h",
+				"Debug/map",
+				"Debug/map.h",
+				"Experimental/filesystem",
+				"Ext/pb_ds/assoc_container.hpp",
+				"Linux/if.h",
+				"Parallel/algorithm",
+				"Parallel/base.h",
+				"Sys/socket.h",
+				"TR1/complex.h",
+				"TR1/regex",
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			for _, header := range tc.headers {
+				assertQualifiedHeaderMapsAsDependency(t, repo, source, header)
+			}
+		})
+	}
+}
+
+func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/safe_iterator.h>
 #include <debug/set.h>
 #include <backward/hash_map>
+#include <experimental/filesystem>
+#include <sys/socket.h>
+#include <linux/if.h>
+#include <bits/stdc++.h>
+#include <asm/errno.h>
+#include <asm-generic/errno.h>
 #include <parallel/algo.h>
 #include <parallel/algobase.h>
 #include <parallel/base.h>
@@ -404,18 +460,25 @@ int main() { return 0; }
 	}
 	for _, dependency := range reportData.Dependencies {
 		switch dependency.Name {
-		case "debug", "parallel", "ext", "tr1":
+		case "asm", "asm-generic", "bits", "debug", "experimental", "ext", "linux", "parallel", "sys", "tr1":
 			t.Fatalf("expected GNU compiler header to be ignored, got dependency row %#v", dependency)
 		}
 	}
 }
 
-func TestAnalyseTopNReportsQualifiedThirdPartyLookalikes(t *testing.T) {
+func TestAnalyseTopNReportsNonCanonicalQualifiedLookalikes(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <ext/pb_ds/map.hpp>
-#include <ext/pb_ds/vector.hpp>
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/vendor/map.h>
+#include <experimental/vendor/filesystem>
+#include <ext/pb_ds/map.hpp>
+#include <ext/pb_ds/vendor/assoc_container.hpp>
 #include <parallel/algo.hpp>
-#include <parallel/algobase.hpp>
+#include <parallel/vendor/base.h>
+#include <Debug/map.h>
+#include <Experimental/filesystem>
+#include <Ext/pb_ds/assoc_container.hpp>
+#include <Parallel/base.h>
+#include <TR1/complex.h>
 int main() { return 0; }
 `)
 
@@ -427,21 +490,13 @@ int main() { return 0; }
 		t.Fatalf("analyse topN: %v", err)
 	}
 
-	var extCount, parallelCount int
-	for _, dependency := range reportData.Dependencies {
-		switch dependency.Name {
-		case "ext":
-			extCount = dependency.TotalExportsCount
-		case "parallel":
-			parallelCount = dependency.TotalExportsCount
-		}
-	}
-	if extCount != 2 {
-		t.Fatalf("expected ext lookalikes to be reported twice, got %d with deps %#v", extCount, reportData.Dependencies)
-	}
-	if parallelCount != 2 {
-		t.Fatalf("expected parallel lookalikes to be reported twice, got %d with deps %#v", parallelCount, reportData.Dependencies)
-	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"debug":        2,
+		"experimental": 2,
+		"ext":          3,
+		"parallel":     3,
+		"tr1":          1,
+	})
 }
 
 func TestBuildRequestedDependenciesNoTarget(t *testing.T) {
@@ -637,4 +692,37 @@ func hasWarning(warnings []string, needle string) bool {
 	return slices.ContainsFunc(warnings, func(warning string) bool {
 		return strings.Contains(strings.ToLower(warning), strings.ToLower(needle))
 	})
+}
+
+func assertQualifiedHeaderMapsAsDependency(t *testing.T, repo, source, header string) {
+	t.Helper()
+	if isLikelyStdHeader(header) {
+		t.Fatalf("did not expect %s to be std header", header)
+	}
+	want := dependencyFromIncludePath(header)
+	catalog := newDependencyCatalog()
+	catalog.add(want, "test manifest")
+
+	dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: header, Delimiter: '<'}, nil, catalog)
+	if dep != want || unresolved {
+		t.Fatalf("expected %s to map to %q, got dep=%q unresolved=%v", header, want, dep, unresolved)
+	}
+}
+
+func assertDependencyExportCounts(t *testing.T, dependencies []report.DependencyReport, want map[string]int) {
+	t.Helper()
+	for name, expected := range want {
+		if got := dependencyExportCount(dependencies, name); got != expected {
+			t.Fatalf("expected %s to be reported %d time(s), got %d with deps %#v", name, expected, got, dependencies)
+		}
+	}
+}
+
+func dependencyExportCount(dependencies []report.DependencyReport, name string) int {
+	for _, dependency := range dependencies {
+		if dependency.Name == name {
+			return dependency.TotalExportsCount
+		}
+	}
+	return 0
 }
