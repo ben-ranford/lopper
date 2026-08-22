@@ -21,6 +21,27 @@ type truncatingFile interface {
 	Truncate(size int64) error
 }
 
+type publishRenameError struct {
+	sourceRel string
+	err       error
+}
+
+func (e *publishRenameError) Error() string {
+	return e.err.Error()
+}
+
+func (e *publishRenameError) Unwrap() error {
+	return e.err
+}
+
+func publishRenameCause(err error) error {
+	var publishErr *publishRenameError
+	if errors.As(err, &publishErr) && publishErr.err != nil {
+		return publishErr.err
+	}
+	return err
+}
+
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
 	if err != nil {
@@ -99,7 +120,7 @@ func publishIdentityBoundReplacing(root Root, sourceRel, targetRel string, expec
 		}
 	}()
 	if err := root.Rename(stagedRel, targetRel); err != nil {
-		return err
+		return &publishRenameError{sourceRel: stagedRel, err: err}
 	}
 	cleanupRel = ""
 	return verifyPublishedPathMatchesInfo(root, targetRel, expected, targetMessage)
@@ -240,7 +261,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 }
 
 func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {
-	return allowPermissionFallback && replacementFile != nil && os.IsPermission(err)
+	return allowPermissionFallback && replacementFile != nil && os.IsPermission(publishRenameCause(err))
 }
 
 func openPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {

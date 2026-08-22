@@ -10,7 +10,7 @@ import (
 )
 
 func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error) (returnErr error) {
-	if !windowsReplaceExistingRenameFallback(renameErr, oldName, newName) {
+	if !windowsReplaceExistingRenameFallback(renameErr, atomicRenameSourceRel(renameErr, oldName), newName) {
 		return renameErr
 	}
 
@@ -29,6 +29,14 @@ func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFi
 		return errors.Join(renameErr, fallbackErr)
 	}
 	return nil
+}
+
+func atomicRenameSourceRel(err error, fallbackRel string) string {
+	var publishErr *publishRenameError
+	if errors.As(err, &publishErr) && publishErr.sourceRel != "" {
+		return publishErr.sourceRel
+	}
+	return fallbackRel
 }
 
 func replacementFileForWindowsFallback(root Root, targetRel string, replacementFile File) (File, func() error, error) {

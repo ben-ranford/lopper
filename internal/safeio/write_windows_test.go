@@ -186,6 +186,54 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 	}
 }
 
+func TestFallbackAtomicReplacementAcceptsIdentityBoundStagedRenameSourceOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	const tempRel = ".safeio-atomic-temp"
+	stagedRel := tempRel + ".staged"
+	renameErr := &publishRenameError{
+		sourceRel: stagedRel,
+		err:       windowsReplaceExistingError(stagedRel, writeTestFileName),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, tempRel, writeTestFileName, targetFile, []byte("after"), renameErr)
+	if err != nil {
+		t.Fatalf("fallbackAtomicReplacement returned error: %v", err)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
+	}
+}
+
+func TestFallbackAtomicReplacementRejectsWrongIdentityBoundStagedRenameSourceOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	const tempRel = ".safeio-atomic-temp"
+	renameErr := &publishRenameError{
+		sourceRel: tempRel + ".staged",
+		err:       windowsReplaceExistingError("other-staged", writeTestFileName),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, tempRel, writeTestFileName, targetFile, []byte("after"), renameErr)
+	if err == nil {
+		t.Fatal("expected mismatched staged source to reject fallback")
+	}
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected original rename error, got %v", err)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("wrong-source fallback mutated target data: %q", string(*targetData))
+	}
+}
+
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
