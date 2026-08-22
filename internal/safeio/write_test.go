@@ -5963,6 +5963,46 @@ func TestCloseCreatedFileWithoutIdentityDoesNotRemovePath(t *testing.T) {
 	}
 }
 
+func TestStageIdentityBoundCopyRejectsPathChangedAfterClose(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	stagedRel := atomicTempPrefix + "stage"
+	useRandomTempNames(t, stagedRel)
+	removeChecks := 0
+
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != stagedRel {
+				t.Fatalf("unexpected staging path: %s", name)
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: func(os.FileMode) error { return nil },
+				stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != stagedRel {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return changedInfo, nil
+		},
+		removeIfMatches: func(string, fs.FileInfo, string) error {
+			removeChecks++
+			return nil
+		},
+	}
+	source := seekableSourceFile(sourceInfo, "original", nil, nil)
+
+	_, _, err := stageIdentityBoundCopy(root, "source", sourceInfo, sourceChangedMsg, source)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected changed staging path rejection, got %v", err)
+	}
+	if removeChecks != 0 {
+		t.Fatalf("expected changed staging path to be preserved, got %d removals", removeChecks)
+	}
+}
+
 func TestStageIdentityBoundFileDoesNotTreatPostLinkCleanupErrorAsLinklessFallback(t *testing.T) {
 	postLinkCleanupErr := errors.Join(syscall.EPERM, errors.New("post-link cleanup failed"))
 	openCalls := 0

@@ -352,9 +352,13 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		if err := staged.Close(); err != nil {
 			return "", nil, err
 		}
+		openStagedInfo := stagedInfo
 		stagedInfo, err = publishedRegularFileInfo(root, stagedRel, message)
 		if err != nil {
 			return "", nil, err
+		}
+		if !sameRegularFile(openStagedInfo, stagedInfo) {
+			return "", nil, fmt.Errorf("%s: %s", message, stagedRel)
 		}
 		stagedReady = true
 		return stagedRel, stagedInfo, nil
