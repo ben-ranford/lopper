@@ -36,7 +36,12 @@ var (
 		if err := root.Mkdir(name, perm); err != nil {
 			return nil, err
 		}
-		return root.Lstat(name)
+		child, err := root.OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		info, err := child.Lstat(".")
+		return info, errors.Join(err, child.Close())
 	}
 	closeAnalysisCacheRoot    = func(root safeio.Root) error { return root.Close() }
 	validateAnalysisCacheRoot = safeio.VerifyDirectoryIdentity
@@ -198,7 +203,7 @@ func removeCreatedAnalysisCacheRoots(openedRoots []openedAnalysisCacheRoot, useR
 		if useRollbackParents {
 			parent = opened.rollbackParent
 		}
-		rollbackErr = errors.Join(rollbackErr, removeCreatedAnalysisCacheChild(parent, opened.name, opened.info))
+		rollbackErr = errors.Join(rollbackErr, rollbackCreatedAnalysisCacheChild(parent, opened.name, nil, opened.info, opened.created))
 	}
 	return rollbackErr
 }
@@ -241,22 +246,29 @@ func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name str
 	var createdInfo fs.FileInfo
 	info, err := root.Lstat(name)
 	if errors.Is(err, os.ErrNotExist) {
-		var mkdirErr error
-		createdInfo, mkdirErr = mkdirAnalysisCacheDir(root, name, 0o750)
-		if mkdirErr != nil {
-			if !errors.Is(mkdirErr, fs.ErrExist) {
-				return openedAnalysisCacheRoot{}, errors.Join(mkdirErr, removeCreatedAnalysisCacheChild(root, name, createdInfo))
+		createdInfo, err = mkdirAnalysisCacheDir(root, name, 0o750)
+		if err != nil {
+			createdInfo = createdAnalysisCachePathInfo(childPath, createdInfo)
+			if !errors.Is(err, fs.ErrExist) {
+				return openedAnalysisCacheRoot{}, errors.Join(err, rollbackCreatedAnalysisCacheChildAtPath(root, childPath, name, createdInfo, true))
 			}
-			createdInfo = nil
 		} else {
 			created = true
 		}
 		info, err = root.Lstat(name)
 		if err != nil {
-			return openedAnalysisCacheRoot{}, errors.Join(err, removeCreatedAnalysisCacheChild(root, name, createdInfo))
+			rollbackErr := rollbackCreatedAnalysisCacheChildAtPath(root, childPath, name, createdInfo, created)
+			if createdInfo == nil {
+				rollbackErr = rollbackCreatedAnalysisCacheChildAfterCreate(root, childPath, name, created)
+			}
+			return openedAnalysisCacheRoot{}, errors.Join(err, rollbackErr)
 		}
 		if created && (createdInfo == nil || !os.SameFile(createdInfo, info)) {
-			return openedAnalysisCacheRoot{}, errors.Join(errors.New("directory changed after creation: "+childPath), removeCreatedAnalysisCacheChild(root, name, createdInfo))
+			rollbackErr := rollbackCreatedAnalysisCacheChildAtPath(root, childPath, name, createdInfo, created)
+			if createdInfo == nil {
+				rollbackErr = rollbackCreatedAnalysisCacheChildAfterCreate(root, childPath, name, created)
+			}
+			return openedAnalysisCacheRoot{}, errors.Join(errors.New("directory changed after creation: "+childPath), rollbackErr)
 		}
 	}
 	if err != nil {
@@ -270,59 +282,122 @@ func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name str
 	}
 	child, err := root.OpenRoot(name)
 	if err != nil {
-		return openedAnalysisCacheRoot{}, errors.Join(err, removeCreatedAnalysisCacheChild(root, name, createdInfo))
+		return openedAnalysisCacheRoot{}, errors.Join(err, rollbackCreatedAnalysisCacheChild(root, name, nil, info, created))
 	}
 	openedInfo, err := child.Lstat(".")
 	if err != nil {
-		return openedAnalysisCacheRoot{}, cleanupCreatedAnalysisCacheChild(root, name, child, createdInfo, err)
+		return openedAnalysisCacheRoot{}, errors.Join(err, rollbackCreatedAnalysisCacheChild(root, name, child, info, created))
 	}
 	if !os.SameFile(info, openedInfo) {
-		return openedAnalysisCacheRoot{}, cleanupCreatedAnalysisCacheChild(root, name, child, createdInfo, errors.New("directory changed while opening: "+childPath))
+		return openedAnalysisCacheRoot{}, errors.Join(errors.New("directory changed while opening: "+childPath), rollbackCreatedAnalysisCacheChild(root, name, child, info, created))
 	}
 	if _, err := verifyPinnedAnalysisCacheDirectory(root, parentPath); err != nil {
-		return openedAnalysisCacheRoot{}, cleanupCreatedAnalysisCacheChild(root, name, child, createdInfo, err)
+		return openedAnalysisCacheRoot{}, errors.Join(err, rollbackCreatedAnalysisCacheChild(root, name, child, openedInfo, created))
 	}
 	if err := safeio.VerifyDirectoryIdentity(childPath, openedInfo); err != nil {
-		return openedAnalysisCacheRoot{}, cleanupCreatedAnalysisCacheChild(root, name, child, createdInfo, err)
+		return openedAnalysisCacheRoot{}, errors.Join(err, rollbackCreatedAnalysisCacheChild(root, name, child, openedInfo, created))
 	}
-	rollbackInfo := openedInfo
-	if created {
-		rollbackInfo = createdInfo
-	}
-	opened := openedAnalysisCacheRoot{root: child, parent: root, name: name, info: rollbackInfo, created: created}
+	opened := openedAnalysisCacheRoot{root: child, parent: root, name: name, info: openedInfo, created: created}
 	if !opened.created {
 		return opened, nil
 	}
 	rollbackParent, err := root.OpenRoot(".")
 	if err != nil {
-		return openedAnalysisCacheRoot{}, cleanupCreatedAnalysisCacheChild(root, name, child, createdInfo, err)
+		return openedAnalysisCacheRoot{}, errors.Join(err, rollbackCreatedAnalysisCacheChild(root, name, child, openedInfo, created))
 	}
 	opened.rollbackParent = rollbackParent
 	return opened, nil
 }
 
-func cleanupCreatedAnalysisCacheChild(root safeio.Root, name string, child safeio.Root, childInfo fs.FileInfo, err error) error {
-	return errors.Join(err, closeAnalysisCacheRoot(child), removeCreatedAnalysisCacheChild(root, name, childInfo))
-}
-
-func removeCreatedAnalysisCacheChild(root safeio.Root, name string, childInfo fs.FileInfo) error {
-	if childInfo == nil {
+func createdAnalysisCachePathInfo(childPath string, fallback fs.FileInfo) fs.FileInfo {
+	if fallback != nil {
+		return fallback
+	}
+	info, err := os.Lstat(childPath)
+	if err != nil {
 		return nil
 	}
-	currentInfo, err := root.Lstat(name)
+	return info
+}
+
+func rollbackCreatedAnalysisCacheChildAfterCreate(root safeio.Root, childPath, name string, created bool) error {
+	if !created {
+		return nil
+	}
+	childInfo, err := openedAnalysisCacheChildInfo(root, name)
+	if err != nil {
+		childInfo = createdAnalysisCachePathInfo(childPath, childInfo)
+		if childInfo == nil {
+			return err
+		}
+	}
+	return errors.Join(err, rollbackCreatedAnalysisCacheChildAtPath(root, childPath, name, childInfo, created))
+}
+
+func openedAnalysisCacheChildInfo(root safeio.Root, name string) (fs.FileInfo, error) {
+	child, err := root.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	childInfo, err := child.Lstat(".")
+	if err != nil {
+		return nil, errors.Join(err, closeAnalysisCacheRoot(child))
+	}
+	return childInfo, closeAnalysisCacheRoot(child)
+}
+
+func rollbackCreatedAnalysisCacheChildAtPath(root safeio.Root, childPath, name string, childInfo fs.FileInfo, created bool) error {
+	if !created {
+		return nil
+	}
+	currentInfo, err := os.Lstat(childPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	if !os.SameFile(currentInfo, childInfo) {
+	if !sameAnalysisCacheRollbackTarget(currentInfo, childInfo) {
 		return nil
 	}
 	if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
+}
+
+func rollbackCreatedAnalysisCacheChild(root safeio.Root, name string, child safeio.Root, childInfo fs.FileInfo, created bool) error {
+	var closeErr error
+	if child != nil {
+		closeErr = closeAnalysisCacheRoot(child)
+	}
+	if !created {
+		return closeErr
+	}
+	currentInfo, err := root.Lstat(name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return closeErr
+		}
+		return errors.Join(closeErr, err)
+	}
+	if !sameAnalysisCacheRollbackTarget(currentInfo, childInfo) {
+		return closeErr
+	}
+	if err := root.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(closeErr, err)
+	}
+	return closeErr
+}
+
+func sameAnalysisCacheRollbackTarget(currentInfo, childInfo fs.FileInfo) bool {
+	if currentInfo == nil || childInfo == nil {
+		return false
+	}
+	if !os.SameFile(currentInfo, childInfo) {
+		return false
+	}
+	return sameAnalysisCacheRollbackOwner(currentInfo, childInfo)
 }
 
 func (c *analysisCache) openWriteRoot() (*safeio.WriteRoot, error) {
