@@ -60,15 +60,8 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 }
 
 func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) error {
-	source, err := OpenPinnedFile(root, sourceRel)
+	sourceInfo, err := chmodAndSnapshotMoveSource(root, sourceRel, filePerm)
 	if err != nil {
-		return err
-	}
-	sourceInfo, err := chmodSnapshotAndCloseMoveSource(source, sourceRel, filePerm)
-	if err != nil {
-		return err
-	}
-	if err := verifyPublishedPathMatchesInfo(root, sourceRel, sourceInfo, "move source changed before rename"); err != nil {
 		return err
 	}
 	if err := root.Rename(sourceRel, targetRel); err != nil {
@@ -77,23 +70,25 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, "move target changed before validation")
 }
 
-func chmodSnapshotAndCloseMoveSource(source File, sourceRel string, filePerm os.FileMode) (info os.FileInfo, returnErr error) {
-	defer func() {
-		if closeErr := source.Close(); closeErr != nil {
-			returnErr = errors.Join(returnErr, closeErr)
-		}
-	}()
-	if err := source.Chmod(filePerm); err != nil {
-		return nil, err
-	}
-	info, err := source.Stat()
+func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMode) (os.FileInfo, error) {
+	sourceInfo, err := root.Lstat(sourceRel)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	if !sourceInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("move source is not a regular file: %s", sourceRel)
 	}
-	return info, nil
+	if err := root.Chmod(sourceRel, filePerm); err != nil {
+		return nil, err
+	}
+	updatedSourceInfo, err := root.Lstat(sourceRel)
+	if err != nil {
+		return nil, err
+	}
+	if !updatedSourceInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, updatedSourceInfo) {
+		return nil, fmt.Errorf("move source changed before rename: %s", sourceRel)
+	}
+	return updatedSourceInfo, nil
 }
 
 func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (_ os.FileInfo, returnErr error) {

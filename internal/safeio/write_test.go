@@ -3709,6 +3709,16 @@ func chmodWithoutError(os.FileMode) error {
 	return nil
 }
 
+func chmodNameWithoutError(t *testing.T, wantName string) func(string, os.FileMode) error {
+	t.Helper()
+	return func(name string, _ os.FileMode) error {
+		if name != wantName {
+			t.Fatalf("unexpected chmod path: %s", name)
+		}
+		return nil
+	}
+}
+
 func closeWithoutError() error {
 	return nil
 }
@@ -3841,13 +3851,7 @@ func TestMoveFileUnderReturnsRenameErrorWithoutFallback(t *testing.T) {
 			lstat: func(string) (fs.FileInfo, error) {
 				return sourceInfo, nil
 			},
-			open: func(string) (File, error) {
-				return &fakeFile{
-					stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
-					chmod: chmodWithoutError,
-					close: closeWithoutError,
-				}, nil
-			},
+			chmod: func(string, os.FileMode) error { return nil },
 			rename: func(string, string) error {
 				return renameErr
 			},
@@ -3909,17 +3913,11 @@ func TestMoveFileWithinRootPreservesSourceOnChmodError(t *testing.T) {
 		lstat: func(string) (fs.FileInfo, error) {
 			return sourceInfo, nil
 		},
-		open: func(string) (File, error) {
-			return &fakeFile{
-				stat: func() (fs.FileInfo, error) { return sourceInfo, nil },
-				chmod: func(perm os.FileMode) error {
-					if perm != 0o640 {
-						t.Fatalf("unexpected chmod perm %#o", perm)
-					}
-					return chmodErr
-				},
-				close: closeWithoutError,
-			}, nil
+		chmod: func(_ string, perm os.FileMode) error {
+			if perm != 0o640 {
+				t.Fatalf("unexpected chmod perm %#o", perm)
+			}
+			return chmodErr
 		},
 		rename: func(oldName, newName string) error {
 			if oldName != "source" || newName != "target" {
@@ -3934,6 +3932,30 @@ func TestMoveFileWithinRootPreservesSourceOnChmodError(t *testing.T) {
 	if !errors.Is(err, chmodErr) {
 		t.Fatalf("expected chmod error without fallback copy, got %v", err)
 	}
+}
+
+func TestMoveFileUnderRenamesUnreadableSource(t *testing.T) {
+	if runtimeGOOS == "windows" {
+		t.Skip("POSIX mode bits required")
+	}
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("hello"), 0o200); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := os.Chmod(sourcePath, 0o200); err != nil {
+		t.Fatalf("make source unreadable: %v", err)
+	}
+
+	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
+		t.Fatalf("MoveFileUnder returned error: %v", err)
+	}
+	assertMovedFileResult(t, sourcePath, targetPath, "hello", "be renamed away")
 }
 
 func TestMoveFileUnderValidationAndSetupErrors(t *testing.T) {
@@ -4018,7 +4040,6 @@ func TestMoveFileWithinRootPreservesReplacedSourceAfterCopyFallback(t *testing.T
 	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
 	tempInfo := newPinnedTargetInfo(t, "temp")
 	sourceInfo := originalInfo
-	sourceOpenCalls := 0
 	tempExists := false
 	targetExists := false
 	removeCalls := 0
@@ -4042,10 +4063,6 @@ func TestMoveFileWithinRootPreservesReplacedSourceAfterCopyFallback(t *testing.T
 			if name != "source" {
 				t.Fatalf("unexpected source open %q", name)
 			}
-			sourceOpenCalls++
-			if sourceOpenCalls == 1 {
-				return &fakeFile{stat: func() (fs.FileInfo, error) { return originalInfo, nil }, chmod: chmodWithoutError, close: closeWithoutError}, nil
-			}
 			reader := strings.NewReader("original")
 			return &fakeFile{
 				read: func(p []byte) (int, error) {
@@ -4057,6 +4074,7 @@ func TestMoveFileWithinRootPreservesReplacedSourceAfterCopyFallback(t *testing.T
 				close: closeWithoutError,
 			}, nil
 		},
+		chmod: chmodNameWithoutError(t, "source"),
 		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
 			if !isMoveFallbackTempPath(name) {
 				t.Fatalf("unexpected temp open %q", name)
@@ -4261,7 +4279,7 @@ func newMoveFallbackOpenHook(cfg moveFallbackConfig, state *moveFallbackState) f
 			return nil, errors.New("unexpected source open path")
 		}
 		state.sourceOpenCalls++
-		if err := cfg.failure(moveFallbackFailSourceOpen); err != nil && state.sourceOpenCalls > 1 {
+		if err := cfg.failure(moveFallbackFailSourceOpen); err != nil {
 			return nil, err
 		}
 		if !state.sourceExists {
@@ -4282,7 +4300,7 @@ func newMoveFallbackSourceFile(cfg moveFallbackConfig, state *moveFallbackState)
 		},
 		close: func() error {
 			state.sourceCloseCalls++
-			if state.sourceCloseCalls > 1 {
+			if state.sourceCloseCalls > 0 {
 				return cfg.sourceCloseErr
 			}
 			return nil
@@ -4546,12 +4564,8 @@ func TestPrepareAndRenameWithinRootErrors(t *testing.T) {
 	sourceInfo := processFileInfo()
 	chmodRoot := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return sourceInfo, nil },
-		open: func(string) (File, error) {
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
-				chmod: func(os.FileMode) error { return chmodErr },
-				close: closeWithoutError,
-			}, nil
+		chmod: func(string, os.FileMode) error {
+			return chmodErr
 		},
 	}
 	if err := prepareAndRenameWithinRoot(chmodRoot, "source", "target", 0o640); !errors.Is(err, chmodErr) {
@@ -4561,13 +4575,7 @@ func TestPrepareAndRenameWithinRootErrors(t *testing.T) {
 	renameErr := errors.New("rename failure")
 	renameRoot := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return sourceInfo, nil },
-		open: func(string) (File, error) {
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
+		chmod: chmodNameWithoutError(t, "source"),
 		rename: func(string, string) error {
 			return renameErr
 		},
@@ -4593,16 +4601,7 @@ func TestPrepareAndRenameWithinRootRejectsChangedSourceBeforeRename(t *testing.T
 			}
 			return changedInfo, nil
 		},
-		open: func(name string) (File, error) {
-			if name != "source" {
-				t.Fatalf("unexpected open path: %s", name)
-			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
+		chmod: chmodNameWithoutError(t, "source"),
 		rename: func(string, string) error {
 			renameCalls++
 			return nil
@@ -4636,16 +4635,7 @@ func TestPrepareAndRenameWithinRootRejectsChangedTargetAfterRename(t *testing.T)
 				return nil, os.ErrNotExist
 			}
 		},
-		open: func(name string) (File, error) {
-			if name != "source" {
-				t.Fatalf("unexpected open path: %s", name)
-			}
-			return &fakeFile{
-				stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
-				chmod: chmodWithoutError,
-				close: closeWithoutError,
-			}, nil
-		},
+		chmod: chmodNameWithoutError(t, "source"),
 		rename: func(oldName, newName string) error {
 			if oldName != "source" || newName != "target" {
 				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
