@@ -139,23 +139,25 @@ const (
 var errGoModModuleScanTooLarge = errors.New("go.mod module scanner read limit exceeded")
 
 type goModModuleScanner struct {
-	buffered       *bufio.Reader
-	bytesRead      int
-	maxBytes       int
-	line           strings.Builder
-	syntheticBody  strings.Builder
-	modulePath     string
-	blockDirective string
-	seenSingletons map[string]struct{}
-	parseSynthetic func(string, string) bool
-	invalid        bool
-	lineInvalid    bool
-	lineTooLarge   bool
-	lineLastSpace  bool
-	inQuotedString bool
-	quoteByte      byte
-	quoteEscaped   bool
-	inLineComment  bool
+	buffered            *bufio.Reader
+	bytesRead           int
+	maxBytes            int
+	line                strings.Builder
+	syntheticBody       strings.Builder
+	modulePath          string
+	blockDirective      string
+	seenSingletons      map[string]struct{}
+	parseSynthetic      func(string, string) bool
+	invalid             bool
+	lineInvalid         bool
+	lineTooLarge        bool
+	lineTooLargeInQuote bool
+	lineQuoteClosed     bool
+	lineLastSpace       bool
+	inQuotedString      bool
+	quoteByte           byte
+	quoteEscaped        bool
+	inLineComment       bool
 }
 
 func (s *goModModuleScanner) scan() (string, error) {
@@ -262,6 +264,7 @@ func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
 	if b == s.quoteByte {
 		s.inQuotedString = false
 		s.quoteByte = 0
+		s.lineQuoteClosed = true
 	}
 }
 
@@ -335,15 +338,18 @@ func (s *goModModuleScanner) appendRawLineByte(b byte) {
 	s.lineLastSpace = false
 	if s.line.Len() >= maxGoModModuleLineBytes {
 		s.lineTooLarge = true
+		s.lineTooLargeInQuote = true
 		return
 	}
 	s.line.WriteByte(b)
 }
 
 func (s *goModModuleScanner) finishLine() {
-	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid, s.lineTooLarge)
+	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid, s.lineTooLarge, s.lineTooLargeInQuote, s.lineQuoteClosed)
 	s.lineInvalid = false
 	s.lineTooLarge = false
+	s.lineTooLargeInQuote = false
+	s.lineQuoteClosed = false
 	s.lineLastSpace = false
 }
 
@@ -362,14 +368,14 @@ func trimGoModDirectiveSpace(lineText string) string {
 
 const goModDirectiveSpaceCutset = " \t\r"
 
-func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, invalid, tooLarge bool) {
+func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, invalid, tooLarge, tooLargeInQuote, quoteClosed bool) {
 	if invalid {
 		line.Reset()
 		s.invalid = true
 		return
 	}
 	if tooLarge {
-		s.consumeTooLargeGoModDirectiveLine(line.String())
+		s.consumeTooLargeGoModDirectiveLine(line.String(), tooLargeInQuote, quoteClosed)
 		line.Reset()
 		return
 	}
@@ -400,22 +406,49 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, in
 	s.appendSyntheticGoModLine(lineText)
 }
 
-func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string) {
+func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, tooLargeInQuote, quoteClosed bool) {
 	lineText = trimGoModDirectiveSpace(lineText)
 	if lineText == "" || s.blockDirective == "module" {
 		s.invalid = true
 		return
 	}
 	if s.blockDirective != "" {
-		if !isSkippableLongGoModBlockLine(s.blockDirective, lineText) {
+		if !s.isValidLongGoModBlockLine(s.blockDirective, lineText, tooLargeInQuote, quoteClosed) {
 			s.invalid = true
 		}
 		return
 	}
-	if isSkippableLongGoModDirectiveLine(lineText) {
+	if s.isValidLongGoModDirectiveLine(lineText, tooLargeInQuote, quoteClosed) {
 		return
 	}
 	s.invalid = true
+}
+
+func (s *goModModuleScanner) isValidLongGoModDirectiveLine(lineText string, tooLargeInQuote, quoteClosed bool) bool {
+	if !tooLargeInQuote || !quoteClosed {
+		return false
+	}
+	return firstToken(lineText) == "replace" && s.isValidLongQuotedReplaceLine(lineText)
+}
+
+func (s *goModModuleScanner) isValidLongGoModBlockLine(directive, lineText string, tooLargeInQuote, quoteClosed bool) bool {
+	if lineText == ")" {
+		return true
+	}
+	return directive == "replace" && tooLargeInQuote && quoteClosed && s.isValidLongQuotedReplaceLine("replace "+lineText)
+}
+
+func (s *goModModuleScanner) isValidLongQuotedReplaceLine(lineText string) bool {
+	surrogate, ok := longQuotedGoModLineSurrogate(lineText)
+	return ok && parseSyntheticGoMod(s.modulePath, surrogate+"\n")
+}
+
+func longQuotedGoModLineSurrogate(lineText string) (string, bool) {
+	quoteIndex := strings.IndexByte(lineText, '"')
+	if quoteIndex < 0 {
+		return "", false
+	}
+	return lineText[:quoteIndex] + `"./lopper-long-quoted-replacement"`, true
 }
 
 func goModBlockDirective(lineText string) (string, bool) {
@@ -551,27 +584,6 @@ func isValidGoModBlockLine(modulePath, directive, lineText string) bool {
 		return true
 	case "retract":
 		return modulePath != "" || firstToken(lineText) != ""
-	default:
-		return false
-	}
-}
-
-func isSkippableLongGoModDirectiveLine(lineText string) bool {
-	switch firstToken(lineText) {
-	case "require", "exclude", "replace", "tool":
-		return true
-	default:
-		return false
-	}
-}
-
-func isSkippableLongGoModBlockLine(directive, lineText string) bool {
-	if lineText == ")" {
-		return true
-	}
-	switch directive {
-	case "require", "exclude", "replace", "tool":
-		return true
 	default:
 		return false
 	}

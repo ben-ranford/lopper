@@ -2245,6 +2245,33 @@ func TestAnalyseTreatsOversizedNestedModuleIdentityWithLongQuotedDirectiveAsLoca
 	requireOversizedNestedModuleImportStaysLocal(t, reportData)
 }
 
+func TestAnalyseDoesNotTreatMalformedLongReplaceNestedModuleIdentityAsLocal(t *testing.T) {
+	reportData := analyseOversizedNestedModuleImportedFromRoot(t, func(nestedDir string) {
+		writeOversizedModuleGoModWithLongMalformedDirective(t, nestedDir, "example.com/service", "replace")
+	})
+	requireMalformedOversizedModuleImportIsExternal(t, reportData)
+}
+
+func TestAnalyseDoesNotTreatMalformedLongRequireWorkspaceModuleIdentityAsLocal(t *testing.T) {
+	repo := t.TempDir()
+	writeRepoGoMod(t, repo, goModDemo)
+	writeFile(t, filepath.Join(repo, fileGoWork), go125Line+"\n\nuse ./svc/api\n")
+	writeRepoMainLines(t, repo,
+		packageMainLine,
+		"",
+		"import _ \"example.com/service/pkg\"",
+		"",
+		"func main() {}",
+		"",
+	)
+	writeOversizedModuleGoModWithLongMalformedDirective(t, filepath.Join(repo, "svc", "api"), "example.com/service", "require")
+	writeFile(t, filepath.Join(repo, "svc", "api", "pkg", "pkg.go"), "package pkg\n")
+
+	reportData := analyseTopGoDependencies(t, repo)
+
+	requireMalformedOversizedModuleImportIsExternal(t, reportData)
+}
+
 func analyseOversizedNestedModuleImportedFromRoot(t *testing.T, writeNestedGoMod func(string)) report.Report {
 	t.Helper()
 	repo := t.TempDir()
@@ -2276,6 +2303,15 @@ func requireOversizedNestedModuleImportStaysLocal(t *testing.T, reportData repor
 	}
 	requireOversizedModuleWarning(t, reportData)
 	requireOversizedMetadataSkipWarning(t, reportData)
+}
+
+func requireMalformedOversizedModuleImportIsExternal(t *testing.T, reportData report.Report) {
+	t.Helper()
+	names := dependencyNames(reportData.Dependencies)
+	if !slices.Contains(names, "example.com/service/pkg") {
+		t.Fatalf("expected malformed oversized module identity not to suppress import attribution, got %#v", names)
+	}
+	requireOversizedModuleWarning(t, reportData)
 }
 
 func TestAnalysePreservesDependencyOnlyFromNestedModuleBelowOversizedGoMod(t *testing.T) {
@@ -2464,6 +2500,16 @@ func writeOversizedModuleGoModWithLeadingComments(t *testing.T, dir, modulePath 
 func writeOversizedModuleGoModWithLongQuotedReplace(t *testing.T, dir, modulePath string) {
 	t.Helper()
 	body := modulePrefix + modulePath + "\nreplace example.com/a => \"" + strings.Repeat("x", 70*1024) + "\"\n"
+	paddingLen := goModSizeLimitTest + 1 - len(body) - len("// ")
+	if paddingLen < 0 {
+		t.Fatalf("oversized module go.mod body exceeds test limit")
+	}
+	writeFile(t, filepath.Join(dir, fileGoMod), body+"// "+strings.Repeat("x", paddingLen))
+}
+
+func writeOversizedModuleGoModWithLongMalformedDirective(t *testing.T, dir, modulePath, directive string) {
+	t.Helper()
+	body := modulePrefix + modulePath + "\n" + directive + " example.com/a " + strings.Repeat("x", 70*1024) + "\n"
 	paddingLen := goModSizeLimitTest + 1 - len(body) - len("// ")
 	if paddingLen < 0 {
 		t.Fatalf("oversized module go.mod body exceeds test limit")
