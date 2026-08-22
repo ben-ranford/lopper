@@ -58,53 +58,27 @@ func TestFeatureFlagCommentResolverSkipsMergedPullRequests(t *testing.T) {
 	t.Parallel()
 
 	resolver := featureFlagCommentResolverScript(t)
-	pull := featureFlagPull(7, "closed")
-	pull["merged"] = true
-	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
-		"pulls":           []map[string]any{pull},
-		"associatedPulls": []map[string]any{},
-		"artifacts": []map[string]any{
-			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+	tests := []featureFlagMergedResolverCase{
+		{
+			name:                  "workflow run pull request",
+			run:                   featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+			pull:                  featureFlagMergedPull(true, ""),
+			wantAssociatedAPICall: false,
 		},
-		"jobs": featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
-	})
-	if !result.OK {
-		t.Fatalf("resolver rejected already-merged pull request: %s", result.Error)
-	}
-	if got := result.Outputs["skip-comments"]; got != "true" {
-		t.Fatalf("skip-comments = %q, want true", got)
-	}
-	if got := result.Exported["PR_NUMBER"]; got != "7" {
-		t.Fatalf("PR_NUMBER = %q, want 7", got)
-	}
-	if result.Calls["artifacts"] != 0 {
-		t.Fatal("merged pull request no-op must not inspect comment artifacts")
-	}
-	if result.Calls["jobs"] != 0 {
-		t.Fatal("merged pull request no-op must not inspect enforcement jobs")
-	}
-}
-
-func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
-	t.Parallel()
-
-	resolver := featureFlagCommentResolverScript(t)
-	pull := featureFlagPull(7, "open")
-	pull["title"] = " \tpreview(cli): trial feature  "
-	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
-		"pulls":           []map[string]any{pull},
-		"associatedPulls": []map[string]any{},
-		"artifacts": []map[string]any{
-			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		{
+			name:                  "commit association fallback",
+			run:                   featureFlagWorkflowRun(nil),
+			pull:                  featureFlagMergedPull(true, ""),
+			associatedPull:        featureFlagMergedPull(false, "2026-08-21T00:00:00Z"),
+			wantAssociatedAPICall: true,
 		},
-	})
-	if !result.OK {
-		t.Fatalf("resolver rejected preview pull request: %s", result.Error)
 	}
-	if got := result.Exported["FEATURE_PR"]; got != "true" {
-		t.Fatalf("FEATURE_PR = %q, want true", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := runFeatureFlagResolverFixture(t, resolver, tt.fixture())
+			assertFeatureFlagMergedPullSkipped(t, result, tt)
+		})
 	}
 }
 
@@ -156,40 +130,23 @@ func TestFeatureFlagCommentResolverFiltersCommitAssociationFallback(t *testing.T
 	}
 }
 
-func TestFeatureFlagCommentResolverSkipsMergedCommitAssociationFallback(t *testing.T) {
+func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
 	t.Parallel()
 
 	resolver := featureFlagCommentResolverScript(t)
-	associatedPull := featureFlagPull(7, "closed")
-	associatedPull["merged_at"] = "2026-08-21T00:00:00Z"
-	pull := featureFlagPull(7, "closed")
-	pull["merged"] = true
 	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-		"run":             featureFlagWorkflowRun(nil),
-		"pulls":           []map[string]any{pull},
-		"associatedPulls": []map[string]any{associatedPull},
+		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+		"pulls":           []map[string]any{featureFlagPreviewPull()},
+		"associatedPulls": []map[string]any{},
 		"artifacts": []map[string]any{
 			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
 		},
-		"jobs": featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
 	})
 	if !result.OK {
-		t.Fatalf("resolver rejected merged associated pull request: %s", result.Error)
+		t.Fatalf("resolver rejected preview pull request: %s", result.Error)
 	}
-	if got := result.Outputs["skip-comments"]; got != "true" {
-		t.Fatalf("skip-comments = %q, want true", got)
-	}
-	if got := result.Exported["PR_NUMBER"]; got != "7" {
-		t.Fatalf("PR_NUMBER = %q, want 7", got)
-	}
-	if result.Calls["associatedPulls"] != 1 {
-		t.Fatal("resolver did not use commit association fallback exactly once")
-	}
-	if result.Calls["artifacts"] != 0 {
-		t.Fatal("merged associated pull request no-op must not inspect comment artifacts")
-	}
-	if result.Calls["jobs"] != 0 {
-		t.Fatal("merged associated pull request no-op must not inspect enforcement jobs")
+	if got := result.Exported["FEATURE_PR"]; got != "true" {
+		t.Fatalf("FEATURE_PR = %q, want true", got)
 	}
 }
 
@@ -611,6 +568,77 @@ func featureFlagPull(number int, state string) map[string]any {
 			"repo": map[string]any{"full_name": "octo/fork"},
 		},
 	}
+}
+
+type featureFlagMergedResolverCase struct {
+	name                  string
+	run                   map[string]any
+	pull                  map[string]any
+	associatedPull        map[string]any
+	wantAssociatedAPICall bool
+}
+
+func (tt featureFlagMergedResolverCase) fixture() map[string]any {
+	associatedPulls := []map[string]any{}
+	if tt.associatedPull != nil {
+		associatedPulls = append(associatedPulls, tt.associatedPull)
+	}
+	return map[string]any{
+		"run":             tt.run,
+		"pulls":           []map[string]any{tt.pull},
+		"associatedPulls": associatedPulls,
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+		"jobs": featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
+	}
+}
+
+func featureFlagMergedPull(merged bool, mergedAt string) map[string]any {
+	pull := featureFlagPull(7, "closed")
+	if merged {
+		pull["merged"] = true
+	}
+	if mergedAt != "" {
+		pull["merged_at"] = mergedAt
+	}
+	return pull
+}
+
+func featureFlagPreviewPull() map[string]any {
+	pull := featureFlagPull(7, "open")
+	pull["title"] = " \tpreview(cli): trial feature  "
+	return pull
+}
+
+func assertFeatureFlagMergedPullSkipped(t *testing.T, result featureFlagResolverFixtureResult, tt featureFlagMergedResolverCase) {
+	t.Helper()
+
+	if !result.OK {
+		t.Fatalf("resolver rejected already-merged pull request: %s", result.Error)
+	}
+	if got := result.Outputs["skip-comments"]; got != "true" {
+		t.Fatalf("skip-comments = %q, want true", got)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if got, want := result.Calls["associatedPulls"], boolToInt(tt.wantAssociatedAPICall); got != want {
+		t.Fatalf("associatedPulls calls = %d, want %d", got, want)
+	}
+	if result.Calls["artifacts"] != 0 {
+		t.Fatal("merged pull request no-op must not inspect comment artifacts")
+	}
+	if result.Calls["jobs"] != 0 {
+		t.Fatal("merged pull request no-op must not inspect enforcement jobs")
+	}
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func runFeatureFlagResolverFixture(t *testing.T, resolver string, fixture map[string]any) featureFlagResolverFixtureResult {
