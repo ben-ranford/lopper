@@ -2,6 +2,10 @@
 
 const COMMENT_MARKER = '<!-- queue-me-controller -->';
 const DEFAULT_QUEUE_LABEL = 'queue-me';
+const MAX_GITHUB_COMMENT_BODY_LENGTH = 60000;
+const MAX_QUEUE_IDENTITY_FAILURES = 10;
+const MAX_QUEUE_IDENTITY_FAILURE_LENGTH = 240;
+const COMMENT_TRUNCATION_NOTICE = '\n\n_Status message truncated to fit GitHub comment limits._';
 
 function labelName(label) {
   return typeof label === 'string' ? label : label?.name;
@@ -26,6 +30,17 @@ function shortSHA(sha) {
 function safeError(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, 1200);
+}
+
+function safeCommentText(value, maxLength) {
+  return String(value).replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, maxLength);
+}
+
+function truncateCommentBody(body) {
+  if (body.length <= MAX_GITHUB_COMMENT_BODY_LENGTH) {
+    return body;
+  }
+  return `${body.slice(0, MAX_GITHUB_COMMENT_BODY_LENGTH - COMMENT_TRUNCATION_NOTICE.length)}${COMMENT_TRUNCATION_NOTICE}`;
 }
 
 function queuePauseError(message) {
@@ -89,6 +104,17 @@ function commitIdentityFailure(commit) {
   return '';
 }
 
+function queueIdentityFailureMessage(failures) {
+  const shownFailures = failures
+    .slice(0, MAX_QUEUE_IDENTITY_FAILURES)
+    .map((failure) => safeCommentText(failure, MAX_QUEUE_IDENTITY_FAILURE_LENGTH));
+  const omitted = failures.length - shownFailures.length;
+  const omittedSummary = omitted > 0
+    ? `; ${omitted} additional commit identity failure${omitted === 1 ? '' : 's'} omitted`
+    : '';
+  return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
+}
+
 function assertCanonicalCommitIdentity(comparison) {
   const commits = comparison?.commits || [];
   if (comparison?.total_commits > commits.length) {
@@ -98,9 +124,7 @@ function assertCanonicalCommitIdentity(comparison) {
   }
   const failures = commits.map(commitIdentityFailure).filter(Boolean);
   if (failures.length > 0) {
-    throw queuePauseError(
-      `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. ${failures.join('; ')}.`,
-    );
+    throw queuePauseError(queueIdentityFailureMessage(failures));
   }
 }
 
@@ -179,7 +203,7 @@ async function syncStatusComment(
       typeof comment.body === 'string' &&
       comment.body.includes(COMMENT_MARKER),
   );
-  const nextBody = `${COMMENT_MARKER}\n${body}`;
+  const nextBody = truncateCommentBody(`${COMMENT_MARKER}\n${body}`);
   if (existing?.body === nextBody) {
     return;
   }
@@ -539,8 +563,10 @@ module.exports.testables = {
   isBranchCurrent,
   isBotIdentity,
   labelName,
+  queueIdentityFailureMessage,
   safeError,
   shortSHA,
   sortQueuedPulls,
+  truncateCommentBody,
   verifyHeadForQueue,
 };

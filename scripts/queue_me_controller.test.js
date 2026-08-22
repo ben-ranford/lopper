@@ -274,6 +274,29 @@ test('status helpers bound untrusted API text', () => {
   assert.equal(testables.safeError('x'.repeat(1300)).length, 1200);
 });
 
+test('identity audit failure reports bound failure count and text length', () => {
+  const failures = Array.from(
+    { length: 25 },
+    (_, index) => `commit-${index}: bad \`metadata\`\n${'x'.repeat(1000)}`,
+  );
+
+  const message = testables.queueIdentityFailureMessage(failures);
+
+  assert.match(message, /Found 25 failing commits; showing 10:/);
+  assert.match(message, /15 additional commit identity failures omitted/);
+  assert.match(message, /commit-0: bad 'metadata' x/);
+  assert.doesNotMatch(message, /commit-10:/);
+  assert.doesNotMatch(message, /[`\r\n]/);
+  assert.ok(message.length < 3500, `message length ${message.length} must stay bounded`);
+});
+
+test('sticky queue status comments are safely truncated before GitHub updates', () => {
+  const body = testables.truncateCommentBody('x'.repeat(70000));
+
+  assert.equal(body.length, 60000);
+  assert.match(body, /Status message truncated to fit GitHub comment limits/);
+});
+
 test('commit identity audit accepts only canonical user committer identity', () => {
   assert.doesNotThrow(() =>
     testables.assertCanonicalCommitIdentity({
@@ -565,6 +588,36 @@ test('controller fails identity audit for noncanonical commits on later compare 
   assert.deepEqual(harness.calls.merged, []);
   assert.match(harness.calls.comments[0].body, /bot-rewrit/);
   assert.match(harness.calls.comments[0].body, /committer is a bot identity/);
+});
+
+test('controller pauses identity failures with bounded count context', async () => {
+  const failingCommits = Array.from({ length: 125 }, (_, index) =>
+    makeComparisonCommit(`bot-rewrite-${index}`, {
+      commit: {
+        committer: {
+          name: 'lopper-queue-controller[bot]',
+          email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+        },
+      },
+      committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+    }),
+  );
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonStatus: 'ahead',
+    comparisonCommits: failingCommits,
+  });
+
+  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
+
+  const comment = harness.calls.comments[0].body;
+  assert.ok(comment.length <= 60000, `comment length ${comment.length} must fit GitHub limits`);
+  assert.match(comment, /Found 125 failing commits; showing 10:/);
+  assert.match(comment, /115 additional commit identity failures omitted/);
+  assert.match(comment, /bot-rewrit/);
+  assert.doesNotMatch(comment, /bot-rewrite-10/);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
 });
 
 test('controller fails identity audit before arming a bot-committed leader', async () => {
