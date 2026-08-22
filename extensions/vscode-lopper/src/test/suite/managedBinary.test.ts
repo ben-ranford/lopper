@@ -144,6 +144,99 @@ suite("managed binary installer", () => {
     }
   });
 
+  test("reuses v-prefixed managed cache for unprefixed configured release tags", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
+    try {
+      const releaseTag = "v1.8.2";
+      const host = { platform: "linux" as const, arch: "x64" };
+      const archivePath = await createTarballFixture(tempRoot, releaseTag, host, "linux binary");
+      const storageRoot = path.join(tempRoot, "storage");
+      const installer = await createInstaller(tempRoot, releaseTag, host, archivePath);
+
+      const installed = await installer.ensureInstalled(releaseTag);
+      assert.equal(installed.downloaded, true);
+      assert.equal(installed.tag, releaseTag);
+      assert.match(installed.binaryPath, /managed-lopper[/\\]v1\.8\.2[/\\]/);
+
+      const metadata = JSON.parse(await readFile(path.join(storageRoot, "managed-binary.json"), "utf8")) as {
+        binaryPath: string;
+        tag: string;
+        binaryDigest: string;
+      };
+      assert.equal(metadata.binaryPath, installed.binaryPath);
+      assert.equal(metadata.tag, releaseTag);
+      assert.equal(metadata.binaryDigest, await sha256File(installed.binaryPath));
+
+      const cached = await installer.findInstalledBinary("1.8.2");
+      assert.equal(cached, installed.binaryPath);
+
+      const reused = await installer.ensureInstalled("1.8.2");
+      assert.deepEqual(reused, {
+        binaryPath: installed.binaryPath,
+        tag: releaseTag,
+        downloaded: false,
+      });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("normalizes unprefixed prerelease and build managed binary tags", async () => {
+    for (const [managedBinaryTag, normalizedTag] of [
+      ["1.8.2-rc.1", "v1.8.2-rc.1"],
+      ["1.8.2+meta", "v1.8.2+meta"],
+    ]) {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-tag-"));
+      const previousPath = process.env.PATH;
+      const cacheLookupTags: Array<string | undefined> = [];
+      const progressTags: Array<string | undefined> = [];
+      const installTags: Array<string | undefined> = [];
+
+      try {
+        process.env.PATH = "";
+        const lifecycle = new LopperBinaryLifecycleManager(
+          {
+            findInstalledBinary: async (releaseTag) => {
+              cacheLookupTags.push(releaseTag);
+              return undefined;
+            },
+            ensureInstalled: async (releaseTag) => {
+              installTags.push(releaseTag);
+              return {
+                binaryPath: path.join(tempRoot, "managed", "lopper"),
+                tag: releaseTag ?? "latest",
+                downloaded: true,
+              };
+            },
+          },
+          { appendLine: () => undefined },
+          {
+            install: async (releaseTag, install) => {
+              progressTags.push(releaseTag);
+              return install();
+            },
+          },
+          "linux",
+        );
+
+        const binaryPath = await lifecycle.resolveBinaryPath({
+          workspaceRoot: tempRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: true,
+          managedBinaryTag,
+        });
+
+        assert.equal(binaryPath, path.join(tempRoot, "managed", "lopper"));
+        assert.deepEqual(cacheLookupTags, [normalizedTag]);
+        assert.deepEqual(progressTags, [normalizedTag]);
+        assert.deepEqual(installTags, [normalizedTag]);
+      } finally {
+        restoreEnv("PATH", previousPath);
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("rejects managed binary archive downloads with checksum mismatch", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-binary-test-"));
     try {
@@ -233,6 +326,59 @@ suite("managed binary installer", () => {
     } finally {
       restoreEnv("PATH", previousPath);
       await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("preserves non-bare configured release tags during managed install", async () => {
+    for (const managedBinaryTag of ["1.2.3-alpha/beta", "1.2.3+meta/build"]) {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lopper-managed-lifecycle-tag-"));
+      const previousPath = process.env.PATH;
+      const cacheLookupTags: Array<string | undefined> = [];
+      const progressTags: Array<string | undefined> = [];
+      const installTags: Array<string | undefined> = [];
+
+      try {
+        process.env.PATH = "";
+        const lifecycle = new LopperBinaryLifecycleManager(
+          {
+            findInstalledBinary: async (releaseTag) => {
+              cacheLookupTags.push(releaseTag);
+              return undefined;
+            },
+            ensureInstalled: async (releaseTag) => {
+              installTags.push(releaseTag);
+              return {
+                binaryPath: path.join(tempRoot, "managed", "lopper"),
+                tag: releaseTag ?? "latest",
+                downloaded: true,
+              };
+            },
+          },
+          { appendLine: () => undefined },
+          {
+            install: async (releaseTag, install) => {
+              progressTags.push(releaseTag);
+              return install();
+            },
+          },
+          "linux",
+        );
+
+        const binaryPath = await lifecycle.resolveBinaryPath({
+          workspaceRoot: tempRoot,
+          workspaceTrusted: true,
+          autoDownloadBinary: true,
+          managedBinaryTag,
+        });
+
+        assert.equal(binaryPath, path.join(tempRoot, "managed", "lopper"));
+        assert.deepEqual(cacheLookupTags, [managedBinaryTag]);
+        assert.deepEqual(progressTags, [managedBinaryTag]);
+        assert.deepEqual(installTags, [managedBinaryTag]);
+      } finally {
+        restoreEnv("PATH", previousPath);
+        await rm(tempRoot, { recursive: true, force: true });
+      }
     }
   });
 
