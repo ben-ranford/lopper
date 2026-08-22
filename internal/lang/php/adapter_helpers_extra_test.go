@@ -310,6 +310,35 @@ func TestParsePHPImportsBoundsAdversarialUseStatements(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsBoundsGroupedUseBindings(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	content.WriteString("use Vendor\\Lib\\{")
+	for i := 0; i < maxPHPUseStatementsPerFile+17; i++ {
+		if i > 0 {
+			content.WriteString(", ")
+		}
+		fmt.Fprintf(&content, "Thing%d", i)
+	}
+	content.WriteString("};\n")
+
+	parsed := parsePHPImports([]byte(content.String()), "adversarial-grouped-use.php", resolver)
+
+	if !parsed.useStatementLimitHit {
+		t.Fatalf("expected grouped use binding limit to be reported")
+	}
+	if len(parsed.imports) != maxPHPUseStatementsPerFile {
+		t.Fatalf("expected exactly %d bounded grouped use imports, got %d", maxPHPUseStatementsPerFile, len(parsed.imports))
+	}
+	if parsed.groupedByDep[helpersVendorLibDependency] != 1 {
+		t.Fatalf("expected grouped dependency attribution, got %#v", parsed.groupedByDep)
+	}
+}
+
 func TestParsePHPImportsBoundsAdversarialNamespaceReferences(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},

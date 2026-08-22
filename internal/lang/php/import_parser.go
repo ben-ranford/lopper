@@ -53,14 +53,23 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	}
 
 	for _, match := range matches {
+		remainingImports := maxPHPUseStatementsPerFile - len(result.imports)
+		if remainingImports <= 0 {
+			result.useStatementLimitHit = true
+			break
+		}
 		statement := strings.TrimSpace(text[match[2]:match[3]])
 		line := lineIndex.lineNumberAt(match[2])
-		bindings, groupedDeps, unresolvedCount := parseUseStatement(statement, filePath, line, resolver)
+		bindings, groupedDeps, unresolvedCount, bindingLimitHit := parseUseStatementWithPartLimit(statement, filePath, line, resolver, remainingImports)
 		result.imports = append(result.imports, bindings...)
 		for dep := range groupedDeps {
 			result.groupedByDep[dep]++
 		}
 		result.unresolvedCount += unresolvedCount
+		if bindingLimitHit {
+			result.useStatementLimitHit = true
+			break
+		}
 	}
 
 	namespaceResult := parseNamespaceReferencesTextWithLineIndex(text, filePath, resolver, lineIndex)
@@ -247,31 +256,55 @@ func (l *phpLineIndex) lineNumberAt(offset int) int {
 }
 
 func parseUseStatement(statement, filePath string, line int, resolver composerResolver) ([]importBinding, map[string]struct{}, int) {
+	imports, groupedDeps, unresolved, _ := parseUseStatementWithPartLimit(statement, filePath, line, resolver, maxPHPUseStatementsPerFile)
+	return imports, groupedDeps, unresolved
+}
+
+func parseUseStatementWithPartLimit(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, bool) {
 	statement = strings.TrimSpace(statement)
 	if statement == "" {
-		return nil, nil, 0
+		return nil, nil, 0, false
 	}
-	if bindings, groupedDeps, unresolved, ok := parseGroupedUseStatement(statement, filePath, line, resolver); ok {
-		return bindings, groupedDeps, unresolved
+	if bindings, groupedDeps, unresolved, ok, limitHit := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, partLimit); ok {
+		return bindings, groupedDeps, unresolved, limitHit
 	}
-	return parseFlatUseStatement(statement, filePath, line, resolver)
+	bindings, groupedDeps, unresolved, limitHit := parseFlatUseStatement(statement, filePath, line, resolver, partLimit)
+	return bindings, groupedDeps, unresolved, limitHit
 }
 
 func parseGroupedUseStatement(statement, filePath string, line int, resolver composerResolver) ([]importBinding, map[string]struct{}, int, bool) {
+	imports, groupedDeps, unresolved, ok, _ := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, maxPHPUseStatementsPerFile)
+	return imports, groupedDeps, unresolved, ok
+}
+
+func parseGroupedUseStatementWithPartLimit(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, bool, bool) {
 	open := strings.Index(statement, "{")
 	closeBrace := strings.LastIndex(statement, "}")
 	if open < 0 || closeBrace <= open {
-		return nil, nil, 0, false
+		return nil, nil, 0, false, false
 	}
 	base := normalizeNamespace(stripUseImportQualifier(statement[:open]))
 	inside := statement[open+1 : closeBrace]
-	imports, groupedDeps, unresolved := parseUseParts(strings.Split(inside, ","), base, filePath, line, resolver, true)
-	return imports, groupedDeps, unresolved, true
+	parts, limitHit := splitUseParts(inside, partLimit)
+	imports, groupedDeps, unresolved := parseUseParts(parts, base, filePath, line, resolver, true)
+	return imports, groupedDeps, unresolved, true, limitHit
 }
 
-func parseFlatUseStatement(statement, filePath string, line int, resolver composerResolver) ([]importBinding, map[string]struct{}, int) {
-	imports, _, unresolved := parseUseParts(strings.Split(statement, ","), "", filePath, line, resolver, false)
-	return imports, map[string]struct{}{}, unresolved
+func parseFlatUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, bool) {
+	parts, limitHit := splitUseParts(statement, partLimit)
+	imports, _, unresolved := parseUseParts(parts, "", filePath, line, resolver, false)
+	return imports, map[string]struct{}{}, unresolved, limitHit
+}
+
+func splitUseParts(statement string, partLimit int) ([]string, bool) {
+	if partLimit <= 0 {
+		return nil, true
+	}
+	parts := strings.SplitN(statement, ",", partLimit+1)
+	if len(parts) <= partLimit {
+		return parts, false
+	}
+	return parts[:partLimit], true
 }
 
 func parseUseParts(parts []string, base, filePath string, line int, resolver composerResolver, collectGroupedDeps bool) ([]importBinding, map[string]struct{}, int) {
