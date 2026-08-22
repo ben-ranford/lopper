@@ -634,6 +634,7 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"tr1/inttypes.h",
 		"tr1/limits.h",
 		"tr1/float.h",
+		"tr1/random.h",
 		"tr1/stdio.h",
 		"tr1/stdarg.h",
 		"tr1/stdint.h",
@@ -820,6 +821,7 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <tr1/inttypes.h>
 #include <tr1/limits.h>
 #include <tr1/float.h>
+#include <tr1/random.h>
 #include <tr1/stdio.h>
 #include <tr1/stdarg.h>
 #include <tr1/stdint.h>
