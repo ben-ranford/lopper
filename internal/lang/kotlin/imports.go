@@ -32,6 +32,19 @@ func IsImportMatch(matches []string) bool {
 	return len(matches) == importMatchGroups
 }
 
+// MatchImportModule recognizes an import line and returns its imported module path.
+func MatchImportModule(line string) ([]string, string, bool) {
+	matches := MatchImport(line)
+	if !IsImportMatch(matches) {
+		return nil, "", false
+	}
+	module := strings.TrimSpace(matches[1])
+	if module == "" {
+		return nil, "", false
+	}
+	return matches, module, true
+}
+
 // LocalName returns the local binding represented by a matched import.
 func LocalName(matches []string, module string) string {
 	if alias := strings.TrimSpace(matches[3]); alias != "" && strings.TrimSpace(matches[2]) != ".*" {
@@ -46,19 +59,33 @@ func LocalName(matches []string, module string) string {
 
 // CountUsage counts Kotlin import bindings without treating directives or bare hard keywords as uses.
 func CountUsage(content []byte, imports []shared.ImportRecord) map[string]int {
-	scannable := maskDirectiveLines(shared.MaskCommentsAndStringsForFile(content, "source.kt"))
+	scannable := scannableKotlinContent(content)
 	escapedLocals := escapedImportLocals(content, imports)
 	if len(escapedLocals) == 0 {
 		return shared.CountUsage(scannable, imports)
 	}
 
-	bareImports := make([]shared.ImportRecord, 0, len(imports))
+	usage := shared.CountUsage(scannable, importsWithoutEscapedLocals(imports, escapedLocals))
+	countEscapedIdentifierUsage(scannable, escapedLocals, usage)
+	return usage
+}
+
+func scannableKotlinContent(content []byte) []byte {
+	return maskDirectiveLines(shared.MaskCommentsAndStringsForFile(content, "source.kt"))
+}
+
+func importsWithoutEscapedLocals(imports []shared.ImportRecord, escapedLocals map[string]struct{}) []shared.ImportRecord {
+	unescaped := make([]shared.ImportRecord, 0, len(imports))
 	for _, imported := range imports {
-		if _, escaped := escapedLocals[imported.Local]; !escaped {
-			bareImports = append(bareImports, imported)
+		if _, escaped := escapedLocals[imported.Local]; escaped {
+			continue
 		}
+		unescaped = append(unescaped, imported)
 	}
-	usage := shared.CountUsage(scannable, bareImports)
+	return unescaped
+}
+
+func countEscapedIdentifierUsage(scannable []byte, escapedLocals map[string]struct{}, usage map[string]int) {
 	for index := 0; index < len(scannable); index++ {
 		local, end, ok := escapedIdentifierAt(scannable, index)
 		if !ok {
@@ -69,38 +96,72 @@ func CountUsage(content []byte, imports []shared.ImportRecord) map[string]int {
 		}
 		index = end
 	}
-	return usage
 }
 
 func escapedImportLocals(content []byte, imports []shared.ImportRecord) map[string]struct{} {
-	imported := make(map[string]struct{}, len(imports))
-	for _, record := range imports {
-		imported[record.Local] = struct{}{}
-	}
-	escaped := make(map[string]struct{})
-	bare := make(map[string]struct{})
+	tracker := newEscapedImportTracker(imports)
 	for _, line := range strings.Split(string(shared.StripBlockComments(content)), "\n") {
-		matches := MatchImport(shared.StripLineComment(line, "//"))
-		if !IsImportMatch(matches) || strings.TrimSpace(matches[2]) == ".*" {
-			continue
-		}
-		local := importLocal(matches)
-		if isEscapedKeyword(local) {
-			local = trimEscapes(local)
-			if _, ok := imported[local]; ok {
-				escaped[local] = struct{}{}
-			}
-			continue
-		}
-		local = trimEscapes(local)
-		if _, ok := imported[local]; ok {
-			bare[local] = struct{}{}
-		}
+		tracker.recordLine(line)
 	}
-	for local := range bare {
-		delete(escaped, local)
+	return tracker.escapedOnly()
+}
+
+type escapedImportTracker struct {
+	imported map[string]struct{}
+	escaped  map[string]struct{}
+	bare     map[string]struct{}
+}
+
+func newEscapedImportTracker(imports []shared.ImportRecord) escapedImportTracker {
+	tracker := escapedImportTracker{
+		imported: make(map[string]struct{}, len(imports)),
+		escaped:  make(map[string]struct{}),
+		bare:     make(map[string]struct{}),
 	}
-	return escaped
+	for _, record := range imports {
+		tracker.imported[record.Local] = struct{}{}
+	}
+	return tracker
+}
+
+func (t *escapedImportTracker) recordLine(line string) {
+	matches, _, ok := MatchImportModule(shared.StripLineComment(line, "//"))
+	if !ok || isWildcardImport(matches) {
+		return
+	}
+	t.recordLocal(importLocal(matches))
+}
+
+func (t *escapedImportTracker) recordLocal(local string) {
+	if isEscapedKeyword(local) {
+		t.recordEscapedKeyword(local)
+		return
+	}
+	t.recordBareLocal(trimEscapes(local))
+}
+
+func (t *escapedImportTracker) recordEscapedKeyword(local string) {
+	local = trimEscapes(local)
+	if _, ok := t.imported[local]; ok {
+		t.escaped[local] = struct{}{}
+	}
+}
+
+func (t *escapedImportTracker) recordBareLocal(local string) {
+	if _, ok := t.imported[local]; ok {
+		t.bare[local] = struct{}{}
+	}
+}
+
+func (t *escapedImportTracker) escapedOnly() map[string]struct{} {
+	for local := range t.bare {
+		delete(t.escaped, local)
+	}
+	return t.escaped
+}
+
+func isWildcardImport(matches []string) bool {
+	return strings.TrimSpace(matches[2]) == ".*"
 }
 
 func importLocal(matches []string) string {
@@ -125,32 +186,80 @@ func trimEscapes(local string) string {
 
 func maskDirectiveLines(content []byte) []byte {
 	masked := append([]byte(nil), content...)
-	for start := 0; start < len(masked); {
-		end := start
-		for end < len(masked) && masked[end] != '\n' {
-			end++
+	forEachLine(masked, func(start, end int) {
+		if isDirectiveLine(masked[start:end]) {
+			maskByteRange(masked, start, end)
 		}
-		fields := strings.Fields(string(masked[start:end]))
-		if len(fields) > 0 && (fields[0] == "import" || fields[0] == "package") {
-			for index := start; index < end; index++ {
-				masked[index] = ' '
-			}
-		}
-		start = end + 1
-	}
+	})
 	return masked
 }
 
-func escapedIdentifierAt(content []byte, start int) (string, int, bool) {
-	if content[start] != '`' {
-		return "", start, false
+func forEachLine(content []byte, visit func(start, end int)) {
+	for start := 0; start < len(content); {
+		end := lineEnd(content, start)
+		visit(start, end)
+		start = end + 1
 	}
-	end := start + 1
-	for end < len(content) && (content[end] == '_' || content[end] >= 'a' && content[end] <= 'z' || content[end] >= 'A' && content[end] <= 'Z' || content[end] >= '0' && content[end] <= '9') {
+}
+
+func lineEnd(content []byte, start int) int {
+	end := start
+	for end < len(content) && content[end] != '\n' {
 		end++
 	}
-	if end == start+1 || end >= len(content) || content[end] != '`' {
+	return end
+}
+
+func isDirectiveLine(line []byte) bool {
+	fields := strings.Fields(string(line))
+	return len(fields) > 0 && isKotlinDirective(fields[0])
+}
+
+func isKotlinDirective(token string) bool {
+	return token == "import" || token == "package"
+}
+
+func maskByteRange(content []byte, start, end int) {
+	for index := start; index < end; index++ {
+		content[index] = ' '
+	}
+}
+
+func escapedIdentifierAt(content []byte, start int) (string, int, bool) {
+	if !hasOpeningEscape(content, start) {
+		return "", start, false
+	}
+	end := scanEscapedIdentifierEnd(content, start+1)
+	if !hasClosingEscape(content, start, end) {
 		return "", start, false
 	}
 	return string(content[start+1 : end]), end, true
+}
+
+func hasOpeningEscape(content []byte, start int) bool {
+	return start < len(content) && content[start] == '`'
+}
+
+func scanEscapedIdentifierEnd(content []byte, start int) int {
+	end := start
+	for end < len(content) && isIdentifierByte(content[end]) {
+		end++
+	}
+	return end
+}
+
+func hasClosingEscape(content []byte, start, end int) bool {
+	return end > start+1 && end < len(content) && content[end] == '`'
+}
+
+func isIdentifierByte(char byte) bool {
+	return char == '_' || isASCIILetter(char) || isASCIIDigit(char)
+}
+
+func isASCIILetter(char byte) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z'
+}
+
+func isASCIIDigit(char byte) bool {
+	return char >= '0' && char <= '9'
 }

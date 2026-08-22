@@ -181,38 +181,69 @@ func parsePackage(content []byte) string {
 
 func parseImports(content []byte, filePath string, filePackage string, lookups dependencyLookups, result *scanResult) []importBinding {
 	sanitized := shared.StripBlockComments(content)
-	return shared.ParseImportLines(sanitized, filePath, func(line string, _ int) []shared.ImportRecord {
-		line = stripLineComment(line)
-		matches := kotlinlang.MatchImport(line)
-		if !kotlinlang.IsImportMatch(matches) {
-			return nil
-		}
-		module := strings.TrimSpace(matches[1])
-		if module == "" {
-			return nil
-		}
+	parser := kotlinAndroidImportParser{
+		filePackage: filePackage,
+		lookups:     lookups,
+		result:      result,
+	}
+	return shared.ParseImportLines(sanitized, filePath, parser.parseLine)
+}
 
-		dependency, ambiguous := resolveDependency(module, lookups)
-		if shouldIgnoreImport(module, filePackage) && dependency == "" {
-			return nil
-		}
-		if dependency == "" {
-			dependency = fallbackDependency(module)
-			if dependency == "" {
-				return nil
-			}
-			_, declared := lookups.DeclaredDependencies[normalizeDependencyID(dependency)]
-			result.addFallbackModule(module, dependency, declared)
-		} else if len(ambiguous) > 1 {
-			result.addAmbiguousModule(module, ambiguous, dependency)
-		}
+type kotlinAndroidImportParser struct {
+	filePackage string
+	lookups     dependencyLookups
+	result      *scanResult
+}
 
-		record, ok := buildImportRecord(matches, module, dependency)
-		if !ok {
-			return nil
-		}
-		return []shared.ImportRecord{record}
-	})
+func (p *kotlinAndroidImportParser) parseLine(line string, _ int) []shared.ImportRecord {
+	record, ok := p.importRecord(line)
+	if !ok {
+		return nil
+	}
+	return []shared.ImportRecord{record}
+}
+
+func (p *kotlinAndroidImportParser) importRecord(line string) (shared.ImportRecord, bool) {
+	matches, module, ok := kotlinlang.MatchImportModule(stripLineComment(line))
+	if !ok {
+		return shared.ImportRecord{}, false
+	}
+	dependency, ok := p.dependencyFor(module)
+	if !ok {
+		return shared.ImportRecord{}, false
+	}
+	return buildImportRecord(matches, module, dependency)
+}
+
+func (p *kotlinAndroidImportParser) dependencyFor(module string) (string, bool) {
+	dependency, ambiguous := resolveDependency(module, p.lookups)
+	if dependency != "" {
+		p.recordAmbiguousModule(module, ambiguous, dependency)
+		return dependency, true
+	}
+	if shouldIgnoreImport(module, p.filePackage) {
+		return "", false
+	}
+	return p.fallbackDependency(module)
+}
+
+func (p *kotlinAndroidImportParser) recordAmbiguousModule(module string, ambiguous []string, dependency string) {
+	if len(ambiguous) <= 1 || p.result == nil {
+		return
+	}
+	p.result.addAmbiguousModule(module, ambiguous, dependency)
+}
+
+func (p *kotlinAndroidImportParser) fallbackDependency(module string) (string, bool) {
+	dependency := fallbackDependency(module)
+	if dependency == "" {
+		return "", false
+	}
+	if p.result != nil {
+		_, declared := p.lookups.DeclaredDependencies[normalizeDependencyID(dependency)]
+		p.result.addFallbackModule(module, dependency, declared)
+	}
+	return dependency, true
 }
 
 func buildImportRecord(matches []string, module string, dependency string) (shared.ImportRecord, bool) {

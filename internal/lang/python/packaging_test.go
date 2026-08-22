@@ -11,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -50,6 +51,9 @@ dev-dependencies = ["mypy>=1.0"]
 		if _, ok := dependencies[want]; !ok {
 			t.Fatalf(expectedDependencyInSetFmt, want, dependencies)
 		}
+	}
+	if _, ok := dependencies["mkdocs"]; ok {
+		t.Fatalf("optional project dependency must not be added to inventory, got %#v", dependencies)
 	}
 	joinedWarnings := strings.Join(warnings, "\n")
 	if !strings.Contains(joinedWarnings, "project.optional-dependencies") {
@@ -381,6 +385,28 @@ version = "0.1.0"
 	}
 }
 
+func TestCollectDirectoryDeclaredDependenciesUsesLargePackageLockFallback(t *testing.T) {
+	for _, lockName := range []string{pythonPoetryLockName, pythonUVLockName} {
+		t.Run(lockName, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, lockName), `
+[[package]]
+name = "Requests"
+version = "2.32.3"
+`+strings.Repeat("# filler\n", int(ManifestReadLimitBytes)/len("# filler\n")+1))
+
+			dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+			if err != nil {
+				t.Fatalf(collectDirectoryErrFmt, err)
+			}
+			if _, ok := dependencies["requests"]; !ok {
+				t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+			}
+			assertWarningContains(t, warnings, "using "+lockName+" package entries as a fallback")
+		})
+	}
+}
+
 func TestPythonPackagingNormalizationUsesSharedPEP503Authority(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), "My__Package==1.2.3\nmy_.package>=1.2.3\n")
@@ -484,6 +510,30 @@ func TestParsePipfileDependenciesInvalidTOML(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonPipfileName)
 	assertInvalidParseWarning(t, repo, path, `[packages`, "invalid Pipfile", "decode error", parsePipfileDependencies)
+}
+
+func TestPythonManifestReadLimitAcceptsLargeManifestAndRejectsOverLimit(t *testing.T) {
+	repo := t.TempDir()
+
+	largePath := filepath.Join(repo, "large", pythonPyprojectFile)
+	testutil.MustWriteFile(t, largePath, "[project]\ndependencies = [\"requests>=2\"]\n"+strings.Repeat("# filler\n", (1<<20)/len("# filler\n")+1))
+	dependencies, warnings, err := parsePyprojectDependencies(repo, largePath)
+	if err != nil {
+		t.Fatalf("parse large pyproject: %v", err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no large manifest warnings, got %#v", warnings)
+	}
+
+	oversizedPath := filepath.Join(repo, "oversized", pythonPipfileName)
+	testutil.MustWriteFile(t, oversizedPath, "[packages]\nflask = \"*\"\n"+strings.Repeat("# filler\n", int(ManifestReadLimitBytes)/len("# filler\n")+1))
+	_, _, err = parsePipfileDependencies(repo, oversizedPath)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected shared manifest read limit error, got %v", err)
+	}
 }
 
 func TestReadOptionalTOMLDocumentOutsideRepoFails(t *testing.T) {

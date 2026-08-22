@@ -48,7 +48,6 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		{"publish-pr-reports", "Download PR report inputs", "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "PR report download"},
 		{"publish-pr-reports", "Comment memory benchmark report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "memory benchmark comment"},
 		{"publish-pr-reports", "Comment lopper report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "lopper report comment"},
-		{"publish-pr-reports", "Post SonarQube review comments (PR)", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "Sonar review comment"},
 		{"publish-pr-reports", "Comment on coverage failure", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "coverage failure comment"},
 	} {
 		step := workflowStepByName(t, workflow.Jobs, check.jobName, check.stepName)
@@ -128,7 +127,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		"./extensions/",
 		"git ",
 	})
-	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Post SonarQube review comments (PR)", "Comment on coverage failure")
+	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Comment on coverage failure")
 	coverageComment := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Comment on coverage failure")
 	if !coverageComment.ContinueOnError {
 		t.Fatal("coverage comment publication must not fail an otherwise-green CI run")
@@ -160,17 +159,8 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		t.Fatalf("required PR report inputs = %q, want %q", got, want)
 	}
 
-	sonar := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Post SonarQube review comments (PR)")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "Sonar review comment action", got: sonar.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
-		{label: "Sonar review comment condition", got: sonar.If, want: "${{ !env.ACT && env.SONAR_TOKEN != '' }}"},
-	})
-	assertWorkflowStepEnv(t, sonar, "Sonar review comment step", map[string]string{
-		"SONAR_HOST_URL":    "https://sonarcloud.io",
-		"SONAR_PROJECT_KEY": "ben-ranford_lopper",
-		"SONAR_TOKEN":       "${{ secrets.SONAR_TOKEN }}",
-	})
-	assertWorkflowEnvKeyOnlyOnStep(t, workflow.Jobs, "SONAR_TOKEN", "publish-pr-reports", "Post SonarQube review comments (PR)")
+	assertWorkflowStepAbsent(t, workflow.Jobs, "publish-pr-reports", "Post SonarQube review comments (PR)")
+	assertWorkflowEnvKeyAbsent(t, workflow.Jobs, "SONAR_TOKEN")
 }
 
 func assertCIArtifactAction(t *testing.T, step workflowStepConfig, label string, wantUses string, wantInputs map[string]string) {
@@ -204,6 +194,35 @@ func shellArrayValues(t *testing.T, script string, name string) []string {
 		}
 	}
 	return values
+}
+
+func assertWorkflowStepAbsent(t *testing.T, jobs map[string]workflowJobConfig, jobName string, stepName string) {
+	t.Helper()
+
+	job, ok := jobs[jobName]
+	if !ok {
+		t.Fatalf("workflow must define job %s", jobName)
+	}
+	for _, step := range job.Steps {
+		if step.Name == stepName {
+			t.Fatalf("%s must not define step %q", jobName, stepName)
+		}
+	}
+}
+
+func assertWorkflowEnvKeyAbsent(t *testing.T, jobs map[string]workflowJobConfig, key string) {
+	t.Helper()
+
+	for jobName, job := range jobs {
+		if _, present := job.Env[key]; present {
+			t.Fatalf("%s must not be scoped to job %q", key, jobName)
+		}
+		for _, step := range job.Steps {
+			if _, present := step.Env[key]; present {
+				t.Fatalf("%s must not be scoped to step %q in job %q", key, step.Name, jobName)
+			}
+		}
+	}
 }
 
 func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
