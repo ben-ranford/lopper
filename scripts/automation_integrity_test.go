@@ -215,6 +215,93 @@ func TestAutomationExamplesRejectsOrFallbackRequiredCommands(t *testing.T) {
 	})
 }
 
+func TestAutomationExamplesRejectsSkippedAndMaskedRequiredCommands(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: false && make automation-integrity || true
+    lopper-json-report:
+      run: mkdir -p .artifacts && false && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || true
+    mutation-guard:
+      run: false && git diff --exit-code -- . ':!.artifacts' || true
+`)
+	if err == nil {
+		t.Fatalf("expected skipped and masked contracts to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"missing automation integrity command",
+		"missing lopper JSON report command",
+		"missing mutation guard command",
+	})
+}
+
+func TestAutomationExamplesRejectsMaskedRequiredCommandFailures(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: make automation-integrity || true
+    lopper-json-report:
+      run: mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || true
+    mutation-guard:
+      run: git diff --exit-code -- . ':!.artifacts' || true
+`)
+	if err == nil {
+		t.Fatalf("expected masked contract failures to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"missing automation integrity command",
+		"missing lopper JSON report command",
+		"missing mutation guard command",
+	})
+}
+
+func TestAutomationExamplesRejectsDuplicateLopperScalarFlags(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		run  string
+	}{
+		{
+			name: "format override",
+			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format json --format text --output .artifacts/lopper-pre-commit.json",
+		},
+		{
+			name: "output override",
+			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json --output /tmp/lopper.json",
+		},
+		{
+			name: "equals syntax duplicate",
+			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format=json --format=text --output .artifacts/lopper-pre-commit.json",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: make automation-integrity
+    lopper-json-report:
+      run: `+tc.run+`
+    mutation-guard:
+      run: git diff --exit-code -- . ':!.artifacts'
+`)
+			if err == nil {
+				t.Fatalf("expected duplicate lopper scalar flags to fail, got success:\n%s", output)
+			}
+			assertOutputContainsAll(t, string(output), []string{
+				"must preserve the automation example contract",
+				"missing lopper JSON report command",
+			})
+		})
+	}
+}
+
 func TestAutomationExamplesAcceptsParsedLefthookCommands(t *testing.T) {
 	t.Parallel()
 

@@ -111,14 +111,72 @@ rescue ArgumentError
 	[]
 end
 
+def noop_success_command?(words)
+	words == ["true"] || words == [":"]
+end
+
 def command_words(segment)
 	words = shell_words(segment[:text])
 	words = words.drop_while { |word| word.match?(/\A[A-Za-z_][A-Za-z0-9_]*=.*/)}
 	words
 end
 
-def required_command_segment?(segment)
-	segment[:operator] != "||"
+def known_failure_command?(words)
+	words == ["false"]
+end
+
+def fallback_masks_chain_success?(segments, index)
+	later_segments = segments[(index + 1)..-1] || []
+	later_segments.any? do |segment|
+		segment[:operator] == "||" && noop_success_command?(command_words(segment))
+	end
+end
+
+def skipped_by_known_failed_and_chain?(segments, index)
+	segments[0...index].any? do |segment|
+		known_failure_command?(command_words(segment))
+	end && segment_and_chain?(segments[index])
+end
+
+def segment_and_chain?(segment)
+	segment[:operator] == "&&"
+end
+
+def required_command_segment?(segments, index)
+	segment = segments[index]
+	return false if segment[:operator] == "||"
+	return false if fallback_masks_chain_success?(segments, index)
+	return false if skipped_by_known_failed_and_chain?(segments, index)
+
+	true
+end
+
+def scalar_flag_values(words, flag)
+	values = []
+	index = 0
+	while index < words.length
+		word = words[index]
+		if word == flag
+			value = words[index + 1]
+			return nil if value.nil? || value.start_with?("--")
+			values << value
+			index += 2
+			next
+		end
+		prefix = "#{flag}="
+		if word.start_with?(prefix)
+			values << word[prefix.length, word.length]
+		end
+		index += 1
+	end
+	values
+end
+
+def has_unique_scalar_flags?(words, expected)
+	expected.all? do |flag, value|
+		values = scalar_flag_values(words, flag)
+		values == [value]
+	end
 end
 
 def pre_commit_command_runs(runs, command_name)
@@ -127,26 +185,30 @@ end
 
 def has_exact_command?(runs, command_name, words)
 	runs.any? do |entry|
+		segments = shell_segments(entry[:run])
 		entry[:hook] == "pre-commit" &&
 			entry[:command] == command_name &&
-			shell_segments(entry[:run]).any? do |segment|
-				required_command_segment?(segment) && command_words(segment) == words
+			segments.each_with_index.any? do |segment, index|
+				required_command_segment?(segments, index) && command_words(segment) == words
 			end
 	end
 end
 
 def has_lopper_json_report?(runs)
 	pre_commit_command_runs(runs, "lopper-json-report").any? do |entry|
-		shell_segments(entry[:run]).any? do |segment|
-			next false unless required_command_segment?(segment)
+		segments = shell_segments(entry[:run])
+		segments.each_with_index.any? do |segment, index|
+			next false unless required_command_segment?(segments, index)
 
 			words = command_words(segment)
 			next false unless words[0, 4] == ["go", "run", "./cmd/lopper", "analyse"]
 
-			words.each_cons(2).include?(["--repo", "."]) &&
-				words.each_cons(2).include?(["--language", "all"]) &&
-				words.each_cons(2).include?(["--format", "json"]) &&
-				words.each_cons(2).include?(["--output", ".artifacts/lopper-pre-commit.json"])
+			has_unique_scalar_flags?(words, {
+				"--repo" => ".",
+				"--language" => "all",
+				"--format" => "json",
+				"--output" => ".artifacts/lopper-pre-commit.json",
+			})
 		end
 	end
 end
