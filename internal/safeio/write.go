@@ -373,6 +373,8 @@ func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 }
 
 func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileInfo) error {
+	const changedBeforeRemoval = "cleanup file changed before removal"
+
 	if tempRel == "" {
 		return nil
 	}
@@ -389,7 +391,7 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
 		return nil
 	}
-	cleanupRel, err := stageIdentityBoundLink(root, tempRel, expected, "cleanup file changed before removal")
+	cleanupRel, err := stageIdentityBoundLink(root, tempRel, expected, changedBeforeRemoval)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -399,10 +401,10 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 		}
 		return err
 	}
-	if err := removeFileIfMatches(root, tempRel, expected, "cleanup file changed before removal"); err != nil {
-		return errors.Join(err, removeFileIfMatches(root, cleanupRel, expected, "cleanup file changed before removal"))
+	if err := removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval); err != nil {
+		return errors.Join(err, removeFileIfMatches(root, cleanupRel, expected, changedBeforeRemoval))
 	}
-	return removeFileIfMatches(root, cleanupRel, expected, "cleanup file changed before removal")
+	return removeFileIfMatches(root, cleanupRel, expected, changedBeforeRemoval)
 }
 
 func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message string) error {
@@ -415,10 +417,8 @@ func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message st
 	var err error
 	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
 		err = guardedRoot.RemoveIfMatches(rel, expected, message)
-	} else if verifyErr := verifyPublishedPathMatchesInfo(root, rel, expected, message); verifyErr != nil {
-		err = verifyErr
 	} else {
-		err = root.Remove(rel)
+		err = fmt.Errorf("%w: %s: %s", errIdentityBoundReplacementUnsupported, rel, message)
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

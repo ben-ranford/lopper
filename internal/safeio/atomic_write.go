@@ -23,6 +23,7 @@ type truncatingFile interface {
 }
 
 type identityBoundOperationsRoot interface {
+	LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error
 	RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error
 	RemoveIfMatches(name string, expected fs.FileInfo, message string) error
 }
@@ -152,10 +153,14 @@ func renameFileIfMatches(root Root, oldName, newName string, expected fs.FileInf
 	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
 		return guardedRoot.RenameIfMatches(oldName, newName, expected, message)
 	}
-	if err := verifyPublishedPathMatchesInfo(root, oldName, expected, message); err != nil {
-		return err
+	return fmt.Errorf("%w: %s: %s", errIdentityBoundReplacementUnsupported, oldName, message)
+}
+
+func linkFileIfMatches(root Root, oldName, newName string, expected fs.FileInfo, message string) error {
+	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
+		return guardedRoot.LinkIfMatches(oldName, newName, expected, message)
 	}
-	return root.Rename(oldName, newName)
+	return fmt.Errorf("%w: %s: %s", errIdentityBoundReplacementUnsupported, oldName, message)
 }
 
 func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, message string) (string, error) {
@@ -170,7 +175,7 @@ func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, m
 		if err != nil {
 			return "", err
 		}
-		if err := root.Link(sourceRel, stagedRel); errors.Is(err, os.ErrExist) {
+		if err := linkFileIfMatches(root, sourceRel, stagedRel, expected, message); errors.Is(err, os.ErrExist) {
 			continue
 		} else if err != nil {
 			return "", err
@@ -286,7 +291,7 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 }
 
 func publishIdentityBoundIfAbsent(root Root, sourceRel, targetRel string, expected fs.FileInfo) error {
-	if err := root.Link(sourceRel, targetRel); err != nil {
+	if err := linkFileIfMatches(root, sourceRel, targetRel, expected, temporaryFileChangedBeforeCommit); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return os.ErrExist
 		}

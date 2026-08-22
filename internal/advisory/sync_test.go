@@ -3918,6 +3918,10 @@ func (r *advisoryFakeRoot) Link(oldName, newName string) error {
 	return errors.New("unexpected link")
 }
 
+func (r *advisoryFakeRoot) LinkIfMatches(oldName, newName string, _ fs.FileInfo, _ string) error {
+	return r.Link(oldName, newName)
+}
+
 func (r *advisoryFakeRoot) Rename(oldName, newName string) error {
 	if r.rename != nil {
 		return r.rename(oldName, newName)
@@ -3925,11 +3929,19 @@ func (r *advisoryFakeRoot) Rename(oldName, newName string) error {
 	return nil
 }
 
+func (r *advisoryFakeRoot) RenameIfMatches(oldName, newName string, _ fs.FileInfo, _ string) error {
+	return r.Rename(oldName, newName)
+}
+
 func (r *advisoryFakeRoot) Remove(name string) error {
 	if r.remove != nil {
 		return r.remove(name)
 	}
 	return nil
+}
+
+func (r *advisoryFakeRoot) RemoveIfMatches(name string, _ fs.FileInfo, _ string) error {
+	return r.Remove(name)
 }
 
 func (r *advisoryFakeRoot) Close() error {

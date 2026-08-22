@@ -207,6 +207,7 @@ type fakeRoot struct {
 	lstat           func(name string) (fs.FileInfo, error)
 	mkdir           func(name string, perm os.FileMode) error
 	link            func(oldName, newName string) error
+	linkIfMatches   func(oldName, newName string, expected fs.FileInfo, message string) error
 	rename          func(oldName, newName string) error
 	renameIfMatches func(oldName, newName string, expected fs.FileInfo, message string) error
 	remove          func(name string) error
@@ -271,6 +272,16 @@ func (r *fakeRoot) Link(oldName, newName string) error {
 		return errors.ErrUnsupported
 	}
 	return r.Root.Link(oldName, newName)
+}
+
+func (r *fakeRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if r.linkIfMatches != nil {
+		return r.linkIfMatches(oldName, newName, expected, message)
+	}
+	if err := verifyPublishedPathMatchesInfo(r, oldName, expected, message); err != nil {
+		return err
+	}
+	return r.Link(oldName, newName)
 }
 
 func (r *fakeRoot) Rename(oldName, newName string) error {

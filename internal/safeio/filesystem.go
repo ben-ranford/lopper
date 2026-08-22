@@ -549,6 +549,13 @@ func (r *osRoot) Link(oldName, newName string) error {
 	return r.root.Link(oldName, newName)
 }
 
+func (r *osRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if err := verifyPublishedPathMatchesInfo(r, oldName, expected, message); err != nil {
+		return err
+	}
+	return r.Link(oldName, newName)
+}
+
 func (r *osRoot) Rename(oldName, newName string) error {
 	return r.root.Rename(oldName, newName)
 }
