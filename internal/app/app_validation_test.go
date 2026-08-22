@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
@@ -350,6 +353,38 @@ func TestExecuteAnalyseReachableVulnerabilityThresholdError(t *testing.T) {
 	}
 	if !strings.Contains(output, `"vulnerabilities"`) || !strings.Contains(output, `"GHSA-threshold"`) {
 		t.Fatalf("expected formatted vulnerability output on threshold failure, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseAllLanguageOversizedComposerManifestFailsClosedForEnforcedGate(t *testing.T) {
+	repo := t.TempDir()
+	advisoryPath := filepath.Join(repo, "security", "advisories.yml")
+	testutil.MustWriteFile(t, advisoryPath, `advisories:
+  - id: GHSA-vendor-lib
+    package: vendor/lib
+    ecosystem: composer
+    severity: high
+    source: fixture
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "index.php"), "<?php\nuse Vendor\\Lib\\Thing;\nThing::run();\n")
+	manifestPrefix := `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}`
+	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), manifestPrefix+strings.Repeat(" ", 2*1024*1024)+"}\n")
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Language = "all"
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.AdvisorySourcePath = advisoryPath
+	req.Analyse.AdvisorySourceTrustRoot = repo
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+	req.Analyse.CacheEnabled = false
+
+	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized composer manifest to fail closed under enforced all-language policy, got %v", err)
 	}
 }
 

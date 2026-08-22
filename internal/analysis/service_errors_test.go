@@ -10,6 +10,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -68,6 +69,25 @@ func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected warning for analyse failure in all-language mode")
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageCoverageErrorIsFatalWhenRequired(t *testing.T) {
+	adapter := &testServiceAdapter{
+		id:     "php",
+		detect: language.Detection{Matched: true, Confidence: 90},
+		err:    errors.Join(errors.New("read composer.json"), safeio.ErrFileTooLarge),
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                ".",
+		Language:                "all",
+		RequireCompleteCoverage: true,
+	}, ".", candidate, nil)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized coverage error to be fatal when coverage is required, got %v", err)
 	}
 }
 

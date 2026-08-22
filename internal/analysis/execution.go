@@ -2,12 +2,14 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
@@ -76,6 +78,9 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
 		})
 		if err != nil {
+			if shouldFailAdapterCoverageError(req, err) {
+				return nil, nil, nil, err
+			}
 			if isMultiLanguage(req.Language) {
 				warnings = append(warnings, err.Error())
 				continue
@@ -88,6 +93,10 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		reports = append(reports, current)
 	}
 	return reports, warnings, analyzedRoots, nil
+}
+
+func shouldFailAdapterCoverageError(req Request, err error) bool {
+	return req.RequireCompleteCoverage && isMultiLanguage(req.Language) && errors.Is(err, safeio.ErrFileTooLarge)
 }
 
 func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {

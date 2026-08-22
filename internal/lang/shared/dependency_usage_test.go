@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -83,6 +84,32 @@ func TestCountUsageSubtractsKnownDeclarationTokenHits(t *testing.T) {
 		if got := CountUsage([]byte(content), imports)["de"]; got != want {
 			t.Errorf("countUsage(%q) = %d, want %d", content, got, want)
 		}
+	}
+}
+
+func TestCountUsageLargeGroupedDeclarationCompletesQuickly(t *testing.T) {
+	const aliasCount = 4096
+	parts := make([]string, 0, aliasCount)
+	imports := make([]ImportRecord, 0, aliasCount)
+	for i := 0; i < aliasCount; i++ {
+		local := fmt.Sprintf("Alias%d", i)
+		parts = append(parts, fmt.Sprintf("Class%d as %s", i, local))
+		imports = append(imports, ImportRecord{
+			Local:    local,
+			Location: report.Location{File: "src/Example.php", Line: 1, Column: 1},
+		})
+	}
+	declaration := "<?php use Vendor\\Lib\\{" + strings.Join(parts, ", ") + "};"
+	padding := strings.Repeat(" ", (2*1024*1024)-len(declaration)-32)
+	content := []byte(declaration + padding + "\n")
+
+	start := time.Now()
+	usage := CountUsage(content, imports)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("CountUsage took %s for one grouped declaration with %d aliases", elapsed, aliasCount)
+	}
+	if usage["Alias4095"] != 0 {
+		t.Fatalf("expected declaration-only alias usage to be zero, got %d", usage["Alias4095"])
 	}
 }
 
