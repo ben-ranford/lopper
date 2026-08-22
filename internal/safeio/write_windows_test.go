@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unsafe"
 )
 
 func TestOpenPinnedReplacementTargetIfNeededOpensPinnedTargetOnWindows(t *testing.T) {
@@ -323,6 +324,293 @@ func TestFallbackAtomicReplacementRejectsTargetChangedAfterLatePin(t *testing.T)
 			)
 		})
 	}
+}
+
+func TestWriteFileAtomicallyIfAbsentFallsBackToWindowsNoReplaceRename(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	root := newWindowsNoReplaceIfAbsentRoot(t, rootInfo, tempInfo)
+
+	renameCalls := 0
+	restoreWindowsNoReplaceRename(t, func(gotRoot Root, gotRootInfo fs.FileInfo, tempRel, targetRel string, gotTempInfo fs.FileInfo) error {
+		renameCalls++
+		if gotRoot != root {
+			t.Fatal("fallback received a different root")
+		}
+		if !os.SameFile(rootInfo, gotRootInfo) {
+			t.Fatal("fallback received the wrong root identity")
+		}
+		if tempRel != ".safeio-atomic-temp" || targetRel != writeTestFileName {
+			t.Fatalf("unexpected rename paths: %s -> %s", tempRel, targetRel)
+		}
+		if !os.SameFile(tempInfo, gotTempInfo) {
+			t.Fatal("fallback received the wrong temp identity")
+		}
+		root.targetPublished = true
+		return nil
+	})
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if err != nil {
+		t.Fatalf("writeFileAtomicallyIfAbsentAtRoot returned error: %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one no-replace rename fallback, got %d", renameCalls)
+	}
+	if root.removeCalls != 0 {
+		t.Fatalf("expected no temp removal after no-replace rename, got %d", root.removeCalls)
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentNoReplaceFallbackPreservesExistingTarget(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	root := newWindowsNoReplaceIfAbsentRoot(t, rootInfo, tempInfo)
+
+	restoreWindowsNoReplaceRename(t, func(Root, fs.FileInfo, string, string, fs.FileInfo) error {
+		return os.ErrExist
+	})
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing target error, got %v", err)
+	}
+	if root.targetPublished {
+		t.Fatal("target was marked published despite existing destination")
+	}
+	if root.removeCalls != 1 {
+		t.Fatalf("expected temp cleanup after failed no-replace rename, got %d", root.removeCalls)
+	}
+}
+
+func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T) {
+	const tempName = ".safeio-atomic-temp"
+	linkError := func(op, oldName, newName string, err error) error {
+		return &os.LinkError{Op: op, Old: oldName, New: newName, Err: err}
+	}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "unsupported", err: linkError("linkat", tempName, writeTestFileName, errors.ErrUnsupported), want: true},
+		{name: "windows unsupported", err: linkError("linkat", tempName, writeTestFileName, syscall.EWINDOWS), want: true},
+		{name: "privilege not held", err: linkError("linkat", tempName, writeTestFileName, syscall.ERROR_PRIVILEGE_NOT_HELD), want: true},
+		{name: "invalid function", err: linkError("linkat", tempName, writeTestFileName, syscall.Errno(1)), want: true},
+		{name: "target exists", err: linkError("linkat", tempName, writeTestFileName, syscall.ERROR_ALREADY_EXISTS)},
+		{name: "wrong operation", err: linkError("link", tempName, writeTestFileName, errors.ErrUnsupported)},
+		{name: "wrong source", err: linkError("linkat", "other-temp", writeTestFileName, errors.ErrUnsupported)},
+		{name: "wrong target", err: linkError("linkat", tempName, "other-target", errors.ErrUnsupported)},
+		{name: "raw unsupported", err: errors.ErrUnsupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := windowsHardLinkUnsupported(tt.err, tempName, writeTestFileName)
+			if got != tt.want {
+				t.Fatalf("unexpected fallback decision: got %t want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewFileRenameInformationSupportsLongTargetNames(t *testing.T) {
+	targetRel := strings.Repeat("a", syscall.MAX_PATH+1)
+	renameInfo, err := newFileRenameInformation(syscall.Handle(42), targetRel)
+	if err != nil {
+		t.Fatalf("newFileRenameInformation returned error for long target: %v", err)
+	}
+	info := fileRenameInformationView(renameInfo)
+	if info == nil {
+		t.Fatal("expected rename info view")
+	}
+	if got, want := info.rootDirectory, syscall.Handle(42); got != want {
+		t.Fatalf("unexpected root handle: got %v want %v", got, want)
+	}
+	if got, want := int(info.fileNameLength), len(targetRel)*2; got != want {
+		t.Fatalf("unexpected target byte length: got %d want %d", got, want)
+	}
+	if got, want := len(renameInfo), int(unsafe.Offsetof(fileRenameInformation{}.fileName))+len(targetRel)*2; got != want {
+		t.Fatalf("unexpected rename buffer length: got %d want %d", got, want)
+	}
+	fileName := unsafe.Slice(&info.fileName[0], len(targetRel))
+	if got, want := syscall.UTF16ToString(fileName), targetRel; got != want {
+		t.Fatalf("unexpected target name: got %q want %q", got, want)
+	}
+}
+
+func TestNormalizeWindowsRootRelativeTargetMatchesRootBasenameSemantics(t *testing.T) {
+	tests := []struct {
+		name      string
+		targetRel string
+		want      string
+	}{
+		{name: "unchanged normal name", targetRel: "artifact.txt", want: "artifact.txt"},
+		{name: "trailing dot", targetRel: "artifact.", want: "artifact"},
+		{name: "trailing space", targetRel: "artifact ", want: "artifact"},
+		{name: "trailing dot and space", targetRel: "artifact. ", want: "artifact"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeWindowsRootRelativeTarget(tt.targetRel)
+			if err != nil {
+				t.Fatalf("normalizeWindowsRootRelativeTarget returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalized target = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewWindowsObjectAttributesPreservesRootRelativeName(t *testing.T) {
+	const targetRel = `artifact.`
+	attrs, err := newWindowsObjectAttributes(syscall.Handle(42), targetRel)
+	if err != nil {
+		t.Fatalf("newWindowsObjectAttributes returned error: %v", err)
+	}
+	if got, want := attrs.rootDirectory, syscall.Handle(42); got != want {
+		t.Fatalf("unexpected root handle: got %v want %v", got, want)
+	}
+	if got, want := int(attrs.objectName.length), len(targetRel)*2; got != want {
+		t.Fatalf("unexpected object name byte length: got %d want %d", got, want)
+	}
+	if got := syscall.UTF16ToString(unsafe.Slice(attrs.objectName.buffer, len(targetRel))); got != targetRel {
+		t.Fatalf("object name was normalized: got %q want %q", got, targetRel)
+	}
+}
+
+func TestWindowsNoReplaceRenameUsesPinnedRootAfterAncestorRename(t *testing.T) {
+	base := t.TempDir()
+	originalParent := filepath.Join(base, "parent")
+	movedParent := filepath.Join(base, "moved")
+	if err := os.Mkdir(originalParent, 0o755); err != nil {
+		t.Fatalf("create original parent: %v", err)
+	}
+
+	root, err := (&osFileSystem{}).OpenRoot(originalParent)
+	if err != nil {
+		t.Fatalf("open pinned parent: %v", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil {
+			t.Fatalf("close pinned parent: %v", err)
+		}
+	}()
+	rootInfo, err := root.Lstat(".")
+	if err != nil {
+		t.Fatalf("stat pinned parent: %v", err)
+	}
+	tempFile, err := root.OpenFile(".safeio-atomic-temp", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatalf("create temp via pinned parent: %v", err)
+	}
+	if _, err := tempFile.Write([]byte("payload")); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	tempInfo, err := tempFile.Stat()
+	if err != nil {
+		t.Fatalf("stat temp: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		t.Fatalf("close temp: %v", err)
+	}
+
+	if err := os.Rename(originalParent, movedParent); err != nil {
+		t.Fatalf("rename opened parent: %v", err)
+	}
+	if err := os.Mkdir(originalParent, 0o755); err != nil {
+		t.Fatalf("replace original parent path: %v", err)
+	}
+
+	if err := windowsNoReplaceRename(root, rootInfo, ".safeio-atomic-temp", writeTestFileName, tempInfo); err != nil {
+		t.Fatalf("windowsNoReplaceRename returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target appeared under replaced parent path: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(movedParent, writeTestFileName))
+	if err != nil {
+		t.Fatalf("read target under pinned parent: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("unexpected target data: got %q", got)
+	}
+}
+
+type windowsNoReplaceIfAbsentRoot struct {
+	*fakeRoot
+	rootInfo        fs.FileInfo
+	tempInfo        fs.FileInfo
+	targetPublished bool
+	removeCalls     int
+}
+
+func newWindowsNoReplaceIfAbsentRoot(t *testing.T, rootInfo, tempInfo fs.FileInfo) *windowsNoReplaceIfAbsentRoot {
+	t.Helper()
+	root := &windowsNoReplaceIfAbsentRoot{
+		rootInfo: rootInfo,
+		tempInfo: tempInfo,
+	}
+	root.fakeRoot = &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case ".":
+				return root.rootInfo, nil
+			case writeTestFileName:
+				if root.targetPublished {
+					return root.tempInfo, nil
+				}
+				return nil, os.ErrNotExist
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != ".safeio-atomic-temp" {
+				t.Fatalf("unexpected temp path: %s", name)
+			}
+			if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
+				t.Fatalf("unexpected temp flags: %#x", flag)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return root.tempInfo, nil },
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: chmodWithoutError,
+				close: closeWithoutError,
+			}, nil
+		},
+		link: func(oldName, newName string) error {
+			return &os.LinkError{
+				Op:  "linkat",
+				Old: oldName,
+				New: newName,
+				Err: errors.ErrUnsupported,
+			}
+		},
+		rename: func(string, string) error {
+			t.Fatal("if-absent fallback must not use replace-capable Root.Rename")
+			return nil
+		},
+		remove: func(name string) error {
+			root.removeCalls++
+			if name != ".safeio-atomic-temp" {
+				t.Fatalf("unexpected cleanup path: %s", name)
+			}
+			return nil
+		},
+	}
+	return root
+}
+
+func restoreWindowsNoReplaceRename(t *testing.T, fn func(Root, fs.FileInfo, string, string, fs.FileInfo) error) {
+	t.Helper()
+	previousRename := windowsNoReplaceRenameFn
+	previousTempName := randomTempNameFn
+	windowsNoReplaceRenameFn = fn
+	randomTempNameFn = func() (string, error) { return ".safeio-atomic-temp", nil }
+	t.Cleanup(func() {
+		windowsNoReplaceRenameFn = previousRename
+		randomTempNameFn = previousTempName
+	})
 }
 
 type windowsFallbackTarget struct {
