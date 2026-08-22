@@ -811,6 +811,31 @@ func TestParseNamespaceReferencesSkipsNamespaceDeclaration(t *testing.T) {
 	}
 }
 
+func TestParseNamespaceReferencesSkipsSameLineDeclareNamespaceDeclaration(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	imports, unresolved := parseNamespaceReferences([]byte("<?php declare(strict_types=1); namespace Vendor\\Package;\n"), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 0 {
+		t.Fatalf("expected no namespace imports from same-line declare namespace declaration, got %#v", imports)
+	}
+}
+
+func TestParseNamespaceReferencesDoesNotMaskNamespaceAfterArbitraryStatement(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	imports, unresolved := parseNamespaceReferences([]byte("<?php doWork(); namespace Vendor\\Package;\n"), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected arbitrary same-line statement to remain a namespace reference, got %#v", imports)
+	}
+	if imports[0].Module != "Vendor\\Package" {
+		t.Fatalf("expected module %q, got %#v", "Vendor\\Package", imports[0])
+	}
+}
+
 func TestParseNamespaceReferencesDoesNotLetUseLinesExhaustReferenceLimit(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	var content strings.Builder

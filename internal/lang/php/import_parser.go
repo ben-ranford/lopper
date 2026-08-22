@@ -32,7 +32,8 @@ type phpLineIndex struct {
 
 var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+([^;]+);`)
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+`)
-var namespaceDeclPattern = regexp.MustCompile(`(?m)(?:^\s*|<\?php\s+)namespace\s+[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*\s*(?:;|\{)`)
+var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*\s*(?:;|\{)`)
+var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
 
 func parseImports(content []byte, filePath string, resolver composerResolver) ([]importBinding, map[string]int, int) {
@@ -140,11 +141,32 @@ func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath str
 }
 
 func maskUseStatementRanges(text string) string {
-	masked := maskMatchedRanges(text, useStmtPattern.FindAllStringIndex(text, -1), namespaceDeclPattern.FindAllStringIndex(text, -1))
+	masked := maskMatchedRanges(text, useStmtPattern.FindAllStringIndex(text, -1), findNamespaceDeclarationRanges(text))
 	if masked == "" {
 		return text
 	}
 	return masked
+}
+
+func findNamespaceDeclarationRanges(text string) [][]int {
+	candidates := namespaceDeclCandidatePattern.FindAllStringIndex(text, -1)
+	if len(candidates) == 0 {
+		return nil
+	}
+	ranges := make([][]int, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !isMaskableRange(candidate) || !isNamespaceDeclarationCandidate(text, candidate[0]) {
+			continue
+		}
+		ranges = append(ranges, candidate)
+	}
+	return ranges
+}
+
+func isNamespaceDeclarationCandidate(text string, start int) bool {
+	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
+	prefix := text[lineStart:start]
+	return namespaceDeclPrefixPattern.MatchString(prefix)
 }
 
 func maskMatchedRanges(text string, groups ...[][]int) string {

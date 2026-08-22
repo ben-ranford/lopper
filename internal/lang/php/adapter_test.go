@@ -272,6 +272,43 @@ final class LocalThing {}
 	}
 }
 
+func TestPHPAdapterIgnoresSameLineDeclareNamespaceDeclarationAsDependencyUsage(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), `{
+  "packages": [
+    {
+      "name": "vendor/package",
+      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
+    }
+  ]
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php declare(strict_types=1); namespace Vendor\Package;
+
+final class LocalThing {}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
+		t.Fatalf("expected same-line declare namespace declaration to produce no dependency usage, report=%#v", dep)
+	}
+	if !containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("expected no-import warning for same-line declare namespace declaration, got %#v", reportData.Warnings)
+	}
+}
+
 func TestPHPAdapterIgnoresMalformedGroupedUseStatement(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
