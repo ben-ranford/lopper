@@ -3188,6 +3188,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
 		`git rev-parse --verify -q --end-of-options "$$base_ref^{commit}"`,
 		`git merge-base -- "$$base_ref" HEAD`,
+		`list -test -f '{{range .TestGoFiles}}`,
 		`{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}`,
 		`{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}`,
 		`-list '^Benchmark' "$$bench_pkg"`,
@@ -3908,6 +3909,67 @@ func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testi
 		t.Fatalf("bench-gate treated an ordinary test as benchmark harness drift:\n%s", output)
 	}
 	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
+}
+
+func TestMakefileBenchGateRejectsChangedEmbeddedBenchmarkFixtureBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	benchmarkSource := `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/input.txt
+var embeddedBenchmarkInput string
+
+var embeddedBenchmarkSink int
+
+func BenchmarkEmbeddedFixture(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		embeddedBenchmarkSink += len(embeddedBenchmarkInput)
+	}
+}
+`
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkSource)
+	writeFile(t, filepath.Join(repo, "benchpkg", "testdata", "input.txt"), "base fixture\n")
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/testdata/input.txt")
+	runGitCommand(t, repo, "commit", "-m", "add embedded benchmark fixture")
+
+	writeFile(t, filepath.Join(repo, "benchpkg", "testdata", "input.txt"), "head fixture\n")
+	runGitCommand(t, repo, "add", "benchpkg/testdata/input.txt")
+	runGitCommand(t, repo, "commit", "-m", "change embedded benchmark fixture")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+	if exitCode != 2 {
+		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(output, "package=github.com/ben-ranford/lopper/benchpkg selection=^(BenchmarkEmbeddedFixture)$") ||
+		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
+		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
+	}
+	for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
+		if strings.Contains(output, omit) {
+			t.Fatalf("bench-gate must reject changed embedded fixtures before execution, found %q:\n%s", omit, output)
+		}
+	}
+
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+		"BenchmarkEmbeddedFixture-",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
 }
 
 func TestMakefileBenchGateApplicationFailuresExitInvalid(t *testing.T) {
