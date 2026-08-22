@@ -18,6 +18,13 @@ var (
 	descriptorStatFn            = descriptorStat
 	afterOpenSearchAncestorFn   = func(string) error { return nil }
 	openSearchOnlyDirectoryAtFn = openSearchOnlyDirectoryAt
+	descriptorMkdiratFn         = unix.Mkdirat
+	descriptorLinkatFn          = unix.Linkat
+	descriptorUnlinkatFn        = unix.Unlinkat
+	descriptorFileWriteFn       = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
+	descriptorFileChmodFn       = func(file *os.File, perm os.FileMode) error { return file.Chmod(perm) }
+	descriptorFileStatFn        = func(file *os.File) (os.FileInfo, error) { return file.Stat() }
+	descriptorFileCloseFn       = func(file *os.File) error { return file.Close() }
 )
 
 const canonicalPathParentPerm os.FileMode = 0o750
@@ -220,7 +227,7 @@ func openSearchOnlyChildDirectory(parentFD int, name, path string) (*os.File, er
 func openSearchOnlyChildDirectoryWithOptions(parentFD int, name, path string, create bool, perm os.FileMode) (*os.File, error) {
 	info, err := descriptorLstat(parentFD, name)
 	if errors.Is(err, os.ErrNotExist) && create {
-		if mkdirErr := unix.Mkdirat(parentFD, name, uint32(perm)); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+		if mkdirErr := descriptorMkdiratFn(parentFD, name, uint32(perm)); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
 			return nil, mkdirErr
 		}
 		info, err = descriptorLstat(parentFD, name)
@@ -261,31 +268,31 @@ func writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD int, targetRel stri
 		}
 	}()
 
-	if _, err := tempFile.Write(data); err != nil {
+	if _, err := descriptorFileWriteFn(tempFile, data); err != nil {
 		return err
 	}
-	if err := tempFile.Chmod(perm); err != nil {
+	if err := descriptorFileChmodFn(tempFile, perm); err != nil {
 		return err
 	}
-	tempInfo, err := tempFile.Stat()
+	tempInfo, err := descriptorFileStatFn(tempFile)
 	if err != nil {
 		return err
 	}
 	if !tempInfo.Mode().IsRegular() {
 		return fmt.Errorf("temporary file is not regular: %s", tempRel)
 	}
-	if err := tempFile.Close(); err != nil {
+	if err := descriptorFileCloseFn(tempFile); err != nil {
 		return err
 	}
 	tempFile = nil
 
-	if err := unix.Linkat(parentFD, tempRel, parentFD, targetRel, 0); err != nil {
+	if err := descriptorLinkatFn(parentFD, tempRel, parentFD, targetRel, 0); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return os.ErrExist
 		}
 		return err
 	}
-	if err := unix.Unlinkat(parentFD, tempRel, 0); err != nil {
+	if err := descriptorUnlinkatFn(parentFD, tempRel, 0); err != nil {
 		return err
 	}
 	tempCreated = false
@@ -397,12 +404,12 @@ func createDescriptorTempFile(parentFD int, perm os.FileMode) (string, *os.File,
 func cleanupDescriptorTempFile(parentFD int, tempName string, tempFile *os.File) error {
 	var cleanupErr error
 	if tempFile != nil {
-		if err := tempFile.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		if err := descriptorFileCloseFn(tempFile); err != nil && !errors.Is(err, os.ErrClosed) {
 			cleanupErr = err
 		}
 	}
 	if tempName != "" {
-		if err := unix.Unlinkat(parentFD, tempName, 0); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := descriptorUnlinkatFn(parentFD, tempName, 0); err != nil && !errors.Is(err, os.ErrNotExist) {
 			if cleanupErr == nil {
 				return err
 			}

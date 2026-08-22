@@ -310,19 +310,26 @@ func openCanonicalParentForTest(t *testing.T, parent string) (*os.File, int) {
 func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
 	separator := string(os.PathSeparator)
 	tmpAlias := filepath.Join(separator, "tmp")
+	withRuntimeGOOS(t, "darwin")
 	tmpTarget, tmpOK := trustedRootAliasTarget(tmpAlias)
-	gotTmp := canonicalSearchDirectoryPath(tmpAlias)
-	if tmpOK {
-		if gotTmp != tmpTarget {
-			t.Fatalf("expected trusted tmp alias target %q, got %q", tmpTarget, gotTmp)
-		}
-		nested := filepath.Join(tmpAlias, "lopper", "profile")
-		wantNested := filepath.Join(tmpTarget, "lopper", "profile")
-		if got := canonicalSearchDirectoryPath(nested); got != wantNested {
-			t.Fatalf("expected nested trusted tmp alias target %q, got %q", wantNested, got)
-		}
-	} else if gotTmp != tmpAlias {
-		t.Fatalf("expected non-darwin tmp path to remain unchanged, got %q", gotTmp)
+	if !tmpOK {
+		t.Fatal("expected darwin tmp alias to be trusted")
+	}
+	if got := canonicalSearchDirectoryPath(tmpAlias); got != tmpTarget {
+		t.Fatalf("expected trusted tmp alias target %q, got %q", tmpTarget, got)
+	}
+	nested := filepath.Join(tmpAlias, "lopper", "profile")
+	wantNested := filepath.Join(tmpTarget, "lopper", "profile")
+	if got := canonicalSearchDirectoryPath(nested); got != wantNested {
+		t.Fatalf("expected nested trusted tmp alias target %q, got %q", wantNested, got)
+	}
+	varAlias := filepath.Join(separator, "var")
+	varTarget, varOK := trustedRootAliasTarget(varAlias)
+	if !varOK {
+		t.Fatal("expected darwin var alias to be trusted")
+	}
+	if got := canonicalSearchDirectoryPath(varAlias); got != varTarget {
+		t.Fatalf("expected trusted var alias target %q, got %q", varTarget, got)
 	}
 
 	regular := filepath.Join(separator, "usr", "local")
@@ -334,6 +341,9 @@ func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
 	if got := canonicalSearchDirectoryPath(tmpAlias); got != tmpAlias {
 		t.Fatalf("expected linux tmp path to remain unchanged, got %q", got)
 	}
+	if got := canonicalSearchDirectoryPath(varAlias); got != varAlias {
+		t.Fatalf("expected linux var path to remain unchanged, got %q", got)
+	}
 }
 
 func TestOpenSearchOnlyDirectoryRejectsMissingPath(t *testing.T) {
@@ -343,6 +353,23 @@ func TestOpenSearchOnlyDirectoryRejectsMissingPath(t *testing.T) {
 			t.Fatalf("close unexpected missing directory descriptor: %v", closeErr)
 		}
 		t.Fatal("expected missing directory open to fail")
+	}
+}
+
+func TestOpenSearchOnlyChildDirectoryPropagatesMkdirError(t *testing.T) {
+	parent := t.TempDir()
+	_, parentFD := openCanonicalParentForTest(t, parent)
+	expectedErr := errors.New("mkdirat failed")
+	withDescriptorOperationHooks(t, descriptorOperationHooks{
+		mkdirat: func(int, string, uint32) error {
+			return expectedErr
+		},
+	})
+
+	file, err := openSearchOnlyChildDirectoryWithOptions(parentFD, "missing", filepath.Join(parent, "missing"), true, 0o750)
+	closeUnexpectedChildDescriptor(t, file)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected mkdirat error, got %v", err)
 	}
 }
 
@@ -565,6 +592,45 @@ func TestWriteRootPinnedCanonicalPathWritersPropagateRootDescriptorErrors(t *tes
 	}
 }
 
+func TestWriteRootPinnedCanonicalPathWritersJoinRootDescriptorCloseError(t *testing.T) {
+	root := &WriteRoot{
+		root: &fakeRoot{
+			openFile: func(string, int, os.FileMode) (File, error) {
+				return os.NewFile(^uintptr(0), "invalid-root-descriptor"), nil
+			},
+		},
+		rootAbs: string(os.PathSeparator),
+	}
+
+	for _, tc := range []struct {
+		name  string
+		write func() error
+	}{
+		{
+			name: "if absent",
+			write: func() error {
+				return root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(writeTestFileName, []byte("after"), 0o600)
+			},
+		},
+		{
+			name: "replacing",
+			write: func() error {
+				return root.WriteFileAtomicallyReplacingUnderPinnedRoot(writeTestFileName, []byte("after"), 0o600)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.write()
+			if err == nil {
+				t.Fatal("expected descriptor and close failure")
+			}
+			if !strings.Contains(err.Error(), "bad file descriptor") {
+				t.Fatalf("expected joined invalid descriptor error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestCanonicalPathWritersRejectAbsolutePathResolutionFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -707,6 +773,60 @@ func TestDescriptorPathWriteRejectsInvalidDescriptorBeforeTemp(t *testing.T) {
 	}
 }
 
+func TestDescriptorPathWritePropagatesTempFileOperationErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		hooks descriptorOperationHooks
+	}{
+		{
+			name: "write error",
+			hooks: descriptorOperationHooks{
+				write: func(*os.File, []byte) (int, error) {
+					return 0, errors.New("descriptor write failed")
+				},
+			},
+		},
+		{
+			name: "chmod error",
+			hooks: descriptorOperationHooks{
+				chmod: func(*os.File, os.FileMode) error {
+					return errors.New("descriptor chmod failed")
+				},
+			},
+		},
+		{
+			name: "stat error",
+			hooks: descriptorOperationHooks{
+				stat: func(*os.File) (os.FileInfo, error) {
+					return nil, errors.New("descriptor stat failed")
+				},
+			},
+		},
+		{
+			name: "close error",
+			hooks: descriptorOperationHooks{
+				close: func(*os.File) error {
+					return errors.New("descriptor close failed")
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := t.TempDir()
+			_, parentFD := openCanonicalParentForTest(t, parent)
+			withDescriptorOperationHooks(t, tc.hooks)
+
+			err := writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, writeTestFileName, []byte("after"), 0o600)
+			if err == nil || !strings.Contains(err.Error(), "descriptor") {
+				t.Fatalf("expected descriptor operation error, got %v", err)
+			}
+			if _, statErr := os.Lstat(filepath.Join(parent, writeTestFileName)); !os.IsNotExist(statErr) {
+				t.Fatalf("expected target to remain absent, got %v", statErr)
+			}
+		})
+	}
+}
+
 func TestDescriptorPathWriteRejectsChangedTargetValidation(t *testing.T) {
 	parent := t.TempDir()
 	_, parentFD := openCanonicalParentForTest(t, parent)
@@ -765,6 +885,23 @@ func TestDescriptorPathWriteCleansTempOnPublishFailure(t *testing.T) {
 	}
 }
 
+func TestDescriptorPathWritePropagatesTempUnlinkErrorAfterPublish(t *testing.T) {
+	parent := t.TempDir()
+	_, parentFD := openCanonicalParentForTest(t, parent)
+	expectedErr := errors.New("descriptor unlink failed")
+	withDescriptorOperationHooks(t, descriptorOperationHooks{
+		unlinkat: func(int, string, int) error {
+			return expectedErr
+		},
+	})
+
+	err := writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, writeTestFileName, []byte("after"), 0o600)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected unlink error, got %v", err)
+	}
+	assertFileContent(t, filepath.Join(parent, writeTestFileName), "after")
+}
+
 func TestCleanupDescriptorTempFileClosesAndRemovesTemp(t *testing.T) {
 	parent := t.TempDir()
 	_, parentFD := openCanonicalParentForTest(t, parent)
@@ -797,9 +934,27 @@ func TestCleanupDescriptorTempFileClosesAndRemovesTemp(t *testing.T) {
 	if err := cleanupDescriptorTempFile(-1, "still-present", nil); err == nil {
 		t.Fatal("expected invalid descriptor cleanup error")
 	}
-	invalidFile := os.NewFile(^uintptr(0), "invalid-descriptor")
-	if err := cleanupDescriptorTempFile(-1, "still-present", invalidFile); err == nil {
-		t.Fatal("expected joined invalid close and unlink cleanup error")
+}
+
+func TestCleanupDescriptorTempFileJoinsCloseAndUnlinkErrors(t *testing.T) {
+	closeErr := errors.New("descriptor close failed")
+	unlinkErr := errors.New("descriptor unlink failed")
+	tempFile, err := os.CreateTemp(t.TempDir(), "descriptor-cleanup-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	withDescriptorOperationHooks(t, descriptorOperationHooks{
+		close: func(*os.File) error {
+			return closeErr
+		},
+		unlinkat: func(int, string, int) error {
+			return unlinkErr
+		},
+	})
+
+	err = cleanupDescriptorTempFile(-1, "still-present", tempFile)
+	if !errors.Is(err, closeErr) || !errors.Is(err, unlinkErr) {
+		t.Fatalf("expected joined close and unlink errors, got %v", err)
 	}
 }
 
@@ -984,4 +1139,55 @@ func TestSafeIOHelperCoverageBranches(t *testing.T) {
 	if !arePureSentinelCauses([]error{nil, os.ErrNotExist}, []error{os.ErrNotExist}) {
 		t.Fatal("expected nil joined cause to be ignored for pure sentinel matching")
 	}
+}
+
+type descriptorOperationHooks struct {
+	mkdirat  func(int, string, uint32) error
+	linkat   func(int, string, int, string, int) error
+	unlinkat func(int, string, int) error
+	write    func(*os.File, []byte) (int, error)
+	chmod    func(*os.File, os.FileMode) error
+	stat     func(*os.File) (os.FileInfo, error)
+	close    func(*os.File) error
+}
+
+func withDescriptorOperationHooks(t *testing.T, hooks descriptorOperationHooks) {
+	t.Helper()
+	originalMkdirat := descriptorMkdiratFn
+	originalLinkat := descriptorLinkatFn
+	originalUnlinkat := descriptorUnlinkatFn
+	originalWrite := descriptorFileWriteFn
+	originalChmod := descriptorFileChmodFn
+	originalStat := descriptorFileStatFn
+	originalClose := descriptorFileCloseFn
+	if hooks.mkdirat != nil {
+		descriptorMkdiratFn = hooks.mkdirat
+	}
+	if hooks.linkat != nil {
+		descriptorLinkatFn = hooks.linkat
+	}
+	if hooks.unlinkat != nil {
+		descriptorUnlinkatFn = hooks.unlinkat
+	}
+	if hooks.write != nil {
+		descriptorFileWriteFn = hooks.write
+	}
+	if hooks.chmod != nil {
+		descriptorFileChmodFn = hooks.chmod
+	}
+	if hooks.stat != nil {
+		descriptorFileStatFn = hooks.stat
+	}
+	if hooks.close != nil {
+		descriptorFileCloseFn = hooks.close
+	}
+	t.Cleanup(func() {
+		descriptorMkdiratFn = originalMkdirat
+		descriptorLinkatFn = originalLinkat
+		descriptorUnlinkatFn = originalUnlinkat
+		descriptorFileWriteFn = originalWrite
+		descriptorFileChmodFn = originalChmod
+		descriptorFileStatFn = originalStat
+		descriptorFileCloseFn = originalClose
+	})
 }
