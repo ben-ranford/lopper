@@ -54,26 +54,10 @@ function githubLogin(identity) {
   return login;
 }
 
-function normalizedGitIdentity(identity) {
-  return {
-    name: String(identity?.name || '').trim().toLowerCase(),
-    email: String(identity?.email || '').trim().toLowerCase(),
-  };
-}
-
-function sameCommitIdentity(commit, author, committer) {
+function sameCommitIdentity(commit) {
   const authorLogin = githubLogin(commit?.author);
   const committerLogin = githubLogin(commit?.committer);
-  if (authorLogin && committerLogin) {
-    return authorLogin === committerLogin;
-  }
-
-  const normalizedAuthor = normalizedGitIdentity(author);
-  const normalizedCommitter = normalizedGitIdentity(committer);
-  return (
-    normalizedAuthor.name === normalizedCommitter.name &&
-    normalizedAuthor.email === normalizedCommitter.email
-  );
+  return authorLogin !== '' && authorLogin === committerLogin;
 }
 
 function commitIdentityFailure(commit) {
@@ -88,10 +72,18 @@ function commitIdentityFailure(commit) {
   if (!authorName || !authorEmail || !committerName || !committerEmail) {
     return `${sha}: author and committer metadata must both be present`;
   }
+  if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
+    return `${sha}: author is a bot identity`;
+  }
   if (isBotIdentity(commit?.committer) || isBotIdentity(committer)) {
     return `${sha}: committer is a bot identity`;
   }
-  if (!sameCommitIdentity(commit, author, committer)) {
+  const authorLogin = githubLogin(commit?.author);
+  const committerLogin = githubLogin(commit?.committer);
+  if (!authorLogin || !committerLogin) {
+    return `${sha}: cannot prove canonical author and committer GitHub identity`;
+  }
+  if (!sameCommitIdentity(commit)) {
     return `${sha}: author and committer identities differ`;
   }
   return '';

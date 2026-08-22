@@ -308,6 +308,33 @@ test('commit identity audit accepts only canonical user committer identity', () 
     () =>
       testables.assertCanonicalCommitIdentity({
         commits: [
+          makeComparisonCommit('matching-raw-missing-links', {
+            author: null,
+            committer: null,
+          }),
+        ],
+        total_commits: 1,
+      }),
+    /cannot prove canonical author and committer GitHub identity/,
+  );
+
+  assert.throws(
+    () =>
+      testables.assertCanonicalCommitIdentity({
+        commits: [
+          makeComparisonCommit('matching-raw-one-missing-link', {
+            committer: null,
+          }),
+        ],
+        total_commits: 1,
+      }),
+    /cannot prove canonical author and committer GitHub identity/,
+  );
+
+  assert.throws(
+    () =>
+      testables.assertCanonicalCommitIdentity({
+        commits: [
           makeComparisonCommit('linked-user-mismatch', {
             author: { login: 'ben-ranford', type: 'User' },
             committer: { login: 'other-user', type: 'User' },
