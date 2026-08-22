@@ -257,7 +257,7 @@ func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "tr1/regex", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
 		t.Fatalf("expected tr1/regex to be ignored as std, got dep=%q unresolved=%v", dep, unresolved)
 	}
-	for _, header := range []string{"ext/algorithm", "parallel/algorithm", "debug/vector"} {
+	for _, header := range []string{"ext/algorithm", "parallel/algorithm", "debug/vector", "backward/strstream", "tr2/type_traits"} {
 		if !isLikelyStdHeader(header) {
 			t.Fatalf("expected %s to be std header", header)
 		}
