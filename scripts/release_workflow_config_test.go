@@ -3564,7 +3564,7 @@ func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *t
 
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeBenchGateSafeioStub(t, repo)
 	writeFile(t, filepath.Join(repo, "internal", "lang", "shared", "bench_test.go"), benchmarkTestSource("shared", "BenchmarkDefaultConfiguration"))
 	writeFile(t, filepath.Join(repo, "internal", "report", "bench_test.go"), benchmarkTestSource("report", "BenchmarkDefaultConfiguration"))
 	runGitCommand(t, repo, "add", "go.mod", "internal/lang/shared/bench_test.go", "internal/report/bench_test.go", "tools/benchdelta", "internal/safeio")
@@ -3813,7 +3813,7 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 	expectedGoVersion := strings.TrimSpace(string(versionOutput))
 	benchVars["GO_BIN"] = filepath.Join("toolchain", "go-wrapper")
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeBenchGateSafeioStub(t, repo)
 	basePkgOneSource := "package benchpkgone\n\nfunc benchmarkInput() int { return 1 }\n"
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), benchmarkTestSource("benchpkgone", "BenchmarkPkgOneOnly", "BenchmarkShared"))
 	writeFile(t, filepath.Join(repo, "benchpkgone", "work.go"), basePkgOneSource)
@@ -3962,7 +3962,7 @@ func TestMakefileBenchGatePreservesInvalidHelperThresholdExitWhenEnforcementDisa
 
 			repo, benchVars := newTempBenchGateGoRepo(t)
 			copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
-			copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+			writeBenchGateSafeioStub(t, repo)
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkThresholdValidation"))
 			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
 			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
@@ -6055,6 +6055,19 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
 	}
+}
+
+func writeBenchGateSafeioStub(t *testing.T, repo string) {
+	t.Helper()
+
+	writeFile(t, filepath.Join(repo, "internal", "safeio", "openfile.go"), `package safeio
+
+import "os"
+
+func OpenFile(name string) (*os.File, error) {
+	return os.Open(name)
+}
+`)
 }
 
 func writeExecutableFile(t *testing.T, path string, contents string) {
