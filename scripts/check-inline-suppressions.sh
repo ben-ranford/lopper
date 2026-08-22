@@ -313,10 +313,10 @@ track_records_with_gh() {
 
 if ! git diff --cached --quiet --exit-code -- .; then
 	diff_scope="staged changes"
-	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AM --relative --)
+	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AMR --relative --)
 elif ! git diff --quiet --exit-code -- .; then
 	diff_scope="working tree changes"
-	diff_args=(git diff --unified=0 --no-color --diff-filter=AM --relative --)
+	diff_args=(git diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
 	base_ref="$requested_base_ref"
 	used_fallback=0
@@ -338,7 +338,7 @@ else
 	else
 		diff_scope="branch changes vs $base_ref"
 	fi
-	diff_args=(git diff --unified=0 --no-color --diff-filter=AM --relative "$base_commit..HEAD" --)
+	diff_args=(git diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
 fi
 
 tmp_matches="$(create_temp_file)"

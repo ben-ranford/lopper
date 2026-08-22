@@ -137,6 +137,37 @@ func TestInlineSuppressionCheckDetectsTrackedMarkerWithoutGitHubCredentials(t *t
 	}
 }
 
+func TestInlineSuppressionCheckDetectsTrackedMarkerInRenamedSource(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	writeFile(t, filepath.Join(repoDir, "old.go"), mainGoWithoutComment())
+	runCommand(t, repoDir, "git", "add", "old.go")
+	runCommand(t, repoDir, "git", "commit", "-m", "add old source")
+	runCommand(t, repoDir, "git", "mv", "old.go", "renamed.go")
+	writeFile(t, filepath.Join(repoDir, "renamed.go"), mainGoWithTrackedSuppression("nolint:staticcheck"))
+	runCommand(t, repoDir, "git", "add", "renamed.go")
+
+	output, err := runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"SUPPRESSION_GITHUB_REPOSITORY=ben-ranford/lopper",
+		"GITHUB_SHA=abc123",
+	)
+	if err != nil {
+		t.Fatalf("expected renamed source suppression detection to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+	record := records.Suppressions[0]
+	if record.File != "renamed.go" || record.Line != 4 {
+		t.Fatalf("record location = %s:%d, want renamed.go:4", record.File, record.Line)
+	}
+}
+
 func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T) {
 	t.Parallel()
 

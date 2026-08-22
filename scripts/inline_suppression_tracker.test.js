@@ -39,18 +39,36 @@ function makeHarness(options = {}) {
   if (!Number.isInteger(pull.changed_files)) {
     pull.changed_files = files.length;
   }
+  const currentPull = {
+    ...pull,
+    changed_files: options.fetchedChangedFiles ?? pull.changed_files,
+    head: {
+      ...pull.head,
+      sha: options.currentHeadSHA ?? pull.head.sha,
+    },
+  };
 
   const calls = {
     created: [],
+    gets: [],
     infos: [],
+    paginated: 0,
     searches: [],
     updated: [],
   };
+  const trustedIssue = (number, marker) => ({
+    number,
+    body: `<!-- ${marker} -->\n\n## Inline analysis suppression tracking`,
+    user: { login: 'github-actions[bot]', type: 'Bot' },
+  });
   const github = {
     rest: {
       issues: {
         create: async (input) => {
           calls.created.push(input);
+          if (options.createError) {
+            throw options.createError;
+          }
           return { data: { number: 101 } };
         },
         update: async (input) => {
@@ -58,15 +76,22 @@ function makeHarness(options = {}) {
         },
       },
       pulls: {
-        get: async () => ({ data: { changed_files: options.fetchedChangedFiles ?? files.length } }),
+        get: async (input) => {
+          calls.gets.push(input);
+          return { data: currentPull };
+        },
         listFiles: async () => {},
       },
       search: {
         issuesAndPullRequests: async (input) => {
           calls.searches.push(input);
+          const marker = input.q.match(/lopper-inline-suppression:[0-9a-f]+/)?.[0];
+          if (typeof options.searchItems === 'function') {
+            return { data: { items: options.searchItems({ input, marker, calls }) } };
+          }
           return {
             data: {
-              items: options.existingIssue ? [{ number: options.existingIssue }] : [],
+              items: options.existingIssue ? [trustedIssue(options.existingIssue, marker)] : [],
             },
           };
         },
@@ -74,6 +99,7 @@ function makeHarness(options = {}) {
     },
     paginate: async (method) => {
       assert.equal(method, github.rest.pulls.listFiles);
+      calls.paginated += 1;
       return files;
     },
   };
@@ -159,6 +185,83 @@ test('updates an existing tracking issue by fingerprint', async () => {
   assert.equal(harness.calls.updated.length, 1);
   assert.equal(harness.calls.updated[0].issue_number, 77);
   assert.match(harness.calls.infos.join('\n'), /Updated inline suppression tracking issue #77/);
+});
+
+test('does not reuse a public fingerprint marker without trusted tracker ownership', async () => {
+  const harness = makeHarness({
+    searchItems: ({ marker }) => [
+      {
+        number: 77,
+        body: `<!-- ${marker} -->`,
+        user: { login: 'random-user', type: 'User' },
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.updated.length, 0);
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Inline analysis suppression tracking/);
+});
+
+test('recovers when a concurrent tracker creates the trusted issue first', async () => {
+  const searchCalls = [];
+  const harness = makeHarness({
+    createError: new Error('already exists'),
+    searchItems: ({ marker }) => {
+      searchCalls.push(marker);
+      if (searchCalls.length === 1) {
+        return [];
+      }
+      return [
+        {
+          number: 88,
+          body: `<!-- ${marker} -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.equal(harness.calls.updated.length, 1);
+  assert.equal(harness.calls.updated[0].issue_number, 88);
+  assert.match(harness.calls.infos.join('\n'), /Updated inline suppression tracking issue #88/);
+});
+
+test('rejects stale event payloads before reading pull file diffs', async () => {
+  const harness = makeHarness({ currentHeadSHA: 'new-head-sha' });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'RangeError',
+      message: /head changed from event SHA head-sha to new-head-sha.*refusing to use stale inline suppression diff records/,
+    },
+  );
+  assert.equal(harness.calls.paginated, 0);
+  assert.equal(harness.calls.created.length, 0);
+});
+
+test('scans renamed source files for tracked suppressions', async () => {
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'renamed.go',
+        previous_filename: 'main.go',
+        status: 'renamed',
+        patch: patchFor(trackedLine('nosec G404')),
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.equal(harness.calls.created[0].title, 'ci: track inline suppression in renamed.go:4');
 });
 
 test('ignores forged artifact-shaped data because only pull files are read', async () => {

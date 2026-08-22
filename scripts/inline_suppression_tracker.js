@@ -8,6 +8,8 @@ const COMMENT_PREFIXES = ['//', '/*', '#'];
 const NO_MARKERS = new Set(['nosec', 'nosonar', 'nolint', 'noqa']);
 const ESLINT_MARKERS = new Set(['eslint-disable', 'eslint-disable-next-line', 'eslint-disable-line']);
 const TS_MARKERS = new Set(['ts-ignore', 'ts-expect-error']);
+const TRACKED_FILE_STATUSES = new Set(['added', 'modified', 'renamed']);
+const TRUSTED_TRACKER_LOGINS = new Set(['github-actions[bot]']);
 const SOURCE_EXTENSIONS = new Set([
   'bash',
   'c',
@@ -332,12 +334,32 @@ async function changedFileCount({ github, context, pull }) {
   return response.data.changed_files;
 }
 
+async function fetchCurrentPull({ github, context, pull }) {
+  const response = await github.rest.pulls.get({
+    owner: context.repo.owner,
+    repo: context.repo.repo,
+    pull_number: pull.number,
+  });
+  return response.data;
+}
+
 function assertMutablePull(pull) {
   if (!pull?.number || !pull?.base?.sha || !pull?.head?.sha) {
     throw new TypeError('Pull request base and head SHAs are required to recompute inline suppression records.');
   }
   if (pull.state && pull.state !== 'open') {
     throw new RangeError(`Pull request #${pull.number} is ${pull.state}; refusing to publish tracking mutations.`);
+  }
+}
+
+function assertCurrentHeadMatchesEvent({ eventPull, currentPull }) {
+  if (!currentPull?.head?.sha) {
+    throw new TypeError('Current pull request head SHA is unavailable; refusing to publish tracking mutations.');
+  }
+  if (currentPull.head.sha !== eventPull.head.sha) {
+    throw new RangeError(
+      `Pull request #${eventPull.number} head changed from event SHA ${eventPull.head.sha} to ${currentPull.head.sha}; refusing to use stale inline suppression diff records.`,
+    );
   }
 }
 
@@ -363,7 +385,7 @@ async function listChangedFiles({ github, context, pull, expectedCount }) {
 function collectSuppressionRecords({ files, context, pull }) {
   const records = new Map();
   for (const file of files) {
-    if (!['added', 'modified'].includes(file.status) || !isSourceFile(file.filename)) {
+    if (!TRACKED_FILE_STATUSES.has(file.status) || !isSourceFile(file.filename)) {
       continue;
     }
     scanPatch(records, {
@@ -380,11 +402,20 @@ function collectSuppressionRecords({ files, context, pull }) {
 }
 
 async function recomputeSuppressionRecords({ github, context }) {
-  const pull = context.payload.pull_request;
+  const eventPull = context.payload.pull_request;
+  assertMutablePull(eventPull);
+  const pull = await fetchCurrentPull({ github, context, pull: eventPull });
   assertMutablePull(pull);
+  assertCurrentHeadMatchesEvent({ eventPull, currentPull: pull });
   const count = await changedFileCount({ github, context, pull });
   assertTrustedFileCount(count);
   const files = await listChangedFiles({ github, context, pull, expectedCount: count });
+  const refreshedPull = await fetchCurrentPull({ github, context, pull: eventPull });
+  assertMutablePull(refreshedPull);
+  assertCurrentHeadMatchesEvent({ eventPull, currentPull: refreshedPull });
+  if (refreshedPull.changed_files !== count) {
+    throw new RangeError('Pull request changed file count drifted while recomputing inline suppression records; refusing to publish tracking mutations.');
+  }
   return collectSuppressionRecords({ files, context, pull });
 }
 
@@ -408,14 +439,36 @@ function trackingBody(record) {
   ].join('\n');
 }
 
+function issueBodyIncludesMarker(issue, marker) {
+  return typeof issue.body === 'string' && issue.body.includes(`<!-- ${marker} -->`);
+}
+
+function issueHasTrustedTrackerOwner(issue) {
+  return issue.user?.type === 'Bot' && TRUSTED_TRACKER_LOGINS.has(issue.user?.login);
+}
+
+function isTrustedTrackingIssue(issue, marker) {
+  return (
+    issue &&
+    !issue.pull_request &&
+    Number.isInteger(issue.number) &&
+    issueHasTrustedTrackerOwner(issue) &&
+    issueBodyIncludesMarker(issue, marker)
+  );
+}
+
 async function upsertTrackingIssue({ github, context, record }) {
   const marker = `lopper-inline-suppression:${record.fingerprint}`;
   const title = `ci: track inline suppression in ${record.file}:${record.line}`;
-  const results = await github.rest.search.issuesAndPullRequests({
+  const searchTrackingIssue = async () => github.rest.search.issuesAndPullRequests({
     q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
     per_page: 2,
   });
-  const existing = results.data.items.find((item) => !item.pull_request);
+  const findTrustedExisting = async () => {
+    const results = await searchTrackingIssue();
+    return results.data.items.find((item) => isTrustedTrackingIssue(item, marker));
+  };
+  const existing = await findTrustedExisting();
   if (existing) {
     await github.rest.issues.update({
       owner: context.repo.owner,
@@ -426,12 +479,28 @@ async function upsertTrackingIssue({ github, context, record }) {
     });
     return { action: 'updated', number: existing.number };
   }
-  const created = await github.rest.issues.create({
-    owner: context.repo.owner,
-    repo: context.repo.repo,
-    title,
-    body: trackingBody(record),
-  });
+  let created;
+  try {
+    created = await github.rest.issues.create({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      title,
+      body: trackingBody(record),
+    });
+  } catch (error) {
+    const concurrentExisting = await findTrustedExisting();
+    if (concurrentExisting) {
+      await github.rest.issues.update({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        issue_number: concurrentExisting.number,
+        title,
+        body: trackingBody(record),
+      });
+      return { action: 'updated', number: concurrentExisting.number };
+    }
+    throw error;
+  }
   return { action: 'opened', number: created.data.number };
 }
 
@@ -457,6 +526,7 @@ module.exports.testables = {
   fingerprintFor,
   hasInlineSuppressionMarker,
   isSourceFile,
+  isTrustedTrackingIssue,
   metadataValue,
   parseHunkStart,
   recomputeSuppressionRecords,

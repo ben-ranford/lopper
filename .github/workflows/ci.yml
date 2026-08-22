@@ -729,8 +729,10 @@ jobs:
       - name: Run smoke checks
         run: make smoke
 
-  vscode-smoke:
-    name: vscode-smoke (${{ matrix.os }})
+  vscode_smoke_matrix:
+    name: vscode-smoke full (${{ matrix.os }})
+    needs: extension-changes
+    if: ${{ needs.extension-changes.outputs.vscode_extension == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -768,6 +770,31 @@ jobs:
           else
             make vscode-extension-test
           fi
+
+  vscode-smoke:
+    name: vscode-smoke
+    needs:
+      - extension-changes
+      - vscode_smoke_matrix
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify VS Code smoke requirement
+        env:
+          VSCODE_EXTENSION_CHANGED: ${{ needs.extension-changes.outputs.vscode_extension }}
+          VSCODE_SMOKE_RESULT: ${{ needs.vscode_smoke_matrix.result }}
+        run: |
+          if [ "${VSCODE_EXTENSION_CHANGED}" != "true" ]; then
+            echo "No VS Code extension changes detected; smoke matrix not required."
+            exit 0
+          fi
+          if [ "${VSCODE_SMOKE_RESULT}" != "success" ]; then
+            echo "::error::VS Code extension changes require the VS Code smoke matrix to pass."
+            exit 1
+          fi
+          echo "VS Code extension smoke matrix passed."
 
   homebrew-tap-verify:
     runs-on: ubuntu-latest

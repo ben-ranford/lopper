@@ -178,6 +178,9 @@ func TestInlineSuppressionTrackingWorkflowUsesTrustedPullRequestTarget(t *testin
 		"contents: read",
 		"issues: write",
 		"pull-requests: read",
+		"concurrency:",
+		"group: inline-suppression-tracking-${{ github.event.pull_request.number }}",
+		"cancel-in-progress: false",
 		"TRUSTED_TRACKER_REF: ${{ github.workflow_sha }}",
 		"path: 'scripts/inline_suppression_tracker.js'",
 		"ref: process.env.TRUSTED_TRACKER_REF",
@@ -454,23 +457,55 @@ func TestCIWorkflowRollingUsesImmutablePullRequestBaseSHA(t *testing.T) {
 	})
 }
 
-func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *testing.T) {
+func TestCIWorkflowGuardsVSCodeSmokeWithoutSkippingRequiredCheck(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "VS Code smoke condition", got: vscodeSmoke.If, want: ""},
+	extensionChanges := workflowJobByName(t, workflow.Jobs, "extension-changes")
+	assertWorkflowJobPermissions(t, extensionChanges, "VS Code extension change detector", map[string]string{
+		"contents":      "read",
+		"pull-requests": "read",
 	})
-	if len(vscodeSmoke.Needs) != 0 {
-		t.Fatalf("VS Code smoke must not depend on a skip-producing change filter, got needs %v", vscodeSmoke.Needs)
-	}
-	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
-	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension filter output", got: extensionChanges.Outputs["vscode_extension"], want: "${{ steps.filter.outputs.vscode_extension }}"},
+	})
+	filter := workflowStepByName(t, workflow.Jobs, "extension-changes", "Detect VS Code extension changes")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code extension path filter", got: filter.With["filters"], want: "vscode_extension:\n  - 'extensions/vscode-lopper/**'\n"},
+	})
+
+	vscodeMatrix := workflowJobByName(t, workflow.Jobs, "vscode_smoke_matrix")
+	assertWorkflowJobNeeds(t, vscodeMatrix, "VS Code smoke matrix", workflowJobNeeds{"extension-changes"})
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code smoke matrix condition", got: vscodeMatrix.If, want: "${{ needs.extension-changes.outputs.vscode_extension == 'true' }}"},
+		{label: "VS Code smoke matrix name", got: vscodeMatrix.Name, want: "vscode-smoke full (${{ matrix.os }})"},
+	})
+	assertWorkflowStepOrder(t, vscodeMatrix, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
+	contract := workflowStepByName(t, workflow.Jobs, "vscode_smoke_matrix", "Verify VS Code extension package contract")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "VS Code extension package contract", got: contract.Run, want: "go test ./scripts -run '^(TestVSCodeExtensionIconPackageContract|TestVSCodeExtensionPackagingHonorsBraceGlobIgnore)$' -count=1"},
+	})
+
+	vscodeRequired := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
+	assertWorkflowJobNeeds(t, vscodeRequired, "required VS Code smoke check", workflowJobNeeds{"extension-changes", "vscode_smoke_matrix"})
+	assertWorkflowJobPermissions(t, vscodeRequired, "required VS Code smoke check", map[string]string{"contents": "read"})
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "required VS Code smoke check name", got: vscodeRequired.Name, want: "vscode-smoke"},
+		{label: "required VS Code smoke check condition", got: vscodeRequired.If, want: "${{ always() }}"},
+		{label: "required VS Code smoke runner", got: vscodeRequired.RunsOn, want: "ubuntu-latest"},
+	})
+	required := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code smoke requirement")
+	assertWorkflowStepEnv(t, required, "required VS Code smoke check", map[string]string{
+		"VSCODE_EXTENSION_CHANGED": "${{ needs.extension-changes.outputs.vscode_extension }}",
+		"VSCODE_SMOKE_RESULT":      "${{ needs.vscode_smoke_matrix.result }}",
+	})
+	assertWorkflowStepRunContainsAll(t, required, "required VS Code smoke check", []string{
+		`if [ "${VSCODE_EXTENSION_CHANGED}" != "true" ]; then`,
+		`No VS Code extension changes detected; smoke matrix not required.`,
+		`if [ "${VSCODE_SMOKE_RESULT}" != "success" ]; then`,
+		`VS Code extension changes require the VS Code smoke matrix to pass.`,
 	})
 }
 
