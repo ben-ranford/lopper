@@ -803,8 +803,8 @@ type featureFlagMergedResolverCase struct {
 	wantAssociatedAPICall bool
 }
 
-func (tt featureFlagMergedResolverCase) fixture() map[string]any {
-	associatedPulls := []map[string]any{}
+func (tt *featureFlagMergedResolverCase) fixture() map[string]any {
+	var associatedPulls []map[string]any
 	if tt.associatedPull != nil {
 		associatedPulls = append(associatedPulls, tt.associatedPull)
 	}
@@ -883,112 +883,63 @@ func boolToInt(value bool) int {
 func runFeatureFlagPublisherFixture(t *testing.T, publisher string, fixture map[string]any) featureFlagPublisherFixtureResult {
 	t.Helper()
 
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to test the feature flag comment publisher")
-	}
-	fixtureJSON, err := json.Marshal(fixture)
-	if err != nil {
-		t.Fatalf("marshal publisher fixture: %v", err)
-	}
-	const harness = `
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const fixture = JSON.parse(process.env.PUBLISHER_FIXTURE);
-const calls = { comments: 0, pulls: 0 };
-const infos = [];
-const mutations = [];
-const listComments = async () => {};
-const pullSequence = fixture.pullSequence || [];
-const github = {
-  rest: {
-    issues: {
-      listComments,
-      deleteComment: async ({ comment_id }) => { mutations.push('delete:' + comment_id); },
-      updateComment: async ({ comment_id }) => { mutations.push('update:' + comment_id); },
-      createComment: async () => { mutations.push('create'); },
-    },
-    pulls: {
-      get: async () => {
-        const pull = pullSequence[Math.min(calls.pulls, pullSequence.length - 1)];
-        calls.pulls += 1;
-        if (!pull) {
-          throw new Error('fixture has no pull state');
-        }
-        return { data: pull };
-      },
-    },
-  },
-  paginate: async (method) => {
-    if (method !== listComments) {
-      throw new Error('unexpected paginated API method');
-    }
-    calls.comments += 1;
-    return fixture.comments || [];
-  },
-};
-const context = { repo: { owner: 'octo', repo: 'lopper' } };
-const core = { info: (message) => { infos.push(String(message)); } };
-Object.assign(process.env, fixture.env || {});
-process.env.PR_NUMBER = '7';
-(async () => {
-  try {
-    const execute = new AsyncFunction('github', 'context', 'core', 'require', 'process', process.env.PUBLISHER_SCRIPT);
-    await execute(github, context, core, require, process);
-    console.log(JSON.stringify({ ok: true, mutations, calls, infos }));
-  } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: error.message, mutations, calls, infos }));
-  }
-})();
-`
-	command := exec.Command(node, "-e", harness)
-	environment := []string{
-		"PUBLISHER_SCRIPT=" + publisher,
-		"PUBLISHER_FIXTURE=" + string(fixtureJSON),
-	}
-	command.Env = append(os.Environ(), environment...)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("run publisher fixture: %v\n%s", err, output)
-	}
-
-	var result featureFlagPublisherFixtureResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("decode publisher fixture result: %v\n%s", err, output)
-	}
-	return result
+	return runFeatureFlagNodeFixture[featureFlagPublisherFixtureResult](t, featureFlagNodeFixtureConfig{
+		description: "feature flag comment publisher",
+		mode:        "publisher",
+		script:      publisher,
+		fixture:     fixture,
+	})
 }
 
 func runFeatureFlagResolverFixture(t *testing.T, resolver string, fixture map[string]any) featureFlagResolverFixtureResult {
 	t.Helper()
 
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to test the feature flag comment resolver")
-	}
-	fixtureJSON, err := json.Marshal(fixture)
-	if err != nil {
-		t.Fatalf("marshal resolver fixture: %v", err)
-	}
-	const harness = `
+	return runFeatureFlagNodeFixture[featureFlagResolverFixtureResult](t, featureFlagNodeFixtureConfig{
+		description: "feature flag comment resolver",
+		mode:        "resolver",
+		script:      resolver,
+		fixture:     fixture,
+	})
+}
+
+const featureFlagNodeFixtureHarness = `
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const fixture = JSON.parse(process.env.RESOLVER_FIXTURE);
+const fixture = JSON.parse(process.env.FEATURE_FLAG_FIXTURE);
+const mode = process.env.FEATURE_FLAG_FIXTURE_MODE;
 const outputs = {};
 const exported = {};
-const calls = { artifacts: 0, associatedPulls: 0, jobs: 0, pulls: 0 };
+const calls = { artifacts: 0, associatedPulls: 0, comments: 0, jobs: 0, pulls: 0 };
+const infos = [];
+const mutations = [];
 const listArtifacts = async () => {};
 const listAssociatedPulls = async () => {};
+const listComments = async () => {};
 const listJobs = async () => {};
 const pulls = new Map((fixture.pulls || []).map((pull) => [pull.number, pull]));
+const pullSequence = fixture.pullSequence || [];
 const github = {
   rest: {
     actions: {
       listWorkflowRunArtifacts: listArtifacts,
       listJobsForWorkflowRunAttempt: listJobs,
     },
+    issues: {
+      listComments,
+      deleteComment: async ({ comment_id }) => { mutations.push('delete:' + comment_id); },
+      updateComment: async ({ comment_id }) => { mutations.push('update:' + comment_id); },
+      createComment: async () => { mutations.push('create'); },
+    },
     repos: { listPullRequestsAssociatedWithCommit: listAssociatedPulls },
     pulls: {
-      get: async ({ pull_number }) => {
+      get: async ({ pull_number } = {}) => {
         calls.pulls += 1;
+        if (pullSequence.length > 0) {
+          const pull = pullSequence[Math.min(calls.pulls - 1, pullSequence.length - 1)];
+          if (!pull) {
+            throw new Error('fixture has no pull state');
+          }
+          return { data: pull };
+        }
         if (!pulls.has(pull_number)) {
           throw new Error('fixture has no requested pull');
         }
@@ -1005,6 +956,10 @@ const github = {
       calls.associatedPulls += 1;
       return fixture.associatedPulls || [];
     }
+    if (method === listComments) {
+      calls.comments += 1;
+      return fixture.comments || [];
+    }
     if (method === listJobs) {
       calls.jobs += 1;
       return fixture.jobs || [{ steps: [
@@ -1020,35 +975,66 @@ const context = {
 };
 const core = {
   exportVariable: (name, value) => { exported[name] = String(value); },
-  info: () => {},
+  info: (message) => { infos.push(String(message)); },
   setOutput: (name, value) => { outputs[name] = String(value); },
 };
+Object.assign(process.env, fixture.env || {});
+process.env.PR_NUMBER = fixture.prNumber || '7';
 (async () => {
   try {
-    const execute = new AsyncFunction('github', 'context', 'core', process.env.RESOLVER_SCRIPT);
-    await execute(github, context, core);
-    console.log(JSON.stringify({ ok: true, outputs, exported, calls }));
+    if (mode === 'publisher') {
+      const execute = new AsyncFunction('github', 'context', 'core', 'require', 'process', process.env.FEATURE_FLAG_SCRIPT);
+      await execute(github, context, core, require, process);
+      console.log(JSON.stringify({ ok: true, mutations, calls, infos }));
+      return;
+    }
+    if (mode === 'resolver') {
+      const execute = new AsyncFunction('github', 'context', 'core', process.env.FEATURE_FLAG_SCRIPT);
+      await execute(github, context, core);
+      console.log(JSON.stringify({ ok: true, outputs, exported, calls }));
+      return;
+    }
+    throw new Error('unexpected fixture mode: ' + mode);
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: error.message, outputs, exported, calls }));
+    console.log(JSON.stringify({ ok: false, error: error.message, mutations, calls, infos, outputs, exported }));
   }
 })();
 `
-	command := exec.Command(node, "-e", harness)
-	environment := []string{
-		"RESOLVER_SCRIPT=" + resolver,
-		"RESOLVER_FIXTURE=" + string(fixtureJSON),
+
+type featureFlagNodeFixtureConfig struct {
+	description string
+	mode        string
+	script      string
+	fixture     map[string]any
+}
+
+func runFeatureFlagNodeFixture[T any](t *testing.T, config featureFlagNodeFixtureConfig) T {
+	t.Helper()
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required to test the %s", config.description)
 	}
-	command.Env = append(os.Environ(), environment...)
+	fixtureJSON, err := json.Marshal(config.fixture)
+	if err != nil {
+		t.Fatalf("marshal %s fixture: %v", config.description, err)
+	}
+	command := exec.Command(node, "-e", featureFlagNodeFixtureHarness)
+	command.Env = append(os.Environ(),
+		"FEATURE_FLAG_FIXTURE_MODE="+config.mode,
+		"FEATURE_FLAG_SCRIPT="+config.script,
+		"FEATURE_FLAG_FIXTURE="+string(fixtureJSON),
+	)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run resolver fixture: %v\n%s", err, output)
+		t.Fatalf("run %s fixture: %v\n%s", config.description, err, output)
 	}
 
-	var result featureFlagResolverFixtureResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("decode resolver fixture result: %v\n%s", err, output)
+	var decoded T
+	if err := json.Unmarshal(output, &decoded); err != nil {
+		t.Fatalf("decode %s fixture result: %v\n%s", config.description, err, output)
 	}
-	return result
+	return decoded
 }
 
 func writeFeatureFlagZip(t *testing.T, path string, members []featureFlagZipMember) {
