@@ -72,29 +72,16 @@ func (r *WriteRoot) VerifyIdentity(expected fs.FileInfo) error {
 // WriteFileCreatingParents atomically writes a root-relative file, creating
 // missing parent directories inside the pinned root.
 func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
-		createParents: true,
-		parentPerm:    parentPerm,
-		write:         writeFileAtRootWithChecks,
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, writeToTargetParentOptions{
+		write: writeFileAtRootWithChecks,
 	})
 }
 
 // WriteFileCreatingParentsAfterParentReady atomically writes a root-relative
 // file after parentReady validates state with the target parent pinned.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady func() error) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
-		createParents: true,
-		parentPerm:    parentPerm,
-		parentReady:   parentReady,
-		write:         writeFileAtRootWithChecks,
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, writeToTargetParentOptions{
+		write: writeFileAtRootWithChecks,
 	})
 }
 
@@ -102,17 +89,10 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 // root-relative file after parentReady validates state with the target parent
 // pinned, then runs preWrite immediately before the file mutation begins.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, preWrite func() error) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
-		createParents: true,
-		parentPerm:    parentPerm,
-		parentReady:   parentReady,
-		preWrite:      preWrite,
-		postWrite:     preWrite,
-		write:         writeFileAtRootWithChecks,
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, writeToTargetParentOptions{
+		preWrite:  preWrite,
+		postWrite: preWrite,
+		write:     writeFileAtRootWithChecks,
 	})
 }
 
@@ -121,17 +101,10 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(ta
 // pinned. It runs publishCheck immediately before publishing the target and
 // again after the target has been committed.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, publishCheck func() error) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
-		createParents: true,
-		parentPerm:    parentPerm,
-		parentReady:   parentReady,
-		commitReady:   publishCheck,
-		postWrite:     publishCheck,
-		write:         writeFileAtRootWithChecks,
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, writeToTargetParentOptions{
+		commitReady: publishCheck,
+		postWrite:   publishCheck,
+		write:       writeFileAtRootWithChecks,
 	})
 }
 
@@ -154,14 +127,8 @@ func (r *WriteRoot) WriteFileCreatingParentsWithPermissionFallback(targetPath st
 // target path does not already exist, creating missing parent directories
 // inside the pinned root without following symlinks.
 func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []byte, perm, parentPerm os.FileMode) error {
-	target, err := r.resolveTarget(targetPath)
-	if err != nil {
-		return err
-	}
-	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
-		createParents: true,
-		parentPerm:    parentPerm,
-		write:         writeFileIfAbsentAtRootWithChecks,
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, writeToTargetParentOptions{
+		write: writeFileIfAbsentAtRootWithChecks,
 	})
 }
 
@@ -213,6 +180,21 @@ func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.
 		parentPerm:    parentPerm,
 		write:         writeFileAtRootWithChecks,
 	})
+}
+
+func (r *WriteRoot) writeFileCreatingParentsWithOptions(targetPath string, data []byte, perm, parentPerm os.FileMode, options writeToTargetParentOptions) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	options.createParents = true
+	options.parentPerm = parentPerm
+	return r.writeFileToTargetParent(target, data, perm, options)
+}
+
+func (r *WriteRoot) writeFileCreatingParentsAfterParentReadyWithOptions(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady func() error, options writeToTargetParentOptions) error {
+	options.parentReady = parentReady
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, options)
 }
 
 type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error) error
