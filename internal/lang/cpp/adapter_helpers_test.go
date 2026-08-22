@@ -84,6 +84,17 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	if !slices.Equal(ctx.IncludeDirs, wantIncludeDirs) {
 		t.Fatalf("unexpected include dirs: %#v", ctx.IncludeDirs)
 	}
+	sourcePath := filepath.Join(repo, "src", testMainCPPFileName)
+	sourceIncludeDirs := ctx.SourceIncludeDirs[sourcePath]
+	if len(sourceIncludeDirs) != 2 {
+		t.Fatalf("expected per-source include dirs, got %#v", ctx.SourceIncludeDirs)
+	}
+	if sourceIncludeDirs[0].Path != filepath.Join(repo, "include") || sourceIncludeDirs[0].System {
+		t.Fatalf("expected first include dir to preserve -I provenance, got %#v", sourceIncludeDirs[0])
+	}
+	if sourceIncludeDirs[1].Path != systemIncludeDir || !sourceIncludeDirs[1].System {
+		t.Fatalf("expected second include dir to preserve -isystem provenance, got %#v", sourceIncludeDirs[1])
+	}
 	if !slices.Equal(ctx.SourceFiles, []string{filepath.Join(repo, "src", testMainCPPFileName)}) {
 		t.Fatalf("unexpected source files: %#v", ctx.SourceFiles)
 	}
@@ -134,6 +145,61 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 	}
 	if !slices.Equal(dirs, want) {
 		t.Fatalf("unexpected include dirs: got %#v want %#v", dirs, want)
+	}
+
+	searchPaths := extractIncludeSearchPaths([]string{"-I", "include", "-isystem", systemIncludeDir, "-Ivendor/include"}, "/repo")
+	if len(searchPaths) != 3 {
+		t.Fatalf("unexpected search paths: %#v", searchPaths)
+	}
+	if searchPaths[0].Path != "/repo/include" || searchPaths[0].System || !searchPaths[0].ProvenanceKnown {
+		t.Fatalf("expected first -I path with known non-system provenance, got %#v", searchPaths[0])
+	}
+	if searchPaths[1].Path != systemIncludeDir || !searchPaths[1].System || !searchPaths[1].ProvenanceKnown {
+		t.Fatalf("expected second -isystem path with known system provenance, got %#v", searchPaths[1])
+	}
+
+	includeDirSet := map[string]struct{}{}
+	includeSearchPathSet := map[string]includeSearchPath{}
+	recordCompileIncludes(includeDirSet, includeSearchPathSet, []includeSearchPath{
+		{},
+		{Path: "/repo/include", ProvenanceKnown: true},
+		{Path: "/repo/include", System: true, ProvenanceKnown: true},
+	})
+	if len(includeDirSet) != 1 {
+		t.Fatalf("expected blank and duplicate include dirs to be ignored, got %#v", includeDirSet)
+	}
+	if got := includeSearchPathSet["/repo/include"]; !got.System {
+		t.Fatalf("expected duplicate -isystem provenance to upgrade global path metadata, got %#v", got)
+	}
+
+	merged := mergeIncludeSearchPaths(
+		[]includeSearchPath{{Path: "/first"}, {Path: "/shared"}},
+		[]includeSearchPath{{Path: "/shared"}, {Path: "/second"}},
+	)
+	if len(merged) != 3 || merged[0].Path != "/first" || merged[1].Path != "/shared" || merged[2].Path != "/second" {
+		t.Fatalf("expected merge to preserve first-seen order and append new paths, got %#v", merged)
+	}
+	if got := mergeIncludeSearchPaths(nil, []includeSearchPath{{Path: "/only"}}); len(got) != 1 || got[0].Path != "/only" {
+		t.Fatalf("expected empty merge to copy next paths, got %#v", got)
+	}
+	var added []string
+	seen := map[string]struct{}{}
+	addIncludeDir("", seen, &added)
+	addIncludeDir("/repo/include", seen, &added)
+	addIncludeDir("/repo/include", seen, &added)
+	if !slices.Equal(added, []string{"/repo/include"}) {
+		t.Fatalf("expected addIncludeDir to ignore blank and duplicate paths, got %#v", added)
+	}
+
+	sorted := sortedIncludeSearchPaths(map[string]includeSearchPath{
+		"/z": {Path: "/z"},
+		"/a": {Path: "/a", System: true},
+	})
+	if len(sorted) != 2 || sorted[0].Path != "/a" || sorted[1].Path != "/z" {
+		t.Fatalf("expected sorted include search paths, got %#v", sorted)
+	}
+	if copied := copySourceIncludeDirs(nil); copied != nil {
+		t.Fatalf("expected nil source include dirs to stay nil, got %#v", copied)
 	}
 }
 
@@ -222,7 +288,9 @@ func TestMapIncludeToDependencyPreservesQualifiedLookalikesOutsideSystemRoots(t 
 		"asm-generic/vendor/sdk.hpp",
 		"asm-generic/bitops/atomic.h",
 		"backward/hash_map",
+		"bits/types/struct_timespec.h",
 		"linux/netfilter_ipv4/ip_tables.h",
+		"x86_64-linux-gnu/sys/time.h",
 		"parallel/base.h",
 	} {
 		header := header
@@ -318,14 +386,25 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"tr2/type_traits",
 		"tr1/math.h",
 		"tr1/complex.h",
+		"tr1/ctype.h",
+		"tr1/inttypes.h",
+		"tr1/limits.h",
 		"tr1/stdio.h",
+		"tr1/stdint.h",
 		"tr1/type_traits.h",
 		"tr1/unordered_map.h",
 		"tr1/unordered_set.h",
 		"asm/errno.h",
+		"x86_64-linux-gnu/asm/errno.h",
+		"x86_64-linux-gnu/sys/time.h",
 		"asm-generic/errno.h",
 		"asm-generic/bitops/atomic.h",
+		"bits/types/struct_timespec.h",
+		"linux/netfilter/nfnetlink.h",
 		"linux/netfilter_ipv4/ip_tables.h",
+		"./vector",
+		"./experimental/optional",
+		"experimental/./optional",
 	} {
 		header := header
 		t.Run(header, func(t *testing.T) {
@@ -421,6 +500,8 @@ func TestIsLikelyStdHeaderRejectsNonCanonicalQualifiedHeaders(t *testing.T) {
 				"experimental/vendor/filesystem",
 				"experimental/vendor/optional",
 				"ext/vendor/algorithm",
+				"experimental/acme/vector",
+				"ext/vendor/optional",
 				"ext/pb_ds/vendor/assoc_container.hpp",
 				"ext/pb_ds/vendor/exception.hpp",
 				"parallel/vendor/base.h",
@@ -439,6 +520,7 @@ func TestIsLikelyStdHeaderRejectsNonCanonicalQualifiedHeaders(t *testing.T) {
 				"Ext/pb_ds/assoc_container.hpp",
 				"Linux/if.h",
 				"Parallel/algorithm",
+				"Parallel/algo.h",
 				"Parallel/base.h",
 				"Sys/socket.h",
 				"TR1/complex.h",
@@ -476,9 +558,17 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <ext/pb_ds/assoc_container.hpp>
 #include <ext/pb_ds/exception.hpp>
 #include <tr1/complex.h>
+#include <tr1/ctype.h>
+#include <tr1/inttypes.h>
+#include <tr1/limits.h>
 #include <tr1/stdio.h>
+#include <tr1/stdint.h>
 #include <tr1/unordered_map.h>
 #include <tr1/unordered_set.h>
+#include <x86_64-linux-gnu/sys/time.h>
+#include <linux/netfilter/nfnetlink.h>
+#include <bits/types/struct_timespec.h>
+#include <experimental/./optional>
 int main() { return 0; }
 `)
 
@@ -493,6 +583,124 @@ int main() { return 0; }
 		switch dependency.Name {
 		case "asm", "asm-generic", "bits", "debug", "experimental", "ext", "linux", "parallel", "sys", "tr1":
 			t.Fatalf("expected GNU compiler header to be ignored, got dependency row %#v", dependency)
+		}
+	}
+}
+
+func TestMapIncludeToDependencyUsesCompileDatabaseProvenance(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	vendorRoot := filepath.Join(t.TempDir(), "z-vendor", "include")
+	systemRoot := filepath.Join(t.TempDir(), "a-system", "include")
+	sdkRoot := filepath.Join(t.TempDir(), "sdk", "usr", "include")
+	testutil.MustWriteFile(t, source, `#include <debug/map>
+#include <sys/types.h>
+int main() { return 0; }
+`)
+	testutil.MustWriteFile(t, filepath.Join(vendorRoot, "debug", "map"), "// vendor debug header\n")
+	testutil.MustWriteFile(t, filepath.Join(systemRoot, "debug", "map"), "// compiler debug header\n")
+	testutil.MustWriteFile(t, filepath.Join(sdkRoot, "sys", "types.h"), "// sdk system header\n")
+
+	compileInfo := compileContext{
+		SourceFiles: []string{source},
+		SourceIncludeDirs: map[string][]includeSearchPath{
+			source: {
+				{Path: vendorRoot, ProvenanceKnown: true},
+				{Path: systemRoot, System: true, ProvenanceKnown: true},
+				{Path: sdkRoot, System: true, ProvenanceKnown: true},
+			},
+		},
+	}
+	result, err := scanRepo(context.Background(), repo, compileInfo, newDependencyCatalog())
+	if err != nil {
+		t.Fatalf("scan repo: %v", err)
+	}
+	dependencies, _ := buildTopCPPDependencies(10, result, report.DefaultRemovalCandidateWeights())
+	assertDependencyExportCounts(t, dependencies, map[string]int{
+		"debug": 1,
+	})
+	for _, file := range result.Files {
+		for _, include := range file.Includes {
+			if include.Dependency == "sys" {
+				t.Fatalf("expected -isystem sys/types.h to be suppressed, got %#v", result.Files)
+			}
+		}
+	}
+}
+
+func TestShouldSuppressQualifiedStdHeaderHonorsKnownNonSystemProvenance(t *testing.T) {
+	if !shouldSuppressQualifiedStdHeader("vector", includeResolution{}) {
+		t.Fatalf("expected unqualified standard header suppression to stay unconditional")
+	}
+	if !shouldSuppressQualifiedStdHeader("debug/map", includeResolution{}) {
+		t.Fatalf("expected unresolved qualified compiler header to stay suppressed")
+	}
+	if shouldSuppressQualifiedStdHeader("debug/map", includeResolution{
+		Path:            "/usr/local/include/debug/map",
+		Resolved:        true,
+		ProvenanceKnown: true,
+	}) {
+		t.Fatalf("expected known ordinary -I provenance to keep system-looking path reportable")
+	}
+	if !shouldSuppressQualifiedStdHeader("sys/types.h", includeResolution{
+		Path:            "/opt/aarch64-sdk/usr/include/sys/types.h",
+		Resolved:        true,
+		System:          true,
+		ProvenanceKnown: true,
+	}) {
+		t.Fatalf("expected known -isystem provenance to suppress custom SDK system header")
+	}
+	if !shouldSuppressQualifiedStdHeader("debug/map", includeResolution{
+		Path:     "/usr/local/include/debug/map",
+		Resolved: true,
+	}) {
+		t.Fatalf("expected legacy system-path heuristic to suppress when provenance is unknown")
+	}
+	if isLikelyMultiarchIncludePrefix("vendor") {
+		t.Fatalf("did not expect ordinary vendor prefix to be treated as multiarch")
+	}
+	if isKnownOSCompilerQualifiedHeader("x86_64-linux-gnu") {
+		t.Fatalf("did not expect bare multiarch prefix to be treated as an OS header")
+	}
+	if isKnownOSCompilerQualifiedHeader("bits") {
+		t.Fatalf("did not expect bare bits namespace to be treated as an OS header")
+	}
+	if isKnownNestedCompilerQualifiedStdHeader("ext", "pb_ds", "custom.h") {
+		t.Fatalf("did not expect non-hpp pb_ds header to be treated as compiler header")
+	}
+	if isKnownNestedCompilerQualifiedStdHeader("ext", "pb_ds", ".hpp") {
+		t.Fatalf("did not expect empty pb_ds hpp stem to be treated as compiler header")
+	}
+	if isKnownCompilerQualifiedStdHeaderLeaf("vendor", "map") {
+		t.Fatalf("did not expect unknown namespace to be treated as compiler header")
+	}
+	if isKnownCompilerQualifiedStdHeaderLeaf("debug", ".h") {
+		t.Fatalf("did not expect empty .h stem to be treated as compiler header")
+	}
+	if isKnownCompilerQualifiedStdHeaderLeaf("debug", "map.hpp") {
+		t.Fatalf("did not expect unsupported .hpp leaf to be treated as debug compiler header")
+	}
+	if isKnownCompilerQualifiedStdHeaderStem("debug", "vendor_map") {
+		t.Fatalf("did not expect unknown debug stem to be treated as compiler header")
+	}
+	if isKnownCompilerQualifiedStdHHeader("experimental", "optional") {
+		t.Fatalf("did not expect experimental .h namespace to be accepted by exact h-header allowlists")
+	}
+	for _, path := range []string{
+		"",
+		"/workspace/vendor/debug/map",
+		"/opt/homebrew/include/c++/v1/vector",
+		"/opt/local/include/sys/types.h",
+		"/mingw/include/sys/types.h",
+		"/mingw64/include/sys/types.h",
+		"/toolchains/llvm/lib/clang/18/include/stdint.h",
+		"/toolchains/gcc/lib/gcc/x86_64-linux-gnu/13/include/stddef.h",
+		"/kits/msvc/include/vector",
+	} {
+		got := isLikelySystemIncludePath(path)
+		want := path != "" && !strings.Contains(path, "/workspace/vendor/")
+		if got != want {
+			t.Fatalf("unexpected system include path classification for %q: got %v want %v", path, got, want)
 		}
 	}
 }

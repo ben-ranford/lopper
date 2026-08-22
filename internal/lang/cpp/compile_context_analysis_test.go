@@ -176,7 +176,7 @@ func testCPPCompileDatabaseReadErrorsBubbleOut(t *testing.T) {
 	if _, err := loadCompileContext(repo); err == nil {
 		t.Fatalf("expected unreadable compile database to fail load")
 	}
-	if _, err := collectCompileDatabase(compileDB, repo, map[string]struct{}{}, map[string]struct{}{}); err == nil {
+	if _, err := collectCompileDatabase(compileDB, repo, map[string]struct{}{}, map[string]includeSearchPath{}, map[string][]includeSearchPath{}, map[string]struct{}{}); err == nil {
 		t.Fatalf("expected unreadable compile database to fail direct collection")
 	}
 }

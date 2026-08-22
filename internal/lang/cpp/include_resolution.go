@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -46,14 +47,29 @@ type scanResult struct {
 }
 
 type includeResolver struct {
-	repoPath    string
-	includeDirs []string
-	catalog     dependencyCatalog
+	repoPath           string
+	includeDirs        []string
+	includeSearchPaths []includeSearchPath
+	sourceIncludeDirs  map[string][]includeSearchPath
+	catalog            dependencyCatalog
 }
 
 type includeLookup struct {
 	sourcePath string
 	header     string
+}
+
+type includeSearchPath struct {
+	Path            string
+	System          bool
+	ProvenanceKnown bool
+}
+
+type includeResolution struct {
+	Path            string
+	Resolved        bool
+	System          bool
+	ProvenanceKnown bool
 }
 
 type scanStage struct {
@@ -64,9 +80,11 @@ type scanStage struct {
 func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, catalog dependencyCatalog) (scanResult, error) {
 	stage := scanStage{
 		scanner: includeResolver{
-			repoPath:    repoPath,
-			includeDirs: compileInfo.IncludeDirs,
-			catalog:     catalog,
+			repoPath:           repoPath,
+			includeDirs:        compileInfo.IncludeDirs,
+			includeSearchPaths: compileInfo.IncludeSearchPaths,
+			sourceIncludeDirs:  compileInfo.SourceIncludeDirs,
+			catalog:            catalog,
 		},
 		result: scanResult{Catalog: catalog},
 	}
@@ -332,14 +350,17 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if include.Delimiter != '<' && include.Delimiter != '"' {
 		return "", true
 	}
-	resolvedPath, resolved := r.resolveIncludePath(includeLookup{
+	if include.Delimiter == '<' && !strings.Contains(cleanIncludeHeader(header), "/") && isLikelyStdHeader(header) {
+		return "", false
+	}
+	resolution := r.resolveIncludePath(includeLookup{
 		sourcePath: sourcePath,
 		header:     header,
 	})
-	if resolved && shared.IsPathWithin(r.repoPath, resolvedPath) {
+	if resolution.Resolved && shared.IsPathWithin(r.repoPath, resolution.Path) {
 		return "", false
 	}
-	if isLikelyStdHeader(header) && shouldSuppressQualifiedStdHeader(header, resolvedPath, resolved) {
+	if isLikelyStdHeader(header) && shouldSuppressQualifiedStdHeader(header, resolution) {
 		return "", false
 	}
 	if include.Delimiter == '"' {
@@ -353,20 +374,48 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	return correlateDeclaredDependency(dependency, r.catalog), false
 }
 
-func (r *includeResolver) resolveIncludePath(include includeLookup) (string, bool) {
+func (r *includeResolver) resolveIncludePath(include includeLookup) includeResolution {
 	sourceDir := filepath.Dir(include.sourcePath)
-	candidates := []string{filepath.Join(sourceDir, filepath.FromSlash(include.header))}
-	for _, includeDir := range r.includeDirs {
-		candidates = append(candidates, filepath.Join(includeDir, filepath.FromSlash(include.header)))
+	header := filepath.FromSlash(cleanIncludeHeader(include.header))
+	candidates := []includeResolution{{
+		Path:            filepath.Join(sourceDir, header),
+		ProvenanceKnown: true,
+	}}
+	for _, includePath := range r.includeSearchPathsForSource(include.sourcePath) {
+		candidates = append(candidates, includeResolution{
+			Path:            filepath.Join(includePath.Path, header),
+			System:          includePath.System,
+			ProvenanceKnown: includePath.ProvenanceKnown,
+		})
 	}
 	for _, candidate := range candidates {
-		candidate = filepath.Clean(candidate)
-		if _, err := os.Stat(candidate); err != nil {
+		candidate.Path = filepath.Clean(candidate.Path)
+		if _, err := os.Stat(candidate.Path); err != nil {
 			continue
 		}
-		return candidate, true
+		candidate.Resolved = true
+		return candidate
 	}
-	return "", false
+	return includeResolution{}
+}
+
+func (r *includeResolver) includeSearchPathsForSource(sourcePath string) []includeSearchPath {
+	if len(r.sourceIncludeDirs) > 0 {
+		if paths := r.sourceIncludeDirs[filepath.Clean(sourcePath)]; len(paths) > 0 {
+			return paths
+		}
+	}
+	if len(r.includeSearchPaths) > 0 {
+		return r.includeSearchPaths
+	}
+	if len(r.includeDirs) == 0 {
+		return nil
+	}
+	paths := make([]includeSearchPath, 0, len(r.includeDirs))
+	for _, includeDir := range r.includeDirs {
+		paths = append(paths, includeSearchPath{Path: includeDir})
+	}
+	return paths
 }
 
 func dependencyFromIncludePath(header string) string {
@@ -400,7 +449,7 @@ func dependencyFromIncludePath(header string) string {
 }
 
 func isLikelyStdHeader(header string) bool {
-	header = strings.TrimSpace(filepath.ToSlash(header))
+	header = cleanIncludeHeader(header)
 	if header == "" {
 		return false
 	}
@@ -420,20 +469,38 @@ func isLikelyStdHeader(header string) bool {
 	return ok
 }
 
-func shouldSuppressQualifiedStdHeader(header, resolvedPath string, resolved bool) bool {
-	if !strings.Contains(header, "/") {
+func cleanIncludeHeader(header string) string {
+	header = strings.TrimSpace(filepath.ToSlash(header))
+	if header == "" {
+		return ""
+	}
+	cleaned := pathpkg.Clean(header)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func shouldSuppressQualifiedStdHeader(header string, resolution includeResolution) bool {
+	if !strings.Contains(cleanIncludeHeader(header), "/") {
 		return true
 	}
-	if !resolved {
+	if !resolution.Resolved {
 		return true
 	}
-	return isLikelySystemIncludePath(resolvedPath)
+	if resolution.ProvenanceKnown {
+		return resolution.System
+	}
+	return isLikelySystemIncludePath(resolution.Path)
 }
 
 func isKnownOSCompilerQualifiedHeader(header string) bool {
 	parts := strings.Split(header, "/")
 	if len(parts) < 2 {
 		return false
+	}
+	if isLikelyMultiarchIncludePrefix(parts[0]) && len(parts) >= 3 {
+		parts = parts[1:]
 	}
 	namespace, leaf := parts[0], parts[len(parts)-1]
 	if leaf == "" {
@@ -443,13 +510,15 @@ func isKnownOSCompilerQualifiedHeader(header string) bool {
 	case "sys", "linux", "asm", "asm-generic":
 		return filepath.Ext(leaf) == ".h"
 	case "bits":
-		if len(parts) != 2 {
-			return false
-		}
 		return filepath.Ext(leaf) == ".h" || leaf == "stdc++.h"
 	default:
 		return false
 	}
+}
+
+func isLikelyMultiarchIncludePrefix(prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	return strings.Contains(prefix, "-linux-") || strings.HasSuffix(prefix, "-w64-mingw32")
 }
 
 func isLikelySystemIncludePath(path string) bool {
@@ -687,8 +756,12 @@ var cppParallelQualifiedStdHeaderHStemSet = makeStringSet(
 
 var cppTR1QualifiedStdHeaderHStemSet = makeStringSet(
 	"complex",
+	"ctype",
+	"inttypes",
+	"limits",
 	"math",
 	"stdio",
+	"stdint",
 	"type_traits",
 	"unordered_map",
 	"unordered_set",
