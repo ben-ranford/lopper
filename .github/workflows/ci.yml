@@ -84,7 +84,8 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Resolve PR base ref
+      - &ci_resolve_pr_base_step
+        name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -102,9 +103,11 @@ jobs:
             base_source="act-head-parent"
             echo "::notice::ACT pull_request payload omitted pull_request.base.sha; using HEAD^ (${base_sha}) as the immutable local base."
           fi
-          printf 'BASE_SOURCE=%s\n' "${base_source}" >> "$GITHUB_ENV"
-          printf 'BASE_SHA=%s\n' "${base_sha}" >> "$GITHUB_ENV"
-          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+          {
+            printf 'BASE_SOURCE=%s\n' "${base_source}"
+            printf 'BASE_SHA=%s\n' "${base_sha}"
+            printf 'BASE_REF=%s\n' "${base_ref}"
+          } >> "$GITHUB_ENV"
 
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
@@ -117,7 +120,8 @@ jobs:
             fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
             core.exportVariable('PR_BODY_FILE', bodyPath);
 
-      - name: Fetch PR base
+      - &ci_fetch_pr_base_step
+        name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           base_ref="${BASE_REF:-}"
@@ -151,16 +155,22 @@ jobs:
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
-        run: |
+        run: &ci_run_target_script |
+          run_ci() {
+            if [ -n "${BUILD_CHANNEL:-}" ]; then
+              make ci "BUILD_CHANNEL=${BUILD_CHANNEL}"
+            else
+              make ci
+            fi
+          }
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci
-          else
-            make ci
+            PATH="$(go env GOPATH)/bin:$PATH"
           fi
+          run_ci
 
       - name: Prove regression tests for fix PRs
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
@@ -635,73 +645,15 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Resolve PR base ref
-        if: ${{ github.event_name == 'pull_request' }}
-        env:
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          base_ref="${PR_BASE_REF:-}"
-          base_sha="${PR_BASE_SHA:-}"
-          base_source="github-event"
-          if [ -n "${ACT:-}" ] && [ -z "${base_sha}" ]; then
-            if ! base_sha="$(git rev-parse --verify -q --end-of-options HEAD^ 2>/dev/null)"; then
-              echo "::error::ACT pull_request runs without pull_request.base.sha require a parent commit to derive an immutable local base." >&2
-              exit 1
-            fi
-            base_ref=""
-            base_source="act-head-parent"
-            echo "::notice::ACT pull_request payload omitted pull_request.base.sha; using HEAD^ (${base_sha}) as the immutable local base."
-          fi
-          printf 'BASE_SOURCE=%s\n' "${base_source}" >> "$GITHUB_ENV"
-          printf 'BASE_SHA=%s\n' "${base_sha}" >> "$GITHUB_ENV"
-          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+      - *ci_resolve_pr_base_step
 
-      - name: Fetch PR base
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          base_ref="${BASE_REF:-}"
-          base_sha="${BASE_SHA:-}"
-          base_source="${BASE_SOURCE:-github-event}"
-          if [ -z "${base_sha}" ]; then
-            echo "::error::PR base SHA is unavailable; cannot prepare rolling memory benchmark base." >&2
-            exit 1
-          fi
-          if [ "${base_source}" = "act-head-parent" ]; then
-            if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
-              echo "::error::ACT fallback base SHA '${base_sha}' is unavailable locally; cannot prepare memory benchmark base." >&2
-              exit 1
-            fi
-          else
-            git fetch --no-tags origin "${base_sha}"
-            if [ -n "${base_ref}" ]; then
-              git fetch --no-tags origin "${base_ref}"
-            fi
-            if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
-              echo "::error::PR base SHA '${base_sha}' is missing after fetch; cannot prepare memory benchmark base." >&2
-              exit 1
-            fi
-          fi
-          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
-            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
-            exit 1
-          fi
-          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
+      - *ci_fetch_pr_base_step
 
       - name: Run CI target with rolling defaults
         env:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
-        run: |
-          if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared rolling PR memory benchmark base is required}"
-            export MEMORY_BENCH_ENFORCE=0
-          fi
-          if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
-          else
-            make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
-          fi
+        run: *ci_run_target_script
 
   os-smoke:
     name: os-smoke (${{ matrix.os }})
