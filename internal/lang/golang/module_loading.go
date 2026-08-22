@@ -135,7 +135,7 @@ const (
 	maxGoModModuleScanBytes       = maxGoModBytes + 512*1024
 	maxGoModModuleLineBytes       = 64 * 1024
 	maxLongQuotedGoModTargetBytes = 512 * 1024
-	maxLongQuotedGoModSuffixBytes = 1024
+	maxLongQuotedGoModSuffixBytes = 512 * 1024
 	maxLongUnquotedGoModLineBytes = maxLongQuotedGoModTargetBytes + maxLongQuotedGoModSuffixBytes
 )
 
@@ -303,6 +303,10 @@ func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
 func (s *goModModuleScanner) consumeCodeByte(b byte) error {
 	if s.acceptingLongQuotedLineSuffix() {
 		return s.consumeLongQuotedLineSuffix(b)
+	}
+	if s.lineTooLarge {
+		s.appendLineByte(b)
+		return nil
 	}
 	if b == '"' || b == '`' {
 		s.startQuotedString(b)
@@ -620,7 +624,7 @@ func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, 
 
 func isValidLongGoModDirective(directive string) bool {
 	switch directive {
-	case "go", "toolchain", "require", "exclude", "replace", "retract", "tool", "godebug", "ignore":
+	case "module", "go", "toolchain", "require", "exclude", "replace", "retract", "tool", "godebug", "ignore":
 		return true
 	default:
 		return false
@@ -631,23 +635,34 @@ func (s *goModModuleScanner) acceptLongGoModDirectiveLine(directive, lineText st
 	if !isValidLongGoModDirective(directive) {
 		return false
 	}
-	if tooLargeInQuote {
-		if !quoteClosed {
-			return false
-		}
-		lineText, ok := s.longQuotedGoModLine(lineText)
-		if !ok {
-			return false
-		}
-		s.appendSyntheticGoModLine(lineText)
-		return !s.invalid
-	}
-	lineText, ok := s.longUnquotedGoModLine(lineText)
+	recovered, ok := s.recoverLongGoModDirectiveLine(lineText, tooLargeInQuote, quoteClosed)
 	if !ok {
 		return false
 	}
-	s.appendSyntheticGoModLine(lineText)
+	if directive == "module" {
+		s.consumeGoModModuleLine(recovered)
+		return !s.invalid
+	}
+	s.appendSyntheticGoModLine(recovered)
 	return !s.invalid
+}
+
+func (s *goModModuleScanner) recoverLongGoModDirectiveLine(lineText string, tooLargeInQuote, quoteClosed bool) (string, bool) {
+	if tooLargeInQuote {
+		if !quoteClosed {
+			return "", false
+		}
+		lineText, ok := s.longQuotedGoModLine(lineText)
+		if !ok {
+			return "", false
+		}
+		return lineText, true
+	}
+	lineText, ok := s.longUnquotedGoModLine(lineText)
+	if !ok {
+		return "", false
+	}
+	return lineText, true
 }
 
 func (s *goModModuleScanner) longQuotedGoModLine(lineText string) (string, bool) {

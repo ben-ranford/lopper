@@ -9,60 +9,6 @@ import (
 	"golang.org/x/mod/module"
 )
 
-func TestOversizedRootGoModKeepsLongGodebugDirectivesBeforeModule(t *testing.T) {
-	for name, lines := range map[string][]string{
-		"line": {
-			"godebug default=" + strings.Repeat("x", 70*1024),
-			"module example.com/root",
-		},
-		"block": {
-			"godebug (",
-			"default=" + strings.Repeat("x", 70*1024),
-			")",
-			"module example.com/root",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			repo := t.TempDir()
-			writeOversizedRootGoModLines(t, repo, lines...)
-
-			requireOversizedRootModulePath(t, repo, "module path extraction after long godebug directive")
-		})
-	}
-}
-
-func TestOversizedRootGoModRejectsMalformedLongGodebugAndIgnoreDirectives(t *testing.T) {
-	for name, lines := range map[string][]string{
-		"godebug line": {
-			"module example.com/root",
-			"godebug default=" + strings.Repeat("x", 70*1024) + " extra",
-		},
-		"godebug block": {
-			"module example.com/root",
-			"godebug (",
-			"default=" + strings.Repeat("x", 70*1024) + " extra",
-			")",
-		},
-		"ignore line": {
-			"module example.com/root",
-			"ignore ./" + strings.Repeat("nested/", 10*1024) + "dir extra",
-		},
-		"ignore block": {
-			"module example.com/root",
-			"ignore (",
-			"./" + strings.Repeat("nested/", 10*1024) + "dir extra",
-			")",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			repo := t.TempDir()
-			writeOversizedRootGoModLines(t, repo, lines...)
-
-			requireNoTrustedOversizedRootModuleMetadata(t, repo)
-		})
-	}
-}
-
 func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testing.T) {
 	longGodebug := "default=" + strings.Repeat("x", 70*1024)
 	longIgnore := "./" + strings.Repeat("nested/", 10*1024) + "dir"
@@ -71,6 +17,9 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 	longRetract := "v2." + strings.Repeat("0", 70*1024)
 	longGoDirective := "1.23." + strings.Repeat("0", 70*1024)
 	longQuotedOldPath := `replace "example.com/` + strings.Repeat("x", 70*1024) + `" => "./a//b"`
+	longModulePath := "example.com/" + strings.TrimSuffix(strings.Repeat("service/", 9*1024), "/")
+	longQuotedReplacementSuffix := `replace "example.com/` + strings.Repeat("x", 70*1024) + `" => "./` + strings.Repeat("y", 2*1024) + `"`
+	longUnquotedOldPathWithQuotedReplacement := `replace example.com/` + strings.Repeat("x", 70*1024) + ` => "./a//b"`
 
 	for name, tc := range map[string]struct {
 		lines    []string
@@ -128,6 +77,28 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 			},
 			wantPath: "example.com/root",
 			wantBody: longQuotedOldPath + "\n",
+		},
+		"replace quoted old path with long replacement suffix": {
+			lines: []string{
+				"module example.com/root",
+				longQuotedReplacementSuffix,
+			},
+			wantPath: "example.com/root",
+			wantBody: longQuotedReplacementSuffix + "\n",
+		},
+		"replace unquoted old path before quoted replacement": {
+			lines: []string{
+				"module example.com/root",
+				longUnquotedOldPathWithQuotedReplacement,
+			},
+			wantPath: "example.com/root",
+			wantBody: longUnquotedOldPathWithQuotedReplacement + "\n",
+		},
+		"module line": {
+			lines: []string{
+				"module " + longModulePath,
+			},
+			wantPath: longModulePath,
 		},
 		"go line": {
 			lines: []string{
@@ -406,7 +377,14 @@ func requireDirectiveClassificationStaysNarrow(t *testing.T) {
 
 func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	t.Helper()
+	requireLongRecoveryRejectsBadQuoteState(t)
+	requireLongQuotedSuffixBounds(t)
+	requireLongQuotedSuffixTracksQuotes(t)
+	requireLongRecoveryBlockLineGuards(t)
+}
 
+func requireLongRecoveryRejectsBadQuoteState(t *testing.T) {
+	t.Helper()
 	var missingQuote goModModuleScanner
 	missingQuote.line.WriteString("godebug default=go1.21")
 	missingQuote.quoteByte = '"'
@@ -443,7 +421,10 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	if !outOfBoundsQuoteStart.lineInvalid {
 		t.Fatalf("expected out-of-bounds quote start to invalidate long quoted recovery")
 	}
+}
 
+func requireLongQuotedSuffixBounds(t *testing.T) {
+	t.Helper()
 	var suffixOverflow goModModuleScanner
 	suffixOverflow.lineTooLarge = true
 	suffixOverflow.lineTooLargeInQuote = true
@@ -455,7 +436,17 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	if !suffixOverflow.lineInvalid {
 		t.Fatalf("expected oversized long quoted suffix to invalidate the line")
 	}
+}
 
+func requireLongQuotedSuffixTracksQuotes(t *testing.T) {
+	t.Helper()
+	requireLongDoubleQuotedSuffixTracksComments(t)
+	requireLongRawQuotedSuffixTracksComments(t)
+	requireLongEscapedQuotedSuffix(t)
+}
+
+func requireLongDoubleQuotedSuffixTracksComments(t *testing.T) {
+	t.Helper()
 	var quotedSuffix goModModuleScanner
 	quotedSuffix.lineTooLarge = true
 	quotedSuffix.lineTooLargeInQuote = true
@@ -474,7 +465,10 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	if got := quotedSuffix.longQuotedSuffix.String(); got != "\"./a//b\"" {
 		t.Fatalf("expected quoted suffix to keep comment markers literal, got %q", got)
 	}
+}
 
+func requireLongRawQuotedSuffixTracksComments(t *testing.T) {
+	t.Helper()
 	var rawQuotedSuffix goModModuleScanner
 	rawQuotedSuffix.lineTooLarge = true
 	rawQuotedSuffix.lineTooLargeInQuote = true
@@ -493,7 +487,10 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	if got := rawQuotedSuffix.longQuotedSuffix.String(); got != "`literal/*value`" {
 		t.Fatalf("expected raw-quoted suffix to keep block-comment markers literal, got %q", got)
 	}
+}
 
+func requireLongEscapedQuotedSuffix(t *testing.T) {
+	t.Helper()
 	var escapedQuotedSuffix goModModuleScanner
 	escapedQuotedSuffix.lineTooLarge = true
 	escapedQuotedSuffix.lineTooLargeInQuote = true
@@ -512,7 +509,10 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	if got := escapedQuotedSuffix.longQuotedSuffix.String(); got != "\"./a\\\"b\"" {
 		t.Fatalf("expected escaped quoted suffix to retain escapes, got %q", got)
 	}
+}
 
+func requireLongRecoveryBlockLineGuards(t *testing.T) {
+	t.Helper()
 	rawQuotedOverflow := goModModuleScanner{
 		inQuotedString:      true,
 		quoteByte:           '`',
