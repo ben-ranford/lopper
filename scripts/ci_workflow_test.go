@@ -290,6 +290,87 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	})
 }
 
+func TestCIWorkflowPreparesImmutableMemoryBenchmarkBase(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	testCases := []struct {
+		jobName     string
+		runStepName string
+	}{
+		{jobName: "verify", runStepName: "Run CI target"},
+		{jobName: "verify-rolling", runStepName: "Run CI target with rolling defaults"},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.jobName, func(t *testing.T) {
+			t.Parallel()
+
+			job := workflowJobByName(t, workflow.Jobs, tc.jobName)
+			assertWorkflowStepOrder(t, job, "Resolve PR base ref", "Fetch PR base", tc.runStepName)
+
+			resolver := workflowStepByName(t, workflow.Jobs, tc.jobName, "Resolve PR base ref")
+			assertWorkflowStepEnv(t, resolver, tc.jobName+" PR base resolver", map[string]string{
+				"PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+				"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+			})
+			assertWorkflowStepRunContainsAll(t, resolver, tc.jobName+" PR base resolver", []string{
+				`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"`,
+				`printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"`,
+			})
+
+			fetchBase := workflowStepByName(t, workflow.Jobs, tc.jobName, "Fetch PR base")
+			assertWorkflowStepRunContainsAll(t, fetchBase, tc.jobName+" PR base fetch", []string{
+				`base_sha="${BASE_SHA:-}"`,
+				`git fetch --no-tags origin "${base_sha}"`,
+				`git fetch --no-tags origin "${base_ref}"`,
+				`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
+				`git merge-base -- "${base_sha}" HEAD >/dev/null`,
+				`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
+			})
+			assertWorkflowStepRunOmitsAll(t, fetchBase, tc.jobName+" PR base fetch", []string{
+				`--depth=1 origin "${base_sha}"`,
+				`--depth=1 origin "${base_ref}"`,
+				`MEMORY_BENCH_BASE="origin/${base_ref}"`,
+			})
+
+			runCI := workflowStepByName(t, workflow.Jobs, tc.jobName, tc.runStepName)
+			assertWorkflowStepRunContainsAll(t, runCI, tc.jobName+" CI run", []string{
+				`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
+				`export MEMORY_BENCH_ENFORCE=0`,
+			})
+			assertWorkflowStepRunOmitsAll(t, runCI, tc.jobName+" CI run", []string{
+				`origin/${base_ref}`,
+			})
+		})
+	}
+}
+
+func TestCIWorkflowUsesImmutableBaseSHAForLopperReport(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	assertWorkflowStepOrder(t, verify, "Fetch PR base", "Run lopper self-analysis (base branch)", "Run lopper delta summary (PR)")
+
+	baseReport := workflowStepByName(t, workflow.Jobs, "verify", "Run lopper self-analysis (base branch)")
+	assertWorkflowStepRunContainsAll(t, baseReport, "lopper base report immutable checkout", []string{
+		`base_sha="${BASE_SHA:?prepared PR base SHA is required}"`,
+		`git worktree add --detach .artifacts/base "${base_sha}"`,
+		`bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json`,
+	})
+	assertWorkflowStepRunOmitsAll(t, baseReport, "lopper base report immutable checkout", []string{
+		`base_ref="${BASE_REF:-main}"`,
+		`origin/${base_ref}`,
+		`origin/main`,
+	})
+}
+
 func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	t.Parallel()
 

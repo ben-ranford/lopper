@@ -169,9 +169,9 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         run: |
-          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:?prepared PR base SHA is required}"
           mkdir -p .artifacts
-          git worktree add --detach .artifacts/base "origin/${base_ref}"
+          git worktree add --detach .artifacts/base "${base_sha}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
