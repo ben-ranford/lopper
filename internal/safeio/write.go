@@ -79,7 +79,7 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
 		createParents: true,
 		parentPerm:    parentPerm,
-		write:         writeFileAtRootWithPostWriteCheck,
+		write:         writeFileAtRootWithChecks,
 	})
 }
 
@@ -94,7 +94,7 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 		createParents: true,
 		parentPerm:    parentPerm,
 		parentReady:   parentReady,
-		write:         writeFileAtRootWithPostWriteCheck,
+		write:         writeFileAtRootWithChecks,
 	})
 }
 
@@ -111,7 +111,27 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(ta
 		parentPerm:    parentPerm,
 		parentReady:   parentReady,
 		preWrite:      preWrite,
-		write:         writeFileAtRootWithPostWriteCheck,
+		postWrite:     preWrite,
+		write:         writeFileAtRootWithChecks,
+	})
+}
+
+// WriteFileCreatingParentsAfterParentReadyWithPublishCheck atomically writes a
+// root-relative file after parentReady validates state with the target parent
+// pinned. It runs publishCheck immediately before publishing the target and
+// again after the target has been committed.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, publishCheck func() error) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: true,
+		parentPerm:    parentPerm,
+		parentReady:   parentReady,
+		commitReady:   publishCheck,
+		postWrite:     publishCheck,
+		write:         writeFileAtRootWithChecks,
 	})
 }
 
@@ -141,7 +161,7 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
 		createParents: true,
 		parentPerm:    parentPerm,
-		write:         writeFileIfAbsentAtRootWithPostWriteCheck,
+		write:         writeFileIfAbsentAtRootWithChecks,
 	})
 }
 
@@ -191,17 +211,19 @@ func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.
 	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
 		createParents: createParents,
 		parentPerm:    parentPerm,
-		write:         writeFileAtRootWithPostWriteCheck,
+		write:         writeFileAtRootWithChecks,
 	})
 }
 
-type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error
+type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error) error
 
 type writeToTargetParentOptions struct {
 	createParents bool
 	parentPerm    os.FileMode
 	parentReady   func() error
 	preWrite      func() error
+	commitReady   func() error
+	postWrite     func() error
 	write         writeAtRootFunc
 }
 
@@ -220,7 +242,7 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 				return err
 			}
 		}
-		return options.write(parent, parentTarget, data, perm, options.preWrite)
+		return options.write(parent, parentTarget, data, perm, options.commitReady, options.postWrite)
 	})
 }
 
@@ -337,24 +359,28 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 }
 
 func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithPostWriteCheck(root, target, data, perm, nil)
+	return writeFileAtRootWithChecks(root, target, data, perm, nil, nil)
 }
 
 func writeFileAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, false, postWrite)
+	return writeFileAtRootWithChecks(root, target, data, perm, nil, postWrite)
+}
+
+func writeFileAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error) error {
+	return writeFileAtRootWithOptions(root, target, data, perm, false, commitReady, postWrite)
 }
 
 func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, true, nil)
+	return writeFileAtRootWithOptions(root, target, data, perm, true, nil, nil)
 }
 
-func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool, postWrite func() error) (returnErr error) {
+func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool, commitReady, postWrite func() error) (returnErr error) {
 	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
 	if existingInfo == nil {
-		return writeAtomicReplacementWithPostWriteCheck(root, target.rel, data, writePerm, nil, postWrite)
+		return writeAtomicReplacementWithChecks(root, target.rel, data, writePerm, nil, commitReady, postWrite)
 	}
 
 	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
@@ -367,11 +393,15 @@ func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, per
 		}
 	}()
 
-	return writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, target.rel, data, writePerm, file, allowPermissionFallback, postWrite)
+	return writeAtomicReplacementWithPinnedTargetAndChecks(root, target.rel, data, writePerm, file, allowPermissionFallback, commitReady, postWrite)
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
 	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, nil)
+}
+
+func writeFileIfAbsentAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, _ func() error, postWrite func() error) error {
+	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, postWrite)
 }
 
 func writeFileIfAbsentAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) (returnErr error) {

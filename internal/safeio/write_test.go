@@ -964,6 +964,47 @@ func TestWriteRootCreatesParentsAfterParentReadyWithPreWriteCheck(t *testing.T) 
 	assertFileContent(t, filepath.Join(rootDir, target), "hello")
 }
 
+func TestWriteRootPublishCheckRunsImmediatelyBeforeCommitAndAfterWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", writeTestFileName)
+
+	originalPublishReady := writeFilePublishReadyFn
+	writeFilePublishReadyFn = func() error {
+		if _, err := os.Stat(filepath.Join(rootDir, target)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected target to remain absent before the commit check, got %v", err)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		writeFilePublishReadyFn = originalPublishReady
+	})
+
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPublishCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		return nil
+	}, func() error {
+		publishChecks++
+		if publishChecks == 1 {
+			if _, err := os.Stat(filepath.Join(rootDir, target)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expected target to remain absent during commit check, got %v", err)
+			}
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(rootDir, target)); err != nil {
+			t.Fatalf("expected target to exist during post-write check: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPublishCheck returned error: %v", err)
+	}
+	if publishChecks != 2 {
+		t.Fatalf("expected commit and post-write checks, got %d", publishChecks)
+	}
+	assertFileContent(t, filepath.Join(rootDir, target), "hello")
+}
+
 func TestWriteRootPreWriteReadinessErrorPreventsCallerPreWriteAndWrite(t *testing.T) {
 	rootDir := t.TempDir()
 	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)

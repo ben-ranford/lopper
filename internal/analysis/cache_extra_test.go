@@ -18,9 +18,6 @@ import (
 //go:linkname safeioWriteFileParentReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileParentReadyFn
 var safeioWriteFileParentReadyFn func() error
 
-//go:linkname safeioWriteFilePreWriteReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePreWriteReadyFn
-var safeioWriteFilePreWriteReadyFn func() error
-
 //go:linkname safeioWriteFilePublishReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePublishReadyFn
 var safeioWriteFilePublishReadyFn func() error
 
@@ -240,37 +237,7 @@ func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing
 	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 2, "during pointer publish")
 }
 
-func TestAnalysisCacheStoreRejectsRootReplacementBetweenPointerValidationAndWrite(t *testing.T) {
-	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
-	replacementRoot := filepath.Join(repo, "cache-replacement")
-	mustMkdirCacheLayout(t, replacementRoot)
-
-	originalHook := safeioWriteFilePreWriteReadyFn
-	t.Cleanup(func() { safeioWriteFilePreWriteReadyFn = originalHook })
-	swapped := false
-	safeioWriteFilePreWriteReadyFn = func() error {
-		if swapped {
-			return nil
-		}
-		swapped = true
-		if err := os.Rename(cachePath, movedRoot); err != nil {
-			return err
-		}
-		return os.Rename(replacementRoot, cachePath)
-	}
-
-	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
-	if err == nil {
-		t.Fatal("expected root replacement between pointer validation and write to fail")
-	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
-	}
-	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
-	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
-}
-
-func TestAnalysisCacheStoreLeavesDisplacedPointerAfterRootReplacementAtPublish(t *testing.T) {
+func TestAnalysisCacheStoreRejectsRootReplacementAtPointerCommit(t *testing.T) {
 	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
 	replacementRoot := filepath.Join(repo, "cache-replacement")
 	mustMkdirCacheLayout(t, replacementRoot)
@@ -291,15 +258,15 @@ func TestAnalysisCacheStoreLeavesDisplacedPointerAfterRootReplacementAtPublish(t
 
 	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
 	if err == nil {
-		t.Fatal("expected root replacement at pointer publish to fail")
+		t.Fatal("expected root replacement at pointer commit to fail")
 	}
 	if !strings.Contains(err.Error(), "directory identity changed") {
 		t.Fatalf("expected directory identity error, got %v", err)
 	}
 	if publishCalls != 2 {
-		t.Fatalf("expected cache root swap at pointer publish, got %d publish calls", publishCalls)
+		t.Fatalf("expected cache root swap at pointer commit, got %d publish calls", publishCalls)
 	}
-	assertAnalysisCachePathPresent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
 }
 

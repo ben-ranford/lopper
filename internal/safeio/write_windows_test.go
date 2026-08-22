@@ -175,7 +175,11 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 		},
 	}
 
-	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
+	postWriteCalls := 0
+	if err := writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, targetFile, true, func() error {
+		postWriteCalls++
+		return nil
+	}); err != nil {
 		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
 	}
 	if removeCalls != 1 {
@@ -183,6 +187,49 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 	}
 	if string(*targetData) != "after" {
 		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected post-write check after fallback, got %d calls", postWriteCalls)
+	}
+}
+
+func TestWriteAtomicReplacementRunsPostWriteAfterWindowsFallback(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		rename: func(oldName, newName string) error {
+			return windowsReplaceExistingError(oldName, newName)
+		},
+		remove: func(string) error { return nil },
+	}
+
+	postWriteCalls := 0
+	err := writeAtomicReplacementWithPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, nil, func() error {
+		postWriteCalls++
+		if string(*targetData) != "after" {
+			t.Fatalf("expected fallback overwrite before post-write check, got %q", string(*targetData))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writeAtomicReplacementWithPostWriteCheck returned error: %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected post-write check after fallback, got %d calls", postWriteCalls)
 	}
 }
 
