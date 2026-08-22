@@ -118,9 +118,14 @@ func isPureGoModSizeLimit(err error) bool {
 }
 
 func scanGoModModulePath(reader io.Reader) (string, error) {
+	return scanGoModModulePathWithParser(reader, parseSyntheticGoMod)
+}
+
+func scanGoModModulePathWithParser(reader io.Reader, parseSynthetic func(string, string) bool) (string, error) {
 	scanner := goModModuleScanner{
-		buffered: bufio.NewReaderSize(reader, 32*1024),
-		maxBytes: maxGoModModuleScanBytes,
+		buffered:       bufio.NewReaderSize(reader, 32*1024),
+		maxBytes:       maxGoModModuleScanBytes,
+		parseSynthetic: parseSynthetic,
 	}
 	return scanner.scan()
 }
@@ -128,27 +133,29 @@ func scanGoModModulePath(reader io.Reader) (string, error) {
 const (
 	goModModuleDirectivePrefix = "module "
 	maxGoModModuleScanBytes    = maxGoModBytes + 512*1024
+	maxGoModModuleLineBytes    = 64 * 1024
 )
 
 var errGoModModuleScanTooLarge = errors.New("go.mod module scanner read limit exceeded")
 
 type goModModuleScanner struct {
-	buffered        *bufio.Reader
-	bytesRead       int
-	maxBytes        int
-	line            strings.Builder
-	modulePath      string
-	blockDirective  string
-	pendingRetracts []string
-	seenSingletons  map[string]struct{}
-	invalid         bool
-	lineInvalid     bool
-	lineTooLarge    bool
-	lineLastSpace   bool
-	inQuotedString  bool
-	quoteByte       byte
-	quoteEscaped    bool
-	inLineComment   bool
+	buffered       *bufio.Reader
+	bytesRead      int
+	maxBytes       int
+	line           strings.Builder
+	syntheticBody  strings.Builder
+	modulePath     string
+	blockDirective string
+	seenSingletons map[string]struct{}
+	parseSynthetic func(string, string) bool
+	invalid        bool
+	lineInvalid    bool
+	lineTooLarge   bool
+	lineLastSpace  bool
+	inQuotedString bool
+	quoteByte      byte
+	quoteEscaped   bool
+	inLineComment  bool
 }
 
 func (s *goModModuleScanner) scan() (string, error) {
@@ -175,7 +182,10 @@ func (s *goModModuleScanner) finishScanWithReadError(err error) (string, error) 
 
 func (s *goModModuleScanner) finishScanAtEOF() string {
 	s.finishLine()
-	if s.invalid || s.blockDirective != "" {
+	if s.invalid || s.blockDirective != "" || s.modulePath == "" {
+		return ""
+	}
+	if !s.isSyntheticBodyValid() {
 		return ""
 	}
 	return s.modulePath
@@ -314,7 +324,7 @@ func (s *goModModuleScanner) appendLineByte(b byte) {
 	} else {
 		s.lineLastSpace = false
 	}
-	if s.line.Len() >= 64*1024 {
+	if s.line.Len() >= maxGoModModuleLineBytes {
 		s.lineTooLarge = true
 		return
 	}
@@ -323,7 +333,7 @@ func (s *goModModuleScanner) appendLineByte(b byte) {
 
 func (s *goModModuleScanner) appendRawLineByte(b byte) {
 	s.lineLastSpace = false
-	if s.line.Len() >= 64*1024 {
+	if s.line.Len() >= maxGoModModuleLineBytes {
 		s.lineTooLarge = true
 		return
 	}
@@ -331,7 +341,7 @@ func (s *goModModuleScanner) appendRawLineByte(b byte) {
 }
 
 func (s *goModModuleScanner) finishLine() {
-	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid || s.lineTooLarge)
+	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid, s.lineTooLarge)
 	s.lineInvalid = false
 	s.lineTooLarge = false
 	s.lineLastSpace = false
@@ -352,10 +362,15 @@ func trimGoModDirectiveSpace(lineText string) string {
 
 const goModDirectiveSpaceCutset = " \t\r"
 
-func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, tooLarge bool) {
-	if tooLarge {
+func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, invalid, tooLarge bool) {
+	if invalid {
 		line.Reset()
 		s.invalid = true
+		return
+	}
+	if tooLarge {
+		s.consumeTooLargeGoModDirectiveLine(line.String())
+		line.Reset()
 		return
 	}
 	lineText := trimGoModDirectiveSpace(line.String())
@@ -368,11 +383,11 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 		return
 	}
 	if directive, ok := goModInlineEmptyBlockDirective(lineText); ok {
-		s.consumeGoModInlineEmptyBlock(directive)
+		s.consumeGoModInlineEmptyBlock(directive, lineText)
 		return
 	}
 	if directive, ok := goModBlockDirective(lineText); ok {
-		s.startGoModBlock(directive)
+		s.startGoModBlock(directive, lineText)
 		return
 	}
 	if isGoModModuleDirectiveLine(lineText) {
@@ -382,12 +397,25 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 	if !s.consumeGoModSingletonLine(lineText) {
 		return
 	}
-	if s.deferRetractUntilModule(lineText) {
+	s.appendSyntheticGoModLine(lineText)
+}
+
+func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string) {
+	lineText = trimGoModDirectiveSpace(lineText)
+	if lineText == "" || s.blockDirective == "module" {
+		s.invalid = true
 		return
 	}
-	if !isValidGoModDirectiveLine(s.validationModulePath(), lineText) {
-		s.invalid = true
+	if s.blockDirective != "" {
+		if !isSkippableLongGoModBlockLine(s.blockDirective, lineText) {
+			s.invalid = true
+		}
+		return
 	}
+	if isSkippableLongGoModDirectiveLine(lineText) {
+		return
+	}
+	s.invalid = true
 }
 
 func goModBlockDirective(lineText string) (string, bool) {
@@ -410,13 +438,15 @@ func isGoModModuleDirectiveLine(lineText string) bool {
 	return firstToken(lineText) == "module"
 }
 
-func (s *goModModuleScanner) consumeGoModInlineEmptyBlock(directive string) {
+func (s *goModModuleScanner) consumeGoModInlineEmptyBlock(directive, lineText string) {
 	if directive == "module" {
 		return
 	}
-	if !isValidGoModBlockDirective(s.validationModulePath(), directive) {
+	if !isValidGoModBlockDirective(directive) {
 		s.invalid = true
+		return
 	}
+	s.appendSyntheticGoModLine(lineText)
 }
 
 func (s *goModModuleScanner) consumeGoModSingletonLine(lineText string) bool {
@@ -447,6 +477,9 @@ func goModSingletonDirective(lineText string) (string, bool) {
 
 func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
 	if lineText == ")" {
+		if s.blockDirective != "module" {
+			s.appendSyntheticGoModLine(lineText)
+		}
 		s.blockDirective = ""
 		return
 	}
@@ -454,31 +487,24 @@ func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
 		s.consumeGoModModuleLine(goModModuleDirectivePrefix + lineText)
 		return
 	}
-	if s.blockDirective == "retract" && s.deferRetractUntilModule("retract "+lineText) {
+	if !isValidGoModBlockLine(s.modulePath, s.blockDirective, lineText) {
+		s.invalid = true
 		return
 	}
-	if !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
-		s.invalid = true
-	}
+	s.appendSyntheticGoModLine(lineText)
 }
 
-func (s *goModModuleScanner) startGoModBlock(directive string) {
+func (s *goModModuleScanner) startGoModBlock(directive, lineText string) {
 	if directive == "module" {
 		s.blockDirective = directive
 		return
 	}
-	if !isValidGoModBlockDirective(s.validationModulePath(), directive) {
+	if !isValidGoModBlockDirective(directive) {
 		s.invalid = true
 		return
 	}
 	s.blockDirective = directive
-}
-
-func (s *goModModuleScanner) validationModulePath() string {
-	if s.modulePath != "" {
-		return s.modulePath
-	}
-	return "example.com/lopper-oversized-gomod-scan"
+	s.appendSyntheticGoModLine(lineText)
 }
 
 func (s *goModModuleScanner) consumeGoModModuleLine(lineText string) {
@@ -492,37 +518,63 @@ func (s *goModModuleScanner) consumeGoModModuleLine(lineText string) {
 		return
 	}
 	s.modulePath = file.Module.Mod.Path
-	s.validatePendingRetracts()
 }
 
-func (s *goModModuleScanner) deferRetractUntilModule(lineText string) bool {
-	if s.modulePath != "" || firstToken(lineText) != "retract" {
+func (s *goModModuleScanner) appendSyntheticGoModLine(lineText string) {
+	if s.syntheticBody.Len()+len(lineText)+1 > maxGoModModuleScanBytes {
+		s.invalid = true
+		return
+	}
+	s.syntheticBody.WriteString(lineText)
+	s.syntheticBody.WriteByte('\n')
+}
+
+func (s *goModModuleScanner) isSyntheticBodyValid() bool {
+	if s.syntheticBody.Len() == 0 {
+		return true
+	}
+	return s.parseSynthetic(s.modulePath, s.syntheticBody.String())
+}
+
+func isValidGoModBlockDirective(directive string) bool {
+	switch directive {
+	case "require", "exclude", "replace", "retract", "tool":
+		return true
+	default:
 		return false
 	}
-	s.pendingRetracts = append(s.pendingRetracts, lineText)
-	return true
-}
-
-func (s *goModModuleScanner) validatePendingRetracts() {
-	for _, lineText := range s.pendingRetracts {
-		if !isValidGoModDirectiveLine(s.modulePath, lineText) {
-			s.invalid = true
-			break
-		}
-	}
-	s.pendingRetracts = nil
-}
-
-func isValidGoModDirectiveLine(modulePath, lineText string) bool {
-	return parseSyntheticGoMod(modulePath, lineText+"\n")
-}
-
-func isValidGoModBlockDirective(modulePath, directive string) bool {
-	return parseSyntheticGoMod(modulePath, directive+" (\n)\n")
 }
 
 func isValidGoModBlockLine(modulePath, directive, lineText string) bool {
-	return parseSyntheticGoMod(modulePath, directive+" (\n"+lineText+"\n)\n")
+	switch directive {
+	case "require", "exclude", "replace", "tool":
+		return true
+	case "retract":
+		return modulePath != "" || firstToken(lineText) != ""
+	default:
+		return false
+	}
+}
+
+func isSkippableLongGoModDirectiveLine(lineText string) bool {
+	switch firstToken(lineText) {
+	case "require", "exclude", "replace", "tool":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSkippableLongGoModBlockLine(directive, lineText string) bool {
+	if lineText == ")" {
+		return true
+	}
+	switch directive {
+	case "require", "exclude", "replace", "tool":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseSyntheticGoMod(modulePath, body string) bool {

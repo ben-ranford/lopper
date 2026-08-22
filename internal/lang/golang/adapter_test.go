@@ -3,6 +3,7 @@ package golang
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"io/fs"
 	"os"
@@ -1788,14 +1789,49 @@ func TestOversizedRootGoModRejectsNewlineInsideQuotedReplacement(t *testing.T) {
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
 }
 
-func TestOversizedRootGoModRejectsOversizedRawQuotedLine(t *testing.T) {
+func TestOversizedRootGoModKeepsLongQuotedNonModuleDirective(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
 		"module example.com/root",
 		`replace example.com/a => "`+strings.Repeat("x", 70*1024)+`"`,
 	)
 
-	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted non-module directive")
+}
+
+func TestOversizedRootGoModKeepsManyShortValidDirectives(t *testing.T) {
+	repo := t.TempDir()
+	lines := []string{"module example.com/root"}
+	for i := range 20_000 {
+		name := fmt.Sprintf("example.com/dep%05d", i)
+		lines = append(lines, fmt.Sprintf("replace %s => ./%s", name, name))
+	}
+	writeOversizedRootGoModLines(t, repo, lines...)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with many short valid directives")
+}
+
+func TestGoModModuleScannerParsesSyntheticManifestOnce(t *testing.T) {
+	lines := []string{"module example.com/root"}
+	for i := range 20_000 {
+		name := fmt.Sprintf("example.com/dep%05d", i)
+		lines = append(lines, fmt.Sprintf("replace %s => ./%s", name, name))
+	}
+
+	parseCalls := 0
+	modulePath, err := scanGoModModulePathWithParser(strings.NewReader(strings.Join(lines, "\n")), func(modulePath, body string) bool {
+		parseCalls++
+		return parseSyntheticGoMod(modulePath, body)
+	})
+	if err != nil {
+		t.Fatalf("scanGoModModulePathWithParser: %v", err)
+	}
+	if modulePath != "example.com/root" {
+		t.Fatalf("expected module path, got %q", modulePath)
+	}
+	if parseCalls != 1 {
+		t.Fatalf("expected one bounded synthetic parse, got %d", parseCalls)
+	}
 }
 
 func TestOversizedRootGoModRejectsClosedBlockComment(t *testing.T) {
@@ -2202,6 +2238,13 @@ func TestAnalyseTreatsOversizedNestedModuleIdentityBeyondInitialProbeAsLocalForE
 	requireOversizedNestedModuleImportStaysLocal(t, reportData)
 }
 
+func TestAnalyseTreatsOversizedNestedModuleIdentityWithLongQuotedDirectiveAsLocal(t *testing.T) {
+	reportData := analyseOversizedNestedModuleImportedFromRoot(t, func(nestedDir string) {
+		writeOversizedModuleGoModWithLongQuotedReplace(t, nestedDir, "example.com/service")
+	})
+	requireOversizedNestedModuleImportStaysLocal(t, reportData)
+}
+
 func analyseOversizedNestedModuleImportedFromRoot(t *testing.T, writeNestedGoMod func(string)) report.Report {
 	t.Helper()
 	repo := t.TempDir()
@@ -2416,6 +2459,16 @@ func writeOversizedModuleGoModWithLeadingComments(t *testing.T, dir, modulePath 
 		paddingLen = 0
 	}
 	writeFile(t, filepath.Join(dir, fileGoMod), prefix+body+"// "+strings.Repeat("x", paddingLen))
+}
+
+func writeOversizedModuleGoModWithLongQuotedReplace(t *testing.T, dir, modulePath string) {
+	t.Helper()
+	body := modulePrefix + modulePath + "\nreplace example.com/a => \"" + strings.Repeat("x", 70*1024) + "\"\n"
+	paddingLen := goModSizeLimitTest + 1 - len(body) - len("// ")
+	if paddingLen < 0 {
+		t.Fatalf("oversized module go.mod body exceeds test limit")
+	}
+	writeFile(t, filepath.Join(dir, fileGoMod), body+"// "+strings.Repeat("x", paddingLen))
 }
 
 func writeNestedUUIDModule(t *testing.T, parentDir string) {
