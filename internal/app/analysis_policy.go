@@ -64,6 +64,9 @@ func prepareAnalysisPolicy(base analysis.Request, policy analysisRequestPolicy) 
 }
 
 func requiresCompleteCoverage(policy analysisRequestPolicy) bool {
+	if policy.thresholds.FailOnIncreasePercent >= 0 {
+		return true
+	}
 	if policy.thresholds.LicenseFailOnDeny && len(policy.thresholds.LicenseDenyList) > 0 {
 		return true
 	}

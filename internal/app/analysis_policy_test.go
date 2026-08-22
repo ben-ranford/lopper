@@ -16,10 +16,25 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 		want   bool
 	}{
 		{
+			name: "fail on increase gate",
+			policy: analysisRequestPolicy{thresholds: thresholds.Values{
+				FailOnIncreasePercent: 0,
+			}},
+			want: true,
+		},
+		{
+			name: "fail on increase disabled",
+			policy: analysisRequestPolicy{thresholds: thresholds.Values{
+				FailOnIncreasePercent: -1,
+			}},
+			want: false,
+		},
+		{
 			name: "license fail gate",
 			policy: analysisRequestPolicy{thresholds: thresholds.Values{
-				LicenseDenyList:   []string{"GPL-3.0-ONLY"},
-				LicenseFailOnDeny: true,
+				FailOnIncreasePercent: -1,
+				LicenseDenyList:       []string{"GPL-3.0-ONLY"},
+				LicenseFailOnDeny:     true,
 			}},
 			want: true,
 		},
@@ -28,6 +43,7 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 			policy: analysisRequestPolicy{
 				advisorySourcePath: "security/advisories.yml",
 				thresholds: thresholds.Values{
+					FailOnIncreasePercent:          -1,
 					ReachableVulnerabilityPriority: report.VulnerabilityPriorityHigh,
 				},
 			},
@@ -38,6 +54,7 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 			policy: analysisRequestPolicy{
 				advisorySourcePath: "security/advisories.yml",
 				thresholds: thresholds.Values{
+					FailOnIncreasePercent:          -1,
 					ReachableVulnerabilityPriority: report.VulnerabilityPriorityOff,
 				},
 			},
@@ -46,7 +63,8 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 		{
 			name: "license deny list without fail",
 			policy: analysisRequestPolicy{thresholds: thresholds.Values{
-				LicenseDenyList: []string{"GPL-3.0-ONLY"},
+				FailOnIncreasePercent: -1,
+				LicenseDenyList:       []string{"GPL-3.0-ONLY"},
 			}},
 			want: false,
 		},

@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -330,6 +331,57 @@ func TestSaveSnapshotCanonicalizesReport(t *testing.T) {
 	}
 	if len(snapshot.Report.LanguageBreakdown) != 2 || snapshot.Report.LanguageBreakdown[0].Language != "go" || snapshot.Report.LanguageBreakdown[1].Language != "python" {
 		t.Fatalf("saved language breakdown = %#v, want canonical languages", snapshot.Report.LanguageBreakdown)
+	}
+}
+
+func TestSaveSnapshotRejectsIncompleteUsageCoverage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.February, 22, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		rep  Report
+	}{
+		{
+			name: "report-level",
+			rep: Report{
+				SchemaVersion:   SchemaVersion,
+				GeneratedAt:     now,
+				RepoPath:        ".",
+				UsageIncomplete: true,
+			},
+		},
+		{
+			name: "dependency-level",
+			rep: Report{
+				SchemaVersion: SchemaVersion,
+				GeneratedAt:   now,
+				RepoPath:      ".",
+				Dependencies: []DependencyReport{{
+					Name:            "vendor/lib",
+					UsageIncomplete: true,
+				}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			path, err := SaveSnapshot(dir, "label:partial", tc.rep, now)
+			if !errors.Is(err, ErrIncompleteBaselineReport) {
+				t.Fatalf("SaveSnapshot() error = %v, want %v", err, ErrIncompleteBaselineReport)
+			}
+			if path != "" {
+				t.Fatalf("SaveSnapshot() path = %q, want empty path on rejected save", path)
+			}
+			if _, _, err := LoadWithKey(BaselineSnapshotPath(dir, "label:partial")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("LoadWithKey() after rejected save error = %v, want os.ErrNotExist", err)
+			}
+		})
 	}
 }
 

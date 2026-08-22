@@ -15,6 +15,8 @@ var ErrBaselineAlreadyExists = errors.New("baseline snapshot already exists")
 
 var ErrBaselineKeyMismatch = errors.New("baseline snapshot key does not match requested key")
 
+var ErrIncompleteBaselineReport = errors.New("baseline snapshot cannot be saved from incomplete usage coverage")
+
 type BaselineSnapshot = baselineutil.Snapshot[Report]
 
 var baselineSnapshots = baselineutil.SnapshotStore[Report]{
@@ -46,6 +48,9 @@ func ValidateBaselineSnapshotKey(requestedKey, storedKey string) error {
 }
 
 func SaveSnapshot(dir string, key string, rep Report, now time.Time) (string, error) {
+	if hasIncompleteUsageCoverage(rep) {
+		return "", ErrIncompleteBaselineReport
+	}
 	return baselineutil.SaveConfiguredSnapshot(dir, key, now, rep, baselineSnapshots)
 }
 
@@ -84,4 +89,16 @@ func repairSnapshotReport(rep Report) Report {
 
 func unsupportedBaselineSnapshotSchemaError(version string) error {
 	return fmt.Errorf("unsupported baseline schema version: %s", version)
+}
+
+func hasIncompleteUsageCoverage(rep Report) bool {
+	if rep.UsageIncomplete {
+		return true
+	}
+	for _, dependency := range rep.Dependencies {
+		if dependency.UsageIncomplete {
+			return true
+		}
+	}
+	return false
 }
