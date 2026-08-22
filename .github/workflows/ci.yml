@@ -701,8 +701,6 @@ jobs:
 
   vscode-smoke:
     name: vscode-smoke (${{ matrix.os }})
-    needs: extension-changes
-    if: ${{ needs.extension-changes.outputs.vscode_extension == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

@@ -515,6 +515,10 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code smoke job condition", got: vscodeSmoke.If, want: ""},
+	})
+	assertWorkflowJobNeeds(t, vscodeSmoke, "VS Code smoke job", nil)
 	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
 	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
 	assertWorkflowStringValues(t, []workflowStringValue{
