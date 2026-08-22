@@ -1140,11 +1140,11 @@ func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing
 	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
 
 	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
-	if output != "" {
-		t.Fatalf("expected pr-review to fail before emitting output, got %q", output)
+	if !errors.Is(err, ErrPRReviewRegressions) {
+		t.Fatalf("expected oversized gemspec coverage gap to fail via regression handling, got output=%q err=%v", output, err)
 	}
-	if !errors.Is(err, ErrReachableVulnerabilities) {
-		t.Fatalf("expected oversized gemspec coverage gap to fail closed, got %v", err)
+	if !strings.Contains(output, "head "+shortPRReviewRevision(headSHA)+": skipped oversized.gemspec because it exceeds 1048576 bytes") {
+		t.Fatalf("expected pr-review output to preserve the head warning, got %q", output)
 	}
 }
 
@@ -1176,6 +1176,74 @@ func TestExecutePRReviewReachableThresholdIgnoresUnchangedHeadFindings(t *testin
 	}
 	if strings.Contains(output, "GHSA-existing") {
 		t.Fatalf("expected unchanged reachable finding not to appear as a new regression, got %q", output)
+	}
+}
+
+func TestExecutePRReviewReachableThresholdIgnoresUnchangedBaseAndHeadCoverageGaps(t *testing.T) {
+	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
+	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
+	unchangedGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "gems/oversized.gem\u017fpec",
+		Evidence: []string{"skipped gems/oversized.gem\u017fpec because it exceeds 1048576 bytes"},
+	}
+	analyzer := &pathAwarePRReviewAnalyzer{
+		baseReport: report.Report{
+			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)},
+			CoverageGaps: []report.CoverageGap{unchangedGap},
+			Warnings:     []string{"skipped gems/oversized.gem\u017fpec because it exceeds 1048576 bytes"},
+		},
+		headReport: report.Report{
+			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.1.0", 100, 90, false)},
+			CoverageGaps: []report.CoverageGap{{Code: unchangedGap.Code, Language: unchangedGap.Language, Path: unchangedGap.Path, Evidence: []string{"updated warning text"}}},
+			Warnings:     []string{"skipped gems/oversized.gem\u017fpec because it exceeds 1048576 bytes"},
+		},
+	}
+	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
+	req.PRReview.FailOnRegression = true
+	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+
+	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected unchanged coverage gap not to fail pr-review, got output=%q err=%v", output, err)
+	}
+	if !strings.Contains(output, "Downgraded Dependencies") && !strings.Contains(output, "Upgraded Dependencies") {
+		t.Fatalf("expected regular pr-review artifact output, got %q", output)
+	}
+}
+
+func TestExecutePRReviewReachableThresholdOnlyFailsNewCoverageGapWhenFlagEnabled(t *testing.T) {
+	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
+	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
+	analyzer := &pathAwarePRReviewAnalyzer{
+		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
+		headReport: report.Report{
+			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.1.0", 100, 90, false)},
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "pkg because it exceeds old/dependencies.gem\u017fpec",
+				Evidence: []string{"skipped pkg because it exceeds old/dependencies.gem\u017fpec because it exceeds 1048576 bytes"},
+			}},
+			Warnings: []string{"skipped pkg because it exceeds old/dependencies.gem\u017fpec because it exceeds 1048576 bytes"},
+		},
+	}
+	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
+	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+
+	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected pr-review artifact without fail-on-regression, got output=%q err=%v", output, err)
+	}
+	if !strings.Contains(output, "head "+shortPRReviewRevision(headSHA)+": skipped pkg because it exceeds old/dependencies.gem\u017fpec because it exceeds 1048576 bytes") {
+		t.Fatalf("expected warning note for new coverage gap, got %q", output)
+	}
+
+	req.PRReview.FailOnRegression = true
+	output, err = (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if !errors.Is(err, ErrPRReviewRegressions) {
+		t.Fatalf("expected new coverage gap to fail when fail-on-regression is enabled, got output=%q err=%v", output, err)
 	}
 }
 

@@ -140,7 +140,7 @@ func (a *App) executePRReview(ctx context.Context, req Request) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if err := validatePRReviewReachableVulnerabilityThreshold(baseReport, headReport, req.PRReview.Thresholds.ReachableVulnerabilityPriority); err != nil {
+	if err := validatePRReviewReachableVulnerabilityThreshold(req.PRReview.Thresholds.ReachableVulnerabilityPriority); err != nil {
 		return "", err
 	}
 	artifact := buildPRReviewArtifact(prReviewArtifactInput{
@@ -161,7 +161,7 @@ func (a *App) executePRReview(ctx context.Context, req Request) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if req.PRReview.FailOnRegression && artifact.Summary.RegressionCount > 0 {
+	if req.PRReview.FailOnRegression && (artifact.Summary.RegressionCount > 0 || prReviewHasReachableVulnerabilityCoverageRegression(baseReport, headReport, req.PRReview.Thresholds.ReachableVulnerabilityPriority)) {
 		return output, ErrPRReviewRegressions
 	}
 	return output, nil
@@ -421,18 +421,19 @@ func (a *App) runPRReviewPostStages(ctx context.Context, reportData report.Repor
 	})
 }
 
-func validatePRReviewReachableVulnerabilityThreshold(baseReport, headReport report.Report, threshold string) error {
+func validatePRReviewReachableVulnerabilityThreshold(threshold string) error {
 	if !report.ValidVulnerabilityPriorityThreshold(threshold) {
 		return fmt.Errorf("invalid reachable vulnerability priority threshold: %s", threshold)
 	}
-	if !reachableVulnerabilityThresholdEnabled(threshold) {
-		return nil
-	}
+	return nil
+}
 
-	differential := headReport
-	comparison := report.ComputeBaselineComparison(headReport, baseReport)
-	differential.BaselineComparison = &comparison
-	return validateReachableVulnerabilityThreshold(differential, threshold)
+func prReviewHasReachableVulnerabilityCoverageRegression(baseReport, headReport report.Report, threshold string) bool {
+	if !reachableVulnerabilityThresholdEnabled(threshold) {
+		return false
+	}
+	differential := prReviewDifferentialHeadReport(baseReport, headReport)
+	return hasOversizedRubyGemspecCoverageGapList(differential.CoverageGaps)
 }
 
 func validatePRReviewFeatures(req PRReviewRequest) error {
@@ -440,7 +441,8 @@ func validatePRReviewFeatures(req PRReviewRequest) error {
 }
 
 func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
-	comparison := report.ComputeBaselineComparison(input.headReport, input.baseReport)
+	input.headReport = prReviewDifferentialHeadReport(input.baseReport, input.headReport)
+	comparison := *input.headReport.BaselineComparison
 	comparison.BaselineKey = "commit:" + input.baseSHA
 	comparison.CurrentKey = "commit:" + input.headSHA
 	input.headReport.BaselineComparison = &comparison
@@ -473,6 +475,14 @@ func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
 	}
 	artifact.Summary = summarizePRReviewSections(sections)
 	return artifact
+}
+
+func prReviewDifferentialHeadReport(baseReport, headReport report.Report) report.Report {
+	differential := headReport
+	comparison := report.ComputeBaselineComparison(headReport, baseReport)
+	differential.BaselineComparison = &comparison
+	differential.CoverageGaps = append([]report.CoverageGap(nil), comparison.NewCoverageGaps...)
+	return differential
 }
 
 func collectPRReviewWarnings(input prReviewArtifactInput) []string {

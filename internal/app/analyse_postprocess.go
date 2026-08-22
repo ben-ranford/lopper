@@ -309,7 +309,14 @@ func reachableVulnerabilityThresholdEnabled(threshold string) bool {
 }
 
 func hasOversizedRubyGemspecCoverageGap(reportData report.Report) bool {
-	for _, gap := range reportData.CoverageGaps {
+	if hasOversizedRubyGemspecCoverageGapList(reportData.CoverageGaps) {
+		return true
+	}
+	return hasOversizedRubyGemspecDeclarationWarning(reportData.Warnings)
+}
+
+func hasOversizedRubyGemspecCoverageGapList(gaps []report.CoverageGap) bool {
+	for _, gap := range gaps {
 		if strings.TrimSpace(gap.Code) != report.CoverageGapRubyOversizedGemspec {
 			continue
 		}
@@ -318,7 +325,7 @@ func hasOversizedRubyGemspecCoverageGap(reportData report.Report) bool {
 			return true
 		}
 	}
-	return hasOversizedRubyGemspecDeclarationWarning(reportData.Warnings)
+	return false
 }
 
 func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
