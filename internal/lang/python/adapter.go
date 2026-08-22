@@ -194,8 +194,10 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 }
 
 type pythonStringMask struct {
-	multilineQuote string
-	shortQuote     byte
+	multilineQuote            string
+	multilineFString          bool
+	multilineReplacementDepth int
+	shortQuote                byte
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
@@ -225,7 +227,7 @@ func (m *pythonStringMask) codeLine(line string) string {
 		}
 
 		if quote := line[index : index+1]; strings.HasPrefix(line[index:], quote+quote+quote) {
-			m.startMultilineString(quote, &index, &builder)
+			m.startMultilineString(quote, line, &index, &builder)
 			continue
 		}
 
@@ -247,10 +249,14 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 		}
 		return true
 	}
-	if strings.HasPrefix(line[*index:], m.multilineQuote) {
+	if m.maskMultilineFStringReplacement(line, index, builder) {
+		return true
+	}
+	if m.multilineReplacementDepth == 0 && strings.HasPrefix(line[*index:], m.multilineQuote) {
 		writeSpaces(builder, len(m.multilineQuote))
 		*index += len(m.multilineQuote)
 		m.multilineQuote = ""
+		m.multilineFString = false
 		return true
 	}
 	builder.WriteByte(' ')
@@ -270,8 +276,77 @@ func (m *pythonStringMask) maskShortString(line string, index *int, builder *str
 	return true
 }
 
-func (m *pythonStringMask) startMultilineString(quote string, index *int, builder *strings.Builder) {
+func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *int, builder *strings.Builder) bool {
+	if !m.multilineFString {
+		return false
+	}
+	current := line[*index]
+	if m.multilineReplacementDepth == 0 {
+		if current != '{' {
+			return false
+		}
+		builder.WriteByte(' ')
+		*index++
+		if *index < len(line) && line[*index] == '{' {
+			builder.WriteByte(' ')
+			*index++
+			return true
+		}
+		m.multilineReplacementDepth = 1
+		return true
+	}
+	if current == '\'' || current == '"' {
+		m.maskFStringReplacementString(line, index, builder)
+		return true
+	}
+	builder.WriteByte(' ')
+	*index++
+	switch current {
+	case '{':
+		m.multilineReplacementDepth++
+	case '}':
+		m.multilineReplacementDepth--
+	}
+	return true
+}
+
+func (m *pythonStringMask) maskFStringReplacementString(line string, index *int, builder *strings.Builder) {
+	quote := line[*index]
+	if delimiter := line[*index : *index+1]; strings.HasPrefix(line[*index:], delimiter+delimiter+delimiter) {
+		m.maskFStringReplacementTripleString(line, index, builder, delimiter+delimiter+delimiter)
+		return
+	}
+	next, _, _ := maskPythonShortStringContent(line, *index, quote, builder, true)
+	*index = next
+}
+
+func (m *pythonStringMask) maskFStringReplacementTripleString(line string, index *int, builder *strings.Builder, delimiter string) {
+	writeSpaces(builder, len(delimiter))
+	*index += len(delimiter)
+	for *index < len(line) {
+		if line[*index] == '\\' {
+			builder.WriteByte(' ')
+			*index++
+			if *index < len(line) {
+				builder.WriteByte(' ')
+				*index++
+			}
+			continue
+		}
+		if strings.HasPrefix(line[*index:], delimiter) {
+			writeSpaces(builder, len(delimiter))
+			*index += len(delimiter)
+			return
+		}
+		builder.WriteByte(' ')
+		*index++
+	}
+}
+
+func (m *pythonStringMask) startMultilineString(quote string, line string, index *int, builder *strings.Builder) {
 	m.multilineQuote = quote + quote + quote
+	m.multilineFString = hasPythonFStringPrefix(line, *index)
+	m.multilineReplacementDepth = 0
 	writeSpaces(builder, len(m.multilineQuote))
 	*index += len(m.multilineQuote)
 }
@@ -315,6 +390,17 @@ func writeSpaces(builder *strings.Builder, count int) {
 	for range count {
 		builder.WriteByte(' ')
 	}
+}
+
+func hasPythonFStringPrefix(line string, quoteIndex int) bool {
+	if quoteIndex == 0 {
+		return false
+	}
+	prefixStart := quoteIndex
+	for prefixStart > 0 && strings.ContainsRune("rRuUbBfF", rune(line[prefixStart-1])) {
+		prefixStart--
+	}
+	return strings.ContainsAny(line[prefixStart:quoteIndex], "fF")
 }
 
 func continuePendingFromImport(pending **pendingFromImport, trimmed string, lineNoComment string, filePath string, repoPath string, index int) ([]importBinding, bool) {
