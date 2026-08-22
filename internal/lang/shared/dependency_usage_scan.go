@@ -61,6 +61,17 @@ func scanUnicodeTokenUsage(content []byte, importCount map[string]int, usage map
 }
 
 func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage map[string]int) {
+	importsByLine := declarationImportsByLine(imports, usage)
+	if len(importsByLine) == 0 {
+		return
+	}
+	lineStarts := lineStartOffsets(content)
+	for line, lineImports := range importsByLine {
+		subtractDeclarationLineTokenHits(content, lineStarts, lineImports, line, usage)
+	}
+}
+
+func declarationImportsByLine(imports []ImportRecord, usage map[string]int) map[int][]ImportRecord {
 	importsByLine := make(map[int][]ImportRecord)
 	for _, imported := range imports {
 		if imported.Wildcard || imported.Local == "" {
@@ -76,26 +87,24 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 		}
 		importsByLine[imported.Location.Line] = append(importsByLine[imported.Location.Line], imported)
 	}
-	if len(importsByLine) == 0 {
+	return importsByLine
+}
+
+func subtractDeclarationLineTokenHits(content []byte, lineStarts []int, lineImports []ImportRecord, line int, usage map[string]int) {
+	lineContent, ok := declarationLineContent(content, lineStarts, line)
+	if !ok {
 		return
 	}
-	lineStarts := lineStartOffsets(content)
-	for line, lineImports := range importsByLine {
-		lineContent, ok := declarationLineContent(content, lineStarts, line)
-		if !ok {
+	lineTokens := declarationLineTokens(lineContent)
+	for _, imported := range lineImports {
+		if _, ok := lineTokens[imported.Local]; !ok {
 			continue
 		}
-		lineTokens := declarationLineTokens(lineContent)
-		for _, imported := range lineImports {
-			if _, ok := lineTokens[imported.Local]; !ok {
-				continue
-			}
-			declarationHits := imported.DeclarationTokenHits
-			if declarationHits <= 0 {
-				declarationHits = 1
-			}
-			usage[imported.Local] -= declarationHits
+		declarationHits := imported.DeclarationTokenHits
+		if declarationHits <= 0 {
+			declarationHits = 1
 		}
+		usage[imported.Local] -= declarationHits
 	}
 }
 
