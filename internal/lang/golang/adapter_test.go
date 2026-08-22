@@ -1837,18 +1837,56 @@ func TestOversizedRootGoModRejectsUnknownDirectiveAfterModule(t *testing.T) {
 }
 
 func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
-	for name, content := range map[string]string{
-		"inline known empty block":   "module example.com/root\nrequire ()",
-		"inline unknown empty block": "module example.com/root\nunknown ()",
-		"empty module block":         "module example.com/root\nmodule ( )",
-		"unterminated block comment": "module example.com/root /*",
+	requireMetadataPath := func(t *testing.T, repo, wantPath string) {
+		t.Helper()
+		info, err := loadGoModuleInfo(repo)
+		if err != nil {
+			t.Fatalf("loadGoModuleInfo: %v", err)
+		}
+		if info.ModulePath != wantPath {
+			t.Fatalf("module path = %q, want %q", info.ModulePath, wantPath)
+		}
+		if wantPath == "" {
+			if len(info.LocalModulePaths) != 0 {
+				t.Fatalf("expected no trusted local module paths, got %#v", info.LocalModulePaths)
+			}
+			return
+		}
+		if !slices.Contains(info.LocalModulePaths, wantPath) {
+			t.Fatalf("expected trusted local module path %q in %#v", wantPath, info.LocalModulePaths)
+		}
+	}
+
+	for name, fixture := range map[string]struct {
+		content         string
+		wantTrustedPath bool
+	}{
+		"inline known empty block": {
+			content:         "module example.com/root\nrequire ()",
+			wantTrustedPath: true,
+		},
+		"inline unknown empty block": {
+			content: "module example.com/root\nunknown ()",
+		},
+		"empty module block": {
+			content:         "module example.com/root\nmodule ( )",
+			wantTrustedPath: true,
+		},
+		"unterminated block comment": {
+			content: "module example.com/root /*",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := t.TempDir()
-			writeFile(t, filepath.Join(repo, "go.mod"), content+"\n// "+strings.Repeat("x", 2*1024*1024))
+			writeFile(t, filepath.Join(repo, "go.mod"), fixture.content+"\n// "+strings.Repeat("x", 2*1024*1024))
 			if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
 				t.Fatalf("analyse oversized go.mod fixture: %v", err)
 			}
+			if fixture.wantTrustedPath {
+				requireMetadataPath(t, repo, "example.com/root")
+				return
+			}
+			requireMetadataPath(t, repo, "")
 		})
 	}
 
@@ -1857,6 +1895,7 @@ func TestOversizedRootGoModScannerDefensiveFixtures(t *testing.T) {
 	if _, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, TopN: 1}); err != nil {
 		t.Fatalf("analyse scanner-cap fixture: %v", err)
 	}
+	requireMetadataPath(t, repo, "")
 }
 
 func TestOversizedRootGoModRejectsModuleDirectiveInsideRequireBlock(t *testing.T) {
