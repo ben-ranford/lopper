@@ -7289,127 +7289,57 @@ func TestFinalSafeIORemoveIdentityBranches(t *testing.T) {
 func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 	linkUnsupported := func(string, string) error { return syscall.EPERM }
-	lstatErr := errors.New("restore lstat failed")
-	renameErr := errors.New("restore rename failed")
 
-	t.Run("success", func(t *testing.T) {
+	t.Run("safe failure preserves quarantine when original is absent", func(t *testing.T) {
 		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{link: linkUnsupported})
+		renameCalls := 0
+		lstatCalls := 0
+		root := newIdentityMapRoot(t, files, identityMapRootHooks{
+			link: linkUnsupported,
+			rename: func(string, string) error {
+				renameCalls++
+				t.Fatal("linkless restore must not check-then-rename")
+				return nil
+			},
+			lstat: func(string) (fs.FileInfo, error) {
+				lstatCalls++
+				t.Fatal("linkless restore must not Lstat before an unsafe rename")
+				return nil, os.ErrNotExist
+			},
+		})
 
 		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if err != nil || !restored {
-			t.Fatalf("expected linkless restore success, restored=%t err=%v", restored, err)
+		if restored || !errors.Is(err, errIdentityBoundLinkUnavailable) {
+			t.Fatalf("expected linkless restore safe failure, restored=%t err=%v", restored, err)
 		}
-		requireSameFileInfo(t, files["source"], sourceInfo, "source")
-		if _, ok := files["quarantine/entry"]; ok {
-			t.Fatal("expected quarantine entry to be renamed back")
+		if renameCalls != 0 {
+			t.Fatalf("expected no unsafe rename, got %d", renameCalls)
+		}
+		if lstatCalls != 0 {
+			t.Fatalf("expected no pre-rename lstat, got %d", lstatCalls)
+		}
+		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
+		if _, ok := files["source"]; ok {
+			t.Fatal("safe failure must not publish source")
 		}
 	})
 
-	t.Run("original exists", func(t *testing.T) {
+	t.Run("safe failure preserves raced original and quarantine", func(t *testing.T) {
 		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo, "source": changedInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{link: linkUnsupported})
-
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || !errors.Is(err, os.ErrExist) {
-			t.Fatalf("expected existing source conflict, restored=%t err=%v", restored, err)
-		}
-	})
-
-	t.Run("original lstat error", func(t *testing.T) {
-		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			link:  linkUnsupported,
-			lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
-		})
-
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || !errors.Is(err, lstatErr) {
-			t.Fatalf("expected lstat failure, restored=%t err=%v", restored, err)
-		}
-	})
-
-	t.Run("rename error", func(t *testing.T) {
-		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			link:   linkUnsupported,
-			rename: func(string, string) error { return renameErr },
-		})
-
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || !errors.Is(err, renameErr) {
-			t.Fatalf("expected rename failure, restored=%t err=%v", restored, err)
-		}
-	})
-
-	t.Run("restored identity mismatch", func(t *testing.T) {
-		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
-		renamed := false
 		root := newIdentityMapRoot(t, files, identityMapRootHooks{
 			link: linkUnsupported,
 			rename: func(oldName, newName string) error {
-				info, ok := files[oldName]
-				if !ok {
-					return os.ErrNotExist
-				}
-				files[newName] = info
-				delete(files, oldName)
-				renamed = true
+				t.Fatalf("linkless restore must preserve raced target, got rename %q -> %q", oldName, newName)
 				return nil
-			},
-			lstat: func(name string) (fs.FileInfo, error) {
-				if name == "source" && renamed {
-					return changedInfo, nil
-				}
-				info, ok := files[name]
-				if !ok {
-					return nil, os.ErrNotExist
-				}
-				return info, nil
 			},
 		})
 
 		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if !restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
-			t.Fatalf("expected restored identity mismatch, restored=%t err=%v", restored, err)
+		if restored || !errors.Is(err, errIdentityBoundLinkUnavailable) {
+			t.Fatalf("expected linkless restore safe failure, restored=%t err=%v", restored, err)
 		}
-	})
-
-	t.Run("post rename validation error", func(t *testing.T) {
-		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
-		postRenameErr := errors.New("restore validation failed")
-		renamed := false
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			link: linkUnsupported,
-			rename: func(oldName, newName string) error {
-				info, ok := files[oldName]
-				if !ok {
-					return os.ErrNotExist
-				}
-				files[newName] = info
-				delete(files, oldName)
-				renamed = true
-				return nil
-			},
-			lstat: func(name string) (fs.FileInfo, error) {
-				if name == "source" && !renamed {
-					return nil, os.ErrNotExist
-				}
-				if name == "source" {
-					return nil, postRenameErr
-				}
-				info, ok := files[name]
-				if !ok {
-					return nil, os.ErrNotExist
-				}
-				return info, nil
-			},
-		})
-
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if !restored || !errors.Is(err, postRenameErr) {
-			t.Fatalf("expected post-rename validation failure, restored=%t err=%v", restored, err)
-		}
+		requireSameFileInfo(t, files["source"], changedInfo, "source")
+		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
 	})
 }
 
@@ -7774,6 +7704,9 @@ func TestWriteFileExclusivelyIfAbsentAtRootDoesNotRemoveTargetWhenInitialStatFai
 func TestWriteFileExclusivelyIfAbsentAtRootReturnsPostWriteStatError(t *testing.T) {
 	targetInfo := newPinnedTargetInfo(t, writeTestFileName)
 	statErr := errors.New("post-write stat failed")
+	cleanupRel := ".safeio-atomic-created-cleanup"
+	useRandomTempNames(t, cleanupRel)
+	removeChecks := 0
 	root := &fakeRoot{
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
 			if name != writeTestFileName {
@@ -7793,13 +7726,30 @@ func TestWriteFileExclusivelyIfAbsentAtRootReturnsPostWriteStatError(t *testing.
 				close: closeWithoutError,
 			}, nil
 		},
-		lstat:           lstatOriginalForNames(t, targetInfo, writeTestFileName),
-		removeIfMatches: func(string, fs.FileInfo, string) error { return nil },
+		lstat: lstatOriginalForNames(t, targetInfo, writeTestFileName, cleanupRel),
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != writeTestFileName || newName != cleanupRel {
+				t.Fatalf("unexpected cleanup link %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, targetInfo, oldName)
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if name != writeTestFileName && name != cleanupRel {
+				t.Fatalf("unexpected cleanup removal: %s", name)
+			}
+			requireSameFileInfo(t, expected, targetInfo, name)
+			removeChecks++
+			return nil
+		},
 	}
 
 	err := writeFileExclusivelyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o600)
 	if !errors.Is(err, statErr) {
 		t.Fatalf("expected post-write stat error, got %v", err)
+	}
+	if removeChecks != 2 {
+		t.Fatalf("expected failed create cleanup to use original target identity twice, got %d removals", removeChecks)
 	}
 }
 

@@ -610,22 +610,7 @@ func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message 
 		if !identityBoundLinkUnsupported(err) {
 			return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), err)
 		}
-		if _, statErr := root.Lstat(originalRel); statErr == nil {
-			return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), os.ErrExist)
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), statErr)
-		}
-		if err := root.Rename(stagedRel, originalRel); err != nil {
-			return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), err)
-		}
-		restoredInfo, err := publishedRegularFileInfo(root, originalRel, message)
-		if err != nil {
-			return true, err
-		}
-		if !sameRegularFile(expected, restoredInfo) {
-			return true, fmt.Errorf("%s: %s", message, originalRel)
-		}
-		return true, nil
+		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, err)
 	}
 	if err := removeFileIfMatchesUsingBasicRoot(root, stagedRel, expected, message); err != nil {
 		return false, err
