@@ -52,6 +52,10 @@ type exclusiveCreatedTargetCase struct {
 	cleanup   bool
 }
 
+type rootNamer interface {
+	rootName() string
+}
+
 type namedFakeRoot struct {
 	*fakeRoot
 	name string
@@ -2052,7 +2056,7 @@ func TestOpenTargetParentPreservesAbsoluteNameForNamedChildRoot(t *testing.T) {
 	if !closeParent {
 		t.Fatal("expected nested target parent to be caller-owned")
 	}
-	named, ok := parent.(interface{ rootName() string })
+	named, ok := parent.(rootNamer)
 	if !ok {
 		t.Fatalf("expected named parent root, got %T", parent)
 	}
