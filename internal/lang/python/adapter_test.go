@@ -204,6 +204,29 @@ func TestAdapterAnalyseFindsImportsAfterFStringReplacementCommentBrace(t *testin
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseSkipsImportsInsideFStringReplacementContinuedShortString(t *testing.T) {
+	source := "value = f\"\"\"{'not an import \\\r\n" +
+		"}\"\"\"\\\r\n" +
+		"import requests\\\r\n" +
+		"'}\"\"\"\r\n" +
+		"import numpy as np\r\n"
+
+	reportData := analysePythonTopN(t, source, 5)
+	names := dependencyNames(reportData)
+	if slices.Contains(names, `requests\`) || slices.Contains(names, "requests") {
+		t.Fatalf("expected replacement-field string contents to stay out of top-N imports, got %#v", names)
+	}
+	assertDependencyNamesInclude(t, names, "numpy")
+}
+
+func TestAdapterAnalyseSkipsImportsInsideNestedFStringReplacementField(t *testing.T) {
+	source := `value = f"""{f'''{"'''"}'''}"""` + "\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -363,6 +386,39 @@ func TestParseImportsFindsImportAfterFStringReplacementCommentBrace(t *testing.T
 	}
 }
 
+func TestParseImportsSkipsFStringReplacementContinuedShortString(t *testing.T) {
+	repo := t.TempDir()
+	source := "value = f\"\"\"{'not an import \\\r\n" +
+		"}\"\"\"\\\r\n" +
+		"import requests\\\r\n" +
+		"'}\"\"\"\r\n" +
+		"import numpy as np\r\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
+	if imports[0].Location.Line != 5 {
+		t.Fatalf("expected real import on line 5, got location %+v", imports[0].Location)
+	}
+}
+
+func TestParseImportsKeepsOuterStateThroughNestedFStringReplacementField(t *testing.T) {
+	repo := t.TempDir()
+	source := `value = f"""{f'''{"'''"}'''}"""` + "\n" +
+		"import requests\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"})
+	if imports[0].Location.Line != 2 {
+		t.Fatalf("expected real import on line 2, got location %+v", imports[0].Location)
+	}
+}
+
 func assertImportBinding(t *testing.T, got importBinding, want importBinding) {
 	t.Helper()
 	if got.Dependency != want.Dependency || got.Module != want.Module || got.Name != want.Name || got.Local != want.Local {
@@ -439,6 +495,21 @@ func analysePythonDependencyWithFeatureSet(t *testing.T, files map[string]string
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
 	return reportData.Dependencies[0]
+}
+
+func analysePythonTopN(t *testing.T, source string, topN int) report.Result {
+	t.Helper()
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     topN,
+	})
+	if err != nil {
+		t.Fatalf("analyse topN: %v", err)
+	}
+	return reportData
 }
 
 func mustPythonCodemodFeatureSet(t *testing.T, enabled bool) featureflags.Set {

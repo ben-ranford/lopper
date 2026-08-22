@@ -194,11 +194,18 @@ func parseImports(content []byte, filePath string, repoPath string) []importBind
 }
 
 type pythonStringMask struct {
-	multilineQuote                  string
-	multilineFString                bool
-	multilineReplacementDepth       int
-	multilineReplacementStringQuote string
-	shortQuote                      byte
+	multilineQuote              string
+	multilineFString            bool
+	multilineReplacementDepth   int
+	multilineReplacementStrings []pythonReplacementStringState
+	shortQuote                  byte
+}
+
+type pythonReplacementStringState struct {
+	delimiter        string
+	fString          bool
+	replacementDepth int
+	lineContinued    bool
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
@@ -234,6 +241,7 @@ func (m *pythonStringMask) codeLine(line string) string {
 
 		m.startShortString(current, line, &index, &builder)
 	}
+	m.finishReplacementStringLine()
 	return builder.String()
 }
 
@@ -261,7 +269,7 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 		*index += len(m.multilineQuote)
 		m.multilineQuote = ""
 		m.multilineFString = false
-		m.multilineReplacementStringQuote = ""
+		m.multilineReplacementStrings = nil
 		return true
 	}
 	builder.WriteByte(' ')
@@ -301,7 +309,7 @@ func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *i
 		return true
 	}
 	if current == '\'' || current == '"' {
-		m.maskFStringReplacementString(line, index, builder)
+		m.startFStringReplacementString(line, index, builder)
 		return true
 	}
 	if current == '#' {
@@ -321,8 +329,24 @@ func (m *pythonStringMask) maskMultilineFStringReplacement(line string, index *i
 }
 
 func (m *pythonStringMask) maskMultilineFStringReplacementString(line string, index *int, builder *strings.Builder) bool {
-	if m.multilineReplacementStringQuote == "" {
+	if len(m.multilineReplacementStrings) == 0 {
 		return false
+	}
+	state := &m.multilineReplacementStrings[len(m.multilineReplacementStrings)-1]
+	if !state.fString {
+		return m.maskPlainReplacementString(line, index, builder, state)
+	}
+	return m.maskNestedFStringReplacementString(line, index, builder, state)
+}
+
+func (m *pythonStringMask) maskPlainReplacementString(line string, index *int, builder *strings.Builder, state *pythonReplacementStringState) bool {
+	if len(state.delimiter) == 1 {
+		next, closed, continued := maskPythonShortStringContent(line, *index, state.delimiter[0], builder, false)
+		*index = next
+		if closed || !continued {
+			m.popReplacementString()
+		}
+		return true
 	}
 	if line[*index] == '\\' {
 		builder.WriteByte(' ')
@@ -333,10 +357,10 @@ func (m *pythonStringMask) maskMultilineFStringReplacementString(line string, in
 		}
 		return true
 	}
-	if strings.HasPrefix(line[*index:], m.multilineReplacementStringQuote) {
-		writeSpaces(builder, len(m.multilineReplacementStringQuote))
-		*index += len(m.multilineReplacementStringQuote)
-		m.multilineReplacementStringQuote = ""
+	if strings.HasPrefix(line[*index:], state.delimiter) {
+		writeSpaces(builder, len(state.delimiter))
+		*index += len(state.delimiter)
+		m.popReplacementString()
 		return true
 	}
 	builder.WriteByte(' ')
@@ -344,45 +368,106 @@ func (m *pythonStringMask) maskMultilineFStringReplacementString(line string, in
 	return true
 }
 
-func (m *pythonStringMask) maskFStringReplacementString(line string, index *int, builder *strings.Builder) {
-	quote := line[*index]
-	if delimiter := line[*index : *index+1]; strings.HasPrefix(line[*index:], delimiter+delimiter+delimiter) {
-		m.maskFStringReplacementTripleString(line, index, builder, delimiter+delimiter+delimiter)
-		return
+func (m *pythonStringMask) maskNestedFStringReplacementString(line string, index *int, builder *strings.Builder, state *pythonReplacementStringState) bool {
+	if state.lineContinued {
+		state.lineContinued = false
 	}
-	next, _, _ := maskPythonShortStringContent(line, *index, quote, builder, true)
-	*index = next
-}
-
-func (m *pythonStringMask) maskFStringReplacementTripleString(line string, index *int, builder *strings.Builder, delimiter string) {
-	writeSpaces(builder, len(delimiter))
-	*index += len(delimiter)
-	for *index < len(line) {
+	if state.replacementDepth == 0 {
 		if line[*index] == '\\' {
 			builder.WriteByte(' ')
 			*index++
 			if *index < len(line) {
 				builder.WriteByte(' ')
 				*index++
+			} else if len(state.delimiter) == 1 {
+				state.lineContinued = true
 			}
-			continue
+			return true
 		}
-		if strings.HasPrefix(line[*index:], delimiter) {
-			writeSpaces(builder, len(delimiter))
-			*index += len(delimiter)
-			return
+		if strings.HasPrefix(line[*index:], state.delimiter) {
+			writeSpaces(builder, len(state.delimiter))
+			*index += len(state.delimiter)
+			m.popReplacementString()
+			return true
+		}
+		current := line[*index]
+		if current == '{' {
+			builder.WriteByte(' ')
+			*index++
+			if *index < len(line) && line[*index] == '{' {
+				builder.WriteByte(' ')
+				*index++
+				return true
+			}
+			state.replacementDepth = 1
+			return true
+		}
+		if current == '}' {
+			builder.WriteByte(' ')
+			*index++
+			if *index < len(line) && line[*index] == '}' {
+				builder.WriteByte(' ')
+				*index++
+			}
+			return true
 		}
 		builder.WriteByte(' ')
 		*index++
+		return true
 	}
-	m.multilineReplacementStringQuote = delimiter
+	current := line[*index]
+	if current == '\'' || current == '"' {
+		m.startFStringReplacementString(line, index, builder)
+		return true
+	}
+	if current == '#' {
+		writeSpaces(builder, len(line)-*index)
+		*index = len(line)
+		return true
+	}
+	builder.WriteByte(' ')
+	*index++
+	switch current {
+	case '{':
+		state.replacementDepth++
+	case '}':
+		state.replacementDepth--
+	}
+	return true
+}
+
+func (m *pythonStringMask) startFStringReplacementString(line string, index *int, builder *strings.Builder) {
+	delimiter := line[*index : *index+1]
+	if strings.HasPrefix(line[*index:], delimiter+delimiter+delimiter) {
+		delimiter += delimiter + delimiter
+	}
+	writeSpaces(builder, len(delimiter))
+	*index += len(delimiter)
+	m.multilineReplacementStrings = append(m.multilineReplacementStrings, pythonReplacementStringState{
+		delimiter: delimiter,
+		fString:   hasPythonFStringPrefix(line, *index-len(delimiter)),
+	})
+}
+
+func (m *pythonStringMask) popReplacementString() {
+	m.multilineReplacementStrings = m.multilineReplacementStrings[:len(m.multilineReplacementStrings)-1]
+}
+
+func (m *pythonStringMask) finishReplacementStringLine() {
+	for len(m.multilineReplacementStrings) > 0 {
+		state := &m.multilineReplacementStrings[len(m.multilineReplacementStrings)-1]
+		if !state.fString || len(state.delimiter) != 1 || state.replacementDepth > 0 || state.lineContinued {
+			return
+		}
+		m.popReplacementString()
+	}
 }
 
 func (m *pythonStringMask) startMultilineString(quote string, line string, index *int, builder *strings.Builder) {
 	m.multilineQuote = quote + quote + quote
 	m.multilineFString = hasPythonFStringPrefix(line, *index)
 	m.multilineReplacementDepth = 0
-	m.multilineReplacementStringQuote = ""
+	m.multilineReplacementStrings = nil
 	writeSpaces(builder, len(m.multilineQuote))
 	*index += len(m.multilineQuote)
 }
