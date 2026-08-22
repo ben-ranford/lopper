@@ -270,7 +270,7 @@ func TestAnalysisCacheStoreRejectsRootReplacementBetweenPointerValidationAndWrit
 	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
 }
 
-func TestAnalysisCacheStoreCleansPointerAfterRootReplacementAtPublish(t *testing.T) {
+func TestAnalysisCacheStoreLeavesDisplacedPointerAfterRootReplacementAtPublish(t *testing.T) {
 	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
 	replacementRoot := filepath.Join(repo, "cache-replacement")
 	mustMkdirCacheLayout(t, replacementRoot)
@@ -299,7 +299,7 @@ func TestAnalysisCacheStoreCleansPointerAfterRootReplacementAtPublish(t *testing
 	if publishCalls != 2 {
 		t.Fatalf("expected cache root swap at pointer publish, got %d publish calls", publishCalls)
 	}
-	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathPresent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
 }
 
@@ -467,6 +467,13 @@ func assertAnalysisCachePathAbsent(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected %q to remain absent, stat err=%v", path, err)
+	}
+}
+
+func assertAnalysisCachePathPresent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected %q to remain present, stat err=%v", path, err)
 	}
 }
 

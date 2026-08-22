@@ -2881,6 +2881,46 @@ func TestWriteAtomicReplacementRejectsChangedCommittedTarget(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicReplacementLeavesCommittedTargetAfterPostWriteFailure(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	postWriteErr := errors.New("post-write validation failure")
+	lstatCalls := 0
+	removeCalls := 0
+	concurrentReplacementRemoved := false
+	root := newCommittedTargetTestRoot(t,
+		tempInfo,
+		func(string) (fs.FileInfo, error) {
+			lstatCalls++
+			return tempInfo, nil
+		},
+		func(string, string) error {
+			return nil
+		},
+		func(string) error {
+			removeCalls++
+			concurrentReplacementRemoved = true
+			return nil
+		},
+		closeWithoutError,
+	)
+
+	err := writeAtomicReplacementWithPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()), func() error {
+		return postWriteErr
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if lstatCalls != 1 {
+		t.Fatalf("expected only committed target validation lstat, got %d", lstatCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected no cleanup remove after post-write failure, got %d", removeCalls)
+	}
+	if concurrentReplacementRemoved {
+		t.Fatal("post-write failure cleanup removed a concurrent replacement")
+	}
+}
+
 func TestWriteAtomicReplacementReturnsCloseErrorBeforeRename(t *testing.T) {
 	expectedErr := errors.New("close temp failure")
 	renameCalls := 0

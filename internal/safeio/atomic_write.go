@@ -84,27 +84,7 @@ func (s *atomicWriteSession) verifyCommittedTargetAndPostWrite(postWrite func() 
 	if postWrite == nil {
 		return nil
 	}
-	if err := postWrite(); err != nil {
-		return errors.Join(err, s.cleanupCommittedTargetIfOwned())
-	}
-	return nil
-}
-
-func (s *atomicWriteSession) cleanupCommittedTargetIfOwned() error {
-	if s.tempInfo == nil {
-		return nil
-	}
-	pathInfo, err := s.root.Lstat(s.targetRel)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
-		return nil
-	}
-	return s.root.Remove(s.targetRel)
+	return postWrite()
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {

@@ -76,7 +76,11 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileAtRootWithPostWriteCheck)
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: true,
+		parentPerm:    parentPerm,
+		write:         writeFileAtRootWithPostWriteCheck,
+	})
 }
 
 // WriteFileCreatingParentsAfterParentReady atomically writes a root-relative
@@ -86,7 +90,12 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, nil, writeFileAtRootWithPostWriteCheck)
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: true,
+		parentPerm:    parentPerm,
+		parentReady:   parentReady,
+		write:         writeFileAtRootWithPostWriteCheck,
+	})
 }
 
 // WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck atomically writes a
@@ -97,7 +106,13 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(ta
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, preWrite, writeFileAtRootWithPostWriteCheck)
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: true,
+		parentPerm:    parentPerm,
+		parentReady:   parentReady,
+		preWrite:      preWrite,
+		write:         writeFileAtRootWithPostWriteCheck,
+	})
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -123,7 +138,11 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileIfAbsentAtRootWithPostWriteCheck)
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: true,
+		parentPerm:    parentPerm,
+		write:         writeFileIfAbsentAtRootWithPostWriteCheck,
+	})
 }
 
 // WriteFileCreatingParentsAtomicallyIfAbsent atomically publishes a
@@ -169,25 +188,39 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) error {
-	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, nil, nil, writeFileAtRootWithPostWriteCheck)
+	return r.writeFileToTargetParent(target, data, perm, writeToTargetParentOptions{
+		createParents: createParents,
+		parentPerm:    parentPerm,
+		write:         writeFileAtRootWithPostWriteCheck,
+	})
 }
 
-func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, parentReady, preWrite func() error, write func(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error) (returnErr error) {
-	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
-		if parentReady != nil {
-			if err := parentReady(); err != nil {
+type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error
+
+type writeToTargetParentOptions struct {
+	createParents bool
+	parentPerm    os.FileMode
+	parentReady   func() error
+	preWrite      func() error
+	write         writeAtRootFunc
+}
+
+func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, options writeToTargetParentOptions) (returnErr error) {
+	return r.withTargetParent(target, options.createParents, options.parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		if options.parentReady != nil {
+			if err := options.parentReady(); err != nil {
 				return err
 			}
 		}
-		if preWrite != nil {
+		if options.preWrite != nil {
 			if err := writeFilePreWriteReadyFn(); err != nil {
 				return err
 			}
-			if err := preWrite(); err != nil {
+			if err := options.preWrite(); err != nil {
 				return err
 			}
 		}
-		return write(parent, parentTarget, data, perm, preWrite)
+		return options.write(parent, parentTarget, data, perm, options.preWrite)
 	})
 }
 
