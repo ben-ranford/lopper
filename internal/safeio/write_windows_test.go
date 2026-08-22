@@ -437,6 +437,30 @@ func TestNewFileRenameInformationSupportsLongTargetNames(t *testing.T) {
 	}
 }
 
+func TestNormalizeWindowsRootRelativeTargetMatchesRootBasenameSemantics(t *testing.T) {
+	tests := []struct {
+		name      string
+		targetRel string
+		want      string
+	}{
+		{name: "unchanged normal name", targetRel: "artifact.txt", want: "artifact.txt"},
+		{name: "trailing dot", targetRel: "artifact.", want: "artifact"},
+		{name: "trailing space", targetRel: "artifact ", want: "artifact"},
+		{name: "trailing dot and space", targetRel: "artifact. ", want: "artifact"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeWindowsRootRelativeTarget(tt.targetRel)
+			if err != nil {
+				t.Fatalf("normalizeWindowsRootRelativeTarget returned error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("normalized target = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewWindowsObjectAttributesPreservesRootRelativeName(t *testing.T) {
 	const targetRel = `artifact.`
 	attrs, err := newWindowsObjectAttributes(syscall.Handle(42), targetRel)

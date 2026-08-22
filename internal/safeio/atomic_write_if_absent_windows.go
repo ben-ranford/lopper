@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -82,7 +83,11 @@ func windowsNoReplaceRename(root Root, rootInfo fs.FileInfo, tempRel, targetRel 
 		return fmt.Errorf("temporary file changed before no-replace publish: %s", targetRel)
 	}
 
-	return ntRenameNoReplace(syscall.Handle(tempFile.Fd()), syscall.Handle(parentFile.Fd()), targetRel)
+	normalizedTargetRel, err := normalizeWindowsRootRelativeTarget(targetRel)
+	if err != nil {
+		return err
+	}
+	return ntRenameNoReplace(syscall.Handle(tempFile.Fd()), syscall.Handle(parentFile.Fd()), normalizedTargetRel)
 }
 
 type windowsHandleFile interface {
@@ -187,6 +192,28 @@ func newNTUnicodeString(name string) (*ntUnicodeString, error) {
 		maximumLength: uint16(byteLength),
 		buffer:        &p16[0],
 	}, nil
+}
+
+func normalizeWindowsRootRelativeTarget(targetRel string) (string, error) {
+	if targetRel == "" {
+		return "", syscall.EINVAL
+	}
+	last := targetRel[len(targetRel)-1]
+	if last != '.' && last != ' ' {
+		return targetRel, nil
+	}
+
+	const fixedPrefix = `\\?\?`
+	normalizedTargetRel, err := syscall.FullPath(fixedPrefix + `\` + targetRel)
+	if err != nil {
+		return "", err
+	}
+	normalizedTargetRel = strings.TrimPrefix(normalizedTargetRel, fixedPrefix)
+	normalizedTargetRel = strings.TrimPrefix(normalizedTargetRel, `\`)
+	if normalizedTargetRel == "" {
+		normalizedTargetRel = "."
+	}
+	return normalizedTargetRel, nil
 }
 
 func ntRenameNoReplace(source, targetRoot syscall.Handle, targetRel string) error {
