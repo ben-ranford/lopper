@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 func TestOversizedRootGoModKeepsLongGodebugDirectivesBeforeModule(t *testing.T) {
@@ -63,9 +66,15 @@ func TestOversizedRootGoModRejectsMalformedLongGodebugAndIgnoreDirectives(t *tes
 func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testing.T) {
 	longGodebug := "default=" + strings.Repeat("x", 70*1024)
 	longIgnore := "./" + strings.Repeat("nested/", 10*1024) + "dir"
+	longVersionedReplace := "example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3"
+	longToolchain := "go1." + strings.Repeat("0", 70*1024)
+	longRetract := "v2." + strings.Repeat("0", 70*1024)
+	longGoDirective := "1.23." + strings.Repeat("0", 70*1024)
+	longQuotedOldPath := `replace "example.com/` + strings.Repeat("x", 70*1024) + `" => "./a//b"`
 
 	for name, tc := range map[string]struct {
 		lines    []string
+		wantPath string
 		wantBody string
 	}{
 		"godebug line": {
@@ -73,6 +82,7 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 				"godebug " + longGodebug,
 				"module example.com/root",
 			},
+			wantPath: "example.com/root",
 			wantBody: "godebug " + longGodebug + "\n",
 		},
 		"ignore line": {
@@ -80,6 +90,7 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 				"ignore " + longIgnore,
 				"module example.com/root",
 			},
+			wantPath: "example.com/root",
 			wantBody: "ignore " + longIgnore + "\n",
 		},
 		"godebug block": {
@@ -89,6 +100,7 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 				")",
 				"module example.com/root",
 			},
+			wantPath: "example.com/root",
 			wantBody: "godebug (\n" + longGodebug + "\n)\n",
 		},
 		"ignore block": {
@@ -98,7 +110,48 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 				")",
 				"module example.com/root",
 			},
+			wantPath: "example.com/root",
 			wantBody: "ignore (\n" + longIgnore + "\n)\n",
+		},
+		"replace unquoted versioned target": {
+			lines: []string{
+				"module example.com/root",
+				"replace example.com/a => " + longVersionedReplace,
+			},
+			wantPath: "example.com/root",
+			wantBody: "replace example.com/a => " + longVersionedReplace + "\n",
+		},
+		"replace quoted old path with quoted comment markers in suffix": {
+			lines: []string{
+				"module example.com/root",
+				longQuotedOldPath,
+			},
+			wantPath: "example.com/root",
+			wantBody: longQuotedOldPath + "\n",
+		},
+		"go line": {
+			lines: []string{
+				"go " + longGoDirective,
+				"module example.com/root",
+			},
+			wantPath: "example.com/root",
+			wantBody: "go " + longGoDirective + "\n",
+		},
+		"toolchain line": {
+			lines: []string{
+				"toolchain " + longToolchain,
+				"module example.com/root",
+			},
+			wantPath: "example.com/root",
+			wantBody: "toolchain " + longToolchain + "\n",
+		},
+		"retract line": {
+			lines: []string{
+				"retract " + longRetract,
+				"module example.com/root/v2",
+			},
+			wantPath: "example.com/root/v2",
+			wantBody: "retract " + longRetract + "\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -106,8 +159,8 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 			if err != nil {
 				t.Fatalf("scanGoModModulePathWithParser: %v", err)
 			}
-			if modulePath != "example.com/root" {
-				t.Fatalf("module path = %q, want %q", modulePath, "example.com/root")
+			if modulePath != tc.wantPath {
+				t.Fatalf("module path = %q, want %q", modulePath, tc.wantPath)
 			}
 			if body != tc.wantBody {
 				t.Fatalf("synthetic body mismatch\nwant: %q\ngot:  %q", tc.wantBody, body)
@@ -199,6 +252,18 @@ func requireOversizedDirectiveRejection(t *testing.T) {
 	if !blank.invalid {
 		t.Fatalf("expected blank oversized directive line to fail closed")
 	}
+
+	blockFailure := goModModuleScanner{blockDirective: "unknown"}
+	blockFailure.consumeTooLargeGoModDirectiveLine("value", false, false)
+	if !blockFailure.invalid {
+		t.Fatalf("expected unknown oversized block directive line to fail closed")
+	}
+
+	topLevelFailure := goModModuleScanner{}
+	topLevelFailure.consumeTooLargeGoModDirectiveLine("replace example.com/a =>", false, false)
+	if !topLevelFailure.invalid {
+		t.Fatalf("expected incomplete oversized top-level directive line to fail closed")
+	}
 }
 
 func requireIncompleteRecoveredDirectives(t *testing.T) {
@@ -215,9 +280,57 @@ func requireIncompleteRecoveredDirectives(t *testing.T) {
 		t.Fatalf("expected quoted recovery without an opening quote marker to fail")
 	}
 
+	mismatchedQuote := goModModuleScanner{
+		longQuotedQuote: '"',
+		quoteStartValid: true,
+		quoteStart:      0,
+	}
+	mismatchedQuote.longQuotedTarget.WriteString("./replacement")
+	if _, ok := mismatchedQuote.longQuotedGoModLine("`"); ok {
+		t.Fatalf("expected quoted recovery with mismatched opening quote to fail")
+	}
+
+	emptyQuotedTarget := goModModuleScanner{
+		longQuotedQuote: '"',
+		quoteStartValid: true,
+		quoteStart:      0,
+	}
+	if _, ok := emptyQuotedTarget.longQuotedGoModLine(`"`); ok {
+		t.Fatalf("expected quoted recovery without target content to fail")
+	}
+
 	unquoted := goModModuleScanner{longUnquotedStart: len("ignore ./nested")}
 	if _, ok := unquoted.longUnquotedGoModLine("ignore ./nested"); ok {
 		t.Fatalf("expected unquoted recovery without captured suffix to fail")
+	}
+
+	quotedAtOverflowBoundary := goModModuleScanner{
+		longQuotedQuote: '"',
+		quoteStartValid: true,
+		quoteStart:      len(`replace example.com/a => `),
+	}
+	quotedAtOverflowBoundary.longQuotedTarget.WriteString("./replacement")
+	if got, ok := quotedAtOverflowBoundary.longQuotedGoModLine(`replace example.com/a => `); !ok || got != `replace example.com/a => "./replacement"` {
+		t.Fatalf("expected quote-start boundary recovery to rebuild line, got %q ok=%v", got, ok)
+	}
+
+	unknownDirective := goModModuleScanner{}
+	if unknownDirective.acceptLongGoModDirectiveLine("unknown", "unknown value", false, false) {
+		t.Fatalf("expected unknown long directive recovery to fail")
+	}
+
+	badQuotedRecovery := goModModuleScanner{
+		longQuotedQuote: '"',
+		quoteStartValid: true,
+		quoteStart:      0,
+	}
+	if badQuotedRecovery.acceptLongGoModDirectiveLine("replace", `replace example.com/a => "`, true, true) {
+		t.Fatalf("expected quoted recovery without captured target to fail")
+	}
+
+	badUnquotedRecovery := goModModuleScanner{longUnquotedStart: len("require example.com/dep v1.2.3") + 1}
+	if badUnquotedRecovery.acceptLongGoModDirectiveLine("require", "require example.com/dep v1.2.3", false, false) {
+		t.Fatalf("expected unquoted recovery without bounded suffix to fail")
 	}
 }
 
@@ -256,18 +369,27 @@ func requireOversizedGoModPathReadErrors(t *testing.T) {
 	if _, err := readOversizedGoModModulePath(repo, repo+"/go.mod"); err == nil {
 		t.Fatalf("expected missing oversized go.mod to fail open")
 	}
+
+	successRepo := t.TempDir()
+	writeOversizedRootGoModLines(t, successRepo, "module example.com/root")
+	modulePath, err := readOversizedGoModModulePath(successRepo, successRepo+"/go.mod")
+	if err != nil {
+		t.Fatalf("expected oversized go.mod read to succeed, got %v", err)
+	}
+	if modulePath != "example.com/root" {
+		t.Fatalf("expected oversized go.mod read to recover module path, got %q", modulePath)
+	}
 }
 
 func requireDirectiveClassificationStaysNarrow(t *testing.T) {
 	t.Helper()
 
-	if !isValidLongGoModDirective("replace", true) {
-		t.Fatalf("expected quoted replace to remain valid for long-line recovery")
+	for _, directive := range []string{"go", "toolchain", "replace", "retract"} {
+		if !isValidLongGoModDirective(directive) {
+			t.Fatalf("expected %q to remain valid for long-line recovery", directive)
+		}
 	}
-	if isValidLongGoModDirective("replace", false) {
-		t.Fatalf("expected unquoted replace to remain invalid for long-line recovery")
-	}
-	if isValidLongGoModDirective("unknown", false) {
+	if isValidLongGoModDirective("unknown") {
 		t.Fatalf("expected unknown long directive to remain invalid")
 	}
 
@@ -288,9 +410,38 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	var missingQuote goModModuleScanner
 	missingQuote.line.WriteString("godebug default=go1.21")
 	missingQuote.quoteByte = '"'
+	missingQuote.quoteStart = len("godebug default=go1.2")
+	missingQuote.quoteStartValid = true
 	missingQuote.startLongQuotedTarget()
 	if !missingQuote.lineInvalid {
 		t.Fatalf("expected missing opening quote to invalidate long quoted recovery")
+	}
+
+	var openingQuoteOverflow goModModuleScanner
+	openingQuoteOverflow.line.WriteString(`replace example.com/a => `)
+	openingQuoteOverflow.quoteByte = '"'
+	openingQuoteOverflow.quoteStart = openingQuoteOverflow.line.Len()
+	openingQuoteOverflow.quoteStartValid = true
+	openingQuoteOverflow.startLongQuotedTarget()
+	if openingQuoteOverflow.lineInvalid || openingQuoteOverflow.longQuotedTarget.Len() != 0 {
+		t.Fatalf("expected opening-quote overflow recovery to stay valid, got %#v", openingQuoteOverflow)
+	}
+
+	var missingQuoteStart goModModuleScanner
+	missingQuoteStart.quoteByte = '"'
+	missingQuoteStart.startLongQuotedTarget()
+	if !missingQuoteStart.lineInvalid {
+		t.Fatalf("expected missing quote-start metadata to invalidate long quoted recovery")
+	}
+
+	var outOfBoundsQuoteStart goModModuleScanner
+	outOfBoundsQuoteStart.line.WriteString(`replace example.com/a => "`)
+	outOfBoundsQuoteStart.quoteByte = '"'
+	outOfBoundsQuoteStart.quoteStart = outOfBoundsQuoteStart.line.Len() + 1
+	outOfBoundsQuoteStart.quoteStartValid = true
+	outOfBoundsQuoteStart.startLongQuotedTarget()
+	if !outOfBoundsQuoteStart.lineInvalid {
+		t.Fatalf("expected out-of-bounds quote start to invalidate long quoted recovery")
 	}
 
 	var suffixOverflow goModModuleScanner
@@ -303,6 +454,73 @@ func requireLongRecoveryTracksQuotesAndBounds(t *testing.T) {
 	}
 	if !suffixOverflow.lineInvalid {
 		t.Fatalf("expected oversized long quoted suffix to invalidate the line")
+	}
+
+	var quotedSuffix goModModuleScanner
+	quotedSuffix.lineTooLarge = true
+	quotedSuffix.lineTooLargeInQuote = true
+	quotedSuffix.lineQuoteClosed = true
+	if err := quotedSuffix.consumeLongQuotedLineSuffix('"'); err != nil {
+		t.Fatalf("consumeLongQuotedLineSuffix start quote: %v", err)
+	}
+	for _, b := range []byte("./a//b\"") {
+		if err := quotedSuffix.consumeLongQuotedLineSuffix(b); err != nil {
+			t.Fatalf("consumeLongQuotedLineSuffix quoted suffix: %v", err)
+		}
+	}
+	if quotedSuffix.suffixInQuoted {
+		t.Fatalf("expected suffix quote tracking to exit quoted mode")
+	}
+	if got := quotedSuffix.longQuotedSuffix.String(); got != "\"./a//b\"" {
+		t.Fatalf("expected quoted suffix to keep comment markers literal, got %q", got)
+	}
+
+	var rawQuotedSuffix goModModuleScanner
+	rawQuotedSuffix.lineTooLarge = true
+	rawQuotedSuffix.lineTooLargeInQuote = true
+	rawQuotedSuffix.lineQuoteClosed = true
+	if err := rawQuotedSuffix.consumeLongQuotedLineSuffix('`'); err != nil {
+		t.Fatalf("consumeLongQuotedLineSuffix raw quote: %v", err)
+	}
+	for _, b := range []byte("literal/*value`") {
+		if err := rawQuotedSuffix.consumeLongQuotedLineSuffix(b); err != nil {
+			t.Fatalf("consumeLongQuotedLineSuffix raw suffix: %v", err)
+		}
+	}
+	if rawQuotedSuffix.suffixInQuoted {
+		t.Fatalf("expected raw-quoted suffix tracking to exit quoted mode")
+	}
+	if got := rawQuotedSuffix.longQuotedSuffix.String(); got != "`literal/*value`" {
+		t.Fatalf("expected raw-quoted suffix to keep block-comment markers literal, got %q", got)
+	}
+
+	var escapedQuotedSuffix goModModuleScanner
+	escapedQuotedSuffix.lineTooLarge = true
+	escapedQuotedSuffix.lineTooLargeInQuote = true
+	escapedQuotedSuffix.lineQuoteClosed = true
+	if err := escapedQuotedSuffix.consumeLongQuotedLineSuffix('"'); err != nil {
+		t.Fatalf("consumeLongQuotedLineSuffix escaped quote: %v", err)
+	}
+	for _, b := range []byte("./a\\\"b\"") {
+		if err := escapedQuotedSuffix.consumeLongQuotedLineSuffix(b); err != nil {
+			t.Fatalf("consumeLongQuotedLineSuffix escaped suffix: %v", err)
+		}
+	}
+	if escapedQuotedSuffix.suffixInQuoted {
+		t.Fatalf("expected escaped quoted suffix tracking to exit quoted mode")
+	}
+	if got := escapedQuotedSuffix.longQuotedSuffix.String(); got != "\"./a\\\"b\"" {
+		t.Fatalf("expected escaped quoted suffix to retain escapes, got %q", got)
+	}
+
+	rawQuotedOverflow := goModModuleScanner{
+		inQuotedString:      true,
+		quoteByte:           '`',
+		lineTooLargeInQuote: true,
+	}
+	rawQuotedOverflow.consumeQuotedStringByte('`')
+	if rawQuotedOverflow.inQuotedString || rawQuotedOverflow.quoteByte != 0 || !rawQuotedOverflow.lineQuoteClosed {
+		t.Fatalf("expected oversized raw-quoted close to finish the long quoted target, got %#v", rawQuotedOverflow)
 	}
 
 	moduleBlock := goModModuleScanner{blockDirective: "module"}
@@ -323,6 +541,8 @@ func requireLongDirectiveAcceptanceNeedsCompleteRecoveredState(t *testing.T) {
 
 	quotedReplacement := goModModuleScanner{
 		longQuotedQuote: '"',
+		quoteStartValid: true,
+		quoteStart:      len(`replace example.com/a => `),
 		parseSynthetic:  func(string, string) bool { return true },
 	}
 	quotedReplacement.longQuotedTarget.WriteString("./replacement")
@@ -333,11 +553,35 @@ func requireLongDirectiveAcceptanceNeedsCompleteRecoveredState(t *testing.T) {
 
 	unterminated := goModModuleScanner{
 		longQuotedQuote: '"',
+		quoteStartValid: true,
+		quoteStart:      len(`replace example.com/a => `),
 		parseSynthetic:  func(string, string) bool { return true },
 	}
 	unterminated.longQuotedTarget.WriteString("./replacement")
 	if unterminated.acceptLongGoModDirectiveLine("replace", `replace example.com/a => "`, true, false) {
 		t.Fatalf("expected unterminated quoted recovery to fail")
+	}
+
+	unquotedReplacement := goModModuleScanner{
+		longUnquotedStart: len("replace example.com/a => "),
+		parseSynthetic:    func(string, string) bool { return true },
+	}
+	unquotedReplacement.longUnquotedLine.WriteString("example.com/fork v1.2.3")
+	if !unquotedReplacement.acceptLongGoModDirectiveLine("replace", "replace example.com/a => ", false, false) {
+		t.Fatalf("expected unquoted replace recovery to succeed")
+	}
+
+	overflowedSynthetic := goModModuleScanner{
+		longUnquotedStart: len("require "),
+		parseSynthetic:    func(string, string) bool { return true },
+	}
+	overflowedSynthetic.syntheticBody.WriteString(strings.Repeat("x", maxGoModModuleScanBytes-1))
+	overflowedSynthetic.longUnquotedLine.WriteString("example.com/dep v1.2.3")
+	if overflowedSynthetic.acceptLongGoModDirectiveLine("require", "require ", false, false) {
+		t.Fatalf("expected synthetic body overflow to fail closed")
+	}
+	if !overflowedSynthetic.invalid {
+		t.Fatalf("expected synthetic body overflow to invalidate the scanner")
 	}
 
 	var blockEntry goModModuleScanner
@@ -375,11 +619,87 @@ func requireQuotedStringAndRecoveryGuardsFailClosed(t *testing.T) {
 		t.Fatalf("expected invalid lines to skip long quoted target recovery")
 	}
 
+	var suffixQuotedNewline goModModuleScanner
+	suffixQuotedNewline.lineTooLarge = true
+	suffixQuotedNewline.lineTooLargeInQuote = true
+	suffixQuotedNewline.lineQuoteClosed = true
+	if err := suffixQuotedNewline.consumeLongQuotedLineSuffix('"'); err != nil {
+		t.Fatalf("consumeLongQuotedLineSuffix: %v", err)
+	}
+	if err := suffixQuotedNewline.consumeLongQuotedLineSuffix('x'); err != nil {
+		t.Fatalf("consumeLongQuotedLineSuffix quoted body: %v", err)
+	}
+	if err := suffixQuotedNewline.consumeByte('\n'); err != nil {
+		t.Fatalf("consumeByte newline: %v", err)
+	}
+	if !suffixQuotedNewline.invalid {
+		t.Fatalf("expected quoted suffix newline to fail closed")
+	}
+
 	guardedUnquoted := goModModuleScanner{lineInvalid: true}
 	guardedUnquoted.line.WriteString("default=go1.21")
 	guardedUnquoted.startLongUnquotedLine()
 	if guardedUnquoted.longUnquotedLine.Len() != 0 {
 		t.Fatalf("expected invalid lines to skip long unquoted recovery")
+	}
+}
+
+func TestGoModExceedsReadLimitReportsOversizedAndBoundedPaths(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo, "module example.com/root")
+
+	oversized, err := goModExceedsReadLimit(repo, repo+"/go.mod", maxGoModBytes)
+	if err != nil {
+		t.Fatalf("goModExceedsReadLimit oversized: %v", err)
+	}
+	if !oversized {
+		t.Fatalf("expected oversized go.mod to exceed read limit")
+	}
+
+	smallRepo := t.TempDir()
+	writeRepoGoMod(t, smallRepo, "module example.com/root\n")
+	oversized, err = goModExceedsReadLimit(smallRepo, smallRepo+"/go.mod", maxGoModBytes)
+	if err != nil {
+		t.Fatalf("goModExceedsReadLimit small: %v", err)
+	}
+	if oversized {
+		t.Fatalf("expected small go.mod not to exceed read limit")
+	}
+
+	if _, err := goModExceedsReadLimit(repo, repo+"/missing.mod", maxGoModBytes); err == nil {
+		t.Fatalf("expected missing go.mod to surface an error")
+	}
+
+	if _, err := goModExceedsReadLimit("\x00", "go.mod", maxGoModBytes); err == nil {
+		t.Fatalf("expected invalid repo path to surface an error")
+	}
+}
+
+func TestNormalizeInlineGoModRequireBlocksShortCircuitsWhenUnneeded(t *testing.T) {
+	oversized := []byte(strings.Repeat("x", maxGoModBytes+1))
+	if normalized := normalizeInlineGoModRequireBlocks(oversized); string(normalized) != string(oversized) {
+		t.Fatalf("expected oversized content to bypass normalization")
+	}
+
+	stable := []byte("module example.com/root\nrequire example.com/dep v1.2.3\n")
+	if normalized := normalizeInlineGoModRequireBlocks(stable); string(normalized) != string(stable) {
+		t.Fatalf("expected already-stable content to bypass normalization")
+	}
+}
+
+func TestHasValidRetractsRejectsInvalidModulePathMajor(t *testing.T) {
+	const invalidPath = "example.com/root/v02"
+	if _, _, ok := module.SplitPathVersion(invalidPath); ok {
+		t.Fatalf("expected test fixture %q to fail SplitPathVersion", invalidPath)
+	}
+	file := &modfile.File{
+		Module: &modfile.Module{Mod: module.Version{Path: invalidPath}},
+		Retract: []*modfile.Retract{
+			{VersionInterval: modfile.VersionInterval{Low: "v1.0.0"}},
+		},
+	}
+	if hasValidRetracts(file) {
+		t.Fatalf("expected invalid module path version split to fail retract validation")
 	}
 }
 

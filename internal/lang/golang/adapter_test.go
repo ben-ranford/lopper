@@ -1839,6 +1839,23 @@ func TestOversizedRootGoModKeepsLongQuotedWindowsRootedReplacement(t *testing.T)
 	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted Windows-rooted replacement")
 }
 
+func TestOversizedRootGoModKeepsLongQuotedOldPathReplacementWithQuotedCommentMarkersInSuffix(t *testing.T) {
+	for name, suffix := range map[string]string{
+		"line comment marker":  `=> "./a//b"`,
+		"block comment marker": `=> "./a/*b"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				"module example.com/root",
+				`replace "example.com/`+strings.Repeat("x", 70*1024)+`" `+suffix,
+			)
+
+			requireOversizedRootModulePath(t, repo, "module path extraction with long quoted replacement old path and quoted suffix")
+		})
+	}
+}
+
 func TestOversizedRootGoModKeepsLongQuotedNonReplaceDirectives(t *testing.T) {
 	for name, line := range map[string]string{
 		"require": `require "example.com/` + strings.Repeat("x", 70*1024) + `" v1.2.3`,
@@ -1857,11 +1874,15 @@ func TestOversizedRootGoModKeepsLongQuotedNonReplaceDirectives(t *testing.T) {
 	}
 }
 
-func TestOversizedRootGoModKeepsLongUnquotedNonReplaceDirectives(t *testing.T) {
+func TestOversizedRootGoModKeepsLongUnquotedDirectives(t *testing.T) {
 	for name, line := range map[string]string{
-		"require": "require example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
-		"exclude": "exclude example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
-		"tool":    "tool example.com/" + strings.Repeat("x", 70*1024) + "/cmd",
+		"require":         "require example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"exclude":         "exclude example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"tool":            "tool example.com/" + strings.Repeat("x", 70*1024) + "/cmd",
+		"replace local":   "replace example.com/a => ./" + strings.Repeat("x", 70*1024),
+		"replace version": "replace example.com/a => example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"replace rooted":  "replace example.com/a => C:/" + strings.Repeat("x", 70*1024),
+		"toolchain":       "toolchain go1." + strings.Repeat("0", 70*1024),
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -1906,8 +1927,9 @@ func TestOversizedRootGoModKeepsLongUnquotedNonReplaceBlockDirectives(t *testing
 
 func TestOversizedRootGoModDefersLongDirectiveValidationUntilModuleKnown(t *testing.T) {
 	for name, line := range map[string]string{
-		"quoted replacement": `replace example.com/a => "example.com/` + strings.Repeat("x", 70*1024) + `" v1.2.3`,
-		"unquoted require":   "require example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"quoted replacement":   `replace example.com/a => "example.com/` + strings.Repeat("x", 70*1024) + `" v1.2.3`,
+		"unquoted require":     "require example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"unquoted replacement": "replace example.com/a => example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -1919,6 +1941,16 @@ func TestOversizedRootGoModDefersLongDirectiveValidationUntilModuleKnown(t *test
 			requireOversizedRootModulePath(t, repo, "module path extraction after deferred long "+name+" validation")
 		})
 	}
+}
+
+func TestOversizedRootGoModDefersLongRetractValidationUntilModuleKnown(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"retract v2.0.0-"+strings.Repeat("a", 70*1024),
+		"module example.com/root/v2",
+	)
+
+	requireOversizedRootModulePathMatch(t, repo, "example.com/root/v2", "module path extraction after deferred long retract validation")
 }
 
 func TestOversizedRootGoModRejectsMalformedLongQuotedRequire(t *testing.T) {
@@ -1933,16 +1965,21 @@ func TestOversizedRootGoModRejectsMalformedLongQuotedRequire(t *testing.T) {
 
 func TestOversizedRootGoModRejectsMalformedLongUnquotedDirectives(t *testing.T) {
 	for name, line := range map[string]string{
-		"missing require version": "require example.com/" + strings.Repeat("x", 70*1024),
-		"trailing tool token":     "tool example.com/" + strings.Repeat("x", 70*1024) + "/cmd extra",
-		"unquoted replace":        "replace example.com/a => ./" + strings.Repeat("x", 70*1024),
+		"missing require version":        "require example.com/" + strings.Repeat("x", 70*1024),
+		"trailing tool token":            "tool example.com/" + strings.Repeat("x", 70*1024) + "/cmd extra",
+		"unversioned external replace":   "replace example.com/a => example.com/" + strings.Repeat("x", 70*1024),
+		"trailing local replace token":   "replace example.com/a => ./" + strings.Repeat("x", 70*1024) + " extra",
+		"trailing rooted replace token":  "replace example.com/a => C:/" + strings.Repeat("x", 70*1024) + " extra",
+		"trailing toolchain token":       "toolchain go1." + strings.Repeat("0", 70*1024) + " extra",
+		"invalid retract before root/v2": "retract v1." + strings.Repeat("0", 70*1024),
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := t.TempDir()
-			writeOversizedRootGoModLines(t, repo,
-				"module example.com/root",
-				line,
-			)
+			lines := []string{"module example.com/root", line}
+			if name == "invalid retract before root/v2" {
+				lines = []string{line, "module example.com/root/v2"}
+			}
+			writeOversizedRootGoModLines(t, repo, lines...)
 
 			requireNoTrustedOversizedRootModuleMetadata(t, repo)
 		})
@@ -2275,15 +2312,20 @@ func requireNoTrustedOversizedRootModuleMetadata(t *testing.T, repo string) {
 
 func requireOversizedRootModulePath(t *testing.T, repo, context string) {
 	t.Helper()
+	requireOversizedRootModulePathMatch(t, repo, "example.com/root", context)
+}
+
+func requireOversizedRootModulePathMatch(t *testing.T, repo, wantPath, context string) {
+	t.Helper()
 	info, err := loadGoModuleInfo(repo)
 	if err != nil {
 		t.Fatalf("loadGoModuleInfo: %v", err)
 	}
-	if info.ModulePath != "example.com/root" {
+	if info.ModulePath != wantPath {
 		t.Fatalf("expected %s, got %q", context, info.ModulePath)
 	}
-	if !slices.Contains(info.LocalModulePaths, "example.com/root") {
-		t.Fatalf("expected root module path in local modules, got %#v", info.LocalModulePaths)
+	if !slices.Contains(info.LocalModulePaths, wantPath) {
+		t.Fatalf("expected root module path %q in local modules, got %#v", wantPath, info.LocalModulePaths)
 	}
 	if slices.Contains(info.DeclaredDependencies, depUUID) {
 		t.Fatalf("expected oversized root dependencies not to be trusted, got %#v", info.DeclaredDependencies)

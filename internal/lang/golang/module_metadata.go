@@ -2,6 +2,7 @@ package golang
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -82,8 +83,38 @@ func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) 
 }
 
 func isOversizedModuleDir(repoPath, dir string) bool {
-	_, _, _, err := loadGoModFromDir(repoPath, dir)
-	return isPureGoModSizeLimit(err)
+	oversized, err := goModExceedsReadLimit(repoPath, filepath.Join(dir, goModName), maxGoModBytes)
+	return err == nil && oversized
+}
+
+func goModExceedsReadLimit(repoPath, goModPath string, maxBytes int64) (_ bool, err error) {
+	relPath, err := filepath.Rel(repoPath, goModPath)
+	if err != nil {
+		return false, err
+	}
+	root, err := safeio.OpenRootNoFollow(repoPath)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	file, err := safeio.OpenFileWithinRoot(root, relPath)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular() && info.Size() > maxBytes, nil
 }
 
 func discoverNestedModules(repoPath string) ([]string, []string, map[string]string, error) {
