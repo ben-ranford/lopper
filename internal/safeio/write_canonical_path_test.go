@@ -82,6 +82,13 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsDanglingTargetSymli
 }
 
 func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsInvalidTargets(t *testing.T) {
+	t.Run("invalid target path", func(t *testing.T) {
+		err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(string([]byte{'b', 'a', 'd', 0}), []byte("after"), 0o600)
+		if err == nil {
+			t.Fatal("expected invalid target path to fail")
+		}
+	})
+
 	t.Run("relative target", func(t *testing.T) {
 		workspace := t.TempDir()
 		withWorkingDir(t, workspace)
@@ -102,14 +109,7 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsInvalidTargets(t *t
 	})
 
 	t.Run("parent file", func(t *testing.T) {
-		parent := filepath.Join(t.TempDir(), "not-a-directory")
-		if err := os.WriteFile(parent, []byte("file"), 0o600); err != nil {
-			t.Fatalf("seed parent file: %v", err)
-		}
-		err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(filepath.Join(parent, writeTestFileName), []byte("after"), 0o600)
-		if err == nil || !strings.Contains(err.Error(), "directory is not a directory") {
-			t.Fatalf("expected parent file rejection, got %v", err)
-		}
+		assertCanonicalWriterRejectsParentFile(t, WriteFileAtomicallyIfAbsentUnderCanonicalPath)
 	})
 
 	t.Run("unsearchable parent", func(t *testing.T) {
@@ -221,15 +221,7 @@ func TestOpenSearchOnlyChildDirectoryValidationBranches(t *testing.T) {
 	if err := os.Mkdir(child, 0o755); err != nil {
 		t.Fatalf("mkdir child: %v", err)
 	}
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	originalOpenAt := openSearchOnlyDirectoryAtFn
 	originalStat := descriptorStatFn
@@ -301,6 +293,20 @@ func closeUnexpectedChildDescriptor(t *testing.T, file *os.File) {
 	}
 }
 
+func openCanonicalParentForTest(t *testing.T, parent string) (*os.File, int) {
+	t.Helper()
+	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
+	if err != nil {
+		t.Fatalf("open parent descriptor: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := parentFile.Close(); err != nil {
+			t.Errorf("close parent descriptor: %v", err)
+		}
+	})
+	return parentFile, parentFD
+}
+
 func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
 	separator := string(os.PathSeparator)
 	tmpAlias := filepath.Join(separator, "tmp")
@@ -323,6 +329,21 @@ func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
 	if got := canonicalSearchDirectoryPath(regular); got != regular {
 		t.Fatalf("expected regular path to remain unchanged, got %q", got)
 	}
+
+	withRuntimeGOOS(t, "linux")
+	if got := canonicalSearchDirectoryPath(tmpAlias); got != tmpAlias {
+		t.Fatalf("expected linux tmp path to remain unchanged, got %q", got)
+	}
+}
+
+func TestOpenSearchOnlyDirectoryRejectsMissingPath(t *testing.T) {
+	file, err := openSearchOnlyDirectory(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close unexpected missing directory descriptor: %v", closeErr)
+		}
+		t.Fatal("expected missing directory open to fail")
+	}
 }
 
 func TestDescriptorStatRejectsInvalidDescriptor(t *testing.T) {
@@ -332,22 +353,7 @@ func TestDescriptorStatRejectsInvalidDescriptor(t *testing.T) {
 }
 
 func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathWritesSearchOnlyParent(t *testing.T) {
-	if syscall.Geteuid() == 0 {
-		t.Skip("effective privileges bypass parent permission checks")
-	}
-
-	parent := filepath.Join(t.TempDir(), "dropbox")
-	if err := os.Mkdir(parent, 0o333); err != nil {
-		t.Fatalf("mkdir dropbox: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
-			t.Errorf("restore dropbox permissions: %v", err)
-		}
-	})
-	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
-		t.Skipf("parent read permission semantics are not testable: %v", err)
-	}
+	parent := setupSearchOnlyParentForTest(t)
 	target := filepath.Join(parent, writeTestFileName)
 
 	if err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
@@ -365,29 +371,8 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathWritesSearchOnlyParent(t *
 }
 
 func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsExistingTargetInSearchOnlyParent(t *testing.T) {
-	if syscall.Geteuid() == 0 {
-		t.Skip("effective privileges bypass parent permission checks")
-	}
-
-	parent := filepath.Join(t.TempDir(), "dropbox")
-	if err := os.Mkdir(parent, 0o733); err != nil {
-		t.Fatalf("mkdir dropbox: %v", err)
-	}
+	parent := setupSearchOnlyParentWithExistingTargetForTest(t)
 	target := filepath.Join(parent, writeTestFileName)
-	if err := os.WriteFile(target, []byte("before"), 0o640); err != nil {
-		t.Fatalf("seed target: %v", err)
-	}
-	if err := os.Chmod(parent, 0o333); err != nil {
-		t.Fatalf("chmod dropbox search-only: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
-			t.Errorf("restore dropbox permissions: %v", err)
-		}
-	})
-	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
-		t.Skipf("parent read permission semantics are not testable: %v", err)
-	}
 
 	err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600)
 	if err == nil || !strings.Contains(err.Error(), "existing target cannot be safely replaced under descriptor fallback") {
@@ -403,15 +388,7 @@ func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsExistingTargetInSe
 
 func TestDescriptorReplacingPathPreservesConcurrentReplacement(t *testing.T) {
 	parent := t.TempDir()
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	targetPath := filepath.Join(parent, writeTestFileName)
 	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
@@ -438,7 +415,7 @@ func TestDescriptorReplacingPathPreservesConcurrentReplacement(t *testing.T) {
 		return info, err
 	}
 
-	err = writeFileAtomicallyReplacingUnderDescriptorPath(parentFD, writeTestFileName, []byte("forced"), 0o600)
+	err := writeFileAtomicallyReplacingUnderDescriptorPath(parentFD, writeTestFileName, []byte("forced"), 0o600)
 	if err == nil || !strings.Contains(err.Error(), "existing target cannot be safely replaced under descriptor fallback") {
 		t.Fatalf("expected fail-closed existing target error, got %v", err)
 	}
@@ -446,22 +423,7 @@ func TestDescriptorReplacingPathPreservesConcurrentReplacement(t *testing.T) {
 }
 
 func TestWriteFileAtomicallyReplacingUnderCanonicalPathCreatesAbsentTarget(t *testing.T) {
-	if syscall.Geteuid() == 0 {
-		t.Skip("effective privileges bypass parent permission checks")
-	}
-
-	parent := filepath.Join(t.TempDir(), "dropbox")
-	if err := os.Mkdir(parent, 0o333); err != nil {
-		t.Fatalf("mkdir dropbox: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
-			t.Errorf("restore dropbox permissions: %v", err)
-		}
-	})
-	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
-		t.Skipf("parent read permission semantics are not testable: %v", err)
-	}
+	parent := setupSearchOnlyParentForTest(t)
 	target := filepath.Join(parent, writeTestFileName)
 
 	if err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
@@ -489,23 +451,64 @@ func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsExistingSymlink(t 
 	assertFileContent(t, outsideTarget, "outside")
 }
 
-func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathCreatesNestedParentInSearchOnlyParent(t *testing.T) {
-	if syscall.Geteuid() == 0 {
-		t.Skip("effective privileges bypass parent permission checks")
-	}
-
-	parent := filepath.Join(t.TempDir(), "dropbox")
-	if err := os.Mkdir(parent, 0o333); err != nil {
-		t.Fatalf("mkdir dropbox: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
-			t.Errorf("restore dropbox permissions: %v", err)
+func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsInvalidTargets(t *testing.T) {
+	t.Run("invalid target path", func(t *testing.T) {
+		err := WriteFileAtomicallyReplacingUnderCanonicalPath(string([]byte{'b', 'a', 'd', 0}), []byte("after"), 0o600)
+		if err == nil {
+			t.Fatal("expected invalid target path to fail")
 		}
 	})
-	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
-		t.Skipf("parent read permission semantics are not testable: %v", err)
+
+	t.Run("parent file", func(t *testing.T) {
+		assertCanonicalWriterRejectsParentFile(t, WriteFileAtomicallyReplacingUnderCanonicalPath)
+	})
+
+	t.Run("directory target", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), writeTestFileName)
+		if err := os.Mkdir(target, 0o755); err != nil {
+			t.Fatalf("seed directory target: %v", err)
+		}
+		err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600)
+		if err == nil || !strings.Contains(err.Error(), "target path is not a regular file") {
+			t.Fatalf("expected directory target rejection, got %v", err)
+		}
+	})
+}
+
+func TestCanonicalPathWritersRejectAbsolutePathResolutionFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(string, []byte, os.FileMode) error
+	}{
+		{
+			name:  "if absent",
+			write: WriteFileAtomicallyIfAbsentUnderCanonicalPath,
+		},
+		{
+			name:  "replacing",
+			write: WriteFileAtomicallyReplacingUnderCanonicalPath,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFileSystem(t, &fakeFileSystem{abs: func(string) (string, error) {
+				return "", errors.New("abs failed")
+			}})
+			assertErrorContains(t, tc.write(writeTestFileName, []byte("after"), 0o600), "abs failed")
+		})
 	}
+}
+
+func assertCanonicalWriterRejectsParentFile(t *testing.T, write func(string, []byte, os.FileMode) error) {
+	t.Helper()
+	parent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parent, []byte("file"), 0o600); err != nil {
+		t.Fatalf("seed parent file: %v", err)
+	}
+	assertErrorContains(t, write(filepath.Join(parent, writeTestFileName), []byte("after"), 0o600), "directory is not a directory")
+}
+
+func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathCreatesNestedParentInSearchOnlyParent(t *testing.T) {
+	parent := setupSearchOnlyParentForTest(t)
 	target := filepath.Join(parent, "reports", writeTestFileName)
 
 	if err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
@@ -542,15 +545,7 @@ func TestDescriptorPathHelpersRejectInvalidDescriptorAndTempNames(t *testing.T) 
 	}
 
 	parent := t.TempDir()
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	originalRandomTempNameFn := randomTempNameFn
 	t.Cleanup(func() {
@@ -589,22 +584,21 @@ func TestDescriptorPathHelpersRejectInvalidDescriptorAndTempNames(t *testing.T) 
 	}
 }
 
+func TestDescriptorReplacingPathRejectsInvalidDescriptor(t *testing.T) {
+	err := writeFileAtomicallyReplacingUnderDescriptorPath(-1, writeTestFileName, []byte("after"), 0o600)
+	if err == nil {
+		t.Fatal("expected invalid descriptor replacement to fail")
+	}
+}
+
 func TestDescriptorPathWriteRejectsExistingTargetAndCleansTemp(t *testing.T) {
 	parent := t.TempDir()
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	if err := os.WriteFile(filepath.Join(parent, writeTestFileName), []byte("before"), 0o600); err != nil {
 		t.Fatalf("seed target: %v", err)
 	}
-	err = writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, writeTestFileName, []byte("after"), 0o600)
+	err := writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, writeTestFileName, []byte("after"), 0o600)
 	if !errors.Is(err, os.ErrExist) {
 		t.Fatalf("expected existing target error, got %v", err)
 	}
@@ -625,15 +619,7 @@ func TestDescriptorPathWriteRejectsInvalidDescriptorBeforeTemp(t *testing.T) {
 
 func TestDescriptorPathWriteRejectsChangedTargetValidation(t *testing.T) {
 	parent := t.TempDir()
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	originalDescriptorLstatFn := descriptorLstatFn
 	t.Cleanup(func() {
@@ -673,20 +659,12 @@ func TestDescriptorPathWriteRejectsChangedTargetValidation(t *testing.T) {
 
 func TestDescriptorPathWriteCleansTempOnPublishFailure(t *testing.T) {
 	parent := t.TempDir()
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	if err := os.Mkdir(filepath.Join(parent, "missing-dir-target"), 0o755); err != nil {
 		t.Fatalf("seed directory target: %v", err)
 	}
-	err = writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, "", []byte("after"), 0o600)
+	err := writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, "", []byte("after"), 0o600)
 	if err == nil {
 		t.Fatal("expected publish failure for empty descriptor-relative target")
 	}
@@ -699,15 +677,7 @@ func TestDescriptorPathWriteCleansTempOnPublishFailure(t *testing.T) {
 
 func TestCleanupDescriptorTempFileClosesAndRemovesTemp(t *testing.T) {
 	parent := t.TempDir()
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
-	if err != nil {
-		t.Fatalf("open parent descriptor: %v", err)
-	}
-	defer func() {
-		if err := parentFile.Close(); err != nil {
-			t.Errorf("close parent descriptor: %v", err)
-		}
-	}()
+	_, parentFD := openCanonicalParentForTest(t, parent)
 
 	tempName, tempFile, err := createDescriptorTempFile(parentFD, 0o600)
 	if err != nil {
@@ -767,10 +737,7 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 			run: func() error {
 				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
 					openFile: func(string, int, os.FileMode) (File, error) {
-						return &fakeFile{
-							write: func([]byte) (int, error) { return 0, errors.New("write temp failed") },
-							close: func() error { return nil },
-						}, nil
+						return failedWriteFakeFile("write temp failed"), nil
 					},
 					remove: func(string) error { return nil },
 				}, writeTestFileName, []byte("after"), 0o600)
@@ -782,12 +749,7 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 			run: func() error {
 				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
 					openFile: func(string, int, os.FileMode) (File, error) {
-						return &fakeFile{
-							write: func(p []byte) (int, error) { return len(p), nil },
-							chmod: func(os.FileMode) error { return nil },
-							stat:  func() (fs.FileInfo, error) { return nil, errors.New("stat temp failed") },
-							close: func() error { return nil },
-						}, nil
+						return writtenRegularFakeFile(nil, errors.New("stat temp failed")), nil
 					},
 					remove: func(string) error { return nil },
 				}, writeTestFileName, []byte("after"), 0o600)
@@ -799,12 +761,7 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 			run: func() error {
 				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
 					openFile: func(string, int, os.FileMode) (File, error) {
-						return &fakeFile{
-							write: func(p []byte) (int, error) { return len(p), nil },
-							chmod: func(os.FileMode) error { return nil },
-							stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-							close: func() error { return nil },
-						}, nil
+						return writtenRegularFakeFile(tempInfo, nil), nil
 					},
 					link:   func(string, string) error { return nil },
 					remove: func(string) error { return errors.New("remove temp failed") },
@@ -817,10 +774,7 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 			run: func() error {
 				return writeAtomicReplacementWithPinnedTarget(&fakeRoot{
 					openFile: func(string, int, os.FileMode) (File, error) {
-						return &fakeFile{
-							write: func([]byte) (int, error) { return 0, errors.New("pinned write failed") },
-							close: func() error { return nil },
-						}, nil
+						return failedWriteFakeFile("pinned write failed"), nil
 					},
 					remove: func(string) error { return nil },
 				}, writeTestFileName, []byte("after"), 0o600, nil, false)
@@ -832,12 +786,7 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 			run: func() error {
 				return writeAtomicReplacementWithPinnedTarget(&fakeRoot{
 					openFile: func(string, int, os.FileMode) (File, error) {
-						return &fakeFile{
-							write: func(p []byte) (int, error) { return len(p), nil },
-							chmod: func(os.FileMode) error { return nil },
-							stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-							close: func() error { return nil },
-						}, nil
+						return writtenRegularFakeFile(tempInfo, nil), nil
 					},
 					rename: func(string, string) error { return errors.New("pinned rename failed") },
 					remove: func(string) error { return nil },
@@ -855,6 +804,84 @@ func assertErrorContains(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("expected %s failure, got %v", want, err)
+	}
+}
+
+func failedWriteFakeFile(message string) File {
+	return &fakeFile{
+		write: func([]byte) (int, error) { return 0, errors.New(message) },
+		close: func() error { return nil },
+	}
+}
+
+func writtenRegularFakeFile(info fs.FileInfo, statErr error) File {
+	return &fakeFile{
+		write: func(p []byte) (int, error) { return len(p), nil },
+		chmod: func(os.FileMode) error { return nil },
+		stat: func() (fs.FileInfo, error) {
+			if statErr != nil {
+				return nil, statErr
+			}
+			return info, nil
+		},
+		close: func() error { return nil },
+	}
+}
+
+func setupSearchOnlyParentForTest(t *testing.T) string {
+	t.Helper()
+	return setupSearchOnlyParentStateForTest(t, false)
+}
+
+func setupSearchOnlyParentWithExistingTargetForTest(t *testing.T) string {
+	t.Helper()
+	return setupSearchOnlyParentStateForTest(t, true)
+}
+
+func setupSearchOnlyParentStateForTest(t *testing.T, seedTarget bool) string {
+	t.Helper()
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+	parent := filepath.Join(t.TempDir(), "dropbox")
+	if err := os.Mkdir(parent, 0o733); err != nil {
+		t.Fatalf("mkdir dropbox: %v", err)
+	}
+	if seedTarget {
+		seedSearchOnlyTargetForTest(t, parent)
+	}
+	if err := os.Chmod(parent, 0o333); err != nil {
+		t.Fatalf("chmod dropbox search-only: %v", err)
+	}
+	restoreSearchOnlyParentForTest(t, parent)
+	requireSearchOnlyParentForTest(t, parent)
+	return parent
+}
+
+func seedSearchOnlyTargetForTest(t *testing.T, parent string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(parent, writeTestFileName), []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+}
+
+func restoreSearchOnlyParentForTest(t *testing.T, parent string) {
+	t.Helper()
+	t.Cleanup(func() { restoreSearchOnlyParentMode(t, parent) })
+}
+
+func restoreSearchOnlyParentMode(t *testing.T, parent string) {
+	t.Helper()
+	err := os.Chmod(parent, 0o755)
+	if err != nil && !os.IsNotExist(err) {
+		t.Errorf("restore search-only fixture permissions: %v", err)
+	}
+}
+
+func requireSearchOnlyParentForTest(t *testing.T, parent string) {
+	t.Helper()
+	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
+		t.Skipf("parent read permission semantics are not testable: %v", err)
 	}
 }
 

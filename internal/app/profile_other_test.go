@@ -115,69 +115,31 @@ func TestPersistProfileConfigForceRejectsExistingOutputInSearchOnlyParent(t *tes
 }
 
 func TestPersistProfileConfigFallbackUsesPhysicalRelativeOutputPath(t *testing.T) {
-	physicalRoot := t.TempDir()
-	aliasRoot := filepath.Join(t.TempDir(), "workspace-link")
-	if err := os.Symlink(physicalRoot, aliasRoot); err != nil {
-		t.Fatalf("create workspace symlink: %v", err)
-	}
-
-	originalWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get working directory: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(originalWD); err != nil {
-			t.Fatalf("restore working directory: %v", err)
-		}
-	})
-	if err := os.Chdir(aliasRoot); err != nil {
-		t.Fatalf("chdir workspace symlink: %v", err)
-	}
-	t.Setenv("PWD", aliasRoot)
-
-	originalOpenWriteRoot := openCommandOutputWriteRootFn
-	originalCanonicalWrite := writeProfileConfigCanonicalIfAbsentFn
-	originalCanonicalReplacing := writeProfileConfigCanonicalReplacingFn
-	t.Cleanup(func() {
-		openCommandOutputWriteRootFn = originalOpenWriteRoot
-		writeProfileConfigCanonicalIfAbsentFn = originalCanonicalWrite
-		writeProfileConfigCanonicalReplacingFn = originalCanonicalReplacing
-	})
-
-	openCommandOutputWriteRootFn = func(string) (*safeio.WriteRoot, error) {
-		return nil, os.ErrPermission
-	}
-	var capturedPaths []string
-	capturePath := func(targetPath string, _ []byte, _ os.FileMode) error {
-		capturedPaths = append(capturedPaths, targetPath)
-		return nil
-	}
-	writeProfileConfigCanonicalIfAbsentFn = capturePath
-	writeProfileConfigCanonicalReplacingFn = capturePath
-
-	outputPath := filepath.Join("dropbox", "profile.yaml")
 	for _, force := range []bool{false, true} {
-		status, err := persistProfileConfig(profileConfigAfter, outputPath, force)
-		if err != nil {
-			t.Fatalf("persist profile output through symlinked cwd with force=%v: %v", force, err)
-		}
-		if status != "threshold profile config written to "+outputPath {
-			t.Fatalf("unexpected status with force=%v: %q", force, status)
-		}
-	}
+		t.Run(profileForceName(force), func(t *testing.T) {
+			if syscall.Geteuid() == 0 {
+				t.Skip("effective privileges bypass parent permission checks")
+			}
+			physicalRoot := t.TempDir()
+			aliasRoot := filepath.Join(t.TempDir(), "workspace-link")
+			if err := os.Symlink(physicalRoot, aliasRoot); err != nil {
+				t.Fatalf("create workspace symlink: %v", err)
+			}
+			parentDir, outputAbs := setupSearchOnlyProfileParent(t, physicalRoot)
+			chdirForProfileTest(t, aliasRoot)
+			t.Setenv("PWD", aliasRoot)
 
-	resolvedPhysicalRoot, err := filepath.EvalSymlinks(physicalRoot)
-	if err != nil {
-		t.Fatalf("resolve physical root: %v", err)
-	}
-	wantPath := filepath.Join(resolvedPhysicalRoot, "dropbox", "profile.yaml")
-	if len(capturedPaths) != 2 {
-		t.Fatalf("expected normal and forced fallbacks to run, got %v", capturedPaths)
-	}
-	for _, capturedPath := range capturedPaths {
-		if capturedPath != wantPath {
-			t.Fatalf("fallback path = %q, want physical path %q", capturedPath, wantPath)
-		}
+			outputPath := filepath.Join("dropbox", "profile.yaml")
+			status, err := persistProfileConfig(profileConfigAfter, outputPath, force)
+			if err != nil {
+				t.Fatalf("persist profile output through symlinked cwd with force=%v: %v", force, err)
+			}
+			if status != "threshold profile config written to "+outputPath {
+				t.Fatalf("unexpected status with force=%v: %q", force, status)
+			}
+			assertProfileOutput(t, outputAbs, profileConfigAfter, 0o600)
+			assertOnlyProfileOutputInSearchOnlyParent(t, parentDir)
+		})
 	}
 }
 
