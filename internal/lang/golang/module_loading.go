@@ -153,6 +153,7 @@ type goModModuleScanner struct {
 	lineTooLarge        bool
 	lineTooLargeInQuote bool
 	lineQuoteClosed     bool
+	lineQuoteSuffixBad  bool
 	lineLastSpace       bool
 	inQuotedString      bool
 	quoteByte           byte
@@ -269,6 +270,10 @@ func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
 }
 
 func (s *goModModuleScanner) consumeCodeByte(b byte) error {
+	if s.isInvalidLongQuotedLineSuffix(b) {
+		s.lineQuoteSuffixBad = true
+		return nil
+	}
 	if b == '"' || b == '`' {
 		s.startQuotedString(b)
 		return nil
@@ -281,6 +286,24 @@ func (s *goModModuleScanner) consumeCodeByte(b byte) error {
 	}
 	s.appendLineByte(b)
 	return nil
+}
+
+func (s *goModModuleScanner) isInvalidLongQuotedLineSuffix(b byte) bool {
+	if !s.lineTooLarge || !s.lineTooLargeInQuote || !s.lineQuoteClosed {
+		return false
+	}
+	if isGoModDirectiveSpace(b) {
+		return false
+	}
+	if b == '/' {
+		return !s.isNextLineComment()
+	}
+	return true
+}
+
+func (s *goModModuleScanner) isNextLineComment() bool {
+	next, err := s.buffered.Peek(1)
+	return err == nil && len(next) == 1 && next[0] == '/'
 }
 
 func (s *goModModuleScanner) startQuotedString(quote byte) {
@@ -345,11 +368,12 @@ func (s *goModModuleScanner) appendRawLineByte(b byte) {
 }
 
 func (s *goModModuleScanner) finishLine() {
-	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid, s.lineTooLarge, s.lineTooLargeInQuote, s.lineQuoteClosed)
+	s.consumeGoModDirectiveLine(&s.line, s.lineInvalid || s.lineQuoteSuffixBad, s.lineTooLarge, s.lineTooLargeInQuote, s.lineQuoteClosed)
 	s.lineInvalid = false
 	s.lineTooLarge = false
 	s.lineTooLargeInQuote = false
 	s.lineQuoteClosed = false
+	s.lineQuoteSuffixBad = false
 	s.lineLastSpace = false
 }
 
