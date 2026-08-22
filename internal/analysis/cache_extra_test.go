@@ -249,19 +249,22 @@ func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing
 		t.Fatalf("expected directory identity error, got %v", err)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
-	if _, statErr := os.Stat(filepath.Join(movedRoot, cacheKeysDirName, "key.json")); statErr != nil {
-		t.Fatalf("expected stale pinned root to retain orphan pointer, got %v", statErr)
-	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 }
 
 func TestAnalysisCacheStorePointerRollbackPreservesConcurrentPointer(t *testing.T) {
 	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
-	withAnalysisCacheStoreHook(t, cachePath, outside, movedRoot, &analysisCacheStoreBeforePointerWriteFn)
 
 	concurrentPointer := []byte(`{"inputDigest":"concurrent-input","objectDigest":"concurrent-object"}`)
 	originalHook := analysisCacheStoreAfterPointerWriteFn
 	t.Cleanup(func() { analysisCacheStoreAfterPointerWriteFn = originalHook })
 	analysisCacheStoreAfterPointerWriteFn = func() error {
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, cachePath); err != nil {
+			return err
+		}
 		pointerPath := filepath.Join(movedRoot, cacheKeysDirName, "key.json")
 		replacementPath := filepath.Join(movedRoot, cacheKeysDirName, "concurrent-key.json")
 		if err := os.WriteFile(replacementPath, concurrentPointer, 0o640); err != nil {
