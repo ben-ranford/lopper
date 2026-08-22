@@ -55,22 +55,24 @@ func testRubyLoadGemspecDependenciesReturnsReadError(t *testing.T) {
 }
 
 func TestRubyLoadGemspecDependenciesSkipsOversizedGemspec(t *testing.T) {
-	t.Helper()
+	for _, filename := range []string{"oversized.gemspec", "oversized.GEMSPEC", "oversized.GeMsPeC"} {
+		t.Run(filename, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWritePaddedFile(t, filepath.Join(repo, filename), "spec.add_dependency 'oversized'\n", gemspecRegressionLimitBytes+1)
 
-	repo := t.TempDir()
-	testutil.MustWritePaddedFile(t, filepath.Join(repo, "oversized.gemspec"), "spec.add_dependency 'oversized'\n", gemspecRegressionLimitBytes+1)
-
-	out := map[string]struct{}{}
-	warnings, err := loadGemspecDependencies(context.Background(), repo, out)
-	if err != nil {
-		t.Fatalf("loadGemspecDependencies: %v", err)
-	}
-	if _, ok := out["oversized"]; ok {
-		t.Fatalf("expected oversized gemspec dependency to be skipped, got %#v", out)
-	}
-	joinedWarnings := strings.Join(warnings, "\n")
-	if !strings.Contains(joinedWarnings, "skipped oversized.gemspec") || !strings.Contains(joinedWarnings, "exceeds") {
-		t.Fatalf("expected oversized gemspec warning, got %#v", warnings)
+			out := map[string]struct{}{}
+			warnings, err := loadGemspecDependencies(context.Background(), repo, out)
+			if err != nil {
+				t.Fatalf("loadGemspecDependencies: %v", err)
+			}
+			if _, ok := out["oversized"]; ok {
+				t.Fatalf("expected oversized gemspec dependency to be skipped, got %#v", out)
+			}
+			joinedWarnings := strings.Join(warnings, "\n")
+			if !strings.Contains(joinedWarnings, "skipped "+filename) || !strings.Contains(joinedWarnings, "exceeds") {
+				t.Fatalf("expected oversized gemspec warning, got %#v", warnings)
+			}
+		})
 	}
 }
 

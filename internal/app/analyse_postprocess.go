@@ -304,7 +304,8 @@ func reachableVulnerabilityThresholdEnabled(threshold string) bool {
 
 func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
 	for _, warning := range warnings {
-		if strings.HasPrefix(warning, "skipped ") && strings.Contains(warning, ".gemspec because it exceeds ") {
+		normalized := strings.ToLower(warning)
+		if strings.HasPrefix(normalized, "skipped ") && strings.Contains(normalized, ".gemspec because it exceeds ") {
 			return true
 		}
 	}
