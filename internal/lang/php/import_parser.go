@@ -685,14 +685,14 @@ func maskPHPHeredocNowdocBodies(text string) string {
 			continue
 		}
 		bodyStart := nextPHPLineStart(text, lineEnd)
-		terminatorStart, terminatorEnd, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
+		terminatorStart, _, ok := findHeredocNowdocTerminatorRange(text, bodyStart, label)
 		if !ok {
 			masked = withMaskedPHPHeredocRange(text, masked, bodyStart, len(text))
 			return string(masked)
 		}
 		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, terminatorStart)
 		state = phpStateCode
-		lineStart = nextPHPLineStart(text, terminatorEnd)
+		lineStart = terminatorStart
 	}
 	if len(masked) == 0 {
 		return text

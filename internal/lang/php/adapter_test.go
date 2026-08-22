@@ -370,6 +370,32 @@ HTML;
 	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
 }
 
+func TestPHPAdapterCountsTraitUseAfterSameLineSecondHeredoc(t *testing.T) {
+	reportData := analysePHPDependencySource(t, testPHPHeader+`
+final class Service
+{
+    public function template(): string
+    {
+        return <<<ONE
+}
+ONE; $second = <<<'TWO'
+}
+TWO;
+    }
+
+    use \Vendor\Package\FeatureTrait {
+        handle as private;
+    }
+}
+`)
+
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
+	if containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("did not expect no-import warning for trait use after same-line heredoc: %#v", reportData.Warnings)
+	}
+}
+
 func TestPHPAdapterCountsClassBodyTraitUseAfterLongDeclaration(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
@@ -831,6 +857,23 @@ func hasRecommendation(dep report.DependencyReport, code string) bool {
 		}
 	}
 	return false
+}
+
+func analysePHPDependencySource(t *testing.T, source string) report.Report {
+	t.Helper()
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), source)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	return reportData
 }
 
 func singlePHPDependencyReport(t *testing.T, deps []report.DependencyReport) report.DependencyReport {

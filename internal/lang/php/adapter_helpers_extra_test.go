@@ -1089,6 +1089,35 @@ func TestParsePHPImportsKeepsPHPActiveAcrossHeredocCloseTagText(t *testing.T) {
 	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
 }
 
+func TestParsePHPImportsMasksSecondHeredocOnTerminatorLineBeforeTraitUse(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<?php\n" +
+		"final class Service\n" +
+		"{\n" +
+		"    public function template(): string\n" +
+		"    {\n" +
+		"        return <<<ONE\n" +
+		"}\n" +
+		"ONE; $second = <<<'TWO'\n" +
+		"}\n" +
+		"TWO;\n" +
+		"    }\n" +
+		"\n" +
+		"    use \\Vendor\\Package\\FeatureTrait {\n" +
+		"        handle as private;\n" +
+		"    }\n" +
+		"}\n")
+
+	parsed := parsePHPImports(content, "same-line-second-heredoc.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected one class body trait use import, got %#v", parsed.imports)
+	}
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsKeepsPHPActiveAfterFlexibleHeredocTerminators(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	tests := []struct {
@@ -1447,6 +1476,26 @@ func TestPHPHeredocNowdocMaskingMasksBodyOnly(t *testing.T) {
 	}
 	if !strings.Contains(masked, "final class Service") {
 		t.Fatalf("expected code after heredoc to remain visible, got %q", masked)
+	}
+}
+
+func TestPHPHeredocNowdocMaskingScansSecondOpenerOnTerminatorLine(t *testing.T) {
+	content := "return <<<ONE\n" +
+		"class FirstBody {}\n" +
+		"ONE; $second = <<<'TWO'\n" +
+		"class SecondBody {}\n" +
+		"TWO;\n" +
+		"final class Service {}\n"
+
+	masked := maskPHPHeredocNowdocBodies(content)
+	if strings.Contains(masked, "FirstBody") || strings.Contains(masked, "SecondBody") {
+		t.Fatalf("expected both heredoc bodies to be masked, got %q", masked)
+	}
+	if !strings.Contains(masked, "$second = <<<'TWO'") {
+		t.Fatalf("expected same-line second opener to remain visible, got %q", masked)
+	}
+	if !strings.Contains(masked, "final class Service") {
+		t.Fatalf("expected code after second heredoc to remain visible, got %q", masked)
 	}
 }
 
