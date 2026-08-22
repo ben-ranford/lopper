@@ -458,7 +458,7 @@ func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.Fi
 			if errors.Is(err, os.ErrNotExist) {
 				return "", nil
 			}
-			if errors.Is(err, os.ErrExist) {
+			if errors.Is(err, os.ErrExist) || analysisCacheQuarantineDestinationExists(root, name, quarantineName, childInfo) {
 				continue
 			}
 			return "", err
@@ -472,7 +472,7 @@ func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.Fi
 			infoErr = errors.New("rollback target changed while quarantining: " + name)
 		}
 		if restoreErr == nil {
-			return "", nil
+			return "", infoErr
 		}
 		if errors.Is(restoreErr, os.ErrExist) || errors.Is(restoreErr, os.ErrNotExist) {
 			return "", errors.Join(infoErr, restoreErr)
@@ -480,6 +480,17 @@ func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.Fi
 		return "", errors.Join(infoErr, restoreErr)
 	}
 	return "", fmt.Errorf("unable to reserve rollback quarantine for %s", name)
+}
+
+func analysisCacheQuarantineDestinationExists(root safeio.Root, name, quarantineName string, childInfo fs.FileInfo) bool {
+	if _, err := root.Lstat(quarantineName); err != nil {
+		return false
+	}
+	currentInfo, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	return err == nil && sameAnalysisCacheRollbackTarget(currentInfo, childInfo)
 }
 
 func sameAnalysisCacheRollbackTarget(currentInfo, childInfo fs.FileInfo) bool {
