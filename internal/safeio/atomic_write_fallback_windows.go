@@ -9,9 +9,12 @@ import (
 	"syscall"
 )
 
-func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error) (returnErr error) {
+func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error, rollbackOnPostWriteFailure bool) (returnErr error) {
 	if !windowsReplaceExistingRenameFallback(renameErr, oldName, newName) {
 		return renameErr
+	}
+	if rollbackOnPostWriteFailure {
+		return errors.Join(renameErr, rollbackRequiredFallbackError(newName))
 	}
 
 	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, newName, replacementFile)
@@ -27,6 +30,9 @@ func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFi
 	fallbackErr := overwritePinnedFile(root, newName, replacementFile, data, nil)
 	if fallbackErr != nil {
 		return errors.Join(renameErr, fallbackErr)
+	}
+	if err := verifyOverwrittenTarget(root, newName, replacementFile); err != nil {
+		return errors.Join(renameErr, err)
 	}
 	return nil
 }

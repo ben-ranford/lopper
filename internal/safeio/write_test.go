@@ -892,6 +892,974 @@ func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
 	}
 }
 
+func TestWriteRootCreatesParentsAfterParentReady(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", "nested", writeTestFileName)
+	readyCalls := 0
+
+	err := root.WriteFileCreatingParentsAfterParentReady(target, []byte("hello"), 0o640, 0o750, func() error {
+		readyCalls++
+		if _, statErr := os.Stat(filepath.Join(rootDir, "reports", "nested")); statErr != nil {
+			t.Fatalf("expected parent to be created before parentReady: %v", statErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReady returned error: %v", err)
+	}
+	if readyCalls != 1 {
+		t.Fatalf("expected one parentReady call, got %d", readyCalls)
+	}
+	assertFileContent(t, filepath.Join(rootDir, target), "hello")
+}
+
+func TestWriteRootAfterParentReadyErrorPreventsWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expectedErr := errors.New("parent no longer valid")
+	target := filepath.Join("reports", writeTestFileName)
+
+	err := root.WriteFileCreatingParentsAfterParentReady(target, []byte("hello"), 0o640, 0o750, func() error {
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected parentReady error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootAfterParentReadyRejectsNonRelativeTarget(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+
+	err := root.WriteFileCreatingParentsAfterParentReady(filepath.Join(t.TempDir(), writeTestFileName), []byte("hello"), 0o640, 0o750, func() error {
+		t.Fatal("parentReady should not run for invalid target")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected absolute target to be rejected")
+	}
+}
+
+func TestWriteRootCreatesParentsAfterParentReadyWithPreWriteCheck(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", "nested", writeTestFileName)
+	var calls []string
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		calls = append(calls, "parentReady")
+		if _, statErr := os.Stat(filepath.Join(rootDir, "reports", "nested")); statErr != nil {
+			t.Fatalf("expected parent to be created before parentReady: %v", statErr)
+		}
+		return nil
+	}, func() error {
+		calls = append(calls, "preWrite")
+		if len(calls) == 2 {
+			if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected target to remain absent before preWrite, got %v", statErr)
+			}
+			return nil
+		}
+		if _, statErr := os.Stat(filepath.Join(rootDir, target)); statErr != nil {
+			t.Fatalf("expected target to exist during post-write check, got %v", statErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck returned error: %v", err)
+	}
+	if got, want := strings.Join(calls, ","), "parentReady,preWrite,preWrite"; got != want {
+		t.Fatalf("callback order = %s, want %s", got, want)
+	}
+	assertFileContent(t, filepath.Join(rootDir, target), "hello")
+}
+
+func TestWriteRootPublishCheckRunsImmediatelyBeforeCommitAndAfterWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", writeTestFileName)
+
+	originalPublishReady := writeFilePublishReadyFn
+	writeFilePublishReadyFn = func() error {
+		if _, err := os.Stat(filepath.Join(rootDir, target)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected target to remain absent before the commit check, got %v", err)
+		}
+		return nil
+	}
+	t.Cleanup(func() {
+		writeFilePublishReadyFn = originalPublishReady
+	})
+
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPublishCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		return nil
+	}, func() error {
+		publishChecks++
+		if publishChecks == 1 {
+			if _, err := os.Stat(filepath.Join(rootDir, target)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expected target to remain absent during commit check, got %v", err)
+			}
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(rootDir, target)); err != nil {
+			t.Fatalf("expected target to exist during post-write check: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPublishCheck returned error: %v", err)
+	}
+	if publishChecks != 2 {
+		t.Fatalf("expected commit and post-write checks, got %d", publishChecks)
+	}
+	assertFileContent(t, filepath.Join(rootDir, target), "hello")
+}
+
+func TestWriteRootPinnedParentPublishCheckRejectsRetargetedParentPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+
+	originalReady := writeFileParentReadyFn
+	writeFileParentReadyFn = func() error {
+		if err := os.Rename(originalParent, relocatedParent); err != nil {
+			return err
+		}
+		return os.Mkdir(originalParent, 0o750)
+	}
+	t.Cleanup(func() {
+		writeFileParentReadyFn = originalReady
+	})
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		VerifyDirectoryIdentity,
+	)
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted parent identity error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPinnedParentPublishCheckPublishesThroughValidatedParentPath(t *testing.T) {
+	rootDir := t.TempDir()
+	parent := filepath.Join(rootDir, "reports")
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		func(parentPath string, parentIdentity fs.FileInfo) error {
+			publishChecks++
+			return VerifyDirectoryIdentity(parentPath, parentIdentity)
+		},
+	)
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck returned error: %v", err)
+	}
+	if publishChecks != 3 {
+		t.Fatalf("expected initial, commit, and post-write publish checks, got %d", publishChecks)
+	}
+	assertFileContent(t, filepath.Join(parent, writeTestFileName), "hello")
+}
+
+func TestWriteRootPinnedParentPublishCheckRejectsParentSwapDuringCommitCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		func(parentPath string, parentIdentity fs.FileInfo) error {
+			publishChecks++
+			if publishChecks == 2 {
+				if err := os.Rename(originalParent, relocatedParent); err != nil {
+					return err
+				}
+				if err := os.Mkdir(originalParent, 0o750); err != nil {
+					return err
+				}
+			}
+			return VerifyDirectoryIdentity(parentPath, parentIdentity)
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected commit-time parent identity error, got %v", err)
+	}
+	if publishChecks != 2 {
+		t.Fatalf("expected initial and commit publish checks, got %d", publishChecks)
+	}
+	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	replacementParent := originalParent
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+
+	renameReadyCalls := 0
+	originalRenameReady := writeFileRenameReadyFn
+	writeFileRenameReadyFn = func() error {
+		renameReadyCalls++
+		if err := os.Rename(originalParent, relocatedParent); err != nil {
+			return err
+		}
+		return os.Mkdir(originalParent, 0o750)
+	}
+	t.Cleanup(func() {
+		writeFileRenameReadyFn = originalRenameReady
+	})
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		func(parentPath string, parentIdentity fs.FileInfo) error {
+			publishChecks++
+			return VerifyDirectoryIdentity(parentPath, parentIdentity)
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected post-rename parent identity error, got %v", err)
+	}
+	if publishChecks != 1 {
+		t.Fatalf("expected only initial publish check before rename-ready swap, got %d", publishChecks)
+	}
+	if renameReadyCalls != 1 {
+		t.Fatalf("expected one rename-ready hook call, got %d", renameReadyCalls)
+	}
+	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(replacementParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestRenameAtPinnedDirectoryUsesPinnedParentAfterPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(originalParent, "temp"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	parent, err := OpenRoot(originalParent)
+	if err != nil {
+		t.Fatalf("open original parent root: %v", err)
+	}
+	defer func() {
+		if closeErr := parent.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close parent root: %v", closeErr)
+		}
+	}()
+	parentIdentity, err := parent.Lstat(".")
+	if err != nil {
+		t.Fatalf("stat pinned parent: %v", err)
+	}
+
+	if err := os.Rename(originalParent, relocatedParent); err != nil {
+		t.Fatalf("relocate original parent: %v", err)
+	}
+	if err := os.Mkdir(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir replacement parent: %v", err)
+	}
+
+	if err := renameAtPinnedDirectory(parent, parentIdentity, "temp", "target"); err != nil {
+		t.Fatalf("renameAtPinnedDirectory returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(relocatedParent, "target"), "hello")
+	if _, statErr := os.Stat(filepath.Join(originalParent, "target")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestRenameAtPinnedDirectoryRejectsInvalidPinnedParent(t *testing.T) {
+	expectedInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "." {
+				t.Fatalf("unexpected lstat target %q", name)
+			}
+			return changedInfo, nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, expectedInfo, "temp", "target")
+	if err == nil || !strings.Contains(err.Error(), "pinned parent identity changed") {
+		t.Fatalf("expected pinned parent identity error, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no rename after pinned parent identity mismatch, got %d", renameCalls)
+	}
+}
+
+func TestRenameAtPinnedDirectoryPropagatesPinnedRenameError(t *testing.T) {
+	parentInfo := statTestPath(t, t.TempDir())
+	expectedErr := errors.New("pinned rename failed")
+	renameCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "." {
+				t.Fatalf("unexpected lstat target %q", name)
+			}
+			return parentInfo, nil
+		},
+		rename: func(oldName, newName string) error {
+			renameCalls++
+			if oldName != "temp" || newName != "target" {
+				t.Fatalf("unexpected pinned rename %q -> %q", oldName, newName)
+			}
+			return expectedErr
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, parentInfo, "temp", "target")
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected pinned rename error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one pinned rename attempt, got %d", renameCalls)
+	}
+}
+
+func TestRenameAtPinnedDirectoryRejectsNestedPathsBeforeRootLookup(t *testing.T) {
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			t.Fatal("expected direct-child validation before root lstat")
+			return nil, nil
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, newPinnedTargetInfo(t, "parent"), filepath.Join("nested", "temp"), "target")
+	if err == nil || !strings.Contains(err.Error(), "direct children") {
+		t.Fatalf("expected direct-child validation error, got %v", err)
+	}
+}
+
+func TestRenameAtPinnedDirectoryPropagatesRootLookupError(t *testing.T) {
+	expectedErr := errors.New("stat pinned parent failure")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "." {
+				t.Fatalf("unexpected lstat target %q", name)
+			}
+			return nil, expectedErr
+		},
+		rename: func(string, string) error {
+			t.Fatal("rename should not run after root lookup error")
+			return nil
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, newPinnedTargetInfo(t, "parent"), "temp", "target")
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected root lookup error, got %v", err)
+	}
+}
+
+func TestWriteFileAtRootWithPostWriteCheckRunsAfterCommit(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close root: %v", closeErr)
+		}
+	})
+	target := rootedTarget{rootAbs: rootDir, rel: writeTestFileName, abs: filepath.Join(rootDir, writeTestFileName)}
+
+	postWriteCalls := 0
+	err = writeFileAtRootWithPostWriteCheck(root, target, []byte("hello"), 0o640, func() error {
+		postWriteCalls++
+		assertFileContent(t, filepath.Join(rootDir, writeTestFileName), "hello")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writeFileAtRootWithPostWriteCheck returned error: %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write check, got %d", postWriteCalls)
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetAndPostWriteCheckRunsAfterCommit(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	tempClosed := false
+	target, targetData := newPinnedFallbackTargetFile(t, tempInfo, "before")
+	root := newCommittedTargetValidationRoot(
+		t,
+		tempInfo,
+		func() (fs.FileInfo, error) { return tempInfo, nil },
+		func() error { return nil },
+		func(string) error { return nil },
+		&tempClosed,
+	)
+
+	postWriteCalls := 0
+	err := writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, target, false, func() error {
+		postWriteCalls++
+		if string(*targetData) != "before" {
+			t.Fatalf("atomic rename path should not overwrite pinned fallback target, got %q", string(*targetData))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writeAtomicReplacementWithPinnedTargetAndPostWriteCheck returned error: %v", err)
+	}
+	if !tempClosed {
+		t.Fatal("expected temp file close after commit")
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write check, got %d", postWriteCalls)
+	}
+}
+
+func TestVerifyOverwrittenTargetRejectsUnsafeTargetStates(t *testing.T) {
+	infoDir := t.TempDir()
+	regularPath := filepath.Join(infoDir, "regular")
+	if err := os.WriteFile(regularPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write regular info target: %v", err)
+	}
+	regularInfo := statTestPath(t, regularPath)
+	dirInfo := statTestPath(t, infoDir)
+	symlinkPath := filepath.Join(infoDir, "link")
+	if err := os.Symlink(regularPath, symlinkPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	symlinkInfo, err := os.Lstat(symlinkPath)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	statErr := errors.New("opened stat failure")
+
+	cases := []struct {
+		name     string
+		pathInfo fs.FileInfo
+		fileInfo fs.FileInfo
+		statErr  error
+		want     string
+	}{
+		{name: "symlink", pathInfo: symlinkInfo, fileInfo: regularInfo, want: "symlink"},
+		{name: "directory", pathInfo: dirInfo, fileInfo: regularInfo, want: "not a regular file"},
+		{name: "opened stat error", pathInfo: regularInfo, statErr: statErr, want: statErr.Error()},
+		{name: "opened mismatch", pathInfo: regularInfo, fileInfo: dirInfo, want: "changed before validation"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return tc.pathInfo, nil }}
+			file := &fakeFile{stat: func() (fs.FileInfo, error) { return tc.fileInfo, tc.statErr }}
+
+			err := verifyOverwrittenTarget(root, writeTestFileName, file)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentReadinessErrorPreventsPublish(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close root: %v", closeErr)
+		}
+	})
+
+	expectedErr := errors.New("publish readiness failed")
+	originalReady := writeFilePublishReadyFn
+	writeFilePublishReadyFn = func() error { return expectedErr }
+	t.Cleanup(func() {
+		writeFilePublishReadyFn = originalReady
+	})
+
+	err = writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected publish readiness error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentPropagatesPublishFailures(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	for _, tc := range []struct {
+		name string
+		root *fakeRoot
+		want error
+	}{
+		{
+			name: "link",
+			want: errors.New("link failure"),
+		},
+		{
+			name: "remove",
+			want: errors.New("remove failure"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.root = &fakeRoot{
+				openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+					t.Fatalf("target should not be opened")
+					return nil, nil
+				}, tempInfo, nil),
+				link: func(string, string) error {
+					if tc.name == "link" {
+						return tc.want
+					}
+					return nil
+				},
+				remove: func(string) error {
+					if tc.name == "remove" {
+						return tc.want
+					}
+					return nil
+				},
+				lstat: func(string) (fs.FileInfo, error) { return tempInfo, nil },
+			}
+
+			err := writeFileAtomicallyIfAbsentAtRoot(tc.root, writeTestFileName, []byte("hello"), 0o640)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentPropagatesTempPreparationFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		openErr  error
+		writeErr error
+		statErr  error
+		want     error
+	}{
+		{name: "open", openErr: errors.New("open temp failure")},
+		{name: "write", writeErr: errors.New("write temp failure")},
+		{name: "stat", statErr: errors.New("stat temp failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.openErr
+			if want == nil {
+				want = tc.writeErr
+			}
+			if want == nil {
+				want = tc.statErr
+			}
+			root := &fakeRoot{
+				openFile: func(string, int, os.FileMode) (File, error) {
+					if tc.openErr != nil {
+						return nil, tc.openErr
+					}
+					return &fakeFile{
+						stat:  func() (fs.FileInfo, error) { return newPinnedTargetInfo(t, "temp"), tc.statErr },
+						write: func(p []byte) (int, error) { return len(p), tc.writeErr },
+						chmod: chmodWithoutError,
+						close: closeWithoutError,
+					}, nil
+				},
+				remove: func(string) error { return nil },
+			}
+
+			err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+			if !errors.Is(err, want) {
+				t.Fatalf("expected %v, got %v", want, err)
+			}
+		})
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetPermissionFallbackRunsPostWrite(t *testing.T) {
+	info := newPinnedTargetInfo(t, "target")
+	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, os.ErrPermission
+		},
+		lstat: func(string) (fs.FileInfo, error) {
+			return info, nil
+		},
+	}
+
+	postWriteCalls := 0
+	err := writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, target, true, func() error {
+		postWriteCalls++
+		if string(*targetData) != "after" {
+			t.Fatalf("expected fallback overwrite before post-write check, got %q", string(*targetData))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writeAtomicReplacementWithPinnedTargetAndPostWriteCheck returned error: %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write check, got %d", postWriteCalls)
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetPermissionFallbackRejectsRollbackRequiredBeforeMutation(t *testing.T) {
+	info := newPinnedTargetInfo(t, "target")
+	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, os.ErrPermission
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			t.Fatalf("rollback-required permission fallback should not lstat %s", name)
+			return nil, nil
+		},
+	}
+	assertPinnedReplacementPermissionFallbackRejectsRollbackBeforeMutation(t, root, target, targetData)
+}
+
+func TestWriteAtomicReplacementCommitReadyErrorPreventsRename(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	expectedErr := errors.New("not ready to commit")
+	root := &fakeRoot{
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			t.Fatalf("target should not be opened")
+			return nil, nil
+		}, tempInfo, nil),
+		rename: func(string, string) error {
+			t.Fatal("rename should not run after commit readiness error")
+			return nil
+		},
+		remove: func(string) error { return nil },
+	}
+
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, atomicReplacementOptions{
+		commitReady: func() error {
+			return expectedErr
+		},
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected commit readiness error, got %v", err)
+	}
+}
+
+func TestWriteAtomicReplacementRenameReadyErrorPreventsRename(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	expectedErr := errors.New("not ready to rename")
+	root := &fakeRoot{
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			t.Fatalf("target should not be opened")
+			return nil, nil
+		}, tempInfo, nil),
+		rename: func(string, string) error {
+			t.Fatal("rename should not run after rename readiness error")
+			return nil
+		},
+		remove: func(string) error { return nil },
+	}
+
+	originalReady := writeFileRenameReadyFn
+	writeFileRenameReadyFn = func() error { return expectedErr }
+	t.Cleanup(func() {
+		writeFileRenameReadyFn = originalReady
+	})
+
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, atomicReplacementOptions{})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected rename readiness error, got %v", err)
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetCommitPermissionFallbackRunsPostWrite(t *testing.T) {
+	info := newPinnedTargetInfo(t, "target")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	root := newCommitPermissionFallbackRoot(info, tempInfo, target)
+	postWriteCalls := 0
+
+	err := writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, target, true, func() error {
+		postWriteCalls++
+		if string(*targetData) != "after" {
+			t.Fatalf("expected fallback overwrite before post-write check, got %q", string(*targetData))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("writeAtomicReplacementWithPinnedTargetAndPostWriteCheck returned error: %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write check, got %d", postWriteCalls)
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetCommitPermissionFallbackRejectsRollbackRequiredBeforeMutation(t *testing.T) {
+	info := newPinnedTargetInfo(t, "target")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	root := newCommitPermissionFallbackRoot(info, tempInfo, target)
+
+	assertPinnedReplacementPermissionFallbackRejectsRollbackBeforeMutation(t, root, target, targetData)
+}
+
+func assertPinnedReplacementPermissionFallbackRejectsRollbackBeforeMutation(t *testing.T, root Root, target File, targetData *[]byte) {
+	t.Helper()
+
+	postWriteCalls := 0
+
+	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, target, true, pinnedReplacementChecks{
+		postWrite: func() error {
+			postWriteCalls++
+			return nil
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected original permission error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
+		t.Fatalf("expected rollback-required fallback rejection, got %v", err)
+	}
+	if postWriteCalls != 0 {
+		t.Fatalf("expected post-write check to be skipped after fallback rejection, got %d", postWriteCalls)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("expected fallback target data to remain unchanged, got %q", string(*targetData))
+	}
+}
+
+func newCommitPermissionFallbackRoot(info, tempInfo fs.FileInfo, target File) *fakeRoot {
+	return &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return target, nil
+		}, tempInfo, nil),
+		rename: func(string, string) error { return os.ErrPermission },
+		remove: func(string) error { return nil },
+	}
+}
+
+func TestWriteFileIfAbsentAtRootWithPostWriteCheckExistingAndNilPostWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("existing"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	root, err := OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close root: %v", closeErr)
+		}
+	})
+	target := rootedTarget{rootAbs: rootDir, rel: writeTestFileName, abs: targetPath}
+	if err := writeFileIfAbsentAtRootWithPostWriteCheck(root, target, []byte("new"), 0o640, nil); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing target error, got %v", err)
+	}
+	if err := os.Remove(targetPath); err != nil {
+		t.Fatalf("remove seeded target: %v", err)
+	}
+	if err := writeFileIfAbsentAtRootWithPostWriteCheck(root, target, []byte("new"), 0o640, nil); err != nil {
+		t.Fatalf("writeFileIfAbsentAtRootWithPostWriteCheck returned error: %v", err)
+	}
+	assertFileContent(t, targetPath, "new")
+}
+
+func TestWriteFileIfAbsentAtRootWithPostWriteCheckReturnsPostWriteError(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close root: %v", closeErr)
+		}
+	})
+
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	target := rootedTarget{rootAbs: rootDir, rel: writeTestFileName, abs: targetPath}
+	expectedErr := errors.New("post-write check failed")
+	postWriteCalls := 0
+	err = writeFileIfAbsentAtRootWithPostWriteCheck(root, target, []byte("created"), 0o640, func() error {
+		postWriteCalls++
+		assertFileContent(t, targetPath, "created")
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write call, got %d", postWriteCalls)
+	}
+}
+
+func TestWriteRootPreWriteReadinessErrorPreventsCallerPreWriteAndWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expectedErr := errors.New("root no longer ready")
+	originalReady := writeFilePreWriteReadyFn
+	writeFilePreWriteReadyFn = func() error { return expectedErr }
+	t.Cleanup(func() {
+		writeFilePreWriteReadyFn = originalReady
+	})
+	target := filepath.Join("reports", writeTestFileName)
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		return nil
+	}, func() error {
+		t.Fatal("preWrite should not run after readiness error")
+		return nil
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected readiness error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPreWriteErrorPreventsWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expectedErr := errors.New("target changed before write")
+	target := filepath.Join("reports", writeTestFileName)
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(target, []byte("hello"), 0o640, 0o750, func() error {
+		return nil
+	}, func() error {
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected preWrite error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPreWriteCheckRejectsNonRelativeTarget(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(filepath.Join(t.TempDir(), writeTestFileName), []byte("hello"), 0o640, 0o750, func() error {
+		t.Fatal("parentReady should not run for invalid target")
+		return nil
+	}, func() error {
+		t.Fatal("preWrite should not run for invalid target")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected absolute target to be rejected")
+	}
+}
+
+func TestWriteRootLstatAndRemoveRejectNonRelativeTargets(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+	absoluteTarget := filepath.Join(t.TempDir(), writeTestFileName)
+
+	if _, err := root.Lstat(absoluteTarget); err == nil {
+		t.Fatal("expected Lstat absolute target to be rejected")
+	}
+	if err := root.Remove(absoluteTarget); err == nil {
+		t.Fatal("expected Remove absolute target to be rejected")
+	}
+}
+
+func TestWriteRootLstatAndRemove(t *testing.T) {
+	rootDir := t.TempDir()
+	target := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(target, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+
+	info, err := root.Lstat(writeTestFileName)
+	if err != nil {
+		t.Fatalf("Lstat returned error: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected regular file info, got %v", info.Mode())
+	}
+	if err := root.Remove(writeTestFileName); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected target to be removed, got %v", err)
+	}
+}
+
 func TestWriteRootCreatesMissingParentsAndWritesIfAbsent(t *testing.T) {
 	assertWriteRootCreatesMissingParentsAndWrites(t, "WriteFileCreatingParentsIfAbsent", (*WriteRoot).WriteFileCreatingParentsIfAbsent)
 }
@@ -2849,6 +3817,194 @@ func TestWriteAtomicReplacementRejectsChangedCommittedTarget(t *testing.T) {
 	}
 	if removeCalls != 0 {
 		t.Fatalf("expected no cleanup remove after committed target mismatch, got %d", removeCalls)
+	}
+}
+
+func TestWriteAtomicReplacementLeavesCommittedTargetAfterPostWriteFailure(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	postWriteErr := errors.New("post-write validation failure")
+	lstatCalls := 0
+	removeCalls := 0
+	concurrentReplacementRemoved := false
+	root := newCommittedTargetTestRoot(t,
+		tempInfo,
+		func(string) (fs.FileInfo, error) {
+			lstatCalls++
+			return tempInfo, nil
+		},
+		func(string, string) error {
+			return nil
+		},
+		func(string) error {
+			removeCalls++
+			concurrentReplacementRemoved = true
+			return nil
+		},
+		closeWithoutError,
+	)
+
+	err := writeAtomicReplacementWithPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()), func() error {
+		return postWriteErr
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if lstatCalls != 1 {
+		t.Fatalf("expected only committed target validation lstat, got %d", lstatCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected no cleanup remove after post-write failure, got %d", removeCalls)
+	}
+	if concurrentReplacementRemoved {
+		t.Fatal("post-write failure cleanup removed a concurrent replacement")
+	}
+}
+
+func TestWriteAtomicReplacementRollbackRetainsOwnedTargetWithoutPathMutation(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	postWriteErr := errors.New("post-write validation failure")
+	removeCalls := 0
+	lstatCalls := 0
+	renameCalls := 0
+	root := &fakeRoot{
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			t.Fatalf("target should not be opened")
+			return nil, nil
+		}, tempInfo, nil),
+		lstat: func(name string) (fs.FileInfo, error) {
+			lstatCalls++
+			if name == writeTestFileName {
+				return tempInfo, nil
+			}
+			t.Fatalf("unexpected lstat path: %s", name)
+			return nil, nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+		remove: func(name string) error {
+			removeCalls++
+			t.Fatalf("rollback must not remove %s after post-write failure", name)
+			return nil
+		},
+	}
+
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("after"), 0o600, atomicReplacementOptions{
+		postWrite: func() error {
+			return postWriteErr
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected only commit rename, got %d", renameCalls)
+	}
+	if lstatCalls != 1 {
+		t.Fatalf("expected only committed-target validation lstat, got %d", lstatCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected no path removal during rollback, got %d", removeCalls)
+	}
+}
+
+func TestWriteAtomicReplacementRollbackPreservesConcurrentReplacementAfterStaleCheck(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	postWriteErr := errors.New("post-write validation failure")
+	concurrentReplacementReady := false
+	renameCalls := 0
+	root := &fakeRoot{
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			t.Fatalf("target should not be opened")
+			return nil, nil
+		}, tempInfo, nil),
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return tempInfo, nil
+		},
+		rename: func(oldName, newName string) error {
+			renameCalls++
+			if concurrentReplacementReady {
+				t.Fatalf("rollback must not rename concurrent replacement %s to %s", oldName, newName)
+			}
+			return nil
+		},
+		remove: func(name string) error {
+			t.Fatalf("rollback must not remove concurrent replacement %s", name)
+			return nil
+		},
+	}
+
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("after"), 0o600, atomicReplacementOptions{
+		postWrite: func() error {
+			concurrentReplacementReady = true
+			return postWriteErr
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected only commit rename, got %d", renameCalls)
+	}
+}
+
+func TestAtomicWriteSessionRollbackCommittedTargetWithErrorDoesNotPathMutate(t *testing.T) {
+	primaryErr := errors.New("post-write validation failure")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				t.Fatalf("rollback should not lstat %s", name)
+				return nil, nil
+			},
+			rename: func(oldName, newName string) error {
+				t.Fatalf("rollback should not rename %s to %s", oldName, newName)
+				return nil
+			},
+			remove: func(name string) error {
+				t.Fatalf("rollback should not remove %s", name)
+				return nil
+			},
+		},
+		targetRel: writeTestFileName,
+		tempInfo:  newPinnedTargetInfo(t, "temp"),
+	}
+
+	err := session.rollbackCommittedTargetWithError(primaryErr)
+	if !errors.Is(err, primaryErr) {
+		t.Fatalf("expected primary error, got %v", err)
+	}
+}
+
+func TestRunFallbackPostWriteCheckNonRollbackContract(t *testing.T) {
+	if err := runFallbackPostWriteCheck(nil, true, writeTestFileName); err != nil {
+		t.Fatalf("expected nil post-write fallback check to succeed, got %v", err)
+	}
+
+	postWriteErr := errors.New("post-write validation failure")
+	err := runFallbackPostWriteCheck(func() error {
+		return postWriteErr
+	}, false, writeTestFileName)
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "committed target changed before rollback") {
+		t.Fatalf("non-rollback fallback check should not add rollback error, got %v", err)
+	}
+
+	err = runFallbackPostWriteCheck(func() error {
+		return postWriteErr
+	}, true, writeTestFileName)
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error with rollback safety failure, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "committed target changed before rollback") {
+		t.Fatalf("expected rollback safety error, got %v", err)
 	}
 }
 
