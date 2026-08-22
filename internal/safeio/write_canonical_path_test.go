@@ -234,53 +234,67 @@ func TestOpenSearchOnlyChildDirectoryValidationBranches(t *testing.T) {
 		descriptorStatFn = originalStat
 	})
 
-	t.Run("open failure after lstat", func(t *testing.T) {
-		openSearchOnlyDirectoryAtFn = func(int, string) (*os.File, error) {
-			return nil, errors.New("openat failed")
-		}
-		descriptorStatFn = originalStat
-		file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
-		if err == nil || !strings.Contains(err.Error(), "openat failed") {
-			if file != nil {
-				if closeErr := file.Close(); closeErr != nil {
-					t.Fatalf("close unexpected child descriptor: %v", closeErr)
+	for _, tc := range []struct {
+		name      string
+		wantError string
+		configure func()
+	}{
+		{
+			name:      "open failure after lstat",
+			wantError: "openat failed",
+			configure: func() {
+				openSearchOnlyDirectoryAtFn = func(int, string) (*os.File, error) {
+					return nil, errors.New("openat failed")
 				}
-			}
-			t.Fatalf("expected openat failure, got %v", err)
-		}
-	})
+				descriptorStatFn = originalStat
+			},
+		},
+		{
+			name:      "stat failure after open",
+			wantError: "descriptor stat failed",
+			configure: func() {
+				openSearchOnlyDirectoryAtFn = originalOpenAt
+				descriptorStatFn = func(int) (descriptorFileInfo, error) {
+					return descriptorFileInfo{}, errors.New("descriptor stat failed")
+				}
+			},
+		},
+		{
+			name:      "changed after open",
+			wantError: "directory changed while opening",
+			configure: func() {
+				openSearchOnlyDirectoryAtFn = originalOpenAt
+				descriptorStatFn = func(int) (descriptorFileInfo, error) {
+					return descriptorFileInfo{dev: "changed", ino: "changed", mode: unix.S_IFDIR}, nil
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.configure()
+			file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
+			assertOpenSearchOnlyChildDirectoryError(t, file, err, tc.wantError)
+		})
+	}
+}
 
-	t.Run("stat failure after open", func(t *testing.T) {
-		openSearchOnlyDirectoryAtFn = originalOpenAt
-		descriptorStatFn = func(int) (descriptorFileInfo, error) {
-			return descriptorFileInfo{}, errors.New("descriptor stat failed")
-		}
-		file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
-		if err == nil || !strings.Contains(err.Error(), "descriptor stat failed") {
-			if file != nil {
-				if closeErr := file.Close(); closeErr != nil {
-					t.Fatalf("close unexpected child descriptor: %v", closeErr)
-				}
-			}
-			t.Fatalf("expected descriptor stat failure, got %v", err)
-		}
-	})
+func assertOpenSearchOnlyChildDirectoryError(t *testing.T, file *os.File, err error, want string) {
+	t.Helper()
+	if err != nil && strings.Contains(err.Error(), want) {
+		return
+	}
+	closeUnexpectedChildDescriptor(t, file)
+	t.Fatalf("expected %s failure, got %v", want, err)
+}
 
-	t.Run("changed after open", func(t *testing.T) {
-		openSearchOnlyDirectoryAtFn = originalOpenAt
-		descriptorStatFn = func(int) (descriptorFileInfo, error) {
-			return descriptorFileInfo{dev: "changed", ino: "changed", mode: unix.S_IFDIR}, nil
-		}
-		file, err := openSearchOnlyChildDirectory(parentFD, "child", "child")
-		if err == nil || !strings.Contains(err.Error(), "directory changed while opening") {
-			if file != nil {
-				if closeErr := file.Close(); closeErr != nil {
-					t.Fatalf("close unexpected child descriptor: %v", closeErr)
-				}
-			}
-			t.Fatalf("expected changed-directory failure, got %v", err)
-		}
-	})
+func closeUnexpectedChildDescriptor(t *testing.T, file *os.File) {
+	t.Helper()
+	if file == nil {
+		return
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close unexpected child descriptor: %v", err)
+	}
 }
 
 func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
@@ -572,100 +586,117 @@ func TestCleanupDescriptorTempFileClosesAndRemovesTemp(t *testing.T) {
 
 func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 	tempInfo := newPinnedTargetInfo(t, "temp")
-
-	t.Run("temp create failure", func(t *testing.T) {
-		err := writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
-			openFile: func(string, int, os.FileMode) (File, error) {
-				return nil, errors.New("create temp failed")
+	for _, tc := range []struct {
+		name      string
+		wantError string
+		run       func() error
+	}{
+		{
+			name:      "temp create failure",
+			wantError: "create temp failed",
+			run: func() error {
+				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
+					openFile: func(string, int, os.FileMode) (File, error) {
+						return nil, errors.New("create temp failed")
+					},
+				}, writeTestFileName, []byte("after"), 0o600)
 			},
-		}, writeTestFileName, []byte("after"), 0o600)
-		if err == nil || !strings.Contains(err.Error(), "create temp failed") {
-			t.Fatalf("expected create temp failure, got %v", err)
-		}
-	})
-
-	t.Run("temp write failure", func(t *testing.T) {
-		err := writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
-			openFile: func(string, int, os.FileMode) (File, error) {
-				return &fakeFile{
-					write: func([]byte) (int, error) { return 0, errors.New("write temp failed") },
-					close: func() error { return nil },
-				}, nil
+		},
+		{
+			name:      "temp write failure",
+			wantError: "write temp failed",
+			run: func() error {
+				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
+					openFile: func(string, int, os.FileMode) (File, error) {
+						return &fakeFile{
+							write: func([]byte) (int, error) { return 0, errors.New("write temp failed") },
+							close: func() error { return nil },
+						}, nil
+					},
+					remove: func(string) error { return nil },
+				}, writeTestFileName, []byte("after"), 0o600)
 			},
-			remove: func(string) error { return nil },
-		}, writeTestFileName, []byte("after"), 0o600)
-		if err == nil || !strings.Contains(err.Error(), "write temp failed") {
-			t.Fatalf("expected write temp failure, got %v", err)
-		}
-	})
-
-	t.Run("temp stat failure", func(t *testing.T) {
-		err := writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
-			openFile: func(string, int, os.FileMode) (File, error) {
-				return &fakeFile{
-					write: func(p []byte) (int, error) { return len(p), nil },
-					chmod: func(os.FileMode) error { return nil },
-					stat:  func() (fs.FileInfo, error) { return nil, errors.New("stat temp failed") },
-					close: func() error { return nil },
-				}, nil
+		},
+		{
+			name:      "temp stat failure",
+			wantError: "stat temp failed",
+			run: func() error {
+				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
+					openFile: func(string, int, os.FileMode) (File, error) {
+						return &fakeFile{
+							write: func(p []byte) (int, error) { return len(p), nil },
+							chmod: func(os.FileMode) error { return nil },
+							stat:  func() (fs.FileInfo, error) { return nil, errors.New("stat temp failed") },
+							close: func() error { return nil },
+						}, nil
+					},
+					remove: func(string) error { return nil },
+				}, writeTestFileName, []byte("after"), 0o600)
 			},
-			remove: func(string) error { return nil },
-		}, writeTestFileName, []byte("after"), 0o600)
-		if err == nil || !strings.Contains(err.Error(), "stat temp failed") {
-			t.Fatalf("expected stat temp failure, got %v", err)
-		}
-	})
-
-	t.Run("remove temp failure after link", func(t *testing.T) {
-		err := writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
-			openFile: func(string, int, os.FileMode) (File, error) {
-				return &fakeFile{
-					write: func(p []byte) (int, error) { return len(p), nil },
-					chmod: func(os.FileMode) error { return nil },
-					stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-					close: func() error { return nil },
-				}, nil
+		},
+		{
+			name:      "remove temp failure after link",
+			wantError: "remove temp failed",
+			run: func() error {
+				return writeFileAtomicallyIfAbsentAtRoot(&fakeRoot{
+					openFile: func(string, int, os.FileMode) (File, error) {
+						return &fakeFile{
+							write: func(p []byte) (int, error) { return len(p), nil },
+							chmod: func(os.FileMode) error { return nil },
+							stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+							close: func() error { return nil },
+						}, nil
+					},
+					link:   func(string, string) error { return nil },
+					remove: func(string) error { return errors.New("remove temp failed") },
+				}, writeTestFileName, []byte("after"), 0o600)
 			},
-			link:   func(string, string) error { return nil },
-			remove: func(string) error { return errors.New("remove temp failed") },
-		}, writeTestFileName, []byte("after"), 0o600)
-		if err == nil || !strings.Contains(err.Error(), "remove temp failed") {
-			t.Fatalf("expected remove temp failure, got %v", err)
-		}
-	})
-
-	t.Run("pinned replacement temp write failure", func(t *testing.T) {
-		err := writeAtomicReplacementWithPinnedTarget(&fakeRoot{
-			openFile: func(string, int, os.FileMode) (File, error) {
-				return &fakeFile{
-					write: func([]byte) (int, error) { return 0, errors.New("pinned write failed") },
-					close: func() error { return nil },
-				}, nil
+		},
+		{
+			name:      "pinned replacement temp write failure",
+			wantError: "pinned write failed",
+			run: func() error {
+				return writeAtomicReplacementWithPinnedTarget(&fakeRoot{
+					openFile: func(string, int, os.FileMode) (File, error) {
+						return &fakeFile{
+							write: func([]byte) (int, error) { return 0, errors.New("pinned write failed") },
+							close: func() error { return nil },
+						}, nil
+					},
+					remove: func(string) error { return nil },
+				}, writeTestFileName, []byte("after"), 0o600, nil, false)
 			},
-			remove: func(string) error { return nil },
-		}, writeTestFileName, []byte("after"), 0o600, nil, false)
-		if err == nil || !strings.Contains(err.Error(), "pinned write failed") {
-			t.Fatalf("expected pinned write failure, got %v", err)
-		}
-	})
-
-	t.Run("pinned replacement commit failure", func(t *testing.T) {
-		err := writeAtomicReplacementWithPinnedTarget(&fakeRoot{
-			openFile: func(string, int, os.FileMode) (File, error) {
-				return &fakeFile{
-					write: func(p []byte) (int, error) { return len(p), nil },
-					chmod: func(os.FileMode) error { return nil },
-					stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-					close: func() error { return nil },
-				}, nil
+		},
+		{
+			name:      "pinned replacement commit failure",
+			wantError: "pinned rename failed",
+			run: func() error {
+				return writeAtomicReplacementWithPinnedTarget(&fakeRoot{
+					openFile: func(string, int, os.FileMode) (File, error) {
+						return &fakeFile{
+							write: func(p []byte) (int, error) { return len(p), nil },
+							chmod: func(os.FileMode) error { return nil },
+							stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+							close: func() error { return nil },
+						}, nil
+					},
+					rename: func(string, string) error { return errors.New("pinned rename failed") },
+					remove: func(string) error { return nil },
+				}, writeTestFileName, []byte("after"), 0o600, nil, false)
 			},
-			rename: func(string, string) error { return errors.New("pinned rename failed") },
-			remove: func(string) error { return nil },
-		}, writeTestFileName, []byte("after"), 0o600, nil, false)
-		if err == nil || !strings.Contains(err.Error(), "pinned rename failed") {
-			t.Fatalf("expected pinned rename failure, got %v", err)
-		}
-	})
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertErrorContains(t, tc.run(), tc.wantError)
+		})
+	}
+}
+
+func assertErrorContains(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected %s failure, got %v", want, err)
+	}
 }
 
 func TestSafeIOHelperCoverageBranches(t *testing.T) {
