@@ -76,7 +76,7 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileAtRootWithPostWriteCheck)
 }
 
 // WriteFileCreatingParentsAfterParentReady atomically writes a root-relative
@@ -86,7 +86,7 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, nil, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, nil, writeFileAtRootWithPostWriteCheck)
 }
 
 // WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck atomically writes a
@@ -97,7 +97,7 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(ta
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, preWrite, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, preWrite, writeFileAtRootWithPostWriteCheck)
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -123,7 +123,7 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileIfAbsentAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileIfAbsentAtRootWithPostWriteCheck)
 }
 
 // WriteFileCreatingParentsAtomicallyIfAbsent atomically publishes a
@@ -169,10 +169,10 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) error {
-	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, nil, nil, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, nil, nil, writeFileAtRootWithPostWriteCheck)
 }
 
-func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, parentReady, preWrite func() error, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
+func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, parentReady, preWrite func() error, write func(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error) (returnErr error) {
 	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
 		if parentReady != nil {
 			if err := parentReady(); err != nil {
@@ -187,7 +187,7 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 				return err
 			}
 		}
-		return write(parent, parentTarget, data, perm)
+		return write(parent, parentTarget, data, perm, preWrite)
 	})
 }
 
@@ -270,6 +270,7 @@ var (
 	randReadFn               = rand.Read
 	writeFileParentReadyFn   = func() error { return nil }
 	writeFilePreWriteReadyFn = func() error { return nil }
+	writeFilePublishReadyFn  = func() error { return nil }
 )
 
 // CreateTempFileWithinRoot creates a temporary file under dir within root.
@@ -303,20 +304,24 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 }
 
 func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, false)
+	return writeFileAtRootWithPostWriteCheck(root, target, data, perm, nil)
+}
+
+func writeFileAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error {
+	return writeFileAtRootWithOptions(root, target, data, perm, false, postWrite)
 }
 
 func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, true)
+	return writeFileAtRootWithOptions(root, target, data, perm, true, nil)
 }
 
-func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool) (returnErr error) {
+func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool, postWrite func() error) (returnErr error) {
 	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
 	if existingInfo == nil {
-		return writeAtomicReplacement(root, target.rel, data, writePerm, nil)
+		return writeAtomicReplacementWithPostWriteCheck(root, target.rel, data, writePerm, nil, postWrite)
 	}
 
 	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
@@ -329,16 +334,26 @@ func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, per
 		}
 	}()
 
-	return writeAtomicReplacementWithPinnedTarget(root, target.rel, data, writePerm, file, allowPermissionFallback)
+	return writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, target.rel, data, writePerm, file, allowPermissionFallback, postWrite)
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
+	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, nil)
+}
+
+func writeFileIfAbsentAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) (returnErr error) {
 	if _, err := root.Lstat(target.rel); err == nil {
 		return os.ErrExist
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return createFileExclusivelyAtRoot(root, target.rel, data, perm)
+	if err := createFileExclusivelyAtRoot(root, target.rel, data, perm); err != nil {
+		return err
+	}
+	if postWrite != nil {
+		return postWrite()
+	}
+	return nil
 }
 
 func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {

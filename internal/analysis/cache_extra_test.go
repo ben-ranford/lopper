@@ -21,6 +21,9 @@ var safeioWriteFileParentReadyFn func() error
 //go:linkname safeioWriteFilePreWriteReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePreWriteReadyFn
 var safeioWriteFilePreWriteReadyFn func() error
 
+//go:linkname safeioWriteFilePublishReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePublishReadyFn
+var safeioWriteFilePublishReadyFn func() error
+
 const (
 	cacheDirName          = ".lopper-cache"
 	cacheKeysDirName      = "keys"
@@ -262,6 +265,39 @@ func TestAnalysisCacheStoreRejectsRootReplacementBetweenPointerValidationAndWrit
 	}
 	if !strings.Contains(err.Error(), "directory identity changed") {
 		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
+}
+
+func TestAnalysisCacheStoreCleansPointerAfterRootReplacementAtPublish(t *testing.T) {
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	mustMkdirCacheLayout(t, replacementRoot)
+
+	originalHook := safeioWriteFilePublishReadyFn
+	t.Cleanup(func() { safeioWriteFilePublishReadyFn = originalHook })
+	publishCalls := 0
+	safeioWriteFilePublishReadyFn = func() error {
+		publishCalls++
+		if publishCalls != 2 {
+			return nil
+		}
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		return os.Rename(replacementRoot, cachePath)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement at pointer publish to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	if publishCalls != 2 {
+		t.Fatalf("expected cache root swap at pointer publish, got %d publish calls", publishCalls)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))

@@ -50,6 +50,9 @@ func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) erro
 }
 
 func (s *atomicWriteSession) commit() error {
+	if err := writeFilePublishReadyFn(); err != nil {
+		return err
+	}
 	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
 		return err
 	}
@@ -72,6 +75,36 @@ func (s *atomicWriteSession) verifyCommittedTarget() error {
 		return fmt.Errorf("committed target changed before validation: %s", s.targetRel)
 	}
 	return nil
+}
+
+func (s *atomicWriteSession) verifyCommittedTargetAndPostWrite(postWrite func() error) error {
+	if err := s.verifyCommittedTarget(); err != nil {
+		return err
+	}
+	if postWrite == nil {
+		return nil
+	}
+	if err := postWrite(); err != nil {
+		return errors.Join(err, s.cleanupCommittedTargetIfOwned())
+	}
+	return nil
+}
+
+func (s *atomicWriteSession) cleanupCommittedTargetIfOwned() error {
+	if s.tempInfo == nil {
+		return nil
+	}
+	pathInfo, err := s.root.Lstat(s.targetRel)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
+		return nil
+	}
+	return s.root.Remove(s.targetRel)
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
@@ -107,7 +140,11 @@ func (s *atomicWriteSession) cleanup() error {
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
 
-func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) (returnErr error) {
+func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) error {
+	return writeAtomicReplacementWithPostWriteCheck(root, targetRel, data, perm, replacementInfo, nil)
+}
+
+func writeAtomicReplacementWithPostWriteCheck(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo, postWrite func() error) (returnErr error) {
 	replacementFile, closeReplacementFile, err := openPinnedReplacementTargetIfNeeded(root, targetRel, replacementInfo)
 	if err != nil {
 		return err
@@ -133,7 +170,7 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 	if err := session.commit(); err != nil {
 		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 	}
-	return session.verifyCommittedTarget()
+	return session.verifyCommittedTargetAndPostWrite(postWrite)
 }
 
 func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
@@ -151,6 +188,9 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
+	if err := writeFilePublishReadyFn(); err != nil {
+		return err
+	}
 	if err := root.Link(session.tempRel, targetRel); err != nil {
 		return err
 	}
@@ -162,6 +202,10 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 }
 
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
+	return writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, targetRel, data, perm, replacementFile, allowPermissionFallback, nil)
+}
+
+func writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool, postWrite func() error) (returnErr error) {
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
@@ -189,7 +233,7 @@ func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []
 		}
 		return fallbackErr
 	}
-	return session.verifyCommittedTarget()
+	return session.verifyCommittedTargetAndPostWrite(postWrite)
 }
 
 func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {
