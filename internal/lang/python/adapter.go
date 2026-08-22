@@ -262,7 +262,7 @@ func (m *pythonStringMask) maskShortString(line string, index *int, builder *str
 	if m.shortQuote == 0 {
 		return false
 	}
-	next, closed := maskPythonShortStringContent(line, *index, m.shortQuote, builder)
+	next, closed := maskPythonShortStringContent(line, *index, m.shortQuote, builder, false)
 	*index = next
 	if closed {
 		m.shortQuote = 0
@@ -277,16 +277,18 @@ func (m *pythonStringMask) startMultilineString(quote string, index *int, builde
 }
 
 func (m *pythonStringMask) startShortString(quote byte, line string, index *int, builder *strings.Builder) {
-	next, closed := maskPythonShortStringContent(line, *index, quote, builder)
+	next, closed := maskPythonShortStringContent(line, *index, quote, builder, true)
 	*index = next
 	if !closed {
 		m.shortQuote = quote
 	}
 }
 
-func maskPythonShortStringContent(line string, index int, quote byte, builder *strings.Builder) (int, bool) {
-	builder.WriteByte(' ')
-	index++
+func maskPythonShortStringContent(line string, index int, quote byte, builder *strings.Builder, maskOpening bool) (int, bool) {
+	if maskOpening {
+		builder.WriteByte(' ')
+		index++
+	}
 	escaped := false
 	for index < len(line) {
 		current := line[index]
