@@ -18,6 +18,7 @@ const (
 	windowsFileRenamePosixSemantics  = 0x00000002
 	windowsFileRenameInformationID   = 10
 	windowsFileRenameInformationExID = 65
+	windowsObjCaseInsensitive        = 0x00000040
 )
 
 var (
@@ -174,6 +175,7 @@ func newWindowsObjectAttributes(root syscall.Handle, name string) (windowsObject
 		Length:        uint32(unsafe.Sizeof(windowsObjectAttributes{})),
 		RootDirectory: root,
 		ObjectName:    objectName,
+		Attributes:    windowsObjCaseInsensitive,
 	}, nil
 }
 
