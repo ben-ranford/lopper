@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -153,6 +153,24 @@ dup-check:
 suppression-check:
 	SUPPRESSION_BASE="$(SUPPRESSION_BASE)" ./scripts/check-inline-suppressions.sh
 
+github-actions-pinning:
+	@./scripts/check-github-actions-pinning.sh
+
+github-actions-runners:
+	@ruby scripts/check-github-actions-runners.rb
+
+automation-examples:
+	@./scripts/check-automation-examples.sh
+
+release-automation-check:
+	@./scripts/check-release-automation.sh
+
+managed-output-check:
+	@./scripts/check-managed-output.sh
+
+automation-integrity:
+	@./scripts/check-automation-integrity.sh
+
 security:
 	$(GO_CMD) run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -exclude-rules "$(GOSEC_EXCLUDE_RULES)" ./...
 
@@ -267,7 +285,7 @@ build:
 manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
-ci: format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
 
 smoke: mod-check test-race build
 
@@ -307,6 +325,9 @@ toolchain-check:
 	fi
 	@command -v $(ZIG) >/dev/null 2>&1 || (echo "zig not found in PATH (required for cross-CGO builds)"; exit 1)
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH (required for shell script CI checks)"; exit 1)
+	@command -v ruby >/dev/null 2>&1 || (echo "ruby not found in PATH (required for automation integrity YAML/JSON checks)"; exit 1)
+	@command -v node >/dev/null 2>&1 || (echo "node not found in PATH (required for automation integrity JavaScript syntax checks)"; exit 1)
+	@command -v python3 >/dev/null 2>&1 || (echo "python3 not found in PATH (required for Python-based CI checks)"; exit 1)
 
 toolchain-install:
 	@uname_s="$$(uname -s)"; \
@@ -318,19 +339,19 @@ toolchain-install:
 
 toolchain-install-macos:
 	@command -v brew >/dev/null 2>&1 || (echo "homebrew not found"; exit 1)
-	brew install go zig shellcheck
+	brew install go zig shellcheck ruby node python
 
 toolchain-install-linux:
 	@if command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
 		$$SUDO apt-get update; \
-		$$SUDO apt-get install -y golang-go zig shellcheck; \
+		$$SUDO apt-get install -y golang-go zig shellcheck ruby nodejs python3; \
 	elif command -v dnf >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO dnf install -y golang zig ShellCheck; \
+		$$SUDO dnf install -y golang zig ShellCheck ruby nodejs python3; \
 	elif command -v pacman >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck; \
+		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs python; \
 	else \
 		echo "No supported package manager found (need apt-get, dnf, or pacman)"; \
 		exit 1; \
