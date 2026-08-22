@@ -218,6 +218,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		"Resolve PR base ref",
 		"Write PR body for regression proof",
 		"Fetch PR base",
+		"Resolve memory benchmark base",
 		"Run CI target",
 		"Prove regression tests for fix PRs",
 	}
@@ -243,7 +244,16 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
 		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
-		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+		`git fetch --no-tags origin "${base_ref}:refs/remotes/origin/${base_ref}"`,
+	})
+
+	resolveBenchBase := workflowStepByName(t, workflow.Jobs, "verify", "Resolve memory benchmark base")
+	assertWorkflowStepRunContainsAll(t, resolveBenchBase, "resolve memory benchmark base", []string{
+		`requested_base="origin/${base_ref}"`,
+		`requested_base="${base_sha}"`,
+		`merge_base="$(git merge-base -- "$requested_base" HEAD)"`,
+		`echo "Resolved immutable memory benchmark base ${merge_base} from requested base ${requested_base}."`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${merge_base}" >> "$GITHUB_ENV"`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
@@ -269,6 +279,10 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci`,
 	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
+		`export MEMORY_BENCH_BASE="origin/${PR_BASE_REF:-main}"`,
+	})
 
 	failUnapproved := workflowStepByName(t, workflow.Jobs, "verify", "Fail on unapproved memory regression")
 	assertWorkflowStepRunContainsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
@@ -278,6 +292,46 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	assertWorkflowStepRunOmitsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
 		`if [ "$status" = "2" ]`,
 		`if [ "$status" -eq 2 ]`,
+	})
+}
+
+func TestCIWorkflowRollingPRRunsResolveImmutableMemoryBenchmarkBase(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	rolling := workflowJobByName(t, workflow.Jobs, "verify-rolling")
+	assertWorkflowStepOrder(t, rolling, "Resolve PR base ref", "Fetch PR base", "Resolve memory benchmark base", "Run CI target with rolling defaults")
+
+	resolveBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Resolve PR base ref")
+	assertWorkflowStepRunContainsAll(t, resolveBase, "rolling resolve PR base ref", []string{
+		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"`,
+		`printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"`,
+	})
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
+	assertWorkflowStepRunContainsAll(t, fetchBase, "rolling fetch PR base", []string{
+		`base_sha="${BASE_SHA:-}"`,
+		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
+		`git fetch --no-tags origin "${base_ref}:refs/remotes/origin/${base_ref}"`,
+	})
+
+	resolveBenchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Resolve memory benchmark base")
+	assertWorkflowStepRunContainsAll(t, resolveBenchBase, "rolling resolve memory benchmark base", []string{
+		`requested_base="origin/${base_ref}"`,
+		`merge_base="$(git merge-base -- "$requested_base" HEAD)"`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${merge_base}" >> "$GITHUB_ENV"`,
+	})
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+	assertWorkflowStepRunContainsAll(t, runCI, "rolling ci run target", []string{
+		`export MEMORY_BENCH_ENFORCE=0`,
+		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "rolling ci run target", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
+		`export MEMORY_BENCH_BASE="origin/${PR_BASE_REF:-main}"`,
 	})
 }
 

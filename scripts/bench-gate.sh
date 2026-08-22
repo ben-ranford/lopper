@@ -283,11 +283,15 @@ format_benchmark_definition() {
 	invocation_fingerprint="$3";
 	printf "package=%s selection=%s -run '^$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$invocation_pkg" "$invocation_selection" "$GO_TEST_LDFLAGS_ARGS" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_fingerprint" "$requested_go_toolchain" "$go_bin_path" "$GO_TEST_LDFLAGS_ARGS" "$invocation_selection" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_pkg";
 };
-if ! git rev-parse --verify -q --end-of-options "$base_ref^{commit}" >/dev/null; then
+if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}"); then
 	echo "Memory benchmark base ref '$base_ref' is missing or invalid; failing closed.";
 	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is missing or invalid.";
 fi;
-if ! base_commit=$(git merge-base -- "$base_ref" HEAD 2>/dev/null); then
+if ! git merge-base --is-ancestor "$base_commit" HEAD 2>/dev/null; then
+	if git merge-base -- "$base_commit" HEAD >/dev/null 2>&1; then
+		echo "Memory benchmark base ref '$base_ref' is related to HEAD but is not an ancestor; failing closed.";
+		fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is related to HEAD but is not an ancestor of HEAD.";
+	fi;
 	echo "Memory benchmark base ref '$base_ref' is not related to HEAD; failing closed.";
 	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not related to HEAD.";
 fi;
@@ -300,7 +304,7 @@ bench_definitions_tmp=$(mktemp);
 # shellcheck disable=SC2317,SC2329 # cleanup is invoked by trap.
 cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$base_tree" >/dev/null 2>&1 || true); rm -rf "$bench_dir"; rm -f "$base_output_tmp" "$head_output_tmp" "$bench_packages_tmp" "$bench_definitions_tmp"; };
 trap cleanup EXIT INT TERM;
-echo "Running memory benchmark delta against $base_ref.";
+echo "Running memory benchmark delta against $base_commit (requested $base_ref).";
 : > "$base_output_tmp";
 : > "$head_output_tmp";
 : > "$bench_definitions_tmp";
