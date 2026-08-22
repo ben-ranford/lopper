@@ -6654,6 +6654,57 @@ func TestMoveFallsBackToPreparedCopyWhenLinksUnsupported(t *testing.T) {
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
+func TestWriteRootIfAbsentFallsBackToExclusiveCreateWhenLinksUnsupported(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	root := &WriteRoot{
+		root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+		},
+		rootAbs: rootDir,
+	}
+
+	targetRel := filepath.Join("reports", "target")
+	if err := root.WriteFileCreatingParentsIfAbsent(targetRel, []byte("completed"), 0o640, 0o750); err != nil {
+		t.Fatalf("linkless if-absent create returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, targetRel), "completed")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestWriteRootIfAbsentLinklessFallbackRejectsExistingTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	targetRel := filepath.Join("reports", "target")
+	if err := os.MkdirAll(filepath.Join(rootDir, "reports"), 0o750); err != nil {
+		t.Fatalf("create target parent: %v", err)
+	}
+	targetPath := filepath.Join(rootDir, targetRel)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	base := openTestRoot(t, rootDir)
+	root := &WriteRoot{
+		root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+		},
+		rootAbs: rootDir,
+	}
+
+	err := root.WriteFileCreatingParentsIfAbsent(targetRel, []byte("after"), 0o640, 0o750)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing target rejection on linkless root, got %v", err)
+	}
+	assertFileContent(t, targetPath, "before")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
 func TestAtomicIfAbsentLinklessFallbackLeavesNoPartialTarget(t *testing.T) {
 	rootDir := t.TempDir()
 	root := &fakeRoot{
@@ -6669,6 +6720,48 @@ func TestAtomicIfAbsentLinklessFallbackLeavesNoPartialTarget(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(rootDir, "target")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("linkless if-absent fallback exposed a target: %v", err)
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestWriteRootIfAbsentLinklessFallbackLeavesNoPartialTargetOnCloseError(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	closeErr := errors.New("close target failure")
+	root := &WriteRoot{
+		root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				if name != "target" {
+					return file, nil
+				}
+				return &fakeFile{
+					File: file,
+					close: func() error {
+						if err := file.Close(); err != nil {
+							return err
+						}
+						return closeErr
+					},
+				}, nil
+			},
+		},
+		rootAbs: rootDir,
+	}
+
+	err := root.WriteFileCreatingParentsIfAbsent("target", []byte("completed"), 0o600, 0o750)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected linkless close failure, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(rootDir, "target")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("linkless fallback left a partial target: %v", err)
 	}
 	assertNoAtomicStagingEntries(t, rootDir)
 }

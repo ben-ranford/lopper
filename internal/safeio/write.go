@@ -285,7 +285,52 @@ func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm o
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return writeFileAtomicallyIfAbsentAtRoot(root, target.rel, data, perm)
+	err := writeFileAtomicallyIfAbsentAtRoot(root, target.rel, data, perm)
+	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		return err
+	}
+	return writeFileExclusivelyIfAbsentAtRoot(root, target.rel, data, perm)
+}
+
+func writeFileExclusivelyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
+	targetFile, err := root.OpenFile(targetRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+
+	targetInfo, err := targetFile.Stat()
+	if err != nil {
+		return errors.Join(err, cleanupAtomicTempFile(root, targetRel, targetFile))
+	}
+	if !targetInfo.Mode().IsRegular() {
+		return errors.Join(
+			fmt.Errorf("target file is not regular after exclusive create: %s", targetRel),
+			cleanupAtomicTempFileIfMatches(root, targetRel, targetInfo),
+			targetFile.Close(),
+		)
+	}
+
+	defer func() {
+		if targetFile != nil {
+			returnErr = errors.Join(returnErr, targetFile.Close())
+		}
+		if returnErr != nil {
+			returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, targetRel, targetInfo))
+		}
+	}()
+
+	if _, err := targetFile.Write(data); err != nil {
+		return err
+	}
+	if err := targetFile.Chmod(perm); err != nil {
+		return err
+	}
+	if err := targetFile.Close(); err != nil {
+		targetFile = nil
+		return err
+	}
+	targetFile = nil
+	return verifyPublishedPathMatchesInfo(root, targetRel, targetInfo, committedTargetChangedBeforeValidation)
 }
 
 func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {
