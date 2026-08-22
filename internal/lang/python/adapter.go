@@ -216,7 +216,14 @@ type pythonReplacementStringState struct {
 }
 
 func (m *pythonStringMask) codeLine(line string) string {
-	if line == "" || (!strings.Contains(line, "'") && !strings.Contains(line, "\"") && m.multilineQuote == "" && m.shortQuote == 0) {
+	if line == "" {
+		m.shortQuote = 0
+		if len(m.multilineQuote) == 1 {
+			m.resetMultilineString()
+		}
+		return line
+	}
+	if !strings.Contains(line, "'") && !strings.Contains(line, "\"") && m.multilineQuote == "" && m.shortQuote == 0 {
 		return line
 	}
 

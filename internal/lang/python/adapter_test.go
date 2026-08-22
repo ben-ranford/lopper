@@ -167,6 +167,16 @@ func TestAdapterAnalyseFindsImportsAfterContinuedShortStringCloses(t *testing.T)
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseFindsImportsAfterBlankLineEndsContinuedShortStrings(t *testing.T) {
+	for _, source := range []string{
+		"value = \"text\\\n\nimport requests\n",
+		"value = f\"text\\\n\nimport requests\n",
+	} {
+		dep := analysePythonDependency(t, source, "requests")
+		assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+	}
+}
+
 func TestAdapterAnalyseFindsImportsAfterUncontinuedUnterminatedShortString(t *testing.T) {
 	source := "value = \"unfinished\n" +
 		"import requests\n"
