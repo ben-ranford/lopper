@@ -512,6 +512,42 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
 			wantLine: 2,
 		},
+		{
+			name: "template replacement delimiter preserves outer state",
+			source: "value = t\"\"\"{'\"\"\"'}\n" +
+				"import requests\n" +
+				"\"\"\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
+		{
+			name: "uppercase template replacement delimiter preserves outer state",
+			source: "value = T'''{\"'''\"}\n" +
+				"import requests\n" +
+				"'''\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
+		{
+			name: "raw f-string backslash before replacement brace preserves outer state",
+			source: "value = rf\"\"\"\\{'\"\"\"'}\n" +
+				"import requests\n" +
+				"\"\"\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
+		{
+			name: "nested f-string format spec colon preserves outer state",
+			source: "value = f\"\"\"{f'{value:{width:#x}}'}\n" +
+				"import requests\n" +
+				"\"\"\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
 	}
 
 	for _, tc := range cases {

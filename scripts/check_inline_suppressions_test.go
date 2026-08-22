@@ -216,10 +216,36 @@ func writeFile(t *testing.T, path string, content string) {
 func writeFileMode(t *testing.T, path string, content string, mode os.FileMode) {
 	t.Helper()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	if err := os.WriteFile(path, []byte(content), mode); err != nil {
-		t.Fatalf("write %s: %v", path, err)
+	tempFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		t.Fatalf("create temp file for %s: %v", path, err)
+	}
+	tempPath := tempFile.Name()
+	t.Cleanup(func() {
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove temp file %s: %v", tempPath, err)
+		}
+	})
+	if _, err := tempFile.WriteString(content); err != nil {
+		if closeErr := tempFile.Close(); closeErr != nil {
+			t.Fatalf("write %s: %v; close after write failure: %v", tempPath, err, closeErr)
+		}
+		t.Fatalf("write %s: %v", tempPath, err)
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		if closeErr := tempFile.Close(); closeErr != nil {
+			t.Fatalf("chmod %s: %v; close after chmod failure: %v", tempPath, err, closeErr)
+		}
+		t.Fatalf("chmod %s: %v", tempPath, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		t.Fatalf("close %s: %v", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		t.Fatalf("rename %s to %s: %v", tempPath, path, err)
 	}
 }

@@ -259,6 +259,9 @@ func (m *pythonStringMask) maskMultilineString(line string, index *int, builder 
 	if m.maskMultilineFStringReplacementString(line, index, builder) {
 		return true
 	}
+	if m.maskFStringBraceBackslash(line, index, builder) {
+		return true
+	}
 	if m.maskActiveStringEscape(line, index, builder) {
 		return true
 	}
@@ -347,6 +350,10 @@ func (m *pythonStringMask) maskNestedFStringReplacementString(line string, index
 }
 
 func (m *pythonStringMask) maskNestedFStringText(line string, index *int, builder *strings.Builder, state *pythonReplacementStringState) bool {
+	if state.fString && line[*index] == '\\' && *index+1 < len(line) && line[*index+1] == '{' {
+		maskByte(line, index, builder)
+		return true
+	}
 	if maskReplacementStringEscape(line, index, builder, &state.lineContinued, len(state.delimiter) == 1) {
 		return true
 	}
@@ -376,13 +383,18 @@ func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *
 		m.startFStringReplacementString(line, index, builder)
 		return true
 	}
-	if current == '#' && !inFormatSpecText {
+	if current == '#' && !*formatSpec {
 		writeSpaces(builder, len(line)-*index)
 		*index = len(line)
 		return true
 	}
 	builder.WriteByte(' ')
 	*index++
+	updateFStringReplacementExpressionState(current, inFormatSpecText, depth, formatSpec, bracketDepth)
+	return true
+}
+
+func updateFStringReplacementExpressionState(current byte, inFormatSpecText bool, depth *int, formatSpec *bool, bracketDepth *int) {
 	switch current {
 	case '(', '[':
 		if !inFormatSpecText {
@@ -405,6 +417,13 @@ func (m *pythonStringMask) maskFStringReplacementExpression(line string, index *
 			*formatSpec = true
 		}
 	}
+}
+
+func (m *pythonStringMask) maskFStringBraceBackslash(line string, index *int, builder *strings.Builder) bool {
+	if !m.multilineFString || line[*index] != '\\' || *index+1 >= len(line) || line[*index+1] != '{' {
+		return false
+	}
+	maskByte(line, index, builder)
 	return true
 }
 
@@ -574,10 +593,10 @@ func hasPythonFStringPrefix(line string, quoteIndex int) bool {
 		return false
 	}
 	prefixStart := quoteIndex
-	for prefixStart > 0 && strings.ContainsRune("rRuUbBfF", rune(line[prefixStart-1])) {
+	for prefixStart > 0 && strings.ContainsRune("rRuUbBfFtT", rune(line[prefixStart-1])) {
 		prefixStart--
 	}
-	return strings.ContainsAny(line[prefixStart:quoteIndex], "fF")
+	return strings.ContainsAny(line[prefixStart:quoteIndex], "fFtT")
 }
 
 func continuePendingFromImport(pending **pendingFromImport, trimmed string, lineNoComment string, filePath string, repoPath string, index int) ([]importBinding, bool) {
