@@ -12,27 +12,6 @@ on:
       - unlabeled
 
 jobs:
-  extension-changes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      vscode_extension: ${{ steps.filter.outputs.vscode_extension }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Detect VS Code extension changes
-        id: filter
-        uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
-        with:
-          filters: |
-            vscode_extension:
-              - 'extensions/vscode-lopper/**'
-
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -750,8 +729,6 @@ jobs:
 
   vscode-smoke:
     name: vscode-smoke (${{ matrix.os }})
-    needs: extension-changes
-    if: ${{ needs.extension-changes.outputs.vscode_extension == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

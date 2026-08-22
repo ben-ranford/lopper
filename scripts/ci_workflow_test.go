@@ -527,10 +527,17 @@ func assertScenarioUsesDistinctMergeBase(t *testing.T, scenario prBaseScenario) 
 func assertActFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string) {
 	t.Helper()
 
+	assertFetchStepResolvesImmutableBase(t, scenario, script, runLabel, defaultShellEnv())
+}
+
+func assertFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenario, script string, runLabel string, baseEnv []string) {
+	t.Helper()
+
 	githubEnv := filepath.Join(t.TempDir(), "github.env")
-	output, err := runShellCommand(scenario.worktree, script, map[string]string{
+	output, err := runShellCommandWithBaseEnv(scenario.worktree, script, baseEnv, map[string]string{
 		"ACT":        "1",
 		"BASE_REF":   "main",
+		"BASE_SHA":   "",
 		"GITHUB_ENV": githubEnv,
 	})
 	if err != nil {
@@ -542,6 +549,65 @@ func assertActFetchStepResolvesImmutableBase(t *testing.T, scenario prBaseScenar
 
 	envText := readFileText(t, githubEnv)
 	assertImmutableBaseValue(t, envText, scenario.baseSHA, scenario.headParentSHA, scenario.driftSHA, runLabel+" exported env")
+}
+
+func TestCIWorkflowActFallbackIgnoresHostileInheritedBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	scenario := newPRBaseScenario(t)
+	assertScenarioUsesDistinctMergeBase(t, scenario)
+	hostileEnv := append(defaultShellEnv(), "BASE_SHA="+scenario.driftSHA)
+
+	for _, cfg := range []struct {
+		jobName  string
+		runLabel string
+	}{
+		{jobName: "verify", runLabel: "verify"},
+		{jobName: "verify-rolling", runLabel: "verify-rolling"},
+	} {
+		fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
+		assertFetchStepResolvesImmutableBase(t, scenario, fetchBase.Run, cfg.runLabel, hostileEnv)
+	}
+}
+
+func TestCIWorkflowFetchStepsHonorExplicitPRBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	scenario := newPRBaseScenario(t)
+	assertScenarioUsesDistinctMergeBase(t, scenario)
+	hostileEnv := append(defaultShellEnv(), "BASE_SHA="+scenario.driftSHA)
+
+	for _, cfg := range []struct {
+		jobName  string
+		runLabel string
+	}{
+		{jobName: "verify", runLabel: "verify"},
+		{jobName: "verify-rolling", runLabel: "verify-rolling"},
+	} {
+		fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
+		githubEnv := filepath.Join(t.TempDir(), "github.env")
+		output, err := runShellCommandWithBaseEnv(scenario.worktree, fetchBase.Run, hostileEnv, map[string]string{
+			"ACT":        "1",
+			"BASE_REF":   "main",
+			"BASE_SHA":   scenario.baseSHA,
+			"GITHUB_ENV": githubEnv,
+		})
+		if err != nil {
+			t.Fatalf("run %s fetch step with explicit base SHA: %v\n%s", cfg.runLabel, err, output)
+		}
+		if strings.Contains(output, "resolved immutable merge base") {
+			t.Fatalf("%s fetch step unexpectedly used ACT fallback despite explicit base SHA:\n%s", cfg.runLabel, output)
+		}
+
+		envText := readFileText(t, githubEnv)
+		assertImmutableBaseValue(t, envText, scenario.baseSHA, scenario.headParentSHA, scenario.driftSHA, cfg.runLabel+" explicit base exported env")
+	}
 }
 
 func assertRunStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, script string, cfg prBaseWorkflowJobConfig) {
@@ -639,14 +705,41 @@ func assertImmutableBaseValue(t *testing.T, text string, wantBaseSHA string, for
 }
 
 func runShellCommand(dir, script string, env map[string]string) (string, error) {
+	return runShellCommandWithBaseEnv(dir, script, defaultShellEnv(), env)
+}
+
+func runShellCommandWithBaseEnv(dir, script string, baseEnv []string, env map[string]string) (string, error) {
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = dir
-	cmd.Env = append(gitexec.SanitizedEnv(), "PATH="+os.Getenv("PATH"))
-	for key, value := range env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = overlayShellEnv(baseEnv, env)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+func defaultShellEnv() []string {
+	return append(gitexec.SanitizedEnv(), "PATH="+os.Getenv("PATH"))
+}
+
+func overlayShellEnv(base []string, env map[string]string) []string {
+	overrides := make(map[string]struct{}, len(env))
+	for key := range env {
+		overrides[key] = struct{}{}
+	}
+
+	result := make([]string, 0, len(base)+len(env))
+	for _, entry := range base {
+		key, _, hasValue := strings.Cut(entry, "=")
+		if hasValue {
+			if _, present := overrides[key]; present {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	for key, value := range env {
+		result = append(result, key+"="+value)
+	}
+	return result
 }
 
 func shellQuote(path string) string {
@@ -660,6 +753,12 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code smoke condition", got: vscodeSmoke.If, want: ""},
+	})
+	if len(vscodeSmoke.Needs) != 0 {
+		t.Fatalf("VS Code smoke must not depend on a skip-producing change filter, got needs %v", vscodeSmoke.Needs)
+	}
 	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
 	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
 	assertWorkflowStringValues(t, []workflowStringValue{
