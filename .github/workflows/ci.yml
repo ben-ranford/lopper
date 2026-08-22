@@ -781,23 +781,54 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Fetch PR base
+      - name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
+          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"; then
+                echo "::error::ACT pull_request event payload omitted PR base SHA and HEAD^ is unavailable; cannot prepare memory benchmark base." >&2
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; using immutable HEAD^ fallback ${base_sha}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
+          fi
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target with rolling defaults
         env:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${PR_BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then

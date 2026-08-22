@@ -1,10 +1,15 @@
 package scripts
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/gitexec"
 )
 
 type pullRequestTrigger struct {
@@ -318,6 +323,174 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 		`if [ "$status" = "2" ]`,
 		`if [ "$status" -eq 2 ]`,
 	})
+}
+
+func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	verifyRolling := workflowJobByName(t, workflow.Jobs, "verify-rolling")
+	assertWorkflowStepOrder(t, verifyRolling, "Resolve PR base ref", "Fetch PR base", "Run CI target with rolling defaults")
+
+	resolveBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Resolve PR base ref")
+	assertWorkflowStepRunContainsAll(t, resolveBase, "resolve rolling PR base ref", []string{
+		`printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"`,
+		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"`,
+	})
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
+	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch rolling PR base", []string{
+		`base_sha="${BASE_SHA:-}"`,
+		`git fetch --no-tags origin "${base_sha}"`,
+		`git fetch --no-tags origin "${base_ref}"`,
+		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null`,
+		`git merge-base --is-ancestor "${base_sha}" HEAD`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, fetchBase, "fetch rolling PR base", []string{
+		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+	})
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+	assertWorkflowStepRunContainsAll(t, runCI, "run rolling CI target", []string{
+		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
+		`export MEMORY_BENCH_ENFORCE=0`,
+		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "run rolling CI target", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
+	})
+}
+
+func TestCIWorkflowVerifyRollingExportsImmutableBaseSHAWhenBaseRefDrifts(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	runGitCommand(t, t.TempDir(), "init", "--bare", origin)
+
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatalf("create seed repo: %v", err)
+	}
+	runGitCommand(t, seed, "init", "-b", "main")
+	runGitCommand(t, seed, "config", "user.name", "Ben Ranford")
+	runGitCommand(t, seed, "config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+
+	writeFile(t, filepath.Join(seed, "README.md"), "base\n")
+	runGitCommand(t, seed, "add", "README.md")
+	runGitCommand(t, seed, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+
+	runGitCommand(t, seed, "checkout", "-b", "feature")
+	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-1\n")
+	runGitCommand(t, seed, "add", "feature.txt")
+	runGitCommand(t, seed, "commit", "-m", "feature commit one")
+	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-2\n")
+	runGitCommand(t, seed, "add", "feature.txt")
+	runGitCommand(t, seed, "commit", "-m", "feature commit two")
+
+	runGitCommand(t, seed, "checkout", "main")
+	writeFile(t, filepath.Join(seed, "main.txt"), "drift\n")
+	runGitCommand(t, seed, "add", "main.txt")
+	runGitCommand(t, seed, "commit", "-m", "main drift")
+	driftSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+
+	runGitCommand(t, seed, "remote", "add", "origin", origin)
+	runGitCommand(t, seed, "push", origin, "main", "feature")
+
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	runGitCommand(t, t.TempDir(), "clone", origin, worktree)
+	runGitCommand(t, worktree, "checkout", "feature")
+
+	if baseSHA == driftSHA {
+		t.Fatal("test setup must drift the PR base ref")
+	}
+	if output, err := runShellCommand(worktree, `git merge-base --is-ancestor "$DRIFT_SHA" HEAD`, map[string]string{"DRIFT_SHA": driftSHA}); err == nil {
+		t.Fatalf("drifted base ref unexpectedly remained an ancestor of the PR head:\n%s", output)
+	}
+
+	githubEnv := filepath.Join(t.TempDir(), "github.env")
+	runnerTemp := filepath.Join(t.TempDir(), "runner-temp")
+	if err := os.MkdirAll(runnerTemp, 0o755); err != nil {
+		t.Fatalf("create runner temp: %v", err)
+	}
+	if output, err := runShellCommand(worktree, fetchBase.Run, map[string]string{
+		"BASE_REF":   "main",
+		"BASE_SHA":   baseSHA,
+		"GITHUB_ENV": githubEnv,
+	}); err != nil {
+		t.Fatalf("run verify-rolling fetch step: %v\n%s", err, output)
+	}
+
+	envBytes, err := os.ReadFile(githubEnv)
+	if err != nil {
+		t.Fatalf("read exported workflow env: %v", err)
+	}
+	envText := string(envBytes)
+	if !strings.Contains(envText, "MEMORY_BENCH_BASE="+baseSHA+"\n") {
+		t.Fatalf("verify-rolling exported env missing immutable base SHA %q:\n%s", baseSHA, envText)
+	}
+	if strings.Contains(envText, driftSHA) {
+		t.Fatalf("verify-rolling exported env must not contain drifted base ref SHA %q:\n%s", driftSHA, envText)
+	}
+
+	makeLog := filepath.Join(runnerTemp, "make-env.txt")
+	fakeBin := filepath.Join(t.TempDir(), "fakebin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("create fake bin dir: %v", err)
+	}
+	writeExecutableFile(t, filepath.Join(fakeBin, "make"), "#!/bin/sh\nset -eu\nprintf 'MEMORY_BENCH_BASE=%s\\n' \"$MEMORY_BENCH_BASE\" > "+shellQuote(makeLog)+"\nprintf 'MEMORY_BENCH_ENFORCE=%s\\n' \"$MEMORY_BENCH_ENFORCE\" >> "+shellQuote(makeLog)+"\nprintf 'BUILD_CHANNEL=%s\\n' \"$BUILD_CHANNEL\" >> "+shellQuote(makeLog)+"\n")
+
+	if output, err := runShellCommand(worktree, runCI.Run, map[string]string{
+		"GH_EVENT_NAME":     "pull_request",
+		"BUILD_CHANNEL":     "rolling",
+		"MEMORY_BENCH_BASE": baseSHA,
+		"RUNNER_TEMP":       runnerTemp,
+		"PATH":              fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}); err != nil {
+		t.Fatalf("run verify-rolling CI step: %v\n%s", err, output)
+	}
+
+	makeEnv, err := os.ReadFile(makeLog)
+	if err != nil {
+		t.Fatalf("read fake make env log: %v", err)
+	}
+	makeEnvText := string(makeEnv)
+	for _, want := range []string{
+		"MEMORY_BENCH_BASE=" + baseSHA,
+		"MEMORY_BENCH_ENFORCE=0",
+		"BUILD_CHANNEL=rolling",
+	} {
+		if !strings.Contains(makeEnvText, want+"\n") {
+			t.Fatalf("verify-rolling run step missing %q:\n%s", want, makeEnvText)
+		}
+	}
+	if strings.Contains(makeEnvText, driftSHA) {
+		t.Fatalf("verify-rolling run step must not pass drifted base ref SHA %q:\n%s", driftSHA, makeEnvText)
+	}
+}
+
+func runShellCommand(dir, script string, env map[string]string) (string, error) {
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = append(gitexec.SanitizedEnv(), "PATH="+os.Getenv("PATH"))
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
 }
 
 func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *testing.T) {
