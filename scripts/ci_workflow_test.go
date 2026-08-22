@@ -241,6 +241,22 @@ func TestInlineSuppressionTrackerControllerFailsClosedBeforeMutations(t *testing
 	})
 }
 
+func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
+		"GH_EVENT_NAME":               "${{ github.event_name }}",
+		"SUPPRESSION_TRACKING_OUTPUT": ".artifacts/inline-suppressions.json",
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
+		`GH_TOKEN`,
+	})
+}
+
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
 	t.Helper()
 
@@ -351,27 +367,24 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
+		`resolve_act_merge_base() {`,
 		`base_sha="${BASE_SHA:-}"`,
 		`if [ -z "${base_sha}" ]; then`,
-		`echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2`,
+		`base_sha="$(resolve_act_merge_base "${base_ref}")"`,
 		`git fetch --no-tags origin "${base_sha}"`,
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
-		`git merge-base -- "${base_sha}" HEAD`,
+		`git merge-base --is-ancestor "${base_sha}" HEAD`,
 		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 
-	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
-	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
-		"GH_EVENT_NAME":               "${{ github.event_name }}",
-		"SUPPRESSION_TRACKING_OUTPUT": ".artifacts/inline-suppressions.json",
+	lopperBase := workflowStepByName(t, workflow.Jobs, "verify", "Run lopper self-analysis (base branch)")
+	assertWorkflowStepRunContainsAll(t, lopperBase, "lopper immutable base", []string{
+		`base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
+		`git worktree add --detach .artifacts/base "${base_sha}"`,
 	})
-	assertWorkflowStepRunContainsAll(t, runCI, "ci verify immutable memory bench base", []string{
-		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
-	})
-	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify immutable memory bench base", []string{
-		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
-		`GH_TOKEN`,
+	assertWorkflowStepRunOmitsAll(t, lopperBase, "lopper immutable base", []string{
+		`git worktree add --detach .artifacts/base "origin/${base_ref}"`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
@@ -448,8 +461,11 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
-	if vscodeSmoke.If != "" || len(vscodeSmoke.Needs) != 0 {
-		t.Fatalf("vscode-smoke must execute without a path-filter skip: if=%q needs=%v", vscodeSmoke.If, vscodeSmoke.Needs)
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "VS Code smoke condition", got: vscodeSmoke.If, want: ""},
+	})
+	if len(vscodeSmoke.Needs) != 0 {
+		t.Fatalf("VS Code smoke must not depend on a skip-producing change filter, got needs %v", vscodeSmoke.Needs)
 	}
 	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
 	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
