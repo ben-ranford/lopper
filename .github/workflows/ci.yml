@@ -113,15 +113,53 @@ jobs:
           if [ -n "${base_sha}" ]; then
             git fetch --no-tags --depth=1 origin "${base_sha}"
           fi
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          git fetch --no-tags origin "${base_ref}"
+
+      - name: Resolve memory benchmark base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
+          tracked_base_ref="origin/${base_ref}"
+          if [ -z "${base_sha}" ]; then
+            echo "PR base SHA is missing; failing closed." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "PR base SHA '${base_sha}' is missing after fetch; failing closed." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${tracked_base_ref}^{commit}" >/dev/null; then
+            echo "PR base ref '${tracked_base_ref}' is missing after fetch; failing closed." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" "${tracked_base_ref}"; then
+            echo "PR base ref '${tracked_base_ref}' does not contain base SHA '${base_sha}'; failing closed." >&2
+            exit 1
+          fi
+          if ! memory_bench_base="$(git merge-base -- "${base_sha}" HEAD 2>/dev/null)"; then
+            echo "PR base SHA '${base_sha}' is not related to HEAD; failing closed." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${memory_bench_base}^{commit}" >/dev/null; then
+            echo "Resolved memory benchmark base '${memory_bench_base}' is missing; failing closed." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${memory_bench_base}" HEAD; then
+            echo "Resolved memory benchmark base '${memory_bench_base}' is not an ancestor of HEAD; failing closed." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${memory_bench_base}" "${base_sha}"; then
+            echo "Resolved memory benchmark base '${memory_bench_base}' is not an ancestor of PR base SHA '${base_sha}'; failing closed." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${memory_bench_base}" >> "$GITHUB_ENV"
 
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
@@ -765,19 +803,64 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          base_sha="${PR_BASE_SHA:-}"
+          if [ -n "${base_sha}" ]; then
+            git fetch --no-tags --depth=1 origin "${base_sha}"
+          fi
+          git fetch --no-tags origin "${base_ref}"
+
+      - name: Resolve memory benchmark base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base_ref="${PR_BASE_REF:-main}"
+          base_sha="${PR_BASE_SHA:-}"
+          tracked_base_ref="origin/${base_ref}"
+          if [ -z "${base_sha}" ]; then
+            echo "PR base SHA is missing; failing closed." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "PR base SHA '${base_sha}' is missing after fetch; failing closed." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${tracked_base_ref}^{commit}" >/dev/null; then
+            echo "PR base ref '${tracked_base_ref}' is missing after fetch; failing closed." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" "${tracked_base_ref}"; then
+            echo "PR base ref '${tracked_base_ref}' does not contain base SHA '${base_sha}'; failing closed." >&2
+            exit 1
+          fi
+          if ! memory_bench_base="$(git merge-base -- "${base_sha}" HEAD 2>/dev/null)"; then
+            echo "PR base SHA '${base_sha}' is not related to HEAD; failing closed." >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${memory_bench_base}^{commit}" >/dev/null; then
+            echo "Resolved memory benchmark base '${memory_bench_base}' is missing; failing closed." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${memory_bench_base}" HEAD; then
+            echo "Resolved memory benchmark base '${memory_bench_base}' is not an ancestor of HEAD; failing closed." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${memory_bench_base}" "${base_sha}"; then
+            echo "Resolved memory benchmark base '${memory_bench_base}' is not an ancestor of PR base SHA '${base_sha}'; failing closed." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${memory_bench_base}" >> "$GITHUB_ENV"
 
       - name: Run CI target with rolling defaults
         env:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${PR_BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then

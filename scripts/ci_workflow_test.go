@@ -218,6 +218,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		"Resolve PR base ref",
 		"Write PR body for regression proof",
 		"Fetch PR base",
+		"Resolve memory benchmark base",
 		"Run CI target",
 		"Prove regression tests for fix PRs",
 	}
@@ -243,7 +244,20 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
 		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
-		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+		`git fetch --no-tags origin "${base_ref}"`,
+	})
+
+	resolveBenchBase := workflowStepByName(t, workflow.Jobs, "verify", "Resolve memory benchmark base")
+	assertWorkflowStepRunContainsAll(t, resolveBenchBase, "resolve memory benchmark base", []string{
+		`tracked_base_ref="origin/${base_ref}"`,
+		`PR base SHA is missing; failing closed.`,
+		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
+		`git rev-parse --verify -q --end-of-options "${tracked_base_ref}^{commit}"`,
+		`git merge-base --is-ancestor "${base_sha}" "${tracked_base_ref}"`,
+		`memory_bench_base="$(git merge-base -- "${base_sha}" HEAD 2>/dev/null)"`,
+		`git merge-base --is-ancestor "${memory_bench_base}" HEAD`,
+		`git merge-base --is-ancestor "${memory_bench_base}" "${base_sha}"`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${memory_bench_base}" >> "$GITHUB_ENV"`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
@@ -269,6 +283,9 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci`,
 	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
+	})
 
 	failUnapproved := workflowStepByName(t, workflow.Jobs, "verify", "Fail on unapproved memory regression")
 	assertWorkflowStepRunContainsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
@@ -278,6 +295,48 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	assertWorkflowStepRunOmitsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
 		`if [ "$status" = "2" ]`,
 		`if [ "$status" -eq 2 ]`,
+	})
+}
+
+func TestCIWorkflowRollingUsesResolvedMemoryBenchmarkBase(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	verifyRolling := workflowJobByName(t, workflow.Jobs, "verify-rolling")
+	assertWorkflowStepOrder(t, verifyRolling, "Fetch PR base", "Resolve memory benchmark base", "Run CI target with rolling defaults")
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
+	assertWorkflowStepEnv(t, fetchBase, "rolling fetch PR base", map[string]string{
+		"PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+		"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, fetchBase, "rolling fetch PR base", []string{
+		`base_sha="${PR_BASE_SHA:-}"`,
+		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
+		`git fetch --no-tags origin "${base_ref}"`,
+	})
+
+	resolveBenchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Resolve memory benchmark base")
+	assertWorkflowStepEnv(t, resolveBenchBase, "rolling resolve memory benchmark base", map[string]string{
+		"PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+		"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+	})
+	assertWorkflowStepRunContainsAll(t, resolveBenchBase, "rolling resolve memory benchmark base", []string{
+		`tracked_base_ref="origin/${base_ref}"`,
+		`git merge-base --is-ancestor "${base_sha}" "${tracked_base_ref}"`,
+		`memory_bench_base="$(git merge-base -- "${base_sha}" HEAD 2>/dev/null)"`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${memory_bench_base}" >> "$GITHUB_ENV"`,
+	})
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+	assertWorkflowStepRunContainsAll(t, runCI, "rolling ci run target", []string{
+		`export MEMORY_BENCH_ENFORCE=0`,
+		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "rolling ci run target", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
 	})
 }
 
