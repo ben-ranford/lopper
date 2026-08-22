@@ -2,12 +2,12 @@ package php
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -59,7 +59,7 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
 
-	if err := loadComposerLockMappings(repoPath, &data); errors.Is(err, safeio.ErrFileTooLarge) {
+	if err := loadComposerLockMappings(repoPath, &data); isPureOversizedFileError(err) {
 		warnings = append(warnings, fmt.Sprintf("skipped composer.lock because it exceeds %d bytes", maxComposerLockBytes))
 	} else if err != nil {
 		return data, nil, err
@@ -173,4 +173,8 @@ func unmarshalRepoJSON(filename string, bytes []byte, dest any) error {
 		return fmt.Errorf("parse %s: %w", filename, err)
 	}
 	return nil
+}
+
+func isPureOversizedFileError(err error) bool {
+	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
 }
