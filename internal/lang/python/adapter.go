@@ -205,6 +205,7 @@ type pythonStringMask struct {
 type pythonReplacementFieldState struct {
 	formatSpec   bool
 	bracketDepth int
+	curlyDepth   int
 }
 
 type pythonReplacementStringState struct {
@@ -414,11 +415,19 @@ func updateFStringReplacementExpressionState(current byte, inFormatSpecText bool
 			field.bracketDepth--
 		}
 	case '{':
-		*fields = append(*fields, pythonReplacementFieldState{})
+		if inFormatSpecText {
+			*fields = append(*fields, pythonReplacementFieldState{})
+			return
+		}
+		field.curlyDepth++
 	case '}':
+		if !inFormatSpecText && field.curlyDepth > 0 {
+			field.curlyDepth--
+			return
+		}
 		*fields = (*fields)[:len(*fields)-1]
 	case ':':
-		if !field.formatSpec && field.bracketDepth == 0 {
+		if !field.formatSpec && field.bracketDepth == 0 && field.curlyDepth == 0 {
 			field.formatSpec = true
 		}
 	}
