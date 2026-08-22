@@ -328,7 +328,7 @@ func TestParsePHPImportsBoundsGroupedUseBindings(t *testing.T) {
 
 	parsed := parsePHPImports([]byte(content.String()), "adversarial-grouped-use.php", resolver)
 
-	if !parsed.useStatementLimitHit {
+	if !parsed.useBindingLimitHit {
 		t.Fatalf("expected grouped use binding limit to be reported")
 	}
 	if len(parsed.imports) != maxPHPUseStatementsPerFile {
@@ -336,6 +336,34 @@ func TestParsePHPImportsBoundsGroupedUseBindings(t *testing.T) {
 	}
 	if parsed.groupedByDep[helpersVendorLibDependency] != 1 {
 		t.Fatalf("expected grouped dependency attribution, got %#v", parsed.groupedByDep)
+	}
+}
+
+func TestParsePHPImportsBoundsUnresolvedGroupedUseParts(t *testing.T) {
+	resolver := composerResolver{declared: map[string]struct{}{}}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for stmt := 0; stmt < 2; stmt++ {
+		content.WriteString("use Vendor\\Lib\\{")
+		for i := 0; i < maxPHPUseStatementsPerFile; i++ {
+			if i > 0 {
+				content.WriteString(", ")
+			}
+			fmt.Fprintf(&content, "Thing%d", i)
+		}
+		content.WriteString("};\n")
+	}
+
+	parsed := parsePHPImports([]byte(content.String()), "adversarial-unresolved-grouped-use.php", resolver)
+
+	if !parsed.useBindingLimitHit {
+		t.Fatal("expected unresolved grouped use parts to consume the binding budget")
+	}
+	if len(parsed.imports) != 0 {
+		t.Fatalf("expected unresolved grouped use parts to emit no imports, got %d", len(parsed.imports))
+	}
+	if parsed.unresolvedCount != maxPHPUseStatementsPerFile {
+		t.Fatalf("expected unresolved count to stop at %d, got %d", maxPHPUseStatementsPerFile, parsed.unresolvedCount)
 	}
 }
 
@@ -464,6 +492,42 @@ func TestScanRepoSkipsOversizedPHPSourceWithWarning(t *testing.T) {
 	}
 	if !containsWarning(scan.Warnings, "skipped 1 large PHP file") || !containsWarning(scan.Warnings, fmt.Sprintf("%d bytes", maxScannablePHPFile)) {
 		t.Fatalf("expected oversized PHP warning with byte limit, got %#v", scan.Warnings)
+	}
+	if !scan.UsageIncomplete {
+		t.Fatal("expected oversized PHP source to mark scan usage incomplete")
+	}
+}
+
+func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *testing.T) {
+	scan := scanResult{
+		UsageIncomplete:      true,
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		Files: []fileScan{{
+			Path: "src/small.php",
+			Imports: []importBinding{{
+				Dependency: helpersVendorLibDependency,
+				Module:     "Vendor\\Lib\\Thing",
+				Name:       "Thing",
+				Local:      "Thing",
+			}},
+			Usage: map[string]int{"Thing": 0},
+		}},
+	}
+
+	dep, _ := buildDependencyReport(helpersVendorLibDependency, scan, 40)
+	if !dep.UsageIncomplete {
+		t.Fatal("expected dependency report to be marked usage incomplete")
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be suppressed, got %#v", dep.UnusedImports)
+	}
+	if len(dep.SuppressedUnusedImports) != 1 {
+		t.Fatalf("expected one suppressed unused import, got %#v", dep.SuppressedUnusedImports)
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect removal recommendation with incomplete usage: %#v", dep.Recommendations)
+		}
 	}
 }
 

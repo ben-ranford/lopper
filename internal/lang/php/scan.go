@@ -21,6 +21,7 @@ type scanResult struct {
 	DeclaredDependencies       map[string]struct{}
 	GroupedImportsByDependency map[string]int
 	DynamicUsageByDependency   map[string]int
+	UsageIncomplete            bool
 }
 
 type fileScan struct {
@@ -37,6 +38,7 @@ type scanState struct {
 	skippedLargeFiles           int
 	skippedNestedPackage        int
 	useStatementLimitHits       int
+	useBindingLimitHits         int
 	namespaceReferenceLimitHits int
 }
 
@@ -121,6 +123,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	content, relPath, err := readPHPFile(c.repoPath, path)
 	if errors.Is(err, safeio.ErrFileTooLarge) {
 		c.state.skippedLargeFiles++
+		c.result.UsageIncomplete = true
 		return nil
 	}
 	if err != nil {
@@ -139,8 +142,13 @@ func (c *scanCoordinator) scanFile(path string) error {
 	if parsed.useStatementLimitHit {
 		c.state.useStatementLimitHits++
 	}
+	if parsed.useBindingLimitHit {
+		c.state.useBindingLimitHits++
+		c.result.UsageIncomplete = true
+	}
 	if parsed.namespaceReferenceLimitHit {
 		c.state.namespaceReferenceLimitHits++
+		c.result.UsageIncomplete = true
 	}
 	c.result.Files = append(c.result.Files, fileScan{
 		Path:    relPath,
@@ -198,6 +206,9 @@ func appendScanWarnings(result *scanResult, state scanState) {
 	}
 	if state.useStatementLimitHits > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP use import scan after %d statement(s) in %d file(s) to keep analysis bounded", maxPHPUseStatementsPerFile, state.useStatementLimitHits))
+	}
+	if state.useBindingLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP use import scan after %d binding part(s) in %d file(s) to keep analysis bounded", maxPHPUseStatementsPerFile, state.useBindingLimitHits))
 	}
 	if state.namespaceReferenceLimitHits > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace reference scan after %d match(es) in %d file(s) to keep analysis bounded", maxPHPNamespaceReferencesPerFile, state.namespaceReferenceLimitHits))
