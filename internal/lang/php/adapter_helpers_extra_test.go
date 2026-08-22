@@ -239,6 +239,9 @@ func TestLoadComposerDataWarnsAndContinuesWhenLockIsOversized(t *testing.T) {
 	if _, ok := data.DeclaredDependencies[helpersVendorLibDependency]; !ok {
 		t.Fatalf("expected manifest dependency to be retained, got %#v", data.DeclaredDependencies)
 	}
+	if !data.UsageIncomplete {
+		t.Fatal("expected oversized optional composer.lock to mark dependency coverage incomplete")
+	}
 	if !containsWarning(warnings, "skipped composer.lock because it exceeds") {
 		t.Fatalf("expected oversized lock warning, got %#v", warnings)
 	}

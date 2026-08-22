@@ -57,6 +57,7 @@ func newScanCoordinator(repoPath string, composer composerData) scanCoordinator 
 			DeclaredDependencies:       composer.DeclaredDependencies,
 			GroupedImportsByDependency: make(map[string]int),
 			DynamicUsageByDependency:   make(map[string]int),
+			UsageIncomplete:            composer.UsageIncomplete,
 		},
 	}
 }

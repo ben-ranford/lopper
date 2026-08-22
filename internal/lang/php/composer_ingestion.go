@@ -15,6 +15,7 @@ type composerData struct {
 	DeclaredDependencies map[string]struct{}
 	NamespaceToDep       map[string]string
 	LocalNamespaces      map[string]struct{}
+	UsageIncomplete      bool
 }
 
 type composerManifest struct {
@@ -60,6 +61,7 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 	}
 
 	if err := loadComposerLockMappings(repoPath, &data); isPureOversizedFileError(err) {
+		data.UsageIncomplete = true
 		warnings = append(warnings, fmt.Sprintf("skipped composer.lock because it exceeds %d bytes", maxComposerLockBytes))
 	} else if err != nil {
 		return data, nil, err
