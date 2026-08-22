@@ -211,6 +211,31 @@ func TestMapIncludeToDependencyKeepsQualifiedThirdPartyStdBasenames(t *testing.T
 	}
 }
 
+func TestMapIncludeToDependencyPreservesQualifiedLookalikesOutsideSystemRoots(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	vendorRoot := filepath.Join(t.TempDir(), "vendor", "include")
+	testutil.MustWriteFile(t, source, "int main() { return 0; }\n")
+
+	for _, header := range []string{
+		"asm/vendor/sdk.hpp",
+		"asm-generic/vendor/sdk.hpp",
+		"backward/hash_map",
+		"parallel/base.h",
+	} {
+		header := header
+		t.Run(header, func(t *testing.T) {
+			testutil.MustWriteFile(t, filepath.Join(vendorRoot, filepath.FromSlash(header)), "// external lookalike\n")
+
+			want := dependencyFromIncludePath(header)
+			dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: header, Delimiter: '<'}, []string{vendorRoot}, newDependencyCatalog())
+			if dep != want || unresolved {
+				t.Fatalf("expected external lookalike %s to map to %q, got dep=%q unresolved=%v", header, want, dep, unresolved)
+			}
+		})
+	}
+}
+
 func TestMapIncludeToDependencyIgnoresRepoHeaderFromIncludeDir(t *testing.T) {
 	repo := t.TempDir()
 	source := filepath.Join(repo, "src", testMainCPPFileName)
