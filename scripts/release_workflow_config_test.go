@@ -3439,7 +3439,7 @@ func TestMakefileBenchGatePreservesExplicitlyEmptyBenchmarkConfiguration(t *test
 			repo, benchVars := newTempBenchGateGoRepo(t)
 			writeFile(t, filepath.Join(repo, "bench_test.go"), benchmarkTestSource("lopper", "BenchmarkRootConfiguration"))
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkConfiguration"))
-			runGitCommand(t, repo, "add", "go.mod", "bench_test.go", "benchpkg/bench_test.go")
+			runGitCommand(t, repo, "add", "go.mod", "go.sum", "bench_test.go", "benchpkg/bench_test.go")
 			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
 			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
 			benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
@@ -3567,7 +3567,7 @@ func TestMakefileBenchGateUsesDefaultsOnlyWhenBenchmarkConfigurationIsUnset(t *t
 	writeBenchGateSafeioStub(t, repo)
 	writeFile(t, filepath.Join(repo, "internal", "lang", "shared", "bench_test.go"), benchmarkTestSource("shared", "BenchmarkDefaultConfiguration"))
 	writeFile(t, filepath.Join(repo, "internal", "report", "bench_test.go"), benchmarkTestSource("report", "BenchmarkDefaultConfiguration"))
-	runGitCommand(t, repo, "add", "go.mod", "internal/lang/shared/bench_test.go", "internal/report/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "internal/lang/shared/bench_test.go", "internal/report/bench_test.go", "tools/benchdelta", "internal/safeio")
 	runGitCommand(t, repo, "commit", "-m", "add default benchmark packages")
 	benchVars["MEMORY_BENCH_BASE"] = "HEAD"
 	delete(benchVars, "BENCH_COUNT")
@@ -3818,7 +3818,7 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), benchmarkTestSource("benchpkgone", "BenchmarkPkgOneOnly", "BenchmarkShared"))
 	writeFile(t, filepath.Join(repo, "benchpkgone", "work.go"), basePkgOneSource)
 	writeFile(t, filepath.Join(repo, "benchpkgtwo", "bench_test.go"), benchmarkTestSource("benchpkgtwo", "BenchmarkPkgTwoOnly", "BenchmarkShared"))
-	runGitCommand(t, repo, "add", "go.mod", "benchpkgone/bench_test.go", "benchpkgone/work.go", "benchpkgtwo/bench_test.go")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkgone/bench_test.go", "benchpkgone/work.go", "benchpkgtwo/bench_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add base benchmarks")
 
 	headPkgOneSource := "package benchpkgone\n\nfunc benchmarkInput() int { return 2 }\n"
@@ -3914,7 +3914,7 @@ func BenchmarkConditional(b *testing.B) {
 			repo, benchVars := newTempBenchGateGoRepo(t)
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkSource)
 			writeFile(t, filepath.Join(repo, "benchpkg", "work.go"), "package benchpkg\n\nfunc benchmarkShouldFail() bool { return "+strconv.FormatBool(tc.baseFails)+" }\n")
-			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/work.go")
+			runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkg/bench_test.go", "benchpkg/work.go")
 			runGitCommand(t, repo, "commit", "-m", "add conditional benchmark")
 
 			writeFile(t, filepath.Join(repo, "benchpkg", "work.go"), "package benchpkg\n\nfunc benchmarkShouldFail() bool { return "+strconv.FormatBool(tc.headFails)+" }\n")
@@ -3964,7 +3964,7 @@ func TestMakefileBenchGatePreservesInvalidHelperThresholdExitWhenEnforcementDisa
 			copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
 			writeBenchGateSafeioStub(t, repo)
 			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkThresholdValidation"))
-			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+			runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
 			runGitCommand(t, repo, "commit", "-m", "add benchmark package")
 			benchVars["MEMORY_BENCH_ENFORCE"] = "0"
 			benchVars["MEMORY_BENCH_BASE"] = "HEAD"
@@ -3990,7 +3990,7 @@ func TestMakefileBenchGateFailsClosedWhenConfiguredPackageLosesAllHeadBenchmarks
 	repo, benchVars := newTempBenchGateGoRepo(t)
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), benchmarkTestSource("benchpkgone", "BenchmarkRemovedFromHead"))
 	writeFile(t, filepath.Join(repo, "benchpkgtwo", "bench_test.go"), benchmarkTestSource("benchpkgtwo", "BenchmarkStillPresent"))
-	runGitCommand(t, repo, "add", "go.mod", "benchpkgone/bench_test.go", "benchpkgtwo/bench_test.go")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkgone/bench_test.go", "benchpkgtwo/bench_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add configured benchmark packages")
 
 	writeFile(t, filepath.Join(repo, "benchpkgone", "bench_test.go"), "package benchpkgone\n")
@@ -4033,7 +4033,7 @@ func TestMakefileBenchGateRejectsChangedBenchmarkHarnessBeforeExecution(t *testi
 	baseHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n"
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
 	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), baseHarness)
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
+	runGitCommand(t, repo, "add", "go.mod", "go.sum", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
 
 	headHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 2 }\n"
@@ -6044,6 +6044,7 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		}
 	}
 	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire golang.org/x/sys v0.41.0\n")
+	writeFile(t, filepath.Join(repo, "go.sum"), "golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=\n"+"golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=\n")
 	return repo, map[string]string{
 		"GO":                          goPath,
 		"GO_BIN":                      goPath,

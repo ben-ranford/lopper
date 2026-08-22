@@ -212,7 +212,7 @@ func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, r
 
 func cleanupOpenedAnalysisCacheRoots(openedRoots []openedAnalysisCacheRoot, operationErr error) error {
 	if operationErr != nil {
-		operationErr = errors.Join(operationErr, removeCreatedAnalysisCacheRoots(openedRoots, false))
+		operationErr = errors.Join(operationErr, removeCreatedAnalysisCacheRoots(openedRoots, true))
 	}
 	closeErr := closeOpenedAnalysisCacheRoots(openedRoots)
 	if operationErr == nil && closeErr != nil {
