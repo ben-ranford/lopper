@@ -42,10 +42,9 @@ trim_value() {
 
 extract_metadata_field() {
 	local content="$1"
-	local key_pattern="$2"
 	local value=""
 
-	if [[ "$content" =~ (^|[[:space:];,])(${key_pattern})[[:space:]]*[:=][[:space:]]*([^;]+) ]]; then
+	if [[ "$content" =~ (^|[[:space:];,])($2)[[:space:]]*[:=][[:space:]]*([^;]+) ]]; then
 		value="$(trim_value "${BASH_REMATCH[3]}")"
 	fi
 	printf '%s\n' "$value"
@@ -100,6 +99,41 @@ write_tracking_body() {
 	} >"$body_file"
 }
 
+gh_issue_list() {
+	local repo="$1"
+	local fingerprint="$2"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number'
+		return
+	fi
+	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number'
+}
+
+gh_issue_comment() {
+	local repo="$1"
+	local issue_number="$2"
+	local body_file="$3"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue comment "$issue_number" --repo "$repo" --body-file "$body_file"
+		return
+	fi
+	"$gh_bin" issue comment "$issue_number" --body-file "$body_file"
+}
+
+gh_issue_create() {
+	local repo="$1"
+	local title="$2"
+	local body_file="$3"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue create --repo "$repo" --title "$title" --body-file "$body_file"
+		return
+	fi
+	"$gh_bin" issue create --title "$title" --body-file "$body_file"
+}
+
 ensure_tracking_issue() {
 	local file="$1"
 	local line="$2"
@@ -136,58 +170,31 @@ ensure_tracking_issue() {
 	write_tracking_body "$body_file" "$file" "$line" "$content" "$rationale" "$owner" "$removal_condition" "$fingerprint"
 	title="ci: track inline suppression in ${file}:${line}"
 
-	if [[ -n "$repo" ]]; then
-		existing_issue="$("$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number' 2>/dev/null)" || {
-			rm -f "$body_file"
-			echo "Unable to search GitHub tracking issues for ${file}:${line}." >&2
-			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be verified." >&2
-			return 1
-		}
-	else
-		existing_issue="$("$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number' 2>/dev/null)" || {
-			rm -f "$body_file"
-			echo "Unable to search GitHub tracking issues for ${file}:${line}." >&2
-			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be verified." >&2
-			return 1
-		}
-	fi
+	existing_issue="$(gh_issue_list "$repo" "$fingerprint" 2>/dev/null)" || {
+		rm -f "$body_file"
+		echo "Unable to search GitHub tracking issues for ${file}:${line}." >&2
+		echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be verified." >&2
+		return 1
+	}
 
 	if [[ -n "$existing_issue" ]]; then
-		if [[ -n "$repo" ]]; then
-			"$gh_bin" issue comment "$existing_issue" --repo "$repo" --body-file "$body_file" >/dev/null || {
-				rm -f "$body_file"
-				echo "Unable to update GitHub tracking issue #${existing_issue} for ${file}:${line}." >&2
-				echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be updated." >&2
-				return 1
-			}
-		else
-			"$gh_bin" issue comment "$existing_issue" --body-file "$body_file" >/dev/null || {
-				rm -f "$body_file"
-				echo "Unable to update GitHub tracking issue #${existing_issue} for ${file}:${line}." >&2
-				echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be updated." >&2
-				return 1
-			}
-		fi
+		gh_issue_comment "$repo" "$existing_issue" "$body_file" >/dev/null || {
+			rm -f "$body_file"
+			echo "Unable to update GitHub tracking issue #${existing_issue} for ${file}:${line}." >&2
+			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be updated." >&2
+			return 1
+		}
 		rm -f "$body_file"
 		echo "Updated GitHub tracking issue #${existing_issue} for inline suppression ${file}:${line}."
 		return 0
 	fi
 
-	if [[ -n "$repo" ]]; then
-		created_issue="$("$gh_bin" issue create --repo "$repo" --title "$title" --body-file "$body_file" 2>/dev/null)" || {
-			rm -f "$body_file"
-			echo "Unable to create GitHub tracking issue for inline suppression ${file}:${line}." >&2
-			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be created." >&2
-			return 1
-		}
-	else
-		created_issue="$("$gh_bin" issue create --title "$title" --body-file "$body_file" 2>/dev/null)" || {
-			rm -f "$body_file"
-			echo "Unable to create GitHub tracking issue for inline suppression ${file}:${line}." >&2
-			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be created." >&2
-			return 1
-		}
-	fi
+	created_issue="$(gh_issue_create "$repo" "$title" "$body_file" 2>/dev/null)" || {
+		rm -f "$body_file"
+		echo "Unable to create GitHub tracking issue for inline suppression ${file}:${line}." >&2
+		echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be created." >&2
+		return 1
+	}
 
 	rm -f "$body_file"
 	echo "Opened GitHub tracking issue for inline suppression ${file}:${line}: ${created_issue}"

@@ -488,6 +488,20 @@ jobs:
                 }
               }
             };
+            const loadChangedFileCount = async (pull) => {
+              if (Number.isInteger(pull.changed_files)) {
+                return pull.changed_files;
+              }
+              const response = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pull.number,
+              });
+              if (!Number.isInteger(response.data.changed_files)) {
+                throw new Error('Pull request changed file count is unavailable; refusing to publish tracking mutations.');
+              }
+              return response.data.changed_files;
+            };
             const recomputeSuppressionRecords = async () => {
               const pull = context.payload.pull_request;
               if (!pull?.number || !pull?.base?.sha || !pull?.head?.sha) {
@@ -499,6 +513,10 @@ jobs:
                 pull_number: pull.number,
                 per_page: 100,
               });
+              const changedFileCount = await loadChangedFileCount(pull);
+              if (files.length !== changedFileCount) {
+                throw new Error(`Trusted inline suppression recomputation saw ${files.length} changed files but GitHub reports ${changedFileCount}; refusing to publish tracking mutations.`);
+              }
               const records = new Map();
               for (const file of files) {
                 if (!['added', 'modified'].includes(file.status) || !sourceFilePattern.test(file.filename)) {
@@ -521,6 +539,15 @@ jobs:
             }
             if (records.size === 0) {
               core.info('No inline suppression records were produced.');
+              return;
+            }
+            const pull = context.payload.pull_request;
+            const isForkPullRequest = Boolean(
+              pull?.head?.repo?.fork === true ||
+              (pull?.head?.repo?.full_name && pull?.base?.repo?.full_name && pull.head.repo.full_name !== pull.base.repo.full_name),
+            );
+            if (isForkPullRequest) {
+              core.warning('Inline suppression tracking mutation skipped for fork pull request; metadata was validated without mutating issues.');
               return;
             }
 

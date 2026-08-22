@@ -140,6 +140,11 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`payload?.schema !== 'lopper-inline-suppressions-v1'`,
 		`payload.suppressions.length > 100`,
 		`github.rest.pulls.listFiles`,
+		`const changedFileCount = await loadChangedFileCount(pull);`,
+		`files.length !== changedFileCount`,
+		`refusing to publish tracking mutations`,
+		`const isForkPullRequest = Boolean(`,
+		`Inline suppression tracking mutation skipped for fork pull request`,
 		`const records = await recomputeSuppressionRecords();`,
 		`core.warning(`,
 		`repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
@@ -204,16 +209,65 @@ func TestCIWorkflowDoesNotTrustForgedInlineSuppressionArtifact(t *testing.T) {
 	assertWorkflowMutationAfter(t, script, "const records = await recomputeSuppressionRecords();", "await github.rest.issues.create({")
 }
 
+func TestCIWorkflowFailsClosedWhenInlineSuppressionRecomputeIsTruncated(t *testing.T) {
+	t.Parallel()
+
+	script := ciInlineSuppressionTrackingScript(t)
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: script}, "inline suppression pagination boundary guard", []string{
+		`const loadChangedFileCount = async (pull) => {`,
+		`Number.isInteger(pull.changed_files)`,
+		`github.rest.pulls.get({`,
+		`const changedFileCount = await loadChangedFileCount(pull);`,
+		`files.length !== changedFileCount`,
+		`Trusted inline suppression recomputation saw ${files.length} changed files but GitHub reports ${changedFileCount}`,
+		`refusing to publish tracking mutations`,
+	})
+	assertWorkflowMarkerOrder(t, script, "const changedFileCount = await loadChangedFileCount(pull);", "const records = new Map();")
+	assertWorkflowMarkerOrder(t, script, "files.length !== changedFileCount", "scanPatch(records, file.filename, file.patch, pull.head.sha);")
+	assertWorkflowMutationAfter(t, script, "files.length !== changedFileCount", "await github.rest.issues.update({")
+	assertWorkflowMutationAfter(t, script, "files.length !== changedFileCount", "await github.rest.issues.create({")
+}
+
+func TestCIWorkflowSkipsInlineSuppressionMutationsForForkPullRequests(t *testing.T) {
+	t.Parallel()
+
+	script := ciInlineSuppressionTrackingScript(t)
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: script}, "inline suppression fork mutation guard", []string{
+		`pull?.head?.repo?.fork === true`,
+		`pull.head.repo.full_name !== pull.base.repo.full_name`,
+		`if (isForkPullRequest) {`,
+		`Inline suppression tracking mutation skipped for fork pull request; metadata was validated without mutating issues.`,
+		`return;`,
+	})
+	assertWorkflowMarkerOrder(t, script, "const records = await recomputeSuppressionRecords();", "const isForkPullRequest = Boolean(")
+	assertWorkflowMarkerOrder(t, script, "if (isForkPullRequest) {", "await github.rest.issues.update({")
+	assertWorkflowMarkerOrder(t, script, "if (isForkPullRequest) {", "await github.rest.issues.create({")
+}
+
+func ciInlineSuppressionTrackingScript(t *testing.T) string {
+	t.Helper()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	return workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Track inline suppressions").With["script"]
+}
+
 func assertWorkflowMutationAfter(t *testing.T, script string, recomputeMarker string, mutationMarker string) {
 	t.Helper()
 
-	recomputeIndex := strings.Index(script, recomputeMarker)
-	mutationIndex := strings.Index(script, mutationMarker)
-	if recomputeIndex == -1 || mutationIndex == -1 {
-		t.Fatalf("workflow script missing recompute marker %q or mutation marker %q", recomputeMarker, mutationMarker)
+	assertWorkflowMarkerOrder(t, script, recomputeMarker, mutationMarker)
+}
+
+func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
+	t.Helper()
+
+	beforeIndex := strings.Index(script, beforeMarker)
+	afterIndex := strings.Index(script, afterMarker)
+	if beforeIndex == -1 || afterIndex == -1 {
+		t.Fatalf("workflow script missing order marker %q or %q", beforeMarker, afterMarker)
 	}
-	if mutationIndex < recomputeIndex {
-		t.Fatalf("workflow mutates before recomputing authoritative inline suppression records")
+	if afterIndex < beforeIndex {
+		t.Fatalf("workflow marker %q appeared before %q", afterMarker, beforeMarker)
 	}
 }
 
