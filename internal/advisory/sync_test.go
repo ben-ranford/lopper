@@ -3398,110 +3398,150 @@ func TestUpdateManifestRootLocalWriteFailuresPreserveEvidenceAndCleanup(t *testi
 	cleanupWriteErr := errors.New("write failure")
 	cleanupErr := errors.New("cleanup failure")
 	tempInfo := advisoryTempFileInfo(t)
-	for _, tc := range []struct {
-		name   string
-		root   *advisoryFakeRoot
-		expect func(error) bool
-	}{
-		{
-			name: "setup",
-			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
-				openFile: func(string, int, os.FileMode) (safeio.File, error) {
-					return nil, errors.New("open temp failure")
-				},
-			}),
-			expect: func(err error) bool { return err != nil && strings.Contains(err.Error(), "open temp failure") },
-		},
-		{
-			name: "write",
-			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
-				openFile: func(string, int, os.FileMode) (safeio.File, error) {
-					return &advisoryFakeFile{
-						write: func([]byte) (int, error) { return 0, errors.New("write failure") },
-						close: func() error { return nil },
-						chmod: func(os.FileMode) error { return nil },
-					}, nil
-				},
-				remove: advisoryExpectAtomicTempCleanup(t),
-			}),
-			expect: func(err error) bool { return err != nil && strings.Contains(err.Error(), "write failure") },
-		},
-		{
-			name: "close",
-			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
-				openFile: func(string, int, os.FileMode) (safeio.File, error) {
-					return &advisoryFakeFile{
-						write: func(p []byte) (int, error) { return len(p), nil },
-						close: func() error { return errors.New("temp close failure") },
-						stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-						chmod: func(os.FileMode) error { return nil },
-					}, nil
-				},
-				remove: advisoryExpectAtomicTempCleanup(t),
-			}),
-			expect: func(err error) bool { return err != nil && strings.Contains(err.Error(), "temp close failure") },
-		},
-		{
-			name: "rename",
-			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
-				lstat: func(name string) (fs.FileInfo, error) {
-					if strings.Contains(name, ".safeio-atomic-") {
-						return tempInfo, nil
-					}
-					return nil, os.ErrNotExist
-				},
-				openFile: func(string, int, os.FileMode) (safeio.File, error) {
-					return &advisoryFakeFile{
-						write: func(p []byte) (int, error) { return len(p), nil },
-						close: func() error { return nil },
-						stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-						chmod: func(os.FileMode) error { return nil },
-					}, nil
-				},
-				link: func(oldName, newName string) error {
-					if !strings.Contains(oldName, ".safeio-atomic-") || !strings.Contains(newName, ".safeio-atomic-") {
-						t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
-					}
-					return nil
-				},
-				rename: func(oldName, newName string) error {
-					if !strings.Contains(oldName, ".safeio-atomic-") {
-						t.Fatalf("expected staged rename source, got %q", oldName)
-					}
-					if newName != manifestFileName {
-						t.Fatalf("expected rename target %q, got %q", manifestFileName, newName)
-					}
-					return errors.New("rename failure")
-				},
-				remove: advisoryExpectAtomicTempCleanup(t),
-			}),
-			expect: func(err error) bool { return err != nil && strings.Contains(err.Error(), "rename failure") },
-		},
-		{
-			name: "cleanup",
-			root: advisoryRootWithoutManifest(&advisoryFakeRoot{
-				openFile: func(string, int, os.FileMode) (safeio.File, error) {
-					return &advisoryFakeFile{
-						write: func([]byte) (int, error) { return 0, cleanupWriteErr },
-						close: func() error { return nil },
-						chmod: func(os.FileMode) error { return nil },
-					}, nil
-				},
-				remove: func(string) error {
-					return cleanupErr
-				},
-			}),
-			expect: func(err error) bool {
-				return errors.Is(err, cleanupWriteErr) && errors.Is(err, cleanupErr)
-			},
-		},
-	} {
+	for _, tc := range updateManifestRootLocalWriteFailureCases(t, tempInfo, cleanupWriteErr, cleanupErr) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := updateManifest(tc.root, CacheSnapshot{ID: "new", Path: "snapshots/new.json"}, now)
 			if !tc.expect(err) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+type updateManifestRootLocalWriteFailureCase struct {
+	name   string
+	root   *advisoryFakeRoot
+	expect func(error) bool
+}
+
+func updateManifestRootLocalWriteFailureCases(t *testing.T, tempInfo fs.FileInfo, cleanupWriteErr, cleanupErr error) []updateManifestRootLocalWriteFailureCase {
+	t.Helper()
+	return []updateManifestRootLocalWriteFailureCase{
+		updateManifestSetupFailureCase(),
+		updateManifestWriteFailureCase(t),
+		updateManifestCloseFailureCase(t, tempInfo),
+		updateManifestRenameFailureCase(t, tempInfo),
+		updateManifestCleanupFailureCase(cleanupWriteErr, cleanupErr),
+	}
+}
+
+func updateManifestSetupFailureCase() updateManifestRootLocalWriteFailureCase {
+	return updateManifestRootLocalWriteFailureCase{
+		name: "setup",
+		root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+			openFile: func(string, int, os.FileMode) (safeio.File, error) {
+				return nil, errors.New("open temp failure")
+			},
+		}),
+		expect: errorContains("open temp failure"),
+	}
+}
+
+func updateManifestWriteFailureCase(t *testing.T) updateManifestRootLocalWriteFailureCase {
+	return updateManifestRootLocalWriteFailureCase{
+		name: "write",
+		root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+			openFile: advisoryFailingWriteTempFile(errors.New("write failure")),
+			remove:   advisoryExpectAtomicTempCleanup(t),
+		}),
+		expect: errorContains("write failure"),
+	}
+}
+
+func updateManifestCloseFailureCase(t *testing.T, tempInfo fs.FileInfo) updateManifestRootLocalWriteFailureCase {
+	return updateManifestRootLocalWriteFailureCase{
+		name: "close",
+		root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+			openFile: advisorySuccessfulWriteTempFile(tempInfo, errors.New("temp close failure")),
+			remove:   advisoryExpectAtomicTempCleanup(t),
+		}),
+		expect: errorContains("temp close failure"),
+	}
+}
+
+func updateManifestRenameFailureCase(t *testing.T, tempInfo fs.FileInfo) updateManifestRootLocalWriteFailureCase {
+	return updateManifestRootLocalWriteFailureCase{
+		name: "rename",
+		root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+			lstat:    advisoryAtomicTempLstat(tempInfo),
+			openFile: advisorySuccessfulWriteTempFile(tempInfo, nil),
+			link:     advisoryExpectIdentityBoundAtomicTempLink(t),
+			rename:   advisoryFailManifestRename(t),
+			remove:   advisoryExpectAtomicTempCleanup(t),
+		}),
+		expect: errorContains("rename failure"),
+	}
+}
+
+func updateManifestCleanupFailureCase(cleanupWriteErr, cleanupErr error) updateManifestRootLocalWriteFailureCase {
+	return updateManifestRootLocalWriteFailureCase{
+		name: "cleanup",
+		root: advisoryRootWithoutManifest(&advisoryFakeRoot{
+			openFile: advisoryFailingWriteTempFile(cleanupWriteErr),
+			remove:   func(string) error { return cleanupErr },
+		}),
+		expect: func(err error) bool {
+			return errors.Is(err, cleanupWriteErr) && errors.Is(err, cleanupErr)
+		},
+	}
+}
+
+func advisoryFailingWriteTempFile(writeErr error) func(string, int, os.FileMode) (safeio.File, error) {
+	return func(string, int, os.FileMode) (safeio.File, error) {
+		return &advisoryFakeFile{
+			write: func([]byte) (int, error) { return 0, writeErr },
+			close: func() error { return nil },
+			chmod: func(os.FileMode) error { return nil },
+		}, nil
+	}
+}
+
+func advisorySuccessfulWriteTempFile(tempInfo fs.FileInfo, closeErr error) func(string, int, os.FileMode) (safeio.File, error) {
+	return func(string, int, os.FileMode) (safeio.File, error) {
+		return &advisoryFakeFile{
+			write: func(p []byte) (int, error) { return len(p), nil },
+			close: func() error { return closeErr },
+			stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+			chmod: func(os.FileMode) error { return nil },
+		}, nil
+	}
+}
+
+func advisoryAtomicTempLstat(tempInfo fs.FileInfo) func(string) (fs.FileInfo, error) {
+	return func(name string) (fs.FileInfo, error) {
+		if strings.Contains(name, ".safeio-atomic-") {
+			return tempInfo, nil
+		}
+		return nil, os.ErrNotExist
+	}
+}
+
+func advisoryExpectIdentityBoundAtomicTempLink(t *testing.T) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		if !strings.Contains(oldName, ".safeio-atomic-") || !strings.Contains(newName, ".safeio-atomic-") {
+			t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+		}
+		return nil
+	}
+}
+
+func advisoryFailManifestRename(t *testing.T) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		if !strings.Contains(oldName, ".safeio-atomic-") {
+			t.Fatalf("expected staged rename source, got %q", oldName)
+		}
+		if newName != manifestFileName {
+			t.Fatalf("expected rename target %q, got %q", manifestFileName, newName)
+		}
+		return errors.New("rename failure")
+	}
+}
+
+func errorContains(substr string) func(error) bool {
+	return func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), substr)
 	}
 }
 

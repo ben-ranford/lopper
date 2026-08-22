@@ -60,13 +60,6 @@ func (s *atomicWriteSession) commit() error {
 	)
 }
 
-func (s *atomicWriteSession) verifyPreparedSourcePath() error {
-	if s.tempInfo == nil {
-		return fmt.Errorf("temporary file info unavailable before commit: %s", s.tempRel)
-	}
-	return verifyPublishedPathMatchesInfo(s.root, s.tempRel, s.tempInfo, "temporary file changed before commit")
-}
-
 func (s *atomicWriteSession) verifyCommittedTarget() error {
 	if s.tempInfo == nil {
 		return fmt.Errorf("temporary file info unavailable after commit: %s", s.targetRel)
@@ -94,14 +87,16 @@ func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo,
 	return nil
 }
 
-func publishIdentityBoundReplacing(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string) error {
+func publishIdentityBoundReplacing(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string) (returnErr error) {
 	stagedRel, err := stageIdentityBoundLink(root, sourceRel, expected, sourceMessage)
 	if err != nil {
 		return err
 	}
 	cleanupRel := stagedRel
 	defer func() {
-		_ = cleanupAtomicTempFile(root, cleanupRel, nil)
+		if cleanupErr := cleanupAtomicTempFile(root, cleanupRel, nil); cleanupErr != nil {
+			returnErr = errors.Join(returnErr, cleanupErr)
+		}
 	}()
 	if err := root.Rename(stagedRel, targetRel); err != nil {
 		return err
