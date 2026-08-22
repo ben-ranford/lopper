@@ -11,7 +11,12 @@ import (
 	"syscall"
 )
 
-const moveSourceChangedBeforeCleanup = "move source changed before cleanup"
+const (
+	moveSourceChangedBeforeCleanup  = "move source changed before cleanup"
+	moveSourceChangedBeforeRename   = "move source changed before rename"
+	moveSourceChangedBeforeFallback = "move source changed before fallback copy"
+	moveTargetChangedBeforeValidate = "move target changed before validation"
+)
 
 // MoveFileUnder atomically places sourcePath at targetPath only if both resolve under rootDir.
 // It preserves atomic final placement by renaming within root, and falls back to copy-then-rename
@@ -59,12 +64,37 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 		return renameErr
 	}
 
-	sourceInfo, copyErr := copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
+	fallbackSourceRel := moveFallbackCopySource(renameErr, sourceRel)
+	sourceInfo, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, sourceInfo)
 	if copyErr != nil {
 		return errors.Join(renameErr, copyErr)
 	}
 
-	return errors.Join(publishRenameCleanup(renameErr), removeCopiedMoveSource(root, sourceRel, sourceInfo))
+	return errors.Join(
+		publishRenameCleanup(renameErr),
+		removeCopiedMoveSource(root, fallbackSourceRel, sourceInfo),
+		cleanupMoveSourceStagingDir(root, sourceRel, fallbackSourceRel),
+	)
+}
+
+type moveLinklessRenameError struct {
+	err error
+}
+
+func (e *moveLinklessRenameError) Error() string {
+	return e.err.Error()
+}
+
+func (e *moveLinklessRenameError) Unwrap() error {
+	return e.err
+}
+
+func moveFallbackCopySource(err error, sourceRel string) string {
+	var linklessErr *moveLinklessRenameError
+	if errors.As(err, &linklessErr) {
+		return publishRenameSource(linklessErr.err, sourceRel)
+	}
+	return sourceRel
 }
 
 func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (fs.FileInfo, error) {
@@ -76,7 +106,7 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return sourceInfo, err
 	}
-	_, err = publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, "move source changed before rename", "move target changed before validation")
+	_, err = publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename, moveTargetChangedBeforeValidate)
 	if err != nil {
 		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
 			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
@@ -93,15 +123,15 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 }
 
 func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) error {
-	sourceConsumed, err := renameFileIfMatches(root, sourceRel, targetRel, sourceInfo, "move source changed before rename")
+	sourceConsumed, err := renameFileIfMatches(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename)
 	if err != nil {
-		return err
+		return &moveLinklessRenameError{err: err}
 	}
 	if sourceConsumed {
-		return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, "move target changed before validation")
+		return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, moveTargetChangedBeforeValidate)
 	}
 	return errors.Join(
-		verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, "move target changed before validation"),
+		verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, moveTargetChangedBeforeValidate),
 		removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup),
 	)
 }
@@ -136,7 +166,7 @@ func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMod
 		return nil, err
 	}
 	if !updatedSourceInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, updatedSourceInfo) {
-		return nil, fmt.Errorf("move source changed before rename: %s", sourceRel)
+		return nil, fmt.Errorf("%s: %s", moveSourceChangedBeforeRename, sourceRel)
 	}
 	return updatedSourceInfo, nil
 }
@@ -163,7 +193,7 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 		return nil, fmt.Errorf("move source is not a regular file: %s", sourceRel)
 	}
 	if expectedSourceInfo != nil && !os.SameFile(expectedSourceInfo, sourceInfo) {
-		return nil, fmt.Errorf("move source changed before fallback copy: %s", sourceRel)
+		return nil, fmt.Errorf("%s: %s", moveSourceChangedBeforeFallback, sourceRel)
 	}
 
 	session, err := newAtomicWriteSession(root, targetRel, filePerm)
@@ -185,6 +215,9 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return nil, err
 	}
+	if err := verifyPublishedPathMatchesInfo(root, sourceRel, sourceInfo, moveSourceChangedBeforeFallback); err != nil {
+		return nil, err
+	}
 	if err := session.commit(); err != nil {
 		return nil, err
 	}
@@ -193,6 +226,27 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 
 func removeCopiedMoveSource(root Root, sourceRel string, sourceInfo os.FileInfo) error {
 	return removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup)
+}
+
+func cleanupMoveSourceStagingDir(root Root, sourceRel, fallbackSourceRel string) error {
+	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
+		return nil
+	}
+	dir := filepath.Dir(fallbackSourceRel)
+	if dir == "." || filepath.Base(fallbackSourceRel) != "entry" || !strings.HasPrefix(filepath.Base(dir), atomicTempPrefix) {
+		return nil
+	}
+	info, err := root.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return ignoreRemoveNotExist(root.Remove(dir))
 }
 
 func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message string) error {

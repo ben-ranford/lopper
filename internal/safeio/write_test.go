@@ -4617,8 +4617,8 @@ func TestMoveFileWithinRootPreservesReplacedSourceAfterCopyFallback(t *testing.T
 
 	root := newReplacedSourceMoveFallbackRoot(t, state)
 	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
-	if err == nil || !strings.Contains(err.Error(), "move source changed before cleanup") {
-		t.Fatalf("expected changed source cleanup rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeFallback) {
+		t.Fatalf("expected changed source fallback rejection, got %v", err)
 	}
 	if state.published != "original" {
 		t.Fatalf("expected pinned original data to be published, got %q", state.published)
@@ -8113,6 +8113,68 @@ func TestCleanupAtomicTempFileIfMatchesRejectsTempSwapAtRemoval(t *testing.T) {
 	}
 }
 
+func TestCleanupAtomicTempFileIfMatchesRetriesRestoredCandidateAfterCleanupError(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	tempRel := ".safeio-atomic-source"
+	cleanupRel := ".safeio-atomic-cleanup"
+	removeErr := errors.New("cleanup remove failed")
+	removeChecks := 0
+	useRandomTempNames(t, cleanupRel)
+
+	root := &fakeRoot{
+		lstat:  lstatOriginalForNames(t, info, tempRel, cleanupRel),
+		link:   requireExactLinks(t, [2]string{tempRel, cleanupRel}),
+		remove: countAndFailRawRemove(t, new(int), "cleanup must be identity-conditional"),
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, info, name)
+			switch name {
+			case tempRel:
+				removeChecks++
+				if removeChecks == 1 {
+					return removeErr
+				}
+				return nil
+			case cleanupRel:
+				return nil
+			default:
+				t.Fatalf("unexpected cleanup path: %s", name)
+				return nil
+			}
+		},
+	}
+
+	err := cleanupAtomicTempFileIfMatches(root, tempRel, info)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected original cleanup error to be preserved, got %v", err)
+	}
+	if removeChecks != 2 {
+		t.Fatalf("expected cleanup retry against restored candidate, got %d checks", removeChecks)
+	}
+}
+
+func TestRetryCleanupAtomicTempFileIfStillMatchesBranches(t *testing.T) {
+	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	if err := retryCleanupAtomicTempFileIfStillMatches(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}, ".safeio-atomic-source", originalInfo, "cleanup changed"); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected retry lstat error, got %v", err)
+	}
+
+	removeCalls := 0
+	err := retryCleanupAtomicTempFileIfStillMatches(&fakeRoot{
+		lstat:  lstatOriginalForNames(t, changedInfo, ".safeio-atomic-source"),
+		remove: func(string) error { removeCalls++; return nil },
+	}, ".safeio-atomic-source", originalInfo, "cleanup changed")
+	if err != nil {
+		t.Fatalf("expected changed retry target to be ignored, got %v", err)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected changed retry target to be preserved, got %d removes", removeCalls)
+	}
+}
+
 func TestPrepareAndRenameWithinRootRejectsChangedTargetAfterRename(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 	fixture := newChangedTargetAfterRenameFixture(t, sourceInfo, changedInfo)
@@ -8737,6 +8799,227 @@ func TestLinklessStagingCopyFailureCleansUpPrivateCandidate(t *testing.T) {
 	}
 	assertFileContent(t, sourcePath, "source")
 	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyRejectsSourceSwapAfterCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	swapped := false
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			return &fakeFile{
+				File: file,
+				read: swapSourceAfterEOF(t, file, sourcePath, expected, &swapped),
+			}
+		}),
+	}}
+
+	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected post-copy source identity rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyCleansCandidateWhenReopenedSourceCloseFails(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	closeErr := errors.New("close source failed")
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			return &fakeFile{
+				File: file,
+				close: func() error {
+					if err := file.Close(); err != nil {
+						return err
+					}
+					return closeErr
+				},
+			}
+		}),
+	}}
+
+	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected source close error, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestCopyFileWithinRootRejectsSourceSwapAfterCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	swapped := false
+	root := &fakeRoot{
+		Root: base,
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			return &fakeFile{
+				File: file,
+				read: swapSourceAfterEOF(t, file, sourcePath, expected, &swapped),
+			}
+		}),
+	}
+
+	_, err := copyFileWithinRoot(root, "source", "target", 0o640, expected)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeFallback) {
+		t.Fatalf("expected fallback source identity rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootCopiesFromQuarantinedSourceAfterLinklessRenameEXDEV(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	sourceQuarantineRel := ""
+	sourceQuarantineRenameFailed := false
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+		rename: func(oldName, newName string) error {
+			if oldName == "source" {
+				sourceQuarantineRel = newName
+				return base.Rename(oldName, newName)
+			}
+			if oldName == sourceQuarantineRel && newName == "target" {
+				sourceQuarantineRenameFailed = true
+				return syscall.EXDEV
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("move fallback returned error: %v", err)
+	}
+	if !sourceQuarantineRenameFailed {
+		t.Fatal("expected direct rename of the quarantined source to fail with EXDEV")
+	}
+	assertPathAbsent(t, sourcePath)
+	assertFileContent(t, targetPath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFallbackCopySourceAndStagingDirCleanupBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	renameErr := &moveLinklessRenameError{err: withPublishRenameSource(syscall.EXDEV, filepath.Join(atomicTempPrefix+"move", "entry"))}
+	if renameErr.Error() == "" {
+		t.Fatal("expected linkless rename error text")
+	}
+	if got := moveFallbackCopySource(renameErr, "source"); got != filepath.Join(atomicTempPrefix+"move", "entry") {
+		t.Fatalf("expected published fallback source, got %q", got)
+	}
+
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{}, "source", "source"); err != nil {
+		t.Fatalf("same source cleanup should be ignored: %v", err)
+	}
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{}, "source", filepath.Join(atomicTempPrefix+"move", "not-entry")); err != nil {
+		t.Fatalf("non-entry cleanup should be ignored: %v", err)
+	}
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); err != nil {
+		t.Fatalf("missing staging dir cleanup should be ignored: %v", err)
+	}
+
+	lstatErr := errors.New("lstat failed")
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected staging dir lstat error, got %v", err)
+	}
+
+	removed := false
+	dirInfo := statTestPath(t, t.TempDir())
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		remove: func(string) error {
+			removed = true
+			return os.ErrNotExist
+		},
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); err != nil {
+		t.Fatalf("missing staging dir removal should be ignored, got %v", err)
+	}
+	if !removed {
+		t.Fatal("expected staging dir cleanup remove")
+	}
+
+	fileInfo := &modeOverrideFileInfo{FileInfo: sourceInfo, mode: 0o600}
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return fileInfo, nil },
+		remove: func(string) error {
+			t.Fatal("non-directory staging path must be preserved")
+			return nil
+		},
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); err != nil {
+		t.Fatalf("non-directory staging dir cleanup should be ignored: %v", err)
+	}
+}
+
+func swapSourceAfterEOF(t *testing.T, file File, sourcePath string, expected fs.FileInfo, swapped *bool) func([]byte) (int, error) {
+	t.Helper()
+	return func(p []byte) (int, error) {
+		n, err := file.Read(p)
+		if errors.Is(err, io.EOF) && !*swapped {
+			replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
+			*swapped = true
+		}
+		return n, err
+	}
+}
+
+func wrapOpenedSourceFile(t *testing.T, base Root, sourceRel string, wrap func(File) File) func(string) (File, error) {
+	t.Helper()
+	return func(name string) (File, error) {
+		file, err := base.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		if name != sourceRel {
+			return file, nil
+		}
+		return wrap(file), nil
+	}
 }
 
 func TestMoveFileWithinRootDistinctHardLinkAliasRemovesSource(t *testing.T) {

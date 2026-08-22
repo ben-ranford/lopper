@@ -337,9 +337,10 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 			return "", nil, closeFilePreservingPrimary(staged, fmt.Errorf("%s: %s", message, stagedRel))
 		}
 		stagedReady := false
+		cleanupStagedInfo := stagedInfo
 		defer func() {
 			if !stagedReady {
-				returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
+				returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, cleanupStagedInfo))
 			}
 		}()
 		if _, err := io.Copy(staged, source); err != nil {
@@ -352,16 +353,29 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		if err != nil {
 			return "", nil, closeFilePreservingPrimary(staged, err)
 		}
+		cleanupStagedInfo = stagedInfo
 		if err := staged.Close(); err != nil {
 			return "", nil, err
 		}
 		openStagedInfo := stagedInfo
-		stagedInfo, err = publishedRegularFileInfo(root, stagedRel, message)
+		publishedStagedInfo, err := publishedRegularFileInfo(root, stagedRel, message)
 		if err != nil {
 			return "", nil, err
 		}
-		if !sameRegularFile(openStagedInfo, stagedInfo) {
+		if !sameRegularFile(openStagedInfo, publishedStagedInfo) {
 			return "", nil, fmt.Errorf("%s: %s", message, stagedRel)
+		}
+		stagedInfo = publishedStagedInfo
+		cleanupStagedInfo = stagedInfo
+		if err := verifyPublishedPathMatchesInfo(root, sourceRel, expected, message); err != nil {
+			return "", nil, err
+		}
+		if closeSource {
+			if err := source.Close(); err != nil {
+				closeSource = false
+				return "", nil, err
+			}
+			closeSource = false
 		}
 		stagedReady = true
 		return stagedRel, stagedInfo, nil

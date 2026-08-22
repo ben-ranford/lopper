@@ -425,6 +425,17 @@ func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileInfo) error {
 	const changedBeforeRemoval = "cleanup file changed before removal"
 
+	err := cleanupAtomicTempFileIfMatchesOnce(root, tempRel, expected, changedBeforeRemoval)
+	if err == nil {
+		return nil
+	}
+	if tempRel == "" || expected == nil || strings.Contains(err.Error(), changedBeforeRemoval) {
+		return err
+	}
+	return errors.Join(err, retryCleanupAtomicTempFileIfStillMatches(root, tempRel, expected, changedBeforeRemoval))
+}
+
+func cleanupAtomicTempFileIfMatchesOnce(root Root, tempRel string, expected fs.FileInfo, changedBeforeRemoval string) error {
 	if tempRel == "" {
 		return nil
 	}
@@ -455,6 +466,20 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 		return errors.Join(err, removeFileIfMatches(root, cleanupRel, info, changedBeforeRemoval))
 	}
 	return removeFileIfMatches(root, cleanupRel, info, changedBeforeRemoval)
+}
+
+func retryCleanupAtomicTempFileIfStillMatches(root Root, tempRel string, expected fs.FileInfo, changedBeforeRemoval string) error {
+	info, err := root.Lstat(tempRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !sameRegularFile(expected, info) {
+		return nil
+	}
+	return removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval)
 }
 
 func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message string) error {
