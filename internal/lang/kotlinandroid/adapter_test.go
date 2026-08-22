@@ -148,7 +148,7 @@ dependencies {
 		filepath.Join("app", "src", "main", "kotlin", testMainSourceFileName): `
 package app.consumer
 
-import com.example.` + testKotlinEscapedWhen + `.Widget
+import com.example.` + "`when`" + `.Widget
 
 fun run() {
   Widget()
@@ -176,7 +176,7 @@ func TestAdapterTopNNormalizesEscapedKotlinAndroidFallbackDependency(t *testing.
 		filepath.Join("app", "src", "main", "kotlin", testMainSourceFileName): `
 package app.consumer
 
-import custom.` + testKotlinEscapedWhen + `.Widget
+import custom.` + "`when`" + `.Widget
 
 fun run() {
   Widget()

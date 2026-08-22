@@ -20,7 +20,6 @@ const (
 	testFilePomXML         = "pom.xml"
 	testFileBuildGradleKTS = "build.gradle.kts"
 	testFileMainKT         = "Main.kt"
-	testKotlinEscapedWhen  = "`when`"
 	errDetectFmt           = "detect: %v"
 	errAnalyseFmt          = "analyse: %v"
 	errSymlinkFmt          = "symlink not supported: %v"
@@ -180,7 +179,7 @@ dependencies {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
 package app.consumer
 
-import com.example.`+testKotlinEscapedWhen+`.Widget
+import com.example.`+"`when`"+`.Widget
 
 fun run() {
   Widget()
@@ -203,7 +202,7 @@ func TestAdapterTopNNormalizesEscapedKotlinFallbackDependency(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main", "kotlin", testFileMainKT), `
 package app.consumer
 
-import custom.`+testKotlinEscapedWhen+`.Widget
+import custom.`+"`when`"+`.Widget
 
 fun run() {
   Widget()

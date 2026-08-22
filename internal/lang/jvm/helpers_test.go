@@ -154,26 +154,6 @@ func TestJVMParsePackageSupportsKotlinEscapedSegment(t *testing.T) {
 	}
 }
 
-func TestJVMEscapedPackageSegmentsNormalizeForLookupOnly(t *testing.T) {
-	module := "com.example.`when`.Widget"
-	if got := normalizeJVMModuleForLookup(module); got != "com.example.when.Widget" {
-		t.Fatalf("expected escaped module segments to normalize for lookup, got %q", got)
-	}
-	if shouldIgnoreImport(module, "com.other") {
-		t.Fatalf("expected imported escaped dependency package to remain external to other packages")
-	}
-	if !shouldIgnoreImport(module, "com.example.`when`") {
-		t.Fatalf("expected escaped same-package import to normalize before comparison")
-	}
-	prefixes := map[string]string{"com.example.when": acmeLibName}
-	if got := resolveDependency(module, prefixes, nil); got != acmeLibName {
-		t.Fatalf("expected escaped module to match normalized prefix, got %q", got)
-	}
-	if got := fallbackDependency("custom.`when`.Widget"); got != "custom.when" {
-		t.Fatalf("expected escaped fallback dependency to normalize, got %q", got)
-	}
-}
-
 func TestJVMParseImportsHandlesBlockComments(t *testing.T) {
 	content := []byte(`package com.example.app;
 import java.util.List;

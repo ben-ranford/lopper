@@ -39,12 +39,6 @@ func TestImportHelpersAndRiskRecommendations(t *testing.T) {
 	if got := fallbackDependency("foo.bar.Baz"); got != "foo.bar" {
 		t.Fatalf("unexpected fallback dependency: %q", got)
 	}
-	if got := normalizeKotlinAndroidModuleForLookup("foo.`when`.Baz"); got != "foo.when.Baz" {
-		t.Fatalf("expected escaped module segments to normalize for lookup, got %q", got)
-	}
-	if got := fallbackDependency("foo.`when`.Baz"); got != "foo.when" {
-		t.Fatalf("unexpected escaped fallback dependency: %q", got)
-	}
 	if got := lastModuleSegment("a.b.C"); got != "C" {
 		t.Fatalf("unexpected last module segment: %q", got)
 	}

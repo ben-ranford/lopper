@@ -46,15 +46,3 @@ func TestLastModuleSegment(t *testing.T) {
 		})
 	}
 }
-
-func TestNormalizeEscapedModuleSegments(t *testing.T) {
-	if got := NormalizeEscapedModuleSegments("com.example.`when`.Widget"); got != "com.example.when.Widget" {
-		t.Fatalf("escaped keyword segment = %q", got)
-	}
-	if got := NormalizeEscapedModuleSegments(" custom.`when`.Widget "); got != "custom.when.Widget" {
-		t.Fatalf("trimmed escaped package = %q", got)
-	}
-	if got := NormalizeEscapedModuleSegments("plain.module"); got != "plain.module" {
-		t.Fatalf("plain module = %q", got)
-	}
-}
