@@ -47,7 +47,62 @@ def command_runs(config)
 end
 
 def shell_segments(run)
-	run.split(/\s*(?:&&|\|\|)\s*/).map(&:strip).reject(&:empty?)
+	segments = []
+	buffer = +""
+	operator = nil
+	single_quoted = false
+	double_quoted = false
+	escaped = false
+	index = 0
+
+	while index < run.length
+		char = run[index]
+		next_char = run[index + 1]
+
+		if escaped
+			buffer << char
+			escaped = false
+			index += 1
+			next
+		end
+
+		if char == "\\" && !single_quoted
+			buffer << char
+			escaped = true
+			index += 1
+			next
+		end
+
+		if char == "'" && !double_quoted
+			single_quoted = !single_quoted
+			buffer << char
+			index += 1
+			next
+		end
+
+		if char == '"' && !single_quoted
+			double_quoted = !double_quoted
+			buffer << char
+			index += 1
+			next
+		end
+
+		if !single_quoted && !double_quoted && ((char == "&" && next_char == "&") || (char == "|" && next_char == "|"))
+			segment = buffer.strip
+			segments << { operator: operator, text: segment } unless segment.empty?
+			operator = char + next_char
+			buffer = +""
+			index += 2
+			next
+		end
+
+		buffer << char
+		index += 1
+	end
+
+	segment = buffer.strip
+	segments << { operator: operator, text: segment } unless segment.empty?
+	segments
 end
 
 def shell_words(segment)
@@ -56,19 +111,36 @@ rescue ArgumentError
 	[]
 end
 
+def command_words(segment)
+	words = shell_words(segment[:text])
+	words = words.drop_while { |word| word.match?(/\A[A-Za-z_][A-Za-z0-9_]*=.*/)}
+	words
+end
+
+def required_command_segment?(segment)
+	segment[:operator] != "||"
+end
+
+def pre_commit_command_runs(runs, command_name)
+	runs.select { |entry| entry[:hook] == "pre-commit" && entry[:command] == command_name }
+end
+
 def has_exact_command?(runs, command_name, words)
 	runs.any? do |entry|
-		entry[:command] == command_name &&
-			shell_segments(entry[:run]).any? { |segment| shell_words(segment) == words }
+		entry[:hook] == "pre-commit" &&
+			entry[:command] == command_name &&
+			shell_segments(entry[:run]).any? do |segment|
+				required_command_segment?(segment) && command_words(segment) == words
+			end
 	end
 end
 
 def has_lopper_json_report?(runs)
-	runs.any? do |entry|
-		next false unless entry[:command] == "lopper-json-report"
-
+	pre_commit_command_runs(runs, "lopper-json-report").any? do |entry|
 		shell_segments(entry[:run]).any? do |segment|
-			words = shell_words(segment)
+			next false unless required_command_segment?(segment)
+
+			words = command_words(segment)
 			next false unless words[0, 4] == ["go", "run", "./cmd/lopper", "analyse"]
 
 			words.each_cons(2).include?(["--repo", "."]) &&

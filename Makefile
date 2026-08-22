@@ -327,6 +327,7 @@ toolchain-check:
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH (required for shell script CI checks)"; exit 1)
 	@command -v ruby >/dev/null 2>&1 || (echo "ruby not found in PATH (required for automation integrity YAML/JSON checks)"; exit 1)
 	@command -v node >/dev/null 2>&1 || (echo "node not found in PATH (required for automation integrity JavaScript syntax checks)"; exit 1)
+	@command -v python3 >/dev/null 2>&1 || (echo "python3 not found in PATH (required for Python-based CI checks)"; exit 1)
 
 toolchain-install:
 	@uname_s="$$(uname -s)"; \
@@ -338,19 +339,19 @@ toolchain-install:
 
 toolchain-install-macos:
 	@command -v brew >/dev/null 2>&1 || (echo "homebrew not found"; exit 1)
-	brew install go zig shellcheck ruby node
+	brew install go zig shellcheck ruby node python
 
 toolchain-install-linux:
 	@if command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
 		$$SUDO apt-get update; \
-		$$SUDO apt-get install -y golang-go zig shellcheck ruby nodejs; \
+		$$SUDO apt-get install -y golang-go zig shellcheck ruby nodejs python3; \
 	elif command -v dnf >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO dnf install -y golang zig ShellCheck ruby nodejs; \
+		$$SUDO dnf install -y golang zig ShellCheck ruby nodejs python3; \
 	elif command -v pacman >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs; \
+		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs python; \
 	else \
 		echo "No supported package manager found (need apt-get, dnf, or pacman)"; \
 		exit 1; \

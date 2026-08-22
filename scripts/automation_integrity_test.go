@@ -146,9 +146,7 @@ jobs:
 func TestAutomationExamplesRejectsFakeCommandSubstrings(t *testing.T) {
 	t.Parallel()
 
-	repoDir := t.TempDir()
-	writeRepoScriptFixture(t, repoDir, "scripts/check-automation-examples.sh")
-	writeFixtureFile(t, repoDir, "examples/lefthook.yml", `# make automation-integrity
+	output, err := runAutomationExamplesFixture(t, `# make automation-integrity
 # go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
 # git diff --exit-code -- . ':!.artifacts'
 pre-commit:
@@ -160,10 +158,6 @@ pre-commit:
     mutation-guard:
       run: echo "git diff --exit-code -- . ':!.artifacts'"
 `)
-
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
-	cmd.Dir = repoDir
-	output, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected fake command substrings to fail, got success:\n%s", output)
 	}
@@ -175,20 +169,86 @@ pre-commit:
 	})
 }
 
+func TestAutomationExamplesRejectsNonPreCommitContracts(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: make automation-integrity
+pre-push:
+  commands:
+    lopper-json-report:
+      run: go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+    mutation-guard:
+      run: git diff --exit-code -- . ':!.artifacts'
+`)
+	if err == nil {
+		t.Fatalf("expected non-pre-commit contracts to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"must preserve the automation example contract",
+		"missing lopper JSON report command",
+		"missing mutation guard command",
+	})
+}
+
+func TestAutomationExamplesRejectsOrFallbackRequiredCommands(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: true || make automation-integrity
+    lopper-json-report:
+      run: true || go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+    mutation-guard:
+      run: true || git diff --exit-code -- . ':!.artifacts'
+`)
+	if err == nil {
+		t.Fatalf("expected OR-fallback contracts to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"missing automation integrity command",
+		"missing lopper JSON report command",
+		"missing mutation guard command",
+	})
+}
+
 func TestAutomationExamplesAcceptsParsedLefthookCommands(t *testing.T) {
 	t.Parallel()
 
-	repoDir := t.TempDir()
-	writeRepoScriptFixture(t, repoDir, "scripts/check-automation-examples.sh")
-	writeFixtureFile(t, repoDir, "examples/lefthook.yml", readRepoFile(t, "examples/lefthook.yml"))
-
-	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
-	cmd.Dir = repoDir
-	output, err := cmd.CombinedOutput()
+	output, err := runAutomationExamplesFixture(t, readRepoFile(t, "examples/lefthook.yml"))
 	if err != nil {
 		t.Fatalf("expected parsed lefthook commands to pass, got %v:\n%s", err, output)
 	}
 	assertOutputContainsAll(t, string(output), []string{"Automation examples preserve JSON and mutation-guard contracts."})
+}
+
+func TestMakefileToolchainIncludesPython3ForCI(t *testing.T) {
+	t.Parallel()
+
+	makefile := readRepoFile(t, "Makefile")
+	assertContainsAll(t, makefile, []string{
+		`@command -v python3 >/dev/null 2>&1 || (echo "python3 not found in PATH (required for Python-based CI checks)"; exit 1)`,
+		`brew install go zig shellcheck ruby node python`,
+		`$$SUDO apt-get install -y golang-go zig shellcheck ruby nodejs python3`,
+		`$$SUDO dnf install -y golang zig ShellCheck ruby nodejs python3`,
+		`$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs python`,
+	})
+}
+
+func runAutomationExamplesFixture(t *testing.T, lefthookYAML string) (string, error) {
+	t.Helper()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-automation-examples.sh")
+	writeFixtureFile(t, repoDir, "examples/lefthook.yml", lefthookYAML)
+
+	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	return string(output), err
 }
 
 func readRepoFile(t *testing.T, path string) string {
@@ -226,6 +286,12 @@ func writeFixtureFileMode(t *testing.T, repoDir string, path string, content str
 }
 
 func assertOutputContainsAll(t *testing.T, output string, wants []string) {
+	t.Helper()
+
+	assertContainsAll(t, output, wants)
+}
+
+func assertContainsAll(t *testing.T, output string, wants []string) {
 	t.Helper()
 
 	for _, want := range wants {
