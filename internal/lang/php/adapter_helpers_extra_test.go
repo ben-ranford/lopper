@@ -26,6 +26,12 @@ const helpersScanRepoErr = "scanRepo: %v"
 const helpersUnexpectedUnresolvedFmt = "unexpected unresolved: %d"
 const helpersPHPHeader = "<?php\n"
 
+const (
+	helpersComposerManifestLimit int64 = 2 * 1024 * 1024
+	helpersComposerLockLimit     int64 = 8 * 1024 * 1024
+	helpersScannablePHPFileLimit int64 = 2 * 1024 * 1024
+)
+
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
 	adapter := NewAdapter()
 	if adapter.ID() != "php" {
@@ -92,7 +98,7 @@ func TestReadComposerInputsRejectOversizedFiles(t *testing.T) {
 		{
 			name:     "composer manifest",
 			filename: helpersComposerJSON,
-			limit:    maxComposerManifestBytes,
+			limit:    helpersComposerManifestLimit,
 			read: func(repo string) error {
 				_, _, err := readComposerManifest(repo)
 				return err
@@ -101,7 +107,7 @@ func TestReadComposerInputsRejectOversizedFiles(t *testing.T) {
 		{
 			name:     "composer lock",
 			filename: helpersComposerLock,
-			limit:    maxComposerLockBytes,
+			limit:    helpersComposerLockLimit,
 			read: func(repo string) error {
 				data := composerData{NamespaceToDep: map[string]string{}}
 				return loadComposerLockMappings(repo, &data)
@@ -125,8 +131,8 @@ func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
 		filename string
 		limit    int64
 	}{
-		{name: "composer manifest", filename: helpersComposerJSON, limit: maxComposerManifestBytes},
-		{name: "composer lock", filename: helpersComposerLock, limit: maxComposerLockBytes},
+		{name: "composer manifest", filename: helpersComposerJSON, limit: helpersComposerManifestLimit},
+		{name: "composer lock", filename: helpersComposerLock, limit: helpersComposerLockLimit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -149,7 +155,7 @@ func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
 func TestAnalyseWarnsAndContinuesWhenComposerLockIsOversized(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
-	testutil.MustWritePaddedFile(t, filepath.Join(repo, helpersComposerLock), "{}", maxComposerLockBytes+1)
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, helpersComposerLock), "{}", helpersComposerLockLimit+1)
 	writeFile(t, filepath.Join(repo, "src", "x.php"), helpersPHPHeader+"$client = new \\Vendor\\Lib\\Client();\n")
 
 	result, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -311,7 +317,7 @@ func TestReadPHPFileAndScanNoPHP(t *testing.T) {
 func TestReadPHPFileRejectsOversizedSource(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", "oversized.php")
-	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, maxScannablePHPFile+1)
+	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, helpersScannablePHPFileLimit+1)
 
 	if _, _, err := readPHPFile(repo, sourcePath); !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected oversized PHP source to fail with ErrFileTooLarge, got %v", err)
@@ -321,7 +327,7 @@ func TestReadPHPFileRejectsOversizedSource(t *testing.T) {
 func TestReadPHPFileAcceptsExactLimitSource(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", "exact.php")
-	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, maxScannablePHPFile)
+	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, helpersScannablePHPFileLimit)
 
 	content, relPath, err := readPHPFile(repo, sourcePath)
 	if err != nil {
@@ -330,14 +336,14 @@ func TestReadPHPFileAcceptsExactLimitSource(t *testing.T) {
 	if relPath != filepath.Join("src", "exact.php") {
 		t.Fatalf("unexpected rel path: %q", relPath)
 	}
-	if int64(len(content)) != maxScannablePHPFile {
-		t.Fatalf("expected exact-limit PHP source read to return %d bytes, got %d", maxScannablePHPFile, len(content))
+	if int64(len(content)) != helpersScannablePHPFileLimit {
+		t.Fatalf("expected exact-limit PHP source read to return %d bytes, got %d", helpersScannablePHPFileLimit, len(content))
 	}
 }
 
 func TestScanRepoSkipsOversizedPHPSourceWithWarning(t *testing.T) {
 	repo := t.TempDir()
-	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), helpersPHPHeader, maxScannablePHPFile+1)
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), helpersPHPHeader, helpersScannablePHPFileLimit+1)
 
 	scan, err := scanRepo(context.Background(), repo, composerData{DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}}})
 	if err != nil {
@@ -346,7 +352,7 @@ func TestScanRepoSkipsOversizedPHPSourceWithWarning(t *testing.T) {
 	if len(scan.Files) != 0 {
 		t.Fatalf("expected oversized PHP source to be skipped, got %#v", scan.Files)
 	}
-	if !containsWarning(scan.Warnings, "skipped 1 large PHP file") || !containsWarning(scan.Warnings, fmt.Sprintf("%d bytes", maxScannablePHPFile)) {
+	if !containsWarning(scan.Warnings, "skipped 1 large PHP file") || !containsWarning(scan.Warnings, fmt.Sprintf("%d bytes", helpersScannablePHPFileLimit)) {
 		t.Fatalf("expected oversized PHP warning with byte limit, got %#v", scan.Warnings)
 	}
 }
