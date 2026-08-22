@@ -100,6 +100,11 @@ int main() { return 0; }
 #include <backward/hash_map>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <parallel/base.h>
+#include <tr1/float.h>
+#include <tr1/stdarg.h>
+#include <tr1/stdlib.h>
+#include <tr1/wchar.h>
+#include <tr1/wctype.h>
 int main() { return 0; }
 `)
 
@@ -116,6 +121,27 @@ int main() { return 0; }
 		assertDependencyCount(t, report, "backward", 0)
 		assertDependencyCount(t, report, "linux", 0)
 		assertDependencyCount(t, report, "parallel", 0)
+		assertDependencyCount(t, report, "tr1", 0)
+	})
+
+	t.Run("declared extension lookalikes without provenance are reported", func(t *testing.T) {
+		repoPath := filepath.Join(workspaceRoot, "cpp-declared-lookalikes")
+		writeFile(t, filepath.Join(repoPath, "vcpkg.json"), `{"name":"fixture","version-string":"1.0.0","dependencies":["parallel"]}`)
+		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <parallel/base.h>
+#include <acme/base.h>
+int main() { return 0; }
+`)
+
+		report := runAnalyseBinary(t, binaryPath, workspaceRoot, []string{
+			"analyse", "--top", "10",
+			"--repo", repoPath,
+			"--language", "cpp",
+			"--format", "json",
+			"--cache=false",
+		})
+
+		assertDependencyCount(t, report, "parallel", 1)
+		assertDependencyCount(t, report, "acme", 1)
 	})
 }
 
