@@ -106,11 +106,11 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 }
 
 func shouldFailAdapterCoverageError(req Request, err error) bool {
-	return req.RequireCompleteCoverage && isMultiLanguage(req.Language) && errors.Is(err, safeio.ErrFileTooLarge)
+	return req.RequireCompleteCoverage && isAggregateCoverageLanguage(req.Language) && errors.Is(err, safeio.ErrFileTooLarge)
 }
 
 func incompleteCoverageReportError(req Request, adapterID, root string, reportData report.Report) error {
-	if !req.RequireCompleteCoverage || !isMultiLanguage(req.Language) {
+	if !req.RequireCompleteCoverage || !isAggregateCoverageLanguage(req.Language) {
 		return nil
 	}
 	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
@@ -121,6 +121,11 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 		return nil
 	}
 	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
+}
+
+func isAggregateCoverageLanguage(languageID string) bool {
+	languageID = strings.TrimSpace(strings.ToLower(languageID))
+	return languageID == "" || languageID == language.Auto || languageID == language.All
 }
 
 func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {

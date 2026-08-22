@@ -465,6 +465,27 @@ func TestExecuteAnalyseAllLanguageIncompletePHPCoverageWithoutDependencyRowsFail
 	}
 }
 
+func TestExecuteAnalyseAutoIncompletePHPCoverageFailsClosedForEnforcedGate(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}}`+"\n")
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), "<?php\n", (2*1024*1024)+1)
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.ScopeMode = ScopeModeRepo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.CacheEnabled = false
+	req.Analyse.Thresholds.LicenseDenyList = []string{deniedLicenseSPDX}
+	req.Analyse.Thresholds.LicenseFailOnDeny = true
+
+	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
+	if !errors.Is(err, analysis.ErrIncompleteCoverage) {
+		t.Fatalf("expected auto-mode incomplete PHP coverage to fail closed under enforced policy, got %v", err)
+	}
+}
+
 func TestExecuteAnalyseReachableVulnerabilityThresholdUsesOSVCVSSVector(t *testing.T) {
 	advisorySource := `id: GHSA-osv-vector
 severity:
