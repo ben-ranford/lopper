@@ -3160,9 +3160,16 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		`write_memory_bench_status() { \`,
 		`write_invalid_memory_summary() { \`,
+		`write_harness_change_requires_approval_summary() { \`,
 		`fail_invalid_memory_gate() { \`,
-		`printf "2\n" > "$(MEMORY_BENCH_STATUS)"`,
+		`report_harness_change_requires_approval() { \`,
+		`printf "%s\n" "$1" > "$(MEMORY_BENCH_STATUS)"`,
+		`write_memory_bench_status "2";`,
+		`write_memory_bench_status "1";`,
+		`Result: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition.`,
+		`printf "Memory benchmark approval required: %s\n" "$diagnostic" >&2;`,
 		`requested_go_bin="$(GO_BIN)"`,
 		`requested_go_toolchain="$(GO_TOOLCHAIN)"`,
 		`if [ "${GO_TEST_LDFLAGS+x}" != x ]; then`,
@@ -3194,6 +3201,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Resolved head benchmark definitions:"`,
 		`harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s`,
 		`base_harness_fingerprint=$$(cd "$$base_tree" && benchmark_harness_fingerprint "$$bench_pkg")`,
+		`if [ "$$MEMORY_BENCH_ENFORCE" = "0" ]; then`,
+		`report_harness_change_requires_approval "base benchmark definition for package '$$bench_pkg' does not match the resolved head harness fingerprint.";`,
 		`does not match the resolved head harness fingerprint.`,
 		`printf "Applied base benchmark definition: %s\n" "$$definition_metadata" >> "$$base_output_tmp"`,
 		`printf "Applied head benchmark definition: %s\n" "$$definition_metadata" >> "$$head_output_tmp"`,
@@ -4029,46 +4038,89 @@ func TestMakefileBenchGateFailsClosedWhenConfiguredPackageLosesAllHeadBenchmarks
 func TestMakefileBenchGateRejectsChangedBenchmarkHarnessBeforeExecution(t *testing.T) {
 	t.Parallel()
 
-	repo, benchVars := newTempBenchGateGoRepo(t)
-	baseHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n"
-	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
-	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), baseHarness)
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
-	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
+	tests := []struct {
+		name                string
+		enforce             string
+		wantExit            int
+		wantStatus          string
+		wantOutput          string
+		wantSummary         string
+		wantOmitFromSummary []string
+	}{
+		{
+			name:                "enforced mode fails closed",
+			enforce:             "1",
+			wantExit:            2,
+			wantStatus:          "2\n",
+			wantOutput:          "Memory benchmark gate invalid: base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+			wantSummary:         "Result: benchmark input could not be read for a safe memory comparison.",
+			wantOmitFromSummary: []string{"Result: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition."},
+		},
+		{
+			name:                "report-only mode requires approval",
+			enforce:             "0",
+			wantExit:            0,
+			wantStatus:          "1\n",
+			wantOutput:          "Memory benchmark approval required: base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+			wantSummary:         "Result: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition.",
+			wantOmitFromSummary: []string{"Result: benchmark input could not be read for a safe memory comparison."},
+		},
+	}
 
-	headHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 2 }\n"
-	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), headHarness)
-	runGitCommand(t, repo, "add", "benchpkg/harness_test.go")
-	runGitCommand(t, repo, "commit", "-m", "change benchmark harness")
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
-	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
-	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
-	if exitCode != 2 {
-		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
-	}
-	if !strings.Contains(output, "package=github.com/ben-ranford/lopper/benchpkg selection=^(BenchmarkShared)$") ||
-		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
-		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
-	}
-	for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
-		if strings.Contains(output, omit) {
-			t.Fatalf("bench-gate must reject changed harness before execution, found %q:\n%s", omit, output)
-		}
-	}
+			repo, benchVars := newTempBenchGateGoRepo(t)
+			baseHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n"
+			writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+			writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), baseHarness)
+			runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
+			runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
 
-	wantContains := []string{
-		"Comparison status: invalid",
-		"base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+			headHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 2 }\n"
+			writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), headHarness)
+			runGitCommand(t, repo, "add", "benchpkg/harness_test.go")
+			runGitCommand(t, repo, "commit", "-m", "change benchmark harness")
+
+			benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+			benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+			benchVars["MEMORY_BENCH_ENFORCE"] = tc.enforce
+			output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, tc.wantExit)
+			if exitCode != tc.wantExit {
+				t.Fatalf("bench-gate exit code = %d, want %d", exitCode, tc.wantExit)
+			}
+			for _, want := range []string{
+				"package=github.com/ben-ranford/lopper/benchpkg selection=^(BenchmarkShared)$",
+				"harness-fingerprint=git-hash-object:",
+				tc.wantOutput,
+			} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("bench-gate output missing %q:\n%s", want, output)
+				}
+			}
+			for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
+				if strings.Contains(output, omit) {
+					t.Fatalf("bench-gate must reject changed harness before execution, found %q:\n%s", omit, output)
+				}
+			}
+
+			wantContains := []string{
+				"Comparison status: invalid",
+				"base benchmark definition for package 'github.com/ben-ranford/lopper/benchpkg' does not match the resolved head harness fingerprint.",
+				tc.wantSummary,
+			}
+			wantOmit := append([]string{
+				"Result: memory benchmark gate passed.",
+				"Result: memory benchmark regression detected.",
+				"BenchmarkShared-",
+			}, tc.wantOmitFromSummary...)
+			assertMemoryBenchArtifacts(t, repo, tc.wantStatus, wantContains, wantOmit)
+			assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
+			assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
+		})
 	}
-	wantOmit := []string{
-		"Result: memory benchmark gate passed.",
-		"Result: memory benchmark regression detected.",
-		"BenchmarkShared-",
-	}
-	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
-	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
-	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
 }
 
 func TestMakefileLockfiledriftHeadContract(t *testing.T) {
