@@ -305,16 +305,36 @@ func reachableVulnerabilityThresholdEnabled(threshold string) bool {
 
 func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
 	for _, warning := range warnings {
-		path, found := strings.CutPrefix(warning, "skipped ")
-		if !found {
-			continue
-		}
-		path, _, found = strings.Cut(path, " because it exceeds ")
-		if found && strings.EqualFold(filepath.Ext(path), ".gemspec") {
+		if path, found := oversizedRubyGemspecDeclarationWarningPath(warning); found && strings.EqualFold(filepath.Ext(path), ".gemspec") {
 			return true
 		}
 	}
 	return false
+}
+
+func oversizedRubyGemspecDeclarationWarningPath(warning string) (string, bool) {
+	warning = strings.TrimSpace(warning)
+	for {
+		if path, found := equalFoldCutPrefix(warning, "skipped "); found {
+			path, _, found = strings.Cut(path, " because it exceeds ")
+			if !found {
+				return "", false
+			}
+			return strings.TrimSpace(path), true
+		}
+		_, rest, found := strings.Cut(warning, ": ")
+		if !found {
+			return "", false
+		}
+		warning = strings.TrimSpace(rest)
+	}
+}
+
+func equalFoldCutPrefix(value, prefix string) (string, bool) {
+	if len(value) < len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
+		return "", false
+	}
+	return value[len(prefix):], true
 }
 
 func baselineHasReachableVulnerabilityAtOrAbove(findings []report.VulnerabilityDelta, threshold string) bool {
