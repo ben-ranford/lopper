@@ -285,57 +285,7 @@ func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm o
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return createFileExclusivelyAtRoot(root, target.rel, data, perm)
-}
-
-func createFileExclusivelyAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
-	file, err := root.OpenFile(targetRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return os.ErrExist
-		}
-		return err
-	}
-
-	targetCreated := true
-	defer func() {
-		if targetCreated {
-			returnErr = errors.Join(returnErr, cleanupAtomicTempFile(root, targetRel, file))
-		}
-	}()
-
-	openedInfo, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if !openedInfo.Mode().IsRegular() {
-		return fmt.Errorf("exclusive-create target is not a regular file: %s", targetRel)
-	}
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	if err := file.Chmod(perm); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	file = nil
-	pathInfo, err := root.Lstat(targetRel)
-	if err != nil {
-		targetCreated = false
-		return fmt.Errorf("exclusive-create target changed before validation: %w", err)
-	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 {
-		targetCreated = false
-		return fmt.Errorf("exclusive-create target became a symlink before validation: %s", targetRel)
-	}
-	if !pathInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
-		targetCreated = false
-		return fmt.Errorf("exclusive-create target changed before validation: %s", targetRel)
-	}
-	targetCreated = false
-	return nil
+	return writeFileAtomicallyIfAbsentAtRoot(root, target.rel, data, perm)
 }
 
 func resolvedWriteFilePerm(root Root, target rootedTarget, requestedPerm os.FileMode) (os.FileMode, fs.FileInfo, error) {
@@ -439,43 +389,20 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
 		return nil
 	}
-	cleanupRel, err := quarantineAtomicTempFile(root, tempRel)
+	cleanupRel, err := stageIdentityBoundLink(root, tempRel, expected, "cleanup file changed before removal")
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if identityBoundLinkUnsupported(err) {
+			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, tempRel, err)
+		}
 		return err
 	}
-	if cleanupRel == "" {
-		return nil
-	}
-	cleanupInfo, err := root.Lstat(cleanupRel)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !cleanupInfo.Mode().IsRegular() || !os.SameFile(expected, cleanupInfo) {
-		return nil
+	if err := root.Remove(tempRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(err, cleanupAtomicTempFile(root, cleanupRel, nil))
 	}
 	return cleanupAtomicTempFile(root, cleanupRel, nil)
-}
-
-func quarantineAtomicTempFile(root Root, tempRel string) (string, error) {
-	for range 10 {
-		cleanupRel, err := identityBoundStagingPath(tempRel)
-		if err != nil {
-			return "", err
-		}
-		if err := root.Rename(tempRel, cleanupRel); errors.Is(err, os.ErrExist) {
-			continue
-		} else if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return "", nil
-			}
-			return "", err
-		}
-		return cleanupRel, nil
-	}
-	return "", fmt.Errorf("quarantine temp file: too many collisions")
 }
 
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {

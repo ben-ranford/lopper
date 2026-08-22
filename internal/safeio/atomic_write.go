@@ -3,7 +3,6 @@ package safeio
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -218,6 +217,9 @@ func (s *atomicWriteSession) closeTempFile() error {
 }
 
 func (s *atomicWriteSession) cleanup() error {
+	if s.tempInfo != nil {
+		return cleanupAtomicTempFileIfMatches(s.root, s.tempRel, s.tempInfo)
+	}
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
 
@@ -274,49 +276,11 @@ func publishIdentityBoundIfAbsent(root Root, sourceRel, targetRel string, expect
 			return os.ErrExist
 		}
 		if identityBoundLinkUnsupported(err) {
-			return createFileExclusivelyFromPreparedSource(root, sourceRel, targetRel, expected)
+			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, sourceRel, err)
 		}
 		return err
 	}
 	return verifyPublishedPathMatchesInfo(root, targetRel, expected, committedTargetChangedBeforeValidation)
-}
-
-func createFileExclusivelyFromPreparedSource(root Root, sourceRel, targetRel string, expected fs.FileInfo) (returnErr error) {
-	if err := verifyPublishedPathMatchesInfo(root, sourceRel, expected, temporaryFileChangedBeforeCommit); err != nil {
-		return err
-	}
-	source, err := root.Open(sourceRel)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, source.Close())
-	}()
-
-	file, err := root.OpenFile(targetRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, expected.Mode().Perm())
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return os.ErrExist
-		}
-		return err
-	}
-	targetCreated := true
-	defer func() {
-		if targetCreated {
-			returnErr = errors.Join(returnErr, cleanupAtomicTempFile(root, targetRel, file))
-		}
-	}()
-	if _, err := io.Copy(file, source); err != nil {
-		return err
-	}
-	if err := file.Chmod(expected.Mode().Perm()); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	targetCreated = false
-	return nil
 }
 
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {

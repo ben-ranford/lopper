@@ -161,46 +161,22 @@ func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message st
 	if expected == nil {
 		return fmt.Errorf("%s: %s", message, rel)
 	}
-	stagedRel, err := identityBoundStagingPath(rel)
+	cleanupRel, err := stageIdentityBoundLink(root, rel, expected, message)
 	if err != nil {
-		return err
-	}
-	if err := root.Rename(rel, stagedRel); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return err
-	}
-	stagedInfo, err := root.Lstat(stagedRel)
-	if err != nil {
-		return err
-	}
-	if !stagedInfo.Mode().IsRegular() || !os.SameFile(expected, stagedInfo) {
-		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel, stagedInfo)
-		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
-	}
-	if err := cleanupAtomicTempFileIfMatches(root, stagedRel, expected); err != nil {
-		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel, expected)
-		return errors.Join(err, restoreErr)
-	}
-	return nil
-}
-
-func restoreSourceIfAbsent(root Root, stagedRel, rel string, expected fs.FileInfo) error {
-	if expected == nil {
-		return fmt.Errorf("source restore identity unavailable: %s", rel)
-	}
-	if err := root.Link(stagedRel, rel); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("source path occupied during restore: %s", rel)
-		}
 		if identityBoundLinkUnsupported(err) {
-			return fmt.Errorf("identity-bound source restore unsupported: %s: %w", rel, err)
+			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, rel, err)
 		}
 		return err
 	}
-	if err := verifyPublishedPathMatchesInfo(root, rel, expected, "source changed during restore"); err != nil {
-		return err
+	if err := root.Remove(rel); err != nil {
+		cleanupErr := cleanupAtomicTempFileIfMatches(root, cleanupRel, expected)
+		if errors.Is(err, os.ErrNotExist) {
+			return cleanupErr
+		}
+		return errors.Join(err, cleanupErr)
 	}
-	return cleanupAtomicTempFileIfMatches(root, stagedRel, expected)
+	return cleanupAtomicTempFileIfMatches(root, cleanupRel, expected)
 }
