@@ -1047,6 +1047,53 @@ func TestWriteRootPinnedParentPublishCheckRejectsRetargetedParentPath(t *testing
 	}
 }
 
+func TestWriteRootPinnedParentPublishCheckRejectsParentSwapDuringCommitCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		func(parentPath string, parentIdentity fs.FileInfo) error {
+			publishChecks++
+			if err := VerifyDirectoryIdentity(parentPath, parentIdentity); err != nil {
+				return err
+			}
+			if publishChecks == 2 {
+				if err := os.Rename(originalParent, relocatedParent); err != nil {
+					return err
+				}
+				return os.Mkdir(originalParent, 0o750)
+			}
+			return nil
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected commit-time parent identity error, got %v", err)
+	}
+	if publishChecks != 2 {
+		t.Fatalf("expected initial and commit publish checks, got %d", publishChecks)
+	}
+	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
 func TestWriteFileAtRootWithPostWriteCheckRunsAfterCommit(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := OpenRoot(rootDir)

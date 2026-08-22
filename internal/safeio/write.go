@@ -245,7 +245,10 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 			}
 			parentPath := filepath.Dir(target.abs)
 			parentCheck := func() error {
-				return options.publishParent(parentPath, parentIdentity)
+				if err := options.publishParent(parentPath, parentIdentity); err != nil {
+					return err
+				}
+				return VerifyDirectoryIdentity(parentPath, parentIdentity)
 			}
 			commitReady = parentCheck
 			postWrite = parentCheck
