@@ -435,7 +435,7 @@ func isLikelyStdHeader(header string) bool {
 }
 
 func hasLikelyStdHeaderPrefix(header string) bool {
-	for _, prefix := range []string{"sys/", "bits/", "linux/", "experimental/", "tr1/"} {
+	for _, prefix := range []string{"sys/", "bits/", "linux/", "experimental/", "tr1/", "ext/", "parallel/", "debug/"} {
 		if strings.HasPrefix(header, prefix) {
 			return true
 		}
