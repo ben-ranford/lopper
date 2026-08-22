@@ -348,7 +348,7 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	})
 }
 
-func TestCIWorkflowACTPullRequestFallbackUsesHeadParentBase(t *testing.T) {
+func TestCIWorkflowACTPullRequestFallbackUsesTrueMergeBase(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
@@ -356,7 +356,10 @@ func TestCIWorkflowACTPullRequestFallbackUsesHeadParentBase(t *testing.T) {
 
 	resolveBase := workflowStepByName(t, workflow.Jobs, "verify", ciWorkflowResolveBaseStepName)
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", ciWorkflowFetchBaseStepName)
-	repo, baseSHA := createCIWorkflowGitRepo(t)
+	repo, baseSHA, headParentSHA := createCIWorkflowACTMergeBaseRepo(t)
+	if headParentSHA == baseSHA {
+		t.Fatalf("test fixture is invalid: HEAD^ = %q, want a distinct feature commit before HEAD", headParentSHA)
+	}
 
 	resolveEnvPath := filepath.Join(t.TempDir(), "resolve.env")
 	resolveOutput, err := runCIWorkflowShellStep(t, repo, resolveBase.Run, map[string]string{
@@ -368,14 +371,14 @@ func TestCIWorkflowACTPullRequestFallbackUsesHeadParentBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve PR base ref failed for ACT fallback: %v\n%s", err, resolveOutput)
 	}
-	if !strings.Contains(resolveOutput, "using HEAD^ ("+baseSHA+") as the immutable local base") {
-		t.Fatalf("resolve PR base ref output = %q, want HEAD^ fallback notice for %s", resolveOutput, baseSHA)
+	if !strings.Contains(resolveOutput, "will resolve the immutable local base from merge-base(origin/main, HEAD).") {
+		t.Fatalf("resolve PR base ref output = %q, want merge-base fallback notice", resolveOutput)
 	}
 	resolvedEnv := readCIWorkflowEnvFile(t, resolveEnvPath)
 	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "ACT fallback base source", got: resolvedEnv["BASE_SOURCE"], want: "act-head-parent"},
-		{label: "ACT fallback base sha", got: resolvedEnv["BASE_SHA"], want: baseSHA},
-		{label: "ACT fallback base ref", got: resolvedEnv["BASE_REF"], want: ""},
+		{label: "ACT fallback base source", got: resolvedEnv["BASE_SOURCE"], want: "act-merge-base"},
+		{label: "ACT fallback base sha", got: resolvedEnv["BASE_SHA"], want: ""},
+		{label: "ACT fallback base ref", got: resolvedEnv["BASE_REF"], want: "main"},
 	})
 
 	fetchEnvPath := filepath.Join(t.TempDir(), "fetch.env")
@@ -389,9 +392,43 @@ func TestCIWorkflowACTPullRequestFallbackUsesHeadParentBase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch PR base failed for ACT fallback: %v\n%s", err, fetchOutput)
 	}
+	if !strings.Contains(fetchOutput, "using merge-base(origin/main, HEAD) ("+baseSHA+") as the immutable local base") {
+		t.Fatalf("fetch PR base output = %q, want merge-base fallback notice for %s", fetchOutput, baseSHA)
+	}
 	fetchedEnv := readCIWorkflowEnvFile(t, fetchEnvPath)
+	if got := fetchedEnv["BASE_SHA"]; got != baseSHA {
+		t.Fatalf("ACT fallback prepared base SHA = %q, want %q", got, baseSHA)
+	}
 	if got := fetchedEnv["MEMORY_BENCH_BASE"]; got != baseSHA {
 		t.Fatalf("ACT fallback memory benchmark base = %q, want %q", got, baseSHA)
+	}
+	if got := fetchedEnv["MEMORY_BENCH_BASE"]; got == headParentSHA {
+		t.Fatalf("ACT fallback selected HEAD^ = %q, want true merge-base %q", got, baseSHA)
+	}
+}
+
+func TestCIWorkflowACTPullRequestFallbackFailsClosedWithoutResolvableBaseBranch(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	resolveBase := workflowStepByName(t, workflow.Jobs, "verify", ciWorkflowResolveBaseStepName)
+	repo := initCIWorkflowGitRepo(t)
+	commitCIWorkflowGitFile(t, repo, "fixture.txt", "base\n", "base")
+	commitCIWorkflowTrackedFile(t, repo, "fixture.txt", "head\n", "head")
+
+	output, err := runCIWorkflowShellStep(t, repo, resolveBase.Run, map[string]string{
+		"ACT":         "1",
+		"GITHUB_ENV":  filepath.Join(t.TempDir(), "resolve.env"),
+		"PR_BASE_REF": "",
+		"PR_BASE_SHA": "",
+	})
+	if err == nil {
+		t.Fatal("resolve PR base ref succeeded without pull_request.base.ref or origin/HEAD")
+	}
+	if !strings.Contains(output, "require pull_request.base.ref or origin/HEAD to resolve an immutable local base branch") {
+		t.Fatalf("resolve PR base ref output = %q, want fail-closed base-branch resolution error", output)
 	}
 }
 
@@ -416,7 +453,7 @@ func TestCIWorkflowFetchPRBaseRejectsNonAncestorBaseSHA(t *testing.T) {
 	output, err := runCIWorkflowShellStep(t, repo, fetchBase.Run, map[string]string{
 		"ACT":         "1",
 		"GITHUB_ENV":  filepath.Join(t.TempDir(), "non-ancestor.env"),
-		"BASE_SOURCE": "act-head-parent",
+		"BASE_SOURCE": "github-event",
 		"BASE_SHA":    nonAncestorSHA,
 	})
 	if err == nil {
@@ -509,7 +546,10 @@ func assertCIWorkflowPreparedBaseResolverStep(t *testing.T, step workflowStepCon
 		`base_sha="${PR_BASE_SHA:-}"`,
 		`base_source="github-event"`,
 		`if [ -n "${ACT:-}" ] && [ -z "${base_sha}" ]; then`,
-		`base_sha="$(git rev-parse --verify -q --end-of-options HEAD^ 2>/dev/null)"`,
+		`git remote set-head origin --auto >/dev/null 2>&1 || true`,
+		`base_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"`,
+		`base_ref="${base_ref#origin/}"`,
+		`base_source="act-merge-base"`,
 		`printf 'BASE_SOURCE=%s\n' "${base_source}"`,
 		`printf 'BASE_SHA=%s\n' "${base_sha}"`,
 		`printf 'BASE_REF=%s\n' "${base_ref}"`,
@@ -517,6 +557,7 @@ func assertCIWorkflowPreparedBaseResolverStep(t *testing.T, step workflowStepCon
 	})
 	assertWorkflowStepRunOmitsAll(t, step, label, []string{
 		`base_ref="${PR_BASE_REF:-main}"`,
+		`HEAD^`,
 	})
 }
 
@@ -527,13 +568,18 @@ func assertCIWorkflowPreparedBaseFetchStep(t *testing.T, step workflowStepConfig
 		`base_ref="${BASE_REF:-}"`,
 		`base_sha="${BASE_SHA:-}"`,
 		`base_source="${BASE_SOURCE:-github-event}"`,
-		`if [ "${base_source}" = "act-head-parent" ]; then`,
+		`if [ "${base_source}" = "act-merge-base" ]; then`,
+		`git fetch --no-tags origin "${base_ref}"`,
+		`git rev-parse --verify -q --end-of-options "origin/${base_ref}^{commit}"`,
+		`base_sha="$(git merge-base "origin/${base_ref}" HEAD 2>/dev/null)"`,
+		`printf 'BASE_SHA=%s\n' "${base_sha}"`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}"`,
 		`git fetch --no-tags origin "${base_sha}"`,
 		`if [ -n "${base_ref}" ]; then`,
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
 		`git merge-base --is-ancestor "${base_sha}" HEAD`,
-		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
+		`} >> "$GITHUB_ENV"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, step, label, []string{
 		`base_ref="${BASE_REF:-main}"`,
@@ -542,6 +588,7 @@ func assertCIWorkflowPreparedBaseFetchStep(t *testing.T, step workflowStepConfig
 		`--depth=1 origin "${base_ref}"`,
 		`git merge-base -- "${base_sha}" HEAD >/dev/null`,
 		`MEMORY_BENCH_BASE="origin/${base_ref}"`,
+		`HEAD^`,
 	})
 }
 
@@ -585,8 +632,9 @@ func assertCIWorkflowRegressionProofUsesPreparedBaseSHA(t *testing.T, step workf
 func createCIWorkflowGitRepo(t *testing.T) (string, string) {
 	t.Helper()
 
-	repo := initCIWorkflowGitRepo(t)
+	repo := initCIWorkflowGitRemoteClone(t)
 	baseSHA := commitCIWorkflowGitFile(t, repo, "fixture.txt", "base\n", "base")
+	runCIWorkflowGit(t, repo, "push", "-u", "origin", "main")
 	commitCIWorkflowTrackedFile(t, repo, "fixture.txt", "head\n", "head")
 	return repo, baseSHA
 }
@@ -594,10 +642,12 @@ func createCIWorkflowGitRepo(t *testing.T) (string, string) {
 func createCIWorkflowDivergedRepo(t *testing.T) (string, string) {
 	t.Helper()
 
-	repo := initCIWorkflowGitRepo(t)
+	repo := initCIWorkflowGitRemoteClone(t)
 	commitCIWorkflowGitFile(t, repo, "fixture.txt", "base\n", "base")
-	runCIWorkflowGit(t, repo, "checkout", "-b", "topic-base")
+	runCIWorkflowGit(t, repo, "push", "-u", "origin", "main")
+	runCIWorkflowGit(t, repo, "checkout", "-b", "topic-base", "main")
 	nonAncestorSHA := commitCIWorkflowGitFile(t, repo, "topic.txt", "topic\n", "topic")
+	runCIWorkflowGit(t, repo, "push", "-u", "origin", "topic-base")
 	runCIWorkflowGit(t, repo, "checkout", "main")
 	commitCIWorkflowTrackedFile(t, repo, "fixture.txt", "head\n", "head")
 	return repo, nonAncestorSHA
@@ -611,6 +661,44 @@ func initCIWorkflowGitRepo(t *testing.T) string {
 	runCIWorkflowGit(t, repo, "config", "user.name", "CI Workflow Test")
 	runCIWorkflowGit(t, repo, "config", "user.email", "ci-workflow-test@example.com")
 	return repo
+}
+
+func initCIWorkflowGitRemoteClone(t *testing.T) string {
+	t.Helper()
+
+	parent := t.TempDir()
+	remote := filepath.Join(parent, "origin.git")
+	runCIWorkflowGitInDir(t, parent, "init", "--bare", "--initial-branch=main", remote)
+
+	seed := filepath.Join(parent, "seed")
+	runCIWorkflowGitInDir(t, parent, "clone", remote, seed)
+	configureCIWorkflowGitIdentity(t, seed)
+	commitCIWorkflowGitFile(t, seed, "seed.txt", "seed\n", "seed")
+	runCIWorkflowGit(t, seed, "push", "-u", "origin", "main")
+
+	repo := filepath.Join(parent, "repo")
+	runCIWorkflowGitInDir(t, parent, "clone", remote, repo)
+	configureCIWorkflowGitIdentity(t, repo)
+	return repo
+}
+
+func configureCIWorkflowGitIdentity(t *testing.T, repo string) {
+	t.Helper()
+
+	runCIWorkflowGit(t, repo, "config", "user.name", "CI Workflow Test")
+	runCIWorkflowGit(t, repo, "config", "user.email", "ci-workflow-test@example.com")
+}
+
+func createCIWorkflowACTMergeBaseRepo(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	repo := initCIWorkflowGitRemoteClone(t)
+	baseSHA := commitCIWorkflowGitFile(t, repo, "fixture.txt", "base\n", "base")
+	runCIWorkflowGit(t, repo, "push", "-u", "origin", "main")
+	runCIWorkflowGit(t, repo, "checkout", "-b", "feature/merge-base-proof", "main")
+	headParentSHA := commitCIWorkflowTrackedFile(t, repo, "fixture.txt", "feature-one\n", "feature one")
+	commitCIWorkflowTrackedFile(t, repo, "fixture.txt", "feature-two\n", "feature two")
+	return repo, baseSHA, headParentSHA
 }
 
 func commitCIWorkflowGitFile(t *testing.T, repo string, relativePath string, contents string, message string) string {
@@ -642,6 +730,18 @@ func runCIWorkflowGit(t *testing.T, repo string, args ...string) string {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func runCIWorkflowGitInDir(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed in %s: %v\n%s", strings.Join(args, " "), dir, err, output)
 	}
 	return string(output)
 }

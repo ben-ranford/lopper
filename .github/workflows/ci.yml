@@ -95,13 +95,17 @@ jobs:
           base_sha="${PR_BASE_SHA:-}"
           base_source="github-event"
           if [ -n "${ACT:-}" ] && [ -z "${base_sha}" ]; then
-            if ! base_sha="$(git rev-parse --verify -q --end-of-options HEAD^ 2>/dev/null)"; then
-              echo "::error::ACT pull_request runs without pull_request.base.sha require a parent commit to derive an immutable local base." >&2
+            if [ -z "${base_ref}" ]; then
+              git remote set-head origin --auto >/dev/null 2>&1 || true
+              base_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+              base_ref="${base_ref#origin/}"
+            fi
+            if [ -z "${base_ref}" ]; then
+              echo "::error::ACT pull_request runs without pull_request.base.sha require pull_request.base.ref or origin/HEAD to resolve an immutable local base branch." >&2
               exit 1
             fi
-            base_ref=""
-            base_source="act-head-parent"
-            echo "::notice::ACT pull_request payload omitted pull_request.base.sha; using HEAD^ (${base_sha}) as the immutable local base."
+            base_source="act-merge-base"
+            echo "::notice::ACT pull_request payload omitted pull_request.base.sha; will resolve the immutable local base from merge-base(origin/${base_ref}, HEAD)."
           fi
           {
             printf 'BASE_SOURCE=%s\n' "${base_source}"
@@ -127,16 +131,30 @@ jobs:
           base_ref="${BASE_REF:-}"
           base_sha="${BASE_SHA:-}"
           base_source="${BASE_SOURCE:-github-event}"
-          if [ -z "${base_sha}" ]; then
-            echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
-            exit 1
-          fi
-          if [ "${base_source}" = "act-head-parent" ]; then
-            if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
-              echo "::error::ACT fallback base SHA '${base_sha}' is unavailable locally; cannot prepare memory benchmark base." >&2
+          if [ "${base_source}" = "act-merge-base" ]; then
+            if [ -z "${base_ref}" ]; then
+              echo "::error::ACT local base branch is unavailable; cannot resolve immutable local base." >&2
               exit 1
             fi
+            git fetch --no-tags origin "${base_ref}"
+            if ! git rev-parse --verify -q --end-of-options "origin/${base_ref}^{commit}" >/dev/null; then
+              echo "::error::ACT local base branch 'origin/${base_ref}' is missing after fetch; cannot resolve immutable local base." >&2
+              exit 1
+            fi
+            if ! base_sha="$(git merge-base "origin/${base_ref}" HEAD 2>/dev/null)"; then
+              echo "::error::ACT local base branch 'origin/${base_ref}' is not related to HEAD; cannot derive immutable local base." >&2
+              exit 1
+            fi
+            if [ -z "${base_sha}" ]; then
+              echo "::error::ACT local base branch 'origin/${base_ref}' did not yield a merge-base with HEAD; cannot derive immutable local base." >&2
+              exit 1
+            fi
+            echo "::notice::ACT pull_request payload omitted pull_request.base.sha; using merge-base(origin/${base_ref}, HEAD) (${base_sha}) as the immutable local base."
           else
+            if [ -z "${base_sha}" ]; then
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
             git fetch --no-tags origin "${base_sha}"
             if [ -n "${base_ref}" ]; then
               git fetch --no-tags origin "${base_ref}"
@@ -150,7 +168,10 @@ jobs:
             echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
-          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
+          {
+            printf 'BASE_SHA=%s\n' "${base_sha}"
+            printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}"
+          } >> "$GITHUB_ENV"
 
       - name: Run CI target
         env:
