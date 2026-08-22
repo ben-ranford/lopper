@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
@@ -238,6 +239,21 @@ func TestPythonManifestIdentityReadsLargeAdapterSupportedManifest(t *testing.T) 
 		Source: pythonProjectFileName, Confidence: "high",
 	})
 	assertWarningsExact(t, repoPath, reportData.Warnings, nil)
+}
+
+func TestPythonManifestIdentityWarnsOnManifestOverSharedReadLimit(t *testing.T) {
+	repoPath := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repoPath, pythonPipfileName), "[packages]\nflask = \"==3.0.0\"\n"+strings.Repeat("# filler\n", int(pythonlang.ManifestReadLimitBytes)/len("# filler\n")+1))
+	reportData := report.Report{Dependencies: []report.DependencyReport{
+		{Language: "python", Name: "flask"},
+	}}
+
+	annotateDependencyIdentities(repoPath, &reportData)
+
+	assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", "flask"), "pypi", "flask")
+	assertWarningsExact(t, repoPath, reportData.Warnings, []string{
+		"identity manifest read failed for Pipfile: file exceeds size limit",
+	})
 }
 
 func TestPythonManifestEvidenceWarnsOnMalformedTOML(t *testing.T) {

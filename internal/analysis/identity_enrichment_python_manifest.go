@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ben-ranford/lopper/internal/safeio"
+	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -42,7 +42,7 @@ func collectPipfileManifestEvidence(repoPath, path string, index identityIndex, 
 }
 
 func readPythonManifestDocument(repoPath, path string, warnings *identityWarningCollector) (map[string]any, bool) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := pythonlang.ReadManifestFile(repoPath, path)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nil, false

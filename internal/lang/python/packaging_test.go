@@ -11,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -487,6 +488,30 @@ func TestParsePipfileDependenciesInvalidTOML(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonPipfileName)
 	assertInvalidParseWarning(t, repo, path, `[packages`, "invalid Pipfile", "decode error", parsePipfileDependencies)
+}
+
+func TestPythonManifestReadLimitAcceptsLargeManifestAndRejectsOverLimit(t *testing.T) {
+	repo := t.TempDir()
+
+	largePath := filepath.Join(repo, "large", pythonPyprojectFile)
+	testutil.MustWriteFile(t, largePath, "[project]\ndependencies = [\"requests>=2\"]\n"+strings.Repeat("# filler\n", (1<<20)/len("# filler\n")+1))
+	dependencies, warnings, err := parsePyprojectDependencies(repo, largePath)
+	if err != nil {
+		t.Fatalf("parse large pyproject: %v", err)
+	}
+	if _, ok := dependencies["requests"]; !ok {
+		t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no large manifest warnings, got %#v", warnings)
+	}
+
+	oversizedPath := filepath.Join(repo, "oversized", pythonPipfileName)
+	testutil.MustWriteFile(t, oversizedPath, "[packages]\nflask = \"*\"\n"+strings.Repeat("# filler\n", int(ManifestReadLimitBytes)/len("# filler\n")+1))
+	_, _, err = parsePipfileDependencies(repo, oversizedPath)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected shared manifest read limit error, got %v", err)
+	}
 }
 
 func TestReadOptionalTOMLDocumentOutsideRepoFails(t *testing.T) {
