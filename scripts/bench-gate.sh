@@ -243,19 +243,7 @@ echo "Memory benchmark GO_BIN: $go_bin_path";
 echo "Memory benchmark Go toolchain: $expected_go_version";
 benchmark_harness_go_file_selected() {
 	fingerprint_go_file="$1";
-	if grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_go_file"; then
-		return 0;
-	fi;
-	if grep -Eq '^[[:space:]]*//go:embed[[:space:]]' "$fingerprint_go_file"; then
-		return 0;
-	fi;
-	if grep -Eq '(^|[^[:alnum:]_])benchmark[[:alnum:]_]*' "$fingerprint_go_file"; then
-		return 0;
-	fi;
-	if grep -Eq 'func[[:space:]]+(Test|Fuzz)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_go_file"; then
-		return 1;
-	fi;
-	return 0;
+	"$benchmark_harness_selector_bin" "$fingerprint_go_file";
 };
 benchmark_harness_append_file() {
 	fingerprint_kind="$1";
@@ -287,8 +275,15 @@ benchmark_harness_fingerprint() {
 		[ -n "$fingerprint_file" ] || continue;
 		case "$fingerprint_kind" in
 			test|xtest)
-				if ! benchmark_harness_go_file_selected "$fingerprint_dir/$fingerprint_file"; then
-					continue;
+				if benchmark_harness_go_file_selected "$fingerprint_dir/$fingerprint_file"; then
+					:
+				else
+					selection_status=$?;
+					if [ "$selection_status" -eq 1 ]; then
+						continue;
+					fi;
+					fingerprint_failed=1;
+					break;
 				fi;
 				;;
 			test-embed|xtest-embed) ;;
@@ -330,6 +325,97 @@ bench_definitions_tmp=$(mktemp);
 # shellcheck disable=SC2317,SC2329 # cleanup is invoked by trap.
 cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$base_tree" >/dev/null 2>&1 || true); rm -rf "$bench_dir"; rm -f "$base_output_tmp" "$head_output_tmp" "$bench_packages_tmp" "$bench_definitions_tmp"; };
 trap cleanup EXIT INT TERM;
+benchmark_harness_selector_bin="$bench_dir/benchharness";
+benchmark_harness_selector_src="$bench_dir/benchharness.go";
+cat > "$benchmark_harness_selector_src" <<'GOEOF';
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+func main() {
+	if len(os.Args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: benchharness <go-test-file>")
+		os.Exit(2)
+	}
+
+	selected, err := benchmarkHarnessFileSelected(os.Args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parse benchmark harness file %q: %v\n", os.Args[1], err)
+		os.Exit(2)
+	}
+	if !selected {
+		os.Exit(1)
+	}
+}
+
+func benchmarkHarnessFileSelected(path string) (bool, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		return false, err
+	}
+
+	for _, decl := range file.Decls {
+		if declarationCanAffectBenchmark(decl) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func declarationCanAffectBenchmark(decl ast.Decl) bool {
+	switch typed := decl.(type) {
+	case *ast.GenDecl:
+		return declarationTokenCanAffectBenchmark(typed.Tok) && len(typed.Specs) > 0
+	case *ast.FuncDecl:
+		return functionDeclarationCanAffectBenchmark(typed)
+	default:
+		return false
+	}
+}
+
+func declarationTokenCanAffectBenchmark(tok token.Token) bool {
+	return tok == token.CONST || tok == token.TYPE || tok == token.VAR
+}
+
+func functionDeclarationCanAffectBenchmark(decl *ast.FuncDecl) bool {
+	if decl.Name == nil {
+		return false
+	}
+	if decl.Recv != nil {
+		return true
+	}
+
+	name := decl.Name.Name
+	if name == "init" || isGoTestEntrypoint(name, "Benchmark") {
+		return true
+	}
+	return !isGoTestEntrypoint(name, "Test") &&
+		!isGoTestEntrypoint(name, "Fuzz") &&
+		!isGoTestEntrypoint(name, "Example")
+}
+
+func isGoTestEntrypoint(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	suffix := name[len(prefix):]
+	if suffix == "" {
+		return true
+	}
+	first, _ := utf8.DecodeRuneInString(suffix)
+	return !unicode.IsLower(first)
+}
+GOEOF
+GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src";
 echo "Running memory benchmark delta against $base_ref.";
 : > "$base_output_tmp";
 : > "$head_output_tmp";

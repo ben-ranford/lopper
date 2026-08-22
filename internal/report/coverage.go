@@ -64,9 +64,13 @@ func normalizeCoverageGap(gap CoverageGap) CoverageGap {
 	return CoverageGap{
 		Code:     strings.TrimSpace(gap.Code),
 		Language: strings.TrimSpace(gap.Language),
-		Path:     filepath.ToSlash(strings.TrimSpace(gap.Path)),
+		Path:     normalizeCoverageGapPath(gap.Path),
 		Evidence: sortedUniqueStrings(gap.Evidence),
 	}
+}
+
+func normalizeCoverageGapPath(path string) string {
+	return strings.ReplaceAll(filepath.ToSlash(path), "\\", "/")
 }
 
 func coverageGapIdentity(gap CoverageGap) string {
