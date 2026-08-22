@@ -373,6 +373,10 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 		s.consumeGoModBlockLine(lineText)
 		return
 	}
+	if directive, ok := goModInlineEmptyBlockDirective(lineText); ok {
+		s.consumeGoModInlineEmptyBlock(directive)
+		return
+	}
 	if directive, ok := goModBlockDirective(lineText); ok {
 		s.startGoModBlock(directive)
 		return
@@ -400,6 +404,24 @@ func goModBlockDirective(lineText string) (string, bool) {
 		return strings.TrimSuffix(lineText, "("), true
 	}
 	return "", false
+}
+
+func goModInlineEmptyBlockDirective(lineText string) (string, bool) {
+	directive := firstToken(lineText)
+	if directive == "" {
+		return "", false
+	}
+	rest := trimGoModDirectiveSpace(strings.TrimPrefix(lineText, directive))
+	return directive, rest == "()" || rest == "( )"
+}
+
+func (s *goModModuleScanner) consumeGoModInlineEmptyBlock(directive string) {
+	if directive == "module" {
+		return
+	}
+	if !isValidGoModBlockDirective(s.validationModulePath(), directive) {
+		s.invalid = true
+	}
 }
 
 func (s *goModModuleScanner) consumeGoModSingletonLine(lineText string) bool {
