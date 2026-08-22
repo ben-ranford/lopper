@@ -261,6 +261,9 @@ benchmark_harness_fingerprint() {
 	fingerprint_failed=0;
 	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file; do
 		[ -n "$fingerprint_file" ] || continue;
+		if ! grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_dir/$fingerprint_file"; then
+			continue;
+		fi;
 		if ! fingerprint_blob=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
 			fingerprint_failed=1;
 			break;

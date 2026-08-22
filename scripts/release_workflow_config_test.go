@@ -3184,6 +3184,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`requested base ref '$$base_ref' is not related to HEAD`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
+		`grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$$fingerprint_dir/$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
 		`git rev-parse --verify -q --end-of-options "$$base_ref^{commit}"`,
 		`git merge-base -- "$$base_ref" HEAD`,
@@ -3881,6 +3882,32 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 	})
 
 	assertPinnedGoBinInvocations(t, goBinLog, resolvedGoBin)
+}
+
+func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")
+
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), "package benchpkg\n\nimport \"testing\"\n\nfunc TestOrdinary(t *testing.T) {}\n")
+	runGitCommand(t, repo, "add", "benchpkg/ordinary_test.go")
+	runGitCommand(t, repo, "commit", "-m", "add ordinary test")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0", exitCode)
+	}
+	if strings.Contains(output, "does not match the resolved head harness fingerprint") {
+		t.Fatalf("bench-gate treated an ordinary test as benchmark harness drift:\n%s", output)
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
 
 func TestMakefileBenchGateApplicationFailuresExitInvalid(t *testing.T) {

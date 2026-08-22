@@ -34,6 +34,7 @@ const (
 	prReviewCategoryPolicyChanged      = "policy-changed"
 	prReviewCategoryNewlyReachable     = "newly-reachable"
 	prReviewCategoryMateriallyWorsened = "materially-worsened"
+	prReviewCategoryCoverageGap        = "coverage-gap"
 )
 
 var (
@@ -69,6 +70,7 @@ type prReviewSummary struct {
 	PolicyChanged        int `json:"policyChanged"`
 	NewlyReachable       int `json:"newlyReachable"`
 	MateriallyWorsened   int `json:"materiallyWorsened"`
+	CoverageGaps         int `json:"coverageGaps"`
 	RegressionCount      int `json:"regressionCount"`
 	MarkdownOverflowRows int `json:"markdownOverflowRows,omitempty"`
 }
@@ -161,7 +163,7 @@ func (a *App) executePRReview(ctx context.Context, req Request) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if req.PRReview.FailOnRegression && (artifact.Summary.RegressionCount > 0 || prReviewHasReachableVulnerabilityCoverageRegression(baseReport, headReport, req.PRReview.Thresholds.ReachableVulnerabilityPriority)) {
+	if req.PRReview.FailOnRegression && artifact.Summary.RegressionCount > 0 {
 		return output, ErrPRReviewRegressions
 	}
 	return output, nil
@@ -428,14 +430,6 @@ func validatePRReviewReachableVulnerabilityThreshold(threshold string) error {
 	return nil
 }
 
-func prReviewHasReachableVulnerabilityCoverageRegression(baseReport, headReport report.Report, threshold string) bool {
-	if !reachableVulnerabilityThresholdEnabled(threshold) {
-		return false
-	}
-	differential := prReviewDifferentialHeadReport(baseReport, headReport)
-	return hasOversizedRubyGemspecCoverageGapList(differential.CoverageGaps)
-}
-
 func validatePRReviewFeatures(req PRReviewRequest) error {
 	return validateAnalysisPolicyFeatures(req.Features, req.AdvisorySourcePath, req.Thresholds, req.VulnerabilityExceptions)
 }
@@ -456,6 +450,7 @@ func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
 		{ID: prReviewCategoryPolicyChanged, Title: "Policy Changed Dependencies", Rows: prReviewPolicyRows(input.baseReport, input.headReport)},
 		{ID: prReviewCategoryNewlyReachable, Title: "Newly Reachable Vulnerabilities", Rows: prReviewNewlyReachableRows(input.headReport, comparison.NewReachableVulnerabilities, input.req.Thresholds.ReachableVulnerabilityPriority)},
 		{ID: prReviewCategoryMateriallyWorsened, Title: "Materially Worsened Dependencies", Rows: prReviewMaterialRows(input.baseReport, input.headReport, input.req.MaterialWasteBytes)},
+		{ID: prReviewCategoryCoverageGap, Title: "Coverage Gaps", Rows: prReviewCoverageGapRows(input.headReport.CoverageGaps, input.req.Thresholds.ReachableVulnerabilityPriority)},
 	}
 	for i := range sections {
 		sortPRReviewRows(sections[i].Rows)
@@ -686,6 +681,37 @@ func prReviewMaterialRows(baseReport, headReport report.Report, threshold int64)
 	return rows
 }
 
+func prReviewCoverageGapRows(gaps []report.CoverageGap, threshold string) []prReviewRow {
+	rows := make([]prReviewRow, 0, len(gaps))
+	regression := reachableVulnerabilityThresholdEnabled(threshold)
+	for _, gap := range report.StableCoverageGaps(gaps) {
+		row := prReviewRow{
+			Category:           prReviewCategoryCoverageGap,
+			Dependency:         strings.TrimSpace(gap.Path),
+			Language:           strings.TrimSpace(gap.Language),
+			IdentityConfidence: "high",
+			EvidenceConfidence: "high",
+			Regression:         regression && isPRReviewReachableCoverageGap(gap),
+			Evidence:           compactPRReviewEvidence(gap.Evidence),
+		}
+		if row.Dependency == "" {
+			row.Dependency = strings.TrimSpace(gap.Code)
+		}
+		if row.Dependency == "" {
+			row.Dependency = "coverage gap"
+		}
+		if strings.TrimSpace(gap.Code) != "" {
+			row.Evidence = append(row.Evidence, "coverage gap: "+strings.TrimSpace(gap.Code))
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func isPRReviewReachableCoverageGap(gap report.CoverageGap) bool {
+	return strings.TrimSpace(gap.Code) == report.CoverageGapRubyOversizedGemspec
+}
+
 func prReviewRowForDependency(category string, dep report.DependencyReport) prReviewRow {
 	return prReviewRow{
 		Category:           category,
@@ -736,6 +762,8 @@ func summarizePRReviewSections(sections []prReviewSection) prReviewSummary {
 			summary.NewlyReachable = len(section.Rows)
 		case prReviewCategoryMateriallyWorsened:
 			summary.MateriallyWorsened = len(section.Rows)
+		case prReviewCategoryCoverageGap:
+			summary.CoverageGaps = len(section.Rows)
 		}
 	}
 	return summary
@@ -770,6 +798,7 @@ func formatPRReviewMarkdown(artifact prReviewArtifact, maxRows int) string {
 	fmt.Fprintf(&buffer, "| Policy changed | %d |\n", artifact.Summary.PolicyChanged)
 	fmt.Fprintf(&buffer, "| Newly reachable | %d |\n", artifact.Summary.NewlyReachable)
 	fmt.Fprintf(&buffer, "| Materially worsened | %d |\n", artifact.Summary.MateriallyWorsened)
+	fmt.Fprintf(&buffer, "| Coverage gaps | %d |\n", artifact.Summary.CoverageGaps)
 	fmt.Fprintf(&buffer, "| Regression rows | %d |\n", artifact.Summary.RegressionCount)
 
 	overflowRows := 0

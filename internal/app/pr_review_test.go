@@ -1146,6 +1146,13 @@ func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing
 	if !strings.Contains(output, "head "+shortPRReviewRevision(headSHA)+": skipped oversized.gemspec because it exceeds 1048576 bytes") {
 		t.Fatalf("expected pr-review output to preserve the head warning, got %q", output)
 	}
+	assertContainsAll(t, output, []string{
+		`"coverageGaps": 1`,
+		`"regressionCount": 1`,
+		`"id": "coverage-gap"`,
+		"\"dependency\": \"oversized.gem\u017fpec\"",
+		"coverage gap: " + report.CoverageGapRubyOversizedGemspec,
+	})
 }
 
 func TestExecutePRReviewReachableThresholdIgnoresUnchangedHeadFindings(t *testing.T) {
@@ -1239,11 +1246,118 @@ func TestExecutePRReviewReachableThresholdOnlyFailsNewCoverageGapWhenFlagEnabled
 	if !strings.Contains(output, "head "+shortPRReviewRevision(headSHA)+": skipped pkg because it exceeds old/dependencies.gem\u017fpec because it exceeds 1048576 bytes") {
 		t.Fatalf("expected warning note for new coverage gap, got %q", output)
 	}
+	assertContainsAll(t, output, []string{
+		`"coverageGaps": 1`,
+		`"regressionCount": 1`,
+		`"id": "coverage-gap"`,
+		"\"dependency\": \"pkg because it exceeds old/dependencies.gem\u017fpec\"",
+	})
 
 	req.PRReview.FailOnRegression = true
 	output, err = (&App{Analyzer: analyzer}).Execute(context.Background(), req)
 	if !errors.Is(err, ErrPRReviewRegressions) {
 		t.Fatalf("expected new coverage gap to fail when fail-on-regression is enabled, got output=%q err=%v", output, err)
+	}
+}
+
+func TestBuildPRReviewArtifactRepresentsDifferentialCoverageGaps(t *testing.T) {
+	unchangedGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "existing.gemspec",
+		Evidence: []string{"base evidence"},
+	}
+	introducedGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "pkg because it exceeds old/dependencies.gem\u017fpec",
+		Evidence: []string{"head evidence", "head evidence"},
+	}
+	req := PRReviewRequest{}
+	req.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+
+	artifact := buildPRReviewArtifact(prReviewArtifactInput{
+		baseReport: report.Report{CoverageGaps: []report.CoverageGap{unchangedGap}},
+		headReport: report.Report{CoverageGaps: []report.CoverageGap{
+			introducedGap,
+			{Code: unchangedGap.Code, Language: unchangedGap.Language, Path: unchangedGap.Path, Evidence: []string{"updated warning text"}},
+		}},
+		req: req,
+	})
+
+	rows := prReviewTestSectionRows(t, artifact, prReviewCategoryCoverageGap)
+	if len(rows) != 1 {
+		t.Fatalf("expected one differential coverage gap row, got %#v", rows)
+	}
+	if rows[0].Dependency != introducedGap.Path || !rows[0].Regression {
+		t.Fatalf("expected introduced gap to be represented as a regression row, got %#v", rows[0])
+	}
+	if !reflect.DeepEqual(rows[0].Evidence, []string{"head evidence", "coverage gap: " + report.CoverageGapRubyOversizedGemspec}) {
+		t.Fatalf("expected stable evidence for coverage gap row, got %#v", rows[0].Evidence)
+	}
+	if artifact.Summary.CoverageGaps != 1 || artifact.Summary.RegressionCount != 1 {
+		t.Fatalf("expected coverage gap to contribute to summary regressions, got %#v", artifact.Summary)
+	}
+}
+
+func TestPRReviewCoverageGapRowsUseStableFallbacks(t *testing.T) {
+	rows := prReviewCoverageGapRows([]report.CoverageGap{
+		{
+			Code:     "generic-gap",
+			Language: " ruby ",
+			Evidence: []string{"", "second", "second"},
+		},
+		{
+			Evidence: []string{"missing code and path"},
+		},
+	}, report.VulnerabilityPriorityHigh)
+
+	if len(rows) != 2 {
+		t.Fatalf("expected two coverage gap rows, got %#v", rows)
+	}
+	if rows[0].Dependency != "coverage gap" || rows[0].Regression {
+		t.Fatalf("expected blank-code gap to use generic non-regression fallback, got %#v", rows[0])
+	}
+	if rows[1].Dependency != "generic-gap" || rows[1].Language != "ruby" || rows[1].Regression {
+		t.Fatalf("expected generic coded gap to use code fallback without reachable regression, got %#v", rows[1])
+	}
+	if !reflect.DeepEqual(rows[1].Evidence, []string{"second", "coverage gap: generic-gap"}) {
+		t.Fatalf("expected compact generic gap evidence, got %#v", rows[1].Evidence)
+	}
+
+	thresholdOffRows := prReviewCoverageGapRows([]report.CoverageGap{{
+		Code: report.CoverageGapRubyOversizedGemspec,
+		Path: "oversized.gemspec",
+	}}, report.VulnerabilityPriorityOff)
+	if len(thresholdOffRows) != 1 || thresholdOffRows[0].Regression {
+		t.Fatalf("expected threshold off to keep ruby coverage gap visible without regression, got %#v", thresholdOffRows)
+	}
+}
+
+func TestOversizedRubyGemspecWarningParsingRejectsMalformedMessages(t *testing.T) {
+	if path, found := oversizedRubyGemspecDeclarationWarningPathFromMessage("skipped demo.gemspec without delimiter"); found || path != "" {
+		t.Fatalf("expected missing delimiter warning to be rejected, got path=%q found=%t", path, found)
+	}
+	if path, found := oversizedRubyGemspecDeclarationWarningPathFromMessage("skipped demo.gemspec because it exceeds many units"); found || path != "" {
+		t.Fatalf("expected non-byte-count warning to be rejected, got path=%q found=%t", path, found)
+	}
+	if path, found := cutPRReviewRevisionWarningPrefix("head abcdef123456 skipped demo.gemspec because it exceeds 1 bytes"); found || path != "" {
+		t.Fatalf("expected revision warning without colon to be rejected, got path=%q found=%t", path, found)
+	}
+	if path, found := cutPRReviewRevisionWarningPrefix("other abcdef123456: skipped demo.gemspec because it exceeds 1 bytes"); found || path != "" {
+		t.Fatalf("expected non-base/head revision warning to be rejected, got path=%q found=%t", path, found)
+	}
+	if suffix, found := equalFoldCutPrefix("value", ""); !found || suffix != "value" {
+		t.Fatalf("expected empty prefix to match original value, got suffix=%q found=%t", suffix, found)
+	}
+	if suffix, found := equalFoldCutPrefix("x", "skipped "); found || suffix != "" {
+		t.Fatalf("expected too-short prefix mismatch, got suffix=%q found=%t", suffix, found)
+	}
+	if suffix, found := equalFoldCutPrefix("ignored", "skipped "); found || suffix != "" {
+		t.Fatalf("expected prefix mismatch, got suffix=%q found=%t", suffix, found)
+	}
+	if hasOversizedRubyGemspecCoverageGapList([]report.CoverageGap{{Code: report.CoverageGapRubyOversizedGemspec, Path: "dependencies.txt"}}) {
+		t.Fatalf("expected non-gemspec coverage gap path not to fail reachable threshold")
 	}
 }
 
