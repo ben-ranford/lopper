@@ -282,6 +282,42 @@ test('commit identity audit accepts only canonical user committer identity', () 
     }),
   );
 
+  assert.doesNotThrow(() =>
+    testables.assertCanonicalCommitIdentity({
+      commits: [
+        makeComparisonCommit('same-linked-user', {
+          commit: {
+            author: {
+              name: 'Ben Ranford',
+              email: '84072202+ben-ranford@users.noreply.github.com',
+            },
+            committer: {
+              name: 'ben-ranford',
+              email: '84072202+ben-ranford@users.noreply.github.com',
+            },
+          },
+          author: { login: 'ben-ranford', type: 'User' },
+          committer: { login: 'ben-ranford', type: 'User' },
+        }),
+      ],
+      total_commits: 1,
+    }),
+  );
+
+  assert.throws(
+    () =>
+      testables.assertCanonicalCommitIdentity({
+        commits: [
+          makeComparisonCommit('linked-user-mismatch', {
+            author: { login: 'ben-ranford', type: 'User' },
+            committer: { login: 'other-user', type: 'User' },
+          }),
+        ],
+        total_commits: 1,
+      }),
+    /author and committer identities differ/,
+  );
+
   assert.throws(
     () =>
       testables.assertCanonicalCommitIdentity({

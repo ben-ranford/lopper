@@ -46,6 +46,36 @@ function isBotIdentity(identity) {
   );
 }
 
+function githubLogin(identity) {
+  const login = String(identity?.login || '').trim().toLowerCase();
+  if (!login || isBotIdentity(identity)) {
+    return '';
+  }
+  return login;
+}
+
+function normalizedGitIdentity(identity) {
+  return {
+    name: String(identity?.name || '').trim().toLowerCase(),
+    email: String(identity?.email || '').trim().toLowerCase(),
+  };
+}
+
+function sameCommitIdentity(commit, author, committer) {
+  const authorLogin = githubLogin(commit?.author);
+  const committerLogin = githubLogin(commit?.committer);
+  if (authorLogin && committerLogin) {
+    return authorLogin === committerLogin;
+  }
+
+  const normalizedAuthor = normalizedGitIdentity(author);
+  const normalizedCommitter = normalizedGitIdentity(committer);
+  return (
+    normalizedAuthor.name === normalizedCommitter.name &&
+    normalizedAuthor.email === normalizedCommitter.email
+  );
+}
+
 function commitIdentityFailure(commit) {
   const author = commit?.commit?.author || {};
   const committer = commit?.commit?.committer || {};
@@ -61,7 +91,7 @@ function commitIdentityFailure(commit) {
   if (isBotIdentity(commit?.committer) || isBotIdentity(committer)) {
     return `${sha}: committer is a bot identity`;
   }
-  if (authorName !== committerName || authorEmail !== committerEmail) {
+  if (!sameCommitIdentity(commit, author, committer)) {
     return `${sha}: author and committer identities differ`;
   }
   return '';
