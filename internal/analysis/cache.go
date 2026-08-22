@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -41,6 +42,7 @@ type analysisCacheQuarantineReservation struct {
 	quarantineName string
 	ownerName      string
 	ownerToken     string
+	info           fs.FileInfo
 }
 
 var (
@@ -461,10 +463,10 @@ func finishConditionalAnalysisCacheRemoval(root safeio.Root, reservation analysi
 	if reservation.quarantineName == "" {
 		return nil
 	}
-	if err := root.Remove(reservation.quarantineName); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeAnalysisCacheQuarantine(root, reservation); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(lstatErr, err)
 	}
-	return errors.Join(lstatErr, removeAnalysisCacheQuarantineReservation(root, reservation))
+	return lstatErr
 }
 
 func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.FileInfo) (string, error) {
@@ -510,15 +512,27 @@ func reserveAnalysisCacheQuarantine(root safeio.Root, reservationName, quarantin
 		}
 		return analysisCacheQuarantineReservation{}, false, err
 	}
+	info, err := root.Lstat(reservationName)
+	if err != nil {
+		return analysisCacheQuarantineReservation{}, false, err
+	}
+	reservation.info = info
 	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
 		return analysisCacheQuarantineReservation{}, false, err
 	}
 	if _, err := root.Lstat(quarantineName); err == nil {
-		return analysisCacheQuarantineReservation{}, true, removeAnalysisCacheQuarantineReservation(root, reservation)
+		return analysisCacheQuarantineReservation{}, true, ignoreAnalysisCacheOccupiedReservationCleanup(removeAnalysisCacheQuarantineReservation(root, reservation))
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return analysisCacheQuarantineReservation{}, false, errors.Join(err, removeAnalysisCacheQuarantineReservation(root, reservation))
 	}
 	return reservation, false, nil
+}
+
+func ignoreAnalysisCacheOccupiedReservationCleanup(err error) error {
+	if isAnalysisCacheNonEmptyDirectoryError(err) {
+		return nil
+	}
+	return err
 }
 
 func handleAnalysisCacheQuarantineRenameError(root safeio.Root, reservation analysisCacheQuarantineReservation, name string, childInfo fs.FileInfo, renameErr error) (analysisCacheQuarantineReservation, bool, error) {
@@ -527,7 +541,7 @@ func handleAnalysisCacheQuarantineRenameError(root safeio.Root, reservation anal
 		return analysisCacheQuarantineReservation{}, false, removeReservationErr
 	}
 	if errors.Is(renameErr, os.ErrExist) || analysisCacheQuarantineDestinationExists(root, name, reservation.quarantineName, childInfo) {
-		if removeReservationErr != nil && !errors.Is(removeReservationErr, os.ErrNotExist) {
+		if removeReservationErr != nil && !errors.Is(removeReservationErr, os.ErrNotExist) && !isAnalysisCacheNonEmptyDirectoryError(removeReservationErr) {
 			return analysisCacheQuarantineReservation{}, false, errors.Join(renameErr, removeReservationErr)
 		}
 		return analysisCacheQuarantineReservation{}, true, nil
@@ -609,20 +623,100 @@ func removeAnalysisCacheQuarantineReservation(root safeio.Root, reservation anal
 	if reservation.ownerToken == "" || !analysisCacheQuarantineReservationOwned(root, reservation) {
 		return nil
 	}
+	if !analysisCacheQuarantineReservationSameFile(root, reservation) {
+		return nil
+	}
 	if err := root.Remove(reservation.ownerName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if !analysisCacheQuarantineReservationSameFile(root, reservation) {
+		return nil
+	}
+	if err := root.Remove(reservation.name); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
 func analysisCacheQuarantineReservationOwned(root safeio.Root, reservation analysisCacheQuarantineReservation) bool {
-	file, err := root.Open(reservation.ownerName)
+	return analysisCacheQuarantineOwnerTokenMatches(root, reservation.ownerName, reservation.ownerToken)
+}
+
+func analysisCacheQuarantineOwnerTokenMatches(root safeio.Root, ownerName, ownerToken string) bool {
+	file, err := root.Open(ownerName)
 	if err != nil {
 		return false
 	}
 	data, err := io.ReadAll(file)
 	closeErr := file.Close()
-	return err == nil && closeErr == nil && string(data) == reservation.ownerToken
+	return err == nil && closeErr == nil && string(data) == ownerToken
+}
+
+func analysisCacheQuarantineReservationSameFile(root safeio.Root, reservation analysisCacheQuarantineReservation) bool {
+	if reservation.info == nil {
+		return true
+	}
+	info, err := root.Lstat(reservation.name)
+	return err == nil && sameAnalysisCacheRollbackTarget(info, reservation.info)
+}
+
+func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
+	reservationRoot, err := openOwnedAnalysisCacheQuarantineReservation(root, reservation)
+	if err != nil {
+		return err
+	}
+	removeErr := reservationRoot.Remove(filepath.Base(reservation.quarantineName))
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		closeErr := reservationRoot.Close()
+		return errors.Join(removeErr, closeErr)
+	}
+	removeOwnerErr := reservationRoot.Remove(analysisCacheQuarantineOwnerFile)
+	closeErr := reservationRoot.Close()
+	if removeOwnerErr != nil && !errors.Is(removeOwnerErr, os.ErrNotExist) {
+		return errors.Join(removeOwnerErr, closeErr)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return removeAnalysisCacheQuarantineReservationDirectory(root, reservation)
+}
+
+func openOwnedAnalysisCacheQuarantineReservation(root safeio.Root, reservation analysisCacheQuarantineReservation) (safeio.Root, error) {
+	if reservation.ownerToken == "" || reservation.info == nil {
+		return nil, os.ErrNotExist
+	}
+	reservationRoot, err := root.OpenRoot(reservation.name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := reservationRoot.Lstat(".")
+	if err != nil {
+		return nil, errors.Join(err, reservationRoot.Close())
+	}
+	if !sameAnalysisCacheRollbackTarget(info, reservation.info) {
+		return nil, errors.Join(os.ErrNotExist, reservationRoot.Close())
+	}
+	if !analysisCacheQuarantineOwnerTokenMatches(reservationRoot, analysisCacheQuarantineOwnerFile, reservation.ownerToken) {
+		return nil, errors.Join(os.ErrNotExist, reservationRoot.Close())
+	}
+	return reservationRoot, nil
+}
+
+func removeAnalysisCacheQuarantineReservationDirectory(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
+	if !analysisCacheQuarantineReservationSameFile(root, reservation) {
+		return nil
+	}
+	if err := root.Remove(reservation.name); err != nil && !isAnalysisCacheNonEmptyDirectoryError(err) {
+		return err
+	}
+	return nil
+}
+
+func isAnalysisCacheNonEmptyDirectoryError(err error) bool {
+	if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "not empty")
 }
 
 func analysisCacheQuarantineDestinationExists(root safeio.Root, name, quarantineName string, childInfo fs.FileInfo) bool {

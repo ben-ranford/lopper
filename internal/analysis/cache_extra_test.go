@@ -141,13 +141,46 @@ type removeQuarantineCreatesReplacementAnalysisCacheRoot struct {
 	safeio.Root
 	t               *testing.T
 	repo            string
+	reservationName string
 	name            string
 	err             error
 	replacementInfo fs.FileInfo
 }
 
 func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) Remove(name string) error {
-	if strings.HasPrefix(name, ".lopper-cache-rollback-") {
+	return r.Root.Remove(name)
+}
+
+func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) OpenRoot(name string) (safeio.Root, error) {
+	root, err := r.Root.OpenRoot(name)
+	if err != nil || name != r.reservationName {
+		return root, err
+	}
+	return &removeQuarantineChildCreatesReplacementAnalysisCacheRoot{
+		Root: root,
+		t:    r.t,
+		repo: r.repo,
+		name: r.name,
+		err:  r.err,
+		info: &r.replacementInfo,
+	}, nil
+}
+
+func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
+type removeQuarantineChildCreatesReplacementAnalysisCacheRoot struct {
+	safeio.Root
+	t    *testing.T
+	repo string
+	name string
+	err  error
+	info *fs.FileInfo
+}
+
+func (r *removeQuarantineChildCreatesReplacementAnalysisCacheRoot) Remove(name string) error {
+	if name == r.name {
 		replacementPath := filepath.Join(r.repo, r.name)
 		if err := os.Mkdir(replacementPath, 0o750); err != nil {
 			r.t.Fatalf("create replacement before failed quarantine remove: %v", err)
@@ -156,13 +189,28 @@ func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) Remove(name string
 		if err != nil {
 			r.t.Fatalf("stat replacement before failed quarantine remove: %v", err)
 		}
-		r.replacementInfo = info
+		*r.info = info
 		return r.err
 	}
 	return r.Root.Remove(name)
 }
 
-func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+type openReservationRemoveChildErrorAnalysisCacheRoot struct {
+	safeio.Root
+	reservationName string
+	childName       string
+	err             error
+}
+
+func (r *openReservationRemoveChildErrorAnalysisCacheRoot) OpenRoot(name string) (safeio.Root, error) {
+	root, err := r.Root.OpenRoot(name)
+	if err != nil || name != r.reservationName {
+		return root, err
+	}
+	return &removeErrorAnalysisCacheRoot{Root: root, name: r.childName, err: r.err}, nil
+}
+
+func (r *openReservationRemoveChildErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
 	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
@@ -181,7 +229,15 @@ func (r *removeQuarantineSwapsReservationAnalysisCacheRoot) Remove(name string) 
 		r.t.Fatalf("unsafe path-only reservation removal attempted for %s", name)
 	}
 	err := r.Root.Remove(name)
-	if err == nil && name == r.quarantineName && !r.swapped {
+	return err
+}
+
+func (r *removeQuarantineSwapsReservationAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
+func (r *removeQuarantineSwapsReservationAnalysisCacheRoot) OpenRoot(name string) (safeio.Root, error) {
+	if name == r.reservationName && !r.swapped {
 		r.swapped = true
 		reservationPath := filepath.Join(r.repo, r.reservationName)
 		replacementPath := filepath.Join(r.repo, "replacement-reservation")
@@ -197,11 +253,7 @@ func (r *removeQuarantineSwapsReservationAnalysisCacheRoot) Remove(name string) 
 		}
 		r.replacementInfo = info
 	}
-	return err
-}
-
-func (r *removeQuarantineSwapsReservationAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
-	return safeio.RenameNoReplace(r.Root, oldName, newName)
+	return r.Root.OpenRoot(name)
 }
 
 type renameErrorAnalysisCacheRoot struct {
@@ -1354,7 +1406,12 @@ func TestRollbackCreatedAnalysisCacheChildAtPathErrorBranches(t *testing.T) {
 		removeErr := errors.New("remove child failed")
 
 		err := rollbackCreatedAnalysisCacheChildAtPath(
-			&removeErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: removeErr},
+			&openReservationRemoveChildErrorAnalysisCacheRoot{
+				Root:            root,
+				reservationName: ".lopper-cache-rollback-keys-0",
+				childName:       cacheKeysDirName,
+				err:             removeErr,
+			},
 			childPath,
 			cacheKeysDirName,
 			childInfo,
@@ -1379,6 +1436,7 @@ func TestConditionallyRemoveAnalysisCacheChildBranches(t *testing.T) {
 	t.Run("lstat and rename errors are joined", testConditionallyRemoveAnalysisCacheChildJoinsLstatAndRenameErrors)
 	t.Run("failed quarantine removal does not overwrite replacement", testConditionallyRemoveAnalysisCacheChildRemoveFailurePreservesReplacement)
 	t.Run("replacement reservation is not removed after quarantine cleanup", testConditionallyRemoveAnalysisCacheChildPreservesSwappedReservation)
+	t.Run("successful rollback removes reservation directories", testConditionallyRemoveAnalysisCacheChildCleansReservations)
 }
 
 func testConditionallyRemoveAnalysisCacheChildNilInfo(t *testing.T) {
@@ -1473,11 +1531,12 @@ func testConditionallyRemoveAnalysisCacheChildRemoveFailurePreservesReplacement(
 	root := openAnalysisCacheTestRoot(t, repo)
 	removeErr := errors.New("remove quarantine failed")
 	wrappedRoot := &removeQuarantineCreatesReplacementAnalysisCacheRoot{
-		Root: root,
-		t:    t,
-		repo: repo,
-		name: cacheKeysDirName,
-		err:  removeErr,
+		Root:            root,
+		t:               t,
+		repo:            repo,
+		reservationName: ".lopper-cache-rollback-keys-0",
+		name:            cacheKeysDirName,
+		err:             removeErr,
 	}
 
 	err := conditionallyRemoveAnalysisCacheChild(wrappedRoot, cacheKeysDirName, childInfo)
@@ -1507,6 +1566,21 @@ func testConditionallyRemoveAnalysisCacheChildPreservesSwappedReservation(t *tes
 	}
 	assertAnalysisCachePathAbsent(t, childPath)
 	assertAnalysisCacheSameFile(t, filepath.Join(repo, reservationName), wrappedRoot.replacementInfo)
+	assertAnalysisCacheDirExists(t, filepath.Join(repo, "replacement-reservation", cacheKeysDirName))
+}
+
+func testConditionallyRemoveAnalysisCacheChildCleansReservations(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+
+	for attempt := 0; attempt < 17; attempt++ {
+		childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+		if err := conditionallyRemoveAnalysisCacheChild(root, cacheKeysDirName, childInfo); err != nil {
+			t.Fatalf("conditionally remove cache child attempt %d: %v", attempt, err)
+		}
+		assertAnalysisCachePathAbsent(t, childPath)
+		assertAnalysisCachePathAbsent(t, filepath.Join(repo, ".lopper-cache-rollback-keys-0"))
+	}
 }
 
 func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
@@ -1727,7 +1801,7 @@ func TestRestoreMovedAnalysisCacheReplacementRestoresIdentityAndOwnerToken(t *te
 
 	assertAnalysisCacheSameFile(t, filepath.Join(repo, cacheKeysDirName), movedInfo)
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservation.ownerName))
-	assertAnalysisCacheDirExists(t, filepath.Join(repo, reservationName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
 func TestRemoveAnalysisCacheQuarantineReservationBranches(t *testing.T) {
@@ -1802,7 +1876,12 @@ func TestRollbackCreatedAnalysisCacheChildPreservesRemoveFailureAlongsideCloseEr
 	removeErr := errors.New("remove child failed")
 
 	err = rollbackCreatedAnalysisCacheChild(
-		&removeErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: removeErr},
+		&openReservationRemoveChildErrorAnalysisCacheRoot{
+			Root:            root,
+			reservationName: ".lopper-cache-rollback-keys-0",
+			childName:       cacheKeysDirName,
+			err:             removeErr,
+		},
 		cacheKeysDirName,
 		&closeErrorAnalysisCacheRoot{Root: child, err: closeErr},
 		childInfo,

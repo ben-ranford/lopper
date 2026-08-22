@@ -6043,7 +6043,7 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 			t.Fatalf("create Go environment directory: %v", err)
 		}
 	}
-	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire golang.org/x/sys v0.41.0\n")
 	return repo, map[string]string{
 		"GO":                          goPath,
 		"GO_BIN":                      goPath,

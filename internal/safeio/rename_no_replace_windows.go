@@ -59,7 +59,7 @@ func renameNoReplaceBetweenRoots(oldRoot, newRoot *osRoot, oldName, newName stri
 }
 
 func renameNoReplaceAt(oldParent win.Handle, oldName string, newParent win.Handle, newName string) (returnErr error) {
-	objectAttrs, err := newWindowsObjectAttributes(oldParent, oldName)
+	objectAttrs, err := newRenameNoReplaceWindowsObjectAttributes(oldParent, oldName)
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func renameNoReplaceAt(oldParent win.Handle, oldName string, newParent win.Handl
 	)
 }
 
-func newWindowsObjectAttributes(root win.Handle, name string) (win.OBJECT_ATTRIBUTES, error) {
+func newRenameNoReplaceWindowsObjectAttributes(root win.Handle, name string) (win.OBJECT_ATTRIBUTES, error) {
 	if name == "." {
 		name = ""
 	}

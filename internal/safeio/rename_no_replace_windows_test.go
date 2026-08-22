@@ -11,12 +11,12 @@ import (
 	win "golang.org/x/sys/windows"
 )
 
-func TestNewWindowsObjectAttributesUsesCaseInsensitiveLookup(t *testing.T) {
+func TestNewRenameNoReplaceWindowsObjectAttributesUsesCaseInsensitiveLookup(t *testing.T) {
 	const root = win.Handle(123)
 
-	attrs, err := newWindowsObjectAttributes(root, "Source")
+	attrs, err := newRenameNoReplaceWindowsObjectAttributes(root, "Source")
 	if err != nil {
-		t.Fatalf("newWindowsObjectAttributes returned error: %v", err)
+		t.Fatalf("newRenameNoReplaceWindowsObjectAttributes returned error: %v", err)
 	}
 
 	if attrs.Length != uint32(unsafe.Sizeof(win.OBJECT_ATTRIBUTES{})) {
