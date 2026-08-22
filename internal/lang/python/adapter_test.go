@@ -467,6 +467,51 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
 			wantLine: 5,
 		},
+		{
+			name: "quoted comment is ignored before real import",
+			source: "# \"import requests\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 2,
+		},
+		{
+			name: "escaped backslash inside replacement triple string hides import-like content",
+			source: "value = f\"\"\"{'''\\\\\n" +
+				"import requests\n" +
+				"'''}\"\"\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 4,
+		},
+		{
+			name: "continued nested short f-string hides import-like content",
+			source: "value = f\"\"\"{f'not an import \\\n" +
+				"import requests'}\"\"\"\n" +
+				"import numpy as np\n",
+			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
+			wantLine: 3,
+		},
+		{
+			name: "nested f-string literal brace text preserves outer state",
+			source: `value = f"""{f'a}}b'}"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "escaped outer f-string brace preserves outer state",
+			source: `value = f"""{{literal}}"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "dict literal braces inside replacement preserve outer state",
+			source: `value = f"""{ {'key': 'value'} }"""` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
 	}
 
 	for _, tc := range cases {
