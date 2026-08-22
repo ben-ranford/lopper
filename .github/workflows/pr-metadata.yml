@@ -14,12 +14,20 @@ on:
 jobs:
   validate:
     name: pr-metadata
-    if: github.event.pull_request.user.login != 'renovate[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
     steps:
+      - name: Require at least one PR label
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const labels = context.payload.pull_request?.labels ?? [];
+            if (labels.length === 0) {
+              core.setFailed('Pull requests must have at least one label.');
+            }
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
