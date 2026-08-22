@@ -210,6 +210,95 @@ func TestMergeReportsPreservesCoverageGapsForSingleAndMergedReports(t *testing.T
 	}
 }
 
+func TestMergeReportsRebasesCoverageGapsByCandidateRoot(t *testing.T) {
+	reports := []report.Report{
+		{
+			RepoPath: "/repo/packages/a",
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "foo.gemspec",
+				Evidence: []string{"package a"},
+			}},
+		},
+		{
+			RepoPath: "/repo/packages/b",
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "foo.gemspec",
+				Evidence: []string{"package b"},
+			}},
+		},
+		{
+			RepoPath: "/repo/packages/a",
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "packages/a/already-rebased.gemspec",
+				Evidence: []string{"already rebased"},
+			}},
+		},
+	}
+
+	merged := mergeReports("/repo", reports)
+	want := []report.CoverageGap{
+		{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "packages/a/already-rebased.gemspec",
+			Evidence: []string{"already rebased"},
+		},
+		{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "packages/a/foo.gemspec",
+			Evidence: []string{"package a"},
+		},
+		{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "packages/b/foo.gemspec",
+			Evidence: []string{"package b"},
+		},
+	}
+	if !reflect.DeepEqual(merged.CoverageGaps, want) {
+		t.Fatalf("mergeReports() coverage gaps = %#v, want %#v", merged.CoverageGaps, want)
+	}
+}
+
+func TestMergeReportsKeepsMovedBaselineCoverageGapDifferential(t *testing.T) {
+	baseline := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/a",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "foo.gemspec",
+			Evidence: []string{"baseline package"},
+		}},
+	}})
+	current := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/b",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "foo.gemspec",
+			Evidence: []string{"current package"},
+		}},
+	}})
+
+	comparison := report.ComputeBaselineComparison(current, baseline)
+	want := []report.CoverageGap{{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "packages/b/foo.gemspec",
+		Evidence: []string{"current package"},
+	}}
+	if !reflect.DeepEqual(comparison.NewCoverageGaps, want) {
+		t.Fatalf("ComputeBaselineComparison() new coverage gaps = %#v, want %#v", comparison.NewCoverageGaps, want)
+	}
+}
+
 func TestSuppressedUnusedImportsPreserveVulnerabilityScoringAndPathEvidence(t *testing.T) {
 	reportData := report.Report{Dependencies: []report.DependencyReport{{
 		Name: "example-lib",
