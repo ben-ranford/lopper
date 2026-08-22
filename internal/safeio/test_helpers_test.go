@@ -199,17 +199,19 @@ func (f *fakeFileSystem) OpenRootNoFollow(name string) (Root, error) {
 
 type fakeRoot struct {
 	Root
-	chmod    func(name string, perm os.FileMode) error
-	mkdirAll func(name string, perm os.FileMode) error
-	open     func(name string) (File, error)
-	openFile func(name string, flag int, perm os.FileMode) (File, error)
-	openRoot func(name string) (Root, error)
-	lstat    func(name string) (fs.FileInfo, error)
-	mkdir    func(name string, perm os.FileMode) error
-	link     func(oldName, newName string) error
-	rename   func(oldName, newName string) error
-	remove   func(name string) error
-	close    func() error
+	chmod           func(name string, perm os.FileMode) error
+	mkdirAll        func(name string, perm os.FileMode) error
+	open            func(name string) (File, error)
+	openFile        func(name string, flag int, perm os.FileMode) (File, error)
+	openRoot        func(name string) (Root, error)
+	lstat           func(name string) (fs.FileInfo, error)
+	mkdir           func(name string, perm os.FileMode) error
+	link            func(oldName, newName string) error
+	rename          func(oldName, newName string) error
+	renameIfMatches func(oldName, newName string, expected fs.FileInfo, message string) error
+	remove          func(name string) error
+	removeIfMatches func(name string, expected fs.FileInfo, message string) error
+	close           func() error
 }
 
 func (r *fakeRoot) Open(name string) (File, error) {
@@ -278,6 +280,16 @@ func (r *fakeRoot) Rename(oldName, newName string) error {
 	return r.Root.Rename(oldName, newName)
 }
 
+func (r *fakeRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if r.renameIfMatches != nil {
+		return r.renameIfMatches(oldName, newName, expected, message)
+	}
+	if err := verifyPublishedPathMatchesInfo(r, oldName, expected, message); err != nil {
+		return err
+	}
+	return r.Rename(oldName, newName)
+}
+
 func (r *fakeRoot) Remove(name string) error {
 	if r.remove != nil {
 		return r.remove(name)
@@ -286,6 +298,16 @@ func (r *fakeRoot) Remove(name string) error {
 		return nil
 	}
 	return r.Root.Remove(name)
+}
+
+func (r *fakeRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
+	if r.removeIfMatches != nil {
+		return r.removeIfMatches(name, expected, message)
+	}
+	if err := verifyPublishedPathMatchesInfo(r, name, expected, message); err != nil {
+		return err
+	}
+	return r.Remove(name)
 }
 
 func (r *fakeRoot) Close() error {

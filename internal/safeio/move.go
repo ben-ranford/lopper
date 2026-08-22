@@ -171,7 +171,7 @@ func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message st
 		}
 		return err
 	}
-	if err := root.Remove(rel); err != nil {
+	if err := removeFileIfMatches(root, rel, expected, message); err != nil {
 		cleanupErr := cleanupAtomicTempFileIfMatches(root, cleanupRel, expected)
 		if errors.Is(err, os.ErrNotExist) {
 			return cleanupErr

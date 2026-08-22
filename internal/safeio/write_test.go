@@ -3,6 +3,7 @@ package safeio
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -1866,7 +1867,7 @@ func TestWriteFileAtomicallyIfAbsentAtRootPublishesCompletedTemp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected atomic-if-absent publish success, got %v", err)
 	}
-	want := []string{"open-temp", "write-temp:hello", "chmod-temp", "stat-temp", "close-temp", "link-target", "lstat-target", "lstat-temp", "link-cleanup", "lstat-temp", "remove-temp", "remove-temp"}
+	want := []string{"open-temp", "write-temp:hello", "chmod-temp", "stat-temp", "close-temp", "link-target", "lstat-target", "lstat-temp", "link-cleanup", "lstat-temp", "lstat-temp", "remove-temp", "lstat-temp", "remove-temp"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Fatalf("unexpected publish order: got %v want %v", events, want)
 	}
@@ -5471,7 +5472,7 @@ func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAfterValidation(t *tes
 		},
 		chmod: chmodNameWithoutError(t, "source"),
 		link: func(oldName, newName string) error {
-			if oldName != "source" || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+			if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
 				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
 			}
 			return nil
@@ -5495,6 +5496,64 @@ func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAfterValidation(t *tes
 	}
 	if removeCalls != 0 {
 		t.Fatalf("expected substituted staged path not to be removed, got %d removes", removeCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAtPublish(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == "source", strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+				return sourceInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		link: func(oldName, newName string) error {
+			if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: func(string, string) error {
+			t.Fatal("publish must use identity-bound rename")
+			return nil
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
+				t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
+			}
+			renameCalls++
+			if !os.SameFile(expected, sourceInfo) {
+				t.Fatalf("expected source identity, got %v", expected)
+			}
+			if !os.SameFile(changedInfo, sourceInfo) {
+				return fmt.Errorf("%s: %s", message, oldName)
+			}
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				t.Fatalf("unexpected cleanup path: %s", name)
+			}
+			if !os.SameFile(expected, sourceInfo) {
+				t.Fatalf("expected cleanup source identity, got %v", expected)
+			}
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
+		t.Fatalf("expected operation-time staged source swap rejection, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one identity-bound rename attempt, got %d", renameCalls)
 	}
 }
 
@@ -5657,6 +5716,76 @@ func TestRemoveIdentityBoundDoesNotOverwriteNewerSourceDuringCleanup(t *testing.
 	}
 }
 
+func TestRemoveIdentityBoundRejectsSourceSwapAtRemoval(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	stageNames := []string{".safeio-atomic-source-stage", ".safeio-atomic-cleanup-stage"}
+	randomCalls := 0
+	sourceRemoveChecks := 0
+	rawRemoveCalls := 0
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) {
+		name := stageNames[randomCalls]
+		randomCalls++
+		return name, nil
+	}
+	defer func() {
+		randomTempNameFn = originalRandomTempNameFn
+	}()
+
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source", stageNames[0], stageNames[1]:
+				return originalInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		link: func(oldName, newName string) error {
+			switch {
+			case oldName == "source" && newName == stageNames[0]:
+			case oldName == stageNames[0] && newName == stageNames[1]:
+			default:
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		remove: func(name string) error {
+			rawRemoveCalls++
+			t.Fatalf("removal must be identity-conditional, got raw remove of %s", name)
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if !os.SameFile(expected, originalInfo) {
+				t.Fatalf("expected original identity for %s, got %v", name, expected)
+			}
+			if name == "source" {
+				sourceRemoveChecks++
+				if os.SameFile(replacementInfo, originalInfo) {
+					t.Fatal("test identities must differ")
+				}
+				return fmt.Errorf("%s: %s", message, name)
+			}
+			if name != stageNames[0] && name != stageNames[1] {
+				t.Fatalf("unexpected identity-bound cleanup path: %s", name)
+			}
+			return nil
+		},
+	}
+
+	err := removeIdentityBound(root, "source", originalInfo, "move source changed before cleanup")
+	if err == nil || !strings.Contains(err.Error(), "move source changed before cleanup") {
+		t.Fatalf("expected source cleanup identity rejection, got %v", err)
+	}
+	if sourceRemoveChecks != 1 {
+		t.Fatalf("expected one source removal identity check, got %d", sourceRemoveChecks)
+	}
+	if rawRemoveCalls != 0 {
+		t.Fatalf("expected no raw removals, got %d", rawRemoveCalls)
+	}
+}
+
 func TestCleanupAtomicTempFileIfMatchesDoesNotRemoveQuarantinedSwap(t *testing.T) {
 	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
 	tempRel := ".safeio-atomic-source"
@@ -5700,6 +5829,70 @@ func TestCleanupAtomicTempFileIfMatchesDoesNotRemoveQuarantinedSwap(t *testing.T
 	}
 	if removeCalls != 0 {
 		t.Fatalf("expected no removal after quarantine identity mismatch, got %d removes", removeCalls)
+	}
+}
+
+func TestCleanupAtomicTempFileIfMatchesRejectsTempSwapAtRemoval(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	tempRel := ".safeio-atomic-source"
+	quarantineRel := ".safeio-atomic-quarantine"
+	removeChecks := 0
+	rawRemoveCalls := 0
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) {
+		return quarantineRel, nil
+	}
+	defer func() {
+		randomTempNameFn = originalRandomTempNameFn
+	}()
+
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case tempRel, quarantineRel:
+				return originalInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		link: func(oldName, newName string) error {
+			if oldName != tempRel || newName != quarantineRel {
+				t.Fatalf("unexpected cleanup link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		remove: func(name string) error {
+			rawRemoveCalls++
+			t.Fatalf("cleanup must be identity-conditional, got raw remove of %s", name)
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if !os.SameFile(expected, originalInfo) {
+				t.Fatalf("expected original identity for %s, got %v", name, expected)
+			}
+			if name == tempRel {
+				removeChecks++
+				if os.SameFile(replacementInfo, originalInfo) {
+					t.Fatal("test identities must differ")
+				}
+				return fmt.Errorf("%s: %s", message, name)
+			}
+			if name != quarantineRel {
+				t.Fatalf("unexpected identity-bound cleanup path: %s", name)
+			}
+			return nil
+		},
+	}
+
+	if err := cleanupAtomicTempFileIfMatches(root, tempRel, originalInfo); err == nil || !strings.Contains(err.Error(), "cleanup file changed before removal") {
+		t.Fatalf("expected operation-time cleanup identity rejection, got %v", err)
+	}
+	if removeChecks != 1 {
+		t.Fatalf("expected one temp removal identity check, got %d", removeChecks)
+	}
+	if rawRemoveCalls != 0 {
+		t.Fatalf("expected no raw removals, got %d", rawRemoveCalls)
 	}
 }
 

@@ -553,8 +553,22 @@ func (r *osRoot) Rename(oldName, newName string) error {
 	return r.root.Rename(oldName, newName)
 }
 
+func (r *osRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if err := verifyPublishedPathMatchesInfo(r, oldName, expected, message); err != nil {
+		return err
+	}
+	return r.Rename(oldName, newName)
+}
+
 func (r *osRoot) Remove(name string) error {
 	return r.root.Remove(name)
+}
+
+func (r *osRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
+	if err := verifyPublishedPathMatchesInfo(r, name, expected, message); err != nil {
+		return err
+	}
+	return r.Remove(name)
 }
 
 func (r *osRoot) Close() error {

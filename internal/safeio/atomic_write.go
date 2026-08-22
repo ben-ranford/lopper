@@ -22,6 +22,11 @@ type truncatingFile interface {
 	Truncate(size int64) error
 }
 
+type identityBoundOperationsRoot interface {
+	RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error
+	RemoveIfMatches(name string, expected fs.FileInfo, message string) error
+}
+
 type publishRenameError struct {
 	sourceRel string
 	err       error
@@ -137,10 +142,20 @@ func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRe
 	if err := verifyPublishedPathMatchesInfo(root, stagedRel, expected, sourceMessage); err != nil {
 		return false, err
 	}
-	if err := root.Rename(stagedRel, targetRel); err != nil {
+	if err := renameFileIfMatches(root, stagedRel, targetRel, expected, sourceMessage); err != nil {
 		return false, &publishRenameError{sourceRel: stagedRel, err: err}
 	}
 	return false, verifyPublishedPathMatchesInfo(root, targetRel, expected, targetMessage)
+}
+
+func renameFileIfMatches(root Root, oldName, newName string, expected fs.FileInfo, message string) error {
+	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
+		return guardedRoot.RenameIfMatches(oldName, newName, expected, message)
+	}
+	if err := verifyPublishedPathMatchesInfo(root, oldName, expected, message); err != nil {
+		return err
+	}
+	return root.Rename(oldName, newName)
 }
 
 func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, message string) (string, error) {

@@ -399,10 +399,31 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 		}
 		return err
 	}
-	if err := root.Remove(tempRel); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return errors.Join(err, cleanupAtomicTempFile(root, cleanupRel, nil))
+	if err := removeFileIfMatches(root, tempRel, expected, "cleanup file changed before removal"); err != nil {
+		return errors.Join(err, removeFileIfMatches(root, cleanupRel, expected, "cleanup file changed before removal"))
 	}
-	return cleanupAtomicTempFile(root, cleanupRel, nil)
+	return removeFileIfMatches(root, cleanupRel, expected, "cleanup file changed before removal")
+}
+
+func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message string) error {
+	if rel == "" {
+		return nil
+	}
+	if expected == nil {
+		return fmt.Errorf("%s: %s", message, rel)
+	}
+	var err error
+	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
+		err = guardedRoot.RemoveIfMatches(rel, expected, message)
+	} else if verifyErr := verifyPublishedPathMatchesInfo(root, rel, expected, message); verifyErr != nil {
+		err = verifyErr
+	} else {
+		err = root.Remove(rel)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {
