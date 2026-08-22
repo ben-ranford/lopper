@@ -111,9 +111,11 @@ function queueIdentityFailureMessage(failures) {
     .slice(0, MAX_QUEUE_IDENTITY_FAILURES)
     .map((failure) => safeCommentText(failure, MAX_QUEUE_IDENTITY_FAILURE_LENGTH));
   const omitted = failures.length - shownFailures.length;
-  const omittedSummary = omitted > 0
-    ? `; ${omitted} additional commit identity failure${omitted === 1 ? '' : 's'} omitted`
-    : '';
+  let omittedSummary = '';
+  if (omitted > 0) {
+    const omittedFailureNoun = omitted === 1 ? 'failure' : 'failures';
+    omittedSummary = `; ${omitted} additional commit identity ${omittedFailureNoun} omitted`;
+  }
   return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
 }
 
