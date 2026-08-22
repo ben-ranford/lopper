@@ -1176,30 +1176,6 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndR
 	}
 }
 
-func TestRenameAtDirectoryPathRequiresDirectChildrenAndMapsRenameError(t *testing.T) {
-	parent := t.TempDir()
-	if err := os.WriteFile(filepath.Join(parent, "temp"), []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write temp: %v", err)
-	}
-	if err := renameAtDirectoryPath(parent, "temp", "target"); err != nil {
-		t.Fatalf("renameAtDirectoryPath returned error: %v", err)
-	}
-	assertFileContent(t, filepath.Join(parent, "target"), "hello")
-
-	if err := renameAtDirectoryPath(parent, filepath.Join("nested", "temp"), "target"); err == nil || !strings.Contains(err.Error(), "direct children") {
-		t.Fatalf("expected direct-child validation error, got %v", err)
-	}
-
-	err := renameAtDirectoryPath(parent, "missing", "other")
-	var linkErr *os.LinkError
-	if !errors.As(err, &linkErr) {
-		t.Fatalf("expected mapped link error, got %T %[1]v", err)
-	}
-	if linkErr.Op != "renameat" || linkErr.Old != "missing" || linkErr.New != "other" {
-		t.Fatalf("mapped link error = %#v", linkErr)
-	}
-}
-
 func TestRenameAtPinnedDirectoryUsesPinnedParentAfterPathReplacement(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory replacement semantics are covered on Unix")
@@ -1267,6 +1243,35 @@ func TestRenameAtPinnedDirectoryRejectsInvalidPinnedParent(t *testing.T) {
 	}
 	if renameCalls != 0 {
 		t.Fatalf("expected no rename after pinned parent identity mismatch, got %d", renameCalls)
+	}
+}
+
+func TestRenameAtPinnedDirectoryPropagatesPinnedRenameError(t *testing.T) {
+	parentInfo := statTestPath(t, t.TempDir())
+	expectedErr := errors.New("pinned rename failed")
+	renameCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "." {
+				t.Fatalf("unexpected lstat target %q", name)
+			}
+			return parentInfo, nil
+		},
+		rename: func(oldName, newName string) error {
+			renameCalls++
+			if oldName != "temp" || newName != "target" {
+				t.Fatalf("unexpected pinned rename %q -> %q", oldName, newName)
+			}
+			return expectedErr
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, parentInfo, "temp", "target")
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected pinned rename error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one pinned rename attempt, got %d", renameCalls)
 	}
 }
 

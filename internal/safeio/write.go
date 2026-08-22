@@ -271,7 +271,7 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 				if err := parentCheck(); err != nil {
 					return err
 				}
-				return renameAtDirectoryPath(parentPath, oldName, newName)
+				return renameAtPinnedDirectory(parent, parentIdentity, oldName, newName)
 			}
 			if err := parentCheck(); err != nil {
 				return err
@@ -298,20 +298,6 @@ func renameAtPinnedDirectory(parent Root, parentIdentity fs.FileInfo, oldName, n
 		return fmt.Errorf("pinned parent identity changed")
 	}
 	return parent.Rename(oldName, newName)
-}
-
-func renameAtDirectoryPath(parentPath, oldName, newName string) error {
-	if filepath.Dir(oldName) != "." || filepath.Dir(newName) != "." {
-		return fmt.Errorf("rename paths must be direct children of %s", parentPath)
-	}
-	if err := os.Rename(filepath.Join(parentPath, oldName), filepath.Join(parentPath, newName)); err != nil {
-		var linkErr *os.LinkError
-		if errors.As(err, &linkErr) {
-			return &os.LinkError{Op: "renameat", Old: oldName, New: newName, Err: linkErr.Err}
-		}
-		return err
-	}
-	return nil
 }
 
 func (r *WriteRoot) withTargetParent(target rootedTarget, createParents bool, parentPerm os.FileMode, write func(parent Root, parentTarget rootedTarget) error) (returnErr error) {
