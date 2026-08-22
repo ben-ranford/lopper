@@ -2,12 +2,12 @@ package php
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -60,7 +60,7 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 	}
 
 	if err := loadComposerLockMappings(repoPath, &data); err != nil {
-		if errors.Is(err, safeio.ErrFileTooLarge) {
+		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
 			warnings = append(warnings, fmt.Sprintf("%s skipped: %v", composerLockName, err))
 			return data, warnings, nil
 		}
