@@ -249,6 +249,17 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafe
 			}
 			return tempInfo, nil
 		},
+		open: func(name string) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected rollback snapshot path: %s", name)
+			}
+			reader := strings.NewReader("before")
+			return &fakeFile{
+				read:  reader.Read,
+				stat:  func() (fs.FileInfo, error) { return info, nil },
+				close: closeWithoutError,
+			}, nil
+		},
 		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
 			return targetFile, nil
 		}, tempInfo, nil),
@@ -279,9 +290,6 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafe
 	if !errors.Is(err, postWriteErr) {
 		t.Fatalf("expected post-write validation error, got %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before rollback") {
-		t.Fatalf("expected fallback rollback safety error, got %v", err)
-	}
 	if strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
 		t.Fatalf("replace-existing fallback should not reject before post-write validation, got %v", err)
 	}
@@ -291,8 +299,8 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafe
 	if removeCalls != 1 {
 		t.Fatalf("expected only temp cleanup remove, got %d removes", removeCalls)
 	}
-	if string(*targetData) != "after" {
-		t.Fatalf("expected fallback target data to be overwritten, got %q", string(*targetData))
+	if string(*targetData) != "before" {
+		t.Fatalf("expected rollback to restore fallback target data, got %q", string(*targetData))
 	}
 }
 
@@ -430,7 +438,7 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 			}
 			renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr, false)
+			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr, nil, false)
 			if !errors.Is(err, renameErr) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected joined rename and %q rejection, got %v", tt.want, err)
 			}
@@ -458,6 +466,17 @@ func TestFallbackAtomicReplacementAllowsRollbackRequiredReplacement(t *testing.T
 			lstatCalls++
 			return info, nil
 		},
+		open: func(name string) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected rollback snapshot path: %s", name)
+			}
+			reader := strings.NewReader("before")
+			return &fakeFile{
+				read:  reader.Read,
+				stat:  func() (fs.FileInfo, error) { return info, nil },
+				close: closeWithoutError,
+			}, nil
+		},
 		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
 			t.Fatalf("fallback should use the supplied pinned target, not open %s", name)
 			return nil, nil
@@ -465,18 +484,55 @@ func TestFallbackAtomicReplacementAllowsRollbackRequiredReplacement(t *testing.T
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr, true)
+	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr, nil, true)
 	if err != nil {
 		t.Fatalf("expected rollback-required fallback overwrite to succeed, got %v", err)
 	}
-	if lstatCalls != 2 {
-		t.Fatalf("expected pre- and post-overwrite target validation, got %d lstat calls", lstatCalls)
+	if lstatCalls != 3 {
+		t.Fatalf("expected snapshot, pre-overwrite, and post-overwrite target validation, got %d lstat calls", lstatCalls)
 	}
 	if target.truncateCalls != 1 || target.writeCalls != 1 {
 		t.Fatalf("expected one fallback overwrite: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
 	}
 	if string(target.data) != "after" {
 		t.Fatalf("expected target data to be overwritten, got %q", string(target.data))
+	}
+}
+
+func TestFallbackAtomicReplacementRollbackRequiredSnapshotFailurePreventsMutation(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	target := &windowsFallbackTarget{data: []byte("before")}
+	targetFile := target.file(t, info)
+	snapshotErr := errors.New("rollback snapshot failure")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return info, nil
+		},
+		open: func(name string) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected rollback snapshot path: %s", name)
+			}
+			return nil, snapshotErr
+		},
+	}
+	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
+
+	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr, nil, true)
+	if !errors.Is(err, renameErr) || !errors.Is(err, snapshotErr) {
+		t.Fatalf("expected rename and snapshot errors, got %v", err)
+	}
+	if target.truncateCalls != 0 || target.writeCalls != 0 {
+		t.Fatalf("target mutated after snapshot failure: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
+	}
+	if string(target.data) != "before" {
+		t.Fatalf("expected target data to remain unchanged, got %q", string(target.data))
 	}
 }
 
@@ -634,7 +690,7 @@ func assertWindowsFallbackRejectsAfterLatePin(
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr, false)
+	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr, nil, false)
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("expected original rename error, got %v", err)
 	}

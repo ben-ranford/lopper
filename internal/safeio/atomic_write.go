@@ -234,10 +234,7 @@ func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, 
 		return err
 	}
 	if err := session.commit(options.commitReady, options.commitRename); err != nil {
-		if fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, options.rollbackOnPostWriteFailure); fallbackErr != nil {
-			return fallbackErr
-		}
-		return runFallbackPostWriteCheck(options.postWrite, options.rollbackOnPostWriteFailure, targetRel)
+		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, options.postWrite, options.rollbackOnPostWriteFailure)
 	}
 	return session.verifyCommittedTargetAndPostWrite(options.postWrite, options.rollbackOnPostWriteFailure)
 }
@@ -301,9 +298,9 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 		return err
 	}
 	if err := session.commit(callbacks.commitReady, callbacks.commitRename); err != nil {
-		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, callbacks.rollbackOnPostWriteFailure)
+		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, callbacks.postWrite, callbacks.rollbackOnPostWriteFailure)
 		if fallbackErr == nil {
-			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
+			return nil
 		}
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			return runPinnedOverwriteFallback(root, targetRel, replacementFile, data, err, callbacks)
@@ -387,6 +384,10 @@ func overwritePinnedFile(root Root, targetRel string, file File, data []byte, be
 		return fmt.Errorf("target changed before replacement: %s", targetRel)
 	}
 
+	return truncateAndWritePinnedFile(targetRel, file, data)
+}
+
+func truncateAndWritePinnedFile(targetRel string, file File, data []byte) error {
 	targetFile, ok := file.(truncatingFile)
 	if !ok {
 		return fmt.Errorf("target does not support truncation: %s", targetRel)
