@@ -251,6 +251,12 @@ func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "experimental/filesystem", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
 		t.Fatalf("expected experimental/filesystem to be ignored as std, got dep=%q unresolved=%v", dep, unresolved)
 	}
+	if !isLikelyStdHeader("tr1/regex") {
+		t.Fatalf("expected tr1/regex to be std header")
+	}
+	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "tr1/regex", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
+		t.Fatalf("expected tr1/regex to be ignored as std, got dep=%q unresolved=%v", dep, unresolved)
+	}
 	if isLikelyStdHeader("boost/regex.hpp") {
 		t.Fatalf("did not expect qualified boost header to be std header")
 	}
