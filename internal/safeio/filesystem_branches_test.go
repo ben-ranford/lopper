@@ -161,6 +161,27 @@ func TestCloseFileWithErrorJoinsCloseError(t *testing.T) {
 	}
 }
 
+func TestCloseRenameNoReplaceParentRootsIgnoresCloseErrorAfterSuccess(t *testing.T) {
+	closeErr := errors.New("close pinned parent")
+	err := closeRenameNoReplaceParentRoots([]Root{
+		&fakeRoot{close: func() error { return closeErr }},
+	}, nil)
+	if err != nil {
+		t.Fatalf("expected successful rename cleanup to ignore close error, got %v", err)
+	}
+}
+
+func TestCloseRenameNoReplaceParentRootsJoinsCloseErrorAfterFailure(t *testing.T) {
+	primary := errors.New("rename failed")
+	closeErr := errors.New("close pinned parent")
+	err := closeRenameNoReplaceParentRoots([]Root{
+		&fakeRoot{close: func() error { return closeErr }},
+	}, primary)
+	if !errors.Is(err, primary) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected failed rename cleanup to join errors, got %v", err)
+	}
+}
+
 func TestNormalizePathEscapesRootErrorReturnsNilForNilError(t *testing.T) {
 	if err := normalizePathEscapesRootError("child.txt", nil); err != nil {
 		t.Fatalf("expected nil error to stay nil, got %v", err)

@@ -611,8 +611,18 @@ func (r *osRoot) openRenameNoReplaceParent(parent string) (*osRoot, func(error) 
 
 	parentRoot := current.(*osRoot)
 	return parentRoot, func(err error) error {
-		return closeRootsWithError(opened, err)
+		return closeRenameNoReplaceParentRoots(opened, err)
 	}, nil
+}
+
+func closeRenameNoReplaceParentRoots(roots []Root, primary error) error {
+	for idx := len(roots) - 1; idx >= 0; idx-- {
+		closeErr := roots[idx].Close()
+		if primary != nil {
+			primary = errors.Join(primary, closeErr)
+		}
+	}
+	return primary
 }
 
 func RenameNoReplace(root Root, oldName, newName string) error {

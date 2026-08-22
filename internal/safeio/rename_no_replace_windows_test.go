@@ -5,26 +5,27 @@ package safeio
 import (
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"unsafe"
+
+	win "golang.org/x/sys/windows"
 )
 
 func TestNewWindowsObjectAttributesUsesCaseInsensitiveLookup(t *testing.T) {
-	const root = syscall.Handle(123)
+	const root = win.Handle(123)
 
 	attrs, err := newWindowsObjectAttributes(root, "Source")
 	if err != nil {
 		t.Fatalf("newWindowsObjectAttributes returned error: %v", err)
 	}
 
-	if attrs.Length != uint32(unsafe.Sizeof(windowsObjectAttributes{})) {
-		t.Fatalf("object attributes length = %d, want %d", attrs.Length, unsafe.Sizeof(windowsObjectAttributes{}))
+	if attrs.Length != uint32(unsafe.Sizeof(win.OBJECT_ATTRIBUTES{})) {
+		t.Fatalf("object attributes length = %d, want %d", attrs.Length, unsafe.Sizeof(win.OBJECT_ATTRIBUTES{}))
 	}
 	if attrs.RootDirectory != root {
 		t.Fatalf("root handle = %v, want %v", attrs.RootDirectory, root)
 	}
-	if attrs.Attributes&windowsObjCaseInsensitive == 0 {
+	if attrs.Attributes&win.OBJ_CASE_INSENSITIVE == 0 {
 		t.Fatalf("object attributes = %#x, want OBJ_CASE_INSENSITIVE", attrs.Attributes)
 	}
 	if attrs.ObjectName == nil {
