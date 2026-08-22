@@ -3,6 +3,10 @@
 
 require "yaml"
 
+def load_workflow(path)
+	YAML.safe_load(File.read(path), aliases: true, filename: path)
+end
+
 allowed_runners = (ENV["APPROVED_GITHUB_RUNNERS"] || "ubuntu-latest,ubuntu-24.04-arm,macos-26,macos-26-intel")
 	.split(",")
 	.map(&:strip)
@@ -13,9 +17,9 @@ if allowed_runners.empty?
 	exit 1
 end
 
-paths = Dir[".github/workflows/*.yml"].sort
+paths = Dir[".github/workflows/*.{yml,yaml}"].sort
 if paths.empty?
-	warn "No GitHub workflow files found under .github/workflows/*.yml."
+	warn "No GitHub workflow files found under .github/workflows/*.yml or *.yaml."
 	exit 1
 end
 
@@ -39,7 +43,7 @@ def matrix_values(job, key)
 end
 
 paths.each do |path|
-	workflow = YAML.load_file(path)
+	workflow = load_workflow(path)
 	workflow.fetch("jobs", {}).each do |job_name, job|
 		runs_on = job["runs-on"]
 		next if runs_on.nil?
