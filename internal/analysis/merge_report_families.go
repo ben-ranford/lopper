@@ -70,10 +70,13 @@ func (m *coverageGapsReportFamilyMerger) finalize(result *report.Report) {
 }
 
 func coverageGapsRebasedForMerge(repoPath string, current report.Report) []report.CoverageGap {
-	if len(current.CoverageGaps) == 0 {
+	gaps := append([]report.CoverageGap(nil), current.CoverageGaps...)
+	if current.BaselineComparison != nil {
+		gaps = append(gaps, current.BaselineComparison.NewCoverageGaps...)
+	}
+	if len(gaps) == 0 {
 		return nil
 	}
-	gaps := append([]report.CoverageGap(nil), current.CoverageGaps...)
 	prefix, ok := reportRootPrefixForMerge(repoPath, current.RepoPath)
 	if !ok {
 		return gaps

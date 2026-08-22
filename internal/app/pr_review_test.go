@@ -1123,18 +1123,7 @@ func TestAnalysePRReviewWorktreeAnnotatesAdvisorySource(t *testing.T) {
 func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing.T) {
 	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
 	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
-	analyzer := &pathAwarePRReviewAnalyzer{
-		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
-		headReport: report.Report{
-			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.1.0", 100, 90, false)},
-			CoverageGaps: []report.CoverageGap{{
-				Code:     report.CoverageGapRubyOversizedGemspec,
-				Language: "ruby",
-				Path:     "oversized.gem\u017fpec",
-			}},
-			Warnings: []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"},
-		},
-	}
+	analyzer := prReviewOversizedGemspecAnalyzer("oversized.gem\u017fpec", nil, []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"})
 	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
 	req.PRReview.FailOnRegression = true
 	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
@@ -1153,6 +1142,46 @@ func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing
 		"\"dependency\": \"oversized.gem\u017fpec\"",
 		"coverage gap: " + report.CoverageGapRubyOversizedGemspec,
 	})
+}
+
+func TestExecutePRReviewRegressionGateFailsClosedForTypedOversizedGemspecCoverageGap(t *testing.T) {
+	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
+	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
+	analyzer := prReviewOversizedGemspecAnalyzer(
+		"vendor/oversized.gemspec",
+		[]string{"skipped vendor/oversized.gemspec because it exceeds 1048576 bytes"},
+		nil,
+	)
+	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
+	req.PRReview.FailOnRegression = true
+	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+
+	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if !errors.Is(err, ErrPRReviewRegressions) {
+		t.Fatalf("expected typed oversized gemspec coverage gap to fail pr-review regression gate, got output=%q err=%v", output, err)
+	}
+	assertContainsAll(t, output, []string{
+		`"coverageGaps": 1`,
+		`"regressionCount": 1`,
+		`"dependency": "vendor/oversized.gemspec"`,
+		"coverage gap: " + report.CoverageGapRubyOversizedGemspec,
+	})
+}
+
+func prReviewOversizedGemspecAnalyzer(path string, evidence []string, warnings []string) *pathAwarePRReviewAnalyzer {
+	return &pathAwarePRReviewAnalyzer{
+		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
+		headReport: report.Report{
+			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.1.0", 100, 90, false)},
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     path,
+				Evidence: evidence,
+			}},
+			Warnings: warnings,
+		},
+	}
 }
 
 func TestExecutePRReviewReachableThresholdIgnoresUnchangedHeadFindings(t *testing.T) {

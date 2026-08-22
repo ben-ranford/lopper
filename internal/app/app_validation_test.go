@@ -302,10 +302,11 @@ func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testi
 			},
 		},
 		CoverageGaps:       []report.CoverageGap{existingCoverageGap},
+		Warnings:           []string{"skipped dependencies.gemspec because it exceeds 1048576 bytes"},
 		BaselineComparison: &report.BaselineComparison{},
 	}
 	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); err != nil {
-		t.Fatalf("expected baseline mode to ignore existing current findings and coverage gaps, got %v", err)
+		t.Fatalf("expected baseline mode to ignore existing current findings, coverage gaps, and warnings, got %v", err)
 	}
 
 	reportData.BaselineComparison.NewReachableVulnerabilities = []report.VulnerabilityDelta{

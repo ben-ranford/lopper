@@ -492,11 +492,14 @@ func declarationTokenCanAffectBenchmark(tok token.Token) bool {
 }
 
 func rootDeclarationCanAffectBenchmark(decl ast.Decl) bool {
-	typed, ok := decl.(*ast.FuncDecl)
-	if !ok {
+	switch typed := decl.(type) {
+	case *ast.FuncDecl:
+		return rootFunctionCanAffectBenchmark(typed)
+	case *ast.GenDecl:
+		return rootGenDeclCanAffectBenchmark(typed)
+	default:
 		return false
 	}
-	return rootFunctionCanAffectBenchmark(typed)
 }
 
 func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
@@ -505,6 +508,48 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 	}
 	name := decl.Name.Name
 	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
+}
+
+func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
+	switch decl.Tok {
+	case token.IMPORT:
+		return genDeclHasBlankImport(decl)
+	case token.VAR:
+		return genDeclHasInitializedVar(decl)
+	default:
+		return false
+	}
+}
+
+func genDeclHasBlankImport(decl *ast.GenDecl) bool {
+	for _, spec := range decl.Specs {
+		importSpec, ok := spec.(*ast.ImportSpec)
+		if ok && importSpec.Name != nil && importSpec.Name.Name == "_" && blankImportPath(importSpec) != "embed" {
+			return true
+		}
+	}
+	return false
+}
+
+func blankImportPath(spec *ast.ImportSpec) string {
+	if spec == nil || spec.Path == nil {
+		return ""
+	}
+	value, err := strconv.Unquote(spec.Path.Value)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+func genDeclHasInitializedVar(decl *ast.GenDecl) bool {
+	for _, spec := range decl.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if ok && len(valueSpec.Values) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func referencedPackageNames(node ast.Node) map[string]struct{} {

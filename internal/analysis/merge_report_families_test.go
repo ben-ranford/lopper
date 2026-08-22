@@ -174,6 +174,12 @@ func TestMergeReportsPreservesCoverageGapsForSingleAndMergedReports(t *testing.T
 		Path:     "pkg because it exceeds old/dependencies.gemspec",
 		Evidence: []string{"first warning"},
 	}
+	baselineNewGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "baseline-new.gemspec",
+		Evidence: []string{"baseline comparison warning"},
+	}
 
 	for _, tc := range []struct {
 		name    string
@@ -188,6 +194,15 @@ func TestMergeReportsPreservesCoverageGapsForSingleAndMergedReports(t *testing.T
 			want: []report.CoverageGap{singleGap},
 		},
 		{
+			name: "single report baseline comparison coverage gap",
+			reports: []report.Report{{
+				BaselineComparison: &report.BaselineComparison{
+					NewCoverageGaps: []report.CoverageGap{baselineNewGap},
+				},
+			}},
+			want: []report.CoverageGap{baselineNewGap},
+		},
+		{
 			name: "merged reports",
 			reports: []report.Report{
 				{CoverageGaps: []report.CoverageGap{sharedGap}},
@@ -199,6 +214,14 @@ func TestMergeReportsPreservesCoverageGapsForSingleAndMergedReports(t *testing.T
 				Path:     sharedGap.Path,
 				Evidence: []string{"first warning", "second warning"},
 			}},
+		},
+		{
+			name: "merged top-level and baseline comparison coverage gaps",
+			reports: []report.Report{
+				{CoverageGaps: []report.CoverageGap{singleGap}},
+				{BaselineComparison: &report.BaselineComparison{NewCoverageGaps: []report.CoverageGap{baselineNewGap}}},
+			},
+			want: []report.CoverageGap{baselineNewGap, singleGap},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
