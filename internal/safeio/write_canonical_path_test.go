@@ -475,6 +475,96 @@ func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsInvalidTargets(t *
 	})
 }
 
+func TestWriteRootPinnedCanonicalPathWriters(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+
+	if err := root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(filepath.Join("reports", "profile.yaml"), []byte("thresholds: {}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomicallyIfAbsentUnderPinnedRoot returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "reports", "profile.yaml"), "thresholds: {}\n")
+
+	if err := root.WriteFileAtomicallyReplacingUnderPinnedRoot(filepath.Join("reports", "created.txt"), []byte("created"), 0o640); err != nil {
+		t.Fatalf("WriteFileAtomicallyReplacingUnderPinnedRoot returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "reports", "created.txt"), "created")
+
+	err := root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(filepath.Join("reports", "profile.yaml"), []byte("after"), 0o600)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing target error, got %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "reports", "profile.yaml"), "thresholds: {}\n")
+
+	err = root.WriteFileAtomicallyReplacingUnderPinnedRoot(filepath.Join("reports", "profile.yaml"), []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "existing target cannot be safely replaced under descriptor fallback") {
+		t.Fatalf("expected fail-closed existing target error, got %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "reports", "profile.yaml"), "thresholds: {}\n")
+}
+
+func TestWriteRootPinnedCanonicalPathWritersRejectUnsafeTargets(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenCanonicalWriteRoot)
+	outside := t.TempDir()
+
+	err := root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(filepath.Join("..", filepath.Base(outside), writeTestFileName), []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), escapesRootErr) {
+		t.Fatalf("expected root escape rejection, got %v", err)
+	}
+	err = root.WriteFileAtomicallyReplacingUnderPinnedRoot(filepath.Join("..", filepath.Base(outside), writeTestFileName), []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), escapesRootErr) {
+		t.Fatalf("expected replacing root escape rejection, got %v", err)
+	}
+
+	if err := os.Symlink(outside, filepath.Join(rootDir, "link")); err != nil {
+		t.Fatalf("create parent symlink: %v", err)
+	}
+	err = root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(filepath.Join("link", writeTestFileName), []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "directory contains symlink") {
+		t.Fatalf("expected symlink parent rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, writeTestFileName)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected outside target to remain absent, got err=%v", statErr)
+	}
+
+	if err := os.Symlink(filepath.Join(outside, "missing"), filepath.Join(rootDir, "target-link")); err != nil {
+		t.Fatalf("create target symlink: %v", err)
+	}
+	err = root.WriteFileAtomicallyReplacingUnderPinnedRoot("target-link", []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "target path is a symlink") {
+		t.Fatalf("expected target symlink rejection, got %v", err)
+	}
+}
+
+func TestWriteRootPinnedCanonicalPathWritersPropagateRootDescriptorErrors(t *testing.T) {
+	expectedErr := errors.New("root descriptor open failed")
+	root := &WriteRoot{
+		root: &fakeRoot{
+			openFile: func(string, int, os.FileMode) (File, error) {
+				return nil, expectedErr
+			},
+		},
+		rootAbs: string(os.PathSeparator),
+	}
+
+	if err := root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(writeTestFileName, []byte("after"), 0o600); !errors.Is(err, expectedErr) {
+		t.Fatalf("expected root descriptor open error, got %v", err)
+	}
+	if err := root.WriteFileAtomicallyReplacingUnderPinnedRoot(writeTestFileName, []byte("after"), 0o600); !errors.Is(err, expectedErr) {
+		t.Fatalf("expected root descriptor open error, got %v", err)
+	}
+
+	root.root = &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return &fakeFile{close: func() error { return nil }}, nil
+		},
+	}
+	err := root.WriteFileAtomicallyIfAbsentUnderPinnedRoot(writeTestFileName, []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "pinned root does not expose a file descriptor") {
+		t.Fatalf("expected non-descriptor root error, got %v", err)
+	}
+}
+
 func TestCanonicalPathWritersRejectAbsolutePathResolutionFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
