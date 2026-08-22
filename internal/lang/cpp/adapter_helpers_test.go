@@ -119,6 +119,33 @@ func TestCompileContextCollectorMergesRepeatedSourceIncludeDirs(t *testing.T) {
 	}
 }
 
+func TestAnalyseDoesNotLetFlaglessCompileEntriesInheritOtherIncludeDirs(t *testing.T) {
+	repo := t.TempDir()
+	includeRoot := filepath.Join(repo, "include")
+	testutil.MustWriteFile(t, filepath.Join(includeRoot, "project", "header.hpp"), "// repo header\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "no_flags.cpp"), `#include <project/header.hpp>
+int no_flags() { return 0; }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "with_flags.cpp"), `#include <project/header.hpp>
+int with_flags() { return 0; }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":"src/no_flags.cpp","arguments":["c++","-c","src/no_flags.cpp"]},
+  {"directory":".","file":"src/with_flags.cpp","arguments":["c++","-I",%q,"-c","src/with_flags.cpp"]}
+]`, includeRoot))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"project": 1,
+	})
+}
+
 func TestDetectWithCompileDatabaseAndCMakeSignals(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "CMakeLists.txt"), "project(demo)\n")
@@ -288,6 +315,90 @@ func TestMapIncludeToDependencyPreservesQualifiedLookalikesOutsideSystemRoots(t 
 	}
 }
 
+func TestMapIncludeToDependencyReportsDeclaredQualifiedLookalikesWithoutProvenance(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	testutil.MustWriteFile(t, source, "int main() { return 0; }\n")
+
+	catalog := newDependencyCatalog()
+	catalog.add("parallel", "vcpkg manifest")
+
+	dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "parallel/base.h", Delimiter: '<'}, nil, catalog)
+	if dep != "parallel" || unresolved {
+		t.Fatalf("expected declared parallel lookalike to be reported, got dep=%q unresolved=%v", dep, unresolved)
+	}
+	dep, unresolved = mapIncludeToDependency(repo, source, parsedInclude{Path: "acme/base.h", Delimiter: '<'}, nil, catalog)
+	if dep != "acme" || unresolved {
+		t.Fatalf("expected ordinary acme header to be reported, got dep=%q unresolved=%v", dep, unresolved)
+	}
+	dep, unresolved = mapIncludeToDependency(repo, source, parsedInclude{Path: "parallel/base.h", Delimiter: '<'}, nil, newDependencyCatalog())
+	if dep != "" || unresolved {
+		t.Fatalf("expected undeclared compiler parallel header to remain suppressed, got dep=%q unresolved=%v", dep, unresolved)
+	}
+}
+
+func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
+	catalog := newDependencyCatalog()
+	catalog.add("parallel-extra", "vcpkg manifest")
+	if got := declaredIncludeDependency("parallel/base.h", catalog); got != "parallel-extra" {
+		t.Fatalf("expected declared prefix correlation, got %q", got)
+	}
+	if got := declaredIncludeDependency("", catalog); got != "" {
+		t.Fatalf("expected blank include to have no declared dependency, got %q", got)
+	}
+	if got := declaredIncludeDependency("debug/map", newDependencyCatalog()); got != "" {
+		t.Fatalf("expected empty catalog to have no declared dependency, got %q", got)
+	}
+	if got := declaredIncludeDependency("debug/map", catalog); got != "" {
+		t.Fatalf("expected unrelated catalog to have no declared dependency, got %q", got)
+	}
+
+	includeDirSet := map[string]struct{}{}
+	searchPathSet := map[string]includeSearchPath{
+		"/repo/sdk":   {Path: "/repo/sdk"},
+		"/repo/quote": {Path: "/repo/quote", QuoteOnly: true, ProvenanceKnown: true},
+	}
+	recordCompileIncludes(includeDirSet, searchPathSet, []includeSearchPath{
+		{},
+		{Path: "/repo/sdk", System: true, ProvenanceKnown: true},
+		{Path: "/repo/quote", ProvenanceKnown: true},
+	})
+	if _, ok := includeDirSet["/repo/sdk"]; !ok {
+		t.Fatalf("expected include dir set to record nonblank path")
+	}
+	if !searchPathSet["/repo/sdk"].System {
+		t.Fatalf("expected duplicate -isystem path to promote system provenance")
+	}
+	if searchPathSet["/repo/quote"].QuoteOnly {
+		t.Fatalf("expected ordinary duplicate path to replace quote-only provenance")
+	}
+
+	if got := filterIncludeSearchPathsForDelimiter([]includeSearchPath{{Path: "/repo/include"}}, '#'); got != nil {
+		t.Fatalf("expected invalid delimiter to yield nil search paths, got %#v", got)
+	}
+	if shouldSuppressQualifiedStdHeader("debug/map", includeResolution{Resolved: true, ProvenanceKnown: true, Path: "/tmp/debug/map"}) {
+		t.Fatalf("expected non-system known provenance to avoid suppression")
+	}
+	if !isLikelyMultiarchIncludePrefix("x86_64-linux-android") {
+		t.Fatalf("expected android multiarch prefix to be recognized")
+	}
+	if isLikelyMultiarchIncludePrefix("x86_64-darwin-gnu") {
+		t.Fatalf("expected non-linux multiarch prefix to be rejected")
+	}
+	if isKnownOSCompilerQualifiedHeader("sys") {
+		t.Fatalf("expected one-component OS header candidate to be rejected")
+	}
+	if isKnownOSCompilerQualifiedHeader("sys/") {
+		t.Fatalf("expected empty OS header leaf to be rejected")
+	}
+	if !isLikelySystemIncludePath("/opt/toolchain/lib/gcc/x86_64-linux-gnu/13/include/stddef.h") {
+		t.Fatalf("expected GCC include path to be system")
+	}
+	if isLikelySystemIncludePath("/opt/vendor/include/debug/map") {
+		t.Fatalf("expected vendor include path to be non-system")
+	}
+}
+
 func TestMapIncludeToDependencySuppressesResolvedCompilerHeaderRoots(t *testing.T) {
 	repo := t.TempDir()
 	source := filepath.Join(repo, "src", testMainCPPFileName)
@@ -393,11 +504,16 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"tr1/ctype.h",
 		"tr1/inttypes.h",
 		"tr1/limits.h",
+		"tr1/float.h",
 		"tr1/stdio.h",
+		"tr1/stdarg.h",
 		"tr1/stdint.h",
+		"tr1/stdlib.h",
 		"tr1/type_traits.h",
 		"tr1/unordered_map.h",
 		"tr1/unordered_set.h",
+		"tr1/wchar.h",
+		"tr1/wctype.h",
 		"asm/errno.h",
 		"aarch64-linux-gnu/asm/errno.h",
 		"x86_64-linux-gnu/asm/errno.h",
@@ -574,10 +690,15 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <tr1/ctype.h>
 #include <tr1/inttypes.h>
 #include <tr1/limits.h>
+#include <tr1/float.h>
 #include <tr1/stdio.h>
+#include <tr1/stdarg.h>
 #include <tr1/stdint.h>
+#include <tr1/stdlib.h>
 #include <tr1/unordered_map.h>
 #include <tr1/unordered_set.h>
+#include <tr1/wchar.h>
+#include <tr1/wctype.h>
 #include <x86_64-linux-gnu/sys/time.h>
 #include <x86_64-w64-mingw32/sys/time.h>
 #include <linux/netfilter/nfnetlink.h>

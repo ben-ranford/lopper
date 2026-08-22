@@ -363,8 +363,15 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if resolution.Resolved && shared.IsPathWithin(r.repoPath, resolution.Path) {
 		return "", false
 	}
-	if isLikelyStdHeader(header) && shouldSuppressQualifiedStdHeader(header, resolution) {
-		return "", false
+	if isLikelyStdHeader(header) {
+		if shouldSuppressQualifiedStdHeader(header, resolution) {
+			if !resolution.Resolved && strings.Contains(cleanIncludeHeader(header), "/") {
+				if declaredDependency := declaredIncludeDependency(header, r.catalog); declaredDependency != "" {
+					return declaredDependency, false
+				}
+			}
+			return "", false
+		}
 	}
 	if include.Delimiter == '"' {
 		return "", true
@@ -407,7 +414,7 @@ func (r *includeResolver) resolveIncludePath(include includeLookup) includeResol
 
 func (r *includeResolver) includeSearchPathsForSource(sourcePath string, delimiter byte) []includeSearchPath {
 	if len(r.sourceIncludeDirs) > 0 {
-		if paths := r.sourceIncludeDirs[filepath.Clean(sourcePath)]; len(paths) > 0 {
+		if paths, ok := r.sourceIncludeDirs[filepath.Clean(sourcePath)]; ok {
 			return filterIncludeSearchPathsForDelimiter(paths, delimiter)
 		}
 	}
@@ -515,6 +522,21 @@ func shouldSuppressQualifiedStdHeader(header string, resolution includeResolutio
 		return resolution.System && isLikelySystemIncludePath(resolution.Path)
 	}
 	return isLikelySystemIncludePath(resolution.Path)
+}
+
+func declaredIncludeDependency(header string, catalog dependencyCatalog) string {
+	dependency := dependencyFromIncludePath(header)
+	if dependency == "" || len(catalog.Declarations) == 0 {
+		return ""
+	}
+	if catalog.contains(dependency) {
+		return dependency
+	}
+	correlated := correlateDeclaredDependency(dependency, catalog)
+	if correlated != dependency {
+		return correlated
+	}
+	return ""
 }
 
 func isKnownOSCompilerQualifiedHeader(header string) bool {
@@ -813,14 +835,19 @@ var cppParallelQualifiedStdHeaderHStemSet = makeStringSet(
 var cppTR1QualifiedStdHeaderHStemSet = makeStringSet(
 	"complex",
 	"ctype",
+	"float",
 	"inttypes",
 	"limits",
 	"math",
+	"stdarg",
 	"stdio",
 	"stdint",
+	"stdlib",
 	"type_traits",
 	"unordered_map",
 	"unordered_set",
+	"wchar",
+	"wctype",
 )
 
 var cppExtPBDSQualifiedStdHeaderHPPStemSet = makeStringSet(

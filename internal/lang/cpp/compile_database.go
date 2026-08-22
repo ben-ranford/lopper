@@ -120,7 +120,7 @@ func collectCompileDatabase(path, repoPath string, includeDirSet map[string]stru
 		recordCompileSource(sourceFileSet, sourcePath)
 		includePaths := extractIncludeSearchPaths(entry.compileArgs(), baseDir)
 		recordCompileIncludes(includeDirSet, includeSearchPathSet, includePaths)
-		if sourcePath != "" && isCPPSourceFile(sourcePath) && len(includePaths) > 0 {
+		if sourcePath != "" && isCPPSourceFile(sourcePath) {
 			sourceIncludeDirs[sourcePath] = mergeIncludeSearchPaths(sourceIncludeDirs[sourcePath], includePaths)
 		}
 	}
