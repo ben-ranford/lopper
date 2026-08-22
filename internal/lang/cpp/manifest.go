@@ -27,6 +27,7 @@ const (
 
 type dependencyCatalog struct {
 	Declarations map[string]declaredDependency
+	Incomplete   bool
 }
 
 type declaredDependency struct {
@@ -91,6 +92,7 @@ func loadDependencyCatalog(repoPath string) (dependencyCatalog, []string, error)
 		case vcpkgManifestFile, vcpkgLockFile, conanManifestFile, conanLockFile:
 			manifestCount++
 			if manifestCount > maxManifestFiles {
+				catalog.Incomplete = true
 				return fs.SkipAll
 			}
 		default:
@@ -116,6 +118,7 @@ func loadDependencyManifest(repoPath, path string, catalog *dependencyCatalog) (
 	case errors.Is(err, os.ErrNotExist):
 		return nil, nil
 	case shared.IsPureSentinelError(err, safeio.ErrFileTooLarge):
+		catalog.Incomplete = true
 		return []string{fmt.Sprintf("skipped oversized %s: %v", relPath, err)}, nil
 	default:
 		return nil, fmt.Errorf("read %s: %w", relPath, err)

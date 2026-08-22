@@ -106,6 +106,9 @@ func TestLoadDependencyCatalogSkipsOversizedManifests(t *testing.T) {
 			if got := catalog.list(); len(got) != 0 {
 				t.Fatalf("expected oversized manifest to add no dependencies, got %#v", got)
 			}
+			if !catalog.Incomplete {
+				t.Fatal("expected oversized manifest to mark dependency catalog incomplete")
+			}
 			if !hasWarning(warnings, "skipped oversized "+manifestName) {
 				t.Fatalf("expected oversized manifest warning for %s, got %#v", manifestName, warnings)
 			}
@@ -223,6 +226,37 @@ func TestBuildDependencyReportFlagsUndeclaredUsage(t *testing.T) {
 	}
 	if !hasRecommendation(dep.Recommendations, "declare-dependency-explicitly") {
 		t.Fatalf("expected declaration recommendation, got %#v", dep.Recommendations)
+	}
+}
+
+func TestBuildDependencyReportSuppressesUndeclaredUsageWhenCatalogIncomplete(t *testing.T) {
+	scan := scanResult{
+		Catalog: dependencyCatalog{
+			Declarations: make(map[string]declaredDependency),
+			Incomplete:   true,
+		},
+		Files: []fileScan{{
+			Path: "src/main.cpp",
+			Includes: []includeRecord{{
+				Dependency: "fmt",
+				Header:     "fmt/core.h",
+				Location:   report.Location{File: "src/main.cpp", Line: 1, Column: 1},
+			}},
+		}},
+	}
+
+	dep, warnings := buildDependencyReport("fmt", scan, true)
+	if hasWarning(warnings, "not declared in vcpkg or conan manifests") {
+		t.Fatalf("did not expect undeclared-usage warning with incomplete catalog, got %#v", warnings)
+	}
+	if hasRiskCue(dep.RiskCues, "undeclared-package-usage") {
+		t.Fatalf("did not expect undeclared risk cue with incomplete catalog, got %#v", dep.RiskCues)
+	}
+	if hasRecommendation(dep.Recommendations, "declare-dependency-explicitly") {
+		t.Fatalf("did not expect declaration recommendation with incomplete catalog, got %#v", dep.Recommendations)
+	}
+	if dep.TotalExportsCount != 1 || dep.UsedExportsCount != 1 {
+		t.Fatalf("expected include usage to remain reported, got total=%d used=%d", dep.TotalExportsCount, dep.UsedExportsCount)
 	}
 }
 
