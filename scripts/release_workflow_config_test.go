@@ -3181,12 +3181,13 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Memory benchmark GO_BIN: $$go_bin_path"`,
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
-		`requested base ref '$$base_ref' is not related to HEAD`,
+		`requested base ref '$$base_ref' is not an ancestor of HEAD`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
 		`git rev-parse --verify -q --end-of-options "$$base_ref^{commit}"`,
-		`git merge-base -- "$$base_ref" HEAD`,
+		`base_commit=$(git rev-parse --verify -q --end-of-options "$$base_ref^{commit}")`,
+		`git merge-base --is-ancestor "$$base_commit" HEAD`,
 		`{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}`,
 		`{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}`,
 		`-list '^Benchmark' "$$bench_pkg"`,
@@ -3232,7 +3233,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	assertTextAppearsBefore(t, benchGateScript, `if [ "$base_harness_fingerprint" != "$harness_fingerprint" ]; then`, `printf "Applied base benchmark definition: %s\n" "$definition_metadata"`, "bench-gate must verify every base harness fingerprint before executing benchmarks")
-	assertTextAppearsBefore(t, benchGateScript, `validate_go_toolchain "initial validation"`, `if ! git rev-parse --verify -q --end-of-options "$base_ref^{commit}"`, "bench-gate must pin the Go executable and toolchain before resolving revisions")
+	assertTextAppearsBefore(t, benchGateScript, `validate_go_toolchain "initial validation"`, `if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}"); then`, "bench-gate must pin the Go executable and toolchain before resolving revisions")
 }
 
 func TestMakefileBenchGateRejectsMissingOrNonExecutableGoBin(t *testing.T) {
