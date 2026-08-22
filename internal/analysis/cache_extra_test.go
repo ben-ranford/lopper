@@ -223,29 +223,8 @@ func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
 }
 
 func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, cacheDirName)
-	mustMkdirCacheLayout(t, cachePath)
-	outside := t.TempDir()
-	movedRoot := filepath.Join(repo, "cache-holding")
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if !cache.cacheable {
-		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
-	}
-
-	originalHook := analysisCacheStoreAfterObjectWriteFn
-	t.Cleanup(func() { analysisCacheStoreAfterObjectWriteFn = originalHook })
-	replaced := false
-	analysisCacheStoreAfterObjectWriteFn = func() error {
-		if replaced {
-			return nil
-		}
-		replaced = true
-		if err := os.Rename(cachePath, movedRoot); err != nil {
-			return err
-		}
-		return os.Symlink(outside, cachePath)
-	}
+	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
+	withAnalysisCacheStoreHook(t, cachePath, outside, movedRoot, &analysisCacheStoreAfterObjectWriteFn)
 
 	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
 	if err == nil {
@@ -259,29 +238,8 @@ func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
 }
 
 func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing.T) {
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, cacheDirName)
-	mustMkdirCacheLayout(t, cachePath)
-	outside := t.TempDir()
-	movedRoot := filepath.Join(repo, "cache-holding")
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if !cache.cacheable {
-		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
-	}
-
-	originalHook := analysisCacheStoreBeforePointerWriteFn
-	t.Cleanup(func() { analysisCacheStoreBeforePointerWriteFn = originalHook })
-	replaced := false
-	analysisCacheStoreBeforePointerWriteFn = func() error {
-		if replaced {
-			return nil
-		}
-		replaced = true
-		if err := os.Rename(cachePath, movedRoot); err != nil {
-			return err
-		}
-		return os.Symlink(outside, cachePath)
-	}
+	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
+	withAnalysisCacheStoreHook(t, cachePath, outside, movedRoot, &analysisCacheStoreBeforePointerWriteFn)
 
 	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
 	if err == nil {
@@ -292,6 +250,35 @@ func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+}
+
+func newReplaceableCacheForStoreTest(t *testing.T) (string, *analysisCache, string, string, string) {
+	t.Helper()
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
+	}
+	return repo, cache, cachePath, t.TempDir(), filepath.Join(repo, "cache-holding")
+}
+
+func withAnalysisCacheStoreHook(t *testing.T, cachePath, outside, movedRoot string, hook *func() error) {
+	t.Helper()
+	originalHook := *hook
+	t.Cleanup(func() { *hook = originalHook })
+	replaced := false
+	*hook = func() error {
+		if replaced {
+			return nil
+		}
+		replaced = true
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		return os.Symlink(outside, cachePath)
+	}
 }
 
 func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
