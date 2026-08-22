@@ -125,6 +125,31 @@ func TestAdapterAnalyseSuggestOnlyPythonUnsafeSkips(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseSuggestOnlyPythonSkipsParenthesizedFromImportAtOpeningLineAfterNestedBlankLineReplacement(t *testing.T) {
+	source := "value = f\"{f'''{\"\"\"\n" +
+		"\n" +
+		"import requests\n" +
+		"\"\"\"}'''}\"\n" +
+		"from numpy import (\n" +
+		"    array,\n" +
+		")\n"
+
+	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "numpy", true)
+	if dep.Codemod == nil {
+		t.Fatal("expected python codemod report")
+	}
+	if len(dep.Codemod.Suggestions) != 0 {
+		t.Fatalf("expected no safe suggestions for parenthesized multiline import, got %#v", dep.Codemod.Suggestions)
+	}
+	if len(dep.Codemod.Skips) != 1 {
+		t.Fatalf("expected one unsupported-syntax skip, got %#v", dep.Codemod.Skips)
+	}
+	skip := dep.Codemod.Skips[0]
+	if skip.ReasonCode != pythonCodemodReasonUnsupportedSyntax || skip.Line != 5 || skip.ImportName != "array" {
+		t.Fatalf("expected unsupported parenthesized skip on opening line 5, got %#v", skip)
+	}
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonSkipsImportLikeMultilineStrings(t *testing.T) {
 	source := "\"\"\"\n" +
 		"import requests\n" +

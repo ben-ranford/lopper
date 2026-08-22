@@ -143,6 +143,36 @@ func TestPythonCodemodLineMatchingHelpers(t *testing.T) {
 	}
 }
 
+func TestPythonCodemodNormalizesParenthesizedFromImportToOpeningLine(t *testing.T) {
+	lines := []string{
+		"value = f\"{f'''{\"\"\"",
+		"",
+		"import requests",
+		"\"\"\"}'''}\"",
+		"from numpy import (",
+		"    array,",
+		")",
+	}
+	importsByLine := pythonImportsByLine(lines, []importBinding{{
+		Dependency: "numpy",
+		Module:     "numpy",
+		Name:       "array",
+		Local:      "array",
+		Location:   report.Location{File: "main.py", Line: 6},
+	}})
+	if len(importsByLine) != 1 || len(importsByLine[5]) != 1 {
+		t.Fatalf("expected multiline from-import binding to group on opening line 5, got %#v", importsByLine)
+	}
+
+	simpleImports := pythonImportsByLine([]string{"import requests, os"}, []importBinding{
+		{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests", Location: report.Location{File: "main.py", Line: 1}},
+		{Dependency: "os", Module: "os", Name: "os", Local: "os", Location: report.Location{File: "main.py", Line: 1}},
+	})
+	if len(simpleImports) != 1 || len(simpleImports[1]) != 2 {
+		t.Fatalf("expected simple imports to stay on line 1, got %#v", simpleImports)
+	}
+}
+
 func TestPythonCodemodSmallHelpers(t *testing.T) {
 	imports := []importBinding{
 		{Module: "requests", Name: "get", Local: "get"},
