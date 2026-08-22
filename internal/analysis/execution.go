@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,9 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+// ErrIncompleteCoverage reports that an enforced analysis policy cannot trust partial dependency coverage.
+var ErrIncompleteCoverage = errors.New("complete dependency coverage is required")
 
 func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
@@ -62,6 +66,9 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, cachedReport); err != nil {
+				return nil, nil, nil, err
+			}
 			reports = append(reports, cachedReport)
 			continue
 		}
@@ -90,6 +97,9 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
+		if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, current); err != nil {
+			return nil, nil, nil, err
+		}
 		reports = append(reports, current)
 	}
 	return reports, warnings, analyzedRoots, nil
@@ -97,6 +107,35 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 
 func shouldFailAdapterCoverageError(req Request, err error) bool {
 	return req.RequireCompleteCoverage && isMultiLanguage(req.Language) && errors.Is(err, safeio.ErrFileTooLarge)
+}
+
+func incompleteCoverageReportError(req Request, adapterID, root string, reportData report.Report) error {
+	if !req.RequireCompleteCoverage || !isMultiLanguage(req.Language) {
+		return nil
+	}
+	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
+	if len(dependencies) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
+}
+
+func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {
+	incomplete := make([]string, 0)
+	for _, dependency := range dependencies {
+		if !dependency.UsageIncomplete {
+			continue
+		}
+		name := strings.TrimSpace(dependency.Name)
+		if name == "" {
+			name = "<unknown>"
+		}
+		if languageID := strings.TrimSpace(dependency.Language); languageID != "" {
+			name = languageID + ":" + name
+		}
+		incomplete = append(incomplete, name)
+	}
+	return incomplete
 }
 
 func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
