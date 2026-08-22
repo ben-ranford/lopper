@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -331,10 +332,22 @@ func oversizedRubyGemspecDeclarationWarningPath(warning string) (string, bool) {
 }
 
 func equalFoldCutPrefix(value, prefix string) (string, bool) {
-	if len(value) < len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
-		return "", false
+	if prefix == "" {
+		return value, true
 	}
-	return value[len(prefix):], true
+
+	cut := 0
+	for _, prefixChar := range prefix {
+		if cut >= len(value) {
+			return "", false
+		}
+		valueChar, size := utf8.DecodeRuneInString(value[cut:])
+		if !strings.EqualFold(string(valueChar), string(prefixChar)) {
+			return "", false
+		}
+		cut += size
+	}
+	return value[cut:], true
 }
 
 func baselineHasReachableVulnerabilityAtOrAbove(findings []report.VulnerabilityDelta, threshold string) bool {

@@ -1120,6 +1120,29 @@ func TestAnalysePRReviewWorktreeAnnotatesAdvisorySource(t *testing.T) {
 	}
 }
 
+func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing.T) {
+	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
+	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
+	analyzer := &pathAwarePRReviewAnalyzer{
+		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
+		headReport: report.Report{
+			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.1.0", 100, 90, false)},
+			Warnings:     []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"},
+		},
+	}
+	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
+	req.PRReview.FailOnRegression = true
+	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+
+	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if output != "" {
+		t.Fatalf("expected pr-review to fail before emitting output, got %q", output)
+	}
+	if !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected oversized gemspec coverage gap to fail closed, got %v", err)
+	}
+}
+
 func TestBuildPRReviewArtifactClassifiesCargoAliasVersionChangeAsUpgrade(t *testing.T) {
 	baseReport := report.Report{Dependencies: []report.DependencyReport{{
 		Name:     "demo",

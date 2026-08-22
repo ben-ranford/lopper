@@ -399,15 +399,36 @@ func (a *App) analysePRReviewWorktree(ctx context.Context, repoPath, callerRepoP
 	if resolvedCallerRepoPath := strings.TrimSpace(callerRepoPath); resolvedCallerRepoPath != "" {
 		reportData.RepoPath = resolvedCallerRepoPath
 	}
-	if strings.TrimSpace(req.AdvisorySourcePath) != "" {
-		advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
-		if err != nil {
-			return report.Report{}, err
-		}
-		report.AnnotateVulnerabilities(&reportData, advisories)
-		reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+	reportData, err = a.runPRReviewPostStages(ctx, reportData, req)
+	if err != nil {
+		return reportData, err
 	}
-	return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, prReviewNow().UTC()), nil
+	return reportData, nil
+}
+
+func (a *App) runPRReviewPostStages(ctx context.Context, reportData report.Report, req PRReviewRequest) (report.Report, error) {
+	now := prReviewNow().UTC()
+
+	return runAnalyseStages(ctx, reportData, []analyseReportStage{
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			if strings.TrimSpace(req.AdvisorySourcePath) == "" {
+				return reportData, nil
+			}
+			advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
+			if err != nil {
+				return reportData, err
+			}
+			report.AnnotateVulnerabilities(&reportData, advisories)
+			reportData.Summary = report.ComputeSummary(reportData.Dependencies)
+			return reportData, nil
+		},
+		func(_ context.Context, reportData report.Report) (report.Report, error) {
+			return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, now), nil
+		},
+		analyseValidationStage(func(reportData report.Report) error {
+			return validateReachableVulnerabilityThreshold(reportData, req.Thresholds.ReachableVulnerabilityPriority)
+		}),
+	})
 }
 
 func validatePRReviewFeatures(req PRReviewRequest) error {

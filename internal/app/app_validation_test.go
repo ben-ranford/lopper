@@ -244,6 +244,16 @@ func TestValidateReachableVulnerabilityThresholdFailsClosedForOversizedRubyGemsp
 	}
 }
 
+func TestEqualFoldCutPrefixHandlesUnicodeSimpleFoldPrefix(t *testing.T) {
+	suffix, ok := equalFoldCutPrefix("\u017fkipped oversized.gemspec because it exceeds 1048576 bytes", "skipped ")
+	if !ok {
+		t.Fatalf("expected unicode long-s prefix to match")
+	}
+	if suffix != "oversized.gemspec because it exceeds 1048576 bytes" {
+		t.Fatalf("unexpected suffix %q", suffix)
+	}
+}
+
 func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testing.T) {
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{
