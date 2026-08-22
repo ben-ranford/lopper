@@ -167,6 +167,14 @@ func TestAdapterAnalyseFindsImportsAfterContinuedShortStringCloses(t *testing.T)
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseFindsImportsAfterUncontinuedUnterminatedShortString(t *testing.T) {
+	source := "value = \"unfinished\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")

@@ -262,9 +262,9 @@ func (m *pythonStringMask) maskShortString(line string, index *int, builder *str
 	if m.shortQuote == 0 {
 		return false
 	}
-	next, closed := maskPythonShortStringContent(line, *index, m.shortQuote, builder, false)
+	next, closed, continued := maskPythonShortStringContent(line, *index, m.shortQuote, builder, false)
 	*index = next
-	if closed {
+	if closed || !continued {
 		m.shortQuote = 0
 	}
 	return true
@@ -277,14 +277,14 @@ func (m *pythonStringMask) startMultilineString(quote string, index *int, builde
 }
 
 func (m *pythonStringMask) startShortString(quote byte, line string, index *int, builder *strings.Builder) {
-	next, closed := maskPythonShortStringContent(line, *index, quote, builder, true)
+	next, closed, continued := maskPythonShortStringContent(line, *index, quote, builder, true)
 	*index = next
-	if !closed {
+	if !closed && continued {
 		m.shortQuote = quote
 	}
 }
 
-func maskPythonShortStringContent(line string, index int, quote byte, builder *strings.Builder, maskOpening bool) (int, bool) {
+func maskPythonShortStringContent(line string, index int, quote byte, builder *strings.Builder, maskOpening bool) (int, bool, bool) {
 	if maskOpening {
 		builder.WriteByte(' ')
 		index++
@@ -303,10 +303,10 @@ func maskPythonShortStringContent(line string, index int, quote byte, builder *s
 			continue
 		}
 		if current == quote {
-			return index, true
+			return index, true, false
 		}
 	}
-	return index, false
+	return index, false, escaped
 }
 
 func writeSpaces(builder *strings.Builder, count int) {
