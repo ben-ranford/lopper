@@ -14,17 +14,18 @@ import (
 )
 
 var (
-	descriptorLstatFn           = descriptorLstat
-	descriptorStatFn            = descriptorStat
-	afterOpenSearchAncestorFn   = func(string) error { return nil }
-	openSearchOnlyDirectoryAtFn = openSearchOnlyDirectoryAt
-	descriptorMkdiratFn         = unix.Mkdirat
-	descriptorLinkatFn          = unix.Linkat
-	descriptorUnlinkatFn        = unix.Unlinkat
-	descriptorFileWriteFn       = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
-	descriptorFileChmodFn       = func(file *os.File, perm os.FileMode) error { return file.Chmod(perm) }
-	descriptorFileStatFn        = func(file *os.File) (os.FileInfo, error) { return file.Stat() }
-	descriptorFileCloseFn       = func(file *os.File) error { return file.Close() }
+	descriptorLstatFn            = descriptorLstat
+	descriptorStatFn             = descriptorStat
+	afterOpenSearchAncestorFn    = func(string) error { return nil }
+	openSearchOnlyDirectoryAtFn  = openSearchOnlyDirectoryAt
+	searchDirectoryAliasTargetFn = searchDirectoryAliasTarget
+	descriptorMkdiratFn          = unix.Mkdirat
+	descriptorLinkatFn           = unix.Linkat
+	descriptorUnlinkatFn         = unix.Unlinkat
+	descriptorFileWriteFn        = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
+	descriptorFileChmodFn        = func(file *os.File, perm os.FileMode) error { return file.Chmod(perm) }
+	descriptorFileStatFn         = func(file *os.File) (os.FileInfo, error) { return file.Stat() }
+	descriptorFileCloseFn        = func(file *os.File) error { return file.Close() }
 )
 
 const canonicalPathParentPerm os.FileMode = 0o750
@@ -185,20 +186,55 @@ func openSearchOnlyCanonicalDirectoryWithOptions(path string, create bool, perm 
 
 func canonicalSearchDirectoryPath(path string) string {
 	cleanPath := filepath.Clean(path)
-	separator := string(os.PathSeparator)
-	for _, alias := range []string{filepath.Join(separator, "tmp"), filepath.Join(separator, "var")} {
-		target, ok := trustedRootAliasTarget(alias)
-		if !ok {
-			continue
-		}
-		if cleanPath == alias {
-			return target
-		}
-		if strings.HasPrefix(cleanPath, alias+separator) {
-			return filepath.Join(target, strings.TrimPrefix(cleanPath, alias+separator))
-		}
+	volumeRoot := filepath.VolumeName(cleanPath) + string(os.PathSeparator)
+	rel, err := filepath.Rel(volumeRoot, cleanPath)
+	if err != nil || rel == "." {
+		return cleanPath
 	}
-	return cleanPath
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) == 0 || parts[0] == "" || parts[0] == "." || parts[0] == ".." {
+		return cleanPath
+	}
+	aliasRoot := filepath.Join(volumeRoot, parts[0])
+	targetRoot, ok := searchDirectoryAliasTargetFn(aliasRoot)
+	if !ok {
+		return cleanPath
+	}
+	if len(parts) == 1 {
+		return targetRoot
+	}
+	return filepath.Join(targetRoot, filepath.Join(parts[1:]...))
+}
+
+func searchDirectoryAliasTarget(path string) (string, bool) {
+	if target, ok := trustedRootAliasTarget(path); ok {
+		return target, true
+	}
+	if !isSearchDirectoryRootLevelAlias(path) {
+		return "", false
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	return target, true
+}
+
+func isSearchDirectoryRootLevelAlias(path string) bool {
+	cleanPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanPath) {
+		return false
+	}
+	parent := filepath.Dir(cleanPath)
+	if parent == cleanPath || filepath.Dir(parent) != parent {
+		return false
+	}
+	linkInfo, err := os.Lstat(cleanPath)
+	if err != nil || linkInfo.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	targetInfo, err := os.Stat(cleanPath)
+	return err == nil && targetInfo.IsDir()
 }
 
 func openSearchOnlyDirectoryParts(current *os.File, currentPath string, parts []string, create bool, perm os.FileMode) (_ *os.File, _ int, returnErr error) {

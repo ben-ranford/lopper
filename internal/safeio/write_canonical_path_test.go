@@ -308,13 +308,27 @@ func openCanonicalParentForTest(t *testing.T, parent string) (*os.File, int) {
 }
 
 func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
+	originalAliasTarget := searchDirectoryAliasTargetFn
+	t.Cleanup(func() {
+		searchDirectoryAliasTargetFn = originalAliasTarget
+	})
+
 	separator := string(os.PathSeparator)
 	tmpAlias := filepath.Join(separator, "tmp")
-	withRuntimeGOOS(t, "darwin")
-	tmpTarget, tmpOK := trustedRootAliasTarget(tmpAlias)
-	if !tmpOK {
-		t.Fatal("expected darwin tmp alias to be trusted")
+	tmpTarget := filepath.Join(separator, "private", "tmp")
+	varAlias := filepath.Join(separator, "var")
+	varTarget := filepath.Join(separator, "private", "var")
+	searchDirectoryAliasTargetFn = func(path string) (string, bool) {
+		switch path {
+		case tmpAlias:
+			return tmpTarget, true
+		case varAlias:
+			return varTarget, true
+		default:
+			return "", false
+		}
 	}
+
 	if got := canonicalSearchDirectoryPath(tmpAlias); got != tmpTarget {
 		t.Fatalf("expected trusted tmp alias target %q, got %q", tmpTarget, got)
 	}
@@ -322,11 +336,6 @@ func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
 	wantNested := filepath.Join(tmpTarget, "lopper", "profile")
 	if got := canonicalSearchDirectoryPath(nested); got != wantNested {
 		t.Fatalf("expected nested trusted tmp alias target %q, got %q", wantNested, got)
-	}
-	varAlias := filepath.Join(separator, "var")
-	varTarget, varOK := trustedRootAliasTarget(varAlias)
-	if !varOK {
-		t.Fatal("expected darwin var alias to be trusted")
 	}
 	if got := canonicalSearchDirectoryPath(varAlias); got != varTarget {
 		t.Fatalf("expected trusted var alias target %q, got %q", varTarget, got)
@@ -336,13 +345,23 @@ func TestCanonicalSearchDirectoryPathHandlesTrustedAliases(t *testing.T) {
 	if got := canonicalSearchDirectoryPath(regular); got != regular {
 		t.Fatalf("expected regular path to remain unchanged, got %q", got)
 	}
+}
 
-	withRuntimeGOOS(t, "linux")
-	if got := canonicalSearchDirectoryPath(tmpAlias); got != tmpAlias {
-		t.Fatalf("expected linux tmp path to remain unchanged, got %q", got)
+func TestCanonicalSearchDirectoryPathUsesResolvedRootLevelAliases(t *testing.T) {
+	originalAliasTarget := searchDirectoryAliasTargetFn
+	t.Cleanup(func() {
+		searchDirectoryAliasTargetFn = originalAliasTarget
+	})
+
+	searchDirectoryAliasTargetFn = func(path string) (string, bool) {
+		if path != filepath.Join(string(os.PathSeparator), "alias") {
+			return "", false
+		}
+		return filepath.Join(string(os.PathSeparator), "resolved-alias"), true
 	}
-	if got := canonicalSearchDirectoryPath(varAlias); got != varAlias {
-		t.Fatalf("expected linux var path to remain unchanged, got %q", got)
+
+	if got := canonicalSearchDirectoryPath(filepath.Join(string(os.PathSeparator), "alias", "reports", "profile.yaml")); got != filepath.Join(string(os.PathSeparator), "resolved-alias", "reports", "profile.yaml") {
+		t.Fatalf("expected synthetic root-level alias to resolve, got %q", got)
 	}
 }
 
