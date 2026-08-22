@@ -233,6 +233,50 @@ func TestWriteAtomicReplacementRunsPostWriteAfterWindowsFallback(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicReplacementRejectsRetargetedDestinationAfterWindowsFallback(t *testing.T) {
+	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, originalInfo, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	lstatCalls := 0
+	postWriteCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				lstatCalls++
+				if lstatCalls == 1 {
+					return originalInfo, nil
+				}
+				return changedInfo, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		rename: func(oldName, newName string) error {
+			return windowsReplaceExistingError(oldName, newName)
+		},
+		remove: func(string) error { return nil },
+	}
+
+	err := writeAtomicReplacementWithPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, nil, func() error {
+		postWriteCalls++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "overwritten target changed before validation") {
+		t.Fatalf("expected overwritten target validation error, got %v", err)
+	}
+	if postWriteCalls != 0 {
+		t.Fatalf("expected post-write check to be skipped after validation failure, got %d calls", postWriteCalls)
+	}
+	if lstatCalls != 2 {
+		t.Fatalf("expected pre-overwrite and post-overwrite validation lstat calls, got %d", lstatCalls)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite before retarget detection, got %q", string(*targetData))
+	}
+}
+
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {

@@ -160,17 +160,42 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	return nil
 }
 
-func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel string, serializedPointer []byte) error {
+func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel string, serializedPointer []byte) (returnErr error) {
 	if err := c.validateWriteRoot(writeRoot); err != nil {
 		return err
 	}
-	validateRoot := func() error {
-		return c.validateWriteRoot(writeRoot)
-	}
-	if err := writeRoot.WriteFileCreatingParentsAfterParentReadyWithPublishCheck(pointerRel, serializedPointer, 0o640, 0o750, validateRoot, validateRoot); err != nil {
+	parentPath := filepath.Join(c.options.Path, filepath.Dir(pointerRel))
+	parentRoot, err := safeio.OpenRootNoFollow(parentPath)
+	if err != nil {
 		return err
 	}
-	return c.validateWriteRoot(writeRoot)
+	defer func() {
+		returnErr = errors.Join(returnErr, parentRoot.Close())
+	}()
+	parentIdentity, err := parentRoot.Lstat(".")
+	if err != nil {
+		return err
+	}
+	validatePointerParent := func() error {
+		if err := c.validateWriteRoot(writeRoot); err != nil {
+			return err
+		}
+		if err := validateAnalysisCacheRoot(parentPath, parentIdentity); err != nil {
+			return err
+		}
+		observed, err := parentRoot.Lstat(".")
+		if err != nil {
+			return err
+		}
+		return validateObservedAnalysisCacheDirectoryIdentity(parentPath, parentIdentity, observed)
+	}
+	if err := validatePointerParent(); err != nil {
+		return err
+	}
+	if err := writeRoot.WriteFileCreatingParentsAfterParentReadyWithPublishCheck(pointerRel, serializedPointer, 0o640, 0o750, validatePointerParent, validatePointerParent); err != nil {
+		return err
+	}
+	return validatePointerParent()
 }
 
 func newCachedPayload(data report.Report) cachedPayload {

@@ -152,10 +152,7 @@ func (c *analysisCache) openWriteRoot() (*safeio.WriteRoot, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := root.VerifyIdentity(c.rootIdentity); err != nil {
-		return nil, errors.Join(err, root.Close())
-	}
-	if err := validateAnalysisCacheRoot(c.options.Path, c.rootIdentity); err != nil {
+	if err := c.validateWriteRoot(root); err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
 	return root, nil
@@ -165,7 +162,18 @@ func (c *analysisCache) validateWriteRoot(writeRoot *safeio.WriteRoot) error {
 	if err := validateAnalysisCacheRoot(c.options.Path, c.rootIdentity); err != nil {
 		return err
 	}
-	return writeRoot.VerifyIdentity(c.rootIdentity)
+	observed, err := writeRoot.RootInfo()
+	if err != nil {
+		return err
+	}
+	return validateObservedAnalysisCacheDirectoryIdentity(c.options.Path, c.rootIdentity, observed)
+}
+
+func validateObservedAnalysisCacheDirectoryIdentity(path string, expected, observed fs.FileInfo) error {
+	if observed == nil || observed.Mode()&os.ModeSymlink != 0 || !observed.IsDir() || !os.SameFile(expected, observed) {
+		return fmt.Errorf("directory identity changed: %s", path)
+	}
+	return nil
 }
 
 func cachePathEscapesRepo(cachePath, repoPath string) bool {

@@ -270,6 +270,52 @@ func TestAnalysisCacheStoreRejectsRootReplacementAtPointerCommit(t *testing.T) {
 	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
 }
 
+func TestAnalysisCacheStoreRejectsKeysRetargetAtPointerCommit(t *testing.T) {
+	repo, cache, cachePath, _, _ := newReplaceableCacheForStoreTest(t)
+	keysPath := filepath.Join(cachePath, cacheKeysDirName)
+	movedKeys := filepath.Join(repo, "moved-keys")
+
+	originalHook := safeioWriteFilePublishReadyFn
+	t.Cleanup(func() { safeioWriteFilePublishReadyFn = originalHook })
+	publishCalls := 0
+	safeioWriteFilePublishReadyFn = func() error {
+		publishCalls++
+		if publishCalls != 2 {
+			return nil
+		}
+		if err := os.Rename(keysPath, movedKeys); err != nil {
+			return err
+		}
+		return os.Mkdir(keysPath, 0o750)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected keys retarget at pointer commit to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	if publishCalls != 2 {
+		t.Fatalf("expected keys retarget at pointer commit, got %d publish calls", publishCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedKeys, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+}
+
+func TestValidateObservedAnalysisCacheDirectoryIdentityRejectsRetargetedPinnedRoot(t *testing.T) {
+	expectedPath := t.TempDir()
+	observedPath := t.TempDir()
+
+	expected := statAnalysisCacheDirectory(t, expectedPath)
+	observed := statAnalysisCacheDirectory(t, observedPath)
+
+	err := validateObservedAnalysisCacheDirectoryIdentity(expectedPath, expected, observed)
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity change, got %v", err)
+	}
+}
+
 func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *testing.T, replaceOnCall int, stage string) {
 	t.Helper()
 	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
@@ -437,11 +483,13 @@ func assertAnalysisCachePathAbsent(t *testing.T, path string) {
 	}
 }
 
-func assertAnalysisCachePathPresent(t *testing.T, path string) {
+func statAnalysisCacheDirectory(t *testing.T, path string) os.FileInfo {
 	t.Helper()
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("expected %q to remain present, stat err=%v", path, err)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
 	}
+	return info
 }
 
 func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {

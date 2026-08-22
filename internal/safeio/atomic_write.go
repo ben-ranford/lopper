@@ -21,6 +21,11 @@ type truncatingFile interface {
 	Truncate(size int64) error
 }
 
+var (
+	_ = writeAtomicReplacementWithPinnedTargetAndPostWriteCheck
+	_ = writeFileAtRootWithPostWriteCheck
+)
+
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
 	if err != nil {
@@ -125,6 +130,27 @@ func (s *atomicWriteSession) cleanup() error {
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
 
+func verifyOverwrittenTarget(root Root, targetRel string, file File) error {
+	pathInfo, err := root.Lstat(targetRel)
+	if err != nil {
+		return fmt.Errorf("overwritten target changed before validation: %w", err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("overwritten target became a symlink before validation: %s", targetRel)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return fmt.Errorf("overwritten target is not a regular file before validation: %s", targetRel)
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return fmt.Errorf("overwritten target changed before validation: %s", targetRel)
+	}
+	return nil
+}
+
 func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo) error {
 	return writeAtomicReplacementWithChecks(root, targetRel, data, perm, replacementInfo, nil, nil)
 }
@@ -208,6 +234,9 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 			if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
 				return err
 			}
+			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
+				return err
+			}
 			return runPostWriteCheck(postWrite)
 		}
 		return err
@@ -229,6 +258,9 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 		}
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
+				return err
+			}
+			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
 				return err
 			}
 			return runPostWriteCheck(postWrite)

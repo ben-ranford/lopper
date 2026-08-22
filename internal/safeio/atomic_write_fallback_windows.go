@@ -28,6 +28,9 @@ func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFi
 	if fallbackErr != nil {
 		return errors.Join(renameErr, fallbackErr)
 	}
+	if err := verifyOverwrittenTarget(root, newName, replacementFile); err != nil {
+		return errors.Join(renameErr, err)
+	}
 	return nil
 }
 
