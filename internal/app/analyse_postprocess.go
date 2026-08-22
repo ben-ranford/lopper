@@ -285,7 +285,7 @@ func validateReachableVulnerabilityThreshold(reportData report.Report, threshold
 	if !reachableVulnerabilityThresholdEnabled(threshold) {
 		return nil
 	}
-	if hasOversizedRubyGemspecDeclarationWarning(reportData.Warnings) {
+	if hasOversizedRubyGemspecCoverageGap(reportData) {
 		return ErrReachableVulnerabilities
 	}
 	if !hasReachableVulnerabilityAtOrAbove(reportData, threshold) {
@@ -308,6 +308,19 @@ func reachableVulnerabilityThresholdEnabled(threshold string) bool {
 	return strings.TrimSpace(threshold) != "" && report.NormalizeVulnerabilityPriorityThreshold(threshold) != report.VulnerabilityPriorityOff
 }
 
+func hasOversizedRubyGemspecCoverageGap(reportData report.Report) bool {
+	for _, gap := range reportData.CoverageGaps {
+		if strings.TrimSpace(gap.Code) != report.CoverageGapRubyOversizedGemspec {
+			continue
+		}
+		path := strings.TrimSpace(gap.Path)
+		if path == "" || strings.EqualFold(filepath.Ext(path), ".gemspec") {
+			return true
+		}
+	}
+	return hasOversizedRubyGemspecDeclarationWarning(reportData.Warnings)
+}
+
 func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
 	for _, warning := range warnings {
 		if path, found := oversizedRubyGemspecDeclarationWarningPath(warning); found && strings.EqualFold(filepath.Ext(path), ".gemspec") {
@@ -320,19 +333,46 @@ func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
 func oversizedRubyGemspecDeclarationWarningPath(warning string) (string, bool) {
 	warning = strings.TrimSpace(warning)
 	for {
-		if path, found := equalFoldCutPrefix(warning, "skipped "); found {
-			path, _, found = strings.Cut(path, " because it exceeds ")
-			if !found {
-				return "", false
-			}
-			return strings.TrimSpace(path), true
+		if path, found := oversizedRubyGemspecDeclarationWarningPathFromMessage(warning); found {
+			return path, true
 		}
-		_, rest, found := strings.Cut(warning, ": ")
+		rest, found := cutPRReviewRevisionWarningPrefix(warning)
 		if !found {
 			return "", false
 		}
-		warning = strings.TrimSpace(rest)
+		warning = rest
 	}
+}
+
+func oversizedRubyGemspecDeclarationWarningPathFromMessage(warning string) (string, bool) {
+	path, found := equalFoldCutPrefix(warning, "skipped ")
+	if !found {
+		return "", false
+	}
+	const delimiter = " because it exceeds "
+	index := strings.LastIndex(path, delimiter)
+	if index < 0 {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.TrimSpace(path[index+len(delimiter):]), " bytes") {
+		return "", false
+	}
+	return strings.TrimSpace(path[:index]), true
+}
+
+func cutPRReviewRevisionWarningPrefix(warning string) (string, bool) {
+	for _, prefix := range []string{"base ", "head "} {
+		suffix, found := equalFoldCutPrefix(warning, prefix)
+		if !found {
+			continue
+		}
+		index := strings.Index(suffix, ": ")
+		if index < 0 {
+			return "", false
+		}
+		return strings.TrimSpace(suffix[index+2:]), true
+	}
+	return "", false
 }
 
 func equalFoldCutPrefix(value, prefix string) (string, bool) {

@@ -10,18 +10,22 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-func loadDeclaredDependencies(ctx context.Context, repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) ([]string, error) {
+func loadDeclaredDependencies(ctx context.Context, repoPath string, out map[string]struct{}, sources map[string]rubyDependencySource) ([]string, []report.CoverageGap, error) {
 	if err := loadBundlerDependenciesWithSources(repoPath, out, sources); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return loadGemspecDependencies(ctx, repoPath, out)
 }
 
-func loadGemspecDependencies(ctx context.Context, repoPath string, out map[string]struct{}) ([]string, error) {
-	var warnings []string
+func loadGemspecDependencies(ctx context.Context, repoPath string, out map[string]struct{}) ([]string, []report.CoverageGap, error) {
+	var (
+		warnings     []string
+		coverageGaps []report.CoverageGap
+	)
 	err := walkRubyRepoFiles(ctx, repoPath, func(path string, entry fs.DirEntry) error {
 		if !strings.EqualFold(filepath.Ext(entry.Name()), gemspecExt) {
 			return nil
@@ -33,7 +37,14 @@ func loadGemspecDependencies(ctx context.Context, repoPath string, out map[strin
 		displayPath := filepath.ToSlash(relPath)
 		content, err := safeio.ReadFileUnderLimit(repoPath, path, maxGemspecBytes)
 		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
-			warnings = append(warnings, fmt.Sprintf("skipped %s because it exceeds %d bytes", displayPath, maxGemspecBytes))
+			warning := fmt.Sprintf("skipped %s because it exceeds %d bytes", displayPath, maxGemspecBytes)
+			warnings = append(warnings, warning)
+			coverageGaps = append(coverageGaps, report.CoverageGap{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     displayPath,
+				Evidence: []string{warning},
+			})
 			return nil
 		}
 		if err != nil {
@@ -44,9 +55,9 @@ func loadGemspecDependencies(ctx context.Context, repoPath string, out map[strin
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return warnings, nil
+	return warnings, coverageGaps, nil
 }
 
 func parseGemspecDependencies(content []byte, filePath string, out map[string]struct{}) []string {

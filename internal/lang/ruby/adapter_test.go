@@ -288,12 +288,15 @@ func TestLoadDeclaredDependenciesToleratesNilSources(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, demoGemspecFile), "Gem::Specification.new do |spec|\n  spec.add_dependency 'httparty'\nend\n")
 
 	out := make(map[string]struct{})
-	warnings, err := loadDeclaredDependencies(context.Background(), repo, out, nil)
+	warnings, coverageGaps, err := loadDeclaredDependencies(context.Background(), repo, out, nil)
 	if err != nil {
 		t.Fatalf("loadDeclaredDependencies: %v", err)
 	}
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	if len(coverageGaps) != 0 {
+		t.Fatalf("expected no coverage gaps, got %#v", coverageGaps)
 	}
 	if got := sortedDependencyUnion(out); !slices.Equal(got, []string{"httparty", "rack"}) {
 		t.Fatalf("unexpected declared dependencies: %#v", got)

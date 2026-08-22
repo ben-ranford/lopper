@@ -1127,7 +1127,12 @@ func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing
 		baseReport: report.Report{Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)}},
 		headReport: report.Report{
 			Dependencies: []report.DependencyReport{prReviewTestDependency("lib", "npm", "1.1.0", 100, 90, false)},
-			Warnings:     []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"},
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "oversized.gem\u017fpec",
+			}},
+			Warnings: []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"},
 		},
 	}
 	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
@@ -1140,6 +1145,37 @@ func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing
 	}
 	if !errors.Is(err, ErrReachableVulnerabilities) {
 		t.Fatalf("expected oversized gemspec coverage gap to fail closed, got %v", err)
+	}
+}
+
+func TestExecutePRReviewReachableThresholdIgnoresUnchangedHeadFindings(t *testing.T) {
+	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
+	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
+	reachable := prReviewTestDependency("lib", "npm", "1.0.0", 100, 90, false)
+	reachable.Vulnerabilities = []report.VulnerabilityFinding{prReviewTestVulnerabilityFindingWithVersionStatus(t, report.VulnerabilityFinding{
+		AdvisoryID: "GHSA-existing",
+		Package:    "lib",
+		Severity:   report.VulnerabilityPriorityHigh,
+		Priority:   report.VulnerabilityPriorityHigh,
+		Reachable:  true,
+	}, "affected")}
+
+	analyzer := &pathAwarePRReviewAnalyzer{
+		baseReport: report.Report{Dependencies: []report.DependencyReport{reachable}},
+		headReport: report.Report{Dependencies: []report.DependencyReport{reachable}},
+	}
+	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
+	req.PRReview.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+
+	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected unchanged reachable finding not to abort pr-review, got output=%q err=%v", output, err)
+	}
+	if !strings.Contains(output, "Newly Reachable Vulnerabilities") {
+		t.Fatalf("expected review output, got %q", output)
+	}
+	if strings.Contains(output, "GHSA-existing") {
+		t.Fatalf("expected unchanged reachable finding not to appear as a new regression, got %q", output)
 	}
 }
 

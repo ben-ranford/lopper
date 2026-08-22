@@ -140,6 +140,9 @@ func (a *App) executePRReview(ctx context.Context, req Request) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	if err := validatePRReviewReachableVulnerabilityThreshold(baseReport, headReport, req.PRReview.Thresholds.ReachableVulnerabilityPriority); err != nil {
+		return "", err
+	}
 	artifact := buildPRReviewArtifact(prReviewArtifactInput{
 		repoPath:   repoPath,
 		baseSHA:    baseSHA,
@@ -415,10 +418,21 @@ func (a *App) runPRReviewPostStages(ctx context.Context, reportData report.Repor
 		func(_ context.Context, reportData report.Report) (report.Report, error) {
 			return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, now), nil
 		},
-		analyseValidationStage(func(reportData report.Report) error {
-			return validateReachableVulnerabilityThreshold(reportData, req.Thresholds.ReachableVulnerabilityPriority)
-		}),
 	})
+}
+
+func validatePRReviewReachableVulnerabilityThreshold(baseReport, headReport report.Report, threshold string) error {
+	if !report.ValidVulnerabilityPriorityThreshold(threshold) {
+		return fmt.Errorf("invalid reachable vulnerability priority threshold: %s", threshold)
+	}
+	if !reachableVulnerabilityThresholdEnabled(threshold) {
+		return nil
+	}
+
+	differential := headReport
+	comparison := report.ComputeBaselineComparison(headReport, baseReport)
+	differential.BaselineComparison = &comparison
+	return validateReachableVulnerabilityThreshold(differential, threshold)
 }
 
 func validatePRReviewFeatures(req PRReviewRequest) error {
