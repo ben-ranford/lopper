@@ -143,6 +143,46 @@ func TestPersistProfileConfigFallbackUsesPhysicalRelativeOutputPath(t *testing.T
 	}
 }
 
+func TestPersistProfileConfigFallbackFailsClosedWhenPinnedRootPathIsRetargeted(t *testing.T) {
+	baseDir := t.TempDir()
+	workspace := filepath.Join(baseDir, "workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	retargetedWorkspace := filepath.Join(baseDir, "workspace-retargeted")
+	replacementOutput := filepath.Join(workspace, "dropbox", "profile.yaml")
+
+	originalAccepted := commandOutputBoundaryAcceptedFn
+	t.Cleanup(func() {
+		commandOutputBoundaryAcceptedFn = originalAccepted
+	})
+	commandOutputBoundaryAcceptedFn = func() error {
+		if err := os.Rename(workspace, retargetedWorkspace); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(replacementOutput), 0o755); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	err := persistProfileConfigThroughDestination(replacementOutput, []byte(profileConfigAfter), func(commandOutputDestination, []byte) error {
+		return os.ErrPermission
+	}, func(targetPath string, data []byte, perm os.FileMode) error {
+		return os.WriteFile(targetPath, data, perm)
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted root identity rejection, got %v", err)
+	}
+	if _, statErr := os.Stat(replacementOutput); !os.IsNotExist(statErr) {
+		t.Fatalf("expected replacement output to remain absent, got err=%v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(retargetedWorkspace, "dropbox", "profile.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected pinned original tree to remain absent, got err=%v", statErr)
+	}
+}
+
 func TestPersistProfileConfigForceIsOptInWhenParentLacksWritePermission(t *testing.T) {
 	if syscall.Geteuid() == 0 {
 		t.Skip("effective privileges bypass parent write permission checks")

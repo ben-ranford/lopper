@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,8 @@ type commandOutputRootBoundary struct {
 
 type commandOutputDestination struct {
 	root       *safeio.WriteRoot
+	rootAbs    string
+	rootInfo   fs.FileInfo
 	targetPath string
 	outputAbs  string
 }
@@ -78,13 +81,20 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 	if err != nil {
 		return commandOutputDestination{}, err
 	}
+	rootInfo, err := writeRoot.RootInfo()
+	if err != nil {
+		if closeErr := writeRoot.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+		return commandOutputDestination{}, err
+	}
 	if err := commandOutputBoundaryAcceptedFn(); err != nil {
 		if closeErr := writeRoot.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
 		return commandOutputDestination{}, err
 	}
-	return commandOutputDestination{root: writeRoot, targetPath: targetPath, outputAbs: outputAbs}, nil
+	return commandOutputDestination{root: writeRoot, rootAbs: root.resolved, rootInfo: rootInfo, targetPath: targetPath, outputAbs: outputAbs}, nil
 }
 
 func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string) (commandOutputRootBoundary, string, error) {

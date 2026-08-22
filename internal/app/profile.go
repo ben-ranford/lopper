@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -80,11 +81,18 @@ func persistProfileConfigThroughDestination(outputPath string, data []byte, writ
 
 	if err := write(destination, data); err != nil {
 		if profilePermissionError(err) {
-			return persistProfileConfigCanonical(data, outputPath, destination.outputAbs, err, writeCanonical)
+			return persistProfileConfigCanonicalThroughDestination(data, destination, err, writeCanonical)
 		}
 		return err
 	}
 	return returnErr
+}
+
+func persistProfileConfigCanonicalThroughDestination(data []byte, destination commandOutputDestination, primaryErr error, write profileConfigCanonicalWriter) error {
+	if err := safeio.VerifyDirectoryIdentity(destination.rootAbs, destination.rootInfo); err != nil {
+		return errors.Join(primaryErr, err)
+	}
+	return write(filepath.Join(destination.rootAbs, destination.targetPath), data, 0o600)
 }
 
 func persistProfileConfigCanonical(data []byte, outputPath, outputAbs string, primaryErr error, write profileConfigCanonicalWriter) error {

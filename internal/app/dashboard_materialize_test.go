@@ -682,14 +682,13 @@ func TestOpenCommandOutputDestinationClosesRootOnBoundaryError(t *testing.T) {
 	boundaryErr := errors.New("boundary failure")
 	originalOpen := openCommandOutputWriteRootFn
 	originalAccepted := commandOutputBoundaryAcceptedFn
+	var openedRoot *safeio.WriteRoot
 	openCommandOutputWriteRootFn = func(rootPath string) (*safeio.WriteRoot, error) {
 		root, err := safeio.OpenWriteRoot(rootPath)
 		if err != nil {
 			return nil, err
 		}
-		if err := root.Close(); err != nil {
-			return nil, err
-		}
+		openedRoot = root
 		return root, nil
 	}
 	commandOutputBoundaryAcceptedFn = func() error { return boundaryErr }
@@ -707,6 +706,12 @@ func TestOpenCommandOutputDestinationClosesRootOnBoundaryError(t *testing.T) {
 	}
 	if !errors.Is(err, boundaryErr) {
 		t.Fatalf("expected boundary error, got %v", err)
+	}
+	if openedRoot == nil {
+		t.Fatal("expected output root to be opened")
+	}
+	if _, rootErr := openedRoot.RootInfo(); rootErr == nil {
+		t.Fatal("expected output root to be closed after boundary error")
 	}
 }
 
