@@ -448,10 +448,18 @@ func isKnownCompilerQualifiedStdHeader(header string) bool {
 		return false
 	}
 	base := header[strings.LastIndex(header, "/")+1:]
-	if base == "" || filepath.Ext(base) != "" {
+	if base == "" {
 		return false
 	}
+	if filepath.Ext(base) != "" {
+		return isKnownCompilerQualifiedStdHeaderPath(header)
+	}
 	_, ok := cppStdHeaderSet[strings.ToLower(base)]
+	return ok
+}
+
+func isKnownCompilerQualifiedStdHeaderPath(header string) bool {
+	_, ok := cppQualifiedStdHeaderWithExtensionSet[strings.ToLower(strings.TrimSpace(header))]
 	return ok
 }
 
@@ -495,4 +503,10 @@ func isCPPSourceOrHeader(path string) bool {
 var cppStdHeaderSet = map[string]struct{}{
 	"algorithm": {}, "array": {}, "atomic": {}, "bitset": {}, "cassert": {}, "cctype": {}, "cerrno": {}, "cfenv": {}, "cfloat": {}, "charconv": {}, "chrono": {}, "cinttypes": {}, "ciso646": {}, "climits": {}, "clocale": {}, "cmath": {}, "codecvt": {}, "compare": {}, "complex": {}, "condition_variable": {}, "coroutine": {}, "csetjmp": {}, "csignal": {}, "cstdarg": {}, "cstddef": {}, "cstdint": {}, "cstdio": {}, "cstdlib": {}, "cstring": {}, "ctime": {}, "cuchar": {}, "cwchar": {}, "cwctype": {}, "deque": {}, "exception": {}, "execution": {}, "filesystem": {}, "forward_list": {}, "fstream": {}, "functional": {}, "future": {}, "initializer_list": {}, "iomanip": {}, "ios": {}, "iosfwd": {}, "iostream": {}, "istream": {}, "iterator": {}, "latch": {}, "limits": {}, "list": {}, "locale": {}, "map": {}, "memory": {}, "memory_resource": {}, "mutex": {}, "new": {}, "numbers": {}, "numeric": {}, "optional": {}, "ostream": {}, "queue": {}, "random": {}, "ranges": {}, "ratio": {}, "regex": {}, "scoped_allocator": {}, "semaphore": {}, "set": {}, "shared_mutex": {}, "source_location": {}, "span": {}, "sstream": {}, "stack": {}, "stdexcept": {}, "stop_token": {}, "streambuf": {}, "string": {}, "string_view": {}, "strstream": {}, "syncstream": {}, "system_error": {}, "thread": {}, "tuple": {}, "type_traits": {}, "typeindex": {}, "typeinfo": {}, "unordered_map": {}, "unordered_set": {}, "utility": {}, "valarray": {}, "variant": {}, "vector": {},
 	"assert": {}, "ctype": {}, "errno": {}, "float": {}, "inttypes": {}, "math": {}, "setjmp": {}, "signal": {}, "stdarg": {}, "stddef": {}, "stdint": {}, "stdio": {}, "stdlib": {}, "time": {}, "wchar": {}, "wctype": {},
+}
+
+var cppQualifiedStdHeaderWithExtensionSet = map[string]struct{}{
+	"debug/map.h":         {},
+	"parallel/iterator.h": {},
+	"tr1/math.h":          {},
 }
