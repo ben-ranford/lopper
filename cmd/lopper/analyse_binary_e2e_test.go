@@ -125,6 +125,32 @@ int main() { return 0; }
 		assertDependencyCount(t, report, "tr1", 0)
 	})
 
+	t.Run("dash I compiler default roots keep system semantics", func(t *testing.T) {
+		repoPath := filepath.Join(workspaceRoot, "cpp-dash-i-system-root")
+		compilerDefaultRoot := filepath.Join(workspaceRoot, "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
+		userRoot := filepath.Join(workspaceRoot, "acme-sdk", "include")
+		writeFile(t, filepath.Join(compilerDefaultRoot, "linux", "if.h"), "// compiler default header\n")
+		writeFile(t, filepath.Join(userRoot, "sys", "types.h"), "// user supplied lookalike\n")
+		writeFile(t, filepath.Join(repoPath, "compile_commands.json"), `[
+  {"directory":"`+repoPath+`","file":"src/main.cpp","arguments":["c++","-I","`+compilerDefaultRoot+`","-I","`+userRoot+`","-c","src/main.cpp"]}
+]`)
+		writeFile(t, filepath.Join(repoPath, "src", "main.cpp"), `#include <linux/if.h>
+#include <sys/types.h>
+int main() { return 0; }
+`)
+
+		report := runAnalyseBinary(t, binaryPath, workspaceRoot, []string{
+			"analyse", "--top", "10",
+			"--repo", repoPath,
+			"--language", "cpp",
+			"--format", "json",
+			"--cache=false",
+		})
+
+		assertDependencyCount(t, report, "linux", 0)
+		assertDependencyCount(t, report, "sys", 1)
+	})
+
 	t.Run("declared extension lookalikes without provenance are reported", func(t *testing.T) {
 		repoPath := filepath.Join(workspaceRoot, "cpp-declared-lookalikes")
 		writeFile(t, filepath.Join(repoPath, "vcpkg.json"), `{"name":"fixture","version-string":"1.0.0","dependencies":["parallel"]}`)

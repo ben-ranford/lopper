@@ -726,6 +726,9 @@ func isLikelySystemIncludePath(path string) bool {
 			return true
 		}
 	}
+	if strings.Contains(path, "/sdks/") && strings.Contains(path, ".sdk/usr/include/") {
+		return true
+	}
 	for _, fragment := range []string{
 		"/include/c++/",
 		"/include/c++/v1/",
