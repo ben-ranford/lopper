@@ -234,6 +234,7 @@ test('status helpers bound untrusted API text', () => {
   assert.equal(sanitized, "bad 'branch' try again");
   assert.equal(testables.safeError('x'.repeat(1300)).length, 1200);
   assert.equal(testables.isMergeConflict(new Error('merge conflict')), true);
+  assert.equal(testables.isMergeConflict(new Error('Pull Request is not mergeable')), true);
   assert.equal(testables.isMergeConflict(new Error('rate limited')), false);
 });
 
@@ -378,7 +379,7 @@ test('a rebase conflict advances the queue and retries the blocked pull request 
   const harness = makeHarness({
     pulls: [leader, follower],
     comparisonStatuses: { 10: 'behind', 20: 'ahead' },
-    rebaseErrors: { 10: new Error('conflict in `workflow`') },
+    rebaseErrors: { 10: new Error('Pull Request is not mergeable') },
   });
 
   await runController(harness.args);
@@ -386,7 +387,7 @@ test('a rebase conflict advances the queue and retries the blocked pull request 
   assert.deepEqual(harness.calls.armed, [20]);
   assert.match(commentsFor(harness, 10), /because of merge conflicts/);
   assert.match(commentsFor(harness, 10), /retried after its branch is updated/);
-  assert.match(commentsFor(harness, 10), /conflict in 'workflow'/);
+  assert.match(commentsFor(harness, 10), /Pull Request is not mergeable/);
   assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 
   const updatedLeader = makePull(10, { head: { sha: 'updated-head-10', repo: { full_name: 'octo/lopper' } } });
