@@ -12,27 +12,6 @@ on:
       - unlabeled
 
 jobs:
-  extension-changes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      vscode_extension: ${{ steps.filter.outputs.vscode_extension }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Detect VS Code extension changes
-        id: filter
-        uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
-        with:
-          filters: |
-            vscode_extension:
-              - 'extensions/vscode-lopper/**'
-
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -84,29 +63,15 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - &ci_resolve_pr_base_step
-        name: Resolve PR base ref
+      - name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          base_sha="${PR_BASE_SHA:-}"
-          base_source="github-event"
-          if [ -n "${ACT:-}" ] && [ -z "${base_sha}" ]; then
-            if [ -z "${base_ref}" ]; then
-              echo "::error::ACT pull_request runs without pull_request.base.sha require pull_request.base.ref or the default 'main' base branch to resolve an immutable local base branch." >&2
-              exit 1
-            fi
-            base_source="act-merge-base"
-            echo "::notice::ACT pull_request payload omitted pull_request.base.sha; will resolve the immutable local base from merge-base(origin/${base_ref}, HEAD)."
-          fi
-          {
-            printf 'BASE_SOURCE=%s\n' "${base_source}"
-            printf 'BASE_SHA=%s\n' "${base_sha}"
-            printf 'BASE_REF=%s\n' "${base_ref}"
-          } >> "$GITHUB_ENV"
+          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
+          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
 
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
@@ -119,86 +84,81 @@ jobs:
             fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
             core.exportVariable('PR_BODY_FILE', bodyPath);
 
-      - &ci_fetch_pr_base_step
-        name: Fetch PR base
+      - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
-          base_ref="${BASE_REF:-}"
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
+          base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
-          base_source="${BASE_SOURCE:-github-event}"
-          if [ "${base_source}" = "act-merge-base" ]; then
-            if [ -z "${base_ref}" ]; then
-              echo "::error::ACT local base branch is unavailable; cannot resolve immutable local base." >&2
-              exit 1
-            fi
-            if ! git fetch --no-tags origin "${base_ref}"; then
-              echo "::error::ACT local base branch 'origin/${base_ref}' could not be fetched; cannot resolve immutable local base." >&2
-              exit 1
-            fi
-            if ! git rev-parse --verify -q --end-of-options "origin/${base_ref}^{commit}" >/dev/null; then
-              echo "::error::ACT local base branch 'origin/${base_ref}' is missing after fetch; cannot resolve immutable local base." >&2
-              exit 1
-            fi
-            if ! base_sha="$(git merge-base "origin/${base_ref}" HEAD 2>/dev/null)"; then
-              echo "::error::ACT local base branch 'origin/${base_ref}' is not related to HEAD; cannot derive immutable local base." >&2
-              exit 1
-            fi
-            if [ -z "${base_sha}" ]; then
-              echo "::error::ACT local base branch 'origin/${base_ref}' did not yield a merge-base with HEAD; cannot derive immutable local base." >&2
-              exit 1
-            fi
-            echo "::notice::ACT pull_request payload omitted pull_request.base.sha; using merge-base(origin/${base_ref}, HEAD) (${base_sha}) as the immutable local base."
-          else
-            if [ -z "${base_sha}" ]; then
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
               echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
               exit 1
             fi
+          fi
+          if [ -z "${ACT:-}" ]; then
             git fetch --no-tags origin "${base_sha}"
-            if [ -n "${base_ref}" ]; then
-              git fetch --no-tags origin "${base_ref}"
-            fi
-            if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
-              echo "::error::PR base SHA '${base_sha}' is missing after fetch; cannot prepare memory benchmark base." >&2
-              exit 1
-            fi
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
           fi
           if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
             echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
-          {
-            printf 'BASE_SHA=%s\n' "${base_sha}"
-            printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}"
-          } >> "$GITHUB_ENV"
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
-        run: &ci_run_target_script |
-          run_ci() {
-            if [ -n "${BUILD_CHANNEL:-}" ]; then
-              make ci "BUILD_CHANNEL=${BUILD_CHANNEL}"
-            else
-              make ci
-            fi
-          }
+        run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH"
+            PATH="$(go env GOPATH)/bin:$PATH" make ci
+          else
+            make ci
           fi
-          run_ci
 
       - name: Prove regression tests for fix PRs
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
         run: |
-          base_sha="${BASE_SHA:?prepared PR base SHA is required}"
-          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$base_sha" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"
+          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"
 
       - name: Fail on unapproved memory regression
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
@@ -220,7 +180,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         run: |
-          base_sha="${BASE_SHA:?prepared PR base SHA is required}"
+          base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
           mkdir -p .artifacts
           git worktree add --detach .artifacts/base "${base_sha}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
@@ -664,15 +624,83 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - *ci_resolve_pr_base_step
+      - name: Resolve PR base ref
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base_ref="${PR_BASE_REF:-main}"
+          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
+          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
 
-      - *ci_fetch_pr_base_step
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
+          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
+          fi
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target with rolling defaults
         env:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
-        run: *ci_run_target_script
+        run: |
+          if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
+            export MEMORY_BENCH_ENFORCE=0
+          fi
+          if [ -n "${ACT:-}" ]; then
+            PATH="$(go env GOPATH)/bin:$PATH" make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+          else
+            make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+          fi
 
   os-smoke:
     name: os-smoke (${{ matrix.os }})
