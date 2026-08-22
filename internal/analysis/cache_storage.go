@@ -14,6 +14,7 @@ const cacheObjectCorruptReason = "object-corrupt"
 
 var analysisCacheStoreAfterObjectWriteFn = func() error { return nil }
 var analysisCacheStoreBeforePointerWriteFn = func() error { return nil }
+var analysisCacheStoreAfterPointerWriteFn = func() error { return nil }
 
 type cachePointer struct {
 	InputDigest  string `json:"inputDigest"`
@@ -176,8 +177,15 @@ func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel s
 	if err := writeRoot.WriteFileCreatingParents(pointerRel, serializedPointer, 0o640, 0o750); err != nil {
 		return err
 	}
+	publishedInfo, err := writeRoot.Lstat(pointerRel)
+	if err != nil {
+		return err
+	}
+	if err := analysisCacheStoreAfterPointerWriteFn(); err != nil {
+		return err
+	}
 	if err := c.validateWriteRoot(writeRoot); err != nil {
-		return errors.Join(err, writeRoot.Remove(pointerRel))
+		return errors.Join(err, writeRoot.RemoveIfSame(pointerRel, publishedInfo))
 	}
 	return nil
 }

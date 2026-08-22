@@ -127,6 +127,35 @@ func (r *WriteRoot) Remove(targetPath string) error {
 	return r.root.Remove(target.rel)
 }
 
+// Lstat returns identity information for a root-relative path.
+func (r *WriteRoot) Lstat(targetPath string) (fs.FileInfo, error) {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return nil, err
+	}
+	return r.root.Lstat(target.rel)
+}
+
+// RemoveIfSame deletes a root-relative path only when it still identifies the
+// expected file.
+func (r *WriteRoot) RemoveIfSame(targetPath string, expected fs.FileInfo) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	current, err := r.root.Lstat(target.rel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || expected == nil || !os.SameFile(expected, current) {
+		return nil
+	}
+	return r.root.Remove(target.rel)
+}
+
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	if filepath.IsAbs(targetPath) {
 		return rootedTarget{}, fmt.Errorf("target path must be relative to root: %s", targetPath)
