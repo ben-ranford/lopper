@@ -321,6 +321,55 @@ final class Service
 	}
 }
 
+func TestPHPAdapterCountsSameLineAttributedClassTraitUseAsActiveDependency(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+#[SomeAttribute]
+final class Service { use \Vendor\Package\FeatureTrait; }
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
+}
+
+func TestPHPAdapterIgnoresHeredocBracesBeforeClassBodyTraitUse(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+final class Service
+{
+    public function template(): string
+    {
+        return <<<'HTML'
+}
+HTML;
+    }
+
+    use \Vendor\Package\FeatureTrait;
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
+}
+
 func TestPHPAdapterCountsClassBodyTraitUseAfterLongDeclaration(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
@@ -521,6 +570,37 @@ final class Service
 	}
 	if !hasRecommendation(dep, "remove-unused-dependency") {
 		t.Fatalf("expected remove-unused recommendation when namespace-relative trait use is local, got %#v", dep.Recommendations)
+	}
+}
+
+func TestPHPAdapterResolvesSameLineNamespaceRelativeTraitUseAsLocal(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{
+  "require": {%q: "^1.0"},
+  "autoload": {"psr-4": {"App\\": "src/"}}
+}`, dependency))
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+namespace App; use Vendor\Package\UnusedExternal; final class Service { use Vendor\Package\FeatureTrait; }
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 1 {
+		t.Fatalf("expected same-line namespace-relative trait use to stay local, report=%#v", dep)
+	}
+	if len(dep.UnusedImports) != 1 || dep.UnusedImports[0].Module != `Vendor\Package\UnusedExternal` {
+		t.Fatalf("expected only the external import to be unused, got %#v", dep.UnusedImports)
+	}
+	if !hasRecommendation(dep, "remove-unused-dependency") {
+		t.Fatalf("expected remove-unused recommendation when same-line namespace-relative trait use is local, got %#v", dep.Recommendations)
 	}
 }
 

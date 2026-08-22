@@ -262,12 +262,13 @@ func containsNonASCIIBytes(value []byte) bool {
 }
 
 type maskProfile struct {
-	lineSlashSlash bool
-	lineHash       bool
-	blockSlashStar bool
-	singleQuote    bool
-	doubleQuote    bool
-	backtickQuote  bool
+	lineSlashSlash       bool
+	lineHash             bool
+	hashBracketAttribute bool
+	blockSlashStar       bool
+	singleQuote          bool
+	doubleQuote          bool
+	backtickQuote        bool
 }
 
 var defaultMaskProfile = maskProfile{
@@ -307,6 +308,16 @@ func maskProfileForFile(filePath string) maskProfile {
 			singleQuote:   true,
 			doubleQuote:   true,
 			backtickQuote: true,
+		}
+	case ".php":
+		return maskProfile{
+			lineSlashSlash:       true,
+			lineHash:             true,
+			hashBracketAttribute: true,
+			blockSlashStar:       true,
+			singleQuote:          true,
+			doubleQuote:          true,
+			backtickQuote:        true,
 		}
 	default:
 		return defaultMaskProfile
@@ -399,6 +410,9 @@ func scanCode(content []byte, index int, profile maskProfile) (int, scannerState
 	}
 	ch := content[index]
 	if profile.lineHash && ch == '#' {
+		if profile.hashBracketAttribute && index+1 < len(content) && content[index+1] == '[' {
+			return index + 1, scannerStateCode
+		}
 		maskNonNewline(content, index)
 		return index + 1, scannerStateLineComment
 	}

@@ -973,6 +973,12 @@ func TestImportParserUseStatementHelperBranches(t *testing.T) {
 			t.Fatalf("expected %q not to parse as same-line use declaration, got %#v", text, match)
 		}
 	}
+	if match, ok := nextSameLineUseStatement("  use Foo\\A;", 0); !ok || match.statementStart != len("  use ") {
+		t.Fatalf("expected same-line use declaration to parse, got %#v ok=%v", match, ok)
+	}
+	if match, ok := phpUseStatementAt("abuse Foo\\A;", 2); ok || match != (phpUseStatementMatch{}) {
+		t.Fatalf("expected embedded use keyword to be rejected, got %#v", match)
+	}
 }
 
 func TestImportParserContextTrackerHelperBranches(t *testing.T) {
@@ -1013,6 +1019,16 @@ func TestClassLikeDeclarationScanStartDelimiterBranches(t *testing.T) {
 	if got := classLikeDeclarationScanStart(parenBoundary, len(parenBoundary)-1); got != strings.IndexByte(parenBoundary, '(')+1 {
 		t.Fatalf("expected unmatched parenthesis to bound declaration scan, got %d", got)
 	}
+
+	braceBoundary := "if ($x) { class C {"
+	if got := classLikeDeclarationScanStart(braceBoundary, len(braceBoundary)-1); got != strings.IndexByte(braceBoundary, '{')+1 {
+		t.Fatalf("expected unmatched brace to bound declaration scan, got %d", got)
+	}
+
+	balance := phpReverseDelimiterBalance{paren: 1, bracket: 1, brace: 1}
+	if boundary, ok := balance.openingDelimiterBoundary(&balance.paren); ok || boundary != 0 || balance.paren != 0 {
+		t.Fatalf("expected nested opening delimiter to reduce depth, boundary=%d ok=%v balance=%#v", boundary, ok, balance)
+	}
 }
 
 func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
@@ -1031,6 +1047,15 @@ func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
 	if !isClassLikeDeclarationBeforeBrace("class C {", len("class C ")) {
 		t.Fatalf("expected declaration at start of text to be class-like")
 	}
+	if !followsCompletedNamespaceDeclaration("namespace A; ") {
+		t.Fatalf("expected semicolon namespace declaration to allow following same-line namespace")
+	}
+	if !followsCompletedNamespaceDeclaration("namespace A { class C {} } ") {
+		t.Fatalf("expected completed namespace block to allow following same-line namespace")
+	}
+	if followsCompletedNamespaceDeclaration("doWork(); ") {
+		t.Fatalf("expected arbitrary same-line statement not to allow following namespace")
+	}
 }
 
 func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
@@ -1043,6 +1068,51 @@ func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
 	}
 	if parts, limitHit := splitUseParts("Vendor\\Lib\\A", 0); !limitHit || len(parts) != 0 {
 		t.Fatalf("expected non-positive part limit to hit limit, parts=%#v limit=%v", parts, limitHit)
+	}
+	if got := lineTextAt("a\nb", 3); got != "" {
+		t.Fatalf("expected out-of-range line text to be empty, got %q", got)
+	}
+}
+
+func TestPHPHeredocNowdocMaskingHelperBranches(t *testing.T) {
+	plain := "final class Service {}\n"
+	if got := maskPHPHeredocNowdocBodies(plain); got != plain {
+		t.Fatalf("expected text without heredoc to remain unchanged, got %q", got)
+	}
+
+	content := "return <<<\"HTML\"\n}\nHTML;\nfinal class Service {}\n"
+	masked := maskPHPHeredocNowdocBodies(content)
+	if strings.Contains(masked, "\n}\n") {
+		t.Fatalf("expected heredoc body brace to be masked, got %q", masked)
+	}
+	if !strings.Contains(masked, "final class Service") {
+		t.Fatalf("expected code after heredoc to remain visible, got %q", masked)
+	}
+
+	unterminated := "return <<<TXT\n}\n"
+	if got := maskPHPHeredocNowdocBodies(unterminated); strings.Contains(got, "}") {
+		t.Fatalf("expected unterminated heredoc body to be masked, got %q", got)
+	}
+
+	for _, line := range []string{"return 1;", "return <<<;", "return <<<'TXT;"} {
+		if label, ok := heredocNowdocLabel(line); ok || label != "" {
+			t.Fatalf("expected invalid heredoc opener %q to be rejected, label=%q ok=%v", line, label, ok)
+		}
+	}
+	if label, ok := heredocNowdocLabel("return <<<'TXT'"); !ok || label != "TXT" {
+		t.Fatalf("expected nowdoc label to parse, label=%q ok=%v", label, ok)
+	}
+	if end := findHeredocNowdocTerminator("body\n", 0, "TXT"); end != -1 {
+		t.Fatalf("expected missing heredoc terminator to return -1, got %d", end)
+	}
+	if !isHeredocNowdocTerminatorLine("TXT\r", "TXT") {
+		t.Fatalf("expected CR-terminated heredoc label to be accepted")
+	}
+	if end := nextPHPLineEnd("abc", 0); end != 3 {
+		t.Fatalf("expected no-newline line end to be len, got %d", end)
+	}
+	if start := nextPHPLineStart("abc", 3); start != 3 {
+		t.Fatalf("expected terminal line start to remain at end, got %d", start)
 	}
 }
 
@@ -1169,6 +1239,23 @@ func TestParsePHPImportsKeepsBracketedNamespaceUseAsDeclaration(t *testing.T) {
 	usage := shared.CountUsage(content, parsed.imports)
 	if usage["FeatureTrait"] != 0 {
 		t.Fatalf("expected unused namespace import declaration, got usage=%#v imports=%#v", usage, parsed.imports)
+	}
+}
+
+func TestParsePHPImportsTracksSubsequentSameLineNamespaceDeclarations(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"B\\Vendor": {}},
+	}
+	content := []byte(helpersPHPHeader +
+		`namespace A { final class One {} } namespace B { final class Service { use Vendor\Package\LocalTrait; } }` + "\n")
+
+	parsed := parsePHPImports(content, "x.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 0 {
+		t.Fatalf("expected same-line namespace-relative trait use to resolve as local, got %#v", parsed.imports)
 	}
 }
 

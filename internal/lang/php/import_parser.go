@@ -44,7 +44,6 @@ type phpUseContext struct {
 	namespace string
 }
 
-var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+((?:(?:function|const)\s+)?\\?[A-Za-z_\x{80}-\x{10FFFF}][^;]*);`)
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
 var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)*\s*(?:;|\{)`)
 var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
@@ -57,7 +56,8 @@ func parseImports(content []byte, filePath string, resolver composerResolver) ([
 }
 
 func parsePHPImports(content []byte, filePath string, resolver composerResolver) importParseResult {
-	sanitized := shared.MaskCommentsAndStringsForFile(content, filePath)
+	phpMasked := maskPHPHeredocNowdocBodies(string(content))
+	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	text := string(sanitized)
 	lineIndex := newPHPLineIndex(text)
 	matches := findPHPUseStatementMatches(text, maxPHPUseStatementsPerFile+1)
@@ -119,7 +119,8 @@ func parseUseStatementByContext(statement, filePath string, line int, resolver c
 }
 
 func parseNamespaceReferences(content []byte, filePath string, resolver composerResolver) ([]importBinding, int) {
-	sanitized := shared.MaskCommentsAndStringsForFile(content, filePath)
+	phpMasked := maskPHPHeredocNowdocBodies(string(content))
+	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	return parseNamespaceReferencesText(string(sanitized), filePath, resolver)
 }
 
@@ -198,41 +199,22 @@ func findPHPUseStatementRanges(text string) [][]int {
 }
 
 func findPHPUseStatementMatches(text string, limit int) []phpUseStatementMatch {
-	rawMatches := useStmtPattern.FindAllStringSubmatchIndex(text, -1)
-	if len(rawMatches) == 0 {
-		return nil
-	}
-	matches := make([]phpUseStatementMatch, 0, len(rawMatches))
-	for _, raw := range rawMatches {
-		matches = appendPHPUseStatementMatch(matches, phpUseStatementMatch{
-			start:          raw[0],
-			end:            raw[1],
-			statementStart: raw[2],
-			statementEnd:   raw[3],
-		}, limit)
-		if limit > 0 && len(matches) >= limit {
-			return matches
+	matches := make([]phpUseStatementMatch, 0)
+	for offset := 0; offset < len(text); offset++ {
+		if !hasKeywordAt(text, offset, "use") {
+			continue
 		}
-		matches = appendFollowingSameLineUseStatements(text, raw[1], matches, limit)
-		if limit > 0 && len(matches) >= limit {
-			return matches
-		}
-	}
-	return matches
-}
-
-func appendFollowingSameLineUseStatements(text string, offset int, matches []phpUseStatementMatch, limit int) []phpUseStatementMatch {
-	for {
-		match, ok := nextSameLineUseStatement(text, offset)
+		match, ok := phpUseStatementAt(text, offset)
 		if !ok {
-			return matches
+			continue
 		}
 		matches = appendPHPUseStatementMatch(matches, match, limit)
 		if limit > 0 && len(matches) >= limit {
 			return matches
 		}
-		offset = match.end
+		offset = match.end - 1
 	}
+	return matches
 }
 
 func appendPHPUseStatementMatch(matches []phpUseStatementMatch, match phpUseStatementMatch, limit int) []phpUseStatementMatch {
@@ -244,7 +226,14 @@ func appendPHPUseStatementMatch(matches []phpUseStatementMatch, match phpUseStat
 
 func nextSameLineUseStatement(text string, offset int) (phpUseStatementMatch, bool) {
 	start := skipHorizontalWhitespace(text, offset)
-	if start >= len(text) || isLineBreak(text[start]) || !hasKeywordAt(text, start, "use") {
+	if start >= len(text) || isLineBreak(text[start]) {
+		return phpUseStatementMatch{}, false
+	}
+	return phpUseStatementAt(text, start)
+}
+
+func phpUseStatementAt(text string, start int) (phpUseStatementMatch, bool) {
+	if !hasKeywordAt(text, start, "use") {
 		return phpUseStatementMatch{}, false
 	}
 	afterUse := start + len("use")
@@ -290,7 +279,7 @@ func hasKeywordAt(text string, offset int, keyword string) bool {
 }
 
 func isPHPIdentifierByte(ch byte) bool {
-	return ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= 0x80
+	return ch == '$' || ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= 0x80
 }
 
 func findNamespaceDeclarationRanges(text string) [][]int {
@@ -308,7 +297,26 @@ func findNamespaceDeclarationRanges(text string) [][]int {
 func isNamespaceDeclarationCandidate(text string, start int) bool {
 	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
 	prefix := text[lineStart:start]
-	return namespaceDeclPrefixPattern.MatchString(prefix)
+	if namespaceDeclPrefixPattern.MatchString(prefix) {
+		return true
+	}
+	return followsCompletedNamespaceDeclaration(prefix)
+}
+
+func followsCompletedNamespaceDeclaration(prefix string) bool {
+	trimmed := strings.TrimRight(prefix, " \t\r")
+	if strings.HasSuffix(trimmed, "}") {
+		return true
+	}
+	if !strings.HasSuffix(trimmed, ";") {
+		return false
+	}
+	previous := strings.TrimSpace(trimmed[:len(trimmed)-1])
+	start := strings.LastIndex(previous, ";")
+	if start >= 0 {
+		previous = strings.TrimSpace(previous[start+1:])
+	}
+	return strings.HasPrefix(strings.ToLower(previous), "namespace ")
 }
 
 type phpBraceFrame struct {
@@ -464,46 +472,150 @@ func classLikeDeclarationScanStart(text string, braceOffset int) int {
 	if minStart < 0 {
 		minStart = 0
 	}
-	parenDepth, bracketDepth, braceDepth := 0, 0, 0
+	balance := phpReverseDelimiterBalance{}
 	for i := braceOffset - 1; i >= minStart; i-- {
-		switch text[i] {
-		case ')':
-			parenDepth++
-		case '(':
-			if parenDepth > 0 {
-				parenDepth--
-				continue
-			}
-			if bracketDepth == 0 && braceDepth == 0 {
-				return i + 1
-			}
-		case ']':
-			bracketDepth++
-		case '[':
-			if bracketDepth > 0 {
-				bracketDepth--
-				continue
-			}
-			if parenDepth == 0 && braceDepth == 0 {
-				return i + 1
-			}
-		case '}':
-			braceDepth++
-		case '{':
-			if braceDepth > 0 {
-				braceDepth--
-				continue
-			}
-			if parenDepth == 0 && bracketDepth == 0 {
-				return i + 1
-			}
-		case ';':
-			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
-				return i + 1
-			}
+		if boundary, ok := balance.scanReverse(text[i]); ok {
+			return i + boundary
 		}
 	}
 	return minStart
+}
+
+type phpReverseDelimiterBalance struct {
+	paren   int
+	bracket int
+	brace   int
+}
+
+func (b *phpReverseDelimiterBalance) scanReverse(ch byte) (int, bool) {
+	switch ch {
+	case ')':
+		b.paren++
+	case '(':
+		return b.openingDelimiterBoundary(&b.paren)
+	case ']':
+		b.bracket++
+	case '[':
+		return b.openingDelimiterBoundary(&b.bracket)
+	case '}':
+		b.brace++
+	case '{':
+		return b.openingDelimiterBoundary(&b.brace)
+	case ';':
+		if b.atTopLevel() {
+			return 1, true
+		}
+	}
+	return 0, false
+}
+
+func (b *phpReverseDelimiterBalance) openingDelimiterBoundary(depth *int) (int, bool) {
+	if *depth > 0 {
+		*depth--
+		return 0, false
+	}
+	if b.atTopLevel() {
+		return 1, true
+	}
+	return 0, false
+}
+
+func (b *phpReverseDelimiterBalance) atTopLevel() bool {
+	return b.paren == 0 && b.bracket == 0 && b.brace == 0
+}
+
+func maskPHPHeredocNowdocBodies(text string) string {
+	var masked []byte
+	for lineStart := 0; lineStart < len(text); {
+		lineEnd := nextPHPLineEnd(text, lineStart)
+		label, ok := heredocNowdocLabel(text[lineStart:lineEnd])
+		if !ok {
+			lineStart = nextPHPLineStart(text, lineEnd)
+			continue
+		}
+		bodyStart := nextPHPLineStart(text, lineEnd)
+		bodyEnd := findHeredocNowdocTerminator(text, bodyStart, label)
+		if bodyEnd < 0 {
+			masked = withMaskedPHPHeredocRange(text, masked, bodyStart, len(text))
+			return string(masked)
+		}
+		masked = withMaskedPHPHeredocRange(text, masked, bodyStart, bodyEnd)
+		lineStart = nextPHPLineStart(text, bodyEnd)
+	}
+	if len(masked) == 0 {
+		return text
+	}
+	return string(masked)
+}
+
+func withMaskedPHPHeredocRange(text string, masked []byte, start, end int) []byte {
+	if start >= end {
+		return masked
+	}
+	masked = ensureMaskedText(text, masked)
+	maskByteRange(masked, start, end)
+	return masked
+}
+
+func heredocNowdocLabel(line string) (string, bool) {
+	marker := strings.Index(line, "<<<")
+	if marker < 0 {
+		return "", false
+	}
+	rest := strings.TrimLeft(line[marker+len("<<<"):], " \t")
+	if rest == "" {
+		return "", false
+	}
+	quote := byte(0)
+	if rest[0] == '\'' || rest[0] == '"' {
+		quote = rest[0]
+		rest = rest[1:]
+	}
+	end := 0
+	for end < len(rest) && isPHPIdentifierByte(rest[end]) && rest[end] != '$' {
+		end++
+	}
+	if end == 0 {
+		return "", false
+	}
+	if quote != 0 && (end >= len(rest) || rest[end] != quote) {
+		return "", false
+	}
+	return rest[:end], true
+}
+
+func findHeredocNowdocTerminator(text string, start int, label string) int {
+	for lineStart := start; lineStart < len(text); {
+		lineEnd := nextPHPLineEnd(text, lineStart)
+		if isHeredocNowdocTerminatorLine(text[lineStart:lineEnd], label) {
+			return lineEnd
+		}
+		lineStart = nextPHPLineStart(text, lineEnd)
+	}
+	return -1
+}
+
+func isHeredocNowdocTerminatorLine(line string, label string) bool {
+	line = strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(line, label) {
+		return false
+	}
+	rest := line[len(label):]
+	return rest == "" || strings.HasPrefix(rest, ";") || strings.HasPrefix(rest, "\r")
+}
+
+func nextPHPLineEnd(text string, start int) int {
+	if next := strings.IndexByte(text[start:], '\n'); next >= 0 {
+		return start + next
+	}
+	return len(text)
+}
+
+func nextPHPLineStart(text string, lineEnd int) int {
+	if lineEnd < len(text) && text[lineEnd] == '\n' {
+		return lineEnd + 1
+	}
+	return lineEnd
 }
 
 func maskMatchedRanges(text string, groups ...[][]int) string {

@@ -144,6 +144,7 @@ func TestCountUsageLanguageAwareMasking(t *testing.T) {
 		{"python floor division does not look like a comment", "mathlib", "main.py", "import mathlib\nvalue = 10 // mathlib\n"},
 		{"swift backticks remain tokenizable", "foo", "main.swift", "import foo\nlet escaped = `foo`\n"},
 		{"rust attributes are not masked as hash comments", "Serialize", "main.rs", "use serde::Serialize;\n#[derive(Serialize)]\nstruct Person;\n"},
+		{"php attributes are not masked as hash comments", "Service", "main.php", "<?php\n#[Route(Service::class)]\nfinal class Controller {}\n"},
 	}
 
 	for _, tc := range cases {
