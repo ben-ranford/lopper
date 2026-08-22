@@ -93,6 +93,7 @@ func loadDependencyCatalog(repoPath string) (dependencyCatalog, []string, error)
 			manifestCount++
 			if manifestCount > maxManifestFiles {
 				catalog.Incomplete = true
+				warnings = append(warnings, fmt.Sprintf("skipped remaining C/C++ dependency manifests after reaching limit of %d; dependency catalog is incomplete", maxManifestFiles))
 				return fs.SkipAll
 			}
 		default:

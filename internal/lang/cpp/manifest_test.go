@@ -119,6 +119,75 @@ func TestLoadDependencyCatalogSkipsOversizedManifests(t *testing.T) {
 	}
 }
 
+func TestAnalyseSuppressesUndeclaredSignalsAfterOversizedManifest(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, vcpkgManifestFile), strings.Repeat("x", maxManifestBytes+1))
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: "fmt",
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+
+	dep := requireDependencyReport(t, reportData.Dependencies, "fmt")
+	if !hasWarning(reportData.Warnings, "skipped oversized "+vcpkgManifestFile) {
+		t.Fatalf("expected oversized manifest warning, got %#v", reportData.Warnings)
+	}
+	if hasWarning(reportData.Warnings, "not declared in vcpkg or Conan manifests") {
+		t.Fatalf("did not expect undeclared warning with incomplete catalog, got %#v", reportData.Warnings)
+	}
+	if hasRiskCue(dep.RiskCues, "undeclared-package-usage") {
+		t.Fatalf("did not expect undeclared risk cue with incomplete catalog, got %#v", dep.RiskCues)
+	}
+	if hasRecommendation(dep.Recommendations, "declare-dependency-explicitly") {
+		t.Fatalf("did not expect declaration recommendation with incomplete catalog, got %#v", dep.Recommendations)
+	}
+	if dep.TotalExportsCount != 1 || dep.UsedExportsCount != 1 {
+		t.Fatalf("expected include usage to remain reported, got total=%d used=%d", dep.TotalExportsCount, dep.UsedExportsCount)
+	}
+}
+
+func TestAnalyseDoesNotPrefixCorrelateAfterOversizedManifest(t *testing.T) {
+	t.Parallel()
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "declared", vcpkgManifestFile), `{"dependencies":["boost-asio"]}`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "skipped", vcpkgManifestFile), strings.Repeat("x", maxManifestBytes+1))
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <boost/version.hpp>\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+
+	names := dependencyNames(reportData.Dependencies)
+	if !slices.Contains(names, "boost") {
+		t.Fatalf("expected include-derived boost dependency to be retained, got %#v", names)
+	}
+	if !slices.Contains(names, "boost-asio") {
+		t.Fatalf("expected declared boost-asio dependency to remain listed, got %#v", names)
+	}
+	boost := requireDependencyReport(t, reportData.Dependencies, "boost")
+	if boost.TotalExportsCount != 1 {
+		t.Fatalf("expected boost include usage to remain on boost token, got %#v", boost)
+	}
+	boostAsio := requireDependencyReport(t, reportData.Dependencies, "boost-asio")
+	if boostAsio.TotalExportsCount != 0 {
+		t.Fatalf("did not expect boost/version.hpp usage to be attributed to boost-asio, got %#v", boostAsio)
+	}
+	if !hasWarning(reportData.Warnings, "skipped oversized skipped"+string(filepath.Separator)+vcpkgManifestFile) {
+		t.Fatalf("expected oversized manifest warning, got %#v", reportData.Warnings)
+	}
+}
+
 func TestLoadDependencyCatalogAcceptsExactSizeManifestLimit(t *testing.T) {
 	t.Parallel()
 
