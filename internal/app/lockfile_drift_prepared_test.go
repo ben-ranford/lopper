@@ -3,9 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 func TestPyprojectSectionMatcherMatchesAndMissesSections(t *testing.T) {
@@ -91,4 +95,138 @@ func TestDirContainsDotnetProjectManifestSkipsSubdirectories(t *testing.T) {
 	if !hasManifest {
 		t.Fatal("expected project manifest to be found after skipping subdirectories")
 	}
+}
+
+func TestPreparedLockfileNameHelpersPreserveOrder(t *testing.T) {
+	present := []presentLockfile{
+		{name: "package-lock.json"},
+		{name: "poetry.lock"},
+	}
+	names := preparedLockfileNames(present)
+	wantNames := []string{"package-lock.json", "poetry.lock"}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("unexpected prepared names:\n got: %#v\nwant: %#v", names, wantNames)
+	}
+
+	roundTrip := preparedPresentLockfiles(names)
+	if !reflect.DeepEqual(roundTrip, present) {
+		t.Fatalf("unexpected prepared present lockfiles:\n got: %#v\nwant: %#v", roundTrip, present)
+	}
+
+	if got := preparedPresentLockfiles(nil); len(got) != 0 {
+		t.Fatalf("expected nil names to return no lockfiles, got %#v", got)
+	}
+	if got := preparedLockfileNames(nil); len(got) != 0 {
+		t.Fatalf("expected nil lockfiles to return no names, got %#v", got)
+	}
+}
+
+func TestEvaluatePreparedReplayRuleNormalPackageBranches(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, manifestFileName), demoPackageJSON)
+	snapshot := lockfileDirSnapshot{repoPath: repo, path: repo, relDir: "."}
+	dir := lockfilePreparedDir{repoPath: repo, path: repo, relDir: "."}
+
+	t.Run("missing lockfile", func(t *testing.T) {
+		prepared := lockfilePreparedRule{
+			replay: &lockfilePreparedRuleReplay{
+				rule:      lockfileRule{manager: "npm", manifest: manifestFileName},
+				manifests: []string{manifestFileName},
+			},
+		}
+
+		finding, found, err := evaluatePreparedReplayRule(dir, prepared, lockfileGitContext{}, newLockfileManifestCache(snapshot))
+		if err != nil {
+			t.Fatalf("evaluate missing lockfile replay: %v", err)
+		}
+		if !found || finding.kind != lockfileDriftMissingLockfile || finding.manifest != manifestFileName {
+			t.Fatalf("expected missing lockfile finding, got found=%v finding=%#v", found, finding)
+		}
+	})
+
+	t.Run("stale lockfile", func(t *testing.T) {
+		prepared := lockfilePreparedRule{
+			replay: &lockfilePreparedRuleReplay{
+				rule:      lockfileRule{manager: "npm", manifest: manifestFileName},
+				lockfiles: []string{lockfileName},
+			},
+		}
+
+		finding, found, err := evaluatePreparedReplayRule(dir, prepared, lockfileGitContext{}, newLockfileManifestCache(snapshot))
+		if err != nil {
+			t.Fatalf("evaluate stale lockfile replay: %v", err)
+		}
+		if !found || finding.kind != lockfileDriftStaleLockfile || len(finding.lockfiles) != 1 || finding.lockfiles[0].name != lockfileName {
+			t.Fatalf("expected stale lockfile finding, got found=%v finding=%#v", found, finding)
+		}
+	})
+
+	t.Run("without replay inputs", func(t *testing.T) {
+		finding, found, err := evaluatePreparedReplayRule(dir, lockfilePreparedRule{replay: &lockfilePreparedRuleReplay{
+			rule: lockfileRule{manager: "custom", manifest: "custom.toml"},
+		}}, lockfileGitContext{}, newLockfileManifestCache(snapshot))
+		if err != nil {
+			t.Fatalf("evaluate empty replay: %v", err)
+		}
+		if found || finding.kind != 0 || finding.manifest != "" || len(finding.lockfiles) != 0 {
+			t.Fatalf("expected no finding without replay inputs, got found=%v finding=%#v", found, finding)
+		}
+	})
+}
+
+func TestAppendPreparedReplayRuleHandlesManifestReadErrors(t *testing.T) {
+	repo := t.TempDir()
+	dir := lockfilePreparedDir{repoPath: repo, path: repo, relDir: "."}
+	rule := lockfilePreparedRule{
+		replay: &lockfilePreparedRuleReplay{
+			rule: lockfileRule{
+				manager:               "Poetry",
+				manifest:              pyprojectManifestName,
+				manifestMatcherLabel:  pyprojectPoetrySection,
+				manifestMatcherNeedle: pyprojectSectionNeedle(pyprojectPoetrySection),
+			},
+			manifests: []string{pyprojectManifestName},
+			lockfiles: []string{poetryLockName},
+		},
+	}
+
+	t.Run("recoverable", func(t *testing.T) {
+		snapshot := lockfileDirSnapshot{repoPath: repo, path: repo, relDir: "."}
+		cache := newLockfileManifestCacheWithIO(snapshot, lockfileManifestIO{
+			readFileUnderLimit: func(string, string, int64) ([]byte, error) {
+				return nil, safeio.ErrFileTooLarge
+			},
+		})
+		result := &lockfileDriftResult{}
+
+		if ok := result.appendPreparedReplayRule(dir, rule, lockfileGitContext{}, cache); !ok {
+			t.Fatal("expected recoverable manifest read error to keep scanning")
+		}
+		if !errors.Is(result.err, safeio.ErrFileTooLarge) {
+			t.Fatalf("expected recoverable read error to be retained, got %v", result.err)
+		}
+		if len(result.orderedWarnings) != 1 {
+			t.Fatalf("expected one recoverable warning, got %#v", result.orderedWarnings)
+		}
+	})
+
+	t.Run("fatal", func(t *testing.T) {
+		snapshot := lockfileDirSnapshot{repoPath: repo, path: repo, relDir: "."}
+		cache := newLockfileManifestCacheWithIO(snapshot, lockfileManifestIO{
+			readFileUnderLimit: func(string, string, int64) ([]byte, error) {
+				return nil, fs.ErrPermission
+			},
+		})
+		result := &lockfileDriftResult{}
+
+		if ok := result.appendPreparedReplayRule(dir, rule, lockfileGitContext{}, cache); ok {
+			t.Fatal("expected fatal manifest read error to stop scanning")
+		}
+		if !errors.Is(result.err, fs.ErrPermission) {
+			t.Fatalf("expected fatal read error to be retained, got %v", result.err)
+		}
+		if len(result.orderedWarnings) != 0 {
+			t.Fatalf("expected no recoverable warnings for fatal error, got %#v", result.orderedWarnings)
+		}
+	})
 }

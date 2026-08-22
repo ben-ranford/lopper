@@ -49,7 +49,10 @@ type ReadDirFile interface {
 	ReadDir(count int) ([]fs.DirEntry, error)
 }
 
-var ErrTargetPathSymlink = errors.New("target path is a symlink")
+var (
+	ErrTargetPathSymlink              = errors.New("target path is a symlink")
+	ErrSearchOnlyWriteRootUnsupported = errors.New("search-only write root is not supported")
+)
 
 var fileSystem FileSystem = &osFileSystem{}
 var runtimeGOOS = runtime.GOOS
