@@ -175,124 +175,6 @@ func TestAdapterAnalyseFindsImportsAfterUncontinuedUnterminatedShortString(t *te
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
-func TestAdapterAnalyseFindsImportsAfterFStringReplacementFieldDelimiter(t *testing.T) {
-	source := `value = f"""{'"""'}"""` + "\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseFindsImportsAfterMultilineFStringReplacementString(t *testing.T) {
-	source := "value = f\"\"\"{'''\n" +
-		"}\n" +
-		"\"\"\"\n" +
-		"'''}\"\"\"\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseFindsImportsAfterFStringReplacementCommentBrace(t *testing.T) {
-	source := "value = f\"\"\"{(\n" +
-		"1 # {\n" +
-		")}\"\"\"\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseSkipsImportsInsideFStringReplacementContinuedShortString(t *testing.T) {
-	source := "value = f\"\"\"{'not an import \\\r\n" +
-		"}\"\"\"\\\r\n" +
-		"import requests\\\r\n" +
-		"'}\"\"\"\r\n" +
-		"import numpy as np\r\n"
-
-	reportData := analysePythonTopN(t, source, 5)
-	names := dependencyNames(reportData)
-	if slices.Contains(names, `requests\`) || slices.Contains(names, "requests") {
-		t.Fatalf("expected replacement-field string contents to stay out of top-N imports, got %#v", names)
-	}
-	assertDependencyNamesInclude(t, names, "numpy")
-}
-
-func TestAdapterAnalyseSkipsImportsInsideNestedFStringReplacementField(t *testing.T) {
-	source := `value = f"""{f'''{"'''"}'''}"""` + "\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseFindsImportsAfterNestedShortFStringReplacementField(t *testing.T) {
-	source := `value = f"""{f'{'"""'}'}"""` + "\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseSkipsImportsInsideShortFStringMultilineReplacementField(t *testing.T) {
-	source := "value = f\"{'''\n" +
-		"import requests\n" +
-		"'''}\"\n" +
-		"import numpy as np\n"
-
-	reportData := analysePythonTopN(t, source, 5)
-	names := dependencyNames(reportData)
-	if slices.Contains(names, "requests") {
-		t.Fatalf("expected short f-string replacement string contents to stay out of top-N imports, got %#v", names)
-	}
-	assertDependencyNamesInclude(t, names, "numpy")
-}
-
-func TestAdapterAnalyseFindsImportsAfterFStringFormatSpecHash(t *testing.T) {
-	source := `value = f"{42:#08x}"` + "\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseFindsImportsAfterFStringFormatSpecQuoteFill(t *testing.T) {
-	source := `value = f"{value:'<10}"` + "\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseFindsImportsAfterMultilineFStringSliceComment(t *testing.T) {
-	source := "value = f\"\"\"{items[\n" +
-		"0: # } \"\"\" comment\n" +
-		"2\n" +
-		"]}\"\"\"\n" +
-		"import requests\n"
-
-	dep := analysePythonDependency(t, source, "requests")
-	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-}
-
-func TestAdapterAnalyseFindsImportsAfterNestedFStringFormatSpecs(t *testing.T) {
-	cases := map[string]string{
-		"nested hash format spec": `value = f"{42:{3:#x}}"`,
-		"nested quote fill":       `value = f"""{42:{3:'<10}}"""`,
-		"nested comment": "value = f\"\"\"{42:{(\n" +
-			"3 # }} \"\"\" comment\n" +
-			")}}\"\"\"",
-	}
-	for name, value := range cases {
-		t.Run(name, func(t *testing.T) {
-			source := value + "\nimport requests\n"
-			dep := analysePythonDependency(t, source, "requests")
-			assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
-		})
-	}
-}
-
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -659,6 +541,17 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 			if imports[0].Location.Line != tc.wantLine {
 				t.Fatalf("expected real import on line %d, got location %+v", tc.wantLine, imports[0].Location)
 			}
+			if tc.want.Dependency == "requests" {
+				dep := analysePythonDependency(t, tc.source, "requests")
+				assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+				return
+			}
+			reportData := analysePythonTopN(t, tc.source, 5)
+			names := dependencyNames(reportData)
+			if slices.Contains(names, "requests") || slices.Contains(names, `requests\`) || slices.Contains(names, "pandas") {
+				t.Fatalf("expected import-like string contents to stay out of top-N imports, got %#v", names)
+			}
+			assertDependencyNamesInclude(t, names, tc.want.Dependency)
 		})
 	}
 }
