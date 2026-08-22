@@ -179,6 +179,9 @@ func (s *goModModuleScanner) scan() (string, error) {
 			}
 			return "", err
 		}
+		if s.invalid {
+			return "", nil
+		}
 	}
 }
 
