@@ -447,11 +447,15 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: prNumber,
               });
-              if (pull.state === 'closed' && (pull.merged === true || pull.merged_at != null)) {
-                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
-                return false;
+              if (pull.state === 'open') {
+                return true;
               }
-              return true;
+              if (pull.merged === true || pull.merged_at != null) {
+                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
+              } else {
+                core.info(`Pull request #${prNumber} was not open before comment mutation; skipping.`);
+              }
+              return false;
             };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -551,11 +555,15 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: prNumber,
               });
-              if (pull.state === 'closed' && (pull.merged === true || pull.merged_at != null)) {
-                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
-                return false;
+              if (pull.state === 'open') {
+                return true;
               }
-              return true;
+              if (pull.merged === true || pull.merged_at != null) {
+                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
+              } else {
+                core.info(`Pull request #${prNumber} was not open before comment mutation; skipping.`);
+              }
+              return false;
             };
 
             const comments = await github.paginate(github.rest.issues.listComments, {

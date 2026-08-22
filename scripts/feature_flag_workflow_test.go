@@ -336,6 +336,49 @@ func TestFeatureFlagCommentPublishersSkipMutationWhenPullMergesAfterResolver(t *
 	}
 }
 
+func TestFeatureFlagCommentPublishersSkipMutationWhenPullClosesUnmergedAfterResolver(t *testing.T) {
+	t.Parallel()
+
+	tests := []featureFlagPublisherCase{
+		{
+			name: "feature enforcement comment",
+			step: "Sync feature flag enforcement comment on PR",
+			env: map[string]string{
+				"FEATURE_PR":         "true",
+				"ENFORCEMENT_FAILED": "false",
+			},
+		},
+		{
+			name: "release guidance comment",
+			step: "Sync release feature guidance comment on PR",
+			env:  map[string]string{"RELEASE_PR": "true"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
+				"env":          tt.env,
+				"pullSequence": []map[string]any{featureFlagPull(7, "closed")},
+				"comments":     []map[string]any{},
+			})
+			if !result.OK {
+				t.Fatalf("publisher rejected fixture: %s", result.Error)
+			}
+			if len(result.Mutations) != 0 {
+				t.Fatalf("publisher mutated comments after unmerged close: %#v", result.Mutations)
+			}
+			if got := result.Calls["pulls"]; got != 1 {
+				t.Fatalf("pulls.get calls = %d, want 1 fresh pre-mutation check", got)
+			}
+			if got := strings.Join(result.Infos, "\n"); !strings.Contains(got, "was not open before comment mutation") {
+				t.Fatalf("publisher info logs = %q, want closed-unmerged skip reason", got)
+			}
+		})
+	}
+}
+
 func TestFeatureFlagCommentPublishersRecheckBeforeEachDuplicateDeletion(t *testing.T) {
 	t.Parallel()
 
