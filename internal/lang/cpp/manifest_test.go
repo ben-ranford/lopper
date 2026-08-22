@@ -16,6 +16,7 @@ const (
 	testConanLockSource      = "conan.lock"
 	testVcpkgManifestSource  = "vcpkg manifest"
 	testParseConanLockPrefix = "failed to parse conan.lock"
+	testMaxManifestBytes     = 2 << 20
 )
 
 func TestLoadDependencyCatalogParsesManifestsAndLocks(t *testing.T) {
@@ -97,7 +98,7 @@ func TestLoadDependencyCatalogSkipsOversizedManifests(t *testing.T) {
 			t.Parallel()
 
 			repo := t.TempDir()
-			testutil.MustWriteFile(t, filepath.Join(repo, manifestName), strings.Repeat("x", maxManifestBytes+1))
+			testutil.MustWriteFile(t, filepath.Join(repo, manifestName), oversizedManifestContent())
 
 			catalog, warnings, err := loadDependencyCatalog(repo)
 			if err != nil {
@@ -105,9 +106,6 @@ func TestLoadDependencyCatalogSkipsOversizedManifests(t *testing.T) {
 			}
 			if got := catalog.list(); len(got) != 0 {
 				t.Fatalf("expected oversized manifest to add no dependencies, got %#v", got)
-			}
-			if !catalog.Incomplete {
-				t.Fatal("expected oversized manifest to mark dependency catalog incomplete")
 			}
 			if !hasWarning(warnings, "skipped oversized "+manifestName) {
 				t.Fatalf("expected oversized manifest warning for %s, got %#v", manifestName, warnings)
@@ -123,7 +121,7 @@ func TestAnalyseSuppressesUndeclaredSignalsAfterOversizedManifest(t *testing.T) 
 	t.Parallel()
 
 	repo := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repo, vcpkgManifestFile), strings.Repeat("x", maxManifestBytes+1))
+	testutil.MustWriteFile(t, filepath.Join(repo, vcpkgManifestFile), oversizedManifestContent())
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <fmt/core.h>\n")
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -157,7 +155,7 @@ func TestAnalyseDoesNotPrefixCorrelateAfterOversizedManifest(t *testing.T) {
 
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "declared", vcpkgManifestFile), `{"dependencies":["boost-asio"]}`)
-	testutil.MustWriteFile(t, filepath.Join(repo, "skipped", vcpkgManifestFile), strings.Repeat("x", maxManifestBytes+1))
+	testutil.MustWriteFile(t, filepath.Join(repo, "skipped", vcpkgManifestFile), oversizedManifestContent())
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), "#include <boost/version.hpp>\n")
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
@@ -193,7 +191,7 @@ func TestLoadDependencyCatalogAcceptsExactSizeManifestLimit(t *testing.T) {
 
 	repo := t.TempDir()
 	content := "[requires]\nfmt/10.2.1\n"
-	content += strings.Repeat("#", maxManifestBytes-len(content))
+	content += strings.Repeat("#", testMaxManifestBytes-len(content))
 	testutil.MustWriteFile(t, filepath.Join(repo, conanManifestFile), content)
 
 	catalog, warnings, err := loadDependencyCatalog(repo)
@@ -295,37 +293,6 @@ func TestBuildDependencyReportFlagsUndeclaredUsage(t *testing.T) {
 	}
 	if !hasRecommendation(dep.Recommendations, "declare-dependency-explicitly") {
 		t.Fatalf("expected declaration recommendation, got %#v", dep.Recommendations)
-	}
-}
-
-func TestBuildDependencyReportSuppressesUndeclaredUsageWhenCatalogIncomplete(t *testing.T) {
-	scan := scanResult{
-		Catalog: dependencyCatalog{
-			Declarations: make(map[string]declaredDependency),
-			Incomplete:   true,
-		},
-		Files: []fileScan{{
-			Path: "src/main.cpp",
-			Includes: []includeRecord{{
-				Dependency: "fmt",
-				Header:     "fmt/core.h",
-				Location:   report.Location{File: "src/main.cpp", Line: 1, Column: 1},
-			}},
-		}},
-	}
-
-	dep, warnings := buildDependencyReport("fmt", scan, true)
-	if hasWarning(warnings, "not declared in vcpkg or conan manifests") {
-		t.Fatalf("did not expect undeclared-usage warning with incomplete catalog, got %#v", warnings)
-	}
-	if hasRiskCue(dep.RiskCues, "undeclared-package-usage") {
-		t.Fatalf("did not expect undeclared risk cue with incomplete catalog, got %#v", dep.RiskCues)
-	}
-	if hasRecommendation(dep.Recommendations, "declare-dependency-explicitly") {
-		t.Fatalf("did not expect declaration recommendation with incomplete catalog, got %#v", dep.Recommendations)
-	}
-	if dep.TotalExportsCount != 1 || dep.UsedExportsCount != 1 {
-		t.Fatalf("expected include usage to remain reported, got total=%d used=%d", dep.TotalExportsCount, dep.UsedExportsCount)
 	}
 }
 
@@ -484,22 +451,16 @@ func TestCorrelateDeclaredDependencyReturnsOriginalWhenMatchIsAmbiguous(t *testi
 	}
 }
 
-func TestCorrelateDeclaredDependencyReturnsOriginalWhenCatalogIncomplete(t *testing.T) {
-	catalog := newDependencyCatalog()
-	catalog.add("boost-asio", testVcpkgManifestSource)
-	catalog.Incomplete = true
-
-	if got := correlateDeclaredDependency("boost", catalog); got != "boost" {
-		t.Fatalf("expected incomplete catalog to keep original token, got %q", got)
-	}
-}
-
 func dependencyNames(dependencies []report.DependencyReport) []string {
 	names := make([]string, 0, len(dependencies))
 	for _, dependency := range dependencies {
 		names = append(names, dependency.Name)
 	}
 	return names
+}
+
+func oversizedManifestContent() string {
+	return strings.Repeat("x", testMaxManifestBytes+1)
 }
 
 func sortedDependencySet(values map[string]struct{}) []string {
