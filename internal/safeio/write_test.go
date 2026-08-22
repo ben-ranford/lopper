@@ -1129,6 +1129,7 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndR
 	rootDir := t.TempDir()
 	originalParent := filepath.Join(rootDir, "reports")
 	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	replacementParent := originalParent
 	if err := os.MkdirAll(originalParent, 0o750); err != nil {
 		t.Fatalf("mkdir original parent: %v", err)
 	}
@@ -1158,19 +1159,17 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndR
 			return VerifyDirectoryIdentity(parentPath, parentIdentity)
 		},
 	)
-	if err == nil {
-		t.Fatal("expected parent replacement before rename to fail")
+	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected post-rename parent identity error, got %v", err)
 	}
-	if publishChecks != 2 {
-		t.Fatalf("expected initial and commit publish checks before safeio rejected the final parent check, got %d", publishChecks)
+	if publishChecks != 3 {
+		t.Fatalf("expected initial, commit, and final commit publish checks, got %d", publishChecks)
 	}
 	if renameReadyCalls != 1 {
 		t.Fatalf("expected one rename-ready hook call, got %d", renameReadyCalls)
 	}
-	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
-	}
-	if _, statErr := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+	assertFileContent(t, filepath.Join(relocatedParent, writeTestFileName), "hello")
+	if _, statErr := os.Stat(filepath.Join(replacementParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
 	}
 }
@@ -1196,6 +1195,111 @@ func TestRenameAtDirectoryPathRequiresDirectChildrenAndMapsRenameError(t *testin
 	}
 	if linkErr.Op != "renameat" || linkErr.Old != "missing" || linkErr.New != "other" {
 		t.Fatalf("mapped link error = %#v", linkErr)
+	}
+}
+
+func TestRenameAtPinnedDirectoryUsesPinnedParentAfterPathReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(originalParent, "temp"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	parent, err := OpenRoot(originalParent)
+	if err != nil {
+		t.Fatalf("open original parent root: %v", err)
+	}
+	defer func() {
+		if closeErr := parent.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			t.Errorf("close parent root: %v", closeErr)
+		}
+	}()
+	parentIdentity, err := parent.Lstat(".")
+	if err != nil {
+		t.Fatalf("stat pinned parent: %v", err)
+	}
+
+	if err := os.Rename(originalParent, relocatedParent); err != nil {
+		t.Fatalf("relocate original parent: %v", err)
+	}
+	if err := os.Mkdir(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir replacement parent: %v", err)
+	}
+
+	if err := renameAtPinnedDirectory(parent, parentIdentity, "temp", "target"); err != nil {
+		t.Fatalf("renameAtPinnedDirectory returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(relocatedParent, "target"), "hello")
+	if _, statErr := os.Stat(filepath.Join(originalParent, "target")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestRenameAtPinnedDirectoryRejectsInvalidPinnedParent(t *testing.T) {
+	expectedInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "." {
+				t.Fatalf("unexpected lstat target %q", name)
+			}
+			return changedInfo, nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, expectedInfo, "temp", "target")
+	if err == nil || !strings.Contains(err.Error(), "pinned parent identity changed") {
+		t.Fatalf("expected pinned parent identity error, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no rename after pinned parent identity mismatch, got %d", renameCalls)
+	}
+}
+
+func TestRenameAtPinnedDirectoryRejectsNestedPathsBeforeRootLookup(t *testing.T) {
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			t.Fatal("expected direct-child validation before root lstat")
+			return nil, nil
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, newPinnedTargetInfo(t, "parent"), filepath.Join("nested", "temp"), "target")
+	if err == nil || !strings.Contains(err.Error(), "direct children") {
+		t.Fatalf("expected direct-child validation error, got %v", err)
+	}
+}
+
+func TestRenameAtPinnedDirectoryPropagatesRootLookupError(t *testing.T) {
+	expectedErr := errors.New("stat pinned parent failure")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "." {
+				t.Fatalf("unexpected lstat target %q", name)
+			}
+			return nil, expectedErr
+		},
+		rename: func(string, string) error {
+			t.Fatal("rename should not run after root lookup error")
+			return nil
+		},
+	}
+
+	err := renameAtPinnedDirectory(root, newPinnedTargetInfo(t, "parent"), "temp", "target")
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected root lookup error, got %v", err)
 	}
 }
 
