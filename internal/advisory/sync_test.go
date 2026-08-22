@@ -3487,25 +3487,35 @@ func updateManifestCleanupFailureCase(cleanupWriteErr, cleanupErr error) updateM
 }
 
 func advisoryFailingWriteTempFile(writeErr error) func(string, int, os.FileMode) (safeio.File, error) {
-	return func(string, int, os.FileMode) (safeio.File, error) {
-		return &advisoryFakeFile{
-			write: func([]byte) (int, error) { return 0, writeErr },
-			close: func() error { return nil },
-			chmod: func(os.FileMode) error { return nil },
-		}, nil
-	}
+	return advisoryOpenTempFile(advisoryTempFileWithWrite(advisoryFailWrite(writeErr)))
 }
 
 func advisorySuccessfulWriteTempFile(tempInfo fs.FileInfo, closeErr error) func(string, int, os.FileMode) (safeio.File, error) {
-	return func(string, int, os.FileMode) (safeio.File, error) {
-		return &advisoryFakeFile{
-			write: func(p []byte) (int, error) { return len(p), nil },
-			close: func() error { return closeErr },
-			stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
-			chmod: func(os.FileMode) error { return nil },
-		}, nil
+	file := advisoryTempFileWithWrite(func(p []byte) (int, error) { return len(p), nil })
+	file.close = func() error { return closeErr }
+	file.stat = func() (fs.FileInfo, error) { return tempInfo, nil }
+	return advisoryOpenTempFile(file)
+}
+
+func advisoryOpenTempFile(file safeio.File) func(string, int, os.FileMode) (safeio.File, error) {
+	return func(string, int, os.FileMode) (safeio.File, error) { return file, nil }
+}
+
+func advisoryTempFileWithWrite(write func([]byte) (int, error)) *advisoryFakeFile {
+	return &advisoryFakeFile{
+		write: write,
+		close: advisoryNoopClose,
+		chmod: advisoryNoopChmod,
 	}
 }
+
+func advisoryFailWrite(writeErr error) func([]byte) (int, error) {
+	return func([]byte) (int, error) { return 0, writeErr }
+}
+
+func advisoryNoopClose() error { return nil }
+
+func advisoryNoopChmod(os.FileMode) error { return nil }
 
 func advisoryAtomicTempLstat(tempInfo fs.FileInfo) func(string) (fs.FileInfo, error) {
 	return func(name string) (fs.FileInfo, error) {

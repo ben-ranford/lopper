@@ -145,24 +145,7 @@ func newExclusiveCreateRoot(t *testing.T, targetInfo fs.FileInfo) (*fakeRoot, *e
 			}
 			return targetInfo, nil
 		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			assertExclusiveCreateOpen(t, name, flag, perm)
-			return &fakeFile{
-				stat: func() (fs.FileInfo, error) { return targetInfo, nil },
-				write: func(p []byte) (int, error) {
-					state.wroteTarget = append([]byte(nil), p...)
-					return len(p), nil
-				},
-				chmod: func(mode os.FileMode) error {
-					state.chmodTarget = mode
-					return nil
-				},
-				close: func() error {
-					state.targetClosed = true
-					return nil
-				},
-			}, nil
-		},
+		openFile: exclusiveCreateOpenFile(t, targetInfo, state),
 		link: func(string, string) error {
 			t.Fatal("write-if-absent should not link through a replaceable temp pathname")
 			return nil
@@ -180,6 +163,32 @@ func assertExclusiveCreateOpen(t *testing.T, name string, flag int, perm os.File
 	}
 	if perm != 0o640 {
 		t.Fatalf("unexpected target perm: %#o", perm)
+	}
+}
+
+func exclusiveCreateOpenFile(t *testing.T, targetInfo fs.FileInfo, state *exclusiveCreateState) func(string, int, os.FileMode) (File, error) {
+	t.Helper()
+	return func(name string, flag int, perm os.FileMode) (File, error) {
+		assertExclusiveCreateOpen(t, name, flag, perm)
+		return exclusiveCreateFile(targetInfo, state), nil
+	}
+}
+
+func exclusiveCreateFile(targetInfo fs.FileInfo, state *exclusiveCreateState) File {
+	return &fakeFile{
+		stat: func() (fs.FileInfo, error) { return targetInfo, nil },
+		write: func(p []byte) (int, error) {
+			state.wroteTarget = append([]byte(nil), p...)
+			return len(p), nil
+		},
+		chmod: func(mode os.FileMode) error {
+			state.chmodTarget = mode
+			return nil
+		},
+		close: func() error {
+			state.targetClosed = true
+			return nil
+		},
 	}
 }
 
@@ -1770,24 +1779,7 @@ func TestWriteFileAtomicallyIfAbsentAtRootCreatesTargetExclusivelyWithoutLinking
 			state.lstatCalls++
 			return targetInfo, nil
 		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			assertExclusiveCreateOpen(t, name, flag, perm)
-			return &fakeFile{
-				stat: func() (fs.FileInfo, error) { return targetInfo, nil },
-				write: func(p []byte) (int, error) {
-					state.wroteTarget = append([]byte(nil), p...)
-					return len(p), nil
-				},
-				chmod: func(mode os.FileMode) error {
-					state.chmodTarget = mode
-					return nil
-				},
-				close: func() error {
-					state.targetClosed = true
-					return nil
-				},
-			}, nil
-		},
+		openFile: exclusiveCreateOpenFile(t, targetInfo, state),
 		link: func(string, string) error {
 			t.Fatal("atomic write-if-absent should not link through a replaceable temp pathname")
 			return nil
