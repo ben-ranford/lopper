@@ -30,17 +30,21 @@ type compileCommandEntry struct {
 type compileContext struct {
 	HasCompileDatabase bool
 	IncludeDirs        []string
+	IncludeSearchPaths []includeSearchPath
+	SourceIncludeDirs  map[string][]includeSearchPath
 	SourceFiles        []string
 	Warnings           []string
 }
 
 type compileContextCollector struct {
-	repoPath      string
-	includeDirSet map[string]struct{}
-	sourceFileSet map[string]struct{}
-	warnings      []string
-	visited       int
-	found         bool
+	repoPath           string
+	includeDirSet      map[string]struct{}
+	includeSearchPaths map[string]includeSearchPath
+	sourceIncludeDirs  map[string][]includeSearchPath
+	sourceFileSet      map[string]struct{}
+	warnings           []string
+	visited            int
+	found              bool
 }
 
 func loadCompileContext(repoPath string) (compileContext, error) {
@@ -63,9 +67,11 @@ func newCompileContextCollector(repoPath string) (*compileContextCollector, erro
 		return nil, fmt.Errorf("repo path is empty")
 	}
 	return &compileContextCollector{
-		repoPath:      repoPath,
-		includeDirSet: make(map[string]struct{}),
-		sourceFileSet: make(map[string]struct{}),
+		repoPath:           repoPath,
+		includeDirSet:      make(map[string]struct{}),
+		includeSearchPaths: make(map[string]includeSearchPath),
+		sourceIncludeDirs:  make(map[string][]includeSearchPath),
+		sourceFileSet:      make(map[string]struct{}),
 	}, nil
 }
 
@@ -78,7 +84,7 @@ func (c *compileContextCollector) visit(path string) error {
 		return fs.SkipAll
 	}
 
-	warnings, err := collectCompileDatabase(path, c.repoPath, c.includeDirSet, c.sourceFileSet)
+	warnings, err := collectCompileDatabase(path, c.repoPath, c.includeDirSet, c.includeSearchPaths, c.sourceIncludeDirs, c.sourceFileSet)
 	c.warnings = append(c.warnings, warnings...)
 	if err != nil {
 		return err
@@ -91,6 +97,8 @@ func (c *compileContextCollector) result() compileContext {
 	result := compileContext{
 		HasCompileDatabase: c.found,
 		IncludeDirs:        shared.SortedKeys(c.includeDirSet),
+		IncludeSearchPaths: sortedIncludeSearchPaths(c.includeSearchPaths),
+		SourceIncludeDirs:  copySourceIncludeDirs(c.sourceIncludeDirs),
 		SourceFiles:        shared.SortedKeys(c.sourceFileSet),
 		Warnings:           append([]string(nil), c.warnings...),
 	}
@@ -100,7 +108,7 @@ func (c *compileContextCollector) result() compileContext {
 	return result
 }
 
-func collectCompileDatabase(path, repoPath string, includeDirSet, sourceFileSet map[string]struct{}) ([]string, error) {
+func collectCompileDatabase(path, repoPath string, includeDirSet map[string]struct{}, includeSearchPathSet map[string]includeSearchPath, sourceIncludeDirs map[string][]includeSearchPath, sourceFileSet map[string]struct{}) ([]string, error) {
 	entries, warnings, err := readCompileDatabase(path, repoPath)
 	if err != nil || len(entries) == 0 {
 		return warnings, err
@@ -108,8 +116,13 @@ func collectCompileDatabase(path, repoPath string, includeDirSet, sourceFileSet 
 
 	for _, entry := range entries {
 		baseDir := resolveCompileDirectory(path, entry.Directory)
-		recordCompileSource(sourceFileSet, resolveCompilePath(baseDir, entry.File))
-		recordCompileIncludes(includeDirSet, entry.compileArgs(), baseDir)
+		sourcePath := resolveCompilePath(baseDir, entry.File)
+		recordCompileSource(sourceFileSet, sourcePath)
+		includePaths := extractIncludeSearchPaths(entry.compileArgs(), baseDir)
+		recordCompileIncludes(includeDirSet, includeSearchPathSet, includePaths)
+		if sourcePath != "" && isCPPSourceFile(sourcePath) && len(includePaths) > 0 {
+			sourceIncludeDirs[sourcePath] = mergeIncludeSearchPaths(sourceIncludeDirs[sourcePath], includePaths)
+		}
 	}
 	return warnings, nil
 }
@@ -149,10 +162,15 @@ func recordCompileSource(sourceFileSet map[string]struct{}, sourcePath string) {
 	sourceFileSet[sourcePath] = struct{}{}
 }
 
-func recordCompileIncludes(includeDirSet map[string]struct{}, args []string, baseDir string) {
-	for _, includeDir := range extractIncludeDirs(args, baseDir) {
-		if includeDir != "" {
-			includeDirSet[includeDir] = struct{}{}
+func recordCompileIncludes(includeDirSet map[string]struct{}, includeSearchPathSet map[string]includeSearchPath, includePaths []includeSearchPath) {
+	for _, includePath := range includePaths {
+		if includePath.Path == "" {
+			continue
+		}
+		includeDirSet[includePath.Path] = struct{}{}
+		existing, ok := includeSearchPathSet[includePath.Path]
+		if !ok || (!existing.System && includePath.System) {
+			includeSearchPathSet[includePath.Path] = includePath
 		}
 	}
 }
@@ -177,8 +195,19 @@ func resolveCompilePath(base, value string) string {
 }
 
 func extractIncludeDirs(args []string, baseDir string) []string {
+	paths := extractIncludeSearchPaths(args, baseDir)
 	seen := make(map[string]struct{})
 	items := make([]string, 0)
+	for _, includePath := range paths {
+		addIncludeDir(includePath.Path, seen, &items)
+	}
+	sort.Strings(items)
+	return items
+}
+
+func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPath {
+	seen := make(map[string]struct{})
+	items := make([]includeSearchPath, 0)
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" {
@@ -190,16 +219,15 @@ func extractIncludeDirs(args []string, baseDir string) []string {
 				continue
 			}
 			i++
-			addIncludeDir(resolveCompilePath(baseDir, args[i]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, seen, &items)
 		case strings.HasPrefix(arg, includeFlag) && len(arg) > len(includeFlag):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len(includeFlag):]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, seen, &items)
 		case strings.HasPrefix(arg, isystemFlag) && len(arg) > len(isystemFlag):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len(isystemFlag):]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, seen, &items)
 		case strings.HasPrefix(arg, iquoteFlag) && len(arg) > len(iquoteFlag):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, seen, &items)
 		}
 	}
-	sort.Strings(items)
 	return items
 }
 
@@ -213,4 +241,59 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 	}
 	seen[path] = struct{}{}
 	*items = append(*items, path)
+}
+
+func addIncludeSearchPath(path string, system bool, seen map[string]struct{}, items *[]includeSearchPath) {
+	if path == "" {
+		return
+	}
+	path = filepath.Clean(path)
+	if _, ok := seen[path]; ok {
+		return
+	}
+	seen[path] = struct{}{}
+	*items = append(*items, includeSearchPath{Path: path, System: system, ProvenanceKnown: true})
+}
+
+func mergeIncludeSearchPaths(existing, next []includeSearchPath) []includeSearchPath {
+	if len(existing) == 0 {
+		return append([]includeSearchPath(nil), next...)
+	}
+	seen := make(map[string]struct{}, len(existing)+len(next))
+	merged := append([]includeSearchPath(nil), existing...)
+	for _, item := range existing {
+		seen[item.Path] = struct{}{}
+	}
+	for _, item := range next {
+		if _, ok := seen[item.Path]; ok {
+			continue
+		}
+		seen[item.Path] = struct{}{}
+		merged = append(merged, item)
+	}
+	return merged
+}
+
+func sortedIncludeSearchPaths(paths map[string]includeSearchPath) []includeSearchPath {
+	keys := make([]string, 0, len(paths))
+	for key := range paths {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]includeSearchPath, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, paths[key])
+	}
+	return result
+}
+
+func copySourceIncludeDirs(sourceIncludeDirs map[string][]includeSearchPath) map[string][]includeSearchPath {
+	if len(sourceIncludeDirs) == 0 {
+		return nil
+	}
+	result := make(map[string][]includeSearchPath, len(sourceIncludeDirs))
+	for source, paths := range sourceIncludeDirs {
+		result[source] = append([]includeSearchPath(nil), paths...)
+	}
+	return result
 }
