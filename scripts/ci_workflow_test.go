@@ -261,8 +261,20 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
+		`if [ -z "${base_sha}" ]; then`,
+		`echo "PR base SHA is required for pull_request CI."`,
 		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
 		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+	})
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	assertWorkflowStepRunContainsAll(t, runCI, "ci verify immutable memory bench base", []string{
+		`base_sha="${BASE_SHA:-}"`,
+		`echo "PR base SHA is required for memory benchmark comparison."`,
+		`export MEMORY_BENCH_BASE="${base_sha}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify immutable memory bench base", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
@@ -297,6 +309,38 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	assertWorkflowStepRunOmitsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
 		`if [ "$status" = "2" ]`,
 		`if [ "$status" -eq 2 ]`,
+	})
+}
+
+func TestCIWorkflowRollingMemoryBenchUsesImmutablePRBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling fetch PR base SHA env", got: fetchBase.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, fetchBase, "rolling fetch PR base", []string{
+		`base_sha="${PR_BASE_SHA:-}"`,
+		`if [ -z "${base_sha}" ]; then`,
+		`echo "PR base SHA is required for pull_request CI."`,
+		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
+		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+	})
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+	assertWorkflowStringValues(t, []workflowStringValue{
+		{label: "rolling run CI PR base SHA env", got: runCI.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
+	})
+	assertWorkflowStepRunContainsAll(t, runCI, "rolling immutable memory bench base", []string{
+		`base_sha="${PR_BASE_SHA:-}"`,
+		`echo "PR base SHA is required for memory benchmark comparison."`,
+		`export MEMORY_BENCH_BASE="${base_sha}"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "rolling immutable memory bench base", []string{
+		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
 	})
 }
 

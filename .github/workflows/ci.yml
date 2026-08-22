@@ -110,9 +110,11 @@ jobs:
         run: |
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
-          if [ -n "${base_sha}" ]; then
-            git fetch --no-tags --depth=1 origin "${base_sha}"
+          if [ -z "${base_sha}" ]; then
+            echo "PR base SHA is required for pull_request CI."
+            exit 1
           fi
+          git fetch --no-tags --depth=1 origin "${base_sha}"
           git fetch --no-tags --depth=1 origin "${base_ref}"
 
       - name: Run CI target
@@ -120,8 +122,12 @@ jobs:
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            base_sha="${BASE_SHA:-}"
+            if [ -z "${base_sha}" ]; then
+              echo "PR base SHA is required for memory benchmark comparison."
+              exit 1
+            fi
+            export MEMORY_BENCH_BASE="${base_sha}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
@@ -607,8 +613,15 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
+          base_sha="${PR_BASE_SHA:-}"
+          if [ -z "${base_sha}" ]; then
+            echo "PR base SHA is required for pull_request CI."
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "${base_sha}"
           git fetch --no-tags --depth=1 origin "${base_ref}"
 
       - name: Run CI target with rolling defaults
@@ -616,10 +629,15 @@ jobs:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${PR_BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            base_sha="${PR_BASE_SHA:-}"
+            if [ -z "${base_sha}" ]; then
+              echo "PR base SHA is required for memory benchmark comparison."
+              exit 1
+            fi
+            export MEMORY_BENCH_BASE="${base_sha}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
