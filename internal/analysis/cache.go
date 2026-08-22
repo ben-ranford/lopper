@@ -439,13 +439,9 @@ func conditionallyRemoveAnalysisCacheChild(root safeio.Root, name string, childI
 		return nil
 	}
 	if err := root.Remove(quarantineName); err != nil && !errors.Is(err, os.ErrNotExist) {
-		restoreErr := root.Rename(quarantineName, name)
-		if restoreErr == nil {
-			return errors.Join(lstatErr, err)
-		}
-		return errors.Join(lstatErr, err, restoreErr)
+		return errors.Join(lstatErr, err)
 	}
-	return nil
+	return errors.Join(lstatErr, removeAnalysisCacheQuarantineReservation(root, quarantineName))
 }
 
 func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.FileInfo) (string, error) {
@@ -453,33 +449,51 @@ func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.Fi
 		return "", nil
 	}
 	for attempt := 0; attempt < 16; attempt++ {
-		quarantineName := fmt.Sprintf(".lopper-cache-rollback-%s-%d", filepath.Base(name), attempt)
-		if err := root.Rename(name, quarantineName); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return "", nil
-			}
-			if errors.Is(err, os.ErrExist) || analysisCacheQuarantineDestinationExists(root, name, quarantineName, childInfo) {
+		reservationName := fmt.Sprintf(".lopper-cache-rollback-%s-%d", filepath.Base(name), attempt)
+		quarantineName := filepath.Join(reservationName, filepath.Base(name))
+		if err := root.Mkdir(reservationName, 0o700); err != nil {
+			if errors.Is(err, os.ErrExist) || errors.Is(err, fs.ErrExist) {
 				continue
 			}
 			return "", err
+		}
+		if err := root.Rename(name, quarantineName); err != nil {
+			removeReservationErr := root.Remove(reservationName)
+			if errors.Is(err, os.ErrNotExist) {
+				return "", removeReservationErr
+			}
+			if errors.Is(err, os.ErrExist) || analysisCacheQuarantineDestinationExists(root, name, quarantineName, childInfo) {
+				if removeReservationErr != nil && !errors.Is(removeReservationErr, os.ErrNotExist) {
+					return "", errors.Join(err, removeReservationErr)
+				}
+				continue
+			}
+			return "", errors.Join(err, removeReservationErr)
 		}
 		quarantineInfo, infoErr := root.Lstat(quarantineName)
 		if infoErr == nil && sameAnalysisCacheRollbackTarget(quarantineInfo, childInfo) {
 			return quarantineName, nil
 		}
-		restoreErr := root.Rename(quarantineName, name)
 		if infoErr == nil {
 			infoErr = errors.New("rollback target changed while quarantining: " + name)
 		}
-		if restoreErr == nil {
-			return "", infoErr
-		}
-		if errors.Is(restoreErr, os.ErrExist) || errors.Is(restoreErr, os.ErrNotExist) {
-			return "", errors.Join(infoErr, restoreErr)
-		}
-		return "", errors.Join(infoErr, restoreErr)
+		return "", infoErr
 	}
 	return "", fmt.Errorf("unable to reserve rollback quarantine for %s", name)
+}
+
+func removeAnalysisCacheQuarantineReservation(root safeio.Root, quarantineName string) error {
+	reservationName := filepath.Dir(quarantineName)
+	if reservationName == "." || reservationName == string(filepath.Separator) {
+		return nil
+	}
+	if !strings.HasPrefix(filepath.Base(reservationName), ".lopper-cache-rollback-") {
+		return nil
+	}
+	if err := root.Remove(reservationName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func analysisCacheQuarantineDestinationExists(root safeio.Root, name, quarantineName string, childInfo fs.FileInfo) bool {

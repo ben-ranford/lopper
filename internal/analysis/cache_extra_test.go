@@ -67,6 +67,34 @@ func (r *postCreateLstatErrorAnalysisCacheRoot) Lstat(name string) (fs.FileInfo,
 	return r.Root.Lstat(name)
 }
 
+type secondPostCreateLstatErrorAnalysisCacheRoot struct {
+	safeio.Root
+	name             string
+	err              error
+	created          bool
+	postCreateLstats int
+}
+
+func (r *secondPostCreateLstatErrorAnalysisCacheRoot) Mkdir(name string, perm os.FileMode) error {
+	if err := r.Root.Mkdir(name, perm); err != nil {
+		return err
+	}
+	if name == r.name {
+		r.created = true
+	}
+	return nil
+}
+
+func (r *secondPostCreateLstatErrorAnalysisCacheRoot) Lstat(name string) (fs.FileInfo, error) {
+	if r.created && name == r.name {
+		r.postCreateLstats++
+		if r.postCreateLstats == 2 {
+			return nil, r.err
+		}
+	}
+	return r.Root.Lstat(name)
+}
+
 type mkdirErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -93,6 +121,31 @@ func (r *removeErrorAnalysisCacheRoot) Remove(name string) error {
 	return r.Root.Remove(name)
 }
 
+type removeQuarantineCreatesReplacementAnalysisCacheRoot struct {
+	safeio.Root
+	t               *testing.T
+	repo            string
+	name            string
+	err             error
+	replacementInfo fs.FileInfo
+}
+
+func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) Remove(name string) error {
+	if strings.HasPrefix(name, ".lopper-cache-rollback-") {
+		replacementPath := filepath.Join(r.repo, r.name)
+		if err := os.Mkdir(replacementPath, 0o750); err != nil {
+			r.t.Fatalf("create replacement before failed quarantine remove: %v", err)
+		}
+		info, err := os.Lstat(replacementPath)
+		if err != nil {
+			r.t.Fatalf("stat replacement before failed quarantine remove: %v", err)
+		}
+		r.replacementInfo = info
+		return r.err
+	}
+	return r.Root.Remove(name)
+}
+
 type renameErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -113,7 +166,7 @@ type renameErrExistOnceAnalysisCacheRoot struct {
 }
 
 func (r *renameErrExistOnceAnalysisCacheRoot) Rename(oldName, newName string) error {
-	if oldName == r.name && strings.HasSuffix(newName, "-0") && !r.seen {
+	if oldName == r.name && strings.HasSuffix(filepath.Dir(newName), "-0") && !r.seen {
 		r.seen = true
 		return os.ErrExist
 	}
@@ -128,19 +181,6 @@ type renameErrExistAnalysisCacheRoot struct {
 func (r *renameErrExistAnalysisCacheRoot) Rename(oldName, newName string) error {
 	if oldName == r.name && strings.HasPrefix(newName, ".lopper-cache-rollback-") {
 		return os.ErrExist
-	}
-	return r.Root.Rename(oldName, newName)
-}
-
-type restoreRenameErrorAnalysisCacheRoot struct {
-	safeio.Root
-	name string
-	err  error
-}
-
-func (r *restoreRenameErrorAnalysisCacheRoot) Rename(oldName, newName string) error {
-	if strings.HasPrefix(oldName, ".lopper-cache-rollback-") && newName == r.name {
-		return r.err
 	}
 	return r.Root.Rename(oldName, newName)
 }
@@ -733,6 +773,22 @@ func TestOpenOrCreatePinnedAnalysisCacheChildRollsBackWhenPostCreateLstatFails(t
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, cacheKeysDirName))
 }
 
+func TestOpenOrCreatePinnedAnalysisCacheChildRollsBackWhenSecondPostCreateLstatFails(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	lstatErr := errors.New("child lstat failed after create helper returned")
+
+	_, err := openOrCreatePinnedAnalysisCacheChild(&secondPostCreateLstatErrorAnalysisCacheRoot{
+		Root: root,
+		name: cacheKeysDirName,
+		err:  lstatErr,
+	}, repo, cacheKeysDirName)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected second post-create lstat error to be preserved, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, cacheKeysDirName))
+}
+
 func TestMkdirAnalysisCacheDirValidatesOpenedChildIdentity(t *testing.T) {
 	t.Run("mkdir error is preserved", func(t *testing.T) {
 		repo := t.TempDir()
@@ -1140,8 +1196,10 @@ func TestRollbackCreatedAnalysisCacheChildAtPathErrorBranches(t *testing.T) {
 		if !errors.Is(err, removeErr) {
 			t.Fatalf("expected remove error to be preserved, got %v", err)
 		}
-		if info, statErr := os.Stat(childPath); statErr != nil || !info.IsDir() {
-			t.Fatalf("expected child to remain after failed rollback, info=%#v err=%v", info, statErr)
+		assertAnalysisCachePathAbsent(t, childPath)
+		quarantinePath := filepath.Join(repo, ".lopper-cache-rollback-keys-0", cacheKeysDirName)
+		if info, statErr := os.Stat(quarantinePath); statErr != nil || !info.IsDir() {
+			t.Fatalf("expected child to remain quarantined after failed rollback, info=%#v err=%v", info, statErr)
 		}
 	})
 }
@@ -1165,7 +1223,7 @@ func TestConditionallyRemoveAnalysisCacheChildBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("post-verification replacement is restored and reported", func(t *testing.T) {
+	t.Run("post-verification replacement is quarantined and reported", func(t *testing.T) {
 		repo := t.TempDir()
 		childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
 		renamedChildPath := filepath.Join(repo, "created-child")
@@ -1185,10 +1243,9 @@ func TestConditionallyRemoveAnalysisCacheChildBranches(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "rollback target changed while quarantining") {
 			t.Fatalf("expected replacement race to be reported, got %v", err)
 		}
-		for _, path := range []string{childPath, renamedChildPath} {
-			if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
-				t.Fatalf("expected %q to remain after replacement race, info=%#v err=%v", path, info, statErr)
-			}
+		assertAnalysisCachePathAbsent(t, childPath)
+		if info, statErr := os.Stat(renamedChildPath); statErr != nil || !info.IsDir() {
+			t.Fatalf("expected original child to remain renamed after replacement race, info=%#v err=%v", info, statErr)
 		}
 	})
 
@@ -1216,6 +1273,33 @@ func TestConditionallyRemoveAnalysisCacheChildBranches(t *testing.T) {
 		}
 		if info, statErr := os.Stat(childPath); statErr != nil || !info.IsDir() {
 			t.Fatalf("expected child to remain after joined errors, info=%#v err=%v", info, statErr)
+		}
+	})
+
+	t.Run("failed quarantine removal does not overwrite replacement", func(t *testing.T) {
+		repo := t.TempDir()
+		childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+		root := openAnalysisCacheTestRoot(t, repo)
+		removeErr := errors.New("remove quarantine failed")
+		wrappedRoot := &removeQuarantineCreatesReplacementAnalysisCacheRoot{
+			Root: root,
+			t:    t,
+			repo: repo,
+			name: cacheKeysDirName,
+			err:  removeErr,
+		}
+
+		err := conditionallyRemoveAnalysisCacheChild(wrappedRoot, cacheKeysDirName, childInfo)
+		if !errors.Is(err, removeErr) {
+			t.Fatalf("expected failed quarantine remove to be preserved, got %v", err)
+		}
+		currentInfo, statErr := os.Lstat(childPath)
+		if statErr != nil || !os.SameFile(currentInfo, wrappedRoot.replacementInfo) {
+			t.Fatalf("expected replacement child to remain at original name, info=%#v replacement=%#v err=%v", currentInfo, wrappedRoot.replacementInfo, statErr)
+		}
+		quarantinePath := filepath.Join(repo, ".lopper-cache-rollback-keys-0", cacheKeysDirName)
+		if info, statErr := os.Stat(quarantinePath); statErr != nil || !info.IsDir() {
+			t.Fatalf("expected failed cleanup to leave original child quarantined, info=%#v err=%v", info, statErr)
 		}
 	})
 }
@@ -1261,7 +1345,7 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("quarantine retry: %v", err)
 		}
-		if !strings.HasSuffix(quarantineName, "-1") {
+		if !strings.HasSuffix(filepath.Dir(quarantineName), "-1") {
 			t.Fatalf("expected retry quarantine suffix, got %q", quarantineName)
 		}
 		if err := root.Remove(quarantineName); err != nil {
@@ -1269,14 +1353,14 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("restores original child and reports quarantine lstat failure", func(t *testing.T) {
+	t.Run("leaves child quarantined and reports quarantine lstat failure", func(t *testing.T) {
 		repo := t.TempDir()
 		root := openAnalysisCacheTestRoot(t, repo)
 		childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
 		lstatErr := errors.New("quarantine lstat failed")
 
 		quarantineName, err := quarantineAnalysisCacheChild(
-			&lstatErrorAnalysisCacheRoot{Root: root, name: ".lopper-cache-rollback-keys-0", err: lstatErr},
+			&lstatErrorAnalysisCacheRoot{Root: root, name: filepath.Join(".lopper-cache-rollback-keys-0", cacheKeysDirName), err: lstatErr},
 			cacheKeysDirName,
 			childInfo,
 		)
@@ -1284,10 +1368,12 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 			t.Fatalf("expected quarantine lstat error to be reported, got %v", err)
 		}
 		if quarantineName != "" {
-			t.Fatalf("expected failed quarantine verification to restore original name, got %q", quarantineName)
+			t.Fatalf("expected failed quarantine verification not to return a quarantine name, got %q", quarantineName)
 		}
-		if info, statErr := os.Stat(childPath); statErr != nil || !info.IsDir() {
-			t.Fatalf("expected child to be restored after quarantine lstat failure, info=%#v err=%v", info, statErr)
+		assertAnalysisCachePathAbsent(t, childPath)
+		quarantinePath := filepath.Join(repo, ".lopper-cache-rollback-keys-0", cacheKeysDirName)
+		if info, statErr := os.Stat(quarantinePath); statErr != nil || !info.IsDir() {
+			t.Fatalf("expected child to remain quarantined after verification failure, info=%#v err=%v", info, statErr)
 		}
 	})
 
@@ -1303,7 +1389,7 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 		if err != nil {
 			t.Fatalf("quarantine retry after occupied destination: %v", err)
 		}
-		if !strings.HasSuffix(quarantineName, "-1") {
+		if !strings.HasSuffix(filepath.Dir(quarantineName), "-1") {
 			t.Fatalf("expected retry quarantine suffix after occupied destination, got %q", quarantineName)
 		}
 		if err := root.Remove(quarantineName); err != nil {
@@ -1311,23 +1397,32 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("reports restore failure after quarantine verification fails", func(t *testing.T) {
+	t.Run("does not replace occupied quarantine directory", func(t *testing.T) {
 		repo := t.TempDir()
 		root := openAnalysisCacheTestRoot(t, repo)
 		_, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
-		restoreErr := os.ErrExist
+		occupiedPath := filepath.Join(repo, ".lopper-cache-rollback-keys-0")
+		if err := os.Mkdir(occupiedPath, 0o750); err != nil {
+			t.Fatalf("seed occupied quarantine directory: %v", err)
+		}
+		occupiedInfo, err := os.Lstat(occupiedPath)
+		if err != nil {
+			t.Fatalf("stat occupied quarantine directory: %v", err)
+		}
 
-		_, err := quarantineAnalysisCacheChild(
-			&restoreRenameErrorAnalysisCacheRoot{
-				Root: &lstatErrorAnalysisCacheRoot{Root: root, name: ".lopper-cache-rollback-keys-0", err: errors.New("quarantine lstat failed")},
-				name: cacheKeysDirName,
-				err:  restoreErr,
-			},
-			cacheKeysDirName,
-			childInfo,
-		)
-		if !errors.Is(err, restoreErr) {
-			t.Fatalf("expected restore error to be preserved, got %v", err)
+		quarantineName, err := quarantineAnalysisCacheChild(root, cacheKeysDirName, childInfo)
+		if err != nil {
+			t.Fatalf("quarantine retry after occupied directory: %v", err)
+		}
+		if !strings.HasSuffix(filepath.Dir(quarantineName), "-1") {
+			t.Fatalf("expected retry quarantine suffix after occupied directory, got %q", quarantineName)
+		}
+		currentInfo, err := os.Lstat(occupiedPath)
+		if err != nil || !os.SameFile(currentInfo, occupiedInfo) {
+			t.Fatalf("expected occupied quarantine directory to survive, info=%#v occupied=%#v err=%v", currentInfo, occupiedInfo, err)
+		}
+		if err := root.Remove(quarantineName); err != nil {
+			t.Fatalf("remove retried quarantine: %v", err)
 		}
 	})
 
@@ -1371,8 +1466,10 @@ func TestRollbackCreatedAnalysisCacheChildPreservesRemoveFailureAlongsideCloseEr
 	if !errors.Is(err, removeErr) {
 		t.Fatalf("expected remove error to be preserved, got %v", err)
 	}
-	if info, statErr := os.Stat(childPath); statErr != nil || !info.IsDir() {
-		t.Fatalf("expected child to remain after failed rollback, info=%#v err=%v", info, statErr)
+	assertAnalysisCachePathAbsent(t, childPath)
+	quarantinePath := filepath.Join(repo, ".lopper-cache-rollback-keys-0", cacheKeysDirName)
+	if info, statErr := os.Stat(quarantinePath); statErr != nil || !info.IsDir() {
+		t.Fatalf("expected child to remain quarantined after failed rollback, info=%#v err=%v", info, statErr)
 	}
 }
 
