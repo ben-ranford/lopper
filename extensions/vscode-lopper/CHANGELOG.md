@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.6 (2026-08-22)
+
+- Updated VS Code behavior: normalize managed binary release tags
+
 ## 1.8.5 (2026-08-12)
 
 - Updated VS Code behavior: chore(vscode): add extension icon (#1477).
