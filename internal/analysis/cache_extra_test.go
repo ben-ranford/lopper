@@ -258,6 +258,42 @@ func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 }
 
+func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	outside := t.TempDir()
+	movedRoot := filepath.Join(repo, "cache-holding")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
+	}
+
+	originalHook := analysisCacheStoreBeforePointerWriteFn
+	t.Cleanup(func() { analysisCacheStoreBeforePointerWriteFn = originalHook })
+	replaced := false
+	analysisCacheStoreBeforePointerWriteFn = func() error {
+		if replaced {
+			return nil
+		}
+		replaced = true
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		return os.Symlink(outside, cachePath)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement during pointer publish to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+}
+
 func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, cacheDirName)

@@ -118,6 +118,15 @@ func (r *WriteRoot) WriteFileCreatingParentsAtomicallyIfAbsent(targetPath string
 	})
 }
 
+// Remove deletes a root-relative path inside the pinned root.
+func (r *WriteRoot) Remove(targetPath string) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.root.Remove(target.rel)
+}
+
 func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 	if filepath.IsAbs(targetPath) {
 		return rootedTarget{}, fmt.Errorf("target path must be relative to root: %s", targetPath)
