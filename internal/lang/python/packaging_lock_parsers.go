@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -86,7 +87,7 @@ func parsePipfileLockDependencies(repoPath, path string) (map[string]struct{}, [
 	case err == nil:
 	case errors.Is(err, os.ErrNotExist):
 		return make(map[string]struct{}), nil, nil
-	case errors.Is(err, safeio.ErrFileTooLarge):
+	case shared.IsPureSentinelError(err, safeio.ErrFileTooLarge):
 		return make(map[string]struct{}), []string{fmt.Sprintf("%s: skipped %s larger than %d bytes", relativePackagingPath(repoPath, path), pythonPipfileLockName, maxPythonPackagingFileBytes)}, nil
 	default:
 		return nil, nil, fmt.Errorf("read %s: %w", relativePackagingPath(repoPath, path), err)
