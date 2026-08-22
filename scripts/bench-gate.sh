@@ -79,18 +79,22 @@ write_harness_change_requires_approval_summary() {
 };
 fail_invalid_memory_gate() {
 	diagnostic="$1";
-	summary_error="$diagnostic";
-	if [ "$#" -gt 1 ]; then summary_error="$2"; fi;
 	printf "Memory benchmark gate invalid: %s\n" "$diagnostic" >&2;
-	write_invalid_memory_summary "$summary_error";
+	if [ "$#" -gt 1 ]; then
+		write_invalid_memory_summary "$2";
+	else
+		write_invalid_memory_summary "$diagnostic";
+	fi;
 	exit 2;
 };
 report_harness_change_requires_approval() {
 	diagnostic="$1";
-	summary_error="$diagnostic";
-	if [ "$#" -gt 1 ]; then summary_error="$2"; fi;
 	printf "Memory benchmark approval required: %s\n" "$diagnostic" >&2;
-	write_harness_change_requires_approval_summary "$summary_error";
+	if [ "$#" -gt 1 ]; then
+		write_harness_change_requires_approval_summary "$2";
+	else
+		write_harness_change_requires_approval_summary "$diagnostic";
+	fi;
 	exit 0;
 };
 run_configured_go_env() {
