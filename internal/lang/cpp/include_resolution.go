@@ -422,7 +422,7 @@ func isLikelyStdHeader(header string) bool {
 		if hasOSCompilerHeaderPrefix(header) {
 			return true
 		}
-		return isKnownQualifiedStdHeader(header)
+		return isKnownCompilerQualifiedStdHeader(header)
 	}
 
 	base := strings.TrimSpace(filepath.Base(header))
@@ -443,10 +443,25 @@ func hasOSCompilerHeaderPrefix(header string) bool {
 	return false
 }
 
-func isKnownQualifiedStdHeader(header string) bool {
-	header = strings.ToLower(strings.TrimSpace(header))
-	_, ok := cppQualifiedStdHeaderSet[header]
+func isKnownCompilerQualifiedStdHeader(header string) bool {
+	if !hasCompilerQualifiedStdHeaderPrefix(header) {
+		return false
+	}
+	base := header[strings.LastIndex(header, "/")+1:]
+	if base == "" || filepath.Ext(base) != "" {
+		return false
+	}
+	_, ok := cppStdHeaderSet[strings.ToLower(base)]
 	return ok
+}
+
+func hasCompilerQualifiedStdHeaderPrefix(header string) bool {
+	for _, prefix := range []string{"backward/", "debug/", "experimental/", "ext/", "parallel/", "tr1/", "tr2/"} {
+		if strings.HasPrefix(header, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func relOrBase(repoPath, value string) string {
@@ -480,14 +495,4 @@ func isCPPSourceOrHeader(path string) bool {
 var cppStdHeaderSet = map[string]struct{}{
 	"algorithm": {}, "array": {}, "atomic": {}, "bitset": {}, "cassert": {}, "cctype": {}, "cerrno": {}, "cfenv": {}, "cfloat": {}, "charconv": {}, "chrono": {}, "cinttypes": {}, "ciso646": {}, "climits": {}, "clocale": {}, "cmath": {}, "codecvt": {}, "compare": {}, "complex": {}, "condition_variable": {}, "coroutine": {}, "csetjmp": {}, "csignal": {}, "cstdarg": {}, "cstddef": {}, "cstdint": {}, "cstdio": {}, "cstdlib": {}, "cstring": {}, "ctime": {}, "cuchar": {}, "cwchar": {}, "cwctype": {}, "deque": {}, "exception": {}, "execution": {}, "filesystem": {}, "forward_list": {}, "fstream": {}, "functional": {}, "future": {}, "initializer_list": {}, "iomanip": {}, "ios": {}, "iosfwd": {}, "iostream": {}, "istream": {}, "iterator": {}, "latch": {}, "limits": {}, "list": {}, "locale": {}, "map": {}, "memory": {}, "memory_resource": {}, "mutex": {}, "new": {}, "numbers": {}, "numeric": {}, "optional": {}, "ostream": {}, "queue": {}, "random": {}, "ranges": {}, "ratio": {}, "regex": {}, "scoped_allocator": {}, "semaphore": {}, "set": {}, "shared_mutex": {}, "source_location": {}, "span": {}, "sstream": {}, "stack": {}, "stdexcept": {}, "stop_token": {}, "streambuf": {}, "string": {}, "string_view": {}, "strstream": {}, "syncstream": {}, "system_error": {}, "thread": {}, "tuple": {}, "type_traits": {}, "typeindex": {}, "typeinfo": {}, "unordered_map": {}, "unordered_set": {}, "utility": {}, "valarray": {}, "variant": {}, "vector": {},
 	"assert": {}, "ctype": {}, "errno": {}, "float": {}, "inttypes": {}, "math": {}, "setjmp": {}, "signal": {}, "stdarg": {}, "stddef": {}, "stdint": {}, "stdio": {}, "stdlib": {}, "time": {}, "wchar": {}, "wctype": {},
-}
-
-var cppQualifiedStdHeaderSet = map[string]struct{}{
-	"backward/strstream":      {},
-	"debug/vector":            {},
-	"experimental/filesystem": {},
-	"ext/algorithm":           {},
-	"parallel/algorithm":      {},
-	"tr1/regex":               {},
-	"tr2/type_traits":         {},
 }
