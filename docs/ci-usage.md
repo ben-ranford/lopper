@@ -64,10 +64,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -78,11 +78,11 @@ jobs:
   os-smoke:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
       - run: make smoke
@@ -137,7 +137,7 @@ jobs:
   lopper:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
@@ -182,7 +182,7 @@ jobs:
 
       - name: Upsert Lopper PR comment
         if: ${{ always() }}
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         with:
           script: |
             const fs = require('node:fs');
@@ -255,7 +255,7 @@ jobs:
   lopper:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Generate Lopper SARIF
         uses: ben-ranford/lopper@v1.7.0
@@ -284,6 +284,7 @@ jobs:
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
 - `make suppression-check`: fail when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments
+- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, and `macos-26-intel`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`
@@ -293,7 +294,7 @@ jobs:
 - `make bench-gate`: compare curated memory benchmark deltas against a base ref (defaults: `MEMORY_BENCH_BASE=origin/main`, `MEMORY_BENCH_MAX_BYTES_PCT=15`, `MEMORY_BENCH_MAX_ALLOCS_PCT=10`)
 - `make cov`: run tests with coverage profile and enforce both minimum total coverage (`COVERAGE_MIN`, default `98`) and minimum per-package coverage (`COVERAGE_PACKAGE_MIN`, default `98`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
 - `make smoke`: run cross-OS smoke checks (`mod-check + test-race + build`)
-- `make ci`: `format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
+- `make ci`: `automation-integrity + format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
 - `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
 - `make toolchain-check`: verify required cross toolchain binaries plus `shellcheck`
 - `make toolchain-install`: install required OS toolchains (`go`, `zig`, `shellcheck`) on macOS/Linux
