@@ -110,18 +110,28 @@ jobs:
         run: |
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
-          if [ -n "${base_sha}" ]; then
-            git fetch --no-tags --depth=1 origin "${base_sha}"
+          if [ -z "${base_sha}" ]; then
+            echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+            exit 1
           fi
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          git fetch --no-tags origin "${base_sha}"
+          git fetch --no-tags origin "${base_ref}"
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing after fetch; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base -- "${base_sha}" HEAD >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is not related to HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then

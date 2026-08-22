@@ -242,8 +242,12 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
-		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
-		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
+		`if [ -z "${base_sha}" ]; then`,
+		`git fetch --no-tags origin "${base_sha}"`,
+		`git fetch --no-tags origin "${base_ref}"`,
+		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
+		`git merge-base -- "${base_sha}" HEAD`,
+		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
@@ -266,6 +270,7 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 
 	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify run target", []string{
+		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci`,
 	})
