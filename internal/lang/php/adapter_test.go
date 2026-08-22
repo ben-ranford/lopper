@@ -234,6 +234,88 @@ $logger = new \Monolog\Logger("app");
 	}
 }
 
+func TestPHPAdapterIgnoresNamespaceDeclarationAsDependencyUsage(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), `{
+  "packages": [
+    {
+      "name": "vendor/package",
+      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
+    }
+  ]
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+namespace Vendor\Package;
+
+final class LocalThing {}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
+		t.Fatalf("expected namespace declaration to produce no dependency usage, report=%#v", dep)
+	}
+	if !containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("expected no-import warning for namespace declaration only, got %#v", reportData.Warnings)
+	}
+}
+
+func TestPHPAdapterIgnoresMalformedGroupedUseStatement(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), `{
+  "packages": [
+    {
+      "name": "vendor/package",
+      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
+    }
+  ]
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+use Vendor\Package\{Client, Broken;
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
+		t.Fatalf("expected malformed grouped use to produce no dependency usage, report=%#v", dep)
+	}
+	if hasRiskCueCode(dep, "grouped-use-import") {
+		t.Fatalf("did not expect grouped-use-import cue from malformed grouped use, got %#v", dep.RiskCues)
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "prefer-explicit-imports" {
+			t.Fatalf("did not expect explicit-import recommendation from malformed grouped use, got %#v", dep.Recommendations)
+		}
+	}
+	if !containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("expected no-import warning for malformed grouped use, got %#v", reportData.Warnings)
+	}
+}
+
 func TestPHPAdapterMarksUsageIncompleteWhenComposerLockIsOversized(t *testing.T) {
 	repo := t.TempDir()
 	const declaredDependency = "vendor/lib"

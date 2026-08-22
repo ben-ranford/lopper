@@ -32,6 +32,7 @@ type phpLineIndex struct {
 
 var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+([^;]+);`)
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+`)
+var namespaceDeclPattern = regexp.MustCompile(`(?m)(?:^\s*|<\?php\s+)namespace\s+[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*\s*(?:;|\{)`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
 
 func parseImports(content []byte, filePath string, resolver composerResolver) ([]importBinding, map[string]int, int) {
@@ -139,17 +140,32 @@ func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath str
 }
 
 func maskUseStatementRanges(text string) string {
-	matches := useStmtPattern.FindAllStringIndex(text, -1)
-	if len(matches) == 0 {
+	masked := maskMatchedRanges(text, useStmtPattern.FindAllStringIndex(text, -1), namespaceDeclPattern.FindAllStringIndex(text, -1))
+	if masked == "" {
 		return text
 	}
-	masked := []byte(text)
-	for _, match := range matches {
-		for i := match[0]; i < match[1]; i++ {
-			if masked[i] != '\n' && masked[i] != '\r' {
-				masked[i] = ' '
+	return masked
+}
+
+func maskMatchedRanges(text string, groups ...[][]int) string {
+	var masked []byte
+	for _, matches := range groups {
+		for _, match := range matches {
+			if len(match) != 2 {
+				continue
+			}
+			if len(masked) == 0 {
+				masked = []byte(text)
+			}
+			for i := match[0]; i < match[1]; i++ {
+				if masked[i] != '\n' && masked[i] != '\r' {
+					masked[i] = ' '
+				}
 			}
 		}
+	}
+	if len(masked) == 0 {
+		return text
 	}
 	return string(masked)
 }
@@ -268,8 +284,11 @@ func parseUseStatementWithPartLimit(statement, filePath string, line int, resolv
 	if statement == "" {
 		return nil, nil, 0, 0, false
 	}
-	if bindings, groupedDeps, unresolved, consumedParts, ok, limitHit := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, partLimit); ok {
-		return bindings, groupedDeps, unresolved, consumedParts, limitHit
+	if strings.ContainsAny(statement, "{}") {
+		if bindings, groupedDeps, unresolved, consumedParts, ok, limitHit := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, partLimit); ok {
+			return bindings, groupedDeps, unresolved, consumedParts, limitHit
+		}
+		return nil, nil, 0, 0, false
 	}
 	bindings, groupedDeps, unresolved, consumedParts, limitHit := parseFlatUseStatement(statement, filePath, line, resolver, partLimit)
 	return bindings, groupedDeps, unresolved, consumedParts, limitHit

@@ -800,6 +800,17 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	}
 }
 
+func TestParseNamespaceReferencesSkipsNamespaceDeclaration(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	imports, unresolved := parseNamespaceReferences([]byte(helpersPHPHeader+"namespace Vendor\\Package;\n"), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 0 {
+		t.Fatalf("expected no namespace imports from namespace declaration, got %#v", imports)
+	}
+}
+
 func TestParseNamespaceReferencesDoesNotLetUseLinesExhaustReferenceLimit(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	var content strings.Builder
@@ -1107,6 +1118,13 @@ func TestAdditionalBranchCoverageResolverAndUseBranches(t *testing.T) {
 	imports, _, unresolved = parseUseStatement(`Unknown\Pkg\{Thing}`, "x.php", 1, unknownResolver)
 	if len(imports) != 0 || unresolved == 0 {
 		t.Fatalf("expected unresolved grouped use statement branch, imports=%#v unresolved=%d", imports, unresolved)
+	}
+	imports, grouped, unresolved := parseUseStatement(`Vendor\Package\{Client, Broken`, "x.php", 1, composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		declared:       map[string]struct{}{"vendor/package": {}},
+	})
+	if len(imports) != 0 || len(grouped) != 0 || unresolved != 0 {
+		t.Fatalf("expected malformed grouped use statement to be ignored, imports=%#v grouped=%#v unresolved=%d", imports, grouped, unresolved)
 	}
 
 	knownResolver := composerResolver{namespaceToDep: map[string]string{"Foo\\Bar": "foo/bar"}}
