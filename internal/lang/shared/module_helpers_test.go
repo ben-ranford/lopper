@@ -48,14 +48,19 @@ func TestLastModuleSegment(t *testing.T) {
 }
 
 func TestNormalizeEscapedModuleSegments(t *testing.T) {
-	assertNormalizes := func(module string, want string) {
+	type normalizationExpectation struct {
+		module string
+		want   string
+	}
+
+	assertNormalizes := func(expectation normalizationExpectation) {
 		t.Helper()
-		if got := NormalizeEscapedModuleSegments(module); got != want {
-			t.Fatalf("NormalizeEscapedModuleSegments(%q) = %q, want %q", module, got, want)
+		if got := NormalizeEscapedModuleSegments(expectation.module); got != expectation.want {
+			t.Fatalf("NormalizeEscapedModuleSegments(%q) = %q, want %q", expectation.module, got, expectation.want)
 		}
 	}
 
-	assertNormalizes("`com`.`example`.`module`", "com.example.module")
-	assertNormalizes("com.example.module", "com.example.module")
-	assertNormalizes(" `foo` . `bar` ", "foo.bar")
+	assertNormalizes(normalizationExpectation{module: "`com`.`example`.`module`", want: "com.example.module"})
+	assertNormalizes(normalizationExpectation{module: "com.example.module", want: "com.example.module"})
+	assertNormalizes(normalizationExpectation{module: " `foo` . `bar` ", want: "foo.bar"})
 }
