@@ -257,6 +257,25 @@ func TestAdapterAnalyseFindsImportsAfterFStringFormatSpecHash(t *testing.T) {
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
 }
 
+func TestAdapterAnalyseFindsImportsAfterFStringFormatSpecQuoteFill(t *testing.T) {
+	source := `value = f"{value:'<10}"` + "\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
+func TestAdapterAnalyseFindsImportsAfterMultilineFStringSliceComment(t *testing.T) {
+	source := "value = f\"\"\"{items[\n" +
+		"0: # } \"\"\" comment\n" +
+		"2\n" +
+		"]}\"\"\"\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -430,6 +449,23 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 				"import requests\n",
 			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
 			wantLine: 2,
+		},
+		{
+			name: "format spec quote fill does not start replacement string",
+			source: `value = f"{value:'<10}"` + "\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 2,
+		},
+		{
+			name: "slice colon does not start format spec before replacement comment",
+			source: "value = f\"\"\"{items[\n" +
+				"0: # } \"\"\" comment\n" +
+				"2\n" +
+				"]}\"\"\"\n" +
+				"import requests\n",
+			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
+			wantLine: 5,
 		},
 	}
 
