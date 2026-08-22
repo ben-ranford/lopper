@@ -3774,12 +3774,55 @@ func TestMakefileBenchGateFailsClosedForUnrelatedRequestedBase(t *testing.T) {
 		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
 	}
 	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
-	if !strings.Contains(output, "not related to HEAD; failing closed") {
+	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
 		t.Fatalf("expected unrelated base failure output, got:\n%s", output)
 	}
 	wantContains := []string{
 		"Comparison status: invalid",
-		"base benchmark input could not be read: requested base ref 'unrelated-base' is not related to HEAD.",
+		"base benchmark input could not be read: requested base ref 'unrelated-base' is not an ancestor of HEAD.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+}
+
+func TestMakefileBenchGateFailsClosedForRelatedNonAncestorRequestedBase(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("resolve go binary: %v", err)
+	}
+	runGitCommand(t, repo, "checkout", "-b", "side-base")
+	writeFile(t, filepath.Join(repo, "side.txt"), "side\n")
+	runGitCommand(t, repo, "add", "side.txt")
+	runGitCommand(t, repo, "commit", "-m", "side history")
+	runGitCommand(t, repo, "checkout", "main")
+	writeFile(t, filepath.Join(repo, "head.txt"), "head\n")
+	runGitCommand(t, repo, "add", "head.txt")
+	runGitCommand(t, repo, "commit", "-m", "head history")
+
+	vars := map[string]string{
+		"GO":                   goPath,
+		"GO_BIN":               goPath,
+		"GO_TOOLCHAIN":         "local",
+		"MEMORY_BENCH_BASE":    "side-base",
+		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
+		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
+		t.Fatalf("expected non-ancestor base failure output, got:\n%s", output)
+	}
+	if strings.Contains(output, "Running memory benchmark delta against") {
+		t.Fatalf("bench-gate must reject non-ancestor base before benchmarking:\n%s", output)
+	}
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark input could not be read: requested base ref 'side-base' is not an ancestor of HEAD.",
 	}
 	wantOmit := []string{
 		"Result: memory benchmark gate passed.",

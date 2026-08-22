@@ -243,10 +243,11 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`base_sha="${BASE_SHA:-}"`,
 		`if [ -z "${base_sha}" ]; then`,
+		`base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"`,
 		`git fetch --no-tags origin "${base_sha}"`,
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
-		`git merge-base -- "${base_sha}" HEAD`,
+		`git merge-base --is-ancestor "${base_sha}" HEAD`,
 		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 
@@ -259,6 +260,39 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	})
 	assertWorkflowStepRunContainsAll(t, proof, "regression proof step", []string{
 		`go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+	})
+}
+
+func TestCIWorkflowUsesActOnlyImmutablePRBaseFallback(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base act fallback", []string{
+		`if [ -n "${ACT:-}" ]; then`,
+		`base_sha="$(git rev-parse --verify -q --end-of-options "HEAD^")"`,
+		`ACT pull_request event payload omitted PR base SHA; using immutable HEAD^ fallback ${base_sha}.`,
+		`echo "::error::ACT pull_request event payload omitted PR base SHA and HEAD^ is unavailable; cannot prepare memory benchmark base." >&2`,
+	})
+}
+
+func TestCIWorkflowFailsClosedWithoutHostedPRBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base hosted guard", []string{
+		`echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2`,
+		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null`,
+		`git merge-base --is-ancestor "${base_sha}" HEAD`,
+		`echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2`,
+	})
+	assertWorkflowStepRunOmitsAll(t, fetchBase, "fetch PR base hosted guard", []string{
+		`git merge-base -- "${base_sha}" HEAD`,
 	})
 }
 
