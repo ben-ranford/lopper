@@ -14,8 +14,6 @@ var (
 	exactPythonVersionPattern     = regexp.MustCompile(`(?i)^(?:[0-9]+!)?[0-9]+(?:\.[0-9]+)*(?:[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?[0-9]*)?(?:(?:-[0-9]+)|(?:[-_.]?(?:post|rev|r)[-_.]?[0-9]*))?(?:[-_.]?dev[-_.]?[0-9]*)?(?:\+[a-z0-9]+(?:[-_.][a-z0-9]+)*)?$`)
 )
 
-const pythonIdentityManifestReadLimit int64 = 1 << 20
-
 func collectPyprojectManifestEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
 	document, ok := readPythonManifestDocument(repoPath, path, warnings)
 	if !ok {
@@ -44,7 +42,7 @@ func collectPipfileManifestEvidence(repoPath, path string, index identityIndex, 
 }
 
 func readPythonManifestDocument(repoPath, path string, warnings *identityWarningCollector) (map[string]any, bool) {
-	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonIdentityManifestReadLimit)
+	data, err := safeio.ReadFileUnder(repoPath, path)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nil, false

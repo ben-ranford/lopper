@@ -220,11 +220,11 @@ func TestPythonManifestDiscoveryIsGatedByReportLanguage(t *testing.T) {
 	}
 }
 
-func TestPythonManifestIdentityReadIsBounded(t *testing.T) {
+func TestPythonManifestIdentityReadsLargeAdapterSupportedManifest(t *testing.T) {
 	repoPath := t.TempDir()
-	const oversizedManifestBytes = 1<<20 + 1
+	const largeManifestBytes = 1<<20 + 1
 	body := "[project]\ndependencies = [\"requests==2.32.3\"]\n" +
-		strings.Repeat("# filler\n", oversizedManifestBytes/len("# filler\n")+1)
+		strings.Repeat("# filler\n", largeManifestBytes/len("# filler\n")+1)
 	testutil.MustWriteFile(t, filepath.Join(repoPath, pythonProjectFileName), body)
 	reportData := report.Report{Dependencies: []report.DependencyReport{
 		{Language: "python", Name: "requests"},
@@ -232,10 +232,12 @@ func TestPythonManifestIdentityReadIsBounded(t *testing.T) {
 
 	annotateDependencyIdentities(repoPath, &reportData)
 
-	assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", "requests"), "pypi", "requests")
-	assertWarningsExact(t, repoPath, reportData.Warnings, []string{
-		"identity manifest read failed for pyproject.toml: file exceeds size limit",
+	assertIdentity(t, findIdentityDependency(t, reportData, "python", "requests"), report.DependencyIdentity{
+		Ecosystem: "pypi", Name: "requests", Version: "2.32.3", VersionStatus: identityStatusDeclared,
+		PURL: "pkg:pypi/requests@2.32.3", PURLStatus: identityStatusResolved,
+		Source: pythonProjectFileName, Confidence: "high",
 	})
+	assertWarningsExact(t, repoPath, reportData.Warnings, nil)
 }
 
 func TestPythonManifestEvidenceWarnsOnMalformedTOML(t *testing.T) {
