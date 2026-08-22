@@ -1245,6 +1245,10 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
 		`git merge-base --is-ancestor "${base_sha}" HEAD`,
+		`checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"`,
+		`checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"`,
+		`git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"`,
+		`base_sha="${checkout_base_sha}"`,
 		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 

@@ -154,6 +154,11 @@ jobs:
             echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
+          checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"
+          checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
+          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
+            base_sha="${checkout_base_sha}"
+          fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target
@@ -1385,6 +1390,11 @@ jobs:
           if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
             echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
+          fi
+          checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"
+          checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
+          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
+            base_sha="${checkout_base_sha}"
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
