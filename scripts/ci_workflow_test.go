@@ -407,28 +407,41 @@ func TestCIWorkflowACTPullRequestFallbackUsesTrueMergeBase(t *testing.T) {
 	}
 }
 
-func TestCIWorkflowACTPullRequestFallbackFailsClosedWithoutResolvableBaseBranch(t *testing.T) {
+func TestCIWorkflowACTPullRequestFallbackFailsClosedWithoutLocalMain(t *testing.T) {
 	t.Parallel()
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	resolveBase := workflowStepByName(t, workflow.Jobs, "verify", ciWorkflowResolveBaseStepName)
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", ciWorkflowFetchBaseStepName)
 	repo := initCIWorkflowGitRepo(t)
 	commitCIWorkflowGitFile(t, repo, "fixture.txt", "base\n", "base")
 	commitCIWorkflowTrackedFile(t, repo, "fixture.txt", "head\n", "head")
 
-	output, err := runCIWorkflowShellStep(t, repo, resolveBase.Run, map[string]string{
+	resolveEnvPath := filepath.Join(t.TempDir(), "resolve.env")
+	resolveOutput, err := runCIWorkflowShellStep(t, repo, resolveBase.Run, map[string]string{
 		"ACT":         "1",
-		"GITHUB_ENV":  filepath.Join(t.TempDir(), "resolve.env"),
+		"GITHUB_ENV":  resolveEnvPath,
 		"PR_BASE_REF": "",
 		"PR_BASE_SHA": "",
 	})
-	if err == nil {
-		t.Fatal("resolve PR base ref succeeded without pull_request.base.ref or origin/HEAD")
+	if err != nil {
+		t.Fatalf("resolve PR base ref failed for default ACT base: %v\n%s", err, resolveOutput)
 	}
-	if !strings.Contains(output, "require pull_request.base.ref or origin/HEAD to resolve an immutable local base branch") {
-		t.Fatalf("resolve PR base ref output = %q, want fail-closed base-branch resolution error", output)
+	resolvedEnv := readCIWorkflowEnvFile(t, resolveEnvPath)
+	output, err := runCIWorkflowShellStep(t, repo, fetchBase.Run, map[string]string{
+		"ACT":         "1",
+		"GITHUB_ENV":  filepath.Join(t.TempDir(), "fetch.env"),
+		"BASE_SOURCE": resolvedEnv["BASE_SOURCE"],
+		"BASE_SHA":    resolvedEnv["BASE_SHA"],
+		"BASE_REF":    resolvedEnv["BASE_REF"],
+	})
+	if err == nil {
+		t.Fatal("fetch PR base succeeded without origin/main")
+	}
+	if !strings.Contains(output, "ACT local base branch 'origin/main' could not be fetched") {
+		t.Fatalf("fetch PR base output = %q, want fail-closed default-base error", output)
 	}
 }
 
@@ -542,13 +555,10 @@ func assertCIWorkflowPreparedBaseResolverStep(t *testing.T, step workflowStepCon
 		"PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
 	})
 	assertWorkflowStepRunContainsAll(t, step, label, []string{
-		`base_ref="${PR_BASE_REF:-}"`,
+		`base_ref="${PR_BASE_REF:-main}"`,
 		`base_sha="${PR_BASE_SHA:-}"`,
 		`base_source="github-event"`,
 		`if [ -n "${ACT:-}" ] && [ -z "${base_sha}" ]; then`,
-		`git remote set-head origin --auto >/dev/null 2>&1 || true`,
-		`base_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"`,
-		`base_ref="${base_ref#origin/}"`,
 		`base_source="act-merge-base"`,
 		`printf 'BASE_SOURCE=%s\n' "${base_source}"`,
 		`printf 'BASE_SHA=%s\n' "${base_sha}"`,
@@ -556,7 +566,8 @@ func assertCIWorkflowPreparedBaseResolverStep(t *testing.T, step workflowStepCon
 		`} >> "$GITHUB_ENV"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, step, label, []string{
-		`base_ref="${PR_BASE_REF:-main}"`,
+		`refs/remotes/origin/HEAD`,
+		`git remote set-head origin --auto`,
 		`HEAD^`,
 	})
 }
@@ -569,7 +580,7 @@ func assertCIWorkflowPreparedBaseFetchStep(t *testing.T, step workflowStepConfig
 		`base_sha="${BASE_SHA:-}"`,
 		`base_source="${BASE_SOURCE:-github-event}"`,
 		`if [ "${base_source}" = "act-merge-base" ]; then`,
-		`git fetch --no-tags origin "${base_ref}"`,
+		`if ! git fetch --no-tags origin "${base_ref}"; then`,
 		`git rev-parse --verify -q --end-of-options "origin/${base_ref}^{commit}"`,
 		`base_sha="$(git merge-base "origin/${base_ref}" HEAD 2>/dev/null)"`,
 		`printf 'BASE_SHA=%s\n' "${base_sha}"`,

@@ -3193,12 +3193,12 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Memory benchmark GO_BIN: $$go_bin_path"`,
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
-		`requested base ref '$$base_ref' is not an ancestor of HEAD`,
+		`requested base ref '$$base_ref' is not related to HEAD`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
 		`base_commit=$$(git rev-parse --verify -q --end-of-options "$$base_ref^{commit}" 2>/dev/null)`,
-		`git merge-base --is-ancestor "$$base_commit" HEAD >/dev/null 2>&1`,
+		`base_commit=$$(git merge-base -- "$$base_commit" HEAD 2>/dev/null)`,
 		`{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}`,
 		`{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}`,
 		`-list '^Benchmark' "$$bench_pkg"`,
@@ -3236,7 +3236,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`falling back to 'HEAD~1'`,
 		`No valid memory benchmark base ref found; skipping memory benchmark gate.`,
 		`is not an ancestor of HEAD; skipping memory benchmark gate.`,
-		`git merge-base -- "$$base_ref" HEAD`,
+		`git merge-base --is-ancestor "$$base_commit" HEAD`,
 		`head benchmark selection is ambiguous across packages`,
 		`{{range .GoFiles}}`,
 		`prepare_artifact_parent`,
@@ -3780,21 +3780,14 @@ func TestMakefileBenchGateFailsClosedForUnrelatedRequestedBase(t *testing.T) {
 	runGitCommand(t, repo, "commit", "-m", "unrelated history")
 	runGitCommand(t, repo, "checkout", "main")
 
-	vars := map[string]string{
-		"GO":                   goPath,
-		"GO_BIN":               goPath,
-		"GO_TOOLCHAIN":         "local",
-		"MEMORY_BENCH_BASE":    "unrelated-base",
-		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
-		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
-	}
+	vars := benchGateBaseEnv(goPath, "unrelated-base")
 	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
-	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
+	if !strings.Contains(output, "not related to HEAD; failing closed") {
 		t.Fatalf("expected unrelated base failure output, got:\n%s", output)
 	}
 	wantContains := []string{
 		"Comparison status: invalid",
-		"base benchmark input could not be read: requested base ref 'unrelated-base' is not an ancestor of HEAD.",
+		"base benchmark input could not be read: requested base ref 'unrelated-base' is not related to HEAD.",
 	}
 	wantOmit := []string{
 		"Result: memory benchmark gate passed.",
@@ -3803,14 +3796,15 @@ func TestMakefileBenchGateFailsClosedForUnrelatedRequestedBase(t *testing.T) {
 	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
 }
 
-func TestMakefileBenchGateRejectsNonAncestorRequestedBase(t *testing.T) {
+func TestMakefileBenchGateUsesMergeBaseForRelatedMovingRequestedBase(t *testing.T) {
 	t.Parallel()
 
-	repo := newTempBenchGateRepo(t)
-	goPath, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatalf("resolve go binary: %v", err)
-	}
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkMovingBase"))
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "commit", "-m", "add benchmark package")
 	runGitCommand(t, repo, "checkout", "-b", "topic-base")
 	writeFile(t, filepath.Join(repo, "topic.txt"), "topic\n")
 	runGitCommand(t, repo, "add", "topic.txt")
@@ -3819,28 +3813,19 @@ func TestMakefileBenchGateRejectsNonAncestorRequestedBase(t *testing.T) {
 	writeFile(t, filepath.Join(repo, "README.md"), "head\n")
 	runGitCommand(t, repo, "commit", "-am", "head")
 
-	vars := map[string]string{
-		"GO":                   goPath,
-		"GO_BIN":               goPath,
-		"GO_TOOLCHAIN":         "local",
-		"MEMORY_BENCH_BASE":    "topic-base",
-		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
-		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
+	benchVars["MEMORY_BENCH_BASE"] = "topic-base"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0\n%s", exitCode, output)
 	}
-	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
-	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
-		t.Fatalf("expected non-ancestor base failure output, got:\n%s", output)
+	if !strings.Contains(output, "Applied base benchmark definition:") {
+		t.Fatalf("bench-gate output missing applied base definition:\n%s", output)
 	}
-	wantContains := []string{
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{
 		"Comparison status: invalid",
-		"base benchmark input could not be read: requested base ref 'topic-base' is not an ancestor of HEAD.",
-	}
-	wantOmit := []string{
-		"Applied base benchmark definition:",
-		"Result: memory benchmark gate passed.",
 		"Result: memory benchmark regression detected.",
-	}
-	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+	})
 }
 
 func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
@@ -6139,6 +6124,17 @@ func newTempBenchGateRepo(t *testing.T) string {
 	runGitCommand(t, root, "add", "README.md", "Makefile")
 	runGitCommand(t, root, "commit", "-m", "baseline")
 	return root
+}
+
+func benchGateBaseEnv(goPath string, baseRef string) map[string]string {
+	return map[string]string{
+		"GO":                   goPath,
+		"GO_BIN":               goPath,
+		"GO_TOOLCHAIN":         "local",
+		"MEMORY_BENCH_BASE":    baseRef,
+		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
+		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
+	}
 }
 
 func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {

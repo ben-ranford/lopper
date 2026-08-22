@@ -91,17 +91,12 @@ jobs:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          base_ref="${PR_BASE_REF:-}"
+          base_ref="${PR_BASE_REF:-main}"
           base_sha="${PR_BASE_SHA:-}"
           base_source="github-event"
           if [ -n "${ACT:-}" ] && [ -z "${base_sha}" ]; then
             if [ -z "${base_ref}" ]; then
-              git remote set-head origin --auto >/dev/null 2>&1 || true
-              base_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-              base_ref="${base_ref#origin/}"
-            fi
-            if [ -z "${base_ref}" ]; then
-              echo "::error::ACT pull_request runs without pull_request.base.sha require pull_request.base.ref or origin/HEAD to resolve an immutable local base branch." >&2
+              echo "::error::ACT pull_request runs without pull_request.base.sha require pull_request.base.ref or the default 'main' base branch to resolve an immutable local base branch." >&2
               exit 1
             fi
             base_source="act-merge-base"
@@ -136,7 +131,10 @@ jobs:
               echo "::error::ACT local base branch is unavailable; cannot resolve immutable local base." >&2
               exit 1
             fi
-            git fetch --no-tags origin "${base_ref}"
+            if ! git fetch --no-tags origin "${base_ref}"; then
+              echo "::error::ACT local base branch 'origin/${base_ref}' could not be fetched; cannot resolve immutable local base." >&2
+              exit 1
+            fi
             if ! git rev-parse --verify -q --end-of-options "origin/${base_ref}^{commit}" >/dev/null; then
               echo "::error::ACT local base branch 'origin/${base_ref}' is missing after fetch; cannot resolve immutable local base." >&2
               exit 1

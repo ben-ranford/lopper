@@ -308,9 +308,9 @@ if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit
 	echo "Memory benchmark base ref '$base_ref' is missing or invalid; failing closed.";
 	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is missing or invalid.";
 fi;
-if ! git merge-base --is-ancestor "$base_commit" HEAD >/dev/null 2>&1; then
-	echo "Memory benchmark base ref '$base_ref' is not an ancestor of HEAD; failing closed.";
-	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not an ancestor of HEAD.";
+if ! base_commit=$(git merge-base -- "$base_commit" HEAD 2>/dev/null); then
+	echo "Memory benchmark base ref '$base_ref' is not related to HEAD; failing closed.";
+	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not related to HEAD.";
 fi;
 bench_dir=$(mktemp -d);
 base_tree="$bench_dir/base";
