@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -19,15 +18,11 @@ func fallbackAtomicIfAbsent(root Root, tempRel, targetRel string, tempInfo fs.Fi
 	if !windowsHardLinkUnsupported(linkErr, tempRel, targetRel) {
 		return linkErr
 	}
-	named, ok := root.(namedRoot)
-	if !ok {
-		return linkErr
-	}
 	rootInfo, err := root.Lstat(".")
 	if err != nil {
 		return errors.Join(linkErr, err)
 	}
-	if err := windowsNoReplaceRenameFn(named.rootName(), rootInfo, tempRel, targetRel, tempInfo); err != nil {
+	if err := windowsNoReplaceRenameFn(root, rootInfo, tempRel, targetRel, tempInfo); err != nil {
 		return errors.Join(linkErr, err)
 	}
 	return nil
@@ -47,7 +42,7 @@ func windowsHardLinkUnsupported(err error, oldName, newName string) bool {
 		errors.Is(linkErr.Err, syscall.Errno(1))
 }
 
-func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targetRel string, tempInfo fs.FileInfo) (returnErr error) {
+func windowsNoReplaceRename(root Root, rootInfo fs.FileInfo, tempRel, targetRel string, tempInfo fs.FileInfo) (returnErr error) {
 	if tempInfo == nil {
 		return fmt.Errorf("temporary file info unavailable before no-replace publish: %s", targetRel)
 	}
@@ -55,7 +50,7 @@ func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targ
 		return fmt.Errorf("windows no-replace publish requires parent-relative names: %s -> %s", tempRel, targetRel)
 	}
 
-	parentFile, err := openWindowsDirectory(rootName)
+	parentFile, err := openWindowsRootDirectory(root)
 	if err != nil {
 		return err
 	}
@@ -71,7 +66,7 @@ func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targ
 		return fmt.Errorf("parent root changed before no-replace publish: %s", targetRel)
 	}
 
-	tempFile, err := openWindowsFileNoFollow(filepath.Join(rootName, tempRel))
+	tempFile, err := openWindowsFileNoFollow(syscall.Handle(parentFile.Fd()), tempRel)
 	if err != nil {
 		return err
 	}
@@ -90,101 +85,119 @@ func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targ
 	return ntRenameNoReplace(syscall.Handle(tempFile.Fd()), syscall.Handle(parentFile.Fd()), targetRel)
 }
 
-func openWindowsDirectory(path string) (*os.File, error) {
-	pathp, normalizedPath, err := windowsCreateFilePath(path)
-	if err != nil {
-		return nil, err
-	}
-	handle, err := syscall.CreateFile(
-		pathp,
-		syscall.GENERIC_READ,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
-		nil,
-		syscall.OPEN_EXISTING,
-		syscall.FILE_FLAG_BACKUP_SEMANTICS,
-		0,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return os.NewFile(uintptr(handle), normalizedPath), nil
+type windowsHandleFile interface {
+	File
+	Fd() uintptr
 }
 
-func openWindowsFileNoFollow(path string) (*os.File, error) {
-	pathp, normalizedPath, err := windowsCreateFilePath(path)
+func openWindowsRootDirectory(root Root) (windowsHandleFile, error) {
+	file, err := root.Open(".")
 	if err != nil {
 		return nil, err
 	}
-	handle, err := syscall.CreateFile(
-		pathp,
+	handleFile, ok := file.(windowsHandleFile)
+	if !ok {
+		return nil, closeFileWithError(file, fmt.Errorf("windows no-replace root handle unavailable"))
+	}
+	return handleFile, nil
+}
+
+func openWindowsFileNoFollow(root syscall.Handle, name string) (*os.File, error) {
+	objAttrs, err := newWindowsObjectAttributes(root, name)
+	if err != nil {
+		return nil, err
+	}
+	var handle syscall.Handle
+	status, _, _ := procNtOpenFile.Call(
+		uintptr(unsafe.Pointer(&handle)),
 		windowsDeleteAccess|syscall.SYNCHRONIZE,
-		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
-		nil,
-		syscall.OPEN_EXISTING,
-		syscall.FILE_FLAG_OPEN_REPARSE_POINT,
-		0,
+		uintptr(unsafe.Pointer(objAttrs)),
+		uintptr(unsafe.Pointer(&ioStatusBlock{})),
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|windowsFileShareDelete,
+		windowsFileOpenReparsePoint|windowsFileOpenForBackupIntent|windowsFileSynchronousIONonAlert,
 	)
-	if err != nil {
-		return nil, err
+	if status != 0 {
+		return nil, ntStatusError(status)
 	}
-	return os.NewFile(uintptr(handle), normalizedPath), nil
-}
-
-func windowsCreateFilePath(path string) (*uint16, string, error) {
-	normalizedPath := windowsCreateFilePathName(path)
-	pathp, err := syscall.UTF16PtrFromString(normalizedPath)
-	return pathp, normalizedPath, err
-}
-
-func windowsCreateFilePathName(path string) string {
-	cleaned := filepath.Clean(path)
-	if strings.HasPrefix(cleaned, `\\?\`) || strings.HasPrefix(cleaned, `\\.\`) {
-		return cleaned
-	}
-	if strings.HasPrefix(cleaned, `\\`) {
-		return `\\?\UNC\` + strings.TrimPrefix(cleaned, `\\`)
-	}
-	if filepath.IsAbs(cleaned) {
-		return `\\?\` + cleaned
-	}
-	return cleaned
+	return os.NewFile(uintptr(handle), name), nil
 }
 
 type ioStatusBlock struct {
 	status, information uintptr
 }
 
+type ntUnicodeString struct {
+	length        uint16
+	maximumLength uint16
+	buffer        *uint16
+}
+
+type objectAttributes struct {
+	length             uint32
+	rootDirectory      syscall.Handle
+	objectName         *ntUnicodeString
+	attributes         uint32
+	securityDescriptor uintptr
+	securityQoS        uintptr
+}
+
 type fileRenameInformation struct {
 	replaceIfExists byte
 	rootDirectory   syscall.Handle
 	fileNameLength  uint32
-	fileName        [syscall.MAX_PATH]uint16
+	fileName        [1]uint16
 }
 
+var procNtOpenFile = syscall.NewLazyDLL("ntdll.dll").NewProc("NtOpenFile")
 var procNtSetInformationFile = syscall.NewLazyDLL("ntdll.dll").NewProc("NtSetInformationFile")
 var procRtlNtStatusToDosError = syscall.NewLazyDLL("ntdll.dll").NewProc("RtlNtStatusToDosError")
 
 const fileRenameInformationClass = 10
 const windowsDeleteAccess = 0x00010000
+const maxWindowsRenameTargetUTF16 = 32767
+const windowsFileShareDelete = 0x00000004
+const windowsFileOpenForBackupIntent = 0x00004000
+const windowsFileSynchronousIONonAlert = 0x00000020
+const windowsFileOpenReparsePoint = 0x00200000
+
+func newWindowsObjectAttributes(root syscall.Handle, name string) (*objectAttributes, error) {
+	objectName, err := newNTUnicodeString(name)
+	if err != nil {
+		return nil, err
+	}
+	return &objectAttributes{
+		length:        uint32(unsafe.Sizeof(objectAttributes{})),
+		rootDirectory: root,
+		objectName:    objectName,
+	}, nil
+}
+
+func newNTUnicodeString(name string) (*ntUnicodeString, error) {
+	p16, err := syscall.UTF16FromString(name)
+	if err != nil {
+		return nil, err
+	}
+	byteLength := len(p16) * 2
+	if byteLength > (1<<16)-1 {
+		return nil, syscall.EINVAL
+	}
+	return &ntUnicodeString{
+		length:        uint16(byteLength - 2),
+		maximumLength: uint16(byteLength),
+		buffer:        &p16[0],
+	}, nil
+}
 
 func ntRenameNoReplace(source, targetRoot syscall.Handle, targetRel string) error {
-	p16, err := syscall.UTF16FromString(targetRel)
+	renameInfo, err := newFileRenameInformation(targetRoot, targetRel)
 	if err != nil {
 		return err
 	}
-	if len(p16) > len(fileRenameInformation{}.fileName) {
-		return syscall.EINVAL
-	}
-	info := fileRenameInformation{
-		rootDirectory:  targetRoot,
-		fileNameLength: uint32((len(p16) - 1) * 2),
-	}
-	copy(info.fileName[:], p16)
 	status, _, _ := procNtSetInformationFile.Call(
 		uintptr(source),
 		uintptr(unsafe.Pointer(&ioStatusBlock{})),
-		uintptr(unsafe.Pointer(&info)),
-		unsafe.Sizeof(info),
+		uintptr(unsafe.Pointer(&renameInfo[0])),
+		uintptr(len(renameInfo)),
 		fileRenameInformationClass,
 	)
 	if status != 0 {
@@ -195,6 +208,36 @@ func ntRenameNoReplace(source, targetRoot syscall.Handle, targetRel string) erro
 		return err
 	}
 	return nil
+}
+
+func newFileRenameInformation(targetRoot syscall.Handle, targetRel string) ([]byte, error) {
+	p16, err := syscall.UTF16FromString(targetRel)
+	if err != nil {
+		return nil, err
+	}
+	nameLength := len(p16) - 1
+	if nameLength == 0 {
+		return nil, syscall.EINVAL
+	}
+	if nameLength > maxWindowsRenameTargetUTF16 {
+		return nil, syscall.Errno(206)
+	}
+	fileNameOffset := unsafe.Offsetof(fileRenameInformation{}.fileName)
+	fileNameBytes := nameLength * 2
+	renameInfo := make([]byte, int(fileNameOffset)+fileNameBytes)
+	info := (*fileRenameInformation)(unsafe.Pointer(&renameInfo[0]))
+	info.rootDirectory = targetRoot
+	info.fileNameLength = uint32(fileNameBytes)
+	fileName := unsafe.Slice(&info.fileName[0], nameLength)
+	copy(fileName, p16[:nameLength])
+	return renameInfo, nil
+}
+
+func fileRenameInformationView(buffer []byte) *fileRenameInformation {
+	if len(buffer) == 0 {
+		return nil
+	}
+	return (*fileRenameInformation)(unsafe.Pointer(&buffer[0]))
 }
 
 func ntStatusError(status uintptr) error {
