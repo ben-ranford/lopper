@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -304,8 +305,12 @@ func reachableVulnerabilityThresholdEnabled(threshold string) bool {
 
 func hasOversizedRubyGemspecDeclarationWarning(warnings []string) bool {
 	for _, warning := range warnings {
-		normalized := strings.ToLower(warning)
-		if strings.HasPrefix(normalized, "skipped ") && strings.Contains(normalized, ".gemspec because it exceeds ") {
+		path, found := strings.CutPrefix(warning, "skipped ")
+		if !found {
+			continue
+		}
+		path, _, found = strings.Cut(path, " because it exceeds ")
+		if found && strings.EqualFold(filepath.Ext(path), ".gemspec") {
 			return true
 		}
 	}

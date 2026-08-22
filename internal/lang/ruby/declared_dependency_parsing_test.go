@@ -55,7 +55,7 @@ func testRubyLoadGemspecDependenciesReturnsReadError(t *testing.T) {
 }
 
 func TestRubyLoadGemspecDependenciesSkipsOversizedGemspec(t *testing.T) {
-	for _, filename := range []string{"oversized.gemspec", "oversized.GEMSPEC", "oversized.GeMsPeC"} {
+	for _, filename := range []string{"oversized.gemspec", "oversized.GEMSPEC", "oversized.GeMsPeC", "oversized.gem\u017fpec"} {
 		t.Run(filename, func(t *testing.T) {
 			repo := t.TempDir()
 			testutil.MustWritePaddedFile(t, filepath.Join(repo, filename), "spec.add_dependency 'oversized'\n", gemspecRegressionLimitBytes+1)

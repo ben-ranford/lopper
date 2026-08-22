@@ -209,6 +209,10 @@ func TestValidateReachableVulnerabilityThresholdFailsClosedForOversizedRubyGemsp
 			name:    "mixed case extension",
 			warning: "skipped oversized.GeMsPeC because it exceeds 1048576 bytes",
 		},
+		{
+			name:    "unicode simple-fold extension",
+			warning: "skipped oversized.gem\u017fpec because it exceeds 1048576 bytes",
+		},
 	}
 
 	for _, tc := range warningCases {
