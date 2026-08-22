@@ -480,6 +480,18 @@ func TestCIWorkflowFetchPRBaseRejectsNonAncestorBaseSHA(t *testing.T) {
 func TestCIWorkflowHostedPullRequestWithoutBaseSHAFailsClosed(t *testing.T) {
 	t.Parallel()
 
+	assertCIWorkflowHostedPullRequestWithoutBaseSHAFailsClosed(t)
+}
+
+func TestCIWorkflowHostedPullRequestWithoutBaseSHAIgnoresInheritedBaseSHA(t *testing.T) {
+	t.Setenv("BASE_SHA", "1d020ed342f184786ba7525d456939f701193cfb")
+
+	assertCIWorkflowHostedPullRequestWithoutBaseSHAFailsClosed(t)
+}
+
+func assertCIWorkflowHostedPullRequestWithoutBaseSHAFailsClosed(t *testing.T) {
+	t.Helper()
+
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
@@ -762,12 +774,23 @@ func runCIWorkflowShellStep(t *testing.T, repo string, script string, env map[st
 
 	cmd := exec.Command("/bin/bash", "-euo", "pipefail", "-c", script)
 	cmd.Dir = repo
-	cmd.Env = os.Environ()
+	cmd.Env = minimalCIWorkflowShellStepEnv()
 	for key, value := range env {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+func minimalCIWorkflowShellStepEnv() []string {
+	keys := []string{"PATH", "HOME", "TMPDIR"}
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			values = append(values, key+"="+value)
+		}
+	}
+	return values
 }
 
 func readCIWorkflowEnvFile(t *testing.T, path string) map[string]string {
