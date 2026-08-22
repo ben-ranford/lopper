@@ -265,24 +265,34 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafe
 	}
 
 	postWriteCalls := 0
+	postWriteErr := errors.New("post-write validation failure")
 	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, targetFile, true, pinnedReplacementChecks{
 		postWrite: func() error {
 			postWriteCalls++
-			return errors.New("post-write validation failure")
+			if string(*targetData) != "after" {
+				t.Fatalf("expected fallback overwrite before post-write check, got %q", string(*targetData))
+			}
+			return postWriteErr
 		},
 		rollbackOnPostWriteFailure: true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
-		t.Fatalf("expected rollback-required fallback rejection, got %v", err)
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write validation error, got %v", err)
 	}
-	if postWriteCalls != 0 {
-		t.Fatalf("expected post-write check to be skipped after fallback rejection, got %d", postWriteCalls)
+	if err == nil || !strings.Contains(err.Error(), "committed target changed before rollback") {
+		t.Fatalf("expected fallback rollback safety error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
+		t.Fatalf("replace-existing fallback should not reject before post-write validation, got %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected post-write check after fallback overwrite, got %d calls", postWriteCalls)
 	}
 	if removeCalls != 1 {
 		t.Fatalf("expected only temp cleanup remove, got %d removes", removeCalls)
 	}
-	if string(*targetData) != "before" {
-		t.Fatalf("expected fallback target data to remain unchanged, got %q", string(*targetData))
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback target data to be overwritten, got %q", string(*targetData))
 	}
 }
 
@@ -431,7 +441,7 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 	}
 }
 
-func TestFallbackAtomicReplacementRejectsRollbackRequiredBeforeMutation(t *testing.T) {
+func TestFallbackAtomicReplacementAllowsRollbackRequiredReplacement(t *testing.T) {
 	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
 		t.Fatalf("seed target info path: %v", err)
@@ -439,30 +449,34 @@ func TestFallbackAtomicReplacementRejectsRollbackRequiredBeforeMutation(t *testi
 	info := statTestPath(t, infoPath)
 	target := &windowsFallbackTarget{data: []byte("before")}
 	targetFile := target.file(t, info)
+	lstatCalls := 0
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
-			t.Fatalf("rollback-required fallback should not lstat %s", name)
-			return nil, nil
+			if name != writeTestFileName {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			lstatCalls++
+			return info, nil
 		},
 		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
-			t.Fatalf("rollback-required fallback should not open %s", name)
+			t.Fatalf("fallback should use the supplied pinned target, not open %s", name)
 			return nil, nil
 		},
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
 	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr, true)
-	if !errors.Is(err, renameErr) {
-		t.Fatalf("expected original rename error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected rollback-required fallback overwrite to succeed, got %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
-		t.Fatalf("expected rollback-required fallback rejection, got %v", err)
+	if lstatCalls != 2 {
+		t.Fatalf("expected pre- and post-overwrite target validation, got %d lstat calls", lstatCalls)
 	}
-	if target.truncateCalls != 0 || target.writeCalls != 0 {
-		t.Fatalf("target mutated before rejection: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
+	if target.truncateCalls != 1 || target.writeCalls != 1 {
+		t.Fatalf("expected one fallback overwrite: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
 	}
-	if string(target.data) != "before" {
-		t.Fatalf("expected target data to remain unchanged, got %q", string(target.data))
+	if string(target.data) != "after" {
+		t.Fatalf("expected target data to be overwritten, got %q", string(target.data))
 	}
 }
 

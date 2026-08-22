@@ -9,12 +9,9 @@ import (
 	"syscall"
 )
 
-func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error, rollbackOnPostWriteFailure bool) (returnErr error) {
+func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error, _ bool) (returnErr error) {
 	if !windowsReplaceExistingRenameFallback(renameErr, oldName, newName) {
 		return renameErr
-	}
-	if rollbackOnPostWriteFailure {
-		return errors.Join(renameErr, rollbackRequiredFallbackError(newName))
 	}
 
 	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, newName, replacementFile)
