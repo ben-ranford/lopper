@@ -6126,7 +6126,7 @@ func newTempBenchGateRepo(t *testing.T) string {
 	return root
 }
 
-func benchGateBaseEnv(goPath string, baseRef string) map[string]string {
+func benchGateBaseEnv(goPath, baseRef string) map[string]string {
 	return map[string]string{
 		"GO":                   goPath,
 		"GO_BIN":               goPath,
