@@ -3542,6 +3542,9 @@ func advisoryFailManifestRename(t *testing.T) func(string, string) error {
 		if !strings.Contains(oldName, ".safeio-atomic-") {
 			t.Fatalf("expected staged rename source, got %q", oldName)
 		}
+		if strings.Contains(newName, ".safeio-atomic-") {
+			return nil
+		}
 		if newName != manifestFileName {
 			t.Fatalf("expected rename target %q, got %q", manifestFileName, newName)
 		}

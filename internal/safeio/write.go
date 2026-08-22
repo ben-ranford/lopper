@@ -439,7 +439,43 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
 		return nil
 	}
-	return cleanupAtomicTempFile(root, tempRel, nil)
+	cleanupRel, err := quarantineAtomicTempFile(root, tempRel)
+	if err != nil {
+		return err
+	}
+	if cleanupRel == "" {
+		return nil
+	}
+	cleanupInfo, err := root.Lstat(cleanupRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !cleanupInfo.Mode().IsRegular() || !os.SameFile(expected, cleanupInfo) {
+		return nil
+	}
+	return cleanupAtomicTempFile(root, cleanupRel, nil)
+}
+
+func quarantineAtomicTempFile(root Root, tempRel string) (string, error) {
+	for range 10 {
+		cleanupRel, err := identityBoundStagingPath(tempRel)
+		if err != nil {
+			return "", err
+		}
+		if err := root.Rename(tempRel, cleanupRel); errors.Is(err, os.ErrExist) {
+			continue
+		} else if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return "", nil
+			}
+			return "", err
+		}
+		return cleanupRel, nil
+	}
+	return "", fmt.Errorf("quarantine temp file: too many collisions")
 }
 
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {

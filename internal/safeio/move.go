@@ -176,21 +176,31 @@ func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message st
 		return err
 	}
 	if !stagedInfo.Mode().IsRegular() || !os.SameFile(expected, stagedInfo) {
-		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel)
+		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel, stagedInfo)
 		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 	}
 	if err := cleanupAtomicTempFileIfMatches(root, stagedRel, expected); err != nil {
-		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel)
+		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel, expected)
 		return errors.Join(err, restoreErr)
 	}
 	return nil
 }
 
-func restoreSourceIfAbsent(root Root, stagedRel, rel string) error {
-	if _, err := root.Lstat(rel); err == nil {
-		return fmt.Errorf("source path occupied during restore: %s", rel)
-	} else if !errors.Is(err, os.ErrNotExist) {
+func restoreSourceIfAbsent(root Root, stagedRel, rel string, expected fs.FileInfo) error {
+	if expected == nil {
+		return fmt.Errorf("source restore identity unavailable: %s", rel)
+	}
+	if err := root.Link(stagedRel, rel); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("source path occupied during restore: %s", rel)
+		}
+		if identityBoundLinkUnsupported(err) {
+			return fmt.Errorf("identity-bound source restore unsupported: %s: %w", rel, err)
+		}
 		return err
 	}
-	return root.Rename(stagedRel, rel)
+	if err := verifyPublishedPathMatchesInfo(root, rel, expected, "source changed during restore"); err != nil {
+		return err
+	}
+	return cleanupAtomicTempFileIfMatches(root, stagedRel, expected)
 }

@@ -28,6 +28,13 @@ type publishRenameError struct {
 	err       error
 }
 
+const (
+	committedTargetChangedBeforeValidation = "committed target changed before validation"
+	temporaryFileChangedBeforeCommit       = "temporary file changed before commit"
+)
+
+var errIdentityBoundReplacementUnsupported = errors.New("identity-bound atomic replacement unsupported")
+
 func (e *publishRenameError) Error() string {
 	return e.err.Error()
 }
@@ -78,8 +85,8 @@ func (s *atomicWriteSession) commit() error {
 		s.tempRel,
 		s.targetRel,
 		s.tempInfo,
-		"temporary file changed before commit",
-		"committed target changed before validation",
+		temporaryFileChangedBeforeCommit,
+		committedTargetChangedBeforeValidation,
 	)
 }
 
@@ -90,7 +97,7 @@ func (s *atomicWriteSession) verifyCommittedTarget() error {
 	if !s.tempInfo.Mode().IsRegular() {
 		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
 	}
-	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, s.tempInfo, "committed target changed before validation")
+	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, s.tempInfo, committedTargetChangedBeforeValidation)
 }
 
 func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo, message string) error {
@@ -121,16 +128,16 @@ func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRe
 		if !identityBoundLinkUnsupported(err) {
 			return false, err
 		}
-		if err := root.Rename(sourceRel, targetRel); err != nil {
-			return false, &publishRenameError{sourceRel: sourceRel, err: err}
-		}
-		return true, verifyPublishedPathMatchesInfo(root, targetRel, expected, targetMessage)
+		return false, fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, sourceRel, err)
 	}
 	defer func() {
 		if cleanupErr := cleanupAtomicTempFileIfMatches(root, stagedRel, expected); cleanupErr != nil {
 			returnErr = errors.Join(returnErr, cleanupErr)
 		}
 	}()
+	if err := verifyPublishedPathMatchesInfo(root, stagedRel, expected, sourceMessage); err != nil {
+		return false, err
+	}
 	if err := root.Rename(stagedRel, targetRel); err != nil {
 		return false, &publishRenameError{sourceRel: stagedRel, err: err}
 	}
@@ -271,11 +278,11 @@ func publishIdentityBoundIfAbsent(root Root, sourceRel, targetRel string, expect
 		}
 		return err
 	}
-	return verifyPublishedPathMatchesInfo(root, targetRel, expected, "committed target changed before validation")
+	return verifyPublishedPathMatchesInfo(root, targetRel, expected, committedTargetChangedBeforeValidation)
 }
 
 func createFileExclusivelyFromPreparedSource(root Root, sourceRel, targetRel string, expected fs.FileInfo) (returnErr error) {
-	if err := verifyPublishedPathMatchesInfo(root, sourceRel, expected, "temporary file changed before commit"); err != nil {
+	if err := verifyPublishedPathMatchesInfo(root, sourceRel, expected, temporaryFileChangedBeforeCommit); err != nil {
 		return err
 	}
 	source, err := root.Open(sourceRel)

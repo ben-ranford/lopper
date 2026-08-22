@@ -2880,8 +2880,8 @@ func TestWriteAtomicReplacementVerifiesCommittedTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected committed target validation success, got %v", err)
 	}
-	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+	if renameCalls != 2 {
+		t.Fatalf("expected publish and cleanup quarantine renames, got %d", renameCalls)
 	}
 	if lstatCalls != 1 {
 		t.Fatalf("expected one committed target lstat, got %d", lstatCalls)
@@ -2917,11 +2917,11 @@ func TestWriteAtomicReplacementRejectsChangedCommittedTarget(t *testing.T) {
 	root := newCommittedTargetTestRoot(t, tempInfo, lstat, rename, remove, closeFn)
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected committed target validation error, got %v", err)
 	}
-	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+	if renameCalls != 2 {
+		t.Fatalf("expected publish and cleanup quarantine renames, got %d", renameCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected temp file close before committed target mismatch")
@@ -2990,8 +2990,8 @@ func TestWriteAtomicReplacementWithPinnedTargetKeepsCommittedTargetIdentity(t *t
 	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, target, false); err != nil {
 		t.Fatalf("expected committed target validation success, got %v", err)
 	}
-	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+	if renameCalls != 2 {
+		t.Fatalf("expected publish and cleanup quarantine renames, got %d", renameCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected committed temp file to be closed")
@@ -3019,11 +3019,11 @@ func TestWriteAtomicReplacementWithPinnedTargetRejectsChangedCommittedTarget(t *
 	root := newCommittedTargetValidationRoot(t, tempInfo, lstatTarget, rename, remove, &tempClosed)
 
 	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, target, false)
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected committed target validation error, got %v", err)
 	}
-	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+	if renameCalls != 2 {
+		t.Fatalf("expected publish and cleanup quarantine renames, got %d", renameCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected temp file to be closed during cleanup")
@@ -3201,7 +3201,7 @@ func TestAtomicWriteSessionCommitRejectsChangedTempPathBeforePublish(t *testing.
 	}
 
 	err := session.commit()
-	if err == nil || !strings.Contains(err.Error(), "temporary file changed before commit") {
+	if err == nil || !strings.Contains(err.Error(), temporaryFileChangedBeforeCommit) {
 		t.Fatalf("expected changed temp path rejection, got %v", err)
 	}
 	if renameCalls != 0 {
@@ -3209,7 +3209,7 @@ func TestAtomicWriteSessionCommitRejectsChangedTempPathBeforePublish(t *testing.
 	}
 }
 
-func TestAtomicWriteSessionCommitFallsBackToRenameWhenHardLinksUnsupported(t *testing.T) {
+func TestAtomicWriteSessionCommitRejectsHardLinksUnsupported(t *testing.T) {
 	tempInfo := newPinnedTargetInfo(t, "temp")
 	renameCalls := 0
 	removeCalls := 0
@@ -3244,14 +3244,15 @@ func TestAtomicWriteSessionCommitFallsBackToRenameWhenHardLinksUnsupported(t *te
 		tempInfo:  tempInfo,
 	}
 
-	if err := session.commit(); err != nil {
-		t.Fatalf("expected direct rename fallback success, got %v", err)
+	err := session.commit()
+	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("expected identity-bound replacement unsupported error, got %v", err)
 	}
-	if renameCalls != 1 {
-		t.Fatalf("expected one direct rename, got %d", renameCalls)
+	if renameCalls != 0 {
+		t.Fatalf("expected no direct rename fallback, got %d", renameCalls)
 	}
 	if removeCalls != 0 {
-		t.Fatalf("direct rename fallback should not remove staging links, got %d removes", removeCalls)
+		t.Fatalf("unsupported identity-bound replacement should not remove staging links, got %d removes", removeCalls)
 	}
 }
 
@@ -3261,7 +3262,7 @@ func TestAtomicWriteSessionCommitPreservesMismatchedTargetAfterRename(t *testing
 	session := fixture.session()
 
 	err := session.commit()
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected committed target validation error, got %v", err)
 	}
 	fixture.assertRenameCalls(t, 1)
@@ -3285,7 +3286,7 @@ func TestAtomicWriteSessionCommitPreservesConcurrentReplacementAfterRename(t *te
 	session := fixture.session()
 
 	err := session.commit()
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected committed target validation error, got %v", err)
 	}
 	fixture.assertRenameCalls(t, 1)
@@ -3359,6 +3360,9 @@ func (f *atomicCommitTargetMismatchFixture) link(oldName, newName string) error 
 }
 
 func (f *atomicCommitTargetMismatchFixture) rename(oldName, newName string) error {
+	if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return nil
+	}
 	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != writeTestFileName {
 		f.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 	}
@@ -3440,7 +3444,7 @@ func TestAtomicWriteSessionVerifyCommittedTargetRejectsNonRegularCommittedTarget
 	}
 
 	err := session.verifyCommittedTarget()
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected non-regular committed target error, got %v", err)
 	}
 }
@@ -4139,6 +4143,9 @@ func moveFallbackCopyRoot(root Root) Root {
 }
 
 func moveFallbackCopyRename(root Root, oldName, newName string, attempts *int, fallbackPublished *bool) error {
+	if strings.Contains(oldName, atomicTempPrefix) && strings.Contains(newName, atomicTempPrefix) {
+		return root.Rename(oldName, newName)
+	}
 	if strings.Contains(oldName, atomicTempPrefix) && newName == "snapshots/final.json" {
 		(*attempts)++
 		if *attempts == 1 {
@@ -4230,6 +4237,9 @@ func TestMoveFileWithinRootPreservesSourceOnNonEXDEVRenameError(t *testing.T) {
 	failingRoot := &fakeRoot{
 		Root: root,
 		rename: func(oldName, newName string) error {
+			if strings.Contains(oldName, atomicTempPrefix) && strings.Contains(newName, atomicTempPrefix) {
+				return root.Rename(oldName, newName)
+			}
 			if !strings.Contains(oldName, atomicTempPrefix) || newName != filepath.Join("snapshots", "final.json") {
 				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 			}
@@ -4491,6 +4501,9 @@ func (f *fallbackSourceReplacementAfterEXDEVFixture) link(oldName, newName strin
 }
 
 func (f *fallbackSourceReplacementAfterEXDEVFixture) rename(oldName, newName string) error {
+	if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return nil
+	}
 	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
 		f.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 	}
@@ -4646,6 +4659,10 @@ func (s *replacedSourceMoveFallbackState) link(t *testing.T) func(string, string
 	t.Helper()
 
 	return func(oldName, newName string) error {
+		if isMoveFallbackTempPath(oldName) && s.sourceStage && newName == "source" {
+			s.sourceStage = false
+			return nil
+		}
 		if !isMoveFallbackTempPath(newName) {
 			t.Fatalf("unexpected identity-bound link target %q", newName)
 		}
@@ -4668,6 +4685,15 @@ func (s *replacedSourceMoveFallbackState) rename(t *testing.T) func(string, stri
 		if oldName == "source" && isMoveFallbackTempPath(newName) {
 			s.sourceStage = true
 			return nil
+		}
+		if isMoveFallbackTempPath(oldName) && isMoveFallbackTempPath(newName) {
+			if s.sourceStage {
+				return nil
+			}
+			if s.tempStage {
+				s.tempStage = false
+				return nil
+			}
 		}
 		if isMoveFallbackTempPath(oldName) && newName == "source" {
 			s.sourceStage = false
@@ -4926,6 +4952,10 @@ func newMoveFallbackTempFile(cfg moveFallbackConfig, state *moveFallbackState) F
 
 func newMoveFallbackLinkHook(cfg moveFallbackConfig, state *moveFallbackState) func(string, string) error {
 	return func(oldName, newName string) error {
+		if oldName == state.sourceStagePath && newName == cfg.sourcePath {
+			state.sourceExists = true
+			return nil
+		}
 		if !isMoveFallbackTempPath(newName) {
 			return errors.New("unexpected identity-bound link target")
 		}
@@ -4950,6 +4980,16 @@ func newMoveFallbackRenameHook(cfg moveFallbackConfig, state *moveFallbackState)
 			state.sourceStageExists = true
 			state.sourceStagePath = newName
 			state.sourceCleanupPath = newName
+			return nil
+		}
+		if oldName == state.sourceStagePath && isMoveFallbackTempPath(newName) {
+			state.sourceStageExists = false
+			state.sourceStagePath = ""
+			state.sourceCleanupPath = newName
+			return nil
+		}
+		if isMoveFallbackTempPath(oldName) && isMoveFallbackTempPath(newName) {
+			state.tempStageExists = false
 			return nil
 		}
 		if isMoveFallbackTempPath(oldName) && newName == cfg.sourcePath {
@@ -4979,6 +5019,14 @@ func newMoveFallbackRenameHook(cfg moveFallbackConfig, state *moveFallbackState)
 
 func newMoveFallbackRemoveHook(cfg moveFallbackConfig, state *moveFallbackState) func(string) error {
 	return func(name string) error {
+		if name == state.sourceCleanupPath && state.sourceCleanupPath != "" {
+			if cfg.sourceRemoveErr == nil || errors.Is(cfg.sourceRemoveErr, os.ErrNotExist) {
+				state.sourceStageExists = false
+				state.sourceStagePath = ""
+				state.sourceCleanupPath = ""
+			}
+			return cfg.sourceRemoveErr
+		}
 		if name == state.sourceStagePath && state.sourceStageExists {
 			if name != state.sourceCleanupPath {
 				state.sourceStageExists = false
@@ -5103,13 +5151,10 @@ func TestMoveFileUnderJoinsPrimaryAndCleanupErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected MoveFileUnder error")
 	}
-	for _, expected := range []error{primaryErr, sourceCloseErr, tempRemoveErr, rootCloseErr} {
+	for _, expected := range []error{primaryErr, sourceCloseErr, tempRemoveErr, sourceRemoveErr, rootCloseErr} {
 		if !errors.Is(err, expected) {
 			t.Fatalf("expected joined error to include %v, got %v", expected, err)
 		}
-	}
-	if errors.Is(err, sourceRemoveErr) {
-		t.Fatalf("expected fallback failure to preserve source instead of removing it, got %v", err)
 	}
 }
 
@@ -5234,7 +5279,58 @@ func TestPrepareAndRenameWithinRootRejectsSubstitutedStagedSourceBeforePublish(t
 	}
 }
 
-func TestPrepareAndRenameWithinRootFallsBackToDirectRenameWhenHardLinksUnsupported(t *testing.T) {
+func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAfterValidation(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	stagedValidated := false
+	renameCalls := 0
+	removeCalls := 0
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == "source":
+				return sourceInfo, nil
+			case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+				if stagedValidated {
+					return changedInfo, nil
+				}
+				stagedValidated = true
+				return sourceInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		link: func(oldName, newName string) error {
+			if oldName != "source" || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
+		t.Fatalf("expected staged source swap rejection, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no target publish after staged source swap, got %d renames", renameCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected substituted staged path not to be removed, got %d removes", removeCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootRejectsReplacementWhenHardLinksUnsupported(t *testing.T) {
 	sourceInfo := newPinnedTargetInfo(t, "source")
 	renameCalls := 0
 	removeCalls := 0
@@ -5266,14 +5362,15 @@ func TestPrepareAndRenameWithinRootFallsBackToDirectRenameWhenHardLinksUnsupport
 		},
 	}
 
-	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
-		t.Fatalf("expected direct rename fallback success, got %v", err)
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("expected identity-bound replacement unsupported error, got %v", err)
 	}
-	if renameCalls != 1 {
-		t.Fatalf("expected one direct rename, got %d", renameCalls)
+	if renameCalls != 0 {
+		t.Fatalf("expected no direct rename fallback, got %d", renameCalls)
 	}
 	if removeCalls != 0 {
-		t.Fatalf("direct move fallback should not remove staging links, got %d removes", removeCalls)
+		t.Fatalf("unsupported identity-bound replacement should not remove staging links, got %d removes", removeCalls)
 	}
 }
 
@@ -5343,7 +5440,6 @@ func assertMoveFileWithinRootIdentityBoundStagingError(t *testing.T, sourceInfo 
 
 func TestRemoveIdentityBoundDoesNotOverwriteNewerSourceDuringRestore(t *testing.T) {
 	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
-	newerInfo := newPinnedTargetInfo(t, "newer")
 	stagedRel := ".safeio-atomic-stage"
 	randomCalls := 0
 	renameCalls := 0
@@ -5361,17 +5457,21 @@ func TestRemoveIdentityBoundDoesNotOverwriteNewerSourceDuringRestore(t *testing.
 			switch name {
 			case stagedRel:
 				return replacementInfo, nil
-			case "source":
-				return newerInfo, nil
 			default:
 				t.Fatalf("unexpected lstat path: %s", name)
 				return nil, os.ErrNotExist
 			}
 		},
+		link: func(oldName, newName string) error {
+			if oldName != stagedRel || newName != "source" {
+				t.Fatalf("restore must link staged source back, got link %q -> %q", oldName, newName)
+			}
+			return os.ErrExist
+		},
 		rename: func(oldName, newName string) error {
 			renameCalls++
 			if oldName != "source" || newName != stagedRel {
-				t.Fatalf("restore must not overwrite newer source, got rename %q -> %q", oldName, newName)
+				t.Fatalf("cleanup must only quarantine source first, got rename %q -> %q", oldName, newName)
 			}
 			return nil
 		},
@@ -5390,6 +5490,56 @@ func TestRemoveIdentityBoundDoesNotOverwriteNewerSourceDuringRestore(t *testing.
 	}
 	if renameCalls != 1 {
 		t.Fatalf("expected only source-to-stage rename, got %d renames", renameCalls)
+	}
+}
+
+func TestCleanupAtomicTempFileIfMatchesDoesNotRemoveQuarantinedSwap(t *testing.T) {
+	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
+	tempRel := ".safeio-atomic-source"
+	quarantineRel := ".safeio-atomic-quarantine"
+	renamed := false
+	removeCalls := 0
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) {
+		return quarantineRel, nil
+	}
+	defer func() {
+		randomTempNameFn = originalRandomTempNameFn
+	}()
+
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case tempRel:
+				return originalInfo, nil
+			case quarantineRel:
+				if renamed {
+					return changedInfo, nil
+				}
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return nil, os.ErrNotExist
+		},
+		rename: func(oldName, newName string) error {
+			if oldName != tempRel || newName != quarantineRel {
+				t.Fatalf("unexpected quarantine rename %q -> %q", oldName, newName)
+			}
+			renamed = true
+			return nil
+		},
+		remove: func(name string) error {
+			removeCalls++
+			t.Fatalf("must not remove substituted quarantined path: %s", name)
+			return nil
+		},
+	}
+
+	if err := cleanupAtomicTempFileIfMatches(root, tempRel, originalInfo); err != nil {
+		t.Fatalf("expected substituted quarantine cleanup to fail closed without error, got %v", err)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected no removal after quarantine identity mismatch, got %d removes", removeCalls)
 	}
 }
 
@@ -5451,6 +5601,9 @@ func (f *changedTargetAfterRenameFixture) link(oldName, newName string) error {
 }
 
 func (f *changedTargetAfterRenameFixture) rename(oldName, newName string) error {
+	if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return nil
+	}
 	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
 		f.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 	}
@@ -5496,6 +5649,9 @@ func TestPrepareAndRenameWithinRootReturnsSourceCleanupErrorAfterPublish(t *test
 		},
 		rename: func(oldName, newName string) error {
 			renameCalls++
+			if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				return nil
+			}
 			if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && newName == "target" {
 				return nil
 			}
@@ -5511,8 +5667,8 @@ func TestPrepareAndRenameWithinRootReturnsSourceCleanupErrorAfterPublish(t *test
 	if !errors.Is(err, cleanupErr) {
 		t.Fatalf("expected source cleanup error, got %v", err)
 	}
-	if renameCalls != 2 {
-		t.Fatalf("expected publish and cleanup rename attempts, got %d", renameCalls)
+	if renameCalls != 3 {
+		t.Fatalf("expected publish, staged cleanup, and source cleanup rename attempts, got %d", renameCalls)
 	}
 }
 
@@ -5644,6 +5800,9 @@ func lstatSourceOrTemp(t *testing.T, info fs.FileInfo) func(string) (fs.FileInfo
 func exdevSourceOrTempToTarget(t *testing.T) func(string, string) error {
 	t.Helper()
 	return func(oldName, newName string) error {
+		if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+			return nil
+		}
 		if (oldName == "source" || strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) && newName == "target" {
 			return syscall.EXDEV
 		}

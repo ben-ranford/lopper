@@ -137,8 +137,8 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackWhenRenameDeniedOnNonWin
 	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
 		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
 	}
-	if removeCalls != 2 {
-		t.Fatalf("expected staged link and temp cleanup after rename fallback, got %d removes", removeCalls)
+	if removeCalls != 1 {
+		t.Fatalf("expected temp cleanup after rename fallback, got %d removes", removeCalls)
 	}
 	assertFallbackTargetData(t, targetData, "after")
 }
