@@ -1127,6 +1127,9 @@ func TestScanRepoMaxFilesAndSkipDirBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf(helpersScanRepoErr, err)
 	}
+	if !scan.UsageIncomplete {
+		t.Fatal("expected bounded scan to mark usage incomplete")
+	}
 	if !containsWarning(scan.Warnings, "scan stopped after") {
 		t.Fatalf("expected bounded scan warning, got %#v", scan.Warnings)
 	}

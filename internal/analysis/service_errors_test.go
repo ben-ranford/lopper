@@ -116,6 +116,28 @@ func TestRunCandidateOnRootsMultiLanguageIncompleteCoverageReportIsFatalWhenRequ
 	}
 }
 
+func TestRunCandidateOnRootsMultiLanguageReportLevelIncompleteCoverageIsFatalWhenRequired(t *testing.T) {
+	adapter := &testServiceAdapter{
+		id:      "php",
+		detect:  language.Detection{Matched: true, Confidence: 90},
+		analyse: report.Report{UsageIncomplete: true},
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                ".",
+		Language:                "all",
+		RequireCompleteCoverage: true,
+	}, ".", candidate, nil)
+	if !errors.Is(err, ErrIncompleteCoverage) {
+		t.Fatalf("expected report-level incomplete coverage to be fatal when coverage is required, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "reported incomplete usage coverage") {
+		t.Fatalf("expected report-level incomplete coverage details in error, got %v", err)
+	}
+}
+
 func TestRunCandidateOnRootsIncompleteCoverageReportPreservesOrdinaryPartialBehavior(t *testing.T) {
 	for _, tt := range []struct {
 		name string

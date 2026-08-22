@@ -114,6 +114,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.visited++
 	if c.state.visited > maxScanFiles {
 		c.result.Warnings = append(c.result.Warnings, fmt.Sprintf("scan stopped after %d files to keep analysis bounded", maxScanFiles))
+		c.result.UsageIncomplete = true
 		return fs.SkipAll
 	}
 	if !strings.EqualFold(filepath.Ext(path), ".php") {

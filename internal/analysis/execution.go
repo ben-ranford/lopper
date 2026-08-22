@@ -115,6 +115,9 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 	}
 	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
 	if len(dependencies) == 0 {
+		if reportData.UsageIncomplete {
+			return fmt.Errorf("%w: adapter %s at %s reported incomplete usage coverage", ErrIncompleteCoverage, adapterID, root)
+		}
 		return nil
 	}
 	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))

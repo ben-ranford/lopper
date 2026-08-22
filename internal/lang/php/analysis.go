@@ -53,9 +53,10 @@ func runPHPScanStage(ctx context.Context, state *analysisPipelineState) error {
 
 func (a *Adapter) runPHPReportAssemblyStage(req language.Request, state analysisPipelineState) report.Report {
 	result := report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    state.repoPath,
-		Warnings:    append([]string(nil), state.warnings...),
+		GeneratedAt:     a.Clock(),
+		RepoPath:        state.repoPath,
+		UsageIncomplete: state.scan.UsageIncomplete,
+		Warnings:        append([]string(nil), state.warnings...),
 	}
 
 	dependencies, warnings := buildRequestedPHPDependencies(req, state.scan)
