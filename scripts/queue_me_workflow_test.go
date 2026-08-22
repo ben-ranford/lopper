@@ -97,6 +97,29 @@ func TestQueueMeControllerContract(t *testing.T) {
 	}
 }
 
+func TestQueueMeControllerAdvancesPastConflictingLeaderContract(t *testing.T) {
+	controller := readConfig(t, "scripts/queue_me_controller.js")
+	docs := readConfig(t, "docs/ci-usage.md")
+	for _, fragment := range []string{
+		"function isMergeConflict(error)",
+		"pull request is not mergeable",
+		"Every queued pull request is waiting for a branch update after a rebase conflict.",
+	} {
+		if !strings.Contains(controller, fragment) {
+			t.Fatalf("queue-me controller conflict handling missing %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"rebases the first entry it can advance",
+		"skips to the next queued pull request",
+		"retries the conflicted entry only after that branch receives an update",
+	} {
+		if !strings.Contains(docs, fragment) {
+			t.Fatalf("queue-me docs conflict ordering contract missing %q", fragment)
+		}
+	}
+}
+
 func TestQueueMeControllerNodeSuite(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
