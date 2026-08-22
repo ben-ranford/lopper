@@ -28,7 +28,10 @@ var (
 	absPath              = filepath.Abs
 )
 
-const buildVCSFlag = "-buildvcs=false"
+const (
+	buildVCSFlag            = "-buildvcs=false"
+	regressionProofBuildTag = "regressionproof"
+)
 
 type testAction string
 
@@ -346,7 +349,7 @@ func copyProofFiles(headRoot, baseRoot string, files []string) (returnErr error)
 }
 
 func (r *runner) resolvePackage(ctx context.Context, repoRoot, packagePath string) (string, error) {
-	args := []string{"list", buildVCSFlag, "-f", "{{.ImportPath}}", packagePath}
+	args := []string{"list", buildVCSFlag, "-tags", regressionProofBuildTag, "-f", "{{.ImportPath}}", packagePath}
 	output, err := r.execCommand(ctx, "go", args, repoRoot, os.Environ())
 	if err != nil {
 		return "", fmt.Errorf("resolve regression-test package %s: %w", packagePath, err)
@@ -376,7 +379,7 @@ func (r *runner) compilePackage(ctx context.Context, repoRoot, packagePath strin
 	}()
 
 	testBinaryPath := filepath.Join(testBinaryDir, "test-binary")
-	_, err = r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-c", "-o", testBinaryPath, packagePath}, repoRoot, os.Environ())
+	_, err = r.execCommand(ctx, "go", regressionProofGoTestArgs("-c", "-o", testBinaryPath, packagePath), repoRoot, os.Environ())
 	return err
 }
 
@@ -411,7 +414,7 @@ func (r *runner) expectPass(ctx context.Context, repoRoot, expectedPackage strin
 }
 
 func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage string, declaration prmetadata.RegressionDeclaration) (testAction, error) {
-	output, err := r.execCommand(ctx, "go", []string{"test", buildVCSFlag, "-count=1", "-json", "-run", "^" + declaration.TestName + "$", declaration.PackagePath}, repoRoot, os.Environ())
+	output, err := r.execCommand(ctx, "go", regressionProofGoTestArgs("-count=1", "-json", "-run", "^"+declaration.TestName+"$", declaration.PackagePath), repoRoot, os.Environ())
 	action, parseErr := parseDeclaredTestAction(output, expectedPackage, declaration.TestName)
 	if parseErr != nil {
 		if err != nil {
@@ -424,6 +427,11 @@ func (r *runner) runDeclaredTest(ctx context.Context, repoRoot, expectedPackage 
 		return "", err
 	}
 	return action, nil
+}
+
+func regressionProofGoTestArgs(args ...string) []string {
+	result := []string{"test", buildVCSFlag, "-tags", regressionProofBuildTag}
+	return append(result, args...)
 }
 
 func parseDeclaredTestAction(output []byte, expectedPackage, testName string) (testAction, error) {
