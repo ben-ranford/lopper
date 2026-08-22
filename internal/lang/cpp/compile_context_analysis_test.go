@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -287,11 +286,11 @@ func TestCPPAdditionalZeroHitBranches(t *testing.T) {
 
 	outside := filepath.Join(t.TempDir(), "outside.cpp")
 	testutil.MustWriteFile(t, outside, "#include <fmt/core.h>\n")
-	stage := scanStage{scanner: includeResolver{repoPath: repo}}
-	if err := stage.process(context.Background(), scanInput{Path: outside}); err != nil {
-		t.Fatalf("expected escaped-path scan errors to be downgraded into warnings, got %v", err)
+	result, err := scanRepo(context.Background(), repo, compileContext{SourceFiles: []string{outside}}, newDependencyCatalog())
+	if err != nil {
+		t.Fatalf("expected escaped source hints to be downgraded into warnings, got %v", err)
 	}
-	if len(stage.result.Warnings) != 1 || !strings.Contains(stage.result.Warnings[0], "outside repo boundary") {
-		t.Fatalf("expected escaped-path warning, got %#v", stage.result.Warnings)
+	if !hasWarning(result.Warnings, "outside repo boundary") {
+		t.Fatalf("expected escaped-path warning, got %#v", result.Warnings)
 	}
 }

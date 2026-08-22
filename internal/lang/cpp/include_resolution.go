@@ -717,8 +717,18 @@ func isLikelySystemIncludePath(path string) bool {
 		return false
 	}
 	path = filepath.ToSlash(filepath.Clean(path))
+	lowerPath := strings.ToLower(path)
+
+	return hasSystemIncludeRoot(path) ||
+		hasAppleSystemIncludePath(lowerPath) ||
+		hasWindowsSystemIncludePath(path, lowerPath) ||
+		hasCompilerRuntimeIncludePath(path)
+}
+
+func hasSystemIncludeRoot(path string) bool {
 	for _, prefix := range []string{
 		"/usr/include/",
+		"/usr/local/include/",
 		"/mingw/include/",
 		"/mingw64/include/",
 	} {
@@ -726,25 +736,34 @@ func isLikelySystemIncludePath(path string) bool {
 			return true
 		}
 	}
-	lowerPath := strings.ToLower(path)
+	return false
+}
+
+func hasAppleSystemIncludePath(lowerPath string) bool {
 	if strings.Contains(lowerPath, "/sdks/") && strings.Contains(lowerPath, ".sdk/usr/include/") {
 		return true
 	}
-	if strings.Contains(lowerPath, ".xctoolchain/usr/lib/clang/") ||
-		strings.Contains(lowerPath, "/library/developer/commandlinetools/usr/lib/clang/") {
-		return true
+	return strings.Contains(lowerPath, ".xctoolchain/usr/lib/clang/") ||
+		strings.Contains(lowerPath, "/library/developer/commandlinetools/usr/lib/clang/")
+}
+
+func hasWindowsSystemIncludePath(path, lowerPath string) bool {
+	if !isWindowsStyleIncludePath(path) {
+		return false
 	}
-	if isWindowsStyleIncludePath(path) {
-		for _, fragment := range []string{
-			"/mingw/include/",
-			"/mingw64/include/",
-			"/msvc/",
-		} {
-			if strings.Contains(lowerPath, fragment) {
-				return true
-			}
+	for _, fragment := range []string{
+		"/mingw/include/",
+		"/mingw64/include/",
+		"/msvc/",
+	} {
+		if strings.Contains(lowerPath, fragment) {
+			return true
 		}
 	}
+	return false
+}
+
+func hasCompilerRuntimeIncludePath(path string) bool {
 	for _, fragment := range []string{
 		"/include/c++/",
 		"/include/c++/v1/",
