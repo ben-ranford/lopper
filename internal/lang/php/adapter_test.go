@@ -238,7 +238,7 @@ func TestPHPAdapterMarksUsageIncompleteWhenComposerLockIsOversized(t *testing.T)
 	repo := t.TempDir()
 	const declaredDependency = "vendor/lib"
 	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, declaredDependency))
-	writeFile(t, filepath.Join(repo, testComposerLock), "{}"+strings.Repeat(" ", int(maxComposerLockBytes)))
+	writeFile(t, filepath.Join(repo, testComposerLock), "{}"+strings.Repeat(" ", int(testMaxComposerLockBytes)))
 	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
 use Vendor\Lib\Client;
 $client = new Client();
