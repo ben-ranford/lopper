@@ -478,7 +478,7 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 	if retry, err := reserveAnalysisCacheQuarantine(root, reservationName, quarantineName); retry || err != nil {
 		return "", retry, err
 	}
-	if err := root.Rename(name, quarantineName); err != nil {
+	if err := safeio.RenameNoReplace(root, name, quarantineName); err != nil {
 		return handleAnalysisCacheQuarantineRenameError(root, reservationName, name, quarantineName, childInfo, err)
 	}
 	return verifyAnalysisCacheQuarantine(root, reservationName, name, quarantineName, childInfo)
@@ -535,7 +535,7 @@ func restoreMovedAnalysisCacheReplacement(root safeio.Root, reservationName, nam
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := root.Rename(quarantineName, name); err != nil {
+	if err := safeio.RenameNoReplace(root, quarantineName, name); err != nil {
 		return err
 	}
 	restoredInfo, err := root.Lstat(name)

@@ -43,6 +43,10 @@ func (r *openRootErrorAnalysisCacheRoot) OpenRoot(string) (safeio.Root, error) {
 	return nil, r.err
 }
 
+func (r *openRootErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type postCreateLstatErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name    string
@@ -65,6 +69,10 @@ func (r *postCreateLstatErrorAnalysisCacheRoot) Lstat(name string) (fs.FileInfo,
 		return nil, r.err
 	}
 	return r.Root.Lstat(name)
+}
+
+func (r *postCreateLstatErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
 type secondPostCreateLstatErrorAnalysisCacheRoot struct {
@@ -95,6 +103,10 @@ func (r *secondPostCreateLstatErrorAnalysisCacheRoot) Lstat(name string) (fs.Fil
 	return r.Root.Lstat(name)
 }
 
+func (r *secondPostCreateLstatErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type mkdirErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -119,6 +131,10 @@ func (r *removeErrorAnalysisCacheRoot) Remove(name string) error {
 		return r.err
 	}
 	return r.Root.Remove(name)
+}
+
+func (r *removeErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
 type removeQuarantineCreatesReplacementAnalysisCacheRoot struct {
@@ -146,6 +162,10 @@ func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) Remove(name string
 	return r.Root.Remove(name)
 }
 
+func (r *removeQuarantineCreatesReplacementAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type renameErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -157,6 +177,13 @@ func (r *renameErrorAnalysisCacheRoot) Rename(oldName, newName string) error {
 		return r.err
 	}
 	return r.Root.Rename(oldName, newName)
+}
+
+func (r *renameErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	if oldName == r.name {
+		return r.err
+	}
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
 type renameErrExistOnceAnalysisCacheRoot struct {
@@ -173,6 +200,14 @@ func (r *renameErrExistOnceAnalysisCacheRoot) Rename(oldName, newName string) er
 	return r.Root.Rename(oldName, newName)
 }
 
+func (r *renameErrExistOnceAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	if oldName == r.name && strings.HasSuffix(filepath.Dir(newName), "-0") && !r.seen {
+		r.seen = true
+		return os.ErrExist
+	}
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type renameErrExistAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -183,6 +218,13 @@ func (r *renameErrExistAnalysisCacheRoot) Rename(oldName, newName string) error 
 		return os.ErrExist
 	}
 	return r.Root.Rename(oldName, newName)
+}
+
+func (r *renameErrExistAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	if oldName == r.name && strings.HasPrefix(newName, ".lopper-cache-rollback-") {
+		return os.ErrExist
+	}
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
 type closeErrorAnalysisCacheRoot struct {
@@ -205,6 +247,10 @@ func (r *lstatErrorAnalysisCacheRoot) Lstat(name string) (fs.FileInfo, error) {
 		return nil, r.err
 	}
 	return r.Root.Lstat(name)
+}
+
+func (r *lstatErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
 type lstatSwapAnalysisCacheRoot struct {
@@ -237,6 +283,10 @@ func (r *lstatSwapAnalysisCacheRoot) Lstat(name string) (fs.FileInfo, error) {
 	return info, nil
 }
 
+func (r *lstatSwapAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type quarantineDestinationRaceAnalysisCacheRoot struct {
 	safeio.Root
 	t               *testing.T
@@ -263,6 +313,40 @@ func (r *quarantineDestinationRaceAnalysisCacheRoot) Mkdir(name string, perm os.
 	return nil
 }
 
+type renameNoReplaceRaceAnalysisCacheRoot struct {
+	safeio.Root
+	t               *testing.T
+	repo            string
+	oldName         string
+	newName         string
+	replacementInfo fs.FileInfo
+}
+
+func (r *renameNoReplaceRaceAnalysisCacheRoot) Rename(oldName, newName string) error {
+	r.createReplacement(oldName, newName)
+	return r.Root.Rename(oldName, newName)
+}
+
+func (r *renameNoReplaceRaceAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	r.createReplacement(oldName, newName)
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
+func (r *renameNoReplaceRaceAnalysisCacheRoot) createReplacement(oldName, newName string) {
+	if oldName != r.oldName || newName != r.newName || r.replacementInfo != nil {
+		return
+	}
+	replacementPath := filepath.Join(r.repo, newName)
+	if err := os.Mkdir(replacementPath, 0o750); err != nil {
+		r.t.Fatalf("create rename no-replace race destination: %v", err)
+	}
+	info, err := os.Lstat(replacementPath)
+	if err != nil {
+		r.t.Fatalf("stat rename no-replace race destination: %v", err)
+	}
+	r.replacementInfo = info
+}
+
 type openNamedRootAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -276,6 +360,10 @@ func (r *openNamedRootAnalysisCacheRoot) OpenRoot(name string) (safeio.Root, err
 	return r.Root.OpenRoot(name)
 }
 
+func (r *openNamedRootAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type openNamedRootErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -287,6 +375,10 @@ func (r *openNamedRootErrorAnalysisCacheRoot) OpenRoot(name string) (safeio.Root
 		return nil, r.err
 	}
 	return r.Root.OpenRoot(name)
+}
+
+func (r *openNamedRootErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
 type analysisCacheSwapFixture struct {
@@ -1243,6 +1335,7 @@ func TestConditionallyRemoveAnalysisCacheChildBranches(t *testing.T) {
 	t.Run("nil child info noops", testConditionallyRemoveAnalysisCacheChildNilInfo)
 	t.Run("missing current child noops", testConditionallyRemoveAnalysisCacheChildMissingCurrent)
 	t.Run("post-verification replacement is restored and reported", testConditionallyRemoveAnalysisCacheChildRestoresReplacementRace)
+	t.Run("pre-quarantine destination race preserves both entries", testConditionallyRemoveAnalysisCacheChildPreservesPreRenameQuarantineRace)
 	t.Run("lstat and rename errors are joined", testConditionallyRemoveAnalysisCacheChildJoinsLstatAndRenameErrors)
 	t.Run("failed quarantine removal does not overwrite replacement", testConditionallyRemoveAnalysisCacheChildRemoveFailurePreservesReplacement)
 }
@@ -1285,6 +1378,27 @@ func testConditionallyRemoveAnalysisCacheChildRestoresReplacementRace(t *testing
 	assertAnalysisCacheSameFile(t, childPath, wrappedRoot.replacementInfo)
 	assertAnalysisCacheDirExists(t, renamedChildPath)
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, ".lopper-cache-rollback-keys-0"))
+}
+
+func testConditionallyRemoveAnalysisCacheChildPreservesPreRenameQuarantineRace(t *testing.T) {
+	repo := t.TempDir()
+	childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	root := openAnalysisCacheTestRoot(t, repo)
+	quarantineName := filepath.Join(".lopper-cache-rollback-keys-0", cacheKeysDirName)
+	wrappedRoot := &renameNoReplaceRaceAnalysisCacheRoot{
+		Root:    root,
+		t:       t,
+		repo:    repo,
+		oldName: cacheKeysDirName,
+		newName: quarantineName,
+	}
+
+	err := conditionallyRemoveAnalysisCacheChild(wrappedRoot, cacheKeysDirName, childInfo)
+	if err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected occupied quarantine destination to be reported, got %v", err)
+	}
+	assertAnalysisCacheSameFile(t, childPath, childInfo)
+	assertAnalysisCacheSameFile(t, filepath.Join(repo, quarantineName), wrappedRoot.replacementInfo)
 }
 
 func testConditionallyRemoveAnalysisCacheChildJoinsLstatAndRenameErrors(t *testing.T) {
@@ -1485,6 +1599,38 @@ func testQuarantineAnalysisCacheChildReportsReserveExhaustion(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unable to reserve rollback quarantine") {
 		t.Fatalf("expected reserve exhaustion error, got %v", err)
 	}
+}
+
+func TestRestoreMovedAnalysisCacheReplacementPreservesPreRenameTargetRace(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	quarantinePath := filepath.Join(repo, quarantineName)
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	if err := os.Mkdir(quarantinePath, 0o750); err != nil {
+		t.Fatalf("create quarantined replacement: %v", err)
+	}
+	movedInfo, err := os.Lstat(quarantinePath)
+	if err != nil {
+		t.Fatalf("stat quarantined replacement: %v", err)
+	}
+	wrappedRoot := &renameNoReplaceRaceAnalysisCacheRoot{
+		Root:    root,
+		t:       t,
+		repo:    repo,
+		oldName: quarantineName,
+		newName: cacheKeysDirName,
+	}
+
+	err = restoreMovedAnalysisCacheReplacement(wrappedRoot, reservationName, cacheKeysDirName, quarantineName, movedInfo)
+	if err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected occupied restore target to be reported, got %v", err)
+	}
+	assertAnalysisCacheSameFile(t, filepath.Join(repo, cacheKeysDirName), wrappedRoot.replacementInfo)
+	assertAnalysisCacheSameFile(t, quarantinePath, movedInfo)
 }
 
 func TestRollbackCreatedAnalysisCacheChildPreservesRemoveFailureAlongsideCloseError(t *testing.T) {

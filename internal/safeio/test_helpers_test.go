@@ -199,17 +199,18 @@ func (f *fakeFileSystem) OpenRootNoFollow(name string) (Root, error) {
 
 type fakeRoot struct {
 	Root
-	chmod    func(name string, perm os.FileMode) error
-	mkdirAll func(name string, perm os.FileMode) error
-	open     func(name string) (File, error)
-	openFile func(name string, flag int, perm os.FileMode) (File, error)
-	openRoot func(name string) (Root, error)
-	lstat    func(name string) (fs.FileInfo, error)
-	mkdir    func(name string, perm os.FileMode) error
-	link     func(oldName, newName string) error
-	rename   func(oldName, newName string) error
-	remove   func(name string) error
-	close    func() error
+	chmod           func(name string, perm os.FileMode) error
+	mkdirAll        func(name string, perm os.FileMode) error
+	open            func(name string) (File, error)
+	openFile        func(name string, flag int, perm os.FileMode) (File, error)
+	openRoot        func(name string) (Root, error)
+	lstat           func(name string) (fs.FileInfo, error)
+	mkdir           func(name string, perm os.FileMode) error
+	link            func(oldName, newName string) error
+	rename          func(oldName, newName string) error
+	renameNoReplace func(oldName, newName string) error
+	remove          func(name string) error
+	close           func() error
 }
 
 func (r *fakeRoot) Open(name string) (File, error) {
@@ -273,6 +274,13 @@ func (r *fakeRoot) Rename(oldName, newName string) error {
 		return r.rename(oldName, newName)
 	}
 	return r.Root.Rename(oldName, newName)
+}
+
+func (r *fakeRoot) RenameNoReplace(oldName, newName string) error {
+	if r.renameNoReplace != nil {
+		return r.renameNoReplace(oldName, newName)
+	}
+	return RenameNoReplace(r.Root, oldName, newName)
 }
 
 func (r *fakeRoot) Remove(name string) error {

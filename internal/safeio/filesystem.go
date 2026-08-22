@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"syscall"
@@ -551,6 +552,31 @@ func (r *osRoot) Link(oldName, newName string) error {
 
 func (r *osRoot) Rename(oldName, newName string) error {
 	return r.root.Rename(oldName, newName)
+}
+
+func (r *osRoot) RenameNoReplace(oldName, newName string) error {
+	oldRel, err := resolveRelativeTarget(oldName, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	newRel, err := resolveRelativeTarget(newName, rejectRootTarget)
+	if err != nil {
+		return err
+	}
+	return renameNoReplaceInRoot(r, oldRel, newRel)
+}
+
+func RenameNoReplace(root Root, oldName, newName string) error {
+	method := reflect.ValueOf(root).MethodByName("RenameNoReplace")
+	if !method.IsValid() {
+		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
+	}
+	results := method.Call([]reflect.Value{reflect.ValueOf(oldName), reflect.ValueOf(newName)})
+	if len(results) != 1 || results[0].IsNil() {
+		return nil
+	}
+	err, _ := results[0].Interface().(error)
+	return err
 }
 
 func (r *osRoot) Remove(name string) error {
