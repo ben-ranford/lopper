@@ -12,14 +12,18 @@ command -v ruby >/dev/null 2>&1 || {
 ruby <<'RUBY'
 require "yaml"
 
-paths = Dir[".github/workflows/*.yml"].sort
-abort "No GitHub workflow files found under .github/workflows/*.yml." if paths.empty?
+def load_workflow(path)
+	YAML.safe_load(File.read(path), aliases: true, filename: path)
+end
+
+paths = Dir[".github/workflows/*.{yml,yaml}"].sort
+abort "No GitHub workflow files found under .github/workflows/*.yml or *.yaml." if paths.empty?
 
 immutable_action_ref = /\A[^@\s]+@[0-9a-f]{40}\z/
 errors = []
 
 paths.each do |path|
-	workflow = YAML.load_file(path)
+	workflow = load_workflow(path)
 	jobs = workflow.fetch("jobs", {})
 
 	jobs.each do |job_name, job|

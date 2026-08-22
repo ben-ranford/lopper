@@ -62,6 +62,31 @@ jobs:
 	})
 }
 
+func TestGitHubActionsPinningSupportsAnchoredYamlWorkflow(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-github-actions-pinning.sh")
+	writeFixtureFile(t, repoDir, ".github/workflows/anchored.yaml", `name: anchored
+on: [pull_request]
+x-trusted-steps: &trusted_steps
+  - name: Checkout
+    uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps: *trusted_steps
+`)
+
+	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected anchored .yaml workflow to pass, got %v:\n%s", err, output)
+	}
+	assertOutputContainsAll(t, string(output), []string{"GitHub Actions pinning check passed."})
+}
+
 func TestGitHubActionsRunnerCheckRejectsUnapprovedMatrixRunner(t *testing.T) {
 	t.Parallel()
 
@@ -92,6 +117,78 @@ jobs:
 		"windows-latest",
 		"allowed runners:",
 	})
+}
+
+func TestGitHubActionsRunnerCheckSupportsAnchoredYamlWorkflow(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-github-actions-runners.rb")
+	writeFixtureFile(t, repoDir, ".github/workflows/anchored.yaml", `name: anchored
+on: [pull_request]
+x-approved-runner: &approved_runner ubuntu-latest
+jobs:
+  smoke:
+    runs-on: *approved_runner
+    steps:
+      - run: make smoke
+`)
+
+	cmd := exec.Command("ruby", filepath.Join(repoDir, "scripts", "check-github-actions-runners.rb"))
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected anchored .yaml workflow to pass, got %v:\n%s", err, output)
+	}
+	assertOutputContainsAll(t, string(output), []string{"GitHub Actions runner allowlist check passed."})
+}
+
+func TestAutomationExamplesRejectsFakeCommandSubstrings(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-automation-examples.sh")
+	writeFixtureFile(t, repoDir, "examples/lefthook.yml", `# make automation-integrity
+# go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+# git diff --exit-code -- . ':!.artifacts'
+pre-commit:
+  commands:
+    automation-integrity:
+      run: echo "make automation-integrity"
+    lopper-json-report:
+      run: echo "go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json"
+    mutation-guard:
+      run: echo "git diff --exit-code -- . ':!.artifacts'"
+`)
+
+	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected fake command substrings to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"must preserve the automation example contract",
+		"missing automation integrity command",
+		"missing lopper JSON report command",
+		"missing mutation guard command",
+	})
+}
+
+func TestAutomationExamplesAcceptsParsedLefthookCommands(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-automation-examples.sh")
+	writeFixtureFile(t, repoDir, "examples/lefthook.yml", readRepoFile(t, "examples/lefthook.yml"))
+
+	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-automation-examples.sh"))
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected parsed lefthook commands to pass, got %v:\n%s", err, output)
+	}
+	assertOutputContainsAll(t, string(output), []string{"Automation examples preserve JSON and mutation-guard contracts."})
 }
 
 func readRepoFile(t *testing.T, path string) string {

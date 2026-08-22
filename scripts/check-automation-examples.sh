@@ -15,16 +15,83 @@ if [ ! -f "$example" ]; then
 	exit 1
 fi
 
-ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' "$example"
+ruby - "$example" <<'RUBY'
+require "shellwords"
+require "yaml"
 
-for required in \
-	'make automation-integrity' \
-	'--format json' \
-	'git diff --exit-code'; do
-	if ! grep -F -- "$required" "$example" >/dev/null; then
-		printf '%s must preserve the automation example contract: missing %s\n' "$example" "$required" >&2
-		exit 1
-	fi
-done
+example = ARGV.fetch(0)
+
+def load_yaml(path)
+	YAML.safe_load(File.read(path), aliases: true, filename: path)
+end
+
+def command_runs(config)
+	runs = []
+	return runs unless config.is_a?(Hash)
+
+	config.each do |hook_name, hook_config|
+		next unless hook_config.is_a?(Hash)
+
+		commands = hook_config["commands"]
+		next unless commands.is_a?(Hash)
+
+		commands.each do |command_name, command_config|
+			next unless command_config.is_a?(Hash)
+
+			run = command_config["run"]
+			runs << { hook: hook_name, command: command_name, run: run } if run.is_a?(String)
+		end
+	end
+
+	runs
+end
+
+def shell_segments(run)
+	run.split(/\s*(?:&&|\|\|)\s*/).map(&:strip).reject(&:empty?)
+end
+
+def shell_words(segment)
+	Shellwords.split(segment)
+rescue ArgumentError
+	[]
+end
+
+def has_exact_command?(runs, command_name, words)
+	runs.any? do |entry|
+		entry[:command] == command_name &&
+			shell_segments(entry[:run]).any? { |segment| shell_words(segment) == words }
+	end
+end
+
+def has_lopper_json_report?(runs)
+	runs.any? do |entry|
+		next false unless entry[:command] == "lopper-json-report"
+
+		shell_segments(entry[:run]).any? do |segment|
+			words = shell_words(segment)
+			next false unless words[0, 4] == ["go", "run", "./cmd/lopper", "analyse"]
+
+			words.each_cons(2).include?(["--repo", "."]) &&
+				words.each_cons(2).include?(["--language", "all"]) &&
+				words.each_cons(2).include?(["--format", "json"]) &&
+				words.each_cons(2).include?(["--output", ".artifacts/lopper-pre-commit.json"])
+		end
+	end
+end
+
+config = load_yaml(example)
+runs = command_runs(config)
+missing = []
+missing << "automation integrity command" unless has_exact_command?(runs, "automation-integrity", ["make", "automation-integrity"])
+missing << "lopper JSON report command" unless has_lopper_json_report?(runs)
+missing << "mutation guard command" unless has_exact_command?(runs, "mutation-guard", ["git", "diff", "--exit-code", "--", ".", ":!.artifacts"])
+
+unless missing.empty?
+	warn "#{example} must preserve the automation example contract:"
+	missing.each { |contract| warn "  - missing #{contract}" }
+	exit 1
+end
+
+RUBY
 
 printf 'Automation examples preserve JSON and mutation-guard contracts.\n'
