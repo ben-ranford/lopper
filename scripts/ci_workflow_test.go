@@ -33,7 +33,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
-	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read", "issues": "write"})
+	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, verify, "ci verify")
 	assertWorkflowStepOrder(t, verify, "Run coverage gate", "Stage PR report inputs", "Upload PR report inputs", "Upload binary artifact", "Fail workflow on coverage gate")
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -46,6 +46,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 		{"verify", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},
 		{"verify", "Upload binary artifact", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify binary upload"},
 		{"publish-pr-reports", "Download PR report inputs", "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "PR report download"},
+		{"publish-pr-reports", "Track inline suppressions", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "inline suppression tracking"},
 		{"publish-pr-reports", "Comment memory benchmark report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "memory benchmark comment"},
 		{"publish-pr-reports", "Comment lopper report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "lopper report comment"},
 		{"publish-pr-reports", "Comment on coverage failure", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "coverage failure comment"},
@@ -92,6 +93,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`limit_bytes=1048576`,
 		`coverage-package-failures.txt)`,
 		`limit_bytes=131072`,
+		`inline-suppressions.json)`,
 		`coverage-status.txt|coverage-total.txt|memory-bench-status.txt)`,
 		`copy_bounded_report "${src}" "${report_root}/${report}" "${limit_bytes}"`,
 	})
@@ -127,11 +129,21 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		"./extensions/",
 		"git ",
 	})
-	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Comment on coverage failure")
+	assertWorkflowStepOrder(t, publication, "Download PR report inputs", "Validate PR report inputs", "Track inline suppressions", "Comment memory benchmark report on PR", "Comment lopper report on PR", "Comment on coverage failure")
 	coverageComment := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Comment on coverage failure")
 	if !coverageComment.ContinueOnError {
 		t.Fatal("coverage comment publication must not fail an otherwise-green CI run")
 	}
+	trackSuppressions := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Track inline suppressions")
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: trackSuppressions.With["script"]}, "inline suppression publication", []string{
+		`const reportPath = 'pr-report-inputs/inline-suppressions.json';`,
+		`payload?.schema !== 'lopper-inline-suppressions-v1'`,
+		`payload.suppressions.length > 100`,
+		`unique.set(fingerprint, normalized);`,
+		`repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
+		`await github.rest.issues.update({`,
+		`await github.rest.issues.create({`,
+	})
 
 	downloadInputs := workflowStepByName(t, workflow.Jobs, "publish-pr-reports", "Download PR report inputs")
 	assertWorkflowArtifactDownloadByID(t, downloadInputs, workflowArtifactDownloadExpectation{
@@ -154,6 +166,8 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`path="${REPORT_ROOT}/${required}"`,
 		`Unexpected PR report input: ${name}`,
 		`PR report input exceeds the 1 MiB publication limit: ${name}`,
+		`inline-suppressions.json)`,
+		`PR report input exceeds the 128 KiB publication limit: ${name}`,
 	})
 	if got, want := shellArrayValues(t, validateInputs.Run, "required_files"), []string{"lopper-base-outcome.txt", "lopper-delta-outcome.txt"}; !slices.Equal(got, want) {
 		t.Fatalf("required PR report inputs = %q, want %q", got, want)
@@ -272,14 +286,15 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 
 	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
 	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
-		"GH_EVENT_NAME": "${{ github.event_name }}",
-		"GH_TOKEN":      "${{ github.token }}",
+		"GH_EVENT_NAME":               "${{ github.event_name }}",
+		"SUPPRESSION_TRACKING_OUTPUT": ".artifacts/inline-suppressions.json",
 	})
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify immutable memory bench base", []string{
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify immutable memory bench base", []string{
 		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
+		`GH_TOKEN`,
 	})
 
 	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")

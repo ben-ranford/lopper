@@ -37,7 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
     outputs:
       pr_report_artifact_id: ${{ steps.upload_pr_report_inputs.outputs.artifact-id }}
     steps:
@@ -129,8 +128,8 @@ jobs:
 
       - name: Run CI target
         env:
-          GH_TOKEN: ${{ github.token }}
           GH_EVENT_NAME: ${{ github.event_name }}
+          SUPPRESSION_TRACKING_OUTPUT: .artifacts/inline-suppressions.json
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
@@ -255,6 +254,7 @@ jobs:
             coverage-package-failures.txt \
             coverage-status.txt \
             coverage-total.txt \
+            inline-suppressions.json \
             lopper-pr-comment.md \
             memory-bench-status.txt \
             memory-bench-summary.md
@@ -264,6 +264,9 @@ jobs:
               limit_bytes=1048576
               case "${report}" in
                 coverage-package-failures.txt)
+                  limit_bytes=131072
+                  ;;
+                inline-suppressions.json)
                   limit_bytes=131072
                   ;;
                 coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
@@ -341,6 +344,7 @@ jobs:
             coverage-package-failures.txt
             coverage-status.txt
             coverage-total.txt
+            inline-suppressions.json
             lopper-base-outcome.txt
             lopper-delta-outcome.txt
             lopper-pr-comment.md
@@ -373,7 +377,131 @@ jobs:
               echo "PR report input exceeds the 1 MiB publication limit: ${name}" >&2
               exit 1
             fi
+            case "${name}" in
+              coverage-package-failures.txt|inline-suppressions.json)
+                if [ "$(stat --format=%s "${path}")" -gt 131072 ]; then
+                  echo "PR report input exceeds the 128 KiB publication limit: ${name}" >&2
+                  exit 1
+                fi
+                ;;
+              coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
+                if [ "$(stat --format=%s "${path}")" -gt 64 ]; then
+                  echo "PR report input exceeds the 64-byte publication limit: ${name}" >&2
+                  exit 1
+                fi
+                ;;
+            esac
           done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
+
+      - name: Track inline suppressions
+        if: ${{ !env.ACT }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('node:fs');
+
+            const reportPath = 'pr-report-inputs/inline-suppressions.json';
+            if (!fs.existsSync(reportPath)) {
+              core.info('No inline suppression records were produced.');
+              return;
+            }
+
+            const raw = fs.readFileSync(reportPath, 'utf8');
+            if (Buffer.byteLength(raw, 'utf8') > 131072) {
+              throw new Error('Inline suppression records exceed the 128 KiB publication limit.');
+            }
+
+            const payload = JSON.parse(raw);
+            if (payload?.schema !== 'lopper-inline-suppressions-v1' || !Array.isArray(payload.suppressions)) {
+              throw new Error('Inline suppression records use an unsupported schema.');
+            }
+            if (payload.suppressions.length > 100) {
+              throw new Error('Inline suppression records exceed the 100-record publication limit.');
+            }
+
+            const requireString = (record, key, maxBytes) => {
+              const value = record?.[key];
+              if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value, 'utf8') > maxBytes || /[\u0000-\u0008\u000a-\u001f\u007f]/u.test(value)) {
+                throw new Error(`Invalid inline suppression ${key}.`);
+              }
+              return value;
+            };
+            const escapeFence = (value) => value.replaceAll('```', '``\u200b`');
+            const unique = new Map();
+
+            for (const record of payload.suppressions) {
+              const fingerprint = requireString(record, 'fingerprint', 64);
+              if (!/^[0-9a-f]{64}$/u.test(fingerprint)) {
+                throw new Error('Invalid inline suppression fingerprint.');
+              }
+              const file = requireString(record, 'file', 512);
+              if (file.startsWith('/') || file.split('/').includes('..')) {
+                throw new Error('Invalid inline suppression file path.');
+              }
+              const line = record?.line;
+              if (!Number.isInteger(line) || line < 1 || line > 1000000) {
+                throw new Error('Invalid inline suppression line.');
+              }
+              const normalized = {
+                fingerprint,
+                file,
+                line,
+                source: requireString(record, 'source', 1024),
+                content: requireString(record, 'content', 4096),
+                rationale: requireString(record, 'rationale', 1024),
+                owner: requireString(record, 'owner', 256),
+                remove_when: requireString(record, 'remove_when', 1024),
+              };
+              if (!unique.has(fingerprint)) {
+                unique.set(fingerprint, normalized);
+              }
+            }
+
+            for (const record of unique.values()) {
+              const marker = `lopper-inline-suppression:${record.fingerprint}`;
+              const title = `ci: track inline suppression in ${record.file}:${record.line}`;
+              const body = [
+                `<!-- ${marker} -->`,
+                '',
+                '## Inline analysis suppression tracking',
+                '',
+                `- Location: \`${record.file}:${record.line}\``,
+                `- Source: ${record.source}`,
+                `- Rationale: ${record.rationale}`,
+                `- Owner: ${record.owner}`,
+                `- Removal condition: ${record.remove_when}`,
+                '',
+                'Source line:',
+                '',
+                '```text',
+                escapeFence(record.content),
+                '```',
+              ].join('\n');
+
+              const results = await github.rest.search.issuesAndPullRequests({
+                q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
+                per_page: 2,
+              });
+              const existing = results.data.items.find((item) => !item.pull_request);
+              if (existing) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  title,
+                  body,
+                });
+                core.info(`Updated inline suppression tracking issue #${existing.number} for ${record.file}:${record.line}.`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                });
+                core.info(`Opened inline suppression tracking issue #${created.data.number} for ${record.file}:${record.line}.`);
+              }
+            }
 
       - name: Comment memory benchmark report on PR
         if: ${{ !env.ACT }}
