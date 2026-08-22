@@ -390,6 +390,34 @@ test('commit identity audit accepts only canonical user committer identity', () 
   assert.throws(
     () =>
       testables.assertCanonicalCommitIdentity({
+        commits: [
+          makeComparisonCommit('linked-author-bot-type', {
+            author: { login: 'neutral-linked-author', type: 'Bot' },
+            committer: { login: 'neutral-linked-author', type: 'User' },
+          }),
+        ],
+        total_commits: 1,
+      }),
+    /author is a bot identity/,
+  );
+
+  assert.throws(
+    () =>
+      testables.assertCanonicalCommitIdentity({
+        commits: [
+          makeComparisonCommit('linked-committer-bot-type', {
+            author: { login: 'neutral-linked-committer', type: 'User' },
+            committer: { login: 'neutral-linked-committer', type: 'bOt' },
+          }),
+        ],
+        total_commits: 1,
+      }),
+    /committer is a bot identity/,
+  );
+
+  assert.throws(
+    () =>
+      testables.assertCanonicalCommitIdentity({
         commits: [makeComparisonCommit('partial')],
         total_commits: 2,
       }),

@@ -50,10 +50,12 @@ function queuePauseError(message) {
 }
 
 function isBotIdentity(identity) {
+  const type = String(identity?.type || '').trim().toLowerCase();
   const login = String(identity?.login || '').toLowerCase();
   const name = String(identity?.name || '').toLowerCase();
   const email = String(identity?.email || '').toLowerCase();
   return (
+    type === 'bot' ||
     login.endsWith('[bot]') ||
     name.endsWith('[bot]') ||
     email.includes('[bot]@') ||
