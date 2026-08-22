@@ -1930,11 +1930,11 @@ func TestOversizedRootGoModKeepsValidRetractBeforeV2Module(t *testing.T) {
 	}
 }
 
-func TestParseGoModFallbackStopsAtLineLimit(t *testing.T) {
+func TestParseGoModFallbackParsesInlineRequireBeyondFormerLineLimit(t *testing.T) {
 	content := moduleDemoLine + "\n" + strings.Repeat("// filler\n", 8192) + "require (" + depUUID + versionV160 + ")\n"
 	modulePath, dependencies, replacements := parseGoMod([]byte(content))
-	if modulePath != "" || len(dependencies) != 0 || len(replacements) != 0 {
-		t.Fatalf("expected over-limit malformed fallback to trust no metadata, got %q %#v %#v", modulePath, dependencies, replacements)
+	if modulePath != moduleDemo || !slices.Contains(dependencies, depUUID) || len(replacements) != 0 {
+		t.Fatalf("expected post-former-line-limit malformed fallback metadata, got %q %#v %#v", modulePath, dependencies, replacements)
 	}
 }
 

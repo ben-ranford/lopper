@@ -13,8 +13,7 @@ import (
 )
 
 const (
-	maxGoModBytes         = 2 * 1024 * 1024
-	maxGoModFallbackLines = 8192
+	maxGoModBytes = 2 * 1024 * 1024
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
@@ -191,10 +190,7 @@ func normalizeInlineGoModRequireBlocks(content []byte) []byte {
 }
 
 func goModFallbackNeedsNormalization(content []byte) bool {
-	for cursor, lineCount := 0, 0; cursor < len(content); lineCount++ {
-		if lineCount >= maxGoModFallbackLines {
-			return false
-		}
+	for cursor := 0; cursor < len(content); {
 		line, nextCursor := nextGoModFallbackLine(content, cursor)
 		rawLine := string(line)
 		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
@@ -212,10 +208,7 @@ func goModFallbackNeedsNormalization(content []byte) bool {
 func buildNormalizedInlineGoModRequireBlocks(content []byte) ([]byte, bool) {
 	var normalized strings.Builder
 	normalized.Grow(len(content))
-	for cursor, lineCount := 0, 0; cursor < len(content); lineCount++ {
-		if lineCount >= maxGoModFallbackLines {
-			return nil, false
-		}
+	for cursor := 0; cursor < len(content); {
 		line, nextCursor := nextGoModFallbackLine(content, cursor)
 		writeNormalizedGoModFallbackLine(&normalized, line)
 		if nextCursor < 0 {
