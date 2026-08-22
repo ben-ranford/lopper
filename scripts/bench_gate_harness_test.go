@@ -63,6 +63,217 @@ func TestHelper(t *testing.T) {}
 	}
 }
 
+func TestBenchGateFingerprintsTestMainHarnessFiles(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"bench_test.go": `package benchpkg
+
+import "testing"
+
+func BenchmarkValue(b *testing.B) {}
+`,
+		"main_test.go": `package benchpkg
+
+import (
+	"os"
+	"testing"
+)
+
+var setupValue = "base"
+
+func TestMain(m *testing.M) {
+	if setupValue == "" {
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+`,
+	})
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"main_test.go": `package benchpkg
+
+import (
+	"os"
+	"testing"
+)
+
+var setupValue = "head"
+
+func TestMain(m *testing.M) {
+	if setupValue == "" {
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
+`,
+	})
+	fixture.commit("head")
+
+	assertBenchGateHarnessMismatch(t, fixture)
+}
+
+func TestBenchGateFingerprintsBenchmarkEmbedsWithGoSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		files       map[string]string
+		changedFile string
+	}{
+		{
+			name: "recursive directory contents",
+			files: map[string]string{
+				"bench_test.go": `package benchpkg
+
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed testdata
+var fixtures embed.FS
+
+func BenchmarkValue(b *testing.B) {
+	_, _ = fixtures.ReadFile("testdata/nested/input.txt")
+}
+`,
+				"testdata/nested/input.txt": "base\n",
+			},
+			changedFile: "testdata/nested/input.txt",
+		},
+		{
+			name: "quoted filename with spaces",
+			files: map[string]string{
+				"bench_test.go": `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed "test data/input.txt"
+var input string
+
+func BenchmarkValue(b *testing.B) {
+	_ = len(input)
+}
+`,
+				"test data/input.txt": "base\n",
+			},
+			changedFile: "test data/input.txt",
+		},
+		{
+			name: "quoted filename with Go escape",
+			files: map[string]string{
+				"bench_test.go": `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed "test\x20data/input.txt"
+var input string
+
+func BenchmarkValue(b *testing.B) {
+	_ = len(input)
+}
+`,
+				"test data/input.txt": "base\n",
+			},
+			changedFile: "test data/input.txt",
+		},
+		{
+			name: "all directory includes hidden fixtures",
+			files: map[string]string{
+				"bench_test.go": `package benchpkg
+
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed all:testdata
+var fixtures embed.FS
+
+func BenchmarkValue(b *testing.B) {
+	_, _ = fixtures.ReadFile("testdata/.fixture")
+}
+`,
+				"testdata/.fixture": "base\n",
+			},
+			changedFile: "testdata/.fixture",
+		},
+		{
+			name: "glob includes dotfiles",
+			files: map[string]string{
+				"bench_test.go": `package benchpkg
+
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed testdata/*
+var fixtures embed.FS
+
+func BenchmarkValue(b *testing.B) {
+	_, _ = fixtures.ReadFile("testdata/.fixture")
+}
+`,
+				"testdata/.fixture": "base\n",
+			},
+			changedFile: "testdata/.fixture",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newBenchGateFixture(t, "benchpkg")
+			fixture.writeBenchmarkPackage("benchpkg", tc.files)
+			fixture.commit("base")
+			fixture.writeBenchmarkPackage("benchpkg", map[string]string{tc.changedFile: "head\n"})
+			fixture.commit("head")
+
+			assertBenchGateHarnessMismatch(t, fixture)
+		})
+	}
+}
+
+func TestBenchGateIgnoresOrdinaryTestOnlyEmbedFixtures(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"bench_test.go": `package benchpkg
+
+import "testing"
+
+func BenchmarkValue(b *testing.B) {}
+`,
+		"ordinary_test.go": `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/ordinary.txt
+var ordinaryInput string
+
+func TestOrdinary(t *testing.T) {
+	if ordinaryInput == "" {
+		t.Fatal("missing ordinary fixture")
+	}
+}
+`,
+		"testdata/ordinary.txt": "base\n",
+	})
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"testdata/ordinary.txt": "head\n"})
+	fixture.commit("head")
+
+	output, exitCode := fixture.runBenchGate()
+	if exitCode != 0 {
+		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+}
+
 func TestBenchGateIgnoresPackageCommentAndStringBenchmarkText(t *testing.T) {
 	fixture := newBenchGateFixture(t, "benchmarkpkg")
 	fixture.writeBenchmarkPackage("benchmarkpkg", map[string]string{
@@ -70,11 +281,11 @@ func TestBenchGateIgnoresPackageCommentAndStringBenchmarkText(t *testing.T) {
 
 import "testing"
 
-var sink int
+var sink []byte
 
 func BenchmarkValue(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		sink++
+		sink = make([]byte, 1)
 	}
 }
 `,
@@ -105,6 +316,18 @@ func TestNoise(t *testing.T) {
 	output, exitCode := fixture.runBenchGate()
 	if exitCode != 0 {
 		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+}
+
+func assertBenchGateHarnessMismatch(t *testing.T, fixture benchGateFixture) {
+	t.Helper()
+
+	output, exitCode := fixture.runBenchGate()
+	if exitCode != 2 {
+		t.Fatalf("bench gate exit code = %d, want 2\n%s", exitCode, output)
+	}
+	if !strings.Contains(output, "does not match the resolved head harness fingerprint") {
+		t.Fatalf("expected harness fingerprint mismatch, got:\n%s", output)
 	}
 }
 

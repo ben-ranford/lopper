@@ -162,6 +162,22 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	if deps[0].UsedImports[0].Locations[0].File != "a.js" {
 		t.Fatalf("expected unchanged location when analyzed root equals repo root")
 	}
+
+	gaps := []report.CoverageGap{
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: " foo.gemspec "},
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: "/absolute/foo.gemspec"},
+		{Code: "pathless-gap", Language: "ruby"},
+	}
+	adjustRelativeCoverageGaps("/repo", "/repo/packages/a", gaps)
+	if gaps[0].Path != "packages/a/ foo.gemspec " {
+		t.Fatalf("expected relative coverage gap to be rebased without trimming filename whitespace, got %q", gaps[0].Path)
+	}
+	if gaps[1].Path != "/absolute/foo.gemspec" {
+		t.Fatalf("expected absolute coverage gap path to stay absolute, got %q", gaps[1].Path)
+	}
+	if gaps[2].Path != "" {
+		t.Fatalf("expected empty coverage gap path to remain empty, got %q", gaps[2].Path)
+	}
 }
 
 func TestMergeReportsAndTopSymbolsBranches(t *testing.T) {

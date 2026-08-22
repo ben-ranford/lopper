@@ -241,10 +241,6 @@ if [ -z "$go_version_log" ] || [ "$reported_go_version" != "$expected_go_version
 fi;
 echo "Memory benchmark GO_BIN: $go_bin_path";
 echo "Memory benchmark Go toolchain: $expected_go_version";
-benchmark_harness_go_file_selected() {
-	fingerprint_go_file="$1";
-	"$benchmark_harness_selector_bin" "$fingerprint_go_file";
-};
 benchmark_harness_append_file() {
 	fingerprint_kind="$1";
 	fingerprint_file="$2";
@@ -255,18 +251,32 @@ benchmark_harness_append_file() {
 };
 benchmark_harness_fingerprint() {
 	fingerprint_pkg="$1";
-	fingerprint_files_tmp=$(mktemp) || return 1;
-	fingerprint_manifest_tmp=$(mktemp) || { rm -f "$fingerprint_files_tmp"; return 1; };
+	fingerprint_go_files_tmp=$(mktemp) || return 1;
+	fingerprint_files_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp"; return 1; };
+	fingerprint_kind_files_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp"; return 1; };
+	fingerprint_manifest_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp"; return 1; };
 	if ! fingerprint_dir=$(GOFLAGS=-buildvcs=false run_validated_go "benchmark harness directory resolution for '$fingerprint_pkg'" list -f '{{.Dir}}' "$fingerprint_pkg" 2>/dev/null); then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
-	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_files_tmp" 2>/dev/null; then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_go_files_tmp" 2>/dev/null; then
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
+	if ! LC_ALL=C sort -u -o "$fingerprint_go_files_tmp" "$fingerprint_go_files_tmp"; then
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		return 1;
+	fi;
+	: > "$fingerprint_files_tmp";
+	for fingerprint_kind in test xtest; do
+		awk -F "$(printf '\t')" -v kind="$fingerprint_kind" '$1 == kind { print $2 }' "$fingerprint_go_files_tmp" > "$fingerprint_kind_files_tmp";
+		if ! "$benchmark_harness_selector_bin" "$fingerprint_dir" "$fingerprint_kind" < "$fingerprint_kind_files_tmp" >> "$fingerprint_files_tmp"; then
+			rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+			return 1;
+		fi;
+	done;
 	if ! LC_ALL=C sort -u -o "$fingerprint_files_tmp" "$fingerprint_files_tmp"; then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
 	: > "$fingerprint_manifest_tmp";
@@ -274,18 +284,7 @@ benchmark_harness_fingerprint() {
 	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file; do
 		[ -n "$fingerprint_file" ] || continue;
 		case "$fingerprint_kind" in
-			test|xtest)
-				if benchmark_harness_go_file_selected "$fingerprint_dir/$fingerprint_file"; then
-					:
-				else
-					selection_status=$?;
-					if [ "$selection_status" -eq 1 ]; then
-						continue;
-					fi;
-					fingerprint_failed=1;
-					break;
-				fi;
-				;;
+			test|xtest) ;;
 			test-embed|xtest-embed) ;;
 			*) continue ;;
 		esac;
@@ -296,10 +295,10 @@ benchmark_harness_fingerprint() {
 	done < "$fingerprint_files_tmp";
 	LC_ALL=C sort -u -o "$fingerprint_manifest_tmp" "$fingerprint_manifest_tmp" || fingerprint_failed=1;
 	if [ "$fingerprint_failed" -ne 0 ] || ! fingerprint_value=$(git hash-object -- "$fingerprint_manifest_tmp" 2>/dev/null); then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
-	rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+	rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 	printf "git-hash-object:%s\n" "$fingerprint_value";
 };
 format_benchmark_definition() {
@@ -331,54 +330,160 @@ cat > "$benchmark_harness_selector_src" <<'GOEOF';
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
+type harnessDecl struct {
+	file string
+	decl ast.Decl
+}
+
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: benchharness <go-test-file>")
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: benchharness <package-dir> <test|xtest>")
 		os.Exit(2)
 	}
 
-	selected, err := benchmarkHarnessFileSelected(os.Args[1])
+	manifest, err := benchmarkHarnessManifest(os.Args[1], os.Args[2], os.Stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "parse benchmark harness file %q: %v\n", os.Args[1], err)
+		fmt.Fprintf(os.Stderr, "resolve benchmark harness files: %v\n", err)
 		os.Exit(2)
 	}
-	if !selected {
-		os.Exit(1)
+	for _, line := range manifest {
+		fmt.Println(line)
 	}
 }
 
-func benchmarkHarnessFileSelected(path string) (bool, error) {
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error) {
+	files, err := readFileList(stdin)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-
-	for _, decl := range file.Decls {
-		if declarationCanAffectBenchmark(decl) {
-			return true, nil
+	parsed := make(map[string]*ast.File, len(files))
+	decls := make(map[string][]harnessDecl)
+	roots := make([]harnessDecl, 0)
+	for _, rel := range files {
+		abs := filepath.Join(dir, filepath.FromSlash(rel))
+		file, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.ParseComments)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", rel, err)
+		}
+		parsed[rel] = file
+		for _, decl := range file.Decls {
+			for _, name := range declaredNames(decl) {
+				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
+			}
+			if rootDeclarationCanAffectBenchmark(decl) {
+				roots = append(roots, harnessDecl{file: rel, decl: decl})
+			}
 		}
 	}
-	return false, nil
+
+	selected := selectedBenchmarkHarnessFiles(roots, decls)
+	manifest := make([]string, 0, len(selected))
+	seen := make(map[string]struct{})
+	for _, rel := range files {
+		if _, ok := selected[rel]; !ok {
+			continue
+		}
+		appendManifestLine(&manifest, seen, kind, rel)
+		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel])
+		if err != nil {
+			return nil, fmt.Errorf("resolve embeds in %s: %w", rel, err)
+		}
+		for _, embedFile := range embedFiles {
+			appendManifestLine(&manifest, seen, kind+"-embed", embedFile)
+		}
+	}
+	sort.Strings(manifest)
+	return manifest, nil
 }
 
-func declarationCanAffectBenchmark(decl ast.Decl) bool {
+func readFileList(stdin *os.File) ([]string, error) {
+	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	files := make([]string, 0)
+	for scanner.Scan() {
+		if rel := strings.TrimSpace(scanner.Text()); rel != "" {
+			files = append(files, filepath.ToSlash(rel))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel string) {
+	line := kind + "\t" + filepath.ToSlash(rel)
+	if _, ok := seen[line]; ok {
+		return
+	}
+	seen[line] = struct{}{}
+	*manifest = append(*manifest, line)
+}
+
+func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) map[string]struct{} {
+	selected := make(map[string]struct{})
+	seenDecls := make(map[ast.Decl]struct{})
+	queue := append([]harnessDecl(nil), roots...)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if _, ok := seenDecls[current.decl]; ok {
+			continue
+		}
+		seenDecls[current.decl] = struct{}{}
+		selected[current.file] = struct{}{}
+		for name := range referencedPackageNames(current.decl) {
+			for _, next := range decls[name] {
+				if _, ok := seenDecls[next.decl]; !ok {
+					queue = append(queue, next)
+				}
+			}
+		}
+	}
+	return selected
+}
+
+func declaredNames(decl ast.Decl) []string {
 	switch typed := decl.(type) {
-	case *ast.GenDecl:
-		return declarationTokenCanAffectBenchmark(typed.Tok) && len(typed.Specs) > 0
 	case *ast.FuncDecl:
-		return functionDeclarationCanAffectBenchmark(typed)
+		if typed.Name == nil {
+			return nil
+		}
+		return []string{typed.Name.Name}
+	case *ast.GenDecl:
+		if !declarationTokenCanAffectBenchmark(typed.Tok) {
+			return nil
+		}
+		names := make([]string, 0, len(typed.Specs))
+		for _, spec := range typed.Specs {
+			switch typedSpec := spec.(type) {
+			case *ast.ValueSpec:
+				for _, name := range typedSpec.Names {
+					names = append(names, name.Name)
+				}
+			case *ast.TypeSpec:
+				names = append(names, typedSpec.Name.Name)
+			}
+		}
+		return names
 	default:
-		return false
+		return nil
 	}
 }
 
@@ -386,21 +491,38 @@ func declarationTokenCanAffectBenchmark(tok token.Token) bool {
 	return tok == token.CONST || tok == token.TYPE || tok == token.VAR
 }
 
-func functionDeclarationCanAffectBenchmark(decl *ast.FuncDecl) bool {
+func rootDeclarationCanAffectBenchmark(decl ast.Decl) bool {
+	typed, ok := decl.(*ast.FuncDecl)
+	if !ok {
+		return false
+	}
+	return rootFunctionCanAffectBenchmark(typed)
+}
+
+func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 	if decl.Name == nil {
 		return false
 	}
-	if decl.Recv != nil {
-		return true
-	}
-
 	name := decl.Name.Name
-	if name == "init" || isGoTestEntrypoint(name, "Benchmark") {
+	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
+}
+
+func referencedPackageNames(node ast.Node) map[string]struct{} {
+	names := make(map[string]struct{})
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch typed := n.(type) {
+		case *ast.Ident:
+			if typed.Name != "_" {
+				names[typed.Name] = struct{}{}
+			}
+		case *ast.SelectorExpr:
+			if typed.Sel != nil {
+				names[typed.Sel.Name] = struct{}{}
+			}
+		}
 		return true
-	}
-	return !isGoTestEntrypoint(name, "Test") &&
-		!isGoTestEntrypoint(name, "Fuzz") &&
-		!isGoTestEntrypoint(name, "Example")
+	})
+	return names
 }
 
 func isGoTestEntrypoint(name, prefix string) bool {
@@ -413,6 +535,219 @@ func isGoTestEntrypoint(name, prefix string) bool {
 	}
 	first, _ := utf8.DecodeRuneInString(suffix)
 	return !unicode.IsLower(first)
+}
+
+func embeddedFilesForSelectedFile(dir string, file *ast.File) ([]string, error) {
+	if file == nil {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	files := make([]string, 0)
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			text := strings.TrimSpace(comment.Text)
+			if !strings.HasPrefix(text, "//go:embed") {
+				continue
+			}
+			patterns, err := parseEmbedPatterns(strings.TrimSpace(strings.TrimPrefix(text, "//go:embed")))
+			if err != nil {
+				return nil, err
+			}
+			for _, pattern := range patterns {
+				matches, err := resolveEmbedPattern(dir, pattern)
+				if err != nil {
+					return nil, err
+				}
+				for _, match := range matches {
+					if _, ok := seen[match]; ok {
+						continue
+					}
+					seen[match] = struct{}{}
+					files = append(files, match)
+				}
+			}
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func parseEmbedPatterns(text string) ([]string, error) {
+	patterns := make([]string, 0)
+	for {
+		text = strings.TrimLeftFunc(text, unicode.IsSpace)
+		if text == "" {
+			return patterns, nil
+		}
+		switch text[0] {
+		case '`':
+			end := strings.IndexByte(text[1:], '`')
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated raw string literal in go:embed directive")
+			}
+			lit := text[:end+2]
+			value, err := strconv.Unquote(lit)
+			if err != nil {
+				return nil, err
+			}
+			patterns = append(patterns, value)
+			text = text[end+2:]
+		case '"':
+			end := 1
+			escaped := false
+			for end < len(text) {
+				ch := text[end]
+				if escaped {
+					escaped = false
+				} else if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					break
+				}
+				end++
+			}
+			if end >= len(text) {
+				return nil, fmt.Errorf("unterminated string literal in go:embed directive")
+			}
+			lit := text[:end+1]
+			value, err := strconv.Unquote(lit)
+			if err != nil {
+				return nil, err
+			}
+			patterns = append(patterns, value)
+			text = text[end+1:]
+		default:
+			end := strings.IndexFunc(text, unicode.IsSpace)
+			if end < 0 {
+				patterns = append(patterns, text)
+				text = ""
+			} else {
+				patterns = append(patterns, text[:end])
+				text = text[end:]
+			}
+		}
+	}
+}
+
+func resolveEmbedPattern(dir, pattern string) ([]string, error) {
+	includeHidden := false
+	if strings.HasPrefix(pattern, "all:") {
+		includeHidden = true
+		pattern = strings.TrimPrefix(pattern, "all:")
+	}
+	pattern = filepath.ToSlash(pattern)
+	if pattern == "" {
+		return nil, fmt.Errorf("empty go:embed pattern")
+	}
+	if hasPathMeta(pattern) {
+		return resolveEmbedGlob(dir, pattern, includeHidden)
+	}
+	abs := filepath.Join(dir, filepath.FromSlash(pattern))
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return embeddedFilesUnderDir(dir, abs, includeHidden)
+	}
+	if info.Mode().IsRegular() {
+		return []string{filepath.ToSlash(pattern)}, nil
+	}
+	return nil, nil
+}
+
+func resolveEmbedGlob(dir, pattern string, includeHidden bool) ([]string, error) {
+	files := make([]string, 0)
+	err := filepath.WalkDir(dir, func(abs string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if abs == dir {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, abs)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		matched, err := path.Match(pattern, rel)
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return nil
+		}
+		if entry.IsDir() {
+			nested, err := embeddedFilesUnderDir(dir, abs, includeHidden)
+			if err != nil {
+				return err
+			}
+			files = append(files, nested...)
+			return filepath.SkipDir
+		}
+		if entry.Type().IsRegular() {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return uniqueStrings(files), nil
+}
+
+func embeddedFilesUnderDir(root, dir string, includeHidden bool) ([]string, error) {
+	files := make([]string, 0)
+	err := filepath.WalkDir(dir, func(abs string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if abs != dir && !includeHidden && hiddenEmbedName(entry.Name()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func hasPathMeta(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[")
+}
+
+func hiddenEmbedName(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := values[:0]
+	var last string
+	for i, value := range values {
+		if i > 0 && value == last {
+			continue
+		}
+		out = append(out, value)
+		last = value
+	}
+	return out
 }
 GOEOF
 GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src";

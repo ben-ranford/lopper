@@ -3182,7 +3182,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
 		`requested base ref '$$base_ref' is not related to HEAD`,
-		`benchmark_harness_go_file_selected() { \`,
+		`benchmark_harness_selector_bin="$$bench_dir/benchharness"`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
@@ -3191,8 +3191,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`list -test -f '{{range .TestGoFiles}}`,
 		`{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}`,
 		`{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}`,
-		`{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}`,
-		`{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}`,
+		`"$benchmark_harness_selector_bin" "$fingerprint_dir" "$fingerprint_kind"`,
 		`-list '^Benchmark' "$$bench_pkg"`,
 		`configured head benchmark package target '$$bench_pkg' resolved zero selected benchmarks.`,
 		`echo "Resolved head benchmark definitions:"`,
@@ -3913,14 +3912,15 @@ func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testi
 	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
 
-func TestMakefileBenchGateRejectsChangedOrdinaryTestOnlyEmbeddedFixturesBeforeExecution(t *testing.T) {
+func TestMakefileBenchGateIgnoresChangedOrdinaryTestOnlyEmbeddedFixtures(t *testing.T) {
 	t.Parallel()
 
-	assertBenchGateRejectsChangedBenchmarkHarnessInputBeforeExecution(t, changedBenchmarkFixtureCase{
-		name: "ordinary test embedded fixture",
-		files: []benchmarkFixtureFile{
-			{path: "benchpkg/bench_test.go", content: benchmarkTestSource("benchpkg", "BenchmarkShared")},
-			{path: "benchpkg/ordinary_test.go", content: `package benchpkg
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	files := []benchmarkFixtureFile{
+		{path: "benchpkg/bench_test.go", content: benchmarkTestSource("benchpkg", "BenchmarkShared")},
+		{path: "benchpkg/ordinary_test.go", content: `package benchpkg
 
 import (
 	_ "embed"
@@ -3936,13 +3936,31 @@ func TestOrdinaryEmbeddedFixture(t *testing.T) {
 	}
 }
 `},
-			{path: "benchpkg/testdata/ordinary.txt", content: "base ordinary fixture\n"},
-		},
-		changePath:    "benchpkg/testdata/ordinary.txt",
-		headContent:   "head ordinary fixture\n",
-		selectionName: "BenchmarkShared",
-		benchName:     "BenchmarkShared-",
-	})
+		{path: "benchpkg/testdata/ordinary.txt", content: "base ordinary fixture\n"},
+	}
+	paths := []string{"go.mod", "tools/benchdelta", "internal/safeio"}
+	for _, file := range files {
+		writeFile(t, filepath.Join(repo, file.path), file.content)
+		paths = append(paths, file.path)
+	}
+	slices.Sort(paths)
+	runGitCommand(t, repo, append([]string{"add"}, paths...)...)
+	runGitCommand(t, repo, "commit", "-m", "add ordinary embedded fixture")
+
+	writeFile(t, filepath.Join(repo, "benchpkg/testdata/ordinary.txt"), "head ordinary fixture\n")
+	runGitCommand(t, repo, "add", "benchpkg/testdata/ordinary.txt")
+	runGitCommand(t, repo, "commit", "-m", "change ordinary embedded fixture")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+	if strings.Contains(output, "does not match the resolved head harness fingerprint") {
+		t.Fatalf("bench-gate treated an ordinary test-only fixture as benchmark harness drift:\n%s", output)
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
 
 type benchmarkFixtureFile struct {

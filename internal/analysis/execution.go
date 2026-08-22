@@ -60,6 +60,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			adjustRelativeCoverageGaps(repoPath, normalizedRoot, cachedReport.CoverageGaps)
 			reports = append(reports, cachedReport)
 			continue
 		}
@@ -85,6 +86,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
+		adjustRelativeCoverageGaps(repoPath, normalizedRoot, current.CoverageGaps)
 		reports = append(reports, current)
 	}
 	return reports, warnings, analyzedRoots, nil
@@ -141,6 +143,25 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 		adjustImportLocations(prefix, dependencies[i].UsedImports)
 		adjustImportLocations(prefix, dependencies[i].UnusedImports)
 		adjustImportLocations(prefix, dependencies[i].SuppressedUnusedImports)
+	}
+}
+
+func adjustRelativeCoverageGaps(repoPath string, analyzedRoot string, gaps []report.CoverageGap) {
+	prefix, err := filepath.Rel(repoPath, analyzedRoot)
+	if err != nil || prefix == "." || prefix == "" {
+		return
+	}
+	normalizedPrefix := normalizeLocationPath(prefix)
+	for i := range gaps {
+		if gaps[i].Path == "" {
+			continue
+		}
+		normalizedPath := normalizeLocationPath(gaps[i].Path)
+		if isAbsoluteLocationPath(gaps[i].Path) {
+			gaps[i].Path = normalizedPath
+			continue
+		}
+		gaps[i].Path = path.Clean(path.Join(normalizedPrefix, normalizedPath))
 	}
 }
 
