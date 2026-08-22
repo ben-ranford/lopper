@@ -274,11 +274,15 @@ func (r *fakeRoot) Link(oldName, newName string) error {
 	return r.Root.Link(oldName, newName)
 }
 
+func (r *fakeRoot) verifyPathMatches(name string, expected fs.FileInfo, message string) error {
+	return verifyPublishedPathMatchesInfo(r, name, expected, message)
+}
+
 func (r *fakeRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
 	if r.linkIfMatches != nil {
 		return r.linkIfMatches(oldName, newName, expected, message)
 	}
-	if err := verifyPublishedPathMatchesInfo(r, oldName, expected, message); err != nil {
+	if err := r.verifyPathMatches(oldName, expected, message); err != nil {
 		return err
 	}
 	return r.Link(oldName, newName)
@@ -295,7 +299,7 @@ func (r *fakeRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo
 	if r.renameIfMatches != nil {
 		return r.renameIfMatches(oldName, newName, expected, message)
 	}
-	if err := verifyPublishedPathMatchesInfo(r, oldName, expected, message); err != nil {
+	if err := r.verifyPathMatches(oldName, expected, message); err != nil {
 		return err
 	}
 	return r.Rename(oldName, newName)
@@ -315,7 +319,7 @@ func (r *fakeRoot) RemoveIfMatches(name string, expected fs.FileInfo, message st
 	if r.removeIfMatches != nil {
 		return r.removeIfMatches(name, expected, message)
 	}
-	if err := verifyPublishedPathMatchesInfo(r, name, expected, message); err != nil {
+	if err := r.verifyPathMatches(name, expected, message); err != nil {
 		return err
 	}
 	return r.Remove(name)

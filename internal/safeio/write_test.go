@@ -151,21 +151,8 @@ func newExclusiveCreateRoot(t *testing.T, targetInfo fs.FileInfo) (*fakeRoot, *e
 			return targetInfo, nil
 		},
 		openFile: exclusiveCreateOpenFile(t, targetInfo, state),
-		link: func(oldName, newName string) error {
-			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
-				t.Fatalf("unexpected temp publish source: %s", oldName)
-			}
-			if newName != writeTestFileName && !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
-				t.Fatalf("unexpected temp publish target: %s", newName)
-			}
-			return nil
-		},
-		remove: func(name string) error {
-			if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
-				t.Fatalf("unexpected cleanup path: %s", name)
-			}
-			return nil
-		},
+		link:     atomicTempPublishLink(t, writeTestFileName),
+		remove:   removeOnlyTempPath(t),
 	}, state
 }
 
@@ -179,6 +166,19 @@ func assertExclusiveCreateOpen(t *testing.T, name string, flag int, perm os.File
 	}
 	if perm != 0o640 {
 		t.Fatalf("unexpected target perm: %#o", perm)
+	}
+}
+
+func atomicTempPublishLink(t *testing.T, finalName string) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
+			t.Fatalf("unexpected temp publish source: %s", oldName)
+		}
+		if newName != finalName && !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+			t.Fatalf("unexpected temp publish target: %s", newName)
+		}
+		return nil
 	}
 }
 
@@ -248,15 +248,7 @@ func assertExclusiveCreatedTargetRejected(t *testing.T, tc exclusiveCreatedTarge
 			}
 			return tc.pathInfo, tc.lstatErr
 		},
-		link: func(oldName, newName string) error {
-			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
-				t.Fatalf("unexpected publish link source: %s", oldName)
-			}
-			if newName != writeTestFileName && !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
-				t.Fatalf("unexpected publish link target: %s", newName)
-			}
-			return nil
-		},
+		link:   atomicTempPublishLink(t, writeTestFileName),
 		remove: func(string) error { removed = true; return nil },
 	}
 
@@ -4228,7 +4220,7 @@ func moveFallbackCopyRename(root Root, oldName, newName string, attempts *int, f
 	return syscall.EXDEV
 }
 
-func lstatOnlySource(t *testing.T, sourceInfo fs.FileInfo) func(string) (fs.FileInfo, error) {
+func lstatSourceOrTemp(t *testing.T, sourceInfo fs.FileInfo) func(string) (fs.FileInfo, error) {
 	t.Helper()
 	return func(name string) (fs.FileInfo, error) {
 		if name != "source" && !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
@@ -4238,16 +4230,18 @@ func lstatOnlySource(t *testing.T, sourceInfo fs.FileInfo) func(string) (fs.File
 	}
 }
 
+func assertIdentityBoundSourceLink(t *testing.T, oldName, newName string) {
+	t.Helper()
+	if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+	}
+}
+
 func identityBoundSourceLink(t *testing.T, linkErr error, calls *int) func(string, string) error {
 	t.Helper()
 	return func(oldName, newName string) error {
 		(*calls)++
-		if !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
-			t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
-		}
-		if oldName == "source" || strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
-			return linkErr
-		}
+		assertIdentityBoundSourceLink(t, oldName, newName)
 		return linkErr
 	}
 }
@@ -4565,9 +4559,7 @@ func (f *fallbackSourceReplacementAfterEXDEVFixture) lstat(name string) (fs.File
 }
 
 func (f *fallbackSourceReplacementAfterEXDEVFixture) link(oldName, newName string) error {
-	if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
-		f.t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
-	}
+	assertIdentityBoundSourceLink(f.t, oldName, newName)
 	return nil
 }
 
@@ -5688,37 +5680,52 @@ type rootWithoutIdentity struct {
 	Root
 }
 
-func TestRenameFileIfMatchesFailsClosedWithoutIdentityBoundRoot(t *testing.T) {
+func TestPathOperationIfMatchesFailsClosedWithoutIdentityBoundRoot(t *testing.T) {
 	info := newPinnedTargetInfo(t, "source")
-	renameCalls := 0
-	root := &rootWithoutIdentity{Root: &fakeRoot{
-		lstat:  lstatOriginalForNames(t, info, "source"),
-		rename: func(string, string) error { renameCalls++; return nil },
-	}}
-
-	_, err := renameFileIfMatches(root, "source", "target", info, sourceChangedMsg)
-	if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-		t.Fatalf("expected fail-closed unsupported rename, got %v", err)
-	}
-	if renameCalls != 0 {
-		t.Fatalf("expected no raw rename without identity-bound hook, got %d", renameCalls)
-	}
-}
-
-func TestLinkFileIfMatchesFailsClosedWithoutIdentityBoundRoot(t *testing.T) {
-	info := newPinnedTargetInfo(t, "source")
-	linkCalls := 0
-	root := &rootWithoutIdentity{Root: &fakeRoot{
-		lstat: lstatOriginalForNames(t, info, "source"),
-		link:  func(string, string) error { linkCalls++; return nil },
-	}}
-
-	err := linkFileIfMatches(root, "source", "target", info, sourceChangedMsg)
-	if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-		t.Fatalf("expected fail-closed unsupported link, got %v", err)
-	}
-	if linkCalls != 0 {
-		t.Fatalf("expected no raw link without identity-bound hook, got %d", linkCalls)
+	for _, tc := range []struct {
+		name   string
+		opName string
+		root   func(*int) Root
+		call   func(Root, fs.FileInfo) error
+	}{
+		{
+			name:   "rename",
+			opName: "rename",
+			root: func(calls *int) Root {
+				return &rootWithoutIdentity{Root: &fakeRoot{
+					lstat:  lstatOriginalForNames(t, info, "source"),
+					rename: func(string, string) error { (*calls)++; return nil },
+				}}
+			},
+			call: func(root Root, info fs.FileInfo) error {
+				_, err := renameFileIfMatches(root, "source", "target", info, sourceChangedMsg)
+				return err
+			},
+		},
+		{
+			name:   "link",
+			opName: "link",
+			root: func(calls *int) Root {
+				return &rootWithoutIdentity{Root: &fakeRoot{
+					lstat: lstatOriginalForNames(t, info, "source"),
+					link:  func(string, string) error { (*calls)++; return nil },
+				}}
+			},
+			call: func(root Root, info fs.FileInfo) error {
+				return linkFileIfMatches(root, "source", "target", info, sourceChangedMsg)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			err := tc.call(tc.root(&calls), info)
+			if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+				t.Fatalf("expected fail-closed unsupported %s, got %v", tc.opName, err)
+			}
+			if calls != 0 {
+				t.Fatalf("expected no raw %s without identity-bound hook, got %d", tc.opName, calls)
+			}
+		})
 	}
 }
 
@@ -6015,7 +6022,7 @@ func assertMoveFileWithinRootIdentityBoundStagingError(t *testing.T, sourceInfo 
 	linkCalls := 0
 	root := &fakeRoot{
 		mkdirAll: func(string, os.FileMode) error { return nil },
-		lstat:    lstatOnlySource(t, sourceInfo),
+		lstat:    lstatSourceOrTemp(t, sourceInfo),
 		chmod:    chmodNameWithoutError(t, "source"),
 		link:     identityBoundSourceLink(t, linkErr, &linkCalls),
 		rename: func(string, string) error {
@@ -6236,9 +6243,7 @@ func (f *changedTargetAfterRenameFixture) lstat(name string) (fs.FileInfo, error
 }
 
 func (f *changedTargetAfterRenameFixture) link(oldName, newName string) error {
-	if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
-		f.t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
-	}
+	assertIdentityBoundSourceLink(f.t, oldName, newName)
 	return nil
 }
 
@@ -6364,12 +6369,7 @@ func TestChmodAndSnapshotMoveSourceErrorBranches(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := MoveFileWithinRoot(tc.root, "source", "target", 0o750, 0o640)
-			switch {
-			case tc.wantIs != nil && !errors.Is(err, tc.wantIs):
-				t.Fatalf("expected %v, got %v", tc.wantIs, err)
-			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
-			}
+			assertMoveFileWithinRootError(t, err, tc.wantIs, tc.wantErr)
 		})
 	}
 }
@@ -6408,11 +6408,16 @@ func assertCopyFileWithinRootRejectsInvalidSourceStat(t *testing.T, regularInfo 
 	t.Helper()
 	root := copyInvalidSourceStatRoot(t, regularInfo, tc.stat)
 	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	assertMoveFileWithinRootError(t, err, tc.wantIs, tc.wantErr)
+}
+
+func assertMoveFileWithinRootError(t *testing.T, err, wantIs error, wantErr string) {
+	t.Helper()
 	switch {
-	case tc.wantIs != nil && !errors.Is(err, tc.wantIs):
-		t.Fatalf("expected %v, got %v", tc.wantIs, err)
-	case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
-		t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+	case wantIs != nil && !errors.Is(err, wantIs):
+		t.Fatalf("expected %v, got %v", wantIs, err)
+	case wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)):
+		t.Fatalf("expected %q error, got %v", wantErr, err)
 	}
 }
 
@@ -6426,16 +6431,6 @@ func copyInvalidSourceStatRoot(t *testing.T, regularInfo fs.FileInfo, invalidSta
 		rename:   exdevSourceOrTempToTarget(t),
 		remove:   removeOnlyTempPath(t),
 		open:     invalidSourceStatOpen(t, regularInfo, invalidStat),
-	}
-}
-
-func lstatSourceOrTemp(t *testing.T, info fs.FileInfo) func(string) (fs.FileInfo, error) {
-	t.Helper()
-	return func(name string) (fs.FileInfo, error) {
-		if name != "source" && !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
-			t.Fatalf("unexpected lstat path: %s", name)
-		}
-		return info, nil
 	}
 }
 
