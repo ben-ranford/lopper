@@ -111,14 +111,8 @@ rescue ArgumentError
 	[]
 end
 
-def noop_success_command?(words)
-	words == ["true"] || words == [":"]
-end
-
 def command_words(segment)
-	words = shell_words(segment[:text])
-	words = words.drop_while { |word| word.match?(/\A[A-Za-z_][A-Za-z0-9_]*=.*/)}
-	words
+	shell_words(segment[:text])
 end
 
 def known_failure_command?(words)
@@ -127,9 +121,7 @@ end
 
 def fallback_masks_chain_success?(segments, index)
 	later_segments = segments[(index + 1)..-1] || []
-	later_segments.any? do |segment|
-		segment[:operator] == "||" && noop_success_command?(command_words(segment))
-	end
+	later_segments.any? { |segment| segment[:operator] == "||" }
 end
 
 def skipped_by_known_failed_and_chain?(segments, index)
@@ -202,8 +194,9 @@ def has_lopper_json_report?(runs)
 
 			words = command_words(segment)
 			next false unless words[0, 4] == ["go", "run", "./cmd/lopper", "analyse"]
+			parsed_words = words.take_while { |word| word != "--" }
 
-			has_unique_scalar_flags?(words, {
+			has_unique_scalar_flags?(parsed_words, {
 				"--repo" => ".",
 				"--language" => "all",
 				"--format" => "json",
