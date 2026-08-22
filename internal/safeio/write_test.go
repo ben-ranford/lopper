@@ -27,6 +27,26 @@ type modeOverrideFileInfo struct {
 	mode os.FileMode
 }
 
+type namedDirEntry struct {
+	name string
+}
+
+func (e *namedDirEntry) Name() string {
+	return e.name
+}
+
+func (e *namedDirEntry) IsDir() bool {
+	return false
+}
+
+func (e *namedDirEntry) Type() fs.FileMode {
+	return 0
+}
+
+func (e *namedDirEntry) Info() (fs.FileInfo, error) {
+	return nil, fs.ErrInvalid
+}
+
 type unsafeTargetModeCase struct {
 	name string
 	mode os.FileMode
@@ -56,6 +76,10 @@ type exclusiveCreatedTargetCase struct {
 
 func (i *modeOverrideFileInfo) Mode() os.FileMode {
 	return i.mode
+}
+
+func (i *modeOverrideFileInfo) IsDir() bool {
+	return i.mode.IsDir()
 }
 
 func unsafeTargetModeCases() []unsafeTargetModeCase {
@@ -7157,8 +7181,23 @@ func TestIdentityHelperQuarantineBranches(t *testing.T) {
 }
 
 func TestMoveLinklessFallbackBranches(t *testing.T) {
-	sourceInfo := newPinnedTargetInfo(t, "source")
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	changedDirInfo := statTestPath(t, t.TempDir())
 	lstatErr := errors.New("lstat failed")
+
+	t.Run("target alias skips unrelated spelling", func(t *testing.T) {
+		called := false
+		aliases, err := targetAliasesSource(&fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				called = true
+				return nil, lstatErr
+			},
+		}, "source", "target", sourceInfo)
+		if err != nil || aliases || called {
+			t.Fatalf("unrelated spelling should skip alias probing, aliases=%t called=%t err=%v", aliases, called, err)
+		}
+	})
 
 	t.Run("target alias missing and lstat error", func(t *testing.T) {
 		root := &fakeRoot{
@@ -7171,6 +7210,105 @@ func TestMoveLinklessFallbackBranches(t *testing.T) {
 		root.lstat = func(string) (fs.FileInfo, error) { return nil, lstatErr }
 		if _, err := targetAliasesSource(root, "source", "source", sourceInfo); !errors.Is(err, lstatErr) {
 			t.Fatalf("expected alias lstat error, got %v", err)
+		}
+	})
+
+	t.Run("target alias exact self", func(t *testing.T) {
+		aliases, err := targetAliasesSource(&fakeRoot{
+			lstat: lstatOriginalForNames(t, sourceInfo, "source"),
+		}, "source", "source", sourceInfo)
+		if err != nil || !aliases {
+			t.Fatalf("exact path should alias itself, aliases=%t err=%v", aliases, err)
+		}
+	})
+
+	t.Run("target alias rejects nonregular and distinct targets", func(t *testing.T) {
+		aliases, err := targetAliasesSource(&fakeRoot{
+			lstat: lstatOriginalForNames(t, dirInfo, "SOURCE"),
+		}, "source", "SOURCE", sourceInfo)
+		if err != nil || aliases {
+			t.Fatalf("nonregular target should not alias, aliases=%t err=%v", aliases, err)
+		}
+		aliases, err = targetAliasesSource(&fakeRoot{
+			lstat: lstatOriginalForNames(t, changedInfo, "SOURCE"),
+		}, "source", "SOURCE", sourceInfo)
+		if err != nil || aliases {
+			t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
+		}
+	})
+
+	t.Run("target alias parent lookup and mismatch branches", func(t *testing.T) {
+		root := &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				switch name {
+				case filepath.Join("b", "é"):
+					return sourceInfo, nil
+				case "a":
+					return nil, lstatErr
+				default:
+					t.Fatalf("unexpected source-parent error lstat path: %s", name)
+					return nil, os.ErrNotExist
+				}
+			},
+		}
+		if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
+			t.Fatalf("expected source parent lstat error, got %v", err)
+		}
+
+		root.lstat = func(name string) (fs.FileInfo, error) {
+			switch name {
+			case filepath.Join("b", "é"):
+				return sourceInfo, nil
+			case "a":
+				return dirInfo, nil
+			case "b":
+				return nil, lstatErr
+			default:
+				t.Fatalf("unexpected target-parent error lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		}
+		if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
+			t.Fatalf("expected target parent lstat error, got %v", err)
+		}
+
+		root.lstat = func(name string) (fs.FileInfo, error) {
+			switch name {
+			case filepath.Join("b", "é"):
+				return sourceInfo, nil
+			case "a":
+				return dirInfo, nil
+			case "b":
+				return changedDirInfo, nil
+			default:
+				t.Fatalf("unexpected parent mismatch lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		}
+		aliases, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo)
+		if err != nil || aliases {
+			t.Fatalf("different parent directories should not alias, aliases=%t err=%v", aliases, err)
+		}
+	})
+
+	t.Run("target alias propagates directory count error", func(t *testing.T) {
+		countErr := errors.New("count directory failed")
+		aliases, err := targetAliasesSource(&fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				switch name {
+				case "SOURCE":
+					return sourceInfo, nil
+				case ".":
+					return dirInfo, nil
+				default:
+					t.Fatalf("unexpected count error lstat path: %s", name)
+					return nil, os.ErrNotExist
+				}
+			},
+			open: func(string) (File, error) { return nil, countErr },
+		}, "source", "SOURCE", sourceInfo)
+		if !errors.Is(err, countErr) || aliases {
+			t.Fatalf("expected count error without alias, aliases=%t err=%v", aliases, err)
 		}
 	})
 
@@ -7345,7 +7483,7 @@ func TestFinalSafeIOMoveCleanupBranches(t *testing.T) {
 }
 
 func TestFinalSafeIORemoveIdentityBranches(t *testing.T) {
-	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 	removeErr := errors.New("remove failed")
 
 	t.Run("remove identity bound missing source during staging", func(t *testing.T) {
@@ -7389,8 +7527,36 @@ func TestFinalSafeIORemoveIdentityBranches(t *testing.T) {
 			},
 		})
 		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || !errors.Is(err, removeErr) {
+		if !restored || !errors.Is(err, removeErr) {
 			t.Fatalf("expected restore cleanup failure, restored=%t err=%v", restored, err)
+		}
+	})
+
+	t.Run("rename restore cleanup failure keeps retry armed", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"restore", atomicTempPrefix+"retry")
+		files := map[string]fs.FileInfo{"source": changedInfo}
+		removeCalls := 0
+		root := newIdentityMapRoot(t, files, identityMapRootHooks{
+			remove: func(name string) error {
+				if name == filepath.Join(atomicTempPrefix+"restore", "entry") {
+					removeCalls++
+					if removeCalls == 1 {
+						return removeErr
+					}
+				}
+				delete(files, name)
+				return nil
+			},
+		})
+		_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+		if err == nil || !errors.Is(err, removeErr) {
+			t.Fatalf("expected restore cleanup failure, got %v", err)
+		}
+		requireSameFileInfo(t, files["source"], changedInfo, "restored source")
+		for name := range files {
+			if strings.Contains(name, "entry") {
+				t.Fatalf("expected deferred cleanup retry to remove staged entry, still have %s", name)
+			}
 		}
 	})
 }
@@ -7399,38 +7565,27 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 	linkUnsupported := func(string, string) error { return syscall.EPERM }
 
-	t.Run("safe failure preserves quarantine when original is absent", func(t *testing.T) {
-		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
-		renameCalls := 0
-		lstatCalls := 0
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
+	t.Run("restores by validated copy when original is absent", func(t *testing.T) {
+		rootDir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+			t.Fatalf("create quarantine: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(rootDir, "quarantine", "entry"), []byte("source"), 0o640); err != nil {
+			t.Fatalf("seed quarantine: %v", err)
+		}
+		expected := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
+		base := openTestRoot(t, rootDir)
+		root := &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
 			link: linkUnsupported,
-			rename: func(string, string) error {
-				renameCalls++
-				t.Fatal("linkless restore must not check-then-rename")
-				return nil
-			},
-			lstat: func(string) (fs.FileInfo, error) {
-				lstatCalls++
-				t.Fatal("linkless restore must not Lstat before an unsafe rename")
-				return nil, os.ErrNotExist
-			},
-		})
+		}}
 
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || !errors.Is(err, errIdentityBoundLinkUnavailable) {
-			t.Fatalf("expected linkless restore safe failure, restored=%t err=%v", restored, err)
+		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+		if !restored || err != nil {
+			t.Fatalf("expected linkless copy restore, restored=%t err=%v", restored, err)
 		}
-		if renameCalls != 0 {
-			t.Fatalf("expected no unsafe rename, got %d", renameCalls)
-		}
-		if lstatCalls != 0 {
-			t.Fatalf("expected no pre-rename lstat, got %d", lstatCalls)
-		}
-		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
-		if _, ok := files["source"]; ok {
-			t.Fatal("safe failure must not publish source")
-		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+		assertPathAbsent(t, filepath.Join(rootDir, "quarantine", "entry"))
 	})
 
 	t.Run("safe failure preserves raced original and quarantine", func(t *testing.T) {
@@ -7450,6 +7605,372 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 		requireSameFileInfo(t, files["source"], changedInfo, "source")
 		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
 	})
+}
+
+func TestRestoreQuarantinedPathNoReplaceByCopyErrorBranches(t *testing.T) {
+	linkErr := syscall.EPERM
+	setup := func(t *testing.T) (string, Root, fs.FileInfo) {
+		t.Helper()
+		rootDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(rootDir, "staged"), []byte("source"), 0o640); err != nil {
+			t.Fatalf("seed staged source: %v", err)
+		}
+		return rootDir, openTestRoot(t, rootDir), statTestPath(t, filepath.Join(rootDir, "staged"))
+	}
+
+	t.Run("missing staged source", func(t *testing.T) {
+		rootDir := t.TempDir()
+		root := openTestRoot(t, rootDir)
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, newPinnedTargetInfo(t, "missing"), linkErr)
+		if restored || !errors.Is(err, errIdentityBoundLinkUnavailable) || !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected missing staged source error, restored=%t err=%v", restored, err)
+		}
+	})
+
+	t.Run("source identity mismatch before copy", func(t *testing.T) {
+		_, root, _ := setup(t)
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, newPinnedTargetInfo(t, "changed"), linkErr)
+		if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+			t.Fatalf("expected staged source identity mismatch, restored=%t err=%v", restored, err)
+		}
+	})
+
+	t.Run("original already exists", func(t *testing.T) {
+		rootDir, root, expected := setup(t)
+		if err := os.WriteFile(filepath.Join(rootDir, "source"), []byte("newer"), 0o640); err != nil {
+			t.Fatalf("seed raced source: %v", err)
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, os.ErrExist) {
+			t.Fatalf("expected no-replace create failure, restored=%t err=%v", restored, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "newer")
+	})
+
+	t.Run("created target stat failure reports and cleans candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		statErr := errors.New("stat restored failed")
+		root := &fakeRoot{
+			Root: base,
+			openFile: func(string, int, os.FileMode) (File, error) {
+				return &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return nil, statErr },
+					close: closeWithoutError,
+				}, nil
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, statErr) {
+			t.Fatalf("expected created target stat failure, restored=%t err=%v", restored, err)
+		}
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	})
+
+	t.Run("copy source read failure cleans candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		readErr := errors.New("read staged failed")
+		root := &fakeRoot{
+			Root: base,
+			open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
+				return &fakeFile{File: file, read: func([]byte) (int, error) { return 0, readErr }}
+			}),
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, readErr) {
+			t.Fatalf("expected read failure, restored=%t err=%v", restored, err)
+		}
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	})
+
+	t.Run("copy source read failure joins target stat failure", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		readErr := errors.New("read staged failed")
+		statErr := errors.New("stat partial restore failed")
+		root := &fakeRoot{
+			Root: base,
+			open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
+				return &fakeFile{File: file, read: func([]byte) (int, error) { return 0, readErr }}
+			}),
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				statCalls := 0
+				return &fakeFile{
+					File: file,
+					stat: func() (fs.FileInfo, error) {
+						statCalls++
+						if statCalls == 1 {
+							return file.Stat()
+						}
+						return nil, statErr
+					},
+				}, nil
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, readErr) || !errors.Is(err, statErr) {
+			t.Fatalf("expected read and stat failures, restored=%t err=%v", restored, err)
+		}
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	})
+
+	t.Run("created target chmod failure cleans candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		chmodErr := errors.New("chmod restored failed")
+		root := &fakeRoot{
+			Root: base,
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				return &fakeFile{File: file, chmod: func(os.FileMode) error { return chmodErr }}, nil
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, chmodErr) {
+			t.Fatalf("expected chmod failure, restored=%t err=%v", restored, err)
+		}
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	})
+
+	t.Run("created target chmod failure with target stat failure preserves candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		chmodErr := errors.New("chmod restored failed")
+		statErr := errors.New("stat chmod candidate failed")
+		root := &fakeRoot{
+			Root: base,
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				statCalls := 0
+				return &fakeFile{
+					File:  file,
+					chmod: func(os.FileMode) error { return chmodErr },
+					stat: func() (fs.FileInfo, error) {
+						statCalls++
+						if statCalls == 1 {
+							return file.Stat()
+						}
+						return nil, statErr
+					},
+				}, nil
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, chmodErr) || !errors.Is(err, statErr) {
+			t.Fatalf("expected chmod and stat failures, restored=%t err=%v", restored, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	})
+
+	t.Run("created target post-copy stat failure preserves candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		statErr := errors.New("stat completed restore failed")
+		root := &fakeRoot{
+			Root: base,
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				statCalls := 0
+				return &fakeFile{
+					File: file,
+					stat: func() (fs.FileInfo, error) {
+						statCalls++
+						if statCalls == 1 {
+							return file.Stat()
+						}
+						return nil, statErr
+					},
+				}, nil
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, statErr) {
+			t.Fatalf("expected post-copy stat failure, restored=%t err=%v", restored, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	})
+
+	t.Run("created target close failure cleans candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		closeErr := errors.New("close restored failed")
+		root := &fakeRoot{
+			Root: base,
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				return &fakeFile{
+					File: file,
+					close: func() error {
+						if err := file.Close(); err != nil {
+							return err
+						}
+						return closeErr
+					},
+				}, nil
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, closeErr) {
+			t.Fatalf("expected close failure, restored=%t err=%v", restored, err)
+		}
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	})
+
+	t.Run("source identity mismatch after copy cleans candidate", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		changedInfo := newPinnedTargetInfo(t, "changed")
+		root := &fakeRoot{
+			Root: base,
+			open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
+				statCalls := 0
+				return &fakeFile{
+					File: file,
+					stat: func() (fs.FileInfo, error) {
+						statCalls++
+						if statCalls == 1 {
+							return expected, nil
+						}
+						return changedInfo, nil
+					},
+				}
+			}),
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+			t.Fatalf("expected post-copy staged source mismatch, restored=%t err=%v", restored, err)
+		}
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	})
+
+	t.Run("restored path identity mismatch leaves candidate for retry cleanup", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		changedInfo := newPinnedTargetInfo(t, "changed")
+		root := &fakeRoot{
+			Root: base,
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name == "source" {
+					return changedInfo, nil
+				}
+				return base.Lstat(name)
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+			t.Fatalf("expected restored path identity mismatch, restored=%t err=%v", restored, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	})
+
+	t.Run("restored path validation failure leaves candidate for retry cleanup", func(t *testing.T) {
+		rootDir, base, expected := setup(t)
+		lstatErr := errors.New("restored lstat failed")
+		root := &fakeRoot{
+			Root: base,
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name == "source" {
+					return nil, lstatErr
+				}
+				return base.Lstat(name)
+			},
+		}
+		restored, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, linkErr)
+		if restored || !errors.Is(err, lstatErr) {
+			t.Fatalf("expected restored path validation failure, restored=%t err=%v", restored, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	})
+}
+
+func TestFinishRestoredQuarantinedPathBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+
+	restored, err := finishRestoredQuarantinedPath(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+	}, "staged", sourceChangedMsg, sourceInfo)
+	if !restored || err != nil {
+		t.Fatalf("missing staged cleanup should be accepted, restored=%t err=%v", restored, err)
+	}
+
+	restored, err = finishRestoredQuarantinedPath(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil },
+	}, "staged", sourceChangedMsg, sourceInfo)
+	if !restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected staged identity mismatch, restored=%t err=%v", restored, err)
+	}
+}
+
+func TestCountDirectoryEntriesMatchingFileBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+
+	openErr := errors.New("open directory failed")
+	if _, err := countDirectoryEntriesMatchingFile(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, openErr },
+	}, ".", sourceInfo); !errors.Is(err, openErr) {
+		t.Fatal("expected directory open error")
+	}
+
+	readErr := errors.New("read dir failed")
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	root := &fakeRoot{
+		Root: base,
+		open: func(name string) (File, error) {
+			file, err := base.Open(name)
+			if err != nil {
+				return nil, err
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{File: file},
+				readDir:  func(int) ([]fs.DirEntry, error) { return nil, readErr },
+			}, nil
+		},
+	}
+	if _, err := countDirectoryEntriesMatchingFile(root, ".", sourceInfo); !errors.Is(err, readErr) {
+		t.Fatalf("expected read dir error, got %v", err)
+	}
+
+	lstatErr := errors.New("entry lstat failed")
+	root = &fakeRoot{
+		Root: base,
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case ".":
+				return base.Lstat(name)
+			case filepath.Join(".", "missing"):
+				return nil, os.ErrNotExist
+			case filepath.Join(".", "bad"):
+				return nil, lstatErr
+			default:
+				t.Fatalf("unexpected count lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		open: func(name string) (File, error) {
+			file, err := base.Open(name)
+			if err != nil {
+				return nil, err
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{File: file},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					return []fs.DirEntry{&namedDirEntry{name: "missing"}, &namedDirEntry{name: "bad"}}, nil
+				},
+			}, nil
+		},
+	}
+	if _, err := countDirectoryEntriesMatchingFile(root, ".", sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected entry lstat error after missing entry skip, got %v", err)
+	}
 }
 
 func TestFinalSafeIOPathUtilityBranches(t *testing.T) {
@@ -8762,6 +9283,49 @@ func TestMoveLinklessUnreadableSourceUsesRenameBeforeCopyFallback(t *testing.T) 
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
+func TestMoveLinklessUnreadableSourceRestoresAfterTargetRenameFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("completed"), 0o200); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("seed target directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(sourcePath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("restore source permissions: %v", err)
+		}
+	})
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+	}}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil {
+		t.Fatal("expected target directory rename failure")
+	}
+	assertFileContent(t, sourcePath, "completed")
+	if info := statTestPath(t, sourcePath); info.Mode().Perm() != 0o640 {
+		t.Fatalf("expected restored source mode 0640, got %#o", info.Mode().Perm())
+	}
+	if info := statTestPath(t, targetPath); !info.IsDir() {
+		t.Fatal("target directory was replaced")
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
 func TestWriteRootIfAbsentFallsBackToExclusiveCreateWhenLinksUnsupported(t *testing.T) {
 	rootDir := t.TempDir()
 	base := openTestRoot(t, rootDir)
@@ -8932,11 +9496,51 @@ func TestLinklessStagingCopyRejectsSourceSwapAfterCopy(t *testing.T) {
 		}),
 	}}
 
-	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
-	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
-		t.Fatalf("expected post-copy source identity rejection, got %v", err)
+	stagedRel, stagedInfo, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if err != nil {
+		t.Fatalf("path-only source swap should not invalidate pinned source copy: %v", err)
+	}
+	if err := cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo); err != nil {
+		t.Fatalf("cleanup staged copy: %v", err)
 	}
 	assertFileContent(t, sourcePath, "replacement")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyRejectsLiveSourceChangeAfterCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	changedInfo := newPinnedTargetInfo(t, "changed")
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			statCalls := 0
+			return &fakeFile{
+				File: file,
+				stat: func() (fs.FileInfo, error) {
+					statCalls++
+					if statCalls == 1 {
+						return expected, nil
+					}
+					return changedInfo, nil
+				},
+			}
+		}),
+	}}
+
+	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected live source identity rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "source")
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
@@ -9181,6 +9785,33 @@ func TestMoveFileWithinRootCaseOnlyAliasPreservesFile(t *testing.T) {
 		t.Fatalf("case-only move returned error: %v", err)
 	}
 	assertFileContent(t, filepath.Join(rootDir, "file"), "same")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootCanonicalUnicodeAliasPreservesFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("canonical alias regression requires a normalization-insensitive filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourceRel := "\u00e9"
+	targetRel := "e\u0301"
+	sourcePath := filepath.Join(rootDir, sourceRel)
+	targetPath := filepath.Join(rootDir, targetRel)
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is normalization-sensitive")
+	}
+	root := openTestRoot(t, rootDir)
+
+	if err := MoveFileWithinRoot(root, sourceRel, targetRel, 0o750, 0o640); err != nil {
+		t.Fatalf("canonical alias move returned error: %v", err)
+	}
+	assertFileContent(t, targetPath, "same")
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 

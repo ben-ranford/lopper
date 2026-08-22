@@ -610,10 +610,83 @@ func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message 
 		if !identityBoundLinkUnsupported(err) {
 			return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), err)
 		}
-		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, err)
+		return restoreQuarantinedPathNoReplaceByCopy(root, stagedRel, originalRel, message, expected, err)
 	}
-	if err := removeFileIfMatchesUsingBasicRoot(root, stagedRel, expected, message); err != nil {
+	return finishRestoredQuarantinedPath(root, stagedRel, message, expected)
+}
+
+func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, message string, expected fs.FileInfo, linkErr error) (restored bool, returnErr error) {
+	source, err := OpenPinnedFile(root, stagedRel)
+	if err != nil {
+		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, source.Close())
+	}()
+	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
+		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+
+	target, err := root.OpenFile(originalRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, chmodSupportedMode(expected.Mode()))
+	if err != nil {
+		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	createdInfo, err := target.Stat()
+	if err != nil {
+		return false, errors.Join(closeCreatedFileWithoutIdentity(target, err), cleanupAtomicTempFileIfMatches(root, originalRel, createdInfo))
+	}
+	defer func() {
+		if !restored {
+			returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, originalRel, createdInfo))
+		}
+	}()
+	if _, err := io.Copy(target, source); err != nil {
+		if info, statErr := target.Stat(); statErr == nil {
+			createdInfo = info
+		} else {
+			err = errors.Join(err, statErr)
+		}
+		return false, closeFilePreservingPrimary(target, err)
+	}
+	if err := target.Chmod(chmodSupportedMode(expected.Mode())); err != nil {
+		if info, statErr := target.Stat(); statErr == nil {
+			createdInfo = info
+		} else {
+			err = errors.Join(err, statErr)
+		}
+		return false, closeFilePreservingPrimary(target, err)
+	}
+	createdInfo, err = target.Stat()
+	if err != nil {
+		return false, closeFilePreservingPrimary(target, err)
+	}
+	if err := target.Close(); err != nil {
 		return false, err
+	}
+	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
+		return false, err
+	}
+	restoredInfo, err := publishedRegularFileInfo(root, originalRel, message)
+	if err != nil {
+		return false, err
+	}
+	if !sameRegularFile(createdInfo, restoredInfo) {
+		return false, fmt.Errorf("%s: %s", message, originalRel)
+	}
+	restored = true
+	_, returnErr = finishRestoredQuarantinedPath(root, stagedRel, message, expected)
+	return restored, returnErr
+}
+
+func finishRestoredQuarantinedPath(root Root, stagedRel, message string, expected fs.FileInfo) (bool, error) {
+	if err := verifyPublishedPathMatchesInfo(root, stagedRel, expected, message); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return true, err
+	}
+	if err := root.Remove(stagedRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return true, err
 	}
 	return true, nil
 }

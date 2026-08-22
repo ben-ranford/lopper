@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // WriteRoot pins a filesystem root for path-confined atomic writes.
@@ -568,7 +569,12 @@ func renameFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expec
 		return false, err
 	}
 	cleanupDir := true
+	cleanupQuarantineEntry := false
+	var quarantineInfo fs.FileInfo
 	defer func() {
+		if cleanupQuarantineEntry {
+			returnErr = errors.Join(returnErr, retryCleanupAtomicTempFileIfStillMatches(root, quarantineRel, quarantineInfo, message))
+		}
 		if cleanupDir {
 			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
 		}
@@ -578,29 +584,44 @@ func renameFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expec
 		return false, err
 	}
 
-	quarantineInfo, err := publishedRegularFileInfo(root, quarantineRel, message)
+	quarantineInfo, err = publishedRegularFileInfo(root, quarantineRel, message)
 	if err != nil {
 		cleanupDir = false
 		return false, withPublishRenameSource(err, quarantineRel)
 	}
+	cleanupQuarantineEntry = true
 	if !sameRegularFile(expected, quarantineInfo) {
 		restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, oldName, message, quarantineInfo)
 		if !restored {
 			cleanupDir = false
+			cleanupQuarantineEntry = false
+		}
+		if restored && restoreErr == nil {
+			cleanupQuarantineEntry = false
 		}
 		return false, withPublishRenameSource(errors.Join(fmt.Errorf("%s: %s", message, oldName), restoreErr), quarantineRel)
 	}
 
 	if err := root.Rename(quarantineRel, newName); err != nil {
+		if errors.Is(err, syscall.EXDEV) {
+			cleanupDir = false
+			cleanupQuarantineEntry = false
+			return false, withPublishRenameSource(err, quarantineRel)
+		}
 		restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, oldName, message, quarantineInfo)
 		if !restored {
 			cleanupDir = false
+			cleanupQuarantineEntry = false
+		}
+		if restored && restoreErr == nil {
+			cleanupQuarantineEntry = false
 		}
 		return false, withPublishRenameSource(errors.Join(err, restoreErr), quarantineRel)
 	}
 
 	stagedInfo, err := root.Lstat(quarantineRel)
 	if errors.Is(err, os.ErrNotExist) {
+		cleanupQuarantineEntry = false
 		return true, nil
 	}
 	if err != nil {
@@ -608,14 +629,16 @@ func renameFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expec
 		return false, withPublishRenameSource(err, quarantineRel)
 	}
 	if sameRegularFile(quarantineInfo, stagedInfo) {
-		cleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+		_, cleanupErr := finishRestoredQuarantinedPath(root, quarantineRel, message, quarantineInfo)
 		if cleanupErr != nil {
 			cleanupDir = false
 			return false, cleanupErr
 		}
+		cleanupQuarantineEntry = false
 		return false, nil
 	}
 	cleanupDir = false
+	cleanupQuarantineEntry = false
 	return false, withPublishRenameSource(fmt.Errorf("%s: %s", message, quarantineRel), quarantineRel)
 }
 
@@ -625,7 +648,12 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 		return err
 	}
 	cleanupDir := true
+	cleanupQuarantineEntry := false
+	var quarantineInfo fs.FileInfo
 	defer func() {
+		if cleanupQuarantineEntry {
+			returnErr = errors.Join(returnErr, retryCleanupAtomicTempFileIfStillMatches(root, quarantineRel, quarantineInfo, message))
+		}
 		if cleanupDir {
 			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
 		}
@@ -635,15 +663,20 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 		return err
 	}
 
-	quarantineInfo, err := publishedRegularFileInfo(root, quarantineRel, message)
+	quarantineInfo, err = publishedRegularFileInfo(root, quarantineRel, message)
 	if err != nil {
 		cleanupDir = false
 		return err
 	}
+	cleanupQuarantineEntry = true
 	if !sameRegularFile(expected, quarantineInfo) {
 		restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
 		if !restored {
 			cleanupDir = false
+			cleanupQuarantineEntry = false
+		}
+		if restored && restoreErr == nil {
+			cleanupQuarantineEntry = false
 		}
 		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 	}
@@ -655,6 +688,7 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 		cleanupDir = false
 		return err
 	}
+	cleanupQuarantineEntry = false
 	return nil
 }
 

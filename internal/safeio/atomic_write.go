@@ -368,7 +368,7 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		}
 		stagedInfo = publishedStagedInfo
 		cleanupStagedInfo = stagedInfo
-		if err := verifyPublishedPathMatchesInfo(root, sourceRel, expected, message); err != nil {
+		if _, err := validateLiveSourceInfo(source, sourceRel, expected, message); err != nil {
 			return "", nil, err
 		}
 		if closeSource {

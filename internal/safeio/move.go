@@ -137,17 +137,83 @@ func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo
 }
 
 func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
-	if !strings.EqualFold(filepath.Clean(sourceRel), filepath.Clean(targetRel)) {
+	sourceClean := filepath.Clean(sourceRel)
+	targetClean := filepath.Clean(targetRel)
+	if !pathSpellingCanAlias(sourceClean, targetClean) {
 		return false, nil
 	}
-	targetInfo, err := root.Lstat(targetRel)
+	targetInfo, err := root.Lstat(targetClean)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return targetInfo.Mode().IsRegular() && os.SameFile(sourceInfo, targetInfo), nil
+	if !targetInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, targetInfo) {
+		return false, nil
+	}
+	if sourceClean == targetClean {
+		return true, nil
+	}
+	sourceParent := filepath.Dir(sourceClean)
+	targetParent := filepath.Dir(targetClean)
+	sourceParentInfo, err := root.Lstat(sourceParent)
+	if err != nil {
+		return false, err
+	}
+	targetParentInfo, err := root.Lstat(targetParent)
+	if err != nil {
+		return false, err
+	}
+	if !sourceParentInfo.IsDir() || !targetParentInfo.IsDir() || !os.SameFile(sourceParentInfo, targetParentInfo) {
+		return false, nil
+	}
+	aliases, err := countDirectoryEntriesMatchingFile(root, sourceParent, sourceInfo)
+	if err != nil {
+		return false, err
+	}
+	return aliases == 1, nil
+}
+
+func pathSpellingCanAlias(sourceRel, targetRel string) bool {
+	return sourceRel == targetRel || strings.EqualFold(sourceRel, targetRel) || containsNonASCII(sourceRel) || containsNonASCII(targetRel)
+}
+
+func containsNonASCII(value string) bool {
+	for _, r := range value {
+		if r > 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func countDirectoryEntriesMatchingFile(root Root, parentRel string, sourceInfo fs.FileInfo) (_ int, returnErr error) {
+	dir, err := OpenPinnedDirectory(root, parentRel)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, dir.Close())
+	}()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		entryInfo, err := root.Lstat(filepath.Join(parentRel, entry.Name()))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if entryInfo.Mode().IsRegular() && os.SameFile(sourceInfo, entryInfo) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMode) (os.FileInfo, error) {
