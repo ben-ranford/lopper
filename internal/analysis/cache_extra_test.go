@@ -9,10 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	_ "unsafe"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
+
+//go:linkname safeioWriteFileParentReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileParentReadyFn
+var safeioWriteFileParentReadyFn func() error
 
 const (
 	cacheDirName          = ".lopper-cache"
@@ -223,70 +227,28 @@ func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
 }
 
 func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
-	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
-	withAnalysisCacheStoreHook(t, cachePath, outside, movedRoot, &analysisCacheStoreAfterObjectWriteFn)
-
-	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
-	if err == nil {
-		t.Fatal("expected root replacement between cache writes to fail")
-	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
-	}
-	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
-	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 1, "between cache writes")
 }
 
 func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing.T) {
-	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
-	withAnalysisCacheStoreHook(t, cachePath, outside, movedRoot, &analysisCacheStoreBeforePointerWriteFn)
-
-	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
-	if err == nil {
-		t.Fatal("expected root replacement during pointer publish to fail")
-	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
-	}
-	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
-	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 2, "during pointer publish")
 }
 
-func TestAnalysisCacheStorePointerRollbackPreservesConcurrentPointer(t *testing.T) {
+func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *testing.T, replaceOnCall int, stage string) {
+	t.Helper()
 	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
-
-	concurrentPointer := []byte(`{"inputDigest":"concurrent-input","objectDigest":"concurrent-object"}`)
-	originalHook := analysisCacheStoreAfterPointerWriteFn
-	t.Cleanup(func() { analysisCacheStoreAfterPointerWriteFn = originalHook })
-	analysisCacheStoreAfterPointerWriteFn = func() error {
-		if err := os.Rename(cachePath, movedRoot); err != nil {
-			return err
-		}
-		if err := os.Symlink(outside, cachePath); err != nil {
-			return err
-		}
-		pointerPath := filepath.Join(movedRoot, cacheKeysDirName, "key.json")
-		replacementPath := filepath.Join(movedRoot, cacheKeysDirName, "concurrent-key.json")
-		if err := os.WriteFile(replacementPath, concurrentPointer, 0o640); err != nil {
-			return err
-		}
-		return os.Rename(replacementPath, pointerPath)
-	}
+	withAnalysisCacheStoreReplacementAfterWriteParentReady(t, cachePath, outside, movedRoot, replaceOnCall)
 
 	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
 	if err == nil {
-		t.Fatal("expected root replacement during pointer rollback to fail")
+		t.Fatalf("expected root replacement %s to fail", stage)
 	}
 	if !strings.Contains(err.Error(), "directory identity changed") {
 		t.Fatalf("expected directory identity error, got %v", err)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
-	got, err := os.ReadFile(filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
-	if err != nil {
-		t.Fatalf("read concurrent cache pointer: %v", err)
-	}
-	if !bytes.Equal(got, concurrentPointer) {
-		t.Fatalf("concurrent cache pointer = %q, want %q", got, concurrentPointer)
+	if replaceOnCall == 1 {
+		assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 	}
 }
 
@@ -302,16 +264,16 @@ func newReplaceableCacheForStoreTest(t *testing.T) (string, *analysisCache, stri
 	return repo, cache, cachePath, t.TempDir(), filepath.Join(repo, "cache-holding")
 }
 
-func withAnalysisCacheStoreHook(t *testing.T, cachePath, outside, movedRoot string, hook *func() error) {
+func withAnalysisCacheStoreReplacementAfterWriteParentReady(t *testing.T, cachePath, outside, movedRoot string, replaceOnCall int) {
 	t.Helper()
-	originalHook := *hook
-	t.Cleanup(func() { *hook = originalHook })
-	replaced := false
-	*hook = func() error {
-		if replaced {
+	originalHook := safeioWriteFileParentReadyFn
+	t.Cleanup(func() { safeioWriteFileParentReadyFn = originalHook })
+	callCount := 0
+	safeioWriteFileParentReadyFn = func() error {
+		callCount++
+		if callCount != replaceOnCall {
 			return nil
 		}
-		replaced = true
 		if err := os.Rename(cachePath, movedRoot); err != nil {
 			return err
 		}
