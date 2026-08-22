@@ -1780,7 +1780,7 @@ func collectPythonIdentityEvidenceFromPaths(repoPath string, index identityIndex
 }
 
 func collectPythonTOMLLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -1804,7 +1804,7 @@ func collectPythonTOMLLockEvidence(repoPath, path string, index identityIndex, w
 }
 
 func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return

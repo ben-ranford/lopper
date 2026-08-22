@@ -9,7 +9,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-const analysisPythonManifestReadLimitBytes int64 = 16 << 20
+const (
+	analysisPythonManifestReadLimitBytes  int64 = 16 << 20
+	analysisPythonPackagingReadLimitBytes int64 = 1024 * 1024
+)
 
 func TestPythonIdentityUsesExactPyprojectAndPipfilePins(t *testing.T) {
 	repoPath := t.TempDir()
@@ -254,6 +257,40 @@ func TestPythonManifestIdentityWarnsOnManifestOverSharedReadLimit(t *testing.T) 
 	assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", "flask"), "pypi", "flask")
 	assertWarningsExact(t, repoPath, reportData.Warnings, []string{
 		"identity manifest read failed for Pipfile: file exceeds size limit",
+	})
+}
+
+func TestPythonIdentitySkipsOversizedTOMLLockEvidence(t *testing.T) {
+	for _, lockName := range []string{poetryLockFileName, uvLockFileName} {
+		t.Run(lockName, func(t *testing.T) {
+			repoPath := t.TempDir()
+			path := filepath.Join(repoPath, lockName)
+			testutil.MustWritePaddedFile(t, path, "[[package]]\nname = \"Requests\"\nversion = \"2.32.3\"\n", analysisPythonPackagingReadLimitBytes+1)
+
+			index := identityIndex{}
+			warnings := newIdentityWarningCollector(repoPath)
+			collectPythonTOMLLockEvidence(repoPath, path, index, warnings)
+
+			assertNoIdentityEvidence(t, index, identityKey("python", "requests"))
+			assertWarningsExact(t, repoPath, warnings.list(), []string{
+				"identity manifest read failed for " + lockName + ": file exceeds size limit",
+			})
+		})
+	}
+}
+
+func TestPythonIdentitySkipsOversizedPipfileLockEvidence(t *testing.T) {
+	repoPath := t.TempDir()
+	path := filepath.Join(repoPath, "Pipfile.lock")
+	testutil.MustWritePaddedFile(t, path, `{"default":{"Requests":{"version":"==2.32.3"}}}`, analysisPythonPackagingReadLimitBytes+1)
+
+	index := identityIndex{}
+	warnings := newIdentityWarningCollector(repoPath)
+	collectPipfileLockEvidence(repoPath, path, index, warnings)
+
+	assertNoIdentityEvidence(t, index, identityKey("python", "requests"))
+	assertWarningsExact(t, repoPath, warnings.list(), []string{
+		"identity manifest read failed for Pipfile.lock: file exceeds size limit",
 	})
 }
 

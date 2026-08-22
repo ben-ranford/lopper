@@ -439,7 +439,7 @@ func TestCollectDirectoryDeclaredDependenciesSkipsOversizedPackageLockFallback(t
 [[package]]
 name = "Requests"
 version = "2.32.3"
-`, maxPythonPackagingFileBytes+1)
+`, pythonPackagingSizeLimitTest+1)
 
 			dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 			if err != nil {
@@ -539,6 +539,10 @@ func TestParsePipfileLockDependenciesInvalidJSON(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonPipfileLockName)
 	assertInvalidParseWarning(t, repo, path, `{`, "invalid Pipfile.lock", "JSON decode error", parsePipfileLockDependencies)
+}
+
+func TestParsePipfileLockDependenciesSkipsOversizedFile(t *testing.T) {
+	assertPythonPackagingParserSkipsOversizedFile(t, pythonPipfileLockName, parsePipfileLockDependencies, "skipped Pipfile.lock larger than")
 }
 
 func TestPythonPackagingParsersAcceptExactSizeLimit(t *testing.T) {
