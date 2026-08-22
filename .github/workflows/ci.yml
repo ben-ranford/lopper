@@ -108,20 +108,52 @@ jobs:
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
           if [ -z "${base_sha}" ]; then
-            echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
-            exit 1
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
           fi
-          git fetch --no-tags origin "${base_sha}"
-          git fetch --no-tags origin "${base_ref}"
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
           if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
-            echo "::error::PR base SHA '${base_sha}' is missing after fetch; cannot prepare memory benchmark base." >&2
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
             exit 1
           fi
-          if ! git merge-base -- "${base_sha}" HEAD >/dev/null; then
-            echo "::error::PR base SHA '${base_sha}' is not related to HEAD; memory benchmark gate cannot run safely." >&2
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
@@ -169,9 +201,9 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         run: |
-          base_ref="${BASE_REF:-main}"
+          base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
           mkdir -p .artifacts
-          git worktree add --detach .artifacts/base "origin/${base_ref}"
+          git worktree add --detach .artifacts/base "${base_sha}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
@@ -613,26 +645,65 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Fetch PR base
+      - name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          base_sha="${PR_BASE_SHA:-}"
+          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
+          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
+          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
           if [ -z "${base_sha}" ]; then
-            echo "::error::PR base SHA is unavailable; cannot prepare rolling memory benchmark base." >&2
-            exit 1
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
           fi
-          git fetch --no-tags origin "${base_sha}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
           if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
-            echo "::error::PR base SHA '${base_sha}' is missing after fetch; cannot prepare rolling memory benchmark base." >&2
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
             exit 1
           fi
-          if ! git merge-base -- "${base_sha}" HEAD >/dev/null; then
-            echo "::error::PR base SHA '${base_sha}' is not related to HEAD; rolling memory benchmark gate cannot run safely." >&2
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
@@ -643,7 +714,7 @@ jobs:
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared rolling PR memory benchmark base is required}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
