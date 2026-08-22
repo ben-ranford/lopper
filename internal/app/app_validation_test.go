@@ -282,6 +282,11 @@ func TestOversizedRubyGemspecDeclarationWarningPathUsesLastDelimiter(t *testing.
 }
 
 func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testing.T) {
+	existingCoverageGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "dependencies.gemspec",
+	}
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{
 			{
@@ -296,10 +301,11 @@ func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testi
 				},
 			},
 		},
+		CoverageGaps:       []report.CoverageGap{existingCoverageGap},
 		BaselineComparison: &report.BaselineComparison{},
 	}
 	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); err != nil {
-		t.Fatalf("expected baseline mode to ignore existing current findings, got %v", err)
+		t.Fatalf("expected baseline mode to ignore existing current findings and coverage gaps, got %v", err)
 	}
 
 	reportData.BaselineComparison.NewReachableVulnerabilities = []report.VulnerabilityDelta{
@@ -312,6 +318,12 @@ func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testi
 	}
 	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
 		t.Fatalf("expected baseline new reachable vulnerability error, got %v", err)
+	}
+
+	reportData.BaselineComparison.NewReachableVulnerabilities = nil
+	reportData.BaselineComparison.NewCoverageGaps = []report.CoverageGap{existingCoverageGap}
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected baseline new coverage gap error, got %v", err)
 	}
 }
 

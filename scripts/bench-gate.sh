@@ -241,6 +241,69 @@ if [ -z "$go_version_log" ] || [ "$reported_go_version" != "$expected_go_version
 fi;
 echo "Memory benchmark GO_BIN: $go_bin_path";
 echo "Memory benchmark Go toolchain: $expected_go_version";
+benchmark_harness_go_file_selected() {
+	fingerprint_go_file="$1";
+	if grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_go_file"; then
+		return 0;
+	fi;
+	if grep -Eq 'func[[:space:]]+(Test|Fuzz)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_go_file"; then
+		return 1;
+	fi;
+	return 0;
+};
+benchmark_harness_append_file() {
+	fingerprint_kind="$1";
+	fingerprint_file="$2";
+	if ! fingerprint_blob=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
+		return 1;
+	fi;
+	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_blob" >> "$fingerprint_manifest_tmp";
+};
+benchmark_harness_append_embeds() {
+	fingerprint_embed_kind="$1";
+	fingerprint_source_file="$2";
+	fingerprint_patterns_tmp=$(mktemp) || return 1;
+	if ! awk '/^\/\/go:embed[[:space:]]/ { sub(/^\/\/go:embed[[:space:]]+/, ""); print }' "$fingerprint_dir/$fingerprint_source_file" > "$fingerprint_patterns_tmp"; then
+		rm -f "$fingerprint_patterns_tmp";
+		return 1;
+	fi;
+	fingerprint_source_dir="${fingerprint_source_file%/*}";
+	if [ "$fingerprint_source_dir" = "$fingerprint_source_file" ]; then
+		fingerprint_source_dir="";
+	else
+		fingerprint_source_dir="$fingerprint_source_dir/";
+	fi;
+	fingerprint_embed_failed=0;
+	while IFS= read -r fingerprint_embed_line; do
+		for fingerprint_embed_pattern in $fingerprint_embed_line; do
+			fingerprint_embed_pattern="${fingerprint_embed_pattern#\"}";
+			fingerprint_embed_pattern="${fingerprint_embed_pattern%\"}";
+			fingerprint_embed_pattern="${fingerprint_embed_pattern#\`}";
+			fingerprint_embed_pattern="${fingerprint_embed_pattern%\`}";
+			fingerprint_embed_pattern="${fingerprint_embed_pattern#all:}";
+			[ -n "$fingerprint_embed_pattern" ] || continue;
+			fingerprint_prefixed_pattern="$fingerprint_source_dir$fingerprint_embed_pattern";
+			if [ -d "$fingerprint_dir/$fingerprint_prefixed_pattern" ]; then
+				fingerprint_prefixed_pattern="$fingerprint_prefixed_pattern/*";
+			fi;
+			# shellcheck disable=SC2086 # go:embed patterns are path globs relative to the declaring source file.
+			for fingerprint_embed_path in "$fingerprint_dir"/$fingerprint_prefixed_pattern; do
+				[ -f "$fingerprint_embed_path" ] || continue;
+				fingerprint_embed_file="${fingerprint_embed_path#"$fingerprint_dir"/}";
+				benchmark_harness_append_file "$fingerprint_embed_kind" "$fingerprint_embed_file" || {
+					fingerprint_embed_failed=1;
+					break;
+				};
+			done;
+			[ "$fingerprint_embed_failed" -eq 0 ] || break;
+		done;
+		[ "$fingerprint_embed_failed" -eq 0 ] || break;
+	done < "$fingerprint_patterns_tmp";
+	rm -f "$fingerprint_patterns_tmp";
+	if [ "$fingerprint_embed_failed" -ne 0 ]; then
+		return 1;
+	fi;
+};
 benchmark_harness_fingerprint() {
 	fingerprint_pkg="$1";
 	fingerprint_files_tmp=$(mktemp) || return 1;
@@ -249,7 +312,7 @@ benchmark_harness_fingerprint() {
 		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
-	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_files_tmp" 2>/dev/null; then
+	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_files_tmp" 2>/dev/null; then
 		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
@@ -261,22 +324,21 @@ benchmark_harness_fingerprint() {
 	fingerprint_failed=0;
 	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file; do
 		[ -n "$fingerprint_file" ] || continue;
-		case "$fingerprint_kind" in
-			test|xtest)
-				if ! grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_dir/$fingerprint_file"; then
-					continue;
-				fi;
-				;;
-		esac;
-		if ! fingerprint_blob=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
-			fingerprint_failed=1;
-			break;
-		fi;
-		if ! printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_blob" >> "$fingerprint_manifest_tmp"; then
-			fingerprint_failed=1;
-			break;
+		if [ "$fingerprint_kind" = "test" ] || [ "$fingerprint_kind" = "xtest" ]; then
+			if ! benchmark_harness_go_file_selected "$fingerprint_dir/$fingerprint_file"; then
+				continue;
+			fi;
+			if ! benchmark_harness_append_file "$fingerprint_kind" "$fingerprint_file"; then
+				fingerprint_failed=1;
+				break;
+			fi;
+			if ! benchmark_harness_append_embeds "$fingerprint_kind-embed" "$fingerprint_file"; then
+				fingerprint_failed=1;
+				break;
+			fi;
 		fi;
 	done < "$fingerprint_files_tmp";
+	LC_ALL=C sort -u -o "$fingerprint_manifest_tmp" "$fingerprint_manifest_tmp" || fingerprint_failed=1;
 	if [ "$fingerprint_failed" -ne 0 ] || ! fingerprint_value=$(git hash-object -- "$fingerprint_manifest_tmp" 2>/dev/null); then
 		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
@@ -288,7 +350,7 @@ format_benchmark_definition() {
 	invocation_pkg="$1";
 	invocation_selection="$2";
 	invocation_fingerprint="$3";
-	printf "package=%s selection=%s -run '^$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$invocation_pkg" "$invocation_selection" "$GO_TEST_LDFLAGS_ARGS" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_fingerprint" "$requested_go_toolchain" "$go_bin_path" "$GO_TEST_LDFLAGS_ARGS" "$invocation_selection" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_pkg";
+	printf "package=%s selection=%s -run '^$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=benchmark-test-go-files,benchmark-test-embed-files harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$invocation_pkg" "$invocation_selection" "$GO_TEST_LDFLAGS_ARGS" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_fingerprint" "$requested_go_toolchain" "$go_bin_path" "$GO_TEST_LDFLAGS_ARGS" "$invocation_selection" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_pkg";
 };
 if ! git rev-parse --verify -q --end-of-options "$base_ref^{commit}" >/dev/null; then
 	echo "Memory benchmark base ref '$base_ref' is missing or invalid; failing closed.";

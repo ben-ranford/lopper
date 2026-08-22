@@ -3182,9 +3182,12 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
 		`requested base ref '$$base_ref' is not related to HEAD`,
+		`benchmark_harness_go_file_selected() { \`,
+		`benchmark_harness_append_embeds() { \`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
-		`grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$$fingerprint_dir/$$fingerprint_file"`,
+		`for fingerprint_embed_path in "$$fingerprint_dir"/$$fingerprint_prefixed_pattern; do`,
+		`benchmark_harness_append_embeds "$$fingerprint_kind-embed" "$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
 		`git rev-parse --verify -q --end-of-options "$$base_ref^{commit}"`,
 		`git merge-base -- "$$base_ref" HEAD`,
@@ -3194,7 +3197,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`-list '^Benchmark' "$$bench_pkg"`,
 		`configured head benchmark package target '$$bench_pkg' resolved zero selected benchmarks.`,
 		`echo "Resolved head benchmark definitions:"`,
-		`harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s`,
+		`harness-files=benchmark-test-go-files,benchmark-test-embed-files harness-fingerprint=%s`,
 		`base_harness_fingerprint=$$(cd "$$base_tree" && benchmark_harness_fingerprint "$$bench_pkg")`,
 		`does not match the resolved head harness fingerprint.`,
 		`printf "Applied base benchmark definition: %s\n" "$$definition_metadata" >> "$$base_output_tmp"`,
@@ -3226,6 +3229,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`is not related to HEAD; skipping memory benchmark gate.`,
 		`head benchmark selection is ambiguous across packages`,
 		`{{range .GoFiles}}`,
+		`{{range .TestEmbedFiles}}`,
+		`{{range .XTestEmbedFiles}}`,
 		`prepare_artifact_parent`,
 	} {
 		if strings.Contains(target+"\n"+benchGateScript, omit) {
@@ -3841,7 +3846,7 @@ func TestMakefileBenchGateAppliesOneDefinitionAcrossRevisions(t *testing.T) {
 		"-run '^$'",
 		"GO_TEST_LDFLAGS_ARGS=",
 		"-benchmem -count=1 -benchtime=1x",
-		"harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles",
+		"harness-files=benchmark-test-go-files,benchmark-test-embed-files",
 		"harness-fingerprint=git-hash-object:",
 		"Applied base benchmark definition:",
 		"Applied head benchmark definition:",
@@ -3907,6 +3912,50 @@ func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testi
 	}
 	if strings.Contains(output, "does not match the resolved head harness fingerprint") {
 		t.Fatalf("bench-gate treated an ordinary test as benchmark harness drift:\n%s", output)
+	}
+	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
+}
+
+func TestMakefileBenchGateIgnoresOrdinaryTestOnlyEmbeddedFixturesWhenFingerprintingHarness(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
+	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
+	ordinaryTestSource := `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/ordinary.txt
+var ordinaryTestInput string
+
+func TestOrdinaryEmbeddedFixture(t *testing.T) {
+	if ordinaryTestInput == "" {
+		t.Fatal("missing ordinary test fixture")
+	}
+}
+`
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), ordinaryTestSource)
+	writeFile(t, filepath.Join(repo, "benchpkg", "testdata", "ordinary.txt"), "base ordinary fixture\n")
+	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/ordinary_test.go", "benchpkg/testdata/ordinary.txt", "tools/benchdelta", "internal/safeio")
+	runGitCommand(t, repo, "commit", "-m", "add ordinary embedded fixture")
+
+	writeFile(t, filepath.Join(repo, "benchpkg", "testdata", "ordinary.txt"), "head ordinary fixture\n")
+	runGitCommand(t, repo, "add", "benchpkg/testdata/ordinary.txt")
+	runGitCommand(t, repo, "commit", "-m", "change ordinary embedded fixture")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 0)
+	if exitCode != 0 {
+		t.Fatalf("bench-gate exit code = %d, want 0", exitCode)
+	}
+	if strings.Contains(output, "does not match the resolved head harness fingerprint") {
+		t.Fatalf("bench-gate treated an ordinary-test-only embedded fixture as benchmark harness drift:\n%s", output)
 	}
 	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
@@ -4119,8 +4168,20 @@ func TestMakefileBenchGateRejectsChangedBenchmarkHarnessBeforeExecution(t *testi
 	t.Parallel()
 
 	repo, benchVars := newTempBenchGateGoRepo(t)
+	benchmarkSource := `package benchpkg
+
+import "testing"
+
+var benchmarkHarnessSink int
+
+func BenchmarkShared(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		benchmarkHarnessSink += benchmarkHarnessValue()
+	}
+}
+`
 	baseHarness := "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n"
-	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkSource)
 	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), baseHarness)
 	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go")
 	runGitCommand(t, repo, "commit", "-m", "add benchmark harness")

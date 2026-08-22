@@ -309,6 +309,9 @@ func reachableVulnerabilityThresholdEnabled(threshold string) bool {
 }
 
 func hasOversizedRubyGemspecCoverageGap(reportData report.Report) bool {
+	if reportData.BaselineComparison != nil {
+		return hasOversizedRubyGemspecCoverageGapList(reportData.BaselineComparison.NewCoverageGaps)
+	}
 	if hasOversizedRubyGemspecCoverageGapList(reportData.CoverageGaps) {
 		return true
 	}
