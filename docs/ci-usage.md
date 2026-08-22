@@ -89,7 +89,7 @@ jobs:
 ```
 
 On pull requests, `ci.yml` also runs lopper delta analysis against the PR base and posts/updates a bot comment.
-If `SONAR_TOKEN` is set, it additionally posts/updates a SonarQube summary comment.
+SonarCloud's repository integration reports its quality gate independently; `ci.yml` does not publish a custom SonarQube PR comment.
 When running locally with `act`, target the Linux-backed jobs explicitly (for example `act pull_request -W .github/workflows/ci.yml --job verify`), because Docker-based `act` environments do not provide hosted macOS runners.
 
 ## First-party GitHub Action
