@@ -72,7 +72,8 @@ func parseImports(content []byte, filePath string, resolver composerResolver) ([
 }
 
 func parsePHPImports(content []byte, filePath string, resolver composerResolver) importParseResult {
-	phpMasked := maskPHPHeredocNowdocBodies(string(content))
+	activePHP := maskInactivePHPRegions(string(content))
+	phpMasked := maskPHPHeredocNowdocBodies(activePHP)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	text := string(sanitized)
 	lineIndex := newPHPLineIndex(text)
@@ -136,7 +137,8 @@ func parseUseStatementByContext(statement, filePath string, line int, resolver c
 }
 
 func parseNamespaceReferences(content []byte, filePath string, resolver composerResolver) ([]importBinding, int) {
-	phpMasked := maskPHPHeredocNowdocBodies(string(content))
+	activePHP := maskInactivePHPRegions(string(content))
+	phpMasked := maskPHPHeredocNowdocBodies(activePHP)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	return parseNamespaceReferencesText(string(sanitized), filePath, resolver)
 }
@@ -587,6 +589,74 @@ func (b *phpReverseDelimiterBalance) atTopLevel() bool {
 	return b.paren == 0 && b.bracket == 0 && b.brace == 0
 }
 
+func maskInactivePHPRegions(text string) string {
+	masked := ensureMaskedText(text, nil)
+	maskByteRange(masked, 0, len(masked))
+	for offset := 0; offset < len(text); {
+		openStart, codeStart, ok := nextPHPOpenTag(text, offset)
+		if !ok {
+			break
+		}
+		closeStart, nextOffset := findPHPRegionEnd(text, codeStart)
+		unmaskByteRange(masked, text, openStart, closeStart)
+		if nextOffset <= offset {
+			nextOffset = offset + 1
+		}
+		offset = nextOffset
+	}
+	return string(masked)
+}
+
+func nextPHPOpenTag(text string, offset int) (int, int, bool) {
+	for offset < len(text) {
+		relative := strings.Index(text[offset:], "<?")
+		if relative < 0 {
+			return 0, 0, false
+		}
+		start := offset + relative
+		if strings.HasPrefix(text[start:], "<?=") {
+			return start, start + len("<?="), true
+		}
+		tagEnd := start + len("<?php")
+		if tagEnd <= len(text) && strings.EqualFold(text[start:tagEnd], "<?php") && (tagEnd == len(text) || !isPHPIdentifierByte(text[tagEnd])) {
+			return start, tagEnd, true
+		}
+		offset = start + len("<?")
+	}
+	return 0, 0, false
+}
+
+func findPHPRegionEnd(text string, offset int) (int, int) {
+	state := phpStateCode
+	for offset < len(text) {
+		if state == phpStateCode && strings.HasPrefix(text[offset:], "?>") {
+			return offset, offset + len("?>")
+		}
+		if state == phpStateCode && strings.HasPrefix(text[offset:], "<<<") {
+			if nextOffset, ok := skipHeredocNowdocBody(text, offset); ok {
+				offset = nextOffset
+				continue
+			}
+		}
+		offset = advancePHPCodeState(text, offset, &state)
+	}
+	return len(text), len(text)
+}
+
+func skipHeredocNowdocBody(text string, markerOffset int) (int, bool) {
+	lineEnd := nextPHPLineEnd(text, markerOffset)
+	label, ok := parseHeredocNowdocLabelAfterMarker(text[markerOffset+len("<<<") : lineEnd])
+	if !ok {
+		return 0, false
+	}
+	bodyStart := nextPHPLineStart(text, lineEnd)
+	bodyEnd := findHeredocNowdocTerminator(text, bodyStart, label)
+	if bodyEnd < 0 {
+		return len(text), true
+	}
+	return nextPHPLineStart(text, bodyEnd), true
+}
+
 func maskPHPHeredocNowdocBodies(text string) string {
 	var masked []byte
 	state := phpStateCode
@@ -800,6 +870,12 @@ func maskByteRange(masked []byte, start, end int) {
 			continue
 		}
 		masked[i] = ' '
+	}
+}
+
+func unmaskByteRange(masked []byte, text string, start, end int) {
+	for i := start; i < end; i++ {
+		masked[i] = text[i]
 	}
 }
 

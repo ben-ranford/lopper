@@ -1035,7 +1035,71 @@ func TestParseNamespaceReferencesSkipsSemicolonSeparatedUseDeclarations(t *testi
 	}
 }
 
-func TestImportParserUseStatementHelperBranches(t *testing.T) {
+func TestParsePHPImportsIgnoresUseStatementsInInactiveTemplateText(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<div>To use Vendor\\Package\\Client;</div>\n" +
+		"<p>\\Vendor\\Package\\Factory is documentation only.</p>\n" +
+		"<?php echo 'active code without imports';\n")
+
+	parsed := parsePHPImports(content, "template.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 0 {
+		t.Fatalf("expected inactive template namespaces to be ignored, got %#v", parsed.imports)
+	}
+}
+
+func TestParsePHPImportsParsesValidMultiRegionPHPOnly(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<div>use Vendor\\Package\\TemplateOnly;</div>\n" +
+		"<?php\n" +
+		"use Vendor\\Package\\Client as ClientAlias;\n" +
+		"?>\n" +
+		"<span>\\Vendor\\Package\\HtmlOnly</span>\n" +
+		"<?php\n" +
+		"$factory = new \\Vendor\\Package\\Factory();\n")
+
+	parsed := parsePHPImports(content, "multi-region.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 2 {
+		t.Fatalf("expected one active use import and one active namespace reference, got %#v", parsed.imports)
+	}
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"})
+}
+
+func TestParsePHPImportsKeepsPHPActiveAcrossHeredocCloseTagText(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<?php\n" +
+		"$html = <<<HTML\n" +
+		"<div>use Vendor\\Package\\TemplateOnly;</div>\n" +
+		"?>\n" +
+		"HTML;\n" +
+		"use Vendor\\Package\\Client;\n")
+
+	parsed := parsePHPImports(content, "heredoc-region.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected only the post-heredoc active import, got %#v", parsed.imports)
+	}
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+}
+
+func TestMaskInactivePHPRegionsHelperBranches(t *testing.T) {
+	masked := maskInactivePHPRegions("<div>use Vendor\\Package\\Client;</div>\n<?php use Vendor\\Package\\Real; ?>")
+	if strings.Contains(masked, "Client") {
+		t.Fatalf("expected inactive template content to be masked, got %q", masked)
+	}
+	if !strings.Contains(masked, "Vendor\\Package\\Real") {
+		t.Fatalf("expected active PHP content to remain visible, got %q", masked)
+	}
+}
+
+func TestImportParserUseStatementMaskAndLimitHelpers(t *testing.T) {
 	if got := maskUseStatementRanges("", nil); got != "" {
 		t.Fatalf("expected empty mask result, got %q", got)
 	}
@@ -1047,23 +1111,49 @@ func TestImportParserUseStatementHelperBranches(t *testing.T) {
 	if len(kept) != 1 || kept[0].start != 1 {
 		t.Fatalf("expected append to respect existing limit, got %#v", kept)
 	}
+}
+
+func TestImportParserRejectsMalformedSameLineUseStatements(t *testing.T) {
 	for _, text := range []string{"use", "use ($capture);", "use Foo\\A"} {
-		if match, ok := nextSameLineUseStatement(text, 0); ok || match != (phpUseStatementMatch{}) {
-			t.Fatalf("expected %q not to parse as same-line use declaration, got %#v", text, match)
-		}
+		assertNoSameLineUseStatement(t, text)
 	}
+	assertNoSameLineUseStatement(t, "\nuse Foo\\A;")
+}
+
+func TestImportParserAcceptsValidSameLineUseStatement(t *testing.T) {
 	if match, ok := nextSameLineUseStatement("  use Foo\\A;", 0); !ok || match.statementStart != len("  use ") {
 		t.Fatalf("expected same-line use declaration to parse, got %#v ok=%v", match, ok)
 	}
+}
+
+func TestImportParserRejectsEmbeddedUseKeyword(t *testing.T) {
 	if match, ok := phpUseStatementAt("abuse Foo\\A;", 2); ok || match != (phpUseStatementMatch{}) {
 		t.Fatalf("expected embedded use keyword to be rejected, got %#v", match)
 	}
-	if match, ok := nextSameLineUseStatement("\nuse Foo\\A;", 0); ok || match != (phpUseStatementMatch{}) {
-		t.Fatalf("expected next same-line use to reject a line break, got %#v ok=%v", match, ok)
-	}
+}
+
+func TestImportParserScansPastMalformedUseStatement(t *testing.T) {
 	malformed := scanPHPUseStatements("<?php use Vendor\\Package\\Missing\nuse Vendor\\Package\\Client;", 0)
 	if len(malformed.ranges) != 2 || len(malformed.matches) != 1 {
 		t.Fatalf("expected malformed use range plus valid match, got %#v", malformed)
+	}
+}
+
+func assertNoSameLineUseStatement(t *testing.T, text string) {
+	t.Helper()
+	if match, ok := nextSameLineUseStatement(text, 0); ok || match != (phpUseStatementMatch{}) {
+		t.Fatalf("expected %q not to parse as same-line use declaration, got %#v ok=%v", text, match, ok)
+	}
+}
+
+func assertImportModules(t *testing.T, imports []importBinding, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(imports))
+	for _, imp := range imports {
+		got = append(got, imp.Module)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected import modules %v, got %v from %#v", want, got, imports)
 	}
 }
 
@@ -1185,12 +1275,14 @@ func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
 	}
 }
 
-func TestPHPHeredocNowdocMaskingHelperBranches(t *testing.T) {
+func TestPHPHeredocNowdocMaskingKeepsPlainTextUnchanged(t *testing.T) {
 	plain := "final class Service {}\n"
 	if got := maskPHPHeredocNowdocBodies(plain); got != plain {
 		t.Fatalf("expected text without heredoc to remain unchanged, got %q", got)
 	}
+}
 
+func TestPHPHeredocNowdocMaskingMasksBodyOnly(t *testing.T) {
 	content := "return <<<\"HTML\"\n}\nHTML;\nfinal class Service {}\n"
 	masked := maskPHPHeredocNowdocBodies(content)
 	if strings.Contains(masked, "\n}\n") {
@@ -1199,17 +1291,24 @@ func TestPHPHeredocNowdocMaskingHelperBranches(t *testing.T) {
 	if !strings.Contains(masked, "final class Service") {
 		t.Fatalf("expected code after heredoc to remain visible, got %q", masked)
 	}
+}
 
+func TestPHPHeredocNowdocMaskingMasksUnterminatedBody(t *testing.T) {
 	unterminated := "return <<<TXT\n}\n"
 	if got := maskPHPHeredocNowdocBodies(unterminated); strings.Contains(got, "}") {
 		t.Fatalf("expected unterminated heredoc body to be masked, got %q", got)
 	}
+}
 
+func TestPHPHeredocNowdocRejectsInvalidOpeners(t *testing.T) {
 	for _, line := range []string{"return 1;", "return <<<;", "return <<<'TXT;"} {
 		if label, ok := heredocNowdocLabel(line); ok || label != "" {
 			t.Fatalf("expected invalid heredoc opener %q to be rejected, label=%q ok=%v", line, label, ok)
 		}
 	}
+}
+
+func TestPHPHeredocNowdocHelperBranches(t *testing.T) {
 	if label, ok := heredocNowdocLabel("return <<<'TXT'"); !ok || label != "TXT" {
 		t.Fatalf("expected nowdoc label to parse, label=%q ok=%v", label, ok)
 	}
