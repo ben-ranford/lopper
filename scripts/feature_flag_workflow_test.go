@@ -367,84 +367,31 @@ func TestFeatureFlagTrustedCommentRenderingRendersSanitizedMarkdown(t *testing.T
 	}
 }
 
-func TestFeatureFlagCommentPublishersSkipMutationWhenPullMergesAfterResolver(t *testing.T) {
+func TestFeatureFlagCommentPublishersSkipMutationWhenPullChangesAfterResolver(t *testing.T) {
 	t.Parallel()
 
-	tests := []featureFlagPublisherCase{
+	tests := []featureFlagPublisherStateCase{
 		{
-			name: "feature enforcement comment",
-			step: "Sync feature flag enforcement comment on PR",
-			env: map[string]string{
-				"FEATURE_PR":         "true",
-				"ENFORCEMENT_FAILED": "false",
-			},
+			name:              "merged",
+			pullSequence:      []map[string]any{featureFlagMergedPull(true, "")},
+			wantMutationError: "publisher mutated comments after merge",
 		},
 		{
-			name: "release guidance comment",
-			step: "Sync release feature guidance comment on PR",
-			env:  map[string]string{"RELEASE_PR": "true"},
+			name:              "closed unmerged",
+			pullSequence:      []map[string]any{featureFlagPull(7, "closed")},
+			wantMutationError: "publisher mutated comments after unmerged close",
+			wantInfo:          "was not open before comment mutation",
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, state := range tests {
+		t.Run(state.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
-				"env":          tt.env,
-				"pullSequence": []map[string]any{featureFlagMergedPull(true, "")},
-				"comments":     []map[string]any{},
-			})
-			if !result.OK {
-				t.Fatalf("publisher rejected fixture: %s", result.Error)
-			}
-			if len(result.Mutations) != 0 {
-				t.Fatalf("publisher mutated comments after merge: %#v", result.Mutations)
-			}
-			if got := result.Calls["pulls"]; got != 1 {
-				t.Fatalf("pulls.get calls = %d, want 1 fresh pre-mutation check", got)
-			}
-		})
-	}
-}
-
-func TestFeatureFlagCommentPublishersSkipMutationWhenPullClosesUnmergedAfterResolver(t *testing.T) {
-	t.Parallel()
-
-	tests := []featureFlagPublisherCase{
-		{
-			name: "feature enforcement comment",
-			step: "Sync feature flag enforcement comment on PR",
-			env: map[string]string{
-				"FEATURE_PR":         "true",
-				"ENFORCEMENT_FAILED": "false",
-			},
-		},
-		{
-			name: "release guidance comment",
-			step: "Sync release feature guidance comment on PR",
-			env:  map[string]string{"RELEASE_PR": "true"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
-				"env":          tt.env,
-				"pullSequence": []map[string]any{featureFlagPull(7, "closed")},
-				"comments":     []map[string]any{},
-			})
-			if !result.OK {
-				t.Fatalf("publisher rejected fixture: %s", result.Error)
-			}
-			if len(result.Mutations) != 0 {
-				t.Fatalf("publisher mutated comments after unmerged close: %#v", result.Mutations)
-			}
-			if got := result.Calls["pulls"]; got != 1 {
-				t.Fatalf("pulls.get calls = %d, want 1 fresh pre-mutation check", got)
-			}
-			if got := strings.Join(result.Infos, "\n"); !strings.Contains(got, "was not open before comment mutation") {
-				t.Fatalf("publisher info logs = %q, want closed-unmerged skip reason", got)
+			for _, tt := range featureFlagMutationPublisherCases() {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					assertFeatureFlagPublisherSkipsMutationAfterResolver(t, state, tt)
+				})
 			}
 		})
 	}
@@ -636,12 +583,62 @@ type featureFlagPublisherCase struct {
 	env    map[string]string
 }
 
+type featureFlagPublisherStateCase struct {
+	name              string
+	pullSequence      []map[string]any
+	wantMutationError string
+	wantInfo          string
+}
+
 type featureFlagPublisherFixtureResult struct {
 	OK        bool           `json:"ok"`
 	Error     string         `json:"error"`
 	Mutations []string       `json:"mutations"`
 	Calls     map[string]int `json:"calls"`
 	Infos     []string       `json:"infos"`
+}
+
+func featureFlagMutationPublisherCases() []featureFlagPublisherCase {
+	return []featureFlagPublisherCase{
+		{
+			name: "feature enforcement comment",
+			step: "Sync feature flag enforcement comment on PR",
+			env: map[string]string{
+				"FEATURE_PR":         "true",
+				"ENFORCEMENT_FAILED": "false",
+			},
+		},
+		{
+			name: "release guidance comment",
+			step: "Sync release feature guidance comment on PR",
+			env:  map[string]string{"RELEASE_PR": "true"},
+		},
+	}
+}
+
+func assertFeatureFlagPublisherSkipsMutationAfterResolver(t *testing.T, state featureFlagPublisherStateCase, tt featureFlagPublisherCase) {
+	t.Helper()
+
+	result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
+		"env":          tt.env,
+		"pullSequence": state.pullSequence,
+		"comments":     []map[string]any{},
+	})
+	if !result.OK {
+		t.Fatalf("publisher rejected fixture: %s", result.Error)
+	}
+	if len(result.Mutations) != 0 {
+		t.Fatalf("%s: %#v", state.wantMutationError, result.Mutations)
+	}
+	if got := result.Calls["pulls"]; got != 1 {
+		t.Fatalf("pulls.get calls = %d, want 1 fresh pre-mutation check", got)
+	}
+	if state.wantInfo == "" {
+		return
+	}
+	if got := strings.Join(result.Infos, "\n"); !strings.Contains(got, state.wantInfo) {
+		t.Fatalf("publisher info logs = %q, want %q", got, state.wantInfo)
+	}
 }
 
 func assertFeatureFlagEnforcementStepCase(t *testing.T, resolver string, tt featureFlagEnforcementStepCase) {
