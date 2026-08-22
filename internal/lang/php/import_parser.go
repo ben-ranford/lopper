@@ -61,7 +61,6 @@ const (
 )
 
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
-var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)*\s*(?:;|\{)`)
 var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
 var classLikeDeclarationBeforeBracePattern = regexp.MustCompile(`(?is)\b(?:class|interface|trait|enum)\b.*$`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
@@ -405,6 +404,7 @@ type phpContextTracker struct {
 	currentNamespace          string
 	semicolonNamespaceByStart map[int]string
 	bracketedNamespaceByBrace map[int]string
+	classLikeBraceByOffset    map[int]struct{}
 }
 
 func newPHPContextTracker(text string) phpContextTracker {
@@ -423,6 +423,7 @@ func newPHPContextTracker(text string) phpContextTracker {
 		frames:                    make([]phpBraceFrame, 0, 8),
 		semicolonNamespaceByStart: semicolonNamespaceByStart,
 		bracketedNamespaceByBrace: bracketedNamespaceByBrace,
+		classLikeBraceByOffset:    findPHPClassLikeBraceOffsets(text),
 	}
 }
 
@@ -464,7 +465,8 @@ func (t *phpContextTracker) pushBraceFrame(offset int) {
 		t.currentNamespace = namespace
 		return
 	}
-	t.frames = append(t.frames, phpBraceFrame{classLike: isClassLikeDeclarationBeforeBrace(t.text, offset)})
+	_, classLike := t.classLikeBraceByOffset[offset]
+	t.frames = append(t.frames, phpBraceFrame{classLike: classLike})
 }
 
 func (t *phpContextTracker) popBraceFrame() {
@@ -479,18 +481,199 @@ func (t *phpContextTracker) popBraceFrame() {
 }
 
 func findNamespaceDeclarations(text string) []phpNamespaceDeclaration {
-	candidates := namespaceDeclCandidatePattern.FindAllStringIndex(text, -1)
-	if len(candidates) == 0 {
+	declarations := make([]phpNamespaceDeclaration, 0)
+	for lineStart := 0; lineStart < len(text); {
+		lineEnd := nextPHPLineEnd(text, lineStart)
+		declarations = appendNamespaceDeclarationsInLine(declarations, text, lineStart, lineEnd)
+		if lineEnd >= len(text) {
+			break
+		}
+		lineStart = nextPHPLineStart(text, lineEnd)
+	}
+	if len(declarations) == 0 {
 		return nil
 	}
-	declarations := make([]phpNamespaceDeclaration, 0, len(candidates))
-	for _, candidate := range candidates {
-		declaration, ok := parseNamespaceDeclarationCandidate(text, candidate)
+	return declarations
+}
+
+func appendNamespaceDeclarationsInLine(declarations []phpNamespaceDeclaration, text string, lineStart, lineEnd int) []phpNamespaceDeclaration {
+	prelude := phpNamespaceLinePrelude{offset: lineStart, valid: true}
+	completion := phpNamespaceLineCompletion{offset: lineStart, segmentStart: lineStart}
+	for offset := lineStart; offset < lineEnd; {
+		declaration, ok := parseNamespaceDeclarationAt(text, offset)
 		if ok {
-			declarations = append(declarations, declaration)
+			prelude.advanceTo(text, offset, lineEnd)
+			if prelude.valid || completion.followsCompletedNamespaceDeclaration() {
+				declarations = append(declarations, declaration)
+			}
+			completion.advanceTo(text, declaration.end)
+			offset = declaration.end
+			continue
 		}
+		completion.advanceTo(text, offset+1)
+		offset++
 	}
 	return declarations
+}
+
+type phpNamespaceLinePrelude struct {
+	offset     int
+	valid      bool
+	phpTagSeen bool
+}
+
+func (p *phpNamespaceLinePrelude) advanceTo(text string, target, lineEnd int) {
+	if !p.valid {
+		p.offset = target
+		return
+	}
+	for p.offset < target {
+		next := skipPHPWhitespaceUntil(text, p.offset, target)
+		if next > p.offset {
+			p.offset = next
+			continue
+		}
+		if !p.phpTagSeen && hasPHPOpenPreludeAt(text, p.offset, target) {
+			p.phpTagSeen = true
+			p.offset += len("<?php")
+			continue
+		}
+		if next, ok := parseDeclarePreludeAt(text, p.offset, target, lineEnd); ok {
+			p.offset = next
+			continue
+		}
+		p.valid = false
+		p.offset = target
+		return
+	}
+}
+
+func skipPHPWhitespaceUntil(text string, offset, limit int) int {
+	for offset < limit && isPHPWhitespace(text[offset]) {
+		offset++
+	}
+	return offset
+}
+
+func hasPHPOpenPreludeAt(text string, offset, limit int) bool {
+	end := offset + len("<?php")
+	return end <= limit && strings.HasPrefix(text[offset:end], "<?php") && (end == len(text) || !isPHPIdentifierByte(text[end]))
+}
+
+func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool) {
+	if offset+len("declare") > target || !strings.HasPrefix(text[offset:], "declare") {
+		return 0, false
+	}
+	next := offset + len("declare")
+	next = skipPHPWhitespaceUntil(text, next, target)
+	if next >= target || text[next] != '(' {
+		return 0, false
+	}
+	closeOffset := strings.IndexByte(text[next+1:lineEnd], ')')
+	if closeOffset < 0 {
+		return 0, false
+	}
+	next += closeOffset + 2
+	next = skipPHPWhitespaceUntil(text, next, lineEnd)
+	if next >= lineEnd || text[next] != ';' {
+		return 0, false
+	}
+	next++
+	next = skipPHPWhitespaceUntil(text, next, target)
+	if next > target {
+		return 0, false
+	}
+	return next, true
+}
+
+type phpNamespaceLineCompletion struct {
+	offset                                   int
+	segmentStart                             int
+	lastNonWhitespace                        byte
+	lastSemicolonSegmentStartedWithNamespace bool
+}
+
+func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
+	for c.offset < target {
+		ch := text[c.offset]
+		if ch == ';' {
+			segment := strings.TrimSpace(text[c.segmentStart:c.offset])
+			c.lastSemicolonSegmentStartedWithNamespace = strings.HasPrefix(strings.ToLower(segment), "namespace ")
+			c.segmentStart = c.offset + 1
+		}
+		if !isPHPWhitespace(ch) {
+			c.lastNonWhitespace = ch
+		}
+		c.offset++
+	}
+}
+
+func (c *phpNamespaceLineCompletion) followsCompletedNamespaceDeclaration() bool {
+	if c.lastNonWhitespace == '}' {
+		return true
+	}
+	return c.lastNonWhitespace == ';' && c.lastSemicolonSegmentStartedWithNamespace
+}
+
+func parseNamespaceDeclarationAt(text string, offset int) (phpNamespaceDeclaration, bool) {
+	if !hasKeywordAt(text, offset, "namespace") {
+		return phpNamespaceDeclaration{}, false
+	}
+	nameStart := skipPHPWhitespace(text, offset+len("namespace"))
+	nameEnd, ok := parseNamespaceDeclarationNameEnd(text, nameStart)
+	if !ok {
+		return phpNamespaceDeclaration{}, false
+	}
+	end := skipPHPWhitespace(text, nameEnd)
+	if end >= len(text) || text[end] != ';' && text[end] != '{' {
+		return phpNamespaceDeclaration{}, false
+	}
+	bracketed := text[end] == '{'
+	braceOffset := -1
+	if bracketed {
+		braceOffset = end
+	}
+	return phpNamespaceDeclaration{
+		start:       offset,
+		end:         end + 1,
+		braceOffset: braceOffset,
+		name:        normalizeNamespace(text[nameStart:nameEnd]),
+		bracketed:   bracketed,
+	}, true
+}
+
+func parseNamespaceDeclarationNameEnd(text string, offset int) (int, bool) {
+	end, ok := parsePHPNamespaceIdentifierEnd(text, offset)
+	if !ok {
+		return 0, false
+	}
+	for end < len(text) && text[end] == '\\' {
+		next, ok := parsePHPNamespaceIdentifierEnd(text, end+1)
+		if !ok {
+			return 0, false
+		}
+		end = next
+	}
+	return end, true
+}
+
+func parsePHPNamespaceIdentifierEnd(text string, offset int) (int, bool) {
+	if offset >= len(text) || !isPHPNamespaceIdentifierStartByte(text[offset]) {
+		return 0, false
+	}
+	offset++
+	for offset < len(text) && isPHPNamespaceIdentifierPartByte(text[offset]) {
+		offset++
+	}
+	return offset, true
+}
+
+func isPHPNamespaceIdentifierStartByte(ch byte) bool {
+	return ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= 0x80
+}
+
+func isPHPNamespaceIdentifierPartByte(ch byte) bool {
+	return isPHPNamespaceIdentifierStartByte(ch) || ch >= '0' && ch <= '9'
 }
 
 func parseNamespaceDeclarationCandidate(text string, candidate []int) (phpNamespaceDeclaration, bool) {
@@ -527,6 +710,67 @@ func isClassLikeDeclarationBeforeBrace(text string, braceOffset int) bool {
 	}
 	start := classLikeDeclarationScanStart(text, braceOffset)
 	return classLikeDeclarationBeforeBracePattern.MatchString(text[start:braceOffset])
+}
+
+func findPHPClassLikeBraceOffsets(text string) map[int]struct{} {
+	var stack []byte
+	boundaries := []int{0}
+	classLikeKeywordOffsets := []int{-1}
+	classLikeOffsets := make(map[int]struct{})
+	for offset := 0; offset < len(text); offset++ {
+		if phpClassLikeKeywordAt(text, offset) {
+			classLikeKeywordOffsets[len(classLikeKeywordOffsets)-1] = offset
+		}
+		switch text[offset] {
+		case '(':
+			stack = append(stack, '(')
+			boundaries = append(boundaries, offset+1)
+			classLikeKeywordOffsets = append(classLikeKeywordOffsets, -1)
+		case '[':
+			stack = append(stack, '[')
+			boundaries = append(boundaries, offset+1)
+			classLikeKeywordOffsets = append(classLikeKeywordOffsets, -1)
+		case '{':
+			start := boundaries[len(boundaries)-1]
+			minStart := offset - maxPHPNamespaceAncestorBytes
+			if minStart > start {
+				start = minStart
+			}
+			if classLikeKeywordOffsets[len(classLikeKeywordOffsets)-1] >= start {
+				classLikeOffsets[offset] = struct{}{}
+			}
+			stack = append(stack, '{')
+			boundaries = append(boundaries, offset+1)
+			classLikeKeywordOffsets = append(classLikeKeywordOffsets, -1)
+		case ')':
+			stack, boundaries, classLikeKeywordOffsets = popPHPClassLikeDelimiter(stack, boundaries, classLikeKeywordOffsets, '(')
+		case ']':
+			stack, boundaries, classLikeKeywordOffsets = popPHPClassLikeDelimiter(stack, boundaries, classLikeKeywordOffsets, '[')
+		case '}':
+			stack, boundaries, classLikeKeywordOffsets = popPHPClassLikeDelimiter(stack, boundaries, classLikeKeywordOffsets, '{')
+		case ';':
+			boundaries[len(boundaries)-1] = offset + 1
+			classLikeKeywordOffsets[len(classLikeKeywordOffsets)-1] = -1
+		}
+	}
+	if len(classLikeOffsets) == 0 {
+		return nil
+	}
+	return classLikeOffsets
+}
+
+func phpClassLikeKeywordAt(text string, offset int) bool {
+	return hasKeywordAt(text, offset, "class") ||
+		hasKeywordAt(text, offset, "interface") ||
+		hasKeywordAt(text, offset, "trait") ||
+		hasKeywordAt(text, offset, "enum")
+}
+
+func popPHPClassLikeDelimiter(stack []byte, boundaries []int, classLikeKeywordOffsets []int, opener byte) ([]byte, []int, []int) {
+	if len(stack) == 0 || stack[len(stack)-1] != opener {
+		return stack, boundaries, classLikeKeywordOffsets
+	}
+	return stack[:len(stack)-1], boundaries[:len(boundaries)-1], classLikeKeywordOffsets[:len(classLikeKeywordOffsets)-1]
 }
 
 func classLikeDeclarationScanStart(text string, braceOffset int) int {

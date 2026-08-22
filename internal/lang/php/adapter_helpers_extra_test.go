@@ -443,6 +443,59 @@ func TestParsePHPImportsTracksClassContextNearLinearly(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsScansManyBraceContextsNearLinearly(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	padding := strings.Repeat(" ", maxPHPNamespaceAncestorBytes)
+	for i := 0; i < 24; i++ {
+		content.WriteString("if ($flag) ")
+		content.WriteString(padding)
+		content.WriteString("{ }\n")
+	}
+	content.WriteString("use Vendor\\Lib\\Thing;\n")
+
+	start := time.Now()
+	parsed := parsePHPImports([]byte(content.String()), "brace-contexts.php", resolver)
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("expected many brace contexts to scan quickly, took %s", elapsed)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected one import after brace-heavy prefix, got %#v", parsed.imports)
+	}
+	if parsed.imports[0].Wildcard {
+		t.Fatalf("expected top-level use after brace-heavy prefix to remain an import declaration, got %#v", parsed.imports[0])
+	}
+}
+
+func TestFindNamespaceDeclarationsScansSameLineCandidatesNearLinearly(t *testing.T) {
+	const declarationCount = 3000
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < declarationCount; i++ {
+		fmt.Fprintf(&content, "namespace Vendor\\Package%d; ", i)
+	}
+
+	start := time.Now()
+	declarations := findNamespaceDeclarations(content.String())
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected same-line namespace declarations to scan quickly, took %s", elapsed)
+	}
+	if len(declarations) != declarationCount {
+		t.Fatalf("expected %d namespace declarations, got %d", declarationCount, len(declarations))
+	}
+	if declarations[0].name != `Vendor\Package0` || declarations[len(declarations)-1].name != `Vendor\Package2999` {
+		t.Fatalf("unexpected declaration endpoints: first=%#v last=%#v", declarations[0], declarations[len(declarations)-1])
+	}
+}
+
 func TestParsePHPImportsBoundsGroupedUseBindings(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
@@ -1312,6 +1365,13 @@ func TestImportParserContextTrackerHelperBranches(t *testing.T) {
 	}
 	if !isClassLikeDeclarationBeforeBrace(anonymousClass, len(anonymousClass)-1) {
 		t.Fatalf("expected anonymous class with closure argument to be class-like")
+	}
+	classLikeBraces := findPHPClassLikeBraceOffsets(anonymousClass)
+	if _, ok := classLikeBraces[strings.IndexByte(anonymousClass, '{')]; ok {
+		t.Fatalf("expected linear brace index to skip closure argument body")
+	}
+	if _, ok := classLikeBraces[len(anonymousClass)-1]; !ok {
+		t.Fatalf("expected linear brace index to mark anonymous class body")
 	}
 	if got := traitUseList("Vendor\\Package\\FeatureTrait { handle as alias"); got != "Vendor\\Package\\FeatureTrait" {
 		t.Fatalf("expected trait adaptation list to keep only trait names, got %q", got)
