@@ -65,6 +65,16 @@ function makeHarness(options = {}) {
     rebased: [],
   };
   const repository = { default_branch: 'main', full_name: 'octo/lopper' };
+  for (const [number, bodies] of Object.entries(options.initialComments || {})) {
+    comments.set(
+      Number(number),
+      bodies.map((body, index) => ({
+        id: -index - 1,
+        body,
+        user: { type: 'Bot' },
+      })),
+    );
+  }
 
   const github = {
     rest: {
@@ -236,6 +246,11 @@ test('status helpers bound untrusted API text', () => {
   assert.equal(testables.isMergeConflict(new Error('merge conflict')), true);
   assert.equal(testables.isMergeConflict(new Error('Pull Request is not mergeable')), true);
   assert.equal(testables.isMergeConflict(new Error('rate limited')), false);
+  assert.deepEqual(
+    testables.parseConflictBlock('<!-- queue-me-conflict-block head=head-10 base=base-sha -->'),
+    { headSHA: 'head-10', baseSHA: 'base-sha' },
+  );
+  assert.equal(testables.parseConflictBlock('no block'), null);
 });
 
 test('controller creates the queue label and exits cleanly for an empty queue', async () => {
@@ -386,7 +401,7 @@ test('a rebase conflict advances the queue and retries the blocked pull request 
 
   assert.deepEqual(harness.calls.armed, [20]);
   assert.match(commentsFor(harness, 10), /because of merge conflicts/);
-  assert.match(commentsFor(harness, 10), /retried after its branch is updated/);
+  assert.match(commentsFor(harness, 10), /retried after its branch or the base branch changes/);
   assert.match(commentsFor(harness, 10), /Pull Request is not mergeable/);
   assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 
@@ -401,6 +416,52 @@ test('a rebase conflict advances the queue and retries the blocked pull request 
   await runController(retry.args);
 
   assert.deepEqual(retry.calls.armed, [10]);
+});
+
+test('a conflict skip refreshes queued followers behind the selected eligible pull request', async () => {
+  const blocked = makePull(10);
+  const selected = makePull(20);
+  const follower = makePull(30);
+  const harness = makeHarness({
+    pulls: [blocked, selected, follower],
+    eventPull: follower,
+    comparisonStatuses: { 10: 'behind', 20: 'ahead' },
+    rebaseErrors: { 10: new Error('Pull Request is not mergeable') },
+  });
+
+  await runController(harness.args);
+
+  const followerComments = harness.calls.comments
+    .filter((comment) => comment.number === 30)
+    .map((comment) => comment.body);
+  assert.deepEqual(harness.calls.armed, [20]);
+  assert.match(followerComments[0], /Queued behind #10/);
+  assert.match(commentsFor(harness, 30), /Queued behind #20/);
+  assert.match(commentsFor(harness, 30), /rebase conflicts/);
+  assert.doesNotMatch(commentsFor(harness, 30), /Queued behind #10/);
+});
+
+test('an unchanged conflicted pull request is skipped until its head or base changes', async () => {
+  const blocked = makePull(10);
+  const selected = makePull(20);
+  const harness = makeHarness({
+    pulls: [blocked, selected],
+    initialComments: {
+      10: [
+        '<!-- queue-me-controller -->\n## Queue status\n\nGitHub could not rebase this pull request onto `main` because of merge conflicts.\n\n<!-- queue-me-conflict-block head=head-10 base=base-sha -->',
+      ],
+    },
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.rebased, []);
+  assert.deepEqual(harness.calls.disabled, []);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
 
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
