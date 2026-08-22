@@ -2829,6 +2829,34 @@ func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
 	t.Fatal("Go module updates must run gomodTidy before CI and automerge")
 }
 
+func TestRenovatePRsSatisfyMetadataRequirements(t *testing.T) {
+	t.Parallel()
+
+	var config struct {
+		Labels         []string `json:"labels"`
+		PRBodyTemplate string   `json:"prBodyTemplate"`
+	}
+	readJSONConfig(t, "renovate.json", &config)
+
+	if !slices.Contains(config.Labels, "dependencies") {
+		t.Fatalf("Renovate PR labels = %v, want dependencies", config.Labels)
+	}
+
+	bodyPath := filepath.Join(t.TempDir(), "renovate-pr-body.md")
+	if err := os.WriteFile(bodyPath, []byte(config.PRBodyTemplate), 0o600); err != nil {
+		t.Fatalf("write Renovate PR body template: %v", err)
+	}
+	command := exec.Command("go", "run", "./tools/prcheck",
+		"--title", "chore(deps): update dependencies",
+		"--head-ref", "renovate/example-dependency",
+		"--body-file", bodyPath,
+	)
+	command.Dir = filepath.Dir(repoPath(t, "renovate.json"))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Renovate PR body must satisfy metadata validation: %v\n%s", err, output)
+	}
+}
+
 func TestDarwinReleaseJobsAssertHostArchitecture(t *testing.T) {
 	t.Parallel()
 
