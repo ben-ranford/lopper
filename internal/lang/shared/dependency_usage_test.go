@@ -86,6 +86,41 @@ func TestCountUsageSubtractsKnownDeclarationTokenHits(t *testing.T) {
 	}
 }
 
+func TestCountUsageLargeGroupedDeclarationCountsOnlyReferences(t *testing.T) {
+	const aliasCount = 4096
+	imports, content := largeGroupedDeclarationFixture(aliasCount, "Alias4095::boot();")
+
+	usage := CountUsage(content, imports)
+	if usage["Alias0"] != 0 {
+		t.Fatalf("expected declaration-only first alias usage to be zero, got %d", usage["Alias0"])
+	}
+	if usage["Alias4094"] != 0 {
+		t.Fatalf("expected declaration-only penultimate alias usage to be zero, got %d", usage["Alias4094"])
+	}
+	if usage["Alias4095"] != 1 {
+		t.Fatalf("expected referenced final alias usage to be one, got %d", usage["Alias4095"])
+	}
+}
+
+func largeGroupedDeclarationFixture(aliasCount int, reference string) ([]ImportRecord, []byte) {
+	parts := make([]string, 0, aliasCount)
+	imports := make([]ImportRecord, 0, aliasCount)
+	for i := 0; i < aliasCount; i++ {
+		local := fmt.Sprintf("Alias%d", i)
+		parts = append(parts, fmt.Sprintf("Class%d as %s", i, local))
+		imports = append(imports, ImportRecord{
+			Local:    local,
+			Location: report.Location{File: "src/Example.php", Line: 1, Column: 1},
+		})
+	}
+	declaration := "<?php use Vendor\\Lib\\{" + strings.Join(parts, ", ") + "};"
+	padding := strings.Repeat(" ", (2*1024*1024)-len(declaration)-32)
+	if reference != "" {
+		reference = "\n" + reference
+	}
+	return imports, []byte(declaration + padding + reference + "\n")
+}
+
 func TestCountUsageIgnoresCommentsAndStrings(t *testing.T) {
 	imports := []ImportRecord{{Local: testLocalFoo}, {Local: "bar"}}
 	content := []byte("import foo\nimport bar\nfoo()\n\"foo bar\"\n'foo'\n`foo`\n// foo bar\n# foo bar\n/* foo\nbar\n*/\n")
@@ -306,6 +341,15 @@ func BenchmarkCountUsage(b *testing.B) {
 
 func BenchmarkCountUsageUnicode(b *testing.B) {
 	imports, content := benchmarkUnicodeImportsAndContent()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = CountUsage(content, imports)
+	}
+}
+
+func BenchmarkCountUsageLargeGroupedDeclaration(b *testing.B) {
+	imports, content := largeGroupedDeclarationFixture(4096, "Alias4095::boot();")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

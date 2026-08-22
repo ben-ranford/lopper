@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -14,6 +15,7 @@ type composerData struct {
 	DeclaredDependencies map[string]struct{}
 	NamespaceToDep       map[string]string
 	LocalNamespaces      map[string]struct{}
+	UsageIncomplete      bool
 }
 
 type composerManifest struct {
@@ -58,7 +60,10 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
 
-	if err := loadComposerLockMappings(repoPath, &data); err != nil {
+	if err := loadComposerLockMappings(repoPath, &data); isPureOversizedFileError(err) {
+		data.UsageIncomplete = true
+		warnings = append(warnings, fmt.Sprintf("skipped composer.lock because it exceeds %d bytes", maxComposerLockBytes))
+	} else if err != nil {
 		return data, nil, err
 	}
 	return data, warnings, nil
@@ -148,7 +153,7 @@ func loadComposerLockMappings(repoPath string, data *composerData) error {
 
 func readOptionalRepoFile(repoPath, filename string) ([]byte, bool, error) {
 	path := filepath.Join(repoPath, filename)
-	bytes, err := safeio.ReadFileUnder(repoPath, path)
+	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, composerInputByteLimit(filename))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, false, nil
@@ -158,9 +163,20 @@ func readOptionalRepoFile(repoPath, filename string) ([]byte, bool, error) {
 	return bytes, true, nil
 }
 
+func composerInputByteLimit(filename string) int64 {
+	if filename == composerLockName {
+		return maxComposerLockBytes
+	}
+	return maxComposerManifestBytes
+}
+
 func unmarshalRepoJSON(filename string, bytes []byte, dest any) error {
 	if err := json.Unmarshal(bytes, dest); err != nil {
 		return fmt.Errorf("parse %s: %w", filename, err)
 	}
 	return nil
+}
+
+func isPureOversizedFileError(err error) bool {
+	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
 }

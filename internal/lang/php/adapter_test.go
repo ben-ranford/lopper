@@ -234,6 +234,46 @@ $logger = new \Monolog\Logger("app");
 	}
 }
 
+func TestPHPAdapterMarksUsageIncompleteWhenComposerLockIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	const declaredDependency = "vendor/lib"
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, declaredDependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), "{}"+strings.Repeat(" ", int(testMaxComposerLockBytes)))
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
+use Vendor\Lib\Client;
+$client = new Client();
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     1,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if !containsWarning(reportData.Warnings, "skipped composer.lock because it exceeds") {
+		t.Fatalf("expected oversized lock warning, got %#v", reportData.Warnings)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one top dependency, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.Name != declaredDependency {
+		t.Fatalf("expected declared dependency in top report, got %q", dep.Name)
+	}
+	if !dep.UsageIncomplete {
+		t.Fatalf("expected oversized composer.lock to make usage coverage incomplete")
+	}
+	if dep.RemovalCandidate != nil {
+		t.Fatalf("expected incomplete usage to suppress removal-candidate scoring, got %#v", dep.RemovalCandidate)
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect removal recommendation with incomplete usage: %#v", dep.Recommendations)
+		}
+	}
+}
+
 func TestPHPAdapterParsesUseStatementsInlineWithPHPOpenTag(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))

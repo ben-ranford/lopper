@@ -2,14 +2,19 @@ package php
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const helpersComposerJSON = "composer.json"
@@ -22,6 +27,14 @@ const helpersMonologLogger = "Monolog\\Logger"
 const helpersScanRepoErr = "scanRepo: %v"
 const helpersUnexpectedUnresolvedFmt = "unexpected unresolved: %d"
 const helpersPHPHeader = "<?php\n"
+
+const (
+	testMaxComposerManifestBytes         int64 = 2 * 1024 * 1024
+	testMaxComposerLockBytes             int64 = 8 * 1024 * 1024
+	testMaxScannablePHPFile              int64 = 2 * 1024 * 1024
+	testMaxPHPUseStatementsPerFile             = 4096
+	testMaxPHPNamespaceReferencesPerFile       = 4096
+)
 
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
 	adapter := NewAdapter()
@@ -76,6 +89,83 @@ func TestReadComposerManifestBranches(t *testing.T) {
 	_, _, err = readComposerManifest(repo)
 	if err == nil || !strings.Contains(err.Error(), "parse composer.json") {
 		t.Fatalf("expected parse error branch, got %v", err)
+	}
+}
+
+func TestReadComposerInputsRejectOversizedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		limit    int64
+		read     func(string) error
+	}{
+		{
+			name:     "composer manifest",
+			filename: helpersComposerJSON,
+			limit:    testMaxComposerManifestBytes,
+			read: func(repo string) error {
+				_, _, err := readComposerManifest(repo)
+				return err
+			},
+		},
+		{
+			name:     "composer lock",
+			filename: helpersComposerLock,
+			limit:    testMaxComposerLockBytes,
+			read: func(repo string) error {
+				data := composerData{NamespaceToDep: map[string]string{}}
+				return loadComposerLockMappings(repo, &data)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWritePaddedFile(t, filepath.Join(repo, tc.filename), "{}", tc.limit+1)
+
+			if err := tc.read(repo); !errors.Is(err, safeio.ErrFileTooLarge) {
+				t.Fatalf("expected oversized %s to fail with ErrFileTooLarge, got %v", tc.filename, err)
+			}
+		})
+	}
+}
+
+func TestPureOversizedFileErrorPreservesJoinedOperationalErrors(t *testing.T) {
+	if !isPureOversizedFileErrorForTest(safeio.ErrFileTooLarge) {
+		t.Fatalf("expected direct oversized sentinel to be classified as skippable")
+	}
+	if !isPureOversizedFileErrorForTest(fmt.Errorf("wrapped: %w", safeio.ErrFileTooLarge)) {
+		t.Fatalf("expected wrapped oversized sentinel to be classified as skippable")
+	}
+	closeErr := errors.New("close failed")
+	if isPureOversizedFileErrorForTest(errors.Join(safeio.ErrFileTooLarge, closeErr)) {
+		t.Fatalf("expected joined operational error to be preserved")
+	}
+}
+
+func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		limit    int64
+	}{
+		{name: "composer manifest", filename: helpersComposerJSON, limit: testMaxComposerManifestBytes},
+		{name: "composer lock", filename: helpersComposerLock, limit: testMaxComposerLockBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWritePaddedFile(t, filepath.Join(repo, tc.filename), "{}", tc.limit)
+
+			bytes, found, err := readOptionalRepoFile(repo, tc.filename)
+			if err != nil {
+				t.Fatalf("read exact-limit %s: %v", tc.filename, err)
+			}
+			if !found {
+				t.Fatalf("expected exact-limit %s to be found", tc.filename)
+			}
+			if int64(len(bytes)) != tc.limit {
+				t.Fatalf("expected exact-limit %s read to return %d bytes, got %d", tc.filename, tc.limit, len(bytes))
+			}
+		})
 	}
 }
 
@@ -147,6 +237,26 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	}
 }
 
+func TestLoadComposerDataWarnsAndContinuesWhenLockIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, helpersComposerLock), "{}", testMaxComposerLockBytes+1)
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("expected oversized optional composer.lock to warn and continue, got %v", err)
+	}
+	if _, ok := data.DeclaredDependencies[helpersVendorLibDependency]; !ok {
+		t.Fatalf("expected manifest dependency to be retained, got %#v", data.DeclaredDependencies)
+	}
+	if !usageIncompleteForTest(t, data) {
+		t.Fatal("expected oversized optional composer.lock to mark dependency coverage incomplete")
+	}
+	if !containsWarning(warnings, "skipped composer.lock because it exceeds") {
+		t.Fatalf("expected oversized lock warning, got %#v", warnings)
+	}
+}
+
 func TestNamespaceAndUseHelpers(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Monolog": helpersMonologDependency},
@@ -197,6 +307,139 @@ func TestParsePHPImportsStructuredResult(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsBoundsAdversarialUseStatements(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPUseStatementsPerFile+17; i++ {
+		fmt.Fprintf(&content, "use Vendor\\Lib\\Thing%d;\n", i)
+	}
+
+	parsed := parsePHPImports([]byte(content.String()), "adversarial-use.php", resolver)
+
+	if len(parsed.imports) != testMaxPHPUseStatementsPerFile {
+		t.Fatalf("expected exactly %d bounded use imports, got %d", testMaxPHPUseStatementsPerFile, len(parsed.imports))
+	}
+	if parsed.imports[len(parsed.imports)-1].Location.Line != testMaxPHPUseStatementsPerFile+1 {
+		t.Fatalf("expected last bounded use import on line %d, got %#v", testMaxPHPUseStatementsPerFile+1, parsed.imports[len(parsed.imports)-1])
+	}
+	for _, imp := range parsed.imports {
+		if imp.Wildcard {
+			t.Fatalf("did not expect namespace-reference import while parsing use-statement adversary, got %#v", imp)
+		}
+	}
+}
+
+func TestParsePHPImportsBoundsGroupedUseBindings(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	content.WriteString("use Vendor\\Lib\\{")
+	for i := 0; i < testMaxPHPUseStatementsPerFile+17; i++ {
+		if i > 0 {
+			content.WriteString(", ")
+		}
+		fmt.Fprintf(&content, "Thing%d", i)
+	}
+	content.WriteString("};\n")
+
+	parsed := parsePHPImports([]byte(content.String()), "adversarial-grouped-use.php", resolver)
+
+	if len(parsed.imports) != testMaxPHPUseStatementsPerFile {
+		t.Fatalf("expected exactly %d bounded grouped use imports, got %d", testMaxPHPUseStatementsPerFile, len(parsed.imports))
+	}
+	if parsed.groupedByDep[helpersVendorLibDependency] != 1 {
+		t.Fatalf("expected grouped dependency attribution, got %#v", parsed.groupedByDep)
+	}
+}
+
+func TestParsePHPImportsBoundsUnresolvedGroupedUseParts(t *testing.T) {
+	resolver := composerResolver{declared: map[string]struct{}{}}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for stmt := 0; stmt < 2; stmt++ {
+		content.WriteString("use Vendor\\Lib\\{")
+		for i := 0; i < testMaxPHPUseStatementsPerFile; i++ {
+			if i > 0 {
+				content.WriteString(", ")
+			}
+			fmt.Fprintf(&content, "Thing%d", i)
+		}
+		content.WriteString("};\n")
+	}
+
+	parsed := parsePHPImports([]byte(content.String()), "adversarial-unresolved-grouped-use.php", resolver)
+
+	if len(parsed.imports) != 0 {
+		t.Fatalf("expected unresolved grouped use parts to emit no imports, got %d", len(parsed.imports))
+	}
+	if parsed.unresolvedCount != testMaxPHPUseStatementsPerFile {
+		t.Fatalf("expected unresolved count to stop at %d, got %d", testMaxPHPUseStatementsPerFile, parsed.unresolvedCount)
+	}
+}
+
+func TestParsePHPImportsBoundsAdversarialNamespaceReferences(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
+	}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPNamespaceReferencesPerFile+23; i++ {
+		content.WriteString("$client = new \\Vendor\\Lib\\Client();\n")
+	}
+
+	parsed := parsePHPImports([]byte(content.String()), "adversarial-namespace.php", resolver)
+
+	if len(parsed.imports) != testMaxPHPNamespaceReferencesPerFile {
+		t.Fatalf("expected exactly %d bounded namespace imports, got %d", testMaxPHPNamespaceReferencesPerFile, len(parsed.imports))
+	}
+	if parsed.imports[0].Location.Line != 2 {
+		t.Fatalf("expected first namespace import on line 2, got %#v", parsed.imports[0])
+	}
+	if parsed.imports[len(parsed.imports)-1].Location.Line != testMaxPHPNamespaceReferencesPerFile+1 {
+		t.Fatalf("expected last bounded namespace import on line %d, got %#v", testMaxPHPNamespaceReferencesPerFile+1, parsed.imports[len(parsed.imports)-1])
+	}
+}
+
+func TestScanRepoWarnsWhenPHPImportScansAreBounded(t *testing.T) {
+	repo := t.TempDir()
+	var useContent strings.Builder
+	useContent.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPUseStatementsPerFile+1; i++ {
+		fmt.Fprintf(&useContent, "use Vendor\\Lib\\UseThing%d;\n", i)
+	}
+	writeFile(t, filepath.Join(repo, "src", "use-adversary.php"), useContent.String())
+
+	var namespaceContent strings.Builder
+	namespaceContent.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPNamespaceReferencesPerFile+1; i++ {
+		namespaceContent.WriteString("$client = new \\Vendor\\Lib\\Client();\n")
+	}
+	writeFile(t, filepath.Join(repo, "src", "namespace-adversary.php"), namespaceContent.String())
+
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if !containsWarning(scan.Warnings, "stopped PHP use import scan") {
+		t.Fatalf("expected bounded use import warning, got %#v", scan.Warnings)
+	}
+	if !containsWarning(scan.Warnings, "stopped PHP namespace reference scan") {
+		t.Fatalf("expected bounded namespace reference warning, got %#v", scan.Warnings)
+	}
+}
+
 func TestReadPHPFileAndScanNoPHP(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
@@ -217,6 +460,122 @@ func TestReadPHPFileAndScanNoPHP(t *testing.T) {
 	}
 	if !containsWarning(scan.Warnings, "no PHP source files") {
 		t.Fatalf("expected no-PHP warning, got %#v", scan.Warnings)
+	}
+}
+
+func TestReadPHPFileRejectsOversizedSource(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "src", "oversized.php")
+	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, testMaxScannablePHPFile+1)
+
+	if _, _, err := readPHPFile(repo, sourcePath); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized PHP source to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestReadPHPFileAcceptsExactLimitSource(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "src", "exact.php")
+	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, testMaxScannablePHPFile)
+
+	content, relPath, err := readPHPFile(repo, sourcePath)
+	if err != nil {
+		t.Fatalf("read exact-limit PHP source: %v", err)
+	}
+	if relPath != filepath.Join("src", "exact.php") {
+		t.Fatalf("unexpected rel path: %q", relPath)
+	}
+	if int64(len(content)) != testMaxScannablePHPFile {
+		t.Fatalf("expected exact-limit PHP source read to return %d bytes, got %d", testMaxScannablePHPFile, len(content))
+	}
+}
+
+func TestScanRepoSkipsOversizedPHPSourceWithWarning(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), helpersPHPHeader, testMaxScannablePHPFile+1)
+
+	scan, err := scanRepo(context.Background(), repo, composerData{DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}}})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if len(scan.Files) != 0 {
+		t.Fatalf("expected oversized PHP source to be skipped, got %#v", scan.Files)
+	}
+	if !containsWarning(scan.Warnings, "skipped 1 large PHP file") || !containsWarning(scan.Warnings, fmt.Sprintf("%d bytes", testMaxScannablePHPFile)) {
+		t.Fatalf("expected oversized PHP warning with byte limit, got %#v", scan.Warnings)
+	}
+	if !usageIncompleteForTest(t, scan) {
+		t.Fatal("expected oversized PHP source to mark scan usage incomplete")
+	}
+}
+
+func TestScanRepoMarksUsageIncompleteWhenUseStatementLimitHit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPUseStatementsPerFile+1; i++ {
+		fmt.Fprintf(&content, "use Vendor\\Lib\\Thing%d;\n", i)
+	}
+	writeFile(t, filepath.Join(repo, "src", "adversarial-use.php"), content.String())
+
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if !usageIncompleteForTest(t, scan) {
+		t.Fatal("expected use statement cap to mark scan usage incomplete")
+	}
+	if !containsWarning(scan.Warnings, "stopped PHP use import scan") {
+		t.Fatalf("expected use statement cap warning, got %#v", scan.Warnings)
+	}
+
+	dep, _ := buildDependencyReport(helpersVendorLibDependency, scan, 100)
+	if !dep.UsageIncomplete {
+		t.Fatal("expected dependency report to be marked usage incomplete")
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect definitive usage recommendation with incomplete scan: %#v", dep.Recommendations)
+		}
+	}
+}
+
+func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *testing.T) {
+	scan := scanResult{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		Files: []fileScan{{
+			Path: "src/small.php",
+			Imports: []importBinding{{
+				Dependency: helpersVendorLibDependency,
+				Module:     "Vendor\\Lib\\Thing",
+				Name:       "Thing",
+				Local:      "Thing",
+			}},
+			Usage: map[string]int{"Thing": 0},
+		}},
+	}
+
+	setUsageIncompleteForTest(t, &scan)
+
+	dep, _ := buildDependencyReport(helpersVendorLibDependency, scan, 40)
+	if !dep.UsageIncomplete {
+		t.Fatal("expected dependency report to be marked usage incomplete")
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected unused imports to be suppressed, got %#v", dep.UnusedImports)
+	}
+	if len(dep.SuppressedUnusedImports) != 1 {
+		t.Fatalf("expected one suppressed unused import, got %#v", dep.SuppressedUnusedImports)
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect removal recommendation with incomplete usage: %#v", dep.Recommendations)
+		}
 	}
 }
 
@@ -413,6 +772,32 @@ func TestParseNamespaceReferencesSkipsUseLine(t *testing.T) {
 	}
 	if len(imports) != 0 {
 		t.Fatalf("expected no namespace imports from use-line, got %#v", imports)
+	}
+}
+
+func TestParseNamespaceReferencesDoesNotLetUseLinesExhaustReferenceLimit(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	content.WriteString("<?php use Monolog\\InlineLogger;\n")
+	for i := 0; i < testMaxPHPUseStatementsPerFile*2; i++ {
+		content.WriteString("use Monolog\\Logger;\n")
+	}
+	content.WriteString("$logger = new \\Monolog\\Logger(\"app\");\n")
+
+	imports, unresolved := parseNamespaceReferences([]byte(content.String()), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected namespace reference after bounded use lines to be preserved, got %#v", imports)
+	}
+	if imports[0].Module != helpersMonologLogger {
+		t.Fatalf("expected module %q, got %#v", helpersMonologLogger, imports[0])
+	}
+	expectedLine := testMaxPHPUseStatementsPerFile*2 + 3
+	if imports[0].Location.Line != expectedLine {
+		t.Fatalf("expected namespace reference after use block on line %d, got %#v", expectedLine, imports[0])
 	}
 }
 
@@ -738,6 +1123,9 @@ func TestScanRepoMaxFilesAndSkipDirBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf(helpersScanRepoErr, err)
 	}
+	if !usageIncompleteForTest(t, scan) {
+		t.Fatal("expected bounded scan to mark usage incomplete")
+	}
 	if !containsWarning(scan.Warnings, "scan stopped after") {
 		t.Fatalf("expected bounded scan warning, got %#v", scan.Warnings)
 	}
@@ -772,4 +1160,26 @@ func hasNamespaceDependencyMapping(namespaceToDep map[string]string, namespaceFr
 		}
 	}
 	return false
+}
+
+func usageIncompleteForTest(t *testing.T, value any) bool {
+	t.Helper()
+	field := reflect.ValueOf(value).FieldByName("UsageIncomplete")
+	if !field.IsValid() || field.Kind() != reflect.Bool {
+		return false
+	}
+	return field.Bool()
+}
+
+func setUsageIncompleteForTest(t *testing.T, value any) {
+	t.Helper()
+	field := reflect.ValueOf(value).Elem().FieldByName("UsageIncomplete")
+	if !field.IsValid() || field.Kind() != reflect.Bool || !field.CanSet() {
+		t.Fatalf("expected settable UsageIncomplete field")
+	}
+	field.SetBool(true)
+}
+
+func isPureOversizedFileErrorForTest(err error) bool {
+	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
 }
