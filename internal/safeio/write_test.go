@@ -1047,6 +1047,34 @@ func TestWriteRootPinnedParentPublishCheckRejectsRetargetedParentPath(t *testing
 	}
 }
 
+func TestWriteRootPinnedParentPublishCheckPublishesThroughValidatedParentPath(t *testing.T) {
+	rootDir := t.TempDir()
+	parent := filepath.Join(rootDir, "reports")
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		func(parentPath string, parentIdentity fs.FileInfo) error {
+			publishChecks++
+			return VerifyDirectoryIdentity(parentPath, parentIdentity)
+		},
+	)
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck returned error: %v", err)
+	}
+	if publishChecks != 3 {
+		t.Fatalf("expected initial, commit, and post-write publish checks, got %d", publishChecks)
+	}
+	assertFileContent(t, filepath.Join(parent, writeTestFileName), "hello")
+}
+
 func TestWriteRootPinnedParentPublishCheckRejectsParentSwapDuringCommitCheck(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory replacement semantics are covered on Unix")
@@ -1091,6 +1119,84 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapDuringCommitCheck(t *
 	}
 	if _, statErr := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	rootDir := t.TempDir()
+	originalParent := filepath.Join(rootDir, "reports")
+	relocatedParent := filepath.Join(rootDir, "reports-relocated")
+	if err := os.MkdirAll(originalParent, 0o750); err != nil {
+		t.Fatalf("mkdir original parent: %v", err)
+	}
+
+	renameReadyCalls := 0
+	originalRenameReady := writeFileRenameReadyFn
+	writeFileRenameReadyFn = func() error {
+		renameReadyCalls++
+		if err := os.Rename(originalParent, relocatedParent); err != nil {
+			return err
+		}
+		return os.Mkdir(originalParent, 0o750)
+	}
+	t.Cleanup(func() {
+		writeFileRenameReadyFn = originalRenameReady
+	})
+
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	publishChecks := 0
+	err := root.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(
+		filepath.Join("reports", writeTestFileName),
+		[]byte("hello"),
+		0o640,
+		0o750,
+		func(parentPath string, parentIdentity fs.FileInfo) error {
+			publishChecks++
+			return VerifyDirectoryIdentity(parentPath, parentIdentity)
+		},
+	)
+	if err == nil {
+		t.Fatal("expected parent replacement before rename to fail")
+	}
+	if publishChecks != 2 {
+		t.Fatalf("expected initial and commit publish checks, got %d", publishChecks)
+	}
+	if renameReadyCalls != 1 {
+		t.Fatalf("expected one rename-ready hook call, got %d", renameReadyCalls)
+	}
+	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(originalParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
+	}
+}
+
+func TestRenameAtDirectoryPathRequiresDirectChildrenAndMapsRenameError(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, "temp"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	if err := renameAtDirectoryPath(parent, "temp", "target"); err != nil {
+		t.Fatalf("renameAtDirectoryPath returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(parent, "target"), "hello")
+
+	if err := renameAtDirectoryPath(parent, filepath.Join("nested", "temp"), "target"); err == nil || !strings.Contains(err.Error(), "direct children") {
+		t.Fatalf("expected direct-child validation error, got %v", err)
+	}
+
+	err := renameAtDirectoryPath(parent, "missing", "other")
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("expected mapped link error, got %T %[1]v", err)
+	}
+	if linkErr.Op != "renameat" || linkErr.Old != "missing" || linkErr.New != "other" {
+		t.Fatalf("mapped link error = %#v", linkErr)
 	}
 }
 
@@ -1360,6 +1466,33 @@ func TestWriteAtomicReplacementCommitReadyErrorPreventsRename(t *testing.T) {
 	}, nil)
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected commit readiness error, got %v", err)
+	}
+}
+
+func TestWriteAtomicReplacementRenameReadyErrorPreventsRename(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	expectedErr := errors.New("not ready to rename")
+	root := &fakeRoot{
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			t.Fatalf("target should not be opened")
+			return nil, nil
+		}, tempInfo, nil),
+		rename: func(string, string) error {
+			t.Fatal("rename should not run after rename readiness error")
+			return nil
+		},
+		remove: func(string) error { return nil },
+	}
+
+	originalReady := writeFileRenameReadyFn
+	writeFileRenameReadyFn = func() error { return expectedErr }
+	t.Cleanup(func() {
+		writeFileRenameReadyFn = originalReady
+	})
+
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, nil, nil, nil)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected rename readiness error, got %v", err)
 	}
 }
 

@@ -27,8 +27,9 @@ var (
 )
 
 type pinnedReplacementChecks struct {
-	commitReady func() error
-	postWrite   func() error
+	commitReady  func() error
+	postWrite    func() error
+	commitRename atomicRenameFunc
 }
 
 func newPinnedReplacementChecks(checks []func() error) pinnedReplacementChecks {
@@ -70,7 +71,9 @@ func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) erro
 	return s.tempFile.Chmod(perm)
 }
 
-func (s *atomicWriteSession) commit(commitReady func() error) error {
+type atomicRenameFunc func(oldName, newName string) error
+
+func (s *atomicWriteSession) commit(commitReady func() error, rename atomicRenameFunc) error {
 	if err := writeFilePublishReadyFn(); err != nil {
 		return err
 	}
@@ -79,7 +82,13 @@ func (s *atomicWriteSession) commit(commitReady func() error) error {
 			return err
 		}
 	}
-	if err := s.root.Rename(s.tempRel, s.targetRel); err != nil {
+	if rename == nil {
+		if err := writeFileRenameReadyFn(); err != nil {
+			return err
+		}
+		rename = s.root.Rename
+	}
+	if err := rename(s.tempRel, s.targetRel); err != nil {
 		return err
 	}
 	s.tempRel = ""
@@ -175,7 +184,8 @@ func writeAtomicReplacementWithPostWriteCheck(root Root, targetRel string, data 
 	return writeAtomicReplacementWithChecks(root, targetRel, data, perm, replacementInfo, nil, postWrite)
 }
 
-func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo, commitReady, postWrite func() error) (returnErr error) {
+func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, perm os.FileMode, replacementInfo fs.FileInfo, commitReady, postWrite func() error, commitRename ...atomicRenameFunc) (returnErr error) {
+	rename := firstAtomicRename(commitRename)
 	replacementFile, closeReplacementFile, err := openPinnedReplacementTargetIfNeeded(root, targetRel, replacementInfo)
 	if err != nil {
 		return err
@@ -198,7 +208,7 @@ func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, 
 	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
-	if err := session.commit(commitReady); err != nil {
+	if err := session.commit(commitReady, rename); err != nil {
 		if fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err); fallbackErr != nil {
 			return fallbackErr
 		}
@@ -244,8 +254,10 @@ func writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root Root, targetRe
 }
 
 func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool, checks ...func() error) (returnErr error) {
-	callbacks := newPinnedReplacementChecks(checks)
+	return writeAtomicReplacementWithPinnedTargetCallbacks(root, targetRel, data, perm, replacementFile, allowPermissionFallback, newPinnedReplacementChecks(checks))
+}
 
+func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool, callbacks pinnedReplacementChecks) (returnErr error) {
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
@@ -269,7 +281,7 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
-	if err := session.commit(callbacks.commitReady); err != nil {
+	if err := session.commit(callbacks.commitReady, callbacks.commitRename); err != nil {
 		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 		if fallbackErr == nil {
 			return runPostWriteCheck(callbacks.postWrite)
@@ -286,6 +298,13 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 		return fallbackErr
 	}
 	return session.verifyCommittedTargetAndPostWrite(callbacks.postWrite)
+}
+
+func firstAtomicRename(commitRename []atomicRenameFunc) atomicRenameFunc {
+	if len(commitRename) == 0 {
+		return nil
+	}
+	return commitRename[0]
 }
 
 func runPostWriteCheck(postWrite func() error) error {

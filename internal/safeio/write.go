@@ -208,7 +208,7 @@ func (r *WriteRoot) writeFileCreatingParentsAfterParentReadyWithOptions(targetPa
 	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, options)
 }
 
-type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error) error
+type writeAtRootFunc func(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error, commitRename atomicRenameFunc) error
 
 type writeToTargetParentOptions struct {
 	createParents bool
@@ -218,6 +218,7 @@ type writeToTargetParentOptions struct {
 	commitReady   func() error
 	postWrite     func() error
 	publishParent func(parentPath string, parentIdentity fs.FileInfo) error
+	commitRename  atomicRenameFunc
 	write         writeAtRootFunc
 }
 
@@ -250,14 +251,37 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 				}
 				return VerifyDirectoryIdentity(parentPath, parentIdentity)
 			}
-			commitReady = parentCheck
+			commitReady = nil
 			postWrite = parentCheck
+			options.commitRename = func(oldName, newName string) error {
+				if err := parentCheck(); err != nil {
+					return err
+				}
+				if err := writeFileRenameReadyFn(); err != nil {
+					return err
+				}
+				return renameAtDirectoryPath(parentPath, oldName, newName)
+			}
 			if err := parentCheck(); err != nil {
 				return err
 			}
 		}
-		return options.write(parent, parentTarget, data, perm, commitReady, postWrite)
+		return options.write(parent, parentTarget, data, perm, commitReady, postWrite, options.commitRename)
 	})
+}
+
+func renameAtDirectoryPath(parentPath, oldName, newName string) error {
+	if filepath.Dir(oldName) != "." || filepath.Dir(newName) != "." {
+		return fmt.Errorf("rename paths must be direct children of %s", parentPath)
+	}
+	if err := os.Rename(filepath.Join(parentPath, oldName), filepath.Join(parentPath, newName)); err != nil {
+		var linkErr *os.LinkError
+		if errors.As(err, &linkErr) {
+			return &os.LinkError{Op: "renameat", Old: oldName, New: newName, Err: linkErr.Err}
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *WriteRoot) withTargetParent(target rootedTarget, createParents bool, parentPerm os.FileMode, write func(parent Root, parentTarget rootedTarget) error) (returnErr error) {
@@ -340,6 +364,7 @@ var (
 	writeFileParentReadyFn   = func() error { return nil }
 	writeFilePreWriteReadyFn = func() error { return nil }
 	writeFilePublishReadyFn  = func() error { return nil }
+	writeFileRenameReadyFn   = func() error { return nil }
 )
 
 // CreateTempFileWithinRoot creates a temporary file under dir within root.
@@ -373,28 +398,28 @@ func WriteFileUnder(rootDir, targetPath string, data []byte, perm os.FileMode) (
 }
 
 func writeFileAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithChecks(root, target, data, perm, nil, nil)
+	return writeFileAtRootWithChecks(root, target, data, perm, nil, nil, nil)
 }
 
 func writeFileAtRootWithPostWriteCheck(root Root, target rootedTarget, data []byte, perm os.FileMode, postWrite func() error) error {
-	return writeFileAtRootWithChecks(root, target, data, perm, nil, postWrite)
+	return writeFileAtRootWithChecks(root, target, data, perm, nil, postWrite, nil)
 }
 
-func writeFileAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, false, commitReady, postWrite)
+func writeFileAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, commitReady, postWrite func() error, commitRename atomicRenameFunc) error {
+	return writeFileAtRootWithOptions(root, target, data, perm, false, commitReady, postWrite, commitRename)
 }
 
 func writeFileAtRootWithPermissionFallback(root Root, target rootedTarget, data []byte, perm os.FileMode) error {
-	return writeFileAtRootWithOptions(root, target, data, perm, true, nil, nil)
+	return writeFileAtRootWithOptions(root, target, data, perm, true, nil, nil, nil)
 }
 
-func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool, commitReady, postWrite func() error) (returnErr error) {
+func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, perm os.FileMode, allowPermissionFallback bool, commitReady, postWrite func() error, commitRename atomicRenameFunc) (returnErr error) {
 	writePerm, existingInfo, err := resolvedWriteFilePerm(root, target, perm)
 	if err != nil {
 		return err
 	}
 	if existingInfo == nil {
-		return writeAtomicReplacementWithChecks(root, target.rel, data, writePerm, nil, commitReady, postWrite)
+		return writeAtomicReplacementWithChecks(root, target.rel, data, writePerm, nil, commitReady, postWrite, commitRename)
 	}
 
 	file, err := openPinnedReplacementTarget(root, target.rel, existingInfo)
@@ -407,14 +432,18 @@ func writeFileAtRootWithOptions(root Root, target rootedTarget, data []byte, per
 		}
 	}()
 
-	return writeAtomicReplacementWithPinnedTargetAndChecks(root, target.rel, data, writePerm, file, allowPermissionFallback, commitReady, postWrite)
+	return writeAtomicReplacementWithPinnedTargetCallbacks(root, target.rel, data, writePerm, file, allowPermissionFallback, pinnedReplacementChecks{
+		commitReady:  commitReady,
+		postWrite:    postWrite,
+		commitRename: commitRename,
+	})
 }
 
 func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm os.FileMode) (returnErr error) {
 	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, nil)
 }
 
-func writeFileIfAbsentAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, _ func() error, postWrite func() error) error {
+func writeFileIfAbsentAtRootWithChecks(root Root, target rootedTarget, data []byte, perm os.FileMode, _ func() error, postWrite func() error, _ atomicRenameFunc) error {
 	return writeFileIfAbsentAtRootWithPostWriteCheck(root, target, data, perm, postWrite)
 }
 
