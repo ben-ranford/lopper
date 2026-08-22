@@ -76,7 +76,7 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileAtRoot)
 }
 
 // WriteFileCreatingParentsAfterParentReady atomically writes a root-relative
@@ -86,7 +86,18 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, nil, writeFileAtRoot)
+}
+
+// WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck atomically writes a
+// root-relative file after parentReady validates state with the target parent
+// pinned, then runs preWrite immediately before the file mutation begins.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, preWrite func() error) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, preWrite, writeFileAtRoot)
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -112,7 +123,7 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, writeFileIfAbsentAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, nil, writeFileIfAbsentAtRoot)
 }
 
 // WriteFileCreatingParentsAtomicallyIfAbsent atomically publishes a
@@ -158,13 +169,21 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) error {
-	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, nil, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, nil, nil, writeFileAtRoot)
 }
 
-func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, parentReady func() error, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
+func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, parentReady, preWrite func() error, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
 	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
 		if parentReady != nil {
 			if err := parentReady(); err != nil {
+				return err
+			}
+		}
+		if preWrite != nil {
+			if err := writeFilePreWriteReadyFn(); err != nil {
+				return err
+			}
+			if err := preWrite(); err != nil {
 				return err
 			}
 		}
@@ -247,9 +266,10 @@ func closeOwnedRootWithError(root Root, owned bool, err error) error {
 const atomicTempPrefix = ".safeio-atomic-"
 
 var (
-	randomTempNameFn       = randomTempName
-	randReadFn             = rand.Read
-	writeFileParentReadyFn = func() error { return nil }
+	randomTempNameFn         = randomTempName
+	randReadFn               = rand.Read
+	writeFileParentReadyFn   = func() error { return nil }
+	writeFilePreWriteReadyFn = func() error { return nil }
 )
 
 // CreateTempFileWithinRoot creates a temporary file under dir within root.

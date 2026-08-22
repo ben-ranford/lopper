@@ -18,6 +18,9 @@ import (
 //go:linkname safeioWriteFileParentReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileParentReadyFn
 var safeioWriteFileParentReadyFn func() error
 
+//go:linkname safeioWriteFilePreWriteReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePreWriteReadyFn
+var safeioWriteFilePreWriteReadyFn func() error
+
 const (
 	cacheDirName          = ".lopper-cache"
 	cacheKeysDirName      = "keys"
@@ -232,6 +235,36 @@ func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
 
 func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing.T) {
 	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 2, "during pointer publish")
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementBetweenPointerValidationAndWrite(t *testing.T) {
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	mustMkdirCacheLayout(t, replacementRoot)
+
+	originalHook := safeioWriteFilePreWriteReadyFn
+	t.Cleanup(func() { safeioWriteFilePreWriteReadyFn = originalHook })
+	swapped := false
+	safeioWriteFilePreWriteReadyFn = func() error {
+		if swapped {
+			return nil
+		}
+		swapped = true
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		return os.Rename(replacementRoot, cachePath)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement between pointer validation and write to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
 }
 
 func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *testing.T, replaceOnCall int, stage string) {
