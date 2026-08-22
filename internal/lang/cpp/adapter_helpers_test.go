@@ -265,6 +265,7 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"parallel/features.h",
 		"parallel/iterator.h",
 		"parallel/parallel.h",
+		"parallel/queue.h",
 		"debug/map",
 		"debug/map.h",
 		"debug/safe_iterator.h",
@@ -279,9 +280,11 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"backward/auto_ptr.h",
 		"tr2/type_traits",
 		"tr1/math.h",
+		"tr1/complex.h",
 		"tr1/stdio.h",
 		"tr1/type_traits.h",
 		"tr1/unordered_map.h",
+		"tr1/unordered_set.h",
 		"asm/errno.h",
 		"asm-generic/errno.h",
 	} {
@@ -358,9 +361,12 @@ func TestAnalyseTopNIgnoresGNUQualifiedCompilerHeaders(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "main.cpp"), `#include <debug/safe_iterator.h>
 #include <debug/set.h>
 #include <parallel/base.h>
+#include <parallel/queue.h>
 #include <ext/pb_ds/assoc_container.hpp>
+#include <tr1/complex.h>
 #include <tr1/stdio.h>
 #include <tr1/unordered_map.h>
+#include <tr1/unordered_set.h>
 int main() { return 0; }
 `)
 
