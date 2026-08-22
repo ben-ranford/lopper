@@ -221,7 +221,7 @@ func TestInlineSuppressionTrackerControllerFailsClosedBeforeMutations(t *testing
 	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: controller}, "inline suppression tracker controller", []string{
 		"MAX_CHANGED_FILES = 3000",
 		"count > MAX_CHANGED_FILES",
-		"files.length !== count",
+		"files.length !== expectedCount",
 		"diff patch is unavailable",
 		"refusing to publish tracking mutations",
 		"records.size > MAX_RECORDS",

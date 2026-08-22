@@ -107,6 +107,49 @@ test('tracks fork pull request suppressions from trusted diff recomputation', as
   assert.match(harness.calls.infos.join('\n'), /Opened inline suppression tracking issue #101/);
 });
 
+test('recognizes supported inline suppression marker forms without matching quoted text', () => {
+  const matchingLines = [
+    '\t_ = 1 /' + '/no' + 'sec G404',
+    '\t_ = 1 /' + '* NO' + 'SONAR */',
+    '\t_ = 1 /' + '** NO' + 'SONAR */',
+    '\t_ = 1 ' + '# no' + 'qa',
+    '\t_ = 1 /' + '/ @ts-' + 'ignore',
+    '\t_ = 1 /' + '/ @ts-' + 'expect-error',
+    '\t_ = 1 /' + '/ eslint-' + 'disable-next-line no-console',
+    '\t_ = 1 /' + '/ pragma: ' + 'no cover',
+    '\t_ = 1 /' + '/ coverage: ' + 'ignore',
+  ];
+  for (const line of matchingLines) {
+    assert.equal(testables.hasInlineSuppressionMarker(line), true, line);
+  }
+
+  const ignoredLines = [
+    'const marker = "/' + '/no' + 'sec";',
+    'const marker = "/' + '* NO' + 'SONAR */";',
+    '\t_ = 1 /' + '/ no' + 'linter',
+    '\t_ = 1 /' + '/ coverage: ' + 'ignored',
+    '\t_ = 1 /' + '/ pragma: ' + 'no coverage',
+  ];
+  for (const line of ignoredLines) {
+    assert.equal(testables.hasInlineSuppressionMarker(line), false, line);
+  }
+});
+
+test('classifies source files without path validation side effects', () => {
+  assert.equal(testables.isSourceFile('internal/main.go'), true);
+  assert.equal(testables.isSourceFile('web/component.TSX'), true);
+  assert.equal(testables.isSourceFile('.githooks/pre-commit'), true);
+  assert.equal(testables.isSourceFile('docs/policy.md'), false);
+});
+
+test('parses metadata aliases without dynamic regular expressions', () => {
+  const content = '/' + '/nolint //' + ' reason: false positive; owner = @security; removal-condition= analyzer fix';
+
+  assert.equal(testables.metadataValue(content, ['rationale', 'reason']), 'false positive');
+  assert.equal(testables.metadataValue(content, ['owner']), '@security');
+  assert.equal(testables.metadataValue(content, ['remove-when', 'removal-condition']), 'analyzer fix');
+});
+
 test('updates an existing tracking issue by fingerprint', async () => {
   const harness = makeHarness({ existingIssue: 77 });
 
@@ -152,7 +195,25 @@ test('fails closed when GitHub omits a changed file patch', async () => {
 
   await assert.rejects(
     () => trackInlineSuppressions(harness.args),
-    /diff patch is unavailable.*refusing to publish tracking mutations/,
+    {
+      name: 'TypeError',
+      message: /diff patch is unavailable.*refusing to publish tracking mutations/,
+    },
+  );
+  assert.equal(harness.calls.created.length, 0);
+});
+
+test('fails closed when a trusted diff hunk is malformed', async () => {
+  const harness = makeHarness({
+    files: [{ filename: 'main.go', status: 'modified', patch: '@@ malformed @@\n+' + trackedLine() }],
+  });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'SyntaxError',
+      message: /Unable to parse inline suppression diff hunk for main\.go/,
+    },
   );
   assert.equal(harness.calls.created.length, 0);
 });
@@ -162,7 +223,10 @@ test('fails closed when pagination does not match the authoritative file count',
 
   await assert.rejects(
     () => trackInlineSuppressions(harness.args),
-    /saw 1 changed files but GitHub reports 2.*refusing to publish tracking mutations/,
+    {
+      name: 'RangeError',
+      message: /saw 1 changed files but GitHub reports 2.*refusing to publish tracking mutations/,
+    },
   );
   assert.equal(harness.calls.created.length, 0);
 });
@@ -172,7 +236,10 @@ test('fails closed above the GitHub 3000-file pull diff boundary', async () => {
 
   await assert.rejects(
     () => trackInlineSuppressions(harness.args),
-    /exceeds the 3000-file trusted diff limit.*refusing to publish tracking mutations/,
+    {
+      name: 'RangeError',
+      message: /exceeds the 3000-file trusted diff limit.*refusing to publish tracking mutations/,
+    },
   );
   assert.equal(harness.calls.created.length, 0);
 });
@@ -188,6 +255,9 @@ test('rejects path traversal before issue mutation', async () => {
     ],
   });
 
-  await assert.rejects(() => trackInlineSuppressions(harness.args), /Invalid inline suppression file path/);
+  await assert.rejects(() => trackInlineSuppressions(harness.args), {
+    name: 'TypeError',
+    message: /Invalid inline suppression file path/,
+  });
   assert.equal(harness.calls.created.length, 0);
 });
