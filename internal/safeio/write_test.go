@@ -1069,8 +1069,8 @@ func TestWriteRootPinnedParentPublishCheckPublishesThroughValidatedParentPath(t 
 	if err != nil {
 		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck returned error: %v", err)
 	}
-	if publishChecks != 3 {
-		t.Fatalf("expected initial, commit, and post-write publish checks, got %d", publishChecks)
+	if publishChecks != 4 {
+		t.Fatalf("expected initial, commit, final commit, and post-write publish checks, got %d", publishChecks)
 	}
 	assertFileContent(t, filepath.Join(parent, writeTestFileName), "hello")
 }
@@ -1096,16 +1096,15 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapDuringCommitCheck(t *
 		0o750,
 		func(parentPath string, parentIdentity fs.FileInfo) error {
 			publishChecks++
-			if err := VerifyDirectoryIdentity(parentPath, parentIdentity); err != nil {
-				return err
-			}
 			if publishChecks == 2 {
 				if err := os.Rename(originalParent, relocatedParent); err != nil {
 					return err
 				}
-				return os.Mkdir(originalParent, 0o750)
+				if err := os.Mkdir(originalParent, 0o750); err != nil {
+					return err
+				}
 			}
-			return nil
+			return VerifyDirectoryIdentity(parentPath, parentIdentity)
 		},
 	)
 	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
@@ -1163,7 +1162,7 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndR
 		t.Fatal("expected parent replacement before rename to fail")
 	}
 	if publishChecks != 2 {
-		t.Fatalf("expected initial and commit publish checks, got %d", publishChecks)
+		t.Fatalf("expected initial and commit publish checks before safeio rejected the final parent check, got %d", publishChecks)
 	}
 	if renameReadyCalls != 1 {
 		t.Fatalf("expected one rename-ready hook call, got %d", renameReadyCalls)
@@ -1461,9 +1460,11 @@ func TestWriteAtomicReplacementCommitReadyErrorPreventsRename(t *testing.T) {
 		remove: func(string) error { return nil },
 	}
 
-	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, nil, func() error {
-		return expectedErr
-	}, nil)
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, atomicReplacementOptions{
+		commitReady: func() error {
+			return expectedErr
+		},
+	})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected commit readiness error, got %v", err)
 	}
@@ -1490,7 +1491,7 @@ func TestWriteAtomicReplacementRenameReadyErrorPreventsRename(t *testing.T) {
 		writeFileRenameReadyFn = originalReady
 	})
 
-	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, nil, nil, nil)
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("hello"), 0o640, atomicReplacementOptions{})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected rename readiness error, got %v", err)
 	}
@@ -1556,6 +1557,35 @@ func TestWriteFileIfAbsentAtRootWithPostWriteCheckExistingAndNilPostWrite(t *tes
 		t.Fatalf("writeFileIfAbsentAtRootWithPostWriteCheck returned error: %v", err)
 	}
 	assertFileContent(t, targetPath, "new")
+}
+
+func TestWriteFileIfAbsentAtRootWithPostWriteCheckReturnsPostWriteError(t *testing.T) {
+	rootDir := t.TempDir()
+	root, err := OpenRoot(rootDir)
+	if err != nil {
+		t.Fatalf("OpenRoot returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close root: %v", closeErr)
+		}
+	})
+
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	target := rootedTarget{rootAbs: rootDir, rel: writeTestFileName, abs: targetPath}
+	expectedErr := errors.New("post-write check failed")
+	postWriteCalls := 0
+	err = writeFileIfAbsentAtRootWithPostWriteCheck(root, target, []byte("created"), 0o640, func() error {
+		postWriteCalls++
+		assertFileContent(t, targetPath, "created")
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write call, got %d", postWriteCalls)
+	}
 }
 
 func TestWriteRootPreWriteReadinessErrorPreventsCallerPreWriteAndWrite(t *testing.T) {

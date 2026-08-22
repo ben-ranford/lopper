@@ -14,6 +14,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 //go:linkname safeioWriteFileParentReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileParentReadyFn
@@ -21,6 +22,9 @@ var safeioWriteFileParentReadyFn func() error
 
 //go:linkname safeioWriteFilePublishReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePublishReadyFn
 var safeioWriteFilePublishReadyFn func() error
+
+//go:linkname safeioWriteFileRenameReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileRenameReadyFn
+var safeioWriteFileRenameReadyFn func() error
 
 const (
 	cacheDirName          = ".lopper-cache"
@@ -304,8 +308,8 @@ func TestAnalysisCacheStoreRejectsRootReplacementAtPointerCommit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected root replacement at pointer commit to fail")
 	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
 	}
 	if publishCalls != 2 {
 		t.Fatalf("expected cache root swap at pointer commit, got %d publish calls", publishCalls)
@@ -337,8 +341,8 @@ func TestAnalysisCacheStoreRejectsKeysRetargetAtPointerCommit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected keys retarget at pointer commit to fail")
 	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
 	}
 	if publishCalls != 2 {
 		t.Fatalf("expected keys retarget at pointer commit, got %d publish calls", publishCalls)
@@ -374,14 +378,54 @@ func TestAnalysisCacheStoreRejectsKeysReplacementAfterParentPinned(t *testing.T)
 	if err == nil {
 		t.Fatal("expected keys replacement after parent pin to fail")
 	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
 	}
 	if parentReadyCalls != 2 {
 		t.Fatalf("expected keys replacement during pointer publish, got %d parent-ready calls", parentReadyCalls)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedKeys, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementBetweenFinalCheckAndPointerRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	keysPath := filepath.Join(cachePath, cacheKeysDirName)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	if err := os.Mkdir(replacementRoot, 0o750); err != nil {
+		t.Fatalf("mkdir replacement root: %v", err)
+	}
+
+	originalHook := safeioWriteFileRenameReadyFn
+	t.Cleanup(func() { safeioWriteFileRenameReadyFn = originalHook })
+	renameReadyCalls := 0
+	safeioWriteFileRenameReadyFn = func() error {
+		renameReadyCalls++
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		if err := os.Rename(replacementRoot, cachePath); err != nil {
+			return err
+		}
+		return os.Rename(filepath.Join(movedRoot, cacheKeysDirName), keysPath)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement after final parent check to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	if renameReadyCalls != 1 {
+		t.Fatalf("expected one pointer rename-ready call, got %d", renameReadyCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 }
 
 func TestValidateObservedAnalysisCacheDirectoryIdentityRejectsRetargetedPinnedRoot(t *testing.T) {
@@ -397,6 +441,96 @@ func TestValidateObservedAnalysisCacheDirectoryIdentityRejectsRetargetedPinnedRo
 	}
 }
 
+func TestVerifyPinnedAnalysisCacheDirectoryRejectsRetargetedPath(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), cacheDirName)
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache root: %v", err)
+	}
+	root, err := safeio.OpenRootNoFollow(cachePath)
+	if err != nil {
+		t.Fatalf("open cache root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close cache root: %v", closeErr)
+		}
+	})
+	movedRoot := filepath.Join(filepath.Dir(cachePath), "cache-moved")
+	if err := os.Rename(cachePath, movedRoot); err != nil {
+		t.Fatalf("move cache root: %v", err)
+	}
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("replace cache root: %v", err)
+	}
+
+	if _, err := verifyPinnedAnalysisCacheDirectory(root, cachePath); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted cache root to be rejected, got %v", err)
+	}
+}
+
+func TestOpenOrCreatePinnedAnalysisCacheChildRejectsRetargetedParentPath(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), cacheDirName)
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache root: %v", err)
+	}
+	root, err := safeio.OpenRootNoFollow(cachePath)
+	if err != nil {
+		t.Fatalf("open cache root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close cache root: %v", closeErr)
+		}
+	})
+	movedRoot := filepath.Join(filepath.Dir(cachePath), "cache-moved")
+	if err := os.Rename(cachePath, movedRoot); err != nil {
+		t.Fatalf("move cache root: %v", err)
+	}
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("replace cache root: %v", err)
+	}
+
+	if _, err := openOrCreatePinnedAnalysisCacheChild(root, cachePath, cacheKeysDirName); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted parent path to be rejected, got %v", err)
+	}
+}
+
+func TestAnalysisCacheValidateWriteRootRejectsClosedAndMismatchedRoots(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, filepath.Dir(cachePath))
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
+	}
+
+	closedRoot, err := safeio.OpenCanonicalWriteRoot(cachePath)
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	if err := closedRoot.Close(); err != nil {
+		t.Fatalf("close write root: %v", err)
+	}
+	if err := cache.validateWriteRoot(closedRoot); err == nil {
+		t.Fatal("expected closed write root validation to fail")
+	}
+
+	otherPath := t.TempDir()
+	otherIdentity := statAnalysisCacheDirectory(t, otherPath)
+	cache.rootIdentity = otherIdentity
+	root, err := safeio.OpenCanonicalWriteRoot(cachePath)
+	if err != nil {
+		t.Fatalf("open mismatched write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close mismatched write root: %v", closeErr)
+		}
+	})
+	if err := cache.validateWriteRoot(root); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected mismatched write root identity to fail, got %v", err)
+	}
+}
+
 func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *testing.T, replaceOnCall int, stage string) {
 	t.Helper()
 	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
@@ -406,8 +540,8 @@ func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *test
 	if err == nil {
 		t.Fatalf("expected root replacement %s to fail", stage)
 	}
-	if !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity error, got %v", err)
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
@@ -440,6 +574,10 @@ func withAnalysisCacheStoreReplacementAfterWriteParentReady(t *testing.T, cacheP
 		}
 		return os.Symlink(outside, cachePath)
 	}
+}
+
+func isDirectoryIdentityOrMissingError(err error) bool {
+	return strings.Contains(err.Error(), "directory identity changed") || errors.Is(err, os.ErrNotExist)
 }
 
 func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
