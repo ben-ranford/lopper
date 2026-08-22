@@ -146,6 +146,27 @@ func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
 	}
 }
 
+func TestAnalyseWarnsAndContinuesWhenComposerLockIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, helpersComposerLock), "{}", maxComposerLockBytes+1)
+	writeFile(t, filepath.Join(repo, "src", "x.php"), helpersPHPHeader+"$client = new \\Vendor\\Lib\\Client();\n")
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: helpersVendorLibDependency,
+	})
+	if err != nil {
+		t.Fatalf("analyse with oversized optional composer.lock: %v", err)
+	}
+	if !containsWarning(result.Warnings, "composer.lock skipped") || !containsWarning(result.Warnings, "file exceeds size limit") {
+		t.Fatalf("expected oversized composer.lock warning, got %#v", result.Warnings)
+	}
+	if len(result.Dependencies) != 1 {
+		t.Fatalf("expected dependency report despite oversized composer.lock, got %d", len(result.Dependencies))
+	}
+}
+
 func TestLoadComposerLockMappingsBranches(t *testing.T) {
 	repo := t.TempDir()
 	data := composerData{NamespaceToDep: map[string]string{}}
