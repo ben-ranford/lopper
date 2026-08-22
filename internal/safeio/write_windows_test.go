@@ -411,6 +411,52 @@ func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T
 	}
 }
 
+func TestWindowsCreateFilePathNameSupportsLongAbsolutePaths(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "drive absolute",
+			path: `C:\safe-root\reports\.safeio-atomic-temp`,
+			want: `\\?\C:\safe-root\reports\.safeio-atomic-temp`,
+		},
+		{
+			name: "unc absolute",
+			path: `\\server\share\safe-root\.safeio-atomic-temp`,
+			want: `\\?\UNC\server\share\safe-root\.safeio-atomic-temp`,
+		},
+		{
+			name: "verbatim absolute",
+			path: `\\?\C:\safe-root\.safeio-atomic-temp`,
+			want: `\\?\C:\safe-root\.safeio-atomic-temp`,
+		},
+		{
+			name: "device namespace",
+			path: `\\.\C:\safe-root\.safeio-atomic-temp`,
+			want: `\\.\C:\safe-root\.safeio-atomic-temp`,
+		},
+		{
+			name: "relative",
+			path: `reports\.safeio-atomic-temp`,
+			want: `reports\.safeio-atomic-temp`,
+		},
+		{
+			name: "drive relative",
+			path: `C:safe-root\.safeio-atomic-temp`,
+			want: `C:safe-root\.safeio-atomic-temp`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := windowsCreateFilePathName(tt.path); got != tt.want {
+				t.Fatalf("unexpected CreateFile path: got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 type windowsNoReplaceIfAbsentRoot struct {
 	*fakeRoot
 	name            string

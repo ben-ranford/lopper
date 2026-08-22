@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -90,7 +91,7 @@ func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targ
 }
 
 func openWindowsDirectory(path string) (*os.File, error) {
-	pathp, err := syscall.UTF16PtrFromString(path)
+	pathp, normalizedPath, err := windowsCreateFilePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -106,11 +107,11 @@ func openWindowsDirectory(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.NewFile(uintptr(handle), path), nil
+	return os.NewFile(uintptr(handle), normalizedPath), nil
 }
 
 func openWindowsFileNoFollow(path string) (*os.File, error) {
-	pathp, err := syscall.UTF16PtrFromString(path)
+	pathp, normalizedPath, err := windowsCreateFilePath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +127,27 @@ func openWindowsFileNoFollow(path string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.NewFile(uintptr(handle), path), nil
+	return os.NewFile(uintptr(handle), normalizedPath), nil
+}
+
+func windowsCreateFilePath(path string) (*uint16, string, error) {
+	normalizedPath := windowsCreateFilePathName(path)
+	pathp, err := syscall.UTF16PtrFromString(normalizedPath)
+	return pathp, normalizedPath, err
+}
+
+func windowsCreateFilePathName(path string) string {
+	cleaned := filepath.Clean(path)
+	if strings.HasPrefix(cleaned, `\\?\`) || strings.HasPrefix(cleaned, `\\.\`) {
+		return cleaned
+	}
+	if strings.HasPrefix(cleaned, `\\`) {
+		return `\\?\UNC\` + strings.TrimPrefix(cleaned, `\\`)
+	}
+	if filepath.IsAbs(cleaned) {
+		return `\\?\` + cleaned
+	}
+	return cleaned
 }
 
 type ioStatusBlock struct {
