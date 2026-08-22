@@ -270,7 +270,7 @@ benchmark_harness_fingerprint() {
 		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
-	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_files_tmp" 2>/dev/null; then
+	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_files_tmp" 2>/dev/null; then
 		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
@@ -282,6 +282,13 @@ benchmark_harness_fingerprint() {
 	fingerprint_failed=0;
 	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file; do
 		[ -n "$fingerprint_file" ] || continue;
+		case "$fingerprint_kind" in
+			test|xtest)
+				if ! grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_dir/$fingerprint_file"; then
+					continue;
+				fi;
+				;;
+		esac;
 		if ! fingerprint_blob=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
 			fingerprint_failed=1;
 			break;

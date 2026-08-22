@@ -192,6 +192,95 @@ func TestValidateReachableVulnerabilityThreshold(t *testing.T) {
 	}
 }
 
+func TestValidateReachableVulnerabilityThresholdFailsClosedForOversizedRubyGemspecCoverage(t *testing.T) {
+	warningCases := []struct {
+		name    string
+		warning string
+	}{
+		{
+			name:    "lowercase extension",
+			warning: "skipped oversized.gemspec because it exceeds 1048576 bytes",
+		},
+		{
+			name:    "uppercase extension",
+			warning: "skipped oversized.GEMSPEC because it exceeds 1048576 bytes",
+		},
+		{
+			name:    "mixed case extension",
+			warning: "skipped oversized.GeMsPeC because it exceeds 1048576 bytes",
+		},
+		{
+			name:    "unicode simple-fold extension",
+			warning: "skipped oversized.gem\u017fpec because it exceeds 1048576 bytes",
+		},
+		{
+			name:    "review warning prefix preserves lowercase extension",
+			warning: "head abcdef123456: skipped oversized.gemspec because it exceeds 1048576 bytes",
+		},
+		{
+			name:    "review warning prefix preserves unicode simple-fold extension",
+			warning: "head abcdef123456: skipped oversized.gem\u017fpec because it exceeds 1048576 bytes",
+		},
+	}
+
+	for _, tc := range warningCases {
+		t.Run(tc.name, func(t *testing.T) {
+			oversized := report.Report{
+				Warnings: []string{tc.warning},
+			}
+			if err := validateReachableVulnerabilityThreshold(oversized, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
+				t.Fatalf("expected oversized gemspec coverage to fail closed under reachable-vulnerability threshold, got %v", err)
+			}
+
+			if err := validateReachableVulnerabilityThreshold(oversized, report.VulnerabilityPriorityOff); err != nil {
+				t.Fatalf("expected off threshold to allow oversized gemspec warning, got %v", err)
+			}
+		})
+	}
+
+	exactLimit := report.Report{}
+	if err := validateReachableVulnerabilityThreshold(exactLimit, report.VulnerabilityPriorityHigh); err != nil {
+		t.Fatalf("expected exact-limit gemspec coverage without warning to pass, got %v", err)
+	}
+
+	typedGap := report.Report{
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "oversized.gem\u017fpec",
+		}},
+	}
+	if err := validateReachableVulnerabilityThreshold(typedGap, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected typed oversized gemspec coverage gap to fail closed, got %v", err)
+	}
+}
+
+func TestEqualFoldCutPrefixHandlesUnicodeSimpleFoldPrefix(t *testing.T) {
+	suffix, ok := equalFoldCutPrefix("\u017fkipped oversized.gemspec because it exceeds 1048576 bytes", "skipped ")
+	if !ok {
+		t.Fatalf("expected unicode long-s prefix to match")
+	}
+	if suffix != "oversized.gemspec because it exceeds 1048576 bytes" {
+		t.Fatalf("unexpected suffix %q", suffix)
+	}
+}
+
+func TestOversizedRubyGemspecDeclarationWarningPathUsesLastDelimiter(t *testing.T) {
+	warning := "head abcdef123456: skipped nested/because it exceeds /oversized.gem\u017fpec because it exceeds 1048576 bytes"
+	path, ok := oversizedRubyGemspecDeclarationWarningPath(warning)
+	if !ok {
+		t.Fatalf("expected warning path to parse")
+	}
+	if path != "nested/because it exceeds /oversized.gem\u017fpec" {
+		t.Fatalf("unexpected parsed path %q", path)
+	}
+
+	reportData := report.Report{Warnings: []string{warning}}
+	if err := validateReachableVulnerabilityThreshold(reportData, report.VulnerabilityPriorityHigh); !errors.Is(err, ErrReachableVulnerabilities) {
+		t.Fatalf("expected delimiter-bearing gemspec path to fail closed, got %v", err)
+	}
+}
+
 func TestValidateReachableVulnerabilityThresholdUsesBaselineNewFindings(t *testing.T) {
 	reportData := report.Report{
 		Dependencies: []report.DependencyReport{

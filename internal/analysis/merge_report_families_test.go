@@ -161,6 +161,55 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 	}
 }
 
+func TestMergeReportsPreservesCoverageGapsForSingleAndMergedReports(t *testing.T) {
+	singleGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "gems/oversized.gem\u017fpec",
+		Evidence: []string{"single warning"},
+	}
+	sharedGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "pkg because it exceeds old/dependencies.gemspec",
+		Evidence: []string{"first warning"},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		reports []report.Report
+		want    []report.CoverageGap
+	}{
+		{
+			name: "single report",
+			reports: []report.Report{{
+				CoverageGaps: []report.CoverageGap{singleGap},
+			}},
+			want: []report.CoverageGap{singleGap},
+		},
+		{
+			name: "merged reports",
+			reports: []report.Report{
+				{CoverageGaps: []report.CoverageGap{sharedGap}},
+				{CoverageGaps: []report.CoverageGap{{Code: sharedGap.Code, Language: sharedGap.Language, Path: sharedGap.Path, Evidence: []string{"second warning"}}}},
+			},
+			want: []report.CoverageGap{{
+				Code:     sharedGap.Code,
+				Language: sharedGap.Language,
+				Path:     sharedGap.Path,
+				Evidence: []string{"first warning", "second warning"},
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			merged := mergeReports("/repo", tc.reports)
+			if !reflect.DeepEqual(merged.CoverageGaps, tc.want) {
+				t.Fatalf("mergeReports() coverage gaps = %#v, want %#v", merged.CoverageGaps, tc.want)
+			}
+		})
+	}
+}
+
 func TestSuppressedUnusedImportsPreserveVulnerabilityScoringAndPathEvidence(t *testing.T) {
 	reportData := report.Report{Dependencies: []report.DependencyReport{{
 		Name: "example-lib",

@@ -19,6 +19,7 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 
 	families := []reportFamilyMerger{
 		&warningsReportFamilyMerger{},
+		&coverageGapsReportFamilyMerger{},
 		&usageUncertaintyReportFamilyMerger{},
 		&generatedAtReportFamilyMerger{},
 		newDependencyReportFamilyMerger(),
@@ -46,6 +47,18 @@ func (m *warningsReportFamilyMerger) merge(current report.Report) {
 
 func (m *warningsReportFamilyMerger) finalize(result *report.Report) {
 	result.Warnings = append([]string(nil), m.warnings...)
+}
+
+type coverageGapsReportFamilyMerger struct {
+	coverageGaps []report.CoverageGap
+}
+
+func (m *coverageGapsReportFamilyMerger) merge(current report.Report) {
+	m.coverageGaps = append(m.coverageGaps, current.CoverageGaps...)
+}
+
+func (m *coverageGapsReportFamilyMerger) finalize(result *report.Report) {
+	result.CoverageGaps = report.StableCoverageGaps(m.coverageGaps)
 }
 
 type usageUncertaintyReportFamilyMerger struct {
