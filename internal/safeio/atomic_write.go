@@ -187,7 +187,7 @@ func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo,
 	if err != nil {
 		return fmt.Errorf("%s: %w", message, err)
 	}
-	if !pathInfo.Mode().IsRegular() || !os.SameFile(expected, pathInfo) {
+	if !sameRegularFile(expected, pathInfo) {
 		return fmt.Errorf("%s: %s", message, rel)
 	}
 	return nil
@@ -328,7 +328,7 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		}
 		stagedInfo, err := staged.Stat()
 		if err != nil {
-			return "", nil, closeAndCleanupCreatedFile(root, staged, stagedRel, err)
+			return "", nil, closeCreatedFileWithoutIdentity(staged, err)
 		}
 		if !stagedInfo.Mode().IsRegular() {
 			return "", nil, closeFilePreservingPrimary(staged, fmt.Errorf("%s: %s", message, stagedRel))
@@ -436,16 +436,9 @@ func sameRegularFile(expected, actual fs.FileInfo) bool {
 		expected.ModTime().Equal(actual.ModTime())
 }
 
-func closeAndCleanupCreatedFile(root Root, file File, rel string, primaryErr error) error {
-	info, infoErr := root.Lstat(rel)
+func closeCreatedFileWithoutIdentity(file File, primaryErr error) error {
 	closeErr := file.Close()
-	if infoErr != nil {
-		if errors.Is(infoErr, os.ErrNotExist) {
-			return errors.Join(primaryErr, closeErr)
-		}
-		return errors.Join(primaryErr, closeErr, infoErr)
-	}
-	return errors.Join(primaryErr, closeErr, cleanupAtomicTempFileIfMatches(root, rel, info))
+	return errors.Join(primaryErr, closeErr)
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {

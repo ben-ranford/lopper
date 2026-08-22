@@ -5946,42 +5946,20 @@ func TestIdentityBoundQuarantinePathUsesSourceDirectory(t *testing.T) {
 	}
 }
 
-func TestCloseAndCleanupCreatedFileBindsCleanupToObservedInode(t *testing.T) {
-	const tempRel = ".safeio-atomic-created"
-	const cleanupRel = ".safeio-atomic-cleanup"
-	createdInfo := newPinnedTargetInfo(t, "created")
+func TestCloseCreatedFileWithoutIdentityDoesNotRemovePath(t *testing.T) {
 	statErr := errors.New("staged stat failure")
-	removeChecks := 0
-	rawRemoveCalls := 0
-	useRandomTempNames(t, cleanupRel)
+	closeErr := errors.New("close failed")
+	closed := false
 
-	root := &fakeRoot{
-		lstat: lstatOriginalForNames(t, createdInfo, tempRel, cleanupRel),
-		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			requireSameFileInfo(t, expected, createdInfo, oldName)
-			if oldName != tempRel || newName != cleanupRel {
-				t.Fatalf("unexpected cleanup link %q -> %q", oldName, newName)
-			}
-			return nil
-		},
-		remove: countAndFailRawRemove(t, &rawRemoveCalls, "created-file cleanup must stay identity-bound"),
-		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
-			removeChecks++
-			requireSameFileInfo(t, expected, createdInfo, name)
-			requireOneOfNames(t, name, tempRel, cleanupRel)
-			return nil
-		},
+	err := closeCreatedFileWithoutIdentity(&fakeFile{close: func() error {
+		closed = true
+		return closeErr
+	}}, statErr)
+	if !errors.Is(err, statErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected staged stat and close errors, got %v", err)
 	}
-
-	err := closeAndCleanupCreatedFile(root, &fakeFile{close: closeWithoutError}, tempRel, statErr)
-	if !errors.Is(err, statErr) {
-		t.Fatalf("expected staged stat failure, got %v", err)
-	}
-	if removeChecks != 2 {
-		t.Fatalf("expected temp and cleanup removals, got %d", removeChecks)
-	}
-	if rawRemoveCalls != 0 {
-		t.Fatalf("expected no raw removals, got %d", rawRemoveCalls)
+	if !closed {
+		t.Fatal("expected created file to be closed")
 	}
 }
 
@@ -6845,7 +6823,6 @@ func stagingCopySourceValidationOpen(t *testing.T, stat func() (fs.FileInfo, err
 
 func TestIdentityHelperInfoAndCleanupBranches(t *testing.T) {
 	sourceInfo, _ := writePinnedTargetInfoPair(t)
-	lstatErr := errors.New("lstat failed")
 	closeErr := errors.New("close failed")
 	removeErr := errors.New("remove failed")
 
@@ -6869,12 +6846,10 @@ func TestIdentityHelperInfoAndCleanupBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("close and cleanup keeps lstat error", func(t *testing.T) {
-		err := closeAndCleanupCreatedFile(&fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
-		}, &fakeFile{close: func() error { return closeErr }}, "source", removeErr)
-		if !errors.Is(err, lstatErr) || !errors.Is(err, closeErr) || !errors.Is(err, removeErr) {
-			t.Fatalf("expected primary, close, and lstat errors, got %v", err)
+	t.Run("close without identity keeps close error", func(t *testing.T) {
+		err := closeCreatedFileWithoutIdentity(&fakeFile{close: func() error { return closeErr }}, removeErr)
+		if !errors.Is(err, closeErr) || !errors.Is(err, removeErr) {
+			t.Fatalf("expected primary and close errors, got %v", err)
 		}
 	})
 }
@@ -7196,6 +7171,16 @@ func TestVerifyPublishedPathMatchesInfoRejectsNilAndNonRegularExpected(t *testin
 	dirInfo := &modeOverrideFileInfo{FileInfo: newPinnedTargetInfo(t, "source"), mode: os.ModeDir | 0o755}
 	if err := verifyPublishedPathMatchesInfo(root, "source", dirInfo, sourceChangedMsg); err == nil {
 		t.Fatal("expected non-regular identity rejection")
+	}
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	modeMismatch := &modeOverrideFileInfo{FileInfo: sourceInfo, mode: 0o600}
+	root = &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			return sourceInfo, nil
+		},
+	}
+	if err := verifyPublishedPathMatchesInfo(root, "source", modeMismatch, sourceChangedMsg); err == nil {
+		t.Fatal("expected metadata mismatch rejection")
 	}
 }
 
