@@ -150,7 +150,8 @@ func TestResolveCompilePathAndDirectory(t *testing.T) {
 }
 
 func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
-	dirs := extractIncludeDirs([]string{"-I", "include", "-Ivendor/include", "-isystem", systemIncludeDir, "-iquote", "headers", "-isystem/opt/include", "-iquotequoted", "-Ivendor/include", "-I", ""}, "/repo")
+	args := []string{"-I", "include", "-Ivendor/include", "-isystem", systemIncludeDir, "-iquote", "headers", "-isystem/opt/include", "-iquotequoted", "-Ivendor/include", "-I", ""}
+	dirs := extractIncludeDirs(args, "/repo")
 	want := []string{
 		"/opt/include",
 		"/repo/headers",
@@ -161,6 +162,16 @@ func TestExtractIncludeDirsAndAddDedup(t *testing.T) {
 	}
 	if !slices.Equal(dirs, want) {
 		t.Fatalf("unexpected include dirs: got %#v want %#v", dirs, want)
+	}
+	searchPaths := extractIncludeSearchPaths([]string{"-isystem", "sdk", "-I", "vendor", "-iquote", "quote", "-I", "user2", "-isystem", "vendor", "-I", "sdk"}, "/repo")
+	wantSearchPaths := []includeSearchPath{
+		{Path: "/repo/quote", QuoteOnly: true, ProvenanceKnown: true},
+		{Path: "/repo/user2", ProvenanceKnown: true},
+		{Path: "/repo/sdk", System: true, ProvenanceKnown: true},
+		{Path: "/repo/vendor", System: true, ProvenanceKnown: true},
+	}
+	if !slices.Equal(searchPaths, wantSearchPaths) {
+		t.Fatalf("unexpected include search order/provenance: got %#v want %#v", searchPaths, wantSearchPaths)
 	}
 	var added []string
 	seen := map[string]struct{}{}
@@ -259,6 +270,8 @@ func TestMapIncludeToDependencyPreservesQualifiedLookalikesOutsideSystemRoots(t 
 		"backward/hash_map",
 		"bits/types/struct_timespec.h",
 		"linux/netfilter_ipv4/ip_tables.h",
+		"acme-linux-sdk/sys/time.h",
+		"acme-w64-mingw32/sys/time.h",
 		"x86_64-linux-gnu/sys/time.h",
 		"parallel/base.h",
 	} {
@@ -386,8 +399,10 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"tr1/unordered_map.h",
 		"tr1/unordered_set.h",
 		"asm/errno.h",
+		"aarch64-linux-gnu/asm/errno.h",
 		"x86_64-linux-gnu/asm/errno.h",
 		"x86_64-linux-gnu/sys/time.h",
+		"x86_64-w64-mingw32/sys/time.h",
 		"asm-generic/errno.h",
 		"asm-generic/bitops/atomic.h",
 		"bits/types/struct_timespec.h",
@@ -417,6 +432,8 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"boost/regex.hpp",
 		"absl/types/optional.h",
 		"thirdparty/custom.hpp",
+		"acme-linux-sdk/sys/time.h",
+		"acme-w64-mingw32/sys/time.h",
 		"debug/vector.hpp",
 		"debug/map.hpp",
 		"debug/logger.h",
@@ -562,6 +579,7 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <tr1/unordered_map.h>
 #include <tr1/unordered_set.h>
 #include <x86_64-linux-gnu/sys/time.h>
+#include <x86_64-w64-mingw32/sys/time.h>
 #include <linux/netfilter/nfnetlink.h>
 #include <bits/types/struct_timespec.h>
 #include <experimental/./optional>
@@ -583,22 +601,29 @@ int main() { return 0; }
 	}
 }
 
-func TestMapIncludeToDependencyUsesCompileDatabaseProvenance(t *testing.T) {
+func TestMapIncludeToDependencyUsesTrustedCompileDatabaseProvenance(t *testing.T) {
 	repo := t.TempDir()
 	vendorRoot := filepath.Join(t.TempDir(), "z-vendor", "include")
-	systemRoot := filepath.Join(t.TempDir(), "a-system", "include", "c++", "13")
-	sdkRoot := filepath.Join(t.TempDir(), "sdk", "usr", "include")
+	quoteRoot := filepath.Join(t.TempDir(), "quote", "include")
+	compilerRoot := filepath.Join(t.TempDir(), "toolchain", "include", "c++", "13")
+	duplicateCompilerRoot := filepath.Join(t.TempDir(), "duplicate", "include", "c++", "13")
+	untrustedSystemRoot := filepath.Join(t.TempDir(), "acme-sdk", "include")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include <debug/map>
+#include <parallel/queue.h>
+#include <debug/set.h>
 #include <sys/types.h>
 int main() { return 0; }
 `)
 	testutil.MustWriteFile(t, filepath.Join(vendorRoot, "debug", "map"), "// vendor debug header\n")
-	testutil.MustWriteFile(t, filepath.Join(systemRoot, "debug", "map"), "// compiler debug header\n")
-	testutil.MustWriteFile(t, filepath.Join(sdkRoot, "sys", "types.h"), "// sdk system header\n")
+	testutil.MustWriteFile(t, filepath.Join(quoteRoot, "parallel", "queue.h"), "// quote-only lookalike\n")
+	testutil.MustWriteFile(t, filepath.Join(compilerRoot, "debug", "map"), "// compiler debug header\n")
+	testutil.MustWriteFile(t, filepath.Join(compilerRoot, "parallel", "queue.h"), "// compiler parallel header\n")
+	testutil.MustWriteFile(t, filepath.Join(duplicateCompilerRoot, "debug", "set.h"), "// duplicate compiler header\n")
+	testutil.MustWriteFile(t, filepath.Join(untrustedSystemRoot, "sys", "types.h"), "// third-party sdk lookalike\n")
 	sourceRel := filepath.ToSlash(filepath.Join("src", testMainCPPFileName))
 	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
-  {"directory":".","file":%q,"arguments":["c++","-I",%q,"-isystem",%q,"-isystem",%q,"-c",%q]}
-]`, sourceRel, vendorRoot, systemRoot, sdkRoot, sourceRel))
+  {"directory":".","file":%q,"arguments":["c++","-isystem",%q,"-I",%q,"-iquote",%q,"-I",%q,"-isystem",%q,"-isystem",%q,"-c",%q]}
+]`, sourceRel, compilerRoot, vendorRoot, quoteRoot, duplicateCompilerRoot, duplicateCompilerRoot, untrustedSystemRoot, sourceRel))
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
 		RepoPath: repo,
@@ -609,9 +634,12 @@ int main() { return 0; }
 	}
 	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
 		"debug": 1,
+		"sys":   1,
 	})
-	if dependencyExportCount(reportData.Dependencies, "sys") != 0 {
-		t.Fatalf("expected -isystem sys/types.h to be suppressed, got %#v", reportData.Dependencies)
+	for _, suppressed := range []string{"parallel"} {
+		if dependencyExportCount(reportData.Dependencies, suppressed) != 0 {
+			t.Fatalf("expected %s to be suppressed by trusted compiler provenance, got %#v", suppressed, reportData.Dependencies)
+		}
 	}
 }
 
@@ -628,6 +656,8 @@ func TestAnalyseTopNReportsNonCanonicalQualifiedLookalikes(t *testing.T) {
 #include <Ext/pb_ds/assoc_container.hpp>
 #include <Parallel/base.h>
 #include <TR1/complex.h>
+#include <acme-linux-sdk/sys/time.h>
+#include <acme-w64-mingw32/sys/time.h>
 int main() { return 0; }
 `)
 
@@ -640,11 +670,13 @@ int main() { return 0; }
 	}
 
 	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
-		"debug":        2,
-		"experimental": 2,
-		"ext":          3,
-		"parallel":     3,
-		"tr1":          1,
+		"debug":            2,
+		"experimental":     2,
+		"ext":              3,
+		"parallel":         3,
+		"tr1":              1,
+		"acme-linux-sdk":   1,
+		"acme-w64-mingw32": 1,
 	})
 }
 

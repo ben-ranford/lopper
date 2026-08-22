@@ -169,7 +169,12 @@ func recordCompileIncludes(includeDirSet map[string]struct{}, includeSearchPathS
 		}
 		includeDirSet[includePath.Path] = struct{}{}
 		existing, ok := includeSearchPathSet[includePath.Path]
-		if !ok || (!existing.System && includePath.System) {
+		switch {
+		case !ok:
+			includeSearchPathSet[includePath.Path] = includePath
+		case includePath.System && !existing.System:
+			includeSearchPathSet[includePath.Path] = includePath
+		case existing.QuoteOnly && !includePath.QuoteOnly:
 			includeSearchPathSet[includePath.Path] = includePath
 		}
 	}
@@ -206,7 +211,6 @@ func extractIncludeDirs(args []string, baseDir string) []string {
 }
 
 func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPath {
-	seen := make(map[string]struct{})
 	items := make([]includeSearchPath, 0)
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
@@ -219,16 +223,16 @@ func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPat
 				continue
 			}
 			i++
-			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, arg == iquoteFlag, &items)
 		case strings.HasPrefix(arg, includeFlag) && len(arg) > len(includeFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, false, &items)
 		case strings.HasPrefix(arg, isystemFlag) && len(arg) > len(isystemFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, false, &items)
 		case strings.HasPrefix(arg, iquoteFlag) && len(arg) > len(iquoteFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, true, &items)
 		}
 	}
-	return items
+	return normalizeCompileSearchPaths(items)
 }
 
 func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
@@ -243,35 +247,68 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 	*items = append(*items, path)
 }
 
-func addIncludeSearchPath(path string, system bool, seen map[string]struct{}, items *[]includeSearchPath) {
+func addIncludeSearchPath(path string, system, quoteOnly bool, items *[]includeSearchPath) {
 	if path == "" {
 		return
 	}
 	path = filepath.Clean(path)
-	if _, ok := seen[path]; ok {
-		return
+	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})
+}
+
+func normalizeCompileSearchPaths(paths []includeSearchPath) []includeSearchPath {
+	systemPaths := make(map[string]struct{})
+	for _, includePath := range paths {
+		if includePath.System {
+			systemPaths[includePath.Path] = struct{}{}
+		}
 	}
-	seen[path] = struct{}{}
-	*items = append(*items, includeSearchPath{Path: path, System: system, ProvenanceKnown: true})
+	result := make([]includeSearchPath, 0, len(paths))
+	seenQuote := make(map[string]struct{})
+	seenUser := make(map[string]struct{})
+	seenSystem := make(map[string]struct{})
+	for _, includePath := range paths {
+		if includePath.Path == "" || !includePath.QuoteOnly {
+			continue
+		}
+		if _, ok := seenQuote[includePath.Path]; ok {
+			continue
+		}
+		seenQuote[includePath.Path] = struct{}{}
+		result = append(result, includePath)
+	}
+	for _, includePath := range paths {
+		if includePath.Path == "" || includePath.QuoteOnly || includePath.System {
+			continue
+		}
+		if _, existsAsSystem := systemPaths[includePath.Path]; existsAsSystem {
+			continue
+		}
+		if _, ok := seenUser[includePath.Path]; ok {
+			continue
+		}
+		seenUser[includePath.Path] = struct{}{}
+		result = append(result, includePath)
+	}
+	for _, includePath := range paths {
+		if includePath.Path == "" || !includePath.System {
+			continue
+		}
+		if _, ok := seenSystem[includePath.Path]; ok {
+			continue
+		}
+		seenSystem[includePath.Path] = struct{}{}
+		result = append(result, includePath)
+	}
+	return result
 }
 
 func mergeIncludeSearchPaths(existing, next []includeSearchPath) []includeSearchPath {
 	if len(existing) == 0 {
 		return append([]includeSearchPath(nil), next...)
 	}
-	seen := make(map[string]struct{}, len(existing)+len(next))
 	merged := append([]includeSearchPath(nil), existing...)
-	for _, item := range existing {
-		seen[item.Path] = struct{}{}
-	}
-	for _, item := range next {
-		if _, ok := seen[item.Path]; ok {
-			continue
-		}
-		seen[item.Path] = struct{}{}
-		merged = append(merged, item)
-	}
-	return merged
+	merged = append(merged, next...)
+	return normalizeCompileSearchPaths(merged)
 }
 
 func sortedIncludeSearchPaths(paths map[string]includeSearchPath) []includeSearchPath {
