@@ -54,7 +54,7 @@ func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targ
 		return fmt.Errorf("windows no-replace publish requires parent-relative names: %s -> %s", tempRel, targetRel)
 	}
 
-	parentFile, err := openWindowsDirectoryNoFollow(rootName)
+	parentFile, err := openWindowsDirectory(rootName)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func windowsNoReplaceRename(rootName string, rootInfo fs.FileInfo, tempRel, targ
 	return ntRenameNoReplace(syscall.Handle(tempFile.Fd()), syscall.Handle(parentFile.Fd()), targetRel)
 }
 
-func openWindowsDirectoryNoFollow(path string) (*os.File, error) {
+func openWindowsDirectory(path string) (*os.File, error) {
 	pathp, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
@@ -100,7 +100,7 @@ func openWindowsDirectoryNoFollow(path string) (*os.File, error) {
 		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
 		nil,
 		syscall.OPEN_EXISTING,
-		syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT,
+		syscall.FILE_FLAG_BACKUP_SEMANTICS,
 		0,
 	)
 	if err != nil {
