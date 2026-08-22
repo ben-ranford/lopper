@@ -157,32 +157,41 @@ func (s *goModModuleScanner) scan() (string, error) {
 	for {
 		b, err := s.readByte()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if s.inBlockComment {
-					s.invalid = true
-				} else {
-					s.finishLine()
-				}
-				if s.invalid || s.blockDirective != "" {
-					return "", nil
-				}
-				return s.modulePath, nil
-			}
-			if errors.Is(err, errGoModModuleScanTooLarge) {
-				return "", nil
-			}
-			return "", err
+			return s.finishScanWithReadError(err)
 		}
 		if err := s.consumeByte(b); err != nil {
-			if errors.Is(err, errGoModModuleScanTooLarge) {
-				return "", nil
-			}
-			return "", err
+			return "", suppressGoModModuleScanLimit(err)
 		}
 		if s.invalid {
 			return "", nil
 		}
 	}
+}
+
+func (s *goModModuleScanner) finishScanWithReadError(err error) (string, error) {
+	if errors.Is(err, io.EOF) {
+		return s.finishScanAtEOF(), nil
+	}
+	return "", suppressGoModModuleScanLimit(err)
+}
+
+func (s *goModModuleScanner) finishScanAtEOF() string {
+	if s.inBlockComment {
+		s.invalid = true
+	} else {
+		s.finishLine()
+	}
+	if s.invalid || s.blockDirective != "" {
+		return ""
+	}
+	return s.modulePath
+}
+
+func suppressGoModModuleScanLimit(err error) error {
+	if errors.Is(err, errGoModModuleScanTooLarge) {
+		return nil
+	}
+	return err
 }
 
 func (s *goModModuleScanner) readByte() (byte, error) {
