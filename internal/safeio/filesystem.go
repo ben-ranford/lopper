@@ -554,16 +554,65 @@ func (r *osRoot) Rename(oldName, newName string) error {
 	return r.root.Rename(oldName, newName)
 }
 
-func (r *osRoot) RenameNoReplace(oldName, newName string) error {
-	oldRel, err := resolveRelativeTarget(oldName, rejectRootTarget)
+func (r *osRoot) RenameNoReplace(oldName, newName string) (returnErr error) {
+	oldParent, oldBase, err := resolveRenameNoReplaceTarget(oldName)
 	if err != nil {
 		return err
 	}
-	newRel, err := resolveRelativeTarget(newName, rejectRootTarget)
+	newParent, newBase, err := resolveRenameNoReplaceTarget(newName)
 	if err != nil {
 		return err
 	}
-	return renameNoReplaceInRoot(r, oldRel, newRel)
+
+	oldParentRoot, closeOldParent, err := r.openRenameNoReplaceParent(oldParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeOldParent(returnErr)
+	}()
+	newParentRoot, closeNewParent, err := r.openRenameNoReplaceParent(newParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeNewParent(returnErr)
+	}()
+
+	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newBase)
+}
+
+func resolveRenameNoReplaceTarget(name string) (string, string, error) {
+	rel, err := resolveRelativeTarget(name, rejectRootTarget)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Dir(rel), filepath.Base(rel), nil
+}
+
+func (r *osRoot) openRenameNoReplaceParent(parent string) (*osRoot, func(error) error, error) {
+	if parent == "." {
+		return r, func(err error) error { return err }, nil
+	}
+
+	_, parts := splitPinnedPath(parent)
+	opened := make([]Root, 0, len(parts))
+	current := Root(r)
+	currentPath := ""
+	for _, part := range parts {
+		currentPath = filepath.Join(currentPath, part)
+		next, err := openRootChildNoFollow(current, part, currentPath)
+		if err != nil {
+			return nil, nil, closeRootsWithError(opened, err)
+		}
+		opened = append(opened, next)
+		current = next
+	}
+
+	parentRoot := current.(*osRoot)
+	return parentRoot, func(err error) error {
+		return closeRootsWithError(opened, err)
+	}, nil
 }
 
 func RenameNoReplace(root Root, oldName, newName string) error {

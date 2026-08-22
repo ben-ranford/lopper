@@ -9,13 +9,21 @@ import (
 	"unsafe"
 )
 
-func renameNoReplaceInRootSyscall(root *osRoot, oldName, newName, op string, sysno, flags uintptr) (returnErr error) {
-	dir, err := root.root.Open(".")
+func renameNoReplaceBetweenRootsSyscall(oldRoot, newRoot *osRoot, oldName, newName, op string, sysno, flags uintptr) (returnErr error) {
+	oldDir, err := oldRoot.root.Open(".")
 	if err != nil {
 		return err
 	}
 	defer func() {
-		returnErr = errors.Join(returnErr, dir.Close())
+		returnErr = errors.Join(returnErr, oldDir.Close())
+	}()
+
+	newDir, err := newRoot.root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, newDir.Close())
 	}()
 
 	oldPtr, err := syscall.BytePtrFromString(oldName)
@@ -26,15 +34,25 @@ func renameNoReplaceInRootSyscall(root *osRoot, oldName, newName, op string, sys
 	if err != nil {
 		return err
 	}
-	conn, err := dir.SyscallConn()
+	oldConn, err := oldDir.SyscallConn()
+	if err != nil {
+		return err
+	}
+	newConn, err := newDir.SyscallConn()
 	if err != nil {
 		return err
 	}
 	var errno syscall.Errno
-	if err := conn.Control(func(fd uintptr) {
-		_, _, errno = syscall.Syscall6(sysno, fd, uintptr(unsafe.Pointer(oldPtr)), fd, uintptr(unsafe.Pointer(newPtr)), flags, 0)
+	var controlErr error
+	if err := oldConn.Control(func(oldFD uintptr) {
+		controlErr = newConn.Control(func(newFD uintptr) {
+			_, _, errno = syscall.Syscall6(sysno, oldFD, uintptr(unsafe.Pointer(oldPtr)), newFD, uintptr(unsafe.Pointer(newPtr)), flags, 0)
+		})
 	}); err != nil {
 		return err
+	}
+	if controlErr != nil {
+		return controlErr
 	}
 	if errno != 0 {
 		return &os.LinkError{Op: op, Old: oldName, New: newName, Err: errno}
