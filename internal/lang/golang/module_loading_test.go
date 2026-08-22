@@ -132,3 +132,32 @@ func TestOversizedRootGoModKeepsLongSupportedFallbackDirectives(t *testing.T) {
 		})
 	}
 }
+
+func TestOversizedRootGoModKeepsQuotedTargetAfterLongUnquotedReplacementSource(t *testing.T) {
+	for name, target := range map[string]string{
+		"formfeed inside quotes":              `"./local` + "\f" + `dir"`,
+		"escaped quote before comment marker": `"./local\"//dir"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				"module example.com/root",
+				"replace example.com/"+strings.Repeat("x", 70*1024)+" => "+target,
+			)
+
+			requireOversizedRootModulePath(t, repo, "module path extraction with quoted target after long unquoted replacement source")
+		})
+	}
+}
+
+func TestOversizedRootGoModKeepsLongModuleBlockPath(t *testing.T) {
+	repo := t.TempDir()
+	modulePath := "example.com/" + strings.Repeat("x", 70*1024)
+	writeOversizedRootGoModLines(t, repo,
+		"module (",
+		modulePath,
+		")",
+	)
+
+	requireOversizedRootModulePathMatch(t, repo, modulePath, "module path extraction with long module block path")
+}

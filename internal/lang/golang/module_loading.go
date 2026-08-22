@@ -164,6 +164,9 @@ type goModModuleScanner struct {
 	longQuotedSuffix    strings.Builder
 	longUnquotedStart   int
 	longUnquotedLine    strings.Builder
+	longUnquotedInQuote bool
+	longUnquotedQuote   byte
+	longUnquotedEscaped bool
 	inQuotedString      bool
 	quoteByte           byte
 	quoteEscaped        bool
@@ -232,6 +235,10 @@ func (s *goModModuleScanner) consumeByte(b byte) error {
 	}
 	if s.inQuotedString {
 		s.consumeQuotedStringByte(b)
+		return nil
+	}
+	if s.longUnquotedInQuote {
+		s.consumeLongUnquotedQuotedByte(b)
 		return nil
 	}
 	if b == '\n' {
@@ -305,11 +312,25 @@ func (s *goModModuleScanner) consumeCodeByte(b byte) error {
 		return s.consumeLongQuotedLineSuffix(b)
 	}
 	if s.lineTooLarge {
-		s.appendLineByte(b)
-		return nil
+		return s.consumeLongUnquotedLineByte(b)
 	}
 	if b == '"' || b == '`' {
 		s.startQuotedString(b)
+		return nil
+	}
+	if b == '/' {
+		consumed, err := s.tryStartComment()
+		if consumed || err != nil {
+			return err
+		}
+	}
+	s.appendLineByte(b)
+	return nil
+}
+
+func (s *goModModuleScanner) consumeLongUnquotedLineByte(b byte) error {
+	if b == '"' || b == '`' {
+		s.startLongUnquotedQuotedString(b)
 		return nil
 	}
 	if b == '/' {
@@ -362,11 +383,52 @@ func (s *goModModuleScanner) startQuotedString(quote byte) {
 	s.appendRawLineByte(quote)
 }
 
+func (s *goModModuleScanner) startLongUnquotedQuotedString(quote byte) {
+	s.longUnquotedInQuote = true
+	s.longUnquotedQuote = quote
+	s.longUnquotedEscaped = false
+	s.appendLongUnquotedLineByte(quote)
+}
+
 func (s *goModModuleScanner) startLongQuotedSuffixQuotedString(quote byte) {
 	s.suffixInQuoted = true
 	s.suffixQuoteByte = quote
 	s.suffixQuoteEscaped = false
 	s.appendLongQuotedSuffixByte(quote)
+}
+
+func (s *goModModuleScanner) consumeLongUnquotedQuotedByte(b byte) {
+	if b == '\n' {
+		s.lineInvalid = true
+		s.longUnquotedInQuote = false
+		s.longUnquotedQuote = 0
+		s.longUnquotedEscaped = false
+		s.finishLine()
+		return
+	}
+	if s.longUnquotedQuote == '`' {
+		s.appendLongUnquotedLineByte(b)
+		if b == '`' {
+			s.longUnquotedInQuote = false
+			s.longUnquotedQuote = 0
+		}
+		return
+	}
+	if s.longUnquotedEscaped {
+		s.appendLongUnquotedLineByte(b)
+		s.longUnquotedEscaped = false
+		return
+	}
+	if b == '\\' {
+		s.appendLongUnquotedLineByte(b)
+		s.longUnquotedEscaped = true
+		return
+	}
+	s.appendLongUnquotedLineByte(b)
+	if b == s.longUnquotedQuote {
+		s.longUnquotedInQuote = false
+		s.longUnquotedQuote = 0
+	}
 }
 
 func (s *goModModuleScanner) consumeLongQuotedQuotedSuffixByte(b byte) {
@@ -546,6 +608,9 @@ func (s *goModModuleScanner) finishLine() {
 	s.longQuotedSuffix.Reset()
 	s.longUnquotedStart = 0
 	s.longUnquotedLine.Reset()
+	s.longUnquotedInQuote = false
+	s.longUnquotedQuote = 0
+	s.longUnquotedEscaped = false
 	s.suffixInQuoted = false
 	s.suffixQuoteByte = 0
 	s.suffixQuoteEscaped = false
@@ -606,8 +671,12 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, in
 
 func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, tooLargeInQuote, quoteClosed bool) {
 	lineText = trimGoModDirectiveSpace(lineText)
-	if lineText == "" || s.blockDirective == "module" {
+	if lineText == "" {
 		s.invalid = true
+		return
+	}
+	if s.blockDirective == "module" {
+		s.consumeTooLargeGoModModuleBlockLine(lineText, tooLargeInQuote, quoteClosed)
 		return
 	}
 	if s.blockDirective != "" {
@@ -620,6 +689,15 @@ func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, 
 		return
 	}
 	s.invalid = true
+}
+
+func (s *goModModuleScanner) consumeTooLargeGoModModuleBlockLine(lineText string, tooLargeInQuote, quoteClosed bool) {
+	recovered, ok := s.recoverLongGoModDirectiveLine(lineText, tooLargeInQuote, quoteClosed)
+	if !ok {
+		s.invalid = true
+		return
+	}
+	s.consumeGoModModuleLine(goModModuleDirectivePrefix + recovered)
 }
 
 func isValidLongGoModDirective(directive string) bool {

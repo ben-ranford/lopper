@@ -1,6 +1,7 @@
 package golang
 
 import (
+	"bufio"
 	"errors"
 	"strings"
 	"testing"
@@ -634,6 +635,49 @@ func requireQuotedStringAndRecoveryGuardsFailClosed(t *testing.T) {
 	}
 	if !suffixQuotedNewline.invalid {
 		t.Fatalf("expected quoted suffix newline to fail closed")
+	}
+
+	longUnquotedLineComment := goModModuleScanner{
+		buffered: bufio.NewReaderSize(strings.NewReader("/ comment\n"), 16),
+	}
+	if err := longUnquotedLineComment.consumeLongUnquotedLineByte('/'); err != nil {
+		t.Fatalf("consumeLongUnquotedLineByte line comment: %v", err)
+	}
+	if !longUnquotedLineComment.inLineComment || longUnquotedLineComment.longUnquotedLine.Len() != 0 {
+		t.Fatalf("expected long unquoted line comment to start without appending slash, got %#v", longUnquotedLineComment)
+	}
+
+	longUnquotedRawQuoted := goModModuleScanner{
+		longUnquotedInQuote: true,
+		longUnquotedQuote:   '`',
+	}
+	longUnquotedRawQuoted.consumeLongUnquotedQuotedByte('x')
+	longUnquotedRawQuoted.consumeLongUnquotedQuotedByte('`')
+	if longUnquotedRawQuoted.longUnquotedInQuote || longUnquotedRawQuoted.longUnquotedQuote != 0 || longUnquotedRawQuoted.longUnquotedLine.String() != "x`" {
+		t.Fatalf("expected long unquoted raw quote close to exit quoted mode, got %#v", longUnquotedRawQuoted)
+	}
+
+	longUnquotedEscapedQuote := goModModuleScanner{
+		longUnquotedInQuote: true,
+		longUnquotedQuote:   '"',
+	}
+	longUnquotedEscapedQuote.consumeLongUnquotedQuotedByte('\\')
+	longUnquotedEscapedQuote.consumeLongUnquotedQuotedByte('"')
+	if !longUnquotedEscapedQuote.longUnquotedInQuote || longUnquotedEscapedQuote.longUnquotedEscaped {
+		t.Fatalf("expected escaped quote to stay inside long unquoted quoted mode, got %#v", longUnquotedEscapedQuote)
+	}
+	longUnquotedEscapedQuote.consumeLongUnquotedQuotedByte('"')
+	if longUnquotedEscapedQuote.longUnquotedInQuote || longUnquotedEscapedQuote.longUnquotedQuote != 0 || longUnquotedEscapedQuote.longUnquotedLine.String() != `\""` {
+		t.Fatalf("expected following quote to close long unquoted quoted mode, got %#v", longUnquotedEscapedQuote)
+	}
+
+	longUnquotedQuotedNewline := goModModuleScanner{
+		longUnquotedInQuote: true,
+		longUnquotedQuote:   '"',
+	}
+	longUnquotedQuotedNewline.consumeLongUnquotedQuotedByte('\n')
+	if !longUnquotedQuotedNewline.invalid || longUnquotedQuotedNewline.longUnquotedInQuote || longUnquotedQuotedNewline.longUnquotedQuote != 0 {
+		t.Fatalf("expected long unquoted quoted newline to fail closed, got %#v", longUnquotedQuotedNewline)
 	}
 
 	guardedUnquoted := goModModuleScanner{lineInvalid: true}
