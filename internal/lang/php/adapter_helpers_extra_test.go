@@ -959,6 +959,29 @@ func TestParseNamespaceReferencesKeepsSameLineReferenceAfterUseImport(t *testing
 	}
 }
 
+func TestParsePHPImportsKeepsBracketedNamespaceUseAsDeclaration(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte(helpersPHPHeader +
+		"namespace App {\n" +
+		"    use \\Vendor\\Package\\FeatureTrait;\n" +
+		"}\n")
+
+	parsed := parsePHPImports(content, "x.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected one namespace import declaration, got %#v", parsed.imports)
+	}
+	if parsed.imports[0].Wildcard {
+		t.Fatalf("expected bracketed namespace use to remain declaration usage, got %#v", parsed.imports[0])
+	}
+	usage := shared.CountUsage(content, parsed.imports)
+	if usage["FeatureTrait"] != 0 {
+		t.Fatalf("expected unused namespace import declaration, got usage=%#v imports=%#v", usage, parsed.imports)
+	}
+}
+
 func TestParseNamespaceReferencesDoesNotLetUseLinesExhaustReferenceLimit(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	var content strings.Builder
@@ -1382,7 +1405,7 @@ func deepNamespaceForTest(prefix string, totalSegments int) string {
 	return builder.String()
 }
 
-func exactSegmentNamespaceWithHugeSegmentForTest(totalSegments int, hugeSegmentBytes int) string {
+func exactSegmentNamespaceWithHugeSegmentForTest(totalSegments, hugeSegmentBytes int) string {
 	if totalSegments < 2 {
 		totalSegments = 2
 	}

@@ -278,6 +278,49 @@ $callback = function ()
 	}
 }
 
+func TestPHPAdapterCountsClassBodyTraitUseAsActiveDependency(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+namespace App;
+
+final class Service
+{
+    use \Vendor\Package\FeatureTrait;
+}
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 || dep.UsedPercent != 100 {
+		t.Fatalf("expected trait use to count as full dependency usage, report=%#v", dep)
+	}
+	if len(dep.UsedImports) != 1 || dep.UsedImports[0].Module != `Vendor\Package\FeatureTrait` {
+		t.Fatalf("expected trait use in used imports, got %#v", dep.UsedImports)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("did not expect unused imports for active trait use, got %#v", dep.UnusedImports)
+	}
+	for _, rec := range dep.Recommendations {
+		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
+			t.Fatalf("did not expect dependency removal or low-usage recommendation for trait use, got %#v", dep.Recommendations)
+		}
+	}
+	if containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("did not expect no-import warning for active trait use: %#v", reportData.Warnings)
+	}
+}
+
 func TestPHPAdapterIgnoresNamespaceDeclarationAsDependencyUsage(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"

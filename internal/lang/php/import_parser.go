@@ -36,6 +36,7 @@ var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+((?:(?:fun
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
 var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)*\s*(?:;|\{)`)
 var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
+var classLikeDeclarationBeforeBracePattern = regexp.MustCompile(`(?is)\b(?:class|interface|trait|enum)\b[^;{}]*$`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
 
 func parseImports(content []byte, filePath string, resolver composerResolver) ([]importBinding, map[string]int, int) {
@@ -66,7 +67,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		}
 		statement := strings.TrimSpace(text[match[2]:match[3]])
 		line := lineIndex.lineNumberAt(match[2])
-		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementWithPartLimit(statement, filePath, line, resolver, remainingUseParts)
+		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, text, match[0])
 		if bindingLimitHit {
 			result.useBindingLimitHit = true
 		}
@@ -90,6 +91,17 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	result.namespaceReferenceLimitHit = namespaceResult.limitHit
 	result.namespaceResolutionLimitHit = result.namespaceResolutionLimitHit || namespaceResult.namespaceResolutionLimitHit
 	return result
+}
+
+func parseUseStatementByContext(statement, filePath string, line int, resolver composerResolver, partLimit int, text string, offset int) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
+	if isClassBodyUseStatement(text, offset) {
+		bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit := parseFlatUseStatement(statement, filePath, line, resolver, partLimit)
+		for i := range bindings {
+			bindings[i].Wildcard = true
+		}
+		return bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit
+	}
+	return parseUseStatementWithPartLimit(statement, filePath, line, resolver, partLimit)
 }
 
 func parseNamespaceReferences(content []byte, filePath string, resolver composerResolver) ([]importBinding, int) {
@@ -181,6 +193,48 @@ func isNamespaceDeclarationCandidate(text string, start int) bool {
 	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
 	prefix := text[lineStart:start]
 	return namespaceDeclPrefixPattern.MatchString(prefix)
+}
+
+type phpBraceFrame struct {
+	classLike bool
+}
+
+func isClassBodyUseStatement(text string, offset int) bool {
+	if offset <= 0 {
+		return false
+	}
+	if offset > len(text) {
+		offset = len(text)
+	}
+	frames := make([]phpBraceFrame, 0, 8)
+	for i := 0; i < offset; i++ {
+		switch text[i] {
+		case '{':
+			frames = append(frames, phpBraceFrame{classLike: isClassLikeDeclarationBeforeBrace(text, i)})
+		case '}':
+			if len(frames) > 0 {
+				frames = frames[:len(frames)-1]
+			}
+		}
+	}
+	return len(frames) > 0 && frames[len(frames)-1].classLike
+}
+
+func isClassLikeDeclarationBeforeBrace(text string, braceOffset int) bool {
+	const maxDeclarationContextBytes = 2048
+	if braceOffset <= 0 {
+		return false
+	}
+	start := strings.LastIndexAny(text[:braceOffset], ";{}")
+	if start < 0 {
+		start = 0
+	} else {
+		start++
+	}
+	if braceOffset-start > maxDeclarationContextBytes {
+		start = braceOffset - maxDeclarationContextBytes
+	}
+	return classLikeDeclarationBeforeBracePattern.MatchString(text[start:braceOffset])
 }
 
 func maskMatchedRanges(text string, groups ...[][]int) string {

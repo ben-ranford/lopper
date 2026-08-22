@@ -16,7 +16,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
-func reachableLibReport(repoPath string, version string) report.Report {
+func reachableLibReport(repoPath, version string) report.Report {
 	dep := report.DependencyReport{
 		Language:          "js-ts",
 		Name:              "reachable-lib",
@@ -34,7 +34,7 @@ func reachableLibReport(repoPath string, version string) report.Report {
 	}
 }
 
-func enforcedPHPCoverageRequest(repo string, language string) Request {
+func enforcedPHPCoverageRequest(repo, language string) Request {
 	req := DefaultRequest()
 	req.Mode = ModeAnalyse
 	req.RepoPath = repo
