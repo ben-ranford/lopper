@@ -441,6 +441,18 @@ jobs:
               '',
               'See the workflow logs for the failure details.',
             ].join('\n');
+            const ensurePullStillOpen = async () => {
+              const { data: pull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pull.state === 'closed' && (pull.merged === true || pull.merged_at != null)) {
+                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
+                return false;
+              }
+              return true;
+            };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -461,6 +473,9 @@ jobs:
               process.env.ENFORCEMENT_FAILED === 'true';
             if (!shouldComment) {
               for (const duplicate of existing) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -475,6 +490,9 @@ jobs:
                 ? fs.readFileSync(bodyPath, 'utf8').trim()
                 : fallbackBody;
             if (existing.length > 0) {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -482,6 +500,9 @@ jobs:
                 body,
               });
               for (const duplicate of existing.slice(1)) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -489,6 +510,9 @@ jobs:
                 });
               }
             } else {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -521,6 +545,18 @@ jobs:
               '',
               'See the workflow logs for the failure details.',
             ].join('\n');
+            const ensurePullStillOpen = async () => {
+              const { data: pull } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+              if (pull.state === 'closed' && (pull.merged === true || pull.merged_at != null)) {
+                core.info(`Pull request #${prNumber} was merged before comment mutation; skipping.`);
+                return false;
+              }
+              return true;
+            };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -538,6 +574,9 @@ jobs:
 
             if (process.env.RELEASE_PR !== 'true') {
               for (const duplicate of existing) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -553,6 +592,9 @@ jobs:
                 : fallbackBody;
 
             if (existing.length > 0) {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -560,6 +602,9 @@ jobs:
                 body,
               });
               for (const duplicate of existing.slice(1)) {
+                if (!(await ensurePullStillOpen())) {
+                  return;
+                }
                 await github.rest.issues.deleteComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -567,6 +612,9 @@ jobs:
                 });
               }
             } else {
+              if (!(await ensurePullStillOpen())) {
+                return;
+              }
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

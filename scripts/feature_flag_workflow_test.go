@@ -296,6 +296,94 @@ func TestFeatureFlagTrustedCommentRenderingRendersSanitizedMarkdown(t *testing.T
 	}
 }
 
+func TestFeatureFlagCommentPublishersSkipMutationWhenPullMergesAfterResolver(t *testing.T) {
+	t.Parallel()
+
+	tests := []featureFlagPublisherCase{
+		{
+			name: "feature enforcement comment",
+			step: "Sync feature flag enforcement comment on PR",
+			env: map[string]string{
+				"FEATURE_PR":         "true",
+				"ENFORCEMENT_FAILED": "false",
+			},
+		},
+		{
+			name: "release guidance comment",
+			step: "Sync release feature guidance comment on PR",
+			env:  map[string]string{"RELEASE_PR": "true"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
+				"env":          tt.env,
+				"pullSequence": []map[string]any{featureFlagMergedPull(true, "")},
+				"comments":     []map[string]any{},
+			})
+			if !result.OK {
+				t.Fatalf("publisher rejected fixture: %s", result.Error)
+			}
+			if len(result.Mutations) != 0 {
+				t.Fatalf("publisher mutated comments after merge: %#v", result.Mutations)
+			}
+			if got := result.Calls["pulls"]; got != 1 {
+				t.Fatalf("pulls.get calls = %d, want 1 fresh pre-mutation check", got)
+			}
+		})
+	}
+}
+
+func TestFeatureFlagCommentPublishersRecheckBeforeEachDuplicateDeletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []featureFlagPublisherCase{
+		{
+			name:   "feature enforcement duplicate cleanup",
+			step:   "Sync feature flag enforcement comment on PR",
+			marker: "<!-- lopper-feature-flag-enforcement -->",
+			env: map[string]string{
+				"FEATURE_PR":         "false",
+				"ENFORCEMENT_FAILED": "false",
+			},
+		},
+		{
+			name:   "release guidance duplicate cleanup",
+			step:   "Sync release feature guidance comment on PR",
+			marker: "<!-- lopper-feature-flag-release-pr -->",
+			env:    map[string]string{"RELEASE_PR": "false"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
+				"env": tt.env,
+				"pullSequence": []map[string]any{
+					featureFlagPull(7, "open"),
+					featureFlagMergedPull(true, ""),
+				},
+				"comments": []map[string]any{
+					featureFlagBotComment(101, tt.marker),
+					featureFlagBotComment(102, tt.marker),
+				},
+			})
+			if !result.OK {
+				t.Fatalf("publisher rejected fixture: %s", result.Error)
+			}
+			if got, want := strings.Join(result.Mutations, ","), "delete:101"; got != want {
+				t.Fatalf("mutations = %q, want %q", got, want)
+			}
+			if got := result.Calls["pulls"]; got != 2 {
+				t.Fatalf("pulls.get calls = %d, want a fresh check before each attempted deletion", got)
+			}
+		})
+	}
+}
+
 func writeUntrustedCommentSources(t *testing.T, commentDir string, tests []trustedCommentRenderCase) {
 	t.Helper()
 
@@ -427,6 +515,21 @@ type trustedCommentRenderCase struct {
 	title  string
 }
 
+type featureFlagPublisherCase struct {
+	name   string
+	step   string
+	marker string
+	env    map[string]string
+}
+
+type featureFlagPublisherFixtureResult struct {
+	OK        bool           `json:"ok"`
+	Error     string         `json:"error"`
+	Mutations []string       `json:"mutations"`
+	Calls     map[string]int `json:"calls"`
+	Infos     []string       `json:"infos"`
+}
+
 func assertFeatureFlagEnforcementStepCase(t *testing.T, resolver string, tt featureFlagEnforcementStepCase) {
 	t.Helper()
 
@@ -542,6 +645,14 @@ func featureFlagCommentResolverScript(t *testing.T) string {
 	return workflowStepByName(t, workflow.Jobs, "publish-comments", "Resolve triggering pull request and artifact").With["script"]
 }
 
+func featureFlagCommentPublisherScript(t *testing.T, stepName string) string {
+	t.Helper()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &workflow)
+	return workflowStepByName(t, workflow.Jobs, "publish-comments", stepName).With["script"]
+}
+
 func featureFlagWorkflowRun(pulls []map[string]any) map[string]any {
 	return map[string]any{
 		"id":              100,
@@ -611,6 +722,14 @@ func featureFlagPreviewPull() map[string]any {
 	return pull
 }
 
+func featureFlagBotComment(id int, marker string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"body": marker + "\nexisting",
+		"user": map[string]any{"type": "Bot"},
+	}
+}
+
 func assertFeatureFlagMergedPullSkipped(t *testing.T, result featureFlagResolverFixtureResult, tt featureFlagMergedResolverCase) {
 	t.Helper()
 
@@ -639,6 +758,84 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func runFeatureFlagPublisherFixture(t *testing.T, publisher string, fixture map[string]any) featureFlagPublisherFixtureResult {
+	t.Helper()
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("node is required to test the feature flag comment publisher")
+	}
+	fixtureJSON, err := json.Marshal(fixture)
+	if err != nil {
+		t.Fatalf("marshal publisher fixture: %v", err)
+	}
+	const harness = `
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const fixture = JSON.parse(process.env.PUBLISHER_FIXTURE);
+const calls = { comments: 0, pulls: 0 };
+const infos = [];
+const mutations = [];
+const listComments = async () => {};
+const pullSequence = fixture.pullSequence || [];
+const github = {
+  rest: {
+    issues: {
+      listComments,
+      deleteComment: async ({ comment_id }) => { mutations.push('delete:' + comment_id); },
+      updateComment: async ({ comment_id }) => { mutations.push('update:' + comment_id); },
+      createComment: async () => { mutations.push('create'); },
+    },
+    pulls: {
+      get: async () => {
+        const pull = pullSequence[Math.min(calls.pulls, pullSequence.length - 1)];
+        calls.pulls += 1;
+        if (!pull) {
+          throw new Error('fixture has no pull state');
+        }
+        return { data: pull };
+      },
+    },
+  },
+  paginate: async (method) => {
+    if (method !== listComments) {
+      throw new Error('unexpected paginated API method');
+    }
+    calls.comments += 1;
+    return fixture.comments || [];
+  },
+};
+const context = { repo: { owner: 'octo', repo: 'lopper' } };
+const core = { info: (message) => { infos.push(String(message)); } };
+Object.assign(process.env, fixture.env || {});
+process.env.PR_NUMBER = '7';
+(async () => {
+  try {
+    const execute = new AsyncFunction('github', 'context', 'core', 'require', 'process', process.env.PUBLISHER_SCRIPT);
+    await execute(github, context, core, require, process);
+    console.log(JSON.stringify({ ok: true, mutations, calls, infos }));
+  } catch (error) {
+    console.log(JSON.stringify({ ok: false, error: error.message, mutations, calls, infos }));
+  }
+})();
+`
+	command := exec.Command(node, "-e", harness)
+	environment := []string{
+		"PUBLISHER_SCRIPT=" + publisher,
+		"PUBLISHER_FIXTURE=" + string(fixtureJSON),
+	}
+	command.Env = append(os.Environ(), environment...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run publisher fixture: %v\n%s", err, output)
+	}
+
+	var result featureFlagPublisherFixtureResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode publisher fixture result: %v\n%s", err, output)
+	}
+	return result
 }
 
 func runFeatureFlagResolverFixture(t *testing.T, resolver string, fixture map[string]any) featureFlagResolverFixtureResult {
