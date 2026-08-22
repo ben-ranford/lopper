@@ -18,7 +18,8 @@ const (
 	pythonRequirementsTxt = "requirements.txt"
 
 	maxRequirementsTxtBytes     int64 = 1 * 1024 * 1024
-	maxPythonPackagingFileBytes       = 1024 * 1024
+	PackagingReadLimitBytes     int64 = 1024 * 1024
+	maxPythonPackagingFileBytes       = PackagingReadLimitBytes
 )
 
 var pythonRequirementNamePattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)`)
