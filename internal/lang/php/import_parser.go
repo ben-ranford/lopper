@@ -150,24 +150,47 @@ func maskUseStatementRanges(text string) string {
 func maskMatchedRanges(text string, groups ...[][]int) string {
 	var masked []byte
 	for _, matches := range groups {
-		for _, match := range matches {
-			if len(match) != 2 {
-				continue
-			}
-			if len(masked) == 0 {
-				masked = []byte(text)
-			}
-			for i := match[0]; i < match[1]; i++ {
-				if masked[i] != '\n' && masked[i] != '\r' {
-					masked[i] = ' '
-				}
-			}
-		}
+		masked = maskMatchedGroup(text, masked, matches)
 	}
 	if len(masked) == 0 {
 		return text
 	}
 	return string(masked)
+}
+
+func maskMatchedGroup(text string, masked []byte, matches [][]int) []byte {
+	for _, match := range matches {
+		if !isMaskableRange(match) {
+			continue
+		}
+		masked = ensureMaskedText(text, masked)
+		maskByteRange(masked, match[0], match[1])
+	}
+	return masked
+}
+
+func isMaskableRange(match []int) bool {
+	return len(match) == 2
+}
+
+func ensureMaskedText(text string, masked []byte) []byte {
+	if len(masked) != 0 {
+		return masked
+	}
+	return []byte(text)
+}
+
+func maskByteRange(masked []byte, start, end int) {
+	for i := start; i < end; i++ {
+		if isLineBreak(masked[i]) {
+			continue
+		}
+		masked[i] = ' '
+	}
+}
+
+func isLineBreak(ch byte) bool {
+	return ch == '\n' || ch == '\r'
 }
 
 func parseNamespaceReferenceMetadata(text string, match []int) (string, int, string, bool) {
