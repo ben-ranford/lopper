@@ -247,9 +247,7 @@ func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *test
 		t.Fatalf("expected directory identity error, got %v", err)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
-	if replaceOnCall == 1 {
-		assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
-	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 }
 
 func newReplaceableCacheForStoreTest(t *testing.T) (string, *analysisCache, string, string, string) {

@@ -76,7 +76,17 @@ func (r *WriteRoot) WriteFileCreatingParents(targetPath string, data []byte, per
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, writeFileAtRoot)
+}
+
+// WriteFileCreatingParentsAfterParentReady atomically writes a root-relative
+// file after parentReady validates state with the target parent pinned.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady func() error) error {
+	target, err := r.resolveTarget(targetPath)
+	if err != nil {
+		return err
+	}
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, parentReady, writeFileAtRoot)
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -102,7 +112,7 @@ func (r *WriteRoot) WriteFileCreatingParentsIfAbsent(targetPath string, data []b
 	if err != nil {
 		return err
 	}
-	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, writeFileIfAbsentAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, true, parentPerm, nil, writeFileIfAbsentAtRoot)
 }
 
 // WriteFileCreatingParentsAtomicallyIfAbsent atomically publishes a
@@ -148,11 +158,16 @@ func (r *WriteRoot) resolveTarget(targetPath string) (rootedTarget, error) {
 }
 
 func (r *WriteRoot) writeFileAtTarget(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode) error {
-	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, writeFileAtRoot)
+	return r.writeFileToTargetParent(target, data, perm, createParents, parentPerm, nil, writeFileAtRoot)
 }
 
-func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
+func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, perm os.FileMode, createParents bool, parentPerm os.FileMode, parentReady func() error, write func(root Root, target rootedTarget, data []byte, perm os.FileMode) error) (returnErr error) {
 	return r.withTargetParent(target, createParents, parentPerm, func(parent Root, parentTarget rootedTarget) error {
+		if parentReady != nil {
+			if err := parentReady(); err != nil {
+				return err
+			}
+		}
 		return write(parent, parentTarget, data, perm)
 	})
 }

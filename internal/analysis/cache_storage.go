@@ -164,7 +164,9 @@ func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel s
 	if err := c.validateWriteRoot(writeRoot); err != nil {
 		return err
 	}
-	if err := writeRoot.WriteFileCreatingParents(pointerRel, serializedPointer, 0o640, 0o750); err != nil {
+	if err := writeRoot.WriteFileCreatingParentsAfterParentReady(pointerRel, serializedPointer, 0o640, 0o750, func() error {
+		return c.validateWriteRoot(writeRoot)
+	}); err != nil {
 		return err
 	}
 	return c.validateWriteRoot(writeRoot)

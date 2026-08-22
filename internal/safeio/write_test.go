@@ -879,6 +879,80 @@ func TestWriteRootCreatesMissingParentsAndWritesAtomically(t *testing.T) {
 	}
 }
 
+func TestWriteRootCreatesParentsAfterParentReady(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	target := filepath.Join("reports", "nested", writeTestFileName)
+	readyCalls := 0
+
+	err := root.WriteFileCreatingParentsAfterParentReady(target, []byte("hello"), 0o640, 0o750, func() error {
+		readyCalls++
+		if _, statErr := os.Stat(filepath.Join(rootDir, "reports", "nested")); statErr != nil {
+			t.Fatalf("expected parent to be created before parentReady: %v", statErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WriteFileCreatingParentsAfterParentReady returned error: %v", err)
+	}
+	if readyCalls != 1 {
+		t.Fatalf("expected one parentReady call, got %d", readyCalls)
+	}
+	assertFileContent(t, filepath.Join(rootDir, target), "hello")
+}
+
+func TestWriteRootAfterParentReadyErrorPreventsWrite(t *testing.T) {
+	rootDir := t.TempDir()
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+	expectedErr := errors.New("parent no longer valid")
+	target := filepath.Join("reports", writeTestFileName)
+
+	err := root.WriteFileCreatingParentsAfterParentReady(target, []byte("hello"), 0o640, 0o750, func() error {
+		return expectedErr
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected parentReady error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rootDir, target)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
+	}
+}
+
+func TestWriteRootAfterParentReadyRejectsNonRelativeTarget(t *testing.T) {
+	root := openTestWriteRoot(t, t.TempDir(), OpenWriteRoot)
+
+	err := root.WriteFileCreatingParentsAfterParentReady(filepath.Join(t.TempDir(), writeTestFileName), []byte("hello"), 0o640, 0o750, func() error {
+		t.Fatal("parentReady should not run for invalid target")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected absolute target to be rejected")
+	}
+}
+
+func TestWriteRootLstatAndRemove(t *testing.T) {
+	rootDir := t.TempDir()
+	target := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(target, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	root := openTestWriteRoot(t, rootDir, OpenWriteRoot)
+
+	info, err := root.Lstat(writeTestFileName)
+	if err != nil {
+		t.Fatalf("Lstat returned error: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected regular file info, got %v", info.Mode())
+	}
+	if err := root.Remove(writeTestFileName); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected target to be removed, got %v", err)
+	}
+}
+
 func TestWriteRootCreatesMissingParentsAndWritesIfAbsent(t *testing.T) {
 	assertWriteRootCreatesMissingParentsAndWrites(t, "WriteFileCreatingParentsIfAbsent", (*WriteRoot).WriteFileCreatingParentsIfAbsent)
 }
