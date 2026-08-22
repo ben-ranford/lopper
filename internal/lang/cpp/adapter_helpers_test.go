@@ -220,7 +220,9 @@ func TestMapIncludeToDependencyPreservesQualifiedLookalikesOutsideSystemRoots(t 
 	for _, header := range []string{
 		"asm/vendor/sdk.hpp",
 		"asm-generic/vendor/sdk.hpp",
+		"asm-generic/bitops/atomic.h",
 		"backward/hash_map",
+		"linux/netfilter_ipv4/ip_tables.h",
 		"parallel/base.h",
 	} {
 		header := header
@@ -322,6 +324,8 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"tr1/unordered_set.h",
 		"asm/errno.h",
 		"asm-generic/errno.h",
+		"asm-generic/bitops/atomic.h",
+		"linux/netfilter_ipv4/ip_tables.h",
 	} {
 		header := header
 		t.Run(header, func(t *testing.T) {
@@ -459,9 +463,11 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <experimental/filesystem>
 #include <sys/socket.h>
 #include <linux/if.h>
+#include <linux/netfilter_ipv4/ip_tables.h>
 #include <bits/stdc++.h>
 #include <asm/errno.h>
 #include <asm-generic/errno.h>
+#include <asm-generic/bitops/atomic.h>
 #include <parallel/algo.h>
 #include <parallel/algobase.h>
 #include <parallel/base.h>

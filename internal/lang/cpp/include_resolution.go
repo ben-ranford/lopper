@@ -432,10 +432,10 @@ func shouldSuppressQualifiedStdHeader(header, resolvedPath string, resolved bool
 
 func isKnownOSCompilerQualifiedHeader(header string) bool {
 	parts := strings.Split(header, "/")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
 		return false
 	}
-	namespace, leaf := parts[0], parts[1]
+	namespace, leaf := parts[0], parts[len(parts)-1]
 	if leaf == "" {
 		return false
 	}
@@ -443,6 +443,9 @@ func isKnownOSCompilerQualifiedHeader(header string) bool {
 	case "sys", "linux", "asm", "asm-generic":
 		return filepath.Ext(leaf) == ".h"
 	case "bits":
+		if len(parts) != 2 {
+			return false
+		}
 		return filepath.Ext(leaf) == ".h" || leaf == "stdc++.h"
 	default:
 		return false
