@@ -26,6 +26,22 @@ var (
 	_ = writeFileAtRootWithPostWriteCheck
 )
 
+type pinnedReplacementChecks struct {
+	commitReady func() error
+	postWrite   func() error
+}
+
+func newPinnedReplacementChecks(checks []func() error) pinnedReplacementChecks {
+	callbacks := pinnedReplacementChecks{}
+	if len(checks) > 0 {
+		callbacks.commitReady = checks[0]
+	}
+	if len(checks) > 1 {
+		callbacks.postWrite = checks[1]
+	}
+	return callbacks
+}
+
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
 	tempRel, tempFile, err := createAtomicTempFile(root, filepath.Dir(targetRel), perm)
 	if err != nil {
@@ -227,7 +243,9 @@ func writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root Root, targetRe
 	return writeAtomicReplacementWithPinnedTargetAndChecks(root, targetRel, data, perm, replacementFile, allowPermissionFallback, nil, postWrite)
 }
 
-func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool, commitReady, postWrite func() error) (returnErr error) {
+func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool, checks ...func() error) (returnErr error) {
+	callbacks := newPinnedReplacementChecks(checks)
+
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
@@ -237,7 +255,7 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
 				return err
 			}
-			return runPostWriteCheck(postWrite)
+			return runPostWriteCheck(callbacks.postWrite)
 		}
 		return err
 	}
@@ -251,10 +269,10 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 	if err := session.snapshotAndCloseTempFile(); err != nil {
 		return err
 	}
-	if err := session.commit(commitReady); err != nil {
+	if err := session.commit(callbacks.commitReady); err != nil {
 		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 		if fallbackErr == nil {
-			return runPostWriteCheck(postWrite)
+			return runPostWriteCheck(callbacks.postWrite)
 		}
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
@@ -263,11 +281,11 @@ func writeAtomicReplacementWithPinnedTargetAndChecks(root Root, targetRel string
 			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
 				return err
 			}
-			return runPostWriteCheck(postWrite)
+			return runPostWriteCheck(callbacks.postWrite)
 		}
 		return fallbackErr
 	}
-	return session.verifyCommittedTargetAndPostWrite(postWrite)
+	return session.verifyCommittedTargetAndPostWrite(callbacks.postWrite)
 }
 
 func runPostWriteCheck(postWrite func() error) error {
