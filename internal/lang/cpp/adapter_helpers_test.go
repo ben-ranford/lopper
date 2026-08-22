@@ -224,9 +224,7 @@ func TestMapIncludeToDependencyIgnoresRepoHeaderFromIncludeDir(t *testing.T) {
 	}
 }
 
-func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
-	repo := t.TempDir()
-	source := filepath.Join(repo, testMainCPPFileName)
+func TestDependencyFromIncludePath(t *testing.T) {
 	if got := dependencyFromIncludePath("openssl/ssl.h"); got != "openssl" {
 		t.Fatalf("expected openssl, got %q", got)
 	}
@@ -242,37 +240,70 @@ func TestDependencyFromIncludePathAndStdHeader(t *testing.T) {
 	if got := dependencyFromIncludePath("../bad path"); got != "" {
 		t.Fatalf("expected invalid dependency token to map to empty, got %q", got)
 	}
-	if !isLikelyStdHeader("sys/types.h") {
-		t.Fatalf("expected sys/types.h to be std header")
+}
+
+func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, testMainCPPFileName)
+
+	for _, header := range []string{
+		"sys/types.h",
+		"linux/limits.h",
+		"bits/stdc++.h",
+		"experimental/filesystem",
+		"tr1/regex",
+		"ext/algorithm",
+		"parallel/algorithm",
+		"debug/vector",
+		"backward/strstream",
+		"tr2/type_traits",
+		"asm/errno.h",
+		"asm-generic/errno.h",
+	} {
+		header := header
+		t.Run(header, func(t *testing.T) {
+			if !isLikelyStdHeader(header) {
+				t.Fatalf("expected %s to be std header", header)
+			}
+			if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: header, Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
+				t.Fatalf("expected %s to be ignored as std, got dep=%q unresolved=%v", header, dep, unresolved)
+			}
+		})
 	}
-	if !isLikelyStdHeader("experimental/filesystem") {
-		t.Fatalf("expected experimental/filesystem to be std header")
-	}
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "experimental/filesystem", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
-		t.Fatalf("expected experimental/filesystem to be ignored as std, got dep=%q unresolved=%v", dep, unresolved)
-	}
-	if !isLikelyStdHeader("tr1/regex") {
-		t.Fatalf("expected tr1/regex to be std header")
-	}
-	if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: "tr1/regex", Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
-		t.Fatalf("expected tr1/regex to be ignored as std, got dep=%q unresolved=%v", dep, unresolved)
-	}
-	for _, header := range []string{"ext/algorithm", "parallel/algorithm", "debug/vector", "backward/strstream", "tr2/type_traits"} {
-		if !isLikelyStdHeader(header) {
-			t.Fatalf("expected %s to be std header", header)
-		}
-		if dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: header, Delimiter: '<'}, nil, newDependencyCatalog()); dep != "" || unresolved {
-			t.Fatalf("expected %s to be ignored as std, got dep=%q unresolved=%v", header, dep, unresolved)
-		}
-	}
-	if isLikelyStdHeader("boost/regex.hpp") {
-		t.Fatalf("did not expect qualified boost header to be std header")
-	}
-	if isLikelyStdHeader("absl/types/optional.h") {
-		t.Fatalf("did not expect qualified absl header to be std header")
-	}
-	if isLikelyStdHeader("thirdparty/custom.hpp") {
-		t.Fatalf("did not expect thirdparty/custom.hpp to be std header")
+}
+
+func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, testMainCPPFileName)
+
+	for _, header := range []string{
+		"boost/regex.hpp",
+		"absl/types/optional.h",
+		"thirdparty/custom.hpp",
+		"experimental/logger.hpp",
+		"tr1/logger.hpp",
+		"tr2/logger.hpp",
+		"ext/logger.hpp",
+		"parallel/logger.hpp",
+		"debug/logger.hpp",
+		"backward/logger.hpp",
+		"asm/logger.hpp",
+		"asm-generic/logger.hpp",
+	} {
+		header := header
+		t.Run(header, func(t *testing.T) {
+			if isLikelyStdHeader(header) {
+				t.Fatalf("did not expect %s to be std header", header)
+			}
+			want := dependencyFromIncludePath(header)
+			catalog := newDependencyCatalog()
+			catalog.add(want, "test manifest")
+
+			dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: header, Delimiter: '<'}, nil, catalog)
+			if dep != want || unresolved {
+				t.Fatalf("expected third-party header %s to map to %q, got dep=%q unresolved=%v", header, want, dep, unresolved)
+			}
+		})
 	}
 }
 
