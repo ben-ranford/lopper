@@ -716,7 +716,7 @@ func isLikelySystemIncludePath(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		return false
 	}
-	path = strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+	path = filepath.ToSlash(filepath.Clean(path))
 	for _, prefix := range []string{
 		"/usr/include/",
 		"/mingw/include/",
@@ -726,8 +726,24 @@ func isLikelySystemIncludePath(path string) bool {
 			return true
 		}
 	}
-	if strings.Contains(path, "/sdks/") && strings.Contains(path, ".sdk/usr/include/") {
+	lowerPath := strings.ToLower(path)
+	if strings.Contains(lowerPath, "/sdks/") && strings.Contains(lowerPath, ".sdk/usr/include/") {
 		return true
+	}
+	if strings.Contains(lowerPath, ".xctoolchain/usr/lib/clang/") ||
+		strings.Contains(lowerPath, "/library/developer/commandlinetools/usr/lib/clang/") {
+		return true
+	}
+	if isWindowsStyleIncludePath(path) {
+		for _, fragment := range []string{
+			"/mingw/include/",
+			"/mingw64/include/",
+			"/msvc/",
+		} {
+			if strings.Contains(lowerPath, fragment) {
+				return true
+			}
+		}
 	}
 	for _, fragment := range []string{
 		"/include/c++/",
@@ -741,6 +757,12 @@ func isLikelySystemIncludePath(path string) bool {
 		}
 	}
 	return false
+}
+
+func isWindowsStyleIncludePath(path string) bool {
+	return len(path) >= 3 &&
+		((path[1] == ':' && path[2] == '/') ||
+			strings.HasPrefix(path, "//"))
 }
 
 func isKnownCompilerQualifiedStdHeader(header string) bool {

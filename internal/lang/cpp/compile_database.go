@@ -268,7 +268,7 @@ func addIncludeSearchPath(path string, system, quoteOnly bool, items *[]includeS
 }
 
 func isCompilerDefaultSystemIncludeRoot(path string) bool {
-	path = strings.ToLower(filepath.ToSlash(filepath.Clean(strings.TrimSpace(path))))
+	path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
 	if path == "" {
 		return false
 	}
@@ -276,9 +276,13 @@ func isCompilerDefaultSystemIncludeRoot(path string) bool {
 	case "/usr/include", "/mingw/include", "/mingw64/include":
 		return true
 	}
+	switch strings.ToLower(path) {
+	case "/mingw/include", "/mingw64/include":
+		return true
+	}
 	return isDefaultUsrIncludeSubroot(path) ||
 		isDefaultCompilerRuntimeIncludeRoot(path) ||
-		isDefaultAppleSDKIncludeRoot(path)
+		isDefaultAppleSystemIncludeRoot(path)
 }
 
 func isDefaultUsrIncludeSubroot(path string) bool {
@@ -309,14 +313,26 @@ func isDefaultCompilerRuntimeIncludeRoot(path string) bool {
 		"/usr/lib/clang/",
 		"/usr/local/lib/gcc/",
 		"/usr/local/lib/clang/",
-		"/library/developer/commandlinetools/usr/lib/clang/",
 	} {
 		if strings.HasPrefix(path, prefix) {
 			return true
 		}
 	}
 	return (strings.HasPrefix(path, "/opt/homebrew/") || strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/")) &&
-		(strings.Contains(path, "/lib/gcc/") || strings.Contains(path, "/lib/clang/")) ||
+		(strings.Contains(path, "/lib/gcc/") || strings.Contains(path, "/lib/clang/"))
+}
+
+func isDefaultAppleSystemIncludeRoot(path string) bool {
+	path = strings.ToLower(path)
+	return isDefaultAppleCompilerRuntimeIncludeRoot(path) ||
+		isDefaultAppleSDKIncludeRoot(path)
+}
+
+func isDefaultAppleCompilerRuntimeIncludeRoot(path string) bool {
+	if !strings.HasSuffix(path, "/include") && !strings.HasSuffix(path, "/include-fixed") {
+		return false
+	}
+	return strings.HasPrefix(path, "/library/developer/commandlinetools/usr/lib/clang/") ||
 		strings.Contains(path, ".xctoolchain/usr/lib/clang/")
 }
 
