@@ -13,12 +13,14 @@ marker_coverage_prefix="coverage"
 marker_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
 diff_scope=""
+gh_bin="${GH_BIN:-gh}"
+tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
+tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
 
 create_temp_file() {
-	local template="${TMPDIR:-/tmp}/inline-suppressions.XXXXXX"
 	local temp_file=""
 
-	if temp_file="$(mktemp "$template" 2>/dev/null)"; then
+	if temp_file="$(mktemp "${TMPDIR:-/tmp}/inline-suppressions.XXXXXX" 2>/dev/null)"; then
 		printf '%s\n' "$temp_file"
 		return 0
 	fi
@@ -29,6 +31,284 @@ create_temp_file() {
 
 	echo "unable to create temporary file for suppression check" >&2
 	return 1
+}
+
+trim_value() {
+	local value="$1"
+	value="${value#"${value%%[![:space:]]*}"}"
+	value="${value%"${value##*[![:space:]]}"}"
+	printf '%s\n' "$value"
+}
+
+extract_metadata_field() {
+	local content="$1"
+	local value=""
+
+	if [[ "$content" =~ (^|[[:space:];,])($2)[[:space:]]*[:=][[:space:]]*([^;]+) ]]; then
+		value="$(trim_value "${BASH_REMATCH[3]}")"
+	fi
+	printf '%s\n' "$value"
+}
+
+fingerprint_for_match() {
+	local file="$1"
+	local content="$2"
+
+	printf '%s\n%s' "$file" "$content" | shasum -a 256 | awk '{ print $1 }'
+}
+
+source_url_for_match() {
+	local file="$1"
+	local line="$2"
+	local repo="${SUPPRESSION_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+	local server="${GITHUB_SERVER_URL:-https://github.com}"
+	local sha="${GITHUB_SHA:-}"
+
+	if [[ -n "$repo" && -n "$sha" ]]; then
+		printf '%s/%s/blob/%s/%s#L%s\n' "$server" "$repo" "$sha" "$file" "$line"
+		return 0
+	fi
+
+	printf '%s:%s\n' "$file" "$line"
+}
+
+write_tracking_body() {
+	local body_file="$1"
+	local file="$2"
+	local line="$3"
+	local content="$4"
+	local rationale="$5"
+	local owner="$6"
+	local removal_condition="$7"
+	local fingerprint="$8"
+	local location_url
+
+	location_url="$(source_url_for_match "$file" "$line")"
+	{
+		printf '<!-- lopper-inline-suppression:%s -->\n\n' "$fingerprint"
+		printf '## Inline analysis suppression tracking\n\n'
+		printf '%s\n' "- Location: \`${file}:${line}\`"
+		printf '%s\n' "- Source: ${location_url}"
+		printf '%s\n' "- Rationale: ${rationale}"
+		printf '%s\n' "- Owner: ${owner}"
+		printf '%s\n\n' "- Removal condition: ${removal_condition}"
+		printf 'Source line:\n\n'
+		printf '```text\n'
+		printf '%s\n' "$content"
+		printf '```\n'
+	} >"$body_file"
+}
+
+gh_issue_list() {
+	local repo="$1"
+	local fingerprint="$2"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number'
+		return
+	fi
+	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number'
+}
+
+gh_issue_comment() {
+	local repo="$1"
+	local issue_number="$2"
+	local body_file="$3"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue comment "$issue_number" --repo "$repo" --body-file "$body_file"
+		return
+	fi
+	"$gh_bin" issue comment "$issue_number" --body-file "$body_file"
+}
+
+gh_issue_create() {
+	local repo="$1"
+	local title="$2"
+	local body_file="$3"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue create --repo "$repo" --title "$title" --body-file "$body_file"
+		return
+	fi
+	"$gh_bin" issue create --title "$title" --body-file "$body_file"
+}
+
+ensure_tracking_issue() {
+	local file="$1"
+	local line="$2"
+	local content="$3"
+	local rationale
+	local owner
+	local removal_condition
+	local fingerprint
+	local body_file
+	local title
+	local existing_issue
+	local created_issue
+	local repo="${SUPPRESSION_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+
+	rationale="$(extract_metadata_field "$content" "rationale|reason")"
+	owner="$(extract_metadata_field "$content" "owner")"
+	removal_condition="$(extract_metadata_field "$content" "remove-when|removal-condition|removal")"
+
+	if [[ -z "$rationale" || -z "$owner" || -z "$removal_condition" ]]; then
+		echo "Missing inline suppression tracking metadata for ${file}:${line}." >&2
+		echo "$content" >&2
+		echo "Add same-line metadata: rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>." >&2
+		return 1
+	fi
+
+	if ! command -v "$gh_bin" >/dev/null 2>&1; then
+		echo "Unable to track inline suppression ${file}:${line}: GitHub CLI '$gh_bin' was not found." >&2
+		echo "Install gh or set GH_BIN; CI must provide GH_TOKEN/GITHUB_TOKEN with issues:write." >&2
+		return 1
+	fi
+
+	fingerprint="$(fingerprint_for_match "$file" "$content")"
+	body_file="$(create_temp_file)"
+	write_tracking_body "$body_file" "$file" "$line" "$content" "$rationale" "$owner" "$removal_condition" "$fingerprint"
+	title="ci: track inline suppression in ${file}:${line}"
+
+	existing_issue="$(gh_issue_list "$repo" "$fingerprint" 2>/dev/null)" || {
+		rm -f "$body_file"
+		echo "Unable to search GitHub tracking issues for ${file}:${line}." >&2
+		echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be verified." >&2
+		return 1
+	}
+
+	if [[ -n "$existing_issue" ]]; then
+		gh_issue_comment "$repo" "$existing_issue" "$body_file" >/dev/null || {
+			rm -f "$body_file"
+			echo "Unable to update GitHub tracking issue #${existing_issue} for ${file}:${line}." >&2
+			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be updated." >&2
+			return 1
+		}
+		rm -f "$body_file"
+		echo "Updated GitHub tracking issue #${existing_issue} for inline suppression ${file}:${line}."
+		return 0
+	fi
+
+	created_issue="$(gh_issue_create "$repo" "$title" "$body_file" 2>/dev/null)" || {
+		rm -f "$body_file"
+		echo "Unable to create GitHub tracking issue for inline suppression ${file}:${line}." >&2
+		echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be created." >&2
+		return 1
+	}
+
+	rm -f "$body_file"
+	echo "Opened GitHub tracking issue for inline suppression ${file}:${line}: ${created_issue}"
+	return 0
+}
+
+json_escape() {
+	local value="$1"
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	value="${value//$'\t'/\\t}"
+	value="${value//$'\r'/\\r}"
+	value="${value//$'\n'/\\n}"
+	printf '%s' "$value"
+}
+
+write_tracking_records() {
+	local output_file="$1"
+	local records_file="$2"
+	local output_dir
+	local tmp_output
+	local seen_file
+	local first=1
+	local file
+	local line
+	local content
+	local rationale
+	local owner
+	local removal_condition
+	local fingerprint
+	local location_url
+
+	output_dir="$(dirname "$output_file")"
+	mkdir -p "$output_dir"
+	tmp_output="$(create_temp_file)"
+	seen_file="$(create_temp_file)"
+	: >"$seen_file"
+
+	{
+		printf '{\n'
+		printf '  "schema": "lopper-inline-suppressions-v1",\n'
+		printf '  "suppressions": [\n'
+	} >"$tmp_output"
+
+	while IFS=: read -r file line content; do
+		rationale="$(extract_metadata_field "$content" "rationale|reason")"
+		owner="$(extract_metadata_field "$content" "owner")"
+		removal_condition="$(extract_metadata_field "$content" "remove-when|removal-condition|removal")"
+
+		if [[ -z "$rationale" || -z "$owner" || -z "$removal_condition" ]]; then
+			rm -f "$tmp_output" "$seen_file"
+			echo "Missing inline suppression tracking metadata for ${file}:${line}." >&2
+			echo "$content" >&2
+			echo "Add same-line metadata: rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>." >&2
+			return 1
+		fi
+
+		fingerprint="$(fingerprint_for_match "$file" "$content")"
+		if grep -Fqx "$fingerprint" "$seen_file"; then
+			continue
+		fi
+		printf '%s\n' "$fingerprint" >>"$seen_file"
+		location_url="$(source_url_for_match "$file" "$line")"
+
+		if [[ "$first" -eq 0 ]]; then
+			printf ',\n' >>"$tmp_output"
+		fi
+		first=0
+		{
+			printf '    {\n'
+			printf '      "fingerprint": "%s",\n' "$(json_escape "$fingerprint")"
+			printf '      "file": "%s",\n' "$(json_escape "$file")"
+			printf '      "line": %s,\n' "$line"
+			printf '      "source": "%s",\n' "$(json_escape "$location_url")"
+			printf '      "content": "%s",\n' "$(json_escape "$content")"
+			printf '      "rationale": "%s",\n' "$(json_escape "$rationale")"
+			printf '      "owner": "%s",\n' "$(json_escape "$owner")"
+			printf '      "remove_when": "%s"\n' "$(json_escape "$removal_condition")"
+			printf '    }'
+		} >>"$tmp_output"
+	done <"$records_file"
+
+	{
+		printf '\n'
+		printf '  ]\n'
+		printf '}\n'
+	} >>"$tmp_output"
+
+	mv "$tmp_output" "$output_file"
+	rm -f "$seen_file"
+}
+
+track_records_with_gh() {
+	local records_file="$1"
+	local seen_file
+	local file
+	local line
+	local content
+	local fingerprint
+
+	seen_file="$(create_temp_file)"
+	: >"$seen_file"
+	while IFS=: read -r file line content; do
+		fingerprint="$(fingerprint_for_match "$file" "$content")"
+		if grep -Fqx "$fingerprint" "$seen_file"; then
+			continue
+		fi
+		printf '%s\n' "$fingerprint" >>"$seen_file"
+		if ! ensure_tracking_issue "$file" "$line" "$content"; then
+			rm -f "$seen_file"
+			return 1
+		fi
+	done <"$records_file"
+	rm -f "$seen_file"
 }
 
 if ! git diff --cached --quiet --exit-code -- .; then
@@ -106,10 +386,31 @@ if [[ "$awk_status" -ne 0 ]]; then
 	if [[ "$awk_status" -ne 1 || ! -s "$tmp_matches" ]]; then
 		exit "$awk_status"
 	fi
-	echo "Inline suppression markers are not allowed in $diff_scope." >&2
+	echo "Inline suppression markers require tracking metadata in $diff_scope." >&2
 	cat "$tmp_matches" >&2
-	echo "Remove the marker and address the underlying issue instead." >&2
-	exit 1
+	echo "Each new suppression must include same-line rationale, owner, and remove-when metadata." >&2
+	case "$tracking_mode" in
+		detect)
+			if [[ -n "$tracking_output" ]]; then
+				write_tracking_records "$tracking_output" "$tmp_matches"
+			else
+				validation_output="$(create_temp_file)"
+				write_tracking_records "$validation_output" "$tmp_matches"
+				rm -f "$validation_output"
+			fi
+			echo "Inline suppression metadata passed ($diff_scope)"
+			exit 0
+			;;
+		track)
+			track_records_with_gh "$tmp_matches"
+			echo "Inline suppression tracking passed ($diff_scope)"
+			exit 0
+			;;
+		*)
+			echo "Unsupported SUPPRESSION_TRACKING_MODE '$tracking_mode'; expected 'detect' or 'track'." >&2
+			exit 1
+			;;
+	esac
 fi
 
 echo "Inline suppression check passed ($diff_scope)"

@@ -97,6 +97,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`limit_bytes=1048576`,
 		`coverage-package-failures.txt)`,
 		`limit_bytes=131072`,
+		`inline-suppressions.json)`,
 		`coverage-status.txt|coverage-total.txt|memory-bench-status.txt)`,
 		`copy_bounded_report "${src}" "${report_root}/${report}" "${limit_bytes}"`,
 	})
@@ -159,6 +160,8 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`path="${REPORT_ROOT}/${required}"`,
 		`Unexpected PR report input: ${name}`,
 		`PR report input exceeds the 1 MiB publication limit: ${name}`,
+		`inline-suppressions.json)`,
+		`PR report input exceeds the 128 KiB publication limit: ${name}`,
 	})
 	if got, want := shellArrayValues(t, validateInputs.Run, "required_files"), []string{"lopper-base-outcome.txt", "lopper-delta-outcome.txt"}; !slices.Equal(got, want) {
 		t.Fatalf("required PR report inputs = %q, want %q", got, want)
@@ -166,6 +169,110 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 
 	assertWorkflowStepAbsent(t, workflow.Jobs, "publish-pr-reports", "Post SonarQube review comments (PR)")
 	assertWorkflowEnvKeyAbsent(t, workflow.Jobs, "SONAR_TOKEN")
+}
+
+func TestInlineSuppressionTrackingWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/inline-suppression-tracking.yml", &workflow)
+	workflowText := readConfig(t, ".github/workflows/inline-suppression-tracking.yml")
+
+	for _, fragment := range []string{
+		"pull_request_target:",
+		"contents: read",
+		"issues: write",
+		"pull-requests: read",
+		"TRUSTED_TRACKER_REF: ${{ github.workflow_sha }}",
+		"path: 'scripts/inline_suppression_tracker.js'",
+		"ref: process.env.TRUSTED_TRACKER_REF",
+		"flag: 'wx'",
+		"require(process.env.SUPPRESSION_TRACKER_PATH)",
+	} {
+		if !strings.Contains(workflowText, fragment) {
+			t.Fatalf("inline suppression tracking workflow missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{
+		"actions/checkout@",
+		"actions/download-artifact@",
+		"pr-report-inputs",
+		"pull_request:\n",
+		"github.event.pull_request.head",
+	} {
+		if strings.Contains(workflowText, forbidden) {
+			t.Fatalf("inline suppression tracking workflow contains unsafe fragment %q", forbidden)
+		}
+	}
+
+	track := workflowJobByName(t, workflow.Jobs, "track")
+	assertWorkflowJobOmitsCheckout(t, track, "inline suppression tracking")
+	assertWorkflowJobStepRunsOmitAllFold(t, track, "inline suppression tracking", []string{
+		"go run ./",
+		"make ",
+		"npm ",
+		"npx ",
+		"git ",
+		"scripts/",
+		"./extensions/",
+	})
+	assertWorkflowStepOrder(t, track, "Materialize trusted suppression tracker", "Track inline suppressions from trusted diff")
+}
+
+func TestInlineSuppressionTrackerControllerFailsClosedBeforeMutations(t *testing.T) {
+	t.Parallel()
+
+	controller := readConfig(t, "scripts/inline_suppression_tracker.js")
+	assertWorkflowStepRunContainsAll(t, workflowStepConfig{Run: controller}, "inline suppression tracker controller", []string{
+		"MAX_CHANGED_FILES = 3000",
+		"count > MAX_CHANGED_FILES",
+		"files.length !== expectedCount",
+		"diff patch is unavailable",
+		"refusing to publish tracking mutations",
+		"records.size > MAX_RECORDS",
+		"pull.state && pull.state !== 'open'",
+		"github.rest.pulls.listFiles",
+		"github.rest.search.issuesAndPullRequests",
+		"github.rest.issues.update",
+		"github.rest.issues.create",
+	})
+	assertWorkflowMarkerOrder(t, controller, "records.size > MAX_RECORDS", "return records;")
+	assertWorkflowMarkerOrder(t, controller, "const records = await recomputeSuppressionRecords({ github, context });", "await upsertTrackingIssue({ github, context, record });")
+	assertWorkflowStepRunOmitsAll(t, workflowStepConfig{Run: controller}, "inline suppression tracker controller", []string{
+		"inline-suppressions.json",
+		"pr-report-inputs",
+		"isForkPullRequest",
+		"skipped for fork pull request",
+	})
+}
+
+func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
+		"GH_EVENT_NAME":               "${{ github.event_name }}",
+		"SUPPRESSION_TRACKING_OUTPUT": ".artifacts/inline-suppressions.json",
+	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
+		`GH_TOKEN`,
+	})
+}
+
+func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
+	t.Helper()
+
+	beforeIndex := strings.Index(script, beforeMarker)
+	afterIndex := strings.Index(script, afterMarker)
+	if beforeIndex == -1 || afterIndex == -1 {
+		t.Fatalf("workflow script missing order marker %q or %q", beforeMarker, afterMarker)
+	}
+	if afterIndex < beforeIndex {
+		t.Fatalf("workflow marker %q appeared before %q", afterMarker, beforeMarker)
+	}
 }
 
 func assertCIArtifactAction(t *testing.T, step workflowStepConfig, label string, wantUses string, wantInputs map[string]string) {

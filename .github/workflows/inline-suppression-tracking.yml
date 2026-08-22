@@ -1,0 +1,54 @@
+name: inline suppression tracking
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  track:
+    name: track inline suppressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Materialize trusted suppression tracker
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          SUPPRESSION_TRACKER_PATH: ${{ runner.temp }}/inline_suppression_tracker.js
+          TRUSTED_TRACKER_REF: ${{ github.workflow_sha }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { data } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'scripts/inline_suppression_tracker.js',
+              ref: process.env.TRUSTED_TRACKER_REF,
+            });
+            if (Array.isArray(data) || data.type !== 'file' || data.encoding !== 'base64') {
+              throw new Error('Trusted inline suppression tracker is not a base64-encoded repository file.');
+            }
+            const source = Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8');
+            fs.writeFileSync(process.env.SUPPRESSION_TRACKER_PATH, source, {
+              encoding: 'utf8',
+              flag: 'wx',
+              mode: 0o600,
+            });
+
+      - name: Track inline suppressions from trusted diff
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        env:
+          SUPPRESSION_TRACKER_PATH: ${{ runner.temp }}/inline_suppression_tracker.js
+        with:
+          script: |
+            const trackInlineSuppressions = require(process.env.SUPPRESSION_TRACKER_PATH);
+            await trackInlineSuppressions({ github, context, core });

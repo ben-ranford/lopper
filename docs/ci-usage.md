@@ -283,7 +283,7 @@ jobs:
 - `make mod-check`: enforce `go mod tidy -diff` and `go mod verify`
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
-- `make suppression-check`: fail when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments
+- `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless each new exception includes tracking metadata. Set `SUPPRESSION_TRACKING_OUTPUT` to emit bounded JSON records for a trusted issue-publication job.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`
@@ -300,6 +300,14 @@ jobs:
 - `make tools-install`: install pinned Go-based CI tools locally (`golangci-lint`, `gostyle`, `gosec`, `actionlint`, `govulncheck`)
 - `make setup`: bootstrap toolchain + module download + readiness checks
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
+
+Inline suppression tracking:
+
+- New inline analysis suppressions must include same-line metadata: `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`.
+- `make suppression-check` defaults to read-only detection. It validates the metadata and, when `SUPPRESSION_TRACKING_OUTPUT` is set, writes a bounded `lopper-inline-suppressions-v1` JSON artifact whose fingerprint is stable across ordinary line moves while retaining the current line as display metadata.
+- GitHub Actions jobs that execute PR-controlled code must not provide issue-write credentials to `make ci` or `make suppression-check`. The repository CI verify job uploads the bounded suppression artifact as tokenless detection evidence, and the separate trusted `publish-pr-reports` job recomputes authoritative records from the PR diff before using `issues: write` to create or update one tracking issue per suppression fingerprint.
+- Trusted manual callers may set `SUPPRESSION_TRACKING_MODE=track` with an authenticated `gh` CLI to create or update issues directly. Read-only CI, release, and rolling validation should keep the default detection mode.
+- Existing suppressions outside the current diff remain governed by the existing diff-scoped check and are not backfilled by this gate.
 
 Coverage artifacts:
 

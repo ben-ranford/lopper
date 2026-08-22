@@ -140,6 +140,7 @@ jobs:
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
+          SUPPRESSION_TRACKING_OUTPUT: .artifacts/inline-suppressions.json
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
             export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
@@ -264,6 +265,7 @@ jobs:
             coverage-package-failures.txt \
             coverage-status.txt \
             coverage-total.txt \
+            inline-suppressions.json \
             lopper-pr-comment.md \
             memory-bench-status.txt \
             memory-bench-summary.md
@@ -273,6 +275,9 @@ jobs:
               limit_bytes=1048576
               case "${report}" in
                 coverage-package-failures.txt)
+                  limit_bytes=131072
+                  ;;
+                inline-suppressions.json)
                   limit_bytes=131072
                   ;;
                 coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
@@ -350,6 +355,7 @@ jobs:
             coverage-package-failures.txt
             coverage-status.txt
             coverage-total.txt
+            inline-suppressions.json
             lopper-base-outcome.txt
             lopper-delta-outcome.txt
             lopper-pr-comment.md
@@ -382,6 +388,20 @@ jobs:
               echo "PR report input exceeds the 1 MiB publication limit: ${name}" >&2
               exit 1
             fi
+            case "${name}" in
+              coverage-package-failures.txt|inline-suppressions.json)
+                if [ "$(stat --format=%s "${path}")" -gt 131072 ]; then
+                  echo "PR report input exceeds the 128 KiB publication limit: ${name}" >&2
+                  exit 1
+                fi
+                ;;
+              coverage-status.txt|coverage-total.txt|memory-bench-status.txt)
+                if [ "$(stat --format=%s "${path}")" -gt 64 ]; then
+                  echo "PR report input exceeds the 64-byte publication limit: ${name}" >&2
+                  exit 1
+                fi
+                ;;
+            esac
           done < <(find -P "${REPORT_ROOT}" -mindepth 1 -maxdepth 1 -type f -print0)
 
       - name: Comment memory benchmark report on PR
