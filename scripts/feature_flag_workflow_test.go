@@ -86,17 +86,35 @@ func TestFeatureFlagCommentResolverRejectsAmbiguousAssociatedPullRequests(t *tes
 	t.Parallel()
 
 	resolver := featureFlagCommentResolverScript(t)
-	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-		"run":             featureFlagWorkflowRun(nil),
-		"pulls":           []map[string]any{},
-		"associatedPulls": []map[string]any{featureFlagPull(7, "open"), featureFlagPull(8, "open")},
-		"artifacts":       []map[string]any{},
-	})
-	if result.OK {
-		t.Fatal("resolver accepted an ambiguous commit-to-PR association")
+	tests := []struct {
+		name            string
+		associatedPulls []map[string]any
+	}{
+		{
+			name:            "multiple open matches",
+			associatedPulls: []map[string]any{featureFlagPull(7, "open"), featureFlagPull(8, "open")},
+		},
+		{
+			name:            "multiple merged matches",
+			associatedPulls: []map[string]any{featureFlagMergedPullNumber(7), featureFlagMergedPullNumber(8)},
+		},
 	}
-	if !strings.Contains(result.Error, "expected exactly one pull request") {
-		t.Fatalf("resolver error = %q, want exact-one rejection", result.Error)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+				"run":             featureFlagWorkflowRun(nil),
+				"pulls":           []map[string]any{},
+				"associatedPulls": tt.associatedPulls,
+				"artifacts":       []map[string]any{},
+			})
+			if result.OK {
+				t.Fatal("resolver accepted an ambiguous commit-to-PR association")
+			}
+			if !strings.Contains(result.Error, "expected exactly one pull request") {
+				t.Fatalf("resolver error = %q, want exact-one rejection", result.Error)
+			}
+		})
 	}
 }
 
@@ -127,6 +145,59 @@ func TestFeatureFlagCommentResolverFiltersCommitAssociationFallback(t *testing.T
 	}
 	if result.Calls["associatedPulls"] != 1 {
 		t.Fatal("resolver did not use commit association fallback exactly once")
+	}
+}
+
+func TestFeatureFlagCommentResolverPrefersOpenAssociatedPullOverMergedFallback(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":   featureFlagWorkflowRun(nil),
+		"pulls": []map[string]any{featureFlagPull(7, "open")},
+		"associatedPulls": []map[string]any{
+			featureFlagMergedPullNumber(8),
+			featureFlagPull(7, "open"),
+		},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+			{"id": 20, "name": "feature-flag-comment-inputs-8", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected unique open associated pull request: %s", result.Error)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if got := result.Outputs["skip-comments"]; got != "false" {
+		t.Fatalf("skip-comments = %q, want false", got)
+	}
+	if got := result.Outputs["artifact-id"]; got != "19" {
+		t.Fatalf("artifact-id = %q, want 19", got)
+	}
+}
+
+func TestFeatureFlagCommentResolverFallsBackToMergedAssociatedPullWhenNoOpenMatchExists(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun(nil),
+		"pulls":           []map[string]any{featureFlagMergedPullNumber(7)},
+		"associatedPulls": []map[string]any{featureFlagMergedPullNumber(7)},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected merged associated pull fallback: %s", result.Error)
+	}
+	if got := result.Outputs["skip-comments"]; got != "true" {
+		t.Fatalf("skip-comments = %q, want true", got)
+	}
+	if result.Calls["artifacts"] != 0 {
+		t.Fatal("merged pull request fallback must not inspect comment artifacts")
 	}
 }
 
@@ -756,6 +827,12 @@ func featureFlagMergedPull(merged bool, mergedAt string) map[string]any {
 	if mergedAt != "" {
 		pull["merged_at"] = mergedAt
 	}
+	return pull
+}
+
+func featureFlagMergedPullNumber(number int) map[string]any {
+	pull := featureFlagPull(number, "closed")
+	pull["merged"] = true
 	return pull
 }
 

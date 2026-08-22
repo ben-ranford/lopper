@@ -42,12 +42,24 @@ jobs:
               pull.state === 'closed' &&
               isMergedPull(pull) &&
               matchesRunSource(pull);
+            const uniqueCandidateNumbers = (pulls) => [
+              ...new Set(pulls.map((candidate) => candidate.number)),
+            ];
+            const uniqueAssociatedCandidateNumbers = (associatedPulls) => {
+              const openCandidates = uniqueCandidateNumbers(
+                associatedPulls.filter((candidate) => matchesPublishableRun(candidate)),
+              );
+              if (openCandidates.length > 0) {
+                return openCandidates;
+              }
+              return uniqueCandidateNumbers(
+                associatedPulls.filter((candidate) => matchesMergedRun(candidate)),
+              );
+            };
 
             let candidateNumbers;
             if ((run.pull_requests ?? []).length > 0) {
-              candidateNumbers = [
-                ...new Set(run.pull_requests.map((candidate) => candidate.number)),
-              ];
+              candidateNumbers = uniqueCandidateNumbers(run.pull_requests);
             } else {
               const associatedPulls = await github.paginate(
                 github.rest.repos.listPullRequestsAssociatedWithCommit,
@@ -58,13 +70,7 @@ jobs:
                   per_page: 100,
                 },
               );
-              candidateNumbers = [
-                ...new Set(
-                  associatedPulls
-                    .filter((candidate) => matchesPublishableRun(candidate) || matchesMergedRun(candidate))
-                    .map((candidate) => candidate.number),
-                ),
-              ];
+              candidateNumbers = uniqueAssociatedCandidateNumbers(associatedPulls);
             }
             if (
               candidateNumbers.length !== 1 ||
