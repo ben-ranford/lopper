@@ -419,7 +419,10 @@ func isLikelyStdHeader(header string) bool {
 		return false
 	}
 	if strings.Contains(header, "/") {
-		return hasLikelyStdHeaderPrefix(header) && isKnownQualifiedStdHeaderBase(header)
+		if hasOSCompilerHeaderPrefix(header) {
+			return true
+		}
+		return hasGatedStdHeaderPrefix(header) && isKnownQualifiedStdHeaderBase(header)
 	}
 
 	base := strings.TrimSpace(filepath.Base(header))
@@ -431,8 +434,17 @@ func isLikelyStdHeader(header string) bool {
 	return ok
 }
 
-func hasLikelyStdHeaderPrefix(header string) bool {
-	for _, prefix := range []string{"sys/", "bits/", "linux/", "asm/", "asm-generic/", "experimental/", "tr1/", "tr2/", "ext/", "parallel/", "debug/", "backward/"} {
+func hasOSCompilerHeaderPrefix(header string) bool {
+	for _, prefix := range []string{"sys/", "bits/", "linux/", "asm/", "asm-generic/"} {
+		if strings.HasPrefix(header, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGatedStdHeaderPrefix(header string) bool {
+	for _, prefix := range []string{"experimental/", "tr1/", "tr2/", "ext/", "parallel/", "debug/", "backward/"} {
 		if strings.HasPrefix(header, prefix) {
 			return true
 		}
