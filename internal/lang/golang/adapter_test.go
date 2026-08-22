@@ -1857,6 +1857,70 @@ func TestOversizedRootGoModKeepsLongQuotedNonReplaceDirectives(t *testing.T) {
 	}
 }
 
+func TestOversizedRootGoModKeepsLongUnquotedNonReplaceDirectives(t *testing.T) {
+	for name, line := range map[string]string{
+		"require": "require example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"exclude": "exclude example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+		"tool":    "tool example.com/" + strings.Repeat("x", 70*1024) + "/cmd",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				"module example.com/root",
+				line,
+			)
+
+			requireOversizedRootModulePath(t, repo, "module path extraction with long unquoted "+name+" directive")
+		})
+	}
+}
+
+func TestOversizedRootGoModKeepsLongUnquotedNonReplaceBlockDirectives(t *testing.T) {
+	for name, lines := range map[string][]string{
+		"require": {
+			"require (",
+			"example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+			")",
+		},
+		"exclude": {
+			"exclude (",
+			"example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+			")",
+		},
+		"tool": {
+			"tool (",
+			"example.com/" + strings.Repeat("x", 70*1024) + "/cmd",
+			")",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				append([]string{"module example.com/root"}, lines...)...,
+			)
+
+			requireOversizedRootModulePath(t, repo, "module path extraction with long unquoted "+name+" block directive")
+		})
+	}
+}
+
+func TestOversizedRootGoModDefersLongDirectiveValidationUntilModuleKnown(t *testing.T) {
+	for name, line := range map[string]string{
+		"quoted replacement": `replace example.com/a => "example.com/` + strings.Repeat("x", 70*1024) + `" v1.2.3`,
+		"unquoted require":   "require example.com/" + strings.Repeat("x", 70*1024) + " v1.2.3",
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				line,
+				"module example.com/root",
+			)
+
+			requireOversizedRootModulePath(t, repo, "module path extraction after deferred long "+name+" validation")
+		})
+	}
+}
+
 func TestOversizedRootGoModRejectsMalformedLongQuotedRequire(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
@@ -1865,6 +1929,24 @@ func TestOversizedRootGoModRejectsMalformedLongQuotedRequire(t *testing.T) {
 	)
 
 	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
+func TestOversizedRootGoModRejectsMalformedLongUnquotedDirectives(t *testing.T) {
+	for name, line := range map[string]string{
+		"missing require version": "require example.com/" + strings.Repeat("x", 70*1024),
+		"trailing tool token":     "tool example.com/" + strings.Repeat("x", 70*1024) + "/cmd extra",
+		"unquoted replace":        "replace example.com/a => ./" + strings.Repeat("x", 70*1024),
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				"module example.com/root",
+				line,
+			)
+
+			requireNoTrustedOversizedRootModuleMetadata(t, repo)
+		})
+	}
 }
 
 func TestOversizedRootGoModRejectsTrailingTokenAfterLongQuotedReplacement(t *testing.T) {
