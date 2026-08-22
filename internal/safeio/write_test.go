@@ -6328,6 +6328,115 @@ func TestStageIdentityBoundCopyFailureBranches(t *testing.T) {
 	}
 }
 
+func TestStageIdentityBoundCopyCleansStagedFileWhenReopenedSourceCloseFails(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "expected")
+	sourceCloseErr := errors.New("source close failed")
+	stagedRel := atomicTempPrefix + "stage"
+	useRandomTempNames(t, stagedRel)
+
+	removedStaged := false
+	sourceReader := strings.NewReader("payload")
+	liveSource := &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }}
+	reopenedSource := &fakeFile{
+		read: func(p []byte) (int, error) {
+			return sourceReader.Read(p)
+		},
+		stat: func() (fs.FileInfo, error) { return expected, nil },
+		close: func() error {
+			return sourceCloseErr
+		},
+	}
+	root := &fakeRoot{
+		open: func(name string) (File, error) {
+			if name != "source" {
+				t.Fatalf("unexpected source open path %q", name)
+			}
+			return reopenedSource, nil
+		},
+		openFile: stagingOpenSuccess(expected),
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source", stagedRel:
+				return expected, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		link: func(string, string) error {
+			return errors.ErrUnsupported
+		},
+		remove: func(name string) error {
+			if name == stagedRel {
+				removedStaged = true
+			}
+			return nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundCopy(root, "source", expected, sourceChangedMsg, liveSource)
+	if !errors.Is(err, sourceCloseErr) {
+		t.Fatalf("expected reopened source close error, got %v", err)
+	}
+	if !removedStaged {
+		t.Fatal("expected staged copy cleanup to remain armed until reopened source closes")
+	}
+}
+
+func TestStageIdentityBoundCopyPreservesStickyModeBit(t *testing.T) {
+	wantMode := os.ModeSticky | 0o675
+	expected := chmoddedPinnedTargetInfo(t, "source", wantMode)
+	var openMode os.FileMode
+	var chmodMode os.FileMode
+	root := &fakeRoot{
+		openFile: func(_ string, _ int, mode os.FileMode) (File, error) {
+			openMode = mode
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				stat:  func() (fs.FileInfo, error) { return expected, nil },
+				chmod: func(mode os.FileMode) error {
+					chmodMode = mode
+					return nil
+				},
+				close: closeWithoutError,
+			}, nil
+		},
+		lstat: func(string) (fs.FileInfo, error) {
+			return expected, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundCopy(root, "source", expected, sourceChangedMsg, seekableSourceFile(expected, "source", nil, nil))
+	if err != nil {
+		t.Fatalf("stageIdentityBoundCopy returned error: %v", err)
+	}
+	if openMode != wantMode {
+		t.Fatalf("expected OpenFile mode %v, got %v", wantMode, openMode)
+	}
+	if chmodMode != wantMode {
+		t.Fatalf("expected Chmod mode %v, got %v", wantMode, chmodMode)
+	}
+}
+
+func TestChmodSupportedModePreservesSpecialBits(t *testing.T) {
+	mode := os.ModeSetuid | os.ModeSetgid | os.ModeSticky | 0o675
+	if got := chmodSupportedMode(mode); got != mode {
+		t.Fatalf("expected chmod-supported mode %v, got %v", mode, got)
+	}
+}
+
+func chmoddedPinnedTargetInfo(t *testing.T, contents string, mode os.FileMode) fs.FileInfo {
+	t.Helper()
+
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte(contents), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	if err := os.Chmod(targetInfoPath, mode); err != nil {
+		t.Fatalf("chmod target info path: %v", err)
+	}
+	return statTestPath(t, targetInfoPath)
+}
+
 func stagingOpenSuccess(info fs.FileInfo) func(string, int, os.FileMode) (File, error) {
 	return stagingOpenWithFile(&fakeFile{
 		stat:  func() (fs.FileInfo, error) { return info, nil },

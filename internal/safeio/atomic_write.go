@@ -322,7 +322,8 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		if err != nil {
 			return "", nil, err
 		}
-		staged, err := root.OpenFile(stagedRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, expected.Mode().Perm())
+		stagedMode := chmodSupportedMode(expected.Mode())
+		staged, err := root.OpenFile(stagedRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, stagedMode)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
@@ -346,7 +347,7 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		if _, err := io.Copy(staged, source); err != nil {
 			return "", nil, closeFilePreservingPrimary(staged, err)
 		}
-		if err := staged.Chmod(expected.Mode().Perm()); err != nil {
+		if err := staged.Chmod(stagedMode); err != nil {
 			return "", nil, closeFilePreservingPrimary(staged, err)
 		}
 		stagedInfo, err = staged.Stat()
@@ -462,6 +463,10 @@ func sameRegularFile(expected, actual fs.FileInfo) bool {
 		expected.Size() == actual.Size() &&
 		expected.Mode() == actual.Mode() &&
 		expected.ModTime().Equal(actual.ModTime())
+}
+
+func chmodSupportedMode(mode os.FileMode) os.FileMode {
+	return mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
 }
 
 func closeCreatedFileWithoutIdentity(file File, primaryErr error) error {
