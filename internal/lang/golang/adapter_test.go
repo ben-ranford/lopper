@@ -2200,6 +2200,42 @@ func TestOversizedRootGoModKeepsValidRetractBeforeV2Module(t *testing.T) {
 	}
 }
 
+func TestOversizedRootGoModKeepsGodebugBlockBeforeModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"godebug (",
+		"default=go1.21",
+		"panicnil=1",
+		")",
+		"module example.com/root",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction after godebug block")
+}
+
+func TestOversizedRootGoModKeepsIgnoreBlockBeforeModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"ignore (",
+		"static",
+		"./third_party/javascript",
+		")",
+		"module example.com/root",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction after ignore block")
+}
+
+func TestOversizedRootGoModKeepsLongIgnoreBeforeModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"ignore ./"+strings.Repeat("nested/", 10*1024)+"dir",
+		"module example.com/root",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction after long ignore directive")
+}
+
 func TestParseGoModFallbackParsesInlineRequireBeyondFormerLineLimit(t *testing.T) {
 	content := moduleDemoLine + "\n" + strings.Repeat("// filler\n", 8192) + "require (" + depUUID + versionV160 + ")\n"
 	modulePath, dependencies, replacements := parseGoMod([]byte(content))

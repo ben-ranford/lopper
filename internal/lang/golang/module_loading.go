@@ -550,7 +550,7 @@ func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, 
 
 func isValidLongGoModDirective(directive string, quoted bool) bool {
 	switch directive {
-	case "require", "exclude", "tool":
+	case "require", "exclude", "tool", "godebug", "ignore":
 		return true
 	case "replace":
 		return quoted
@@ -721,7 +721,7 @@ func (s *goModModuleScanner) isSyntheticBodyValid() bool {
 
 func isValidGoModBlockDirective(directive string) bool {
 	switch directive {
-	case "require", "exclude", "replace", "retract", "tool":
+	case "require", "exclude", "replace", "retract", "tool", "godebug", "ignore":
 		return true
 	default:
 		return false
@@ -730,7 +730,7 @@ func isValidGoModBlockDirective(directive string) bool {
 
 func isValidGoModBlockLine(modulePath, directive, lineText string) bool {
 	switch directive {
-	case "require", "exclude", "replace", "tool":
+	case "require", "exclude", "replace", "tool", "godebug", "ignore":
 		return true
 	case "retract":
 		return modulePath != "" || firstToken(lineText) != ""
