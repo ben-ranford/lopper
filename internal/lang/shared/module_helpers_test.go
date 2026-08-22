@@ -46,3 +46,23 @@ func TestLastModuleSegment(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeEscapedModuleSegments(t *testing.T) {
+	tests := []struct {
+		name   string
+		module string
+		want   string
+	}{
+		{name: "trims escaped dotted segments", module: "`com`.`example`.`module`", want: "com.example.module"},
+		{name: "preserves unescaped segments", module: "com.example.module", want: "com.example.module"},
+		{name: "trims surrounding spaces before unescaping", module: " `foo` . `bar` ", want: "foo.bar"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeEscapedModuleSegments(tc.module); got != tc.want {
+				t.Fatalf("NormalizeEscapedModuleSegments(%q) = %q, want %q", tc.module, got, tc.want)
+			}
+		})
+	}
+}
