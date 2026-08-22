@@ -234,6 +234,45 @@ $logger = new \Monolog\Logger("app");
 	}
 }
 
+func TestPHPAdapterCountsNamespaceReferenceInsideClosureUseCapture(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, dependency))
+	writeFile(t, filepath.Join(repo, testComposerLock), `{
+  "packages": [
+    {
+      "name": "vendor/package",
+      "autoload": {"psr-4": {"Vendor\\Package\\": "src/"}}
+    }
+  ]
+}
+`)
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+$callback = function ()
+    use ($service) {
+        \Vendor\Package\Used::run();
+    };
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 {
+		t.Fatalf("expected closure body namespace reference to be counted, report=%#v", dep)
+	}
+	if containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("did not expect closure use capture to hide dependency usage: %#v", reportData.Warnings)
+	}
+}
+
 func TestPHPAdapterIgnoresNamespaceDeclarationAsDependencyUsage(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"

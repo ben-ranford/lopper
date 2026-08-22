@@ -11,18 +11,20 @@ import (
 )
 
 type importParseResult struct {
-	imports                    []importBinding
-	groupedByDep               map[string]int
-	unresolvedCount            int
-	useStatementLimitHit       bool
-	useBindingLimitHit         bool
-	namespaceReferenceLimitHit bool
+	imports                     []importBinding
+	groupedByDep                map[string]int
+	unresolvedCount             int
+	useStatementLimitHit        bool
+	useBindingLimitHit          bool
+	namespaceReferenceLimitHit  bool
+	namespaceResolutionLimitHit bool
 }
 
 type namespaceReferenceParseResult struct {
-	imports         []importBinding
-	unresolvedCount int
-	limitHit        bool
+	imports                     []importBinding
+	unresolvedCount             int
+	limitHit                    bool
+	namespaceResolutionLimitHit bool
 }
 
 type phpLineIndex struct {
@@ -30,7 +32,7 @@ type phpLineIndex struct {
 	starts []int
 }
 
-var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+([^;]+);`)
+var useStmtPattern = regexp.MustCompile(`(?ms)(?:^\s*|<\?php\s+)use\s+((?:(?:function|const)\s+)?\\?[A-Za-z_][^;]*);`)
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)+`)
 var namespaceDeclCandidatePattern = regexp.MustCompile(`\bnamespace\s+[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*\s*(?:;|\{)`)
 var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
@@ -64,15 +66,20 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		}
 		statement := strings.TrimSpace(text[match[2]:match[3]])
 		line := lineIndex.lineNumberAt(match[2])
-		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit := parseUseStatementWithPartLimit(statement, filePath, line, resolver, remainingUseParts)
+		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementWithPartLimit(statement, filePath, line, resolver, remainingUseParts)
+		if bindingLimitHit {
+			result.useBindingLimitHit = true
+		}
+		if resolutionLimitHit {
+			result.namespaceResolutionLimitHit = true
+		}
 		consumedUseParts += consumedParts
 		result.imports = append(result.imports, bindings...)
 		for dep := range groupedDeps {
 			result.groupedByDep[dep]++
 		}
 		result.unresolvedCount += unresolvedCount
-		if bindingLimitHit {
-			result.useBindingLimitHit = true
+		if bindingLimitHit || result.namespaceResolutionLimitHit {
 			break
 		}
 	}
@@ -81,6 +88,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	result.imports = append(result.imports, namespaceResult.imports...)
 	result.unresolvedCount += namespaceResult.unresolvedCount
 	result.namespaceReferenceLimitHit = namespaceResult.limitHit
+	result.namespaceResolutionLimitHit = result.namespaceResolutionLimitHit || namespaceResult.namespaceResolutionLimitHit
 	return result
 }
 
@@ -105,7 +113,11 @@ func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, res
 	result.imports = make([]importBinding, 0, len(matches))
 	seen := make(map[string]struct{})
 	for _, match := range matches {
-		binding, unresolvedInc, ok := parseNamespaceReferenceWithLineIndex(namespaceText, match, filePath, resolver, seen, lineIndex)
+		binding, unresolvedInc, ok, resolutionLimitHit := parseNamespaceReferenceWithLineIndex(namespaceText, match, filePath, resolver, seen, lineIndex)
+		if resolutionLimitHit {
+			result.namespaceResolutionLimitHit = true
+			break
+		}
 		result.unresolvedCount += unresolvedInc
 		if !ok {
 			continue
@@ -116,28 +128,33 @@ func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, res
 }
 
 func parseNamespaceReference(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}) (importBinding, int, bool) {
-	return parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, newPHPLineIndex(text))
+	binding, unresolved, ok, _ := parseNamespaceReferenceWithLineIndex(text, match, filePath, resolver, seen, newPHPLineIndex(text))
+	return binding, unresolved, ok
 }
 
-func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}, lineIndex phpLineIndex) (importBinding, int, bool) {
+func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath string, resolver composerResolver, seen map[string]struct{}, lineIndex phpLineIndex) (importBinding, int, bool, bool) {
 	module, line, local, ok := parseNamespaceReferenceMetadataWithLineIndex(text, match, lineIndex)
 	if !ok {
-		return importBinding{}, 0, false
+		return importBinding{}, 0, false, false
 	}
 	if isUseLineWithLineIndex(lineIndex, line) {
-		return importBinding{}, 0, false
+		return importBinding{}, 0, false, false
 	}
-	dependency, resolved := resolver.dependencyFromModule(module)
+	resolution := resolver.resolveModule(module)
+	dependency, resolved := resolution.dependency, resolution.resolved
+	if resolution.limitHit {
+		return importBinding{}, 0, false, true
+	}
 	if dependency == "" {
 		if resolved {
-			return importBinding{}, 1, false
+			return importBinding{}, 1, false, false
 		}
-		return importBinding{}, 0, false
+		return importBinding{}, 0, false, false
 	}
 	if isDuplicateNamespaceReference(seen, module, line) {
-		return importBinding{}, 0, false
+		return importBinding{}, 0, false, false
 	}
-	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true
+	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true, false
 }
 
 func maskUseStatementRanges(text string) string {
@@ -236,8 +253,7 @@ func parseNamespaceReferenceMetadataWithLineIndex(text string, match []int, line
 }
 
 func isUseLineWithLineIndex(lineIndex phpLineIndex, line int) bool {
-	lineText := lineIndex.lineTextAt(line)
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(lineText)), "use ")
+	return isImportUseLine(lineIndex.lineTextAt(line))
 }
 
 func isDuplicateNamespaceReference(seen map[string]struct{}, module string, line int) bool {
@@ -320,47 +336,47 @@ func (l *phpLineIndex) lineNumberAt(offset int) int {
 }
 
 func parseUseStatement(statement, filePath string, line int, resolver composerResolver) ([]importBinding, map[string]struct{}, int) {
-	imports, groupedDeps, unresolved, _, _ := parseUseStatementWithPartLimit(statement, filePath, line, resolver, maxPHPUseStatementsPerFile)
+	imports, groupedDeps, unresolved, _, _, _ := parseUseStatementWithPartLimit(statement, filePath, line, resolver, maxPHPUseStatementsPerFile)
 	return imports, groupedDeps, unresolved
 }
 
-func parseUseStatementWithPartLimit(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, int, bool) {
+func parseUseStatementWithPartLimit(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
 	statement = strings.TrimSpace(statement)
 	if statement == "" {
-		return nil, nil, 0, 0, false
+		return nil, nil, 0, 0, false, false
 	}
 	if strings.ContainsAny(statement, "{}") {
-		if bindings, groupedDeps, unresolved, consumedParts, ok, limitHit := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, partLimit); ok {
-			return bindings, groupedDeps, unresolved, consumedParts, limitHit
+		if bindings, groupedDeps, unresolved, consumedParts, ok, limitHit, resolutionLimitHit := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, partLimit); ok {
+			return bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit
 		}
-		return nil, nil, 0, 0, false
+		return nil, nil, 0, 0, false, false
 	}
-	bindings, groupedDeps, unresolved, consumedParts, limitHit := parseFlatUseStatement(statement, filePath, line, resolver, partLimit)
-	return bindings, groupedDeps, unresolved, consumedParts, limitHit
+	bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit := parseFlatUseStatement(statement, filePath, line, resolver, partLimit)
+	return bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit
 }
 
 func parseGroupedUseStatement(statement, filePath string, line int, resolver composerResolver) ([]importBinding, map[string]struct{}, int, bool) {
-	imports, groupedDeps, unresolved, _, ok, _ := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, maxPHPUseStatementsPerFile)
+	imports, groupedDeps, unresolved, _, ok, _, _ := parseGroupedUseStatementWithPartLimit(statement, filePath, line, resolver, maxPHPUseStatementsPerFile)
 	return imports, groupedDeps, unresolved, ok
 }
 
-func parseGroupedUseStatementWithPartLimit(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
+func parseGroupedUseStatementWithPartLimit(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, int, bool, bool, bool) {
 	open := strings.Index(statement, "{")
 	closeBrace := strings.LastIndex(statement, "}")
 	if open < 0 || closeBrace <= open {
-		return nil, nil, 0, 0, false, false
+		return nil, nil, 0, 0, false, false, false
 	}
 	base := normalizeNamespace(stripUseImportQualifier(statement[:open]))
 	inside := statement[open+1 : closeBrace]
 	parts, limitHit := splitUseParts(inside, partLimit)
-	imports, groupedDeps, unresolved := parseUseParts(parts, base, filePath, line, resolver, true)
-	return imports, groupedDeps, unresolved, len(parts), true, limitHit
+	imports, groupedDeps, unresolved, resolutionLimitHit := parseUseParts(parts, base, filePath, line, resolver, true)
+	return imports, groupedDeps, unresolved, len(parts), true, limitHit, resolutionLimitHit
 }
 
-func parseFlatUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, int, bool) {
+func parseFlatUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
 	parts, limitHit := splitUseParts(statement, partLimit)
-	imports, _, unresolved := parseUseParts(parts, "", filePath, line, resolver, false)
-	return imports, map[string]struct{}{}, unresolved, len(parts), limitHit
+	imports, _, unresolved, resolutionLimitHit := parseUseParts(parts, "", filePath, line, resolver, false)
+	return imports, map[string]struct{}{}, unresolved, len(parts), limitHit, resolutionLimitHit
 }
 
 func splitUseParts(statement string, partLimit int) ([]string, bool) {
@@ -374,12 +390,15 @@ func splitUseParts(statement string, partLimit int) ([]string, bool) {
 	return parts[:partLimit], true
 }
 
-func parseUseParts(parts []string, base, filePath string, line int, resolver composerResolver, collectGroupedDeps bool) ([]importBinding, map[string]struct{}, int) {
+func parseUseParts(parts []string, base, filePath string, line int, resolver composerResolver, collectGroupedDeps bool) ([]importBinding, map[string]struct{}, int, bool) {
 	imports := make([]importBinding, 0)
 	groupedDeps := make(map[string]struct{})
 	unresolved := 0
 	for _, part := range parts {
-		binding, dep, ok, unresolvedImport := parseUsePart(strings.TrimSpace(part), base, filePath, line, resolver)
+		binding, dep, ok, unresolvedImport, resolutionLimitHit := parseUsePart(strings.TrimSpace(part), base, filePath, line, resolver)
+		if resolutionLimitHit {
+			return imports, groupedDeps, unresolved, true
+		}
 		if unresolvedImport {
 			unresolved++
 		}
@@ -391,21 +410,25 @@ func parseUseParts(parts []string, base, filePath string, line int, resolver com
 			groupedDeps[dep] = struct{}{}
 		}
 	}
-	return imports, groupedDeps, unresolved
+	return imports, groupedDeps, unresolved, false
 }
 
-func parseUsePart(part, base, filePath string, line int, resolver composerResolver) (importBinding, string, bool, bool) {
+func parseUsePart(part, base, filePath string, line int, resolver composerResolver) (importBinding, string, bool, bool, bool) {
 	module, local, ok := parseUsePartModuleAndLocal(part, base)
 	if !ok {
-		return importBinding{}, "", false, false
+		return importBinding{}, "", false, false, false
 	}
-	dependency, resolved := resolver.dependencyFromModule(module)
+	resolution := resolver.resolveModule(module)
+	dependency, resolved := resolution.dependency, resolution.resolved
+	if resolution.limitHit {
+		return importBinding{}, "", false, false, true
+	}
 	if dependency == "" {
-		return importBinding{}, "", false, resolved
+		return importBinding{}, "", false, resolved, false
 	}
 
 	binding := newImportBinding(filePath, line, dependency, module, local, lastNamespaceSegment(module), false)
-	return binding, normalizeDependencyID(dependency), true, false
+	return binding, normalizeDependencyID(dependency), true, false, false
 }
 
 func parseUsePartModuleAndLocal(part, base string) (string, string, bool) {
@@ -458,4 +481,35 @@ func lastNamespaceSegment(module string) string {
 
 func hasDynamicPatterns(content []byte) bool {
 	return dynamicPattern.Match(content)
+}
+
+func isImportUseLine(lineText string) bool {
+	trimmed := strings.TrimSpace(lineText)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "<?php") {
+		trimmed = strings.TrimSpace(trimmed[len("<?php"):])
+		lower = strings.ToLower(trimmed)
+	}
+	if !strings.HasPrefix(lower, "use ") {
+		return false
+	}
+	rest := strings.TrimSpace(trimmed[len("use "):])
+	restLower := strings.ToLower(rest)
+	switch {
+	case strings.HasPrefix(restLower, "function "):
+		rest = strings.TrimSpace(rest[len("function "):])
+	case strings.HasPrefix(restLower, "const "):
+		rest = strings.TrimSpace(rest[len("const "):])
+	}
+	if rest == "" {
+		return false
+	}
+	return rest[0] == '\\' || isPHPIdentifierStart(rest[0])
+}
+
+func isPHPIdentifierStart(ch byte) bool {
+	return ch == '_' || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }

@@ -8,6 +8,12 @@ type composerResolver struct {
 	declared       map[string]struct{}
 }
 
+type dependencyResolution struct {
+	dependency string
+	resolved   bool
+	limitHit   bool
+}
+
 func newComposerResolver(data composerData) composerResolver {
 	return composerResolver{
 		namespaceToDep: data.NamespaceToDep,
@@ -17,56 +23,45 @@ func newComposerResolver(data composerData) composerResolver {
 }
 
 func (r *composerResolver) dependencyFromModule(module string) (string, bool) {
+	resolution := r.resolveModule(module)
+	return resolution.dependency, resolution.resolved
+}
+
+func (r *composerResolver) resolveModule(module string) dependencyResolution {
 	module = normalizeNamespace(module)
 	if module == "" {
-		return "", false
+		return dependencyResolution{}
 	}
-	if r.isLocalNamespace(module) {
-		return "", false
+	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup)
+	if limitHit {
+		return dependencyResolution{limitHit: true}
 	}
-	if dep := r.resolveWithPSR4(module); dep != "" {
-		return dep, true
+	if r.isLocalNamespaceFromAncestors(ancestors) {
+		return dependencyResolution{}
+	}
+	if dep := r.resolveWithPSR4FromAncestors(ancestors); dep != "" {
+		return dependencyResolution{dependency: dep, resolved: true}
 	}
 	if dep := r.resolveByNamespaceHeuristic(module); dep != "" {
-		return dep, true
+		return dependencyResolution{dependency: dep, resolved: true}
 	}
-	return "", true
+	return dependencyResolution{resolved: true}
 }
 
 func (r *composerResolver) isLocalNamespace(module string) bool {
-	return containsNamespacePrefix(r.localNamespace, module)
+	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup)
+	if limitHit {
+		return false
+	}
+	return r.isLocalNamespaceFromAncestors(ancestors)
 }
 
 func (r *composerResolver) resolveWithPSR4(module string) string {
-	for candidate := normalizeNamespace(module); candidate != ""; candidate = namespaceParent(candidate) {
-		if dependency := r.namespaceToDep[candidate]; dependency != "" {
-			return dependency
-		}
-		if dependency := r.namespaceToDep[candidate+`\`]; dependency != "" {
-			return dependency
-		}
-	}
-	return ""
-}
-
-func containsNamespacePrefix(namespaces map[string]struct{}, module string) bool {
-	for candidate := normalizeNamespace(module); candidate != ""; candidate = namespaceParent(candidate) {
-		if _, ok := namespaces[candidate]; ok {
-			return true
-		}
-		if _, ok := namespaces[candidate+`\`]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func namespaceParent(namespace string) string {
-	separator := strings.LastIndex(namespace, `\`)
-	if separator < 0 {
+	ancestors, limitHit := namespaceAncestors(module, maxPHPNamespaceSegmentsPerLookup)
+	if limitHit {
 		return ""
 	}
-	return namespace[:separator]
+	return r.resolveWithPSR4FromAncestors(ancestors)
 }
 
 func (r *composerResolver) resolveByNamespaceHeuristic(module string) string {
@@ -91,4 +86,64 @@ func normalizeNamespace(value string) string {
 	value = strings.TrimPrefix(value, `\`)
 	value = strings.TrimSuffix(value, `\`)
 	return value
+}
+
+func (r *composerResolver) isLocalNamespaceFromAncestors(ancestors []string) bool {
+	return hasNamespacePrefix(ancestors, r.localNamespace)
+}
+
+func (r *composerResolver) resolveWithPSR4FromAncestors(ancestors []string) string {
+	for _, candidate := range ancestors {
+		if dependency := lookupNamespaceDependency(r.namespaceToDep, candidate); dependency != "" {
+			return dependency
+		}
+	}
+	return ""
+}
+
+func lookupNamespaceDependency(namespaceToDep map[string]string, candidate string) string {
+	if dependency := namespaceToDep[candidate]; dependency != "" {
+		return dependency
+	}
+	return namespaceToDep[candidate+`\`]
+}
+
+func hasNamespacePrefix(ancestors []string, namespaces map[string]struct{}) bool {
+	for _, candidate := range ancestors {
+		if _, ok := namespaces[candidate]; ok {
+			return true
+		}
+		if _, ok := namespaces[candidate+`\`]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func namespaceAncestors(module string, segmentLimit int) ([]string, bool) {
+	module = normalizeNamespace(module)
+	if module == "" {
+		return nil, false
+	}
+	if segmentLimit <= 0 {
+		return nil, true
+	}
+	segments := 1
+	separators := make([]int, 0, segmentLimit-1)
+	for i := 0; i < len(module); i++ {
+		if module[i] != '\\' {
+			continue
+		}
+		segments++
+		if segments > segmentLimit {
+			return nil, true
+		}
+		separators = append(separators, i)
+	}
+	ancestors := make([]string, 0, len(separators)+1)
+	ancestors = append(ancestors, module)
+	for i := len(separators) - 1; i >= 0; i-- {
+		ancestors = append(ancestors, module[:separators[i]])
+	}
+	return ancestors, false
 }

@@ -32,14 +32,15 @@ type fileScan struct {
 }
 
 type scanState struct {
-	visited                     int
-	unresolvedNamespaces        int
-	foundPHP                    bool
-	skippedLargeFiles           int
-	skippedNestedPackage        int
-	useStatementLimitHits       int
-	useBindingLimitHits         int
-	namespaceReferenceLimitHits int
+	visited                      int
+	unresolvedNamespaces         int
+	foundPHP                     bool
+	skippedLargeFiles            int
+	skippedNestedPackage         int
+	useStatementLimitHits        int
+	useBindingLimitHits          int
+	namespaceReferenceLimitHits  int
+	namespaceResolutionLimitHits int
 }
 
 type scanCoordinator struct {
@@ -153,6 +154,10 @@ func (c *scanCoordinator) scanFile(path string) error {
 		c.state.namespaceReferenceLimitHits++
 		c.result.UsageIncomplete = true
 	}
+	if parsed.namespaceResolutionLimitHit {
+		c.state.namespaceResolutionLimitHits++
+		c.result.UsageIncomplete = true
+	}
 	c.result.Files = append(c.result.Files, fileScan{
 		Path:    relPath,
 		Imports: parsed.imports,
@@ -215,6 +220,9 @@ func appendScanWarnings(result *scanResult, state scanState) {
 	}
 	if state.namespaceReferenceLimitHits > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace reference scan after %d match(es) in %d file(s) to keep analysis bounded", maxPHPNamespaceReferencesPerFile, state.namespaceReferenceLimitHits))
+	}
+	if state.namespaceResolutionLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace resolution after %d segment(s) in %d file(s) to keep analysis bounded", maxPHPNamespaceSegmentsPerLookup, state.namespaceResolutionLimitHits))
 	}
 	if len(result.DynamicUsageByDependency) > 0 {
 		result.Warnings = append(result.Warnings, "dynamic loading/reflection patterns detected; dependency usage may be under-reported")

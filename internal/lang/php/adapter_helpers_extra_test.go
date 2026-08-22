@@ -545,6 +545,31 @@ func TestScanRepoMarksUsageIncompleteWhenUseStatementLimitHit(t *testing.T) {
 	}
 }
 
+func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionSegmentLimitHit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	content := helpersPHPHeader + "$client = new \\" + deepNamespaceForTest("Vendor\\Lib", maxPHPNamespaceSegmentsPerLookup+1) + "();\n"
+	writeFile(t, filepath.Join(repo, "src", "deep-namespace.php"), content)
+
+	scan, err := scanRepo(context.Background(), repo, composerData{
+		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
+		NamespaceToDep:       map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
+		LocalNamespaces:      map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if !usageIncompleteForTest(t, scan) {
+		t.Fatal("expected deep namespace resolution cap to mark scan usage incomplete")
+	}
+	if !containsWarning(scan.Warnings, "stopped PHP namespace resolution after") {
+		t.Fatalf("expected deep namespace resolution warning, got %#v", scan.Warnings)
+	}
+	if containsWarning(scan.Warnings, "unable to map 1 PHP import namespace(s)") {
+		t.Fatalf("did not expect bounded namespace resolution to be reported as unresolved mapping, got %#v", scan.Warnings)
+	}
+}
+
 func TestBuildDependencyReportSuppressesRemovalAdviceWhenUsageIncomplete(t *testing.T) {
 	scan := scanResult{
 		DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}},
@@ -836,6 +861,29 @@ func TestParseNamespaceReferencesDoesNotMaskNamespaceAfterArbitraryStatement(t *
 	}
 }
 
+func TestParseNamespaceReferencesDoesNotMaskClosureUseCapture(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := helpersPHPHeader +
+		"$callback = function ()\n" +
+		"    use ($service) {\n" +
+		"        \\Vendor\\Package\\Used::run();\n" +
+		"    };\n"
+
+	imports, unresolved := parseNamespaceReferences([]byte(content), "x.php", resolver)
+	if unresolved != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
+	}
+	if len(imports) != 1 {
+		t.Fatalf("expected closure body namespace reference to remain visible, got %#v", imports)
+	}
+	if imports[0].Module != "Vendor\\Package\\Used" {
+		t.Fatalf("expected module %q, got %#v", "Vendor\\Package\\Used", imports[0])
+	}
+	if imports[0].Location.Line != 4 {
+		t.Fatalf("expected closure body namespace import on line 4, got %#v", imports[0])
+	}
+}
+
 func TestParseNamespaceReferencesDoesNotLetUseLinesExhaustReferenceLimit(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Monolog": helpersMonologDependency}}
 	var content strings.Builder
@@ -987,14 +1035,14 @@ func TestParseUseStatementAndPartEdgeBranches(t *testing.T) {
 		t.Fatalf("expected empty statement branch, got imports=%#v grouped=%#v unresolved=%d", imports, grouped, unresolved)
 	}
 
-	imp, dep, ok, unresolvedImport := parseUsePart("", "", "x.php", 1, resolver)
-	if ok || unresolvedImport || dep != "" || imp.Dependency != "" {
+	imp, dep, ok, unresolvedImport, limitHit := parseUsePart("", "", "x.php", 1, resolver)
+	if ok || unresolvedImport || limitHit || dep != "" || imp.Dependency != "" {
 		t.Fatalf("expected empty use part to be ignored")
 	}
 
-	imp, dep, ok, unresolvedImport = parseUsePart(`Unknown\Pkg\Thing`, "", "x.php", 1, resolver)
-	if ok || dep != "" || !unresolvedImport || imp.Dependency != "" {
-		t.Fatalf("expected unresolved import branch, got ok=%v dep=%q unresolved=%v", ok, dep, unresolvedImport)
+	imp, dep, ok, unresolvedImport, limitHit = parseUsePart(`Unknown\Pkg\Thing`, "", "x.php", 1, resolver)
+	if ok || dep != "" || !unresolvedImport || limitHit || imp.Dependency != "" {
+		t.Fatalf("expected unresolved import branch, got ok=%v dep=%q unresolved=%v limitHit=%v", ok, dep, unresolvedImport, limitHit)
 	}
 }
 
@@ -1228,6 +1276,20 @@ func hasNamespaceDependencyMapping(namespaceToDep map[string]string, namespaceFr
 		}
 	}
 	return false
+}
+
+func deepNamespaceForTest(prefix string, totalSegments int) string {
+	prefix = normalizeNamespace(prefix)
+	segments := strings.Split(prefix, `\`)
+	if totalSegments < len(segments) {
+		totalSegments = len(segments)
+	}
+	var builder strings.Builder
+	builder.WriteString(prefix)
+	for i := len(segments); i < totalSegments; i++ {
+		builder.WriteString(`\Seg`)
+	}
+	return builder.String()
 }
 
 func usageIncompleteForTest(t *testing.T, value any) bool {
