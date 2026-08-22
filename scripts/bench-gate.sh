@@ -246,6 +246,9 @@ benchmark_harness_go_file_selected() {
 	if grep -Eq 'func[[:space:]]+(Benchmark|benchmark)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_go_file"; then
 		return 0;
 	fi;
+	if grep -Eq '(^|[^[:alnum:]_])benchmark[[:alnum:]_]*' "$fingerprint_go_file"; then
+		return 0;
+	fi;
 	if grep -Eq 'func[[:space:]]+(Test|Fuzz)[[:alnum:]_]*[[:space:]]*\(' "$fingerprint_go_file"; then
 		return 1;
 	fi;
@@ -259,11 +262,115 @@ benchmark_harness_append_file() {
 	fi;
 	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_blob" >> "$fingerprint_manifest_tmp";
 };
+benchmark_harness_path_hidden() {
+	fingerprint_path="$1";
+	while [ -n "$fingerprint_path" ]; do
+		fingerprint_part="${fingerprint_path%%/*}";
+		case "$fingerprint_part" in
+			.[!.]*|..?*|_*) return 0 ;;
+		esac;
+		[ "$fingerprint_part" != "$fingerprint_path" ] || break;
+		fingerprint_path="${fingerprint_path#*/}";
+	done;
+	return 1;
+};
+benchmark_harness_append_directory_embeds() {
+	fingerprint_embed_kind="$1";
+	fingerprint_embed_dir="$2";
+	fingerprint_include_hidden="$3";
+	fingerprint_embed_paths_tmp=$(mktemp) || return 1;
+	if ! find "$fingerprint_dir/$fingerprint_embed_dir" -type f > "$fingerprint_embed_paths_tmp"; then
+		rm -f "$fingerprint_embed_paths_tmp";
+		return 1;
+	fi;
+	fingerprint_directory_failed=0;
+	while IFS= read -r fingerprint_embed_path; do
+		fingerprint_embed_file="${fingerprint_embed_path#"$fingerprint_dir"/}";
+		fingerprint_embed_relative="${fingerprint_embed_file#"$fingerprint_embed_dir"/}";
+		if [ "$fingerprint_include_hidden" -ne 1 ] && benchmark_harness_path_hidden "$fingerprint_embed_relative"; then
+			continue;
+		fi;
+		benchmark_harness_append_file "$fingerprint_embed_kind" "$fingerprint_embed_file" || {
+			fingerprint_directory_failed=1;
+			break;
+		};
+	done < "$fingerprint_embed_paths_tmp";
+	rm -f "$fingerprint_embed_paths_tmp";
+	return "$fingerprint_directory_failed";
+};
+benchmark_harness_append_pattern_embeds() {
+	fingerprint_embed_kind="$1";
+	fingerprint_prefixed_pattern="$2";
+	fingerprint_include_hidden="$3";
+	if [ -d "$fingerprint_dir/$fingerprint_prefixed_pattern" ]; then
+		benchmark_harness_append_directory_embeds "$fingerprint_embed_kind" "$fingerprint_prefixed_pattern" "$fingerprint_include_hidden";
+		return "$?";
+	fi;
+	if [ -f "$fingerprint_dir/$fingerprint_prefixed_pattern" ]; then
+		benchmark_harness_append_file "$fingerprint_embed_kind" "$fingerprint_prefixed_pattern";
+		return "$?";
+	fi;
+	fingerprint_embed_failed=0;
+	# shellcheck disable=SC2086 # go:embed glob patterns are path globs relative to the declaring source file.
+	for fingerprint_embed_path in "$fingerprint_dir"/$fingerprint_prefixed_pattern; do
+		[ -f "$fingerprint_embed_path" ] || continue;
+		fingerprint_embed_file="${fingerprint_embed_path#"$fingerprint_dir"/}";
+		benchmark_harness_append_file "$fingerprint_embed_kind" "$fingerprint_embed_file" || {
+			fingerprint_embed_failed=1;
+			break;
+		};
+	done;
+	return "$fingerprint_embed_failed";
+};
+benchmark_harness_embed_tokens() {
+	fingerprint_source_file="$1";
+	awk '
+		/^\/\/go:embed[[:space:]]/ {
+			line = $0
+			sub(/^\/\/go:embed[[:space:]]+/, "", line)
+			token = ""
+			quote = ""
+			for (i = 1; i <= length(line); i++) {
+				char = substr(line, i, 1)
+				if (quote == "") {
+					if (char ~ /[[:space:]]/) {
+						if (token != "") {
+							print token
+							token = ""
+						}
+					} else if (char == "\"" || char == "`") {
+						quote = char
+					} else {
+						token = token char
+					}
+				} else if (quote == "\"") {
+					if (char == "\\") {
+						i++
+						if (i <= length(line)) {
+							token = token substr(line, i, 1)
+						}
+					} else if (char == "\"") {
+						quote = ""
+					} else {
+						token = token char
+					}
+				} else if (char == "`") {
+					quote = ""
+				} else {
+					token = token char
+				}
+			}
+			if (token != "") {
+				print token
+			}
+		}
+	' "$fingerprint_dir/$fingerprint_source_file";
+};
 benchmark_harness_append_embeds() {
 	fingerprint_embed_kind="$1";
 	fingerprint_source_file="$2";
 	fingerprint_patterns_tmp=$(mktemp) || return 1;
-	if ! awk '/^\/\/go:embed[[:space:]]/ { sub(/^\/\/go:embed[[:space:]]+/, ""); print }' "$fingerprint_dir/$fingerprint_source_file" > "$fingerprint_patterns_tmp"; then
+	if ! benchmark_harness_embed_tokens "$fingerprint_source_file" > "$fingerprint_patterns_tmp"; then
 		rm -f "$fingerprint_patterns_tmp";
 		return 1;
 	fi;
@@ -274,35 +381,24 @@ benchmark_harness_append_embeds() {
 		fingerprint_source_dir="$fingerprint_source_dir/";
 	fi;
 	fingerprint_embed_failed=0;
-	while IFS= read -r fingerprint_embed_line; do
-		for fingerprint_embed_pattern in $fingerprint_embed_line; do
-			fingerprint_embed_pattern="${fingerprint_embed_pattern#\"}";
-			fingerprint_embed_pattern="${fingerprint_embed_pattern%\"}";
-			fingerprint_embed_pattern="${fingerprint_embed_pattern#\`}";
-			fingerprint_embed_pattern="${fingerprint_embed_pattern%\`}";
-			fingerprint_embed_pattern="${fingerprint_embed_pattern#all:}";
-			[ -n "$fingerprint_embed_pattern" ] || continue;
-			fingerprint_prefixed_pattern="$fingerprint_source_dir$fingerprint_embed_pattern";
-			if [ -d "$fingerprint_dir/$fingerprint_prefixed_pattern" ]; then
-				fingerprint_prefixed_pattern="$fingerprint_prefixed_pattern/*";
-			fi;
-			# shellcheck disable=SC2086 # go:embed patterns are path globs relative to the declaring source file.
-			for fingerprint_embed_path in "$fingerprint_dir"/$fingerprint_prefixed_pattern; do
-				[ -f "$fingerprint_embed_path" ] || continue;
-				fingerprint_embed_file="${fingerprint_embed_path#"$fingerprint_dir"/}";
-				benchmark_harness_append_file "$fingerprint_embed_kind" "$fingerprint_embed_file" || {
-					fingerprint_embed_failed=1;
-					break;
-				};
-			done;
-			[ "$fingerprint_embed_failed" -eq 0 ] || break;
-		done;
-		[ "$fingerprint_embed_failed" -eq 0 ] || break;
+	while IFS= read -r fingerprint_embed_pattern; do
+		[ -n "$fingerprint_embed_pattern" ] || continue;
+		fingerprint_include_hidden=0;
+		case "$fingerprint_embed_pattern" in
+			all:*)
+				fingerprint_embed_pattern="${fingerprint_embed_pattern#all:}";
+				fingerprint_include_hidden=1;
+				;;
+		esac;
+		[ -n "$fingerprint_embed_pattern" ] || continue;
+		fingerprint_prefixed_pattern="$fingerprint_source_dir$fingerprint_embed_pattern";
+		benchmark_harness_append_pattern_embeds "$fingerprint_embed_kind" "$fingerprint_prefixed_pattern" "$fingerprint_include_hidden" || {
+			fingerprint_embed_failed=1;
+			break;
+		};
 	done < "$fingerprint_patterns_tmp";
 	rm -f "$fingerprint_patterns_tmp";
-	if [ "$fingerprint_embed_failed" -ne 0 ]; then
-		return 1;
-	fi;
+	return "$fingerprint_embed_failed";
 };
 benchmark_harness_fingerprint() {
 	fingerprint_pkg="$1";

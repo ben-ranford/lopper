@@ -3960,12 +3960,27 @@ func TestOrdinaryEmbeddedFixture(t *testing.T) {
 	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
 
+type benchmarkFixtureFile struct {
+	path    string
+	content string
+}
+
+type changedBenchmarkFixtureCase struct {
+	name          string
+	files         []benchmarkFixtureFile
+	changePath    string
+	headContent   string
+	selectionName string
+	benchName     string
+}
+
 func TestMakefileBenchGateRejectsChangedEmbeddedBenchmarkFixtureBeforeExecution(t *testing.T) {
 	t.Parallel()
 
-	repo, benchVars := newTempBenchGateGoRepo(t)
-	benchmarkSource := `package benchpkg
-
+	assertBenchGateRejectsChangedEmbeddedBenchmarkFixtureBeforeExecution(t, changedBenchmarkFixtureCase{
+		name: "direct file",
+		files: []benchmarkFixtureFile{
+			{path: "benchpkg/bench_test.go", content: `package benchpkg
 import (
 	_ "embed"
 	"testing"
@@ -3981,23 +3996,179 @@ func BenchmarkEmbeddedFixture(b *testing.B) {
 		embeddedBenchmarkSink += len(embeddedBenchmarkInput)
 	}
 }
-`
-	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkSource)
-	writeFile(t, filepath.Join(repo, "benchpkg", "testdata", "input.txt"), "base fixture\n")
-	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/testdata/input.txt")
+`},
+			{path: "benchpkg/testdata/input.txt", content: "base fixture\n"},
+		},
+		changePath:    "benchpkg/testdata/input.txt",
+		headContent:   "head fixture\n",
+		selectionName: "BenchmarkEmbeddedFixture",
+		benchName:     "BenchmarkEmbeddedFixture-",
+	})
+}
+
+func TestMakefileBenchGateRejectsChangedEmbeddedBenchmarkHarnessInputs(t *testing.T) {
+	t.Parallel()
+
+	tests := []changedBenchmarkFixtureCase{
+		{
+			name: "recursive directory",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed testdata
+var benchmarkFixtures embed.FS
+
+var benchmarkDirectorySink int
+
+func BenchmarkEmbeddedDirectory(b *testing.B) {
+	data, err := benchmarkFixtures.ReadFile("testdata/nested/input.txt")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		benchmarkDirectorySink += len(data)
+	}
+}
+`},
+				{path: "benchpkg/testdata/nested/input.txt", content: "base nested fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/nested/input.txt",
+			headContent:   "head nested fixture\n",
+			selectionName: "BenchmarkEmbeddedDirectory",
+			benchName:     "BenchmarkEmbeddedDirectory-",
+		},
+		{
+			name: "helper test with ordinary test",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import "testing"
+
+var benchmarkHelperSink int
+
+func BenchmarkEmbeddedHelper(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		benchmarkHelperSink += len(benchmarkHelperInput)
+	}
+}
+`},
+				{path: "benchpkg/helper_test.go", content: `package benchpkg
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed testdata/helper.txt
+var benchmarkHelperInput string
+
+func TestHelperFixture(t *testing.T) {
+	if benchmarkHelperInput == "" {
+		t.Fatal("missing helper fixture")
+	}
+}
+`},
+				{path: "benchpkg/testdata/helper.txt", content: "base helper fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/helper.txt",
+			headContent:   "head helper fixture\n",
+			selectionName: "BenchmarkEmbeddedHelper",
+			benchName:     "BenchmarkEmbeddedHelper-",
+		},
+		{
+			name: "quoted file with spaces",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	_ "embed"
+	"testing"
+)
+
+//go:embed "testdata/input file.txt"
+var benchmarkQuotedInput string
+
+var benchmarkQuotedSink int
+
+func BenchmarkEmbeddedQuotedFile(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		benchmarkQuotedSink += len(benchmarkQuotedInput)
+	}
+}
+`},
+				{path: "benchpkg/testdata/input file.txt", content: "base quoted fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/input file.txt",
+			headContent:   "head quoted fixture\n",
+			selectionName: "BenchmarkEmbeddedQuotedFile",
+			benchName:     "BenchmarkEmbeddedQuotedFile-",
+		},
+		{
+			name: "all directory includes hidden",
+			files: []benchmarkFixtureFile{
+				{path: "benchpkg/bench_test.go", content: `package benchpkg
+import (
+	"embed"
+	"testing"
+)
+
+//go:embed all:testdata
+var benchmarkAllFixtures embed.FS
+
+var benchmarkAllSink int
+
+func BenchmarkEmbeddedAllDirectory(b *testing.B) {
+	data, err := benchmarkAllFixtures.ReadFile("testdata/.hidden.txt")
+	if err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < b.N; i++ {
+		benchmarkAllSink += len(data)
+	}
+}
+`},
+				{path: "benchpkg/testdata/.hidden.txt", content: "base hidden fixture\n"},
+			},
+			changePath:    "benchpkg/testdata/.hidden.txt",
+			headContent:   "head hidden fixture\n",
+			selectionName: "BenchmarkEmbeddedAllDirectory",
+			benchName:     "BenchmarkEmbeddedAllDirectory-",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertBenchGateRejectsChangedEmbeddedBenchmarkFixtureBeforeExecution(t, tc)
+		})
+	}
+}
+
+func assertBenchGateRejectsChangedEmbeddedBenchmarkFixtureBeforeExecution(t *testing.T, tc changedBenchmarkFixtureCase) {
+	t.Helper()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	paths := []string{"go.mod"}
+	for _, file := range tc.files {
+		writeFile(t, filepath.Join(repo, file.path), file.content)
+		paths = append(paths, file.path)
+	}
+	slices.Sort(paths)
+	runGitCommand(t, repo, append([]string{"add"}, paths...)...)
 	runGitCommand(t, repo, "commit", "-m", "add embedded benchmark fixture")
 
-	writeFile(t, filepath.Join(repo, "benchpkg", "testdata", "input.txt"), "head fixture\n")
-	runGitCommand(t, repo, "add", "benchpkg/testdata/input.txt")
+	writeFile(t, filepath.Join(repo, tc.changePath), tc.headContent)
+	runGitCommand(t, repo, "add", tc.changePath)
 	runGitCommand(t, repo, "commit", "-m", "change embedded benchmark fixture")
-
 	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
 	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
 	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
 	if exitCode != 2 {
 		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
 	}
-	if !strings.Contains(output, "package=github.com/ben-ranford/lopper/benchpkg selection=^(BenchmarkEmbeddedFixture)$") ||
+	if !strings.Contains(output, "package=github.com/ben-ranford/lopper/benchpkg selection=^("+tc.selectionName+")$") ||
 		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
 		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
 	}
@@ -4014,7 +4185,7 @@ func BenchmarkEmbeddedFixture(b *testing.B) {
 	wantOmit := []string{
 		"Result: memory benchmark gate passed.",
 		"Result: memory benchmark regression detected.",
-		"BenchmarkEmbeddedFixture-",
+		tc.benchName,
 	}
 	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
 	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
