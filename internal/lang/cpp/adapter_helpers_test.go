@@ -167,6 +167,52 @@ int main() { return 0; }
 	})
 }
 
+func TestAnalyseRepeatedIdenticalCompileEntriesDedupesEvidenceLocations(t *testing.T) {
+	repo := t.TempDir()
+	first := filepath.Join(repo, "first")
+	second := filepath.Join(repo, "second")
+	testutil.MustWriteFile(t, filepath.Join(first, "firstlib", "only.hpp"), "// first only\n")
+	testutil.MustWriteFile(t, filepath.Join(second, "secondlib", "only.hpp"), "// second only\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include <firstlib/only.hpp>
+#include <secondlib/only.hpp>
+int main() { return 0; }
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I",%q,"-c","src/`+testMainCPPFileName+`"]},
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I",%q,"-c","src/`+testMainCPPFileName+`"]},
+  {"directory":".","file":"src/`+testMainCPPFileName+`","arguments":["c++","-I",%q,"-c","src/`+testMainCPPFileName+`"]}
+]`, first, first, second))
+
+	compileInfo, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	if len(compileInfo.SourceContexts) != 3 {
+		t.Fatalf("expected compile context provenance to retain duplicate commands, got %#v", compileInfo.SourceContexts)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"firstlib":  1,
+		"secondlib": 1,
+	})
+
+	firstlib := dependencyByName(reportData.Dependencies, "firstlib")
+	if len(firstlib.UsedImports) != 1 || firstlib.UsedImports[0].Name != "firstlib/only.hpp" {
+		t.Fatalf("expected one firstlib import entry, got %#v", firstlib.UsedImports)
+	}
+	wantLocation := report.Location{File: filepath.Join("src", testMainCPPFileName), Line: 1, Column: 1}
+	if !slices.Equal(firstlib.UsedImports[0].Locations, []report.Location{wantLocation}) {
+		t.Fatalf("expected duplicate compile commands to emit one evidence location, got %#v", firstlib.UsedImports[0].Locations)
+	}
+}
+
 func TestAnalyseDoesNotLetFlaglessCompileEntriesInheritOtherIncludeDirs(t *testing.T) {
 	repo := t.TempDir()
 	includeRoot := filepath.Join(repo, "include")
@@ -1107,4 +1153,13 @@ func dependencyExportCount(dependencies []report.DependencyReport, name string) 
 		}
 	}
 	return 0
+}
+
+func dependencyByName(dependencies []report.DependencyReport, name string) report.DependencyReport {
+	for _, dependency := range dependencies {
+		if dependency.Name == name {
+			return dependency
+		}
+	}
+	return report.DependencyReport{}
 }
