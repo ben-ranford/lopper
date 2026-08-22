@@ -5,10 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	pythonlang "github.com/ben-ranford/lopper/internal/lang/python"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
+
+const analysisPythonManifestReadLimitBytes int64 = 16 << 20
 
 func TestPythonIdentityUsesExactPyprojectAndPipfilePins(t *testing.T) {
 	repoPath := t.TempDir()
@@ -243,7 +244,7 @@ func TestPythonManifestIdentityReadsLargeAdapterSupportedManifest(t *testing.T) 
 
 func TestPythonManifestIdentityWarnsOnManifestOverSharedReadLimit(t *testing.T) {
 	repoPath := t.TempDir()
-	testutil.MustWriteFile(t, filepath.Join(repoPath, pythonPipfileName), "[packages]\nflask = \"==3.0.0\"\n"+strings.Repeat("# filler\n", int(pythonlang.ManifestReadLimitBytes)/len("# filler\n")+1))
+	testutil.MustWriteFile(t, filepath.Join(repoPath, pythonPipfileName), "[packages]\nflask = \"==3.0.0\"\n"+strings.Repeat("# filler\n", int(analysisPythonManifestReadLimitBytes)/len("# filler\n")+1))
 	reportData := report.Report{Dependencies: []report.DependencyReport{
 		{Language: "python", Name: "flask"},
 	}}
