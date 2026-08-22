@@ -422,7 +422,7 @@ func isLikelyStdHeader(header string) bool {
 		if hasOSCompilerHeaderPrefix(header) {
 			return true
 		}
-		return hasGatedStdHeaderPrefix(header) && isKnownQualifiedStdHeaderBase(header)
+		return isKnownQualifiedStdHeader(header)
 	}
 
 	base := strings.TrimSpace(filepath.Base(header))
@@ -443,26 +443,9 @@ func hasOSCompilerHeaderPrefix(header string) bool {
 	return false
 }
 
-func hasGatedStdHeaderPrefix(header string) bool {
-	for _, prefix := range []string{"experimental/", "tr1/", "tr2/", "ext/", "parallel/", "debug/", "backward/"} {
-		if strings.HasPrefix(header, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func isKnownQualifiedStdHeaderBase(header string) bool {
-	base := strings.TrimSpace(filepath.Base(header))
-	if base == "" {
-		return false
-	}
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	base = strings.ToLower(base)
-	if _, ok := cppStdHeaderSet[base]; ok {
-		return true
-	}
-	_, ok := cppQualifiedStdHeaderBaseSet[base]
+func isKnownQualifiedStdHeader(header string) bool {
+	header = strings.ToLower(strings.TrimSpace(header))
+	_, ok := cppQualifiedStdHeaderSet[header]
 	return ok
 }
 
@@ -499,8 +482,12 @@ var cppStdHeaderSet = map[string]struct{}{
 	"assert": {}, "ctype": {}, "errno": {}, "float": {}, "inttypes": {}, "math": {}, "setjmp": {}, "signal": {}, "stdarg": {}, "stddef": {}, "stdint": {}, "stdio": {}, "stdlib": {}, "time": {}, "wchar": {}, "wctype": {},
 }
 
-var cppQualifiedStdHeaderBaseSet = map[string]struct{}{
-	"c++config": {},
-	"stdc++":    {},
-	"types":     {},
+var cppQualifiedStdHeaderSet = map[string]struct{}{
+	"backward/strstream":      {},
+	"debug/vector":            {},
+	"experimental/filesystem": {},
+	"ext/algorithm":           {},
+	"parallel/algorithm":      {},
+	"tr1/regex":               {},
+	"tr2/type_traits":         {},
 }
