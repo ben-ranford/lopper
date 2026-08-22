@@ -209,6 +209,7 @@ func shellArrayValues(t *testing.T, script string, name string) []string {
 func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	t.Parallel()
 	assertPullRequestTriggerTypes(t, ".github/workflows/ci.yml")
+	assertManualDispatchTrigger(t, ".github/workflows/ci.yml")
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
@@ -324,5 +325,14 @@ func assertPullRequestTriggerTypes(t *testing.T, workflowPath string) {
 		if got[i] != want[i] {
 			t.Fatalf("%s pull_request types = %v, want %v", workflowPath, got, want)
 		}
+	}
+}
+
+func assertManualDispatchTrigger(t *testing.T, workflowPath string) {
+	t.Helper()
+
+	workflowText := readConfig(t, workflowPath)
+	if !strings.Contains(workflowText, "workflow_dispatch:\n  pull_request:") {
+		t.Fatalf("%s must support manual dispatch without losing pull_request triggers", workflowPath)
 	}
 }
