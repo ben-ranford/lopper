@@ -58,7 +58,7 @@ func (s *atomicWriteSession) commit() error {
 	}
 	s.tempRel = ""
 	if err := s.verifyCommittedTarget(); err != nil {
-		return errors.Join(err, s.removeMismatchedCommittedTarget())
+		return err
 	}
 	return nil
 }
@@ -78,13 +78,6 @@ func (s *atomicWriteSession) verifyCommittedTarget() error {
 		return fmt.Errorf("temporary file is not regular after commit: %s", s.targetRel)
 	}
 	return verifyPublishedPathMatchesInfo(s.root, s.targetRel, s.tempInfo, "committed target changed before validation")
-}
-
-func (s *atomicWriteSession) removeMismatchedCommittedTarget() error {
-	if err := s.root.Remove(s.targetRel); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
 }
 
 func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo, message string) error {
@@ -192,7 +185,7 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 	}
 	session.tempRel = ""
 	if err := session.verifyCommittedTarget(); err != nil {
-		return errors.Join(err, session.removeMismatchedCommittedTarget())
+		return err
 	}
 	return nil
 }
