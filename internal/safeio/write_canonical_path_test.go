@@ -364,6 +364,86 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathWritesSearchOnlyParent(t *
 	}
 }
 
+func TestWriteFileAtomicallyReplacingUnderCanonicalPathOverwritesSearchOnlyParent(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+
+	parent := filepath.Join(t.TempDir(), "dropbox")
+	if err := os.Mkdir(parent, 0o733); err != nil {
+		t.Fatalf("mkdir dropbox: %v", err)
+	}
+	target := filepath.Join(parent, writeTestFileName)
+	if err := os.WriteFile(target, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	if err := os.Chmod(parent, 0o333); err != nil {
+		t.Fatalf("chmod dropbox search-only: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore dropbox permissions: %v", err)
+		}
+	})
+	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
+		t.Skipf("parent read permission semantics are not testable: %v", err)
+	}
+
+	if err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomicallyReplacingUnderCanonicalPath returned error: %v", err)
+	}
+	assertFileContent(t, target, "after")
+	if info, err := os.Stat(target); err != nil {
+		t.Fatalf("stat target: %v", err)
+	} else if info.Mode().Perm() != 0o640 {
+		t.Fatalf("expected replacement to preserve mode 0640, got %#o", info.Mode().Perm())
+	}
+}
+
+func TestWriteFileAtomicallyReplacingUnderCanonicalPathCreatesAbsentTarget(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+
+	parent := filepath.Join(t.TempDir(), "dropbox")
+	if err := os.Mkdir(parent, 0o333); err != nil {
+		t.Fatalf("mkdir dropbox: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore dropbox permissions: %v", err)
+		}
+	})
+	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
+		t.Skipf("parent read permission semantics are not testable: %v", err)
+	}
+	target := filepath.Join(parent, writeTestFileName)
+
+	if err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomicallyReplacingUnderCanonicalPath returned error: %v", err)
+	}
+	assertFileContent(t, target, "after")
+}
+
+func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsExistingSymlink(t *testing.T) {
+	parent := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(parent, writeTestFileName)
+	outsideTarget := filepath.Join(outside, writeTestFileName)
+	if err := os.WriteFile(outsideTarget, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("seed outside target: %v", err)
+	}
+	if err := os.Symlink(outsideTarget, target); err != nil {
+		t.Fatalf("create target symlink: %v", err)
+	}
+
+	err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "target path is a symlink") {
+		t.Fatalf("expected target symlink rejection, got %v", err)
+	}
+	assertFileContent(t, outsideTarget, "outside")
+}
+
 func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathCreatesNestedParentInSearchOnlyParent(t *testing.T) {
 	if syscall.Geteuid() == 0 {
 		t.Skip("effective privileges bypass parent permission checks")

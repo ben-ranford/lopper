@@ -10,7 +10,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
 
-var writeProfileConfigCanonicalIfAbsentFn = safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath
+var (
+	writeProfileConfigCanonicalIfAbsentFn  = safeio.WriteFileAtomicallyIfAbsentUnderCanonicalPath
+	writeProfileConfigCanonicalReplacingFn = safeio.WriteFileAtomicallyReplacingUnderCanonicalPath
+)
 
 func (a *App) executeProfile(req Request) (string, error) {
 	if !req.Profile.Features.Enabled(thresholds.ProfilesPreviewFeature) {
@@ -51,7 +54,7 @@ func persistProfileConfigForced(config, outputPath string) (returnErr error) {
 	destination, err := openCommandOutputDestination(outputPath)
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return persistProfileConfigCanonicalIfAbsent(config, outputPath, err)
+			return persistProfileConfigCanonicalReplacing(config, outputPath, err)
 		}
 		return err
 	}
@@ -88,4 +91,12 @@ func persistProfileConfigCanonicalIfAbsent(config, outputPath string, primaryErr
 		return errors.Join(primaryErr, resolveErr)
 	}
 	return writeProfileConfigCanonicalIfAbsentFn(resolvedOutputPath, []byte(config), 0o600)
+}
+
+func persistProfileConfigCanonicalReplacing(config, outputPath string, primaryErr error) error {
+	resolvedOutputPath, resolveErr := absoluteCommandOutputPath(outputPath)
+	if resolveErr != nil {
+		return errors.Join(primaryErr, resolveErr)
+	}
+	return writeProfileConfigCanonicalReplacingFn(resolvedOutputPath, []byte(config), 0o600)
 }

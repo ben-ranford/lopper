@@ -96,6 +96,41 @@ func TestPersistProfileConfigForceWritesAbsentOutputIntoSearchOnlyParent(t *test
 	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
 }
 
+func TestPersistProfileConfigForceOverwritesExistingOutputInSearchOnlyParent(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+
+	parentDir := filepath.Join(t.TempDir(), "dropbox")
+	if err := os.Mkdir(parentDir, 0o733); err != nil {
+		t.Fatalf("mkdir dropbox: %v", err)
+	}
+	outputPath := filepath.Join(parentDir, "profile.yaml")
+	if err := os.WriteFile(outputPath, []byte("thresholds:\n  fail_on_increase_percent: 5\n"), 0o600); err != nil {
+		t.Fatalf("seed profile output: %v", err)
+	}
+	if err := os.Chmod(parentDir, 0o333); err != nil {
+		t.Fatalf("chmod dropbox search-only: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parentDir, 0o755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore dropbox permissions: %v", err)
+		}
+	})
+	requireParentReadDenied(t, parentDir)
+	requireParentWriteAllowed(t, parentDir, ".profile-write-probe")
+	requireWritableTargetReopenable(t, outputPath)
+
+	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, true)
+	if err != nil {
+		t.Fatalf("persist forced profile output: %v", err)
+	}
+	if status != "threshold profile config written to "+outputPath {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
+}
+
 func TestPersistProfileConfigFallbackUsesPhysicalRelativeOutputPath(t *testing.T) {
 	physicalRoot := t.TempDir()
 	aliasRoot := filepath.Join(t.TempDir(), "workspace-link")
@@ -119,19 +154,23 @@ func TestPersistProfileConfigFallbackUsesPhysicalRelativeOutputPath(t *testing.T
 
 	originalOpenWriteRoot := openCommandOutputWriteRootFn
 	originalCanonicalWrite := writeProfileConfigCanonicalIfAbsentFn
+	originalCanonicalReplacing := writeProfileConfigCanonicalReplacingFn
 	t.Cleanup(func() {
 		openCommandOutputWriteRootFn = originalOpenWriteRoot
 		writeProfileConfigCanonicalIfAbsentFn = originalCanonicalWrite
+		writeProfileConfigCanonicalReplacingFn = originalCanonicalReplacing
 	})
 
 	openCommandOutputWriteRootFn = func(string) (*safeio.WriteRoot, error) {
 		return nil, os.ErrPermission
 	}
 	var capturedPaths []string
-	writeProfileConfigCanonicalIfAbsentFn = func(targetPath string, _ []byte, _ os.FileMode) error {
+	capturePath := func(targetPath string, _ []byte, _ os.FileMode) error {
 		capturedPaths = append(capturedPaths, targetPath)
 		return nil
 	}
+	writeProfileConfigCanonicalIfAbsentFn = capturePath
+	writeProfileConfigCanonicalReplacingFn = capturePath
 
 	outputPath := filepath.Join("dropbox", "profile.yaml")
 	for _, force := range []bool{false, true} {

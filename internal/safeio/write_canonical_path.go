@@ -50,6 +50,30 @@ func WriteFileAtomicallyIfAbsentUnderCanonicalPath(targetPath string, data []byt
 	return writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, targetRel, data, perm)
 }
 
+// WriteFileAtomicallyReplacingUnderCanonicalPath publishes targetPath under a
+// descriptor-pinned canonical parent. Missing targets are created exclusively;
+// existing targets are replaced only when they are regular files.
+func WriteFileAtomicallyReplacingUnderCanonicalPath(targetPath string, data []byte, perm os.FileMode) (returnErr error) {
+	targetAbs, err := resolveAbsolutePath("target", targetPath)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(targetAbs)
+
+	parentFile, parentFD, err := openOrCreateSearchOnlyCanonicalDirectory(parent, canonicalPathParentPerm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := parentFile.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+
+	targetRel := filepath.Base(targetAbs)
+	return writeFileAtomicallyReplacingUnderDescriptorPath(parentFD, targetRel, data, perm)
+}
+
 func openSearchOnlyCanonicalDirectory(path string) (*os.File, int, error) {
 	return openSearchOnlyCanonicalDirectoryWithOptions(path, false, 0)
 }
@@ -207,6 +231,94 @@ func writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD int, targetRel stri
 	return nil
 }
 
+func writeFileAtomicallyReplacingUnderDescriptorPath(parentFD int, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
+	targetInfo, targetErr := descriptorLstatFn(parentFD, targetRel)
+	switch {
+	case errors.Is(targetErr, os.ErrNotExist):
+		return writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, targetRel, data, perm)
+	case targetErr != nil:
+		return targetErr
+	case descriptorInfoIsSymlink(targetInfo):
+		return fmt.Errorf("target path is a symlink: %s", targetRel)
+	case !descriptorInfoIsRegular(targetInfo):
+		return fmt.Errorf("target path is not a regular file: %s", targetRel)
+	}
+
+	targetFile, err := openDescriptorReplacementTarget(parentFD, targetRel, targetInfo)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := targetFile.Close(); closeErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+
+	writePerm := descriptorInfoPerm(targetInfo)
+	tempRel, tempFile, err := createDescriptorTempFile(parentFD, writePerm)
+	if err != nil {
+		return err
+	}
+	tempCreated := true
+	defer func() {
+		if tempCreated {
+			returnErr = errors.Join(returnErr, cleanupDescriptorTempFile(parentFD, tempRel, tempFile))
+		}
+	}()
+
+	if _, err := tempFile.Write(data); err != nil {
+		return err
+	}
+	if err := tempFile.Chmod(writePerm); err != nil {
+		return err
+	}
+	tempInfo, err := tempFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !tempInfo.Mode().IsRegular() {
+		return fmt.Errorf("temporary file is not regular: %s", tempRel)
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	tempFile = nil
+
+	if err := unix.Renameat(parentFD, tempRel, parentFD, targetRel); err != nil {
+		return err
+	}
+	tempCreated = false
+
+	pathInfo, err := descriptorLstatFn(parentFD, targetRel)
+	if err != nil {
+		return fmt.Errorf("replacement target changed before validation: %w", err)
+	}
+	if descriptorInfoIsSymlink(pathInfo) {
+		return fmt.Errorf("replacement target became a symlink before validation: %s", targetRel)
+	}
+	if !descriptorInfoIsRegular(pathInfo) || !sameDescriptorFileInfo(tempInfo, pathInfo) {
+		return fmt.Errorf("replacement target changed before validation: %s", targetRel)
+	}
+	return nil
+}
+
+func openDescriptorReplacementTarget(parentFD int, targetRel string, expectedInfo descriptorFileInfo) (*os.File, error) {
+	fd, err := unix.Openat(parentFD, targetRel, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), targetRel)
+	openedInfo, err := descriptorStatFn(fd)
+	if err != nil {
+		return nil, closeFileWithError(file, err)
+	}
+	if !descriptorInfoIsRegular(openedInfo) || !sameDescriptorInfos(expectedInfo, openedInfo) {
+		err := fmt.Errorf("target changed while opening for replacement: %s", targetRel)
+		return nil, closeFileWithError(file, err)
+	}
+	return file, nil
+}
+
 func rejectExistingDescriptorPath(parentFD int, targetRel string) error {
 	info, err := descriptorLstat(parentFD, targetRel)
 	switch {
@@ -246,6 +358,10 @@ func descriptorInfoIsSymlink(info descriptorFileInfo) bool {
 
 func descriptorInfoIsDirectory(info descriptorFileInfo) bool {
 	return info.mode&unix.S_IFMT == unix.S_IFDIR
+}
+
+func descriptorInfoPerm(info descriptorFileInfo) os.FileMode {
+	return os.FileMode(info.mode).Perm()
 }
 
 func descriptorStat(fd int) (descriptorFileInfo, error) {
