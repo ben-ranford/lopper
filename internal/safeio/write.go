@@ -422,6 +422,26 @@ func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 	return cleanupErr
 }
 
+func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileInfo) error {
+	if tempRel == "" {
+		return nil
+	}
+	if expected == nil {
+		return fmt.Errorf("cleanup file identity unavailable: %s", tempRel)
+	}
+	info, err := root.Lstat(tempRel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return nil
+	}
+	return cleanupAtomicTempFile(root, tempRel, nil)
+}
+
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {
 	tempDir := filepath.Clean(dir)
 	if tempDir == "." {

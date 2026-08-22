@@ -43,6 +43,10 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 	if err := root.MkdirAll(filepath.Dir(targetRel), dirPerm); err != nil {
 		return err
 	}
+	if filepath.Clean(sourceRel) == filepath.Clean(targetRel) {
+		_, err := chmodAndSnapshotMoveSource(root, sourceRel, filePerm)
+		return err
+	}
 
 	sourceInfo, renameErr := prepareAndRenameWithinRoot(root, sourceRel, targetRel, filePerm)
 	if renameErr == nil {
@@ -65,8 +69,12 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return nil, err
 	}
-	if err := publishIdentityBoundReplacing(root, sourceRel, targetRel, sourceInfo, "move source changed before rename", "move target changed before validation"); err != nil {
+	sourceConsumed, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, "move source changed before rename", "move target changed before validation")
+	if err != nil {
 		return sourceInfo, err
+	}
+	if sourceConsumed {
+		return sourceInfo, nil
 	}
 	if err := removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup"); err != nil {
 		return sourceInfo, err
@@ -168,12 +176,21 @@ func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message st
 		return err
 	}
 	if !stagedInfo.Mode().IsRegular() || !os.SameFile(expected, stagedInfo) {
-		restoreErr := root.Rename(stagedRel, rel)
+		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel)
 		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 	}
-	if err := cleanupAtomicTempFile(root, stagedRel, nil); err != nil {
-		restoreErr := root.Rename(stagedRel, rel)
+	if err := cleanupAtomicTempFileIfMatches(root, stagedRel, expected); err != nil {
+		restoreErr := restoreSourceIfAbsent(root, stagedRel, rel)
 		return errors.Join(err, restoreErr)
 	}
 	return nil
+}
+
+func restoreSourceIfAbsent(root Root, stagedRel, rel string) error {
+	if _, err := root.Lstat(rel); err == nil {
+		return fmt.Errorf("source path occupied during restore: %s", rel)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return root.Rename(stagedRel, rel)
 }

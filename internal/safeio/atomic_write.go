@@ -3,9 +3,11 @@ package safeio
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 type atomicWriteSession struct {
@@ -109,21 +111,30 @@ func verifyPublishedPathMatchesInfo(root Root, rel string, expected fs.FileInfo,
 }
 
 func publishIdentityBoundReplacing(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string) (returnErr error) {
+	_, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, expected, sourceMessage, targetMessage)
+	return err
+}
+
+func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string) (_ bool, returnErr error) {
 	stagedRel, err := stageIdentityBoundLink(root, sourceRel, expected, sourceMessage)
 	if err != nil {
-		return err
+		if !identityBoundLinkUnsupported(err) {
+			return false, err
+		}
+		if err := root.Rename(sourceRel, targetRel); err != nil {
+			return false, &publishRenameError{sourceRel: sourceRel, err: err}
+		}
+		return true, verifyPublishedPathMatchesInfo(root, targetRel, expected, targetMessage)
 	}
-	cleanupRel := stagedRel
 	defer func() {
-		if cleanupErr := cleanupAtomicTempFile(root, cleanupRel, nil); cleanupErr != nil {
+		if cleanupErr := cleanupAtomicTempFileIfMatches(root, stagedRel, expected); cleanupErr != nil {
 			returnErr = errors.Join(returnErr, cleanupErr)
 		}
 	}()
 	if err := root.Rename(stagedRel, targetRel); err != nil {
-		return &publishRenameError{sourceRel: stagedRel, err: err}
+		return false, &publishRenameError{sourceRel: stagedRel, err: err}
 	}
-	cleanupRel = ""
-	return verifyPublishedPathMatchesInfo(root, targetRel, expected, targetMessage)
+	return false, verifyPublishedPathMatchesInfo(root, targetRel, expected, targetMessage)
 }
 
 func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, message string) (string, error) {
@@ -144,11 +155,18 @@ func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, m
 			return "", err
 		}
 		if err := verifyPublishedPathMatchesInfo(root, stagedRel, expected, message); err != nil {
-			return "", errors.Join(err, cleanupAtomicTempFile(root, stagedRel, nil))
+			return "", errors.Join(err, cleanupAtomicTempFileIfMatches(root, stagedRel, expected))
 		}
 		return stagedRel, nil
 	}
 	return "", fmt.Errorf("create identity-bound staging link: too many collisions")
+}
+
+func identityBoundLinkUnsupported(err error) bool {
+	return errors.Is(err, errors.ErrUnsupported) ||
+		errors.Is(err, syscall.EOPNOTSUPP) ||
+		errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EXDEV)
 }
 
 func identityBoundStagingPath(sourceRel string) (string, error) {
@@ -226,7 +244,72 @@ func writeAtomicReplacement(root Root, targetRel string, data []byte, perm os.Fi
 }
 
 func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte, perm os.FileMode) (returnErr error) {
-	return createFileExclusivelyAtRoot(root, targetRel, data, perm)
+	session, err := newAtomicWriteSession(root, targetRel, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, session.cleanup())
+	}()
+
+	if err := session.writeAndPrepare(data, perm); err != nil {
+		return err
+	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
+		return err
+	}
+	return publishIdentityBoundIfAbsent(root, session.tempRel, targetRel, session.tempInfo)
+}
+
+func publishIdentityBoundIfAbsent(root Root, sourceRel, targetRel string, expected fs.FileInfo) error {
+	if err := root.Link(sourceRel, targetRel); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return os.ErrExist
+		}
+		if identityBoundLinkUnsupported(err) {
+			return createFileExclusivelyFromPreparedSource(root, sourceRel, targetRel, expected)
+		}
+		return err
+	}
+	return verifyPublishedPathMatchesInfo(root, targetRel, expected, "committed target changed before validation")
+}
+
+func createFileExclusivelyFromPreparedSource(root Root, sourceRel, targetRel string, expected fs.FileInfo) (returnErr error) {
+	if err := verifyPublishedPathMatchesInfo(root, sourceRel, expected, "temporary file changed before commit"); err != nil {
+		return err
+	}
+	source, err := root.Open(sourceRel)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, source.Close())
+	}()
+
+	file, err := root.OpenFile(targetRel, os.O_RDWR|os.O_CREATE|os.O_EXCL, expected.Mode().Perm())
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return os.ErrExist
+		}
+		return err
+	}
+	targetCreated := true
+	defer func() {
+		if targetCreated {
+			returnErr = errors.Join(returnErr, cleanupAtomicTempFile(root, targetRel, file))
+		}
+	}()
+	if _, err := io.Copy(file, source); err != nil {
+		return err
+	}
+	if err := file.Chmod(expected.Mode().Perm()); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	targetCreated = false
+	return nil
 }
 
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {

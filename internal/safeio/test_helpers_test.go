@@ -265,6 +265,9 @@ func (r *fakeRoot) Link(oldName, newName string) error {
 	if r.link != nil {
 		return r.link(oldName, newName)
 	}
+	if r.Root == nil {
+		return errors.ErrUnsupported
+	}
 	return r.Root.Link(oldName, newName)
 }
 
@@ -278,6 +281,9 @@ func (r *fakeRoot) Rename(oldName, newName string) error {
 func (r *fakeRoot) Remove(name string) error {
 	if r.remove != nil {
 		return r.remove(name)
+	}
+	if r.Root == nil {
+		return nil
 	}
 	return r.Root.Remove(name)
 }
