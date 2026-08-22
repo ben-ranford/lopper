@@ -357,6 +357,23 @@ func TestExtractIncludeSearchPathsPromotesCompilerDefaultsPassedWithDashI(t *tes
 	}
 }
 
+func TestExtractIncludeSearchPathsKeepsUppercaseUsrIncludeAsUserRoot(t *testing.T) {
+	searchPaths := extractIncludeSearchPaths([]string{
+		"-I", "/USR/INCLUDE",
+		"-I", "/usr/include",
+		"-I", "/opt/acme/include",
+	}, "/repo")
+
+	wantSearchPaths := []includeSearchPath{
+		{Path: "/USR/INCLUDE", ProvenanceKnown: true},
+		{Path: "/opt/acme/include", ProvenanceKnown: true},
+		{Path: "/usr/include", System: true, ProvenanceKnown: true},
+	}
+	if !slices.Equal(searchPaths, wantSearchPaths) {
+		t.Fatalf("unexpected uppercase include provenance: got %#v want %#v", searchPaths, wantSearchPaths)
+	}
+}
+
 func TestParseIncludesBranches(t *testing.T) {
 	content := []byte(`#include <` + fmtCoreHeader + `>
 #include "local/header.hpp"
@@ -564,6 +581,7 @@ func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/usr/include/not-a-multiarch",
+		"/USR/INCLUDE",
 		"/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
 		"/opt/acme/include",
 		"/opt/acme/lib/clang/18/include",
@@ -577,6 +595,12 @@ func TestCPPIncludeClassificationHelperBranches(t *testing.T) {
 	}
 	if isLikelySystemIncludePath("/opt/vendor/include/debug/map") {
 		t.Fatalf("expected vendor include path to be non-system")
+	}
+	if isLikelySystemIncludePath("/USR/INCLUDE/debug/map") {
+		t.Fatalf("expected uppercase usr include path to be non-system on case-sensitive hosts")
+	}
+	if !isLikelySystemIncludePath("C:/Build/MSVC/include/debug/map") {
+		t.Fatalf("expected Windows-style MSVC include path to remain system")
 	}
 }
 
