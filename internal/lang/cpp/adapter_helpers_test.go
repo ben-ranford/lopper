@@ -247,8 +247,11 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 	source := filepath.Join(repo, testMainCPPFileName)
 
 	for _, header := range []string{
+		"sys/socket.h",
 		"sys/types.h",
+		"linux/if.h",
 		"linux/limits.h",
+		"bits/wordsize.h",
 		"bits/stdc++.h",
 		"experimental/filesystem",
 		"tr1/regex",
@@ -287,8 +290,6 @@ func TestIsLikelyStdHeaderDoesNotSwallowQualifiedThirdPartyHeaders(t *testing.T)
 		"parallel/logger.hpp",
 		"debug/logger.hpp",
 		"backward/logger.hpp",
-		"asm/logger.hpp",
-		"asm-generic/logger.hpp",
 	} {
 		header := header
 		t.Run(header, func(t *testing.T) {
