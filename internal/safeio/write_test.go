@@ -132,6 +132,33 @@ func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
 	return statTestPath(t, originalPath), statTestPath(t, changedPath)
 }
 
+func replaceFileAtPathWithDistinctIdentity(t *testing.T, path string, expected fs.FileInfo, replacement string) {
+	t.Helper()
+
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	replacementPath := filepath.Join(dir, "."+base+".replacement")
+	originalPath := filepath.Join(dir, "."+base+".original")
+
+	if err := os.WriteFile(replacementPath, []byte(replacement), 0o600); err != nil {
+		t.Fatalf("write replacement file: %v", err)
+	}
+	if err := os.Rename(path, originalPath); err != nil {
+		t.Fatalf("move original aside: %v", err)
+	}
+	if err := os.Rename(replacementPath, path); err != nil {
+		t.Fatalf("publish replacement file: %v", err)
+	}
+	if err := os.Remove(originalPath); err != nil {
+		t.Fatalf("remove displaced original: %v", err)
+	}
+
+	replacementInfo := statTestPath(t, path)
+	if os.SameFile(expected, replacementInfo) {
+		t.Fatalf("expected replacement at %s to change file identity", path)
+	}
+}
+
 func newExclusiveCreateRoot(t *testing.T, targetInfo fs.FileInfo) (*fakeRoot, *exclusiveCreateState) {
 	t.Helper()
 
@@ -5843,44 +5870,61 @@ func TestStageIdentityBoundLinkFailsAfterNameCollisions(t *testing.T) {
 }
 
 func TestPublishIdentityBoundIfAbsentHandlesExistUnsupportedAndVerifyFailure(t *testing.T) {
-	info, replacementInfo := writePinnedTargetInfoPair(t)
-	cases := []struct {
-		name     string
-		linkErr  error
-		lstat    func(string) (fs.FileInfo, error)
-		wantErr  error
-		wantText string
-	}{
-		{name: "exists", linkErr: os.ErrExist, wantErr: os.ErrExist},
-		{name: "unsupported", linkErr: syscall.EXDEV, wantErr: errIdentityBoundReplacementUnsupported},
-		{name: "verify", lstat: lstatOriginalForNames(t, replacementInfo, "target"), wantText: committedTargetChangedBeforeValidation},
-	}
-	for _, tc := range cases {
+	for _, tc := range publishIdentityBoundIfAbsentCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
-			linkCalls := 0
-			root := &fakeRoot{
-				linkIfMatches: func(string, string, fs.FileInfo, string) error {
-					linkCalls++
-					if linkCalls == 2 {
-						return tc.linkErr
-					}
-					return nil
-				},
-				lstat: func(name string) (fs.FileInfo, error) {
-					if name == "target" && tc.lstat != nil {
-						return tc.lstat(name)
-					}
-					return info, nil
-				},
-			}
-			err := publishIdentityBoundIfAbsent(root, "source", "target", info)
-			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
-				t.Fatalf("expected %v, got %v", tc.wantErr, err)
-			}
-			if tc.wantText != "" && (err == nil || !strings.Contains(err.Error(), tc.wantText)) {
-				t.Fatalf("expected %q, got %v", tc.wantText, err)
-			}
+			assertPublishIdentityBoundIfAbsentOutcome(t, tc)
 		})
+	}
+}
+
+type publishIdentityBoundIfAbsentCase struct {
+	name     string
+	info     fs.FileInfo
+	linkErr  error
+	lstat    func(string) (fs.FileInfo, error)
+	wantErr  error
+	wantText string
+}
+
+func publishIdentityBoundIfAbsentCases(t *testing.T) []publishIdentityBoundIfAbsentCase {
+	t.Helper()
+
+	info, replacementInfo := writePinnedTargetInfoPair(t)
+	return []publishIdentityBoundIfAbsentCase{
+		{name: "exists", info: info, linkErr: os.ErrExist, wantErr: os.ErrExist},
+		{name: "unsupported", info: info, linkErr: syscall.EXDEV, wantErr: errIdentityBoundReplacementUnsupported},
+		{name: "verify", info: info, lstat: lstatOriginalForNames(t, replacementInfo, "target"), wantText: committedTargetChangedBeforeValidation},
+	}
+}
+
+func assertPublishIdentityBoundIfAbsentOutcome(t *testing.T, tc publishIdentityBoundIfAbsentCase) {
+	t.Helper()
+
+	err := publishIdentityBoundIfAbsent(publishIdentityBoundIfAbsentRoot(tc), "source", "target", tc.info)
+	if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+		t.Fatalf("expected %v, got %v", tc.wantErr, err)
+	}
+	if tc.wantText != "" && (err == nil || !strings.Contains(err.Error(), tc.wantText)) {
+		t.Fatalf("expected %q, got %v", tc.wantText, err)
+	}
+}
+
+func publishIdentityBoundIfAbsentRoot(tc publishIdentityBoundIfAbsentCase) *fakeRoot {
+	linkCalls := 0
+	return &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			linkCalls++
+			if linkCalls == 2 {
+				return tc.linkErr
+			}
+			return nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "target" && tc.lstat != nil {
+				return tc.lstat(name)
+			}
+			return tc.info, nil
+		},
 	}
 }
 
@@ -6490,12 +6534,7 @@ func TestIdentityBoundPublishRejectsSubstitutedSourceWithoutPublishingIt(t *test
 		t.Fatalf("seed source: %v", err)
 	}
 	expected := statTestPath(t, sourcePath)
-	if err := os.Remove(sourcePath); err != nil {
-		t.Fatalf("replace source: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
-		t.Fatalf("write replacement source: %v", err)
-	}
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
 	root := openTestRoot(t, rootDir)
 
 	err := publishIdentityBoundReplacing(root, "source", "target", expected, sourceChangedMsg, "target changed")
@@ -6517,12 +6556,7 @@ func TestIdentityBoundIfAbsentRejectsSubstitutedSourceWithoutPartialTarget(t *te
 		t.Fatalf("seed source: %v", err)
 	}
 	expected := statTestPath(t, sourcePath)
-	if err := os.Remove(sourcePath); err != nil {
-		t.Fatalf("replace source: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
-		t.Fatalf("write replacement source: %v", err)
-	}
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
 	root := openTestRoot(t, rootDir)
 
 	err := publishIdentityBoundIfAbsent(root, "source", "target", expected)
@@ -6544,12 +6578,7 @@ func TestOSRootRenameIfMatchesRestoresSubstitution(t *testing.T) {
 		t.Fatalf("seed source: %v", err)
 	}
 	expected := statTestPath(t, sourcePath)
-	if err := os.Remove(sourcePath); err != nil {
-		t.Fatalf("replace source: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
-		t.Fatalf("write replacement source: %v", err)
-	}
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
 	root := openTestRoot(t, rootDir)
 	osRoot, ok := root.(*osRoot)
 	if !ok {
@@ -6574,12 +6603,7 @@ func TestOSRootRemoveIfMatchesRestoresSubstitution(t *testing.T) {
 		t.Fatalf("seed source: %v", err)
 	}
 	expected := statTestPath(t, sourcePath)
-	if err := os.Remove(sourcePath); err != nil {
-		t.Fatalf("replace source: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
-		t.Fatalf("write replacement source: %v", err)
-	}
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
 	root := openTestRoot(t, rootDir)
 	osRoot, ok := root.(*osRoot)
 	if !ok {
