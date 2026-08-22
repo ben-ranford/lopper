@@ -11,6 +11,11 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
+const (
+	compileDatabaseRegressionLimitBytes int64 = 8 * 1024 * 1024
+	cppSourceRegressionLimitBytes       int64 = 2 * 1024 * 1024
+)
+
 func TestLoadCompileContextEnforcesCompileDatabaseSizeLimit(t *testing.T) {
 	repo := t.TempDir()
 	compileDB := filepath.Join(repo, compileCommandsFile)
@@ -18,7 +23,7 @@ func TestLoadCompileContextEnforcesCompileDatabaseSizeLimit(t *testing.T) {
   {"directory":".","file":"src/main.cpp","arguments":["c++","-I","include","-c","src/main.cpp"]}
 ]`
 
-	testutil.MustWritePaddedFile(t, compileDB, compileDBContent, maxCompileDatabaseBytes)
+	testutil.MustWritePaddedFile(t, compileDB, compileDBContent, compileDatabaseRegressionLimitBytes)
 	compileInfo, err := loadCompileContext(repo)
 	if err != nil {
 		t.Fatalf("loadCompileContext at exact limit: %v", err)
@@ -32,7 +37,7 @@ func TestLoadCompileContextEnforcesCompileDatabaseSizeLimit(t *testing.T) {
 
 	repo = t.TempDir()
 	compileDB = filepath.Join(repo, compileCommandsFile)
-	testutil.MustWritePaddedFile(t, compileDB, compileDBContent, maxCompileDatabaseBytes+1)
+	testutil.MustWritePaddedFile(t, compileDB, compileDBContent, compileDatabaseRegressionLimitBytes+1)
 
 	compileInfo, err = loadCompileContext(repo)
 	if err != nil {
@@ -44,7 +49,7 @@ func TestLoadCompileContextEnforcesCompileDatabaseSizeLimit(t *testing.T) {
 	if len(compileInfo.SourceFiles) != 0 || len(compileInfo.IncludeDirs) != 0 {
 		t.Fatalf("expected oversized compile database to be skipped, got sources=%#v includeDirs=%#v", compileInfo.SourceFiles, compileInfo.IncludeDirs)
 	}
-	if !hasWarning(compileInfo.Warnings, compileCommandsFile) || !hasWarning(compileInfo.Warnings, "larger than") || !hasWarning(compileInfo.Warnings, fmt.Sprintf("%d bytes", maxCompileDatabaseBytes)) {
+	if !hasWarning(compileInfo.Warnings, compileCommandsFile) || !hasWarning(compileInfo.Warnings, "larger than") || !hasWarning(compileInfo.Warnings, fmt.Sprintf("%d bytes", compileDatabaseRegressionLimitBytes)) {
 		t.Fatalf("expected oversized compile database warning, got %#v", compileInfo.Warnings)
 	}
 }
@@ -52,7 +57,7 @@ func TestLoadCompileContextEnforcesCompileDatabaseSizeLimit(t *testing.T) {
 func TestAnalyseEnforcesCPPSourceSizeLimit(t *testing.T) {
 	repo := t.TempDir()
 	sourcePath := filepath.Join(repo, "src", testMainCPPFileName)
-	testutil.MustWritePaddedFile(t, sourcePath, fmtCoreIncludeLine, maxScannableCPPFile)
+	testutil.MustWritePaddedFile(t, sourcePath, fmtCoreIncludeLine, cppSourceRegressionLimitBytes)
 
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "fmt"})
 	if err != nil {
@@ -64,7 +69,7 @@ func TestAnalyseEnforcesCPPSourceSizeLimit(t *testing.T) {
 
 	repo = t.TempDir()
 	sourcePath = filepath.Join(repo, "src", "large.cpp")
-	testutil.MustWritePaddedFile(t, sourcePath, fmtCoreIncludeLine, maxScannableCPPFile+1)
+	testutil.MustWritePaddedFile(t, sourcePath, fmtCoreIncludeLine, cppSourceRegressionLimitBytes+1)
 
 	reportData, err = NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "fmt"})
 	if err != nil {
@@ -77,7 +82,7 @@ func TestAnalyseEnforcesCPPSourceSizeLimit(t *testing.T) {
 		t.Fatalf("expected oversized source to be skipped, got %#v", reportData.Dependencies[0])
 	}
 	warnings := strings.Join(reportData.Warnings, "\n")
-	if !strings.Contains(warnings, "skipped 1 large C/C++ source file") || !strings.Contains(warnings, fmt.Sprintf("%d bytes", maxScannableCPPFile)) {
+	if !strings.Contains(warnings, "skipped 1 large C/C++ source file") || !strings.Contains(warnings, fmt.Sprintf("%d bytes", cppSourceRegressionLimitBytes)) {
 		t.Fatalf("expected oversized source warning, got %#v", reportData.Warnings)
 	}
 }
