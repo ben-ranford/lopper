@@ -201,11 +201,28 @@ async function verifyHeadForQueue(
   pull,
   defaultBranchSHA,
 ) {
-  const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+  const comparisonRequest = {
     owner: pull.base.repo.owner.login,
     repo: pull.base.repo.name,
     basehead: `${defaultBranchSHA}...${pull.head.sha}`,
+    per_page: 100,
+  };
+  const { data: firstComparison } = await github.rest.repos.compareCommitsWithBasehead({
+    ...comparisonRequest,
+    page: 1,
   });
+  const commits = [...(firstComparison.commits || [])];
+  for (let page = 2; firstComparison.total_commits > commits.length; page++) {
+    const { data: comparisonPage } = await github.rest.repos.compareCommitsWithBasehead({
+      ...comparisonRequest,
+      page,
+    });
+    commits.push(...(comparisonPage.commits || []));
+    if (!comparisonPage.commits?.length) {
+      break;
+    }
+  }
+  const comparison = { ...firstComparison, commits };
   assertCanonicalCommitIdentity(comparison);
   if (isBranchCurrent(comparison.status)) {
     return { headSHA: pull.head.sha, needsCurrentBase: false };

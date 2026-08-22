@@ -131,7 +131,26 @@ function makeHarness(options = {}) {
             throw options.comparisonError;
           }
           calls.comparisons = calls.comparisons || [];
-          calls.comparisons.push(input.basehead);
+          calls.comparisons.push(input);
+          if (options.comparisonPages) {
+            const page = options.comparisonPages[(input.page || 1) - 1];
+            if (!page) {
+              return {
+                data: {
+                  status: options.comparisonStatus || 'ahead',
+                  commits: [],
+                  total_commits: options.totalCommits ?? 0,
+                },
+              };
+            }
+            return {
+              data: {
+                status: page.status || options.comparisonStatus || 'ahead',
+                commits: page.commits || [],
+                total_commits: page.totalCommits ?? options.totalCommits ?? page.commits?.length ?? 0,
+              },
+            };
+          }
           const commits = options.comparisonCommits || [makeComparisonCommit()];
           return {
             data: {
@@ -432,6 +451,57 @@ test('a current fork branch can arm auto-merge without a branch update', async (
   assert.deepEqual(harness.calls.armed, [10]);
   assert.deepEqual(harness.calls.armExpectedHeads, ['fork-head']);
   assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
+});
+
+test('controller audits canonical commits across paginated compare results', async () => {
+  const commits = Array.from({ length: 251 }, (_, index) =>
+    makeComparisonCommit(`canonical-${index}`),
+  );
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonPages: [
+      { status: 'ahead', commits: commits.slice(0, 100), totalCommits: 251 },
+      { status: 'behind', commits: commits.slice(100, 200), totalCommits: 251 },
+      { status: 'behind', commits: commits.slice(200), totalCommits: 251 },
+    ],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2, 3]);
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.per_page), [100, 100, 100]);
+  assert.deepEqual(harness.calls.armed, [10]);
+  assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
+});
+
+test('controller fails identity audit for noncanonical commits on later compare pages', async () => {
+  const canonical = Array.from({ length: 100 }, (_, index) =>
+    makeComparisonCommit(`canonical-${index}`),
+  );
+  const botCommit = makeComparisonCommit('bot-rewrite-later-page', {
+    commit: {
+      committer: {
+        name: 'lopper-queue-controller[bot]',
+        email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+      },
+    },
+    committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+  });
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonPages: [
+      { status: 'ahead', commits: canonical, totalCommits: 101 },
+      { status: 'ahead', commits: [botCommit], totalCommits: 101 },
+    ],
+  });
+
+  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
+
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /bot-rewrit/);
+  assert.match(harness.calls.comments[0].body, /committer is a bot identity/);
 });
 
 test('controller fails identity audit before arming a bot-committed leader', async () => {
