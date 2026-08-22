@@ -279,10 +279,7 @@ $callback = function ()
 }
 
 func TestPHPAdapterCountsClassBodyTraitUseAsActiveDependency(t *testing.T) {
-	repo := t.TempDir()
-	const dependency = "vendor/package"
-	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+	reportData := analysePHPDependencySource(t, testPHPHeader+`
 namespace App;
 
 final class Service
@@ -291,31 +288,8 @@ final class Service
 }
 `)
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: dependency,
-	})
-	if err != nil {
-		t.Fatalf(testAnalyseErrFmt, err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 || dep.UsedPercent != 100 {
-		t.Fatalf("expected trait use to count as full dependency usage, report=%#v", dep)
-	}
-	if len(dep.UsedImports) != 1 || dep.UsedImports[0].Module != `Vendor\Package\FeatureTrait` {
-		t.Fatalf("expected trait use in used imports, got %#v", dep.UsedImports)
-	}
-	if len(dep.UnusedImports) != 0 {
-		t.Fatalf("did not expect unused imports for active trait use, got %#v", dep.UnusedImports)
-	}
-	for _, rec := range dep.Recommendations {
-		if rec.Code == "remove-unused-dependency" || rec.Code == "low-usage-dependency" {
-			t.Fatalf("did not expect dependency removal or low-usage recommendation for trait use, got %#v", dep.Recommendations)
-		}
-	}
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
 	if containsWarning(reportData.Warnings, "no imports found") {
 		t.Fatalf("did not expect no-import warning for active trait use: %#v", reportData.Warnings)
 	}
@@ -397,10 +371,7 @@ TWO;
 }
 
 func TestPHPAdapterCountsClassBodyTraitUseAfterLongDeclaration(t *testing.T) {
-	repo := t.TempDir()
-	const dependency = "vendor/package"
-	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+	reportData := analysePHPDependencySource(t, testPHPHeader+`
 namespace App;
 
 final class Service `+strings.Repeat(" ", 2200)+`
@@ -409,26 +380,8 @@ final class Service `+strings.Repeat(" ", 2200)+`
 }
 `)
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: dependency,
-	})
-	if err != nil {
-		t.Fatalf(testAnalyseErrFmt, err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.UsedExportsCount != 1 || dep.TotalExportsCount != 1 || dep.UsedPercent != 100 {
-		t.Fatalf("expected long class declaration trait use to count as active usage, report=%#v", dep)
-	}
-	if len(dep.UnusedImports) != 0 {
-		t.Fatalf("did not expect long declaration trait use to be marked unused, got %#v", dep.UnusedImports)
-	}
-	if hasRecommendation(dep, "remove-unused-dependency") || hasRecommendation(dep, "low-usage-dependency") {
-		t.Fatalf("did not expect dependency removal or low-usage recommendation for long declaration trait use, got %#v", dep.Recommendations)
-	}
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	assertActivePHPTraitDependency(t, dep, []string{`Vendor\Package\FeatureTrait`})
 }
 
 func TestPHPAdapterCountsAnonymousClassTraitUseAsActiveDependency(t *testing.T) {
@@ -631,60 +584,22 @@ namespace App; use Vendor\Package\UnusedExternal; final class Service { use Vend
 }
 
 func TestPHPAdapterIgnoresNamespaceDeclarationAsDependencyUsage(t *testing.T) {
-	repo := t.TempDir()
-	const dependency = "vendor/package"
-	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+	reportData := analysePHPDependencySource(t, testPHPHeader+`
 namespace Vendor\Package;
 
 final class LocalThing {}
 `)
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: dependency,
-	})
-	if err != nil {
-		t.Fatalf(testAnalyseErrFmt, err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
-		t.Fatalf("expected namespace declaration to produce no dependency usage, report=%#v", dep)
-	}
-	if !containsWarning(reportData.Warnings, "no imports found") {
-		t.Fatalf("expected no-import warning for namespace declaration only, got %#v", reportData.Warnings)
-	}
+	assertNoPHPDependencyUsage(t, reportData, "namespace declaration only")
 }
 
 func TestPHPAdapterIgnoresSameLineDeclareNamespaceDeclarationAsDependencyUsage(t *testing.T) {
-	repo := t.TempDir()
-	const dependency = "vendor/package"
-	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php declare(strict_types=1); namespace Vendor\Package;
+	reportData := analysePHPDependencySource(t, `<?php declare(strict_types=1); namespace Vendor\Package;
 
 final class LocalThing {}
 `)
 
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
-		RepoPath:   repo,
-		Dependency: dependency,
-	})
-	if err != nil {
-		t.Fatalf(testAnalyseErrFmt, err)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
-	}
-	dep := reportData.Dependencies[0]
-	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
-		t.Fatalf("expected same-line declare namespace declaration to produce no dependency usage, report=%#v", dep)
-	}
-	if !containsWarning(reportData.Warnings, "no imports found") {
-		t.Fatalf("expected no-import warning for same-line declare namespace declaration, got %#v", reportData.Warnings)
-	}
+	assertNoPHPDependencyUsage(t, reportData, "same-line declare namespace declaration")
 }
 
 func TestPHPAdapterIgnoresMalformedGroupedUseStatement(t *testing.T) {
@@ -882,6 +797,17 @@ func singlePHPDependencyReport(t *testing.T, deps []report.DependencyReport) rep
 		t.Fatalf(testExpectedOneDependencyReportFmt, len(deps))
 	}
 	return deps[0]
+}
+
+func assertNoPHPDependencyUsage(t *testing.T, reportData report.Report, warningContext string) {
+	t.Helper()
+	dep := singlePHPDependencyReport(t, reportData.Dependencies)
+	if dep.UsedExportsCount != 0 || dep.TotalExportsCount != 0 {
+		t.Fatalf("expected %s to produce no dependency usage, report=%#v", warningContext, dep)
+	}
+	if !containsWarning(reportData.Warnings, "no imports found") {
+		t.Fatalf("expected no-import warning for %s, got %#v", warningContext, reportData.Warnings)
+	}
 }
 
 func assertActivePHPTraitDependency(t *testing.T, dep report.DependencyReport, wantModules []string) {

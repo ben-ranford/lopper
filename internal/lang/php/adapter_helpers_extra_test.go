@@ -1036,22 +1036,14 @@ func TestParseNamespaceReferencesSkipsSemicolonSeparatedUseDeclarations(t *testi
 }
 
 func TestParsePHPImportsIgnoresUseStatementsInInactiveTemplateText(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<div>To use Vendor\\Package\\Client;</div>\n" +
 		"<p>\\Vendor\\Package\\Factory is documentation only.</p>\n" +
 		"<?php echo 'active code without imports';\n")
 
-	parsed := parsePHPImports(content, "template.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 0 {
-		t.Fatalf("expected inactive template namespaces to be ignored, got %#v", parsed.imports)
-	}
+	assertParsedVendorPackageModules(t, "template.php", content, nil, "expected inactive template namespaces to be ignored")
 }
 
 func TestParsePHPImportsParsesValidMultiRegionPHPOnly(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<div>use Vendor\\Package\\TemplateOnly;</div>\n" +
 		"<?php\n" +
 		"use Vendor\\Package\\Client as ClientAlias;\n" +
@@ -1060,18 +1052,12 @@ func TestParsePHPImportsParsesValidMultiRegionPHPOnly(t *testing.T) {
 		"<?php\n" +
 		"$factory = new \\Vendor\\Package\\Factory();\n")
 
-	parsed := parsePHPImports(content, "multi-region.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 2 {
-		t.Fatalf("expected one active use import and one active namespace reference, got %#v", parsed.imports)
-	}
-	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"})
+	assertParsedVendorPackageModules(t, "multi-region.php", content,
+		[]string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"},
+		"expected one active use import and one active namespace reference")
 }
 
 func TestParsePHPImportsKeepsPHPActiveAcrossHeredocCloseTagText(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<?php\n" +
 		"$html = <<<HTML\n" +
 		"<div>use Vendor\\Package\\TemplateOnly;</div>\n" +
@@ -1079,18 +1065,12 @@ func TestParsePHPImportsKeepsPHPActiveAcrossHeredocCloseTagText(t *testing.T) {
 		"HTML;\n" +
 		"use Vendor\\Package\\Client;\n")
 
-	parsed := parsePHPImports(content, "heredoc-region.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 1 {
-		t.Fatalf("expected only the post-heredoc active import, got %#v", parsed.imports)
-	}
-	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+	assertParsedVendorPackageModules(t, "heredoc-region.php", content,
+		[]string{"Vendor\\Package\\Client"},
+		"expected only the post-heredoc active import")
 }
 
 func TestParsePHPImportsMasksSecondHeredocOnTerminatorLineBeforeTraitUse(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<?php\n" +
 		"final class Service\n" +
 		"{\n" +
@@ -1108,18 +1088,12 @@ func TestParsePHPImportsMasksSecondHeredocOnTerminatorLineBeforeTraitUse(t *test
 		"    }\n" +
 		"}\n")
 
-	parsed := parsePHPImports(content, "same-line-second-heredoc.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 1 {
-		t.Fatalf("expected one class body trait use import, got %#v", parsed.imports)
-	}
-	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\FeatureTrait"})
+	assertParsedVendorPackageModules(t, "same-line-second-heredoc.php", content,
+		[]string{"Vendor\\Package\\FeatureTrait"},
+		"expected one class body trait use import")
 }
 
 func TestParsePHPImportsKeepsPHPActiveAfterFlexibleHeredocTerminators(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	tests := []struct {
 		name       string
 		terminator string
@@ -1137,20 +1111,14 @@ func TestParsePHPImportsKeepsPHPActiveAfterFlexibleHeredocTerminators(t *testing
 				tc.terminator + "\n" +
 				"use Vendor\\Package\\Client;\n")
 
-			parsed := parsePHPImports(content, tc.name+".php", resolver)
-			if parsed.unresolvedCount != 0 {
-				t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-			}
-			if len(parsed.imports) != 1 {
-				t.Fatalf("expected import after flexible heredoc terminator, got %#v", parsed.imports)
-			}
-			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+			assertParsedVendorPackageModules(t, tc.name+".php", content,
+				[]string{"Vendor\\Package\\Client"},
+				"expected import after flexible heredoc terminator")
 		})
 	}
 }
 
 func TestParsePHPImportsReturnsToTemplateAfterHeredocTerminatorCloseTag(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	tests := []struct {
 		name   string
 		opener string
@@ -1182,53 +1150,35 @@ func TestParsePHPImportsReturnsToTemplateAfterHeredocTerminatorCloseTag(t *testi
 				"<template>use Vendor\\Package\\TemplateOnly;</template>\n" +
 				"<?php use Vendor\\Package\\Client;\n")
 
-			parsed := parsePHPImports(content, tc.name+".php", resolver)
-			if parsed.unresolvedCount != 0 {
-				t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-			}
-			if len(parsed.imports) != 1 {
-				t.Fatalf("expected only the reopened active PHP import, got %#v", parsed.imports)
-			}
-			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+			assertParsedVendorPackageModules(t, tc.name+".php", content,
+				[]string{"Vendor\\Package\\Client"},
+				"expected only the reopened active PHP import")
 		})
 	}
 }
 
 func TestParsePHPImportsDoesNotTreatArbitraryHeredocLabelTailAsTerminator(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<?php\n" +
 		"$html = <<<HTML\n" +
 		"}\n" +
 		"HTML garbage\n" +
 		"use Vendor\\Package\\Client;\n")
 
-	parsed := parsePHPImports(content, "invalid-heredoc-tail.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 0 {
-		t.Fatalf("expected unterminated heredoc body to mask later imports, got %#v", parsed.imports)
-	}
+	assertParsedVendorPackageModules(t, "invalid-heredoc-tail.php", content, nil,
+		"expected unterminated heredoc body to mask later imports")
 }
 
 func TestParsePHPImportsParsesConfiguredShortOpenTags(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<section>use Vendor\\Package\\TemplateOnly;</section>\n" +
 		"<? use Vendor\\Package\\Client;\n" +
 		"$factory = new \\Vendor\\Package\\Factory(); ?>\n")
 
-	parsed := parsePHPImports(content, "short-open.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 2 {
-		t.Fatalf("expected short-open PHP imports and references to be active, got %#v", parsed.imports)
-	}
-	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"})
+	assertParsedVendorPackageModules(t, "short-open.php", content,
+		[]string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"},
+		"expected short-open PHP imports and references to be active")
 }
 
 func TestParsePHPImportsReturnsToTemplateAfterCommentCloseTags(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	tests := []struct {
 		name   string
 		region string
@@ -1246,33 +1196,22 @@ func TestParsePHPImportsReturnsToTemplateAfterCommentCloseTags(t *testing.T) {
 				"<template>use Vendor\\Package\\TemplateOnly;</template>\n" +
 				"<?php use Vendor\\Package\\Client;\n")
 
-			parsed := parsePHPImports(content, tc.name+".php", resolver)
-			if parsed.unresolvedCount != 0 {
-				t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-			}
-			if len(parsed.imports) != 1 {
-				t.Fatalf("expected template namespace after close tag to stay inactive, got %#v", parsed.imports)
-			}
-			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+			assertParsedVendorPackageModules(t, tc.name+".php", content,
+				[]string{"Vendor\\Package\\Client"},
+				"expected template namespace after close tag to stay inactive")
 		})
 	}
 }
 
 func TestParsePHPImportsExcludesXMLDeclarationsWhenShortOpenTagsAreSupported(t *testing.T) {
-	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	content := []byte("<?xml version=\"1.0\"?>\n" +
 		"<root>use Vendor\\Package\\TemplateOnly;</root>\n" +
 		"<?xml-stylesheet type=\"text/xsl\" href=\"style.xsl\"?>\n" +
 		"<? use Vendor\\Package\\Client; ?>\n")
 
-	parsed := parsePHPImports(content, "xml-template.php", resolver)
-	if parsed.unresolvedCount != 0 {
-		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
-	}
-	if len(parsed.imports) != 1 {
-		t.Fatalf("expected XML declarations to stay inactive and short-open PHP to parse, got %#v", parsed.imports)
-	}
-	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+	assertParsedVendorPackageModules(t, "xml-template.php", content,
+		[]string{"Vendor\\Package\\Client"},
+		"expected XML declarations to stay inactive and short-open PHP to parse")
 }
 
 func TestMaskInactivePHPRegionsHelperBranches(t *testing.T) {
@@ -1341,6 +1280,19 @@ func assertImportModules(t *testing.T, imports []importBinding, want []string) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected import modules %v, got %v from %#v", want, got, imports)
 	}
+}
+
+func assertParsedVendorPackageModules(t *testing.T, filePath string, content []byte, want []string, reason string) {
+	t.Helper()
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	parsed := parsePHPImports(content, filePath, resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != len(want) {
+		t.Fatalf("%s, got %#v", reason, parsed.imports)
+	}
+	assertImportModules(t, parsed.imports, want)
 }
 
 func TestImportParserContextTrackerHelperBranches(t *testing.T) {
