@@ -436,20 +436,20 @@ func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileI
 	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
 		return nil
 	}
-	cleanupRel, err := stageIdentityBoundLink(root, tempRel, expected, changedBeforeRemoval)
+	cleanupRel, err := stageIdentityBoundLink(root, tempRel, info, changedBeforeRemoval)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		if errors.Is(err, errIdentityBoundLinkUnavailable) || identityBoundLinkUnsupported(err) {
-			return removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval)
+			return removeFileIfMatches(root, tempRel, info, changedBeforeRemoval)
 		}
 		return err
 	}
 	if err := removeFileIfMatches(root, tempRel, expected, changedBeforeRemoval); err != nil {
-		return errors.Join(err, removeFileIfMatches(root, cleanupRel, expected, changedBeforeRemoval))
+		return errors.Join(err, removeFileIfMatches(root, cleanupRel, info, changedBeforeRemoval))
 	}
-	return removeFileIfMatches(root, cleanupRel, expected, changedBeforeRemoval)
+	return removeFileIfMatches(root, cleanupRel, info, changedBeforeRemoval)
 }
 
 func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message string) error {

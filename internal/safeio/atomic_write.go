@@ -345,7 +345,15 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		if err := staged.Chmod(expected.Mode().Perm()); err != nil {
 			return "", nil, closeFilePreservingPrimary(staged, err)
 		}
+		stagedInfo, err = staged.Stat()
+		if err != nil {
+			return "", nil, closeFilePreservingPrimary(staged, err)
+		}
 		if err := staged.Close(); err != nil {
+			return "", nil, err
+		}
+		stagedInfo, err = publishedRegularFileInfo(root, stagedRel, message)
+		if err != nil {
 			return "", nil, err
 		}
 		stagedReady = true
@@ -415,14 +423,17 @@ func publishedRegularFileInfo(root Root, rel, message string) (fs.FileInfo, erro
 	return info, nil
 }
 
-func sameRegularFile(expected fs.FileInfo, actual fs.FileInfo) bool {
+func sameRegularFile(expected, actual fs.FileInfo) bool {
 	if expected == nil || actual == nil {
 		return false
 	}
 	if !expected.Mode().IsRegular() || !actual.Mode().IsRegular() {
 		return false
 	}
-	return os.SameFile(expected, actual)
+	return os.SameFile(expected, actual) &&
+		expected.Size() == actual.Size() &&
+		expected.Mode() == actual.Mode() &&
+		expected.ModTime().Equal(actual.ModTime())
 }
 
 func closeAndCleanupCreatedFile(root Root, file File, rel string, primaryErr error) error {

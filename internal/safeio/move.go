@@ -11,6 +11,8 @@ import (
 	"syscall"
 )
 
+const moveSourceChangedBeforeCleanup = "move source changed before cleanup"
+
 // MoveFileUnder atomically places sourcePath at targetPath only if both resolve under rootDir.
 // It preserves atomic final placement by renaming within root, and falls back to copy-then-rename
 // when the direct rename cannot be completed.
@@ -84,7 +86,7 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if sourceConsumed || aliasesTarget {
 		return sourceInfo, nil
 	}
-	if err := removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup"); err != nil {
+	if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
 		return sourceInfo, err
 	}
 	return sourceInfo, nil
@@ -98,7 +100,7 @@ func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo
 	if sourceConsumed {
 		return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, "move target changed before validation")
 	}
-	return removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup")
+	return removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup)
 }
 
 func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
@@ -187,7 +189,7 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 }
 
 func removeCopiedMoveSource(root Root, sourceRel string, sourceInfo os.FileInfo) error {
-	return removeIdentityBound(root, sourceRel, sourceInfo, "move source changed before cleanup")
+	return removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup)
 }
 
 func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message string) error {
