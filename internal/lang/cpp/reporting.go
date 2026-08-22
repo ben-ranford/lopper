@@ -60,14 +60,16 @@ func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage boo
 }
 
 type dependencyUsageSummary struct {
-	usedByHeader        map[string]int
-	usedImportsByHeader map[string]*report.ImportUse
+	usedByHeader          map[string]int
+	usedImportsByHeader   map[string]*report.ImportUse
+	seenLocationsByHeader map[string]map[report.Location]struct{}
 }
 
 func collectDependencyUsage(dependency string, files []fileScan) dependencyUsageSummary {
 	summary := dependencyUsageSummary{
-		usedByHeader:        make(map[string]int),
-		usedImportsByHeader: make(map[string]*report.ImportUse),
+		usedByHeader:          make(map[string]int),
+		usedImportsByHeader:   make(map[string]*report.ImportUse),
+		seenLocationsByHeader: make(map[string]map[report.Location]struct{}),
 	}
 
 	for _, file := range files {
@@ -75,7 +77,9 @@ func collectDependencyUsage(dependency string, files []fileScan) dependencyUsage
 			if shared.NormalizeDependencyID(include.Dependency) != dependency {
 				continue
 			}
-			summary.usedByHeader[include.Header]++
+			if !summary.recordLocation(include.Header, include.Location) {
+				continue
+			}
 			entry, ok := summary.usedImportsByHeader[include.Header]
 			if !ok {
 				entry = &report.ImportUse{Name: include.Header, Module: include.Header}
@@ -86,6 +90,20 @@ func collectDependencyUsage(dependency string, files []fileScan) dependencyUsage
 	}
 
 	return summary
+}
+
+func (s *dependencyUsageSummary) recordLocation(header string, location report.Location) bool {
+	seen, ok := s.seenLocationsByHeader[header]
+	if !ok {
+		seen = make(map[report.Location]struct{})
+		s.seenLocationsByHeader[header] = seen
+	}
+	if _, ok := seen[location]; ok {
+		return false
+	}
+	seen[location] = struct{}{}
+	s.usedByHeader[header]++
+	return true
 }
 
 func (s *dependencyUsageSummary) apply(reportData *report.DependencyReport) {
