@@ -283,7 +283,7 @@ jobs:
 - `make mod-check`: enforce `go mod tidy -diff` and `go mod verify`
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
-- `make suppression-check`: fail when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments
+- `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless the gate can open or update a GitHub tracking issue for each new exception
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`
@@ -300,6 +300,14 @@ jobs:
 - `make tools-install`: install pinned Go-based CI tools locally (`golangci-lint`, `gostyle`, `gosec`, `actionlint`, `govulncheck`)
 - `make setup`: bootstrap toolchain + module download + readiness checks
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
+
+Inline suppression tracking:
+
+- New inline analysis suppressions must include same-line metadata: `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`.
+- `make suppression-check` uses `gh` to find or create a deterministic tracking issue whose body records the source location, rationale, owner, and removal condition. Set `GH_BIN` to use a non-default GitHub CLI binary.
+- GitHub Actions jobs that run `make ci` must provide `GH_TOKEN` or `GITHUB_TOKEN` with `issues: write`; the repository CI verify job grants that permission and passes `${{ github.token }}` to the gate.
+- Pull requests from forks or locked-down workflow contexts may receive a read-only token. In those contexts, newly introduced inline suppressions fail closed until the marker is removed or the run has issue-write credentials.
+- Existing suppressions outside the current diff remain governed by the existing diff-scoped check and are not backfilled by this gate.
 
 Coverage artifacts:
 

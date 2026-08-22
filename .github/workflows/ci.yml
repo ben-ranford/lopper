@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
     outputs:
       pr_report_artifact_id: ${{ steps.upload_pr_report_inputs.outputs.artifact-id }}
     steps:
@@ -128,6 +129,7 @@ jobs:
 
       - name: Run CI target
         env:
+          GH_TOKEN: ${{ github.token }}
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then

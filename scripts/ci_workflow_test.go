@@ -33,7 +33,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
-	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read"})
+	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read", "issues": "write"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, verify, "ci verify")
 	assertWorkflowStepOrder(t, verify, "Run coverage gate", "Stage PR report inputs", "Upload PR report inputs", "Upload binary artifact", "Fail workflow on coverage gate")
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -271,6 +271,10 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	})
 
 	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
+		"GH_EVENT_NAME": "${{ github.event_name }}",
+		"GH_TOKEN":      "${{ github.token }}",
+	})
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify immutable memory bench base", []string{
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 	})
