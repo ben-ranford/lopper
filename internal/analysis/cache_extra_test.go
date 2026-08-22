@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	_ "unsafe"
@@ -229,6 +230,49 @@ func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName))
 }
 
+func TestAnalysisCacheOpenWriteRootInitializesMissingIdentity(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, cacheable: true}
+
+	root, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close write root: %v", closeErr)
+		}
+	})
+	if cache.rootIdentity == nil {
+		t.Fatal("expected openWriteRoot to initialize cache root identity")
+	}
+	if err := cache.validateWriteRoot(root); err != nil {
+		t.Fatalf("validate initialized write root: %v", err)
+	}
+}
+
+func TestAnalysisCacheStableRootUsesAnalysisRepoMapping(t *testing.T) {
+	stableRepo := filepath.Join(t.TempDir(), "stable")
+	analysisRepo := filepath.Join(t.TempDir(), "analysis")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: false}}, stableRepo, analysisRepo)
+
+	got := cache.stableCacheRoot(filepath.Join(analysisRepo, "nested", cacheDirName))
+	want := filepath.Join(stableRepo, "nested", cacheDirName)
+	if got != want {
+		t.Fatalf("stable cache root = %q, want %q", got, want)
+	}
+	outside := filepath.Join(t.TempDir(), cacheDirName)
+	if got := cache.stableCacheRoot(outside); got != outside {
+		t.Fatalf("outside cache root = %q, want original %q", got, outside)
+	}
+	var nilCache *analysisCache
+	if got := nilCache.stableCacheRoot(outside); got != outside {
+		t.Fatalf("nil cache stable root = %q, want original %q", got, outside)
+	}
+}
+
 func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
 	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 1, "between cache writes")
 }
@@ -298,6 +342,43 @@ func TestAnalysisCacheStoreRejectsKeysRetargetAtPointerCommit(t *testing.T) {
 	}
 	if publishCalls != 2 {
 		t.Fatalf("expected keys retarget at pointer commit, got %d publish calls", publishCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedKeys, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+}
+
+func TestAnalysisCacheStoreRejectsKeysReplacementAfterParentPinned(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo, cache, cachePath, _, _ := newReplaceableCacheForStoreTest(t)
+	keysPath := filepath.Join(cachePath, cacheKeysDirName)
+	movedKeys := filepath.Join(repo, "moved-keys")
+
+	originalHook := safeioWriteFileParentReadyFn
+	t.Cleanup(func() { safeioWriteFileParentReadyFn = originalHook })
+	parentReadyCalls := 0
+	safeioWriteFileParentReadyFn = func() error {
+		parentReadyCalls++
+		if parentReadyCalls != 2 {
+			return nil
+		}
+		if err := os.Rename(keysPath, movedKeys); err != nil {
+			return err
+		}
+		return os.Mkdir(keysPath, 0o750)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected keys replacement after parent pin to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	if parentReadyCalls != 2 {
+		t.Fatalf("expected keys replacement during pointer publish, got %d parent-ready calls", parentReadyCalls)
 	}
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedKeys, "key.json"))
 	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))

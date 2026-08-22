@@ -159,14 +159,14 @@ func (c *analysisCache) openWriteRoot() (*safeio.WriteRoot, error) {
 }
 
 func (c *analysisCache) validateWriteRoot(writeRoot *safeio.WriteRoot) error {
-	if err := validateAnalysisCacheRoot(c.options.Path, c.rootIdentity); err != nil {
-		return err
-	}
 	observed, err := writeRoot.RootInfo()
 	if err != nil {
 		return err
 	}
-	return validateObservedAnalysisCacheDirectoryIdentity(c.options.Path, c.rootIdentity, observed)
+	if err := validateObservedAnalysisCacheDirectoryIdentity(c.options.Path, c.rootIdentity, observed); err != nil {
+		return err
+	}
+	return validateAnalysisCacheRoot(c.options.Path, c.rootIdentity)
 }
 
 func validateObservedAnalysisCacheDirectoryIdentity(path string, expected, observed fs.FileInfo) error {

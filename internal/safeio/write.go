@@ -108,6 +108,17 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(tar
 	})
 }
 
+// WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck
+// atomically writes a root-relative file after the target parent is pinned. It
+// passes the actual pinned parent identity to publishCheck before publishing and
+// again after the target has been committed.
+func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, publishCheck func(parentPath string, parentIdentity fs.FileInfo) error) error {
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, writeToTargetParentOptions{
+		publishParent: publishCheck,
+		write:         writeFileAtRootWithChecks,
+	})
+}
+
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
 // root-relative file, creating missing parent directories inside the pinned
 // root. When an existing regular target is already open and writable, callers
@@ -206,6 +217,7 @@ type writeToTargetParentOptions struct {
 	preWrite      func() error
 	commitReady   func() error
 	postWrite     func() error
+	publishParent func(parentPath string, parentIdentity fs.FileInfo) error
 	write         writeAtRootFunc
 }
 
@@ -224,7 +236,24 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 				return err
 			}
 		}
-		return options.write(parent, parentTarget, data, perm, options.commitReady, options.postWrite)
+		commitReady := options.commitReady
+		postWrite := options.postWrite
+		if options.publishParent != nil {
+			parentIdentity, err := parent.Lstat(".")
+			if err != nil {
+				return err
+			}
+			parentPath := filepath.Dir(target.abs)
+			parentCheck := func() error {
+				return options.publishParent(parentPath, parentIdentity)
+			}
+			commitReady = parentCheck
+			postWrite = parentCheck
+			if err := parentCheck(); err != nil {
+				return err
+			}
+		}
+		return options.write(parent, parentTarget, data, perm, commitReady, postWrite)
 	})
 }
 
