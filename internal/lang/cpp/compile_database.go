@@ -17,6 +17,8 @@ const (
 	includeFlag         = "-I"
 	isystemFlag         = "-isystem"
 	iquoteFlag          = "-iquote"
+	nostdincFlag        = "-nostdinc"
+	nostdincxxFlag      = "-nostdinc++"
 	maxCompileDatabases = 64
 )
 
@@ -221,24 +223,27 @@ func extractIncludeDirs(args []string, baseDir string) []string {
 
 func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPath {
 	items := make([]includeSearchPath, 0)
+	promoteCompilerDefaultRoots := true
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" {
 			continue
 		}
 		switch {
+		case arg == nostdincFlag || arg == nostdincxxFlag:
+			promoteCompilerDefaultRoots = false
 		case arg == includeFlag || arg == isystemFlag || arg == iquoteFlag:
 			if i+1 >= len(args) {
 				continue
 			}
 			i++
-			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, arg == iquoteFlag, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, arg == iquoteFlag, promoteCompilerDefaultRoots, &items)
 		case strings.HasPrefix(arg, includeFlag) && len(arg) > len(includeFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, false, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, false, promoteCompilerDefaultRoots, &items)
 		case strings.HasPrefix(arg, isystemFlag) && len(arg) > len(isystemFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, false, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, false, promoteCompilerDefaultRoots, &items)
 		case strings.HasPrefix(arg, iquoteFlag) && len(arg) > len(iquoteFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, true, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, true, promoteCompilerDefaultRoots, &items)
 		}
 	}
 	return normalizeCompileSearchPaths(items)
@@ -256,12 +261,12 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 	*items = append(*items, path)
 }
 
-func addIncludeSearchPath(path string, system, quoteOnly bool, items *[]includeSearchPath) {
+func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefaultRoots bool, items *[]includeSearchPath) {
 	if path == "" {
 		return
 	}
 	path = filepath.Clean(path)
-	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(path) {
+	if promoteCompilerDefaultRoots && !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(path) {
 		system = true
 	}
 	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})

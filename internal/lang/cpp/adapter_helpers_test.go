@@ -100,6 +100,49 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 	}
 }
 
+func TestCompileContextNostdincPreservesLaterDashIUserProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "nostdinc separated include",
+			args: []string{"c++", "-nostdinc", "-I", "/usr/local/include", "-isystem", "/usr/include", "-c", "src/" + testMainCPPFileName},
+		},
+		{
+			name: "nostdinc++ joined include",
+			args: []string{"c++", "-nostdinc++", "-I/usr/local/include", "-isystem/usr/include", "-c", "src/" + testMainCPPFileName},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, tc.args))
+			testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+			ctx, err := loadCompileContext(repo)
+			if err != nil {
+				t.Fatalf("load compile context: %v", err)
+			}
+			requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", false)
+			requireCompileContextSearchPathSystem(t, ctx, "/usr/include", true)
+		})
+	}
+}
+
+func TestCompileContextNostdincAffectsOnlyLaterDashIProvenance(t *testing.T) {
+	repo := t.TempDir()
+	args := []string{"c++", "-I/usr/local/include", "-nostdinc", "-I/usr/include", "-c", "src/" + testMainCPPFileName}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", true)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", false)
+}
+
 func compileContextSearchPathSystem(ctx compileContext, wantPath string) (bool, bool) {
 	searchPaths := reflect.ValueOf(ctx).FieldByName("IncludeSearchPaths")
 	if !searchPaths.IsValid() {
@@ -118,6 +161,17 @@ func compileContextSearchPathSystem(ctx compileContext, wantPath string) (bool, 
 		return system.Bool(), true
 	}
 	return false, false
+}
+
+func requireCompileContextSearchPathSystem(t *testing.T, ctx compileContext, wantPath string, want bool) {
+	t.Helper()
+	got, ok := compileContextSearchPathSystem(ctx, wantPath)
+	if !ok {
+		t.Fatalf("expected compile context search path %s to be present", wantPath)
+	}
+	if got != want {
+		t.Fatalf("compile context search path %s system provenance: got %t, want %t", wantPath, got, want)
+	}
 }
 
 func compileContextSearchPathQuoteOnly(ctx compileContext, wantPath string) (bool, bool) {
@@ -1106,6 +1160,30 @@ int main() { return 0; }
 	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
 		"linux": 0,
 		"sys":   1,
+	})
+}
+
+func TestAnalyseNostdincDashICompilerDefaultRootKeepsUserHeaderSemantics(t *testing.T) {
+	repo := t.TempDir()
+	compilerDefaultRoot := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
+	testutil.MustWriteFile(t, filepath.Join(compilerDefaultRoot, "linux", "if.h"), "// user supplied header under compiler-shaped root\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include <linux/if.h>
+int main() { return 0; }
+`)
+	sourceRel := filepath.ToSlash(filepath.Join("src", testMainCPPFileName))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":%q,"arguments":["c++","-nostdinc","-I",%q,"-c",%q]}
+]`, sourceRel, compilerDefaultRoot, sourceRel))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"linux": 1,
 	})
 }
 

@@ -13,60 +13,65 @@ import (
 func TestCPPRegressionproofExcludedIncludeClassificationBranches(t *testing.T) {
 	catalog := newDependencyCatalog()
 	catalog.add("parallel-extra", "vcpkg manifest")
-	if got := declaredIncludeDependency("parallel/base.h", catalog); got != "parallel-extra" {
-		t.Fatalf("expected declared prefix correlation, got %q", got)
-	}
-	if got := declaredIncludeDependency("", catalog); got != "" {
-		t.Fatalf("expected blank include to have no declared dependency, got %q", got)
-	}
-	if got := declaredIncludeDependency("debug/map", newDependencyCatalog()); got != "" {
-		t.Fatalf("expected empty catalog to have no declared dependency, got %q", got)
-	}
-	if got := declaredIncludeDependency("debug/map", catalog); got != "" {
-		t.Fatalf("expected unrelated catalog to have no declared dependency, got %q", got)
-	}
 
-	if got := filterIncludeSearchPathsForDelimiter([]includeSearchPath{{Path: "/repo/include"}}, '#'); len(got) != 0 {
-		t.Fatalf("expected invalid delimiter to yield nil search paths, got %#v", got)
+	assertDeclaredIncludeDependency(t, "parallel/base.h", catalog, "parallel-extra")
+	assertDeclaredIncludeDependency(t, "", catalog, "")
+	assertDeclaredIncludeDependency(t, "debug/map", newDependencyCatalog(), "")
+	assertDeclaredIncludeDependency(t, "debug/map", catalog, "")
+	assertEmptySearchPaths(t, filterIncludeSearchPathsForDelimiter([]includeSearchPath{{Path: "/repo/include"}}, '#'))
+	assertRegressionproofExcludedBooleans(t, []regressionproofExcludedBooleanCase{
+		{
+			name: "non-system known provenance avoids suppression",
+			got:  shouldSuppressQualifiedStdHeader("debug/map", includeResolution{Resolved: true, ProvenanceKnown: true, Path: "/tmp/debug/map"}),
+			want: false,
+		},
+		{
+			name: "leaf standard header is suppressed",
+			got:  shouldSuppressQualifiedStdHeader("regex", includeResolution{Resolved: true, ProvenanceKnown: true, System: true, Path: "/usr/local/include/regex"}),
+			want: true,
+		},
+		{name: "android multiarch prefix is recognized", got: isLikelyMultiarchIncludePrefix("x86_64-linux-android"), want: true},
+		{name: "unknown linux multiarch ABI is rejected", got: isLikelyMultiarchIncludePrefix("x86_64-linux-unknownabi"), want: false},
+		{name: "non-linux multiarch prefix is rejected", got: isLikelyMultiarchIncludePrefix("x86_64-darwin-gnu"), want: false},
+		{name: "one-component OS header candidate is rejected", got: isKnownOSCompilerQualifiedHeader("sys"), want: false},
+		{name: "empty OS header leaf is rejected", got: isKnownOSCompilerQualifiedHeader("sys/"), want: false},
+		{name: "blank include root is not compiler default", got: isCompilerDefaultSystemIncludeRoot(""), want: false},
+		{name: "blank include path is not system", got: isLikelySystemIncludePath(""), want: false},
+		{name: "/usr/local/include header is system", got: isLikelySystemIncludePath("/usr/local/include/sys/types.h"), want: true},
+		{name: "uppercase usr-local include path remains user-provided", got: isLikelySystemIncludePath("/USR/LOCAL/INCLUDE/sys/types.h"), want: false},
+		{name: "Windows-style vendor include path is not system", got: isLikelySystemIncludePath("C:/Build/vendor/include/debug/map"), want: false},
+		{name: "Windows-style MSVC include path is system", got: isLikelySystemIncludePath("C:/Build/MSVC/include/debug/map"), want: true},
+	})
+}
+
+type regressionproofExcludedBooleanCase struct {
+	name string
+	got  bool
+	want bool
+}
+
+func assertDeclaredIncludeDependency(t *testing.T, header string, catalog dependencyCatalog, want string) {
+	t.Helper()
+	if got := declaredIncludeDependency(header, catalog); got != want {
+		t.Fatalf("%s declared dependency: got %q, want %q", header, got, want)
 	}
-	if shouldSuppressQualifiedStdHeader("debug/map", includeResolution{Resolved: true, ProvenanceKnown: true, Path: "/tmp/debug/map"}) {
-		t.Fatalf("expected non-system known provenance to avoid suppression")
+}
+
+func assertEmptySearchPaths(t *testing.T, paths []includeSearchPath) {
+	t.Helper()
+	if len(paths) != 0 {
+		t.Fatalf("expected invalid delimiter to yield nil search paths, got %#v", paths)
 	}
-	if !shouldSuppressQualifiedStdHeader("regex", includeResolution{Resolved: true, ProvenanceKnown: true, System: true, Path: "/usr/local/include/regex"}) {
-		t.Fatalf("expected leaf standard header to be suppressed")
-	}
-	if !isLikelyMultiarchIncludePrefix("x86_64-linux-android") {
-		t.Fatalf("expected android multiarch prefix to be recognized")
-	}
-	if isLikelyMultiarchIncludePrefix("x86_64-linux-unknownabi") {
-		t.Fatalf("expected unknown linux multiarch ABI to be rejected")
-	}
-	if isLikelyMultiarchIncludePrefix("x86_64-darwin-gnu") {
-		t.Fatalf("expected non-linux multiarch prefix to be rejected")
-	}
-	if isKnownOSCompilerQualifiedHeader("sys") {
-		t.Fatalf("expected one-component OS header candidate to be rejected")
-	}
-	if isKnownOSCompilerQualifiedHeader("sys/") {
-		t.Fatalf("expected empty OS header leaf to be rejected")
-	}
-	if isCompilerDefaultSystemIncludeRoot("") {
-		t.Fatalf("expected blank include root not to be compiler default")
-	}
-	if isLikelySystemIncludePath("") {
-		t.Fatalf("expected blank include path not to be system")
-	}
-	if !isLikelySystemIncludePath("/usr/local/include/sys/types.h") {
-		t.Fatalf("expected /usr/local/include header to be system")
-	}
-	if isLikelySystemIncludePath("/USR/LOCAL/INCLUDE/sys/types.h") {
-		t.Fatalf("expected uppercase usr-local include path to remain user-provided")
-	}
-	if isLikelySystemIncludePath("C:/Build/vendor/include/debug/map") {
-		t.Fatalf("expected Windows-style vendor include path not to be system")
-	}
-	if !isLikelySystemIncludePath("C:/Build/MSVC/include/debug/map") {
-		t.Fatalf("expected Windows-style MSVC include path to remain system")
+}
+
+func assertRegressionproofExcludedBooleans(t *testing.T, cases []regressionproofExcludedBooleanCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Fatalf("%s: got %t, want %t", tc.name, tc.got, tc.want)
+			}
+		})
 	}
 }
 
