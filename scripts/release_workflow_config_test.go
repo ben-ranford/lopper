@@ -2832,6 +2832,9 @@ func TestRenovateTidiesGoModuleUpdates(t *testing.T) {
 func TestRenovatePRsSatisfyMetadataRequirements(t *testing.T) {
 	t.Parallel()
 
+	const regressionProofTemplate = "{{#if (equals semanticCommitType 'fix')}}\nRegression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements\n{{/if}}"
+	const regressionProof = "Regression-Test: ./scripts::TestRenovatePRsSatisfyMetadataRequirements"
+
 	var config struct {
 		Labels         []string `json:"labels"`
 		PRBodyTemplate string   `json:"prBodyTemplate"`
@@ -2841,19 +2844,41 @@ func TestRenovatePRsSatisfyMetadataRequirements(t *testing.T) {
 	if !slices.Contains(config.Labels, "dependencies") {
 		t.Fatalf("Renovate PR labels = %v, want dependencies", config.Labels)
 	}
-
-	bodyPath := filepath.Join(t.TempDir(), "renovate-pr-body.md")
-	if err := os.WriteFile(bodyPath, []byte(config.PRBodyTemplate), 0o600); err != nil {
-		t.Fatalf("write Renovate PR body template: %v", err)
+	if !strings.Contains(config.PRBodyTemplate, regressionProofTemplate) {
+		t.Fatal("Renovate PR body must declare a regression test only for fix semantic titles")
 	}
-	command := exec.Command("go", "run", "./tools/prcheck",
-		"--title", "chore(deps): update dependencies",
-		"--head-ref", "renovate/example-dependency",
-		"--body-file", bodyPath,
-	)
-	command.Dir = filepath.Dir(repoPath(t, "renovate.json"))
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("Renovate PR body must satisfy metadata validation: %v\n%s", err, output)
+
+	for _, test := range []struct {
+		name  string
+		title string
+		body  string
+	}{
+		{
+			name:  "chore title omits regression proof",
+			title: "chore(deps): update dependencies",
+			body:  strings.Replace(config.PRBodyTemplate, regressionProofTemplate, "", 1),
+		},
+		{
+			name:  "fix title includes regression proof",
+			title: "fix(deps): update dependencies",
+			body:  strings.Replace(config.PRBodyTemplate, regressionProofTemplate, regressionProof, 1),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bodyPath := filepath.Join(t.TempDir(), "renovate-pr-body.md")
+			if err := os.WriteFile(bodyPath, []byte(test.body), 0o600); err != nil {
+				t.Fatalf("write Renovate PR body template: %v", err)
+			}
+			command := exec.Command("go", "run", "./tools/prcheck",
+				"--title", test.title,
+				"--head-ref", "renovate/example-dependency",
+				"--body-file", bodyPath,
+			)
+			command.Dir = filepath.Dir(repoPath(t, "renovate.json"))
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("Renovate PR body must satisfy metadata validation: %v\n%s", err, output)
+			}
+		})
 	}
 }
 
