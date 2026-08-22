@@ -295,6 +295,11 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 			Local:      "np",
 		}, wantLine)
 	}
+	numpyAfterHiddenImportCase := func(name string, hiddenLines []string, closingLine string) importBoundaryCase {
+		lines := append([]string{}, hiddenLines...)
+		lines = append(lines, "from pandas import DataFrame", closingLine, "import numpy as np")
+		return numpyCase(name, strings.Join(lines, "\n")+"\n", 6)
+	}
 
 	cases := []importBoundaryCase{
 		numpyCase(
@@ -468,65 +473,35 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 				"import requests\n",
 			4,
 		),
-		numpyCase(
+		numpyAfterHiddenImportCase(
 			"nested format spec strings hide import-like content",
-			"value = f\"\"\"{42:{f'''width\n"+
-				"import requests\n"+
-				"''':{3:#x}}}\n"+
-				"from pandas import DataFrame\n"+
-				"\"\"\"\n"+
-				"import numpy as np\n",
-			6,
+			[]string{`value = f"""{42:{f'''width`, "import requests", "''':{3:#x}}}"},
+			`"""`,
 		),
-		numpyCase(
+		numpyAfterHiddenImportCase(
 			"template replacement strings hide import-like content",
-			"value = t\"\"\"{'''\n"+
-				"import requests\n"+
-				"'''}\n"+
-				"from pandas import DataFrame\n"+
-				"\"\"\"\n"+
-				"import numpy as np\n",
-			6,
+			[]string{`value = t"""{'''`, "import requests", "'''}"},
+			`"""`,
 		),
-		numpyCase(
+		numpyAfterHiddenImportCase(
 			"uppercase template replacement strings hide import-like content",
-			"value = T'''{\"\"\"\n"+
-				"import requests\n"+
-				"\"\"\"}\n"+
-				"from pandas import DataFrame\n"+
-				"'''\n"+
-				"import numpy as np\n",
-			6,
+			[]string{`value = T'''{"""`, "import requests", `"""}`},
+			"'''",
 		),
-		numpyCase(
+		numpyAfterHiddenImportCase(
 			"raw f-string replacement brace hides embedded strings",
-			"value = rf\"\"\"\\{'''\n"+
-				"import requests\n"+
-				"'''}\n"+
-				"from pandas import DataFrame\n"+
-				"\"\"\"\n"+
-				"import numpy as np\n",
-			6,
+			[]string{`value = rf"""\{'''`, "import requests", "'''}"},
+			`"""`,
 		),
-		numpyCase(
+		numpyAfterHiddenImportCase(
 			"nested field comment hides import-like continuation",
-			"value = f\"\"\"{42:{(\n"+
-				"3 # }} \"\"\" comment\n"+
-				")}}\n"+
-				"from pandas import DataFrame\n"+
-				"\"\"\"\n"+
-				"import numpy as np\n",
-			6,
+			[]string{`value = f"""{42:{(`, `3 # }} """ comment`, ")}}"},
+			`"""`,
 		),
-		numpyCase(
+		numpyAfterHiddenImportCase(
 			"dict curly nesting delays format-spec detection",
-			"value = f\"\"\"{ {'key': '''\n"+
-				"import requests\n"+
-				"'''} :{width}}\n"+
-				"from pandas import DataFrame\n"+
-				"\"\"\"\n"+
-				"import numpy as np\n",
-			6,
+			[]string{`value = f"""{ {'key': '''`, "import requests", "'''} :{width}}"},
+			`"""`,
 		),
 	}
 
