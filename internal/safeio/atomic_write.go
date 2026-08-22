@@ -148,10 +148,45 @@ func (s *atomicWriteSession) rollbackCommittedTargetWithError(primaryErr error) 
 	if s.tempInfo == nil || !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
 		return errors.Join(primaryErr, fmt.Errorf("committed target changed before rollback: %s", s.targetRel))
 	}
-	if err := s.root.Remove(s.targetRel); err != nil && !os.IsNotExist(err) {
+	rollbackRel, err := randomRollbackRel(s.root, filepath.Dir(s.targetRel))
+	if err != nil {
 		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
 	}
+	if err := s.root.Rename(s.targetRel, rollbackRel); err != nil {
+		if os.IsNotExist(err) {
+			return primaryErr
+		}
+		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
+	}
+	rollbackInfo, err := s.root.Lstat(rollbackRel)
+	if err != nil {
+		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
+	}
+	// Leave the moved rollback candidate in place. A path-based delete after
+	// identity validation would recreate the same replacement race at a new name.
+	if !rollbackInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, rollbackInfo) {
+		return errors.Join(primaryErr, fmt.Errorf("committed target changed before rollback: %s", s.targetRel))
+	}
 	return primaryErr
+}
+
+func randomRollbackRel(root Root, dir string) (string, error) {
+	for range 10 {
+		name, err := randomTempNameFn()
+		if err != nil {
+			return "", err
+		}
+		rollbackRel := name
+		if dir != "." {
+			rollbackRel = filepath.Join(dir, name)
+		}
+		if _, err := root.Lstat(rollbackRel); os.IsNotExist(err) {
+			return rollbackRel, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("create rollback path: too many collisions")
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
@@ -243,7 +278,7 @@ func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, 
 		if fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err); fallbackErr != nil {
 			return fallbackErr
 		}
-		return runPostWriteCheck(options.postWrite)
+		return runFallbackPostWriteCheck(options.postWrite, options.rollbackOnPostWriteFailure, targetRel)
 	}
 	return session.verifyCommittedTargetAndPostWrite(options.postWrite, options.rollbackOnPostWriteFailure)
 }
@@ -298,7 +333,7 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
 				return err
 			}
-			return runPostWriteCheck(callbacks.postWrite)
+			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
 		}
 		return err
 	}
@@ -315,7 +350,7 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 	if err := session.commit(callbacks.commitReady, callbacks.commitRename); err != nil {
 		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
 		if fallbackErr == nil {
-			return runPostWriteCheck(callbacks.postWrite)
+			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
 		}
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
 			if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
@@ -324,7 +359,7 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
 				return err
 			}
-			return runPostWriteCheck(callbacks.postWrite)
+			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
 		}
 		return fallbackErr
 	}
@@ -336,6 +371,14 @@ func runPostWriteCheck(postWrite func() error) error {
 		return nil
 	}
 	return postWrite()
+}
+
+func runFallbackPostWriteCheck(postWrite func() error, rollbackOnPostWriteFailure bool, targetRel string) error {
+	err := runPostWriteCheck(postWrite)
+	if err != nil && rollbackOnPostWriteFailure {
+		return errors.Join(err, fmt.Errorf("committed target changed before rollback: %s", targetRel))
+	}
+	return err
 }
 
 func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, allowPermissionFallback bool) bool {

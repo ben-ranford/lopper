@@ -233,6 +233,63 @@ func TestWriteAtomicReplacementRunsPostWriteAfterWindowsFallback(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafety(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	removeCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		rename: func(oldName, newName string) error {
+			return windowsReplaceExistingError(oldName, newName)
+		},
+		remove: func(name string) error {
+			removeCalls++
+			if name == writeTestFileName {
+				t.Fatal("fallback rollback must not remove the overwritten target path")
+			}
+			return nil
+		},
+	}
+
+	postWriteErr := errors.New("post-write validation failure")
+	postWriteCalls := 0
+	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, targetFile, true, pinnedReplacementChecks{
+		postWrite: func() error {
+			postWriteCalls++
+			return postWriteErr
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "committed target changed before rollback") {
+		t.Fatalf("expected unsafe rollback error, got %v", err)
+	}
+	if postWriteCalls != 1 {
+		t.Fatalf("expected one post-write check after fallback, got %d", postWriteCalls)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected only temp cleanup remove, got %d removes", removeCalls)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback target data to be preserved after post-write failure, got %q", string(*targetData))
+	}
+}
+
 func TestWriteAtomicReplacementRejectsRetargetedDestinationAfterWindowsFallback(t *testing.T) {
 	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
 	targetFile, targetData := newPinnedFallbackTargetFile(t, originalInfo, "before")
