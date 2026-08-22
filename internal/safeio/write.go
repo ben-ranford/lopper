@@ -89,11 +89,10 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReady(targetPath string, 
 // root-relative file after parentReady validates state with the target parent
 // pinned, then runs preWrite immediately before the file mutation begins.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, preWrite func() error) error {
-	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, writeToTargetParentOptions{
-		preWrite:  preWrite,
-		postWrite: preWrite,
-		write:     writeFileAtRootWithChecks,
-	})
+	options := checkedWriteToTargetParentOptions()
+	options.preWrite = preWrite
+	options.postWrite = preWrite
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, options)
 }
 
 // WriteFileCreatingParentsAfterParentReadyWithPublishCheck atomically writes a
@@ -101,11 +100,10 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPreWriteCheck(ta
 // pinned. It runs publishCheck immediately before publishing the target and
 // again after the target has been committed.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, parentReady, publishCheck func() error) error {
-	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, writeToTargetParentOptions{
-		commitReady: publishCheck,
-		postWrite:   publishCheck,
-		write:       writeFileAtRootWithChecks,
-	})
+	options := checkedWriteToTargetParentOptions()
+	options.commitReady = publishCheck
+	options.postWrite = publishCheck
+	return r.writeFileCreatingParentsAfterParentReadyWithOptions(targetPath, data, perm, parentPerm, parentReady, options)
 }
 
 // WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck
@@ -113,10 +111,13 @@ func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPublishCheck(tar
 // passes the actual pinned parent identity to publishCheck before publishing and
 // again after the target has been committed.
 func (r *WriteRoot) WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(targetPath string, data []byte, perm, parentPerm os.FileMode, publishCheck func(parentPath string, parentIdentity fs.FileInfo) error) error {
-	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, writeToTargetParentOptions{
-		publishParent: publishCheck,
-		write:         writeFileAtRootWithChecks,
-	})
+	options := checkedWriteToTargetParentOptions()
+	options.publishParent = publishCheck
+	return r.writeFileCreatingParentsWithOptions(targetPath, data, perm, parentPerm, options)
+}
+
+func checkedWriteToTargetParentOptions() writeToTargetParentOptions {
+	return writeToTargetParentOptions{write: writeFileAtRootWithChecks}
 }
 
 // WriteFileCreatingParentsWithPermissionFallback atomically writes a
@@ -264,16 +265,13 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 			postWrite = parentCheck
 			options.rollbackOnPostWriteFailure = true
 			options.commitRename = func(oldName, newName string) error {
-				if err := parentCheck(); err != nil {
-					return err
-				}
-				if err := parentCheck(); err != nil {
-					return err
-				}
 				if err := writeFileRenameReadyFn(); err != nil {
 					return err
 				}
-				return renameAtPinnedDirectory(parent, parentIdentity, oldName, newName)
+				if err := parentCheck(); err != nil {
+					return err
+				}
+				return renameAtDirectoryPath(parentPath, oldName, newName)
 			}
 			if err := parentCheck(); err != nil {
 				return err

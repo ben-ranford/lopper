@@ -1069,8 +1069,8 @@ func TestWriteRootPinnedParentPublishCheckPublishesThroughValidatedParentPath(t 
 	if err != nil {
 		t.Fatalf("WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck returned error: %v", err)
 	}
-	if publishChecks != 4 {
-		t.Fatalf("expected initial, commit, final commit, and post-write publish checks, got %d", publishChecks)
+	if publishChecks != 3 {
+		t.Fatalf("expected initial, commit, and post-write publish checks, got %d", publishChecks)
 	}
 	assertFileContent(t, filepath.Join(parent, writeTestFileName), "hello")
 }
@@ -1162,14 +1162,14 @@ func TestWriteRootPinnedParentPublishCheckRejectsParentSwapBetweenFinalCheckAndR
 	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
 		t.Fatalf("expected post-rename parent identity error, got %v", err)
 	}
-	if publishChecks != 3 {
-		t.Fatalf("expected initial, commit, and final commit publish checks, got %d", publishChecks)
+	if publishChecks != 1 {
+		t.Fatalf("expected only initial publish check before rename-ready swap, got %d", publishChecks)
 	}
 	if renameReadyCalls != 1 {
 		t.Fatalf("expected one rename-ready hook call, got %d", renameReadyCalls)
 	}
 	if _, statErr := os.Stat(filepath.Join(relocatedParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("expected relocated parent target to be rolled back, got %v", statErr)
+		t.Fatalf("expected relocated parent target to remain absent, got %v", statErr)
 	}
 	if _, statErr := os.Stat(filepath.Join(replacementParent, writeTestFileName)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected replacement parent target to remain absent, got %v", statErr)
@@ -1551,6 +1551,41 @@ func TestWriteAtomicReplacementWithPinnedTargetPermissionFallbackRunsPostWrite(t
 	}
 }
 
+func TestWriteAtomicReplacementWithPinnedTargetPermissionFallbackRejectsRollbackRequiredBeforeMutation(t *testing.T) {
+	info := newPinnedTargetInfo(t, "target")
+	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, os.ErrPermission
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			t.Fatalf("rollback-required permission fallback should not lstat %s", name)
+			return nil, nil
+		},
+	}
+	postWriteCalls := 0
+
+	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, target, true, pinnedReplacementChecks{
+		postWrite: func() error {
+			postWriteCalls++
+			return nil
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected original permission error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
+		t.Fatalf("expected rollback-required fallback rejection, got %v", err)
+	}
+	if postWriteCalls != 0 {
+		t.Fatalf("expected post-write check to be skipped after fallback rejection, got %d", postWriteCalls)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("expected fallback target data to remain unchanged, got %q", string(*targetData))
+	}
+}
+
 func TestWriteAtomicReplacementCommitReadyErrorPreventsRename(t *testing.T) {
 	tempInfo := newPinnedTargetInfo(t, "temp")
 	expectedErr := errors.New("not ready to commit")
@@ -1607,19 +1642,7 @@ func TestWriteAtomicReplacementWithPinnedTargetCommitPermissionFallbackRunsPostW
 	info := newPinnedTargetInfo(t, "target")
 	tempInfo := newPinnedTargetInfo(t, "temp")
 	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
-	root := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name == writeTestFileName {
-				return info, nil
-			}
-			return tempInfo, nil
-		},
-		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
-			return target, nil
-		}, tempInfo, nil),
-		rename: func(string, string) error { return os.ErrPermission },
-		remove: func(string) error { return nil },
-	}
+	root := newCommitPermissionFallbackRoot(info, tempInfo, target)
 	postWriteCalls := 0
 
 	err := writeAtomicReplacementWithPinnedTargetAndPostWriteCheck(root, writeTestFileName, []byte("after"), 0o600, target, true, func() error {
@@ -1634,6 +1657,50 @@ func TestWriteAtomicReplacementWithPinnedTargetCommitPermissionFallbackRunsPostW
 	}
 	if postWriteCalls != 1 {
 		t.Fatalf("expected one post-write check, got %d", postWriteCalls)
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetCommitPermissionFallbackRejectsRollbackRequiredBeforeMutation(t *testing.T) {
+	info := newPinnedTargetInfo(t, "target")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	target, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	root := newCommitPermissionFallbackRoot(info, tempInfo, target)
+	postWriteCalls := 0
+
+	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, target, true, pinnedReplacementChecks{
+		postWrite: func() error {
+			postWriteCalls++
+			return nil
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected original permission error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fallback replacement cannot roll back post-write failure") {
+		t.Fatalf("expected rollback-required fallback rejection, got %v", err)
+	}
+	if postWriteCalls != 0 {
+		t.Fatalf("expected post-write check to be skipped after fallback rejection, got %d", postWriteCalls)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("expected fallback target data to remain unchanged, got %q", string(*targetData))
+	}
+}
+
+func newCommitPermissionFallbackRoot(info, tempInfo fs.FileInfo, target File) *fakeRoot {
+	return &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return target, nil
+		}, tempInfo, nil),
+		rename: func(string, string) error { return os.ErrPermission },
+		remove: func(string) error { return nil },
 	}
 }
 
@@ -3756,10 +3823,9 @@ func TestWriteAtomicReplacementLeavesCommittedTargetAfterPostWriteFailure(t *tes
 	}
 }
 
-func TestWriteAtomicReplacementRollbackPreservesRetargetedReplacement(t *testing.T) {
-	tempInfo, changedInfo := writePinnedTargetInfoPair(t)
+func TestWriteAtomicReplacementRollbackRetainsOwnedTargetWithoutPathMutation(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
 	postWriteErr := errors.New("post-write validation failure")
-	rollbackRel := ""
 	removeCalls := 0
 	lstatCalls := 0
 	renameCalls := 0
@@ -3773,27 +3839,16 @@ func TestWriteAtomicReplacementRollbackPreservesRetargetedReplacement(t *testing
 			if name == writeTestFileName {
 				return tempInfo, nil
 			}
-			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && rollbackRel == "" {
-				return nil, os.ErrNotExist
-			}
-			if name == rollbackRel {
-				return changedInfo, nil
-			}
 			t.Fatalf("unexpected lstat path: %s", name)
 			return nil, nil
 		},
-		rename: func(oldName, newName string) error {
+		rename: func(string, string) error {
 			renameCalls++
-			if oldName == writeTestFileName {
-				rollbackRel = newName
-			}
 			return nil
 		},
 		remove: func(name string) error {
 			removeCalls++
-			if name == writeTestFileName {
-				t.Fatal("rollback must not remove a path that can be replaced after identity validation")
-			}
+			t.Fatalf("rollback must not remove %s after post-write failure", name)
 			return nil
 		},
 	}
@@ -3807,196 +3862,85 @@ func TestWriteAtomicReplacementRollbackPreservesRetargetedReplacement(t *testing
 	if !errors.Is(err, postWriteErr) {
 		t.Fatalf("expected post-write error, got %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before rollback") {
-		t.Fatalf("expected rollback identity error, got %v", err)
+	if renameCalls != 1 {
+		t.Fatalf("expected only commit rename, got %d", renameCalls)
 	}
-	if rollbackRel == "" {
-		t.Fatal("expected committed target to be moved to a rollback path before validation")
-	}
-	if renameCalls != 2 {
-		t.Fatalf("expected commit and rollback rename calls, got %d", renameCalls)
-	}
-	if lstatCalls != 4 {
-		t.Fatalf("expected commit, rollback, rollback-name, and moved-target lstat calls, got %d", lstatCalls)
+	if lstatCalls != 1 {
+		t.Fatalf("expected only committed-target validation lstat, got %d", lstatCalls)
 	}
 	if removeCalls != 0 {
 		t.Fatalf("expected no path removal during rollback, got %d", removeCalls)
 	}
 }
 
-func TestAtomicWriteSessionRollbackCommittedTargetErrorPaths(t *testing.T) {
+func TestWriteAtomicReplacementRollbackPreservesConcurrentReplacementAfterStaleCheck(t *testing.T) {
 	tempInfo := newPinnedTargetInfo(t, "temp")
-	primaryErr := errors.New("post-write validation failure")
-
-	tests := []struct {
-		name          string
-		session       *atomicWriteSession
-		randomErr     error
-		renameErr     error
-		rollbackErr   error
-		wantErr       error
-		wantSubstring string
-		wantRename    bool
-	}{
-		{
-			name: "missing target",
-			session: &atomicWriteSession{
-				root: &fakeRoot{
-					lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-				},
-				targetRel: writeTestFileName,
-				tempInfo:  tempInfo,
-			},
+	postWriteErr := errors.New("post-write validation failure")
+	concurrentReplacementReady := false
+	renameCalls := 0
+	root := &fakeRoot{
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			t.Fatalf("target should not be opened")
+			return nil, nil
+		}, tempInfo, nil),
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return tempInfo, nil
 		},
-		{
-			name:    "target lstat failure",
-			wantErr: errors.New("target lstat failure"),
-			session: &atomicWriteSession{
-				root:      &fakeRoot{},
-				targetRel: writeTestFileName,
-				tempInfo:  tempInfo,
-			},
-			wantSubstring: "rollback committed target",
+		rename: func(oldName, newName string) error {
+			renameCalls++
+			if concurrentReplacementReady {
+				t.Fatalf("rollback must not rename concurrent replacement %s to %s", oldName, newName)
+			}
+			return nil
 		},
-		{
-			name: "missing temp snapshot",
-			session: &atomicWriteSession{
-				root: &fakeRoot{
-					lstat: func(string) (fs.FileInfo, error) { return tempInfo, nil },
-				},
-				targetRel: writeTestFileName,
-			},
-			wantSubstring: "committed target changed before rollback",
-		},
-		{
-			name: "random rollback name failure",
-			session: &atomicWriteSession{
-				root:      &fakeRoot{},
-				targetRel: writeTestFileName,
-				tempInfo:  tempInfo,
-			},
-			randomErr:     errors.New("random rollback name failure"),
-			wantSubstring: "rollback committed target",
-		},
-		{
-			name: "rollback rename failure",
-			session: &atomicWriteSession{
-				root:      &fakeRoot{},
-				targetRel: writeTestFileName,
-				tempInfo:  tempInfo,
-			},
-			renameErr:     errors.New("rollback rename failure"),
-			wantSubstring: "rollback committed target",
-			wantRename:    true,
-		},
-		{
-			name: "rollback rename target disappeared",
-			session: &atomicWriteSession{
-				root:      &fakeRoot{},
-				targetRel: writeTestFileName,
-				tempInfo:  tempInfo,
-			},
-			renameErr:  os.ErrNotExist,
-			wantRename: true,
-		},
-		{
-			name: "rollback moved target lstat failure",
-			session: &atomicWriteSession{
-				root:      &fakeRoot{},
-				targetRel: filepath.Join("nested", writeTestFileName),
-				tempInfo:  tempInfo,
-			},
-			rollbackErr:   errors.New("rollback lstat failure"),
-			wantSubstring: "rollback committed target",
-			wantRename:    true,
-		},
-		{
-			name: "subdirectory rollback path",
-			session: &atomicWriteSession{
-				root:      &fakeRoot{},
-				targetRel: filepath.Join("nested", writeTestFileName),
-				tempInfo:  tempInfo,
-			},
-			wantRename: true,
+		remove: func(name string) error {
+			t.Fatalf("rollback must not remove concurrent replacement %s", name)
+			return nil
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			renameCalls := 0
-			rollbackRel := ""
-			if root, ok := tt.session.root.(*fakeRoot); ok {
-				if root.lstat == nil {
-					root.lstat = func(name string) (fs.FileInfo, error) {
-						if name == tt.session.targetRel {
-							if tt.wantErr != nil {
-								return nil, tt.wantErr
-							}
-							return tempInfo, nil
-						}
-						if filepath.Base(name) == "rollback-name" && rollbackRel == "" {
-							return nil, os.ErrNotExist
-						}
-						if name == rollbackRel {
-							return tempInfo, tt.rollbackErr
-						}
-						t.Fatalf("unexpected lstat path: %s", name)
-						return nil, nil
-					}
-				}
-				root.rename = func(oldName, newName string) error {
-					renameCalls++
-					if oldName != tt.session.targetRel {
-						t.Fatalf("unexpected rollback rename source: %s", oldName)
-					}
-					rollbackRel = newName
-					return tt.renameErr
-				}
-				root.remove = func(name string) error {
-					t.Fatalf("rollback should not path-remove %s", name)
-					return nil
-				}
-			}
 
-			originalRandomTempNameFn := randomTempNameFn
-			randomTempNameFn = func() (string, error) {
-				if tt.randomErr != nil {
-					return "", tt.randomErr
-				}
-				return "rollback-name", nil
-			}
-			t.Cleanup(func() {
-				randomTempNameFn = originalRandomTempNameFn
-			})
+	err := writeAtomicReplacementWithChecks(root, writeTestFileName, []byte("after"), 0o600, atomicReplacementOptions{
+		postWrite: func() error {
+			concurrentReplacementReady = true
+			return postWriteErr
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected only commit rename, got %d", renameCalls)
+	}
+}
 
-			err := tt.session.rollbackCommittedTargetWithError(primaryErr)
-			if !errors.Is(err, primaryErr) {
-				t.Fatalf("expected primary error, got %v", err)
-			}
-			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
-				t.Fatalf("expected joined error %v, got %v", tt.wantErr, err)
-			}
-			if tt.randomErr != nil && !errors.Is(err, tt.randomErr) {
-				t.Fatalf("expected random name error %v, got %v", tt.randomErr, err)
-			}
-			if tt.renameErr != nil && !errors.Is(tt.renameErr, os.ErrNotExist) && !errors.Is(err, tt.renameErr) {
-				t.Fatalf("expected rename error %v, got %v", tt.renameErr, err)
-			}
-			if tt.rollbackErr != nil && !errors.Is(err, tt.rollbackErr) {
-				t.Fatalf("expected rollback lstat error %v, got %v", tt.rollbackErr, err)
-			}
-			if tt.wantSubstring != "" && !strings.Contains(err.Error(), tt.wantSubstring) {
-				t.Fatalf("expected %q in error, got %v", tt.wantSubstring, err)
-			}
-			if tt.wantRename && renameCalls != 1 {
-				t.Fatalf("expected one rollback rename, got %d", renameCalls)
-			}
-			if !tt.wantRename && renameCalls != 0 {
-				t.Fatalf("expected no rollback rename, got %d", renameCalls)
-			}
-			if tt.name == "subdirectory rollback path" && rollbackRel != filepath.Join("nested", "rollback-name") {
-				t.Fatalf("unexpected rollback path: %s", rollbackRel)
-			}
-		})
+func TestAtomicWriteSessionRollbackCommittedTargetWithErrorDoesNotPathMutate(t *testing.T) {
+	primaryErr := errors.New("post-write validation failure")
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				t.Fatalf("rollback should not lstat %s", name)
+				return nil, nil
+			},
+			rename: func(oldName, newName string) error {
+				t.Fatalf("rollback should not rename %s to %s", oldName, newName)
+				return nil
+			},
+			remove: func(name string) error {
+				t.Fatalf("rollback should not remove %s", name)
+				return nil
+			},
+		},
+		targetRel: writeTestFileName,
+		tempInfo:  newPinnedTargetInfo(t, "temp"),
+	}
+
+	err := session.rollbackCommittedTargetWithError(primaryErr)
+	if !errors.Is(err, primaryErr) {
+		t.Fatalf("expected primary error, got %v", err)
 	}
 }
 
@@ -4025,83 +3969,6 @@ func TestRunFallbackPostWriteCheckNonRollbackContract(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "committed target changed before rollback") {
 		t.Fatalf("expected rollback safety error, got %v", err)
 	}
-}
-
-func TestRandomRollbackRelHandlesCollisionsAndLookupErrors(t *testing.T) {
-	tempInfo := newPinnedTargetInfo(t, "temp")
-
-	t.Run("retries collisions", func(t *testing.T) {
-		names := []string{"busy", "free"}
-		lookups := 0
-		root := &fakeRoot{
-			lstat: func(name string) (fs.FileInfo, error) {
-				lookups++
-				switch name {
-				case filepath.Join("nested", "busy"):
-					return tempInfo, nil
-				case filepath.Join("nested", "free"):
-					return nil, os.ErrNotExist
-				default:
-					t.Fatalf("unexpected rollback lookup: %s", name)
-					return nil, nil
-				}
-			},
-		}
-
-		originalRandomTempNameFn := randomTempNameFn
-		randomTempNameFn = func() (string, error) {
-			name := names[0]
-			names = names[1:]
-			return name, nil
-		}
-		t.Cleanup(func() {
-			randomTempNameFn = originalRandomTempNameFn
-		})
-
-		rel, err := randomRollbackRel(root, "nested")
-		if err != nil {
-			t.Fatalf("randomRollbackRel returned error: %v", err)
-		}
-		if rel != filepath.Join("nested", "free") {
-			t.Fatalf("unexpected rollback rel: %s", rel)
-		}
-		if lookups != 2 {
-			t.Fatalf("expected collision and free-name lookups, got %d", lookups)
-		}
-	})
-
-	t.Run("returns lookup error", func(t *testing.T) {
-		expectedErr := errors.New("rollback lookup failure")
-		root := &fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) { return nil, expectedErr },
-		}
-		originalRandomTempNameFn := randomTempNameFn
-		randomTempNameFn = func() (string, error) { return "rollback-name", nil }
-		t.Cleanup(func() {
-			randomTempNameFn = originalRandomTempNameFn
-		})
-
-		_, err := randomRollbackRel(root, ".")
-		if !errors.Is(err, expectedErr) {
-			t.Fatalf("expected lookup error, got %v", err)
-		}
-	})
-
-	t.Run("exhausts collisions", func(t *testing.T) {
-		root := &fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) { return tempInfo, nil },
-		}
-		originalRandomTempNameFn := randomTempNameFn
-		randomTempNameFn = func() (string, error) { return "busy", nil }
-		t.Cleanup(func() {
-			randomTempNameFn = originalRandomTempNameFn
-		})
-
-		_, err := randomRollbackRel(root, ".")
-		if err == nil || !strings.Contains(err.Error(), "too many collisions") {
-			t.Fatalf("expected collision exhaustion error, got %v", err)
-		}
-	})
 }
 
 func TestWriteAtomicReplacementReturnsCloseErrorBeforeRename(t *testing.T) {

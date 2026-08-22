@@ -138,55 +138,14 @@ func (s *atomicWriteSession) verifyCommittedTargetAndPostWrite(postWrite func() 
 }
 
 func (s *atomicWriteSession) rollbackCommittedTargetWithError(primaryErr error) error {
-	pathInfo, err := s.root.Lstat(s.targetRel)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return primaryErr
-		}
-		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
-	}
-	if s.tempInfo == nil || !pathInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, pathInfo) {
-		return errors.Join(primaryErr, fmt.Errorf("committed target changed before rollback: %s", s.targetRel))
-	}
-	rollbackRel, err := randomRollbackRel(s.root, filepath.Dir(s.targetRel))
-	if err != nil {
-		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
-	}
-	if err := s.root.Rename(s.targetRel, rollbackRel); err != nil {
-		if os.IsNotExist(err) {
-			return primaryErr
-		}
-		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
-	}
-	rollbackInfo, err := s.root.Lstat(rollbackRel)
-	if err != nil {
-		return errors.Join(primaryErr, fmt.Errorf("rollback committed target: %w", err))
-	}
-	// Leave the moved rollback candidate in place. A path-based delete after
-	// identity validation would recreate the same replacement race at a new name.
-	if !rollbackInfo.Mode().IsRegular() || !os.SameFile(s.tempInfo, rollbackInfo) {
-		return errors.Join(primaryErr, fmt.Errorf("committed target changed before rollback: %s", s.targetRel))
-	}
+	// Root cleanup is path-based. A check-then-Remove or check-then-Rename can
+	// unlink or move a concurrent same-key replacement, so retain the committed
+	// file as an orphan when rollback cannot be identity-atomic.
 	return primaryErr
 }
 
-func randomRollbackRel(root Root, dir string) (string, error) {
-	for range 10 {
-		name, err := randomTempNameFn()
-		if err != nil {
-			return "", err
-		}
-		rollbackRel := name
-		if dir != "." {
-			rollbackRel = filepath.Join(dir, name)
-		}
-		if _, err := root.Lstat(rollbackRel); os.IsNotExist(err) {
-			return rollbackRel, nil
-		} else if err != nil {
-			return "", err
-		}
-	}
-	return "", fmt.Errorf("create rollback path: too many collisions")
+func rollbackRequiredFallbackError(targetRel string) error {
+	return fmt.Errorf("fallback replacement cannot roll back post-write failure: %s", targetRel)
 }
 
 func (s *atomicWriteSession) snapshotAndCloseTempFile() error {
@@ -275,7 +234,7 @@ func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, 
 		return err
 	}
 	if err := session.commit(options.commitReady, options.commitRename); err != nil {
-		if fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err); fallbackErr != nil {
+		if fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, options.rollbackOnPostWriteFailure); fallbackErr != nil {
 			return fallbackErr
 		}
 		return runFallbackPostWriteCheck(options.postWrite, options.rollbackOnPostWriteFailure, targetRel)
@@ -327,13 +286,7 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 	session, err := newAtomicWriteSession(root, targetRel, perm)
 	if err != nil {
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
-			if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
-				return err
-			}
-			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
-				return err
-			}
-			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
+			return runPinnedOverwriteFallback(root, targetRel, replacementFile, data, err, callbacks)
 		}
 		return err
 	}
@@ -348,22 +301,29 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 		return err
 	}
 	if err := session.commit(callbacks.commitReady, callbacks.commitRename); err != nil {
-		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err)
+		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, callbacks.rollbackOnPostWriteFailure)
 		if fallbackErr == nil {
 			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
 		}
 		if pinnedOverwritePermissionFallbackAllowed(err, replacementFile, allowPermissionFallback) {
-			if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
-				return err
-			}
-			if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
-				return err
-			}
-			return runFallbackPostWriteCheck(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure, targetRel)
+			return runPinnedOverwriteFallback(root, targetRel, replacementFile, data, err, callbacks)
 		}
 		return fallbackErr
 	}
 	return session.verifyCommittedTargetAndPostWrite(callbacks.postWrite, callbacks.rollbackOnPostWriteFailure)
+}
+
+func runPinnedOverwriteFallback(root Root, targetRel string, replacementFile File, data []byte, primaryErr error, callbacks pinnedReplacementChecks) error {
+	if callbacks.rollbackOnPostWriteFailure {
+		return errors.Join(primaryErr, rollbackRequiredFallbackError(targetRel))
+	}
+	if err := overwritePinnedFile(root, targetRel, replacementFile, data, nil); err != nil {
+		return err
+	}
+	if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {
+		return err
+	}
+	return runFallbackPostWriteCheck(callbacks.postWrite, false, targetRel)
 }
 
 func runPostWriteCheck(postWrite func() error) error {
