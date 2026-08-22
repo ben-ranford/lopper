@@ -5,6 +5,7 @@ const DEFAULT_QUEUE_LABEL = 'queue-me';
 const MAX_GITHUB_COMMENT_BODY_LENGTH = 60000;
 const MAX_QUEUE_IDENTITY_FAILURES = 10;
 const MAX_QUEUE_IDENTITY_FAILURE_LENGTH = 240;
+const MAX_QUEUE_IDENTITY_COMMITS = 500;
 const COMMENT_TRUNCATION_NOTICE = '\n\n_Status message truncated to fit GitHub comment limits._';
 
 function labelName(label) {
@@ -261,6 +262,11 @@ async function verifyHeadForQueue(
     ...comparisonRequest,
     page: 1,
   });
+  if (firstComparison.total_commits > MAX_QUEUE_IDENTITY_COMMITS) {
+    throw queuePauseError(
+      `Queue identity audit failed: ${firstComparison.total_commits} PR-unique commits exceeds the ${MAX_QUEUE_IDENTITY_COMMITS}-commit audit limit.`,
+    );
+  }
   const commits = [...(firstComparison.commits || [])];
   let page = 2;
   while (commits.length < firstComparison.total_commits) {

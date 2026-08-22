@@ -588,6 +588,26 @@ test('controller audits canonical commits across paginated compare results', asy
   assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
 });
 
+test('controller bounds comparison pagination before auditing commit identity', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonPages: [
+      {
+        status: 'ahead',
+        commits: Array.from({ length: 100 }, (_, index) => makeComparisonCommit(`canonical-${index}`)),
+        totalCommits: 501,
+      },
+    ],
+  });
+
+  await assert.rejects(runController(harness.args), /501 PR-unique commits exceeds the 500-commit audit limit/);
+
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /500-commit audit limit/);
+});
+
 test('controller fails identity audit for noncanonical commits on later compare pages', async () => {
   const canonical = Array.from({ length: 100 }, (_, index) =>
     makeComparisonCommit(`canonical-${index}`),
