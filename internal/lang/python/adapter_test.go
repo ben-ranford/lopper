@@ -387,207 +387,205 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 }
 
 func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
-	cases := []struct {
+	type importBoundaryCase struct {
 		name     string
 		source   string
 		want     importBinding
 		wantLine int
-	}{
-		{
-			name: "CRLF continued short string closes before real import",
-			source: "value = \"not an import \\\r\n" +
-				"import requests\"\r\n" +
+	}
+
+	caseWithRealImport := func(name, source string, want importBinding, wantLine int) importBoundaryCase {
+		return importBoundaryCase{name: name, source: source, want: want, wantLine: wantLine}
+	}
+	requestsCase := func(name, source string, wantLine int) importBoundaryCase {
+		return caseWithRealImport(name, source, importBinding{
+			Dependency: "requests",
+			Module:     "requests",
+			Name:       "requests",
+			Local:      "requests",
+		}, wantLine)
+	}
+	numpyCase := func(name, source string, wantLine int) importBoundaryCase {
+		return caseWithRealImport(name, source, importBinding{
+			Dependency: "numpy",
+			Module:     "numpy",
+			Name:       "numpy",
+			Local:      "np",
+		}, wantLine)
+	}
+
+	cases := []importBoundaryCase{
+		numpyCase(
+			"CRLF continued short string closes before real import",
+			"value = \"not an import \\\r\n"+
+				"import requests\"\r\n"+
 				"import numpy as np\r\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 3,
-		},
-		{
-			name: "f-string replacement delimiter does not close outer string",
-			source: `value = f"""{'"""'}"""` + "\n" +
+			3,
+		),
+		requestsCase(
+			"f-string replacement delimiter does not close outer string",
+			`value = f"""{'"""'}"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "multiline replacement string resumes outer f-string",
-			source: "value = f\"\"\"{'''\n" +
-				"}\n" +
-				"\"\"\"\n" +
-				"'''}\"\"\"\n" +
+			2,
+		),
+		requestsCase(
+			"multiline replacement string resumes outer f-string",
+			"value = f\"\"\"{'''\n"+
+				"}\n"+
+				"\"\"\"\n"+
+				"'''}\"\"\"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 5,
-		},
-		{
-			name: "replacement comment brace does not unbalance depth",
-			source: "value = f\"\"\"{(\n" +
-				"1 # {\n" +
-				")}\"\"\"\n" +
+			5,
+		),
+		requestsCase(
+			"replacement comment brace does not unbalance depth",
+			"value = f\"\"\"{(\n"+
+				"1 # {\n"+
+				")}\"\"\"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 4,
-		},
-		{
-			name: "continued replacement short string hides import-like content",
-			source: "value = f\"\"\"{'not an import \\\r\n" +
-				"}\"\"\"\\\r\n" +
-				"import requests\\\r\n" +
-				"'}\"\"\"\r\n" +
+			4,
+		),
+		numpyCase(
+			"continued replacement short string hides import-like content",
+			"value = f\"\"\"{'not an import \\\r\n"+
+				"}\"\"\"\\\r\n"+
+				"import requests\\\r\n"+
+				"'}\"\"\"\r\n"+
 				"import numpy as np\r\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 5,
-		},
-		{
-			name: "nested f-string replacement preserves outer state",
-			source: `value = f"""{f'''{"'''"}'''}"""` + "\n" +
+			5,
+		),
+		requestsCase(
+			"nested f-string replacement preserves outer state",
+			`value = f"""{f'''{"'''"}'''}"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "nested short f-string replacement preserves outer state",
-			source: `value = f"""{f'{'"""'}'}"""` + "\n" +
+			2,
+		),
+		requestsCase(
+			"nested short f-string replacement preserves outer state",
+			`value = f"""{f'{'"""'}'}"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "short f-string multiline replacement hides import-like content",
-			source: "value = f\"{'''\n" +
-				"import requests\n" +
-				"'''}\"\n" +
+			2,
+		),
+		numpyCase(
+			"short f-string multiline replacement hides import-like content",
+			"value = f\"{'''\n"+
+				"import requests\n"+
+				"'''}\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 4,
-		},
-		{
-			name: "format spec hash does not mask rest of line",
-			source: `value = f"{42:#08x}"` + "\n" +
+			4,
+		),
+		requestsCase(
+			"format spec hash does not mask rest of line",
+			`value = f"{42:#08x}"`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "format spec quote fill does not start replacement string",
-			source: `value = f"{value:'<10}"` + "\n" +
+			2,
+		),
+		requestsCase(
+			"format spec quote fill does not start replacement string",
+			`value = f"{value:'<10}"`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "slice colon does not start format spec before replacement comment",
-			source: "value = f\"\"\"{items[\n" +
-				"0: # } \"\"\" comment\n" +
-				"2\n" +
-				"]}\"\"\"\n" +
+			2,
+		),
+		requestsCase(
+			"slice colon does not start format spec before replacement comment",
+			"value = f\"\"\"{items[\n"+
+				"0: # } \"\"\" comment\n"+
+				"2\n"+
+				"]}\"\"\"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 5,
-		},
-		{
-			name: "quoted comment is ignored before real import",
-			source: "# \"import requests\"\n" +
+			5,
+		),
+		numpyCase(
+			"quoted comment is ignored before real import",
+			"# \"import requests\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 2,
-		},
-		{
-			name: "escaped backslash inside replacement triple string hides import-like content",
-			source: "value = f\"\"\"{'''\\\\\n" +
-				"import requests\n" +
-				"'''}\"\"\"\n" +
+			2,
+		),
+		numpyCase(
+			"escaped backslash inside replacement triple string hides import-like content",
+			"value = f\"\"\"{'''\\\\\n"+
+				"import requests\n"+
+				"'''}\"\"\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 4,
-		},
-		{
-			name: "continued nested short f-string hides import-like content",
-			source: "value = f\"\"\"{f'not an import \\\n" +
-				"import requests'}\"\"\"\n" +
+			4,
+		),
+		numpyCase(
+			"continued nested short f-string hides import-like content",
+			"value = f\"\"\"{f'not an import \\\n"+
+				"import requests'}\"\"\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 3,
-		},
-		{
-			name: "nested f-string literal brace text preserves outer state",
-			source: `value = f"""{f'a}}b'}"""` + "\n" +
+			3,
+		),
+		requestsCase(
+			"nested f-string literal brace text preserves outer state",
+			`value = f"""{f'a}}b'}"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "escaped outer f-string brace preserves outer state",
-			source: `value = f"""{{literal}}"""` + "\n" +
+			2,
+		),
+		requestsCase(
+			"escaped outer f-string brace preserves outer state",
+			`value = f"""{{literal}}"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "dict literal braces inside replacement preserve outer state",
-			source: `value = f"""{ {'key': 'value'} }"""` + "\n" +
+			2,
+		),
+		requestsCase(
+			"dict literal braces inside replacement preserve outer state",
+			`value = f"""{ {'key': 'value'} }"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "template replacement delimiter preserves outer state",
-			source: "value = t\"\"\"{'\"\"\"'}\n" +
-				"import requests\n" +
-				"\"\"\"\n" +
+			2,
+		),
+		numpyCase(
+			"template replacement delimiter preserves outer state",
+			"value = t\"\"\"{'\"\"\"'}\n"+
+				"import requests\n"+
+				"\"\"\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 4,
-		},
-		{
-			name: "uppercase template replacement delimiter preserves outer state",
-			source: "value = T'''{\"'''\"}\n" +
-				"import requests\n" +
-				"'''\n" +
+			4,
+		),
+		numpyCase(
+			"uppercase template replacement delimiter preserves outer state",
+			"value = T'''{\"'''\"}\n"+
+				"import requests\n"+
+				"'''\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 4,
-		},
-		{
-			name: "raw f-string backslash before replacement brace preserves outer state",
-			source: "value = rf\"\"\"\\{'\"\"\"'}\n" +
-				"import requests\n" +
-				"\"\"\"\n" +
+			4,
+		),
+		numpyCase(
+			"raw f-string backslash before replacement brace preserves outer state",
+			"value = rf\"\"\"\\{'\"\"\"'}\n"+
+				"import requests\n"+
+				"\"\"\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 4,
-		},
-		{
-			name: "nested f-string format spec colon preserves outer state",
-			source: "value = f\"\"\"{f'{value:{width:#x}}'}\n" +
-				"import requests\n" +
-				"\"\"\"\n" +
+			4,
+		),
+		numpyCase(
+			"nested f-string format spec colon preserves outer state",
+			"value = f\"\"\"{f'{value:{width:#x}}'}\n"+
+				"import requests\n"+
+				"\"\"\"\n"+
 				"import numpy as np\n",
-			want:     importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"},
-			wantLine: 4,
-		},
-		{
-			name: "nested format spec hash preserves outer state",
-			source: `value = f"{42:{3:#x}}"` + "\n" +
+			4,
+		),
+		requestsCase(
+			"nested format spec hash preserves outer state",
+			`value = f"{42:{3:#x}}"`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "nested format spec quote fill preserves outer state",
-			source: `value = f"""{42:{3:'<10}}"""` + "\n" +
+			2,
+		),
+		requestsCase(
+			"nested format spec quote fill preserves outer state",
+			`value = f"""{42:{3:'<10}}"""`+"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 2,
-		},
-		{
-			name: "nested format field comment preserves outer state",
-			source: "value = f\"\"\"{42:{(\n" +
-				"3 # }} \"\"\" comment\n" +
-				")}}\"\"\"\n" +
+			2,
+		),
+		requestsCase(
+			"nested format field comment preserves outer state",
+			"value = f\"\"\"{42:{(\n"+
+				"3 # }} \"\"\" comment\n"+
+				")}}\"\"\"\n"+
 				"import requests\n",
-			want:     importBinding{Dependency: "requests", Module: "requests", Name: "requests", Local: "requests"},
-			wantLine: 4,
-		},
+			4,
+		),
 	}
 
 	for _, tc := range cases {
