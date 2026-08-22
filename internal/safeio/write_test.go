@@ -3294,7 +3294,8 @@ func TestAtomicWriteSessionCommitRejectsHardLinksUnsupported(t *testing.T) {
 	renameCalls := 0
 	removeCalls := 0
 	session := &atomicWriteSession{
-		root: &fakeRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
+			mkdir: func(string, os.FileMode) error { return nil },
 			lstat: func(name string) (fs.FileInfo, error) {
 				switch name {
 				case ".safeio-atomic-test", writeTestFileName:
@@ -3321,7 +3322,7 @@ func TestAtomicWriteSessionCommitRejectsHardLinksUnsupported(t *testing.T) {
 				removeCalls++
 				return nil
 			},
-		},
+		}},
 		targetRel: writeTestFileName,
 		tempRel:   ".safeio-atomic-test",
 		tempInfo:  tempInfo,
@@ -3334,8 +3335,8 @@ func TestAtomicWriteSessionCommitRejectsHardLinksUnsupported(t *testing.T) {
 	if renameCalls != 0 {
 		t.Fatalf("expected no direct rename fallback, got %d", renameCalls)
 	}
-	if removeCalls != 0 {
-		t.Fatalf("unsupported identity-bound replacement should not remove staging links, got %d removes", removeCalls)
+	if removeCalls != 1 {
+		t.Fatalf("expected only quarantine directory cleanup, got %d removes", removeCalls)
 	}
 }
 
@@ -5394,8 +5395,9 @@ func TestPrepareAndRenameWithinRootRejectsChangedSourceBeforeRename(t *testing.T
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 	lstatCalls := 0
 	renameCalls := 0
-	root := &fakeRoot{
+	root := &rootWithoutIdentity{Root: &fakeRoot{
 		mkdirAll: func(string, os.FileMode) error { return nil },
+		mkdir:    func(string, os.FileMode) error { return nil },
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name != "source" {
 				t.Fatalf("unexpected lstat path: %s", name)
@@ -5411,7 +5413,7 @@ func TestPrepareAndRenameWithinRootRejectsChangedSourceBeforeRename(t *testing.T
 			renameCalls++
 			return nil
 		},
-	}
+	}}
 
 	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
 	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
@@ -5707,113 +5709,104 @@ type rootWithoutIdentity struct {
 	Root
 }
 
-func TestPathOperationIfMatchesFailsClosedWithoutIdentityBoundRoot(t *testing.T) {
-	info := newPinnedTargetInfo(t, "source")
-	for _, tc := range []struct {
-		name   string
-		opName string
-		root   func(*int) Root
-		call   func(Root, fs.FileInfo) error
-	}{
-		{
-			name:   "rename",
-			opName: "rename",
-			root: func(calls *int) Root {
-				return &rootWithoutIdentity{Root: &fakeRoot{
-					lstat:  lstatOriginalForNames(t, info, "source"),
-					rename: func(string, string) error { (*calls)++; return nil },
-				}}
-			},
-			call: func(root Root, info fs.FileInfo) error {
-				_, err := renameFileIfMatches(root, "source", "target", info, sourceChangedMsg)
-				return err
-			},
-		},
-		{
-			name:   "link",
-			opName: "link",
-			root: func(calls *int) Root {
-				return &rootWithoutIdentity{Root: &fakeRoot{
-					lstat: lstatOriginalForNames(t, info, "source"),
-					link:  func(string, string) error { (*calls)++; return nil },
-				}}
-			},
-			call: func(root Root, info fs.FileInfo) error {
-				return linkFileIfMatches(root, "source", "target", info, sourceChangedMsg)
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
-			err := tc.call(tc.root(&calls), info)
-			if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-				t.Fatalf("expected fail-closed unsupported %s, got %v", tc.opName, err)
-			}
-			if calls != 0 {
-				t.Fatalf("expected no raw %s without identity-bound hook, got %d", tc.opName, calls)
-			}
-		})
-	}
+func TestPathOperationIfMatchesSupportsPlainRoot(t *testing.T) {
+	t.Run("link", func(t *testing.T) {
+		rootDir := t.TempDir()
+		sourcePath := filepath.Join(rootDir, "source")
+		if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+			t.Fatalf("seed source: %v", err)
+		}
+		expected := statTestPath(t, sourcePath)
+		root := openPlainRoot(t, rootDir)
+
+		if err := linkFileIfMatches(root, "source", "target", expected, sourceChangedMsg); err != nil {
+			t.Fatalf("linkFileIfMatches returned error: %v", err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "target"), "source")
+		assertNoAtomicStagingEntries(t, rootDir)
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		rootDir := t.TempDir()
+		sourcePath := filepath.Join(rootDir, "source")
+		if err := os.WriteFile(sourcePath, []byte("source"), 0o000); err != nil {
+			t.Fatalf("seed source: %v", err)
+		}
+		expected := statTestPath(t, sourcePath)
+		root := openPlainRoot(t, rootDir)
+
+		consumed, err := renameFileIfMatches(root, "source", "target", expected, sourceChangedMsg)
+		if err != nil {
+			t.Fatalf("renameFileIfMatches returned error: %v", err)
+		}
+		if !consumed {
+			t.Fatal("expected plain-root rename to consume the source")
+		}
+		assertPathAbsent(t, sourcePath)
+		targetPath := filepath.Join(rootDir, "target")
+		if err := os.Chmod(targetPath, 0o600); err != nil {
+			t.Fatalf("chmod target: %v", err)
+		}
+		assertFileContent(t, targetPath, "source")
+		assertNoAtomicStagingEntries(t, rootDir)
+	})
 }
 
-func TestPublishIdentityBoundIfAbsentFailsClosedWithoutOperationBoundLink(t *testing.T) {
-	info := newPinnedTargetInfo(t, "source")
-	linkCalls := 0
-	root := &rootWithoutIdentity{Root: &fakeRoot{
-		link: func(string, string) error {
-			linkCalls++
-			return nil
-		},
-	}}
+func TestPublishIdentityBoundIfAbsentSupportsPlainRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	root := openPlainRoot(t, rootDir)
 
-	err := publishIdentityBoundIfAbsent(root, "source", "target", info)
-	if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-		t.Fatalf("expected fail-closed unsupported publish-if-absent, got %v", err)
+	if err := publishIdentityBoundIfAbsent(root, "source", "target", expected); err != nil {
+		t.Fatalf("publishIdentityBoundIfAbsent returned error: %v", err)
 	}
-	if linkCalls != 0 {
-		t.Fatalf("expected no raw link without operation-bound hook, got %d", linkCalls)
-	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, filepath.Join(rootDir, "target"), "source")
+	assertNoAtomicStagingEntries(t, rootDir)
 }
 
-func TestPublishIdentityBoundReplacingFailsClosedWithoutOperationBoundLink(t *testing.T) {
-	info := newPinnedTargetInfo(t, "source")
-	linkCalls := 0
-	renameCalls := 0
-	root := &rootWithoutIdentity{Root: &fakeRoot{
-		link: func(string, string) error {
-			linkCalls++
-			return nil
-		},
-		rename: func(string, string) error {
-			renameCalls++
-			return nil
-		},
-	}}
+func TestPublishIdentityBoundReplacingSupportsPlainRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o000); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	root := openPlainRoot(t, rootDir)
 
-	_, err := publishIdentityBoundReplacingWithSourceState(root, "source", "target", info, sourceChangedMsg, "target changed")
-	if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-		t.Fatalf("expected fail-closed unsupported replacement, got %v", err)
+	consumed, err := publishIdentityBoundReplacingWithSourceState(root, "source", "target", expected, sourceChangedMsg, "target changed")
+	if err != nil {
+		t.Fatalf("publishIdentityBoundReplacingWithSourceState returned error: %v", err)
 	}
-	if linkCalls != 0 || renameCalls != 0 {
-		t.Fatalf("expected no raw path operations, got links=%d renames=%d", linkCalls, renameCalls)
+	if consumed {
+		t.Fatal("expected plain-root replacement to leave the staged source for outer cleanup")
 	}
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		t.Fatalf("chmod target: %v", err)
+	}
+	assertFileContent(t, targetPath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
 }
 
-func TestRemoveFileIfMatchesFailsClosedWithoutIdentityBoundRoot(t *testing.T) {
-	info := newPinnedTargetInfo(t, "source")
-	removeCalls := 0
-	root := &rootWithoutIdentity{Root: &fakeRoot{
-		lstat:  lstatOriginalForNames(t, info, "source"),
-		remove: func(string) error { removeCalls++; return nil },
-	}}
+func TestRemoveFileIfMatchesSupportsPlainRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	root := openPlainRoot(t, rootDir)
 
-	err := removeFileIfMatches(root, "source", info, sourceChangedMsg)
-	if !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-		t.Fatalf("expected fail-closed unsupported remove, got %v", err)
+	if err := removeFileIfMatches(root, "source", expected, sourceChangedMsg); err != nil {
+		t.Fatalf("removeFileIfMatches returned error: %v", err)
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no raw remove without identity-bound hook, got %d", removeCalls)
-	}
+	assertPathAbsent(t, sourcePath)
+	assertNoAtomicStagingEntries(t, rootDir)
 }
 
 func TestRemoveFileIfMatchesRejectsEmptyAndMissingIdentity(t *testing.T) {
@@ -5823,6 +5816,96 @@ func TestRemoveFileIfMatchesRejectsEmptyAndMissingIdentity(t *testing.T) {
 	}
 	if err := removeFileIfMatches(root, "source", nil, sourceChangedMsg); err == nil {
 		t.Fatal("expected missing identity rejection")
+	}
+}
+
+func TestIdentityBoundQuarantinePathUsesSourceDirectory(t *testing.T) {
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	var mkdirPath string
+	root := &fakeRoot{
+		mkdir: func(name string, perm os.FileMode) error {
+			mkdirPath = name
+			return nil
+		},
+	}
+
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, filepath.Join("nested", "source"))
+	if err != nil {
+		t.Fatalf("identityBoundQuarantinePath returned error: %v", err)
+	}
+	wantDir := filepath.Join("nested", atomicTempPrefix+"quarantine")
+	if quarantineDir != wantDir {
+		t.Fatalf("unexpected quarantine dir: got %q want %q", quarantineDir, wantDir)
+	}
+	if quarantineRel != filepath.Join(wantDir, "entry") {
+		t.Fatalf("unexpected quarantine path: %q", quarantineRel)
+	}
+	if mkdirPath != wantDir {
+		t.Fatalf("expected quarantine mkdir in source directory, got %q", mkdirPath)
+	}
+}
+
+func TestCloseAndCleanupCreatedFileBindsCleanupToObservedInode(t *testing.T) {
+	const tempRel = ".safeio-atomic-created"
+	const cleanupRel = ".safeio-atomic-cleanup"
+	createdInfo := newPinnedTargetInfo(t, "created")
+	statErr := errors.New("staged stat failure")
+	removeChecks := 0
+	rawRemoveCalls := 0
+	useRandomTempNames(t, cleanupRel)
+
+	root := &fakeRoot{
+		lstat: lstatOriginalForNames(t, createdInfo, tempRel, cleanupRel),
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, createdInfo, oldName)
+			if oldName != tempRel || newName != cleanupRel {
+				t.Fatalf("unexpected cleanup link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		remove: countAndFailRawRemove(t, &rawRemoveCalls, "created-file cleanup must stay identity-bound"),
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			removeChecks++
+			requireSameFileInfo(t, expected, createdInfo, name)
+			requireOneOfNames(t, name, tempRel, cleanupRel)
+			return nil
+		},
+	}
+
+	err := closeAndCleanupCreatedFile(root, &fakeFile{close: closeWithoutError}, tempRel, statErr)
+	if !errors.Is(err, statErr) {
+		t.Fatalf("expected staged stat failure, got %v", err)
+	}
+	if removeChecks != 2 {
+		t.Fatalf("expected temp and cleanup removals, got %d", removeChecks)
+	}
+	if rawRemoveCalls != 0 {
+		t.Fatalf("expected no raw removals, got %d", rawRemoveCalls)
+	}
+}
+
+func TestStageIdentityBoundFileDoesNotTreatPostLinkCleanupErrorAsLinklessFallback(t *testing.T) {
+	postLinkCleanupErr := errors.Join(syscall.EPERM, errors.New("post-link cleanup failed"))
+	openCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return postLinkCleanupErr
+		},
+		open: func(string) (File, error) {
+			openCalls++
+			return nil, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundFile(root, "source", newPinnedTargetInfo(t, "source"), sourceChangedMsg)
+	if !errors.Is(err, postLinkCleanupErr) {
+		t.Fatalf("expected post-link cleanup error, got %v", err)
+	}
+	if errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("post-link cleanup error must not trigger linkless fallback: %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected no copy fallback open, got %d opens", openCalls)
 	}
 }
 
@@ -6009,8 +6092,8 @@ func TestPrepareAndRenameWithinRootRejectsReplacementWhenHardLinksUnsupported(t 
 	}
 
 	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
-	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
-		t.Fatalf("expected identity-bound replacement unsupported error, got %v", err)
+	if err == nil || (!errors.Is(err, errIdentityBoundReplacementUnsupported) && !errors.Is(err, errors.ErrUnsupported)) {
+		t.Fatalf("expected unsupported replacement error, got %v", err)
 	}
 	if renameCalls != 0 {
 		t.Fatalf("expected no direct rename fallback, got %d", renameCalls)
@@ -6570,7 +6653,7 @@ func TestIdentityBoundIfAbsentRejectsSubstitutedSourceWithoutPartialTarget(t *te
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
-func TestOSRootRenameIfMatchesRestoresSubstitution(t *testing.T) {
+func TestOSRootRenameIfMatchesQuarantinesSubstitution(t *testing.T) {
 	rootDir := t.TempDir()
 	sourcePath := filepath.Join(rootDir, "source")
 	targetPath := filepath.Join(rootDir, "target")
@@ -6587,16 +6670,14 @@ func TestOSRootRenameIfMatchesRestoresSubstitution(t *testing.T) {
 
 	consumed, err := osRoot.RenameIfMatchesState("source", "target", expected, sourceChangedMsg)
 	if err == nil || consumed {
-		t.Fatalf("expected restored substitution rejection, consumed=%t err=%v", consumed, err)
+		t.Fatalf("expected quarantined substitution rejection, consumed=%t err=%v", consumed, err)
 	}
-	assertFileContent(t, sourcePath, "replacement")
-	if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("substitution was renamed to target: %v", err)
-	}
-	assertNoAtomicStagingEntries(t, rootDir)
+	assertPathAbsent(t, sourcePath)
+	assertPathAbsent(t, targetPath)
+	assertFileContent(t, filepath.Join(findAtomicEntryPath(t, rootDir), "entry"), "replacement")
 }
 
-func TestOSRootRemoveIfMatchesRestoresSubstitution(t *testing.T) {
+func TestOSRootRemoveIfMatchesQuarantinesSubstitution(t *testing.T) {
 	rootDir := t.TempDir()
 	sourcePath := filepath.Join(rootDir, "source")
 	if err := os.WriteFile(sourcePath, []byte("original"), 0o600); err != nil {
@@ -6614,8 +6695,8 @@ func TestOSRootRemoveIfMatchesRestoresSubstitution(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected substituted-source removal rejection")
 	}
-	assertFileContent(t, sourcePath, "replacement")
-	assertNoAtomicStagingEntries(t, rootDir)
+	assertPathAbsent(t, sourcePath)
+	assertFileContent(t, filepath.Join(findAtomicEntryPath(t, rootDir), "entry"), "replacement")
 }
 
 func TestRestoreQuarantinedPathNoReplaceRetainsStagedEntryWhenOriginalReappears(t *testing.T) {
@@ -6630,8 +6711,9 @@ func TestRestoreQuarantinedPathNoReplaceRetainsStagedEntryWhenOriginalReappears(
 		t.Fatalf("seed concurrent source: %v", err)
 	}
 	root := openTestRoot(t, rootDir)
+	stagedInfo := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
 
-	restored, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg)
+	restored, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, stagedInfo)
 	if restored || !errors.Is(err, os.ErrExist) {
 		t.Fatalf("expected no-replace restore conflict, restored=%t err=%v", restored, err)
 	}
@@ -6641,12 +6723,12 @@ func TestRestoreQuarantinedPathNoReplaceRetainsStagedEntryWhenOriginalReappears(
 
 func TestAtomicReplacementFallsBackToPreparedCopyWhenLinksUnsupported(t *testing.T) {
 	rootDir := t.TempDir()
-	root := &fakeRoot{
+	root := &rootWithoutIdentity{Root: &fakeRoot{
 		Root: openTestRoot(t, rootDir),
 		link: func(string, string) error {
 			return syscall.EPERM
 		},
-	}
+	}}
 
 	if err := WriteFileReplacingWithinRoot(root, "target", []byte("completed"), 0o600); err != nil {
 		t.Fatalf("linkless replacement returned error: %v", err)
@@ -6661,12 +6743,12 @@ func TestMoveFallsBackToPreparedCopyWhenLinksUnsupported(t *testing.T) {
 	if err := os.WriteFile(sourcePath, []byte("completed"), 0o600); err != nil {
 		t.Fatalf("seed source: %v", err)
 	}
-	root := &fakeRoot{
+	root := &rootWithoutIdentity{Root: &fakeRoot{
 		Root: openTestRoot(t, rootDir),
 		link: func(string, string) error {
 			return syscall.EPERM
 		},
-	}
+	}}
 
 	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
 		t.Fatalf("linkless move returned error: %v", err)
@@ -6682,12 +6764,12 @@ func TestWriteRootIfAbsentFallsBackToExclusiveCreateWhenLinksUnsupported(t *test
 	rootDir := t.TempDir()
 	base := openTestRoot(t, rootDir)
 	root := &WriteRoot{
-		root: &fakeRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
 			Root: base,
 			link: func(string, string) error {
 				return syscall.EPERM
 			},
-		},
+		}},
 		rootAbs: rootDir,
 	}
 
@@ -6712,12 +6794,12 @@ func TestWriteRootIfAbsentLinklessFallbackRejectsExistingTarget(t *testing.T) {
 
 	base := openTestRoot(t, rootDir)
 	root := &WriteRoot{
-		root: &fakeRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
 			Root: base,
 			link: func(string, string) error {
 				return syscall.EPERM
 			},
-		},
+		}},
 		rootAbs: rootDir,
 	}
 
@@ -6731,12 +6813,12 @@ func TestWriteRootIfAbsentLinklessFallbackRejectsExistingTarget(t *testing.T) {
 
 func TestAtomicIfAbsentLinklessFallbackLeavesNoPartialTarget(t *testing.T) {
 	rootDir := t.TempDir()
-	root := &fakeRoot{
+	root := &rootWithoutIdentity{Root: &fakeRoot{
 		Root: openTestRoot(t, rootDir),
 		link: func(string, string) error {
 			return syscall.EPERM
 		},
-	}
+	}}
 
 	err := writeFileAtomicallyIfAbsentAtRoot(root, "target", []byte("completed"), 0o600)
 	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
@@ -6753,7 +6835,7 @@ func TestWriteRootIfAbsentLinklessFallbackLeavesNoPartialTargetOnCloseError(t *t
 	base := openTestRoot(t, rootDir)
 	closeErr := errors.New("close target failure")
 	root := &WriteRoot{
-		root: &fakeRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
 			Root: base,
 			link: func(string, string) error {
 				return syscall.EPERM
@@ -6776,7 +6858,7 @@ func TestWriteRootIfAbsentLinklessFallbackLeavesNoPartialTargetOnCloseError(t *t
 					},
 				}, nil
 			},
-		},
+		}},
 		rootAbs: rootDir,
 	}
 
@@ -6799,7 +6881,7 @@ func TestLinklessStagingCopyFailureCleansUpPrivateCandidate(t *testing.T) {
 	expected := statTestPath(t, sourcePath)
 	readErr := errors.New("copy failed")
 	base := openTestRoot(t, rootDir)
-	root := &fakeRoot{
+	root := &rootWithoutIdentity{Root: &fakeRoot{
 		Root: base,
 		link: func(string, string) error {
 			return syscall.EPERM
@@ -6816,7 +6898,7 @@ func TestLinklessStagingCopyFailureCleansUpPrivateCandidate(t *testing.T) {
 				},
 			}, nil
 		},
-	}
+	}}
 
 	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
 	if err == nil || !errors.Is(err, readErr) {

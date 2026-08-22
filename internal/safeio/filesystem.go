@@ -557,23 +557,7 @@ func ignoreRemoveNotExist(err error) error {
 }
 
 func (r *osRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) (returnErr error) {
-	stagedRel, err := identityBoundQuarantinePath(r)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(filepath.Dir(stagedRel))))
-	}()
-	if err := r.Link(oldName, stagedRel); err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(stagedRel)))
-	}()
-	if err := verifyPublishedPathMatchesInfo(r, stagedRel, expected, message); err != nil {
-		return err
-	}
-	return r.Link(stagedRel, newName)
+	return linkFileIfMatchesUsingBasicRoot(r, oldName, newName, expected, message)
 }
 
 func (r *osRoot) Rename(oldName, newName string) error {
@@ -589,48 +573,7 @@ func (r *osRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, 
 // quarantined under a private staging directory. The result reports whether
 // oldName was consumed; a false result is a same-inode rename no-op.
 func (r *osRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (_ bool, returnErr error) {
-	stagedRel, err := identityBoundQuarantinePath(r)
-	if err != nil {
-		return false, err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(filepath.Dir(stagedRel))))
-	}()
-	if err := r.Rename(oldName, stagedRel); err != nil {
-		return false, err
-	}
-	stagedPresent := true
-	defer func() {
-		if stagedPresent {
-			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(stagedRel)))
-		}
-	}()
-	if err := verifyPublishedPathMatchesInfo(r, stagedRel, expected, message); err != nil {
-		restored, restoreErr := restoreQuarantinedPathNoReplace(r, stagedRel, oldName, message)
-		if !restored {
-			stagedPresent = false
-		}
-		return false, errors.Join(err, restoreErr)
-	}
-	if err := r.Rename(stagedRel, newName); err != nil {
-		restored, restoreErr := restoreQuarantinedPathNoReplace(r, stagedRel, oldName, message)
-		if !restored {
-			stagedPresent = false
-		}
-		return false, errors.Join(err, restoreErr)
-	}
-	stagedInfo, err := r.Lstat(stagedRel)
-	if errors.Is(err, os.ErrNotExist) {
-		stagedPresent = false
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if stagedInfo.Mode().IsRegular() && os.SameFile(expected, stagedInfo) {
-		return false, nil
-	}
-	return false, fmt.Errorf("%s: %s", message, stagedRel)
+	return renameFileIfMatchesUsingBasicRoot(r, oldName, newName, expected, message)
 }
 
 func (r *osRoot) Remove(name string) error {
@@ -638,57 +581,35 @@ func (r *osRoot) Remove(name string) error {
 }
 
 func (r *osRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) (returnErr error) {
-	stagedRel, err := identityBoundQuarantinePath(r)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(filepath.Dir(stagedRel))))
-	}()
-	if err := r.Rename(name, stagedRel); err != nil {
-		return err
-	}
-	stagedPresent := true
-	defer func() {
-		if stagedPresent {
-			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(stagedRel)))
-		}
-	}()
-	if err := verifyPublishedPathMatchesInfo(r, stagedRel, expected, message); err != nil {
-		restored, restoreErr := restoreQuarantinedPathNoReplace(r, stagedRel, name, message)
-		if !restored {
-			stagedPresent = false
-		}
-		return errors.Join(err, restoreErr)
-	}
-	if err := r.Remove(stagedRel); err != nil {
-		return err
-	}
-	stagedPresent = false
-	return nil
+	return removeFileIfMatchesUsingBasicRoot(r, name, expected, message)
 }
 
-func identityBoundQuarantinePath(root Root) (string, error) {
+func identityBoundQuarantinePath(root Root, sourceRel string) (string, string, error) {
+	dir := filepath.Dir(sourceRel)
+	if dir == "." {
+		dir = ""
+	}
 	for range 10 {
 		name, err := randomTempNameFn()
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		if err := root.Mkdir(name, 0o700); errors.Is(err, os.ErrExist) {
+		quarantineDir := filepath.Join(dir, name)
+		if err := root.Mkdir(quarantineDir, 0o700); errors.Is(err, os.ErrExist) {
 			continue
 		} else if err != nil {
-			return "", err
+			return "", "", err
 		}
-		return filepath.Join(name, "entry"), nil
+		return quarantineDir, filepath.Join(quarantineDir, "entry"), nil
 	}
-	return "", fmt.Errorf("create identity-bound quarantine: too many collisions")
+	return "", "", fmt.Errorf("create identity-bound quarantine: too many collisions")
 }
 
-func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message string) (bool, error) {
+func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message string, expected fs.FileInfo) (bool, error) {
 	if err := root.Link(stagedRel, originalRel); err != nil {
 		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), err)
 	}
-	if err := root.Remove(stagedRel); err != nil {
+	if err := removeFileIfMatchesUsingBasicRoot(root, stagedRel, expected, message); err != nil {
 		return false, err
 	}
 	return true, nil

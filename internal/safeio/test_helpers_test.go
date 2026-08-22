@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +91,11 @@ func openTestRoot(t *testing.T, rootDir string) Root {
 	return root
 }
 
+func openPlainRoot(t *testing.T, rootDir string) Root {
+	t.Helper()
+	return &rootWithoutIdentity{Root: openTestRoot(t, rootDir)}
+}
+
 func canonicalTempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -140,6 +146,28 @@ func assertFileContent(t *testing.T, path, want string) {
 	if string(data) != want {
 		t.Fatalf("unexpected content for %s: %q", path, string(data))
 	}
+}
+
+func assertPathAbsent(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected %s to be absent, got %v", path, err)
+	}
+}
+
+func findAtomicEntryPath(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), atomicTempPrefix) {
+			return filepath.Join(dir, entry.Name())
+		}
+	}
+	t.Fatalf("expected atomic entry in %s", dir)
+	return ""
 }
 
 func statTestPath(t *testing.T, path string) fs.FileInfo {
@@ -303,6 +331,10 @@ func (r *fakeRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo
 		return err
 	}
 	return r.Rename(oldName, newName)
+}
+
+func (r *fakeRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	return true, r.RenameIfMatches(oldName, newName, expected, message)
 }
 
 func (r *fakeRoot) Remove(name string) error {
