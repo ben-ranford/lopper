@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ben-ranford/lopper/internal/advisory"
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/gitexec"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -411,16 +410,7 @@ func (a *App) runPRReviewPostStages(ctx context.Context, reportData report.Repor
 
 	return runAnalyseStages(ctx, reportData, []analyseReportStage{
 		func(_ context.Context, reportData report.Report) (report.Report, error) {
-			if strings.TrimSpace(req.AdvisorySourcePath) == "" {
-				return reportData, nil
-			}
-			advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
-			if err != nil {
-				return reportData, err
-			}
-			report.AnnotateVulnerabilities(&reportData, advisories)
-			reportData.Summary = report.ComputeSummary(reportData.Dependencies)
-			return reportData, nil
+			return applyAdvisories(reportData, req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
 		},
 		func(_ context.Context, reportData report.Report) (report.Report, error) {
 			return applyVulnerabilityExceptionsToReport(reportData, req.VulnerabilityExceptions, now), nil

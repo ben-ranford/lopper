@@ -184,17 +184,21 @@ func appendBaselineSaveWarning(reportData report.Report, savedPath string) repor
 	return reportData
 }
 
-func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, error) {
-	if strings.TrimSpace(req.AdvisorySourcePath) == "" {
+func applyAdvisories(reportData report.Report, advisorySourceTrustRoot, advisorySourcePath string) (report.Report, error) {
+	if strings.TrimSpace(advisorySourcePath) == "" {
 		return reportData, nil
 	}
-	advisories, err := advisory.LoadWithinRoot(req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
+	advisories, err := advisory.LoadWithinRoot(advisorySourceTrustRoot, advisorySourcePath)
 	if err != nil {
 		return reportData, err
 	}
 	report.AnnotateVulnerabilities(&reportData, advisories)
 	reportData.Summary = report.ComputeSummary(reportData.Dependencies)
 	return reportData, nil
+}
+
+func applyAdvisoriesIfNeeded(reportData report.Report, req AnalyseRequest) (report.Report, error) {
+	return applyAdvisories(reportData, req.AdvisorySourceTrustRoot, req.AdvisorySourcePath)
 }
 
 func applyVulnerabilityExceptionsIfNeeded(reportData report.Report, req AnalyseRequest, now time.Time) (report.Report, error) {
