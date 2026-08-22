@@ -142,8 +142,8 @@ jobs:
               exit 1
             fi
           fi
-          if ! git merge-base -- "${base_sha}" HEAD >/dev/null; then
-            echo "::error::PR base SHA '${base_sha}' is not related to HEAD; memory benchmark gate cannot run safely." >&2
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
@@ -166,10 +166,10 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_REGRESSION_EXEMPT_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}
         run: |
-          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"
+          base_sha="${BASE_SHA:?prepared PR base SHA is required}"
+          go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$base_sha" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"
 
       - name: Fail on unapproved memory regression
         if: ${{ github.event_name == 'pull_request' && !env.ACT && always() && !contains(github.event.pull_request.labels.*.name, 'memory-approved') }}
@@ -682,8 +682,8 @@ jobs:
               exit 1
             fi
           fi
-          if ! git merge-base -- "${base_sha}" HEAD >/dev/null; then
-            echo "::error::PR base SHA '${base_sha}' is not related to HEAD; rolling memory benchmark gate cannot run safely." >&2
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
             exit 1
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"

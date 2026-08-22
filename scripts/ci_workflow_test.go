@@ -282,12 +282,13 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		`if [ -n "${base_ref}" ]; then`,
 		`git fetch --no-tags origin "${base_ref}"`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
-		`git merge-base -- "${base_sha}" HEAD`,
+		`git merge-base --is-ancestor "${base_sha}" HEAD`,
 		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, fetchBase, "fetch PR base", []string{
 		`base_ref="${BASE_REF:-main}"`,
 		`origin/main`,
+		`git merge-base -- "${base_sha}" HEAD >/dev/null`,
 		`git fetch --no-tags --depth=1 origin "${base_sha}"`,
 		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
 	})
@@ -304,11 +305,17 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "regression proof condition", got: proof.If, want: "${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}"},
 		{label: "regression proof title env", got: proof.Env["PR_TITLE"], want: "${{ github.event.pull_request.title }}"},
-		{label: "regression proof base env", got: proof.Env["PR_BASE_SHA"], want: "${{ github.event.pull_request.base.sha }}"},
 		{label: "regression proof exemption label env", got: proof.Env["PR_REGRESSION_EXEMPT_LABEL"], want: "${{ contains(github.event.pull_request.labels.*.name, 'regression-exempt') }}"},
 	})
+	if _, present := proof.Env["PR_BASE_SHA"]; present {
+		t.Fatal("regression proof step must not consume the raw pull_request.base.sha after PR base resolution")
+	}
 	assertWorkflowStepRunContainsAll(t, proof, "regression proof step", []string{
-		`go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$PR_BASE_SHA" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+		`base_sha="${BASE_SHA:?prepared PR base SHA is required}"`,
+		`go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$base_sha" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, proof, "regression proof step", []string{
+		`--base-sha "$PR_BASE_SHA"`,
 	})
 }
 
@@ -363,7 +370,7 @@ func TestCIWorkflowPreparesImmutableMemoryBenchmarkBase(t *testing.T) {
 				`if [ -n "${base_ref}" ]; then`,
 				`git fetch --no-tags origin "${base_ref}"`,
 				`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}"`,
-				`git merge-base -- "${base_sha}" HEAD >/dev/null`,
+				`git merge-base --is-ancestor "${base_sha}" HEAD`,
 				`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 			})
 			assertWorkflowStepRunOmitsAll(t, fetchBase, tc.jobName+" PR base fetch", []string{
@@ -371,6 +378,7 @@ func TestCIWorkflowPreparesImmutableMemoryBenchmarkBase(t *testing.T) {
 				`origin/main`,
 				`--depth=1 origin "${base_sha}"`,
 				`--depth=1 origin "${base_ref}"`,
+				`git merge-base -- "${base_sha}" HEAD >/dev/null`,
 				`MEMORY_BENCH_BASE="origin/${base_ref}"`,
 			})
 
@@ -479,6 +487,48 @@ func TestCIWorkflowACTPullRequestFallbackUsesHeadParentBase(t *testing.T) {
 	}
 }
 
+func TestCIWorkflowRegressionProofUsesPreparedBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
+	if _, present := proof.Env["PR_BASE_SHA"]; present {
+		t.Fatal("regression proof step must not inject the raw PR base SHA")
+	}
+	assertWorkflowStepRunContainsAll(t, proof, "regression proof prepared base", []string{
+		`base_sha="${BASE_SHA:?prepared PR base SHA is required}"`,
+		`go run ./tools/regressionproof --repo . --body-file "$PR_BODY_FILE" --title "$PR_TITLE" --base-sha "$base_sha" --regression-exempt-label "$PR_REGRESSION_EXEMPT_LABEL"`,
+	})
+	assertWorkflowStepRunOmitsAll(t, proof, "regression proof prepared base", []string{
+		`${{ github.event.pull_request.base.sha }}`,
+		`--base-sha "$PR_BASE_SHA"`,
+	})
+}
+
+func TestCIWorkflowFetchPRBaseRejectsNonAncestorBaseSHA(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	repo, nonAncestorSHA := createCIWorkflowDivergedRepo(t)
+	output, err := runCIWorkflowShellStep(t, repo, fetchBase.Run, map[string]string{
+		"ACT":         "1",
+		"GITHUB_ENV":  filepath.Join(t.TempDir(), "non-ancestor.env"),
+		"BASE_SOURCE": "act-head-parent",
+		"BASE_SHA":    nonAncestorSHA,
+	})
+	if err == nil {
+		t.Fatal("fetch PR base succeeded for a non-ancestor base SHA")
+	}
+	if !strings.Contains(output, "is not an ancestor of HEAD") {
+		t.Fatalf("fetch PR base output = %q, want non-ancestor failure", output)
+	}
+}
+
 func TestCIWorkflowHostedPullRequestWithoutBaseSHAFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -548,7 +598,7 @@ func createCIWorkflowGitRepo(t *testing.T) (string, string) {
 	t.Helper()
 
 	repo := t.TempDir()
-	runCIWorkflowGit(t, repo, "init")
+	runCIWorkflowGit(t, repo, "init", "-b", "main")
 	runCIWorkflowGit(t, repo, "config", "user.name", "CI Workflow Test")
 	runCIWorkflowGit(t, repo, "config", "user.email", "ci-workflow-test@example.com")
 	if err := os.WriteFile(filepath.Join(repo, "fixture.txt"), []byte("base\n"), 0o644); err != nil {
@@ -562,6 +612,33 @@ func createCIWorkflowGitRepo(t *testing.T) (string, string) {
 	}
 	runCIWorkflowGit(t, repo, "commit", "-am", "head")
 	return repo, baseSHA
+}
+
+func createCIWorkflowDivergedRepo(t *testing.T) (string, string) {
+	t.Helper()
+
+	repo := t.TempDir()
+	runCIWorkflowGit(t, repo, "init", "-b", "main")
+	runCIWorkflowGit(t, repo, "config", "user.name", "CI Workflow Test")
+	runCIWorkflowGit(t, repo, "config", "user.email", "ci-workflow-test@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "fixture.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base fixture: %v", err)
+	}
+	runCIWorkflowGit(t, repo, "add", "fixture.txt")
+	runCIWorkflowGit(t, repo, "commit", "-m", "base")
+	runCIWorkflowGit(t, repo, "checkout", "-b", "topic-base")
+	if err := os.WriteFile(filepath.Join(repo, "topic.txt"), []byte("topic\n"), 0o644); err != nil {
+		t.Fatalf("write topic fixture: %v", err)
+	}
+	runCIWorkflowGit(t, repo, "add", "topic.txt")
+	runCIWorkflowGit(t, repo, "commit", "-m", "topic")
+	nonAncestorSHA := strings.TrimSpace(runCIWorkflowGit(t, repo, "rev-parse", "HEAD"))
+	runCIWorkflowGit(t, repo, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repo, "fixture.txt"), []byte("head\n"), 0o644); err != nil {
+		t.Fatalf("write head fixture: %v", err)
+	}
+	runCIWorkflowGit(t, repo, "commit", "-am", "head")
+	return repo, nonAncestorSHA
 }
 
 func runCIWorkflowGit(t *testing.T, repo string, args ...string) string {

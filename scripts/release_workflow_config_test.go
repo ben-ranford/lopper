@@ -3193,12 +3193,12 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`echo "Memory benchmark GO_BIN: $$go_bin_path"`,
 		`echo "Memory benchmark Go toolchain: $$expected_go_version"`,
 		`requested base ref '$$base_ref' is missing or invalid`,
-		`requested base ref '$$base_ref' is not related to HEAD`,
+		`requested base ref '$$base_ref' is not an ancestor of HEAD`,
 		`benchmark_harness_fingerprint() { \`,
 		`git hash-object -- "$$fingerprint_dir/$$fingerprint_file"`,
 		`git hash-object -- "$$fingerprint_manifest_tmp"`,
-		`git rev-parse --verify -q --end-of-options "$$base_ref^{commit}"`,
-		`git merge-base -- "$$base_ref" HEAD`,
+		`base_commit=$$(git rev-parse --verify -q --end-of-options "$$base_ref^{commit}" 2>/dev/null)`,
+		`git merge-base --is-ancestor "$$base_commit" HEAD >/dev/null 2>&1`,
 		`{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}`,
 		`{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}`,
 		`-list '^Benchmark' "$$bench_pkg"`,
@@ -3235,7 +3235,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`if [ "$$status" -eq 2 ]; then`,
 		`falling back to 'HEAD~1'`,
 		`No valid memory benchmark base ref found; skipping memory benchmark gate.`,
-		`is not related to HEAD; skipping memory benchmark gate.`,
+		`is not an ancestor of HEAD; skipping memory benchmark gate.`,
+		`git merge-base -- "$$base_ref" HEAD`,
 		`head benchmark selection is ambiguous across packages`,
 		`{{range .GoFiles}}`,
 		`prepare_artifact_parent`,
@@ -3246,7 +3247,7 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 	}
 
 	assertTextAppearsBefore(t, benchGateScript, `if [ "$base_harness_fingerprint" != "$harness_fingerprint" ]; then`, `printf "Applied base benchmark definition: %s\n" "$definition_metadata"`, "bench-gate must verify every base harness fingerprint before executing benchmarks")
-	assertTextAppearsBefore(t, benchGateScript, `validate_go_toolchain "initial validation"`, `if ! git rev-parse --verify -q --end-of-options "$base_ref^{commit}"`, "bench-gate must pin the Go executable and toolchain before resolving revisions")
+	assertTextAppearsBefore(t, benchGateScript, `validate_go_toolchain "initial validation"`, `if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}" 2>/dev/null); then`, "bench-gate must pin the Go executable and toolchain before resolving revisions")
 }
 
 func TestMakefileBenchGateRejectsMissingOrNonExecutableGoBin(t *testing.T) {
@@ -3788,14 +3789,54 @@ func TestMakefileBenchGateFailsClosedForUnrelatedRequestedBase(t *testing.T) {
 		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
 	}
 	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
-	if !strings.Contains(output, "not related to HEAD; failing closed") {
+	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
 		t.Fatalf("expected unrelated base failure output, got:\n%s", output)
 	}
 	wantContains := []string{
 		"Comparison status: invalid",
-		"base benchmark input could not be read: requested base ref 'unrelated-base' is not related to HEAD.",
+		"base benchmark input could not be read: requested base ref 'unrelated-base' is not an ancestor of HEAD.",
 	}
 	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+}
+
+func TestMakefileBenchGateRejectsNonAncestorRequestedBase(t *testing.T) {
+	t.Parallel()
+
+	repo := newTempBenchGateRepo(t)
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("resolve go binary: %v", err)
+	}
+	runGitCommand(t, repo, "checkout", "-b", "topic-base")
+	writeFile(t, filepath.Join(repo, "topic.txt"), "topic\n")
+	runGitCommand(t, repo, "add", "topic.txt")
+	runGitCommand(t, repo, "commit", "-m", "topic base")
+	runGitCommand(t, repo, "checkout", "main")
+	writeFile(t, filepath.Join(repo, "README.md"), "head\n")
+	runGitCommand(t, repo, "commit", "-am", "head")
+
+	vars := map[string]string{
+		"GO":                   goPath,
+		"GO_BIN":               goPath,
+		"GO_TOOLCHAIN":         "local",
+		"MEMORY_BENCH_BASE":    "topic-base",
+		"MEMORY_BENCH_SUMMARY": ".artifacts/memory-bench-summary.md",
+		"MEMORY_BENCH_STATUS":  ".artifacts/memory-bench-status.txt",
+	}
+	output, _ := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", vars, 2)
+	if !strings.Contains(output, "not an ancestor of HEAD; failing closed") {
+		t.Fatalf("expected non-ancestor base failure output, got:\n%s", output)
+	}
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark input could not be read: requested base ref 'topic-base' is not an ancestor of HEAD.",
+	}
+	wantOmit := []string{
+		"Applied base benchmark definition:",
 		"Result: memory benchmark gate passed.",
 		"Result: memory benchmark regression detected.",
 	}
