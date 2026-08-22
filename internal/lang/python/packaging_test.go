@@ -235,6 +235,16 @@ func TestParseRequirementsDependenciesSkipsOversizedFile(t *testing.T) {
 	assertWarningContains(t, warnings, "skipped requirements.txt above 1048576 bytes")
 }
 
+func TestPythonPackagingFileTooLargeClassificationPreservesMixedErrors(t *testing.T) {
+	closeErr := errors.New("close requirements file")
+	if !isPurePythonPackagingFileTooLargeError(safeio.ErrFileTooLarge) {
+		t.Fatal("expected bare file-too-large sentinel to be treated as a size-limit warning")
+	}
+	if isPurePythonPackagingFileTooLargeError(errors.Join(safeio.ErrFileTooLarge, closeErr)) {
+		t.Fatal("expected mixed file-too-large and operational error to propagate")
+	}
+}
+
 func TestCollectDirectoryDeclaredDependenciesFromRequirementsTxt(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonRequirementsTxt), `
