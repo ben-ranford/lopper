@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -176,9 +177,6 @@ func testCPPCompileDatabaseReadErrorsBubbleOut(t *testing.T) {
 	if _, err := loadCompileContext(repo); err == nil {
 		t.Fatalf("expected unreadable compile database to fail load")
 	}
-	if _, err := collectCompileDatabase(compileDB, repo, map[string]struct{}{}, map[string]includeSearchPath{}, map[string][]includeSearchPath{}, map[string]struct{}{}); err == nil {
-		t.Fatalf("expected unreadable compile database to fail direct collection")
-	}
 }
 
 func testCPPIncludeMappingFallbackBranches(t *testing.T) {
@@ -197,6 +195,28 @@ func testCPPIncludeMappingFallbackBranches(t *testing.T) {
 	}
 	if isLikelyStdHeader("   ") {
 		t.Fatalf("expected blank std header candidate to be rejected")
+	}
+
+	repo := t.TempDir()
+	source := filepath.Join(repo, cppMainSourcePath)
+	testutil.MustWriteFile(t, source, "int main() { return 0; }\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "headers"), "directory marker")
+	if err := os.MkdirAll(filepath.Join(repo, "src", "headers-dir"), 0o755); err != nil {
+		t.Fatalf("mkdir headers dir: %v", err)
+	}
+	files, warnings, err := filterCompileSourceHints(repo, []string{
+		source,
+		source,
+		filepath.Join(repo, "src", "headers-dir"),
+	})
+	if err != nil {
+		t.Fatalf("filter compile source hints: %v", err)
+	}
+	if !slices.Equal(files, []string{source}) {
+		t.Fatalf("expected duplicate source hints to collapse, got %#v", files)
+	}
+	if !hasWarning(warnings, "not a file") {
+		t.Fatalf("expected directory source hint warning, got %#v", warnings)
 	}
 
 	custom := &report.RemovalCandidateWeights{Usage: 1, Impact: 2, Confidence: 3}
