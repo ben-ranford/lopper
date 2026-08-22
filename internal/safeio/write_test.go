@@ -74,6 +74,19 @@ type exclusiveCreatedTargetCase struct {
 	cleanup   bool
 }
 
+type rootNamer interface {
+	rootName() string
+}
+
+type namedFakeRoot struct {
+	*fakeRoot
+	name string
+}
+
+func (r *namedFakeRoot) rootName() string {
+	return r.name
+}
+
 func (i *modeOverrideFileInfo) Mode() os.FileMode {
 	return i.mode
 }
@@ -2289,6 +2302,38 @@ func TestOpenTargetParentReturnsExistingRootForTopLevelTarget(t *testing.T) {
 	}
 }
 
+func TestOpenTargetParentPreservesAbsoluteNameForNamedChildRoot(t *testing.T) {
+	childInfo := statTestPath(t, t.TempDir())
+	child := &namedFakeRoot{
+		fakeRoot: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return childInfo, nil },
+			close: closeWithoutError,
+		},
+		name: "objects",
+	}
+	root := &fakeRoot{
+		lstat:    func(string) (fs.FileInfo, error) { return childInfo, nil },
+		openRoot: func(string) (Root, error) { return child, nil },
+	}
+	writeRoot := &WriteRoot{root: root, rootAbs: "/root"}
+	target := rootedTarget{rootAbs: "/root", rel: filepath.Join("objects", writeTestFileName)}
+
+	parent, closeParent, err := writeRoot.openTargetParent(target, false, 0)
+	if err != nil {
+		t.Fatalf("expected nested target parent lookup to succeed, got %v", err)
+	}
+	if !closeParent {
+		t.Fatal("expected nested target parent to be caller-owned")
+	}
+	named, ok := parent.(rootNamer)
+	if !ok {
+		t.Fatalf("expected named parent root, got %T", parent)
+	}
+	if got, want := named.rootName(), filepath.Join("/root", "objects"); got != want {
+		t.Fatalf("unexpected target parent root name: got %q want %q", got, want)
+	}
+}
+
 func TestOpenTargetParentClosesNextWhenOwnedParentCloseFails(t *testing.T) {
 	firstInfo := statTestPath(t, t.TempDir())
 	secondInfo := statTestPath(t, t.TempDir())
@@ -3358,6 +3403,228 @@ func TestWriteAtomicReplacementWithPinnedTargetReturnsCloseErrorBeforeRename(t *
 		t.Fatalf("expected temp cleanup after close failure, got %d removes", removeCalls)
 	}
 	assertFileContent(t, targetPath, "before")
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootPublishesWithHardLinkAndRemovesTemp(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	linkCalls := 0
+	publishCalls := 0
+	removeCalls := 0
+	lstatCalls := 0
+
+	tempFile, tempClosed := newTrackedAtomicTempFile(tempInfo, nil, nil)
+	root := newAtomicIfAbsentRoot(t, tempFile, func(oldName, newName string) error {
+		linkCalls++
+		if newName == writeTestFileName {
+			publishCalls++
+			assertAtomicTempPath(t, "hard-link source", oldName)
+			return nil
+		}
+		assertAtomicTempPath(t, "identity-bound staging source", oldName)
+		assertAtomicTempPath(t, "identity-bound staging link", newName)
+		return nil
+	}, func(name string) error {
+		removeCalls++
+		assertAtomicTempPath(t, "temp removal", name)
+		return nil
+	})
+	root.lstat = func(name string) (fs.FileInfo, error) {
+		if strings.HasPrefix(name, atomicTempPrefix) {
+			return tempInfo, nil
+		}
+		if name != writeTestFileName {
+			t.Fatalf("unexpected committed target lookup: %s", name)
+		}
+		lstatCalls++
+		return tempInfo, nil
+	}
+
+	if err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("writeFileAtomicallyIfAbsentAtRoot returned error: %v", err)
+	}
+	if publishCalls != 1 {
+		t.Fatalf("expected one hard-link publish, got %d", publishCalls)
+	}
+	if linkCalls < 2 {
+		t.Fatalf("expected staging and publish hard links, got %d", linkCalls)
+	}
+	if removeCalls != 4 {
+		t.Fatalf("expected identity-bound staged and original temp cleanup after hard-link publish, got %d removes", removeCalls)
+	}
+	if lstatCalls != 1 {
+		t.Fatalf("expected one committed target validation lookup, got %d", lstatCalls)
+	}
+	if !*tempClosed {
+		t.Fatal("expected temp file to close before hard-link publish")
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootPropagatesTempCreationError(t *testing.T) {
+	expectedErr := errors.New("temp creation failure")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, expectedErr
+		},
+		link: func(oldName, newName string) error {
+			t.Fatalf("unexpected hard-link publish after temp creation failure: %s -> %s", oldName, newName)
+			return nil
+		},
+	}
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected temp creation error, got %v", err)
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootCleansTempAfterPreparationErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		writeErr error
+		closeErr error
+	}{
+		{name: "write", writeErr: errors.New("temp write failure")},
+		{name: "close", closeErr: errors.New("temp close failure")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.closeErr
+			if tt.writeErr != nil {
+				want = tt.writeErr
+			}
+			assertWriteFileAtomicallyIfAbsentCleansTempAfterPreparationError(t, tt.writeErr, tt.closeErr, want)
+		})
+	}
+}
+
+func assertWriteFileAtomicallyIfAbsentCleansTempAfterPreparationError(t *testing.T, writeErr, closeErr, want error) {
+	t.Helper()
+
+	cleanupErr := errors.New("temp cleanup failure")
+	tempFile, tempClosed := newTrackedAtomicTempFile(newPinnedTargetInfo(t, "temp"), writeErr, closeErr)
+	removeCalls := 0
+	root := newAtomicIfAbsentRoot(t, tempFile, func(oldName, newName string) error {
+		if newName == writeTestFileName {
+			t.Fatalf("unexpected hard-link publish after temp preparation failure: %s -> %s", oldName, newName)
+		}
+		return nil
+	}, func(name string) error {
+		removeCalls++
+		assertAtomicTempPath(t, "temp cleanup", name)
+		return cleanupErr
+	})
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, want) {
+		t.Fatalf("expected temp preparation error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
+	}
+	wantRemoveCalls := 6
+	if writeErr != nil {
+		wantRemoveCalls = 1
+	}
+	if removeCalls != wantRemoveCalls {
+		t.Fatalf("expected %d temp cleanup removes, got %d", wantRemoveCalls, removeCalls)
+	}
+	if !*tempClosed {
+		t.Fatal("expected temp close to be attempted before cleanup")
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootReturnsTempRemoveErrorAfterHardLink(t *testing.T) {
+	removeErr := errors.New("temp remove failure")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	tempFile, _ := newTrackedAtomicTempFile(tempInfo, nil, nil)
+	linkCalls := 0
+	publishCalls := 0
+	root := newAtomicIfAbsentRoot(t, tempFile, func(oldName, newName string) error {
+		linkCalls++
+		if newName == writeTestFileName {
+			publishCalls++
+		}
+		return nil
+	}, func(name string) error {
+		assertAtomicTempPath(t, "temp removal", name)
+		return removeErr
+	})
+	root.lstat = func(name string) (fs.FileInfo, error) {
+		if strings.HasPrefix(name, atomicTempPrefix) {
+			return tempInfo, nil
+		}
+		if name != writeTestFileName {
+			t.Fatalf("unexpected committed target validation path: %s", name)
+		}
+		return tempInfo, nil
+	}
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected temp remove error, got %v", err)
+	}
+	if publishCalls != 1 {
+		t.Fatalf("expected one hard-link publish before temp remove error, got %d", publishCalls)
+	}
+	if linkCalls < 2 {
+		t.Fatalf("expected staging and publish hard links before temp remove error, got %d", linkCalls)
+	}
+}
+
+func newTrackedAtomicTempFile(info fs.FileInfo, writeErr, closeErr error) (*fakeFile, *bool) {
+	closed := false
+	return &fakeFile{
+		stat: func() (fs.FileInfo, error) {
+			return info, nil
+		},
+		write: func(p []byte) (int, error) {
+			if writeErr != nil {
+				return 0, writeErr
+			}
+			return len(p), nil
+		},
+		chmod: chmodWithoutError,
+		close: func() error {
+			closed = true
+			return closeErr
+		},
+	}, &closed
+}
+
+func newAtomicIfAbsentRoot(t *testing.T, tempFile File, link func(string, string) error, remove func(string) error) *fakeRoot {
+	t.Helper()
+
+	return &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			assertAtomicTempPath(t, "temp open", name)
+			return tempFile, nil
+		},
+		link:   link,
+		remove: remove,
+		lstat: func(name string) (fs.FileInfo, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				return nil, errors.ErrUnsupported
+			}
+			return tempFile.Stat()
+		},
+	}
+}
+
+func assertAtomicIfAbsentPublishPath(t *testing.T, oldName, newName string) {
+	t.Helper()
+
+	assertAtomicTempPath(t, "hard-link source", oldName)
+	if newName != writeTestFileName {
+		t.Fatalf("unexpected hard-link target: %s", newName)
+	}
+}
+
+func assertAtomicTempPath(t *testing.T, label, name string) {
+	t.Helper()
+
+	if !strings.HasPrefix(name, atomicTempPrefix) {
+		t.Fatalf("unexpected %s path: %s", label, name)
+	}
 }
 
 func TestAtomicWriteSessionVerifyCommittedTargetRejectsMissingSnapshot(t *testing.T) {

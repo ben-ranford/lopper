@@ -509,7 +509,12 @@ func (s *atomicWriteSession) closeTempFile() error {
 
 func (s *atomicWriteSession) cleanup() error {
 	if s.tempInfo != nil {
-		return cleanupAtomicTempFileIfMatches(s.root, s.tempRel, s.tempInfo)
+		var closeErr error
+		if s.tempFile != nil {
+			closeErr = s.tempFile.Close()
+			s.tempFile = nil
+		}
+		return errors.Join(closeErr, cleanupAtomicTempFileIfMatches(s.root, s.tempRel, s.tempInfo))
 	}
 	return cleanupAtomicTempFile(s.root, s.tempRel, s.tempFile)
 }
@@ -593,7 +598,11 @@ func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetR
 			return os.ErrExist
 		}
 		if identityBoundLinkUnsupported(err) {
-			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, sourceRel, err)
+			fallbackErr := fallbackAtomicIfAbsent(root, stagedRel, targetRel, stagedInfo, err)
+			if fallbackErr == nil {
+				return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, committedTargetChangedBeforeValidation)
+			}
+			return fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, sourceRel, fallbackErr)
 		}
 		return err
 	}

@@ -34,6 +34,7 @@ type scanState struct {
 	visited              int
 	unresolvedNamespaces int
 	foundPHP             bool
+	skippedLargeFiles    int
 	skippedNestedPackage int
 }
 
@@ -116,6 +117,10 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.foundPHP = true
 
 	content, relPath, err := readPHPFile(c.repoPath, path)
+	if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
+		c.state.skippedLargeFiles++
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -180,6 +185,9 @@ func appendScanWarnings(result *scanResult, state scanState) {
 	if state.skippedNestedPackage > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d nested composer package directory(ies) while scanning", state.skippedNestedPackage))
 	}
+	if state.skippedLargeFiles > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d large PHP file(s) above %d bytes", state.skippedLargeFiles, maxScannablePHPFile))
+	}
 	if len(result.DynamicUsageByDependency) > 0 {
 		result.Warnings = append(result.Warnings, "dynamic loading/reflection patterns detected; dependency usage may be under-reported")
 	}
@@ -197,7 +205,7 @@ func dependenciesInFile(imports []importBinding) map[string]struct{} {
 }
 
 func readPHPFile(repoPath, path string) ([]byte, string, error) {
-	content, err := safeio.ReadFileUnder(repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(repoPath, path, maxScannablePHPFile)
 	if err != nil {
 		return nil, "", err
 	}

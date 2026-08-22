@@ -13,27 +13,6 @@ on:
       - unlabeled
 
 jobs:
-  extension-changes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      vscode_extension: ${{ steps.filter.outputs.vscode_extension }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Detect VS Code extension changes
-        id: filter
-        uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
-        with:
-          filters: |
-            vscode_extension:
-              - 'extensions/vscode-lopper/**'
-
   verify:
     runs-on: ubuntu-latest
     permissions:
@@ -109,20 +88,62 @@ jobs:
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
         run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
           base_ref="${BASE_REF:-main}"
           base_sha="${BASE_SHA:-}"
-          if [ -n "${base_sha}" ]; then
-            git fetch --no-tags --depth=1 origin "${base_sha}"
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
           fi
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
@@ -160,9 +181,9 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
         run: |
-          base_ref="${BASE_REF:-main}"
+          base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
           mkdir -p .artifacts
-          git worktree add --detach .artifacts/base "origin/${base_ref}"
+          git worktree add --detach .artifacts/base "${base_sha}"
           bin/lopper analyse --top 10 --repo .artifacts/base --language all --format json > .artifacts/lopper-base.json
           git worktree remove --force .artifacts/base
 
@@ -492,164 +513,6 @@ jobs:
               });
             }
 
-      - name: Post SonarQube review comments (PR)
-        if: ${{ !env.ACT && env.SONAR_TOKEN != '' }}
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ben-ranford_lopper
-          SONAR_HOST_URL: https://sonarcloud.io
-        continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
-        with:
-          script: |
-            const marker = '<!-- lopper-sonar-review -->';
-            const token = process.env.SONAR_TOKEN || '';
-            const projectKey = process.env.SONAR_PROJECT_KEY || '';
-            const host = (process.env.SONAR_HOST_URL || 'https://sonarcloud.io').replace(/\/+$/, '');
-            const prNumber = context.payload.pull_request?.number;
-
-            if (!prNumber) {
-              core.info('No pull request context available, skipping Sonar comment.');
-              return;
-            }
-
-            if (!token || !projectKey) {
-              core.info('SONAR_TOKEN or project key is missing, skipping Sonar comment.');
-              return;
-            }
-
-            const params = new URLSearchParams({
-              componentKeys: projectKey,
-              pullRequest: String(prNumber),
-              resolved: 'false',
-              p: '1',
-              ps: '20',
-            });
-            const auth = `Basic ${Buffer.from(`${token}:`).toString('base64')}`;
-            const jsonHeaders = {
-              Authorization: auth,
-              Accept: 'application/json',
-            };
-            const fetchJSON = async (path, searchParams) => {
-              const endpoint = `${host}${path}?${searchParams.toString()}`;
-              const response = await fetch(endpoint, { headers: jsonHeaders });
-              if (!response.ok) {
-                throw new Error(`Sonar API request failed (${response.status}): ${await response.text()}`);
-              }
-              return response.json();
-            };
-
-            const payload = await fetchJSON('/api/issues/search', params);
-            const issues = Array.isArray(payload.issues) ? payload.issues : [];
-            const total = Number.isFinite(payload.total) ? payload.total : issues.length;
-            const extractPath = (component) => {
-              const raw = String(component || '');
-              return raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw;
-            };
-            const isMockOrFixtureIssue = (issue) => {
-              const path = extractPath(issue.component);
-              return /(^|\/)(mock|mocks|testdata)(\/|$)/.test(path) || /(^|\/)[^/]+_mock\.go$/.test(path);
-            };
-            const actionableIssues = issues.filter((issue) => !isMockOrFixtureIssue(issue));
-            const excludedCount = issues.length - actionableIssues.length;
-            const list = actionableIssues;
-
-            let duplicationSummary = '_Duplication metrics unavailable for this PR._';
-            try {
-              const measureParams = new URLSearchParams({
-                component: projectKey,
-                pullRequest: String(prNumber),
-                metricKeys: 'duplicated_lines,duplicated_lines_density,new_duplicated_lines,new_duplicated_lines_density',
-              });
-              const measurePayload = await fetchJSON('/api/measures/component', measureParams);
-              const measures = Array.isArray(measurePayload?.component?.measures) ? measurePayload.component.measures : [];
-              const getMeasure = (metric) => measures.find((m) => m?.metric === metric)?.value;
-              const fmtPercent = (value) => {
-                const n = Number(value);
-                return Number.isFinite(n) ? `${n.toFixed(2)}%` : 'n/a';
-              };
-              const fmtInt = (value) => {
-                const n = Number(value);
-                return Number.isFinite(n) ? `${Math.round(n)}` : 'n/a';
-              };
-              duplicationSummary = [
-                `- Overall duplicated lines: **${fmtInt(getMeasure('duplicated_lines'))}**`,
-                `- Overall duplication density: **${fmtPercent(getMeasure('duplicated_lines_density'))}**`,
-                `- New duplicated lines: **${fmtInt(getMeasure('new_duplicated_lines'))}**`,
-                `- New duplication density: **${fmtPercent(getMeasure('new_duplicated_lines_density'))}**`,
-              ].join('\n');
-            } catch (error) {
-              core.warning(`Failed to fetch Sonar duplication measures: ${error.message}`);
-            }
-
-            const issueRows =
-              list.length > 0
-                ? list
-                    .map((issue, idx) => {
-                      const severity = String(issue.severity || 'UNKNOWN');
-                      const rule = String(issue.rule || 'n/a');
-                      const component = String(issue.component || '').split(':').slice(1).join(':') || 'n/a';
-                      const line = issue.line ? `:${issue.line}` : '';
-                      const message = String(issue.message || '').replace(/\|/g, '\\|').replace(/\n+/g, ' ');
-                      return `| ${idx + 1} | ${severity} | \`${rule}\` | \`${component}${line}\` | ${message} |`;
-                    })
-                    .join('\n')
-                : '| - | - | - | - | No open Sonar issues for this PR. |';
-
-            const body = [
-              marker,
-              '## SonarQube (PR)',
-              '',
-              `Open issues: **${total}**`,
-              `Actionable issues shown (excluding mock/fixture files): **${actionableIssues.length}**`,
-              excludedCount > 0 ? `Excluded mock/fixture issues: **${excludedCount}**` : '',
-              '',
-              '### Duplication',
-              duplicationSummary,
-              '',
-              '### Issues',
-              '',
-              '<details>',
-              `<summary>Open Sonar issues (${actionableIssues.length})</summary>`,
-              '',
-              '| # | Severity | Rule | Location | Message |',
-              '| --- | --- | --- | --- | --- |',
-              issueRows,
-              '',
-              '</details>',
-              '',
-              `Source: [SonarCloud PR view](${host}/project/issues?id=${encodeURIComponent(projectKey)}&pullRequest=${prNumber}&resolved=false)`,
-            ].join('\n');
-
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              per_page: 100,
-            });
-            const existing = comments.find(
-              (comment) =>
-                comment.user?.type === 'Bot' &&
-                typeof comment.body === 'string' &&
-                comment.body.includes(marker),
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
-
       - name: Comment on coverage failure
         if: ${{ !env.ACT }}
         continue-on-error: true
@@ -762,23 +625,76 @@ jobs:
             echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           fi
 
-      - name: Fetch PR base
+      - name: Resolve PR base ref
         if: ${{ github.event_name == 'pull_request' }}
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          git fetch --no-tags --depth=1 origin "${base_ref}"
+          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
+          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+
+      - name: Fetch PR base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          resolve_act_merge_base() {
+            local requested_ref="$1"
+            local candidate_ref=""
+            if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/remotes/origin/${requested_ref}"
+            elif git rev-parse --verify -q --end-of-options "refs/heads/${requested_ref}^{commit}" >/dev/null; then
+              candidate_ref="refs/heads/${requested_ref}"
+            else
+              if git fetch --no-tags origin "${requested_ref}" >/dev/null 2>&1; then
+                if git rev-parse --verify -q --end-of-options "refs/remotes/origin/${requested_ref}^{commit}" >/dev/null; then
+                  candidate_ref="refs/remotes/origin/${requested_ref}"
+                fi
+              fi
+            fi
+            if [ -z "${candidate_ref}" ]; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unavailable; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+            if ! git merge-base -- "${candidate_ref}" HEAD; then
+              echo "::error::ACT pull_request event payload omitted PR base SHA and base ref '${requested_ref}' is unrelated to HEAD; cannot resolve immutable merge base." >&2
+              return 1
+            fi
+          }
+          base_ref="${BASE_REF:-main}"
+          base_sha="${BASE_SHA:-}"
+          if [ -z "${base_sha}" ]; then
+            if [ -n "${ACT:-}" ]; then
+              if ! base_sha="$(resolve_act_merge_base "${base_ref}")"; then
+                exit 1
+              fi
+              echo "ACT pull_request event payload omitted PR base SHA; resolved immutable merge base ${base_sha} from ${base_ref}."
+            else
+              echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2
+              exit 1
+            fi
+          fi
+          if [ -z "${ACT:-}" ]; then
+            git fetch --no-tags origin "${base_sha}"
+            git fetch --no-tags origin "${base_ref}"
+          fi
+          if ! git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null; then
+            echo "::error::PR base SHA '${base_sha}' is missing; cannot prepare memory benchmark base." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${base_sha}" HEAD; then
+            echo "::error::PR base SHA '${base_sha}' is not an ancestor of HEAD; memory benchmark gate cannot run safely." >&2
+            exit 1
+          fi
+          printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
 
       - name: Run CI target with rolling defaults
         env:
           BUILD_CHANNEL: rolling
           GH_EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           if [ "${GH_EVENT_NAME}" = "pull_request" ]; then
-            base_ref="${PR_BASE_REF:-main}"
-            export MEMORY_BENCH_BASE="origin/${base_ref}"
+            export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
@@ -814,8 +730,6 @@ jobs:
 
   vscode-smoke:
     name: vscode-smoke (${{ matrix.os }})
-    needs: extension-changes
-    if: ${{ needs.extension-changes.outputs.vscode_extension == 'true' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

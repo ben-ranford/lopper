@@ -2,6 +2,7 @@ package php
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 const helpersComposerJSON = "composer.json"
@@ -22,6 +25,12 @@ const helpersMonologLogger = "Monolog\\Logger"
 const helpersScanRepoErr = "scanRepo: %v"
 const helpersUnexpectedUnresolvedFmt = "unexpected unresolved: %d"
 const helpersPHPHeader = "<?php\n"
+
+const (
+	helpersComposerManifestLimit int64 = 2 * 1024 * 1024
+	helpersComposerLockLimit     int64 = 8 * 1024 * 1024
+	helpersScannablePHPFileLimit int64 = 2 * 1024 * 1024
+)
 
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
 	adapter := NewAdapter()
@@ -76,6 +85,91 @@ func TestReadComposerManifestBranches(t *testing.T) {
 	_, _, err = readComposerManifest(repo)
 	if err == nil || !strings.Contains(err.Error(), "parse composer.json") {
 		t.Fatalf("expected parse error branch, got %v", err)
+	}
+}
+
+func TestReadComposerInputsRejectOversizedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		limit    int64
+		read     func(string) error
+	}{
+		{
+			name:     "composer manifest",
+			filename: helpersComposerJSON,
+			limit:    helpersComposerManifestLimit,
+			read: func(repo string) error {
+				_, _, err := readComposerManifest(repo)
+				return err
+			},
+		},
+		{
+			name:     "composer lock",
+			filename: helpersComposerLock,
+			limit:    helpersComposerLockLimit,
+			read: func(repo string) error {
+				data := composerData{NamespaceToDep: map[string]string{}}
+				return loadComposerLockMappings(repo, &data)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWritePaddedFile(t, filepath.Join(repo, tc.filename), "{}", tc.limit+1)
+
+			if err := tc.read(repo); !errors.Is(err, safeio.ErrFileTooLarge) {
+				t.Fatalf("expected oversized %s to fail with ErrFileTooLarge, got %v", tc.filename, err)
+			}
+		})
+	}
+}
+
+func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		filename string
+		limit    int64
+	}{
+		{name: "composer manifest", filename: helpersComposerJSON, limit: helpersComposerManifestLimit},
+		{name: "composer lock", filename: helpersComposerLock, limit: helpersComposerLockLimit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWritePaddedFile(t, filepath.Join(repo, tc.filename), "{}", tc.limit)
+
+			bytes, found, err := readOptionalRepoFile(repo, tc.filename)
+			if err != nil {
+				t.Fatalf("read exact-limit %s: %v", tc.filename, err)
+			}
+			if !found {
+				t.Fatalf("expected exact-limit %s to be found", tc.filename)
+			}
+			if int64(len(bytes)) != tc.limit {
+				t.Fatalf("expected exact-limit %s read to return %d bytes, got %d", tc.filename, tc.limit, len(bytes))
+			}
+		})
+	}
+}
+
+func TestAnalyseWarnsAndContinuesWhenComposerLockIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, helpersComposerLock), "{}", helpersComposerLockLimit+1)
+	writeFile(t, filepath.Join(repo, "src", "x.php"), helpersPHPHeader+"$client = new \\Vendor\\Lib\\Client();\n")
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: helpersVendorLibDependency,
+	})
+	if err != nil {
+		t.Fatalf("analyse with oversized optional composer.lock: %v", err)
+	}
+	if !containsWarning(result.Warnings, "composer.lock skipped") || !containsWarning(result.Warnings, "file exceeds size limit") {
+		t.Fatalf("expected oversized composer.lock warning, got %#v", result.Warnings)
+	}
+	if len(result.Dependencies) != 1 {
+		t.Fatalf("expected dependency report despite oversized composer.lock, got %d", len(result.Dependencies))
 	}
 }
 
@@ -217,6 +311,49 @@ func TestReadPHPFileAndScanNoPHP(t *testing.T) {
 	}
 	if !containsWarning(scan.Warnings, "no PHP source files") {
 		t.Fatalf("expected no-PHP warning, got %#v", scan.Warnings)
+	}
+}
+
+func TestReadPHPFileRejectsOversizedSource(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "src", "oversized.php")
+	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, helpersScannablePHPFileLimit+1)
+
+	if _, _, err := readPHPFile(repo, sourcePath); !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized PHP source to fail with ErrFileTooLarge, got %v", err)
+	}
+}
+
+func TestReadPHPFileAcceptsExactLimitSource(t *testing.T) {
+	repo := t.TempDir()
+	sourcePath := filepath.Join(repo, "src", "exact.php")
+	testutil.MustWritePaddedFile(t, sourcePath, helpersPHPHeader, helpersScannablePHPFileLimit)
+
+	content, relPath, err := readPHPFile(repo, sourcePath)
+	if err != nil {
+		t.Fatalf("read exact-limit PHP source: %v", err)
+	}
+	if relPath != filepath.Join("src", "exact.php") {
+		t.Fatalf("unexpected rel path: %q", relPath)
+	}
+	if int64(len(content)) != helpersScannablePHPFileLimit {
+		t.Fatalf("expected exact-limit PHP source read to return %d bytes, got %d", helpersScannablePHPFileLimit, len(content))
+	}
+}
+
+func TestScanRepoSkipsOversizedPHPSourceWithWarning(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), helpersPHPHeader, helpersScannablePHPFileLimit+1)
+
+	scan, err := scanRepo(context.Background(), repo, composerData{DeclaredDependencies: map[string]struct{}{helpersVendorLibDependency: {}}})
+	if err != nil {
+		t.Fatalf(helpersScanRepoErr, err)
+	}
+	if len(scan.Files) != 0 {
+		t.Fatalf("expected oversized PHP source to be skipped, got %#v", scan.Files)
+	}
+	if !containsWarning(scan.Warnings, "skipped 1 large PHP file") || !containsWarning(scan.Warnings, fmt.Sprintf("%d bytes", helpersScannablePHPFileLimit)) {
+		t.Fatalf("expected oversized PHP warning with byte limit, got %#v", scan.Warnings)
 	}
 }
 
