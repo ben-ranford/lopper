@@ -29,7 +29,7 @@ type identityBoundOperationsRoot interface {
 	RemoveIfMatches(name string, expected fs.FileInfo, message string) error
 }
 
-type identityBoundRenameStateRoot interface {
+type RenameIfMatchesStater interface {
 	RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error)
 }
 
@@ -181,7 +181,7 @@ func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRe
 }
 
 func renameFileIfMatches(root Root, oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
-	if guardedRoot, ok := root.(identityBoundRenameStateRoot); ok {
+	if guardedRoot, ok := root.(RenameIfMatchesStater); ok {
 		return guardedRoot.RenameIfMatchesState(oldName, newName, expected, message)
 	}
 	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {

@@ -549,16 +549,27 @@ func (r *osRoot) Link(oldName, newName string) error {
 	return r.root.Link(oldName, newName)
 }
 
-func (r *osRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+func ignoreRemoveNotExist(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (r *osRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) (returnErr error) {
 	stagedRel, err := identityBoundQuarantinePath(r)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = r.Remove(filepath.Dir(stagedRel)) }()
+	defer func() {
+		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(filepath.Dir(stagedRel))))
+	}()
 	if err := r.Link(oldName, stagedRel); err != nil {
 		return err
 	}
-	defer func() { _ = r.Remove(stagedRel) }()
+	defer func() {
+		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(stagedRel)))
+	}()
 	if err := verifyPublishedPathMatchesInfo(r, stagedRel, expected, message); err != nil {
 		return err
 	}
@@ -577,19 +588,21 @@ func (r *osRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, 
 // RenameIfMatchesState renames only the inode validated after it has been
 // quarantined under a private staging directory. The result reports whether
 // oldName was consumed; a false result is a same-inode rename no-op.
-func (r *osRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+func (r *osRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (_ bool, returnErr error) {
 	stagedRel, err := identityBoundQuarantinePath(r)
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = r.Remove(filepath.Dir(stagedRel)) }()
+	defer func() {
+		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(filepath.Dir(stagedRel))))
+	}()
 	if err := r.Rename(oldName, stagedRel); err != nil {
 		return false, err
 	}
 	stagedPresent := true
 	defer func() {
 		if stagedPresent {
-			_ = r.Remove(stagedRel)
+			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(stagedRel)))
 		}
 	}()
 	if err := verifyPublishedPathMatchesInfo(r, stagedRel, expected, message); err != nil {
@@ -624,19 +637,21 @@ func (r *osRoot) Remove(name string) error {
 	return r.root.Remove(name)
 }
 
-func (r *osRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
+func (r *osRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) (returnErr error) {
 	stagedRel, err := identityBoundQuarantinePath(r)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = r.Remove(filepath.Dir(stagedRel)) }()
+	defer func() {
+		returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(filepath.Dir(stagedRel))))
+	}()
 	if err := r.Rename(name, stagedRel); err != nil {
 		return err
 	}
 	stagedPresent := true
 	defer func() {
 		if stagedPresent {
-			_ = r.Remove(stagedRel)
+			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(r.Remove(stagedRel)))
 		}
 	}()
 	if err := verifyPublishedPathMatchesInfo(r, stagedRel, expected, message); err != nil {
