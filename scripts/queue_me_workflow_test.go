@@ -77,6 +77,8 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
 		"mergeMethod: SQUASH",
+		"function isMergeConflict(error)",
+		"pull request is not mergeable",
 		"left.number - right.number",
 		"COMMENT_MARKER",
 	} {
