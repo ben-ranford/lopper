@@ -30,6 +30,11 @@ type analysisCache struct {
 	analysisRepoPath string
 }
 
+var (
+	openAnalysisCacheAncestor          = safeio.OpenRootExistingAncestorNoFollow
+	openOrCreatePinnedAnalysisCacheDir = safeio.OpenOrCreatePinnedDirectory
+)
+
 func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string) *analysisCache {
 	options := resolveCacheOptions(req.Cache, repoPath)
 	metadata := report.CacheMetadata{
@@ -84,7 +89,7 @@ func newAnalysisCache(req Request, repoPath string, analysisRepoPaths ...string)
 }
 
 func prepareReadableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, returnErr error) {
-	root, currentPath, missingParts, err := safeio.OpenRootExistingAncestorNoFollow(cachePath)
+	root, currentPath, missingParts, err := openAnalysisCacheAncestor(cachePath)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +115,7 @@ func (c *analysisCache) stableCacheRoot(rootPath string) string {
 }
 
 func prepareWritableAnalysisCacheRoot(cachePath string) (identity fs.FileInfo, returnErr error) {
-	root, currentPath, missingParts, err := safeio.OpenRootExistingAncestorNoFollow(cachePath)
+	root, currentPath, missingParts, err := openAnalysisCacheAncestor(cachePath)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +174,7 @@ func openOrCreatePinnedAnalysisCacheChild(root safeio.Root, parentPath, name str
 	if _, err := verifyPinnedAnalysisCacheDirectory(root, parentPath); err != nil {
 		return nil, err
 	}
-	return safeio.OpenOrCreatePinnedDirectory(root, parentPath, name, 0o750)
+	return openOrCreatePinnedAnalysisCacheDir(root, parentPath, name, 0o750)
 }
 
 func validateAnalysisCacheRoot(cachePath string, expected fs.FileInfo) error {
