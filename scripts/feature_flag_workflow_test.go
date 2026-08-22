@@ -54,25 +54,31 @@ func TestFeatureFlagCommentResolverUsesTrustedPullIdentity(t *testing.T) {
 	}
 }
 
-func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
+func TestFeatureFlagCommentResolverSkipsMergedPullRequests(t *testing.T) {
 	t.Parallel()
 
 	resolver := featureFlagCommentResolverScript(t)
-	pull := featureFlagPull(7, "open")
-	pull["title"] = " \tpreview(cli): trial feature  "
-	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
-		"pulls":           []map[string]any{pull},
-		"associatedPulls": []map[string]any{},
-		"artifacts": []map[string]any{
-			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+	tests := []featureFlagMergedResolverCase{
+		{
+			name:                  "workflow run pull request",
+			run:                   featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+			pull:                  featureFlagMergedPull(true, ""),
+			wantAssociatedAPICall: false,
 		},
-	})
-	if !result.OK {
-		t.Fatalf("resolver rejected preview pull request: %s", result.Error)
+		{
+			name:                  "commit association fallback",
+			run:                   featureFlagWorkflowRun(nil),
+			pull:                  featureFlagMergedPull(true, ""),
+			associatedPull:        featureFlagMergedPull(false, "2026-08-21T00:00:00Z"),
+			wantAssociatedAPICall: true,
+		},
 	}
-	if got := result.Exported["FEATURE_PR"]; got != "true" {
-		t.Fatalf("FEATURE_PR = %q, want true", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := runFeatureFlagResolverFixture(t, resolver, tt.fixture())
+			assertFeatureFlagMergedPullSkipped(t, result, tt)
+		})
 	}
 }
 
@@ -80,17 +86,35 @@ func TestFeatureFlagCommentResolverRejectsAmbiguousAssociatedPullRequests(t *tes
 	t.Parallel()
 
 	resolver := featureFlagCommentResolverScript(t)
-	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
-		"run":             featureFlagWorkflowRun(nil),
-		"pulls":           []map[string]any{},
-		"associatedPulls": []map[string]any{featureFlagPull(7, "open"), featureFlagPull(8, "open")},
-		"artifacts":       []map[string]any{},
-	})
-	if result.OK {
-		t.Fatal("resolver accepted an ambiguous commit-to-PR association")
+	tests := []struct {
+		name            string
+		associatedPulls []map[string]any
+	}{
+		{
+			name:            "multiple open matches",
+			associatedPulls: []map[string]any{featureFlagPull(7, "open"), featureFlagPull(8, "open")},
+		},
+		{
+			name:            "multiple merged matches",
+			associatedPulls: []map[string]any{featureFlagMergedPullNumber(7), featureFlagMergedPullNumber(8)},
+		},
 	}
-	if !strings.Contains(result.Error, "expected exactly one pull request") {
-		t.Fatalf("resolver error = %q, want exact-one rejection", result.Error)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+				"run":             featureFlagWorkflowRun(nil),
+				"pulls":           []map[string]any{},
+				"associatedPulls": tt.associatedPulls,
+				"artifacts":       []map[string]any{},
+			})
+			if result.OK {
+				t.Fatal("resolver accepted an ambiguous commit-to-PR association")
+			}
+			if !strings.Contains(result.Error, "expected exactly one pull request") {
+				t.Fatalf("resolver error = %q, want exact-one rejection", result.Error)
+			}
+		})
 	}
 }
 
@@ -121,6 +145,79 @@ func TestFeatureFlagCommentResolverFiltersCommitAssociationFallback(t *testing.T
 	}
 	if result.Calls["associatedPulls"] != 1 {
 		t.Fatal("resolver did not use commit association fallback exactly once")
+	}
+}
+
+func TestFeatureFlagCommentResolverPrefersOpenAssociatedPullOverMergedFallback(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":   featureFlagWorkflowRun(nil),
+		"pulls": []map[string]any{featureFlagPull(7, "open")},
+		"associatedPulls": []map[string]any{
+			featureFlagMergedPullNumber(8),
+			featureFlagPull(7, "open"),
+		},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+			{"id": 20, "name": "feature-flag-comment-inputs-8", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected unique open associated pull request: %s", result.Error)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if got := result.Outputs["skip-comments"]; got != "false" {
+		t.Fatalf("skip-comments = %q, want false", got)
+	}
+	if got := result.Outputs["artifact-id"]; got != "19" {
+		t.Fatalf("artifact-id = %q, want 19", got)
+	}
+}
+
+func TestFeatureFlagCommentResolverFallsBackToMergedAssociatedPullWhenNoOpenMatchExists(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun(nil),
+		"pulls":           []map[string]any{featureFlagMergedPullNumber(7)},
+		"associatedPulls": []map[string]any{featureFlagMergedPullNumber(7)},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected merged associated pull fallback: %s", result.Error)
+	}
+	if got := result.Outputs["skip-comments"]; got != "true" {
+		t.Fatalf("skip-comments = %q, want true", got)
+	}
+	if result.Calls["artifacts"] != 0 {
+		t.Fatal("merged pull request fallback must not inspect comment artifacts")
+	}
+}
+
+func TestFeatureFlagCommentResolverClassifiesPreviewPullRequests(t *testing.T) {
+	t.Parallel()
+
+	resolver := featureFlagCommentResolverScript(t)
+	result := runFeatureFlagResolverFixture(t, resolver, map[string]any{
+		"run":             featureFlagWorkflowRun([]map[string]any{{"number": 7}}),
+		"pulls":           []map[string]any{featureFlagPreviewPull()},
+		"associatedPulls": []map[string]any{},
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+	})
+	if !result.OK {
+		t.Fatalf("resolver rejected preview pull request: %s", result.Error)
+	}
+	if got := result.Exported["FEATURE_PR"]; got != "true" {
+		t.Fatalf("FEATURE_PR = %q, want true", got)
 	}
 }
 
@@ -270,6 +367,84 @@ func TestFeatureFlagTrustedCommentRenderingRendersSanitizedMarkdown(t *testing.T
 	}
 }
 
+func TestFeatureFlagCommentPublishersSkipMutationWhenPullChangesAfterResolver(t *testing.T) {
+	t.Parallel()
+
+	tests := []featureFlagPublisherStateCase{
+		{
+			name:              "merged",
+			pullSequence:      []map[string]any{featureFlagMergedPull(true, "")},
+			wantMutationError: "publisher mutated comments after merge",
+		},
+		{
+			name:              "closed unmerged",
+			pullSequence:      []map[string]any{featureFlagPull(7, "closed")},
+			wantMutationError: "publisher mutated comments after unmerged close",
+			wantInfo:          "was not open before comment mutation",
+		},
+	}
+	for _, state := range tests {
+		t.Run(state.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, tt := range featureFlagMutationPublisherCases() {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					assertFeatureFlagPublisherSkipsMutationAfterResolver(t, state, tt)
+				})
+			}
+		})
+	}
+}
+
+func TestFeatureFlagCommentPublishersRecheckBeforeEachDuplicateDeletion(t *testing.T) {
+	t.Parallel()
+
+	tests := []featureFlagPublisherCase{
+		{
+			name:   "feature enforcement duplicate cleanup",
+			step:   "Sync feature flag enforcement comment on PR",
+			marker: "<!-- lopper-feature-flag-enforcement -->",
+			env: map[string]string{
+				"FEATURE_PR":         "false",
+				"ENFORCEMENT_FAILED": "false",
+			},
+		},
+		{
+			name:   "release guidance duplicate cleanup",
+			step:   "Sync release feature guidance comment on PR",
+			marker: "<!-- lopper-feature-flag-release-pr -->",
+			env:    map[string]string{"RELEASE_PR": "false"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
+				"env": tt.env,
+				"pullSequence": []map[string]any{
+					featureFlagPull(7, "open"),
+					featureFlagMergedPull(true, ""),
+				},
+				"comments": []map[string]any{
+					featureFlagBotComment(101, tt.marker),
+					featureFlagBotComment(102, tt.marker),
+				},
+			})
+			if !result.OK {
+				t.Fatalf("publisher rejected fixture: %s", result.Error)
+			}
+			if got, want := strings.Join(result.Mutations, ","), "delete:101"; got != want {
+				t.Fatalf("mutations = %q, want %q", got, want)
+			}
+			if got := result.Calls["pulls"]; got != 2 {
+				t.Fatalf("pulls.get calls = %d, want a fresh check before each attempted deletion", got)
+			}
+		})
+	}
+}
+
 func writeUntrustedCommentSources(t *testing.T, commentDir string, tests []trustedCommentRenderCase) {
 	t.Helper()
 
@@ -401,6 +576,71 @@ type trustedCommentRenderCase struct {
 	title  string
 }
 
+type featureFlagPublisherCase struct {
+	name   string
+	step   string
+	marker string
+	env    map[string]string
+}
+
+type featureFlagPublisherStateCase struct {
+	name              string
+	pullSequence      []map[string]any
+	wantMutationError string
+	wantInfo          string
+}
+
+type featureFlagPublisherFixtureResult struct {
+	OK        bool           `json:"ok"`
+	Error     string         `json:"error"`
+	Mutations []string       `json:"mutations"`
+	Calls     map[string]int `json:"calls"`
+	Infos     []string       `json:"infos"`
+}
+
+func featureFlagMutationPublisherCases() []featureFlagPublisherCase {
+	return []featureFlagPublisherCase{
+		{
+			name: "feature enforcement comment",
+			step: "Sync feature flag enforcement comment on PR",
+			env: map[string]string{
+				"FEATURE_PR":         "true",
+				"ENFORCEMENT_FAILED": "false",
+			},
+		},
+		{
+			name: "release guidance comment",
+			step: "Sync release feature guidance comment on PR",
+			env:  map[string]string{"RELEASE_PR": "true"},
+		},
+	}
+}
+
+func assertFeatureFlagPublisherSkipsMutationAfterResolver(t *testing.T, state featureFlagPublisherStateCase, tt featureFlagPublisherCase) {
+	t.Helper()
+
+	result := runFeatureFlagPublisherFixture(t, featureFlagCommentPublisherScript(t, tt.step), map[string]any{
+		"env":          tt.env,
+		"pullSequence": state.pullSequence,
+		"comments":     []map[string]any{},
+	})
+	if !result.OK {
+		t.Fatalf("publisher rejected fixture: %s", result.Error)
+	}
+	if len(result.Mutations) != 0 {
+		t.Fatalf("%s: %#v", state.wantMutationError, result.Mutations)
+	}
+	if got := result.Calls["pulls"]; got != 1 {
+		t.Fatalf("pulls.get calls = %d, want 1 fresh pre-mutation check", got)
+	}
+	if state.wantInfo == "" {
+		return
+	}
+	if got := strings.Join(result.Infos, "\n"); !strings.Contains(got, state.wantInfo) {
+		t.Fatalf("publisher info logs = %q, want %q", got, state.wantInfo)
+	}
+}
+
 func assertFeatureFlagEnforcementStepCase(t *testing.T, resolver string, tt featureFlagEnforcementStepCase) {
 	t.Helper()
 
@@ -516,6 +756,14 @@ func featureFlagCommentResolverScript(t *testing.T) string {
 	return workflowStepByName(t, workflow.Jobs, "publish-comments", "Resolve triggering pull request and artifact").With["script"]
 }
 
+func featureFlagCommentPublisherScript(t *testing.T, stepName string) string {
+	t.Helper()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/feature-flag-comment-publish.yml", &workflow)
+	return workflowStepByName(t, workflow.Jobs, "publish-comments", stepName).With["script"]
+}
+
 func featureFlagWorkflowRun(pulls []map[string]any) map[string]any {
 	return map[string]any{
 		"id":              100,
@@ -544,37 +792,151 @@ func featureFlagPull(number int, state string) map[string]any {
 	}
 }
 
+type featureFlagMergedResolverCase struct {
+	name                  string
+	run                   map[string]any
+	pull                  map[string]any
+	associatedPull        map[string]any
+	wantAssociatedAPICall bool
+}
+
+func (tt *featureFlagMergedResolverCase) fixture() map[string]any {
+	var associatedPulls []map[string]any
+	if tt.associatedPull != nil {
+		associatedPulls = append(associatedPulls, tt.associatedPull)
+	}
+	return map[string]any{
+		"run":             tt.run,
+		"pulls":           []map[string]any{tt.pull},
+		"associatedPulls": associatedPulls,
+		"artifacts": []map[string]any{
+			{"id": 19, "name": "feature-flag-comment-inputs-7", "size_in_bytes": 512, "expired": false},
+		},
+		"jobs": featureFlagEnforcementJobs("Enforce feature flags on PRs", "failure", "Write release feature guidance", "success"),
+	}
+}
+
+func featureFlagMergedPull(merged bool, mergedAt string) map[string]any {
+	pull := featureFlagPull(7, "closed")
+	if merged {
+		pull["merged"] = true
+	}
+	if mergedAt != "" {
+		pull["merged_at"] = mergedAt
+	}
+	return pull
+}
+
+func featureFlagMergedPullNumber(number int) map[string]any {
+	pull := featureFlagPull(number, "closed")
+	pull["merged"] = true
+	return pull
+}
+
+func featureFlagPreviewPull() map[string]any {
+	pull := featureFlagPull(7, "open")
+	pull["title"] = " \tpreview(cli): trial feature  "
+	return pull
+}
+
+func featureFlagBotComment(id int, marker string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"body": marker + "\nexisting",
+		"user": map[string]any{"type": "Bot"},
+	}
+}
+
+func assertFeatureFlagMergedPullSkipped(t *testing.T, result featureFlagResolverFixtureResult, tt featureFlagMergedResolverCase) {
+	t.Helper()
+
+	if !result.OK {
+		t.Fatalf("resolver rejected already-merged pull request: %s", result.Error)
+	}
+	if got := result.Outputs["skip-comments"]; got != "true" {
+		t.Fatalf("skip-comments = %q, want true", got)
+	}
+	if got := result.Exported["PR_NUMBER"]; got != "7" {
+		t.Fatalf("PR_NUMBER = %q, want 7", got)
+	}
+	if got, want := result.Calls["associatedPulls"], boolToInt(tt.wantAssociatedAPICall); got != want {
+		t.Fatalf("associatedPulls calls = %d, want %d", got, want)
+	}
+	if result.Calls["artifacts"] != 0 {
+		t.Fatal("merged pull request no-op must not inspect comment artifacts")
+	}
+	if result.Calls["jobs"] != 0 {
+		t.Fatal("merged pull request no-op must not inspect enforcement jobs")
+	}
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func runFeatureFlagPublisherFixture(t *testing.T, publisher string, fixture map[string]any) featureFlagPublisherFixtureResult {
+	t.Helper()
+
+	return runFeatureFlagNodeFixture[featureFlagPublisherFixtureResult](t, featureFlagNodeFixtureConfig{
+		description: "feature flag comment publisher",
+		mode:        "publisher",
+		script:      publisher,
+		fixture:     fixture,
+	})
+}
+
 func runFeatureFlagResolverFixture(t *testing.T, resolver string, fixture map[string]any) featureFlagResolverFixtureResult {
 	t.Helper()
 
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("node is required to test the feature flag comment resolver")
-	}
-	fixtureJSON, err := json.Marshal(fixture)
-	if err != nil {
-		t.Fatalf("marshal resolver fixture: %v", err)
-	}
-	const harness = `
+	return runFeatureFlagNodeFixture[featureFlagResolverFixtureResult](t, featureFlagNodeFixtureConfig{
+		description: "feature flag comment resolver",
+		mode:        "resolver",
+		script:      resolver,
+		fixture:     fixture,
+	})
+}
+
+const featureFlagNodeFixtureHarness = `
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const fixture = JSON.parse(process.env.RESOLVER_FIXTURE);
+const fixture = JSON.parse(process.env.FEATURE_FLAG_FIXTURE);
+const mode = process.env.FEATURE_FLAG_FIXTURE_MODE;
 const outputs = {};
 const exported = {};
-const calls = { artifacts: 0, associatedPulls: 0, jobs: 0, pulls: 0 };
+const calls = { artifacts: 0, associatedPulls: 0, comments: 0, jobs: 0, pulls: 0 };
+const infos = [];
+const mutations = [];
 const listArtifacts = async () => {};
 const listAssociatedPulls = async () => {};
+const listComments = async () => {};
 const listJobs = async () => {};
 const pulls = new Map((fixture.pulls || []).map((pull) => [pull.number, pull]));
+const pullSequence = fixture.pullSequence || [];
 const github = {
   rest: {
     actions: {
       listWorkflowRunArtifacts: listArtifacts,
       listJobsForWorkflowRunAttempt: listJobs,
     },
+    issues: {
+      listComments,
+      deleteComment: async ({ comment_id }) => { mutations.push('delete:' + comment_id); },
+      updateComment: async ({ comment_id }) => { mutations.push('update:' + comment_id); },
+      createComment: async () => { mutations.push('create'); },
+    },
     repos: { listPullRequestsAssociatedWithCommit: listAssociatedPulls },
     pulls: {
-      get: async ({ pull_number }) => {
+      get: async ({ pull_number } = {}) => {
         calls.pulls += 1;
+        if (pullSequence.length > 0) {
+          const pull = pullSequence[Math.min(calls.pulls - 1, pullSequence.length - 1)];
+          if (!pull) {
+            throw new Error('fixture has no pull state');
+          }
+          return { data: pull };
+        }
         if (!pulls.has(pull_number)) {
           throw new Error('fixture has no requested pull');
         }
@@ -591,6 +953,10 @@ const github = {
       calls.associatedPulls += 1;
       return fixture.associatedPulls || [];
     }
+    if (method === listComments) {
+      calls.comments += 1;
+      return fixture.comments || [];
+    }
     if (method === listJobs) {
       calls.jobs += 1;
       return fixture.jobs || [{ steps: [
@@ -606,34 +972,66 @@ const context = {
 };
 const core = {
   exportVariable: (name, value) => { exported[name] = String(value); },
+  info: (message) => { infos.push(String(message)); },
   setOutput: (name, value) => { outputs[name] = String(value); },
 };
+Object.assign(process.env, fixture.env || {});
+process.env.PR_NUMBER = fixture.prNumber || '7';
 (async () => {
   try {
-    const execute = new AsyncFunction('github', 'context', 'core', process.env.RESOLVER_SCRIPT);
-    await execute(github, context, core);
-    console.log(JSON.stringify({ ok: true, outputs, exported, calls }));
+    if (mode === 'publisher') {
+      const execute = new AsyncFunction('github', 'context', 'core', 'require', 'process', process.env.FEATURE_FLAG_SCRIPT);
+      await execute(github, context, core, require, process);
+      console.log(JSON.stringify({ ok: true, mutations, calls, infos }));
+      return;
+    }
+    if (mode === 'resolver') {
+      const execute = new AsyncFunction('github', 'context', 'core', process.env.FEATURE_FLAG_SCRIPT);
+      await execute(github, context, core);
+      console.log(JSON.stringify({ ok: true, outputs, exported, calls }));
+      return;
+    }
+    throw new Error('unexpected fixture mode: ' + mode);
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: error.message, outputs, exported, calls }));
+    console.log(JSON.stringify({ ok: false, error: error.message, mutations, calls, infos, outputs, exported }));
   }
 })();
 `
-	command := exec.Command(node, "-e", harness)
-	environment := []string{
-		"RESOLVER_SCRIPT=" + resolver,
-		"RESOLVER_FIXTURE=" + string(fixtureJSON),
+
+type featureFlagNodeFixtureConfig struct {
+	description string
+	mode        string
+	script      string
+	fixture     map[string]any
+}
+
+func runFeatureFlagNodeFixture[T any](t *testing.T, config featureFlagNodeFixtureConfig) T {
+	t.Helper()
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required to test the %s", config.description)
 	}
-	command.Env = append(os.Environ(), environment...)
+	fixtureJSON, err := json.Marshal(config.fixture)
+	if err != nil {
+		t.Fatalf("marshal %s fixture: %v", config.description, err)
+	}
+	command := exec.Command(node, "-e", featureFlagNodeFixtureHarness)
+	command.Env = append(os.Environ(),
+		"FEATURE_FLAG_FIXTURE_MODE="+config.mode,
+		"FEATURE_FLAG_SCRIPT="+config.script,
+		"FEATURE_FLAG_FIXTURE="+string(fixtureJSON),
+	)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("run resolver fixture: %v\n%s", err, output)
+		t.Fatalf("run %s fixture: %v\n%s", config.description, err, output)
 	}
 
-	var result featureFlagResolverFixtureResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		t.Fatalf("decode resolver fixture result: %v\n%s", err, output)
+	var decoded T
+	if err := json.Unmarshal(output, &decoded); err != nil {
+		t.Fatalf("decode %s fixture result: %v\n%s", config.description, err, output)
 	}
-	return result
+	return decoded
 }
 
 func writeFeatureFlagZip(t *testing.T, path string, members []featureFlagZipMember) {
@@ -782,9 +1180,13 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		"candidateNumbers.length !== 1",
 		"github.rest.actions.listWorkflowRunArtifacts",
 		"const expectedArtifactName = `feature-flag-comment-inputs-${prNumber}`",
+		"matchesMergedRun(pull)",
+		"core.setOutput('skip-comments', 'true')",
 		"candidate.name === expectedArtifactName",
 		"github.rest.pulls.get",
 		"pull.state === 'open'",
+		"pull.state === 'closed'",
+		"pull.merged === true",
 		"pull.head.sha === run.head_sha",
 		"pull.head.ref === run.head_branch",
 		"pull.head.repo?.full_name?.toLowerCase() === expectedHeadRepository",
@@ -811,8 +1213,10 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment download decompression", got: download.With["skip-decompress"], want: "true"},
 	})
+	assertFeatureFlagPublicationSkipGuard(t, download)
 
 	extractDownload := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Extract bounded comment inputs")
+	assertFeatureFlagPublicationSkipGuard(t, extractDownload)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag publication extraction shell", got: extractDownload.Shell, want: hardenedShell},
 	})
@@ -835,6 +1239,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	validateDownload := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Validate bounded comment inputs")
+	assertFeatureFlagPublicationSkipGuard(t, validateDownload)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag publication validation shell", got: validateDownload.Shell, want: hardenedShell},
 	})
@@ -850,6 +1255,7 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 	})
 
 	renderBodies := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Render inert comment bodies")
+	assertFeatureFlagPublicationSkipGuard(t, renderBodies)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag trusted rendering shell", got: renderBodies.Shell, want: hardenedShell},
 	})
@@ -873,6 +1279,8 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 
 	featureComment := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Sync feature flag enforcement comment on PR")
 	releaseComment := workflowStepByName(t, publicationWorkflow.Jobs, "publish-comments", "Sync release feature guidance comment on PR")
+	assertFeatureFlagPublicationSkipGuard(t, featureComment)
+	assertFeatureFlagPublicationSkipGuard(t, releaseComment)
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "feature flag comment action", got: featureComment.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
 		{label: "release feature comment action", got: releaseComment.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
@@ -916,5 +1324,13 @@ func assertTrustedFeatureFlagPublicationWorkflow(t *testing.T, publicationWorkfl
 		if strings.Contains(publicationText, forbidden) {
 			t.Fatalf("trusted feature flag publisher contains unsafe fragment %q", forbidden)
 		}
+	}
+}
+
+func assertFeatureFlagPublicationSkipGuard(t *testing.T, step workflowStepConfig) {
+	t.Helper()
+
+	if step.If != "${{ steps.resolve_pr.outputs.skip-comments != 'true' }}" {
+		t.Fatalf("%s skip guard = %q, want merged-PR no-op guard", step.Name, step.If)
 	}
 }

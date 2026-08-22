@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -135,6 +136,12 @@ type resolvedToolRequest struct {
 	baselinePath       string
 	baselineKey        string
 	currentKey         string
+}
+
+type cachePathFilesystem struct {
+	lstat        func(string) (os.FileInfo, error)
+	stat         func(string) (os.FileInfo, error)
+	evalSymlinks func(string) (string, error)
 }
 
 func (s *Server) tools() []toolSpec {
@@ -426,11 +433,16 @@ func readOnlyMCPAnalysisCacheOptions(repoPath string, enabled *bool, cachePath s
 }
 
 func cachePathReadyForReadOnly(cachePath string) bool {
-	if pathContainsSymlink(cachePath) && !trustedReadOnlyCacheAlias(cachePath) {
+	return cachePathReadyForReadOnlyForGOOS(runtime.GOOS, cachePath, defaultCachePathFilesystem())
+}
+
+func cachePathReadyForReadOnlyForGOOS(goos, cachePath string, filesystem cachePathFilesystem) bool {
+	filesystem = normalizeCachePathFilesystem(filesystem)
+	if pathContainsSymlinkWithFilesystem(cachePath, filesystem) && !trustedReadOnlyCacheAliasForGOOSWithFilesystem(goos, cachePath, filesystem) {
 		return false
 	}
 	for _, dirName := range []string{"keys", "objects"} {
-		info, err := os.Stat(filepath.Join(cachePath, dirName))
+		info, err := filesystem.stat(filepath.Join(cachePath, dirName))
 		if err != nil || !info.IsDir() {
 			return false
 		}
@@ -447,24 +459,30 @@ func trustedReadOnlyCacheAliasForGOOS(goos, cachePath string) bool {
 }
 
 func trustedReadOnlyCacheAliasForGOOSWithResolver(goos, cachePath string, resolveSymlinks func(string) (string, error)) bool {
-	if goos != "darwin" || !filepath.IsAbs(cachePath) {
+	return trustedReadOnlyCacheAliasForGOOSWithFilesystem(goos, cachePath, cachePathFilesystem{evalSymlinks: resolveSymlinks})
+}
+
+func trustedReadOnlyCacheAliasForGOOSWithFilesystem(goos, cachePath string, filesystem cachePathFilesystem) bool {
+	filesystem = normalizeCachePathFilesystem(filesystem)
+	if goos != "darwin" || !strings.HasPrefix(cachePath, "/") {
 		return false
 	}
-	absPath := filepath.Clean(cachePath)
+	absPath := slashpath.Clean(cachePath)
 	if absPath != "/tmp" && !strings.HasPrefix(absPath, "/tmp/") {
 		return false
 	}
-	resolvedPath, err := resolveSymlinks(absPath)
+	resolvedPath, err := filesystem.evalSymlinks(absPath)
 	if err != nil {
 		return false
 	}
 	return resolvedPath == "/private"+absPath
 }
 
-func pathContainsSymlink(path string) bool {
+func pathContainsSymlinkWithFilesystem(path string, filesystem cachePathFilesystem) bool {
+	filesystem = normalizeCachePathFilesystem(filesystem)
 	current := filepath.Clean(path)
 	for {
-		info, err := os.Lstat(current)
+		info, err := filesystem.lstat(current)
 		if err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return true
 		}
@@ -477,6 +495,28 @@ func pathContainsSymlink(path string) bool {
 		}
 		current = parent
 	}
+}
+
+func defaultCachePathFilesystem() cachePathFilesystem {
+	return cachePathFilesystem{
+		lstat:        os.Lstat,
+		stat:         os.Stat,
+		evalSymlinks: filepath.EvalSymlinks,
+	}
+}
+
+func normalizeCachePathFilesystem(filesystem cachePathFilesystem) cachePathFilesystem {
+	defaults := defaultCachePathFilesystem()
+	if filesystem.lstat == nil {
+		filesystem.lstat = defaults.lstat
+	}
+	if filesystem.stat == nil {
+		filesystem.stat = defaults.stat
+	}
+	if filesystem.evalSymlinks == nil {
+		filesystem.evalSymlinks = defaults.evalSymlinks
+	}
+	return filesystem
 }
 
 func pathContainsTraversalComponent(path string) bool {
