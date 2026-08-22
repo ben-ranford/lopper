@@ -1089,6 +1089,87 @@ func TestParsePHPImportsKeepsPHPActiveAcrossHeredocCloseTagText(t *testing.T) {
 	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
 }
 
+func TestParsePHPImportsKeepsPHPActiveAfterFlexibleHeredocTerminators(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	tests := []struct {
+		name       string
+		terminator string
+	}{
+		{name: "expression delimiter", terminator: "HTML, 'suffix'];"},
+		{name: "whitespace and line comment", terminator: "   HTML   ; // done"},
+		{name: "block comment before delimiter", terminator: "HTML /* comment */ ;"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte("<?php\n" +
+				"$html = [<<<HTML\n" +
+				"}\n" +
+				tc.terminator + "\n" +
+				"use Vendor\\Package\\Client;\n")
+
+			parsed := parsePHPImports(content, tc.name+".php", resolver)
+			if parsed.unresolvedCount != 0 {
+				t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+			}
+			if len(parsed.imports) != 1 {
+				t.Fatalf("expected import after flexible heredoc terminator, got %#v", parsed.imports)
+			}
+			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+		})
+	}
+}
+
+func TestParsePHPImportsDoesNotTreatArbitraryHeredocLabelTailAsTerminator(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<?php\n" +
+		"$html = <<<HTML\n" +
+		"}\n" +
+		"HTML garbage\n" +
+		"use Vendor\\Package\\Client;\n")
+
+	parsed := parsePHPImports(content, "invalid-heredoc-tail.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 0 {
+		t.Fatalf("expected unterminated heredoc body to mask later imports, got %#v", parsed.imports)
+	}
+}
+
+func TestParsePHPImportsParsesConfiguredShortOpenTags(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<section>use Vendor\\Package\\TemplateOnly;</section>\n" +
+		"<? use Vendor\\Package\\Client;\n" +
+		"$factory = new \\Vendor\\Package\\Factory(); ?>\n")
+
+	parsed := parsePHPImports(content, "short-open.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 2 {
+		t.Fatalf("expected short-open PHP imports and references to be active, got %#v", parsed.imports)
+	}
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"})
+}
+
+func TestParsePHPImportsExcludesXMLDeclarationsWhenShortOpenTagsAreSupported(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	content := []byte("<?xml version=\"1.0\"?>\n" +
+		"<root>use Vendor\\Package\\TemplateOnly;</root>\n" +
+		"<?xml-stylesheet type=\"text/xsl\" href=\"style.xsl\"?>\n" +
+		"<? use Vendor\\Package\\Client; ?>\n")
+
+	parsed := parsePHPImports(content, "xml-template.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf(helpersUnexpectedUnresolvedFmt, parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected XML declarations to stay inactive and short-open PHP to parse, got %#v", parsed.imports)
+	}
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+}
+
 func TestMaskInactivePHPRegionsHelperBranches(t *testing.T) {
 	masked := maskInactivePHPRegions("<div>use Vendor\\Package\\Client;</div>\n<?php use Vendor\\Package\\Real; ?>")
 	if strings.Contains(masked, "Client") {
@@ -1320,6 +1401,16 @@ func TestPHPHeredocNowdocHelperBranches(t *testing.T) {
 	}
 	if !isHeredocNowdocTerminatorLine("TXT\r", "TXT") {
 		t.Fatalf("expected CR-terminated heredoc label to be accepted")
+	}
+	for _, line := range []string{"TXT   ;   // comment", "TXT, 'next'", "TXT /* comment */ )\r", "TXT # comment"} {
+		if !isHeredocNowdocTerminatorLine(line, "TXT") {
+			t.Fatalf("expected flexible heredoc terminator %q to be accepted", line)
+		}
+	}
+	for _, line := range []string{"TXT_MORE;", "TXT garbage", "TXT /* unclosed", "NOTTXT;"} {
+		if isHeredocNowdocTerminatorLine(line, "TXT") {
+			t.Fatalf("expected arbitrary heredoc terminator tail %q to be rejected", line)
+		}
 	}
 	if end := nextPHPLineEnd("abc", 0); end != 3 {
 		t.Fatalf("expected no-newline line end to be len, got %d", end)

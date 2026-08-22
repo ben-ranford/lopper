@@ -621,9 +621,19 @@ func nextPHPOpenTag(text string, offset int) (int, int, bool) {
 		if tagEnd <= len(text) && strings.EqualFold(text[start:tagEnd], "<?php") && (tagEnd == len(text) || !isPHPIdentifierByte(text[tagEnd])) {
 			return start, tagEnd, true
 		}
+		if !isXMLDeclarationOpenTag(text, start) {
+			return start, start + len("<?"), true
+		}
 		offset = start + len("<?")
 	}
 	return 0, 0, false
+}
+
+func isXMLDeclarationOpenTag(text string, start int) bool {
+	tagEnd := start + len("<?xml")
+	return tagEnd <= len(text) &&
+		strings.EqualFold(text[start:tagEnd], "<?xml") &&
+		(tagEnd == len(text) || !isPHPIdentifierByte(text[tagEnd]))
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {
@@ -814,7 +824,41 @@ func isHeredocNowdocTerminatorLine(line, label string) bool {
 		return false
 	}
 	rest := line[len(label):]
-	return rest == "" || strings.HasPrefix(rest, ";") || strings.HasPrefix(rest, "\r")
+	if rest != "" && isPHPIdentifierByte(rest[0]) {
+		return false
+	}
+	return isHeredocNowdocTerminatorTail(rest)
+}
+
+func isHeredocNowdocTerminatorTail(rest string) bool {
+	for offset := 0; offset < len(rest); {
+		offset = skipHorizontalWhitespace(rest, offset)
+		if offset >= len(rest) || rest[offset] == '\r' {
+			return true
+		}
+		if strings.HasPrefix(rest[offset:], "//") || rest[offset] == '#' {
+			return true
+		}
+		if strings.HasPrefix(rest[offset:], "/*") {
+			commentEnd := strings.Index(rest[offset+len("/*"):], "*/")
+			if commentEnd < 0 {
+				return false
+			}
+			offset += len("/*") + commentEnd + len("*/")
+			continue
+		}
+		return isHeredocNowdocTerminatorContinuation(rest[offset])
+	}
+	return true
+}
+
+func isHeredocNowdocTerminatorContinuation(ch byte) bool {
+	switch ch {
+	case ';', ',', '.', '+', '-', '*', '/', '%', '<', '>', '=', '!', '&', '|', '^', '?', ':', '(', ')', '[', ']', '{', '}':
+		return true
+	default:
+		return false
+	}
 }
 
 func nextPHPLineEnd(text string, start int) int {
