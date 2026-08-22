@@ -1839,6 +1839,34 @@ func TestOversizedRootGoModKeepsLongQuotedWindowsRootedReplacement(t *testing.T)
 	requireOversizedRootModulePath(t, repo, "module path extraction with long quoted Windows-rooted replacement")
 }
 
+func TestOversizedRootGoModKeepsLongQuotedNonReplaceDirectives(t *testing.T) {
+	for name, line := range map[string]string{
+		"require": `require "example.com/` + strings.Repeat("x", 70*1024) + `" v1.2.3`,
+		"exclude": `exclude "example.com/` + strings.Repeat("x", 70*1024) + `" v1.2.3`,
+		"tool":    `tool "example.com/` + strings.Repeat("x", 70*1024) + `/cmd"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			writeOversizedRootGoModLines(t, repo,
+				"module example.com/root",
+				line,
+			)
+
+			requireOversizedRootModulePath(t, repo, "module path extraction with long quoted "+name+" directive")
+		})
+	}
+}
+
+func TestOversizedRootGoModRejectsMalformedLongQuotedRequire(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		`require "example.com/`+strings.Repeat("x", 70*1024)+`"`,
+	)
+
+	requireNoTrustedOversizedRootModuleMetadata(t, repo)
+}
+
 func TestOversizedRootGoModRejectsTrailingTokenAfterLongQuotedReplacement(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,

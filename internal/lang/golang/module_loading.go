@@ -155,6 +155,7 @@ type goModModuleScanner struct {
 	lineTooLarge        bool
 	lineTooLargeInQuote bool
 	lineQuoteClosed     bool
+	longQuotedQuote     byte
 	lineLastSpace       bool
 	longQuotedTarget    strings.Builder
 	longQuotedSuffix    strings.Builder
@@ -392,6 +393,7 @@ func (s *goModModuleScanner) startLongQuotedTarget() {
 	if s.longQuotedTarget.Len() != 0 || s.lineInvalid {
 		return
 	}
+	s.longQuotedQuote = s.quoteByte
 	quoteIndex := strings.IndexByte(s.line.String(), s.quoteByte)
 	if quoteIndex < 0 {
 		s.lineInvalid = true
@@ -430,6 +432,7 @@ func (s *goModModuleScanner) finishLine() {
 	s.lineTooLargeInQuote = false
 	s.lineQuoteClosed = false
 	s.lineLastSpace = false
+	s.longQuotedQuote = 0
 	s.longQuotedTarget.Reset()
 	s.longQuotedSuffix.Reset()
 }
@@ -509,22 +512,38 @@ func (s *goModModuleScanner) isValidLongGoModDirectiveLine(lineText string, tooL
 	if !tooLargeInQuote || !quoteClosed {
 		return false
 	}
-	return firstToken(lineText) == "replace" && s.isValidLongQuotedReplaceLine(lineText)
+	directive := firstToken(lineText)
+	return isValidLongQuotedGoModDirective(directive) && s.isValidLongQuotedGoModLine(lineText)
 }
 
 func (s *goModModuleScanner) isValidLongGoModBlockLine(directive, lineText string, tooLargeInQuote, quoteClosed bool) bool {
 	if lineText == ")" {
 		return true
 	}
-	return directive == "replace" && tooLargeInQuote && quoteClosed && s.isValidLongQuotedReplaceLine("replace "+lineText)
+	return tooLargeInQuote && quoteClosed &&
+		isValidLongQuotedGoModDirective(directive) &&
+		s.isValidLongQuotedGoModLine(directive+" "+lineText)
 }
 
-func (s *goModModuleScanner) isValidLongQuotedReplaceLine(lineText string) bool {
-	quoteIndex := strings.IndexByte(lineText, '"')
+func isValidLongQuotedGoModDirective(directive string) bool {
+	switch directive {
+	case "require", "exclude", "replace", "tool":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *goModModuleScanner) isValidLongQuotedGoModLine(lineText string) bool {
+	quote := s.longQuotedQuote
+	if quote == 0 {
+		return false
+	}
+	quoteIndex := strings.IndexByte(lineText, quote)
 	if quoteIndex < 0 || s.longQuotedTarget.Len() == 0 {
 		return false
 	}
-	lineText = lineText[:quoteIndex] + `"` + s.longQuotedTarget.String() + `"` + s.longQuotedSuffix.String()
+	lineText = lineText[:quoteIndex] + string(quote) + s.longQuotedTarget.String() + string(quote) + s.longQuotedSuffix.String()
 	return parseSyntheticGoMod(s.modulePath, lineText+"\n")
 }
 
