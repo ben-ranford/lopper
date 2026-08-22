@@ -171,6 +171,27 @@ func TestCloseRenameNoReplaceParentRootsIgnoresCloseErrorAfterSuccess(t *testing
 	}
 }
 
+func TestCloseRenameNoReplaceParentRootsIgnoresOuterPinnedParentCloseErrorsAfterSuccess(t *testing.T) {
+	closeErr := errors.New("close nested pinned parent")
+	closes := 0
+	err := closeRenameNoReplaceParentRoots([]Root{
+		&fakeRoot{close: func() error {
+			closes++
+			return closeErr
+		}},
+		&fakeRoot{close: func() error {
+			closes++
+			return closeErr
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("expected completed nested rename cleanup to ignore close errors, got %v", err)
+	}
+	if closes != 2 {
+		t.Fatalf("expected both nested pinned parent handles to close, got %d", closes)
+	}
+}
+
 func TestCloseRenameNoReplaceParentRootsJoinsCloseErrorAfterFailure(t *testing.T) {
 	primary := errors.New("rename failed")
 	closeErr := errors.New("close pinned parent")

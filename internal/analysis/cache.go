@@ -514,7 +514,8 @@ func reserveAnalysisCacheQuarantine(root safeio.Root, reservationName, quarantin
 	}
 	info, err := root.Lstat(reservationName)
 	if err != nil {
-		return analysisCacheQuarantineReservation{}, false, err
+		reservation.info = openedAnalysisCacheQuarantineReservationInfo(root, reservation)
+		return analysisCacheQuarantineReservation{}, false, errors.Join(err, removeCreatedAnalysisCacheQuarantineReservation(root, reservation))
 	}
 	reservation.info = info
 	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
@@ -529,6 +530,9 @@ func reserveAnalysisCacheQuarantine(root safeio.Root, reservationName, quarantin
 }
 
 func ignoreAnalysisCacheOccupiedReservationCleanup(err error) error {
+	if err == nil {
+		return nil
+	}
 	if isAnalysisCacheNonEmptyDirectoryError(err) {
 		return nil
 	}
@@ -623,13 +627,23 @@ func removeAnalysisCacheQuarantineReservation(root safeio.Root, reservation anal
 	if reservation.ownerToken == "" || !analysisCacheQuarantineReservationOwned(root, reservation) {
 		return nil
 	}
-	if !analysisCacheQuarantineReservationSameFile(root, reservation) {
+	if !analysisCacheQuarantineReservationSameFile(root, reservation) && !analysisCacheQuarantineReservationSameOpenedRoot(root, reservation) {
 		return nil
 	}
 	if err := root.Remove(reservation.ownerName); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if !analysisCacheQuarantineReservationSameFile(root, reservation) {
+	return removeAnalysisCacheQuarantineReservationDirectory(root, reservation)
+}
+
+func removeCreatedAnalysisCacheQuarantineReservation(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
+	if reservation.name == "." || reservation.name == string(filepath.Separator) {
+		return nil
+	}
+	if !strings.HasPrefix(filepath.Base(reservation.name), ".lopper-cache-rollback-") {
+		return nil
+	}
+	if reservation.info == nil || !analysisCacheQuarantineReservationSameOpenedRoot(root, reservation) {
 		return nil
 	}
 	if err := root.Remove(reservation.name); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -658,6 +672,26 @@ func analysisCacheQuarantineReservationSameFile(root safeio.Root, reservation an
 	}
 	info, err := root.Lstat(reservation.name)
 	return err == nil && sameAnalysisCacheRollbackTarget(info, reservation.info)
+}
+
+func analysisCacheQuarantineReservationSameOpenedRoot(root safeio.Root, reservation analysisCacheQuarantineReservation) bool {
+	return sameAnalysisCacheRollbackTarget(openedAnalysisCacheQuarantineReservationInfo(root, reservation), reservation.info)
+}
+
+func openedAnalysisCacheQuarantineReservationInfo(root safeio.Root, reservation analysisCacheQuarantineReservation) fs.FileInfo {
+	if reservation.name == "" {
+		return nil
+	}
+	reservationRoot, err := root.OpenRoot(reservation.name)
+	if err != nil {
+		return nil
+	}
+	info, infoErr := reservationRoot.Lstat(".")
+	closeErr := reservationRoot.Close()
+	if infoErr != nil || closeErr != nil {
+		return nil
+	}
+	return info
 }
 
 func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
@@ -703,7 +737,10 @@ func openOwnedAnalysisCacheQuarantineReservation(root safeio.Root, reservation a
 }
 
 func removeAnalysisCacheQuarantineReservationDirectory(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
-	if !analysisCacheQuarantineReservationSameFile(root, reservation) {
+	if reservation.info == nil {
+		return nil
+	}
+	if !analysisCacheQuarantineReservationSameFile(root, reservation) && !analysisCacheQuarantineReservationSameOpenedRoot(root, reservation) {
 		return nil
 	}
 	if err := root.Remove(reservation.name); err != nil && !isAnalysisCacheNonEmptyDirectoryError(err) {
