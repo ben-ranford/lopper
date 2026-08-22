@@ -295,7 +295,9 @@ func maskPythonShortStringContent(line string, index int, quote byte, builder *s
 		builder.WriteByte(' ')
 		index++
 		if escaped {
-			escaped = false
+			if current != '\r' || index != len(line) {
+				escaped = false
+			}
 			continue
 		}
 		if current == '\\' {

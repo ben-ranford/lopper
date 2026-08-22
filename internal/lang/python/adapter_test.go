@@ -268,6 +268,22 @@ func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
 	}
 }
 
+func TestParseImportsSkipsImportLikeCRLFContinuedShortString(t *testing.T) {
+	repo := t.TempDir()
+	source := "value = \"not an import \\\r\n" +
+		"import requests\"\r\n" +
+		"import numpy as np\r\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
+	if imports[0].Location.Line != 3 {
+		t.Fatalf("expected real import on line 3, got location %+v", imports[0].Location)
+	}
+}
+
 func assertImportBinding(t *testing.T, got importBinding, want importBinding) {
 	t.Helper()
 	if got.Dependency != want.Dependency || got.Module != want.Module || got.Name != want.Name || got.Local != want.Local {
