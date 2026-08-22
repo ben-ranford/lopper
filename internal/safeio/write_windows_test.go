@@ -187,6 +187,53 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackForReplaceExistingRename
 	}
 }
 
+func TestFallbackAtomicReplacementAcceptsActualQuarantineRenameSourceOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
+	renameErr := &publishRenameError{
+		sourceRel: quarantineRel,
+		err:       windowsReplaceExistingError(quarantineRel, writeTestFileName),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr)
+	if err != nil {
+		t.Fatalf("fallbackAtomicReplacement returned error: %v", err)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
+	}
+}
+
+func TestFallbackAtomicReplacementRejectsWrongIdentityBoundStagedRenameSourceOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	const tempRel = ".safeio-atomic-temp"
+	renameErr := &publishRenameError{
+		sourceRel: tempRel + ".staged",
+		err:       windowsReplaceExistingError("other-staged", writeTestFileName),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, tempRel, writeTestFileName, targetFile, []byte("after"), renameErr)
+	if err == nil {
+		t.Fatal("expected mismatched staged source to reject fallback")
+	}
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected original rename error, got %v", err)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("wrong-source fallback mutated target data: %q", string(*targetData))
+	}
+}
+
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
@@ -210,6 +257,45 @@ func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *t
 	}
 	if string(target.data) != "after" {
 		t.Fatalf("expected late fallback overwrite data, got %q", string(target.data))
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetReturnsCleanupAfterSuccessfulWindowsFallback(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	cleanupErr := errors.New("publish cleanup failure")
+	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		renameIfMatches: func(string, string, fs.FileInfo, string) error {
+			return &publishRenameError{
+				sourceRel:  quarantineRel,
+				err:        windowsReplaceExistingError(quarantineRel, writeTestFileName),
+				cleanupErr: cleanupErr,
+			}
+		},
+		remove: func(string) error { return nil },
+	}
+
+	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup failure after successful fallback, got %v", err)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
 	}
 }
 

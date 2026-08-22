@@ -137,7 +137,7 @@ func TestWriteAtomicReplacementWithPinnedTargetFallsBackWhenRenameDeniedOnNonWin
 	if err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true); err != nil {
 		t.Fatalf("writeAtomicReplacementWithPinnedTarget returned error: %v", err)
 	}
-	if removeCalls != 1 {
+	if removeCalls != 4 {
 		t.Fatalf("expected temp cleanup after rename fallback, got %d removes", removeCalls)
 	}
 	assertFallbackTargetData(t, targetData, "after")
@@ -154,7 +154,7 @@ func TestWriteAtomicReplacementWithPinnedTargetReturnsRenameErrorWhenFallbackDis
 	if !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("expected rename permission error without pinned overwrite fallback, got %v", err)
 	}
-	if removeCalls != 1 {
+	if removeCalls != 4 {
 		t.Fatalf("expected temp cleanup after rejected fallback, got %d removes", removeCalls)
 	}
 	assertFallbackTargetData(t, targetData, "before")
@@ -183,10 +183,19 @@ func TestWriteFileAtomicallyIfAbsentAtRootReturnsLinkErrorAndCleansTempOnNonWind
 				},
 			}, nil
 		},
-		link: func(oldName, newName string) error {
+		lstat: func(name string) (fs.FileInfo, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				t.Fatalf("unexpected temp cleanup stat path: %s", name)
+			}
+			return tempInfo, nil
+		},
+		linkIfMatches: func(oldName, newName string, _ fs.FileInfo, message string) error {
+			if message != temporaryFileChangedBeforeCommit {
+				return errIdentityBoundLinkUnavailable
+			}
 			linkCalls++
-			if !strings.HasPrefix(oldName, atomicTempPrefix) || newName != writeTestFileName {
-				t.Fatalf("unexpected hard-link publish paths: %s -> %s", oldName, newName)
+			if !strings.HasPrefix(oldName, atomicTempPrefix) || !strings.HasPrefix(newName, atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound hard-link paths: %s -> %s", oldName, newName)
 			}
 			return linkErr
 		},
@@ -209,8 +218,8 @@ func TestWriteFileAtomicallyIfAbsentAtRootReturnsLinkErrorAndCleansTempOnNonWind
 	if linkCalls != 1 {
 		t.Fatalf("expected one hard-link publish attempt, got %d", linkCalls)
 	}
-	if removeCalls != 1 {
-		t.Fatalf("expected one temp cleanup, got %d", removeCalls)
+	if removeCalls != 2 {
+		t.Fatalf("expected retried temp cleanup, got %d removes", removeCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected temp file to close before publish fallback")
@@ -324,7 +333,13 @@ func newFallbackDeniedWriteRoot(t *testing.T, tempOpenErr error, rename func(str
 			return tempInfo, nil
 		},
 		openFile: openTargetOrTempFile(writeTestFileName, openTarget, tempInfo, tempOpenErr),
-		rename:   rename,
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: rename,
 	}
 	return root, targetFile, targetData
 }
