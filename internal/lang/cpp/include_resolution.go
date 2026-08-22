@@ -332,13 +332,14 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if include.Delimiter != '<' && include.Delimiter != '"' {
 		return "", true
 	}
-	if isLikelyStdHeader(header) {
-		return "", false
-	}
-	if r.includeResolvesWithinRepo(includeLookup{
+	resolvedPath, resolved := r.resolveIncludePath(includeLookup{
 		sourcePath: sourcePath,
 		header:     header,
-	}) {
+	})
+	if resolved && shared.IsPathWithin(r.repoPath, resolvedPath) {
+		return "", false
+	}
+	if isLikelyStdHeader(header) && shouldSuppressQualifiedStdHeader(header, resolvedPath, resolved) {
 		return "", false
 	}
 	if include.Delimiter == '"' {
@@ -352,7 +353,7 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	return correlateDeclaredDependency(dependency, r.catalog), false
 }
 
-func (r *includeResolver) includeResolvesWithinRepo(include includeLookup) bool {
+func (r *includeResolver) resolveIncludePath(include includeLookup) (string, bool) {
 	sourceDir := filepath.Dir(include.sourcePath)
 	candidates := []string{filepath.Join(sourceDir, filepath.FromSlash(include.header))}
 	for _, includeDir := range r.includeDirs {
@@ -363,11 +364,9 @@ func (r *includeResolver) includeResolvesWithinRepo(include includeLookup) bool 
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
-		if shared.IsPathWithin(r.repoPath, candidate) {
-			return true
-		}
+		return candidate, true
 	}
-	return false
+	return "", false
 }
 
 func dependencyFromIncludePath(header string) string {
@@ -406,7 +405,7 @@ func isLikelyStdHeader(header string) bool {
 		return false
 	}
 	if strings.Contains(header, "/") {
-		if hasOSCompilerHeaderPrefix(header) {
+		if isKnownOSCompilerQualifiedHeader(header) {
 			return true
 		}
 		return isKnownCompilerQualifiedStdHeader(header)
@@ -421,9 +420,60 @@ func isLikelyStdHeader(header string) bool {
 	return ok
 }
 
-func hasOSCompilerHeaderPrefix(header string) bool {
-	for _, prefix := range []string{"sys/", "bits/", "linux/", "asm/", "asm-generic/"} {
-		if strings.HasPrefix(header, prefix) {
+func shouldSuppressQualifiedStdHeader(header, resolvedPath string, resolved bool) bool {
+	if !strings.Contains(header, "/") {
+		return true
+	}
+	if !resolved {
+		return true
+	}
+	return isLikelySystemIncludePath(resolvedPath)
+}
+
+func isKnownOSCompilerQualifiedHeader(header string) bool {
+	parts := strings.Split(header, "/")
+	if len(parts) != 2 {
+		return false
+	}
+	namespace, leaf := parts[0], parts[1]
+	if leaf == "" {
+		return false
+	}
+	switch namespace {
+	case "sys", "linux", "asm", "asm-generic":
+		return filepath.Ext(leaf) == ".h"
+	case "bits":
+		return filepath.Ext(leaf) == ".h" || leaf == "stdc++.h"
+	default:
+		return false
+	}
+}
+
+func isLikelySystemIncludePath(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	path = strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+	for _, prefix := range []string{
+		"/usr/include/",
+		"/usr/local/include/",
+		"/opt/homebrew/include/",
+		"/opt/local/include/",
+		"/mingw/include/",
+		"/mingw64/include/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	for _, fragment := range []string{
+		"/include/c++/",
+		"/include/c++/v1/",
+		"/lib/clang/",
+		"/lib/gcc/",
+		"/msvc/",
+	} {
+		if strings.Contains(path, fragment) {
 			return true
 		}
 	}
