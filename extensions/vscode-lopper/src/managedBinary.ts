@@ -92,8 +92,6 @@ export interface ManagedBinaryDeps {
 }
 
 const metadataFileName = "managed-binary.json";
-const unprefixedSemverReleaseTagPattern =
-  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 const releaseOwner = "ben-ranford";
 const releaseRepo = "lopper";
 
@@ -498,10 +496,77 @@ function normalizeConfiguredReleaseTag(releaseTag?: string): string | undefined 
   if (!normalizedTag || normalizedTag.startsWith("v")) {
     return normalizedTag;
   }
-  if (unprefixedSemverReleaseTagPattern.test(normalizedTag)) {
+  if (isUnprefixedSemverReleaseTag(normalizedTag)) {
     return `v${normalizedTag}`;
   }
   return normalizedTag;
+}
+
+function isUnprefixedSemverReleaseTag(releaseTag: string): boolean {
+  const buildSeparator = releaseTag.indexOf("+");
+  const withoutBuild = buildSeparator === -1 ? releaseTag : releaseTag.slice(0, buildSeparator);
+  const build = buildSeparator === -1 ? undefined : releaseTag.slice(buildSeparator + 1);
+  if (build !== undefined && !isBuildMetadata(build)) {
+    return false;
+  }
+
+  const prereleaseSeparator = withoutBuild.indexOf("-");
+  const version = prereleaseSeparator === -1 ? withoutBuild : withoutBuild.slice(0, prereleaseSeparator);
+  const prerelease = prereleaseSeparator === -1 ? undefined : withoutBuild.slice(prereleaseSeparator + 1);
+  if (prerelease !== undefined && !isPrerelease(prerelease)) {
+    return false;
+  }
+
+  const versionParts = version.split(".");
+  return versionParts.length === 3 && versionParts.every(isNumericSemverIdentifier);
+}
+
+function isPrerelease(prerelease: string): boolean {
+  const identifiers = prerelease.split(".");
+  return identifiers.length > 0 && identifiers.every(isPrereleaseIdentifier);
+}
+
+function isBuildMetadata(build: string): boolean {
+  const identifiers = build.split(".");
+  return identifiers.length > 0 && identifiers.every(isSemverIdentifierText);
+}
+
+function isPrereleaseIdentifier(identifier: string): boolean {
+  return (
+    isSemverIdentifierText(identifier) &&
+    (!isDigitsOnly(identifier) || isNumericSemverIdentifier(identifier))
+  );
+}
+
+function isNumericSemverIdentifier(identifier: string): boolean {
+  return isDigitsOnly(identifier) && (identifier === "0" || !identifier.startsWith("0"));
+}
+
+function isDigitsOnly(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (const char of value) {
+    if (char < "0" || char > "9") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isSemverIdentifierText(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (const char of value) {
+    const numeric = char >= "0" && char <= "9";
+    const uppercase = char >= "A" && char <= "Z";
+    const lowercase = char >= "a" && char <= "z";
+    if (!numeric && !uppercase && !lowercase && char !== "-") {
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function fetchRelease(
