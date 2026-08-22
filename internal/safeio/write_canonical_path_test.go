@@ -83,18 +83,22 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsDanglingTargetSymli
 
 func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathRejectsInvalidTargets(t *testing.T) {
 	t.Run("relative target", func(t *testing.T) {
+		workspace := t.TempDir()
+		withWorkingDir(t, workspace)
 		err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(filepath.Join("reports", writeTestFileName), []byte("after"), 0o600)
-		if err == nil {
-			t.Fatal("expected relative target under missing parent to fail")
+		if err != nil {
+			t.Fatalf("expected relative target under missing parent to be created, got %v", err)
 		}
+		assertFileContent(t, filepath.Join(workspace, "reports", writeTestFileName), "after")
 	})
 
 	t.Run("missing parent", func(t *testing.T) {
 		target := filepath.Join(t.TempDir(), "missing", writeTestFileName)
 		err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(target, []byte("after"), 0o600)
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("expected missing parent error, got %v", err)
+		if err != nil {
+			t.Fatalf("expected missing parent to be created, got %v", err)
 		}
+		assertFileContent(t, target, "after")
 	})
 
 	t.Run("parent file", func(t *testing.T) {
@@ -200,7 +204,7 @@ func TestOpenSearchOnlyDirectoryPartsPropagatesHookError(t *testing.T) {
 		return errors.New("ancestor hook failed")
 	}
 
-	opened, fd, err := openSearchOnlyDirectoryParts(root, rootPath, []string{"tmp"})
+	opened, fd, err := openSearchOnlyDirectoryParts(root, rootPath, []string{"tmp"}, false, 0)
 	if err == nil || !strings.Contains(err.Error(), "ancestor hook failed") {
 		if opened != nil {
 			if closeErr := opened.Close(); closeErr != nil {
@@ -357,6 +361,36 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathWritesSearchOnlyParent(t *
 		t.Fatalf("read dropbox: %v", err)
 	} else if len(entries) != 1 || entries[0].Name() != writeTestFileName {
 		t.Fatalf("expected only target to remain, got %v", entries)
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathCreatesNestedParentInSearchOnlyParent(t *testing.T) {
+	if syscall.Geteuid() == 0 {
+		t.Skip("effective privileges bypass parent permission checks")
+	}
+
+	parent := filepath.Join(t.TempDir(), "dropbox")
+	if err := os.Mkdir(parent, 0o333); err != nil {
+		t.Fatalf("mkdir dropbox: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o755); err != nil && !os.IsNotExist(err) {
+			t.Errorf("restore dropbox permissions: %v", err)
+		}
+	})
+	if _, err := os.ReadDir(parent); !os.IsPermission(err) {
+		t.Skipf("parent read permission semantics are not testable: %v", err)
+	}
+	target := filepath.Join(parent, "reports", writeTestFileName)
+
+	if err := WriteFileAtomicallyIfAbsentUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomicallyIfAbsentUnderCanonicalPath returned error: %v", err)
+	}
+	assertFileContent(t, target, "after")
+	if info, err := os.Stat(filepath.Dir(target)); err != nil {
+		t.Fatalf("stat created nested parent: %v", err)
+	} else if info.Mode().Perm() != canonicalPathParentPerm {
+		t.Fatalf("nested parent mode = %#o, want %#o", info.Mode().Perm(), canonicalPathParentPerm)
 	}
 }
 

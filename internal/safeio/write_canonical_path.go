@@ -20,6 +20,8 @@ var (
 	openSearchOnlyDirectoryAtFn = openSearchOnlyDirectoryAt
 )
 
+const canonicalPathParentPerm os.FileMode = 0o750
+
 // WriteFileAtomicallyIfAbsentUnderCanonicalPath publishes targetPath only when
 // the target is absent. It is a narrow fallback for Unix directories that allow
 // search/write but not ordinary read permission, where os.Root cannot pin the
@@ -31,7 +33,7 @@ func WriteFileAtomicallyIfAbsentUnderCanonicalPath(targetPath string, data []byt
 	}
 	parent := filepath.Dir(targetAbs)
 
-	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
+	parentFile, parentFD, err := openOrCreateSearchOnlyCanonicalDirectory(parent, canonicalPathParentPerm)
 	if err != nil {
 		return err
 	}
@@ -49,6 +51,14 @@ func WriteFileAtomicallyIfAbsentUnderCanonicalPath(targetPath string, data []byt
 }
 
 func openSearchOnlyCanonicalDirectory(path string) (*os.File, int, error) {
+	return openSearchOnlyCanonicalDirectoryWithOptions(path, false, 0)
+}
+
+func openOrCreateSearchOnlyCanonicalDirectory(path string, perm os.FileMode) (*os.File, int, error) {
+	return openSearchOnlyCanonicalDirectoryWithOptions(path, true, perm)
+}
+
+func openSearchOnlyCanonicalDirectoryWithOptions(path string, create bool, perm os.FileMode) (*os.File, int, error) {
 	absPath, err := resolveAbsolutePath("directory", path)
 	if err != nil {
 		return nil, -1, err
@@ -67,7 +77,7 @@ func openSearchOnlyCanonicalDirectory(path string) (*os.File, int, error) {
 		return root, int(root.Fd()), nil
 	}
 	_, parts := splitPinnedPath(rel)
-	return openSearchOnlyDirectoryParts(root, volumeRoot, parts)
+	return openSearchOnlyDirectoryParts(root, volumeRoot, parts, create, perm)
 }
 
 func canonicalSearchDirectoryPath(path string) string {
@@ -88,13 +98,13 @@ func canonicalSearchDirectoryPath(path string) string {
 	return cleanPath
 }
 
-func openSearchOnlyDirectoryParts(current *os.File, currentPath string, parts []string) (_ *os.File, _ int, returnErr error) {
+func openSearchOnlyDirectoryParts(current *os.File, currentPath string, parts []string, create bool, perm os.FileMode) (_ *os.File, _ int, returnErr error) {
 	for _, part := range parts {
 		if err := afterOpenSearchAncestorFn(currentPath); err != nil {
 			return nil, -1, closeFileWithError(current, err)
 		}
 		nextPath := filepath.Join(currentPath, part)
-		next, err := openSearchOnlyChildDirectory(int(current.Fd()), part, nextPath)
+		next, err := openSearchOnlyChildDirectoryWithOptions(int(current.Fd()), part, nextPath, create, perm)
 		if err != nil {
 			return nil, -1, closeFileWithError(current, err)
 		}
@@ -108,7 +118,17 @@ func openSearchOnlyDirectoryParts(current *os.File, currentPath string, parts []
 }
 
 func openSearchOnlyChildDirectory(parentFD int, name, path string) (*os.File, error) {
+	return openSearchOnlyChildDirectoryWithOptions(parentFD, name, path, false, 0)
+}
+
+func openSearchOnlyChildDirectoryWithOptions(parentFD int, name, path string, create bool, perm os.FileMode) (*os.File, error) {
 	info, err := descriptorLstat(parentFD, name)
+	if errors.Is(err, os.ErrNotExist) && create {
+		if mkdirErr := unix.Mkdirat(parentFD, name, uint32(perm)); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return nil, mkdirErr
+		}
+		info, err = descriptorLstat(parentFD, name)
+	}
 	if err != nil {
 		return nil, err
 	}

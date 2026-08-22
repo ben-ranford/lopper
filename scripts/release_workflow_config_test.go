@@ -6039,6 +6039,7 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	homeDir := filepath.Join(t.TempDir(), "home")
 	cacheDir := filepath.Join(t.TempDir(), "gocache")
 	moduleCacheDir := currentGoModuleCache(t, goPath)
+	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
 	for _, dir := range []string{homeDir, cacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create Go environment directory: %v", err)
@@ -6075,6 +6076,18 @@ func currentGoModuleCache(t *testing.T, goPath string) string {
 		t.Fatal("go env GOMODCACHE returned an empty path")
 	}
 	return moduleCacheDir
+}
+
+func ensureCurrentGoModuleCached(t *testing.T, goPath, moduleCacheDir, modulePath string) {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "mod", "download", modulePath)
+	cmd.Dir = repoPath(t, ".")
+	cmd.Env = append(gitexec.SanitizedEnv(), "GOMODCACHE="+moduleCacheDir, "GOTOOLCHAIN=local")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("populate reused module cache for %s: %v\n%s", modulePath, err, output)
+	}
 }
 
 func makeTreeWritable(t *testing.T, root string) {
