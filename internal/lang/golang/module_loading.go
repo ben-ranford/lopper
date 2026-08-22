@@ -384,7 +384,7 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, to
 		s.startGoModBlock(directive)
 		return
 	}
-	if strings.HasPrefix(lineText, goModModuleDirectivePrefix) {
+	if isGoModModuleDirectiveLine(lineText) {
 		s.consumeGoModModuleLine(lineText)
 		return
 	}
@@ -416,6 +416,10 @@ func goModInlineEmptyBlockDirective(lineText string) (string, bool) {
 	}
 	rest := trimGoModDirectiveSpace(strings.TrimPrefix(lineText, directive))
 	return directive, rest == "()" || rest == "( )"
+}
+
+func isGoModModuleDirectiveLine(lineText string) bool {
+	return firstToken(lineText) == "module"
 }
 
 func (s *goModModuleScanner) consumeGoModInlineEmptyBlock(directive string) {
@@ -465,7 +469,7 @@ func (s *goModModuleScanner) consumeGoModBlockLine(lineText string) {
 	if s.blockDirective == "retract" && s.deferRetractUntilModule("retract "+lineText) {
 		return
 	}
-	if strings.HasPrefix(lineText, goModModuleDirectivePrefix) || !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
+	if !isValidGoModBlockLine(s.validationModulePath(), s.blockDirective, lineText) {
 		s.invalid = true
 	}
 }

@@ -1724,6 +1724,18 @@ func TestOversizedRootGoModAcceptsCompactRequireBlockDelimiter(t *testing.T) {
 	requireOversizedRootModulePath(t, repo, "module path extraction with compact require block delimiter")
 }
 
+func TestOversizedRootGoModKeepsRequireEntryNamedModule(t *testing.T) {
+	repo := t.TempDir()
+	writeOversizedRootGoModLines(t, repo,
+		"module example.com/root",
+		"require (",
+		"\tmodule v1.0.0",
+		")",
+	)
+
+	requireOversizedRootModulePath(t, repo, "module path extraction with require entry named module")
+}
+
 func TestOversizedRootGoModKeepsQuotedReplacementLineCommentMarker(t *testing.T) {
 	repo := t.TempDir()
 	writeOversizedRootGoModLines(t, repo,
