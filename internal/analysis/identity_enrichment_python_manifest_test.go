@@ -222,17 +222,18 @@ func TestPythonManifestDiscoveryIsGatedByReportLanguage(t *testing.T) {
 
 func TestPythonManifestIdentityReadIsBounded(t *testing.T) {
 	repoPath := t.TempDir()
-	path := filepath.Join(repoPath, pythonProjectFileName)
+	const oversizedManifestBytes = 1<<20 + 1
 	body := "[project]\ndependencies = [\"requests==2.32.3\"]\n" +
-		strings.Repeat("# filler\n", int(pythonIdentityManifestReadLimit)/len("# filler\n")+1)
-	testutil.MustWriteFile(t, path, body)
-	warnings := newIdentityWarningCollector(repoPath)
+		strings.Repeat("# filler\n", oversizedManifestBytes/len("# filler\n")+1)
+	testutil.MustWriteFile(t, filepath.Join(repoPath, pythonProjectFileName), body)
+	reportData := report.Report{Dependencies: []report.DependencyReport{
+		{Language: "python", Name: "requests"},
+	}}
 
-	if document, ok := readPythonManifestDocument(repoPath, path, warnings); ok || document != nil {
-		t.Fatalf("expected oversized pyproject manifest read to be rejected, got ok=%t document=%#v", ok, document)
-	}
+	annotateDependencyIdentities(repoPath, &reportData)
 
-	assertWarningsExact(t, repoPath, warnings.list(), []string{
+	assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", "requests"), "pypi", "requests")
+	assertWarningsExact(t, repoPath, reportData.Warnings, []string{
 		"identity manifest read failed for pyproject.toml: file exceeds size limit",
 	})
 }
