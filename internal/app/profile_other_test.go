@@ -5,6 +5,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -96,7 +97,7 @@ func TestPersistProfileConfigForceWritesAbsentOutputIntoSearchOnlyParent(t *test
 	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
 }
 
-func TestPersistProfileConfigForceOverwritesExistingOutputInSearchOnlyParent(t *testing.T) {
+func TestPersistProfileConfigForceRejectsExistingOutputInSearchOnlyParent(t *testing.T) {
 	if syscall.Geteuid() == 0 {
 		t.Skip("effective privileges bypass parent permission checks")
 	}
@@ -122,13 +123,13 @@ func TestPersistProfileConfigForceOverwritesExistingOutputInSearchOnlyParent(t *
 	requireWritableTargetReopenable(t, outputPath)
 
 	status, err := persistProfileConfig("thresholds:\n  fail_on_increase_percent: 1\n", outputPath, true)
-	if err != nil {
-		t.Fatalf("persist forced profile output: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "existing target cannot be safely replaced under descriptor fallback") {
+		t.Fatalf("expected fail-closed forced profile output error, status=%q err=%v", status, err)
 	}
-	if status != "threshold profile config written to "+outputPath {
-		t.Fatalf("unexpected status: %q", status)
+	if status != "" {
+		t.Fatalf("expected empty status on failed forced profile output, got %q", status)
 	}
-	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 1\n", 0o600)
+	assertProfileOutput(t, outputPath, "thresholds:\n  fail_on_increase_percent: 5\n", 0o600)
 }
 
 func TestPersistProfileConfigFallbackUsesPhysicalRelativeOutputPath(t *testing.T) {

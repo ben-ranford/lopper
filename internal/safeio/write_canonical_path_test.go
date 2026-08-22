@@ -364,7 +364,7 @@ func TestWriteFileAtomicallyIfAbsentUnderCanonicalPathWritesSearchOnlyParent(t *
 	}
 }
 
-func TestWriteFileAtomicallyReplacingUnderCanonicalPathOverwritesSearchOnlyParent(t *testing.T) {
+func TestWriteFileAtomicallyReplacingUnderCanonicalPathRejectsExistingTargetInSearchOnlyParent(t *testing.T) {
 	if syscall.Geteuid() == 0 {
 		t.Skip("effective privileges bypass parent permission checks")
 	}
@@ -389,15 +389,60 @@ func TestWriteFileAtomicallyReplacingUnderCanonicalPathOverwritesSearchOnlyParen
 		t.Skipf("parent read permission semantics are not testable: %v", err)
 	}
 
-	if err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600); err != nil {
-		t.Fatalf("WriteFileAtomicallyReplacingUnderCanonicalPath returned error: %v", err)
+	err := WriteFileAtomicallyReplacingUnderCanonicalPath(target, []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "existing target cannot be safely replaced under descriptor fallback") {
+		t.Fatalf("expected fail-closed existing target error, got %v", err)
 	}
-	assertFileContent(t, target, "after")
+	assertFileContent(t, target, "before")
 	if info, err := os.Stat(target); err != nil {
 		t.Fatalf("stat target: %v", err)
 	} else if info.Mode().Perm() != 0o640 {
-		t.Fatalf("expected replacement to preserve mode 0640, got %#o", info.Mode().Perm())
+		t.Fatalf("expected existing target mode to remain 0640, got %#o", info.Mode().Perm())
 	}
+}
+
+func TestDescriptorReplacingPathPreservesConcurrentReplacement(t *testing.T) {
+	parent := t.TempDir()
+	parentFile, parentFD, err := openSearchOnlyCanonicalDirectory(parent)
+	if err != nil {
+		t.Fatalf("open parent descriptor: %v", err)
+	}
+	defer func() {
+		if err := parentFile.Close(); err != nil {
+			t.Errorf("close parent descriptor: %v", err)
+		}
+	}()
+
+	targetPath := filepath.Join(parent, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed original target: %v", err)
+	}
+	replacementPath := filepath.Join(parent, "replacement")
+	if err := os.WriteFile(replacementPath, []byte("concurrent"), 0o600); err != nil {
+		t.Fatalf("seed concurrent replacement: %v", err)
+	}
+
+	originalDescriptorLstatFn := descriptorLstatFn
+	t.Cleanup(func() {
+		descriptorLstatFn = originalDescriptorLstatFn
+	})
+	replaced := false
+	descriptorLstatFn = func(fd int, name string) (descriptorFileInfo, error) {
+		info, err := originalDescriptorLstatFn(fd, name)
+		if err == nil && name == writeTestFileName && !replaced {
+			replaced = true
+			if renameErr := os.Rename(replacementPath, targetPath); renameErr != nil {
+				t.Fatalf("replace target after descriptor lookup: %v", renameErr)
+			}
+		}
+		return info, err
+	}
+
+	err = writeFileAtomicallyReplacingUnderDescriptorPath(parentFD, writeTestFileName, []byte("forced"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "existing target cannot be safely replaced under descriptor fallback") {
+		t.Fatalf("expected fail-closed existing target error, got %v", err)
+	}
+	assertFileContent(t, targetPath, "concurrent")
 }
 
 func TestWriteFileAtomicallyReplacingUnderCanonicalPathCreatesAbsentTarget(t *testing.T) {
