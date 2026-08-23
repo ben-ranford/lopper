@@ -3,6 +3,6 @@ pre-commit:
     automation-integrity:
       run: make automation-integrity
     lopper-json-report:
-      run: mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+      run: mkdir -p .artifacts && go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
     mutation-guard:
       run: git diff --exit-code -- . ':!.artifacts'

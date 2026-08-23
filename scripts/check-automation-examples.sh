@@ -171,6 +171,88 @@ def has_unique_scalar_flags?(words, expected)
 	end
 end
 
+def scalar_flag_alias_values(words, flags)
+	values = []
+	flags.each do |flag|
+		flag_values = scalar_flag_values(words, flag)
+		return nil if flag_values.nil?
+
+		values.concat(flag_values)
+	end
+	values
+end
+
+def has_unique_scalar_alias_flag?(words, flags, value)
+	scalar_flag_alias_values(words, flags) == [value]
+end
+
+def positive_integer?(value)
+	value.is_a?(String) && value.match?(/\A[1-9][0-9]*\z/)
+end
+
+def flag_requires_value?(word)
+	return false if word.include?("=")
+
+	[
+		"--repo",
+		"--top",
+		"--scope-mode",
+		"--format",
+		"--output",
+		"--language",
+		"--runtime-profile",
+		"--baseline",
+		"--baseline-store",
+		"--baseline-key",
+		"--baseline-label",
+		"--runtime-trace",
+		"--runtime-test-command",
+		"--advisory-source",
+		"--config",
+		"--enable-feature",
+		"--disable-feature",
+		"--include",
+		"--exclude",
+		"--lockfile-drift-policy",
+		"--notify-on",
+		"--notify-slack",
+		"--notify-teams",
+		"-o",
+	].include?(word)
+end
+
+def analyse_positionals(words)
+	positionals = []
+	index = 0
+	while index < words.length
+		word = words[index]
+		if word.start_with?("-")
+			index += flag_requires_value?(word) ? 2 : 1
+			next
+		end
+
+		positionals << word
+		index += 1
+	end
+	positionals
+end
+
+def has_valid_analyse_target?(words)
+	args = words[4..-1] || []
+	parsed_args = args.take_while { |word| word != "--" }
+	top_values = scalar_flag_values(parsed_args, "--top")
+	return false if top_values.nil? || top_values.length > 1
+
+	has_positive_top = positive_integer?(top_values.first)
+	positionals = analyse_positionals(parsed_args)
+	return false if positionals.length > 1
+
+	has_dependency = positionals.length == 1 && !positionals.first.strip.empty?
+	return false if has_dependency && has_positive_top
+
+	has_dependency || has_positive_top
+end
+
 def pre_commit_command_runs(runs, command_name)
 	runs.select { |entry| entry[:hook] == "pre-commit" && entry[:command] == command_name }
 end
@@ -200,8 +282,9 @@ def has_lopper_json_report?(runs)
 				"--repo" => ".",
 				"--language" => "all",
 				"--format" => "json",
-				"--output" => ".artifacts/lopper-pre-commit.json",
-			})
+			}) &&
+				has_unique_scalar_alias_flag?(parsed_words, ["--output", "-o"], ".artifacts/lopper-pre-commit.json") &&
+				has_valid_analyse_target?(words)
 		end
 	end
 end
