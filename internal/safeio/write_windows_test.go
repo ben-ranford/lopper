@@ -255,7 +255,7 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafe
 			if name != writeTestFileName {
 				t.Fatalf("unexpected rollback snapshot path: %s", name)
 			}
-			reader := strings.NewReader("before")
+			reader := strings.NewReader(string(*targetData))
 			return &fakeFile{
 				read:  reader.Read,
 				stat:  func() (fs.FileInfo, error) { return info, nil },
@@ -303,6 +303,67 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureHonorsRollbackSafe
 	}
 	if string(*targetData) != "before" {
 		t.Fatalf("expected rollback to restore fallback target data, got %q", string(*targetData))
+	}
+}
+
+func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureSkipsRollbackAfterConcurrentWrite(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	target := &windowsFallbackTarget{data: []byte("before")}
+	targetFile := target.file(t, info)
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		open: func(name string) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected rollback snapshot path: %s", name)
+			}
+			reader := strings.NewReader(string(target.data))
+			return &fakeFile{
+				read:  reader.Read,
+				stat:  func() (fs.FileInfo, error) { return info, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		rename: func(oldName, newName string) error {
+			return windowsReplaceExistingError(oldName, newName)
+		},
+		remove: func(string) error { return nil },
+	}
+
+	postWriteErr := errors.New("post-write validation failure")
+	err := writeAtomicReplacementWithPinnedTargetCallbacks(root, writeTestFileName, []byte("after"), 0o600, targetFile, true, pinnedReplacementChecks{
+		postWrite: func() error {
+			if string(target.data) != "after" {
+				t.Fatalf("expected fallback overwrite before post-write check, got %q", string(target.data))
+			}
+			target.data = []byte("concurrent")
+			return postWriteErr
+		},
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write validation error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "target changed after fallback overwrite") {
+		t.Fatalf("expected rollback ownership error, got %v", err)
+	}
+	if string(target.data) != "concurrent" {
+		t.Fatalf("rollback must not overwrite concurrent target data, got %q", string(target.data))
+	}
+	if target.truncateCalls != 1 || target.writeCalls != 1 {
+		t.Fatalf("expected only initial fallback overwrite: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
 	}
 }
 

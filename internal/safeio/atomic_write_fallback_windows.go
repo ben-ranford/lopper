@@ -3,6 +3,7 @@
 package safeio
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -42,7 +43,7 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 	}
 	if err := runPostWriteCheck(fallback.postWrite); err != nil {
 		if fallback.rollbackOnPostWriteFailure {
-			return restoreWindowsFallbackTarget(root, fallback.newName, replacementFile, rollbackData, err)
+			return restoreWindowsFallbackTarget(root, fallback.newName, replacementFile, rollbackData, fallback.data, err)
 		}
 		return err
 	}
@@ -110,7 +111,10 @@ func snapshotPinnedWindowsFallbackTarget(root Root, targetRel string, replacemen
 	return io.ReadAll(reader)
 }
 
-func restoreWindowsFallbackTarget(root Root, targetRel string, replacementFile File, rollbackData []byte, primaryErr error) error {
+func restoreWindowsFallbackTarget(root Root, targetRel string, replacementFile File, rollbackData, fallbackData []byte, primaryErr error) error {
+	if err := verifyWindowsFallbackWriteOwnership(root, targetRel, replacementFile, fallbackData); err != nil {
+		return errors.Join(primaryErr, fmt.Errorf("skip Windows fallback rollback: %w", err))
+	}
 	if err := truncateAndWritePinnedFile(targetRel, replacementFile, rollbackData); err != nil {
 		return errors.Join(primaryErr, fmt.Errorf("rollback Windows fallback replacement: %w", err))
 	}
@@ -118,6 +122,17 @@ func restoreWindowsFallbackTarget(root Root, targetRel string, replacementFile F
 		return errors.Join(primaryErr, fmt.Errorf("validate Windows fallback rollback: %w", err))
 	}
 	return primaryErr
+}
+
+func verifyWindowsFallbackWriteOwnership(root Root, targetRel string, replacementFile File, fallbackData []byte) error {
+	currentData, err := snapshotPinnedWindowsFallbackTarget(root, targetRel, replacementFile)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(currentData, fallbackData) {
+		return fmt.Errorf("target changed after fallback overwrite: %s", targetRel)
+	}
+	return nil
 }
 
 func windowsReplaceExistingRenameFallback(err error, oldName, newName string) bool {
