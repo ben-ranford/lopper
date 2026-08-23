@@ -8702,116 +8702,118 @@ func testFinalSafeIORenameRestoreCleanupRetry(t *testing.T) {
 }
 
 func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
-	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
-	linkUnsupported := func(string, string) error { return syscall.EPERM }
+	t.Run("restores by validated copy when original is absent", testRestoreQuarantinedPathNoReplaceByCopy)
+	t.Run("retains source when published copy is replaced after validation", testRestoreQuarantinedPathNoReplaceRetainsRacedCopySource)
+	t.Run("reports retained staging to move recovery", testRestoreQuarantinedPathNoReplaceReportsRetainedStaging)
+	t.Run("safe failure preserves raced original and quarantine", testRestoreQuarantinedPathNoReplacePreservesRacedOriginal)
+}
 
-	t.Run("restores by validated copy when original is absent", func(t *testing.T) {
-		rootDir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
-			t.Fatalf("create quarantine: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(rootDir, "quarantine", "entry"), []byte("source"), 0o640); err != nil {
-			t.Fatalf("seed quarantine: %v", err)
-		}
-		expected := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
-		base := openTestRoot(t, rootDir)
-		root := &rootWithoutIdentity{Root: &fakeRoot{
-			Root: base,
-			link: linkUnsupported,
-		}}
+func testRestoreQuarantinedPathNoReplaceByCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "quarantine", "entry"), []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+	expected := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
+	root := linklessTestRoot(openTestRoot(t, rootDir))
 
-		restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
-		if !restored || !retained || err != nil {
-			t.Fatalf("expected retained linkless copy restore, restored=%t retained=%t err=%v", restored, retained, err)
-		}
-		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
-		assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "source")
-	})
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+	if !restored || !retained || err != nil {
+		t.Fatalf("expected retained linkless copy restore, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "source")
+}
 
-	t.Run("retains source when published copy is replaced after validation", func(t *testing.T) {
-		rootDir := t.TempDir()
-		quarantineDir := filepath.Join(rootDir, "quarantine")
-		if err := os.Mkdir(quarantineDir, 0o700); err != nil {
-			t.Fatalf("create quarantine: %v", err)
-		}
-		stagedPath := filepath.Join(quarantineDir, "entry")
-		if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
-			t.Fatalf("seed quarantine: %v", err)
-		}
-		expected := statTestPath(t, stagedPath)
-		base := openTestRoot(t, rootDir)
-		sourcePath := filepath.Join(rootDir, "source")
-		publishedCopyReplaced := false
-		root := &rootWithoutIdentity{Root: &fakeRoot{
-			Root: base,
-			link: linkUnsupported,
-			lstat: func(name string) (fs.FileInfo, error) {
-				info, err := base.Lstat(name)
-				if name == "source" && err == nil && !publishedCopyReplaced {
-					publishedCopyReplaced = true
-					if err := os.Remove(sourcePath); err != nil {
-						t.Fatalf("replace published copy: %v", err)
-					}
-					if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
-						t.Fatalf("write concurrent replacement: %v", err)
-					}
+func testRestoreQuarantinedPathNoReplaceRetainsRacedCopySource(t *testing.T) {
+	rootDir := t.TempDir()
+	quarantineDir := filepath.Join(rootDir, "quarantine")
+	if err := os.Mkdir(quarantineDir, 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	stagedPath := filepath.Join(quarantineDir, "entry")
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+	expected := statTestPath(t, stagedPath)
+	base := openTestRoot(t, rootDir)
+	sourcePath := filepath.Join(rootDir, "source")
+	publishedCopyReplaced := false
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: unsupportedLink,
+		lstat: func(name string) (fs.FileInfo, error) {
+			info, err := base.Lstat(name)
+			if name == "source" && err == nil && !publishedCopyReplaced {
+				publishedCopyReplaced = true
+				if err := os.Remove(sourcePath); err != nil {
+					t.Fatalf("replace published copy: %v", err)
 				}
-				return info, err
-			},
-		}}
+				if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
+					t.Fatalf("write concurrent replacement: %v", err)
+				}
+			}
+			return info, err
+		},
+	}}
 
-		restored, retained, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, expected)
-		if !restored || !retained || err != nil {
-			t.Fatalf("expected retained copy restore after publication race, restored=%t retained=%t err=%v", restored, retained, err)
-		}
-		if !publishedCopyReplaced {
-			t.Fatal("expected published copy replacement race")
-		}
-		assertFileContent(t, sourcePath, "replacement")
-		assertFileContent(t, stagedPath, "source")
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, expected)
+	if !restored || !retained || err != nil {
+		t.Fatalf("expected retained copy restore after publication race, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	if !publishedCopyReplaced {
+		t.Fatal("expected published copy replacement race")
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertFileContent(t, stagedPath, "source")
+}
+
+func testRestoreQuarantinedPathNoReplaceReportsRetainedStaging(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	stagedPath := filepath.Join(rootDir, "quarantine", "entry")
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+	expected := statTestPath(t, stagedPath)
+
+	err := restoreRetainedAliasSource(linklessTestRoot(openTestRoot(t, rootDir)), filepath.Join("quarantine", "entry"), "source", expected)
+	if !errors.Is(err, errIdentityBoundRestoreRetainedStaging) {
+		t.Fatalf("expected retained staging error, got %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, stagedPath, "source")
+}
+
+func testRestoreQuarantinedPathNoReplacePreservesRacedOriginal(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo, "source": changedInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		link: unsupportedLink,
+		rename: func(oldName, newName string) error {
+			t.Fatalf("linkless restore must preserve raced target, got rename %q -> %q", oldName, newName)
+			return nil
+		},
 	})
 
-	t.Run("reports retained staging to move recovery", func(t *testing.T) {
-		rootDir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
-			t.Fatalf("create quarantine: %v", err)
-		}
-		stagedPath := filepath.Join(rootDir, "quarantine", "entry")
-		if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
-			t.Fatalf("seed quarantine: %v", err)
-		}
-		expected := statTestPath(t, stagedPath)
-		base := openTestRoot(t, rootDir)
-		root := &rootWithoutIdentity{Root: &fakeRoot{
-			Root: base,
-			link: linkUnsupported,
-		}}
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+	if restored || retained || !errors.Is(err, errIdentityBoundLinkUnavailable) {
+		t.Fatalf("expected linkless restore safe failure, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	requireSameFileInfo(t, files["source"], changedInfo, "source")
+	requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
+}
 
-		err := restoreRetainedAliasSource(root, filepath.Join("quarantine", "entry"), "source", expected)
-		if !errors.Is(err, errIdentityBoundRestoreRetainedStaging) {
-			t.Fatalf("expected retained staging error, got %v", err)
-		}
-		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
-		assertFileContent(t, stagedPath, "source")
-	})
+func linklessTestRoot(root Root) Root {
+	return &rootWithoutIdentity{Root: &fakeRoot{Root: root, link: unsupportedLink}}
+}
 
-	t.Run("safe failure preserves raced original and quarantine", func(t *testing.T) {
-		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo, "source": changedInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			link: linkUnsupported,
-			rename: func(oldName, newName string) error {
-				t.Fatalf("linkless restore must preserve raced target, got rename %q -> %q", oldName, newName)
-				return nil
-			},
-		})
-
-		restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || retained || !errors.Is(err, errIdentityBoundLinkUnavailable) {
-			t.Fatalf("expected linkless restore safe failure, restored=%t retained=%t err=%v", restored, retained, err)
-		}
-		requireSameFileInfo(t, files["source"], changedInfo, "source")
-		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
-	})
+func unsupportedLink(string, string) error {
+	return syscall.EPERM
 }
 
 func TestRestoreQuarantinedMoveSourceAfterFallbackFailureCleansRestoredStaging(t *testing.T) {
