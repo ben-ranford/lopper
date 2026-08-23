@@ -34,6 +34,14 @@ type identityBoundStateOperationsRoot interface {
 	RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error)
 }
 
+type Unwrapper interface {
+	Unwrap() error
+}
+
+type UnwrapAller interface {
+	Unwrap() []error
+}
+
 type publishRenameError struct {
 	sourceRel  string
 	sourceInfo fs.FileInfo
@@ -521,7 +529,7 @@ func identityBoundLinkUnavailableOnly(err error) bool {
 	if err == nil {
 		return false
 	}
-	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+	if joined, ok := err.(UnwrapAller); ok {
 		errs := joined.Unwrap()
 		if len(errs) == 0 {
 			return false
@@ -533,7 +541,7 @@ func identityBoundLinkUnavailableOnly(err error) bool {
 		}
 		return true
 	}
-	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+	if wrapped, ok := err.(Unwrapper); ok {
 		return identityBoundLinkUnavailableOnly(wrapped.Unwrap())
 	}
 	return errors.Is(err, errIdentityBoundLinkUnavailable) || identityBoundLinkUnsupported(err)

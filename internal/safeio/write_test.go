@@ -142,10 +142,12 @@ func (s *aliasScanRaceState) remove(name string) error {
 
 type relinkedAliasRaceState struct {
 	*aliasScanRaceState
-	sourceRemovals    int
-	sourceRestores    int
-	targetReplacement fs.FileInfo
-	targetReplaced    bool
+	sourceRemovals                      int
+	sourceRestores                      int
+	targetReplacement                   fs.FileInfo
+	targetReplaced                      bool
+	replaceRetainedStagingAfterRecovery bool
+	retainedStagingReplaced             bool
 }
 
 func newRelinkedAliasRaceState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *relinkedAliasRaceState {
@@ -187,6 +189,23 @@ func (s *relinkedAliasRaceState) link(oldName, newName string) error {
 	}
 	s.files[newName] = true
 	return nil
+}
+
+func (s *relinkedAliasRaceState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if s.retainedStagingReplaced && strings.HasPrefix(oldName, atomicTempPrefix+"retained") {
+		return fmt.Errorf("%s: %s", message, oldName)
+	}
+	if s.files[newName] {
+		if newName == "SOURCE" && s.targetReplaced && s.replaceRetainedStagingAfterRecovery {
+			s.retainedStagingReplaced = true
+		}
+		return os.ErrExist
+	}
+	err := s.aliasScanRaceState.linkIfMatches(oldName, newName, expected, message)
+	if err == nil && newName == "source" {
+		s.sourceRestores++
+	}
+	return err
 }
 
 func (s *relinkedAliasRaceState) renameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
@@ -8405,6 +8424,34 @@ func TestPrepareRestoresSourceWhenRelinkedTargetChangesDuringRecovery(t *testing
 		if exists && strings.HasPrefix(name, atomicTempPrefix) {
 			t.Fatalf("retained staging entry leaked after source restoration: %s", name)
 		}
+	}
+}
+
+func TestPrepareDoesNotRestoreReplacedRetainedStaging(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"primary",
+		atomicTempPrefix+"retained",
+		atomicTempPrefix+"cleanup-one",
+		atomicTempPrefix+"cleanup-two",
+		atomicTempPrefix+"cleanup-three",
+	)
+	state := newRelinkedAliasRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
+	state.targetReplacement = changedInfo
+	state.replaceRetainedStagingAfterRecovery = true
+
+	_, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeCleanup) {
+		t.Fatalf("expected retained staging identity failure, got %v", err)
+	}
+	if state.files["source"] {
+		t.Fatalf("must not restore source from replaced retained staging, files=%#v", state.files)
+	}
+	if !state.files["SOURCE"] {
+		t.Fatalf("expected raced target to remain, files=%#v", state.files)
+	}
+	if state.sourceRestores != 0 {
+		t.Fatalf("expected no source restoration from replaced staging, got %d", state.sourceRestores)
 	}
 }
 
