@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -177,6 +178,25 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	}
 	if gaps[2].Path != "" {
 		t.Fatalf("expected empty coverage gap path to remain empty, got %q", gaps[2].Path)
+	}
+}
+
+func TestAdjustRelativeCoverageGapsPreservesUnixLiteralBackslashes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+
+	gaps := []report.CoverageGap{
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: "a\\b.gemspec"},
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: "a/b.gemspec"},
+	}
+	adjustRelativeCoverageGaps("/repo", "/repo/packages/a", gaps)
+
+	if gaps[0].Path != "packages/a/a\\b.gemspec" {
+		t.Fatalf("expected literal backslash coverage gap to be preserved while rebasing, got %q", gaps[0].Path)
+	}
+	if gaps[1].Path != "packages/a/a/b.gemspec" {
+		t.Fatalf("expected slash coverage gap to remain distinct while rebasing, got %q", gaps[1].Path)
 	}
 }
 

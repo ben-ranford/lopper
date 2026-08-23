@@ -375,6 +375,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 	parsed := make(map[string]*ast.File, len(files))
 	decls := make(map[string][]harnessDecl)
 	roots := make([]harnessDecl, 0)
+	modulePath := modulePathForDir(dir)
 	for _, rel := range files {
 		abs := filepath.Join(dir, filepath.FromSlash(rel))
 		file, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.ParseComments)
@@ -386,7 +387,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			for _, name := range declaredNames(decl) {
 				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
 			}
-			if rootDeclarationCanAffectBenchmark(decl) {
+			if rootDeclarationCanAffectBenchmark(decl, modulePath) {
 				roots = append(roots, harnessDecl{file: rel, decl: decl})
 			}
 		}
@@ -491,12 +492,12 @@ func declarationTokenCanAffectBenchmark(tok token.Token) bool {
 	return tok == token.CONST || tok == token.TYPE || tok == token.VAR
 }
 
-func rootDeclarationCanAffectBenchmark(decl ast.Decl) bool {
+func rootDeclarationCanAffectBenchmark(decl ast.Decl, modulePath string) bool {
 	switch typed := decl.(type) {
 	case *ast.FuncDecl:
 		return rootFunctionCanAffectBenchmark(typed)
 	case *ast.GenDecl:
-		return rootGenDeclCanAffectBenchmark(typed)
+		return rootGenDeclCanAffectBenchmark(typed, modulePath)
 	default:
 		return false
 	}
@@ -513,10 +514,10 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
 }
 
-func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
+func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modulePath string) bool {
 	switch decl.Tok {
 	case token.IMPORT:
-		return genDeclHasBenchmarkImport(decl)
+		return genDeclHasBenchmarkImport(decl, modulePath)
 	case token.VAR:
 		return genDeclHasInitializedVar(decl)
 	default:
@@ -524,17 +525,17 @@ func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
 	}
 }
 
-func genDeclHasBenchmarkImport(decl *ast.GenDecl) bool {
+func genDeclHasBenchmarkImport(decl *ast.GenDecl, modulePath string) bool {
 	for _, spec := range decl.Specs {
 		importSpec, ok := spec.(*ast.ImportSpec)
-		if ok && importCanAffectBenchmark(importSpec) {
+		if ok && importCanAffectBenchmark(importSpec, modulePath) {
 			return true
 		}
 	}
 	return false
 }
 
-func importCanAffectBenchmark(spec *ast.ImportSpec) bool {
+func importCanAffectBenchmark(spec *ast.ImportSpec, modulePath string) bool {
 	path := importPath(spec)
 	if path == "" || path == "embed" {
 		return false
@@ -542,7 +543,7 @@ func importCanAffectBenchmark(spec *ast.ImportSpec) bool {
 	if spec.Name != nil && spec.Name.Name == "_" {
 		return true
 	}
-	return mayHaveExternalInitSideEffects(path)
+	return mayHaveExternalInitSideEffects(path, modulePath)
 }
 
 func importPath(spec *ast.ImportSpec) string {
@@ -556,9 +557,38 @@ func importPath(spec *ast.ImportSpec) string {
 	return value
 }
 
-func mayHaveExternalInitSideEffects(importPath string) bool {
+func mayHaveExternalInitSideEffects(importPath, modulePath string) bool {
+	if modulePath != "" && (importPath == modulePath || strings.HasPrefix(importPath, modulePath+"/")) {
+		return true
+	}
 	firstSegment, _, _ := strings.Cut(importPath, "/")
 	return strings.Contains(firstSegment, ".") || strings.Contains(importPath, "/") || strings.HasPrefix(importPath, ".")
+}
+
+func modulePathForDir(dir string) string {
+	current := filepath.Clean(dir)
+	for {
+		content, err := os.ReadFile(filepath.Join(current, "go.mod"))
+		if err == nil {
+			return parseModulePath(content)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		current = parent
+	}
+}
+
+func parseModulePath(content []byte) string {
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 && fields[0] == "module" {
+			return fields[1]
+		}
+	}
+	return ""
 }
 
 func genDeclHasInitializedVar(decl *ast.GenDecl) bool {

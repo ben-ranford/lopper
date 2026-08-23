@@ -95,15 +95,15 @@ func reportRootPrefixForMerge(repoPath, reportRepoPath string) (string, bool) {
 	if err != nil || prefix == "." || prefix == "" || prefix == ".." || strings.HasPrefix(prefix, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	return normalizeLocationPath(prefix), true
+	return normalizeCoverageGapLocationPath(prefix), true
 }
 
 func rebaseCoverageGapPathForMerge(prefix, value string) string {
 	if value == "" {
 		return value
 	}
-	normalizedPath := normalizeLocationPath(value)
-	if isAbsoluteLocationPath(value) || normalizedPath == prefix || strings.HasPrefix(normalizedPath, prefix+"/") {
+	normalizedPath := normalizeCoverageGapLocationPath(value)
+	if isAbsoluteCoverageGapLocationPath(value) || normalizedPath == prefix || strings.HasPrefix(normalizedPath, prefix+"/") {
 		return normalizedPath
 	}
 	return path.Clean(path.Join(prefix, normalizedPath))

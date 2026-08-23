@@ -3912,6 +3912,66 @@ func TestMakefileBenchGateIgnoresOrdinaryTestsWhenFingerprintingHarness(t *testi
 	assertMemoryBenchArtifacts(t, repo, "0\n", []string{"Result: memory benchmark gate passed."}, []string{"Comparison status: invalid"})
 }
 
+func TestMakefileBenchGateRejectsChangedSimpleModuleImportHarness(t *testing.T) {
+	t.Parallel()
+
+	repo, benchVars := newTempBenchGateGoRepo(t)
+	writeFile(t, filepath.Join(repo, "go.mod"), "module m\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(repo, "setup.go"), "package m\n\nvar Value = 1\n\nfunc init() {}\n")
+	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), `package benchpkg
+
+import (
+	"m"
+	"testing"
+)
+
+func TestOrdinary(t *testing.T) {
+	_ = m.Value
+}
+`)
+	runGitCommand(t, repo, "add", "go.mod", "setup.go", "benchpkg/bench_test.go", "benchpkg/ordinary_test.go")
+	runGitCommand(t, repo, "commit", "-m", "add benchmark with local module import setup")
+
+	writeFile(t, filepath.Join(repo, "benchpkg", "ordinary_test.go"), `package benchpkg
+
+import "testing"
+
+func TestOrdinary(t *testing.T) {}
+`)
+	runGitCommand(t, repo, "add", "benchpkg/ordinary_test.go")
+	runGitCommand(t, repo, "commit", "-m", "change local module import setup")
+
+	benchVars["MEMORY_BENCH_BASE"] = "HEAD~1"
+	benchVars["MEMORY_BENCH_PACKAGES"] = "./benchpkg"
+	output, exitCode := runMakeTargetInDirExpectExitCode(t, repo, "bench-gate", benchVars, 2)
+	if exitCode != 2 {
+		t.Fatalf("bench-gate exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(output, "package=m/benchpkg selection=^(BenchmarkShared)$") ||
+		!strings.Contains(output, "harness-fingerprint=git-hash-object:") {
+		t.Fatalf("bench-gate output missing resolved head definition:\n%s", output)
+	}
+	for _, omit := range []string{"Applied base benchmark definition:", "Applied head benchmark definition:"} {
+		if strings.Contains(output, omit) {
+			t.Fatalf("bench-gate must reject changed local module import harness before execution, found %q:\n%s", omit, output)
+		}
+	}
+
+	wantContains := []string{
+		"Comparison status: invalid",
+		"base benchmark definition for package 'm/benchpkg' does not match the resolved head harness fingerprint.",
+	}
+	wantOmit := []string{
+		"Result: memory benchmark gate passed.",
+		"Result: memory benchmark regression detected.",
+		"BenchmarkShared-",
+	}
+	assertMemoryBenchArtifacts(t, repo, "2\n", wantContains, wantOmit)
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-base.out"))
+	assertPathAbsent(t, filepath.Join(repo, ".artifacts", "bench-head.out"))
+}
+
 func TestMakefileBenchGateIgnoresChangedOrdinaryTestOnlyEmbeddedFixtures(t *testing.T) {
 	t.Parallel()
 

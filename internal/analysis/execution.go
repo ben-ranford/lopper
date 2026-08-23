@@ -151,13 +151,13 @@ func adjustRelativeCoverageGaps(repoPath string, analyzedRoot string, gaps []rep
 	if err != nil || prefix == "." || prefix == "" {
 		return
 	}
-	normalizedPrefix := normalizeLocationPath(prefix)
+	normalizedPrefix := normalizeCoverageGapLocationPath(prefix)
 	for i := range gaps {
 		if gaps[i].Path == "" {
 			continue
 		}
-		normalizedPath := normalizeLocationPath(gaps[i].Path)
-		if isAbsoluteLocationPath(gaps[i].Path) {
+		normalizedPath := normalizeCoverageGapLocationPath(gaps[i].Path)
+		if isAbsoluteCoverageGapLocationPath(gaps[i].Path) {
 			gaps[i].Path = normalizedPath
 			continue
 		}
@@ -182,6 +182,14 @@ func adjustImportLocations(prefix string, imports []report.ImportUse) {
 
 func normalizeLocationPath(value string) string {
 	return path.Clean(strings.ReplaceAll(value, "\\", "/"))
+}
+
+func normalizeCoverageGapLocationPath(value string) string {
+	return filepath.ToSlash(value)
+}
+
+func isAbsoluteCoverageGapLocationPath(value string) bool {
+	return value != "" && filepath.IsAbs(value)
 }
 
 func isAbsoluteLocationPath(value string) bool {

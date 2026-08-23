@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -319,6 +320,39 @@ func TestMergeReportsKeepsMovedBaselineCoverageGapDifferential(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(comparison.NewCoverageGaps, want) {
 		t.Fatalf("ComputeBaselineComparison() new coverage gaps = %#v, want %#v", comparison.NewCoverageGaps, want)
+	}
+}
+
+func TestMergeReportsPreservesUnixLiteralBackslashesInCoverageGapPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+
+	baseline := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/a",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "a\\b.gemspec",
+			Evidence: []string{"baseline package"},
+		}},
+	}})
+	current := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/a",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "a/b.gemspec",
+			Evidence: []string{"current package"},
+		}},
+	}})
+
+	comparison := report.ComputeBaselineComparison(current, baseline)
+	if len(comparison.NewCoverageGaps) != 1 {
+		t.Fatalf("len(NewCoverageGaps) = %d, want distinct slash path: %#v", len(comparison.NewCoverageGaps), comparison.NewCoverageGaps)
+	}
+	if comparison.NewCoverageGaps[0].Path != "packages/a/a/b.gemspec" {
+		t.Fatalf("new coverage gap path = %q, want packages/a/a/b.gemspec", comparison.NewCoverageGaps[0].Path)
 	}
 }
 
