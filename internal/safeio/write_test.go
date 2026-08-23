@@ -140,6 +140,52 @@ func (s *aliasScanRaceState) remove(name string) error {
 	return nil
 }
 
+type relinkedAliasRaceState struct {
+	*aliasScanRaceState
+	sourceRemovals int
+}
+
+func newRelinkedAliasRaceState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *relinkedAliasRaceState {
+	return &relinkedAliasRaceState{aliasScanRaceState: newAliasScanRaceState(t, sourceInfo, dirInfo)}
+}
+
+func (s *relinkedAliasRaceState) root() *renameStateOnlyRoot {
+	base := &fakeRoot{
+		lstat: s.lstat,
+		chmod: chmodNameWithoutError(s.t, "source"),
+		open:  s.open,
+	}
+	return &renameStateOnlyRoot{
+		Root:                 base,
+		linkIfMatches:        s.linkIfMatches,
+		renameIfMatches:      s.renameIfMatches,
+		renameIfMatchesState: s.renameIfMatchesState,
+		removeIfMatches:      s.removeIfMatches,
+	}
+}
+
+func (s *relinkedAliasRaceState) renameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	if !s.files[oldName] {
+		return false, os.ErrNotExist
+	}
+	if newName != "SOURCE" {
+		return false, fmt.Errorf("unexpected target rename %q", newName)
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	// Recreate the distinct hard link after the initial alias scan. The staged
+	// path remains because its rename observes the same underlying file.
+	s.files["SOURCE"] = true
+	return false, nil
+}
+
+func (s *relinkedAliasRaceState) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.sourceInfo, name)
+	if name == "source" {
+		s.sourceRemovals++
+	}
+	return s.remove(name)
+}
+
 type unsafeTargetModeCase struct {
 	name string
 	mode os.FileMode
@@ -8231,6 +8277,24 @@ func TestPrepareRemovesSourceWhenAliasScanChangesBeforePublication(t *testing.T)
 	}
 	if state.readDirCalls != 1 {
 		t.Fatalf("expected source cleanup to rely on the publication result, got %d directory scans", state.readDirCalls)
+	}
+}
+
+func TestPrepareRemovesRelinkedHardLinkAfterAliasScan(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	state := newRelinkedAliasRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
+
+	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("prepare and rename returned error: %v", err)
+	}
+	if state.files["source"] || !state.files["SOURCE"] {
+		t.Fatalf("expected source removal and retained target, files=%#v", state.files)
+	}
+	if state.sourceRemovals != 1 {
+		t.Fatalf("expected exactly one original-source removal, got %d", state.sourceRemovals)
+	}
+	if state.readDirCalls != 1 {
+		t.Fatalf("expected one advisory alias scan, got %d", state.readDirCalls)
 	}
 }
 

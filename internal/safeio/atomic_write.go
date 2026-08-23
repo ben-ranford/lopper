@@ -251,20 +251,31 @@ func publishIdentityBoundReplacing(root Root, sourceRel, targetRel string, expec
 }
 
 func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string) (_ bool, returnErr error) {
+	return publishIdentityBoundReplacingWithRetainedStaging(root, sourceRel, targetRel, expected, sourceMessage, targetMessage, nil)
+}
+
+func publishIdentityBoundReplacingWithRetainedStaging(root Root, sourceRel, targetRel string, expected fs.FileInfo, sourceMessage, targetMessage string, onRetainedStaging func(string, fs.FileInfo) error) (_ bool, returnErr error) {
 	stagedRel, stagedInfo, err := stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, sourceMessage, nil)
 	if err != nil {
 		return false, err
 	}
+	var retainedRel string
+	var retainedInfo fs.FileInfo
+	keepRetainedLink := false
+	hasRetainedLink := false
 	defer func() {
-		if cleanupErr := cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo); cleanupErr != nil {
-			var publishErr *publishRenameError
-			if errors.As(returnErr, &publishErr) {
-				publishErr.cleanupErr = errors.Join(publishErr.cleanupErr, cleanupErr)
-			} else {
-				returnErr = errors.Join(returnErr, cleanupErr)
-			}
+		if hasRetainedLink && !keepRetainedLink {
+			appendPublishStagingCleanup(&returnErr, cleanupAtomicTempFileIfMatches(root, retainedRel, retainedInfo))
 		}
+		appendPublishStagingCleanup(&returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
 	}()
+	if onRetainedStaging != nil {
+		retainedRel, retainedInfo, err = stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, sourceMessage, nil)
+		if err != nil {
+			return false, err
+		}
+		hasRetainedLink = true
+	}
 	if err := verifyPublishedPathMatchesInfo(root, stagedRel, stagedInfo, sourceMessage); err != nil {
 		return false, err
 	}
@@ -272,7 +283,29 @@ func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRe
 	if err != nil {
 		return false, withPublishRenameSourceInfo(err, stagedRel, stagedInfo)
 	}
-	return !stagedConsumed, verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, targetMessage)
+	if err := verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, targetMessage); err != nil {
+		return !stagedConsumed, err
+	}
+	if !stagedConsumed && onRetainedStaging != nil {
+		if err := onRetainedStaging(retainedRel, retainedInfo); err != nil {
+			keepRetainedLink = true
+			return true, withPublishRenameSourceInfo(err, retainedRel, retainedInfo)
+		}
+		return true, nil
+	}
+	return !stagedConsumed, nil
+}
+
+func appendPublishStagingCleanup(returnErr *error, cleanupErr error) {
+	if cleanupErr == nil {
+		return
+	}
+	var publishErr *publishRenameError
+	if errors.As(*returnErr, &publishErr) {
+		publishErr.cleanupErr = errors.Join(publishErr.cleanupErr, cleanupErr)
+		return
+	}
+	*returnErr = errors.Join(*returnErr, cleanupErr)
 }
 
 func renameFileIfMatches(root Root, oldName, newName string, expected fs.FileInfo, message string) (bool, error) {

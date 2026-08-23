@@ -146,7 +146,15 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		// is a no-op, while a raced-away target consumes the source atomically.
 		return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
 	}
-	stagedSourceRetained, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename, moveTargetChangedBeforeValidate)
+	stagedSourceRetained, err := publishIdentityBoundReplacingWithRetainedStaging(
+		root,
+		sourceRel,
+		targetRel,
+		sourceInfo,
+		moveSourceChangedBeforeRename,
+		moveTargetChangedBeforeValidate,
+		retainedStagingAliasFinalizer(root, aliasesTarget, sourceRel, targetRel, sourceInfo),
+	)
 	if err != nil {
 		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
 			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
@@ -160,6 +168,25 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		return sourceInfo, err
 	}
 	return sourceInfo, nil
+}
+
+func retainedStagingAliasFinalizer(root Root, aliasesTarget bool, sourceRel, targetRel string, sourceInfo fs.FileInfo) func(string, fs.FileInfo) error {
+	if !aliasesTarget {
+		return nil
+	}
+	return func(stagedRel string, stagedInfo fs.FileInfo) error {
+		// The initial alias scan is only advisory: a distinct hard link can be
+		// removed and recreated before publication. Keep the retained staging
+		// link live while removing the original, then ensure target names that
+		// exact entry. This also safely rebuilds a genuine same-entry alias.
+		if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
+			return err
+		}
+		if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, moveTargetChangedBeforeValidate)
+	}
 }
 
 func renameStateMayBeUnreported(root Root) bool {
