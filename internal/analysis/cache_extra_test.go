@@ -107,6 +107,60 @@ func (r *secondPostCreateLstatErrorAnalysisCacheRoot) RenameNoReplace(oldName, n
 	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
+type retargetedPostCreateAnalysisCacheRoot struct {
+	safeio.Root
+	name       string
+	retargeted bool
+}
+
+func (r *retargetedPostCreateAnalysisCacheRoot) Mkdir(name string, perm os.FileMode) error {
+	if err := r.Root.Mkdir(name, perm); err != nil {
+		return err
+	}
+	if name == r.name {
+		r.retargeted = true
+	}
+	return nil
+}
+
+func (r *retargetedPostCreateAnalysisCacheRoot) Lstat(name string) (fs.FileInfo, error) {
+	if r.retargeted && name == r.name {
+		return nil, os.ErrNotExist
+	}
+	return r.Root.Lstat(name)
+}
+
+func (r *retargetedPostCreateAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
+type writeErrorAnalysisCacheRoot struct {
+	safeio.Root
+	name string
+	err  error
+}
+
+func (r *writeErrorAnalysisCacheRoot) OpenFile(name string, flag int, perm os.FileMode) (safeio.File, error) {
+	file, err := r.Root.OpenFile(name, flag, perm)
+	if err != nil || name != r.name {
+		return file, err
+	}
+	return &writeErrorAnalysisCacheFile{File: file, err: r.err}, nil
+}
+
+func (r *writeErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
+type writeErrorAnalysisCacheFile struct {
+	safeio.File
+	err error
+}
+
+func (f *writeErrorAnalysisCacheFile) Write([]byte) (int, error) {
+	return 0, f.err
+}
+
 type mkdirErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -1048,6 +1102,21 @@ func TestOpenOrCreatePinnedAnalysisCacheChildRollsBackWhenSecondPostCreateLstatF
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, cacheKeysDirName))
 }
 
+func TestOpenOrCreatePinnedAnalysisCacheChildUsesPreCreateRollbackParentAfterRetarget(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	wrappedRoot := &retargetedPostCreateAnalysisCacheRoot{Root: root, name: cacheKeysDirName}
+
+	_, err := openOrCreatePinnedAnalysisCacheChild(wrappedRoot, repo, cacheKeysDirName)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected retargeted post-create lookup error, got %v", err)
+	}
+	if !wrappedRoot.retargeted {
+		t.Fatal("expected test root to retarget after creating cache child")
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, cacheKeysDirName))
+}
+
 func TestMkdirAnalysisCacheDirValidatesOpenedChildIdentity(t *testing.T) {
 	t.Run("mkdir error is preserved", testMkdirAnalysisCacheDirPreservesMkdirError)
 	t.Run("opened child lstat error is preserved", testMkdirAnalysisCacheDirPreservesOpenedLstatError)
@@ -1340,7 +1409,7 @@ func TestValidateOpenedAnalysisCacheChildRejectsRetargetedPath(t *testing.T) {
 	}
 	retargetedPath := filepath.Join(repo, "missing-child")
 
-	err = validateOpenedAnalysisCacheChild(root, repo, cacheKeysDirName, retargetedPath, childRoot, childInfo, false)
+	err = validateOpenedAnalysisCacheChild(root, root, repo, cacheKeysDirName, retargetedPath, childRoot, childInfo, false)
 	if err == nil || !strings.Contains(err.Error(), "missing-child") {
 		t.Fatalf("expected retargeted child path validation failure, got %v", err)
 	}
@@ -1811,6 +1880,29 @@ func TestReserveAnalysisCacheQuarantinePreservesSwappedReservationWhenLstatFails
 	}
 	assertAnalysisCacheSameFile(t, filepath.Join(repo, reservationName), wrappedRoot.replacementInfo)
 	assertAnalysisCacheDirExists(t, filepath.Join(repo, "moved-reservation"))
+}
+
+func TestReserveAnalysisCacheQuarantineCleansCreatedReservationWhenOwnerWriteFails(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	ownerName := filepath.Join(reservationName, analysisCacheQuarantineOwnerFile)
+	writeErr := errors.New("owner token write failed")
+
+	_, retry, err := reserveAnalysisCacheQuarantine(
+		&writeErrorAnalysisCacheRoot{Root: root, name: ownerName, err: writeErr},
+		reservationName,
+		quarantineName,
+	)
+	if retry {
+		t.Fatal("expected owner write failure not to retry")
+	}
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected owner write error to be preserved, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, ownerName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
 func testQuarantineAnalysisCacheChildReportsReserveExhaustion(t *testing.T) {
