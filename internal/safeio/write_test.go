@@ -8253,7 +8253,7 @@ func TestRestoreQuarantinedPathNoReplaceByCopyErrorBranches(t *testing.T) {
 	t.Run("missing staged source", testRestoreCopyMissingStagedSource)
 	t.Run("source identity mismatch before copy", testRestoreCopySourceIdentityMismatch)
 	t.Run("original already exists", testRestoreCopyOriginalExists)
-	t.Run("created target stat failure reports and cleans candidate", testRestoreCopyInitialStatFailure)
+	t.Run("created target stat failure preserves concurrent replacement", testRestoreCopyInitialStatFailure)
 	t.Run("copy source read failure cleans candidate", testRestoreCopyReadFailure)
 	t.Run("copy source read failure joins target stat failure", testRestoreCopyReadAndStatFailure)
 	t.Run("created target chmod failure cleans candidate", testRestoreCopyChmodFailure)
@@ -8309,14 +8309,23 @@ func testRestoreCopyOriginalExists(t *testing.T) {
 func testRestoreCopyInitialStatFailure(t *testing.T) {
 	rootDir, base, expected := setupRestoreCopy(t)
 	statErr := errors.New("stat restored failed")
+	sourcePath := filepath.Join(rootDir, "source")
 	root := &fakeRoot{Root: base, openFile: failingRestoreTargetOpen(base, func(file File) File {
-		return &fakeFile{File: file, stat: func() (fs.FileInfo, error) { return nil, statErr }}
+		return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
+			if err := os.Remove(sourcePath); err != nil {
+				t.Fatalf("replace unknown-identity candidate: %v", err)
+			}
+			if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
+				t.Fatalf("write concurrent replacement: %v", err)
+			}
+			return nil, statErr
+		}}
 	})}
 	restored, err := restoreCopy(root, expected)
 	if restored || !errors.Is(err, statErr) {
 		t.Fatalf("expected created target stat failure, restored=%t err=%v", restored, err)
 	}
-	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+	assertFileContent(t, sourcePath, "replacement")
 }
 
 func testRestoreCopyReadFailure(t *testing.T) {
