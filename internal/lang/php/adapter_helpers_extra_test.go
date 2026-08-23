@@ -1622,6 +1622,7 @@ func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 		{name: "stylesheet-like call without a close tag", opener: "<?xml-stylesheet?foo():bar();"},
 		{name: "stylesheet-like call after whitespace", opener: "<?xml-stylesheet ();"},
 		{name: "stylesheet-like call without target whitespace", opener: "<?xml-stylesheettype==\"x\";"},
+		{name: "stylesheet-like invalid pseudo-attribute", opener: "<?xml-stylesheet -foo==\"x\";"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			content := []byte(tc.opener + "\nuse Vendor\\Package\\Client;\n")
@@ -1668,6 +1669,26 @@ func TestParsePHPImportsExcludesXMLDeclarationsWhenShortOpenTagsAreSupported(t *
 	}
 	parsed := parsePHPImports(content, "xml-template.php", resolver)
 	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+}
+
+func TestXMLStylesheetProcessingInstructionRequiresXMLNameStart(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "ASCII name", text: "<?xml-stylesheet type=\"text/xsl\"?>", want: true},
+		{name: "Unicode name", text: "<?xml-stylesheet π=\"text/xsl\"?>", want: true},
+		{name: "hyphen", text: "<?xml-stylesheet -foo=\"x\"?>", want: false},
+		{name: "digit", text: "<?xml-stylesheet 2foo=\"x\"?>", want: false},
+		{name: "dollar", text: "<?xml-stylesheet $foo=\"x\"?>", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isXMLStylesheetProcessingInstructionOpenTag(tc.text, 0); got != tc.want {
+				t.Fatalf("isXMLStylesheetProcessingInstructionOpenTag() = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestMaskInactivePHPRegionsHelperBranches(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -1012,16 +1013,44 @@ func isXMLStylesheetProcessingInstructionOpenTag(text string, start int) bool {
 		return false
 	}
 	attributeStart := skipPHPWhitespace(text, targetEnd)
-	attributeEnd := attributeStart
-	for attributeEnd < len(text) && isXMLProcessingInstructionAttributeByte(text[attributeEnd]) {
-		attributeEnd++
+	attributeEnd, ok := xmlProcessingInstructionAttributeNameEnd(text, attributeStart)
+	if !ok {
+		return false
 	}
 	attributeValueStart := skipPHPWhitespace(text, attributeEnd)
-	return attributeEnd > attributeStart && attributeValueStart < len(text) && text[attributeValueStart] == '='
+	return attributeValueStart < len(text) && text[attributeValueStart] == '='
 }
 
-func isXMLProcessingInstructionAttributeByte(ch byte) bool {
-	return isPHPIdentifierByte(ch) || ch == ':' || ch == '-'
+func xmlProcessingInstructionAttributeNameEnd(text string, offset int) (int, bool) {
+	if offset >= len(text) {
+		return offset, false
+	}
+	r, size := utf8.DecodeRuneInString(text[offset:])
+	if r == utf8.RuneError && size == 1 || !isXMLNameStartRune(r) {
+		return offset, false
+	}
+	offset += size
+	for offset < len(text) {
+		r, size = utf8.DecodeRuneInString(text[offset:])
+		if r == utf8.RuneError && size == 1 || !isXMLNameRune(r) {
+			break
+		}
+		offset += size
+	}
+	return offset, true
+}
+
+func isXMLNameStartRune(r rune) bool {
+	return r == ':' || r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' ||
+		r >= 0xC0 && r <= 0xD6 || r >= 0xD8 && r <= 0xF6 || r >= 0xF8 && r <= 0x2FF ||
+		r >= 0x370 && r <= 0x37D || r >= 0x37F && r <= 0x1FFF || r >= 0x200C && r <= 0x200D ||
+		r >= 0x2070 && r <= 0x218F || r >= 0x2C00 && r <= 0x2FEF || r >= 0x3001 && r <= 0xD7FF ||
+		r >= 0xF900 && r <= 0xFDCF || r >= 0xFDF0 && r <= 0xFFFD || r >= 0x10000 && r <= 0xEFFFF
+}
+
+func isXMLNameRune(r rune) bool {
+	return isXMLNameStartRune(r) || r == '-' || r == '.' || r >= '0' && r <= '9' ||
+		r == 0xB7 || r >= 0x0300 && r <= 0x036F || r >= 0x203F && r <= 0x2040
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {
