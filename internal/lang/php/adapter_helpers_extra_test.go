@@ -1505,6 +1505,17 @@ func TestParsePHPImportsResolvesImportedAliasBeforeTraitNamespaceLookup(t *testi
 	assertImportModules(t, parsed.imports, []string{"Acme\\Other\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsResetsAliasesForSeparateGlobalNamespaceBlocks(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{
+		"Acme\\Other":          "acme/other",
+		"Acme\\Other\\Package": "acme/other-package",
+		"Vendor\\Package":      "vendor/package",
+	}}
+	content := []byte("<?php namespace { use Acme\\Other as Vendor; } namespace { class C { use Vendor\\Package\\FeatureTrait; } }")
+	parsed := parsePHPImports(content, "separate-global-namespaces.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Acme\\Other", "Vendor\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsExcludesFunctionAndConstAliasesFromTraitNamespaceLookup(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{
 		"Vendor\\Package":      "vendor/package",

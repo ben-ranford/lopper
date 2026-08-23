@@ -785,6 +785,14 @@ func parseNamespaceDeclarationAt(text string, offset int) (phpNamespaceDeclarati
 		return phpNamespaceDeclaration{}, false
 	}
 	nameStart := skipPHPWhitespace(text, offset+len("namespace"))
+	if nameStart < len(text) && text[nameStart] == '{' {
+		return phpNamespaceDeclaration{
+			start:       offset,
+			end:         nameStart + len("{"),
+			braceOffset: nameStart,
+			bracketed:   true,
+		}, true
+	}
 	nameEnd, ok := parseNamespaceDeclarationNameEnd(text, nameStart)
 	if !ok {
 		return phpNamespaceDeclaration{}, false
