@@ -51,6 +51,11 @@ type ReadDirFile interface {
 
 var ErrTargetPathSymlink = errors.New("target path is a symlink")
 
+// errReadDirFileUnsupported marks directory handles that satisfy File but do
+// not expose directory enumeration. Root deliberately requires only File from
+// Open, so callers that can safely avoid enumeration may select a fallback.
+var errReadDirFileUnsupported = fmt.Errorf("%w: directory file does not implement ReadDir", fs.ErrInvalid)
+
 var fileSystem FileSystem = &osFileSystem{}
 var runtimeGOOS = runtime.GOOS
 
@@ -386,9 +391,9 @@ func OpenPinnedDirectory(root Root, name string) (_ ReadDirFile, err error) {
 		return &pinnedReadDirFile{ReadDirFile: dir, roots: roots}, nil
 	}
 	if len(roots) > 0 {
-		err = closeRootsWithError(roots, fs.ErrInvalid)
+		err = closeRootsWithError(roots, errReadDirFileUnsupported)
 	} else {
-		err = fs.ErrInvalid
+		err = errReadDirFileUnsupported
 	}
 	if closeErr := file.Close(); closeErr != nil {
 		return nil, errors.Join(err, closeErr)

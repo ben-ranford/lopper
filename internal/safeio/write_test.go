@@ -6092,6 +6092,20 @@ type rootWithoutIdentity struct {
 	Root
 }
 
+// plainFileHandleRoot represents a conforming Root whose directory handles
+// expose only the public File contract, not the optional ReadDirFile method.
+type plainFileHandleRoot struct {
+	Root
+}
+
+func (r *plainFileHandleRoot) Open(name string) (File, error) {
+	file, err := r.Root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &fakeFile{File: file}, nil
+}
+
 func TestPathOperationIfMatchesSupportsPlainRoot(t *testing.T) {
 	t.Run("link", func(t *testing.T) {
 		rootDir := t.TempDir()
@@ -7139,6 +7153,38 @@ func TestBasicRootLinkRenameRemoveErrorBranches(t *testing.T) {
 		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
 		if !errors.Is(err, lstatErr) {
 			t.Fatalf("expected lstat error, got %v", err)
+		}
+	})
+
+	t.Run("target stat failure cleans target and quarantine links", func(t *testing.T) {
+		useRandomTempNames(t,
+			atomicTempPrefix+"source-quarantine",
+			atomicTempPrefix+"target-cleanup",
+			atomicTempPrefix+"source-cleanup",
+		)
+		files := map[string]fs.FileInfo{"source": sourceInfo}
+		targetStatErr := errors.New("target stat failed")
+		failTargetStat := true
+		root := newIdentityMapRoot(t, files, identityMapRootHooks{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if name == "target" && failTargetStat {
+					failTargetStat = false
+					return nil, targetStatErr
+				}
+				info, ok := files[name]
+				if !ok {
+					return nil, os.ErrNotExist
+				}
+				return info, nil
+			},
+		})
+
+		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+		if !errors.Is(err, targetStatErr) {
+			t.Fatalf("expected target stat error, got %v", err)
+		}
+		if len(files) != 1 || files["source"] == nil {
+			t.Fatalf("target stat cleanup leaked paths: %#v", files)
 		}
 	})
 
@@ -10878,6 +10924,31 @@ func TestMoveFileWithinRootCaseOnlyAliasPreservesFile(t *testing.T) {
 		t.Fatalf("case-only move returned error: %v", err)
 	}
 	assertFileContent(t, filepath.Join(rootDir, "file"), "same")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootCaseOnlyAliasSupportsPlainFileRoot(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("case-insensitive alias regression requires the default macOS filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "File")
+	targetPath := filepath.Join(rootDir, "file")
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is case-sensitive")
+	}
+	root := &plainFileHandleRoot{Root: openPlainRoot(t, rootDir)}
+
+	if err := MoveFileWithinRoot(root, "File", "file", 0o750, 0o640); err != nil {
+		t.Fatalf("case-only move through plain File root returned error: %v", err)
+	}
+	assertFileContent(t, targetPath, "same")
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 

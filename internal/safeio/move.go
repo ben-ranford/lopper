@@ -131,6 +131,12 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		return nil, err
 	}
 	aliasesTarget, err := targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
+	if errors.Is(err, errReadDirFileUnsupported) {
+		// Root only promises File from Open. When two differently-spelled
+		// paths may address one directory entry, do the identity-checked
+		// quarantine rename instead of guessing from incomplete observations.
+		return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+	}
 	if err != nil {
 		return sourceInfo, err
 	}

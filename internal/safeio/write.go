@@ -553,8 +553,12 @@ func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expecte
 
 	newInfo, err := publishedRegularFileInfo(root, newName, message)
 	if err != nil {
-		cleanupErr := removeFileIfMatchesUsingBasicRoot(root, newName, quarantineInfo, message)
-		return errors.Join(err, cleanupErr)
+		targetCleanupErr := removeFileIfMatchesUsingBasicRoot(root, newName, quarantineInfo, message)
+		sourceCleanupErr := removeFileIfMatchesUsingBasicRoot(root, quarantineRel, quarantineInfo, message)
+		if sourceCleanupErr != nil {
+			cleanupDir = false
+		}
+		return errors.Join(err, targetCleanupErr, sourceCleanupErr)
 	}
 	if !sameRegularFile(quarantineInfo, newInfo) {
 		targetCleanupErr := removeFileIfMatchesUsingBasicRoot(root, newName, quarantineInfo, message)
