@@ -636,7 +636,7 @@ func findNamespaceDeclarationsWithShortOpenTags(text string, allowShortOpenTags 
 
 func appendNamespaceDeclarationsInLine(declarations []phpNamespaceDeclaration, text string, lineStart, lineEnd int, allowShortOpenTags bool) []phpNamespaceDeclaration {
 	prelude := phpNamespaceLinePrelude{offset: lineStart, valid: true, allowShortOpenTags: allowShortOpenTags}
-	completion := phpNamespaceLineCompletion{offset: lineStart}
+	completion := phpNamespaceLineCompletion{offset: lineStart, allowShortOpenTags: allowShortOpenTags}
 	for offset := lineStart; offset < lineEnd; {
 		declaration, ok := parseNamespaceDeclarationAt(text, offset)
 		if ok {
@@ -745,8 +745,9 @@ func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool)
 }
 
 type phpNamespaceLineCompletion struct {
-	offset            int
-	lastNonWhitespace byte
+	offset             int
+	lastNonWhitespace  byte
+	allowShortOpenTags bool
 }
 
 func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
@@ -756,7 +757,7 @@ func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
 			c.offset += len("?>")
 			continue
 		}
-		if tagLength := phpOpenPreludeLengthAt(text, c.offset, len(text), false); tagLength > 0 {
+		if tagLength := phpOpenPreludeLengthAt(text, c.offset, len(text), c.allowShortOpenTags); tagLength > 0 {
 			c.offset += tagLength
 			continue
 		}

@@ -1445,6 +1445,16 @@ func TestParsePHPImportsTracksNamespaceAcrossSameLineCloseOpenTransition(t *test
 	assertImportModules(t, parsed.imports, []string{"B\\Vendor\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsTracksNamespaceAcrossSameLineShortTagTransition(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep:        map[string]string{"B\\Vendor\\Package": "vendor/package"},
+		localNamespace:        map[string]struct{}{"A\\Vendor": {}},
+		allowPHPShortOpenTags: true,
+	}
+	parsed := parsePHPImports([]byte("<? namespace A ?><? namespace B ?><? class C { use Vendor\\Package\\FeatureTrait; }"), "short-tag-close-open-namespace.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"B\\Vendor\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsResolvesNamespaceRelativeTraitUseInGlobalNamespace(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	parsed := parsePHPImports([]byte("<?php namespace { class C { use namespace\\Vendor\\Package\\FeatureTrait; } }"), "global-namespace-relative.php", resolver)
