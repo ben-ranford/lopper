@@ -193,16 +193,7 @@ func retainedStagingAliasFinalizer(root Root, aliasesTarget bool, sourceRel, tar
 }
 
 func restoreRetainedAliasSource(root Root, stagedRel, sourceRel string, stagedInfo fs.FileInfo) error {
-	linkErr := linkFileIfMatches(root, stagedRel, sourceRel, stagedInfo, moveSourceChangedBeforeCleanup)
-	if linkErr == nil {
-		_, cleanupErr := finishRestoredQuarantinedPath(root, stagedRel, moveSourceChangedBeforeCleanup, stagedInfo)
-		return cleanupErr
-	}
-	if !identityBoundLinkFallbackEligible(linkErr) {
-		return errors.Join(fmt.Errorf("%s: %s", moveSourceChangedBeforeCleanup, sourceRel), linkErr)
-	}
-
-	restored, err := restoreQuarantinedPathNoReplaceByCopy(root, stagedRel, sourceRel, moveSourceChangedBeforeCleanup, stagedInfo, linkErr)
+	restored, err := restoreQuarantinedPathNoReplace(root, stagedRel, sourceRel, moveSourceChangedBeforeCleanup, stagedInfo)
 	if restored || err != nil {
 		return err
 	}

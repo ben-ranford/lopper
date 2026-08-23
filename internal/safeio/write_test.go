@@ -6350,8 +6350,13 @@ func TestPathOperationIfMatchesSupportsPlainRoot(t *testing.T) {
 
 func TestPlainRootRenameRestoresSourceAfterQuarantineSnapshotFailure(t *testing.T) {
 	sourceInfo, _ := writePinnedTargetInfoPair(t)
-	useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"restore")
-	state := newPlainRootSnapshotFailureState(t, sourceInfo)
+	useRandomTempNames(t,
+		atomicTempPrefix+"quarantine",
+		atomicTempPrefix+"restore",
+		atomicTempPrefix+"restore-cleanup",
+		atomicTempPrefix+"quarantine-cleanup",
+	)
+	state := newPlainRootSnapshotFailureState(sourceInfo)
 
 	consumed, err := renameFileIfMatches(state.root(), "source", "target", sourceInfo, sourceChangedMsg)
 	if !errors.Is(err, state.snapshotErr) {
@@ -6360,28 +6365,24 @@ func TestPlainRootRenameRestoresSourceAfterQuarantineSnapshotFailure(t *testing.
 	if consumed {
 		t.Fatal("expected source not to be consumed after snapshot failure")
 	}
-	if !state.sourceExists || state.quarantineExists || state.targetExists {
-		t.Fatalf("expected source restored without target publish, got source=%t quarantine=%t target=%t", state.sourceExists, state.quarantineExists, state.targetExists)
+	if !state.files["source"] || state.files[state.quarantineRel] || state.files["target"] {
+		t.Fatalf("expected source restored without target publish, files=%#v", state.files)
 	}
 }
 
 type plainRootSnapshotFailureState struct {
-	t                *testing.T
-	sourceInfo       fs.FileInfo
-	snapshotErr      error
-	sourceExists     bool
-	quarantineExists bool
-	targetExists     bool
-	quarantineRel    string
-	lstatFailed      bool
+	sourceInfo    fs.FileInfo
+	snapshotErr   error
+	files         map[string]bool
+	quarantineRel string
+	lstatFailed   bool
 }
 
-func newPlainRootSnapshotFailureState(t *testing.T, sourceInfo fs.FileInfo) *plainRootSnapshotFailureState {
+func newPlainRootSnapshotFailureState(sourceInfo fs.FileInfo) *plainRootSnapshotFailureState {
 	return &plainRootSnapshotFailureState{
-		t:            t,
-		sourceInfo:   sourceInfo,
-		snapshotErr:  errors.New("snapshot failed"),
-		sourceExists: true,
+		sourceInfo:  sourceInfo,
+		snapshotErr: errors.New("snapshot failed"),
+		files:       map[string]bool{"source": true},
 	}
 }
 
@@ -6396,48 +6397,44 @@ func (s *plainRootSnapshotFailureState) root() Root {
 }
 
 func (s *plainRootSnapshotFailureState) rename(oldName, newName string) error {
-	switch {
-	case oldName == "source" && s.sourceExists:
-		s.sourceExists = false
-		s.quarantineExists = true
-		s.quarantineRel = newName
-	case oldName == s.quarantineRel && newName == "target":
-		s.quarantineExists = false
-		s.targetExists = true
-	case oldName == s.quarantineRel && s.quarantineExists:
-		s.quarantineRel = newName
-	default:
-		s.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+	if !s.files[oldName] {
+		return os.ErrNotExist
 	}
+	if oldName == "source" && s.quarantineRel == "" {
+		s.quarantineRel = newName
+	}
+	s.files[oldName] = false
+	s.files[newName] = true
 	return nil
 }
 
 func (s *plainRootSnapshotFailureState) lstat(name string) (fs.FileInfo, error) {
-	if name == s.quarantineRel && s.quarantineExists && !s.lstatFailed {
+	if name == s.quarantineRel && s.files[name] && !s.lstatFailed {
 		s.lstatFailed = true
 		return nil, s.snapshotErr
 	}
-	if (name == s.quarantineRel && s.quarantineExists) || (name == "source" && s.sourceExists) {
+	if s.files[name] {
 		return s.sourceInfo, nil
 	}
 	return nil, os.ErrNotExist
 }
 
 func (s *plainRootSnapshotFailureState) link(oldName, newName string) error {
-	if oldName != s.quarantineRel || newName != "source" {
-		s.t.Fatalf("unexpected restore link %q -> %q", oldName, newName)
+	if !s.files[oldName] {
+		return os.ErrNotExist
 	}
-	if s.sourceExists {
+	if s.files[newName] {
 		return os.ErrExist
 	}
-	s.sourceExists = true
+	s.files[newName] = true
 	return nil
 }
 
 func (s *plainRootSnapshotFailureState) remove(name string) error {
-	if name == s.quarantineRel {
-		s.quarantineExists = false
+	if !s.files[name] {
+		return os.ErrNotExist
 	}
+	s.files[name] = false
 	return nil
 }
 
@@ -9309,7 +9306,7 @@ func TestFinalSafeIOQuarantineCleanupResidualBranches(t *testing.T) {
 	t.Run("mismatched created cleanup preserves an un-restorable quarantine", func(t *testing.T) {
 		restoreErr := errors.New("restore blocked")
 		cleanupDir, cleanupEntry, err := restoreMismatchedCreatedCleanup(&fakeRoot{
-			link: func(string, string) error { return restoreErr },
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return restoreErr },
 		}, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
 		if cleanupDir || cleanupEntry || !errors.Is(err, restoreErr) {
 			t.Fatalf("expected un-restorable quarantine to be preserved, cleanupDir=%t cleanupEntry=%t err=%v", cleanupDir, cleanupEntry, err)
@@ -9386,7 +9383,7 @@ func TestFinalSafeIOStateErrorBranches(t *testing.T) {
 	t.Run("failed restore disables stale quarantine cleanup", func(t *testing.T) {
 		restoreErr := errors.New("restore rejected")
 		state := &basicRootRenameState{
-			root:                   &fakeRoot{link: func(string, string) error { return restoreErr }},
+			root:                   &fakeRoot{linkIfMatches: func(string, string, fs.FileInfo, string) error { return restoreErr }},
 			oldName:                "source",
 			expected:               sourceInfo,
 			message:                sourceChangedMsg,
@@ -10756,6 +10753,38 @@ func TestRestoreQuarantinedPathNoReplaceRetainsStagedEntryWhenOriginalReappears(
 	}
 	assertFileContent(t, filepath.Join(rootDir, "source"), "newer")
 	assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "displaced")
+}
+
+func TestRestoreQuarantinedPathNoReplaceRejectsReplacedStagingEntry(t *testing.T) {
+	expected, replacement := writePinnedTargetInfoPair(t)
+	restoredSource := false
+	rawLinkCalls := 0
+	root := &identityOnlyRoot{
+		Root: &fakeRoot{
+			link: func(string, string) error {
+				rawLinkCalls++
+				return nil
+			},
+		},
+		linkIfMatches: func(oldName, newName string, gotExpected fs.FileInfo, message string) error {
+			if oldName != "quarantine/entry" || newName != "source" || message != sourceChangedMsg {
+				t.Fatalf("unexpected restore link %q -> %q (%s)", oldName, newName, message)
+			}
+			if !sameRegularFile(gotExpected, replacement) {
+				return fmt.Errorf("%s: %s", message, oldName)
+			}
+			restoredSource = true
+			return nil
+		},
+	}
+
+	restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+	if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected replaced staging rejection, restored=%t err=%v", restored, err)
+	}
+	if restoredSource || rawLinkCalls != 0 {
+		t.Fatalf("must not restore a replacement, restored=%t rawLinkCalls=%d", restoredSource, rawLinkCalls)
+	}
 }
 
 func TestAtomicReplacementFallsBackToPreparedCopyWhenLinksUnsupported(t *testing.T) {

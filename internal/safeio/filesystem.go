@@ -662,13 +662,14 @@ func identityBoundQuarantinePath(root Root, sourceRel string) (string, string, e
 }
 
 func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message string, expected fs.FileInfo) (bool, error) {
-	if err := root.Link(stagedRel, originalRel); err != nil {
-		if !identityBoundLinkUnsupported(err) {
-			return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), err)
-		}
-		return restoreQuarantinedPathNoReplaceByCopy(root, stagedRel, originalRel, message, expected, err)
+	linkErr := linkFileIfMatches(root, stagedRel, originalRel, expected, message)
+	if linkErr == nil {
+		return finishRestoredQuarantinedPath(root, stagedRel, message, expected)
 	}
-	return finishRestoredQuarantinedPath(root, stagedRel, message, expected)
+	if !identityBoundLinkFallbackEligible(linkErr) {
+		return false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), linkErr)
+	}
+	return restoreQuarantinedPathNoReplaceByCopy(root, stagedRel, originalRel, message, expected, linkErr)
 }
 
 func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, message string, expected fs.FileInfo, linkErr error) (restored bool, returnErr error) {
