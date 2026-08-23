@@ -7819,10 +7819,13 @@ func TestPreparePreservesAliasWhenIdentityRootCannotReportRenameState(t *testing
 		},
 	}
 	root := &identityOnlyRoot{
-		Root:          base,
-		linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+		Root: base,
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			t.Fatal("legacy alias handling must not create a staging link")
+			return nil
+		},
 		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "LONGFI~1.TXT" {
+			if oldName != "Long File.txt" || newName != "LONGFI~1.TXT" {
 				t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
 			}
 			return nil
@@ -7842,8 +7845,80 @@ func TestPreparePreservesAliasWhenIdentityRootCannotReportRenameState(t *testing
 	if sourceCleanupCalls != 0 {
 		t.Fatalf("same-entry alias cleanup ran %d times", sourceCleanupCalls)
 	}
-	if readDirCalls != 2 {
-		t.Fatalf("expected pre- and post-publication alias checks, got %d directory scans", readDirCalls)
+	if readDirCalls != 1 {
+		t.Fatalf("expected one pre-rename alias check, got %d directory scans", readDirCalls)
+	}
+}
+
+func TestPrepareLegacyIdentityAliasRenamesDirectlyWhenTargetDisappears(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	sourcePresent := true
+	targetPresent := true
+	readDirCalls := 0
+	renameCalls := 0
+	base := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source":
+				if sourcePresent {
+					return sourceInfo, nil
+				}
+			case "TARGET":
+				if targetPresent {
+					return sourceInfo, nil
+				}
+			case ".":
+				return dirInfo, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return dirInfo, nil }, close: closeWithoutError},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					readDirCalls++
+					return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+				},
+			}, nil
+		},
+	}
+	root := &identityOnlyRoot{
+		Root: base,
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			t.Fatal("legacy alias handling must not create a staging link")
+			return nil
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != "source" || newName != "TARGET" {
+				t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			renameCalls++
+			// Model the target disappearing after the alias scan. The direct,
+			// identity-bound rename consumes source and recreates target atomically.
+			sourcePresent = false
+			targetPresent = true
+			return nil
+		},
+		removeIfMatches: func(string, fs.FileInfo, string) error {
+			t.Fatal("direct legacy rename must not perform a separate source cleanup")
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "TARGET", 0o600); err != nil {
+		t.Fatalf("legacy alias move returned error: %v", err)
+	}
+	if renameCalls != 1 || sourcePresent || !targetPresent {
+		t.Fatalf("expected one direct rename to consume source and publish target, calls=%d source=%t target=%t", renameCalls, sourcePresent, targetPresent)
+	}
+	if readDirCalls != 1 {
+		t.Fatalf("expected only the initial alias scan, got %d directory scans", readDirCalls)
 	}
 }
 

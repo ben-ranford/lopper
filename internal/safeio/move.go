@@ -140,6 +140,12 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return sourceInfo, err
 	}
+	if aliasesTarget && renameStateMayBeUnreported(root) {
+		// A legacy identity-bound root cannot report whether a rename consumed
+		// the staging name. Rename the source directly instead: an alias rename
+		// is a no-op, while a raced-away target consumes the source atomically.
+		return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+	}
 	stagedSourceRetained, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename, moveTargetChangedBeforeValidate)
 	if err != nil {
 		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
@@ -149,15 +155,6 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	}
 	if aliasesTarget && stagedSourceRetained {
 		return sourceInfo, nil
-	}
-	if aliasesTarget && renameStateMayBeUnreported(root) {
-		aliasesTarget, err = targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
-		if err != nil {
-			return sourceInfo, err
-		}
-		if aliasesTarget {
-			return sourceInfo, nil
-		}
 	}
 	if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
 		return sourceInfo, err
