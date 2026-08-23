@@ -197,7 +197,7 @@ func TestFallbackAtomicReplacementAcceptsActualQuarantineRenameSourceOnWindows(t
 	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
 	renameErr := &publishRenameError{
 		sourceRel: quarantineRel,
-		err:       windowsReplaceExistingError(quarantineRel, writeTestFileName),
+		err:       errors.Join(windowsReplaceExistingError(quarantineRel, writeTestFileName), nil),
 	}
 
 	err := fallbackAtomicReplacement(&fakeRoot{}, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr)
