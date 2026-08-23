@@ -6191,6 +6191,8 @@ func (s *plainRootSnapshotFailureState) rename(oldName, newName string) error {
 	case oldName == s.quarantineRel && newName == "target":
 		s.quarantineExists = false
 		s.targetExists = true
+	case oldName == s.quarantineRel && s.quarantineExists:
+		s.quarantineRel = newName
 	default:
 		s.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 	}
@@ -8505,6 +8507,26 @@ func TestFinishRestoredQuarantinedPathBranches(t *testing.T) {
 	}, "staged", sourceChangedMsg, sourceInfo)
 	if !restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
 		t.Fatalf("expected staged identity mismatch, restored=%t err=%v", restored, err)
+	}
+}
+
+func TestRemoveFileIfStillMatchesUsesIdentityBoundRemoval(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "source")
+	removeCalls := 0
+	root := &identityOnlyRoot{removeIfMatches: func(name string, got fs.FileInfo, message string) error {
+		removeCalls++
+		if name != "staged" || message != sourceChangedMsg {
+			t.Fatalf("unexpected identity-bound removal %q: %s", name, message)
+		}
+		requireSameFileInfo(t, got, expected, name)
+		return nil
+	}}
+
+	if err := removeFileIfStillMatches(root, "staged", expected, sourceChangedMsg); err != nil {
+		t.Fatalf("identity-bound removal returned error: %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one identity-bound removal, got %d", removeCalls)
 	}
 }
 

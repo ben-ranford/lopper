@@ -508,16 +508,7 @@ func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message st
 }
 
 func removeFileIfStillMatches(root Root, rel string, expected fs.FileInfo, message string) error {
-	if err := verifyPublishedPathMatchesInfo(root, rel, expected, message); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	return removeFileIfMatches(root, rel, expected, message)
 }
 
 func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expected fs.FileInfo, message string) (returnErr error) {
@@ -777,11 +768,24 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 	}
 
-	if err := removeFileIfStillMatches(root, quarantineRel, quarantineInfo, message); err != nil {
+	if err := removeVerifiedQuarantinedFile(root, quarantineRel, quarantineInfo, message); err != nil {
 		cleanupDir = false
 		return err
 	}
 	cleanupQuarantineEntry = false
+	return nil
+}
+
+func removeVerifiedQuarantinedFile(root Root, rel string, expected fs.FileInfo, message string) error {
+	if err := verifyPublishedPathMatchesInfo(root, rel, expected, message); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return nil
 }
 
