@@ -677,6 +677,36 @@ $client = new Client();
 	}
 }
 
+func TestPHPAdapterAppliesShortOpenTagConfigToDirectorySubtree(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "src", ".user.ini"), "short_open_tag = On\n")
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<? use Vendor\Package\Client;
+$client = new Client();
+`)
+	writeFile(t, filepath.Join(repo, "templates", testIndexPHP), `<? use Vendor\Package\TemplateOnly;
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 1 || len(dep.UsedImports) != 1 || dep.UsedImports[0].Module != `Vendor\Package\Client` {
+		t.Fatalf("expected scoped short-open config to expose only src usage, got %#v", dep)
+	}
+	if len(dep.UnusedImports) != 0 {
+		t.Fatalf("did not expect short-tag imports outside configured subtree, got %#v", dep.UnusedImports)
+	}
+}
+
 func TestPHPAdapterParsesUseStatementsInlineWithPHPOpenTag(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))

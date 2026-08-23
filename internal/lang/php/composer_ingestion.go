@@ -3,6 +3,7 @@ package php
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ type composerData struct {
 	LocalNamespaces      map[string]struct{}
 	UsageIncomplete      bool
 	ShortOpenTags        bool
+	ShortOpenTagPolicy   phpShortOpenTagPolicy
 }
 
 type composerManifest struct {
@@ -60,7 +62,16 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectDeclaredDependencies(manifest, data.DeclaredDependencies)
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
-	data.ShortOpenTags = detectPHPShortOpenTags(repoPath)
+	shortOpenTagPolicy, shortOpenTagWarnings, err := detectPHPShortOpenTags(repoPath)
+	if err != nil {
+		return data, nil, err
+	}
+	data.ShortOpenTags = shortOpenTagPolicy.anyEnabled()
+	data.ShortOpenTagPolicy = shortOpenTagPolicy
+	if len(shortOpenTagPolicy.incompleteDirs) > 0 {
+		data.UsageIncomplete = true
+	}
+	warnings = append(warnings, shortOpenTagWarnings...)
 
 	if err := loadComposerLockMappings(repoPath, &data); isPureOversizedFileError(err) {
 		data.UsageIncomplete = true
@@ -183,25 +194,161 @@ func isPureOversizedFileError(err error) bool {
 	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
 }
 
-func detectPHPShortOpenTags(repoPath string) bool {
-	for _, filename := range []string{".user.ini", "php.ini", ".htaccess"} {
-		if phpConfigEnablesShortOpenTags(repoPath, filename) {
+type phpShortOpenTagPolicy struct {
+	dirSettings    map[string]phpShortOpenTagDirSetting
+	incompleteDirs map[string]struct{}
+}
+
+type phpShortOpenTagDirSetting struct {
+	enabled  bool
+	priority int
+}
+
+func detectPHPShortOpenTags(repoPath string) (phpShortOpenTagPolicy, []string, error) {
+	policy := phpShortOpenTagPolicy{
+		dirSettings:    make(map[string]phpShortOpenTagDirSetting),
+		incompleteDirs: make(map[string]struct{}),
+	}
+	warnings := make([]string, 0)
+	root := filepath.Clean(repoPath)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		return scanPHPShortOpenTagConfigEntry(root, path, entry, walkErr, &policy, &warnings)
+	})
+	if err != nil {
+		return phpShortOpenTagPolicy{}, nil, err
+	}
+	return policy, warnings, nil
+}
+
+func scanPHPShortOpenTagConfigEntry(root, path string, entry fs.DirEntry, walkErr error, policy *phpShortOpenTagPolicy, warnings *[]string) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		return scanPHPShortOpenTagConfigDir(root, path, entry)
+	}
+	priority := phpConfigFilePriority(entry.Name())
+	if priority == 0 {
+		return nil
+	}
+	return scanPHPShortOpenTagConfigFile(root, path, priority, policy, warnings)
+}
+
+func scanPHPShortOpenTagConfigDir(root, path string, entry fs.DirEntry) error {
+	if path == root {
+		return nil
+	}
+	if shouldSkipDir(entry.Name()) || hasComposerManifest(path) {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func scanPHPShortOpenTagConfigFile(root, path string, priority int, policy *phpShortOpenTagPolicy, warnings *[]string) error {
+	enabled, found, err := phpConfigShortOpenTagSetting(root, path)
+	if isPureOversizedFileError(err) {
+		policy.incompleteDirs[filepath.Dir(path)] = struct{}{}
+		*warnings = append(*warnings, phpShortOpenTagConfigOversizedWarning(root, path))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if found {
+		policy.setDirSetting(filepath.Dir(path), enabled, priority)
+	}
+	return nil
+}
+
+func phpShortOpenTagConfigOversizedWarning(root, path string) string {
+	relPath, err := filepath.Rel(root, path)
+	if err != nil {
+		relPath = path
+	}
+	return fmt.Sprintf("skipped PHP short_open_tag config %s because it exceeds %d bytes", relPath, maxPHPConfigBytes)
+}
+
+func (p phpShortOpenTagPolicy) anyEnabled() bool {
+	for _, setting := range p.dirSettings {
+		if setting.enabled {
 			return true
 		}
 	}
 	return false
 }
 
-func phpConfigEnablesShortOpenTags(repoPath, filename string) bool {
-	path := filepath.Join(repoPath, filename)
+func (p phpShortOpenTagPolicy) hasSettings() bool {
+	return len(p.dirSettings) > 0 || len(p.incompleteDirs) > 0
+}
+
+func (p phpShortOpenTagPolicy) enabledForFile(path string) bool {
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		if setting, ok := p.dirSettings[dir]; ok {
+			return setting.enabled
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+func (p phpShortOpenTagPolicy) incompleteForFile(path string) bool {
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		if _, ok := p.incompleteDirs[dir]; ok {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+func (p phpShortOpenTagPolicy) setDirSetting(dir string, enabled bool, priority int) {
+	if existing, ok := p.dirSettings[dir]; ok && existing.priority > priority {
+		return
+	}
+	p.dirSettings[dir] = phpShortOpenTagDirSetting{enabled: enabled, priority: priority}
+}
+
+func phpConfigFilePriority(filename string) int {
+	switch filename {
+	case "php.ini":
+		return 1
+	case ".user.ini":
+		return 2
+	case ".htaccess":
+		return 3
+	default:
+		return 0
+	}
+}
+
+func phpConfigShortOpenTagSetting(repoPath, path string) (bool, bool, error) {
 	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, maxPHPConfigBytes)
 	if err != nil {
-		return false
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, err
 	}
-	return parsesShortOpenTagEnabled(string(bytes))
+	enabled, found := parseShortOpenTagSetting(string(bytes))
+	return enabled, found, nil
 }
 
 func parsesShortOpenTagEnabled(content string) bool {
+	enabled, found := parseShortOpenTagSetting(content)
+	return found && enabled
+}
+
+func parseShortOpenTagSetting(content string) (bool, bool) {
+	enabled := false
+	found := false
 	for _, rawLine := range strings.Split(content, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
@@ -211,7 +358,8 @@ func parsesShortOpenTagEnabled(content string) bool {
 		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
 			fields := strings.Fields(lower)
 			if len(fields) >= 3 && fields[1] == "short_open_tag" {
-				return isPHPConfigTruthy(fields[2])
+				enabled = isPHPConfigTruthy(fields[2])
+				found = true
 			}
 			continue
 		}
@@ -219,9 +367,10 @@ func parsesShortOpenTagEnabled(content string) bool {
 		if !ok || strings.TrimSpace(key) != "short_open_tag" {
 			continue
 		}
-		return isPHPConfigTruthy(strings.TrimSpace(value))
+		enabled = isPHPConfigTruthy(strings.TrimSpace(value))
+		found = true
 	}
-	return false
+	return enabled, found
 }
 
 func isPHPConfigTruthy(value string) bool {

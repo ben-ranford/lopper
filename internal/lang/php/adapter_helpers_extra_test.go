@@ -35,6 +35,7 @@ const (
 	testMaxScannablePHPFile              int64 = 2 * 1024 * 1024
 	testMaxPHPUseStatementsPerFile             = 4096
 	testMaxPHPNamespaceReferencesPerFile       = 4096
+	testMaxPHPConfigBytes                      = 64 * 1024
 )
 
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
@@ -250,8 +251,53 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	if !data.ShortOpenTags {
 		t.Fatalf("expected .user.ini to enable short open tags")
 	}
+	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = Off\nshort_open_tag = On\n")
+	data, warnings, err = loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("load data with repeated short-open config: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings with repeated short-open config: %#v", warnings)
+	}
+	if !data.ShortOpenTags {
+		t.Fatalf("expected final short_open_tag assignment to win")
+	}
+	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = On\nshort_open_tag = Off\n")
+	data, warnings, err = loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("load data with disabled final short-open config: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings with disabled final short-open config: %#v", warnings)
+	}
+	if data.ShortOpenTags {
+		t.Fatalf("expected final disabled short_open_tag assignment to win")
+	}
 	if !parsesShortOpenTagEnabled("php_value memory_limit 128M\nphp_value short_open_tag On # comment\n") {
 		t.Fatalf("expected parser to skip unrelated php_value directives before short_open_tag")
+	}
+	if !parsesShortOpenTagEnabled("php_flag short_open_tag Off\nphp_flag short_open_tag On\n") {
+		t.Fatalf("expected final php_flag short_open_tag assignment to win")
+	}
+	if parsesShortOpenTagEnabled("php_flag short_open_tag On\nphp_flag short_open_tag Off\n") {
+		t.Fatalf("expected final disabled php_flag short_open_tag assignment to win")
+	}
+}
+
+func TestLoadComposerDataMarksUsageIncompleteWhenShortOpenTagConfigIsOversized(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = On\n", testMaxPHPConfigBytes+1)
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("expected oversized PHP config to warn and continue, got %v", err)
+	}
+	if !usageIncompleteForTest(t, data) {
+		t.Fatal("expected oversized PHP config to mark dependency coverage incomplete")
+	}
+	if !containsWarning(warnings, "skipped PHP short_open_tag config .user.ini because it exceeds") {
+		t.Fatalf("expected oversized PHP config warning, got %#v", warnings)
 	}
 }
 

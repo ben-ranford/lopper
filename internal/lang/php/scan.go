@@ -44,10 +44,11 @@ type scanState struct {
 }
 
 type scanCoordinator struct {
-	repoPath string
-	resolver composerResolver
-	result   scanResult
-	state    scanState
+	repoPath           string
+	resolver           composerResolver
+	shortOpenTagPolicy phpShortOpenTagPolicy
+	result             scanResult
+	state              scanState
 }
 
 func newScanCoordinator(repoPath string, composer composerData) scanCoordinator {
@@ -60,6 +61,7 @@ func newScanCoordinator(repoPath string, composer composerData) scanCoordinator 
 			DynamicUsageByDependency:   make(map[string]int),
 			UsageIncomplete:            composer.UsageIncomplete,
 		},
+		shortOpenTagPolicy: composer.ShortOpenTagPolicy,
 	}
 }
 
@@ -133,7 +135,14 @@ func (c *scanCoordinator) scanFile(path string) error {
 		return err
 	}
 
-	parsed := parsePHPImports(content, relPath, c.resolver)
+	resolver := c.resolver
+	if c.shortOpenTagPolicy.hasSettings() {
+		resolver.allowPHPShortOpenTags = c.shortOpenTagPolicy.enabledForFile(path)
+		if c.shortOpenTagPolicy.incompleteForFile(path) {
+			c.result.UsageIncomplete = true
+		}
+	}
+	parsed := parsePHPImports(content, relPath, resolver)
 	usage := shared.CountUsage(content, parsed.imports)
 	dynamic := hasDynamicPatterns(content)
 
