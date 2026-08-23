@@ -119,6 +119,91 @@ import _ "github.com/ben-ranford/lopper/benchpkg/testsetuphead"
 	assertBenchGateHarnessMismatch(t, fixture)
 }
 
+func TestBenchGateFingerprintsNamedImportInitSetup(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
+		"setup_test.go": `package benchpkg
+
+import (
+	"testing"
+
+	"github.com/ben-ranford/lopper/benchpkg/testsetup"
+)
+
+func TestOnly(t *testing.T) {
+	testsetup.Configure()
+}
+`,
+		"testsetup/setup.go": `package testsetup
+
+func Configure() {}
+`,
+		"testsetuphead/setup.go": `package testsetuphead
+
+func Configure() {}
+`,
+	}))
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"setup_test.go": `package benchpkg
+
+import (
+	"testing"
+
+	"github.com/ben-ranford/lopper/benchpkg/testsetuphead"
+)
+
+func TestOnly(t *testing.T) {
+	testsetuphead.Configure()
+}
+`,
+	})
+	fixture.commit("head")
+
+	assertBenchGateHarnessMismatch(t, fixture)
+}
+
+func TestBenchGateFingerprintsInterfaceDispatchedMethods(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"bench_test.go": `package benchpkg
+
+import (
+	"fmt"
+	"testing"
+)
+
+type benchValue struct{}
+
+var sink string
+
+func BenchmarkValue(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		sink = fmt.Sprint(benchValue{})
+	}
+}
+`,
+		"stringer_test.go": `package benchpkg
+
+func (benchValue) String() string {
+	return "base"
+}
+`,
+	})
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"stringer_test.go": `package benchpkg
+
+func (benchValue) String() string {
+	return "head"
+}
+`,
+	})
+	fixture.commit("head")
+
+	assertBenchGateHarnessMismatch(t, fixture)
+}
+
 func benchmarkHarnessPackageFiles(extra map[string]string) map[string]string {
 	files := map[string]string{
 		"bench_test.go": `package benchpkg

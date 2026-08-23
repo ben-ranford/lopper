@@ -70,7 +70,7 @@ func normalizeCoverageGap(gap CoverageGap) CoverageGap {
 }
 
 func normalizeCoverageGapPath(path string) string {
-	return strings.ReplaceAll(filepath.ToSlash(path), "\\", "/")
+	return filepath.ToSlash(path)
 }
 
 func coverageGapIdentity(gap CoverageGap) string {

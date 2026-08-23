@@ -506,6 +506,9 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 	if decl.Name == nil {
 		return false
 	}
+	if decl.Recv != nil {
+		return true
+	}
 	name := decl.Name.Name
 	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
 }
@@ -513,7 +516,7 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
 	switch decl.Tok {
 	case token.IMPORT:
-		return genDeclHasBlankImport(decl)
+		return genDeclHasBenchmarkImport(decl)
 	case token.VAR:
 		return genDeclHasInitializedVar(decl)
 	default:
@@ -521,17 +524,28 @@ func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
 	}
 }
 
-func genDeclHasBlankImport(decl *ast.GenDecl) bool {
+func genDeclHasBenchmarkImport(decl *ast.GenDecl) bool {
 	for _, spec := range decl.Specs {
 		importSpec, ok := spec.(*ast.ImportSpec)
-		if ok && importSpec.Name != nil && importSpec.Name.Name == "_" && blankImportPath(importSpec) != "embed" {
+		if ok && importCanAffectBenchmark(importSpec) {
 			return true
 		}
 	}
 	return false
 }
 
-func blankImportPath(spec *ast.ImportSpec) string {
+func importCanAffectBenchmark(spec *ast.ImportSpec) bool {
+	path := importPath(spec)
+	if path == "" || path == "embed" {
+		return false
+	}
+	if spec.Name != nil && spec.Name.Name == "_" {
+		return true
+	}
+	return mayHaveExternalInitSideEffects(path)
+}
+
+func importPath(spec *ast.ImportSpec) string {
 	if spec == nil || spec.Path == nil {
 		return ""
 	}
@@ -540,6 +554,11 @@ func blankImportPath(spec *ast.ImportSpec) string {
 		return ""
 	}
 	return value
+}
+
+func mayHaveExternalInitSideEffects(importPath string) bool {
+	firstSegment, _, _ := strings.Cut(importPath, "/")
+	return strings.Contains(firstSegment, ".") || strings.Contains(importPath, "/") || strings.HasPrefix(importPath, ".")
 }
 
 func genDeclHasInitializedVar(decl *ast.GenDecl) bool {
