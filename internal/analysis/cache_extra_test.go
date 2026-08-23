@@ -639,15 +639,6 @@ func assertAnalysisCachePathAbsent(t *testing.T, path string) {
 	}
 }
 
-func statAnalysisCacheDirectory(t *testing.T, path string) os.FileInfo {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat %s: %v", path, err)
-	}
-	return info
-}
-
 func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {
 	t.Helper()
 
