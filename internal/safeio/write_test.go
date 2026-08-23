@@ -7112,99 +7112,108 @@ func exclusiveBranchOpen(info fs.FileInfo, writeErr, chmodErr, closeErr error) f
 }
 
 func TestBasicRootLinkRenameRemoveErrorBranches(t *testing.T) {
+	t.Run("link quarantine mkdir error", testBasicRootLinkQuarantineMkdirError)
+	t.Run("link source failure", testBasicRootLinkSourceFailure)
+	t.Run("link quarantine lstat failure", testBasicRootLinkQuarantineLstatFailure)
+	t.Run("target stat failure cleans target and quarantine links", testBasicRootLinkTargetStatFailureCleansAllPaths)
+	t.Run("link final cleanup failure", testBasicRootLinkFinalCleanupFailure)
+}
+
+func testBasicRootLinkQuarantineMkdirError(t *testing.T) {
 	sourceInfo, _ := writePinnedTargetInfoPair(t)
 	mkdirErr := errors.New("mkdir failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		mkdir: func(string, os.FileMode) error { return mkdirErr },
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, mkdirErr) {
+		t.Fatalf("expected mkdir error, got %v", err)
+	}
+}
+
+func testBasicRootLinkSourceFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
 	linkErr := errors.New("link failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		link: func(string, string) error { return linkErr },
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("expected link error, got %v", err)
+	}
+}
+
+func testBasicRootLinkQuarantineLstatFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
 	lstatErr := errors.New("lstat failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasSuffix(name, "entry") {
+				return nil, lstatErr
+			}
+			return sourceInfo, nil
+		},
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat error, got %v", err)
+	}
+}
+
+func testBasicRootLinkTargetStatFailureCleansAllPaths(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"source-quarantine",
+		atomicTempPrefix+"target-cleanup",
+		atomicTempPrefix+"source-cleanup",
+	)
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	targetStatErr := errors.New("target stat failed")
+	failTargetStat := true
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "target" && failTargetStat {
+				failTargetStat = false
+				return nil, targetStatErr
+			}
+			info, ok := files[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return info, nil
+		},
+	})
+
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, targetStatErr) {
+		t.Fatalf("expected target stat error, got %v", err)
+	}
+	if len(files) != 1 || files["source"] == nil {
+		t.Fatalf("target stat cleanup leaked paths: %#v", files)
+	}
+}
+
+func testBasicRootLinkFinalCleanupFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
 	removeErr := errors.New("remove failed")
-
-	t.Run("link quarantine mkdir error", func(t *testing.T) {
-		useRandomTempNames(t, atomicTempPrefix+"quarantine")
-		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
-			mkdir: func(string, os.FileMode) error { return mkdirErr },
-		})
-		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
-		if !errors.Is(err, mkdirErr) {
-			t.Fatalf("expected mkdir error, got %v", err)
-		}
+	useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"cleanup")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		remove: func(name string) error {
+			if strings.Contains(name, "entry") {
+				return removeErr
+			}
+			delete(files, name)
+			return nil
+		},
 	})
-
-	t.Run("link source failure", func(t *testing.T) {
-		useRandomTempNames(t, atomicTempPrefix+"quarantine")
-		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
-			link: func(string, string) error { return linkErr },
-		})
-		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
-		if !errors.Is(err, linkErr) {
-			t.Fatalf("expected link error, got %v", err)
-		}
-	})
-
-	t.Run("link quarantine lstat failure", func(t *testing.T) {
-		useRandomTempNames(t, atomicTempPrefix+"quarantine")
-		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
-			lstat: func(name string) (fs.FileInfo, error) {
-				if strings.HasSuffix(name, "entry") {
-					return nil, lstatErr
-				}
-				return sourceInfo, nil
-			},
-		})
-		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
-		if !errors.Is(err, lstatErr) {
-			t.Fatalf("expected lstat error, got %v", err)
-		}
-	})
-
-	t.Run("target stat failure cleans target and quarantine links", func(t *testing.T) {
-		useRandomTempNames(t,
-			atomicTempPrefix+"source-quarantine",
-			atomicTempPrefix+"target-cleanup",
-			atomicTempPrefix+"source-cleanup",
-		)
-		files := map[string]fs.FileInfo{"source": sourceInfo}
-		targetStatErr := errors.New("target stat failed")
-		failTargetStat := true
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			lstat: func(name string) (fs.FileInfo, error) {
-				if name == "target" && failTargetStat {
-					failTargetStat = false
-					return nil, targetStatErr
-				}
-				info, ok := files[name]
-				if !ok {
-					return nil, os.ErrNotExist
-				}
-				return info, nil
-			},
-		})
-
-		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
-		if !errors.Is(err, targetStatErr) {
-			t.Fatalf("expected target stat error, got %v", err)
-		}
-		if len(files) != 1 || files["source"] == nil {
-			t.Fatalf("target stat cleanup leaked paths: %#v", files)
-		}
-	})
-
-	t.Run("link final cleanup failure", func(t *testing.T) {
-		useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"cleanup")
-		files := map[string]fs.FileInfo{"source": sourceInfo}
-		root := newIdentityMapRoot(t, files, identityMapRootHooks{
-			remove: func(name string) error {
-				if strings.Contains(name, "entry") {
-					return removeErr
-				}
-				delete(files, name)
-				return nil
-			},
-		})
-		err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
-		if !errors.Is(err, removeErr) {
-			t.Fatalf("expected cleanup error, got %v", err)
-		}
-	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected cleanup error, got %v", err)
+	}
 }
 
 func TestBasicRootRenameErrorBranches(t *testing.T) {
