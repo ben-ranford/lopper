@@ -10636,57 +10636,80 @@ func TestMoveFileWithinRootRetriesLiveSourceAfterQuarantinedFallbackDisappears(t
 		t.Fatalf("seed source: %v", err)
 	}
 	base := openTestRoot(t, rootDir)
-	stagedSourceRel := ""
-	sourceOpenAttempts := 0
-	failedTargetCreation := false
-	targetRenameAttempts := 0
-	root := &rootWithoutIdentity{Root: &fakeRoot{
-		Root: base,
-		link: func(string, string) error {
-			return syscall.EPERM
-		},
-		open: func(name string) (File, error) {
-			if name == "source" {
-				sourceOpenAttempts++
-				if sourceOpenAttempts == 1 {
-					return nil, os.ErrPermission
-				}
-			}
-			return base.Open(name)
-		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if !failedTargetCreation && stagedSourceRel != "" && isMoveFallbackTempPath(name) {
-				failedTargetCreation = true
-				if err := base.Rename(stagedSourceRel, "source"); err != nil {
-					t.Fatalf("restore staged source before fallback retry: %v", err)
-				}
-				return nil, os.ErrNotExist
-			}
-			return base.OpenFile(name, flag, perm)
-		},
-		rename: func(oldName, newName string) error {
-			if newName == "target" {
-				targetRenameAttempts++
-				if targetRenameAttempts == 1 {
-					return syscall.EXDEV
-				}
-			}
-			if oldName == "source" {
-				stagedSourceRel = newName
-			}
-			return base.Rename(oldName, newName)
-		},
-	}}
+	scenario := newLiveSourceFallbackRetryScenario(t, base)
 
-	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+	if err := MoveFileWithinRoot(scenario.root(), "source", "target", 0o750, 0o640); err != nil {
 		t.Fatalf("fallback retry returned error: %v", err)
 	}
-	if !failedTargetCreation || sourceOpenAttempts != 2 {
-		t.Fatalf("expected failed staged copy and live-source retry, targetFailure=%t sourceOpens=%d", failedTargetCreation, sourceOpenAttempts)
+	if !scenario.failedTargetCreation || scenario.sourceOpenAttempts != 2 {
+		t.Fatalf("expected failed staged copy and live-source retry, targetFailure=%t sourceOpens=%d", scenario.failedTargetCreation, scenario.sourceOpenAttempts)
 	}
 	assertPathAbsent(t, sourcePath)
 	assertFileContent(t, targetPath, "source")
 	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+type liveSourceFallbackRetryScenario struct {
+	t                    *testing.T
+	base                 Root
+	stagedSourceRel      string
+	sourceOpenAttempts   int
+	failedTargetCreation bool
+	targetRenameAttempts int
+}
+
+func newLiveSourceFallbackRetryScenario(t *testing.T, base Root) *liveSourceFallbackRetryScenario {
+	t.Helper()
+	return &liveSourceFallbackRetryScenario{t: t, base: base}
+}
+
+func (s *liveSourceFallbackRetryScenario) root() Root {
+	return &rootWithoutIdentity{Root: &fakeRoot{
+		Root:     s.base,
+		link:     s.link,
+		open:     s.open,
+		openFile: s.openFile,
+		rename:   s.rename,
+	}}
+}
+
+func (s *liveSourceFallbackRetryScenario) link(string, string) error {
+	return syscall.EPERM
+}
+
+func (s *liveSourceFallbackRetryScenario) open(name string) (File, error) {
+	if name != "source" {
+		return s.base.Open(name)
+	}
+	s.sourceOpenAttempts++
+	if s.sourceOpenAttempts == 1 {
+		return nil, os.ErrPermission
+	}
+	return s.base.Open(name)
+}
+
+func (s *liveSourceFallbackRetryScenario) openFile(name string, flag int, perm os.FileMode) (File, error) {
+	if s.failedTargetCreation || s.stagedSourceRel == "" || !isMoveFallbackTempPath(name) {
+		return s.base.OpenFile(name, flag, perm)
+	}
+	s.failedTargetCreation = true
+	if err := s.base.Rename(s.stagedSourceRel, "source"); err != nil {
+		s.t.Fatalf("restore staged source before fallback retry: %v", err)
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *liveSourceFallbackRetryScenario) rename(oldName, newName string) error {
+	if newName == "target" {
+		s.targetRenameAttempts++
+		if s.targetRenameAttempts == 1 {
+			return syscall.EXDEV
+		}
+	}
+	if oldName == "source" {
+		s.stagedSourceRel = newName
+	}
+	return s.base.Rename(oldName, newName)
 }
 
 func TestMoveFallbackCopySourceAndStagingDirCleanupBranches(t *testing.T) {
