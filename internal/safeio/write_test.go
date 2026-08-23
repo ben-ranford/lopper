@@ -7891,74 +7891,110 @@ func TestPreparePreservesAliasWhenIdentityRootCannotReportRenameState(t *testing
 }
 
 func TestPrepareLegacyIdentityAliasRenamesDirectlyWhenTargetDisappears(t *testing.T) {
-	sourceInfo, _ := writePinnedTargetInfoPair(t)
-	dirInfo := statTestPath(t, t.TempDir())
-	sourcePresent := true
-	targetPresent := true
-	readDirCalls := 0
-	renameCalls := 0
-	base := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			switch name {
-			case "source":
-				if sourcePresent {
-					return sourceInfo, nil
-				}
-			case "TARGET":
-				if targetPresent {
-					return sourceInfo, nil
-				}
-			case ".":
-				return dirInfo, nil
-			}
-			return nil, os.ErrNotExist
-		},
-		chmod: chmodNameWithoutError(t, "source"),
-		open: func(name string) (File, error) {
-			if name != "." {
-				t.Fatalf("unexpected directory open %q", name)
-			}
-			return &fakeReadDirFile{
-				fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return dirInfo, nil }, close: closeWithoutError},
-				readDir: func(int) ([]fs.DirEntry, error) {
-					readDirCalls++
-					return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
-				},
-			}, nil
-		},
-	}
-	root := &identityOnlyRoot{
-		Root: base,
-		linkIfMatches: func(string, string, fs.FileInfo, string) error {
-			t.Fatal("legacy alias handling must not create a staging link")
-			return nil
-		},
-		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			if oldName != "source" || newName != "TARGET" {
-				t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
-			}
-			requireSameFileInfo(t, expected, sourceInfo, oldName)
-			renameCalls++
-			// Model the target disappearing after the alias scan. The direct,
-			// identity-bound rename consumes source and recreates target atomically.
-			sourcePresent = false
-			targetPresent = true
-			return nil
-		},
-		removeIfMatches: func(string, fs.FileInfo, string) error {
-			t.Fatal("direct legacy rename must not perform a separate source cleanup")
-			return nil
-		},
-	}
+	fixture := newLegacyIdentityAliasDisappearanceFixture(t)
 
-	if _, err := prepareAndRenameWithinRoot(root, "source", "TARGET", 0o600); err != nil {
+	if _, err := prepareAndRenameWithinRoot(fixture.root(), "source", "TARGET", 0o600); err != nil {
 		t.Fatalf("legacy alias move returned error: %v", err)
 	}
-	if renameCalls != 1 || sourcePresent || !targetPresent {
-		t.Fatalf("expected one direct rename to consume source and publish target, calls=%d source=%t target=%t", renameCalls, sourcePresent, targetPresent)
+	fixture.assertMoved(t)
+}
+
+type legacyIdentityAliasDisappearanceFixture struct {
+	t             *testing.T
+	sourceInfo    fs.FileInfo
+	dirInfo       fs.FileInfo
+	sourcePresent bool
+	targetPresent bool
+	readDirCalls  int
+	renameCalls   int
+}
+
+func newLegacyIdentityAliasDisappearanceFixture(t *testing.T) *legacyIdentityAliasDisappearanceFixture {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	return &legacyIdentityAliasDisappearanceFixture{
+		t:             t,
+		sourceInfo:    sourceInfo,
+		dirInfo:       statTestPath(t, t.TempDir()),
+		sourcePresent: true,
+		targetPresent: true,
 	}
-	if readDirCalls != 1 {
-		t.Fatalf("expected only the initial alias scan, got %d directory scans", readDirCalls)
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) root() *identityOnlyRoot {
+	base := &fakeRoot{
+		lstat: f.lstat,
+		chmod: chmodNameWithoutError(f.t, "source"),
+		open:  f.open,
+	}
+	return &identityOnlyRoot{
+		Root:          base,
+		linkIfMatches: f.rejectStagingLink,
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, _ string) error {
+			return f.rename(oldName, newName, expected)
+		},
+		removeIfMatches: f.rejectSeparateSourceCleanup,
+	}
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) lstat(name string) (fs.FileInfo, error) {
+	switch name {
+	case "source":
+		if f.sourcePresent {
+			return f.sourceInfo, nil
+		}
+	case "TARGET":
+		if f.targetPresent {
+			return f.sourceInfo, nil
+		}
+	case ".":
+		return f.dirInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) open(name string) (File, error) {
+	if name != "." {
+		return nil, fmt.Errorf("unexpected directory open %q", name)
+	}
+	return &fakeReadDirFile{
+		fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return f.dirInfo, nil }, close: closeWithoutError},
+		readDir: func(int) ([]fs.DirEntry, error) {
+			f.readDirCalls++
+			return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+		},
+	}, nil
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) rejectStagingLink(string, string, fs.FileInfo, string) error {
+	f.t.Fatal("legacy alias handling must not create a staging link")
+	return nil
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) rename(oldName, newName string, expected fs.FileInfo) error {
+	if oldName != "source" || newName != "TARGET" {
+		f.t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
+	}
+	requireSameFileInfo(f.t, expected, f.sourceInfo, oldName)
+	f.renameCalls++
+	// Model the target disappearing after the alias scan. The direct,
+	// identity-bound rename consumes source and recreates target atomically.
+	f.sourcePresent = false
+	f.targetPresent = true
+	return nil
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) rejectSeparateSourceCleanup(string, fs.FileInfo, string) error {
+	f.t.Fatal("direct legacy rename must not perform a separate source cleanup")
+	return nil
+}
+
+func (f *legacyIdentityAliasDisappearanceFixture) assertMoved(t *testing.T) {
+	t.Helper()
+	if f.renameCalls != 1 || f.sourcePresent || !f.targetPresent {
+		t.Fatalf("expected one direct rename to consume source and publish target, calls=%d source=%t target=%t", f.renameCalls, f.sourcePresent, f.targetPresent)
+	}
+	if f.readDirCalls != 1 {
+		t.Fatalf("expected only the initial alias scan, got %d directory scans", f.readDirCalls)
 	}
 }
 
@@ -10694,50 +10730,82 @@ func TestWriteFileIfAbsentAtRootPreservesAtomicCleanupFailureBeforeExclusiveFall
 		{name: "session candidate", failSession: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rootDir := t.TempDir()
-			base := openTestRoot(t, rootDir)
-			cleanupErr := errors.New("atomic cleanup failed")
-			targetOpened := false
-			sessionTemp := ""
-			root := &fakeRoot{
-				Root: base,
-				openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-					if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && sessionTemp == "" {
-						sessionTemp = name
-					}
-					if name == "target" {
-						targetOpened = true
-					}
-					return base.OpenFile(name, flag, perm)
-				},
-				linkIfMatches: func(_ string, newName string, _ fs.FileInfo, _ string) error {
-					if newName == "target" {
-						return syscall.EPERM
-					}
-					return errIdentityBoundLinkUnavailable
-				},
-				removeIfMatches: func(name string, _ fs.FileInfo, _ string) error {
-					if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && (name == sessionTemp) == tc.failSession {
-						return cleanupErr
-					}
-					return base.Remove(name)
-				},
-			}
-
-			err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: "target"}, []byte("completed"), 0o600)
-			if sessionTemp == "" {
-				t.Fatal("atomic session did not create a temporary candidate")
-			}
-			if !errors.Is(err, errIdentityBoundReplacementUnsupported) || !errors.Is(err, cleanupErr) {
-				t.Fatalf("expected unsupported atomic attempt and preserved cleanup error, got %v", err)
-			}
-			if targetOpened {
-				t.Fatal("exclusive fallback must not run after atomic cleanup failure")
-			}
-			if _, statErr := os.Lstat(filepath.Join(rootDir, "target")); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("atomic cleanup failure published target through fallback: %v", statErr)
-			}
+			testWriteFileIfAbsentAtRootPreservesAtomicCleanupFailure(t, tc.failSession)
 		})
+	}
+}
+
+func testWriteFileIfAbsentAtRootPreservesAtomicCleanupFailure(t *testing.T, failSession bool) {
+	fixture := newAtomicCleanupFailureFixture(t, failSession)
+	err := writeFileIfAbsentAtRoot(fixture.root(), rootedTarget{rel: "target"}, []byte("completed"), 0o600)
+	fixture.assertNoFallback(t, err)
+}
+
+type atomicCleanupFailureFixture struct {
+	base         Root
+	rootDir      string
+	cleanupErr   error
+	failSession  bool
+	targetOpened bool
+	sessionTemp  string
+}
+
+func newAtomicCleanupFailureFixture(t *testing.T, failSession bool) *atomicCleanupFailureFixture {
+	rootDir := t.TempDir()
+	return &atomicCleanupFailureFixture{
+		base:        openTestRoot(t, rootDir),
+		rootDir:     rootDir,
+		cleanupErr:  errors.New("atomic cleanup failed"),
+		failSession: failSession,
+	}
+}
+
+func (f *atomicCleanupFailureFixture) root() *fakeRoot {
+	return &fakeRoot{
+		Root:            f.base,
+		openFile:        f.openFile,
+		linkIfMatches:   f.linkIfMatches,
+		removeIfMatches: f.removeIfMatches,
+	}
+}
+
+func (f *atomicCleanupFailureFixture) openFile(name string, flag int, perm os.FileMode) (File, error) {
+	if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && f.sessionTemp == "" {
+		f.sessionTemp = name
+	}
+	if name == "target" {
+		f.targetOpened = true
+	}
+	return f.base.OpenFile(name, flag, perm)
+}
+
+func (*atomicCleanupFailureFixture) linkIfMatches(_ string, newName string, _ fs.FileInfo, _ string) error {
+	if newName == "target" {
+		return syscall.EPERM
+	}
+	return errIdentityBoundLinkUnavailable
+}
+
+func (f *atomicCleanupFailureFixture) removeIfMatches(name string, _ fs.FileInfo, _ string) error {
+	if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && (name == f.sessionTemp) == f.failSession {
+		return f.cleanupErr
+	}
+	return f.base.Remove(name)
+}
+
+func (f *atomicCleanupFailureFixture) assertNoFallback(t *testing.T, err error) {
+	t.Helper()
+	if f.sessionTemp == "" {
+		t.Fatal("atomic session did not create a temporary candidate")
+	}
+	if !errors.Is(err, errIdentityBoundReplacementUnsupported) || !errors.Is(err, f.cleanupErr) {
+		t.Fatalf("expected unsupported atomic attempt and preserved cleanup error, got %v", err)
+	}
+	if f.targetOpened {
+		t.Fatal("exclusive fallback must not run after atomic cleanup failure")
+	}
+	if _, statErr := os.Lstat(filepath.Join(f.rootDir, "target")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("atomic cleanup failure published target through fallback: %v", statErr)
 	}
 }
 
