@@ -1,7 +1,9 @@
 package php
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+var errPHPShortOpenTagConfigWalkLimit = errors.New("PHP short_open_tag config discovery limit exceeded")
 
 type composerData struct {
 	DeclaredDependencies map[string]struct{}
@@ -44,6 +48,10 @@ type composerPackage struct {
 }
 
 func loadComposerData(repoPath string) (composerData, []string, error) {
+	return loadComposerDataWithContext(context.Background(), repoPath)
+}
+
+func loadComposerDataWithContext(ctx context.Context, repoPath string) (composerData, []string, error) {
 	data := composerData{
 		DeclaredDependencies: make(map[string]struct{}),
 		NamespaceToDep:       make(map[string]string),
@@ -62,13 +70,13 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectDeclaredDependencies(manifest, data.DeclaredDependencies)
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
-	shortOpenTagPolicy, shortOpenTagWarnings, err := detectPHPShortOpenTags(repoPath)
+	shortOpenTagPolicy, shortOpenTagWarnings, err := detectPHPShortOpenTags(ctx, repoPath)
 	if err != nil {
 		return data, nil, err
 	}
 	data.ShortOpenTags = shortOpenTagPolicy.anyEnabled()
 	data.ShortOpenTagPolicy = shortOpenTagPolicy
-	if len(shortOpenTagPolicy.incompleteDirs) > 0 {
+	if shortOpenTagPolicy.discoveryIncomplete {
 		data.UsageIncomplete = true
 	}
 	warnings = append(warnings, shortOpenTagWarnings...)
@@ -195,8 +203,9 @@ func isPureOversizedFileError(err error) bool {
 }
 
 type phpShortOpenTagPolicy struct {
-	dirSettings    map[string]phpShortOpenTagDirSetting
-	incompleteDirs map[string]struct{}
+	dirSettings         map[string]phpShortOpenTagDirSetting
+	incompleteDirs      map[string]struct{}
+	discoveryIncomplete bool
 }
 
 type phpShortOpenTagDirSetting struct {
@@ -204,20 +213,48 @@ type phpShortOpenTagDirSetting struct {
 	priority int
 }
 
-func detectPHPShortOpenTags(repoPath string) (phpShortOpenTagPolicy, []string, error) {
+func detectPHPShortOpenTags(ctx context.Context, repoPath string) (phpShortOpenTagPolicy, []string, error) {
 	policy := phpShortOpenTagPolicy{
 		dirSettings:    make(map[string]phpShortOpenTagDirSetting),
 		incompleteDirs: make(map[string]struct{}),
 	}
 	warnings := make([]string, 0)
 	root := filepath.Clean(repoPath)
+	state := phpShortOpenTagConfigWalkState{root: root}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		return scanPHPShortOpenTagConfigEntry(root, path, entry, walkErr, &policy, &warnings)
+		return state.scan(ctx, path, entry, walkErr, &policy, &warnings)
 	})
+	if errors.Is(err, errPHPShortOpenTagConfigWalkLimit) {
+		policy.discoveryIncomplete = true
+		warnings = append(warnings, phpShortOpenTagConfigWalkLimitWarning())
+		return policy, warnings, nil
+	}
 	if err != nil {
 		return phpShortOpenTagPolicy{}, nil, err
 	}
 	return policy, warnings, nil
+}
+
+type phpShortOpenTagConfigWalkState struct {
+	root    string
+	visited int
+}
+
+func (s *phpShortOpenTagConfigWalkState) scan(ctx context.Context, path string, entry fs.DirEntry, walkErr error, policy *phpShortOpenTagPolicy, warnings *[]string) error {
+	if err := shared.WalkContextErr(ctx, walkErr); err != nil {
+		return err
+	}
+	if path != s.root {
+		s.visited++
+		if s.visited > maxPHPConfigWalkEntries {
+			return errPHPShortOpenTagConfigWalkLimit
+		}
+	}
+	return scanPHPShortOpenTagConfigEntry(s.root, path, entry, nil, policy, warnings)
+}
+
+func phpShortOpenTagConfigWalkLimitWarning() string {
+	return fmt.Sprintf("PHP short_open_tag config discovery stopped after %d traversal entries to keep analysis bounded; dependency usage may be incomplete", maxPHPConfigWalkEntries)
 }
 
 func scanPHPShortOpenTagConfigEntry(root, path string, entry fs.DirEntry, walkErr error, policy *phpShortOpenTagPolicy, warnings *[]string) error {

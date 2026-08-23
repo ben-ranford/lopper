@@ -22,7 +22,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	}
 
 	state := analysisPipelineState{repoPath: repoPath}
-	if err := runComposerIngestionStage(&state); err != nil {
+	if err := runComposerIngestionStage(ctx, &state); err != nil {
 		return report.Report{}, err
 	}
 	if err := runPHPScanStage(ctx, &state); err != nil {
@@ -31,8 +31,8 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	return a.runPHPReportAssemblyStage(req, state), nil
 }
 
-func runComposerIngestionStage(state *analysisPipelineState) error {
-	composerData, warnings, err := loadComposerData(state.repoPath)
+func runComposerIngestionStage(ctx context.Context, state *analysisPipelineState) error {
+	composerData, warnings, err := loadComposerDataWithContext(ctx, state.repoPath)
 	if err != nil {
 		return err
 	}

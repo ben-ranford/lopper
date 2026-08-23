@@ -281,7 +281,7 @@ func TestShortOpenTagConfigUsesFinalAssignment(t *testing.T) {
 	}
 }
 
-func TestLoadComposerDataMarksUsageIncompleteWhenShortOpenTagConfigIsOversized(t *testing.T) {
+func TestLoadComposerDataTracksOversizedShortOpenTagConfigByDirectory(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	testutil.MustWritePaddedFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = On\n", testMaxPHPConfigBytes+1)
@@ -290,11 +290,43 @@ func TestLoadComposerDataMarksUsageIncompleteWhenShortOpenTagConfigIsOversized(t
 	if err != nil {
 		t.Fatalf("expected oversized PHP config to warn and continue, got %v", err)
 	}
-	if !usageIncompleteForTest(t, data) {
-		t.Fatal("expected oversized PHP config to mark dependency coverage incomplete")
+	if usageIncompleteForTest(t, data) {
+		t.Fatal("did not expect config ingestion alone to mark all dependency coverage incomplete")
+	}
+	if !data.ShortOpenTagPolicy.incompleteForFile(filepath.Join(repo, "src", "index.php")) {
+		t.Fatal("expected oversized root PHP config to mark files under that directory incomplete")
 	}
 	if !containsWarning(warnings, "skipped PHP short_open_tag config .user.ini because it exceeds") {
 		t.Fatalf("expected oversized PHP config warning, got %#v", warnings)
+	}
+}
+
+func TestLoadComposerDataBoundsShortOpenTagConfigDiscovery(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	for i := 0; i < maxPHPConfigWalkEntries; i++ {
+		writeFile(t, filepath.Join(repo, "ordinary", fmt.Sprintf("file-%04d.txt", i)), "")
+	}
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("expected config discovery cap to warn and continue, got %v", err)
+	}
+	if !usageIncompleteForTest(t, data) {
+		t.Fatal("expected capped config discovery to mark dependency coverage incomplete")
+	}
+	if !containsWarning(warnings, "PHP short_open_tag config discovery stopped after") {
+		t.Fatalf("expected config discovery cap warning, got %#v", warnings)
+	}
+}
+
+func TestLoadComposerDataHonorsCanceledContextDuringShortOpenTagConfigDiscovery(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+
+	_, _, err := loadComposerDataWithContext(testutil.CanceledContext(), repo)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled context from config discovery, got %v", err)
 	}
 }
 

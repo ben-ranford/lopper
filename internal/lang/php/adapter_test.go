@@ -707,6 +707,37 @@ $client = new Client();
 	}
 }
 
+func TestPHPAdapterScopesOversizedShortOpenTagConfigIncompleteToAffectedSubtree(t *testing.T) {
+	repo := t.TempDir()
+	const dependency = "vendor/package"
+	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
+	writeFile(t, filepath.Join(repo, "docs", ".user.ini"), "short_open_tag = On\n"+strings.Repeat(" ", int(testMaxPHPConfigBytes)))
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), `<?php
+use Vendor\Package\Client;
+$client = new Client();
+`)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:   repo,
+		Dependency: dependency,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if reportData.UsageIncomplete {
+		t.Fatalf("did not expect unrelated oversized config to mark report incomplete")
+	}
+	if !containsWarning(reportData.Warnings, "skipped PHP short_open_tag config docs") {
+		t.Fatalf("expected oversized config warning, got %#v", reportData.Warnings)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf(testExpectedOneDependencyReportFmt, len(reportData.Dependencies))
+	}
+	if reportData.Dependencies[0].UsageIncomplete {
+		t.Fatalf("did not expect unrelated oversized config to mark dependency incomplete")
+	}
+}
+
 func TestPHPAdapterParsesUseStatementsInlineWithPHPOpenTag(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, testComposerJSON), fmt.Sprintf(`{"require":{%q:"^3.0"}}`, testMonologDependency))
