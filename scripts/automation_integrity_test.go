@@ -305,10 +305,7 @@ func TestAutomationExamplesRejectsLeadingEnvironmentAssignmentForRequiredCommand
 func TestAutomationExamplesRejectsLopperReportWithoutAnalyseTarget(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name string
-		run  string
-	}{
+	assertAutomationExamplesRejectLopperReportRuns(t, []lopperReportRunCase{
 		{
 			name: "missing dependency and top",
 			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json",
@@ -317,37 +314,13 @@ func TestAutomationExamplesRejectsLopperReportWithoutAnalyseTarget(t *testing.T)
 			name: "zero top",
 			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --top 0 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json",
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			output, err := runAutomationExamplesFixture(t, `pre-commit:
-  commands:
-    automation-integrity:
-      run: make automation-integrity
-    lopper-json-report:
-      run: `+tc.run+`
-    mutation-guard:
-      run: git diff --exit-code -- . ':!.artifacts'
-`)
-			if err == nil {
-				t.Fatalf("expected invalid lopper analyse target to fail, got success:\n%s", output)
-			}
-			assertOutputContainsAll(t, string(output), []string{
-				"must preserve the automation example contract",
-				"missing lopper JSON report command",
-			})
-		})
-	}
+	}, "expected invalid lopper analyse target to fail")
 }
 
 func TestAutomationExamplesRejectsDuplicateLopperScalarFlags(t *testing.T) {
 	t.Parallel()
 
-	for _, tc := range []struct {
-		name string
-		run  string
-	}{
+	assertAutomationExamplesRejectLopperReportRuns(t, []lopperReportRunCase{
 		{
 			name: "format override",
 			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --format text --output .artifacts/lopper-pre-commit.json",
@@ -364,28 +337,7 @@ func TestAutomationExamplesRejectsDuplicateLopperScalarFlags(t *testing.T) {
 			name: "equals syntax duplicate",
 			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --top 20 --repo . --language all --format=json --format=text --output .artifacts/lopper-pre-commit.json",
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			output, err := runAutomationExamplesFixture(t, `pre-commit:
-  commands:
-    automation-integrity:
-      run: make automation-integrity
-    lopper-json-report:
-      run: `+tc.run+`
-    mutation-guard:
-      run: git diff --exit-code -- . ':!.artifacts'
-`)
-			if err == nil {
-				t.Fatalf("expected duplicate lopper scalar flags to fail, got success:\n%s", output)
-			}
-			assertOutputContainsAll(t, string(output), []string{
-				"must preserve the automation example contract",
-				"missing lopper JSON report command",
-			})
-		})
-	}
+	}, "expected duplicate lopper scalar flags to fail")
 }
 
 func TestAutomationExamplesRejectsLopperReportFlagsAfterArgumentTerminator(t *testing.T) {
@@ -443,6 +395,38 @@ func runAutomationExamplesFixture(t *testing.T, lefthookYAML string) (string, er
 	cmd.Dir = repoDir
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+type lopperReportRunCase struct {
+	name string
+	run  string
+}
+
+func assertAutomationExamplesRejectLopperReportRuns(t *testing.T, cases []lopperReportRunCase, failure string) {
+	t.Helper()
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: make automation-integrity
+    lopper-json-report:
+      run: `+tc.run+`
+    mutation-guard:
+      run: git diff --exit-code -- . ':!.artifacts'
+`)
+			if err == nil {
+				t.Fatalf("%s, got success:\n%s", failure, output)
+			}
+			assertOutputContainsAll(t, string(output), []string{
+				"must preserve the automation example contract",
+				"missing lopper JSON report command",
+			})
+		})
+	}
 }
 
 func readRepoFile(t *testing.T, path string) string {
