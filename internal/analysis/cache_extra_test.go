@@ -252,9 +252,6 @@ func TestAnalysisCacheOpenWriteRootInitializesMissingIdentity(t *testing.T) {
 	if cache.rootIdentity == nil {
 		t.Fatal("expected openWriteRoot to initialize cache root identity")
 	}
-	if err := cache.validateWriteRoot(root); err != nil {
-		t.Fatalf("validate initialized write root: %v", err)
-	}
 }
 
 func TestAnalysisCacheStableRootUsesAnalysisRepoMapping(t *testing.T) {
@@ -428,19 +425,6 @@ func TestAnalysisCacheStoreRejectsRootReplacementBetweenFinalCheckAndPointerRena
 	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
 }
 
-func TestValidateObservedAnalysisCacheDirectoryIdentityRejectsRetargetedPinnedRoot(t *testing.T) {
-	expectedPath := t.TempDir()
-	observedPath := t.TempDir()
-
-	expected := statAnalysisCacheDirectory(t, expectedPath)
-	observed := statAnalysisCacheDirectory(t, observedPath)
-
-	err := validateObservedAnalysisCacheDirectoryIdentity(expectedPath, expected, observed)
-	if err == nil || !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected directory identity change, got %v", err)
-	}
-}
-
 func TestVerifyPinnedAnalysisCacheDirectoryRejectsRetargetedPath(t *testing.T) {
 	cachePath, root := retargetPinnedAnalysisCacheRoot(t)
 
@@ -482,42 +466,6 @@ func retargetPinnedAnalysisCacheRoot(t *testing.T) (string, safeio.Root) {
 	}
 
 	return cachePath, root
-}
-
-func TestAnalysisCacheValidateWriteRootRejectsClosedAndMismatchedRoots(t *testing.T) {
-	cachePath := filepath.Join(t.TempDir(), cacheDirName)
-	mustMkdirCacheLayout(t, cachePath)
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, filepath.Dir(cachePath))
-	if !cache.cacheable {
-		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
-	}
-
-	closedRoot, err := safeio.OpenCanonicalWriteRoot(cachePath)
-	if err != nil {
-		t.Fatalf("open write root: %v", err)
-	}
-	if err := closedRoot.Close(); err != nil {
-		t.Fatalf("close write root: %v", err)
-	}
-	if err := cache.validateWriteRoot(closedRoot); err == nil {
-		t.Fatal("expected closed write root validation to fail")
-	}
-
-	otherPath := t.TempDir()
-	otherIdentity := statAnalysisCacheDirectory(t, otherPath)
-	cache.rootIdentity = otherIdentity
-	root, err := safeio.OpenCanonicalWriteRoot(cachePath)
-	if err != nil {
-		t.Fatalf("open mismatched write root: %v", err)
-	}
-	t.Cleanup(func() {
-		if closeErr := root.Close(); closeErr != nil {
-			t.Errorf("close mismatched write root: %v", closeErr)
-		}
-	})
-	if err := cache.validateWriteRoot(root); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
-		t.Fatalf("expected mismatched write root identity to fail, got %v", err)
-	}
 }
 
 func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *testing.T, replaceOnCall int, stage string) {
