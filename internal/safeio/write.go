@@ -698,6 +698,9 @@ func (s *basicRootRenameState) restoreOriginalFromQuarantine() error {
 	if !restored || retained {
 		s.disableQuarantineCleanup()
 	}
+	if retained && restoreErr == nil {
+		return errIdentityBoundRestoreRetainedStaging
+	}
 	if restored && !retained && restoreErr == nil {
 		s.cleanupQuarantineEntry = false
 	}

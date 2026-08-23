@@ -8837,6 +8837,37 @@ func TestRestoreQuarantinedMoveSourceAfterFallbackFailureCleansRestoredStaging(t
 	assertPathAbsent(t, stagingDir)
 }
 
+func TestRestoreOriginalFromQuarantineReportsRetainedStaging(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	stagedRel := filepath.Join("quarantine", "entry")
+	stagedPath := filepath.Join(rootDir, stagedRel)
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+
+	state := &basicRootRenameState{
+		root:           linklessTestRoot(openTestRoot(t, rootDir)),
+		oldName:        "source",
+		quarantineDir:  "quarantine",
+		quarantineRel:  stagedRel,
+		quarantineInfo: statTestPath(t, stagedPath),
+		message:        sourceChangedMsg,
+		cleanupDir:     true,
+	}
+	err := state.restoreOriginalFromQuarantine()
+	if !errors.Is(err, errIdentityBoundRestoreRetainedStaging) {
+		t.Fatalf("expected retained staging error, got %v", err)
+	}
+	if state.cleanupDir || state.cleanupQuarantineEntry {
+		t.Fatalf("expected retained staging cleanup to be disabled, state=%+v", state)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, stagedPath, "source")
+}
+
 func TestCleanupCreatedFileIfSameFileBranches(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
 	cleanupMsg := "created cleanup changed"
