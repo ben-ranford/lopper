@@ -30,6 +30,16 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 			want: false,
 		},
 		{
+			name: "save baseline gate",
+			policy: analysisRequestPolicy{
+				saveBaseline: true,
+				thresholds: thresholds.Values{
+					FailOnIncreasePercent: -1,
+				},
+			},
+			want: true,
+		},
+		{
 			name: "license fail gate",
 			policy: analysisRequestPolicy{thresholds: thresholds.Values{
 				FailOnIncreasePercent: -1,

@@ -9,6 +9,7 @@ import (
 )
 
 type analysisRequestPolicy struct {
+	saveBaseline            bool
 	thresholds              thresholds.Values
 	advisorySourcePath      string
 	advisorySourceTrustRoot string
@@ -64,6 +65,9 @@ func prepareAnalysisPolicy(base analysis.Request, policy analysisRequestPolicy) 
 }
 
 func requiresCompleteCoverage(policy analysisRequestPolicy) bool {
+	if policy.saveBaseline {
+		return true
+	}
 	if policy.thresholds.FailOnIncreasePercent >= 0 {
 		return true
 	}
