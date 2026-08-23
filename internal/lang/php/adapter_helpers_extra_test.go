@@ -2443,6 +2443,15 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 }
 
 func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
+	testPHPUseAndNamespaceBoundaryBranches(t)
+	testPHPTagAndHeredocBoundaryBranches(t)
+	testPHPConfigBoundaryBranches(t)
+	testPHPExcludedPathBoundaryBranches(t)
+}
+
+func testPHPUseAndNamespaceBoundaryBranches(t *testing.T) {
+	t.Helper()
+
 	masked := []byte("abc\n")
 	maskPHPUseStatementRange(masked, -1, len(masked)+1)
 	if got := string(masked); got != "   \n" {
@@ -2481,6 +2490,10 @@ func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
 	if got := phpStatementTerminatorLengthAt("x", 1); got != 0 {
 		t.Fatalf("expected no terminator beyond input, got %d", got)
 	}
+}
+
+func testPHPTagAndHeredocBoundaryBranches(t *testing.T) {
+	t.Helper()
 
 	if _, _, ok := nextPHPOpenTag(`<?xml version="1.0"?>`, 0, true); ok {
 		t.Fatal("expected XML declaration not to be treated as a PHP open tag")
@@ -2500,7 +2513,7 @@ func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
 	if !isHeredocNowdocTerminatorContinuation("") || !isHeredocNowdocTerminatorTail(" ") || isHeredocNowdocTerminatorTail("/*") {
 		t.Fatal("expected empty heredoc continuation and malformed block comment handling")
 	}
-	if end := findHeredocNowdocTerminator("body\nEOF;\n", 0, "EOF"); end < 0 {
+	if findHeredocNowdocTerminator("body\nEOF;\n", 0, "EOF") < 0 {
 		t.Fatal("expected heredoc terminator to be found")
 	}
 	if got := maskPHPHeredocNowdocBodies("<<<\n"); got != "<<<\n" {
@@ -2512,6 +2525,10 @@ func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
 	if got, ok := expandNamespaceUseAlias("Alias", map[string]string{"alias": `Vendor\Package`}); !ok || got != `Vendor\Package` {
 		t.Fatalf("expected alias-only namespace use to expand, got %q ok=%v", got, ok)
 	}
+}
+
+func testPHPConfigBoundaryBranches(t *testing.T) {
+	t.Helper()
 
 	policy := phpShortOpenTagPolicy{
 		dirSettings:    map[string]phpShortOpenTagDirSetting{"dir": {enabled: true, priority: 3}},
@@ -2546,6 +2563,12 @@ func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
 	if err := scanPHPShortOpenTagConfigEntry(repo, filepath.Join(repo, "not-a-config.txt"), mustPHPDirEntry(t, repo, "not-a-config.txt"), nil, &policy, nil); err != nil {
 		t.Fatalf("expected non-config file to be ignored, got %v", err)
 	}
+}
+
+func testPHPExcludedPathBoundaryBranches(t *testing.T) {
+	t.Helper()
+
+	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "nested", helpersComposerJSON), "{}")
 	if err := scanPHPShortOpenTagConfigDir(repo, filepath.Join(repo, "nested"), mustPHPDirEntry(t, repo, "nested")); !errors.Is(err, filepath.SkipDir) {
 		t.Fatalf("expected nested Composer package config directory to be skipped, got %v", err)
