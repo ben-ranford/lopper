@@ -803,9 +803,22 @@ func nextPHPOpenTag(text string, offset int, allowShortOpenTag bool) (int, int, 
 
 func isXMLDeclarationOpenTag(text string, start int) bool {
 	tagEnd := start + len("<?xml")
-	return tagEnd <= len(text) &&
-		strings.EqualFold(text[start:tagEnd], "<?xml") &&
-		(tagEnd == len(text) || text[tagEnd] == '?' || text[tagEnd] == '-' || isPHPWhitespace(text[tagEnd]))
+	if tagEnd > len(text) || !strings.EqualFold(text[start:tagEnd], "<?xml") {
+		return false
+	}
+	if tagEnd == len(text) || text[tagEnd] == '-' {
+		return true
+	}
+	if !isPHPWhitespace(text[tagEnd]) {
+		return false
+	}
+	attributeStart := skipPHPWhitespace(text, tagEnd)
+	attributeEnd := attributeStart + len("version")
+	if attributeEnd > len(text) || !strings.EqualFold(text[attributeStart:attributeEnd], "version") {
+		return false
+	}
+	attributeValueStart := skipPHPWhitespace(text, attributeEnd)
+	return attributeValueStart < len(text) && text[attributeValueStart] == '='
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {

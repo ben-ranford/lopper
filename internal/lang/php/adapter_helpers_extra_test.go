@@ -1355,7 +1355,7 @@ func TestParsePHPImportsHonorsDisabledShortOpenTags(t *testing.T) {
 }
 
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
-	content := []byte("<?xml();\n" +
+	content := []byte("<?xml ::foo();\n" +
 		"use Vendor\\Package\\Client;\n")
 
 	resolver := composerResolver{
