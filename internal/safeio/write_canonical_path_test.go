@@ -542,6 +542,62 @@ func TestOpenCanonicalSearchOnlyWriteRootRejectsInvalidRootPath(t *testing.T) {
 	}
 }
 
+func TestOpenCanonicalSearchOnlyWriteRootPropagatesAbsolutePathError(t *testing.T) {
+	expectedErr := errors.New("root abs failed")
+	withFileSystem(t, &fakeFileSystem{abs: func(string) (string, error) {
+		return "", expectedErr
+	}})
+
+	root, err := OpenCanonicalSearchOnlyWriteRoot(writeTestFileName)
+	if !errors.Is(err, expectedErr) {
+		if root != nil {
+			if closeErr := root.Close(); closeErr != nil {
+				t.Fatalf("close unexpected root: %v", closeErr)
+			}
+		}
+		t.Fatalf("expected absolute path error, got root=%v err=%v", root, err)
+	}
+}
+
+func TestSearchOnlyWriteRootOpenFilePropagatesDupFailure(t *testing.T) {
+	root, err := OpenCanonicalSearchOnlyWriteRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCanonicalSearchOnlyWriteRoot returned error: %v", err)
+	}
+	searchRoot, ok := root.root.(*searchOnlyWriteRoot)
+	if !ok {
+		t.Fatalf("expected search-only root implementation, got %T", root.root)
+	}
+	if err := searchRoot.file.Close(); err != nil {
+		t.Fatalf("close pinned descriptor before duplicate: %v", err)
+	}
+
+	file, err := searchRoot.OpenFile(".", os.O_RDONLY, 0)
+	if err == nil {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close unexpected duplicated file: %v", closeErr)
+		}
+		t.Fatal("expected duplicate of closed descriptor to fail")
+	}
+}
+
+func TestOpenSearchOnlyCanonicalDirectoryPropagatesAbsolutePathError(t *testing.T) {
+	expectedErr := errors.New("directory abs failed")
+	withFileSystem(t, &fakeFileSystem{abs: func(string) (string, error) {
+		return "", expectedErr
+	}})
+
+	file, fd, err := openSearchOnlyCanonicalDirectory(writeTestFileName)
+	if !errors.Is(err, expectedErr) {
+		if file != nil {
+			if closeErr := file.Close(); closeErr != nil {
+				t.Fatalf("close unexpected descriptor: %v", closeErr)
+			}
+		}
+		t.Fatalf("expected absolute path error, got fd=%d err=%v", fd, err)
+	}
+}
+
 func TestOpenSearchOnlyChildDirectoryPropagatesMkdirError(t *testing.T) {
 	parent := t.TempDir()
 	_, parentFD := openCanonicalParentForTest(t, parent)
@@ -562,6 +618,28 @@ func TestOpenSearchOnlyChildDirectoryPropagatesMkdirError(t *testing.T) {
 func TestDescriptorStatRejectsInvalidDescriptor(t *testing.T) {
 	if _, err := descriptorStat(-1); err == nil {
 		t.Fatal("expected invalid descriptor stat to fail")
+	}
+}
+
+func TestSearchDirectoryAliasTargetRejectsUnresolvableRootLevelAlias(t *testing.T) {
+	originalLstat := searchDirectoryLstatFn
+	originalStat := searchDirectoryStatFn
+	t.Cleanup(func() {
+		searchDirectoryLstatFn = originalLstat
+		searchDirectoryStatFn = originalStat
+	})
+
+	dirInfo := statTestPath(t, t.TempDir())
+	searchDirectoryLstatFn = func(string) (fs.FileInfo, error) {
+		return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeSymlink | 0o777}, nil
+	}
+	searchDirectoryStatFn = func(string) (fs.FileInfo, error) {
+		return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeDir | 0o755}, nil
+	}
+
+	invalidAliasPath := string([]byte{os.PathSeparator, 'b', 'a', 'd', 0})
+	if target, ok := searchDirectoryAliasTarget(invalidAliasPath); ok {
+		t.Fatalf("expected unresolvable root-level alias to be rejected, got target=%q", target)
 	}
 }
 
@@ -1010,6 +1088,25 @@ func TestDescriptorPathWritePropagatesTempFileOperationErrors(t *testing.T) {
 				t.Fatalf("expected target to remain absent, got %v", statErr)
 			}
 		})
+	}
+}
+
+func TestDescriptorPathWriteRejectsNonRegularTempFile(t *testing.T) {
+	parent := t.TempDir()
+	_, parentFD := openCanonicalParentForTest(t, parent)
+	dirInfo := statTestPath(t, parent)
+	withDescriptorOperationHooks(t, descriptorOperationHooks{
+		stat: func(*os.File) (os.FileInfo, error) {
+			return &modeOverrideFileInfo{FileInfo: dirInfo, mode: os.ModeDir | 0o755}, nil
+		},
+	})
+
+	err := writeFileAtomicallyIfAbsentUnderDescriptorPath(parentFD, writeTestFileName, []byte("after"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "temporary file is not regular") {
+		t.Fatalf("expected non-regular temp file rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(parent, writeTestFileName)); !os.IsNotExist(statErr) {
+		t.Fatalf("expected target to remain absent, got %v", statErr)
 	}
 }
 

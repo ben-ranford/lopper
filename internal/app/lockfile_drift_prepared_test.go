@@ -199,7 +199,7 @@ func TestAppendPreparedReplayRuleHandlesManifestReadErrors(t *testing.T) {
 		})
 		result := &lockfileDriftResult{}
 
-		if ok := result.appendPreparedReplayRule(dir, rule, lockfileGitContext{}, cache); !ok {
+		if !result.appendPreparedReplayRule(dir, rule, lockfileGitContext{}, cache) {
 			t.Fatal("expected recoverable manifest read error to keep scanning")
 		}
 		if !errors.Is(result.err, safeio.ErrFileTooLarge) {
@@ -219,7 +219,7 @@ func TestAppendPreparedReplayRuleHandlesManifestReadErrors(t *testing.T) {
 		})
 		result := &lockfileDriftResult{}
 
-		if ok := result.appendPreparedReplayRule(dir, rule, lockfileGitContext{}, cache); ok {
+		if result.appendPreparedReplayRule(dir, rule, lockfileGitContext{}, cache) {
 			t.Fatal("expected fatal manifest read error to stop scanning")
 		}
 		if !errors.Is(result.err, fs.ErrPermission) {
