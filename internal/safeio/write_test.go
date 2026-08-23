@@ -47,6 +47,99 @@ func (e *namedDirEntry) Info() (fs.FileInfo, error) {
 	return nil, fs.ErrInvalid
 }
 
+type aliasRevalidationState struct {
+	t            *testing.T
+	sourceInfo   fs.FileInfo
+	dirInfo      fs.FileInfo
+	files        map[string]bool
+	readDirCalls int
+}
+
+func newAliasRevalidationState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *aliasRevalidationState {
+	return &aliasRevalidationState{
+		t:          t,
+		sourceInfo: sourceInfo,
+		dirInfo:    dirInfo,
+		files:      map[string]bool{"source": true, "SOURCE": true},
+	}
+}
+
+func (s *aliasRevalidationState) root() *fakeRoot {
+	return &fakeRoot{
+		lstat:           s.lstat,
+		chmod:           chmodNameWithoutError(s.t, "source"),
+		open:            s.open,
+		linkIfMatches:   s.linkIfMatches,
+		renameIfMatches: s.renameIfMatches,
+		remove:          s.remove,
+	}
+}
+
+func (s *aliasRevalidationState) lstat(name string) (fs.FileInfo, error) {
+	if name == "." {
+		return s.dirInfo, nil
+	}
+	if s.files[name] {
+		return s.sourceInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *aliasRevalidationState) open(name string) (File, error) {
+	if name != "." {
+		s.t.Fatalf("unexpected directory open %q", name)
+		return nil, fs.ErrInvalid
+	}
+	return &fakeReadDirFile{
+		fakeFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return s.dirInfo, nil },
+			close: closeWithoutError,
+		},
+		readDir: s.readDir,
+	}, nil
+}
+
+func (s *aliasRevalidationState) readDir(int) ([]fs.DirEntry, error) {
+	s.readDirCalls++
+	if s.readDirCalls == 1 {
+		// Model a concurrent unlink after target Lstat but before the original
+		// alias enumeration completes.
+		s.files["SOURCE"] = false
+		return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+	}
+	return []fs.DirEntry{
+		&namedDirEntry{name: "source"},
+		&namedDirEntry{name: "SOURCE"},
+	}, nil
+}
+
+func (s *aliasRevalidationState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	s.files[newName] = true
+	return nil
+}
+
+func (s *aliasRevalidationState) renameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	s.files[oldName] = false
+	s.files[newName] = true
+	return nil
+}
+
+func (s *aliasRevalidationState) remove(name string) error {
+	if !s.files[name] {
+		return os.ErrNotExist
+	}
+	s.files[name] = false
+	return nil
+}
+
 type unsafeTargetModeCase struct {
 	name string
 	mode os.FileMode
@@ -7860,85 +7953,19 @@ func TestPrepareUsesDirectoryReadDirFallbackWithoutCleanupFailure(t *testing.T) 
 
 func TestPrepareRevalidatesAliasBeforeSkippingSourceCleanup(t *testing.T) {
 	sourceInfo, _ := writePinnedTargetInfoPair(t)
-	dirInfo := statTestPath(t, t.TempDir())
-	files := map[string]bool{"source": true, "SOURCE": true}
-	readDirCalls := 0
+	state := newAliasRevalidationState(t, sourceInfo, statTestPath(t, t.TempDir()))
 
-	fileExists := func(name string) bool {
-		return files[name]
-	}
-	root := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			if name == "." {
-				return dirInfo, nil
-			}
-			if fileExists(name) {
-				return sourceInfo, nil
-			}
-			return nil, os.ErrNotExist
-		},
-		chmod: chmodNameWithoutError(t, "source"),
-		open: func(name string) (File, error) {
-			if name != "." {
-				t.Fatalf("unexpected directory open %q", name)
-			}
-			return &fakeReadDirFile{
-				fakeFile: &fakeFile{
-					stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
-					close: closeWithoutError,
-				},
-				readDir: func(int) ([]fs.DirEntry, error) {
-					readDirCalls++
-					if readDirCalls == 1 {
-						// Model a concurrent unlink after target Lstat but before
-						// the original alias enumeration completes.
-						files["SOURCE"] = false
-						return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
-					}
-					return []fs.DirEntry{
-						&namedDirEntry{name: "source"},
-						&namedDirEntry{name: "SOURCE"},
-					}, nil
-				},
-			}, nil
-		},
-		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			if !fileExists(oldName) {
-				return os.ErrNotExist
-			}
-			requireSameFileInfo(t, expected, sourceInfo, oldName)
-			files[newName] = true
-			return nil
-		},
-		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			if !fileExists(oldName) {
-				return os.ErrNotExist
-			}
-			requireSameFileInfo(t, expected, sourceInfo, oldName)
-			files[oldName] = false
-			files[newName] = true
-			return nil
-		},
-		remove: func(name string) error {
-			if !fileExists(name) {
-				return os.ErrNotExist
-			}
-			files[name] = false
-			return nil
-		},
-	}
-
-	if _, err := prepareAndRenameWithinRoot(root, "source", "SOURCE", 0o600); err != nil {
+	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
 		t.Fatalf("prepare and rename returned error: %v", err)
 	}
-	if files["source"] {
+	if state.files["source"] {
 		t.Fatal("expected source cleanup after the published target no longer aliased it")
 	}
-	if !files["SOURCE"] {
+	if !state.files["SOURCE"] {
 		t.Fatal("expected published target to remain")
 	}
-	if readDirCalls != 2 {
-		t.Fatalf("expected alias decision to be revalidated after publication, got %d directory scans", readDirCalls)
+	if state.readDirCalls != 2 {
+		t.Fatalf("expected alias decision to be revalidated after publication, got %d directory scans", state.readDirCalls)
 	}
 }
 
