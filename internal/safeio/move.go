@@ -143,17 +143,14 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		return sourceInfo, err
 	}
 	if renameStateMayBeUnreported(root) {
-		switch aliasRelation {
-		case targetAliasesSameDirectoryEntry:
-			// A legacy identity-bound root cannot report whether a rename consumed
-			// its staging name. Rename a confirmed same-entry alias directly: the
-			// rename is a no-op, while a raced-away target consumes source atomically.
-			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
-		case targetAliasRelationIndeterminate:
-			// A legacy root cannot distinguish a retained staging name from a
-			// consumed one. Do not turn an incomplete directory scan into a staged
-			// publication that might delete the target, or a direct rename that
-			// might leave a distinct hard-link source behind.
+		if aliasRelation != targetDoesNotAliasSource {
+			if filepath.Clean(sourceRel) == filepath.Clean(targetRel) {
+				return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+			}
+			// A legacy root cannot report whether a rename consumed staging. Every
+			// differently-spelled alias observation is non-atomic: either a direct
+			// rename can leave a distinct hard-link source behind or staged cleanup
+			// can delete a same-entry target. Reject the ambiguous operation intact.
 			return sourceInfo, fmt.Errorf("%w: %q and %q", errLegacyIdentityAliasStateIndeterminate, sourceRel, targetRel)
 		}
 	}
