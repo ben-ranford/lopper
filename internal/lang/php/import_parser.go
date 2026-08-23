@@ -558,6 +558,11 @@ func (p *phpNamespaceLinePrelude) advanceTo(text string, target, lineEnd int) {
 			p.offset = next
 			continue
 		}
+		if p.phpTagSeen && strings.HasPrefix(text[p.offset:], "?>") {
+			p.phpTagSeen = false
+			p.offset += len("?>")
+			continue
+		}
 		if !p.phpTagSeen {
 			if tagLength := phpOpenPreludeLengthAt(text, p.offset, target, p.allowShortOpenTags); tagLength > 0 {
 				p.phpTagSeen = true
@@ -781,20 +786,30 @@ func maskInactivePHPRegions(text string) string {
 
 func maskInactivePHPRegionsWithShortOpenTags(text string, allowShortOpenTag bool) string {
 	masked := ensureMaskedText(text, nil)
-	maskByteRange(masked, 0, len(masked))
+	maskInactivePHPTemplateRange(masked, text, 0, len(masked))
 	for offset := 0; offset < len(text); {
 		openStart, codeStart, ok := nextPHPOpenTag(text, offset, allowShortOpenTag)
 		if !ok {
 			break
 		}
-		closeStart, nextOffset := findPHPRegionEnd(text, codeStart)
-		unmaskByteRange(masked, text, openStart, closeStart)
+		_, nextOffset := findPHPRegionEnd(text, codeStart)
+		unmaskByteRange(masked, text, openStart, nextOffset)
 		if nextOffset <= offset {
 			nextOffset = offset + 1
 		}
 		offset = nextOffset
 	}
 	return string(masked)
+}
+
+func maskInactivePHPTemplateRange(masked []byte, text string, start, end int) {
+	for offset := start; offset < end; offset++ {
+		if isPHPWhitespace(text[offset]) {
+			masked[offset] = text[offset]
+			continue
+		}
+		masked[offset] = '~'
+	}
 }
 
 func nextPHPOpenTag(text string, offset int, allowShortOpenTag bool) (int, int, bool) {
@@ -847,8 +862,17 @@ func isXMLStylesheetProcessingInstructionOpenTag(text string, start int) bool {
 	if targetEnd >= len(text) || !strings.EqualFold(text[start:targetEnd], "<?xml-stylesheet") {
 		return false
 	}
-	return isPHPWhitespace(text[targetEnd]) ||
-		(text[targetEnd] == '?' && targetEnd+1 < len(text) && text[targetEnd+1] == '>')
+	attributeStart := skipPHPWhitespace(text, targetEnd)
+	attributeEnd := attributeStart
+	for attributeEnd < len(text) && isXMLProcessingInstructionAttributeByte(text[attributeEnd]) {
+		attributeEnd++
+	}
+	attributeValueStart := skipPHPWhitespace(text, attributeEnd)
+	return attributeEnd > attributeStart && attributeValueStart < len(text) && text[attributeValueStart] == '='
+}
+
+func isXMLProcessingInstructionAttributeByte(ch byte) bool {
+	return isPHPIdentifierByte(ch) || ch == ':' || ch == '-'
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {

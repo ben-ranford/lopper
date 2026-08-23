@@ -1394,6 +1394,17 @@ func TestParsePHPImportsResolvesNamespaceRelativeTraitUseAsLocalWithShortOpenTag
 	}
 }
 
+func TestParsePHPImportsResolvesNamespaceRelativeTraitUseAfterEmptyPHPRegions(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"App": {}},
+	}
+	parsed := parsePHPImports([]byte("<?php ?><?php namespace App; class C { use Vendor\\Package\\FeatureTrait; }"), "empty-regions-trait.php", resolver)
+	if parsed.unresolvedCount != 0 || len(parsed.imports) != 0 {
+		t.Fatalf("expected namespace-relative trait use after empty PHP regions to stay local, got %#v", parsed)
+	}
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
@@ -1406,6 +1417,7 @@ func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 		{name: "static call", opener: "<?xml ::foo();"},
 		{name: "hyphenated call", opener: "<?xml-foo();"},
 		{name: "stylesheet-like call without a close tag", opener: "<?xml-stylesheet?foo():bar();"},
+		{name: "stylesheet-like call after whitespace", opener: "<?xml-stylesheet ();"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			content := []byte(tc.opener + "\nuse Vendor\\Package\\Client;\n")
