@@ -55,7 +55,7 @@ func buildDependencyReport(dependency string, scan scanResult, warnOnNoUsage boo
 	usage.apply(&reportData)
 
 	warnings := buildDependencyUsageWarnings(dependency, scan.Catalog, declared, reportData.TotalExportsCount, warnOnNoUsage)
-	addUndeclaredUsageSignals(&reportData, dependency, declared, &warnings)
+	addUndeclaredUsageSignals(&reportData, dependency, declared, scan.Catalog.Incomplete, &warnings)
 	return reportData, warnings
 }
 
@@ -114,8 +114,8 @@ func buildDependencyUsageWarnings(dependency string, catalog dependencyCatalog, 
 	return []string{fmt.Sprintf("dependency %s is declared in %s but has no mapped include usage", dependency, strings.Join(sources, " + "))}
 }
 
-func addUndeclaredUsageSignals(reportData *report.DependencyReport, dependency string, declared bool, warnings *[]string) {
-	if declared || reportData.TotalExportsCount == 0 {
+func addUndeclaredUsageSignals(reportData *report.DependencyReport, dependency string, declared, catalogIncomplete bool, warnings *[]string) {
+	if declared || catalogIncomplete || reportData.TotalExportsCount == 0 {
 		return
 	}
 	reportData.RiskCues = append(reportData.RiskCues, report.RiskCue{

@@ -143,7 +143,6 @@ func TestPureOversizedFileErrorPreservesJoinedOperationalErrors(t *testing.T) {
 		t.Fatalf("expected joined operational error to be preserved")
 	}
 }
-
 func TestReadComposerInputsAcceptExactLimitFiles(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

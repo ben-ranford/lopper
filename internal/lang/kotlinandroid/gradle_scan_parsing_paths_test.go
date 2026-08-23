@@ -593,6 +593,9 @@ import com.acme.lib.Widget
 	if !shouldIgnoreImport("pkg.demo.service", "pkg.demo") {
 		t.Fatalf("expected package-local import to be ignored")
 	}
+	if shouldIgnoreImport("pkg.demo.`when`.Widget", "other.pkg") {
+		t.Fatalf("expected escaped dependency package to remain external to unrelated packages")
+	}
 	escapedPackage := parsePackage([]byte("package pkg.demo.`when`\n"))
 	escapedResult := newScanResult()
 	escapedImports := parseImports([]byte("import pkg.demo.`when`.Widget\n"), testMainSourceFileName, escapedPackage, dependencyLookups{}, &escapedResult)
@@ -617,6 +620,30 @@ func TestKotlinAndroidParseImportsSupportsKotlinBacktickAlias(t *testing.T) {
 	unsupportedSymbol := parseImports([]byte("import com.acme.`my type`\n"), testMainSourceFileName, "pkg.demo", dependencyLookups{Aliases: map[string]string{"com.acme": "acme-lib"}}, &result)
 	if len(unsupportedSymbol) != 0 {
 		t.Fatalf("expected unsupported escaped symbol to be ignored, got %#v", unsupportedSymbol)
+	}
+}
+
+func TestKotlinAndroidParseImportsTracksFallbackAndAmbiguity(t *testing.T) {
+	result := newScanResult()
+	lookups := dependencyLookups{
+		Prefixes: map[string]string{"com.acme": "acme-core"},
+		Ambiguous: map[string][]string{
+			"com.acme": {"acme-core", "acme-alt"},
+		},
+		DeclaredDependencies: map[string]struct{}{},
+	}
+	imports := parseImports([]byte("import com.acme.Widget\nimport com.unknown.Widget\n"), testMainSourceFileName, "pkg.demo", lookups, &result)
+	if len(imports) != 2 {
+		t.Fatalf("expected mapped and fallback imports, got %#v", imports)
+	}
+	if imports[0].Dependency != "acme-core" || imports[1].Dependency != "com.unknown" {
+		t.Fatalf("expected mapped and fallback dependencies, got %#v", imports)
+	}
+	if _, ok := result.AmbiguousDependencies["acme-core"]; !ok {
+		t.Fatalf("expected ambiguous dependency metadata, got %#v", result.AmbiguousDependencies)
+	}
+	if _, ok := result.UndeclaredDependencies["com.unknown"]; !ok {
+		t.Fatalf("expected undeclared fallback dependency metadata, got %#v", result.UndeclaredDependencies)
 	}
 }
 
