@@ -72,9 +72,11 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			continue
 		}
 
+		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req)
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
-			ExcludedPaths:                     cache.cacheExcludedPaths(normalizedRoot, req),
+			ExcludedPaths:                     exclusions.directories,
+			ExcludedFiles:                     exclusions.files,
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,
 			SuggestOnly:                       req.SuggestOnly,

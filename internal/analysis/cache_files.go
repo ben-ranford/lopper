@@ -22,17 +22,22 @@ type cacheTraversalEntry struct {
 	kind         string
 }
 
+type cacheAnalysisExclusions struct {
+	directories []string
+	files       []string
+}
+
 var errPHPShortOpenTagCacheTraversalLimit = errors.New("php short_open_tag cache traversal limit exceeded")
 
 func (c *analysisCache) collectRelevantFiles(rootPath string) ([]cacheRelevantFile, error) {
-	return c.collectRelevantFilesWithExcludedPaths(rootPath, c.cacheExcludedPaths(rootPath, Request{}))
+	return c.collectRelevantFilesWithExclusions(rootPath, c.cacheAnalysisExclusions(rootPath, Request{}))
 }
 
-func (c *analysisCache) collectRelevantFilesWithExcludedPaths(rootPath string, excludedPaths []string) ([]cacheRelevantFile, error) {
+func (c *analysisCache) collectRelevantFilesWithExclusions(rootPath string, exclusions cacheAnalysisExclusions) ([]cacheRelevantFile, error) {
 	files := make([]cacheRelevantFile, 0, 128)
-	excludedDirectories := cacheExcludedDirectorySet(excludedPaths)
+	excludedPaths := cacheExcludedPathSet(exclusions)
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
-		return collectRelevantFileWithExcludedPaths(rootPath, path, d, walkErr, excludedDirectories, &files)
+		return collectRelevantFileWithExcludedPaths(rootPath, path, d, walkErr, excludedPaths, &files)
 	})
 	if err != nil {
 		return nil, err
@@ -40,17 +45,26 @@ func (c *analysisCache) collectRelevantFilesWithExcludedPaths(rootPath string, e
 	return files, nil
 }
 
-func (c *analysisCache) cacheExcludedPaths(rootPath string, req Request) []string {
+func (c *analysisCache) cacheAnalysisExclusions(rootPath string, req Request) cacheAnalysisExclusions {
 	rootPath = filepath.Clean(rootPath)
-	paths := make(map[string]struct{})
+	directories := make(map[string]struct{})
+	files := make(map[string]struct{})
 	if c != nil && strings.TrimSpace(c.options.Path) != "" {
-		addCacheExcludedPath(paths, rootPath, c.options.Path)
+		addCacheExcludedPath(directories, rootPath, c.options.Path)
 	}
 	if tracePath := strings.TrimSpace(req.RuntimeTracePath); tracePath != "" {
-		addCacheExcludedPath(paths, rootPath, filepath.Dir(tracePath))
+		addCacheExcludedPath(files, rootPath, tracePath)
+		addCacheExcludedPath(files, rootPath, runtime.TraceStatePath(tracePath))
 	} else if strings.TrimSpace(req.RuntimeTestCommand) != "" {
-		addCacheExcludedPath(paths, rootPath, filepath.Dir(runtime.DefaultTracePath(rootPath)))
+		addCacheExcludedPath(directories, rootPath, filepath.Dir(runtime.DefaultTracePath(rootPath)))
 	}
+	return cacheAnalysisExclusions{
+		directories: sortedCacheExcludedPaths(directories),
+		files:       sortedCacheExcludedPaths(files),
+	}
+}
+
+func sortedCacheExcludedPaths(paths map[string]struct{}) []string {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -71,23 +85,24 @@ func addCacheExcludedPath(paths map[string]struct{}, rootPath, candidatePath str
 	paths[candidatePath] = struct{}{}
 }
 
-func cacheExcludedDirectorySet(paths []string) map[string]struct{} {
-	if len(paths) == 0 {
+func cacheExcludedPathSet(exclusions cacheAnalysisExclusions) map[string]struct{} {
+	if len(exclusions.directories) == 0 && len(exclusions.files) == 0 {
 		return nil
 	}
-	directories := make(map[string]struct{}, len(paths))
+	paths := append(append([]string(nil), exclusions.directories...), exclusions.files...)
+	excludedPaths := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if strings.TrimSpace(path) != "" {
-			directories[filepath.Clean(path)] = struct{}{}
+			excludedPaths[filepath.Clean(path)] = struct{}{}
 		}
 	}
-	return directories
+	return excludedPaths
 }
 
-func collectPHPShortOpenTagTraversalEntries(rootPath string, excludedPaths []string) ([]cacheTraversalEntry, error) {
+func collectPHPShortOpenTagTraversalEntries(rootPath string, exclusions cacheAnalysisExclusions) ([]cacheTraversalEntry, error) {
 	rootPath = filepath.Clean(rootPath)
 	entries := make([]cacheTraversalEntry, 0, shared.PHPShortOpenTagConfigWalkEntryLimit+1)
-	excludedDirectories := cacheExcludedDirectorySet(excludedPaths)
+	excludedPaths := cacheExcludedPathSet(exclusions)
 	visited := 0
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -96,8 +111,11 @@ func collectPHPShortOpenTagTraversalEntries(rootPath string, excludedPaths []str
 		if path == rootPath {
 			return nil
 		}
-		if _, excluded := excludedDirectories[path]; excluded {
-			return filepath.SkipDir
+		if _, excluded := excludedPaths[path]; excluded {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() && shouldSkipPHPShortOpenTagConfigDir(path, d.Name()) {
 			return filepath.SkipDir
@@ -129,12 +147,15 @@ func collectPHPShortOpenTagTraversalEntries(rootPath string, excludedPaths []str
 	return entries, nil
 }
 
-func collectRelevantFileWithExcludedPaths(rootPath, path string, d fs.DirEntry, walkErr error, excludedDirectories map[string]struct{}, files *[]cacheRelevantFile) error {
+func collectRelevantFileWithExcludedPaths(rootPath, path string, d fs.DirEntry, walkErr error, excludedPaths map[string]struct{}, files *[]cacheRelevantFile) error {
 	if walkErr != nil {
 		return walkErr
 	}
-	if _, excluded := excludedDirectories[path]; excluded {
-		return filepath.SkipDir
+	if _, excluded := excludedPaths[path]; excluded {
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
 	}
 	return collectRelevantFile(rootPath, path, d, nil, files)
 }

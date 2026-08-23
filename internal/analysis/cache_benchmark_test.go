@@ -32,7 +32,7 @@ func TestAnalysisCacheComputeInputDigestMatchesExpectedEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect relevant files: %v", err)
 	}
-	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(repo, nil)
+	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(repo, cacheAnalysisExclusions{})
 	if err != nil {
 		t.Fatalf("collect PHP short_open_tag traversal entries: %v", err)
 	}

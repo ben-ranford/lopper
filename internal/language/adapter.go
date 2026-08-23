@@ -15,6 +15,7 @@ const All = "all"
 type AnalysisOptions struct {
 	RepoPath                          string
 	ExcludedPaths                     []string
+	ExcludedFiles                     []string
 	Dependency                        string
 	TopN                              int
 	SuggestOnly                       bool

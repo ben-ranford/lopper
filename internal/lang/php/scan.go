@@ -45,19 +45,19 @@ type scanState struct {
 }
 
 type scanCoordinator struct {
-	repoPath            string
-	excludedDirectories map[string]struct{}
-	resolver            composerResolver
-	shortOpenTagPolicy  phpShortOpenTagPolicy
-	result              scanResult
-	state               scanState
+	repoPath           string
+	excludedPaths      map[string]struct{}
+	resolver           composerResolver
+	shortOpenTagPolicy phpShortOpenTagPolicy
+	result             scanResult
+	state              scanState
 }
 
-func newScanCoordinatorWithExcludedDirectories(repoPath string, composer composerData, excludedDirectories map[string]struct{}) scanCoordinator {
+func newScanCoordinatorWithExcludedPaths(repoPath string, composer composerData, excludedPaths map[string]struct{}) scanCoordinator {
 	return scanCoordinator{
-		repoPath:            repoPath,
-		excludedDirectories: excludedDirectories,
-		resolver:            newComposerResolver(composer),
+		repoPath:      repoPath,
+		excludedPaths: excludedPaths,
+		resolver:      newComposerResolver(composer),
 		result: scanResult{
 			DeclaredDependencies:       composer.DeclaredDependencies,
 			GroupedImportsByDependency: make(map[string]int),
@@ -69,11 +69,11 @@ func newScanCoordinatorWithExcludedDirectories(repoPath string, composer compose
 }
 
 func scanRepo(ctx context.Context, repoPath string, composer composerData) (scanResult, error) {
-	return scanRepoWithExcludedDirectories(ctx, repoPath, composer, nil)
+	return scanRepoWithExcludedPaths(ctx, repoPath, composer, nil)
 }
 
-func scanRepoWithExcludedDirectories(ctx context.Context, repoPath string, composer composerData, excludedDirectories map[string]struct{}) (scanResult, error) {
-	coordinator := newScanCoordinatorWithExcludedDirectories(repoPath, composer, excludedDirectories)
+func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, composer composerData, excludedPaths map[string]struct{}) (scanResult, error) {
+	coordinator := newScanCoordinatorWithExcludedPaths(repoPath, composer, excludedPaths)
 	return coordinator.scan(ctx)
 }
 
@@ -103,18 +103,24 @@ func contextErr(ctx context.Context) error {
 }
 
 func (c *scanCoordinator) scanEntry(path string, entry fs.DirEntry) error {
+	if isExcludedPath(c.excludedPaths, path) {
+		if entry.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	}
 	if entry.IsDir() {
-		return scanDirEntryWithExcludedDirectories(c.repoPath, path, entry, &c.state, c.excludedDirectories)
+		return scanDirEntryWithExcludedPaths(c.repoPath, path, entry, &c.state, c.excludedPaths)
 	}
 	return c.scanFile(path)
 }
 
 func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanState) error {
-	return scanDirEntryWithExcludedDirectories(repoPath, path, entry, state, nil)
+	return scanDirEntryWithExcludedPaths(repoPath, path, entry, state, nil)
 }
 
-func scanDirEntryWithExcludedDirectories(repoPath string, path string, entry fs.DirEntry, state *scanState, excludedDirectories map[string]struct{}) error {
-	if isExcludedDirectory(excludedDirectories, path) {
+func scanDirEntryWithExcludedPaths(repoPath string, path string, entry fs.DirEntry, state *scanState, excludedPaths map[string]struct{}) error {
+	if isExcludedPath(excludedPaths, path) {
 		return filepath.SkipDir
 	}
 	if shouldSkipDir(entry.Name()) {
@@ -127,12 +133,13 @@ func scanDirEntryWithExcludedDirectories(repoPath string, path string, entry fs.
 	return nil
 }
 
-func excludedDirectoriesForRepo(repoPath string, paths []string) map[string]struct{} {
-	if len(paths) == 0 {
+func excludedPathsForRepo(repoPath string, directories, files []string) map[string]struct{} {
+	if len(directories) == 0 && len(files) == 0 {
 		return nil
 	}
 	repoPath = filepath.Clean(repoPath)
-	directories := make(map[string]struct{}, len(paths))
+	paths := append(append([]string(nil), directories...), files...)
+	excludedPaths := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue
@@ -142,13 +149,13 @@ func excludedDirectoriesForRepo(repoPath string, paths []string) map[string]stru
 		if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
 			continue
 		}
-		directories[cleanedPath] = struct{}{}
+		excludedPaths[cleanedPath] = struct{}{}
 	}
-	return directories
+	return excludedPaths
 }
 
-func isExcludedDirectory(directories map[string]struct{}, path string) bool {
-	_, excluded := directories[filepath.Clean(path)]
+func isExcludedPath(paths map[string]struct{}, path string) bool {
+	_, excluded := paths[filepath.Clean(path)]
 	return excluded
 }
 

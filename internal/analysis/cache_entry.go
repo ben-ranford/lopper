@@ -27,7 +27,7 @@ type cacheDigestInput struct {
 type cacheInputDigestMemoKey struct {
 	normalizedRoot  string
 	cleanConfigPath string
-	excludedPaths   string
+	exclusions      string
 }
 
 func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
@@ -82,7 +82,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
-	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath, c.cacheExcludedPaths(normalizedRoot, req))
+	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath, c.cacheAnalysisExclusions(normalizedRoot, req))
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
@@ -109,19 +109,19 @@ func normalizedScopeCacheIdentity(req Request) *scopeCacheIdentity {
 	return identity
 }
 
-func (c *analysisCache) memoizedInputDigest(rootPath, configPath string, excludedPaths []string) (string, error) {
+func (c *analysisCache) memoizedInputDigest(rootPath, configPath string, exclusions cacheAnalysisExclusions) (string, error) {
 	if c.inputDigestMemo == nil {
 		c.inputDigestMemo = make(map[cacheInputDigestMemoKey]string)
 	}
 	memoKey := cacheInputDigestMemoKey{
 		normalizedRoot:  filepath.Clean(rootPath),
 		cleanConfigPath: cleanConfigPath(configPath),
-		excludedPaths:   strings.Join(excludedPaths, "\x00"),
+		exclusions:      strings.Join(exclusions.directories, "\x00") + "\n" + strings.Join(exclusions.files, "\x00"),
 	}
 	if digest, ok := c.inputDigestMemo[memoKey]; ok {
 		return digest, nil
 	}
-	digest, err := c.computeInputDigestWithExcludedPaths(memoKey.normalizedRoot, memoKey.cleanConfigPath, excludedPaths)
+	digest, err := c.computeInputDigestWithExclusions(memoKey.normalizedRoot, memoKey.cleanConfigPath, exclusions)
 	if err != nil {
 		return "", err
 	}
@@ -130,16 +130,16 @@ func (c *analysisCache) memoizedInputDigest(rootPath, configPath string, exclude
 }
 
 func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
-	return c.computeInputDigestWithExcludedPaths(rootPath, configPath, c.cacheExcludedPaths(rootPath, Request{}))
+	return c.computeInputDigestWithExclusions(rootPath, configPath, c.cacheAnalysisExclusions(rootPath, Request{}))
 }
 
-func (c *analysisCache) computeInputDigestWithExcludedPaths(rootPath, configPath string, excludedPaths []string) (string, error) {
+func (c *analysisCache) computeInputDigestWithExclusions(rootPath, configPath string, exclusions cacheAnalysisExclusions) (string, error) {
 	rootPath = filepath.Clean(rootPath)
-	files, err := c.collectRelevantFilesWithExcludedPaths(rootPath, excludedPaths)
+	files, err := c.collectRelevantFilesWithExclusions(rootPath, exclusions)
 	if err != nil {
 		return "", err
 	}
-	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(rootPath, excludedPaths)
+	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(rootPath, exclusions)
 	if err != nil {
 		return "", err
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 const (
@@ -445,6 +446,37 @@ func TestAnalysisCachePHPShortOpenTagTraversalCutoffInvalidatesInputDigest(t *te
 	}
 	if before == after {
 		t.Fatal("expected PHP short_open_tag traversal cutoff to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join(repo, "tests", "trace.ndjson")
+	sourcePath := filepath.Join(repo, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	exclusions := cache.cacheAnalysisExclusions(repo, Request{RuntimeTracePath: tracePath})
+	before, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, tracePath, []byte("{\"module\":\"example\"}\n"))
+	mustWriteFile(t, runtime.TraceStatePath(tracePath), []byte("{\"schema\":\"v2\"}\n"))
+	afterTrace, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != afterTrace {
+		t.Fatal("expected generated runtime trace artifacts not to invalidate the static input digest")
+	}
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'after';\n"))
+	afterSource, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after source change: %v", err)
+	}
+	if afterTrace == afterSource {
+		t.Fatal("expected source beside an explicit runtime trace to invalidate the input digest")
 	}
 }
 
