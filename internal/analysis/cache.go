@@ -405,8 +405,8 @@ type analysisCacheChildRollback struct {
 	created bool
 }
 
-func (rollback analysisCacheChildRollback) run() error {
-	return rollbackCreatedAnalysisCacheChild(rollback.root, rollback.name, rollback.child, rollback.info, rollback.created)
+func (r *analysisCacheChildRollback) run() error {
+	return rollbackCreatedAnalysisCacheChild(r.root, r.name, r.child, r.info, r.created)
 }
 
 func validateOpenedAnalysisCacheChild(root safeio.Root, parentPath, childPath string, rollback analysisCacheChildRollback) error {
