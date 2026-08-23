@@ -130,7 +130,7 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return nil, err
 	}
-	aliasesTarget, err := targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
+	_, err = targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
 	if readDirFileUnsupportedWithoutCleanupError(err) {
 		// Root only promises File from Open. When two differently-spelled
 		// paths may address one directory entry, do the identity-checked
@@ -140,10 +140,12 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return sourceInfo, err
 	}
-	if aliasesTarget && renameStateMayBeUnreported(root) {
+	if renameStateMayBeUnreported(root) {
 		// A legacy identity-bound root cannot report whether a rename consumed
-		// the staging name. Rename the source directly instead: an alias rename
-		// is a no-op, while a raced-away target consumes the source atomically.
+		// its staging name. The directory scan above is advisory only: a false
+		// alias result cannot safely select the staged replacement path. Rename
+		// the source directly instead: an alias rename is a no-op, while a
+		// raced-away target consumes the source atomically.
 		return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
 	}
 	stagedSourceRetained, err := publishIdentityBoundReplacingWithRetainedStaging(

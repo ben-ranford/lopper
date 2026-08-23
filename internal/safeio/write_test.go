@@ -8117,6 +8117,74 @@ func TestPreparePreservesAliasWhenIdentityRootCannotReportRenameState(t *testing
 	}
 }
 
+func TestPreparePreservesAliasWhenLegacyIdentityAliasScanIsFalse(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	readDirCalls := 0
+	sourceCleanupCalls := 0
+	base := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source", "TARGET":
+				return sourceInfo, nil
+			case ".":
+				return dirInfo, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+					close: func() error { return nil },
+				},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					readDirCalls++
+					// Model a stale or transiently incomplete directory scan: both
+					// spellings still Lstat to the same file, but neither is listed.
+					return nil, nil
+				},
+			}, nil
+		},
+	}
+	root := &identityOnlyRoot{
+		Root: base,
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			t.Fatal("legacy alias handling must not create a staging link")
+			return nil
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != "source" || newName != "TARGET" {
+				t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if name == "source" {
+				sourceCleanupCalls++
+				t.Fatal("same-entry alias must not be cleaned up after a direct rename")
+			}
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "TARGET", 0o600); err != nil {
+		t.Fatalf("legacy identity root alias move returned error: %v", err)
+	}
+	if sourceCleanupCalls != 0 {
+		t.Fatalf("same-entry alias cleanup ran %d times", sourceCleanupCalls)
+	}
+	if readDirCalls != 1 {
+		t.Fatalf("expected one advisory alias scan, got %d directory scans", readDirCalls)
+	}
+}
+
 func TestPrepareLegacyIdentityAliasRenamesDirectlyWhenTargetDisappears(t *testing.T) {
 	fixture := newLegacyIdentityAliasDisappearanceFixture(t)
 
@@ -9812,6 +9880,26 @@ func TestStageIdentityBoundLinkFailsAfterNameCollisions(t *testing.T) {
 	_, err := stageIdentityBoundLink(root, "source", info, sourceChangedMsg)
 	if err == nil || !strings.Contains(err.Error(), "too many collisions") {
 		t.Fatalf("expected staging collision exhaustion, got %v", err)
+	}
+}
+
+func TestStageIdentityBoundLinkPreservesCleanupFailureOnCollision(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	cleanupErr := errors.New("quarantine cleanup failed")
+	linkCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			linkCalls++
+			return withAtomicWriteCleanup(os.ErrExist, cleanupErr)
+		},
+	}
+
+	_, err := stageIdentityBoundLink(root, "source", info, sourceChangedMsg)
+	if !errors.Is(err, cleanupErr) || !atomicWriteCleanupFailed(err) {
+		t.Fatalf("expected collision cleanup failure, got %v", err)
+	}
+	if linkCalls != 1 {
+		t.Fatalf("cleanup failure must stop retries, got %d link attempts", linkCalls)
 	}
 }
 

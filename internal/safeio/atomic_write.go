@@ -347,7 +347,9 @@ func stageIdentityBoundLink(root Root, sourceRel string, expected fs.FileInfo, m
 		if err != nil {
 			return "", err
 		}
-		if err := linkFileIfMatches(root, sourceRel, stagedRel, expected, message); errors.Is(err, os.ErrExist) {
+		if err := linkFileIfMatches(root, sourceRel, stagedRel, expected, message); atomicWriteCleanupFailed(err) {
+			return "", err
+		} else if errors.Is(err, os.ErrExist) {
 			continue
 		} else if err != nil {
 			return "", err
