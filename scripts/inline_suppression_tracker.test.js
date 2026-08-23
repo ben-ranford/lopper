@@ -14,6 +14,33 @@ function patchFor(line) {
   return `@@ -0,0 +1,5 @@\n+package main\n+\n+func main() {\n+${line}\n+}\n`;
 }
 
+function patchStats(patch) {
+  const stats = { additions: 0, deletions: 0 };
+  for (const rawLine of patch.split('\n')) {
+    if (rawLine.startsWith('+++') || rawLine.startsWith('---')) {
+      continue;
+    }
+    if (rawLine.startsWith('+')) {
+      stats.additions += 1;
+    } else if (rawLine.startsWith('-')) {
+      stats.deletions += 1;
+    }
+  }
+  return stats;
+}
+
+function withPatchStats(file) {
+  if (typeof file.patch !== 'string') {
+    return file;
+  }
+  const stats = patchStats(file.patch);
+  return {
+    additions: stats.additions,
+    deletions: stats.deletions,
+    ...file,
+  };
+}
+
 function makeHarness(options = {}) {
   const pull = {
     number: 42,
@@ -29,13 +56,13 @@ function makeHarness(options = {}) {
     },
     ...options.pull,
   };
-  const files = options.files || [
+  const files = (options.files || [
     {
       filename: 'main.go',
       status: 'added',
       patch: patchFor(trackedLine()),
     },
-  ];
+  ]).map(withPatchStats);
   if (!Number.isInteger(pull.changed_files)) {
     pull.changed_files = files.length;
   }
@@ -312,6 +339,48 @@ test('tracks repeated identical suppressions with distinct fingerprints', async 
   assert.match(harness.calls.created[1].body, /Location: `main\.go:5`/);
 });
 
+test('counts pre-existing identical suppressions before assigning new fingerprints', async () => {
+  const existingFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
+  const newFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 2);
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'modified',
+        patch: [
+          '@@ -1,5 +1,6 @@',
+          ' package main',
+          ' ',
+          ' func main() {',
+          ` ${trackedLine('nolint:staticcheck')}`,
+          `+${trackedLine('nolint:staticcheck')}`,
+          ' }',
+          '',
+        ].join('\n'),
+      },
+    ],
+    searchItems: ({ marker }) => {
+      if (marker === `lopper-inline-suppression:${existingFingerprint}`) {
+        return [
+          {
+            number: 77,
+            body: `<!-- ${marker} -->\n\n## Inline analysis suppression tracking`,
+            user: { login: 'github-actions[bot]', type: 'Bot' },
+          },
+        ];
+      }
+      return [];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.updated.length, 0);
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, new RegExp(`lopper-inline-suppression:${newFingerprint}`));
+  assert.match(harness.calls.created[0].body, /Location: `main\.go:5`/);
+});
+
 test('ignores forged artifact-shaped data because only pull files are read', async () => {
   const harness = makeHarness({
     files: [
@@ -364,6 +433,29 @@ test('fails closed when a trusted diff hunk is malformed', async () => {
     {
       name: 'SyntaxError',
       message: /Unable to parse inline suppression diff hunk for main\.go/,
+    },
+  );
+  assert.equal(harness.calls.created.length, 0);
+});
+
+test('fails closed when a pull file patch is truncated', async () => {
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'modified',
+        additions: 5,
+        deletions: 0,
+        patch: '@@ -0,0 +1,1 @@\n+package main\n',
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'RangeError',
+      message: /diff patch for main\.go is incomplete or truncated.*refusing to publish tracking mutations/,
     },
   );
   assert.equal(harness.calls.created.length, 0);

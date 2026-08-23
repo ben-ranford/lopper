@@ -162,7 +162,7 @@ function nextOccurrence(occurrences, file, content) {
   return occurrence;
 }
 
-function addSuppression(records, { file, line, content, context, headSHA, occurrences }) {
+function addSuppression(records, { file, line, content, context, headSHA, occurrences, occurrence }) {
   validateFile(file);
   if (!Number.isInteger(line) || line < 1 || line > 1000000) {
     throw new RangeError('Invalid inline suppression line.');
@@ -176,7 +176,8 @@ function addSuppression(records, { file, line, content, context, headSHA, occurr
     'remove_when',
     1024,
   );
-  const fingerprint = fingerprintFor(file, content, nextOccurrence(occurrences, file, content));
+  const resolvedOccurrence = occurrence || nextOccurrence(occurrences, file, content);
+  const fingerprint = fingerprintFor(file, content, resolvedOccurrence);
   if (records.has(fingerprint)) {
     return;
   }
@@ -289,20 +290,86 @@ function hasInlineSuppressionMarker(content) {
   return false;
 }
 
+function parseHunkHeader(rawLine, file) {
+  const match = /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@/.exec(rawLine);
+  if (!match) {
+    throw new SyntaxError(`Unable to parse inline suppression diff hunk for ${file}.`);
+  }
+  return {
+    oldLines: match[2] === undefined ? 1 : Number.parseInt(match[2], 10),
+    newStart: Number.parseInt(match[3], 10),
+    newLines: match[4] === undefined ? 1 : Number.parseInt(match[4], 10),
+  };
+}
+
 function parseHunkStart(rawLine, file) {
-  const plusIndex = rawLine.indexOf(' +');
-  if (!rawLine.startsWith('@@ ') || plusIndex === -1) {
-    throw new SyntaxError(`Unable to parse inline suppression diff hunk for ${file}.`);
+  return parseHunkHeader(rawLine, file).newStart;
+}
+
+function patchLines(patch) {
+  return (patch.endsWith('\n') ? patch.slice(0, -1) : patch).split('\n');
+}
+
+function truncatedPatchError(file) {
+  return new RangeError(`Inline suppression diff patch for ${file} is incomplete or truncated; refusing to publish tracking mutations.`);
+}
+
+function assertCompleteHunk(file, hunk) {
+  if (!hunk) {
+    return;
   }
-  let cursor = plusIndex + 2;
-  const start = cursor;
-  while (rawLine[cursor] >= '0' && rawLine[cursor] <= '9') {
-    cursor += 1;
+  if (hunk.oldSeen !== hunk.oldLines || hunk.newSeen !== hunk.newLines) {
+    throw truncatedPatchError(file);
   }
-  if (cursor === start || (rawLine[cursor] !== ',' && rawLine[cursor] !== ' ')) {
-    throw new SyntaxError(`Unable to parse inline suppression diff hunk for ${file}.`);
+}
+
+function patchLineStats(patch, file) {
+  const stats = { additions: 0, deletions: 0 };
+  let hunk;
+  for (const rawLine of patchLines(patch)) {
+    if (rawLine.startsWith('@@ ')) {
+      assertCompleteHunk(file, hunk);
+      const header = parseHunkHeader(rawLine, file);
+      hunk = { oldLines: header.oldLines, newLines: header.newLines, oldSeen: 0, newSeen: 0 };
+      continue;
+    }
+    if (rawLine.startsWith('+++') || rawLine.startsWith('---')) {
+      continue;
+    }
+    if (!hunk) {
+      continue;
+    }
+    if (rawLine.startsWith('+')) {
+      stats.additions += 1;
+      hunk.newSeen += 1;
+      continue;
+    }
+    if (rawLine.startsWith('-')) {
+      stats.deletions += 1;
+      hunk.oldSeen += 1;
+      continue;
+    }
+    if (rawLine.startsWith('\\')) {
+      continue;
+    }
+    hunk.oldSeen += 1;
+    hunk.newSeen += 1;
   }
-  return Number.parseInt(rawLine.slice(start, cursor), 10);
+  assertCompleteHunk(file, hunk);
+  return stats;
+}
+
+function assertCompletePatch(file) {
+  if (typeof file.patch !== 'string') {
+    return;
+  }
+  const stats = patchLineStats(file.patch, file.filename);
+  if (
+    (Number.isInteger(file.additions) && stats.additions !== file.additions) ||
+    (Number.isInteger(file.deletions) && stats.deletions !== file.deletions)
+  ) {
+    throw truncatedPatchError(file.filename);
+  }
 }
 
 function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
@@ -312,7 +379,7 @@ function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
   }
 
   let line = 0;
-  for (const rawLine of patch.split('\n')) {
+  for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
       continue;
@@ -323,7 +390,16 @@ function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
       if (hasInlineSuppressionMarker(content)) {
-        addSuppression(records, { file, line, content, context, headSHA, occurrences });
+        const occurrence = nextOccurrence(occurrences, file, content);
+        addSuppression(records, { file, line, content, context, headSHA, occurrences, occurrence });
+      }
+      line += 1;
+      continue;
+    }
+    if (rawLine.startsWith(' ')) {
+      const content = rawLine.slice(1);
+      if (hasInlineSuppressionMarker(content)) {
+        nextOccurrence(occurrences, file, content);
       }
       line += 1;
       continue;
@@ -412,6 +488,7 @@ function collectSuppressionRecords({ files, context, pull }) {
     ) {
       continue;
     }
+    assertCompletePatch(file);
     scanPatch(records, {
       file: file.filename,
       patch: file.patch,
