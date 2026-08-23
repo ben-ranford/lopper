@@ -4727,6 +4727,9 @@ func moveFallbackCopyRename(root Root, oldName, newName string, attempts *int, f
 func lstatSourceOrTemp(t *testing.T, sourceInfo fs.FileInfo) func(string) (fs.FileInfo, error) {
 	t.Helper()
 	return func(name string) (fs.FileInfo, error) {
+		if name == "target" {
+			return nil, os.ErrNotExist
+		}
 		if name != "source" && !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
 			t.Fatalf("unexpected lstat path: %s", name)
 		}
@@ -5910,6 +5913,8 @@ func TestPrepareAndRenameWithinRootRejectsSubstitutedStagedSourceBeforePublish(t
 			switch {
 			case name == "source":
 				return sourceInfo, nil
+			case name == "target":
+				return nil, os.ErrNotExist
 			case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
 				return changedInfo, nil
 			default:
@@ -5960,6 +5965,8 @@ func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAfterValidation(t *tes
 			switch {
 			case name == "source":
 				return sourceInfo, nil
+			case name == "target":
+				return nil, os.ErrNotExist
 			case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
 				if stagedValidated {
 					return changedInfo, nil
@@ -6025,6 +6032,9 @@ func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAtPublish(t *testing.T
 func lstatSourceOrAtomicTemp(t *testing.T, info fs.FileInfo) func(string) (fs.FileInfo, error) {
 	t.Helper()
 	return func(name string) (fs.FileInfo, error) {
+		if name == "target" {
+			return nil, os.ErrNotExist
+		}
 		if name == "source" || strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
 			return info, nil
 		}
@@ -7716,19 +7726,14 @@ func TestIdentityHelperQuarantineBranches(t *testing.T) {
 	})
 }
 
-func TestTargetAliasSkipsUnrelatedSpelling(t *testing.T) {
+func TestTargetAliasProbesUnrelatedSpelling(t *testing.T) {
 	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
-	lstatErr := errors.New("lstat failed")
 
-	called := false
 	aliases, err := targetAliasesSource(&fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) {
-			called = true
-			return nil, lstatErr
-		},
+		lstat: lstatOriginalForNames(t, changedInfo, "target"),
 	}, "source", "target", sourceInfo)
-	if err != nil || aliases || called {
-		t.Fatalf("unrelated spelling should skip alias probing, aliases=%t called=%t err=%v", aliases, called, err)
+	if err != nil || aliases {
+		t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
 	}
 
 	aliases, err = targetAliasesSource(&fakeRoot{
@@ -7736,6 +7741,41 @@ func TestTargetAliasSkipsUnrelatedSpelling(t *testing.T) {
 	}, "source", "SOURCE", sourceInfo)
 	if err != nil || aliases {
 		t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasRecognizesShortNameAlias(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"Long File.txt": sourceInfo,
+				"LONGFI~1.TXT":  sourceInfo,
+				".":             dirInfo,
+			},
+			nil,
+		),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+					close: func() error { return nil },
+				},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					return []fs.DirEntry{&namedDirEntry{name: "Long File.txt"}}, nil
+				},
+			}, nil
+		},
+	}
+
+	aliases, err := targetAliasesSource(root, "Long File.txt", "LONGFI~1.TXT", sourceInfo)
+	if err != nil || !aliases {
+		t.Fatalf("short-name alias should be detected, aliases=%t err=%v", aliases, err)
 	}
 }
 
@@ -7864,8 +7904,14 @@ func TestPrepareFallsBackToLinklessRename(t *testing.T) {
 
 	root := &fakeRoot{
 		mkdirAll: func(string, os.FileMode) error { return nil },
-		lstat:    lstatOriginalForNames(t, sourceInfo, "source", "target"),
-		chmod:    chmodNameWithoutError(t, "source"),
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "source" || name == "target" || name == "." {
+				return sourceInfo, nil
+			}
+			t.Fatalf("unexpected lstat path: %s", name)
+			return nil, os.ErrNotExist
+		},
+		chmod: chmodNameWithoutError(t, "source"),
 		linkIfMatches: func(string, string, fs.FileInfo, string) error {
 			return errIdentityBoundLinkUnavailable
 		},
@@ -9464,8 +9510,10 @@ func TestPrepareAndRenameWithinRootRejectsReplacementWhenHardLinksUnsupported(t 
 		mkdirAll: func(string, os.FileMode) error { return nil },
 		lstat: func(name string) (fs.FileInfo, error) {
 			switch name {
-			case "source", "target":
+			case "source":
 				return sourceInfo, nil
+			case "target":
+				return nil, os.ErrNotExist
 			default:
 				t.Fatalf("unexpected lstat path: %s", name)
 				return nil, os.ErrNotExist
@@ -9951,7 +9999,7 @@ func TestPrepareAndRenameWithinRootReturnsSourceCleanupErrorAfterPublish(t *test
 		mkdirAll: func(string, os.FileMode) error { return nil },
 		lstat: func(name string) (fs.FileInfo, error) {
 			switch {
-			case name == "source", strings.HasPrefix(filepath.Base(name), atomicTempPrefix), name == "target":
+			case name == "source", strings.HasPrefix(filepath.Base(name), atomicTempPrefix), name == "target", name == ".":
 				return sourceInfo, nil
 			default:
 				t.Fatalf("unexpected lstat path: %s", name)

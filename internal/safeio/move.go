@@ -173,9 +173,6 @@ func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo
 func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
 	sourceClean := filepath.Clean(sourceRel)
 	targetClean := filepath.Clean(targetRel)
-	if !pathSpellingCanAlias(sourceClean, targetClean) {
-		return false, nil
-	}
 	targetInfo, err := root.Lstat(targetClean)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -207,19 +204,6 @@ func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.F
 		return false, err
 	}
 	return aliases == 1, nil
-}
-
-func pathSpellingCanAlias(sourceRel, targetRel string) bool {
-	return sourceRel == targetRel || strings.EqualFold(sourceRel, targetRel) || containsNonASCII(sourceRel) || containsNonASCII(targetRel)
-}
-
-func containsNonASCII(value string) bool {
-	for _, r := range value {
-		if r > 0x7f {
-			return true
-		}
-	}
-	return false
 }
 
 func countDirectoryEntriesAddressingBothNames(root Root, parentRel, sourceBase, targetBase string, sourceInfo fs.FileInfo) (_ int, returnErr error) {
