@@ -183,10 +183,21 @@ func retainedStagingAliasFinalizer(root Root, aliasesTarget bool, sourceRel, tar
 			return err
 		}
 		if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil && !errors.Is(err, os.ErrExist) {
-			return err
+			return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))
 		}
-		return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, moveTargetChangedBeforeValidate)
+		if err := verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil {
+			return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))
+		}
+		return nil
 	}
+}
+
+func restoreRetainedAliasSource(root Root, stagedRel, sourceRel string, stagedInfo fs.FileInfo) error {
+	restored, err := restoreQuarantinedPathNoReplace(root, stagedRel, sourceRel, moveSourceChangedBeforeCleanup, stagedInfo)
+	if restored || err != nil {
+		return err
+	}
+	return fmt.Errorf("%s: %s", moveSourceChangedBeforeCleanup, sourceRel)
 }
 
 func renameStateMayBeUnreported(root Root) bool {
