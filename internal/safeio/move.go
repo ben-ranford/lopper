@@ -140,21 +140,15 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return sourceInfo, err
 	}
-	_, err = publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename, moveTargetChangedBeforeValidate)
+	stagedSourceRetained, err := publishIdentityBoundReplacingWithSourceState(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename, moveTargetChangedBeforeValidate)
 	if err != nil {
 		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
 			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
 		}
 		return sourceInfo, err
 	}
-	if aliasesTarget {
-		aliasesTarget, err = targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
-		if err != nil {
-			return sourceInfo, err
-		}
-		if aliasesTarget {
-			return sourceInfo, nil
-		}
+	if aliasesTarget && stagedSourceRetained {
+		return sourceInfo, nil
 	}
 	if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
 		return sourceInfo, err

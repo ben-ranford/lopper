@@ -47,7 +47,7 @@ func (e *namedDirEntry) Info() (fs.FileInfo, error) {
 	return nil, fs.ErrInvalid
 }
 
-type aliasRevalidationState struct {
+type aliasScanRaceState struct {
 	t            *testing.T
 	sourceInfo   fs.FileInfo
 	dirInfo      fs.FileInfo
@@ -55,8 +55,8 @@ type aliasRevalidationState struct {
 	readDirCalls int
 }
 
-func newAliasRevalidationState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *aliasRevalidationState {
-	return &aliasRevalidationState{
+func newAliasScanRaceState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *aliasScanRaceState {
+	return &aliasScanRaceState{
 		t:          t,
 		sourceInfo: sourceInfo,
 		dirInfo:    dirInfo,
@@ -64,7 +64,7 @@ func newAliasRevalidationState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *a
 	}
 }
 
-func (s *aliasRevalidationState) root() *fakeRoot {
+func (s *aliasScanRaceState) root() *fakeRoot {
 	return &fakeRoot{
 		lstat:           s.lstat,
 		chmod:           chmodNameWithoutError(s.t, "source"),
@@ -75,7 +75,7 @@ func (s *aliasRevalidationState) root() *fakeRoot {
 	}
 }
 
-func (s *aliasRevalidationState) lstat(name string) (fs.FileInfo, error) {
+func (s *aliasScanRaceState) lstat(name string) (fs.FileInfo, error) {
 	if name == "." {
 		return s.dirInfo, nil
 	}
@@ -85,7 +85,7 @@ func (s *aliasRevalidationState) lstat(name string) (fs.FileInfo, error) {
 	return nil, os.ErrNotExist
 }
 
-func (s *aliasRevalidationState) open(name string) (File, error) {
+func (s *aliasScanRaceState) open(name string) (File, error) {
 	if name != "." {
 		s.t.Fatalf("unexpected directory open %q", name)
 		return nil, fs.ErrInvalid
@@ -99,7 +99,7 @@ func (s *aliasRevalidationState) open(name string) (File, error) {
 	}, nil
 }
 
-func (s *aliasRevalidationState) readDir(int) ([]fs.DirEntry, error) {
+func (s *aliasScanRaceState) readDir(int) ([]fs.DirEntry, error) {
 	s.readDirCalls++
 	if s.readDirCalls == 1 {
 		// Model a concurrent unlink after target Lstat but before the original
@@ -113,7 +113,7 @@ func (s *aliasRevalidationState) readDir(int) ([]fs.DirEntry, error) {
 	}, nil
 }
 
-func (s *aliasRevalidationState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+func (s *aliasScanRaceState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
 	if !s.files[oldName] {
 		return os.ErrNotExist
 	}
@@ -122,7 +122,7 @@ func (s *aliasRevalidationState) linkIfMatches(oldName, newName string, expected
 	return nil
 }
 
-func (s *aliasRevalidationState) renameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+func (s *aliasScanRaceState) renameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
 	if !s.files[oldName] {
 		return os.ErrNotExist
 	}
@@ -132,7 +132,7 @@ func (s *aliasRevalidationState) renameIfMatches(oldName, newName string, expect
 	return nil
 }
 
-func (s *aliasRevalidationState) remove(name string) error {
+func (s *aliasScanRaceState) remove(name string) error {
 	if !s.files[name] {
 		return os.ErrNotExist
 	}
@@ -7951,9 +7951,9 @@ func TestPrepareUsesDirectoryReadDirFallbackWithoutCleanupFailure(t *testing.T) 
 	}
 }
 
-func TestPrepareRevalidatesAliasBeforeSkippingSourceCleanup(t *testing.T) {
+func TestPrepareRemovesSourceWhenAliasScanChangesBeforePublication(t *testing.T) {
 	sourceInfo, _ := writePinnedTargetInfoPair(t)
-	state := newAliasRevalidationState(t, sourceInfo, statTestPath(t, t.TempDir()))
+	state := newAliasScanRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
 
 	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
 		t.Fatalf("prepare and rename returned error: %v", err)
@@ -7964,8 +7964,8 @@ func TestPrepareRevalidatesAliasBeforeSkippingSourceCleanup(t *testing.T) {
 	if !state.files["SOURCE"] {
 		t.Fatal("expected published target to remain")
 	}
-	if state.readDirCalls != 2 {
-		t.Fatalf("expected alias decision to be revalidated after publication, got %d directory scans", state.readDirCalls)
+	if state.readDirCalls != 1 {
+		t.Fatalf("expected source cleanup to rely on the publication result, got %d directory scans", state.readDirCalls)
 	}
 }
 
