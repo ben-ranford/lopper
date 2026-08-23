@@ -1812,6 +1812,13 @@ func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
 	if parts, limitHit := splitUseParts("Vendor\\Lib\\A", 0); !limitHit || len(parts) != 0 {
 		t.Fatalf("expected non-positive part limit to hit limit, parts=%#v limit=%v", parts, limitHit)
 	}
+	trailingCommaUse := strings.Repeat("Vendor\\Lib\\A,", testMaxPHPUseStatementsPerFile)
+	if parts, limitHit := splitUseParts(trailingCommaUse, testMaxPHPUseStatementsPerFile); limitHit || len(parts) != testMaxPHPUseStatementsPerFile {
+		t.Fatalf("expected trailing comma after part limit to stay complete, parts=%d limit=%v", len(parts), limitHit)
+	}
+	if parts, limitHit := splitUseParts(trailingCommaUse+"Vendor\\Lib\\B", testMaxPHPUseStatementsPerFile); !limitHit || len(parts) != testMaxPHPUseStatementsPerFile {
+		t.Fatalf("expected nonempty part after limit to remain incomplete, parts=%d limit=%v", len(parts), limitHit)
+	}
 	if got := lineTextAt("a\nb", 3); got != "" {
 		t.Fatalf("expected out-of-range line text to be empty, got %q", got)
 	}

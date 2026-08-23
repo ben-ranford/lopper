@@ -1493,8 +1493,9 @@ func splitUseParts(statement string, partLimit int) ([]string, bool) {
 		return nil, true
 	}
 	rawParts := strings.SplitN(statement, ",", partLimit+1)
-	limitHit := len(rawParts) > partLimit
-	if limitHit {
+	limitHit := false
+	if len(rawParts) > partLimit {
+		limitHit = strings.TrimSpace(rawParts[partLimit]) != ""
 		rawParts = rawParts[:partLimit]
 	}
 	parts := make([]string, 0, len(rawParts))
