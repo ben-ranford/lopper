@@ -377,6 +377,52 @@ func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
 	}
 }
 
+func TestAnalysisCacheCollectsPHPShortOpenTagConfigs(t *testing.T) {
+	repo := t.TempDir()
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		mustWriteFile(t, filepath.Join(repo, filename), []byte("short_open_tag = On\n"))
+	}
+
+	cache := &analysisCache{}
+	records, err := cache.collectRelevantFiles(repo)
+	if err != nil {
+		t.Fatalf("collect relevant files: %v", err)
+	}
+	collected := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		collected[record.relativePath] = struct{}{}
+	}
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		if _, ok := collected[filename]; !ok {
+			t.Fatalf("expected %s to participate in cache invalidation, got %#v", filename, collected)
+		}
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagConfigChangesInvalidateInputDigest(t *testing.T) {
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		t.Run(filename, func(t *testing.T) {
+			repo := t.TempDir()
+			configPath := filepath.Join(repo, filename)
+			mustWriteFile(t, configPath, []byte("short_open_tag = Off\n"))
+
+			cache := &analysisCache{}
+			before, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest before config update: %v", err)
+			}
+			mustWriteFile(t, configPath, []byte("short_open_tag = On\n"))
+			after, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest after config update: %v", err)
+			}
+			if before == after {
+				t.Fatalf("expected %s update to invalidate the input digest", filename)
+			}
+		})
+	}
+}
+
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	missingPath := filepath.Join(dir, cacheMissingFileName)
