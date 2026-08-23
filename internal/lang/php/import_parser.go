@@ -76,7 +76,16 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	text := string(sanitized)
 	lineIndex := newPHPLineIndex(text)
 	useScan, namespaceText := scanPHPUseStatementsForImports(text, maxPHPUseStatementsPerFile+1)
-	matches := useScan.matches
+	result := parsePHPUseStatementMatches(text, filePath, resolver, lineIndex, useScan.matches)
+	namespaceResult := parseNamespaceReferencesTextWithLineIndexAndUseRanges(namespaceText, filePath, resolver, lineIndex, nil)
+	result.imports = append(result.imports, namespaceResult.imports...)
+	result.unresolvedCount += namespaceResult.unresolvedCount
+	result.namespaceReferenceLimitHit = namespaceResult.limitHit
+	result.namespaceResolutionLimitHit = result.namespaceResolutionLimitHit || namespaceResult.namespaceResolutionLimitHit
+	return result
+}
+
+func parsePHPUseStatementMatches(text, filePath string, resolver composerResolver, lineIndex phpLineIndex, matches []phpUseStatementMatch) importParseResult {
 	contextTracker := newPHPContextTracker(text, resolver.allowPHPShortOpenTags)
 	result := importParseResult{
 		imports:      make([]importBinding, 0),
@@ -89,41 +98,35 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 
 	consumedUseParts := 0
 	for _, match := range matches {
-		remainingUseParts := maxPHPUseStatementsPerFile - consumedUseParts
-		if remainingUseParts <= 0 {
-			result.useBindingLimitHit = true
-			break
-		}
-		statement := strings.TrimSpace(text[match.statementStart:match.statementEnd])
-		line := lineIndex.lineNumberAt(match.statementStart)
-		context := contextTracker.advanceTo(match.start)
-		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, context)
-		if !context.classBody {
-			contextTracker.addNamespaceUses(statement, remainingUseParts)
-		}
-		if bindingLimitHit {
-			result.useBindingLimitHit = true
-		}
-		if resolutionLimitHit {
-			result.namespaceResolutionLimitHit = true
-		}
+		consumedParts, stop := consumePHPUseStatementMatch(&result, &contextTracker, text, filePath, resolver, lineIndex, match, maxPHPUseStatementsPerFile-consumedUseParts)
 		consumedUseParts += consumedParts
-		result.imports = append(result.imports, bindings...)
-		for dep := range groupedDeps {
-			result.groupedByDep[dep]++
-		}
-		result.unresolvedCount += unresolvedCount
-		if bindingLimitHit || result.namespaceResolutionLimitHit {
+		if stop {
 			break
 		}
 	}
-
-	namespaceResult := parseNamespaceReferencesTextWithLineIndexAndUseRanges(namespaceText, filePath, resolver, lineIndex, nil)
-	result.imports = append(result.imports, namespaceResult.imports...)
-	result.unresolvedCount += namespaceResult.unresolvedCount
-	result.namespaceReferenceLimitHit = namespaceResult.limitHit
-	result.namespaceResolutionLimitHit = result.namespaceResolutionLimitHit || namespaceResult.namespaceResolutionLimitHit
 	return result
+}
+
+func consumePHPUseStatementMatch(result *importParseResult, contextTracker *phpContextTracker, text, filePath string, resolver composerResolver, lineIndex phpLineIndex, match phpUseStatementMatch, remainingUseParts int) (int, bool) {
+	if remainingUseParts <= 0 {
+		result.useBindingLimitHit = true
+		return 0, true
+	}
+	statement := strings.TrimSpace(text[match.statementStart:match.statementEnd])
+	line := lineIndex.lineNumberAt(match.statementStart)
+	context := contextTracker.advanceTo(match.start)
+	bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, context)
+	if !context.classBody {
+		contextTracker.addNamespaceUses(statement, remainingUseParts)
+	}
+	result.imports = append(result.imports, bindings...)
+	for dep := range groupedDeps {
+		result.groupedByDep[dep]++
+	}
+	result.unresolvedCount += unresolvedCount
+	result.useBindingLimitHit = result.useBindingLimitHit || bindingLimitHit
+	result.namespaceResolutionLimitHit = result.namespaceResolutionLimitHit || resolutionLimitHit
+	return consumedParts, bindingLimitHit || resolutionLimitHit
 }
 
 func parseUseStatementByContext(statement, filePath string, line int, resolver composerResolver, partLimit int, context phpUseContext) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
