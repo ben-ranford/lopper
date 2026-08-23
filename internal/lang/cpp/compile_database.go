@@ -228,27 +228,31 @@ func extractIncludeDirs(args []string, baseDir string) []string {
 
 func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPath {
 	items := make([]includeSearchPath, 0)
-	promoteCompilerDefaultRoots := true
+	promoteCompilerDefaultCSystemRoots := true
+	promoteCompilerDefaultCXXSystemRoots := true
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" {
 			continue
 		}
 		switch {
-		case arg == nostdincFlag || arg == nostdincxxFlag:
-			promoteCompilerDefaultRoots = false
+		case arg == nostdincFlag:
+			promoteCompilerDefaultCSystemRoots = false
+			promoteCompilerDefaultCXXSystemRoots = false
+		case arg == nostdincxxFlag:
+			promoteCompilerDefaultCXXSystemRoots = false
 		case arg == includeFlag || arg == isystemFlag || arg == iquoteFlag:
 			if i+1 >= len(args) {
 				continue
 			}
 			i++
-			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, arg == iquoteFlag, promoteCompilerDefaultRoots, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, arg == iquoteFlag, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		case strings.HasPrefix(arg, includeFlag) && len(arg) > len(includeFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, false, promoteCompilerDefaultRoots, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, false, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		case strings.HasPrefix(arg, isystemFlag) && len(arg) > len(isystemFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, false, promoteCompilerDefaultRoots, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, false, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		case strings.HasPrefix(arg, iquoteFlag) && len(arg) > len(iquoteFlag):
-			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, true, promoteCompilerDefaultRoots, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, true, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		}
 	}
 	return normalizeCompileSearchPaths(items)
@@ -266,22 +270,29 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 	*items = append(*items, path)
 }
 
-func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefaultRoots bool, items *[]includeSearchPath) {
+func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots bool, items *[]includeSearchPath) {
 	if path == "" {
 		return
 	}
 	path = filepath.Clean(path)
-	if promoteCompilerDefaultRoots && !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(path) {
+	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(path, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots) {
 		system = true
 	}
 	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})
 }
 
-func isCompilerDefaultSystemIncludeRoot(path string) bool {
+func isCompilerDefaultSystemIncludeRoot(path string, promoteCSystemRoots, promoteCXXSystemRoots bool) bool {
 	path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
 	if path == "" {
 		return false
 	}
+	if promoteCSystemRoots && isCompilerDefaultCSystemIncludeRoot(path) {
+		return true
+	}
+	return promoteCXXSystemRoots && isCompilerDefaultCXXSystemIncludeRoot(path)
+}
+
+func isCompilerDefaultCSystemIncludeRoot(path string) bool {
 	switch path {
 	case "/usr/include", "/usr/local/include", "/mingw/include", "/mingw64/include":
 		return true
@@ -290,28 +301,72 @@ func isCompilerDefaultSystemIncludeRoot(path string) bool {
 	case "/mingw/include", "/mingw64/include":
 		return true
 	}
-	return isDefaultUsrIncludeSubroot(path) ||
+	return isDefaultUsrIncludeCSubroot(path) ||
 		isDefaultCompilerRuntimeIncludeRoot(path) ||
-		isDefaultAppleSystemIncludeRoot(path)
+		isDefaultAppleCSystemIncludeRoot(path)
 }
 
-func isDefaultUsrIncludeSubroot(path string) bool {
+func isCompilerDefaultCXXSystemIncludeRoot(path string) bool {
+	return isDefaultUsrIncludeCXXSubroot(path) ||
+		isDefaultAppleCXXSystemIncludeRoot(path)
+}
+
+func isDefaultUsrIncludeCSubroot(path string) bool {
 	const prefix = "/usr/include/"
 	if !strings.HasPrefix(path, prefix) {
 		return false
 	}
 	suffix := strings.TrimPrefix(path, prefix)
 	parts := strings.Split(suffix, "/")
-	switch {
-	case len(parts) == 1:
-		return isLikelyMultiarchIncludePrefix(parts[0])
-	case len(parts) >= 2 && parts[0] == "c++" && parts[1] != "":
-		return true
-	case len(parts) >= 3 && isLikelyMultiarchIncludePrefix(parts[0]) && parts[1] == "c++" && parts[2] != "":
-		return true
-	default:
+	return len(parts) == 1 && isLikelyMultiarchIncludePrefix(parts[0])
+}
+
+func isDefaultUsrIncludeCXXSubroot(path string) bool {
+	const prefix = "/usr/include/"
+	if !strings.HasPrefix(path, prefix) {
 		return false
 	}
+	suffix := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(suffix, "/")
+	return (len(parts) >= 2 && parts[0] == "c++" && parts[1] != "") ||
+		(len(parts) >= 3 && isLikelyMultiarchIncludePrefix(parts[0]) && parts[1] == "c++" && parts[2] != "")
+}
+
+func isDefaultAppleCSystemIncludeRoot(path string) bool {
+	path = strings.ToLower(path)
+	return isDefaultAppleCompilerRuntimeIncludeRoot(path) ||
+		isDefaultAppleSDKCIncludeRoot(path)
+}
+
+func isDefaultAppleCXXSystemIncludeRoot(path string) bool {
+	return isDefaultAppleSDKCXXIncludeRoot(strings.ToLower(path))
+}
+
+func isDefaultAppleSDKCIncludeRoot(path string) bool {
+	return isDefaultAppleSDKIncludeRoot(path) && !strings.Contains(path, ".sdk/usr/include/c++/")
+}
+
+func isDefaultAppleSDKCXXIncludeRoot(path string) bool {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, ".sdk/usr/include/c++/") {
+		return false
+	}
+	return true
+}
+
+func isDefaultAppleSDKIncludeRoot(path string) bool {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, ".sdk/usr/include") {
+		return false
+	}
+	return strings.HasSuffix(path, ".sdk/usr/include") ||
+		strings.Contains(path, ".sdk/usr/include/c++/")
+}
+
+func isDefaultAppleCompilerRuntimeIncludeRoot(path string) bool {
+	if !strings.HasSuffix(path, "/include") && !strings.HasSuffix(path, "/include-fixed") {
+		return false
+	}
+	return strings.HasPrefix(path, "/library/developer/commandlinetools/usr/lib/clang/") ||
+		strings.Contains(path, ".xctoolchain/usr/lib/clang/")
 }
 
 func isDefaultCompilerRuntimeIncludeRoot(path string) bool {
@@ -330,28 +385,6 @@ func isDefaultCompilerRuntimeIncludeRoot(path string) bool {
 	}
 	return (strings.HasPrefix(path, "/opt/homebrew/") || strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/")) &&
 		(strings.Contains(path, "/lib/gcc/") || strings.Contains(path, "/lib/clang/"))
-}
-
-func isDefaultAppleSystemIncludeRoot(path string) bool {
-	path = strings.ToLower(path)
-	return isDefaultAppleCompilerRuntimeIncludeRoot(path) ||
-		isDefaultAppleSDKIncludeRoot(path)
-}
-
-func isDefaultAppleCompilerRuntimeIncludeRoot(path string) bool {
-	if !strings.HasSuffix(path, "/include") && !strings.HasSuffix(path, "/include-fixed") {
-		return false
-	}
-	return strings.HasPrefix(path, "/library/developer/commandlinetools/usr/lib/clang/") ||
-		strings.Contains(path, ".xctoolchain/usr/lib/clang/")
-}
-
-func isDefaultAppleSDKIncludeRoot(path string) bool {
-	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, ".sdk/usr/include") {
-		return false
-	}
-	return strings.HasSuffix(path, ".sdk/usr/include") ||
-		strings.Contains(path, ".sdk/usr/include/c++/")
 }
 
 func normalizeCompileSearchPaths(paths []includeSearchPath) []includeSearchPath {

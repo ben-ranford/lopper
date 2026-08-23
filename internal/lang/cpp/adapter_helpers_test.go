@@ -101,32 +101,33 @@ func TestCompileContextCollectorStagesCompileDatabaseData(t *testing.T) {
 }
 
 func TestCompileContextNostdincPreservesLaterDashIUserProvenance(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{
-			name: "nostdinc separated include",
-			args: []string{"c++", "-nostdinc", "-I", "/usr/local/include", "-isystem", "/usr/include", "-c", "src/" + testMainCPPFileName},
-		},
-		{
-			name: "nostdinc++ joined include",
-			args: []string{"c++", "-nostdinc++", "-I/usr/local/include", "-isystem/usr/include", "-c", "src/" + testMainCPPFileName},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			repo := t.TempDir()
-			payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, tc.args))
-			testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+	repo := t.TempDir()
+	args := []string{"c++", "-nostdinc", "-I", "/usr/local/include", "-isystem", "/usr/include", "-c", "src/" + testMainCPPFileName}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
 
-			ctx, err := loadCompileContext(repo)
-			if err != nil {
-				t.Fatalf("load compile context: %v", err)
-			}
-			requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", false)
-			requireCompileContextSearchPathSystem(t, ctx, "/usr/include", true)
-		})
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
 	}
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", false)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", true)
+}
+
+func TestCompileContextNostdincXXKeepsCSystemRootProvenance(t *testing.T) {
+	repo := t.TempDir()
+	args := []string{"c++", "-nostdinc++", "-I/usr/include", "-I/usr/local/include", "-I/usr/include/c++/13", "-isystem/usr/include/c++/v1", "-c", "src/" + testMainCPPFileName}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", true)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", true)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include/c++/13", false)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include/c++/v1", true)
 }
 
 func TestCompileContextNostdincAffectsOnlyLaterDashIProvenance(t *testing.T) {
@@ -224,7 +225,7 @@ import "testing"
 
 func TestSystemIncludeProbe(t *testing.T) {
 	for _, root := range []string{"/usr/include", "/usr/local/include"} {
-		if !isCompilerDefaultSystemIncludeRoot(root) {
+		if !isCompilerDefaultSystemIncludeRoot(root, true, true) {
 			t.Fatalf("expected %s to be a compiler default system root", root)
 		}
 	}
@@ -832,6 +833,7 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"linux/limits.h",
 		"bits/wordsize.h",
 		"bits/stdc++.h",
+		"bits/vector.tcc",
 		"experimental/filesystem",
 		"experimental/optional",
 		"tr1/regex",
@@ -862,6 +864,7 @@ func TestIsLikelyStdHeaderQualifiedStandardHeaders(t *testing.T) {
 		"ext/pb_ds/priority_queue.hpp",
 		"ext/pb_ds/tree_policy.hpp",
 		"ext/pb_ds/trie_policy.hpp",
+		"ext/pb_ds/detail/unordered_iterator/iterator.hpp",
 		"ext/type_traits.h",
 		"backward/strstream",
 		"backward/hash_map",
@@ -1003,6 +1006,8 @@ func TestIsLikelyStdHeaderRejectsNonCanonicalQualifiedHeaders(t *testing.T) {
 				"ext/vendor/optional",
 				"ext/pb_ds/vendor/assoc_container.hpp",
 				"ext/pb_ds/vendor/exception.hpp",
+				"ext/pb_ds/detail/vendor/iterator.hpp",
+				"ext/pb_ds/detail/unordered_iterator/iterator.h",
 				"parallel/vendor/base.h",
 				"parallel/vendor/search.h",
 				"tr1/vendor/complex.h",
@@ -1046,6 +1051,7 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <linux/if.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <bits/stdc++.h>
+#include <bits/vector.tcc>
 #include <asm/errno.h>
 #include <asm-generic/errno.h>
 #include <asm-generic/bitops/atomic.h>
@@ -1055,6 +1061,7 @@ func TestAnalyseTopNIgnoresRecognizedQualifiedCompilerHeaders(t *testing.T) {
 #include <parallel/find.h>
 #include <parallel/queue.h>
 #include <ext/pb_ds/assoc_container.hpp>
+#include <ext/pb_ds/detail/unordered_iterator/iterator.hpp>
 #include <ext/pb_ds/exception.hpp>
 #include <tr1/complex.h>
 #include <tr1/ctype.h>
@@ -1184,6 +1191,34 @@ int main() { return 0; }
 	}
 	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
 		"linux": 1,
+	})
+}
+
+func TestAnalyseNostdincXXDashIKeepsCSystemRootSemantics(t *testing.T) {
+	repo := t.TempDir()
+	sdkRoot := filepath.Join(t.TempDir(), "Xcode.app", "Contents", "Developer", "Platforms", "MacOSX.platform", "Developer", "SDKs", "MacOSX.sdk", "usr", "include")
+	cxxRoot := filepath.Join(sdkRoot, "c++", "v1")
+	testutil.MustWriteFile(t, filepath.Join(sdkRoot, "linux", "if.h"), "// C system header\n")
+	testutil.MustWriteFile(t, filepath.Join(cxxRoot, "debug", "map"), "// C++ lookalike disabled by -nostdinc++\n")
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", testMainCPPFileName), `#include <linux/if.h>
+#include <debug/map>
+int main() { return 0; }
+`)
+	sourceRel := filepath.ToSlash(filepath.Join("src", testMainCPPFileName))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), fmt.Sprintf(`[
+  {"directory":".","file":%q,"arguments":["c++","-nostdinc++","-I",%q,"-I",%q,"-c",%q]}
+]`, sourceRel, sdkRoot, cxxRoot, sourceRel))
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     10,
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	assertDependencyExportCounts(t, reportData.Dependencies, map[string]int{
+		"linux": 0,
+		"debug": 1,
 	})
 }
 

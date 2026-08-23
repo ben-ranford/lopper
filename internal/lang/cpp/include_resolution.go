@@ -678,7 +678,7 @@ func isKnownOSCompilerQualifiedHeader(header string) bool {
 	case "sys", "linux", "asm", "asm-generic":
 		return filepath.Ext(leaf) == ".h"
 	case "bits":
-		return filepath.Ext(leaf) == ".h" || leaf == "stdc++.h"
+		return filepath.Ext(leaf) == ".h" || filepath.Ext(leaf) == ".tcc" || leaf == "stdc++.h"
 	default:
 		return false
 	}
@@ -806,7 +806,7 @@ func isKnownCompilerQualifiedStdHeader(header string) bool {
 	case 3:
 		return isKnownNestedCompilerQualifiedStdHeader(parts[0], parts[1], parts[2])
 	default:
-		return false
+		return isKnownDeepCompilerQualifiedStdHeader(parts)
 	}
 }
 
@@ -869,6 +869,19 @@ func isKnownNestedCompilerQualifiedStdHeader(namespace, subdir, leaf string) boo
 		return false
 	}
 	_, ok := cppExtPBDSQualifiedStdHeaderHPPStemSet[stem]
+	return ok
+}
+
+func isKnownDeepCompilerQualifiedStdHeader(parts []string) bool {
+	if len(parts) < 5 || parts[0] != "ext" || parts[1] != "pb_ds" || parts[2] != "detail" {
+		return false
+	}
+	leaf := parts[len(parts)-1]
+	if filepath.Ext(leaf) != ".hpp" {
+		return false
+	}
+	path := strings.Join(parts[2:], "/")
+	_, ok := cppExtPBDSDetailQualifiedStdHeaderSet[path]
 	return ok
 }
 
@@ -1027,4 +1040,8 @@ var cppExtPBDSQualifiedStdHeaderHPPStemSet = makeStringSet(
 	"tag_and_trait",
 	"tree_policy",
 	"trie_policy",
+)
+
+var cppExtPBDSDetailQualifiedStdHeaderSet = makeStringSet(
+	"detail/unordered_iterator/iterator.hpp",
 )

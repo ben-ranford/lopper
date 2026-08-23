@@ -35,7 +35,7 @@ func TestCPPRegressionproofExcludedIncludeClassificationBranches(t *testing.T) {
 		{name: "non-linux multiarch prefix is rejected", got: isLikelyMultiarchIncludePrefix("x86_64-darwin-gnu"), want: false},
 		{name: "one-component OS header candidate is rejected", got: isKnownOSCompilerQualifiedHeader("sys"), want: false},
 		{name: "empty OS header leaf is rejected", got: isKnownOSCompilerQualifiedHeader("sys/"), want: false},
-		{name: "blank include root is not compiler default", got: isCompilerDefaultSystemIncludeRoot(""), want: false},
+		{name: "blank include root is not compiler default", got: isCompilerDefaultSystemIncludeRoot("", true, true), want: false},
 		{name: "blank include path is not system", got: isLikelySystemIncludePath(""), want: false},
 		{name: "/usr/local/include header is system", got: isLikelySystemIncludePath("/usr/local/include/sys/types.h"), want: true},
 		{name: "uppercase usr-local include path remains user-provided", got: isLikelySystemIncludePath("/USR/LOCAL/INCLUDE/sys/types.h"), want: false},
