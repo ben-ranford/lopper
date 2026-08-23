@@ -8636,6 +8636,96 @@ func TestFinalSafeIOQuarantineCleanupResidualBranches(t *testing.T) {
 	})
 }
 
+func TestFinalSafeIOStateErrorBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+
+	t.Run("nested publish error keeps its source identity", func(t *testing.T) {
+		original := &publishRenameError{sourceRel: "staged", sourceInfo: sourceInfo, err: errors.New("publish failed")}
+		wrapped := withPublishRenameSourceInfo(original, "source", newPinnedTargetInfo(t, "replacement"))
+		var got *publishRenameError
+		if !errors.As(wrapped, &got) {
+			t.Fatalf("expected publish rename error, got %v", wrapped)
+		}
+		if got.sourceRel != "staged" {
+			t.Fatalf("expected preserved staged source, got %q", got.sourceRel)
+		}
+		requireSameFileInfo(t, got.sourceInfo, sourceInfo, "preserved source identity")
+	})
+
+	t.Run("non-regular rename identity is rejected", func(t *testing.T) {
+		nonRegular := &modeOverrideFileInfo{FileInfo: sourceInfo, mode: os.ModeDir | 0o700}
+		if _, err := renameFileIfMatchesUsingBasicRoot(&fakeRoot{}, "source", "target", nonRegular, sourceChangedMsg); err == nil {
+			t.Fatal("expected non-regular expected identity rejection")
+		}
+	})
+
+	t.Run("failed restore disables stale quarantine cleanup", func(t *testing.T) {
+		restoreErr := errors.New("restore rejected")
+		state := &basicRootRenameState{
+			root:                   &fakeRoot{link: func(string, string) error { return restoreErr }},
+			oldName:                "source",
+			expected:               sourceInfo,
+			message:                sourceChangedMsg,
+			quarantineRel:          "quarantine/entry",
+			cleanupDir:             true,
+			cleanupQuarantineEntry: true,
+		}
+		if err := state.restoreSourceAfterSnapshotFailure(errors.New("snapshot failed")); !errors.Is(err, restoreErr) {
+			t.Fatalf("expected restore failure, got %v", err)
+		}
+		if state.cleanupDir || state.cleanupQuarantineEntry {
+			t.Fatalf("failed restore retained cleanup state: dir=%t entry=%t", state.cleanupDir, state.cleanupQuarantineEntry)
+		}
+	})
+
+	t.Run("post-rename stat failure retains the quarantine", func(t *testing.T) {
+		lstatErr := errors.New("staged lstat failed")
+		state := &basicRootRenameState{
+			root:          &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr }},
+			message:       sourceChangedMsg,
+			quarantineRel: "quarantine/entry",
+			cleanupDir:    true,
+		}
+		consumed, err := state.finishAfterTargetRename()
+		if consumed || !errors.Is(err, lstatErr) || state.cleanupDir {
+			t.Fatalf("expected quarantined stat failure, consumed=%t cleanupDir=%t err=%v", consumed, state.cleanupDir, err)
+		}
+	})
+
+	t.Run("created cleanup returns quarantine creation failure", func(t *testing.T) {
+		mkdirErr := errors.New("quarantine mkdir failed")
+		if err := removeCreatedFileIfSameFile(&fakeRoot{mkdir: func(string, os.FileMode) error { return mkdirErr }}, "source", sourceInfo, sourceChangedMsg); !errors.Is(err, mkdirErr) {
+			t.Fatalf("expected quarantine mkdir failure, got %v", err)
+		}
+	})
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootCleansTargetAfterPostChmodStatFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	statErr := errors.New("post-chmod stat failed")
+	statCalls := 0
+	root := &fakeRoot{Root: base, openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+		file, err := base.OpenFile(name, flag, perm)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
+			statCalls++
+			if statCalls == 3 {
+				return nil, statErr
+			}
+			return file.Stat()
+		}}, nil
+	}}
+
+	err := writeFileExclusivelyIfAbsentAtRoot(root, "target", []byte("completed"), 0o600)
+	if !errors.Is(err, statErr) {
+		t.Fatalf("expected post-chmod stat failure, got %v", err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "target"))
+}
+
 func TestCleanupAtomicTempFileIfMatchesRejectsMissingIdentity(t *testing.T) {
 	err := cleanupAtomicTempFileIfMatches(&fakeRoot{}, ".safeio-atomic-temp", nil)
 	if err == nil || !strings.Contains(err.Error(), "cleanup file identity unavailable") {
@@ -10535,6 +10625,67 @@ func TestMoveFileWithinRootRestoresQuarantinedSourceWhenFallbackTargetCreationFa
 	}
 	assertFileContent(t, sourcePath, "source")
 	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootRetriesLiveSourceAfterQuarantinedFallbackDisappears(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	stagedSourceRel := ""
+	sourceOpenAttempts := 0
+	failedTargetCreation := false
+	targetRenameAttempts := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				sourceOpenAttempts++
+				if sourceOpenAttempts == 1 {
+					return nil, os.ErrPermission
+				}
+			}
+			return base.Open(name)
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !failedTargetCreation && stagedSourceRel != "" && isMoveFallbackTempPath(name) {
+				failedTargetCreation = true
+				if err := base.Rename(stagedSourceRel, "source"); err != nil {
+					t.Fatalf("restore staged source before fallback retry: %v", err)
+				}
+				return nil, os.ErrNotExist
+			}
+			return base.OpenFile(name, flag, perm)
+		},
+		rename: func(oldName, newName string) error {
+			if newName == "target" {
+				targetRenameAttempts++
+				if targetRenameAttempts == 1 {
+					return syscall.EXDEV
+				}
+			}
+			if oldName == "source" {
+				stagedSourceRel = newName
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("fallback retry returned error: %v", err)
+	}
+	if !failedTargetCreation || sourceOpenAttempts != 2 {
+		t.Fatalf("expected failed staged copy and live-source retry, targetFailure=%t sourceOpens=%d", failedTargetCreation, sourceOpenAttempts)
+	}
+	assertPathAbsent(t, sourcePath)
+	assertFileContent(t, targetPath, "source")
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
