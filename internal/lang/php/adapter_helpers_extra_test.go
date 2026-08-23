@@ -505,6 +505,25 @@ func TestParsePHPImportsBoundsAdversarialUseStatements(t *testing.T) {
 	}
 }
 
+func TestScanPHPUseStatementsForImportsMasksStatementsBeyondMatchLimit(t *testing.T) {
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPUseStatementsPerFile+17; i++ {
+		fmt.Fprintf(&content, "use Vendor\\Lib\\Thing%d;\n", i)
+	}
+
+	scan, masked := scanPHPUseStatementsForImports(content.String(), testMaxPHPUseStatementsPerFile+1)
+	if len(scan.matches) != testMaxPHPUseStatementsPerFile+1 {
+		t.Fatalf("expected %d retained matches, got %d", testMaxPHPUseStatementsPerFile+1, len(scan.matches))
+	}
+	if len(scan.ranges) != 0 {
+		t.Fatalf("expected no retained use ranges, got %#v", scan.ranges)
+	}
+	if strings.Contains(masked, "use Vendor\\Lib\\Thing") {
+		t.Fatalf("expected statements beyond the retained match cap to remain masked")
+	}
+}
+
 func TestParsePHPImportsTracksClassContextNearLinearly(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},

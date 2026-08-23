@@ -74,7 +74,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	text := string(sanitized)
 	lineIndex := newPHPLineIndex(text)
-	useScan := scanPHPUseStatements(text, 0)
+	useScan, namespaceText := scanPHPUseStatementsForImports(text, maxPHPUseStatementsPerFile+1)
 	matches := useScan.matches
 	contextTracker := newPHPContextTracker(text)
 	result := importParseResult{
@@ -114,7 +114,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		}
 	}
 
-	namespaceResult := parseNamespaceReferencesTextWithLineIndexAndUseRanges(text, filePath, resolver, lineIndex, useScan.ranges)
+	namespaceResult := parseNamespaceReferencesTextWithLineIndexAndUseRanges(namespaceText, filePath, resolver, lineIndex, nil)
 	result.imports = append(result.imports, namespaceResult.imports...)
 	result.unresolvedCount += namespaceResult.unresolvedCount
 	result.namespaceReferenceLimitHit = namespaceResult.limitHit
@@ -215,6 +215,43 @@ func findPHPUseStatementRanges(text string) [][]int {
 
 func findPHPUseStatementMatches(text string, limit int) []phpUseStatementMatch {
 	return scanPHPUseStatements(text, limit).matches
+}
+
+func scanPHPUseStatementsForImports(text string, matchLimit int) (phpUseStatementScan, string) {
+	matches := make([]phpUseStatementMatch, 0, matchLimit)
+	masked := []byte(text)
+	for offset := 0; offset < len(text); {
+		if !hasKeywordAt(text, offset, "use") {
+			offset++
+			continue
+		}
+		match, nextOffset, ok := scanPHPUseStatementAt(text, offset)
+		if nextOffset <= offset {
+			nextOffset = offset + 1
+		}
+		if match.end > match.start {
+			maskPHPUseStatementRange(masked, match.start, match.end)
+		}
+		if ok && (matchLimit <= 0 || len(matches) < matchLimit) {
+			matches = append(matches, match)
+		}
+		offset = nextOffset
+	}
+	return phpUseStatementScan{matches: matches}, string(masked)
+}
+
+func maskPHPUseStatementRange(text []byte, start, end int) {
+	if start < 0 {
+		start = 0
+	}
+	if end > len(text) {
+		end = len(text)
+	}
+	for offset := start; offset < end; offset++ {
+		if !isLineBreak(text[offset]) {
+			text[offset] = ' '
+		}
+	}
 }
 
 func scanPHPUseStatements(text string, limit int) phpUseStatementScan {
