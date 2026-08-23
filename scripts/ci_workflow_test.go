@@ -343,6 +343,9 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 		`export MEMORY_BENCH_ENFORCE=0`,
 		`make ci`,
 	})
+	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
+		`MEMORY_BENCH_BASE="origin/${base_ref}"`,
+	})
 
 	failUnapproved := workflowStepByName(t, workflow.Jobs, "verify", "Fail on unapproved memory regression")
 	assertWorkflowStepRunContainsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
