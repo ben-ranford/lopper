@@ -472,7 +472,9 @@ func openPinnedAncestors(root Root, parts []string) (_ []Root, _ Root, _ string,
 
 func closeRootsWithError(roots []Root, err error) error {
 	for idx := len(roots) - 1; idx >= 0; idx-- {
-		err = errors.Join(err, roots[idx].Close())
+		if closeErr := roots[idx].Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 	}
 	return err
 }
