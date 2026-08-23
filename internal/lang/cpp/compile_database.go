@@ -19,6 +19,7 @@ const (
 	iquoteFlag          = "-iquote"
 	nostdincFlag        = "-nostdinc"
 	nostdincxxFlag      = "-nostdinc++"
+	nostdlibincFlag     = "-nostdlibinc"
 	maxCompileDatabases = 64
 
 	appleSDKUsrIncludeFragment    = ".sdk/usr/include"
@@ -238,7 +239,7 @@ func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPat
 			continue
 		}
 		switch {
-		case arg == nostdincFlag || arg == nostdincxxFlag:
+		case arg == nostdincFlag || arg == nostdincxxFlag || arg == nostdlibincFlag:
 		case arg == includeFlag || arg == isystemFlag || arg == iquoteFlag:
 			if i+1 >= len(args) {
 				continue
@@ -261,7 +262,7 @@ func compilerDefaultSystemRootPromotion(args []string) (bool, bool) {
 	promoteCXXSystemRoots := true
 	for _, raw := range args {
 		switch strings.TrimSpace(raw) {
-		case nostdincFlag:
+		case nostdincFlag, nostdlibincFlag:
 			return false, false
 		case nostdincxxFlag:
 			promoteCXXSystemRoots = false

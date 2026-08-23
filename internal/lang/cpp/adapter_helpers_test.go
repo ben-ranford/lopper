@@ -158,6 +158,21 @@ func TestCompileContextNostdincXXAppliesCommandWide(t *testing.T) {
 	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", true)
 }
 
+func TestCompileContextNostdlibincAppliesCommandWide(t *testing.T) {
+	repo := t.TempDir()
+	args := []string{"clang++", "-I/usr/include", "-nostdlibinc", "-I/usr/local/include", "-isystem", "/usr/include/c++/v1", "-c", "src/" + testMainCPPFileName}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", false)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", false)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include/c++/v1", true)
+}
+
 func compileContextSearchPathSystem(ctx compileContext, wantPath string) (bool, bool) {
 	searchPaths := reflect.ValueOf(ctx).FieldByName("IncludeSearchPaths")
 	if !searchPaths.IsValid() {
