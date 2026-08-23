@@ -251,36 +251,28 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	if !data.ShortOpenTags {
 		t.Fatalf("expected .user.ini to enable short open tags")
 	}
-	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = Off\nshort_open_tag = On\n")
-	data, warnings, err = loadComposerData(repo)
-	if err != nil {
-		t.Fatalf("load data with repeated short-open config: %v", err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings with repeated short-open config: %#v", warnings)
-	}
-	if !data.ShortOpenTags {
-		t.Fatalf("expected final short_open_tag assignment to win")
-	}
-	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = On\nshort_open_tag = Off\n")
-	data, warnings, err = loadComposerData(repo)
-	if err != nil {
-		t.Fatalf("load data with disabled final short-open config: %v", err)
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("unexpected warnings with disabled final short-open config: %#v", warnings)
-	}
-	if data.ShortOpenTags {
-		t.Fatalf("expected final disabled short_open_tag assignment to win")
-	}
 	if !parsesShortOpenTagEnabled("php_value memory_limit 128M\nphp_value short_open_tag On # comment\n") {
 		t.Fatalf("expected parser to skip unrelated php_value directives before short_open_tag")
 	}
-	if !parsesShortOpenTagEnabled("php_flag short_open_tag Off\nphp_flag short_open_tag On\n") {
-		t.Fatalf("expected final php_flag short_open_tag assignment to win")
+}
+
+func TestShortOpenTagConfigUsesFinalAssignment(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "ini enables last", content: "short_open_tag = Off\nshort_open_tag = On\n", want: true},
+		{name: "ini disables last", content: "short_open_tag = On\nshort_open_tag = Off\n", want: false},
+		{name: "htaccess enables last", content: "php_flag short_open_tag Off\nphp_flag short_open_tag On\n", want: true},
+		{name: "htaccess disables last", content: "php_flag short_open_tag On\nphp_flag short_open_tag Off\n", want: false},
 	}
-	if parsesShortOpenTagEnabled("php_flag short_open_tag On\nphp_flag short_open_tag Off\n") {
-		t.Fatalf("expected final disabled php_flag short_open_tag assignment to win")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parsesShortOpenTagEnabled(tc.content); got != tc.want {
+				t.Fatalf("expected short_open_tag enabled=%v, got %v", tc.want, got)
+			}
+		})
 	}
 }
 
