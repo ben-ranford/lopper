@@ -110,10 +110,18 @@ func assertMovedFileResult(t *testing.T, sourcePath, targetPath, wantData, sourc
 type truncatingFakeFile struct {
 	*fakeFile
 	truncate func(size int64) error
+	seek     func(offset int64, whence int) (int64, error)
 }
 
 func (f *truncatingFakeFile) Truncate(size int64) error {
 	return f.truncate(size)
+}
+
+func (f *truncatingFakeFile) Seek(offset int64, whence int) (int64, error) {
+	if f.seek != nil {
+		return f.seek(offset, whence)
+	}
+	return offset, nil
 }
 
 func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {

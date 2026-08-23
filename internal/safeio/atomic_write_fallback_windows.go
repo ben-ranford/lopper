@@ -10,14 +10,14 @@ import (
 	"syscall"
 )
 
-func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFile File, data []byte, renameErr error, postWrite func() error, rollbackOnPostWriteFailure bool) (returnErr error) {
-	if !windowsReplaceExistingRenameFallback(renameErr, oldName, newName) {
-		return renameErr
+func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (returnErr error) {
+	if !windowsReplaceExistingRenameFallback(fallback.renameErr, fallback.oldName, fallback.newName) {
+		return fallback.renameErr
 	}
 
-	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, newName, replacementFile)
+	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, fallback.newName, fallback.replacementFile)
 	if err != nil {
-		return errors.Join(renameErr, err)
+		return errors.Join(fallback.renameErr, err)
 	}
 	defer func() {
 		if closeErr := closeReplacementFile(); closeErr != nil {
@@ -26,23 +26,23 @@ func fallbackAtomicReplacement(root Root, oldName, newName string, replacementFi
 	}()
 
 	var rollbackData []byte
-	if rollbackOnPostWriteFailure {
-		rollbackData, err = snapshotPinnedWindowsFallbackTarget(root, newName, replacementFile)
+	if fallback.rollbackOnPostWriteFailure {
+		rollbackData, err = snapshotPinnedWindowsFallbackTarget(root, fallback.newName, replacementFile)
 		if err != nil {
-			return errors.Join(renameErr, err)
+			return errors.Join(fallback.renameErr, err)
 		}
 	}
 
-	fallbackErr := overwritePinnedFile(root, newName, replacementFile, data, nil)
+	fallbackErr := overwritePinnedFile(root, fallback.newName, replacementFile, fallback.data, nil)
 	if fallbackErr != nil {
-		return errors.Join(renameErr, fallbackErr)
+		return errors.Join(fallback.renameErr, fallbackErr)
 	}
-	if err := verifyOverwrittenTarget(root, newName, replacementFile); err != nil {
-		return errors.Join(renameErr, err)
+	if err := verifyOverwrittenTarget(root, fallback.newName, replacementFile); err != nil {
+		return errors.Join(fallback.renameErr, err)
 	}
-	if err := runPostWriteCheck(postWrite); err != nil {
-		if rollbackOnPostWriteFailure {
-			return restoreWindowsFallbackTarget(root, newName, replacementFile, rollbackData, err)
+	if err := runPostWriteCheck(fallback.postWrite); err != nil {
+		if fallback.rollbackOnPostWriteFailure {
+			return restoreWindowsFallbackTarget(root, fallback.newName, replacementFile, rollbackData, err)
 		}
 		return err
 	}

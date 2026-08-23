@@ -4,6 +4,7 @@ package safeio
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -438,7 +439,12 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 			}
 			renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-			err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr, nil, false)
+			err := fallbackAtomicReplacement(root, atomicReplacementFallback{
+				oldName:   ".safeio-atomic-temp",
+				newName:   writeTestFileName,
+				data:      []byte("after"),
+				renameErr: renameErr,
+			})
 			if !errors.Is(err, renameErr) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("expected joined rename and %q rejection, got %v", tt.want, err)
 			}
@@ -484,7 +490,14 @@ func TestFallbackAtomicReplacementAllowsRollbackRequiredReplacement(t *testing.T
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr, nil, true)
+	err := fallbackAtomicReplacement(root, atomicReplacementFallback{
+		oldName:                    ".safeio-atomic-temp",
+		newName:                    writeTestFileName,
+		replacementFile:            targetFile,
+		data:                       []byte("after"),
+		renameErr:                  renameErr,
+		rollbackOnPostWriteFailure: true,
+	})
 	if err != nil {
 		t.Fatalf("expected rollback-required fallback overwrite to succeed, got %v", err)
 	}
@@ -524,7 +537,14 @@ func TestFallbackAtomicReplacementRollbackRequiredSnapshotFailurePreventsMutatio
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr, nil, true)
+	err := fallbackAtomicReplacement(root, atomicReplacementFallback{
+		oldName:                    ".safeio-atomic-temp",
+		newName:                    writeTestFileName,
+		replacementFile:            targetFile,
+		data:                       []byte("after"),
+		renameErr:                  renameErr,
+		rollbackOnPostWriteFailure: true,
+	})
 	if !errors.Is(err, renameErr) || !errors.Is(err, snapshotErr) {
 		t.Fatalf("expected rename and snapshot errors, got %v", err)
 	}
@@ -576,6 +596,7 @@ func TestFallbackAtomicReplacementRejectsTargetChangedAfterLatePin(t *testing.T)
 
 type windowsFallbackTarget struct {
 	data          []byte
+	offset        int64
 	closeErr      error
 	openCalls     int
 	closeCalls    int
@@ -590,7 +611,15 @@ func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
 			stat: func() (fs.FileInfo, error) { return info, nil },
 			write: func(p []byte) (int, error) {
 				s.writeCalls++
-				s.data = append(s.data, p...)
+				if s.offset < 0 {
+					t.Fatalf("unexpected negative write offset: %d", s.offset)
+				}
+				end := int(s.offset) + len(p)
+				if end > len(s.data) {
+					s.data = append(s.data, make([]byte, end-len(s.data))...)
+				}
+				copy(s.data[int(s.offset):end], p)
+				s.offset = int64(end)
 				return len(p), nil
 			},
 			close: func() error {
@@ -605,6 +634,16 @@ func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
 			s.truncateCalls++
 			s.data = s.data[:0]
 			return nil
+		},
+		seek: func(offset int64, whence int) (int64, error) {
+			if whence != io.SeekStart {
+				t.Fatalf("unexpected seek whence: %d", whence)
+			}
+			if offset != 0 {
+				t.Fatalf("unexpected seek offset: %d", offset)
+			}
+			s.offset = offset
+			return s.offset, nil
 		},
 	}
 }
@@ -690,7 +729,12 @@ func assertWindowsFallbackRejectsAfterLatePin(
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
 
-	err := fallbackAtomicReplacement(root, ".safeio-atomic-temp", writeTestFileName, nil, []byte("after"), renameErr, nil, false)
+	err := fallbackAtomicReplacement(root, atomicReplacementFallback{
+		oldName:   ".safeio-atomic-temp",
+		newName:   writeTestFileName,
+		data:      []byte("after"),
+		renameErr: renameErr,
+	})
 	if !errors.Is(err, renameErr) {
 		t.Fatalf("expected original rename error, got %v", err)
 	}

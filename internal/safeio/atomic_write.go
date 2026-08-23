@@ -3,6 +3,7 @@ package safeio
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -38,6 +39,16 @@ type atomicReplacementOptions struct {
 	commitReady                func() error
 	postWrite                  func() error
 	commitRename               atomicRenameFunc
+	rollbackOnPostWriteFailure bool
+}
+
+type atomicReplacementFallback struct {
+	oldName                    string
+	newName                    string
+	replacementFile            File
+	data                       []byte
+	renameErr                  error
+	postWrite                  func() error
 	rollbackOnPostWriteFailure bool
 }
 
@@ -234,7 +245,15 @@ func writeAtomicReplacementWithChecks(root Root, targetRel string, data []byte, 
 		return err
 	}
 	if err := session.commit(options.commitReady, options.commitRename); err != nil {
-		return fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, options.postWrite, options.rollbackOnPostWriteFailure)
+		return fallbackAtomicReplacement(root, atomicReplacementFallback{
+			oldName:                    session.tempRel,
+			newName:                    targetRel,
+			replacementFile:            replacementFile,
+			data:                       data,
+			renameErr:                  err,
+			postWrite:                  options.postWrite,
+			rollbackOnPostWriteFailure: options.rollbackOnPostWriteFailure,
+		})
 	}
 	return session.verifyCommittedTargetAndPostWrite(options.postWrite, options.rollbackOnPostWriteFailure)
 }
@@ -298,7 +317,15 @@ func writeAtomicReplacementWithPinnedTargetCallbacks(root Root, targetRel string
 		return err
 	}
 	if err := session.commit(callbacks.commitReady, callbacks.commitRename); err != nil {
-		fallbackErr := fallbackAtomicReplacement(root, session.tempRel, targetRel, replacementFile, data, err, callbacks.postWrite, callbacks.rollbackOnPostWriteFailure)
+		fallbackErr := fallbackAtomicReplacement(root, atomicReplacementFallback{
+			oldName:                    session.tempRel,
+			newName:                    targetRel,
+			replacementFile:            replacementFile,
+			data:                       data,
+			renameErr:                  err,
+			postWrite:                  callbacks.postWrite,
+			rollbackOnPostWriteFailure: callbacks.rollbackOnPostWriteFailure,
+		})
 		if fallbackErr == nil {
 			return nil
 		}
@@ -394,6 +421,11 @@ func truncateAndWritePinnedFile(targetRel string, file File, data []byte) error 
 	}
 	if err := targetFile.Truncate(0); err != nil {
 		return err
+	}
+	if seeker, ok := file.(io.Seeker); ok {
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
 	}
 	if _, err := file.Write(data); err != nil {
 		return err
