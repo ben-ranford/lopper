@@ -7821,6 +7821,43 @@ func TestPrepareDoesNotSuppressDirectoryCloseFailureWithReadDirFallback(t *testi
 	}
 }
 
+func TestPrepareUsesDirectoryReadDirFallbackWithoutCleanupFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"source": sourceInfo,
+				"SOURCE": sourceInfo,
+				".":      dirInfo,
+			},
+			nil,
+		),
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != "source" || newName != "SOURCE" {
+				t.Fatalf("unexpected linkless rename %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("expected linkless fallback success, got %v", err)
+	}
+}
+
 func lstatMappedPaths(t *testing.T, infos map[string]fs.FileInfo, errs map[string]error) func(string) (fs.FileInfo, error) {
 	t.Helper()
 	return func(name string) (fs.FileInfo, error) {

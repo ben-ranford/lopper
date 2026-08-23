@@ -56,6 +56,29 @@ var ErrTargetPathSymlink = errors.New("target path is a symlink")
 // Open, so callers that can safely avoid enumeration may select a fallback.
 var errReadDirFileUnsupported = fmt.Errorf("%w: directory file does not implement ReadDir", fs.ErrInvalid)
 
+type readDirFileUnsupportedError struct {
+	cleanupErr error
+}
+
+func (e *readDirFileUnsupportedError) Error() string {
+	if e.cleanupErr == nil {
+		return errReadDirFileUnsupported.Error()
+	}
+	return fmt.Sprintf("%v: %v", errReadDirFileUnsupported, e.cleanupErr)
+}
+
+func (e *readDirFileUnsupportedError) Unwrap() []error {
+	if e.cleanupErr == nil {
+		return []error{errReadDirFileUnsupported}
+	}
+	return []error{errReadDirFileUnsupported, e.cleanupErr}
+}
+
+func readDirFileUnsupportedWithoutCleanupError(err error) bool {
+	var unsupported *readDirFileUnsupportedError
+	return errors.As(err, &unsupported) && unsupported.cleanupErr == nil
+}
+
 var fileSystem FileSystem = &osFileSystem{}
 var runtimeGOOS = runtime.GOOS
 
@@ -390,15 +413,11 @@ func OpenPinnedDirectory(root Root, name string) (_ ReadDirFile, err error) {
 		}
 		return &pinnedReadDirFile{ReadDirFile: dir, roots: roots}, nil
 	}
-	if len(roots) > 0 {
-		err = closeRootsWithError(roots, errReadDirFileUnsupported)
-	} else {
-		err = errReadDirFileUnsupported
-	}
+	err = closeRootsWithError(roots, nil)
 	if closeErr := file.Close(); closeErr != nil {
-		return nil, errors.Join(err, closeErr)
+		err = errors.Join(err, closeErr)
 	}
-	return nil, err
+	return nil, &readDirFileUnsupportedError{cleanupErr: err}
 }
 
 type pinnedFile struct {
@@ -472,9 +491,7 @@ func openPinnedAncestors(root Root, parts []string) (_ []Root, _ Root, _ string,
 
 func closeRootsWithError(roots []Root, err error) error {
 	for idx := len(roots) - 1; idx >= 0; idx-- {
-		if closeErr := roots[idx].Close(); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
+		err = errors.Join(err, roots[idx].Close())
 	}
 	return err
 }
