@@ -64,18 +64,25 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 		return renameErr
 	}
 
-	fallbackSourceRel := moveFallbackCopySource(renameErr, sourceRel)
-	sourceInfo, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, sourceInfo)
+	fallbackSourceRel, sourceWasQuarantined := moveFallbackCopySourceState(renameErr, sourceRel)
+	copiedSourceInfo, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, sourceInfo)
 	if errors.Is(copyErr, os.ErrNotExist) && filepath.Clean(fallbackSourceRel) != filepath.Clean(sourceRel) {
-		sourceInfo, copyErr = copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
+		copiedSourceInfo, copyErr = copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
+		sourceWasQuarantined = false
 	}
 	if copyErr != nil {
-		return errors.Join(renameErr, copyErr)
+		return errors.Join(
+			renameErr,
+			copyErr,
+			restoreQuarantinedMoveSourceAfterFallbackFailure(root, sourceRel, fallbackSourceRel, sourceInfo, sourceWasQuarantined),
+		)
 	}
+	sourceInfo = copiedSourceInfo
 
 	return errors.Join(
 		publishRenameCleanup(renameErr),
-		removeCopiedMoveSource(root, fallbackSourceRel, sourceInfo),
+		removeCopiedMoveSource(root, sourceRel, sourceInfo),
+		cleanupCopiedMoveFallbackSource(root, sourceRel, fallbackSourceRel, sourceInfo),
 		cleanupMoveSourceStagingDir(root, sourceRel, fallbackSourceRel),
 	)
 }
@@ -93,15 +100,20 @@ func (e *moveLinklessRenameError) Unwrap() error {
 }
 
 func moveFallbackCopySource(err error, sourceRel string) string {
+	fallbackSourceRel, _ := moveFallbackCopySourceState(err, sourceRel)
+	return fallbackSourceRel
+}
+
+func moveFallbackCopySourceState(err error, sourceRel string) (fallbackSourceRel string, sourceWasQuarantined bool) {
 	var linklessErr *moveLinklessRenameError
 	if errors.As(err, &linklessErr) {
-		return publishRenameSource(linklessErr.err, sourceRel)
+		return publishRenameSource(linklessErr.err, sourceRel), true
 	}
-	fallbackSourceRel := publishRenameSource(err, sourceRel)
+	fallbackSourceRel = publishRenameSource(err, sourceRel)
 	if isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
-		return fallbackSourceRel
+		return fallbackSourceRel, false
 	}
-	return sourceRel
+	return sourceRel, false
 }
 
 func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (fs.FileInfo, error) {
@@ -303,6 +315,28 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 
 func removeCopiedMoveSource(root Root, sourceRel string, sourceInfo os.FileInfo) error {
 	return removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup)
+}
+
+func cleanupCopiedMoveFallbackSource(root Root, sourceRel, fallbackSourceRel string, sourceInfo os.FileInfo) error {
+	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
+		return nil
+	}
+	return cleanupAtomicTempFileIfMatches(root, fallbackSourceRel, sourceInfo)
+}
+
+func restoreQuarantinedMoveSourceAfterFallbackFailure(root Root, sourceRel, fallbackSourceRel string, sourceInfo fs.FileInfo, sourceWasQuarantined bool) error {
+	if !sourceWasQuarantined || !isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
+		return nil
+	}
+	restored, err := restoreQuarantinedPathNoReplace(root, fallbackSourceRel, sourceRel, moveSourceChangedBeforeFallback, sourceInfo)
+	if !restored {
+		return err
+	}
+	return errors.Join(
+		err,
+		cleanupCopiedMoveFallbackSource(root, sourceRel, fallbackSourceRel, sourceInfo),
+		cleanupMoveSourceStagingDir(root, sourceRel, fallbackSourceRel),
+	)
 }
 
 func cleanupMoveSourceStagingDir(root Root, sourceRel, fallbackSourceRel string) error {

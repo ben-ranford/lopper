@@ -644,6 +644,9 @@ func (s *basicRootRenameState) restoreSourceAfterSnapshotFailure(snapshotErr err
 	restored, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.expected)
 	if !restored {
 		s.disableQuarantineCleanup()
+	} else {
+		s.quarantineInfo = s.expected
+		s.cleanupQuarantineEntry = true
 	}
 	sourceRel := s.quarantineRel
 	if restored {

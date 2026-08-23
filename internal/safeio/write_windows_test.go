@@ -449,72 +449,90 @@ func TestWriteFileAtomicallyIfAbsentFallsBackToWindowsNoReplaceRename(t *testing
 
 func TestPublishStagedIfAbsentNoReplaceFallbackUsesAttemptedLinkSource(t *testing.T) {
 	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
-	const (
-		stagedRel              = ".safeio-atomic-temp"
-		attemptedLinkSourceRel = ".safeio-atomic-target-link"
-		targetRel              = writeTestFileName
-	)
+	state := newWindowsPublishStagedFallbackState(t, rootInfo, tempInfo)
+	restoreWindowsNoReplaceRename(t, state.publish)
 
-	targetPublished := false
-	root := &fakeRoot{
-		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			requireSameFileInfo(t, expected, tempInfo, oldName)
-			if oldName != stagedRel || newName != targetRel || message != temporaryFileChangedBeforeCommit {
-				t.Fatalf("unexpected publish link %q -> %q (%s)", oldName, newName, message)
-			}
-			return &os.LinkError{
-				Op:  "linkat",
-				Old: attemptedLinkSourceRel,
-				New: targetRel,
-				Err: errors.ErrUnsupported,
-			}
-		},
-		lstat: func(name string) (fs.FileInfo, error) {
-			switch name {
-			case ".":
-				return rootInfo, nil
-			case targetRel:
-				if targetPublished {
-					return tempInfo, nil
-				}
-				return nil, os.ErrNotExist
-			case stagedRel:
-				if targetPublished {
-					return nil, os.ErrNotExist
-				}
-				return tempInfo, nil
-			default:
-				t.Fatalf("unexpected lstat path: %s", name)
-				return nil, os.ErrNotExist
-			}
-		},
-		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
-			requireSameFileInfo(t, expected, tempInfo, name)
-			if name != stagedRel || message != cleanupFileChangedBeforeRemoval {
-				t.Fatalf("unexpected cleanup %q (%s)", name, message)
-			}
-			return nil
-		},
-	}
-	restoreWindowsNoReplaceRename(t, func(gotRoot Root, gotRootInfo fs.FileInfo, tempRel, gotTargetRel string, gotTempInfo fs.FileInfo) error {
-		if gotRoot != root {
-			t.Fatal("fallback received a different root")
-		}
-		requireSameFileInfo(t, gotRootInfo, rootInfo, "root identity")
-		if tempRel != stagedRel || gotTargetRel != targetRel {
-			t.Fatalf("unexpected no-replace rename %q -> %q", tempRel, gotTargetRel)
-		}
-		requireSameFileInfo(t, gotTempInfo, tempInfo, "staged identity")
-		targetPublished = true
-		return nil
-	})
-
-	if err := publishStagedIdentityBoundIfAbsent(root, "source", stagedRel, targetRel, tempInfo); err != nil {
+	if err := publishStagedIdentityBoundIfAbsent(state.root, "source", state.stagedRel, state.targetRel, tempInfo); err != nil {
 		t.Fatalf("publishStagedIdentityBoundIfAbsent returned error: %v", err)
 	}
-	if !targetPublished {
+	if !state.targetPublished {
 		t.Fatal("expected no-replace fallback to publish the target")
 	}
+}
+
+type windowsPublishStagedFallbackState struct {
+	t               *testing.T
+	root            *fakeRoot
+	rootInfo        fs.FileInfo
+	tempInfo        fs.FileInfo
+	stagedRel       string
+	targetRel       string
+	targetPublished bool
+}
+
+func newWindowsPublishStagedFallbackState(t *testing.T, rootInfo, tempInfo fs.FileInfo) *windowsPublishStagedFallbackState {
+	state := &windowsPublishStagedFallbackState{
+		t:         t,
+		rootInfo:  rootInfo,
+		tempInfo:  tempInfo,
+		stagedRel: ".safeio-atomic-temp",
+		targetRel: writeTestFileName,
+	}
+	state.root = &fakeRoot{
+		linkIfMatches:   state.linkIfMatches,
+		lstat:           state.lstat,
+		removeIfMatches: state.removeIfMatches,
+	}
+	return state
+}
+
+func (s *windowsPublishStagedFallbackState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.tempInfo, oldName)
+	if oldName != s.stagedRel || newName != s.targetRel || message != temporaryFileChangedBeforeCommit {
+		s.t.Fatalf("unexpected publish link %q -> %q (%s)", oldName, newName, message)
+	}
+	return &os.LinkError{Op: "linkat", Old: ".safeio-atomic-target-link", New: s.targetRel, Err: errors.ErrUnsupported}
+}
+
+func (s *windowsPublishStagedFallbackState) lstat(name string) (fs.FileInfo, error) {
+	if name == "." {
+		return s.rootInfo, nil
+	}
+	if name == s.targetRel {
+		if s.targetPublished {
+			return s.tempInfo, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	if name == s.stagedRel {
+		if s.targetPublished {
+			return nil, os.ErrNotExist
+		}
+		return s.tempInfo, nil
+	}
+	s.t.Fatalf("unexpected lstat path: %s", name)
+	return nil, os.ErrNotExist
+}
+
+func (s *windowsPublishStagedFallbackState) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.tempInfo, name)
+	if name != s.stagedRel || message != cleanupFileChangedBeforeRemoval {
+		s.t.Fatalf("unexpected cleanup %q (%s)", name, message)
+	}
+	return nil
+}
+
+func (s *windowsPublishStagedFallbackState) publish(gotRoot Root, gotRootInfo fs.FileInfo, tempRel, targetRel string, gotTempInfo fs.FileInfo) error {
+	if gotRoot != s.root {
+		s.t.Fatal("fallback received a different root")
+	}
+	requireSameFileInfo(s.t, gotRootInfo, s.rootInfo, "root identity")
+	if tempRel != s.stagedRel || targetRel != s.targetRel {
+		s.t.Fatalf("unexpected no-replace rename %q -> %q", tempRel, targetRel)
+	}
+	requireSameFileInfo(s.t, gotTempInfo, s.tempInfo, "staged identity")
+	s.targetPublished = true
+	return nil
 }
 
 func TestWriteFileAtomicallyIfAbsentNoReplaceFallbackPreservesExistingTarget(t *testing.T) {
@@ -554,7 +572,7 @@ func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T
 		{name: "invalid function", err: linkError("linkat", tempName, writeTestFileName, syscall.Errno(1)), want: true},
 		{name: "target exists", err: linkError("linkat", tempName, writeTestFileName, syscall.ERROR_ALREADY_EXISTS)},
 		{name: "wrong operation", err: linkError("link", tempName, writeTestFileName, errors.ErrUnsupported)},
-		{name: "wrong source", err: linkError("linkat", "other-temp", writeTestFileName, errors.ErrUnsupported)},
+		{name: "private staging source", err: linkError("linkat", "other-temp", writeTestFileName, errors.ErrUnsupported), want: true},
 		{name: "wrong target", err: linkError("linkat", tempName, "other-target", errors.ErrUnsupported)},
 		{name: "raw unsupported", err: errors.ErrUnsupported},
 	}
