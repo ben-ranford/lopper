@@ -22,6 +22,13 @@ abort "No GitHub workflow files found under .github/workflows/*.yml or *.yaml." 
 immutable_action_ref = /\A[^@\s]+@[0-9a-f]{40}\z/
 errors = []
 
+def validate_external_action_ref(errors, path, context, uses, immutable_action_ref)
+	return if uses.nil? || uses.start_with?("./")
+	return if uses.match?(immutable_action_ref)
+
+	errors << "#{path}: #{context} uses #{uses.inspect}; pin external GitHub Actions to a 40-character commit SHA."
+end
+
 paths.each do |path|
 	workflow = load_workflow(path)
 	jobs = workflow.fetch("jobs", {})
@@ -33,13 +40,36 @@ paths.each do |path|
 		end
 
 		Array(job["steps"]).each do |step|
-			uses = step["uses"]
-			next if uses.nil? || uses.start_with?("./")
-			next if uses.match?(immutable_action_ref)
-
 			step_name = step["name"] || "<unnamed step>"
-			errors << "#{path}: job #{job_name}, step #{step_name.inspect} uses #{uses.inspect}; pin external GitHub Actions to a 40-character commit SHA."
+			validate_external_action_ref(
+				errors,
+				path,
+				"job #{job_name}, step #{step_name.inspect}",
+				step["uses"],
+				immutable_action_ref,
+			)
 		end
+	end
+end
+
+action_paths = Dir.glob("**/action.{yml,yaml}", File::FNM_DOTMATCH)
+	.reject { |path| path.start_with?(".git/") }
+	.sort
+
+action_paths.each do |path|
+	action = load_workflow(path)
+	runs = action.fetch("runs", {})
+	next unless runs.is_a?(Hash) && runs["using"] == "composite"
+
+	Array(runs["steps"]).each do |step|
+		step_name = step["name"] || "<unnamed step>"
+		validate_external_action_ref(
+			errors,
+			path,
+			"composite step #{step_name.inspect}",
+			step["uses"],
+			immutable_action_ref,
+		)
 	end
 end
 

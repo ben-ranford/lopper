@@ -62,6 +62,41 @@ jobs:
 	})
 }
 
+func TestGitHubActionsPinningRejectsMutableCompositeActionRef(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	writeRepoScriptFixture(t, repoDir, "scripts/check-github-actions-pinning.sh")
+	writeFixtureFile(t, repoDir, ".github/workflows/ci.yml", `name: ci
+on: [pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+`)
+	writeFixtureFile(t, repoDir, "action.yml", `name: unsafe composite
+runs:
+  using: composite
+  steps:
+    - name: Mutable nested action
+      uses: actions/cache@v4
+`)
+
+	cmd := exec.Command(filepath.Join(repoDir, "scripts", "check-github-actions-pinning.sh"))
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected mutable composite action ref to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"GitHub Actions pinning check failed",
+		"action.yml",
+		"actions/cache@v4",
+		"pin external GitHub Actions to a 40-character commit SHA",
+	})
+}
+
 func TestGitHubActionsPinningSupportsAnchoredYamlWorkflow(t *testing.T) {
 	t.Parallel()
 
@@ -359,6 +394,77 @@ func TestAutomationExamplesRejectsLopperReportFlagsAfterArgumentTerminator(t *te
 		"must preserve the automation example contract",
 		"missing lopper JSON report command",
 	})
+}
+
+func TestAutomationExamplesRejectsLopperReportOverridesAfterArgumentTerminator(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: make automation-integrity
+    lopper-json-report:
+      run: go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json -- --format text
+    mutation-guard:
+      run: git diff --exit-code -- . ':!.artifacts'
+`)
+	if err == nil {
+		t.Fatalf("expected report flags after argument terminator to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"must preserve the automation example contract",
+		"missing lopper JSON report command",
+	})
+}
+
+func TestAutomationExamplesRejectsUnrecognizedLopperReportArguments(t *testing.T) {
+	t.Parallel()
+
+	assertAutomationExamplesRejectLopperReportRuns(t, []lopperReportRunCase{
+		{
+			name: "unknown flag",
+			run:  "go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json --threshold-min-usage-percent 10",
+		},
+		{
+			name: "positional argument",
+			run:  "go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json extra.json",
+		},
+	}, "expected unrecognized lopper report arguments to fail")
+}
+
+func TestAutomationExamplesRejectsConditionallyDisabledLefthookCommands(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		option string
+	}{
+		{name: "skip", option: "skip: merge"},
+		{name: "only", option: "only: rebase"},
+		{name: "glob", option: `glob: "*.go"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: make automation-integrity
+    lopper-json-report:
+      `+tc.option+`
+      run: go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+    mutation-guard:
+      run: git diff --exit-code -- . ':!.artifacts'
+`)
+			if err == nil {
+				t.Fatalf("expected conditionally disabled lopper report command to fail, got success:\n%s", output)
+			}
+			assertOutputContainsAll(t, string(output), []string{
+				"must preserve the automation example contract",
+				"missing lopper JSON report command",
+			})
+		})
+	}
 }
 
 func TestAutomationExamplesAcceptsParsedLefthookCommands(t *testing.T) {
