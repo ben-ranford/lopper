@@ -35,6 +35,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	if err != nil {
 		return report.Report{}, err
 	}
+	result.UsageIncomplete = scanResult.UsageIncomplete
 	result.UsageUncertainty = summarizeUsageUncertainty(scanResult)
 	result.Warnings = append(result.Warnings, scanResult.Warnings...)
 
