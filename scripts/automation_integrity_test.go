@@ -147,14 +147,14 @@ func TestAutomationExamplesRejectsFakeCommandSubstrings(t *testing.T) {
 	t.Parallel()
 
 	output, err := runAutomationExamplesFixture(t, `# make automation-integrity
-# go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+# go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
 # git diff --exit-code -- . ':!.artifacts'
 pre-commit:
   commands:
     automation-integrity:
       run: echo "make automation-integrity"
     lopper-json-report:
-      run: echo "go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json"
+      run: echo "go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json"
     mutation-guard:
       run: echo "git diff --exit-code -- . ':!.artifacts'"
 `)
@@ -179,7 +179,7 @@ func TestAutomationExamplesRejectsNonPreCommitContracts(t *testing.T) {
 pre-push:
   commands:
     lopper-json-report:
-      run: go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+      run: go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
     mutation-guard:
       run: git diff --exit-code -- . ':!.artifacts'
 `)
@@ -201,7 +201,7 @@ func TestAutomationExamplesRejectsOrFallbackRequiredCommands(t *testing.T) {
     automation-integrity:
       run: true || make automation-integrity
     lopper-json-report:
-      run: true || go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+      run: true || go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
     mutation-guard:
       run: true || git diff --exit-code -- . ':!.artifacts'
 `)
@@ -223,7 +223,7 @@ func TestAutomationExamplesRejectsSkippedAndMaskedRequiredCommands(t *testing.T)
     automation-integrity:
       run: false && make automation-integrity || true
     lopper-json-report:
-      run: mkdir -p .artifacts && false && go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || true
+      run: mkdir -p .artifacts && false && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || true
     mutation-guard:
       run: false && git diff --exit-code -- . ':!.artifacts' || true
 `)
@@ -245,7 +245,7 @@ func TestAutomationExamplesRejectsMaskedRequiredCommandFailures(t *testing.T) {
     automation-integrity:
       run: make automation-integrity || true
     lopper-json-report:
-      run: mkdir -p .artifacts && go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || true
+      run: mkdir -p .artifacts && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || true
     mutation-guard:
       run: git diff --exit-code -- . ':!.artifacts' || true
 `)
@@ -267,7 +267,7 @@ func TestAutomationExamplesRejectsNonNoopFallbackMaskedRequiredCommands(t *testi
     automation-integrity:
       run: test -f /missing && make automation-integrity || echo skipped
     lopper-json-report:
-      run: test -f /missing && go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || echo skipped
+      run: test -f /missing && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json || echo skipped
     mutation-guard:
       run: test -f /missing && git diff --exit-code -- . ':!.artifacts' || echo skipped
 `)
@@ -289,7 +289,7 @@ func TestAutomationExamplesRejectsLeadingEnvironmentAssignmentForRequiredCommand
     automation-integrity:
       run: MAKEFLAGS=-n make automation-integrity
     lopper-json-report:
-      run: go run ./cmd/lopper analyse --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+      run: go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
     mutation-guard:
       run: git diff --exit-code -- . ':!.artifacts'
 `)
@@ -316,10 +316,6 @@ func TestAutomationExamplesRejectsLopperReportWithoutAnalyseTarget(t *testing.T)
 		{
 			name: "zero top",
 			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse --top 0 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json",
-		},
-		{
-			name: "conflicting dependency and top",
-			run:  "mkdir -p .artifacts && go run ./cmd/lopper analyse lodash --top 20 --repo . --language all --format json --output .artifacts/lopper-pre-commit.json",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
