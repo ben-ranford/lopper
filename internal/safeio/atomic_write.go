@@ -278,13 +278,6 @@ func publishIdentityBoundReplacingWithRetainedStaging(root Root, sourceRel, targ
 		}
 		appendPublishStagingCleanup(&returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
 	}()
-	if onRetainedStaging != nil {
-		retainedRel, retainedInfo, err = stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, sourceMessage, nil)
-		if err != nil {
-			return false, err
-		}
-		hasRetainedLink = true
-	}
 	if err := verifyPublishedPathMatchesInfo(root, stagedRel, stagedInfo, sourceMessage); err != nil {
 		return false, err
 	}
@@ -296,6 +289,14 @@ func publishIdentityBoundReplacingWithRetainedStaging(root Root, sourceRel, targ
 		return !stagedConsumed, err
 	}
 	if !stagedConsumed && onRetainedStaging != nil {
+		// Keep a separate, identity-bound recovery link only after the primary
+		// staging rename reports that it was retained. Creating it earlier would
+		// add an unnecessary failure point to every normal replacement.
+		retainedRel, retainedInfo, err = stageIdentityBoundFileKeepingSourceLive(root, sourceRel, expected, sourceMessage, nil)
+		if err != nil {
+			return true, err
+		}
+		hasRetainedLink = true
 		if err := onRetainedStaging(retainedRel, retainedInfo); err != nil {
 			keepRetainedLink = true
 			return true, withPublishRenameSourceInfo(err, retainedRel, retainedInfo)

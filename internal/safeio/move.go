@@ -153,7 +153,7 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		sourceInfo,
 		moveSourceChangedBeforeRename,
 		moveTargetChangedBeforeValidate,
-		retainedStagingAliasFinalizer(root, aliasesTarget, sourceRel, targetRel, sourceInfo),
+		retainedStagingMoveFinalizer(root, sourceRel, targetRel, sourceInfo),
 	)
 	if err != nil {
 		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
@@ -161,18 +161,7 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		}
 		return sourceInfo, err
 	}
-	if stagedSourceRetained && !aliasesTarget {
-		// A retained staging link says the target named the staged source at
-		// publication time. The earlier alias scan is advisory and can race with
-		// directory changes, but distinct hard links also retain staging. Recheck
-		// now so a restored same-entry alias is preserved without changing the
-		// separate-hard-link cleanup path.
-		aliasesTarget, err = targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
-		if err != nil {
-			return sourceInfo, err
-		}
-	}
-	if aliasesTarget && stagedSourceRetained {
+	if stagedSourceRetained {
 		return sourceInfo, nil
 	}
 	if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
@@ -181,15 +170,11 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	return sourceInfo, nil
 }
 
-func retainedStagingAliasFinalizer(root Root, aliasesTarget bool, sourceRel, targetRel string, sourceInfo fs.FileInfo) func(string, fs.FileInfo) error {
-	if !aliasesTarget {
-		return nil
-	}
+func retainedStagingMoveFinalizer(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) func(string, fs.FileInfo) error {
 	return func(stagedRel string, stagedInfo fs.FileInfo) error {
-		// The initial alias scan is only advisory: a distinct hard link can be
-		// removed and recreated before publication. Keep the retained staging
-		// link live while removing the original, then ensure target names that
-		// exact entry. This also safely rebuilds a genuine same-entry alias.
+		// Retained staging can represent either a same-entry alias or distinct
+		// hard links. Keep its identity-bound recovery link live while removing
+		// source, then ensure target names that exact entry in both cases.
 		if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
 			return err
 		}
