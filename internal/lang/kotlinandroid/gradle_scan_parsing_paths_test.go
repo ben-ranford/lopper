@@ -593,6 +593,9 @@ import com.acme.lib.Widget
 	if !shouldIgnoreImport("pkg.demo.service", "pkg.demo") {
 		t.Fatalf("expected package-local import to be ignored")
 	}
+	if shouldIgnoreImport("pkg.demo.`when`.Widget", "other.pkg") {
+		t.Fatalf("expected escaped dependency package to remain external to unrelated packages")
+	}
 	escapedPackage := parsePackage([]byte("package pkg.demo.`when`\n"))
 	escapedResult := newScanResult()
 	escapedImports := parseImports([]byte("import pkg.demo.`when`.Widget\n"), testMainSourceFileName, escapedPackage, dependencyLookups{}, &escapedResult)

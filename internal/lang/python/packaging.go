@@ -16,6 +16,8 @@ const (
 	pythonPoetryLockName  = "poetry.lock"
 	pythonUVLockName      = "uv.lock"
 	pythonRequirementsTxt = "requirements.txt"
+
+	maxRequirementsTxtBytes int64 = 1 * 1024 * 1024
 )
 
 var pythonRequirementNamePattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)`)

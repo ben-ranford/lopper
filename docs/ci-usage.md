@@ -3,7 +3,7 @@
 This repository includes these GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests
-- `.github/workflows/queue-me.yml`: serializes pull requests carrying the `queue-me` label, rebases the oldest numbered pull request onto current `main`, and arms squash auto-merge
+- `.github/workflows/queue-me.yml`: serializes pull requests carrying the `queue-me` label, verifies the oldest numbered pull request contains current `main` with canonical PR-unique commit identity, and arms squash auto-merge
 - `.github/workflows/release.yml`: release-please-backed stable release workflow. On pushes to `main`, it creates or updates a release PR from Conventional Commits; when that release PR is merged, it creates a draft semver GitHub release, publishes assets, publishes images, optionally publishes the VS Code extension, publishes the draft release, updates the GitHub Action floating tags, and then updates the Homebrew tap with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
@@ -36,9 +36,9 @@ Stable release automation:
 
 ## Pull request auto-merge queue
 
-`.github/workflows/queue-me.yml` provides a repository-hosted queue for the default branch without requiring GitHub's organization-only merge queue feature. Apply the `queue-me` label to any open, non-draft pull request targeting `main`. The controller processes labeled pull requests in ascending PR-number order, rebases only the current queue leader, and enables squash auto-merge so the existing ruleset remains authoritative for checks, Sonar, metadata, and resolved conversations. A merge or any other push to `main` causes the next leader to be rebased against the new exact base. Removing `queue-me` disables that pull request's auto-merge and advances the remaining queue.
+`.github/workflows/queue-me.yml` provides a repository-hosted queue for the default branch without requiring GitHub's organization-only merge queue feature. Apply the `queue-me` label to any open, non-draft pull request targeting `main`. The controller processes labeled pull requests in ascending PR-number order, requires the current queue leader to already contain the exact current `main`, audits PR-unique commits for matching canonical user author and committer identity, and enables squash auto-merge so the existing ruleset remains authoritative for checks, Sonar, metadata, and resolved conversations. A merge or any other push to `main` causes the next leader to be audited against the new exact base; stale leaders pause with a status comment instead of using GitHub branch update, which rewrites PR commits with the queue App bot as committer. Removing `queue-me` disables that pull request's auto-merge and advances the remaining queue.
 
-The workflow uses `pull_request_target`, but it never checks out a repository tree. It downloads only `scripts/queue_me_controller.js` from the exact trusted `github.workflow_sha` through GitHub's Contents API, writes that blob to runner temporary storage, and executes it. API writes use a repository-scoped GitHub App installation token so the rebase-generated `synchronize` event can start normal CI without the recursive-workflow restrictions of `GITHUB_TOKEN`.
+The workflow uses `pull_request_target`, but it never checks out a repository tree. It downloads only `scripts/queue_me_controller.js` from the exact trusted `github.workflow_sha` through GitHub's Contents API, writes that blob to runner temporary storage, and executes it. API writes use a repository-scoped GitHub App installation token so label, comment, and auto-merge events can start normal CI without the recursive-workflow restrictions of `GITHUB_TOKEN`.
 
 Configure the controller once:
 
@@ -49,7 +49,7 @@ Configure the controller once:
 5. Add its private key as repository secret `QUEUE_APP_PRIVATE_KEY`.
 6. Run the `queue me` workflow manually once. This creates the `queue-me` label when it is missing and reports an empty queue successfully.
 
-If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Rebase conflicts, draft queue leaders, and stale fork branches pause the queue and update one sticky status comment on the blocking pull request. Fork pull requests must be rebased manually when stale because the repository-scoped App token cannot write to a contributor's fork; once current with the default branch, they can advance through normal squash auto-merge. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
+If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Draft queue leaders, stale leaders, and identity-audit failures pause the queue and update one sticky status comment on the blocking pull request. Once a pull request branch contains the current default branch and passes the canonical author/committer audit, the existing `queue-me` label remains the trigger for normal squash auto-merge. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
 
 Validate the no-credential path locally with `act workflow_dispatch -W .github/workflows/queue-me.yml --job advance --strict`; it must report the inactive-controller notice, skip token creation and API writes, and complete successfully.
 
