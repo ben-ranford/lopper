@@ -1348,6 +1348,8 @@ func TestParsePHPImportsKeepsPHPActiveAfterFlexibleHeredocTerminators(t *testing
 		{name: "expression delimiter", terminator: "HTML, 'suffix'];"},
 		{name: "whitespace and line comment", terminator: "   HTML   ; // done"},
 		{name: "block comment before delimiter", terminator: "HTML /* comment */ ;"},
+		{name: "logical word operator", terminator: "HTML and print \"x\";"},
+		{name: "instanceof word operator", terminator: "HTML instanceof Stringable;"},
 	}
 
 	for _, tc := range tests {
@@ -1947,7 +1949,7 @@ func TestPHPHeredocNowdocHelperBranches(t *testing.T) {
 	if !isHeredocNowdocTerminatorLine("TXT\r", "TXT") {
 		t.Fatalf("expected CR-terminated heredoc label to be accepted")
 	}
-	for _, line := range []string{"TXT   ;   // comment", "TXT, 'next'", "TXT /* comment */ )\r", "TXT # comment"} {
+	for _, line := range []string{"TXT   ;   // comment", "TXT, 'next'", "TXT /* comment */ )\r", "TXT # comment", "TXT and print \"x\"", "TXT instanceof Stringable", "TXT as $item"} {
 		if !isHeredocNowdocTerminatorLine(line, "TXT") {
 			t.Fatalf("expected flexible heredoc terminator %q to be accepted", line)
 		}

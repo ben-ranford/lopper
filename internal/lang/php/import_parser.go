@@ -1279,18 +1279,29 @@ func isHeredocNowdocTerminatorTail(rest string) bool {
 			offset += len("/*") + commentEnd + len("*/")
 			continue
 		}
-		return isHeredocNowdocTerminatorContinuation(rest[offset])
+		return isHeredocNowdocTerminatorContinuation(rest[offset:])
 	}
 	return true
 }
 
-func isHeredocNowdocTerminatorContinuation(ch byte) bool {
-	switch ch {
+func isHeredocNowdocTerminatorContinuation(rest string) bool {
+	if rest == "" {
+		return true
+	}
+	switch rest[0] {
 	case ';', ',', '.', '+', '-', '*', '/', '%', '<', '>', '=', '!', '&', '|', '^', '?', ':', '(', ')', '[', ']', '{', '}':
 		return true
-	default:
-		return false
 	}
+	return isHeredocNowdocTerminatorKeywordOperator(rest)
+}
+
+func isHeredocNowdocTerminatorKeywordOperator(rest string) bool {
+	for _, operator := range []string{"and", "or", "xor", "instanceof", "as"} {
+		if hasKeywordAt(rest, 0, operator) {
+			return true
+		}
+	}
+	return false
 }
 
 func nextPHPLineEnd(text string, start int) int {
