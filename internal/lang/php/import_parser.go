@@ -332,10 +332,28 @@ func scanPHPUseStatementAt(text string, start int) (phpUseStatementMatch, int, b
 }
 
 func findPHPUseStatementEnd(text string, statementStart int) (int, int, bool) {
+	traitAdaptationDepth := 0
 	for offset := statementStart; offset < len(text); offset++ {
 		switch text[offset] {
+		case '{':
+			if traitAdaptationDepth == 0 && isPHPTraitAdaptationBlockStart(text, statementStart, offset) {
+				traitAdaptationDepth = 1
+				continue
+			}
+			if traitAdaptationDepth > 0 {
+				traitAdaptationDepth++
+			}
+		case '}':
+			if traitAdaptationDepth > 0 {
+				traitAdaptationDepth--
+				if traitAdaptationDepth == 0 {
+					return offset, offset + 1, true
+				}
+			}
 		case ';':
-			return offset, offset + 1, true
+			if traitAdaptationDepth == 0 {
+				return offset, offset + 1, true
+			}
 		case '\n', '\r':
 			lineStart := nextPHPLineStart(text, nextPHPLineEnd(text, offset))
 			nextToken := skipHorizontalWhitespace(text, lineStart)
@@ -345,6 +363,16 @@ func findPHPUseStatementEnd(text string, statementStart int) (int, int, bool) {
 		}
 	}
 	return len(text), len(text), false
+}
+
+func isPHPTraitAdaptationBlockStart(text string, statementStart, braceOffset int) bool {
+	for offset := braceOffset - 1; offset >= statementStart; offset-- {
+		if isPHPWhitespace(text[offset]) {
+			continue
+		}
+		return text[offset] != '\\'
+	}
+	return false
 }
 
 func useStatementContinuesAfterNewline(text string, statementStart, newlineOffset int) bool {
@@ -859,7 +887,7 @@ func isXMLDeclarationOpenTag(text string, start int) bool {
 
 func isXMLStylesheetProcessingInstructionOpenTag(text string, start int) bool {
 	targetEnd := start + len("<?xml-stylesheet")
-	if targetEnd >= len(text) || !strings.EqualFold(text[start:targetEnd], "<?xml-stylesheet") {
+	if targetEnd >= len(text) || !strings.EqualFold(text[start:targetEnd], "<?xml-stylesheet") || !isPHPWhitespace(text[targetEnd]) {
 		return false
 	}
 	attributeStart := skipPHPWhitespace(text, targetEnd)

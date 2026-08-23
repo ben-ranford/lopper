@@ -1405,6 +1405,12 @@ func TestParsePHPImportsResolvesNamespaceRelativeTraitUseAfterEmptyPHPRegions(t 
 	}
 }
 
+func TestParsePHPImportsParsesEmptyTraitAdaptationBlock(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	parsed := parsePHPImports([]byte("<?php class C { use Vendor\\Package\\Feature {} }"), "empty-trait-adaptation.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Feature"})
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
@@ -1418,6 +1424,7 @@ func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 		{name: "hyphenated call", opener: "<?xml-foo();"},
 		{name: "stylesheet-like call without a close tag", opener: "<?xml-stylesheet?foo():bar();"},
 		{name: "stylesheet-like call after whitespace", opener: "<?xml-stylesheet ();"},
+		{name: "stylesheet-like call without target whitespace", opener: "<?xml-stylesheettype==\"x\";"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			content := []byte(tc.opener + "\nuse Vendor\\Package\\Client;\n")
