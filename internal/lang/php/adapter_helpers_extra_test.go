@@ -2442,6 +2442,134 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 
 }
 
+func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
+	masked := []byte("abc\n")
+	maskPHPUseStatementRange(masked, -1, len(masked)+1)
+	if got := string(masked); got != "   \n" {
+		t.Fatalf("expected bounded use-statement mask, got %q", got)
+	}
+	if isPHPTraitAdaptationBlockStart("{", 0, 0) || isPHPTraitAdaptationBlockStart(`\{`, 0, 1) {
+		t.Fatal("expected a leading or escaped brace not to start a trait adaptation block")
+	}
+	if depth, ended := advancePHPTraitAdaptationDepth("{{", 0, 1, 1); depth != 2 || ended {
+		t.Fatalf("expected nested trait adaptation brace depth, got depth=%d ended=%v", depth, ended)
+	}
+	if useStatementContinuesAfterNewline("\n", 0, 0) || !useStatementContinuesAfterNewline(", \n", 0, 2) {
+		t.Fatal("expected only a trailing comma to continue a multiline use statement")
+	}
+
+	tracker := phpContextTracker{currentNamespaceUses: map[string]string{}}
+	tracker.addNamespaceUses(`function Vendor\Ignored`, 4)
+	tracker.addNamespaceUses(`Vendor\{, Item\Thing}`, 4)
+	if _, ok := tracker.currentNamespaceUses["thing"]; !ok {
+		t.Fatalf("expected non-empty grouped alias to be retained, got %#v", tracker.currentNamespaceUses)
+	}
+
+	for _, text := range []string{"declare strict_types=1", "declare(", "declare(strict_types=1) "} {
+		if _, ok := parseDeclarePreludeAt(text, 0, len(text), len(text)); ok {
+			t.Fatalf("expected malformed declare prelude %q to be rejected", text)
+		}
+	}
+	for _, text := range []string{"namespace Vendor", "namespace Vendor:"} {
+		if _, ok := parseNamespaceDeclarationAt(text, 0); ok {
+			t.Fatalf("expected malformed namespace declaration %q to be rejected", text)
+		}
+	}
+	if _, ok := parseNamespaceDeclarationNameEnd(`Vendor\`, 0); ok {
+		t.Fatal("expected a trailing namespace separator to be rejected")
+	}
+	if got := phpStatementTerminatorLengthAt("x", 1); got != 0 {
+		t.Fatalf("expected no terminator beyond input, got %d", got)
+	}
+
+	if _, _, ok := nextPHPOpenTag(`<?xml version="1.0"?>`, 0, true); ok {
+		t.Fatal("expected XML declaration not to be treated as a PHP open tag")
+	}
+	if _, _, ok := nextPHPOpenTag("<?", 0, false); ok {
+		t.Fatal("expected unsupported short PHP open tag to be rejected")
+	}
+	if isXMLDeclarationOpenTag("<?xml", 0) {
+		t.Fatal("expected incomplete XML declaration not to be accepted")
+	}
+	if isXMLDeclarationOpenTag(`<?xml encoding="UTF-8"?>`, 0) {
+		t.Fatal("expected an XML declaration without version assignment to be rejected")
+	}
+	if _, ok := xmlProcessingInstructionAttributeNameEnd("", 0); ok {
+		t.Fatal("expected an empty XML processing instruction attribute name to be rejected")
+	}
+	if !isHeredocNowdocTerminatorContinuation("") || !isHeredocNowdocTerminatorTail(" ") || isHeredocNowdocTerminatorTail("/*") {
+		t.Fatal("expected empty heredoc continuation and malformed block comment handling")
+	}
+	if end := findHeredocNowdocTerminator("body\nEOF;\n", 0, "EOF"); end < 0 {
+		t.Fatal("expected heredoc terminator to be found")
+	}
+	if got := maskPHPHeredocNowdocBodies("<<<\n"); got != "<<<\n" {
+		t.Fatalf("expected malformed heredoc marker to stay unchanged, got %q", got)
+	}
+	if stack, _, _ := popPHPClassLikeDelimiter([]byte{'('}, []int{0}, []int{-1}, '['); len(stack) != 1 {
+		t.Fatalf("expected unmatched delimiter stack to stay intact, got %q", stack)
+	}
+	if got, ok := expandNamespaceUseAlias("Alias", map[string]string{"alias": `Vendor\Package`}); !ok || got != `Vendor\Package` {
+		t.Fatalf("expected alias-only namespace use to expand, got %q ok=%v", got, ok)
+	}
+
+	policy := phpShortOpenTagPolicy{
+		dirSettings:    map[string]phpShortOpenTagDirSetting{"dir": {enabled: true, priority: 3}},
+		incompleteDirs: map[string]int{"dir": 3},
+	}
+	policy.setIncompleteDir("dir", 2)
+	policy.setDirSetting("dir", false, 2)
+	if !policy.dirSettings["dir"].enabled || policy.incompleteDirs["dir"] != 3 {
+		t.Fatalf("expected higher priority PHP configuration to win, got %#v", policy)
+	}
+	if got := phpConfigFilePriority(".htaccess"); got != 3 {
+		t.Fatalf("expected .htaccess PHP config priority to be three, got %d", got)
+	}
+	if got := phpConfigFilePriority("not-a-php-config"); got != 0 {
+		t.Fatalf("expected unknown PHP config priority to be zero, got %d", got)
+	}
+	if enabled, found, incomplete := phpConfigBooleanSetting("maybe"); enabled || found || !incomplete {
+		t.Fatalf("expected unknown PHP boolean setting to be incomplete, got enabled=%v found=%v incomplete=%v", enabled, found, incomplete)
+	}
+	if enabled, found, incomplete := parseShortOpenTagSetting("unrelated_setting = on"); enabled || found || incomplete {
+		t.Fatalf("expected unrelated PHP setting to be ignored, got enabled=%v found=%v incomplete=%v", enabled, found, incomplete)
+	}
+
+	repo := t.TempDir()
+	if enabled, found, incomplete, err := phpConfigShortOpenTagSetting(repo, filepath.Join(repo, "missing.ini")); err != nil || enabled || found || incomplete {
+		t.Fatalf("expected missing PHP config to be ignored, got enabled=%v found=%v incomplete=%v err=%v", enabled, found, incomplete, err)
+	}
+	if err := scanPHPShortOpenTagConfigEntry(repo, repo, nil, errors.New("walk failure"), &policy, nil); err == nil {
+		t.Fatal("expected config walk error to be returned")
+	}
+	writeFile(t, filepath.Join(repo, "not-a-config.txt"), "ignored")
+	if err := scanPHPShortOpenTagConfigEntry(repo, filepath.Join(repo, "not-a-config.txt"), mustPHPDirEntry(t, repo, "not-a-config.txt"), nil, &policy, nil); err != nil {
+		t.Fatalf("expected non-config file to be ignored, got %v", err)
+	}
+	writeFile(t, filepath.Join(repo, "nested", helpersComposerJSON), "{}")
+	if err := scanPHPShortOpenTagConfigDir(repo, filepath.Join(repo, "nested"), mustPHPDirEntry(t, repo, "nested")); !errors.Is(err, filepath.SkipDir) {
+		t.Fatalf("expected nested Composer package config directory to be skipped, got %v", err)
+	}
+	writeFile(t, filepath.Join(repo, "ordinary", "child.txt"), "")
+	if err := walkPHPDetectionEntry(filepath.Join(repo, "ordinary"), mustPHPDirEntry(t, repo, "ordinary"), map[string]struct{}{}, &language.Detection{}, new(int), maxDetectFiles); err != nil {
+		t.Fatalf("expected ordinary directory detection entry to continue, got %v", err)
+	}
+	excludedFile := filepath.Join(repo, "excluded.php")
+	writeFile(t, excludedFile, helpersPHPHeader)
+	coordinator := newScanCoordinatorWithExcludedPaths(repo, composerData{}, map[string]struct{}{excludedFile: {}})
+	if err := coordinator.scanEntry(excludedFile, mustPHPDirEntry(t, repo, "excluded.php")); err != nil {
+		t.Fatalf("expected excluded PHP file to be ignored, got %v", err)
+	}
+	if err := scanDirEntryWithExcludedPaths(repo, filepath.Join(repo, "nested"), mustPHPDirEntry(t, repo, "nested"), &scanState{}, map[string]struct{}{filepath.Join(repo, "nested"): {}}); !errors.Is(err, filepath.SkipDir) {
+		t.Fatalf("expected explicitly excluded directory to be skipped, got %v", err)
+	}
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !errors.Is(contextErr(cancelledCtx), context.Canceled) {
+		t.Fatal("expected cancelled scan context to stop traversal")
+	}
+}
+
 func TestAdditionalBranchCoverageResolverAndUseBranches(t *testing.T) {
 	resolver := composerResolver{
 		localNamespace: map[string]struct{}{"": {}, "App": {}},

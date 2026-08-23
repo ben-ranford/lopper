@@ -65,6 +65,52 @@ func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestCachePathAndRelevantFileBoundaryBranches(t *testing.T) {
+	var nilCache *analysisCache
+	cachePath := filepath.Join(t.TempDir(), cacheDirName)
+	if got := nilCache.stableCacheRoot(cachePath); got != cachePath {
+		t.Fatalf("expected nil cache to preserve cache root, got %q", got)
+	}
+
+	repo := t.TempDir()
+	outside := t.TempDir()
+	symlink := filepath.Join(repo, "linked-cache")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatalf("create cache symlink: %v", err)
+	}
+	if !cachePathEscapesRepo(symlink, repo) {
+		t.Fatal("expected symlinked cache path to be rejected")
+	}
+	if _, err := prepareWritableAnalysisCacheRoot(filepath.Join(repo, "missing", cacheDirName)); err == nil {
+		t.Fatal("expected missing cache root to require deferred creation")
+	}
+	cache := &analysisCache{options: resolvedCacheOptions{Path: repo}}
+	writeRoot, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open cache write root: %v", err)
+	}
+	if err := writeRoot.Close(); err != nil {
+		t.Fatalf("close cache write root: %v", err)
+	}
+
+	exclusions := cacheExcludedPathSet(cacheAnalysisExclusions{files: []string{"", filepath.Join(repo, "trace.ndjson")}})
+	if len(exclusions) != 1 {
+		t.Fatalf("expected only non-empty cache exclusion, got %#v", exclusions)
+	}
+	if !shouldSkipCacheDir(cacheDirName) || isCacheRelevantFile("README.txt") {
+		t.Fatal("expected cache directory and unsupported file handling")
+	}
+	if _, err := collectPHPShortOpenTagTraversalEntries(filepath.Join(repo, "missing-root"), cacheAnalysisExclusions{}); err == nil {
+		t.Fatal("expected missing short-open-tag traversal root to fail")
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "objects", "broken.json"), 0o750); err != nil {
+		t.Fatalf("create malformed cache object path: %v", err)
+	}
+	if _, reason, err := readCachedPayload(repo, "broken"); err != nil || reason != "object-read-error" {
+		t.Fatalf("expected malformed cache object read to invalidate, reason=%q err=%v", reason, err)
+	}
+}
+
 func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
 	repo := t.TempDir()
 	blockingPath := filepath.Join(repo, "not-a-dir")
