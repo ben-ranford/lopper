@@ -405,6 +405,8 @@ func WriteFileReplacingWithinRoot(root Root, targetPath string, data []byte, per
 	return writeAtomicReplacement(root, target.rel, data, writePerm, existingInfo)
 }
 
+const cleanupFileChangedBeforeRemoval = "cleanup file changed before removal"
+
 func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 	var cleanupErr error
 	if tempFile != nil {
@@ -424,16 +426,14 @@ func cleanupAtomicTempFile(root Root, tempRel string, tempFile File) error {
 }
 
 func cleanupAtomicTempFileIfMatches(root Root, tempRel string, expected fs.FileInfo) error {
-	const changedBeforeRemoval = "cleanup file changed before removal"
-
-	err := cleanupAtomicTempFileIfMatchesOnce(root, tempRel, expected, changedBeforeRemoval)
+	err := cleanupAtomicTempFileIfMatchesOnce(root, tempRel, expected, cleanupFileChangedBeforeRemoval)
 	if err == nil {
 		return nil
 	}
-	if tempRel == "" || expected == nil || strings.Contains(err.Error(), changedBeforeRemoval) {
+	if tempRel == "" || expected == nil || strings.Contains(err.Error(), cleanupFileChangedBeforeRemoval) {
 		return err
 	}
-	return errors.Join(err, retryCleanupAtomicTempFileIfStillMatches(root, tempRel, expected, changedBeforeRemoval))
+	return errors.Join(err, retryCleanupAtomicTempFileIfStillMatches(root, tempRel, expected, cleanupFileChangedBeforeRemoval))
 }
 
 func cleanupAtomicTempFileIfMatchesOnce(root Root, tempRel string, expected fs.FileInfo, changedBeforeRemoval string) error {
@@ -564,7 +564,13 @@ func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expecte
 }
 
 func renameFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expected fs.FileInfo, message string) (_ bool, returnErr error) {
-	renameState, err := newBasicRootRenameState(root, oldName, newName, message)
+	if expected == nil {
+		return false, fmt.Errorf("%s: %s", message, oldName)
+	}
+	if !expected.Mode().IsRegular() {
+		return false, fmt.Errorf("%s: %s", message, oldName)
+	}
+	renameState, err := newBasicRootRenameState(root, oldName, newName, expected, message)
 	if err != nil {
 		return false, err
 	}
@@ -589,6 +595,7 @@ type basicRootRenameState struct {
 	root                   Root
 	oldName                string
 	newName                string
+	expected               fs.FileInfo
 	message                string
 	quarantineDir          string
 	quarantineRel          string
@@ -597,7 +604,7 @@ type basicRootRenameState struct {
 	cleanupQuarantineEntry bool
 }
 
-func newBasicRootRenameState(root Root, oldName, newName, message string) (*basicRootRenameState, error) {
+func newBasicRootRenameState(root Root, oldName, newName string, expected fs.FileInfo, message string) (*basicRootRenameState, error) {
 	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, oldName)
 	if err != nil {
 		return nil, err
@@ -606,6 +613,7 @@ func newBasicRootRenameState(root Root, oldName, newName, message string) (*basi
 		root:          root,
 		oldName:       oldName,
 		newName:       newName,
+		expected:      expected,
 		message:       message,
 		quarantineDir: quarantineDir,
 		quarantineRel: quarantineRel,
@@ -625,12 +633,23 @@ func (s *basicRootRenameState) cleanup(returnErr *error) {
 func (s *basicRootRenameState) snapshotQuarantine() error {
 	info, err := publishedRegularFileInfo(s.root, s.quarantineRel, s.message)
 	if err != nil {
-		s.cleanupDir = false
-		return withPublishRenameSource(err, s.quarantineRel)
+		return s.restoreSourceAfterSnapshotFailure(err)
 	}
 	s.quarantineInfo = info
 	s.cleanupQuarantineEntry = true
 	return nil
+}
+
+func (s *basicRootRenameState) restoreSourceAfterSnapshotFailure(snapshotErr error) error {
+	restored, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.expected)
+	if !restored {
+		s.disableQuarantineCleanup()
+	}
+	sourceRel := s.quarantineRel
+	if restored {
+		sourceRel = s.oldName
+	}
+	return withPublishRenameSource(errors.Join(snapshotErr, restoreErr), sourceRel)
 }
 
 func (s *basicRootRenameState) restoreSourceMismatch() error {

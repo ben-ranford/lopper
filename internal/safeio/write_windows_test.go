@@ -447,6 +447,76 @@ func TestWriteFileAtomicallyIfAbsentFallsBackToWindowsNoReplaceRename(t *testing
 	}
 }
 
+func TestPublishStagedIfAbsentNoReplaceFallbackUsesAttemptedLinkSource(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	const (
+		stagedRel              = ".safeio-atomic-temp"
+		attemptedLinkSourceRel = ".safeio-atomic-target-link"
+		targetRel              = writeTestFileName
+	)
+
+	targetPublished := false
+	root := &fakeRoot{
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, tempInfo, oldName)
+			if oldName != stagedRel || newName != targetRel || message != temporaryFileChangedBeforeCommit {
+				t.Fatalf("unexpected publish link %q -> %q (%s)", oldName, newName, message)
+			}
+			return &os.LinkError{
+				Op:  "linkat",
+				Old: attemptedLinkSourceRel,
+				New: targetRel,
+				Err: errors.ErrUnsupported,
+			}
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case ".":
+				return rootInfo, nil
+			case targetRel:
+				if targetPublished {
+					return tempInfo, nil
+				}
+				return nil, os.ErrNotExist
+			case stagedRel:
+				if targetPublished {
+					return nil, os.ErrNotExist
+				}
+				return tempInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, tempInfo, name)
+			if name != stagedRel || message != cleanupFileChangedBeforeRemoval {
+				t.Fatalf("unexpected cleanup %q (%s)", name, message)
+			}
+			return nil
+		},
+	}
+	restoreWindowsNoReplaceRename(t, func(gotRoot Root, gotRootInfo fs.FileInfo, tempRel, gotTargetRel string, gotTempInfo fs.FileInfo) error {
+		if gotRoot != root {
+			t.Fatal("fallback received a different root")
+		}
+		requireSameFileInfo(t, gotRootInfo, rootInfo, "root identity")
+		if tempRel != stagedRel || gotTargetRel != targetRel {
+			t.Fatalf("unexpected no-replace rename %q -> %q", tempRel, gotTargetRel)
+		}
+		requireSameFileInfo(t, gotTempInfo, tempInfo, "staged identity")
+		targetPublished = true
+		return nil
+	})
+
+	if err := publishStagedIdentityBoundIfAbsent(root, "source", stagedRel, targetRel, tempInfo); err != nil {
+		t.Fatalf("publishStagedIdentityBoundIfAbsent returned error: %v", err)
+	}
+	if !targetPublished {
+		t.Fatal("expected no-replace fallback to publish the target")
+	}
+}
+
 func TestWriteFileAtomicallyIfAbsentNoReplaceFallbackPreservesExistingTarget(t *testing.T) {
 	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
 	root := newWindowsNoReplaceIfAbsentRoot(t, rootInfo, tempInfo)

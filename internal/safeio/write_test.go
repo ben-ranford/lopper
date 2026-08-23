@@ -6135,6 +6135,79 @@ func TestPathOperationIfMatchesSupportsPlainRoot(t *testing.T) {
 	})
 }
 
+func TestPlainRootRenameRestoresSourceAfterQuarantineSnapshotFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	snapshotErr := errors.New("snapshot failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"restore")
+
+	state := struct {
+		sourceExists     bool
+		quarantineExists bool
+		targetExists     bool
+		quarantineRel    string
+		lstatFailed      bool
+	}{
+		sourceExists: true,
+	}
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		mkdir: func(string, os.FileMode) error { return nil },
+		rename: func(oldName, newName string) error {
+			switch {
+			case oldName == "source" && state.sourceExists:
+				state.sourceExists = false
+				state.quarantineExists = true
+				state.quarantineRel = newName
+			case oldName == state.quarantineRel && newName == "target":
+				state.quarantineExists = false
+				state.targetExists = true
+			default:
+				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == state.quarantineRel && state.quarantineExists && !state.lstatFailed:
+				state.lstatFailed = true
+				return nil, snapshotErr
+			case name == state.quarantineRel && state.quarantineExists:
+				return sourceInfo, nil
+			case name == "source" && state.sourceExists:
+				return sourceInfo, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		link: func(oldName, newName string) error {
+			if oldName != state.quarantineRel || newName != "source" {
+				t.Fatalf("unexpected restore link %q -> %q", oldName, newName)
+			}
+			if state.sourceExists {
+				return os.ErrExist
+			}
+			state.sourceExists = true
+			return nil
+		},
+		remove: func(name string) error {
+			if name == state.quarantineRel {
+				state.quarantineExists = false
+			}
+			return nil
+		},
+	}}
+
+	consumed, err := renameFileIfMatches(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, snapshotErr) {
+		t.Fatalf("expected snapshot error, got %v", err)
+	}
+	if consumed {
+		t.Fatal("expected source not to be consumed after snapshot failure")
+	}
+	if !state.sourceExists || state.quarantineExists || state.targetExists {
+		t.Fatalf("expected source restored without target publish, got source=%t quarantine=%t target=%t", state.sourceExists, state.quarantineExists, state.targetExists)
+	}
+}
+
 func TestPublishIdentityBoundIfAbsentSupportsPlainRoot(t *testing.T) {
 	rootDir := t.TempDir()
 	sourcePath := filepath.Join(rootDir, "source")
@@ -6879,6 +6952,10 @@ func (r *identityOnlyRoot) RenameIfMatches(oldName, newName string, expected fs.
 	return r.renameIfMatches(oldName, newName, expected, message)
 }
 
+func (r *identityOnlyRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	return true, r.RenameIfMatches(oldName, newName, expected, message)
+}
+
 func (r *identityOnlyRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
 	return r.removeIfMatches(name, expected, message)
 }
@@ -7084,22 +7161,54 @@ func TestBasicRootRenameErrorBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("missing expected identity rejects before rename", func(t *testing.T) {
+		renameCalls := 0
+		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+			rename: func(string, string) error {
+				renameCalls++
+				return nil
+			},
+		})
+		_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", nil, sourceChangedMsg)
+		if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+			t.Fatalf("expected missing identity rejection, got %v", err)
+		}
+		if renameCalls != 0 {
+			t.Fatalf("expected no rename without expected identity, got %d", renameCalls)
+		}
+	})
+
 	t.Run("rename quarantine lstat failure preserves source", func(t *testing.T) {
 		useRandomTempNames(t, atomicTempPrefix+"quarantine")
-		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		files := map[string]fs.FileInfo{"source": sourceInfo}
+		lstatFailed := false
+		root := newIdentityMapRoot(t, files, identityMapRootHooks{
 			lstat: func(name string) (fs.FileInfo, error) {
-				if strings.HasSuffix(name, "entry") {
+				if strings.HasSuffix(name, "entry") && !lstatFailed {
+					lstatFailed = true
 					return nil, lstatErr
 				}
-				return sourceInfo, nil
+				info, ok := files[name]
+				if !ok {
+					return nil, os.ErrNotExist
+				}
+				return info, nil
 			},
 		})
 		_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
 		if !errors.Is(err, lstatErr) {
 			t.Fatalf("expected lstat error, got %v", err)
 		}
-		if source := publishRenameSource(err, "fallback"); !strings.Contains(source, "entry") {
-			t.Fatalf("expected quarantined source in publish error, got %q", source)
+		if source := publishRenameSource(err, "fallback"); source != "source" {
+			t.Fatalf("expected restored source in publish error, got %q", source)
+		}
+		if _, ok := files["source"]; !ok {
+			t.Fatal("expected source restored after quarantine lstat failure")
+		}
+		for name := range files {
+			if strings.HasSuffix(name, "entry") || name == "target" {
+				t.Fatalf("unexpected path after restore: %s", name)
+			}
 		}
 	})
 }

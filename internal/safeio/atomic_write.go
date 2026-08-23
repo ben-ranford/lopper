@@ -18,7 +18,7 @@ type atomicWriteSession struct {
 	tempInfo  fs.FileInfo
 }
 
-type truncatingFile interface {
+type fileTruncater interface {
 	File
 	Truncate(size int64) error
 }
@@ -29,7 +29,8 @@ type identityBoundOperationsRoot interface {
 	RemoveIfMatches(name string, expected fs.FileInfo, message string) error
 }
 
-type RenameIfMatchesStater interface {
+type identityBoundStateOperationsRoot interface {
+	identityBoundOperationsRoot
 	RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error)
 }
 
@@ -227,7 +228,7 @@ func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRe
 }
 
 func renameFileIfMatches(root Root, oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
-	if guardedRoot, ok := root.(RenameIfMatchesStater); ok {
+	if guardedRoot, ok := root.(identityBoundStateOperationsRoot); ok {
 		return guardedRoot.RenameIfMatchesState(oldName, newName, expected, message)
 	}
 	if guardedRoot, ok := root.(identityBoundOperationsRoot); ok {
@@ -598,7 +599,7 @@ func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetR
 			return os.ErrExist
 		}
 		if identityBoundLinkUnsupported(err) {
-			fallbackErr := fallbackAtomicIfAbsent(root, stagedRel, targetRel, stagedInfo, err)
+			fallbackErr := fallbackAtomicIfAbsent(root, stagedRel, attemptedTargetLinkSource(err, stagedRel, targetRel), targetRel, stagedInfo, err)
 			if fallbackErr == nil {
 				return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, committedTargetChangedBeforeValidation)
 			}
@@ -607,6 +608,14 @@ func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetR
 		return err
 	}
 	return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, committedTargetChangedBeforeValidation)
+}
+
+func attemptedTargetLinkSource(err error, fallback, targetRel string) string {
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) && linkErr.Op == "linkat" && linkErr.New == targetRel {
+		return linkErr.Old
+	}
+	return fallback
 }
 
 func writeAtomicReplacementWithPinnedTarget(root Root, targetRel string, data []byte, perm os.FileMode, replacementFile File, allowPermissionFallback bool) (returnErr error) {
@@ -686,7 +695,7 @@ func overwritePinnedFile(root Root, targetRel string, file File, data []byte, be
 		return fmt.Errorf("target changed before replacement: %s", targetRel)
 	}
 
-	targetFile, ok := file.(truncatingFile)
+	targetFile, ok := file.(fileTruncater)
 	if !ok {
 		return fmt.Errorf("target does not support truncation: %s", targetRel)
 	}
