@@ -1476,6 +1476,27 @@ func TestParsePHPImportsExcludesFunctionAndConstAliasesFromTraitNamespaceLookup(
 	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\FeatureTrait", "VendorConst\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsExcludesWhitespaceSeparatedNonClassAliasesFromTraitNamespaceLookup(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{
+		"Vendor\\Package":      "vendor/package",
+		"VendorConst\\Package": "vendor/const-package",
+	}}
+	content := []byte("<?php use function\tAcme\\Other as Vendor; class FunctionAlias { use Vendor\\Package\\FeatureTrait; } use const\nAcme\\Constants as VendorConst; class ConstAlias { use VendorConst\\Package\\FeatureTrait; }")
+	parsed := parsePHPImports(content, "trait-whitespace-nonclass-alias.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\FeatureTrait", "VendorConst\\Package\\FeatureTrait"})
+}
+
+func TestHasUseImportQualifierAcceptsPHPWhitespace(t *testing.T) {
+	for _, separator := range []string{" ", "\t", "\n", "\r", "\v", "\f"} {
+		if !hasUseImportQualifier("function"+separator+"Acme\\Other", "function") {
+			t.Fatalf("expected function qualifier followed by %q to be recognized", separator)
+		}
+		if !hasUseImportQualifier("const"+separator+"Acme\\Other", "const") {
+			t.Fatalf("expected const qualifier followed by %q to be recognized", separator)
+		}
+	}
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/report"
@@ -1618,10 +1619,10 @@ func parseUsePartModuleAndLocal(part, base string) (string, string, bool) {
 func stripUseImportQualifier(part string) string {
 	part = strings.TrimSpace(part)
 	if hasUseImportQualifier(part, "function") {
-		return strings.TrimSpace(part[len("function "):])
+		return strings.TrimSpace(part[len("function"):])
 	}
 	if hasUseImportQualifier(part, "const") {
-		return strings.TrimSpace(part[len("const "):])
+		return strings.TrimSpace(part[len("const"):])
 	}
 	return part
 }
@@ -1632,8 +1633,7 @@ func hasNonClassUseImportQualifier(part string) bool {
 
 func hasUseImportQualifier(part, qualifier string) bool {
 	part = strings.TrimSpace(part)
-	prefix := qualifier + " "
-	return len(part) > len(prefix) && strings.EqualFold(part[:len(prefix)], prefix)
+	return len(part) > len(qualifier) && strings.EqualFold(part[:len(qualifier)], qualifier) && unicode.IsSpace(rune(part[len(qualifier)]))
 }
 
 func splitAlias(value string) (string, string) {
