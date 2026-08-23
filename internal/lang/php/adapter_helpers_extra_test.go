@@ -1437,6 +1437,15 @@ func TestParsePHPImportsTracksSameLineNamespaceAfterStatement(t *testing.T) {
 	assertImportModules(t, parsed.imports, []string{"B\\Vendor\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsTracksNamespaceAcrossSameLineCloseOpenTransition(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"B\\Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"A\\Vendor": {}},
+	}
+	parsed := parsePHPImports([]byte("<?php namespace A ?><?php namespace B ?><?php class C { use Vendor\\Package\\FeatureTrait; }"), "close-open-namespace.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"B\\Vendor\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},

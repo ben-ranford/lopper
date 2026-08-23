@@ -688,6 +688,15 @@ type phpNamespaceLineCompletion struct {
 
 func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
 	for c.offset < target {
+		if strings.HasPrefix(text[c.offset:], "?>") {
+			c.lastNonWhitespace = ';'
+			c.offset += len("?>")
+			continue
+		}
+		if tagLength := phpOpenPreludeLengthAt(text, c.offset, len(text), false); tagLength > 0 {
+			c.offset += tagLength
+			continue
+		}
 		ch := text[c.offset]
 		if !isPHPWhitespace(ch) {
 			c.lastNonWhitespace = ch
