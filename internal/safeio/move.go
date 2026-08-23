@@ -150,10 +150,27 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if aliasesTarget && stagedSourceRetained {
 		return sourceInfo, nil
 	}
+	if aliasesTarget && renameStateMayBeUnreported(root) {
+		aliasesTarget, err = targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
+		if err != nil {
+			return sourceInfo, err
+		}
+		if aliasesTarget {
+			return sourceInfo, nil
+		}
+	}
 	if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
 		return sourceInfo, err
 	}
 	return sourceInfo, nil
+}
+
+func renameStateMayBeUnreported(root Root) bool {
+	if _, reportsState := root.(identityBoundStateOperationsRoot); reportsState {
+		return false
+	}
+	_, usesIdentityBoundOperations := root.(identityBoundOperationsRoot)
+	return usesIdentityBoundOperations
 }
 
 func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) error {

@@ -7779,6 +7779,69 @@ func TestTargetAliasRecognizesShortNameAlias(t *testing.T) {
 	}
 }
 
+func TestPreparePreservesAliasWhenIdentityRootCannotReportRenameState(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	readDirCalls := 0
+	sourceCleanupCalls := 0
+	base := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == "Long File.txt", name == "LONGFI~1.TXT", name == ".", strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+				if name == "." {
+					return dirInfo, nil
+				}
+				return sourceInfo, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "Long File.txt"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+					close: func() error { return nil },
+				},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					readDirCalls++
+					return []fs.DirEntry{&namedDirEntry{name: "Long File.txt"}}, nil
+				},
+			}, nil
+		},
+	}
+	root := &identityOnlyRoot{
+		Root:          base,
+		linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "LONGFI~1.TXT" {
+				t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if name == "Long File.txt" {
+				sourceCleanupCalls++
+				return errors.New("must not remove the same-entry alias")
+			}
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "Long File.txt", "LONGFI~1.TXT", 0o600); err != nil {
+		t.Fatalf("operation-only identity root alias move returned error: %v", err)
+	}
+	if sourceCleanupCalls != 0 {
+		t.Fatalf("same-entry alias cleanup ran %d times", sourceCleanupCalls)
+	}
+	if readDirCalls != 2 {
+		t.Fatalf("expected pre- and post-publication alias checks, got %d directory scans", readDirCalls)
+	}
+}
+
 func TestTargetAliasMissingTarget(t *testing.T) {
 	sourceInfo, _ := writePinnedTargetInfoPair(t)
 
