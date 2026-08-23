@@ -66,6 +66,9 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 
 	fallbackSourceRel := moveFallbackCopySource(renameErr, sourceRel)
 	sourceInfo, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, sourceInfo)
+	if errors.Is(copyErr, os.ErrNotExist) && filepath.Clean(fallbackSourceRel) != filepath.Clean(sourceRel) {
+		sourceInfo, copyErr = copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
+	}
 	if copyErr != nil {
 		return errors.Join(renameErr, copyErr)
 	}
@@ -93,6 +96,10 @@ func moveFallbackCopySource(err error, sourceRel string) string {
 	var linklessErr *moveLinklessRenameError
 	if errors.As(err, &linklessErr) {
 		return publishRenameSource(linklessErr.err, sourceRel)
+	}
+	fallbackSourceRel := publishRenameSource(err, sourceRel)
+	if isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
+		return fallbackSourceRel
 	}
 	return sourceRel
 }
@@ -168,7 +175,7 @@ func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.F
 	if !sourceParentInfo.IsDir() || !targetParentInfo.IsDir() || !os.SameFile(sourceParentInfo, targetParentInfo) {
 		return false, nil
 	}
-	aliases, err := countDirectoryEntriesMatchingFile(root, sourceParent, sourceInfo)
+	aliases, err := countDirectoryEntriesAddressingBothNames(root, sourceParent, filepath.Base(sourceClean), filepath.Base(targetClean), sourceInfo)
 	if err != nil {
 		return false, err
 	}
@@ -188,7 +195,7 @@ func containsNonASCII(value string) bool {
 	return false
 }
 
-func countDirectoryEntriesMatchingFile(root Root, parentRel string, sourceInfo fs.FileInfo) (_ int, returnErr error) {
+func countDirectoryEntriesAddressingBothNames(root Root, parentRel, sourceBase, targetBase string, sourceInfo fs.FileInfo) (_ int, returnErr error) {
 	dir, err := OpenPinnedDirectory(root, parentRel)
 	if err != nil {
 		return 0, err
@@ -202,7 +209,11 @@ func countDirectoryEntriesMatchingFile(root Root, parentRel string, sourceInfo f
 	}
 	count := 0
 	for _, entry := range entries {
-		entryInfo, err := root.Lstat(filepath.Join(parentRel, entry.Name()))
+		name := entry.Name()
+		if name != sourceBase && name != targetBase && !strings.EqualFold(name, sourceBase) && !strings.EqualFold(name, targetBase) {
+			continue
+		}
+		entryInfo, err := root.Lstat(filepath.Join(parentRel, name))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -258,7 +269,7 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 	if !sourceInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("move source is not a regular file: %s", sourceRel)
 	}
-	if expectedSourceInfo != nil && !os.SameFile(expectedSourceInfo, sourceInfo) {
+	if expectedSourceInfo != nil && !sameRegularFile(expectedSourceInfo, sourceInfo) {
 		return nil, fmt.Errorf("%s: %s", moveSourceChangedBeforeFallback, sourceRel)
 	}
 
@@ -298,10 +309,10 @@ func cleanupMoveSourceStagingDir(root Root, sourceRel, fallbackSourceRel string)
 	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
 		return nil
 	}
-	dir := filepath.Dir(fallbackSourceRel)
-	if dir == "." || filepath.Base(fallbackSourceRel) != "entry" || !strings.HasPrefix(filepath.Base(dir), atomicTempPrefix) {
+	if !isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
 		return nil
 	}
+	dir := filepath.Dir(fallbackSourceRel)
 	info, err := root.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -313,6 +324,14 @@ func cleanupMoveSourceStagingDir(root Root, sourceRel, fallbackSourceRel string)
 		return nil
 	}
 	return ignoreRemoveNotExist(root.Remove(dir))
+}
+
+func isMoveSourceStagingEntry(sourceRel, fallbackSourceRel string) bool {
+	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
+		return false
+	}
+	dir := filepath.Dir(fallbackSourceRel)
+	return dir != "." && filepath.Base(fallbackSourceRel) == "entry" && strings.HasPrefix(filepath.Base(dir), atomicTempPrefix)
 }
 
 func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message string) error {

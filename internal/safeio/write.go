@@ -767,6 +767,89 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 	return nil
 }
 
+func cleanupCreatedFileIfSameFile(root Root, rel string, expected fs.FileInfo, message string) (returnErr error) {
+	info, ok, err := createdFileInfoIfSameFile(root, rel, expected, message)
+	if err != nil || !ok {
+		return err
+	}
+	return removeCreatedFileIfSameFile(root, rel, info, message)
+}
+
+func createdFileInfoIfSameFile(root Root, rel string, expected fs.FileInfo, message string) (fs.FileInfo, bool, error) {
+	if rel == "" {
+		return nil, false, nil
+	}
+	if expected == nil {
+		return nil, false, fmt.Errorf("%s: %s", message, rel)
+	}
+	info, err := root.Lstat(rel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return nil, false, nil
+	}
+	return info, true, nil
+}
+
+func removeCreatedFileIfSameFile(root Root, rel string, expected fs.FileInfo, message string) (returnErr error) {
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, rel)
+	if err != nil {
+		return err
+	}
+	cleanupDir := true
+	cleanupQuarantineEntry := false
+	var quarantineInfo fs.FileInfo
+	defer func() {
+		if cleanupQuarantineEntry {
+			returnErr = errors.Join(returnErr, retryCleanupAtomicTempFileIfStillMatches(root, quarantineRel, quarantineInfo, message))
+		}
+		if cleanupDir {
+			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
+		}
+	}()
+
+	if err := root.Rename(rel, quarantineRel); err != nil {
+		return err
+	}
+	quarantineInfo, err = publishedRegularFileInfo(root, quarantineRel, message)
+	if err != nil {
+		cleanupDir = false
+		return err
+	}
+	cleanupQuarantineEntry = true
+	if !os.SameFile(expected, quarantineInfo) {
+		cleanupDir, cleanupQuarantineEntry, err = restoreMismatchedCreatedCleanup(root, quarantineRel, rel, message, quarantineInfo)
+		return err
+	}
+	cleanupDir, cleanupQuarantineEntry, err = removeQuarantinedCreatedCleanup(root, quarantineRel)
+	return err
+}
+
+func restoreMismatchedCreatedCleanup(root Root, quarantineRel, rel, message string, quarantineInfo fs.FileInfo) (bool, bool, error) {
+	restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
+	if !restored {
+		return false, false, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+	}
+	if restoreErr == nil {
+		return true, false, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+	}
+	return true, true, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
+}
+
+func removeQuarantinedCreatedCleanup(root Root, quarantineRel string) (bool, bool, error) {
+	if err := root.Remove(quarantineRel); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true, true, nil
+		}
+		return false, true, err
+	}
+	return true, false, nil
+}
+
 func createAtomicTempFile(root Root, dir string, perm os.FileMode) (string, File, error) {
 	tempDir := filepath.Clean(dir)
 	if tempDir == "." {

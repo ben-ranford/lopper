@@ -6952,10 +6952,6 @@ func (r *identityOnlyRoot) RenameIfMatches(oldName, newName string, expected fs.
 	return r.renameIfMatches(oldName, newName, expected, message)
 }
 
-func (r *identityOnlyRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
-	return true, r.RenameIfMatches(oldName, newName, expected, message)
-}
-
 func (r *identityOnlyRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
 	return r.removeIfMatches(name, expected, message)
 }
@@ -7997,6 +7993,231 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 	})
 }
 
+func TestCleanupCreatedFileIfSameFileBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	cleanupMsg := "created cleanup changed"
+
+	assertCleanupCreatedFileIfSameFileSimpleBranches(t, sourceInfo, changedInfo, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileRemovesMatchingInode(t, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileReturnsQuarantineStatFailure(t, sourceInfo, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileRestoresRacedRenameMismatch(t, sourceInfo, changedInfo, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileReturnsRemoveFailure(t, sourceInfo, cleanupMsg)
+}
+
+func assertCleanupCreatedFileIfSameFileSimpleBranches(t *testing.T, sourceInfo, changedInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{}, "", sourceInfo, cleanupMsg); err != nil {
+		t.Fatalf("empty cleanup path should be ignored: %v", err)
+	}
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{}, "source", nil, cleanupMsg); err == nil || !strings.Contains(err.Error(), cleanupMsg) {
+		t.Fatalf("expected missing identity error, got %v", err)
+	}
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }}, "source", sourceInfo, cleanupMsg); err != nil {
+		t.Fatalf("missing cleanup path should be ignored: %v", err)
+	}
+	lstatErr := errors.New("cleanup lstat failed")
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr }}, "source", sourceInfo, cleanupMsg); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat failure, got %v", err)
+	}
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil }}, "source", sourceInfo, cleanupMsg); err != nil {
+		t.Fatalf("changed cleanup path should be preserved: %v", err)
+	}
+}
+
+func assertCleanupCreatedFileIfSameFileRemovesMatchingInode(t *testing.T, cleanupMsg string) {
+	t.Helper()
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(path, []byte("created"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	info := statTestPath(t, path)
+	root := openTestRoot(t, rootDir)
+	if err := cleanupCreatedFileIfSameFile(root, "source", info, cleanupMsg); err != nil {
+		t.Fatalf("cleanup matching created file: %v", err)
+	}
+	assertPathAbsent(t, path)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func assertCleanupCreatedFileIfSameFileReturnsQuarantineStatFailure(t *testing.T, sourceInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	statErr := errors.New("quarantine stat failed")
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{lstat: func(name string) (fs.FileInfo, error) {
+		if strings.Contains(name, "entry") {
+			return nil, statErr
+		}
+		if info, ok := files[name]; ok {
+			return info, nil
+		}
+		return nil, os.ErrNotExist
+	}})
+	if err := cleanupCreatedFileIfSameFile(root, "source", sourceInfo, cleanupMsg); !errors.Is(err, statErr) {
+		t.Fatalf("expected quarantine stat failure, got %v", err)
+	}
+}
+
+func assertCleanupCreatedFileIfSameFileRestoresRacedRenameMismatch(t *testing.T, sourceInfo, changedInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{rename: func(oldName, newName string) error {
+		files[newName] = changedInfo
+		delete(files, oldName)
+		return nil
+	}})
+	err := cleanupCreatedFileIfSameFile(root, "source", sourceInfo, cleanupMsg)
+	if err == nil || !strings.Contains(err.Error(), cleanupMsg) {
+		t.Fatalf("expected cleanup mismatch error, got %v", err)
+	}
+	requireSameFileInfo(t, files["source"], changedInfo, "restored changed source")
+}
+
+func assertCleanupCreatedFileIfSameFileReturnsRemoveFailure(t *testing.T, sourceInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	removeErr := errors.New("remove failed")
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{remove: func(name string) error {
+		if strings.Contains(name, "entry") {
+			return removeErr
+		}
+		delete(files, name)
+		return nil
+	}})
+	if err := cleanupCreatedFileIfSameFile(root, "source", sourceInfo, cleanupMsg); !errors.Is(err, removeErr) {
+		t.Fatalf("expected remove failure, got %v", err)
+	}
+}
+
+func TestFinalSafeIOActiveHelperBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	root := assertFinalSafeIORootNameBranches(t)
+	assertFinalSafeIOLinkAndStagingClassifiers(t)
+	assertFinalSafeIORandomSetupErrors(t, sourceInfo)
+	assertFinalSafeIOCountDirectoryBranches(t, root, sourceInfo)
+	assertFinalSafeIORetryAndUnconsumedCleanupBranches(t, sourceInfo)
+}
+
+func assertFinalSafeIORootNameBranches(t *testing.T) Root {
+	t.Helper()
+	root := openTestRoot(t, t.TempDir())
+	rootImpl, ok := root.(*osRoot)
+	if !ok {
+		t.Fatalf("expected osRoot test root")
+	}
+	if got := rootImpl.rootName(); got == "" {
+		t.Fatal("expected fallback root name")
+	}
+	unnamedRoot := &osRoot{root: rootImpl.root}
+	if got := unnamedRoot.rootName(); got == "" {
+		t.Fatal("expected unnamed root to use underlying root name")
+	}
+	return root
+}
+
+func assertFinalSafeIOLinkAndStagingClassifiers(t *testing.T) {
+	t.Helper()
+	linkErr := &os.LinkError{Op: "linkat", Old: "attempted", New: "target", Err: syscall.EPERM}
+	if got := attemptedTargetLinkSource(linkErr, "fallback", "target"); got != "attempted" {
+		t.Fatalf("expected attempted link source, got %q", got)
+	}
+	if got := attemptedTargetLinkSource(&os.LinkError{Op: "link", Old: "attempted", New: "target", Err: syscall.EPERM}, "fallback", "target"); got != "fallback" {
+		t.Fatalf("expected fallback for non-linkat error, got %q", got)
+	}
+	if isMoveSourceStagingEntry("source", "source") {
+		t.Fatal("same source must not be a staging entry")
+	}
+	if !isMoveSourceStagingEntry("source", filepath.Join(atomicTempPrefix+"move", "entry")) {
+		t.Fatal("expected quarantine entry to be recognized")
+	}
+}
+
+func assertFinalSafeIORandomSetupErrors(t *testing.T, sourceInfo fs.FileInfo) {
+	t.Helper()
+	randomErr := errors.New("random failed")
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) { return "", randomErr }
+	_, _, err := identityBoundQuarantinePath(&fakeRoot{}, "source")
+	randomTempNameFn = originalRandomTempNameFn
+	if !errors.Is(err, randomErr) {
+		t.Fatalf("expected random quarantine error, got %v", err)
+	}
+	randomTempNameFn = func() (string, error) { return "", randomErr }
+	_, err = newBasicRootRenameState(&fakeRoot{}, "source", "target", sourceInfo, sourceChangedMsg)
+	randomTempNameFn = originalRandomTempNameFn
+	if !errors.Is(err, randomErr) {
+		t.Fatalf("expected random rename-state error, got %v", err)
+	}
+}
+
+func assertFinalSafeIOCountDirectoryBranches(t *testing.T, root Root, sourceInfo fs.FileInfo) {
+	t.Helper()
+	readErr := errors.New("read dir failed")
+	countRoot := readDirErrorRoot(root, readErr)
+	if _, err := countDirectoryEntriesAddressingBothNames(countRoot, ".", "source", "target", sourceInfo); !errors.Is(err, readErr) {
+		t.Fatalf("expected read dir error, got %v", err)
+	}
+	lstatErr := errors.New("entry lstat failed")
+	countRoot = countDirectoryLstatErrorRoot(t, root, lstatErr)
+	if _, err := countDirectoryEntriesAddressingBothNames(countRoot, ".", "source", "target", sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected entry lstat error after missing entry skip, got %v", err)
+	}
+}
+
+func readDirErrorRoot(root Root, readErr error) *fakeRoot {
+	return &fakeRoot{Root: root, open: func(name string) (File, error) {
+		file, err := root.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeReadDirFile{fakeFile: &fakeFile{File: file}, readDir: func(int) ([]fs.DirEntry, error) { return nil, readErr }}, nil
+	}}
+}
+
+func countDirectoryLstatErrorRoot(t *testing.T, root Root, lstatErr error) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{Root: root, open: func(name string) (File, error) {
+		file, err := root.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeReadDirFile{fakeFile: &fakeFile{File: file}, readDir: func(int) ([]fs.DirEntry, error) {
+			return []fs.DirEntry{&namedDirEntry{name: "ignored"}, &namedDirEntry{name: "source"}, &namedDirEntry{name: "target"}}, nil
+		}}, nil
+	}, lstat: func(name string) (fs.FileInfo, error) {
+		switch name {
+		case ".":
+			return root.Lstat(name)
+		case filepath.Join(".", "source"):
+			return nil, os.ErrNotExist
+		case filepath.Join(".", "target"):
+			return nil, lstatErr
+		default:
+			t.Fatalf("unexpected count lstat path: %s", name)
+			return nil, os.ErrNotExist
+		}
+	}}
+}
+
+func assertFinalSafeIORetryAndUnconsumedCleanupBranches(t *testing.T, sourceInfo fs.FileInfo) {
+	t.Helper()
+	if err := retryCleanupAtomicTempFileIfStillMatches(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }}, "missing", sourceInfo, sourceChangedMsg); err != nil {
+		t.Fatalf("missing retry cleanup path should be ignored: %v", err)
+	}
+	randomErr := errors.New("random failed")
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) { return "", randomErr }
+	err := removeFileIfMatchesUsingBasicRoot(&fakeRoot{}, "source", sourceInfo, sourceChangedMsg)
+	randomTempNameFn = originalRandomTempNameFn
+	if !errors.Is(err, randomErr) {
+		t.Fatalf("expected random remove setup error, got %v", err)
+	}
+	state := &basicRootRenameState{root: &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, errors.New("finish failed") }}, quarantineRel: "staged", quarantineInfo: sourceInfo, message: sourceChangedMsg}
+	if _, err := state.removeUnconsumedQuarantineEntry(); err == nil || state.cleanupDir {
+		t.Fatalf("expected failed unconsumed cleanup to disable dir cleanup, err=%v cleanupDir=%t", err, state.cleanupDir)
+	}
+}
+
 func TestRestoreQuarantinedPathNoReplaceByCopyErrorBranches(t *testing.T) {
 	linkErr := syscall.EPERM
 	setup := func(t *testing.T) (string, Root, fs.FileInfo) {
@@ -8158,7 +8379,7 @@ func TestRestoreQuarantinedPathNoReplaceByCopyErrorBranches(t *testing.T) {
 		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
 	})
 
-	t.Run("created target post-copy stat failure preserves candidate", func(t *testing.T) {
+	t.Run("created target post-copy stat failure cleans candidate", func(t *testing.T) {
 		rootDir, base, expected := setup(t)
 		statErr := errors.New("stat completed restore failed")
 		root := &fakeRoot{
@@ -8185,7 +8406,7 @@ func TestRestoreQuarantinedPathNoReplaceByCopyErrorBranches(t *testing.T) {
 		if restored || !errors.Is(err, statErr) {
 			t.Fatalf("expected post-copy stat failure, restored=%t err=%v", restored, err)
 		}
-		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+		assertPathAbsent(t, filepath.Join(rootDir, "source"))
 	})
 
 	t.Run("created target close failure cleans candidate", func(t *testing.T) {
@@ -8296,70 +8517,6 @@ func TestFinishRestoredQuarantinedPathBranches(t *testing.T) {
 	}, "staged", sourceChangedMsg, sourceInfo)
 	if !restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
 		t.Fatalf("expected staged identity mismatch, restored=%t err=%v", restored, err)
-	}
-}
-
-func TestCountDirectoryEntriesMatchingFileBranches(t *testing.T) {
-	sourceInfo := newPinnedTargetInfo(t, "source")
-
-	openErr := errors.New("open directory failed")
-	if _, err := countDirectoryEntriesMatchingFile(&fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, openErr },
-	}, ".", sourceInfo); !errors.Is(err, openErr) {
-		t.Fatal("expected directory open error")
-	}
-
-	readErr := errors.New("read dir failed")
-	rootDir := t.TempDir()
-	base := openTestRoot(t, rootDir)
-	root := &fakeRoot{
-		Root: base,
-		open: func(name string) (File, error) {
-			file, err := base.Open(name)
-			if err != nil {
-				return nil, err
-			}
-			return &fakeReadDirFile{
-				fakeFile: &fakeFile{File: file},
-				readDir:  func(int) ([]fs.DirEntry, error) { return nil, readErr },
-			}, nil
-		},
-	}
-	if _, err := countDirectoryEntriesMatchingFile(root, ".", sourceInfo); !errors.Is(err, readErr) {
-		t.Fatalf("expected read dir error, got %v", err)
-	}
-
-	lstatErr := errors.New("entry lstat failed")
-	root = &fakeRoot{
-		Root: base,
-		lstat: func(name string) (fs.FileInfo, error) {
-			switch name {
-			case ".":
-				return base.Lstat(name)
-			case filepath.Join(".", "missing"):
-				return nil, os.ErrNotExist
-			case filepath.Join(".", "bad"):
-				return nil, lstatErr
-			default:
-				t.Fatalf("unexpected count lstat path: %s", name)
-				return nil, os.ErrNotExist
-			}
-		},
-		open: func(name string) (File, error) {
-			file, err := base.Open(name)
-			if err != nil {
-				return nil, err
-			}
-			return &fakeReadDirFile{
-				fakeFile: &fakeFile{File: file},
-				readDir: func(int) ([]fs.DirEntry, error) {
-					return []fs.DirEntry{&namedDirEntry{name: "missing"}, &namedDirEntry{name: "bad"}}, nil
-				},
-			}, nil
-		},
-	}
-	if _, err := countDirectoryEntriesMatchingFile(root, ".", sourceInfo); !errors.Is(err, lstatErr) {
-		t.Fatalf("expected entry lstat error after missing entry skip, got %v", err)
 	}
 }
 
@@ -9998,6 +10155,38 @@ func TestCopyFileWithinRootRejectsSourceSwapAfterCopy(t *testing.T) {
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
+func TestCopyFileWithinRootRejectsSourceInPlaceChangeBeforeFallbackOpen(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	changed := false
+	root := &fakeRoot{
+		Root: base,
+		open: func(name string) (File, error) {
+			if name == "source" && !changed {
+				if err := os.WriteFile(sourcePath, []byte("changed in place"), 0o600); err != nil {
+					t.Fatalf("change source in place: %v", err)
+				}
+				changed = true
+			}
+			return base.Open(name)
+		},
+	}
+
+	_, err := copyFileWithinRoot(root, "source", "target", 0o640, expected)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeFallback) {
+		t.Fatalf("expected fallback source metadata rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "changed in place")
+	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
 func TestMoveFileWithinRootCopiesFromQuarantinedSourceAfterLinklessRenameEXDEV(t *testing.T) {
 	rootDir := t.TempDir()
 	sourcePath := filepath.Join(rootDir, "source")
@@ -10051,6 +10240,10 @@ func TestMoveFallbackCopySourceAndStagingDirCleanupBranches(t *testing.T) {
 	}
 	if got := moveFallbackCopySource(renameErr, "source"); got != filepath.Join(atomicTempPrefix+"move", "entry") {
 		t.Fatalf("expected published fallback source, got %q", got)
+	}
+	genericRenameErr := withPublishRenameSource(syscall.EXDEV, filepath.Join(atomicTempPrefix+"generic", "entry"))
+	if got := moveFallbackCopySource(genericRenameErr, "source"); got != filepath.Join(atomicTempPrefix+"generic", "entry") {
+		t.Fatalf("expected generic published fallback source, got %q", got)
 	}
 
 	if err := cleanupMoveSourceStagingDir(&fakeRoot{}, "source", "source"); err != nil {
@@ -10152,6 +10345,36 @@ func TestMoveFileWithinRootDistinctHardLinkAliasRemovesSource(t *testing.T) {
 		t.Fatalf("expected target mode 0640, got %#o", info.Mode().Perm())
 	}
 	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootSameEntryAliasIgnoresOtherHardLinks(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("same-entry case alias regression requires the default macOS filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "File")
+	targetPath := filepath.Join(rootDir, "file")
+	otherPath := filepath.Join(rootDir, "other")
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is case-sensitive")
+	}
+	if err := os.Link(sourcePath, otherPath); err != nil {
+		t.Skipf("hard links unsupported: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	aliases, err := targetAliasesSource(root, "File", "file", sourceInfo)
+	if err != nil {
+		t.Fatalf("check alias: %v", err)
+	}
+	if !aliases {
+		t.Fatal("expected same-entry alias detection to ignore unrelated hard links")
+	}
 }
 
 func TestMoveFileWithinRootCaseOnlyAliasPreservesFile(t *testing.T) {

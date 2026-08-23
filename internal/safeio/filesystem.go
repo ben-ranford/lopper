@@ -667,8 +667,9 @@ func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, me
 	if err != nil {
 		return false, errors.Join(closeCreatedFileWithoutIdentity(target, err), cleanupAtomicTempFileIfMatches(root, originalRel, createdInfo))
 	}
+	cleanupCreated := true
 	defer func() {
-		if !restored {
+		if cleanupCreated && !restored {
 			returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, originalRel, createdInfo))
 		}
 	}()
@@ -688,10 +689,12 @@ func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, me
 		}
 		return false, closeFilePreservingPrimary(target, err)
 	}
-	createdInfo, err = target.Stat()
+	refreshedInfo, err := target.Stat()
 	if err != nil {
-		return false, closeFilePreservingPrimary(target, err)
+		cleanupCreated = false
+		return false, errors.Join(err, target.Close(), cleanupCreatedFileIfSameFile(root, originalRel, createdInfo, message))
 	}
+	createdInfo = refreshedInfo
 	if err := target.Close(); err != nil {
 		return false, err
 	}
