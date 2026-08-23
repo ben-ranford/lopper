@@ -10403,6 +10403,55 @@ func TestMoveFileWithinRootRestoresLinklessSourceAfterEXDEVFallbackCopyFailure(t
 	assertNoAtomicStagingEntries(t, rootDir)
 }
 
+func TestMoveFileWithinRootRestoresQuarantinedSourceWhenFallbackTargetCreationFails(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	failedTargetCreation := false
+	sourceOpenAttempts := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				sourceOpenAttempts++
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !failedTargetCreation && isMoveFallbackTempPath(name) {
+				failedTargetCreation = true
+				return nil, os.ErrNotExist
+			}
+			return base.OpenFile(name, flag, perm)
+		},
+		rename: func(oldName, newName string) error {
+			if newName == "target" {
+				return syscall.EXDEV
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !errors.Is(err, syscall.EXDEV) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected EXDEV fallback target-creation failure, got %v", err)
+	}
+	if sourceOpenAttempts != 1 {
+		t.Fatalf("expected only the initial linkless staging attempt to open the original source, got %d opens", sourceOpenAttempts)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
 func TestMoveFallbackCopySourceAndStagingDirCleanupBranches(t *testing.T) {
 	sourceInfo := newPinnedTargetInfo(t, "source")
 	renameErr := &moveLinklessRenameError{err: withPublishRenameSource(syscall.EXDEV, filepath.Join(atomicTempPrefix+"move", "entry"))}
