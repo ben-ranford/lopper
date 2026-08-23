@@ -8665,9 +8665,9 @@ func testFinalSafeIORestoreCleanupFailure(t *testing.T) {
 			return nil
 		},
 	})
-	restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-	if !restored || !errors.Is(err, removeErr) {
-		t.Fatalf("expected restore cleanup failure, restored=%t err=%v", restored, err)
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+	if !restored || retained || !errors.Is(err, removeErr) {
+		t.Fatalf("expected restore cleanup failure, restored=%t retained=%t err=%v", restored, retained, err)
 	}
 }
 
@@ -8720,12 +8720,55 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 			link: linkUnsupported,
 		}}
 
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
-		if !restored || err != nil {
-			t.Fatalf("expected linkless copy restore, restored=%t err=%v", restored, err)
+		restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+		if !restored || !retained || err != nil {
+			t.Fatalf("expected retained linkless copy restore, restored=%t retained=%t err=%v", restored, retained, err)
 		}
 		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
-		assertPathAbsent(t, filepath.Join(rootDir, "quarantine", "entry"))
+		assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "source")
+	})
+
+	t.Run("retains source when published copy is replaced after validation", func(t *testing.T) {
+		rootDir := t.TempDir()
+		quarantineDir := filepath.Join(rootDir, "quarantine")
+		if err := os.Mkdir(quarantineDir, 0o700); err != nil {
+			t.Fatalf("create quarantine: %v", err)
+		}
+		stagedPath := filepath.Join(quarantineDir, "entry")
+		if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+			t.Fatalf("seed quarantine: %v", err)
+		}
+		expected := statTestPath(t, stagedPath)
+		base := openTestRoot(t, rootDir)
+		sourcePath := filepath.Join(rootDir, "source")
+		publishedCopyReplaced := false
+		root := &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
+			link: linkUnsupported,
+			lstat: func(name string) (fs.FileInfo, error) {
+				info, err := base.Lstat(name)
+				if name == "source" && err == nil && !publishedCopyReplaced {
+					publishedCopyReplaced = true
+					if err := os.Remove(sourcePath); err != nil {
+						t.Fatalf("replace published copy: %v", err)
+					}
+					if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
+						t.Fatalf("write concurrent replacement: %v", err)
+					}
+				}
+				return info, err
+			},
+		}}
+
+		restored, retained, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, expected)
+		if !restored || !retained || err != nil {
+			t.Fatalf("expected retained copy restore after publication race, restored=%t retained=%t err=%v", restored, retained, err)
+		}
+		if !publishedCopyReplaced {
+			t.Fatal("expected published copy replacement race")
+		}
+		assertFileContent(t, sourcePath, "replacement")
+		assertFileContent(t, stagedPath, "source")
 	})
 
 	t.Run("safe failure preserves raced original and quarantine", func(t *testing.T) {
@@ -8738,9 +8781,9 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 			},
 		})
 
-		restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
-		if restored || !errors.Is(err, errIdentityBoundLinkUnavailable) {
-			t.Fatalf("expected linkless restore safe failure, restored=%t err=%v", restored, err)
+		restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+		if restored || retained || !errors.Is(err, errIdentityBoundLinkUnavailable) {
+			t.Fatalf("expected linkless restore safe failure, restored=%t retained=%t err=%v", restored, retained, err)
 		}
 		requireSameFileInfo(t, files["source"], changedInfo, "source")
 		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
@@ -8998,7 +9041,8 @@ func setupRestoreCopy(t *testing.T) (string, Root, fs.FileInfo) {
 }
 
 func restoreCopy(root Root, expected fs.FileInfo) (bool, error) {
-	return restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, syscall.EPERM)
+	restored, _, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, syscall.EPERM)
+	return restored, err
 }
 
 func testRestoreCopyMissingStagedSource(t *testing.T) {
@@ -10747,9 +10791,9 @@ func TestRestoreQuarantinedPathNoReplaceRetainsStagedEntryWhenOriginalReappears(
 	root := openTestRoot(t, rootDir)
 	stagedInfo := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
 
-	restored, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, stagedInfo)
-	if restored || !errors.Is(err, os.ErrExist) {
-		t.Fatalf("expected no-replace restore conflict, restored=%t err=%v", restored, err)
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, stagedInfo)
+	if restored || retained || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected no-replace restore conflict, restored=%t retained=%t err=%v", restored, retained, err)
 	}
 	assertFileContent(t, filepath.Join(rootDir, "source"), "newer")
 	assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "displaced")
@@ -10778,9 +10822,9 @@ func TestRestoreQuarantinedPathNoReplaceRejectsReplacedStagingEntry(t *testing.T
 		},
 	}
 
-	restored, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
-	if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
-		t.Fatalf("expected replaced staging rejection, restored=%t err=%v", restored, err)
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+	if restored || retained || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected replaced staging rejection, restored=%t retained=%t err=%v", restored, retained, err)
 	}
 	if restoredSource || rawLinkCalls != 0 {
 		t.Fatalf("must not restore a replacement, restored=%t rawLinkCalls=%d", restoredSource, rawLinkCalls)
@@ -10903,7 +10947,7 @@ func TestMoveLinklessUnreadableSourceRestoresAfterTargetRenameFailure(t *testing
 	if info := statTestPath(t, targetPath); !info.IsDir() {
 		t.Fatal("target directory was replaced")
 	}
-	assertNoAtomicStagingEntries(t, rootDir)
+	assertRetainedAtomicStagingEntry(t, rootDir, "completed")
 }
 
 func TestWriteRootIfAbsentFallsBackToExclusiveCreateWhenLinksUnsupported(t *testing.T) {
@@ -11424,7 +11468,7 @@ func TestMoveFileWithinRootRestoresLinklessSourceAfterEXDEVFallbackCopyFailure(t
 	}
 	assertFileContent(t, sourcePath, "source")
 	assertPathAbsent(t, targetPath)
-	assertNoAtomicStagingEntries(t, rootDir)
+	assertRetainedAtomicStagingEntry(t, rootDir, "source")
 }
 
 func TestMoveFileWithinRootRestoresQuarantinedSourceWhenFallbackTargetCreationFails(t *testing.T) {
@@ -11473,7 +11517,7 @@ func TestMoveFileWithinRootRestoresQuarantinedSourceWhenFallbackTargetCreationFa
 	}
 	assertFileContent(t, sourcePath, "source")
 	assertPathAbsent(t, targetPath)
-	assertNoAtomicStagingEntries(t, rootDir)
+	assertRetainedAtomicStagingEntry(t, rootDir, "source")
 }
 
 func TestMoveFileWithinRootRetriesLiveSourceAfterQuarantinedFallbackDisappears(t *testing.T) {
@@ -11822,5 +11866,27 @@ func assertNoAtomicStagingEntries(t *testing.T, rootDir string) {
 		if strings.HasPrefix(entry.Name(), atomicTempPrefix) {
 			t.Fatalf("leaked atomic staging entry: %s", entry.Name())
 		}
+	}
+}
+
+func assertRetainedAtomicStagingEntry(t *testing.T, rootDir, wantContent string) {
+	t.Helper()
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		t.Fatalf("read root entries: %v", err)
+	}
+	retained := 0
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), atomicTempPrefix) {
+			continue
+		}
+		retained++
+		if !entry.IsDir() {
+			t.Fatalf("retained atomic staging entry is not a directory: %s", entry.Name())
+		}
+		assertFileContent(t, filepath.Join(rootDir, entry.Name(), "entry"), wantContent)
+	}
+	if retained != 1 {
+		t.Fatalf("expected one retained atomic staging entry, got %d", retained)
 	}
 }

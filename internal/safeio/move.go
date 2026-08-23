@@ -193,9 +193,15 @@ func retainedStagingAliasFinalizer(root Root, aliasesTarget bool, sourceRel, tar
 }
 
 func restoreRetainedAliasSource(root Root, stagedRel, sourceRel string, stagedInfo fs.FileInfo) error {
-	restored, err := restoreQuarantinedPathNoReplace(root, stagedRel, sourceRel, moveSourceChangedBeforeCleanup, stagedInfo)
-	if restored || err != nil {
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, stagedRel, sourceRel, moveSourceChangedBeforeCleanup, stagedInfo)
+	if err != nil {
 		return err
+	}
+	if retained {
+		return errIdentityBoundRestoreRetainedStaging
+	}
+	if restored {
+		return nil
 	}
 	return fmt.Errorf("%s: %s", moveSourceChangedBeforeCleanup, sourceRel)
 }
@@ -379,8 +385,8 @@ func restoreQuarantinedMoveSourceAfterFallbackFailure(root Root, sourceRel, fall
 	if !sourceWasQuarantined || !isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
 		return nil
 	}
-	restored, err := restoreQuarantinedPathNoReplace(root, fallbackSourceRel, sourceRel, moveSourceChangedBeforeFallback, sourceInfo)
-	if !restored {
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, fallbackSourceRel, sourceRel, moveSourceChangedBeforeFallback, sourceInfo)
+	if !restored || retained {
 		return err
 	}
 	return errors.Join(

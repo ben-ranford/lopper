@@ -657,8 +657,8 @@ func (s *basicRootRenameState) snapshotQuarantine() error {
 }
 
 func (s *basicRootRenameState) restoreSourceAfterSnapshotFailure(snapshotErr error) error {
-	restored, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.expected)
-	if !restored {
+	restored, retained, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.expected)
+	if !restored || retained {
 		s.disableQuarantineCleanup()
 	} else {
 		s.quarantineInfo = s.expected
@@ -694,11 +694,11 @@ func (s *basicRootRenameState) handleTargetRenameError(err error) error {
 }
 
 func (s *basicRootRenameState) restoreOriginalFromQuarantine() error {
-	restored, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.quarantineInfo)
-	if !restored {
+	restored, retained, restoreErr := restoreQuarantinedPathNoReplace(s.root, s.quarantineRel, s.oldName, s.message, s.quarantineInfo)
+	if !restored || retained {
 		s.disableQuarantineCleanup()
 	}
-	if restored && restoreErr == nil {
+	if restored && !retained && restoreErr == nil {
 		s.cleanupQuarantineEntry = false
 	}
 	return restoreErr
@@ -764,8 +764,8 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 	}
 	cleanupQuarantineEntry = true
 	if !sameRegularFile(expected, quarantineInfo) {
-		restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
-		if !restored {
+		restored, retained, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
+		if !restored || retained {
 			cleanupDir = false
 			cleanupQuarantineEntry = false
 		}
@@ -859,8 +859,8 @@ func removeCreatedFileIfSameFile(root Root, rel string, expected fs.FileInfo, me
 }
 
 func restoreMismatchedCreatedCleanup(root Root, quarantineRel, rel, message string, quarantineInfo fs.FileInfo) (bool, bool, error) {
-	restored, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
-	if !restored {
+	restored, retained, restoreErr := restoreQuarantinedPathNoReplace(root, quarantineRel, rel, message, quarantineInfo)
+	if !restored || retained {
 		return false, false, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 	}
 	if restoreErr == nil {

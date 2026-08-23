@@ -64,6 +64,7 @@ const (
 
 var errIdentityBoundReplacementUnsupported = errors.New("identity-bound atomic replacement unsupported")
 var errIdentityBoundLinkUnavailable = errors.New("identity-bound link unavailable")
+var errIdentityBoundRestoreRetainedStaging = errors.New("identity-bound restore retained staging")
 
 func (e *publishRenameError) Error() string {
 	if e.cleanupErr == nil {
