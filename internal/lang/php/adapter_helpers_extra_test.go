@@ -2443,13 +2443,14 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 }
 
 func TestPHPParserAndConfigBoundaryBranches(t *testing.T) {
-	testPHPUseAndNamespaceBoundaryBranches(t)
+	testPHPUseStatementBoundaryBranches(t)
+	testPHPNamespaceBoundaryBranches(t)
 	testPHPTagAndHeredocBoundaryBranches(t)
 	testPHPConfigBoundaryBranches(t)
 	testPHPExcludedPathBoundaryBranches(t)
 }
 
-func testPHPUseAndNamespaceBoundaryBranches(t *testing.T) {
+func testPHPUseStatementBoundaryBranches(t *testing.T) {
 	t.Helper()
 
 	masked := []byte("abc\n")
@@ -2466,6 +2467,10 @@ func testPHPUseAndNamespaceBoundaryBranches(t *testing.T) {
 	if useStatementContinuesAfterNewline("\n", 0, 0) || !useStatementContinuesAfterNewline(", \n", 0, 2) {
 		t.Fatal("expected only a trailing comma to continue a multiline use statement")
 	}
+}
+
+func testPHPNamespaceBoundaryBranches(t *testing.T) {
+	t.Helper()
 
 	tracker := phpContextTracker{currentNamespaceUses: map[string]string{}}
 	tracker.addNamespaceUses(`function Vendor\Ignored`, 4)
