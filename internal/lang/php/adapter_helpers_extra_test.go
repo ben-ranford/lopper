@@ -1511,6 +1511,18 @@ func TestParsePHPImportsResolvesNamespaceRelativeTraitUseInNamedNamespace(t *tes
 	assertImportModules(t, parsed.imports, []string{"App\\Vendor\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsPreservesClassContextAcrossLongHeaders(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"App\\Vendor": {}},
+	}
+	content := "<?php namespace App; class C " + strings.Repeat(" ", maxPHPNamespaceAncestorBytes+1) + "{ use Vendor\\Package\\FeatureTrait; }"
+	parsed := parsePHPImports([]byte(content), "long-class-header.php", resolver)
+	if parsed.unresolvedCount != 0 || len(parsed.imports) != 0 {
+		t.Fatalf("expected trait in long class header to resolve as local, got %#v", parsed)
+	}
+}
+
 func TestParsePHPImportsResolvesImportedAliasBeforeTraitNamespaceLookup(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{
 		"Acme\\Other\\Package": "acme/other-package",

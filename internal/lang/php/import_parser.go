@@ -889,12 +889,7 @@ func findPHPClassLikeBraceOffsets(text string) map[int]struct{} {
 			boundaries = append(boundaries, offset+1)
 			classLikeKeywordOffsets = append(classLikeKeywordOffsets, -1)
 		case '{':
-			start := boundaries[len(boundaries)-1]
-			minStart := offset - maxPHPNamespaceAncestorBytes
-			if minStart > start {
-				start = minStart
-			}
-			if classLikeKeywordOffsets[len(classLikeKeywordOffsets)-1] >= start {
+			if classLikeKeywordOffsets[len(classLikeKeywordOffsets)-1] >= boundaries[len(boundaries)-1] {
 				classLikeOffsets[offset] = struct{}{}
 			}
 			stack = append(stack, '{')
