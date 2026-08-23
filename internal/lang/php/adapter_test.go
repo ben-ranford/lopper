@@ -511,7 +511,7 @@ $a = new A();
 	}
 }
 
-func TestPHPAdapterResolvesNamespaceRelativeTraitUseAsLocal(t *testing.T) {
+func TestPHPAdapterResolvesNamespaceRelativeTraitUseAsLocalWithUppercaseLongTag(t *testing.T) {
 	repo := t.TempDir()
 	const dependency = "vendor/package"
 	writeTestComposerPackage(t, repo, dependency, `Vendor\Package`)
@@ -519,7 +519,7 @@ func TestPHPAdapterResolvesNamespaceRelativeTraitUseAsLocal(t *testing.T) {
   "require": {%q: "^1.0"},
   "autoload": {"psr-4": {"App\\": "src/"}}
 }`, dependency))
-	writeFile(t, filepath.Join(repo, "src", testIndexPHP), testPHPHeader+`
+	writeFile(t, filepath.Join(repo, "src", testIndexPHP), "<?PHP\n"+`
 namespace App;
 
 use Vendor\Package\UnusedExternal;

@@ -577,7 +577,7 @@ func skipPHPWhitespaceUntil(text string, offset, limit int) int {
 
 func hasPHPOpenPreludeAt(text string, offset, limit int) bool {
 	end := offset + len("<?php")
-	return end <= limit && strings.HasPrefix(text[offset:end], "<?php") && (end == len(text) || !isPHPIdentifierByte(text[end]))
+	return end <= limit && strings.EqualFold(text[offset:end], "<?php") && (end == len(text) || !isPHPIdentifierByte(text[end]))
 }
 
 func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool) {
@@ -829,7 +829,8 @@ func isXMLStylesheetProcessingInstructionOpenTag(text string, start int) bool {
 	if targetEnd >= len(text) || !strings.EqualFold(text[start:targetEnd], "<?xml-stylesheet") {
 		return false
 	}
-	return text[targetEnd] == '?' || isPHPWhitespace(text[targetEnd])
+	return isPHPWhitespace(text[targetEnd]) ||
+		(text[targetEnd] == '?' && targetEnd+1 < len(text) && text[targetEnd+1] == '>')
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {

@@ -2,6 +2,7 @@ package php
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -37,6 +38,13 @@ func buildTopPHPDependencies(topN int, scan scanResult, minUsagePercent int, wei
 		depReport, depWarnings := buildDependencyReport(dependency, scan, minUsagePercent)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
+	}
+	if scan.UsageIncomplete {
+		sort.Slice(reports, func(i, j int) bool {
+			return reports[i].Name < reports[j].Name
+		})
+		warnings = append(warnings, "top-N removal ranking disabled because PHP dependency coverage is incomplete")
+		return reports, warnings
 	}
 	shared.SortReportsByWaste(reports, weights)
 	if topN > 0 && topN < len(reports) {

@@ -1390,6 +1390,7 @@ func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	}{
 		{name: "static call", opener: "<?xml ::foo();"},
 		{name: "hyphenated call", opener: "<?xml-foo();"},
+		{name: "stylesheet-like call without a close tag", opener: "<?xml-stylesheet?foo():bar();"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			content := []byte(tc.opener + "\nuse Vendor\\Package\\Client;\n")
@@ -2154,6 +2155,20 @@ func TestAdditionalBranchCoverageNormalizeAndTopNBranches(t *testing.T) {
 	top, _ := buildTopPHPDependencies(1, scan, 40, report.DefaultRemovalCandidateWeights())
 	if len(top) != 1 {
 		t.Fatalf("expected top-n truncation to one dependency, got %d", len(top))
+	}
+
+	setUsageIncompleteForTest(t, &scan)
+	top, warnings = buildTopPHPDependencies(1, scan, 40, report.DefaultRemovalCandidateWeights())
+	if len(top) != 2 || top[0].Name != "a/pkg" || top[1].Name != "b/pkg" {
+		t.Fatalf("expected deterministic unranked reports from incomplete usage, got %#v", top)
+	}
+	if !containsWarning(warnings, "top-N removal ranking disabled") {
+		t.Fatalf("expected incomplete top-N warning, got %#v", warnings)
+	}
+	for _, dependency := range top {
+		if dependency.RemovalCandidate != nil {
+			t.Fatalf("did not expect incomplete top-N report to be scored, got %#v", dependency)
+		}
 	}
 
 	dep := report.DependencyReport{
