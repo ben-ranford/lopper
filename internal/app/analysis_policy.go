@@ -71,6 +71,9 @@ func requiresCompleteCoverage(policy analysisRequestPolicy) bool {
 	if policy.thresholds.FailOnIncreasePercent >= 0 {
 		return true
 	}
+	if policy.thresholds.MaxUncertainImportCount >= 0 {
+		return true
+	}
 	if policy.thresholds.LicenseFailOnDeny && len(policy.thresholds.LicenseDenyList) > 0 {
 		return true
 	}

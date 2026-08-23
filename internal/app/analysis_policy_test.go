@@ -25,9 +25,18 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 		{
 			name: "fail on increase disabled",
 			policy: analysisRequestPolicy{thresholds: thresholds.Values{
-				FailOnIncreasePercent: -1,
+				FailOnIncreasePercent:   -1,
+				MaxUncertainImportCount: -1,
 			}},
 			want: false,
+		},
+		{
+			name: "uncertainty gate",
+			policy: analysisRequestPolicy{thresholds: thresholds.Values{
+				FailOnIncreasePercent:   -1,
+				MaxUncertainImportCount: 0,
+			}},
+			want: true,
 		},
 		{
 			name: "save baseline gate",
@@ -65,6 +74,7 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 				advisorySourcePath: "security/advisories.yml",
 				thresholds: thresholds.Values{
 					FailOnIncreasePercent:          -1,
+					MaxUncertainImportCount:        -1,
 					ReachableVulnerabilityPriority: report.VulnerabilityPriorityOff,
 				},
 			},
@@ -73,8 +83,9 @@ func TestPrepareAnalysisPolicyRequiresCompleteCoverageForEnforcedGates(t *testin
 		{
 			name: "license deny list without fail",
 			policy: analysisRequestPolicy{thresholds: thresholds.Values{
-				FailOnIncreasePercent: -1,
-				LicenseDenyList:       []string{"GPL-3.0-ONLY"},
+				FailOnIncreasePercent:   -1,
+				MaxUncertainImportCount: -1,
+				LicenseDenyList:         []string{"GPL-3.0-ONLY"},
 			}},
 			want: false,
 		},
