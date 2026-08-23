@@ -599,6 +599,7 @@ func TestFetchSnapshotMkdirTempError(t *testing.T) {
 func TestFetchSnapshotTempDirCleanupError(t *testing.T) {
 	tmpRoot := t.TempDir()
 	t.Setenv("TMPDIR", tmpRoot)
+	cleanupBlocked := true
 	t.Cleanup(func() {
 		if err := os.Chmod(tmpRoot, 0o700); err != nil {
 			t.Fatalf("restore TMPDIR root permissions: %v", err)
@@ -609,13 +610,24 @@ func TestFetchSnapshotTempDirCleanupError(t *testing.T) {
 		if err := os.Chmod(tmpRoot, 0o500); err != nil {
 			t.Fatalf("chmod TMPDIR root: %v", err)
 		}
+		probe, err := os.MkdirTemp(tmpRoot, "permission-probe-")
+		if err == nil {
+			cleanupBlocked = false
+			if err := os.Remove(probe); err != nil {
+				t.Fatalf("remove TMPDIR permission probe: %v", err)
+			}
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(strings.NewReader(`[]`)),
 		}, nil
 	})}
 
-	if _, err := fetchSnapshot(context.Background(), "https://example.test/osv.json", client); err == nil || !strings.Contains(err.Error(), "remove advisory temp dir") {
+	_, err := fetchSnapshot(context.Background(), "https://example.test/osv.json", client)
+	if !cleanupBlocked {
+		t.Skip("TMPDIR permission restriction is ineffective in this environment")
+	}
+	if err == nil || !strings.Contains(err.Error(), "remove advisory temp dir") {
 		t.Fatalf("expected temp dir cleanup error, got %v", err)
 	}
 }
