@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -188,6 +189,23 @@ func (r *removeErrorAnalysisCacheRoot) Remove(name string) error {
 }
 
 func (r *removeErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
+type exactRemoveErrorAnalysisCacheRoot struct {
+	safeio.Root
+	name string
+	err  error
+}
+
+func (r *exactRemoveErrorAnalysisCacheRoot) Remove(name string) error {
+	if name == r.name {
+		return r.err
+	}
+	return r.Root.Remove(name)
+}
+
+func (r *exactRemoveErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
 	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
@@ -1422,6 +1440,119 @@ func TestValidateOpenedAnalysisCacheChildRejectsRetargetedPath(t *testing.T) {
 	}
 }
 
+func TestAnalysisCacheChildHelperBranches(t *testing.T) {
+	t.Run("rollback parent existing child", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		createAnalysisCacheChild(t, repo, cacheKeysDirName)
+
+		parent, err := rollbackParentForMissingAnalysisCacheChild(root, cacheKeysDirName)
+		if err != nil {
+			t.Fatalf("rollback parent for existing child: %v", err)
+		}
+		if parent != nil {
+			t.Fatal("expected existing child to avoid opening a rollback parent")
+		}
+	})
+
+	t.Run("rollback parent missing child", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+
+		parent, err := rollbackParentForMissingAnalysisCacheChild(root, cacheKeysDirName)
+		if err != nil {
+			t.Fatalf("rollback parent for missing child: %v", err)
+		}
+		if parent == nil {
+			t.Fatal("expected missing child to open a rollback parent")
+		}
+		if err := parent.Close(); err != nil {
+			t.Fatalf("close rollback parent: %v", err)
+		}
+	})
+
+	t.Run("rollback parent lstat error", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		lstatErr := errors.New("child lstat denied")
+
+		parent, err := rollbackParentForMissingAnalysisCacheChild(&lstatErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}, cacheKeysDirName)
+		if !errors.Is(err, lstatErr) {
+			t.Fatalf("rollback parent lstat error = %v, want %v", err, lstatErr)
+		}
+		if parent != nil {
+			t.Fatal("expected lstat error to avoid opening a rollback parent")
+		}
+	})
+
+	t.Run("load existing child info", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		childPath, wantInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+
+		gotInfo, created, err := loadOrCreateAnalysisCacheChildInfo(root, nil, childPath, cacheKeysDirName)
+		if err != nil {
+			t.Fatalf("load existing child info: %v", err)
+		}
+		if created {
+			t.Fatal("expected existing child to report created=false")
+		}
+		if !os.SameFile(gotInfo, wantInfo) {
+			t.Fatal("expected loaded child info to match the existing child")
+		}
+	})
+
+	t.Run("load child lstat error", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		lstatErr := errors.New("load child lstat denied")
+
+		_, created, err := loadOrCreateAnalysisCacheChildInfo(&lstatErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}, nil, filepath.Join(repo, cacheKeysDirName), cacheKeysDirName)
+		if !errors.Is(err, lstatErr) {
+			t.Fatalf("load child lstat error = %v, want %v", err, lstatErr)
+		}
+		if created {
+			t.Fatal("expected lstat error to report created=false")
+		}
+	})
+
+	t.Run("validate opened child success", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+		childRoot, err := safeio.OpenRoot(childPath)
+		if err != nil {
+			t.Fatalf("open child root: %v", err)
+		}
+		defer func() {
+			if err := childRoot.Close(); err != nil {
+				t.Fatalf("close child root: %v", err)
+			}
+		}()
+
+		rollback := analysisCacheChildRollback{root: root, name: cacheKeysDirName, child: childRoot, info: childInfo, created: false}
+		if err := validateOpenedAnalysisCacheChild(root, repo, childPath, rollback); err != nil {
+			t.Fatalf("validate opened child success: %v", err)
+		}
+	})
+
+	t.Run("validate opened child parent identity failure", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+		childRoot, err := safeio.OpenRoot(childPath)
+		if err != nil {
+			t.Fatalf("open child root: %v", err)
+		}
+
+		rollback := analysisCacheChildRollback{root: root, name: cacheKeysDirName, child: childRoot, info: childInfo, created: false}
+		err = validateOpenedAnalysisCacheChild(root, filepath.Join(repo, "missing-parent"), childPath, rollback)
+		if err == nil || !strings.Contains(err.Error(), "missing-parent") {
+			t.Fatalf("expected parent identity validation failure, got %v", err)
+		}
+	})
+}
+
 func TestRollbackCreatedAnalysisCacheChildNoopsForUncreatedChild(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
@@ -1505,6 +1636,19 @@ func TestRollbackCreatedAnalysisCacheChildSkipsReplacementSwappedAfterVerificati
 			t.Fatalf("expected %q to remain after rollback race, info=%#v err=%v", path, info, err)
 		}
 	}
+}
+
+func TestRollbackCreatedAnalysisCacheChildPreservesCurrentLstatFailure(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	lstatErr := errors.New("rollback current lstat failed")
+
+	err := rollbackCreatedAnalysisCacheChild(&lstatErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}, cacheKeysDirName, nil, childInfo, true)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected current lstat error to be preserved, got %v", err)
+	}
+	assertAnalysisCacheDirExists(t, childPath)
 }
 
 func TestRollbackCreatedAnalysisCacheChildAtPathErrorBranches(t *testing.T) {
@@ -1861,6 +2005,25 @@ func TestReserveAnalysisCacheQuarantineCleansCreatedReservationWhenLstatFails(t 
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
+func TestReserveAnalysisCacheQuarantineReturnsMkdirFailure(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	mkdirErr := errors.New("reservation mkdir failed")
+
+	_, retry, err := reserveAnalysisCacheQuarantine(
+		&mkdirErrorAnalysisCacheRoot{Root: root, name: reservationName, err: mkdirErr},
+		reservationName,
+		filepath.Join(reservationName, cacheKeysDirName),
+	)
+	if retry {
+		t.Fatal("expected mkdir failure not to retry")
+	}
+	if !errors.Is(err, mkdirErr) {
+		t.Fatalf("expected mkdir error, got %v", err)
+	}
+}
+
 func TestReserveAnalysisCacheQuarantinePreservesSwappedReservationWhenLstatFails(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
@@ -1964,6 +2127,60 @@ func TestRestoreMovedAnalysisCacheReplacementPreservesPreRenameTargetRace(t *tes
 	assertAnalysisCacheSameFile(t, quarantinePath, movedInfo)
 }
 
+func TestRestoreMovedAnalysisCacheReplacementBranches(t *testing.T) {
+	t.Run("nil moved info noops", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		if err := restoreMovedAnalysisCacheReplacement(root, analysisCacheQuarantineReservation{}, cacheKeysDirName, nil); err != nil {
+			t.Fatalf("restore nil moved info: %v", err)
+		}
+	})
+
+	t.Run("occupied target fails", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		_, movedInfo := createAnalysisCacheChild(t, repo, "moved-child")
+		createAnalysisCacheChild(t, repo, cacheKeysDirName)
+
+		err := restoreMovedAnalysisCacheReplacement(root, analysisCacheQuarantineReservation{}, cacheKeysDirName, movedInfo)
+		if err == nil || !strings.Contains(err.Error(), "restore target occupied") {
+			t.Fatalf("expected occupied restore target error, got %v", err)
+		}
+	})
+
+	t.Run("target lstat failure is preserved", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		_, movedInfo := createAnalysisCacheChild(t, repo, "moved-child")
+		lstatErr := errors.New("restore target lstat failed")
+
+		err := restoreMovedAnalysisCacheReplacement(&lstatErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}, analysisCacheQuarantineReservation{}, cacheKeysDirName, movedInfo)
+		if !errors.Is(err, lstatErr) {
+			t.Fatalf("expected target lstat error, got %v", err)
+		}
+	})
+
+	t.Run("changed restored identity fails", func(t *testing.T) {
+		repo := t.TempDir()
+		root := openAnalysisCacheTestRoot(t, repo)
+		reservationName := ".lopper-cache-rollback-keys-0"
+		quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+		quarantinePath := filepath.Join(repo, quarantineName)
+		if err := os.MkdirAll(filepath.Join(repo, reservationName), 0o700); err != nil {
+			t.Fatalf("create reservation: %v", err)
+		}
+		if err := os.Mkdir(quarantinePath, 0o750); err != nil {
+			t.Fatalf("create quarantined child: %v", err)
+		}
+		_, differentInfo := createAnalysisCacheChild(t, repo, "different-child")
+
+		err := restoreMovedAnalysisCacheReplacement(root, newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "token"), cacheKeysDirName, differentInfo)
+		if err == nil || !strings.Contains(err.Error(), "changed while restoring") {
+			t.Fatalf("expected changed restored identity error, got %v", err)
+		}
+	})
+}
+
 func TestRestoreMovedAnalysisCacheReplacementRestoresIdentityAndOwnerToken(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
@@ -2031,6 +2248,91 @@ func TestRemoveAnalysisCacheQuarantineRemovesReservationDirectoryWhenPathLstatFa
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
+func TestRemoveAnalysisCacheQuarantinePreservesRemoveAndCloseErrors(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	reservation := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "owned-token")
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("stat reservation: %v", err)
+	}
+	reservation.info = info
+	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
+		t.Fatalf("write owner token: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, quarantineName), 0o750); err != nil {
+		t.Fatalf("create quarantined child: %v", err)
+	}
+	reservationRoot, err := safeio.OpenRoot(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("open reservation root: %v", err)
+	}
+	removeErr := errors.New("remove owner failed")
+	closeErr := errors.New("close reservation failed")
+
+	err = removeAnalysisCacheQuarantine(
+		&openNamedRootAnalysisCacheRoot{
+			Root: root,
+			name: reservationName,
+			root: &closeErrorAnalysisCacheRoot{
+				Root: &exactRemoveErrorAnalysisCacheRoot{Root: reservationRoot, name: analysisCacheQuarantineOwnerFile, err: removeErr},
+				err:  closeErr,
+			},
+		},
+		reservation,
+	)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected owner remove error, got %v", err)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected reservation close error, got %v", err)
+	}
+}
+
+func TestRemoveAnalysisCacheQuarantinePreservesCloseError(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	reservation := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "owned-token")
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("stat reservation: %v", err)
+	}
+	reservation.info = info
+	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
+		t.Fatalf("write owner token: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, quarantineName), 0o750); err != nil {
+		t.Fatalf("create quarantined child: %v", err)
+	}
+	reservationRoot, err := safeio.OpenRoot(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("open reservation root: %v", err)
+	}
+	closeErr := errors.New("close reservation failed")
+
+	err = removeAnalysisCacheQuarantine(
+		&openNamedRootAnalysisCacheRoot{
+			Root: root,
+			name: reservationName,
+			root: &closeErrorAnalysisCacheRoot{Root: reservationRoot, err: closeErr},
+		},
+		reservation,
+	)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected reservation close error, got %v", err)
+	}
+}
+
 func TestRemoveAnalysisCacheQuarantineReservationBranches(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
@@ -2058,6 +2360,177 @@ func TestRemoveAnalysisCacheQuarantineReservationBranches(t *testing.T) {
 	)
 	if !errors.Is(err, removeErr) {
 		t.Fatalf("expected owner remove error, got %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(repo, reservation.ownerName)); err != nil {
+		t.Fatalf("remove owner file after injected failure: %v", err)
+	}
+	if err := os.Rename(filepath.Join(repo, reservationName), filepath.Join(repo, "moved-reservation")); err != nil {
+		t.Fatalf("move owned reservation: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create replacement reservation: %v", err)
+	}
+	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
+		t.Fatalf("write replacement owner token: %v", err)
+	}
+	if err := removeAnalysisCacheQuarantineReservation(root, reservation); err != nil {
+		t.Fatalf("changed reservation cleanup: %v", err)
+	}
+	assertAnalysisCacheDirExists(t, filepath.Join(repo, reservationName))
+}
+
+func TestFinishConditionalAnalysisCacheRemovalBranches(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	lstatErr := errors.New("rollback lstat failed")
+	quarantineErr := errors.New("rollback quarantine failed")
+
+	err := finishConditionalAnalysisCacheRemoval(root, analysisCacheQuarantineReservation{}, lstatErr, quarantineErr)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat error to be joined, got %v", err)
+	}
+	if !errors.Is(err, quarantineErr) {
+		t.Fatalf("expected quarantine error to be joined, got %v", err)
+	}
+
+	if err := finishConditionalAnalysisCacheRemoval(root, analysisCacheQuarantineReservation{}, nil, nil); err != nil {
+		t.Fatalf("empty reservation cleanup: %v", err)
+	}
+
+	reservation := newAnalysisCacheQuarantineReservation(".lopper-cache-rollback-missing-0", filepath.Join(".lopper-cache-rollback-missing-0", "missing"), "token")
+	if err := finishConditionalAnalysisCacheRemoval(root, reservation, lstatErr, nil); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected missing reservation cleanup to preserve lstat error, got %v", err)
+	}
+}
+
+func TestIgnoreAnalysisCacheOccupiedReservationCleanupBranches(t *testing.T) {
+	if err := ignoreAnalysisCacheOccupiedReservationCleanup(nil); err != nil {
+		t.Fatalf("nil cleanup error: %v", err)
+	}
+	if err := ignoreAnalysisCacheOccupiedReservationCleanup(&os.PathError{Op: "remove", Path: "dir", Err: syscall.ENOTEMPTY}); err != nil {
+		t.Fatalf("expected non-empty directory cleanup error to be ignored, got %v", err)
+	}
+	cleanupErr := errors.New("cleanup failed")
+	if err := ignoreAnalysisCacheOccupiedReservationCleanup(cleanupErr); !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be preserved, got %v", err)
+	}
+}
+
+func TestRemoveCreatedAnalysisCacheQuarantineReservationBranches(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	if err := removeCreatedAnalysisCacheQuarantineReservation(root, newAnalysisCacheQuarantineReservation(".", "keys", "token")); err != nil {
+		t.Fatalf("remove created root reservation marker: %v", err)
+	}
+	if err := removeCreatedAnalysisCacheQuarantineReservation(root, newAnalysisCacheQuarantineReservation("not-rollback", filepath.Join("not-rollback", "keys"), "token")); err != nil {
+		t.Fatalf("remove created non-rollback reservation: %v", err)
+	}
+	if err := removeCreatedAnalysisCacheQuarantineReservation(root, newAnalysisCacheQuarantineReservation(".lopper-cache-rollback-keys-0", filepath.Join(".lopper-cache-rollback-keys-0", cacheKeysDirName), "token")); err != nil {
+		t.Fatalf("remove created reservation without identity: %v", err)
+	}
+
+	reservationName := ".lopper-cache-rollback-keys-0"
+	reservation := newAnalysisCacheQuarantineReservation(reservationName, filepath.Join(reservationName, cacheKeysDirName), "owned-token")
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("stat reservation: %v", err)
+	}
+	reservation.info = info
+	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
+		t.Fatalf("write owner token: %v", err)
+	}
+	removeErr := errors.New("remove owner failed")
+	if err := removeCreatedAnalysisCacheQuarantineReservation(&removeErrorAnalysisCacheRoot{Root: root, name: reservation.ownerName, err: removeErr}, reservation); !errors.Is(err, removeErr) {
+		t.Fatalf("expected owner remove error, got %v", err)
+	}
+	if err := os.Remove(filepath.Join(repo, reservation.ownerName)); err != nil {
+		t.Fatalf("remove owner file after injected failure: %v", err)
+	}
+	removeDirErr := errors.New("remove reservation directory failed")
+	if err := removeCreatedAnalysisCacheQuarantineReservation(&exactRemoveErrorAnalysisCacheRoot{Root: root, name: reservation.name, err: removeDirErr}, reservation); !errors.Is(err, removeDirErr) {
+		t.Fatalf("expected reservation directory remove error, got %v", err)
+	}
+	if err := removeCreatedAnalysisCacheQuarantineReservation(root, reservation); err != nil {
+		t.Fatalf("remove created reservation: %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
+func TestOpenOwnedAnalysisCacheQuarantineReservationBranches(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	empty := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "")
+	if _, err := openOwnedAnalysisCacheQuarantineReservation(root, empty); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected empty token reservation to be hidden, got %v", err)
+	}
+
+	reservation := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "owned-token")
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("stat reservation: %v", err)
+	}
+	reservation.info = info
+	if err := writeAnalysisCacheQuarantineOwner(root, reservation); err != nil {
+		t.Fatalf("write owner token: %v", err)
+	}
+
+	openErr := errors.New("open reservation failed")
+	if opened, err := openOwnedAnalysisCacheQuarantineReservation(&openNamedRootErrorAnalysisCacheRoot{Root: root, name: reservationName, err: openErr}, reservation); !errors.Is(err, openErr) || opened != nil {
+		t.Fatalf("expected reservation open error, opened=%#v err=%v", opened, err)
+	}
+
+	lstatErr := errors.New("reservation lstat failed")
+	reservationRoot, err := safeio.OpenRoot(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("open reservation root: %v", err)
+	}
+	if opened, err := openOwnedAnalysisCacheQuarantineReservation(&openNamedRootAnalysisCacheRoot{Root: root, name: reservationName, root: &lstatErrorAnalysisCacheRoot{Root: reservationRoot, name: ".", err: lstatErr}}, reservation); !errors.Is(err, lstatErr) || opened != nil {
+		t.Fatalf("expected reservation lstat error, opened=%#v err=%v", opened, err)
+	}
+
+	wrongToken := reservation
+	wrongToken.ownerToken = "different-token"
+	if opened, err := openOwnedAnalysisCacheQuarantineReservation(root, wrongToken); !errors.Is(err, os.ErrNotExist) || opened != nil {
+		t.Fatalf("expected wrong owner token to be hidden, opened=%#v err=%v", opened, err)
+	}
+
+	opened, err := openOwnedAnalysisCacheQuarantineReservation(root, reservation)
+	if err != nil {
+		t.Fatalf("open owned reservation: %v", err)
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatalf("close owned reservation: %v", err)
+	}
+}
+
+func TestAnalysisCacheQuarantineHelperPredicates(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	if isAnalysisCacheNonEmptyDirectoryError(errors.New("directory not empty")) != true {
+		t.Fatal("expected text non-empty directory error to match")
+	}
+	if isAnalysisCacheNonEmptyDirectoryError(errors.New("permission denied")) {
+		t.Fatal("did not expect unrelated error to match")
+	}
+	if sameAnalysisCacheRollbackTarget(nil, nil) {
+		t.Fatal("nil rollback targets should not match")
+	}
+
+	reservation := newAnalysisCacheQuarantineReservation(".lopper-cache-rollback-missing-0", filepath.Join(".lopper-cache-rollback-missing-0", "missing"), "token")
+	if info := openedAnalysisCacheQuarantineReservationInfo(root, analysisCacheQuarantineReservation{}); info != nil {
+		t.Fatalf("expected empty reservation name to have no info, got %#v", info)
+	}
+	if err := removeAnalysisCacheQuarantineReservationDirectory(root, reservation); err != nil {
+		t.Fatalf("remove reservation directory without identity: %v", err)
 	}
 }
 
