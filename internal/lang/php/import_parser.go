@@ -577,11 +577,12 @@ func skipPHPWhitespaceUntil(text string, offset, limit int) int {
 
 func hasPHPOpenPreludeAt(text string, offset, limit int) bool {
 	end := offset + len("<?php")
-	return end <= limit && strings.EqualFold(text[offset:end], "<?php") && (end == len(text) || !isPHPIdentifierByte(text[end]))
+	return end <= limit && strings.EqualFold(text[offset:end], "<?php") && (end == len(text) || isPHPWhitespace(text[end]))
 }
 
 func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool) {
-	if offset+len("declare") > target || !strings.HasPrefix(text[offset:], "declare") {
+	declareEnd := offset + len("declare")
+	if declareEnd > target || !strings.EqualFold(text[offset:declareEnd], "declare") {
 		return 0, false
 	}
 	next := offset + len("declare")
@@ -790,7 +791,7 @@ func nextPHPOpenTag(text string, offset int, allowShortOpenTag bool) (int, int, 
 			return start, start + len("<?="), true
 		}
 		tagEnd := start + len("<?php")
-		if tagEnd <= len(text) && strings.EqualFold(text[start:tagEnd], "<?php") && (tagEnd == len(text) || !isPHPIdentifierByte(text[tagEnd])) {
+		if tagEnd <= len(text) && strings.EqualFold(text[start:tagEnd], "<?php") && (tagEnd == len(text) || isPHPWhitespace(text[tagEnd])) {
 			return start, tagEnd, true
 		}
 		if allowShortOpenTag && !isXMLDeclarationOpenTag(text, start) {

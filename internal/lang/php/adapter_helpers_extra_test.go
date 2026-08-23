@@ -1371,12 +1371,12 @@ func TestParsePHPImportsParsesConfiguredShortOpenTags(t *testing.T) {
 }
 
 func TestParsePHPImportsHonorsDisabledShortOpenTags(t *testing.T) {
-	content := []byte("<?target use Vendor\\Package\\TemplateOnly; ?>\n" +
+	content := []byte("<?php(use Vendor\\Package\\TemplateOnly; ?>\n" +
 		"<?php use Vendor\\Package\\Client;\n")
 
 	assertParsedVendorPackageModules(t, "short-disabled.php", content,
 		[]string{"Vendor\\Package\\Client"},
-		"expected non-PHP processing instructions to stay inactive when short tags are disabled")
+		"expected malformed long PHP tags to stay inactive when short tags are disabled")
 }
 
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
