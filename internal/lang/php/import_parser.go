@@ -748,20 +748,27 @@ type phpNamespaceLineCompletion struct {
 	offset             int
 	lastNonWhitespace  byte
 	allowShortOpenTags bool
+	templateMasked     bool
 }
 
 func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
 	for c.offset < target {
 		if strings.HasPrefix(text[c.offset:], "?>") {
 			c.lastNonWhitespace = ';'
+			c.templateMasked = true
 			c.offset += len("?>")
 			continue
 		}
 		if tagLength := phpOpenPreludeLengthAt(text, c.offset, len(text), c.allowShortOpenTags); tagLength > 0 {
+			c.templateMasked = false
 			c.offset += tagLength
 			continue
 		}
 		ch := text[c.offset]
+		if c.templateMasked && ch == '~' {
+			c.offset++
+			continue
+		}
 		if !isPHPWhitespace(ch) {
 			c.lastNonWhitespace = ch
 		}
