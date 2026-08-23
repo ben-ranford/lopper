@@ -363,7 +363,7 @@ func stageIdentityBoundFileKeepingSourceLive(root Root, sourceRel string, expect
 	if err == nil {
 		return stagedRel, expected, nil
 	}
-	if !errors.Is(err, errIdentityBoundLinkUnavailable) {
+	if !errors.Is(err, errIdentityBoundLinkUnavailable) && !identityBoundLinkUnsupported(err) {
 		return "", nil, err
 	}
 	if atomicWriteCleanupFailed(err) {
