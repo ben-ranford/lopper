@@ -240,8 +240,13 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	if data.ShortOpenTags {
 		t.Fatalf("did not expect short open tags without explicit PHP configuration")
 	}
+}
+
+func TestLoadComposerDataDetectsRootShortOpenTagConfig(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
 	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = On\n")
-	data, warnings, err = loadComposerData(repo)
+	data, warnings, err := loadComposerData(repo)
 	if err != nil {
 		t.Fatalf("load data with short-open config: %v", err)
 	}
