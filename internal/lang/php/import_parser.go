@@ -806,7 +806,10 @@ func isXMLDeclarationOpenTag(text string, start int) bool {
 	if tagEnd > len(text) || !strings.EqualFold(text[start:tagEnd], "<?xml") {
 		return false
 	}
-	if tagEnd == len(text) || text[tagEnd] == '-' {
+	if tagEnd == len(text) {
+		return false
+	}
+	if text[tagEnd] == '-' {
 		return true
 	}
 	if !isPHPWhitespace(text[tagEnd]) {
