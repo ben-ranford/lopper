@@ -8181,66 +8181,8 @@ func TestPrepareRejectsLegacyIdentityAliasScanWhenIndeterminate(t *testing.T) {
 }
 
 func TestPrepareUsesStagedCleanupForLegacyDistinctHardLinks(t *testing.T) {
-	sourceInfo, _ := writePinnedTargetInfoPair(t)
-	dirInfo := statTestPath(t, t.TempDir())
-	files := map[string]bool{"source": true, "target": true}
-	linkCalls := 0
-	renameCalls := 0
-	base := &fakeRoot{
-		lstat: func(name string) (fs.FileInfo, error) {
-			switch {
-			case name == ".":
-				return dirInfo, nil
-			case files[name]:
-				return sourceInfo, nil
-			default:
-				return nil, os.ErrNotExist
-			}
-		},
-		chmod: chmodNameWithoutError(t, "source"),
-		open: func(name string) (File, error) {
-			if name != "." {
-				t.Fatalf("unexpected directory open %q", name)
-			}
-			return &fakeReadDirFile{
-				fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return dirInfo, nil }, close: closeWithoutError},
-				readDir: func(int) ([]fs.DirEntry, error) {
-					return []fs.DirEntry{&namedDirEntry{name: "source"}, &namedDirEntry{name: "target"}}, nil
-				},
-			}, nil
-		},
-	}
-	root := &identityOnlyRoot{
-		Root: base,
-		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			if !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
-				t.Fatalf("unexpected staging link %q -> %q", oldName, newName)
-			}
-			if oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
-				t.Fatalf("unexpected staging-link source %q", oldName)
-			}
-			requireSameFileInfo(t, expected, sourceInfo, oldName)
-			linkCalls++
-			files[newName] = true
-			return nil
-		},
-		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
-			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
-				t.Fatalf("unexpected staged rename %q -> %q", oldName, newName)
-			}
-			requireSameFileInfo(t, expected, sourceInfo, oldName)
-			renameCalls++
-			// Distinct hard links make the replacement a no-op; legacy roots do
-			// not report that retained staging state, so the staged cleanup path
-			// must still remove source below.
-			return nil
-		},
-		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
-			requireSameFileInfo(t, expected, sourceInfo, name)
-			files[name] = false
-			return nil
-		},
-	}
+	fixture := newLegacyDistinctHardLinkFixture(t)
+	root := fixture.root()
 	if _, reportsState := any(root).(identityBoundStateOperationsRoot); reportsState {
 		t.Fatal("identity-only test root unexpectedly reports rename state")
 	}
@@ -8248,11 +8190,101 @@ func TestPrepareUsesStagedCleanupForLegacyDistinctHardLinks(t *testing.T) {
 	if _, err := prepareAndRenameWithinRoot(root, "source", "target", 0o600); err != nil {
 		t.Fatalf("legacy distinct-hard-link move returned error: %v", err)
 	}
-	if files["source"] || !files["target"] {
-		t.Fatalf("expected source removal while retaining target, files=%v", files)
+	fixture.assertMoved(t)
+}
+
+type legacyDistinctHardLinkFixture struct {
+	t           *testing.T
+	sourceInfo  fs.FileInfo
+	dirInfo     fs.FileInfo
+	files       map[string]bool
+	linkCalls   int
+	renameCalls int
+}
+
+func newLegacyDistinctHardLinkFixture(t *testing.T) *legacyDistinctHardLinkFixture {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	return &legacyDistinctHardLinkFixture{
+		t:          t,
+		sourceInfo: sourceInfo,
+		dirInfo:    statTestPath(t, t.TempDir()),
+		files:      map[string]bool{"source": true, "target": true},
 	}
-	if linkCalls != 4 || renameCalls != 1 {
-		t.Fatalf("expected staged publication plus identity-bound cleanup, links=%d renames=%d", linkCalls, renameCalls)
+}
+
+func (f *legacyDistinctHardLinkFixture) root() *identityOnlyRoot {
+	base := &fakeRoot{
+		lstat: f.lstat,
+		chmod: chmodNameWithoutError(f.t, "source"),
+		open:  f.open,
+	}
+	return &identityOnlyRoot{
+		Root:            base,
+		linkIfMatches:   f.linkIfMatches,
+		renameIfMatches: f.renameIfMatches,
+		removeIfMatches: f.removeIfMatches,
+	}
+}
+
+func (f *legacyDistinctHardLinkFixture) lstat(name string) (fs.FileInfo, error) {
+	if name == "." {
+		return f.dirInfo, nil
+	}
+	if f.files[name] {
+		return f.sourceInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (f *legacyDistinctHardLinkFixture) open(name string) (File, error) {
+	if name != "." {
+		return nil, fmt.Errorf("unexpected directory open %q", name)
+	}
+	return &fakeReadDirFile{
+		fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return f.dirInfo, nil }, close: closeWithoutError},
+		readDir: func(int) ([]fs.DirEntry, error) {
+			return []fs.DirEntry{&namedDirEntry{name: "source"}, &namedDirEntry{name: "target"}}, nil
+		},
+	}, nil
+}
+
+func (f *legacyDistinctHardLinkFixture) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return fmt.Errorf("unexpected staging link %q -> %q", oldName, newName)
+	}
+	if oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
+		return fmt.Errorf("unexpected staging-link source %q", oldName)
+	}
+	requireSameFileInfo(f.t, expected, f.sourceInfo, oldName)
+	f.linkCalls++
+	f.files[newName] = true
+	return nil
+}
+
+func (f *legacyDistinctHardLinkFixture) renameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
+		return fmt.Errorf("unexpected staged rename %q -> %q", oldName, newName)
+	}
+	requireSameFileInfo(f.t, expected, f.sourceInfo, oldName)
+	f.renameCalls++
+	// Distinct hard links make the replacement a no-op; legacy roots do not
+	// report that retained staging state, so staged cleanup removes source.
+	return nil
+}
+
+func (f *legacyDistinctHardLinkFixture) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(f.t, expected, f.sourceInfo, name)
+	f.files[name] = false
+	return nil
+}
+
+func (f *legacyDistinctHardLinkFixture) assertMoved(t *testing.T) {
+	t.Helper()
+	if f.files["source"] || !f.files["target"] {
+		t.Fatalf("expected source removal while retaining target, files=%v", f.files)
+	}
+	if f.linkCalls != 4 || f.renameCalls != 1 {
+		t.Fatalf("expected staged publication plus identity-bound cleanup, links=%d renames=%d", f.linkCalls, f.renameCalls)
 	}
 }
 
