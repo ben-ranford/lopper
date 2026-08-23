@@ -204,7 +204,7 @@ func isPureOversizedFileError(err error) bool {
 
 type phpShortOpenTagPolicy struct {
 	dirSettings         map[string]phpShortOpenTagDirSetting
-	incompleteDirs      map[string]struct{}
+	incompleteDirs      map[string]int
 	discoveryIncomplete bool
 }
 
@@ -216,7 +216,7 @@ type phpShortOpenTagDirSetting struct {
 func detectPHPShortOpenTags(ctx context.Context, repoPath string) (phpShortOpenTagPolicy, []string, error) {
 	policy := phpShortOpenTagPolicy{
 		dirSettings:    make(map[string]phpShortOpenTagDirSetting),
-		incompleteDirs: make(map[string]struct{}),
+		incompleteDirs: make(map[string]int),
 	}
 	warnings := make([]string, 0)
 	root := filepath.Clean(repoPath)
@@ -284,7 +284,7 @@ func scanPHPShortOpenTagConfigDir(root, path string, entry fs.DirEntry) error {
 func scanPHPShortOpenTagConfigFile(root, path string, priority int, policy *phpShortOpenTagPolicy, warnings *[]string) error {
 	enabled, found, err := phpConfigShortOpenTagSetting(root, path)
 	if isPureOversizedFileError(err) {
-		policy.incompleteDirs[filepath.Dir(path)] = struct{}{}
+		policy.setIncompleteDir(filepath.Dir(path), priority)
 		*warnings = append(*warnings, phpShortOpenTagConfigOversizedWarning(root, path))
 		return nil
 	}
@@ -335,8 +335,13 @@ func (p phpShortOpenTagPolicy) enabledForFile(path string) bool {
 func (p phpShortOpenTagPolicy) incompleteForFile(path string) bool {
 	dir := filepath.Dir(filepath.Clean(path))
 	for {
-		if _, ok := p.incompleteDirs[dir]; ok {
+		setting, hasSetting := p.dirSettings[dir]
+		incompletePriority, hasIncompleteSetting := p.incompleteDirs[dir]
+		if hasIncompleteSetting && (!hasSetting || incompletePriority >= setting.priority) {
 			return true
+		}
+		if hasSetting {
+			return false
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -344,6 +349,13 @@ func (p phpShortOpenTagPolicy) incompleteForFile(path string) bool {
 		}
 		dir = parent
 	}
+}
+
+func (p phpShortOpenTagPolicy) setIncompleteDir(dir string, priority int) {
+	if existing, ok := p.incompleteDirs[dir]; ok && existing > priority {
+		return
+	}
+	p.incompleteDirs[dir] = priority
 }
 
 func (p phpShortOpenTagPolicy) setDirSetting(dir string, enabled bool, priority int) {

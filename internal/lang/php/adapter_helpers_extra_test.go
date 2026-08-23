@@ -301,6 +301,31 @@ func TestLoadComposerDataTracksOversizedShortOpenTagConfigByDirectory(t *testing
 	}
 }
 
+func TestLoadComposerDataChildSettingOverridesIncompleteAncestorConfig(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "php.ini"), "short_open_tag = On\n", testMaxPHPConfigBytes+1)
+	writeFile(t, filepath.Join(repo, "src", ".user.ini"), "short_open_tag = Off\n")
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("expected mixed short-open configs to load: %v", err)
+	}
+	if usageIncompleteForTest(t, data) {
+		t.Fatalf("did not expect readable child setting to inherit ancestor incompleteness: %#v", data)
+	}
+	childFile := filepath.Join(repo, "src", "index.php")
+	if data.ShortOpenTagPolicy.incompleteForFile(childFile) {
+		t.Fatalf("expected child setting to stop ancestor incompleteness for %s", childFile)
+	}
+	if data.ShortOpenTagPolicy.enabledForFile(childFile) {
+		t.Fatalf("expected child short_open_tag setting to win for %s", childFile)
+	}
+	if !containsWarning(warnings, "skipped PHP short_open_tag config php.ini because it exceeds") {
+		t.Fatalf("expected oversized ancestor config warning, got %#v", warnings)
+	}
+}
+
 func TestLoadComposerDataBoundsShortOpenTagConfigDiscovery(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
