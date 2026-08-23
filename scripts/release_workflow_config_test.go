@@ -6038,11 +6038,15 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	cacheDir := filepath.Join(t.TempDir(), "gocache")
-	for _, dir := range []string{homeDir, cacheDir} {
+	moduleCacheDir := filepath.Join(t.TempDir(), "gomodcache")
+	for _, dir := range []string{homeDir, cacheDir, moduleCacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create Go environment directory: %v", err)
 		}
 	}
+	t.Cleanup(func() {
+		restoreOwnerWriteForTestTree(t, moduleCacheDir)
+	})
 	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire golang.org/x/sys v0.41.0\n")
 	writeFile(t, filepath.Join(repo, "go.sum"), "golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=\n"+"golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=\n")
 	return repo, map[string]string{
@@ -6051,10 +6055,46 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"GO_TOOLCHAIN":                "local",
 		"HOME":                        homeDir,
 		"GOCACHE":                     cacheDir,
+		"GOMODCACHE":                  moduleCacheDir,
 		"BENCH_COUNT":                 "1",
 		"BENCH_TIME":                  "1x",
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
+	}
+}
+
+func restoreOwnerWriteForTestTree(t *testing.T, root string) {
+	t.Helper()
+
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		mode := info.Mode()
+		writableMode := mode | 0o600
+		if entry.IsDir() {
+			writableMode = mode | 0o700
+		}
+		if writableMode == mode {
+			return nil
+		}
+		return os.Chmod(path, writableMode)
+	})
+	if err != nil {
+		t.Fatalf("restore Go module cache owner write permissions: %v", err)
 	}
 }
 
