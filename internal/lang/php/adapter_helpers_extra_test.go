@@ -365,6 +365,27 @@ func TestLoadComposerDataBoundsShortOpenTagConfigDiscovery(t *testing.T) {
 	}
 }
 
+func TestAdapterExcludesCacheDirectoryFromShortOpenTagDiscovery(t *testing.T) {
+	repo := t.TempDir()
+	cacheDir := filepath.Join(repo, "a-cache")
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, "z-config", "php.ini"), "short_open_tag = On\n")
+	for i := 0; i < maxPHPConfigWalkEntries; i++ {
+		writeFile(t, filepath.Join(cacheDir, fmt.Sprintf("entry-%04d.txt", i)), "")
+	}
+
+	result, err := NewAdapter().Analyse(context.Background(), language.AnalysisOptions{
+		RepoPath:      repo,
+		ExcludedPaths: []string{cacheDir},
+	})
+	if err != nil {
+		t.Fatalf("analyse with excluded cache directory: %v", err)
+	}
+	if result.UsageIncomplete {
+		t.Fatalf("expected excluded cache directory not to consume config traversal budget, warnings=%#v", result.Warnings)
+	}
+}
+
 func TestLoadComposerDataHonorsCanceledContextDuringShortOpenTagConfigDiscovery(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
@@ -958,6 +979,9 @@ func assertBoundedNamespaceResolutionWarning(t *testing.T, scan scanResult, reas
 func TestShouldSkipDirAndDependencyHelpers(t *testing.T) {
 	if !shouldSkipDir("vendor") {
 		t.Fatalf("expected vendor to be skipped")
+	}
+	if !shouldSkipDir(".lopper-cache") {
+		t.Fatalf("expected .lopper-cache to be skipped")
 	}
 	if shouldSkipDir("src") {
 		t.Fatalf("did not expect src to be skipped")

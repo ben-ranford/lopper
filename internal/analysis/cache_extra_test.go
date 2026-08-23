@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -420,6 +422,29 @@ func TestAnalysisCachePHPShortOpenTagConfigChangesInvalidateInputDigest(t *testi
 				t.Fatalf("expected %s update to invalidate the input digest", filename)
 			}
 		})
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagTraversalCutoffInvalidatesInputDigest(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteFile(t, filepath.Join(repo, "z-config", "php.ini"), []byte("short_open_tag = On\n"))
+
+	cache := &analysisCache{}
+	before, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest before traversal change: %v", err)
+	}
+	for i := 0; i < shared.PHPShortOpenTagConfigWalkEntryLimit; i++ {
+		if err := os.Mkdir(filepath.Join(repo, fmt.Sprintf("a-%04d", i)), 0o750); err != nil {
+			t.Fatalf("create traversal entry %d: %v", i, err)
+		}
+	}
+	after, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest after traversal change: %v", err)
+	}
+	if before == after {
+		t.Fatal("expected PHP short_open_tag traversal cutoff to invalidate the input digest")
 	}
 }
 

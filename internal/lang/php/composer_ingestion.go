@@ -52,6 +52,10 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 }
 
 func loadComposerDataWithContext(ctx context.Context, repoPath string) (composerData, []string, error) {
+	return loadComposerDataWithContextAndExcludedDirectories(ctx, repoPath, nil)
+}
+
+func loadComposerDataWithContextAndExcludedDirectories(ctx context.Context, repoPath string, excludedDirectories map[string]struct{}) (composerData, []string, error) {
 	data := composerData{
 		DeclaredDependencies: make(map[string]struct{}),
 		NamespaceToDep:       make(map[string]string),
@@ -70,7 +74,7 @@ func loadComposerDataWithContext(ctx context.Context, repoPath string) (composer
 		collectDeclaredDependencies(manifest, data.DeclaredDependencies)
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
-	shortOpenTagPolicy, shortOpenTagWarnings, err := detectPHPShortOpenTags(ctx, repoPath)
+	shortOpenTagPolicy, shortOpenTagWarnings, err := detectPHPShortOpenTagsWithExcludedDirectories(ctx, repoPath, excludedDirectories)
 	if err != nil {
 		return data, nil, err
 	}
@@ -213,14 +217,14 @@ type phpShortOpenTagDirSetting struct {
 	priority int
 }
 
-func detectPHPShortOpenTags(ctx context.Context, repoPath string) (phpShortOpenTagPolicy, []string, error) {
+func detectPHPShortOpenTagsWithExcludedDirectories(ctx context.Context, repoPath string, excludedDirectories map[string]struct{}) (phpShortOpenTagPolicy, []string, error) {
 	policy := phpShortOpenTagPolicy{
 		dirSettings:    make(map[string]phpShortOpenTagDirSetting),
 		incompleteDirs: make(map[string]int),
 	}
 	warnings := make([]string, 0)
 	root := filepath.Clean(repoPath)
-	state := phpShortOpenTagConfigWalkState{root: root}
+	state := phpShortOpenTagConfigWalkState{root: root, excludedDirectories: excludedDirectories}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		return state.scan(ctx, path, entry, walkErr, &policy, &warnings)
 	})
@@ -236,13 +240,17 @@ func detectPHPShortOpenTags(ctx context.Context, repoPath string) (phpShortOpenT
 }
 
 type phpShortOpenTagConfigWalkState struct {
-	root    string
-	visited int
+	root                string
+	excludedDirectories map[string]struct{}
+	visited             int
 }
 
 func (s *phpShortOpenTagConfigWalkState) scan(ctx context.Context, path string, entry fs.DirEntry, walkErr error, policy *phpShortOpenTagPolicy, warnings *[]string) error {
 	if err := shared.WalkContextErr(ctx, walkErr); err != nil {
 		return err
+	}
+	if path != s.root && (isExcludedDirectory(s.excludedDirectories, path) || entry.IsDir() && (shouldSkipDir(entry.Name()) || hasComposerManifest(path))) {
+		return filepath.SkipDir
 	}
 	if path != s.root {
 		s.visited++

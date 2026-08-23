@@ -21,11 +21,13 @@ type cacheDigestInput struct {
 	sortKey      string
 	path         string
 	allowMissing bool
+	literal      string
 }
 
 type cacheInputDigestMemoKey struct {
 	normalizedRoot  string
 	cleanConfigPath string
+	excludedPaths   string
 }
 
 func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
@@ -80,7 +82,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
-	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath)
+	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath, c.cacheExcludedPaths(normalizedRoot, req))
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
@@ -107,18 +109,19 @@ func normalizedScopeCacheIdentity(req Request) *scopeCacheIdentity {
 	return identity
 }
 
-func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string, error) {
+func (c *analysisCache) memoizedInputDigest(rootPath, configPath string, excludedPaths []string) (string, error) {
 	if c.inputDigestMemo == nil {
 		c.inputDigestMemo = make(map[cacheInputDigestMemoKey]string)
 	}
 	memoKey := cacheInputDigestMemoKey{
 		normalizedRoot:  filepath.Clean(rootPath),
 		cleanConfigPath: cleanConfigPath(configPath),
+		excludedPaths:   strings.Join(excludedPaths, "\x00"),
 	}
 	if digest, ok := c.inputDigestMemo[memoKey]; ok {
 		return digest, nil
 	}
-	digest, err := c.computeInputDigest(memoKey.normalizedRoot, memoKey.cleanConfigPath)
+	digest, err := c.computeInputDigestWithExcludedPaths(memoKey.normalizedRoot, memoKey.cleanConfigPath, excludedPaths)
 	if err != nil {
 		return "", err
 	}
@@ -127,17 +130,31 @@ func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string
 }
 
 func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
+	return c.computeInputDigestWithExcludedPaths(rootPath, configPath, c.cacheExcludedPaths(rootPath, Request{}))
+}
+
+func (c *analysisCache) computeInputDigestWithExcludedPaths(rootPath, configPath string, excludedPaths []string) (string, error) {
 	rootPath = filepath.Clean(rootPath)
-	files, err := c.collectRelevantFiles(rootPath)
+	files, err := c.collectRelevantFilesWithExcludedPaths(rootPath, excludedPaths)
+	if err != nil {
+		return "", err
+	}
+	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(rootPath, excludedPaths)
 	if err != nil {
 		return "", err
 	}
 
-	inputs := make([]cacheDigestInput, 0, len(files)+1)
+	inputs := make([]cacheDigestInput, 0, len(files)+len(traversalEntries)+1)
 	for _, file := range files {
 		inputs = append(inputs, cacheDigestInput{
 			sortKey: file.relativePath,
 			path:    file.absolutePath,
+		})
+	}
+	for _, entry := range traversalEntries {
+		inputs = append(inputs, cacheDigestInput{
+			sortKey: "php-short-open-tag-traversal\x00" + entry.relativePath,
+			literal: entry.kind,
 		})
 	}
 
@@ -187,7 +204,11 @@ func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {
 	if _, err := io.WriteString(w, "\x00"); err != nil {
 		return err
 	}
-	if input.allowMissing {
+	if input.literal != "" {
+		if _, err := io.WriteString(w, input.literal); err != nil {
+			return err
+		}
+	} else if input.allowMissing {
 		if err := writeFileDigestOrMissing(w, input.path); err != nil {
 			return err
 		}

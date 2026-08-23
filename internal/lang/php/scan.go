@@ -45,17 +45,19 @@ type scanState struct {
 }
 
 type scanCoordinator struct {
-	repoPath           string
-	resolver           composerResolver
-	shortOpenTagPolicy phpShortOpenTagPolicy
-	result             scanResult
-	state              scanState
+	repoPath            string
+	excludedDirectories map[string]struct{}
+	resolver            composerResolver
+	shortOpenTagPolicy  phpShortOpenTagPolicy
+	result              scanResult
+	state               scanState
 }
 
-func newScanCoordinator(repoPath string, composer composerData) scanCoordinator {
+func newScanCoordinatorWithExcludedDirectories(repoPath string, composer composerData, excludedDirectories map[string]struct{}) scanCoordinator {
 	return scanCoordinator{
-		repoPath: repoPath,
-		resolver: newComposerResolver(composer),
+		repoPath:            repoPath,
+		excludedDirectories: excludedDirectories,
+		resolver:            newComposerResolver(composer),
 		result: scanResult{
 			DeclaredDependencies:       composer.DeclaredDependencies,
 			GroupedImportsByDependency: make(map[string]int),
@@ -67,7 +69,11 @@ func newScanCoordinator(repoPath string, composer composerData) scanCoordinator 
 }
 
 func scanRepo(ctx context.Context, repoPath string, composer composerData) (scanResult, error) {
-	coordinator := newScanCoordinator(repoPath, composer)
+	return scanRepoWithExcludedDirectories(ctx, repoPath, composer, nil)
+}
+
+func scanRepoWithExcludedDirectories(ctx context.Context, repoPath string, composer composerData, excludedDirectories map[string]struct{}) (scanResult, error) {
+	coordinator := newScanCoordinatorWithExcludedDirectories(repoPath, composer, excludedDirectories)
 	return coordinator.scan(ctx)
 }
 
@@ -98,12 +104,19 @@ func contextErr(ctx context.Context) error {
 
 func (c *scanCoordinator) scanEntry(path string, entry fs.DirEntry) error {
 	if entry.IsDir() {
-		return scanDirEntry(c.repoPath, path, entry, &c.state)
+		return scanDirEntryWithExcludedDirectories(c.repoPath, path, entry, &c.state, c.excludedDirectories)
 	}
 	return c.scanFile(path)
 }
 
 func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanState) error {
+	return scanDirEntryWithExcludedDirectories(repoPath, path, entry, state, nil)
+}
+
+func scanDirEntryWithExcludedDirectories(repoPath string, path string, entry fs.DirEntry, state *scanState, excludedDirectories map[string]struct{}) error {
+	if isExcludedDirectory(excludedDirectories, path) {
+		return filepath.SkipDir
+	}
 	if shouldSkipDir(entry.Name()) {
 		return filepath.SkipDir
 	}
@@ -112,6 +125,31 @@ func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanSt
 		return filepath.SkipDir
 	}
 	return nil
+}
+
+func excludedDirectoriesForRepo(repoPath string, paths []string) map[string]struct{} {
+	if len(paths) == 0 {
+		return nil
+	}
+	repoPath = filepath.Clean(repoPath)
+	directories := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		cleanedPath := filepath.Clean(path)
+		relativePath, err := filepath.Rel(repoPath, cleanedPath)
+		if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+			continue
+		}
+		directories[cleanedPath] = struct{}{}
+	}
+	return directories
+}
+
+func isExcludedDirectory(directories map[string]struct{}, path string) bool {
+	_, excluded := directories[filepath.Clean(path)]
+	return excluded
 }
 
 func (c *scanCoordinator) scanFile(path string) error {

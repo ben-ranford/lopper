@@ -1,11 +1,15 @@
 package analysis
 
 import (
+	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 type cacheRelevantFile struct {
@@ -13,15 +17,136 @@ type cacheRelevantFile struct {
 	relativePath string
 }
 
+type cacheTraversalEntry struct {
+	relativePath string
+	kind         string
+}
+
+var errPHPShortOpenTagCacheTraversalLimit = errors.New("php short_open_tag cache traversal limit exceeded")
+
 func (c *analysisCache) collectRelevantFiles(rootPath string) ([]cacheRelevantFile, error) {
+	return c.collectRelevantFilesWithExcludedPaths(rootPath, c.cacheExcludedPaths(rootPath, Request{}))
+}
+
+func (c *analysisCache) collectRelevantFilesWithExcludedPaths(rootPath string, excludedPaths []string) ([]cacheRelevantFile, error) {
 	files := make([]cacheRelevantFile, 0, 128)
+	excludedDirectories := cacheExcludedDirectorySet(excludedPaths)
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
-		return collectRelevantFile(rootPath, path, d, walkErr, &files)
+		return collectRelevantFileWithExcludedPaths(rootPath, path, d, walkErr, excludedDirectories, &files)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return files, nil
+}
+
+func (c *analysisCache) cacheExcludedPaths(rootPath string, req Request) []string {
+	rootPath = filepath.Clean(rootPath)
+	paths := make(map[string]struct{})
+	if c != nil && strings.TrimSpace(c.options.Path) != "" {
+		addCacheExcludedPath(paths, rootPath, c.options.Path)
+	}
+	if tracePath := strings.TrimSpace(req.RuntimeTracePath); tracePath != "" {
+		addCacheExcludedPath(paths, rootPath, filepath.Dir(tracePath))
+	} else if strings.TrimSpace(req.RuntimeTestCommand) != "" {
+		addCacheExcludedPath(paths, rootPath, filepath.Dir(runtime.DefaultTracePath(rootPath)))
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	excludedPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		excludedPaths = append(excludedPaths, path)
+	}
+	sort.Strings(excludedPaths)
+	return excludedPaths
+}
+
+func addCacheExcludedPath(paths map[string]struct{}, rootPath, candidatePath string) {
+	candidatePath = filepath.Clean(strings.TrimSpace(candidatePath))
+	relativePath, err := filepath.Rel(rootPath, candidatePath)
+	if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return
+	}
+	paths[candidatePath] = struct{}{}
+}
+
+func cacheExcludedDirectorySet(paths []string) map[string]struct{} {
+	if len(paths) == 0 {
+		return nil
+	}
+	directories := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			directories[filepath.Clean(path)] = struct{}{}
+		}
+	}
+	return directories
+}
+
+func collectPHPShortOpenTagTraversalEntries(rootPath string, excludedPaths []string) ([]cacheTraversalEntry, error) {
+	rootPath = filepath.Clean(rootPath)
+	entries := make([]cacheTraversalEntry, 0, shared.PHPShortOpenTagConfigWalkEntryLimit+1)
+	excludedDirectories := cacheExcludedDirectorySet(excludedPaths)
+	visited := 0
+	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == rootPath {
+			return nil
+		}
+		if _, excluded := excludedDirectories[path]; excluded {
+			return filepath.SkipDir
+		}
+		if d.IsDir() && shouldSkipPHPShortOpenTagConfigDir(path, d.Name()) {
+			return filepath.SkipDir
+		}
+		visited++
+		relativePath, err := filepath.Rel(rootPath, path)
+		if err != nil {
+			return err
+		}
+		kind := "file"
+		if d.IsDir() {
+			kind = "dir"
+		}
+		entries = append(entries, cacheTraversalEntry{
+			relativePath: filepath.ToSlash(relativePath),
+			kind:         kind,
+		})
+		if visited > shared.PHPShortOpenTagConfigWalkEntryLimit {
+			return errPHPShortOpenTagCacheTraversalLimit
+		}
+		return nil
+	})
+	if errors.Is(err, errPHPShortOpenTagCacheTraversalLimit) {
+		return entries, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func collectRelevantFileWithExcludedPaths(rootPath, path string, d fs.DirEntry, walkErr error, excludedDirectories map[string]struct{}, files *[]cacheRelevantFile) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if _, excluded := excludedDirectories[path]; excluded {
+		return filepath.SkipDir
+	}
+	return collectRelevantFile(rootPath, path, d, nil, files)
+}
+
+func shouldSkipPHPShortOpenTagConfigDir(path, name string) bool {
+	switch name {
+	case ".git", ".idea", ".lopper-cache", "node_modules", "vendor", "dist", "build", ".next", ".turbo", "coverage", "tmp", "cache":
+		return true
+	default:
+		_, err := os.Stat(filepath.Join(path, "composer.json"))
+		return err == nil
+	}
 }
 
 func collectRelevantFile(rootPath, path string, d fs.DirEntry, walkErr error, files *[]cacheRelevantFile) error {

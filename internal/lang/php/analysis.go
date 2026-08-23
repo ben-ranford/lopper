@@ -9,10 +9,11 @@ import (
 )
 
 type analysisPipelineState struct {
-	repoPath string
-	composer composerData
-	scan     scanResult
-	warnings []string
+	repoPath            string
+	excludedDirectories map[string]struct{}
+	composer            composerData
+	scan                scanResult
+	warnings            []string
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Result, error) {
@@ -21,7 +22,10 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	state := analysisPipelineState{repoPath: repoPath}
+	state := analysisPipelineState{
+		repoPath:            repoPath,
+		excludedDirectories: excludedDirectoriesForRepo(repoPath, req.ExcludedPaths),
+	}
 	if err := runComposerIngestionStage(ctx, &state); err != nil {
 		return report.Report{}, err
 	}
@@ -32,7 +36,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 }
 
 func runComposerIngestionStage(ctx context.Context, state *analysisPipelineState) error {
-	composerData, warnings, err := loadComposerDataWithContext(ctx, state.repoPath)
+	composerData, warnings, err := loadComposerDataWithContextAndExcludedDirectories(ctx, state.repoPath, state.excludedDirectories)
 	if err != nil {
 		return err
 	}
@@ -42,7 +46,7 @@ func runComposerIngestionStage(ctx context.Context, state *analysisPipelineState
 }
 
 func runPHPScanStage(ctx context.Context, state *analysisPipelineState) error {
-	scan, err := scanRepo(ctx, state.repoPath, state.composer)
+	scan, err := scanRepoWithExcludedDirectories(ctx, state.repoPath, state.composer, state.excludedDirectories)
 	if err != nil {
 		return err
 	}

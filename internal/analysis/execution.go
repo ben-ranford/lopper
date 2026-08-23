@@ -74,6 +74,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
+			ExcludedPaths:                     cache.cacheExcludedPaths(normalizedRoot, req),
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,
 			SuggestOnly:                       req.SuggestOnly,
