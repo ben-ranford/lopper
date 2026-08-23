@@ -1409,7 +1409,14 @@ func TestValidateOpenedAnalysisCacheChildRejectsRetargetedPath(t *testing.T) {
 	}
 	retargetedPath := filepath.Join(repo, "missing-child")
 
-	err = validateOpenedAnalysisCacheChild(root, root, repo, cacheKeysDirName, retargetedPath, childRoot, childInfo, false)
+	rollback := analysisCacheChildRollback{
+		root:    root,
+		name:    cacheKeysDirName,
+		child:   childRoot,
+		info:    childInfo,
+		created: false,
+	}
+	err = validateOpenedAnalysisCacheChild(root, repo, retargetedPath, rollback)
 	if err == nil || !strings.Contains(err.Error(), "missing-child") {
 		t.Fatalf("expected retargeted child path validation failure, got %v", err)
 	}

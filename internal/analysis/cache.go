@@ -384,18 +384,37 @@ func openPinnedAnalysisCacheChildRoot(root, rollbackParent safeio.Root, parentPa
 	if !os.SameFile(info, openedInfo) {
 		return nil, nil, errors.Join(errors.New("directory changed while opening: "+childPath), rollbackCreatedAnalysisCacheChild(rollbackRoot, name, child, info, created))
 	}
-	if err := validateOpenedAnalysisCacheChild(root, rollbackRoot, parentPath, name, childPath, child, openedInfo, created); err != nil {
+	rollback := analysisCacheChildRollback{
+		root:    rollbackRoot,
+		name:    name,
+		child:   child,
+		info:    openedInfo,
+		created: created,
+	}
+	if err := validateOpenedAnalysisCacheChild(root, parentPath, childPath, rollback); err != nil {
 		return nil, nil, err
 	}
 	return child, openedInfo, nil
 }
 
-func validateOpenedAnalysisCacheChild(root, rollbackRoot safeio.Root, parentPath, name, childPath string, child safeio.Root, openedInfo fs.FileInfo, created bool) error {
+type analysisCacheChildRollback struct {
+	root    safeio.Root
+	name    string
+	child   safeio.Root
+	info    fs.FileInfo
+	created bool
+}
+
+func (rollback analysisCacheChildRollback) run() error {
+	return rollbackCreatedAnalysisCacheChild(rollback.root, rollback.name, rollback.child, rollback.info, rollback.created)
+}
+
+func validateOpenedAnalysisCacheChild(root safeio.Root, parentPath, childPath string, rollback analysisCacheChildRollback) error {
 	if _, err := verifyPinnedAnalysisCacheDirectory(root, parentPath); err != nil {
-		return errors.Join(err, rollbackCreatedAnalysisCacheChild(rollbackRoot, name, child, openedInfo, created))
+		return errors.Join(err, rollback.run())
 	}
-	if err := safeio.VerifyDirectoryIdentity(childPath, openedInfo); err != nil {
-		return errors.Join(err, rollbackCreatedAnalysisCacheChild(rollbackRoot, name, child, openedInfo, created))
+	if err := safeio.VerifyDirectoryIdentity(childPath, rollback.info); err != nil {
+		return errors.Join(err, rollback.run())
 	}
 	return nil
 }
