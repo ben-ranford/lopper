@@ -2,6 +2,11 @@
 
 const COMMENT_MARKER = '<!-- queue-me-controller -->';
 const DEFAULT_QUEUE_LABEL = 'queue-me';
+const MAX_GITHUB_COMMENT_BODY_LENGTH = 60000;
+const MAX_QUEUE_IDENTITY_FAILURES = 10;
+const MAX_QUEUE_IDENTITY_FAILURE_LENGTH = 240;
+const MAX_QUEUE_IDENTITY_COMMITS = 500;
+const COMMENT_TRUNCATION_NOTICE = '\n\n_Status message truncated to fit GitHub comment limits._';
 
 function labelName(label) {
   return typeof label === 'string' ? label : label?.name;
@@ -26,6 +31,106 @@ function shortSHA(sha) {
 function safeError(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, 1200);
+}
+
+function safeCommentText(value, maxLength) {
+  return String(value).replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, maxLength);
+}
+
+function truncateCommentBody(body) {
+  if (body.length <= MAX_GITHUB_COMMENT_BODY_LENGTH) {
+    return body;
+  }
+  return `${body.slice(0, MAX_GITHUB_COMMENT_BODY_LENGTH - COMMENT_TRUNCATION_NOTICE.length)}${COMMENT_TRUNCATION_NOTICE}`;
+}
+
+function queuePauseError(message) {
+  const error = new Error(message);
+  error.queuePauseMessage = message;
+  return error;
+}
+
+function isBotIdentity(identity) {
+  const type = String(identity?.type || '').trim().toLowerCase();
+  const login = String(identity?.login || '').toLowerCase();
+  const name = String(identity?.name || '').toLowerCase();
+  const email = String(identity?.email || '').toLowerCase();
+  return (
+    type === 'bot' ||
+    login.endsWith('[bot]') ||
+    name.endsWith('[bot]') ||
+    email.includes('[bot]@') ||
+    email === 'noreply@github.com'
+  );
+}
+
+function githubLogin(identity) {
+  const login = String(identity?.login || '').trim().toLowerCase();
+  if (!login || isBotIdentity(identity)) {
+    return '';
+  }
+  return login;
+}
+
+function sameCommitIdentity(commit) {
+  const authorLogin = githubLogin(commit?.author);
+  const committerLogin = githubLogin(commit?.committer);
+  return authorLogin !== '' && authorLogin === committerLogin;
+}
+
+function commitIdentityFailure(commit) {
+  const author = commit?.commit?.author || {};
+  const committer = commit?.commit?.committer || {};
+  const authorName = String(author.name || '').trim();
+  const authorEmail = String(author.email || '').trim();
+  const committerName = String(committer.name || '').trim();
+  const committerEmail = String(committer.email || '').trim();
+  const sha = shortSHA(commit?.sha);
+
+  if (!authorName || !authorEmail || !committerName || !committerEmail) {
+    return `${sha}: author and committer metadata must both be present`;
+  }
+  if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
+    return `${sha}: author is a bot identity`;
+  }
+  if (isBotIdentity(commit?.committer) || isBotIdentity(committer)) {
+    return `${sha}: committer is a bot identity`;
+  }
+  const authorLogin = githubLogin(commit?.author);
+  const committerLogin = githubLogin(commit?.committer);
+  if (!authorLogin || !committerLogin) {
+    return `${sha}: cannot prove canonical author and committer GitHub identity`;
+  }
+  if (!sameCommitIdentity(commit)) {
+    return `${sha}: author and committer identities differ`;
+  }
+  return '';
+}
+
+function queueIdentityFailureMessage(failures) {
+  const shownFailures = failures
+    .slice(0, MAX_QUEUE_IDENTITY_FAILURES)
+    .map((failure) => safeCommentText(failure, MAX_QUEUE_IDENTITY_FAILURE_LENGTH));
+  const omitted = failures.length - shownFailures.length;
+  let omittedSummary = '';
+  if (omitted > 0) {
+    const omittedFailureNoun = omitted === 1 ? 'failure' : 'failures';
+    omittedSummary = `; ${omitted} additional commit identity ${omittedFailureNoun} omitted`;
+  }
+  return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
+}
+
+function assertCanonicalCommitIdentity(comparison) {
+  const commits = comparison?.commits || [];
+  if (comparison?.total_commits > commits.length) {
+    throw queuePauseError(
+      `Queue identity audit failed: GitHub returned ${commits.length} of ${comparison.total_commits} PR-unique commits, so the queue cannot prove canonical author and committer identity.`,
+    );
+  }
+  const failures = commits.map(commitIdentityFailure).filter(Boolean);
+  if (failures.length > 0) {
+    throw queuePauseError(queueIdentityFailureMessage(failures));
+  }
 }
 
 async function ensureQueueLabel(github, owner, repo, queueLabel) {
@@ -103,7 +208,7 @@ async function syncStatusComment(
       typeof comment.body === 'string' &&
       comment.body.includes(COMMENT_MARKER),
   );
-  const nextBody = `${COMMENT_MARKER}\n${body}`;
+  const nextBody = truncateCommentBody(`${COMMENT_MARKER}\n${body}`);
   if (existing?.body === nextBody) {
     return;
   }
@@ -142,45 +247,45 @@ async function disableAutoMerge(github, owner, repo, number) {
   );
 }
 
-async function rebaseOntoDefault(
+async function verifyHeadForQueue(
   github,
   pull,
   defaultBranchSHA,
-  { canUpdateBranch = true } = {},
 ) {
-  const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+  const comparisonRequest = {
     owner: pull.base.repo.owner.login,
     repo: pull.base.repo.name,
     basehead: `${defaultBranchSHA}...${pull.head.sha}`,
-  });
-  if (isBranchCurrent(comparison.status)) {
-    return { headSHA: pull.head.sha, rebased: false };
-  }
-  if (!canUpdateBranch) {
-    return { headSHA: pull.head.sha, rebased: false, needsManualRebase: true };
-  }
-  const result = await github.graphql(
-    `mutation RebaseQueuedPull($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
-      updatePullRequestBranch(input: {
-        pullRequestId: $pullRequestId
-        expectedHeadOid: $expectedHeadOid
-        updateMethod: REBASE
-      }) {
-        pullRequest {
-          headRefOid
-          number
-        }
-      }
-    }`,
-    {
-      pullRequestId: pull.node_id,
-      expectedHeadOid: pull.head.sha,
-    },
-  );
-  return {
-    headSHA: result.updatePullRequestBranch.pullRequest.headRefOid,
-    rebased: true,
+    per_page: 100,
   };
+  const { data: firstComparison } = await github.rest.repos.compareCommitsWithBasehead({
+    ...comparisonRequest,
+    page: 1,
+  });
+  if (firstComparison.total_commits > MAX_QUEUE_IDENTITY_COMMITS) {
+    throw queuePauseError(
+      `Queue identity audit failed: ${firstComparison.total_commits} PR-unique commits exceeds the ${MAX_QUEUE_IDENTITY_COMMITS}-commit audit limit.`,
+    );
+  }
+  const commits = [...(firstComparison.commits || [])];
+  let page = 2;
+  while (commits.length < firstComparison.total_commits) {
+    const { data: comparisonPage } = await github.rest.repos.compareCommitsWithBasehead({
+      ...comparisonRequest,
+      page,
+    });
+    page += 1;
+    commits.push(...(comparisonPage.commits || []));
+    if (!comparisonPage.commits?.length) {
+      break;
+    }
+  }
+  const comparison = { ...firstComparison, commits };
+  assertCanonicalCommitIdentity(comparison);
+  if (isBranchCurrent(comparison.status)) {
+    return { headSHA: pull.head.sha, needsCurrentBase: false };
+  }
+  return { headSHA: pull.head.sha, needsCurrentBase: true };
 }
 
 async function mergeNow(github, pullRequestId, expectedHeadOid) {
@@ -390,28 +495,30 @@ async function runController({
   });
   let update;
   try {
-    update = await rebaseOntoDefault(github, leader, branch.commit.sha, {
-      canUpdateBranch: leader.head.repo?.full_name === repository.full_name,
-    });
+    update = await verifyHeadForQueue(github, leader, branch.commit.sha);
   } catch (error) {
+    const pauseMessage = error?.queuePauseMessage ||
+      `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
     await syncStatusComment(
       github,
       owner,
       repo,
       leader.number,
-      `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
+      `## Queue status\n\nQueue paused: ${pauseMessage}\n\n\`${safeError(error)}\``,
     );
     throw error;
   }
-  if (update.needsManualRebase) {
+  if (update.needsCurrentBase) {
+    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
+    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. Push a history that contains current \`${defaultBranch}\` while preserving canonical author and committer identity; \`${queueLabel}\` will retry after the clean identity audit.`;
     await syncStatusComment(
       github,
       owner,
       repo,
       leader.number,
-      `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
+      `## Queue status\n\nQueue paused: ${message}`,
     );
-    return;
+    throw new Error(`Queue paused: ${message}`);
   }
 
   try {
@@ -435,9 +542,7 @@ async function runController({
       expectedBaseRefName: defaultBranch,
       expectedBaseRefOid: branch.commit.sha,
     });
-    const rebaseSummary = update.rebased
-      ? `Rebased \`${shortSHA(leader.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
-      : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
+    const queueSummary = `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit.`;
     const mergeSummary = result === 'merged'
       ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
       : 'Squash auto-merge is armed and will wait for the repository ruleset.';
@@ -446,7 +551,7 @@ async function runController({
       owner,
       repo,
       leader.number,
-      `## Queue status\n\n${rebaseSummary}\n\n${mergeSummary}`,
+      `## Queue status\n\n${queueSummary}\n\n${mergeSummary}`,
     );
   } catch (error) {
     await syncStatusComment(
@@ -462,10 +567,16 @@ async function runController({
 
 module.exports = runController;
 module.exports.testables = {
+  assertCanonicalCommitIdentity,
+  commitIdentityFailure,
   hasLabel,
   isBranchCurrent,
+  isBotIdentity,
   labelName,
+  queueIdentityFailureMessage,
   safeError,
   shortSHA,
   sortQueuedPulls,
+  truncateCommentBody,
+  verifyHeadForQueue,
 };
