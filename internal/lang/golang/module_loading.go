@@ -677,8 +677,8 @@ func (s *goModModuleScanner) consumeGoModDirectiveLine(line *strings.Builder, in
 }
 
 func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, tooLargeInQuote, quoteClosed bool) {
-	lineText = trimGoModDirectiveSpace(lineText)
-	if lineText == "" {
+	trimmedLine := trimGoModDirectiveSpace(lineText)
+	if trimmedLine == "" {
 		s.invalid = true
 		return
 	}
@@ -692,7 +692,7 @@ func (s *goModModuleScanner) consumeTooLargeGoModDirectiveLine(lineText string, 
 		}
 		return
 	}
-	if s.acceptLongGoModDirectiveLine(firstToken(lineText), lineText, tooLargeInQuote, quoteClosed) {
+	if s.acceptLongGoModDirectiveLine(firstToken(trimmedLine), lineText, tooLargeInQuote, quoteClosed) {
 		return
 	}
 	s.invalid = true
@@ -704,7 +704,7 @@ func (s *goModModuleScanner) consumeTooLargeGoModModuleBlockLine(lineText string
 		s.invalid = true
 		return
 	}
-	s.consumeGoModModuleLine(goModModuleDirectivePrefix + recovered)
+	s.consumeGoModModuleLine(goModModuleDirectivePrefix + trimGoModDirectiveSpace(recovered))
 }
 
 func isValidLongGoModDirective(directive string) bool {
@@ -724,6 +724,7 @@ func (s *goModModuleScanner) acceptLongGoModDirectiveLine(directive, lineText st
 	if !ok {
 		return false
 	}
+	recovered = trimGoModDirectiveSpace(recovered)
 	if directive == "module" {
 		s.consumeGoModModuleLine(recovered)
 		return !s.invalid
