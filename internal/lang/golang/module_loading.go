@@ -270,13 +270,8 @@ func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
 	}
 	if s.quoteByte == '`' {
 		if b == '`' {
-			if s.lineTooLargeInQuote {
-				s.finishLongQuotedTarget()
-				return
-			}
-			s.appendRawLineByte(b)
-			s.inQuotedString = false
-			s.quoteByte = 0
+			s.closeQuotedString()
+			return
 		}
 		if s.inQuotedString {
 			s.appendRawLineByte(b)
@@ -294,17 +289,28 @@ func (s *goModModuleScanner) consumeQuotedStringByte(b byte) {
 		return
 	}
 	if b == s.quoteByte {
-		if s.lineTooLargeInQuote {
-			s.finishLongQuotedTarget()
-			return
-		}
-		s.appendRawLineByte(b)
-		s.inQuotedString = false
-		s.quoteByte = 0
-		s.lineQuoteClosed = true
+		s.closeQuotedString()
 		return
 	}
 	s.appendRawLineByte(b)
+}
+
+func (s *goModModuleScanner) closeQuotedString() {
+	if s.lineTooLargeInQuote {
+		s.finishLongQuotedTarget()
+		return
+	}
+	if s.line.Len() >= maxGoModModuleLineBytes {
+		s.lineTooLarge = true
+		s.lineTooLargeInQuote = true
+		s.startLongQuotedTarget()
+		s.finishLongQuotedTarget()
+		return
+	}
+	s.appendRawLineByte(s.quoteByte)
+	s.inQuotedString = false
+	s.quoteByte = 0
+	s.lineQuoteClosed = true
 }
 
 func (s *goModModuleScanner) consumeCodeByte(b byte) error {

@@ -18,6 +18,7 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 	longRetract := "v2." + strings.Repeat("0", 70*1024)
 	longGoDirective := "1.23." + strings.Repeat("0", 70*1024)
 	longQuotedOldPath := `replace "example.com/` + strings.Repeat("x", 70*1024) + `" => "./a//b"`
+	boundaryQuotedReplacement := strings.Repeat("x", maxGoModModuleLineBytes-len(`replace example.com/a => "`)) + `"`
 	longModulePath := "example.com/" + strings.TrimSuffix(strings.Repeat("service/", 9*1024), "/")
 	longQuotedReplacementSuffix := `replace "example.com/` + strings.Repeat("x", 70*1024) + `" => "./` + strings.Repeat("y", 2*1024) + `"`
 	longUnquotedOldPathWithQuotedReplacement := `replace example.com/` + strings.Repeat("x", 70*1024) + ` => "./a//b"`
@@ -86,6 +87,14 @@ func TestGoModModuleScannerReconstructsLongSupportedFallbackDirectives(t *testin
 			},
 			wantPath: "example.com/root",
 			wantBody: longQuotedReplacementSuffix + "\n",
+		},
+		"replace quoted target closing at recovery boundary": {
+			lines: []string{
+				"module example.com/root",
+				`replace example.com/a => "` + boundaryQuotedReplacement,
+			},
+			wantPath: "example.com/root",
+			wantBody: `replace example.com/a => "` + boundaryQuotedReplacement + "\n",
 		},
 		"replace unquoted old path before quoted replacement": {
 			lines: []string{
