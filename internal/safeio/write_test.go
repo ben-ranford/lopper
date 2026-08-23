@@ -8572,6 +8572,70 @@ func TestFinalSafeIOPathUtilityBranches(t *testing.T) {
 	})
 }
 
+func TestFinalSafeIOQuarantineCleanupResidualBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+
+	t.Run("missing verified quarantine is already clean", func(t *testing.T) {
+		root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }}
+		if err := removeVerifiedQuarantinedFile(root, "quarantine/entry", sourceInfo, sourceChangedMsg); err != nil {
+			t.Fatalf("missing quarantined cleanup should be accepted: %v", err)
+		}
+	})
+
+	t.Run("mismatched created cleanup preserves an un-restorable quarantine", func(t *testing.T) {
+		restoreErr := errors.New("restore blocked")
+		cleanupDir, cleanupEntry, err := restoreMismatchedCreatedCleanup(&fakeRoot{
+			link: func(string, string) error { return restoreErr },
+		}, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+		if cleanupDir || cleanupEntry || !errors.Is(err, restoreErr) {
+			t.Fatalf("expected un-restorable quarantine to be preserved, cleanupDir=%t cleanupEntry=%t err=%v", cleanupDir, cleanupEntry, err)
+		}
+	})
+
+	t.Run("mismatched created cleanup retains a restored entry after cleanup failure", func(t *testing.T) {
+		rootDir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+			t.Fatalf("create quarantine: %v", err)
+		}
+		stagedPath := filepath.Join(rootDir, "quarantine", "entry")
+		if err := os.WriteFile(stagedPath, []byte("source"), 0o600); err != nil {
+			t.Fatalf("seed quarantined source: %v", err)
+		}
+		stagedInfo := statTestPath(t, stagedPath)
+		removeErr := errors.New("staged cleanup failed")
+		base := openTestRoot(t, rootDir)
+		root := &fakeRoot{Root: base, remove: func(name string) error {
+			if name == filepath.Join("quarantine", "entry") {
+				return removeErr
+			}
+			return base.Remove(name)
+		}}
+
+		cleanupDir, cleanupEntry, err := restoreMismatchedCreatedCleanup(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, stagedInfo)
+		if !cleanupDir || !cleanupEntry || !errors.Is(err, removeErr) {
+			t.Fatalf("expected restored entry cleanup retry, cleanupDir=%t cleanupEntry=%t err=%v", cleanupDir, cleanupEntry, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	})
+
+	t.Run("created cleanup returns a failed quarantine rename", func(t *testing.T) {
+		renameErr := errors.New("quarantine rename failed")
+		root := &fakeRoot{
+			mkdir:  func(string, os.FileMode) error { return nil },
+			rename: func(string, string) error { return renameErr },
+		}
+		if err := removeCreatedFileIfSameFile(root, "source", sourceInfo, sourceChangedMsg); !errors.Is(err, renameErr) {
+			t.Fatalf("expected quarantine rename failure, got %v", err)
+		}
+	})
+
+	t.Run("fallback source absence requires a distinct staged path", func(t *testing.T) {
+		if fallbackCopySourceIsAbsent(&fakeRoot{}, "source", "source") {
+			t.Fatal("the live source path must not be treated as an absent staged fallback")
+		}
+	})
+}
+
 func TestCleanupAtomicTempFileIfMatchesRejectsMissingIdentity(t *testing.T) {
 	err := cleanupAtomicTempFileIfMatches(&fakeRoot{}, ".safeio-atomic-temp", nil)
 	if err == nil || !strings.Contains(err.Error(), "cleanup file identity unavailable") {
