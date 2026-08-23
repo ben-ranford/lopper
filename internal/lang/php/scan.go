@@ -32,15 +32,16 @@ type fileScan struct {
 }
 
 type scanState struct {
-	visited                      int
-	unresolvedNamespaces         int
-	foundPHP                     bool
-	skippedLargeFiles            int
-	skippedNestedPackage         int
-	useStatementLimitHits        int
-	useBindingLimitHits          int
-	namespaceReferenceLimitHits  int
-	namespaceResolutionLimitHits int
+	visited                       int
+	unresolvedNamespaces          int
+	foundPHP                      bool
+	skippedLargeFiles             int
+	skippedNestedPackage          int
+	useStatementLimitHits         int
+	useBindingLimitHits           int
+	namespaceDeclarationLimitHits int
+	namespaceReferenceLimitHits   int
+	namespaceResolutionLimitHits  int
 }
 
 type scanCoordinator struct {
@@ -159,6 +160,10 @@ func (c *scanCoordinator) scanFile(path string) error {
 		c.state.useBindingLimitHits++
 		c.result.UsageIncomplete = true
 	}
+	if parsed.namespaceDeclarationLimitHit {
+		c.state.namespaceDeclarationLimitHits++
+		c.result.UsageIncomplete = true
+	}
 	if parsed.namespaceReferenceLimitHit {
 		c.state.namespaceReferenceLimitHits++
 		c.result.UsageIncomplete = true
@@ -226,6 +231,9 @@ func appendScanWarnings(result *scanResult, state scanState) {
 	}
 	if state.useBindingLimitHits > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP use import scan after %d binding part(s) in %d file(s) to keep analysis bounded", maxPHPUseStatementsPerFile, state.useBindingLimitHits))
+	}
+	if state.namespaceDeclarationLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace declaration scan after %d declaration(s) in %d file(s) to keep analysis bounded", maxPHPNamespaceDeclarationsPerFile, state.namespaceDeclarationLimitHits))
 	}
 	if state.namespaceReferenceLimitHits > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace reference scan after %d match(es) in %d file(s) to keep analysis bounded", maxPHPNamespaceReferencesPerFile, state.namespaceReferenceLimitHits))

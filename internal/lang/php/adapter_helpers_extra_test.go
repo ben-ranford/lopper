@@ -30,12 +30,13 @@ const helpersUnexpectedUnresolvedFmt = "unexpected unresolved: %d"
 const helpersPHPHeader = "<?php\n"
 
 const (
-	testMaxComposerManifestBytes         int64 = 2 * 1024 * 1024
-	testMaxComposerLockBytes             int64 = 8 * 1024 * 1024
-	testMaxScannablePHPFile              int64 = 2 * 1024 * 1024
-	testMaxPHPUseStatementsPerFile             = 4096
-	testMaxPHPNamespaceReferencesPerFile       = 4096
-	testMaxPHPConfigBytes                      = 64 * 1024
+	testMaxComposerManifestBytes           int64 = 2 * 1024 * 1024
+	testMaxComposerLockBytes               int64 = 8 * 1024 * 1024
+	testMaxScannablePHPFile                int64 = 2 * 1024 * 1024
+	testMaxPHPUseStatementsPerFile               = 4096
+	testMaxPHPNamespaceDeclarationsPerFile       = 4096
+	testMaxPHPNamespaceReferencesPerFile         = 4096
+	testMaxPHPConfigBytes                        = 64 * 1024
 )
 
 func TestAdapterIdentityAndDetectWrapper(t *testing.T) {
@@ -849,6 +850,20 @@ func TestScanRepoMarksUsageIncompleteWhenUseStatementLimitHit(t *testing.T) {
 			t.Fatalf("did not expect definitive usage recommendation with incomplete scan: %#v", dep.Recommendations)
 		}
 	}
+}
+
+func TestScanRepoMarksUsageIncompleteWhenNamespaceDeclarationLimitHit(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	var content strings.Builder
+	content.WriteString(helpersPHPHeader)
+	for i := 0; i < testMaxPHPNamespaceDeclarationsPerFile+1; i++ {
+		content.WriteString("namespace {}\n")
+	}
+	writeFile(t, filepath.Join(repo, "src", "adversarial-namespaces.php"), content.String())
+
+	scan := scanVendorLibRepo(t, repo, map[string]string{"Vendor\\Lib": helpersVendorLibDependency})
+	assertIncompleteScanWarning(t, scan, "namespace declaration cap", "stopped PHP namespace declaration scan")
 }
 
 func TestScanRepoMarksUsageIncompleteWhenNamespaceResolutionSegmentLimitHit(t *testing.T) {
@@ -1705,7 +1720,8 @@ func assertParsedVendorPackageModules(t *testing.T, filePath string, content []b
 
 func TestImportParserContextTrackerHelperBranches(t *testing.T) {
 	trackerText := "namespace App { class C {} }"
-	tracker := newPHPContextTracker(trackerText, false)
+	declarations, _ := findNamespaceDeclarationsWithShortOpenTags(trackerText, false)
+	tracker := newPHPContextTracker(trackerText, declarations)
 	if context := tracker.advanceTo(len(trackerText) + 10); context.namespace != "" || context.classBody {
 		t.Fatalf("expected bracketed namespace context to restore after close, got %#v", context)
 	}

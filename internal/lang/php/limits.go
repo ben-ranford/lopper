@@ -7,8 +7,9 @@ const (
 	maxPHPConfigBytes        int64 = 64 * 1024
 	maxPHPConfigWalkEntries        = maxScanFiles
 
-	maxPHPUseStatementsPerFile       = 4096
-	maxPHPNamespaceReferencesPerFile = 4096
-	maxPHPNamespaceSegmentsPerLookup = 256
-	maxPHPNamespaceAncestorBytes     = 64 * 1024
+	maxPHPUseStatementsPerFile         = 4096
+	maxPHPNamespaceDeclarationsPerFile = 4096
+	maxPHPNamespaceReferencesPerFile   = 4096
+	maxPHPNamespaceSegmentsPerLookup   = 256
+	maxPHPNamespaceAncestorBytes       = 64 * 1024
 )
