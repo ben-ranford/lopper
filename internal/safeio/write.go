@@ -551,7 +551,7 @@ func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expecte
 		if cleanupErr != nil {
 			cleanupDir = false
 		}
-		return errors.Join(err, cleanupErr)
+		return withAtomicWriteCleanup(err, cleanupErr)
 	}
 
 	newInfo, err := publishedRegularFileInfo(root, newName, message)

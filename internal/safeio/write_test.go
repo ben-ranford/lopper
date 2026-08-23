@@ -7223,6 +7223,7 @@ func TestBasicRootLinkRenameRemoveErrorBranches(t *testing.T) {
 	t.Run("link quarantine mkdir error", testBasicRootLinkQuarantineMkdirError)
 	t.Run("link source failure", testBasicRootLinkSourceFailure)
 	t.Run("link quarantine lstat failure", testBasicRootLinkQuarantineLstatFailure)
+	t.Run("target link cleanup failure marks atomic cleanup", testBasicRootLinkTargetLinkCleanupFailure)
 	t.Run("target stat failure cleans target and quarantine links", testBasicRootLinkTargetStatFailureCleansAllPaths)
 	t.Run("link final cleanup failure", testBasicRootLinkFinalCleanupFailure)
 }
@@ -7268,6 +7269,45 @@ func testBasicRootLinkQuarantineLstatFailure(t *testing.T) {
 	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
 	if !errors.Is(err, lstatErr) {
 		t.Fatalf("expected lstat error, got %v", err)
+	}
+}
+
+func testBasicRootLinkTargetLinkCleanupFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	linkErr := syscall.EPERM
+	cleanupErr := errors.New("quarantine cleanup failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"cleanup")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		link: func(oldName, newName string) error {
+			if newName == "target" {
+				return linkErr
+			}
+			info, ok := files[oldName]
+			if !ok {
+				return os.ErrNotExist
+			}
+			files[newName] = info
+			return nil
+		},
+		remove: func(name string) error {
+			if filepath.Base(name) == "entry" {
+				return cleanupErr
+			}
+			delete(files, name)
+			return nil
+		},
+	})
+
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("expected target link error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected quarantine cleanup error, got %v", err)
+	}
+	if !atomicWriteCleanupFailed(err) {
+		t.Fatalf("expected atomic cleanup marker, got %v", err)
 	}
 }
 
