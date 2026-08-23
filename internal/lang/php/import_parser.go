@@ -50,6 +50,15 @@ type phpUseContext struct {
 	namespaceUses map[string]string
 }
 
+type phpUseStatementParser struct {
+	result         *importParseResult
+	contextTracker *phpContextTracker
+	text           string
+	filePath       string
+	resolver       composerResolver
+	lineIndex      phpLineIndex
+}
+
 type phpCodeState uint8
 
 const (
@@ -96,9 +105,17 @@ func parsePHPUseStatementMatches(text, filePath string, resolver composerResolve
 		matches = matches[:maxPHPUseStatementsPerFile]
 	}
 
+	parser := phpUseStatementParser{
+		result:         &result,
+		contextTracker: &contextTracker,
+		text:           text,
+		filePath:       filePath,
+		resolver:       resolver,
+		lineIndex:      lineIndex,
+	}
 	consumedUseParts := 0
 	for _, match := range matches {
-		consumedParts, stop := consumePHPUseStatementMatch(&result, &contextTracker, text, filePath, resolver, lineIndex, match, maxPHPUseStatementsPerFile-consumedUseParts)
+		consumedParts, stop := parser.consume(match, maxPHPUseStatementsPerFile-consumedUseParts)
 		consumedUseParts += consumedParts
 		if stop {
 			break
@@ -107,25 +124,25 @@ func parsePHPUseStatementMatches(text, filePath string, resolver composerResolve
 	return result
 }
 
-func consumePHPUseStatementMatch(result *importParseResult, contextTracker *phpContextTracker, text, filePath string, resolver composerResolver, lineIndex phpLineIndex, match phpUseStatementMatch, remainingUseParts int) (int, bool) {
+func (p phpUseStatementParser) consume(match phpUseStatementMatch, remainingUseParts int) (int, bool) {
 	if remainingUseParts <= 0 {
-		result.useBindingLimitHit = true
+		p.result.useBindingLimitHit = true
 		return 0, true
 	}
-	statement := strings.TrimSpace(text[match.statementStart:match.statementEnd])
-	line := lineIndex.lineNumberAt(match.statementStart)
-	context := contextTracker.advanceTo(match.start)
-	bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, context)
+	statement := strings.TrimSpace(p.text[match.statementStart:match.statementEnd])
+	line := p.lineIndex.lineNumberAt(match.statementStart)
+	context := p.contextTracker.advanceTo(match.start)
+	bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, p.filePath, line, p.resolver, remainingUseParts, context)
 	if !context.classBody {
-		contextTracker.addNamespaceUses(statement, remainingUseParts)
+		p.contextTracker.addNamespaceUses(statement, remainingUseParts)
 	}
-	result.imports = append(result.imports, bindings...)
+	p.result.imports = append(p.result.imports, bindings...)
 	for dep := range groupedDeps {
-		result.groupedByDep[dep]++
+		p.result.groupedByDep[dep]++
 	}
-	result.unresolvedCount += unresolvedCount
-	result.useBindingLimitHit = result.useBindingLimitHit || bindingLimitHit
-	result.namespaceResolutionLimitHit = result.namespaceResolutionLimitHit || resolutionLimitHit
+	p.result.unresolvedCount += unresolvedCount
+	p.result.useBindingLimitHit = p.result.useBindingLimitHit || bindingLimitHit
+	p.result.namespaceResolutionLimitHit = p.result.namespaceResolutionLimitHit || resolutionLimitHit
 	return consumedParts, bindingLimitHit || resolutionLimitHit
 }
 
