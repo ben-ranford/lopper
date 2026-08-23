@@ -53,6 +53,7 @@ func (c *analysisCache) cacheAnalysisExclusions(rootPath string, req Request) ca
 		addCacheExcludedPath(directories, rootPath, c.options.Path)
 	}
 	if tracePath := strings.TrimSpace(req.RuntimeTracePath); tracePath != "" {
+		tracePath = runtimeTracePathForRepo(rootPath, tracePath)
 		addCacheExcludedPath(files, rootPath, tracePath)
 		addCacheExcludedPath(files, rootPath, runtime.TraceStatePath(tracePath))
 	} else if strings.TrimSpace(req.RuntimeTestCommand) != "" {
@@ -62,6 +63,14 @@ func (c *analysisCache) cacheAnalysisExclusions(rootPath string, req Request) ca
 		directories: sortedCacheExcludedPaths(directories),
 		files:       sortedCacheExcludedPaths(files),
 	}
+}
+
+func runtimeTracePathForRepo(rootPath, tracePath string) string {
+	tracePath = filepath.Clean(strings.TrimSpace(tracePath))
+	if filepath.IsAbs(tracePath) {
+		return tracePath
+	}
+	return filepath.Join(rootPath, tracePath)
 }
 
 func sortedCacheExcludedPaths(paths map[string]struct{}) []string {

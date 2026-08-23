@@ -451,7 +451,7 @@ func TestAnalysisCachePHPShortOpenTagTraversalCutoffInvalidatesInputDigest(t *te
 
 func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.T) {
 	repo := t.TempDir()
-	tracePath := filepath.Join(repo, "tests", "trace.ndjson")
+	tracePath := filepath.Join("tests", "trace.ndjson")
 	sourcePath := filepath.Join(repo, "tests", "source.php")
 	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
 
@@ -461,8 +461,8 @@ func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.
 	if err != nil {
 		t.Fatalf("compute digest before trace artifacts: %v", err)
 	}
-	mustWriteFile(t, tracePath, []byte("{\"module\":\"example\"}\n"))
-	mustWriteFile(t, runtime.TraceStatePath(tracePath), []byte("{\"schema\":\"v2\"}\n"))
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	mustWriteFile(t, runtime.TraceStatePath(filepath.Join(repo, tracePath)), []byte("{\"schema\":\"v2\"}\n"))
 	afterTrace, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
 	if err != nil {
 		t.Fatalf("compute digest after trace artifacts: %v", err)
