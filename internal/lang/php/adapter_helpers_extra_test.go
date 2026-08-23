@@ -1379,6 +1379,21 @@ func TestParsePHPImportsHonorsDisabledShortOpenTags(t *testing.T) {
 		"expected malformed long PHP tags to stay inactive when short tags are disabled")
 }
 
+func TestParsePHPImportsResolvesNamespaceRelativeTraitUseAsLocalWithShortOpenTag(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
+		localNamespace:        map[string]struct{}{"App": {}},
+		allowPHPShortOpenTags: true,
+	}
+	parsed := parsePHPImports([]byte("<? namespace App; class C { use Vendor\\Package\\FeatureTrait; }"), "short-tag-trait.php", resolver)
+	if parsed.unresolvedCount != 0 {
+		t.Fatalf("expected short-tag namespace-relative trait use to resolve locally, got %d unresolved", parsed.unresolvedCount)
+	}
+	if len(parsed.imports) != 0 {
+		t.Fatalf("expected namespace-relative trait use to stay local, got %#v", parsed.imports)
+	}
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
@@ -1450,7 +1465,7 @@ func TestMaskInactivePHPRegionsHelperBranches(t *testing.T) {
 }
 
 func TestImportParserUseStatementMaskAndLimitHelpers(t *testing.T) {
-	if got := maskUseStatementRanges("", nil); got != "" {
+	if got := maskUseStatementRanges("", nil, nil); got != "" {
 		t.Fatalf("expected empty mask result, got %q", got)
 	}
 	chained := findPHPUseStatementMatches("<?php use Foo\\A; use Foo\\B;", 2)
@@ -1535,7 +1550,7 @@ func assertParsedVendorPackageModules(t *testing.T, filePath string, content []b
 
 func TestImportParserContextTrackerHelperBranches(t *testing.T) {
 	trackerText := "namespace App { class C {} }"
-	tracker := newPHPContextTracker(trackerText)
+	tracker := newPHPContextTracker(trackerText, false)
 	if context := tracker.advanceTo(len(trackerText) + 10); context.namespace != "" || context.classBody {
 		t.Fatalf("expected bracketed namespace context to restore after close, got %#v", context)
 	}

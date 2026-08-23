@@ -76,7 +76,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 	lineIndex := newPHPLineIndex(text)
 	useScan, namespaceText := scanPHPUseStatementsForImports(text, maxPHPUseStatementsPerFile+1)
 	matches := useScan.matches
-	contextTracker := newPHPContextTracker(text)
+	contextTracker := newPHPContextTracker(text, resolver.allowPHPShortOpenTags)
 	result := importParseResult{
 		imports:      make([]importBinding, 0),
 		groupedByDep: make(map[string]int),
@@ -150,7 +150,7 @@ func parseNamespaceReferencesTextWithLineIndex(text string, filePath string, res
 }
 
 func parseNamespaceReferencesTextWithLineIndexAndUseRanges(text string, filePath string, resolver composerResolver, lineIndex phpLineIndex, useRanges [][]int) namespaceReferenceParseResult {
-	namespaceText := maskUseStatementRanges(text, useRanges)
+	namespaceText := maskUseStatementRanges(text, useRanges, findNamespaceDeclarationRanges(text, resolver.allowPHPShortOpenTags))
 	matches := namespaceRefPattern.FindAllStringIndex(namespaceText, maxPHPNamespaceReferencesPerFile+1)
 	result := namespaceReferenceParseResult{}
 	if len(matches) > maxPHPNamespaceReferencesPerFile {
@@ -201,8 +201,8 @@ func parseNamespaceReferenceWithLineIndex(text string, match []int, filePath str
 	return namespaceImportBinding(filePath, line, local, module, dependency), 0, true, false
 }
 
-func maskUseStatementRanges(text string, useRanges [][]int) string {
-	masked := maskMatchedRanges(text, useRanges, findNamespaceDeclarationRanges(text))
+func maskUseStatementRanges(text string, useRanges, namespaceDeclarationRanges [][]int) string {
+	masked := maskMatchedRanges(text, useRanges, namespaceDeclarationRanges)
 	if masked == "" {
 		return text
 	}
@@ -391,8 +391,8 @@ func isPHPIdentifierByte(ch byte) bool {
 	return ch == '$' || ch == '_' || ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= 0x80
 }
 
-func findNamespaceDeclarationRanges(text string) [][]int {
-	declarations := findNamespaceDeclarations(text)
+func findNamespaceDeclarationRanges(text string, allowShortOpenTags bool) [][]int {
+	declarations := findNamespaceDeclarationsWithShortOpenTags(text, allowShortOpenTags)
 	if len(declarations) == 0 {
 		return nil
 	}
@@ -427,8 +427,8 @@ type phpContextTracker struct {
 	classLikeBraceByOffset    map[int]struct{}
 }
 
-func newPHPContextTracker(text string) phpContextTracker {
-	declarations := findNamespaceDeclarations(text)
+func newPHPContextTracker(text string, allowShortOpenTags bool) phpContextTracker {
+	declarations := findNamespaceDeclarationsWithShortOpenTags(text, allowShortOpenTags)
 	semicolonNamespaceByStart := make(map[int]string)
 	bracketedNamespaceByBrace := make(map[int]string)
 	for _, declaration := range declarations {
@@ -501,10 +501,14 @@ func (t *phpContextTracker) popBraceFrame() {
 }
 
 func findNamespaceDeclarations(text string) []phpNamespaceDeclaration {
+	return findNamespaceDeclarationsWithShortOpenTags(text, false)
+}
+
+func findNamespaceDeclarationsWithShortOpenTags(text string, allowShortOpenTags bool) []phpNamespaceDeclaration {
 	declarations := make([]phpNamespaceDeclaration, 0)
 	for lineStart := 0; lineStart < len(text); {
 		lineEnd := nextPHPLineEnd(text, lineStart)
-		declarations = appendNamespaceDeclarationsInLine(declarations, text, lineStart, lineEnd)
+		declarations = appendNamespaceDeclarationsInLine(declarations, text, lineStart, lineEnd, allowShortOpenTags)
 		if lineEnd >= len(text) {
 			break
 		}
@@ -516,8 +520,8 @@ func findNamespaceDeclarations(text string) []phpNamespaceDeclaration {
 	return declarations
 }
 
-func appendNamespaceDeclarationsInLine(declarations []phpNamespaceDeclaration, text string, lineStart, lineEnd int) []phpNamespaceDeclaration {
-	prelude := phpNamespaceLinePrelude{offset: lineStart, valid: true}
+func appendNamespaceDeclarationsInLine(declarations []phpNamespaceDeclaration, text string, lineStart, lineEnd int, allowShortOpenTags bool) []phpNamespaceDeclaration {
+	prelude := phpNamespaceLinePrelude{offset: lineStart, valid: true, allowShortOpenTags: allowShortOpenTags}
 	completion := phpNamespaceLineCompletion{offset: lineStart, segmentStart: lineStart}
 	for offset := lineStart; offset < lineEnd; {
 		declaration, ok := parseNamespaceDeclarationAt(text, offset)
@@ -537,9 +541,10 @@ func appendNamespaceDeclarationsInLine(declarations []phpNamespaceDeclaration, t
 }
 
 type phpNamespaceLinePrelude struct {
-	offset     int
-	valid      bool
-	phpTagSeen bool
+	offset             int
+	valid              bool
+	phpTagSeen         bool
+	allowShortOpenTags bool
 }
 
 func (p *phpNamespaceLinePrelude) advanceTo(text string, target, lineEnd int) {
@@ -553,10 +558,12 @@ func (p *phpNamespaceLinePrelude) advanceTo(text string, target, lineEnd int) {
 			p.offset = next
 			continue
 		}
-		if !p.phpTagSeen && hasPHPOpenPreludeAt(text, p.offset, target) {
-			p.phpTagSeen = true
-			p.offset += len("<?php")
-			continue
+		if !p.phpTagSeen {
+			if tagLength := phpOpenPreludeLengthAt(text, p.offset, target, p.allowShortOpenTags); tagLength > 0 {
+				p.phpTagSeen = true
+				p.offset += tagLength
+				continue
+			}
 		}
 		if next, ok := parseDeclarePreludeAt(text, p.offset, target, lineEnd); ok {
 			p.offset = next
@@ -578,6 +585,16 @@ func skipPHPWhitespaceUntil(text string, offset, limit int) int {
 func hasPHPOpenPreludeAt(text string, offset, limit int) bool {
 	end := offset + len("<?php")
 	return end <= limit && strings.EqualFold(text[offset:end], "<?php") && (end == len(text) || isPHPWhitespace(text[end]))
+}
+
+func phpOpenPreludeLengthAt(text string, offset, limit int, allowShortOpenTags bool) int {
+	if hasPHPOpenPreludeAt(text, offset, limit) {
+		return len("<?php")
+	}
+	if allowShortOpenTags && offset+len("<?") <= limit && strings.HasPrefix(text[offset:], "<?") && !strings.HasPrefix(text[offset:], "<?=") {
+		return len("<?")
+	}
+	return 0
 }
 
 func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool) {
