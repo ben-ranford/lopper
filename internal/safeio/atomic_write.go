@@ -363,10 +363,7 @@ func stageIdentityBoundFileKeepingSourceLive(root Root, sourceRel string, expect
 	if err == nil {
 		return stagedRel, expected, nil
 	}
-	if !errors.Is(err, errIdentityBoundLinkUnavailable) && !identityBoundLinkUnsupported(err) {
-		return "", nil, err
-	}
-	if atomicWriteCleanupFailed(err) {
+	if !identityBoundLinkFallbackEligible(err) {
 		return "", nil, err
 	}
 	stagedRel, stagedInfo, copyErr := stageIdentityBoundCopy(root, sourceRel, expected, message, liveSource)
@@ -511,6 +508,35 @@ func identityBoundLinkUnsupported(err error) bool {
 		errors.Is(err, syscall.ENOSYS) ||
 		errors.Is(err, syscall.EXDEV) ||
 		errors.Is(err, syscall.EPERM)
+}
+
+func identityBoundLinkFallbackEligible(err error) bool {
+	if atomicWriteCleanupFailed(err) {
+		return false
+	}
+	return identityBoundLinkUnavailableOnly(err)
+}
+
+func identityBoundLinkUnavailableOnly(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := joined.Unwrap()
+		if len(errs) == 0 {
+			return false
+		}
+		for _, joinedErr := range errs {
+			if !identityBoundLinkUnavailableOnly(joinedErr) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return identityBoundLinkUnavailableOnly(wrapped.Unwrap())
+	}
+	return errors.Is(err, errIdentityBoundLinkUnavailable) || identityBoundLinkUnsupported(err)
 }
 
 func identityBoundStagingPath(sourceRel string) (string, error) {

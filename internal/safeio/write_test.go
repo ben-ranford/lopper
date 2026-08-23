@@ -6648,6 +6648,31 @@ func TestStageIdentityBoundFileDoesNotTreatPostLinkCleanupErrorAsLinklessFallbac
 	}
 }
 
+func TestStageIdentityBoundFileDoesNotDiscardJoinedRawUnsupportedLinkFailure(t *testing.T) {
+	secondaryErr := errors.New("secondary link failure")
+	openCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return errors.Join(syscall.EPERM, secondaryErr)
+		},
+		open: func(string) (File, error) {
+			openCalls++
+			return nil, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundFile(root, "source", newPinnedTargetInfo(t, "source"), sourceChangedMsg)
+	if !errors.Is(err, syscall.EPERM) || !errors.Is(err, secondaryErr) {
+		t.Fatalf("expected joined raw link failure, got %v", err)
+	}
+	if errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("joined raw link failure must not trigger copy fallback: %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected no copy fallback open, got %d opens", openCalls)
+	}
+}
+
 func TestStageIdentityBoundFileCopiesForRawUnsupportedIdentityLink(t *testing.T) {
 	for _, linkErr := range []error{errors.ErrUnsupported, syscall.EOPNOTSUPP, syscall.EPERM} {
 		t.Run(linkErr.Error(), func(t *testing.T) {
