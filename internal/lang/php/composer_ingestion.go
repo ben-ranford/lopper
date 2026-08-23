@@ -282,7 +282,7 @@ func scanPHPShortOpenTagConfigDir(root, path string, entry fs.DirEntry) error {
 }
 
 func scanPHPShortOpenTagConfigFile(root, path string, priority int, policy *phpShortOpenTagPolicy, warnings *[]string) error {
-	enabled, found, err := phpConfigShortOpenTagSetting(root, path)
+	enabled, found, incomplete, err := phpConfigShortOpenTagSetting(root, path)
 	if isPureOversizedFileError(err) {
 		policy.setIncompleteDir(filepath.Dir(path), priority)
 		*warnings = append(*warnings, phpShortOpenTagConfigOversizedWarning(root, path))
@@ -290,6 +290,11 @@ func scanPHPShortOpenTagConfigFile(root, path string, priority int, policy *phpS
 	}
 	if err != nil {
 		return err
+	}
+	if incomplete {
+		policy.setIncompleteDir(filepath.Dir(path), priority)
+		*warnings = append(*warnings, phpShortOpenTagConfigUnresolvedWarning(root, path))
+		return nil
 	}
 	if found {
 		policy.setDirSetting(filepath.Dir(path), enabled, priority)
@@ -303,6 +308,14 @@ func phpShortOpenTagConfigOversizedWarning(root, path string) string {
 		relPath = path
 	}
 	return fmt.Sprintf("skipped PHP short_open_tag config %s because it exceeds %d bytes", relPath, maxPHPConfigBytes)
+}
+
+func phpShortOpenTagConfigUnresolvedWarning(root, path string) string {
+	relPath, err := filepath.Rel(root, path)
+	if err != nil {
+		relPath = path
+	}
+	return fmt.Sprintf("could not resolve PHP short_open_tag config %s; dependency usage may be incomplete", relPath)
 }
 
 func (p *phpShortOpenTagPolicy) anyEnabled() bool {
@@ -378,26 +391,27 @@ func phpConfigFilePriority(filename string) int {
 	}
 }
 
-func phpConfigShortOpenTagSetting(repoPath, path string) (bool, bool, error) {
+func phpConfigShortOpenTagSetting(repoPath, path string) (bool, bool, bool, error) {
 	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, maxPHPConfigBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, false, nil
+			return false, false, false, nil
 		}
-		return false, false, err
+		return false, false, false, err
 	}
-	enabled, found := parseShortOpenTagSetting(string(bytes))
-	return enabled, found, nil
+	enabled, found, incomplete := parseShortOpenTagSetting(string(bytes))
+	return enabled, found, incomplete, nil
 }
 
 func parsesShortOpenTagEnabled(content string) bool {
-	enabled, found := parseShortOpenTagSetting(content)
+	enabled, found, _ := parseShortOpenTagSetting(content)
 	return found && enabled
 }
 
-func parseShortOpenTagSetting(content string) (bool, bool) {
+func parseShortOpenTagSetting(content string) (bool, bool, bool) {
 	enabled := false
 	found := false
+	incomplete := false
 	for _, rawLine := range strings.Split(content, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
@@ -407,8 +421,7 @@ func parseShortOpenTagSetting(content string) (bool, bool) {
 		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
 			fields := strings.Fields(lower)
 			if len(fields) >= 3 && fields[1] == "short_open_tag" {
-				enabled = isPHPConfigTruthy(fields[2])
-				found = true
+				enabled, found, incomplete = phpConfigBooleanSetting(fields[2])
 			}
 			continue
 		}
@@ -416,13 +429,12 @@ func parseShortOpenTagSetting(content string) (bool, bool) {
 		if !ok || strings.TrimSpace(key) != "short_open_tag" {
 			continue
 		}
-		enabled = isPHPConfigTruthy(strings.TrimSpace(value))
-		found = true
+		enabled, found, incomplete = phpConfigBooleanSetting(value)
 	}
-	return enabled, found
+	return enabled, found, incomplete
 }
 
-func isPHPConfigTruthy(value string) bool {
+func phpConfigBooleanSetting(value string) (bool, bool, bool) {
 	if comment := strings.IndexAny(value, ";#"); comment >= 0 {
 		value = value[:comment]
 	}
@@ -430,8 +442,10 @@ func isPHPConfigTruthy(value string) bool {
 	value = strings.Trim(value, `"'`)
 	switch value {
 	case "1", "on", "true", "yes":
-		return true
+		return true, true, false
+	case "", "0", "off", "false", "no", "none":
+		return false, true, false
 	default:
-		return false
+		return false, false, true
 	}
 }

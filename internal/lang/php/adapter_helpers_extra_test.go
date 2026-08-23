@@ -280,6 +280,26 @@ func TestShortOpenTagConfigUsesFinalAssignment(t *testing.T) {
 	}
 }
 
+func TestLoadComposerDataMarksInterpolatedShortOpenTagConfigIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = ${LOPPER_SHORT_TAGS}\n")
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("load data with interpolated short-open config: %v", err)
+	}
+	if data.ShortOpenTags {
+		t.Fatal("did not expect unresolved short-open config to enable short tags")
+	}
+	if !data.ShortOpenTagPolicy.incompleteForFile(filepath.Join(repo, "src", "index.php")) {
+		t.Fatal("expected interpolated root PHP config to mark files under that directory incomplete")
+	}
+	if !containsWarning(warnings, "could not resolve PHP short_open_tag config .user.ini") {
+		t.Fatalf("expected unresolved PHP config warning, got %#v", warnings)
+	}
+}
+
 func TestLoadComposerDataTracksOversizedShortOpenTagConfigByDirectory(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
