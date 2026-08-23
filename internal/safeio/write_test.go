@@ -8853,7 +8853,6 @@ func TestWriteFileExclusivelyIfAbsentAtRootDoesNotRemoveTargetWhenInitialStatFai
 			return nil
 		},
 	}
-
 	err := writeFileExclusivelyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o600)
 	if !errors.Is(err, statErr) {
 		t.Fatalf("expected stat error, got %v", err)
@@ -8908,7 +8907,6 @@ func TestWriteFileExclusivelyIfAbsentAtRootReturnsPostWriteStatError(t *testing.
 			return nil
 		},
 	}
-
 	err := writeFileExclusivelyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o600)
 	if !errors.Is(err, statErr) {
 		t.Fatalf("expected post-write stat error, got %v", err)
@@ -8916,6 +8914,35 @@ func TestWriteFileExclusivelyIfAbsentAtRootReturnsPostWriteStatError(t *testing.
 	if removeChecks != 2 {
 		t.Fatalf("expected failed create cleanup to use original target identity twice, got %d removals", removeChecks)
 	}
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootCleansModifiedTargetOnChmodFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	chmodErr := errors.New("chmod failed")
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			file, err := base.OpenFile(name, flag, perm)
+			if err != nil {
+				return nil, err
+			}
+			return &fakeFile{
+				File:  file,
+				chmod: func(os.FileMode) error { return chmodErr },
+			}, nil
+		},
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+	}}
+
+	err := writeFileExclusivelyIfAbsentAtRoot(root, "target", []byte("hello"), 0o600)
+	if !errors.Is(err, chmodErr) {
+		t.Fatalf("expected chmod error, got %v", err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "target"))
+	assertNoAtomicStagingEntries(t, rootDir)
 }
 
 func TestWriteRootIfAbsentLinklessFallbackReturnsPostWriteStatError(t *testing.T) {
