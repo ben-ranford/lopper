@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/dashboard"
@@ -805,6 +806,51 @@ func TestTrustedReadOnlyCacheAliasForGOOS(t *testing.T) {
 	}
 }
 
+func TestCachePathReadyForReadOnlyForGOOSAcceptsMacOSTempAlias(t *testing.T) {
+	const cachePath = "/tmp/lopper-cache"
+	filesystem := fakeMCPTrustedAliasFilesystem(t, cachePath, "/tmp")
+
+	if !cachePathReadyForReadOnlyForGOOS("darwin", cachePath, filesystem) {
+		t.Fatal("expected initialized cache through trusted macOS /tmp alias to be reusable")
+	}
+}
+
+func TestCachePathReadyForReadOnlyForGOOSKeepsAliasFailuresClosed(t *testing.T) {
+	const cachePath = "/tmp/lopper-cache"
+	for name, test := range map[string]struct {
+		goos            string
+		path            string
+		resolvedPath    string
+		resolveSymlinks func(string) (string, error)
+	}{
+		"non-Darwin":   {goos: "linux", path: cachePath, resolvedPath: "/private" + cachePath},
+		"relative":     {goos: "darwin", path: "tmp/lopper-cache", resolvedPath: "/private/tmp/lopper-cache"},
+		"outside temp": {goos: "darwin", path: "/var/empty/lopper-cache", resolvedPath: "/private/var/empty/lopper-cache"},
+		"missing": {
+			goos: "darwin",
+			path: cachePath,
+			resolveSymlinks: func(string) (string, error) {
+				return "", os.ErrNotExist
+			},
+		},
+		"untrusted target": {goos: "darwin", path: cachePath, resolvedPath: "/tmp/lopper-cache"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			filesystem := fakeMCPTrustedAliasFilesystem(t, test.path, test.path)
+			if test.resolveSymlinks != nil {
+				filesystem.evalSymlinks = test.resolveSymlinks
+			} else {
+				filesystem.evalSymlinks = func(path string) (string, error) {
+					return test.resolvedPath, nil
+				}
+			}
+			if cachePathReadyForReadOnlyForGOOS(test.goos, test.path, filesystem) {
+				t.Fatal("unexpected trusted read-only cache alias")
+			}
+		})
+	}
+}
+
 func TestTrustedReadOnlyCacheAliasForGOOSAcceptsMacOSTempAlias(t *testing.T) {
 	const cachePath = "/tmp/lopper-cache"
 	resolver := func(path string) (string, error) {
@@ -818,6 +864,52 @@ func TestTrustedReadOnlyCacheAliasForGOOSAcceptsMacOSTempAlias(t *testing.T) {
 		t.Fatal("expected trusted macOS /tmp alias")
 	}
 }
+
+func fakeMCPTrustedAliasFilesystem(t *testing.T, cachePath, symlinkPath string) cachePathFilesystem {
+	t.Helper()
+	cleanCachePath := filepath.Clean(cachePath)
+	cleanSymlinkPath := filepath.Clean(symlinkPath)
+	darwinCachePath := strings.ReplaceAll(cachePath, "\\", "/")
+	return cachePathFilesystem{
+		lstat: func(path string) (os.FileInfo, error) {
+			cleanPath := filepath.Clean(path)
+			if cleanPath == cleanSymlinkPath {
+				return &mcpCachePathTestFileInfo{mode: os.ModeSymlink}, nil
+			}
+			switch cleanPath {
+			case cleanCachePath, filepath.Dir(cleanCachePath), filepath.Clean("/"):
+				return &mcpCachePathTestFileInfo{mode: os.ModeDir}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		stat: func(path string) (os.FileInfo, error) {
+			switch filepath.Clean(path) {
+			case filepath.Join(cleanCachePath, "keys"), filepath.Join(cleanCachePath, "objects"):
+				return &mcpCachePathTestFileInfo{mode: os.ModeDir}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		evalSymlinks: func(path string) (string, error) {
+			if path != darwinCachePath {
+				t.Fatalf("resolver path = %q, want %q", path, darwinCachePath)
+			}
+			return "/private" + darwinCachePath, nil
+		},
+	}
+}
+
+type mcpCachePathTestFileInfo struct {
+	mode os.FileMode
+}
+
+func (*mcpCachePathTestFileInfo) Name() string        { return "" }
+func (*mcpCachePathTestFileInfo) Size() int64         { return 0 }
+func (i *mcpCachePathTestFileInfo) Mode() os.FileMode { return i.mode }
+func (*mcpCachePathTestFileInfo) ModTime() time.Time  { return time.Time{} }
+func (i *mcpCachePathTestFileInfo) IsDir() bool       { return i.mode&os.ModeDir != 0 }
+func (*mcpCachePathTestFileInfo) Sys() any            { return nil }
 
 func assertAnalysisRequestThresholds(t *testing.T, req analysis.Request) {
 	t.Helper()

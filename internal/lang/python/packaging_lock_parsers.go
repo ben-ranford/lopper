@@ -35,7 +35,7 @@ func collectLockFallbacks(repoPath, dir string, files map[string]struct{}) ([]lo
 }
 
 func parsePackageLockDependencies(repoPath, path string) (map[string]struct{}, []string, error) {
-	document, warnings, err := readOptionalTOMLDocument(repoPath, path)
+	document, warnings, err := readOptionalLockTOMLDocument(repoPath, path)
 	if err != nil || document == nil {
 		return make(map[string]struct{}), warnings, err
 	}
