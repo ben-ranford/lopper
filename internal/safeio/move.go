@@ -11,6 +11,8 @@ import (
 	"syscall"
 )
 
+var errLegacyIdentityAliasStateIndeterminate = errors.New("cannot determine legacy source-target alias state")
+
 const (
 	moveSourceChangedBeforeCleanup  = "move source changed before cleanup"
 	moveSourceChangedBeforeRename   = "move source changed before rename"
@@ -130,7 +132,7 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 	if err != nil {
 		return nil, err
 	}
-	_, err = targetAliasesSource(root, sourceRel, targetRel, sourceInfo)
+	aliasRelation, err := classifyTargetAliasRelation(root, sourceRel, targetRel, sourceInfo)
 	if readDirFileUnsupportedWithoutCleanupError(err) {
 		// Root only promises File from Open. When two differently-spelled
 		// paths may address one directory entry, do the identity-checked
@@ -141,12 +143,19 @@ func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm
 		return sourceInfo, err
 	}
 	if renameStateMayBeUnreported(root) {
-		// A legacy identity-bound root cannot report whether a rename consumed
-		// its staging name. The directory scan above is advisory only: a false
-		// alias result cannot safely select the staged replacement path. Rename
-		// the source directly instead: an alias rename is a no-op, while a
-		// raced-away target consumes the source atomically.
-		return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+		switch aliasRelation {
+		case targetAliasesSameDirectoryEntry:
+			// A legacy identity-bound root cannot report whether a rename consumed
+			// its staging name. Rename a confirmed same-entry alias directly: the
+			// rename is a no-op, while a raced-away target consumes source atomically.
+			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+		case targetAliasRelationIndeterminate:
+			// A legacy root cannot distinguish a retained staging name from a
+			// consumed one. Do not turn an incomplete directory scan into a staged
+			// publication that might delete the target, or a direct rename that
+			// might leave a distinct hard-link source behind.
+			return sourceInfo, fmt.Errorf("%w: %q and %q", errLegacyIdentityAliasStateIndeterminate, sourceRel, targetRel)
+		}
 	}
 	stagedSourceRetained, err := publishIdentityBoundReplacingWithRetainedStaging(
 		root,
@@ -228,40 +237,61 @@ func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo
 	)
 }
 
+type targetAliasRelation uint8
+
+const (
+	targetDoesNotAliasSource targetAliasRelation = iota
+	targetAliasesSameDirectoryEntry
+	targetAliasesDistinctDirectoryEntries
+	targetAliasRelationIndeterminate
+)
+
 func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
+	relation, err := classifyTargetAliasRelation(root, sourceRel, targetRel, sourceInfo)
+	return relation == targetAliasesSameDirectoryEntry, err
+}
+
+func classifyTargetAliasRelation(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (targetAliasRelation, error) {
 	sourceClean := filepath.Clean(sourceRel)
 	targetClean := filepath.Clean(targetRel)
 	targetInfo, err := root.Lstat(targetClean)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return targetDoesNotAliasSource, nil
 	}
 	if err != nil {
-		return false, err
+		return targetDoesNotAliasSource, err
 	}
 	if !targetInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, targetInfo) {
-		return false, nil
+		return targetDoesNotAliasSource, nil
 	}
 	if sourceClean == targetClean {
-		return true, nil
+		return targetAliasesSameDirectoryEntry, nil
 	}
 	sourceParent := filepath.Dir(sourceClean)
 	targetParent := filepath.Dir(targetClean)
 	sourceParentInfo, err := root.Lstat(sourceParent)
 	if err != nil {
-		return false, err
+		return targetDoesNotAliasSource, err
 	}
 	targetParentInfo, err := root.Lstat(targetParent)
 	if err != nil {
-		return false, err
+		return targetDoesNotAliasSource, err
 	}
 	if !sourceParentInfo.IsDir() || !targetParentInfo.IsDir() || !os.SameFile(sourceParentInfo, targetParentInfo) {
-		return false, nil
+		return targetAliasesDistinctDirectoryEntries, nil
 	}
-	aliases, err := countDirectoryEntriesAddressingBothNames(root, sourceParent, filepath.Base(sourceClean), filepath.Base(targetClean), sourceInfo)
+	entries, err := countDirectoryEntriesAddressingBothNames(root, sourceParent, filepath.Base(sourceClean), filepath.Base(targetClean), sourceInfo)
 	if err != nil {
-		return false, err
+		return targetDoesNotAliasSource, err
 	}
-	return aliases == 1, nil
+	switch entries {
+	case 1:
+		return targetAliasesSameDirectoryEntry, nil
+	case 2:
+		return targetAliasesDistinctDirectoryEntries, nil
+	default:
+		return targetAliasRelationIndeterminate, nil
+	}
 }
 
 func countDirectoryEntriesAddressingBothNames(root Root, parentRel, sourceBase, targetBase string, sourceInfo fs.FileInfo) (_ int, returnErr error) {
