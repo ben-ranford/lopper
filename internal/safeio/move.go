@@ -178,8 +178,10 @@ func retainedStagingMoveFinalizer(root Root, sourceRel, targetRel string, source
 		if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
 			return err
 		}
-		if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil && !errors.Is(err, os.ErrExist) {
-			return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))
+		if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil {
+			if atomicWriteCleanupFailed(err) || !errors.Is(err, os.ErrExist) {
+				return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))
+			}
 		}
 		if err := verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil {
 			return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))

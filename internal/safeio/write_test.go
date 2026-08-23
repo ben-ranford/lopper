@@ -8641,6 +8641,70 @@ func TestFinalSafeIOCoverageBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("publish staged if absent preserves cleanup error on existing target", func(t *testing.T) {
+		cleanupErr := errors.New("quarantine cleanup failed")
+		err := publishStagedIdentityBoundIfAbsent(&fakeRoot{
+			linkIfMatches: func(string, string, fs.FileInfo, string) error {
+				return withAtomicWriteCleanup(os.ErrExist, cleanupErr)
+			},
+			lstat: lstatOriginalForNames(t, sourceInfo, "stage"),
+			removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+				requireSameFileInfo(t, expected, sourceInfo, name)
+				return nil
+			},
+		}, "source", "stage", "target", sourceInfo)
+		if !errors.Is(err, cleanupErr) {
+			t.Fatalf("expected existing-target cleanup error, got %v", err)
+		}
+	})
+
+	t.Run("retained move recovery preserves existing-target cleanup error", func(t *testing.T) {
+		cleanupErr := errors.New("retained quarantine cleanup failed")
+		sourceRemoved := false
+		sourceRestored := false
+		root := &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return sourceInfo, nil },
+			linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+				requireSameFileInfo(t, expected, sourceInfo, oldName)
+				switch {
+				case oldName == "stage" && newName == "target":
+					return withAtomicWriteCleanup(os.ErrExist, cleanupErr)
+				case oldName == "stage" && newName == "source":
+					sourceRestored = true
+					return nil
+				case oldName == "source" && strings.HasPrefix(newName, atomicTempPrefix):
+					return nil
+				case strings.HasPrefix(oldName, atomicTempPrefix) && strings.HasPrefix(newName, atomicTempPrefix):
+					return nil
+				default:
+					t.Fatalf("unexpected link %q -> %q", oldName, newName)
+					return nil
+				}
+			},
+			removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+				requireSameFileInfo(t, expected, sourceInfo, name)
+				switch name {
+				case "source":
+					sourceRemoved = true
+				case "stage":
+				default:
+					if !strings.HasPrefix(name, atomicTempPrefix) {
+						t.Fatalf("unexpected removal %q", name)
+					}
+				}
+				return nil
+			},
+		}
+
+		err := retainedStagingMoveFinalizer(root, "source", "target", sourceInfo)("stage", sourceInfo)
+		if !errors.Is(err, cleanupErr) {
+			t.Fatalf("expected retained cleanup error, got %v", err)
+		}
+		if !sourceRemoved || !sourceRestored {
+			t.Fatalf("expected failed retained cleanup to restore source, removed=%t restored=%t", sourceRemoved, sourceRestored)
+		}
+	})
+
 	t.Run("publish if absent joins close and cleanup errors", func(t *testing.T) {
 		session := &atomicWriteSession{
 			root:      &fakeRoot{},

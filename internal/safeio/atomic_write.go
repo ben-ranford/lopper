@@ -715,13 +715,13 @@ func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetR
 		returnErr = withAtomicWriteCleanup(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
 	}()
 	if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, temporaryFileChangedBeforeCommit); err != nil {
+		if atomicWriteCleanupFailed(err) {
+			return err
+		}
 		if errors.Is(err, os.ErrExist) {
 			return os.ErrExist
 		}
 		if identityBoundLinkUnsupported(err) {
-			if atomicWriteCleanupFailed(err) {
-				return err
-			}
 			fallbackErr := fallbackAtomicIfAbsent(root, stagedRel, attemptedTargetLinkSource(err, stagedRel, targetRel), targetRel, stagedInfo, err)
 			if fallbackErr == nil {
 				return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, committedTargetChangedBeforeValidation)
