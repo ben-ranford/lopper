@@ -1523,6 +1523,16 @@ func TestParsePHPImportsPreservesClassContextAcrossLongHeaders(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsSkipsEmptyGroupedNamespaceAliases(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"App\\Package": {}},
+	}
+	content := []byte("<?php namespace App; use Vendor\\Package\\{Client,}; class C { use Package\\FeatureTrait; }")
+	parsed := parsePHPImports(content, "trailing-grouped-use.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+}
+
 func TestParsePHPImportsResolvesImportedAliasBeforeTraitNamespaceLookup(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{
 		"Acme\\Other\\Package": "acme/other-package",

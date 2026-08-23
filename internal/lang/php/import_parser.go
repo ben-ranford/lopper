@@ -569,6 +569,9 @@ func (t *phpContextTracker) addNamespaceUses(statement string, partLimit int) {
 	}
 	base, parts := namespaceUseParts(statement, partLimit)
 	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
 		if hasNonClassUseImportQualifier(part) {
 			continue
 		}
@@ -1489,11 +1492,18 @@ func splitUseParts(statement string, partLimit int) ([]string, bool) {
 	if partLimit <= 0 {
 		return nil, true
 	}
-	parts := strings.SplitN(statement, ",", partLimit+1)
-	if len(parts) <= partLimit {
-		return parts, false
+	rawParts := strings.SplitN(statement, ",", partLimit+1)
+	limitHit := len(rawParts) > partLimit
+	if limitHit {
+		rawParts = rawParts[:partLimit]
 	}
-	return parts[:partLimit], true
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		if part = strings.TrimSpace(part); part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts, limitHit
 }
 
 func parseUseParts(parts []string, base, filePath string, line int, resolver composerResolver, collectGroupedDeps bool) ([]importBinding, map[string]struct{}, int, bool) {
