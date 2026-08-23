@@ -643,6 +643,34 @@ func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T
 	}
 }
 
+func TestStageIdentityBoundFileCopiesForWindowsHardLinkUnsupportedErrors(t *testing.T) {
+	for _, linkErr := range []error{syscall.ERROR_PRIVILEGE_NOT_HELD, syscall.Errno(1)} {
+		t.Run(linkErr.Error(), func(t *testing.T) {
+			rootDir := t.TempDir()
+			sourcePath := filepath.Join(rootDir, "source")
+			if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+				t.Fatalf("seed source: %v", err)
+			}
+			root := &fakeRoot{
+				Root: openTestRoot(t, rootDir),
+				linkIfMatches: func(string, string, fs.FileInfo, string) error {
+					return &os.LinkError{Op: "linkat", Old: "source", New: ".safeio-atomic-staging", Err: linkErr}
+				},
+			}
+
+			stagedRel, stagedInfo, err := stageIdentityBoundFile(root, "source", statTestPath(t, sourcePath), sourceChangedMsg)
+			if err != nil {
+				t.Fatalf("unsupported Windows link did not copy fallback: %v", err)
+			}
+			assertFileContent(t, filepath.Join(rootDir, stagedRel), "source")
+			if err := cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo); err != nil {
+				t.Fatalf("cleanup copied staging file: %v", err)
+			}
+			assertNoAtomicStagingEntries(t, rootDir)
+		})
+	}
+}
+
 func TestNewFileRenameInformationSupportsLongTargetNames(t *testing.T) {
 	targetRel := strings.Repeat("a", syscall.MAX_PATH+1)
 	renameInfo, err := newFileRenameInformation(syscall.Handle(42), targetRel)

@@ -6717,6 +6717,12 @@ func TestStageIdentityBoundFileCopiesForRawUnsupportedIdentityLink(t *testing.T)
 	}
 }
 
+func TestPlatformIdentityBoundLinkUnsupportedRejectsUnrelatedError(t *testing.T) {
+	if platformIdentityBoundLinkUnsupported(errors.New("unrelated link error")) {
+		t.Fatal("unrelated error must not select the linkless fallback")
+	}
+}
+
 func TestStageIdentityBoundFileRejectsLiveSourceMismatchBeforeLink(t *testing.T) {
 	expected := newPinnedTargetInfo(t, "expected")
 	liveInfo := newPinnedTargetInfo(t, "replacement")

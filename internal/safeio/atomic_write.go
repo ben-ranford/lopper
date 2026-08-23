@@ -516,7 +516,8 @@ func identityBoundLinkUnsupported(err error) bool {
 		errors.Is(err, syscall.EOPNOTSUPP) ||
 		errors.Is(err, syscall.ENOSYS) ||
 		errors.Is(err, syscall.EXDEV) ||
-		errors.Is(err, syscall.EPERM)
+		errors.Is(err, syscall.EPERM) ||
+		platformIdentityBoundLinkUnsupported(err)
 }
 
 func identityBoundLinkFallbackEligible(err error) bool {
