@@ -1433,6 +1433,68 @@ func TestVerifyOverwrittenTargetRejectsUnsafeTargetStates(t *testing.T) {
 	}
 }
 
+func TestVerifyOverwrittenTargetReturnsLstatError(t *testing.T) {
+	lstatErr := errors.New("lstat target failed")
+	root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr }}
+	file := &fakeFile{stat: func() (fs.FileInfo, error) {
+		t.Fatal("opened file should not be statted after lstat failure")
+		return nil, nil
+	}}
+
+	err := verifyOverwrittenTarget(root, writeTestFileName, file)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionCommitReadyErrorPreventsRename(t *testing.T) {
+	commitErr := errors.New("commit not ready")
+	session := &atomicWriteSession{
+		root:      &fakeRoot{},
+		tempRel:   ".safeio-atomic-temp",
+		targetRel: writeTestFileName,
+	}
+
+	err := session.commit(func() error { return commitErr }, func(string, string) error {
+		t.Fatal("rename should not run after commit readiness failure")
+		return nil
+	})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("expected commit readiness error, got %v", err)
+	}
+}
+
+func TestTruncateAndWritePinnedFileReturnsSeekError(t *testing.T) {
+	seekErr := errors.New("seek failed")
+	writeCalls := 0
+	file := &truncatingFakeFile{
+		fakeFile: &fakeFile{write: func([]byte) (int, error) {
+			writeCalls++
+			return 0, nil
+		}},
+		truncate: func(size int64) error {
+			if size != 0 {
+				t.Fatalf("unexpected truncate size: %d", size)
+			}
+			return nil
+		},
+		seek: func(offset int64, whence int) (int64, error) {
+			if offset != 0 || whence != io.SeekStart {
+				t.Fatalf("unexpected seek: offset=%d whence=%d", offset, whence)
+			}
+			return 0, seekErr
+		},
+	}
+
+	err := truncateAndWritePinnedFile(writeTestFileName, file, []byte("after"))
+	if !errors.Is(err, seekErr) {
+		t.Fatalf("expected seek error, got %v", err)
+	}
+	if writeCalls != 0 {
+		t.Fatalf("write should not run after seek failure, got %d calls", writeCalls)
+	}
+}
+
 func TestWriteFileAtomicallyIfAbsentReadinessErrorPreventsPublish(t *testing.T) {
 	rootDir := t.TempDir()
 	root, err := OpenRoot(rootDir)
