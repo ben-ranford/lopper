@@ -57,6 +57,18 @@ fingerprint_for_match() {
 	printf '%s\n%s' "$file" "$content" | shasum -a 256 | awk '{ print $1 }'
 }
 
+fingerprint_for_occurrence() {
+	local file="$1"
+	local content="$2"
+	local occurrence="$3"
+
+	if [[ "$occurrence" -le 1 ]]; then
+		fingerprint_for_match "$file" "$content"
+		return
+	fi
+	printf '%s\n%s\noccurrence:%s' "$file" "$content" "$occurrence" | shasum -a 256 | awk '{ print $1 }'
+}
+
 source_url_for_match() {
 	local file="$1"
 	local line="$2"
@@ -138,6 +150,7 @@ ensure_tracking_issue() {
 	local file="$1"
 	local line="$2"
 	local content="$3"
+	local occurrence="${4:-1}"
 	local rationale
 	local owner
 	local removal_condition
@@ -165,7 +178,7 @@ ensure_tracking_issue() {
 		return 1
 	fi
 
-	fingerprint="$(fingerprint_for_match "$file" "$content")"
+	fingerprint="$(fingerprint_for_occurrence "$file" "$content" "$occurrence")"
 	body_file="$(create_temp_file)"
 	write_tracking_body "$body_file" "$file" "$line" "$content" "$rationale" "$owner" "$removal_condition" "$fingerprint"
 	title="ci: track inline suppression in ${file}:${line}"
@@ -224,8 +237,10 @@ write_tracking_records() {
 	local rationale
 	local owner
 	local removal_condition
+	local base_fingerprint
 	local fingerprint
 	local location_url
+	local occurrence
 
 	output_dir="$(dirname "$output_file")"
 	mkdir -p "$output_dir"
@@ -252,11 +267,11 @@ write_tracking_records() {
 			return 1
 		fi
 
-		fingerprint="$(fingerprint_for_match "$file" "$content")"
-		if grep -Fqx "$fingerprint" "$seen_file"; then
-			continue
-		fi
-		printf '%s\n' "$fingerprint" >>"$seen_file"
+		base_fingerprint="$(fingerprint_for_match "$file" "$content")"
+		occurrence="$(grep -Fxc "$base_fingerprint" "$seen_file" || true)"
+		occurrence=$((occurrence + 1))
+		printf '%s\n' "$base_fingerprint" >>"$seen_file"
+		fingerprint="$(fingerprint_for_occurrence "$file" "$content" "$occurrence")"
 		location_url="$(source_url_for_match "$file" "$line")"
 
 		if [[ "$first" -eq 0 ]]; then
@@ -293,17 +308,17 @@ track_records_with_gh() {
 	local file
 	local line
 	local content
-	local fingerprint
+	local base_fingerprint
+	local occurrence
 
 	seen_file="$(create_temp_file)"
 	: >"$seen_file"
 	while IFS=: read -r file line content; do
-		fingerprint="$(fingerprint_for_match "$file" "$content")"
-		if grep -Fqx "$fingerprint" "$seen_file"; then
-			continue
-		fi
-		printf '%s\n' "$fingerprint" >>"$seen_file"
-		if ! ensure_tracking_issue "$file" "$line" "$content"; then
+		base_fingerprint="$(fingerprint_for_match "$file" "$content")"
+		occurrence="$(grep -Fxc "$base_fingerprint" "$seen_file" || true)"
+		occurrence=$((occurrence + 1))
+		printf '%s\n' "$base_fingerprint" >>"$seen_file"
+		if ! ensure_tracking_issue "$file" "$line" "$content" "$occurrence"; then
 			rm -f "$seen_file"
 			return 1
 		fi

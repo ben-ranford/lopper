@@ -498,12 +498,17 @@ func TestCIWorkflowGuardsVSCodeSmokeWithoutSkippingRequiredCheck(t *testing.T) {
 	})
 	required := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code smoke requirement")
 	assertWorkflowStepEnv(t, required, "required VS Code smoke check", map[string]string{
+		"EXTENSION_CHANGES_RESULT": "${{ needs.extension-changes.result }}",
 		"VSCODE_EXTENSION_CHANGED": "${{ needs.extension-changes.outputs.vscode_extension }}",
 		"VSCODE_SMOKE_RESULT":      "${{ needs.vscode_smoke_matrix.result }}",
 	})
 	assertWorkflowStepRunContainsAll(t, required, "required VS Code smoke check", []string{
-		`if [ "${VSCODE_EXTENSION_CHANGED}" != "true" ]; then`,
+		`if [ "${EXTENSION_CHANGES_RESULT}" != "success" ]; then`,
+		`VS Code extension change detection must complete before smoke can be skipped.`,
+		`if [ "${VSCODE_EXTENSION_CHANGED}" = "false" ]; then`,
 		`No VS Code extension changes detected; smoke matrix not required.`,
+		`if [ "${VSCODE_EXTENSION_CHANGED}" != "true" ]; then`,
+		`VS Code extension change detection did not produce an explicit result.`,
 		`if [ "${VSCODE_SMOKE_RESULT}" != "success" ]; then`,
 		`VS Code extension changes require the VS Code smoke matrix to pass.`,
 	})

@@ -271,16 +271,29 @@ func TestInlineSuppressionCheckReusesFingerprintAcrossLineMoves(t *testing.T) {
 	}
 }
 
-func TestInlineSuppressionCheckTracksDuplicateFingerprintOnce(t *testing.T) {
+func TestInlineSuppressionCheckTracksDuplicateSuppressionsSeparately(t *testing.T) {
 	t.Parallel()
 
 	repoDir := newInlineSuppressionRepo(t)
 	ghPath, logPath := newMockGH(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	source := "package main\n\nfunc main() {\n\t_ = 1 //" + "nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n\t_ = 1 //" + "nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
 	runCommand(t, repoDir, "git", "add", mainGoPath)
 
-	output, err := runSuppressionCheckWithEnv(repoDir,
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected duplicate fingerprint detection to pass, output:\n%s", output)
+	}
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 2 {
+		t.Fatalf("expected two suppression records, got %#v", records.Suppressions)
+	}
+	if records.Suppressions[0].Fingerprint == records.Suppressions[1].Fingerprint {
+		t.Fatalf("expected duplicate suppressions to receive distinct fingerprints: %#v", records.Suppressions)
+	}
+
+	output, err = runSuppressionCheckWithEnv(repoDir,
 		"GH_BIN="+ghPath,
 		"SUPPRESSION_TRACKING_MODE=track",
 	)
@@ -289,8 +302,8 @@ func TestInlineSuppressionCheckTracksDuplicateFingerprintOnce(t *testing.T) {
 	}
 
 	logContent := readFile(t, logPath)
-	if got := strings.Count(logContent, "issue create"); got != 1 {
-		t.Fatalf("issue create count = %d, want 1; log:\n%s", got, logContent)
+	if got := strings.Count(logContent, "issue create"); got != 2 {
+		t.Fatalf("issue create count = %d, want 2; log:\n%s", got, logContent)
 	}
 }
 

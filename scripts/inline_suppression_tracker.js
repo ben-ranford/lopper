@@ -95,8 +95,9 @@ function metadataValue(content, keys) {
   return '';
 }
 
-function fingerprintFor(file, content) {
-  return crypto.createHash('sha256').update(`${file}\n${content}`).digest('hex');
+function fingerprintFor(file, content, occurrence = 1) {
+  const occurrenceSuffix = occurrence > 1 ? `\noccurrence:${occurrence}` : '';
+  return crypto.createHash('sha256').update(`${file}\n${content}${occurrenceSuffix}`).digest('hex');
 }
 
 function validateString(value, label, maxBytes) {
@@ -147,7 +148,21 @@ function escapeFence(value) {
   return value.replaceAll('```', '``\u200b`');
 }
 
-function addSuppression(records, { file, line, content, context, headSHA }) {
+function occurrenceKeyFor(file, content) {
+  return `${file}\0${content}`;
+}
+
+function nextOccurrence(occurrences, file, content) {
+  if (!occurrences) {
+    return 1;
+  }
+  const key = occurrenceKeyFor(file, content);
+  const occurrence = (occurrences.get(key) || 0) + 1;
+  occurrences.set(key, occurrence);
+  return occurrence;
+}
+
+function addSuppression(records, { file, line, content, context, headSHA, occurrences }) {
   validateFile(file);
   if (!Number.isInteger(line) || line < 1 || line > 1000000) {
     throw new RangeError('Invalid inline suppression line.');
@@ -161,7 +176,7 @@ function addSuppression(records, { file, line, content, context, headSHA }) {
     'remove_when',
     1024,
   );
-  const fingerprint = fingerprintFor(file, content);
+  const fingerprint = fingerprintFor(file, content, nextOccurrence(occurrences, file, content));
   if (records.has(fingerprint)) {
     return;
   }
@@ -290,7 +305,7 @@ function parseHunkStart(rawLine, file) {
   return Number.parseInt(rawLine.slice(start, cursor), 10);
 }
 
-function scanPatch(records, { file, patch, context, headSHA }) {
+function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
   validateFile(file);
   if (typeof patch !== 'string') {
     throw new TypeError(`Inline suppression diff patch is unavailable for ${file}; refusing to publish tracking mutations.`);
@@ -308,7 +323,7 @@ function scanPatch(records, { file, patch, context, headSHA }) {
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
       if (hasInlineSuppressionMarker(content)) {
-        addSuppression(records, { file, line, content, context, headSHA });
+        addSuppression(records, { file, line, content, context, headSHA, occurrences });
       }
       line += 1;
       continue;
@@ -384,8 +399,17 @@ async function listChangedFiles({ github, context, pull, expectedCount }) {
 
 function collectSuppressionRecords({ files, context, pull }) {
   const records = new Map();
+  const occurrences = new Map();
   for (const file of files) {
     if (!TRACKED_FILE_STATUSES.has(file.status) || !isSourceFile(file.filename)) {
+      continue;
+    }
+    if (
+      file.status === 'renamed' &&
+      (file.patch === undefined || file.patch === null) &&
+      file.additions === 0 &&
+      file.deletions === 0
+    ) {
       continue;
     }
     scanPatch(records, {
@@ -393,6 +417,7 @@ function collectSuppressionRecords({ files, context, pull }) {
       patch: file.patch,
       context,
       headSHA: pull.head.sha,
+      occurrences,
     });
   }
   if (records.size > MAX_RECORDS) {

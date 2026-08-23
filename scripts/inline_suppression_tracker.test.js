@@ -264,6 +264,54 @@ test('scans renamed source files for tracked suppressions', async () => {
   assert.equal(harness.calls.created[0].title, 'ci: track inline suppression in renamed.go:4');
 });
 
+test('skips patchless pure source renames', async () => {
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'renamed.go',
+        previous_filename: 'main.go',
+        status: 'renamed',
+        additions: 0,
+        deletions: 0,
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 0);
+  assert.deepEqual(harness.calls.infos, ['No inline suppression records were produced.']);
+});
+
+test('tracks repeated identical suppressions with distinct fingerprints', async () => {
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch: [
+          '@@ -0,0 +1,6 @@',
+          '+package main',
+          '+',
+          '+func main() {',
+          `+${trackedLine('nolint:staticcheck')}`,
+          `+${trackedLine('nolint:staticcheck')}`,
+          '+}',
+          '',
+        ].join('\n'),
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 2);
+  const markers = harness.calls.created.map((created) => created.body.match(/lopper-inline-suppression:([0-9a-f]+)/)?.[1]);
+  assert.equal(new Set(markers).size, 2);
+  assert.match(harness.calls.created[0].body, /Location: `main\.go:4`/);
+  assert.match(harness.calls.created[1].body, /Location: `main\.go:5`/);
+});
+
 test('ignores forged artifact-shaped data because only pull files are read', async () => {
   const harness = makeHarness({
     files: [
