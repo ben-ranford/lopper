@@ -14,7 +14,7 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
-var errPHPShortOpenTagConfigWalkLimit = errors.New("PHP short_open_tag config discovery limit exceeded")
+var errPHPShortOpenTagConfigWalkLimit = errors.New("php short_open_tag config discovery limit exceeded")
 
 type composerData struct {
 	DeclaredDependencies map[string]struct{}
@@ -305,7 +305,7 @@ func phpShortOpenTagConfigOversizedWarning(root, path string) string {
 	return fmt.Sprintf("skipped PHP short_open_tag config %s because it exceeds %d bytes", relPath, maxPHPConfigBytes)
 }
 
-func (p phpShortOpenTagPolicy) anyEnabled() bool {
+func (p *phpShortOpenTagPolicy) anyEnabled() bool {
 	for _, setting := range p.dirSettings {
 		if setting.enabled {
 			return true
@@ -314,11 +314,11 @@ func (p phpShortOpenTagPolicy) anyEnabled() bool {
 	return false
 }
 
-func (p phpShortOpenTagPolicy) hasSettings() bool {
+func (p *phpShortOpenTagPolicy) hasSettings() bool {
 	return len(p.dirSettings) > 0 || len(p.incompleteDirs) > 0
 }
 
-func (p phpShortOpenTagPolicy) enabledForFile(path string) bool {
+func (p *phpShortOpenTagPolicy) enabledForFile(path string) bool {
 	dir := filepath.Dir(filepath.Clean(path))
 	for {
 		if setting, ok := p.dirSettings[dir]; ok {
@@ -332,7 +332,7 @@ func (p phpShortOpenTagPolicy) enabledForFile(path string) bool {
 	}
 }
 
-func (p phpShortOpenTagPolicy) incompleteForFile(path string) bool {
+func (p *phpShortOpenTagPolicy) incompleteForFile(path string) bool {
 	dir := filepath.Dir(filepath.Clean(path))
 	for {
 		setting, hasSetting := p.dirSettings[dir]
@@ -351,14 +351,14 @@ func (p phpShortOpenTagPolicy) incompleteForFile(path string) bool {
 	}
 }
 
-func (p phpShortOpenTagPolicy) setIncompleteDir(dir string, priority int) {
+func (p *phpShortOpenTagPolicy) setIncompleteDir(dir string, priority int) {
 	if existing, ok := p.incompleteDirs[dir]; ok && existing > priority {
 		return
 	}
 	p.incompleteDirs[dir] = priority
 }
 
-func (p phpShortOpenTagPolicy) setDirSetting(dir string, enabled bool, priority int) {
+func (p *phpShortOpenTagPolicy) setDirSetting(dir string, enabled bool, priority int) {
 	if existing, ok := p.dirSettings[dir]; ok && existing.priority > priority {
 		return
 	}

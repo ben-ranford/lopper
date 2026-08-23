@@ -1466,6 +1466,16 @@ func TestParsePHPImportsResolvesImportedAliasBeforeTraitNamespaceLookup(t *testi
 	assertImportModules(t, parsed.imports, []string{"Acme\\Other\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsExcludesFunctionAndConstAliasesFromTraitNamespaceLookup(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{
+		"Vendor\\Package":      "vendor/package",
+		"VendorConst\\Package": "vendor/const-package",
+	}}
+	content := []byte("<?php use function Acme\\Other as Vendor; class FunctionAlias { use Vendor\\Package\\FeatureTrait; } use const Acme\\Constants as VendorConst; class ConstAlias { use VendorConst\\Package\\FeatureTrait; }")
+	parsed := parsePHPImports(content, "trait-nonclass-alias.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\FeatureTrait", "VendorConst\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},

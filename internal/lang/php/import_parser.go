@@ -124,7 +124,7 @@ func parsePHPUseStatementMatches(text, filePath string, resolver composerResolve
 	return result
 }
 
-func (p phpUseStatementParser) consume(match phpUseStatementMatch, remainingUseParts int) (int, bool) {
+func (p *phpUseStatementParser) consume(match phpUseStatementMatch, remainingUseParts int) (int, bool) {
 	if remainingUseParts <= 0 {
 		p.result.useBindingLimitHit = true
 		return 0, true
@@ -557,8 +557,14 @@ func (t *phpContextTracker) currentContext() phpUseContext {
 }
 
 func (t *phpContextTracker) addNamespaceUses(statement string, partLimit int) {
+	if hasNonClassUseImportQualifier(statement) {
+		return
+	}
 	base, parts := namespaceUseParts(statement, partLimit)
 	for _, part := range parts {
+		if hasNonClassUseImportQualifier(part) {
+			continue
+		}
 		module, alias, ok := parseUsePartModuleAndLocal(part, base)
 		if !ok {
 			continue
@@ -1611,14 +1617,23 @@ func parseUsePartModuleAndLocal(part, base string) (string, string, bool) {
 
 func stripUseImportQualifier(part string) string {
 	part = strings.TrimSpace(part)
-	partLower := strings.ToLower(part)
-	if strings.HasPrefix(partLower, "function ") {
+	if hasUseImportQualifier(part, "function") {
 		return strings.TrimSpace(part[len("function "):])
 	}
-	if strings.HasPrefix(partLower, "const ") {
+	if hasUseImportQualifier(part, "const") {
 		return strings.TrimSpace(part[len("const "):])
 	}
 	return part
+}
+
+func hasNonClassUseImportQualifier(part string) bool {
+	return hasUseImportQualifier(part, "function") || hasUseImportQualifier(part, "const")
+}
+
+func hasUseImportQualifier(part, qualifier string) bool {
+	part = strings.TrimSpace(part)
+	prefix := qualifier + " "
+	return len(part) > len(prefix) && strings.EqualFold(part[:len(prefix)], prefix)
 }
 
 func splitAlias(value string) (string, string) {
