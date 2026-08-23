@@ -1355,15 +1355,23 @@ func TestParsePHPImportsHonorsDisabledShortOpenTags(t *testing.T) {
 }
 
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
-	content := []byte("<?xml ::foo();\n" +
-		"use Vendor\\Package\\Client;\n")
-
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
 		allowPHPShortOpenTags: true,
 	}
-	parsed := parsePHPImports(content, "xml-call.php", resolver)
-	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+	for _, tc := range []struct {
+		name   string
+		opener string
+	}{
+		{name: "static call", opener: "<?xml ::foo();"},
+		{name: "hyphenated call", opener: "<?xml-foo();"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte(tc.opener + "\nuse Vendor\\Package\\Client;\n")
+			parsed := parsePHPImports(content, "xml-call.php", resolver)
+			assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+		})
+	}
 }
 
 func TestParsePHPImportsReturnsToTemplateAfterCommentCloseTags(t *testing.T) {

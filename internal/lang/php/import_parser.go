@@ -809,7 +809,7 @@ func isXMLDeclarationOpenTag(text string, start int) bool {
 	if tagEnd == len(text) {
 		return false
 	}
-	if text[tagEnd] == '-' {
+	if isXMLStylesheetProcessingInstructionOpenTag(text, start) {
 		return true
 	}
 	if !isPHPWhitespace(text[tagEnd]) {
@@ -822,6 +822,14 @@ func isXMLDeclarationOpenTag(text string, start int) bool {
 	}
 	attributeValueStart := skipPHPWhitespace(text, attributeEnd)
 	return attributeValueStart < len(text) && text[attributeValueStart] == '='
+}
+
+func isXMLStylesheetProcessingInstructionOpenTag(text string, start int) bool {
+	targetEnd := start + len("<?xml-stylesheet")
+	if targetEnd >= len(text) || !strings.EqualFold(text[start:targetEnd], "<?xml-stylesheet") {
+		return false
+	}
+	return text[targetEnd] == '?' || isPHPWhitespace(text[targetEnd])
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {
