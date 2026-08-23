@@ -209,6 +209,32 @@ func TestFallbackAtomicReplacementAcceptsActualQuarantineRenameSourceOnWindows(t
 	}
 }
 
+func TestFallbackAtomicReplacementRejectsQuarantineRecoveryFailureOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
+	restoreErr := errors.New("quarantine restoration failed")
+	renameErr := &publishRenameError{
+		sourceRel: quarantineRel,
+		err: errors.Join(
+			windowsReplaceExistingError(quarantineRel, writeTestFileName),
+			restoreErr,
+		),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, ".safeio-atomic-temp", writeTestFileName, targetFile, []byte("after"), renameErr)
+	if !errors.Is(err, renameErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("expected rename recovery failure to be preserved, got %v", err)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("fallback must not overwrite after failed source recovery, got %q", string(*targetData))
+	}
+}
+
 func TestFallbackAtomicReplacementRejectsWrongIdentityBoundStagedRenameSourceOnWindows(t *testing.T) {
 	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {

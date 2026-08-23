@@ -63,8 +63,8 @@ func replacementFileForWindowsFallback(root Root, targetRel string, replacementF
 }
 
 func windowsReplaceExistingRenameFallback(err error, oldName, newName string) bool {
-	var linkErr *os.LinkError
-	if !errors.As(err, &linkErr) ||
+	linkErr, ok := publishRenameCause(err).(*os.LinkError)
+	if !ok ||
 		linkErr.Op != "renameat" ||
 		linkErr.Old != oldName ||
 		linkErr.New != newName {
