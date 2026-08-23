@@ -339,8 +339,8 @@ func findPHPUseStatementEnd(text string, statementStart int) (int, int, bool) {
 		if endsTraitAdaptation {
 			return offset, offset + 1, true
 		}
-		if text[offset] == ';' && traitAdaptationDepth == 0 {
-			return offset, offset + 1, true
+		if terminatorLength := phpStatementTerminatorLengthAt(text, offset); traitAdaptationDepth == 0 && terminatorLength > 0 {
+			return offset, offset + terminatorLength, true
 		}
 		if nextOffset, unterminated := unterminatedPHPUseStatementAtLineBreak(text, statementStart, offset, traitAdaptationDepth); unterminated {
 			return offset, nextOffset, false
@@ -373,6 +373,19 @@ func unterminatedPHPUseStatementAtLineBreak(text string, statementStart, offset,
 	lineStart := nextPHPLineStart(text, nextPHPLineEnd(text, offset))
 	nextToken := skipHorizontalWhitespace(text, lineStart)
 	return lineStart, hasKeywordAt(text, nextToken, "use") && !useStatementContinuesAfterNewline(text, statementStart, offset)
+}
+
+func phpStatementTerminatorLengthAt(text string, offset int) int {
+	if offset >= len(text) {
+		return 0
+	}
+	if text[offset] == ';' {
+		return len(";")
+	}
+	if strings.HasPrefix(text[offset:], "?>") {
+		return len("?>")
+	}
+	return 0
 }
 
 func isPHPTraitAdaptationBlockStart(text string, statementStart, braceOffset int) bool {
@@ -560,12 +573,12 @@ func findNamespaceDeclarationsWithShortOpenTags(text string, allowShortOpenTags 
 
 func appendNamespaceDeclarationsInLine(declarations []phpNamespaceDeclaration, text string, lineStart, lineEnd int, allowShortOpenTags bool) []phpNamespaceDeclaration {
 	prelude := phpNamespaceLinePrelude{offset: lineStart, valid: true, allowShortOpenTags: allowShortOpenTags}
-	completion := phpNamespaceLineCompletion{offset: lineStart, segmentStart: lineStart}
+	completion := phpNamespaceLineCompletion{offset: lineStart}
 	for offset := lineStart; offset < lineEnd; {
 		declaration, ok := parseNamespaceDeclarationAt(text, offset)
 		if ok {
 			prelude.advanceTo(text, offset, lineEnd)
-			if prelude.valid || completion.followsCompletedNamespaceDeclaration() {
+			if prelude.valid || completion.followsCompletedStatement() {
 				declarations = append(declarations, declaration)
 			}
 			completion.advanceTo(text, declaration.end)
@@ -656,10 +669,11 @@ func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool)
 	}
 	next += closeOffset + 2
 	next = skipPHPWhitespaceUntil(text, next, lineEnd)
-	if next >= lineEnd || text[next] != ';' {
+	terminatorLength := phpStatementTerminatorLengthAt(text, next)
+	if terminatorLength == 0 {
 		return 0, false
 	}
-	next++
+	next += terminatorLength
 	next = skipPHPWhitespaceUntil(text, next, target)
 	if next > target {
 		return 0, false
@@ -668,20 +682,13 @@ func parseDeclarePreludeAt(text string, offset, target, lineEnd int) (int, bool)
 }
 
 type phpNamespaceLineCompletion struct {
-	offset                                   int
-	segmentStart                             int
-	lastNonWhitespace                        byte
-	lastSemicolonSegmentStartedWithNamespace bool
+	offset            int
+	lastNonWhitespace byte
 }
 
 func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
 	for c.offset < target {
 		ch := text[c.offset]
-		if ch == ';' {
-			segment := strings.TrimSpace(text[c.segmentStart:c.offset])
-			c.lastSemicolonSegmentStartedWithNamespace = strings.HasPrefix(strings.ToLower(segment), "namespace ")
-			c.segmentStart = c.offset + 1
-		}
 		if !isPHPWhitespace(ch) {
 			c.lastNonWhitespace = ch
 		}
@@ -689,11 +696,8 @@ func (c *phpNamespaceLineCompletion) advanceTo(text string, target int) {
 	}
 }
 
-func (c *phpNamespaceLineCompletion) followsCompletedNamespaceDeclaration() bool {
-	if c.lastNonWhitespace == '}' {
-		return true
-	}
-	return c.lastNonWhitespace == ';' && c.lastSemicolonSegmentStartedWithNamespace
+func (c *phpNamespaceLineCompletion) followsCompletedStatement() bool {
+	return c.lastNonWhitespace == '}' || c.lastNonWhitespace == ';'
 }
 
 func parseNamespaceDeclarationAt(text string, offset int) (phpNamespaceDeclaration, bool) {
@@ -706,17 +710,24 @@ func parseNamespaceDeclarationAt(text string, offset int) (phpNamespaceDeclarati
 		return phpNamespaceDeclaration{}, false
 	}
 	end := skipPHPWhitespace(text, nameEnd)
-	if end >= len(text) || text[end] != ';' && text[end] != '{' {
+	if end >= len(text) {
 		return phpNamespaceDeclaration{}, false
 	}
 	bracketed := text[end] == '{'
 	braceOffset := -1
+	terminatorLength := 0
 	if bracketed {
 		braceOffset = end
+		terminatorLength = len("{")
+	} else {
+		terminatorLength = phpStatementTerminatorLengthAt(text, end)
+		if terminatorLength == 0 {
+			return phpNamespaceDeclaration{}, false
+		}
 	}
 	return phpNamespaceDeclaration{
 		start:       offset,
-		end:         end + 1,
+		end:         end + terminatorLength,
 		braceOffset: braceOffset,
 		name:        normalizeNamespace(text[nameStart:nameEnd]),
 		bracketed:   bracketed,

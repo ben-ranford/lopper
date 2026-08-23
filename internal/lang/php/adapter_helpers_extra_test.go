@@ -1411,6 +1411,32 @@ func TestParsePHPImportsParsesEmptyTraitAdaptationBlock(t *testing.T) {
 	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Feature"})
 }
 
+func TestParsePHPImportsParsesUseStatementTerminatedByPHPCloseTag(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
+	parsed := parsePHPImports([]byte("<?php use Vendor\\Package\\Client ?>"), "close-tag-import.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
+}
+
+func TestParsePHPImportsResolvesNamespaceRelativeTraitUseAfterNamespaceCloseTag(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"App": {}},
+	}
+	parsed := parsePHPImports([]byte("<?php namespace App ?><?php class C { use Vendor\\Package\\FeatureTrait; }"), "close-tag-namespace.php", resolver)
+	if parsed.unresolvedCount != 0 || len(parsed.imports) != 0 {
+		t.Fatalf("expected close-tag namespace-relative trait use to stay local, got %#v", parsed)
+	}
+}
+
+func TestParsePHPImportsTracksSameLineNamespaceAfterStatement(t *testing.T) {
+	resolver := composerResolver{
+		namespaceToDep: map[string]string{"B\\Vendor\\Package": "vendor/package"},
+		localNamespace: map[string]struct{}{"A\\Vendor": {}},
+	}
+	parsed := parsePHPImports([]byte("<?php namespace A; echo 1; namespace B; class C { use Vendor\\Package\\FeatureTrait; }"), "same-line-namespace.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"B\\Vendor\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
@@ -1602,27 +1628,27 @@ func TestClassLikeDeclarationScanStartDelimiterBranches(t *testing.T) {
 func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
 	completion := phpNamespaceLineCompletion{}
 	completion.advanceTo("namespace A; ", len("namespace A; "))
-	if !completion.followsCompletedNamespaceDeclaration() {
+	if !completion.followsCompletedStatement() {
 		t.Fatalf("expected semicolon namespace declaration to allow following same-line namespace")
 	}
 	completion = phpNamespaceLineCompletion{}
 	completion.advanceTo("namespace A { class C {} } ", len("namespace A { class C {} } "))
-	if !completion.followsCompletedNamespaceDeclaration() {
+	if !completion.followsCompletedStatement() {
 		t.Fatalf("expected completed namespace block to allow following same-line namespace")
 	}
 	completion = phpNamespaceLineCompletion{}
 	completion.advanceTo("declare(strict_types=1); namespace A; ", len("declare(strict_types=1); namespace A; "))
-	if !completion.followsCompletedNamespaceDeclaration() {
+	if !completion.followsCompletedStatement() {
 		t.Fatalf("expected namespace after previous same-line statement to allow following namespace")
 	}
 	completion = phpNamespaceLineCompletion{}
 	completion.advanceTo("doWork(); ", len("doWork(); "))
-	if completion.followsCompletedNamespaceDeclaration() {
-		t.Fatalf("expected arbitrary same-line statement not to allow following namespace")
+	if !completion.followsCompletedStatement() {
+		t.Fatalf("expected a completed same-line statement to allow following namespace")
 	}
 	completion = phpNamespaceLineCompletion{}
 	completion.advanceTo("namespace A ", len("namespace A "))
-	if completion.followsCompletedNamespaceDeclaration() {
+	if completion.followsCompletedStatement() {
 		t.Fatalf("expected incomplete namespace declaration not to allow following namespace")
 	}
 }
@@ -1811,17 +1837,14 @@ func TestParseNamespaceReferencesSkipsSameLineDeclareNamespaceDeclaration(t *tes
 	}
 }
 
-func TestParseNamespaceReferencesDoesNotMaskNamespaceAfterArbitraryStatement(t *testing.T) {
+func TestParseNamespaceReferencesSkipsSameLineNamespaceAfterStatement(t *testing.T) {
 	resolver := composerResolver{namespaceToDep: map[string]string{"Vendor\\Package": "vendor/package"}}
 	imports, unresolved := parseNamespaceReferences([]byte("<?php doWork(); namespace Vendor\\Package;\n"), "x.php", resolver)
 	if unresolved != 0 {
 		t.Fatalf(helpersUnexpectedUnresolvedFmt, unresolved)
 	}
-	if len(imports) != 1 {
-		t.Fatalf("expected arbitrary same-line statement to remain a namespace reference, got %#v", imports)
-	}
-	if imports[0].Module != "Vendor\\Package" {
-		t.Fatalf("expected module %q, got %#v", "Vendor\\Package", imports[0])
+	if len(imports) != 0 {
+		t.Fatalf("expected namespace declaration after a completed same-line statement to be skipped, got %#v", imports)
 	}
 }
 
