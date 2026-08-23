@@ -1040,12 +1040,29 @@ func xmlProcessingInstructionAttributeNameEnd(text string, offset int) (int, boo
 	return offset, true
 }
 
+type xmlRuneRange struct {
+	first rune
+	last  rune
+}
+
+var xmlNameStartRanges = []xmlRuneRange{
+	{0xC0, 0xD6}, {0xD8, 0xF6}, {0xF8, 0x2FF}, {0x370, 0x37D},
+	{0x37F, 0x1FFF}, {0x200C, 0x200D}, {0x2070, 0x218F}, {0x2C00, 0x2FEF},
+	{0x3001, 0xD7FF}, {0xF900, 0xFDCF}, {0xFDF0, 0xFFFD}, {0x10000, 0xEFFFF},
+}
+
 func isXMLNameStartRune(r rune) bool {
 	return r == ':' || r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' ||
-		r >= 0xC0 && r <= 0xD6 || r >= 0xD8 && r <= 0xF6 || r >= 0xF8 && r <= 0x2FF ||
-		r >= 0x370 && r <= 0x37D || r >= 0x37F && r <= 0x1FFF || r >= 0x200C && r <= 0x200D ||
-		r >= 0x2070 && r <= 0x218F || r >= 0x2C00 && r <= 0x2FEF || r >= 0x3001 && r <= 0xD7FF ||
-		r >= 0xF900 && r <= 0xFDCF || r >= 0xFDF0 && r <= 0xFFFD || r >= 0x10000 && r <= 0xEFFFF
+		isRuneInRanges(r, xmlNameStartRanges)
+}
+
+func isRuneInRanges(r rune, ranges []xmlRuneRange) bool {
+	for _, runeRange := range ranges {
+		if r >= runeRange.first && r <= runeRange.last {
+			return true
+		}
+	}
+	return false
 }
 
 func isXMLNameRune(r rune) bool {
