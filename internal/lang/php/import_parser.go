@@ -334,35 +334,45 @@ func scanPHPUseStatementAt(text string, start int) (phpUseStatementMatch, int, b
 func findPHPUseStatementEnd(text string, statementStart int) (int, int, bool) {
 	traitAdaptationDepth := 0
 	for offset := statementStart; offset < len(text); offset++ {
-		switch text[offset] {
-		case '{':
-			if traitAdaptationDepth == 0 && isPHPTraitAdaptationBlockStart(text, statementStart, offset) {
-				traitAdaptationDepth = 1
-				continue
-			}
-			if traitAdaptationDepth > 0 {
-				traitAdaptationDepth++
-			}
-		case '}':
-			if traitAdaptationDepth > 0 {
-				traitAdaptationDepth--
-				if traitAdaptationDepth == 0 {
-					return offset, offset + 1, true
-				}
-			}
-		case ';':
-			if traitAdaptationDepth == 0 {
-				return offset, offset + 1, true
-			}
-		case '\n', '\r':
-			lineStart := nextPHPLineStart(text, nextPHPLineEnd(text, offset))
-			nextToken := skipHorizontalWhitespace(text, lineStart)
-			if hasKeywordAt(text, nextToken, "use") && !useStatementContinuesAfterNewline(text, statementStart, offset) {
-				return offset, lineStart, false
-			}
+		var endsTraitAdaptation bool
+		traitAdaptationDepth, endsTraitAdaptation = advancePHPTraitAdaptationDepth(text, statementStart, offset, traitAdaptationDepth)
+		if endsTraitAdaptation {
+			return offset, offset + 1, true
+		}
+		if text[offset] == ';' && traitAdaptationDepth == 0 {
+			return offset, offset + 1, true
+		}
+		if nextOffset, unterminated := unterminatedPHPUseStatementAtLineBreak(text, statementStart, offset, traitAdaptationDepth); unterminated {
+			return offset, nextOffset, false
 		}
 	}
 	return len(text), len(text), false
+}
+
+func advancePHPTraitAdaptationDepth(text string, statementStart, offset, depth int) (int, bool) {
+	if text[offset] == '{' {
+		if depth == 0 && isPHPTraitAdaptationBlockStart(text, statementStart, offset) {
+			return 1, false
+		}
+		if depth > 0 {
+			return depth + 1, false
+		}
+		return depth, false
+	}
+	if text[offset] != '}' || depth == 0 {
+		return depth, false
+	}
+	depth--
+	return depth, depth == 0
+}
+
+func unterminatedPHPUseStatementAtLineBreak(text string, statementStart, offset, traitAdaptationDepth int) (int, bool) {
+	if traitAdaptationDepth > 0 || !isLineBreak(text[offset]) {
+		return 0, false
+	}
+	lineStart := nextPHPLineStart(text, nextPHPLineEnd(text, offset))
+	nextToken := skipHorizontalWhitespace(text, lineStart)
+	return lineStart, hasKeywordAt(text, nextToken, "use") && !useStatementContinuesAfterNewline(text, statementStart, offset)
 }
 
 func isPHPTraitAdaptationBlockStart(text string, statementStart, braceOffset int) bool {
