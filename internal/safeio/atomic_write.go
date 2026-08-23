@@ -716,6 +716,9 @@ func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetR
 			return os.ErrExist
 		}
 		if identityBoundLinkUnsupported(err) {
+			if atomicWriteCleanupFailed(err) {
+				return err
+			}
 			fallbackErr := fallbackAtomicIfAbsent(root, stagedRel, attemptedTargetLinkSource(err, stagedRel, targetRel), targetRel, stagedInfo, err)
 			if fallbackErr == nil {
 				return verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, committedTargetChangedBeforeValidation)

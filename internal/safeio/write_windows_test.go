@@ -460,6 +460,33 @@ func TestPublishStagedIfAbsentNoReplaceFallbackUsesAttemptedLinkSource(t *testin
 	}
 }
 
+func TestPublishStagedIfAbsentNoReplaceFallbackPreservesLinkCleanupFailure(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	state := newWindowsPublishStagedFallbackState(t, rootInfo, tempInfo)
+	cleanupErr := errors.New("quarantine cleanup failed")
+	state.linkErr = withAtomicWriteCleanup(
+		&os.LinkError{Op: "linkat", Old: ".safeio-atomic-target-link", New: state.targetRel, Err: errors.ErrUnsupported},
+		cleanupErr,
+	)
+	publishCalls := 0
+	original := windowsNoReplaceRenameFn
+	windowsNoReplaceRenameFn = func(Root, fs.FileInfo, string, string, fs.FileInfo) error {
+		publishCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		windowsNoReplaceRenameFn = original
+	})
+
+	err := publishStagedIdentityBoundIfAbsent(state.root, "source", state.stagedRel, state.targetRel, tempInfo)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected link cleanup failure, got %v", err)
+	}
+	if publishCalls != 0 || state.targetPublished {
+		t.Fatalf("fallback must not publish after link cleanup failure, calls=%d published=%t", publishCalls, state.targetPublished)
+	}
+}
+
 type windowsPublishStagedFallbackState struct {
 	t               *testing.T
 	root            *fakeRoot
@@ -468,6 +495,7 @@ type windowsPublishStagedFallbackState struct {
 	stagedRel       string
 	targetRel       string
 	targetPublished bool
+	linkErr         error
 }
 
 func newWindowsPublishStagedFallbackState(t *testing.T, rootInfo, tempInfo fs.FileInfo) *windowsPublishStagedFallbackState {
@@ -490,6 +518,9 @@ func (s *windowsPublishStagedFallbackState) linkIfMatches(oldName, newName strin
 	requireSameFileInfo(s.t, expected, s.tempInfo, oldName)
 	if oldName != s.stagedRel || newName != s.targetRel || message != temporaryFileChangedBeforeCommit {
 		s.t.Fatalf("unexpected publish link %q -> %q (%s)", oldName, newName, message)
+	}
+	if s.linkErr != nil {
+		return s.linkErr
 	}
 	return &os.LinkError{Op: "linkat", Old: ".safeio-atomic-target-link", New: s.targetRel, Err: errors.ErrUnsupported}
 }
