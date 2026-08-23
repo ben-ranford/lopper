@@ -717,13 +717,7 @@ func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, me
 }
 
 func finishRestoredQuarantinedPath(root Root, stagedRel, message string, expected fs.FileInfo) (bool, error) {
-	if err := verifyPublishedPathMatchesInfo(root, stagedRel, expected, message); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return true, nil
-		}
-		return true, err
-	}
-	if err := root.Remove(stagedRel); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeFileIfStillMatches(root, stagedRel, expected, message); err != nil {
 		return true, err
 	}
 	return true, nil

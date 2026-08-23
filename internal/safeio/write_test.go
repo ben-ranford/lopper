@@ -9206,6 +9206,62 @@ func TestRemoveIdentityBoundRejectsSourceSwapAtRemoval(t *testing.T) {
 	}
 }
 
+func TestRemoveFileIfMatchesUsingBasicRootPreservesQuarantineSwapBeforeFinalRemoval(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	quarantineDir := ".safeio-atomic-quarantine"
+	quarantineRel := filepath.Join(quarantineDir, "entry")
+	useRandomTempNames(t, quarantineDir)
+	quarantineStats := 0
+	removed := false
+
+	root := &fakeRoot{
+		mkdir: func(name string, perm os.FileMode) error {
+			if name != quarantineDir || perm != 0o700 {
+				t.Fatalf("unexpected quarantine directory creation %q %#o", name, perm)
+			}
+			return nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source":
+				return originalInfo, nil
+			case quarantineRel:
+				quarantineStats++
+				if quarantineStats == 1 {
+					return originalInfo, nil
+				}
+				return replacementInfo, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		rename: func(oldName, newName string) error {
+			if oldName != "source" || newName != quarantineRel {
+				t.Fatalf("unexpected quarantine rename %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		remove: func(name string) error {
+			if name == quarantineRel {
+				removed = true
+				t.Fatal("must not remove substituted quarantine entry")
+			}
+			return nil
+		},
+	}
+
+	err := removeFileIfMatchesUsingBasicRoot(root, "source", originalInfo, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected quarantined identity mismatch, got %v", err)
+	}
+	if quarantineStats < 2 {
+		t.Fatalf("expected final quarantine identity validation, got %d stats", quarantineStats)
+	}
+	if removed {
+		t.Fatal("substituted quarantine entry must be preserved")
+	}
+}
+
 func TestCleanupAtomicTempFileIfMatchesDoesNotRemoveQuarantinedSwap(t *testing.T) {
 	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
 	tempRel := ".safeio-atomic-source"

@@ -502,6 +502,19 @@ func removeFileIfMatches(root Root, rel string, expected fs.FileInfo, message st
 	return nil
 }
 
+func removeFileIfStillMatches(root Root, rel string, expected fs.FileInfo, message string) error {
+	if err := verifyPublishedPathMatchesInfo(root, rel, expected, message); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := root.Remove(rel); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expected fs.FileInfo, message string) (returnErr error) {
 	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, oldName)
 	if err != nil {
@@ -759,10 +772,7 @@ func removeFileIfMatchesUsingBasicRoot(root Root, rel string, expected fs.FileIn
 		return errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 	}
 
-	if err := root.Remove(quarantineRel); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
+	if err := removeFileIfStillMatches(root, quarantineRel, quarantineInfo, message); err != nil {
 		cleanupDir = false
 		return err
 	}
@@ -828,7 +838,7 @@ func removeCreatedFileIfSameFile(root Root, rel string, expected fs.FileInfo, me
 		cleanupDir, cleanupQuarantineEntry, err = restoreMismatchedCreatedCleanup(root, quarantineRel, rel, message, quarantineInfo)
 		return err
 	}
-	cleanupDir, cleanupQuarantineEntry, err = removeQuarantinedCreatedCleanup(root, quarantineRel)
+	cleanupDir, cleanupQuarantineEntry, err = removeQuarantinedCreatedCleanup(root, quarantineRel, quarantineInfo, message)
 	return err
 }
 
@@ -843,11 +853,8 @@ func restoreMismatchedCreatedCleanup(root Root, quarantineRel, rel, message stri
 	return true, true, errors.Join(fmt.Errorf("%s: %s", message, rel), restoreErr)
 }
 
-func removeQuarantinedCreatedCleanup(root Root, quarantineRel string) (bool, bool, error) {
-	if err := root.Remove(quarantineRel); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return true, true, nil
-		}
+func removeQuarantinedCreatedCleanup(root Root, quarantineRel string, quarantineInfo fs.FileInfo, message string) (bool, bool, error) {
+	if err := removeFileIfStillMatches(root, quarantineRel, quarantineInfo, message); err != nil {
 		return false, true, err
 	}
 	return true, false, nil
