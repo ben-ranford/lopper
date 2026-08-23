@@ -290,6 +290,9 @@ func writeFileIfAbsentAtRoot(root Root, target rootedTarget, data []byte, perm o
 	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
 		return err
 	}
+	if atomicWriteCleanupFailed(err) {
+		return err
+	}
 	return writeFileExclusivelyIfAbsentAtRoot(root, target.rel, data, perm)
 }
 
@@ -519,7 +522,7 @@ func linkFileIfMatchesUsingBasicRoot(root Root, oldName, newName string, expecte
 	cleanupDir := true
 	defer func() {
 		if cleanupDir {
-			returnErr = errors.Join(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
+			returnErr = withAtomicWriteCleanup(returnErr, ignoreRemoveNotExist(root.Remove(quarantineDir)))
 		}
 	}()
 

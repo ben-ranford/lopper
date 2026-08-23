@@ -725,7 +725,12 @@ func makeFakeFallbackWriteRoot(t *testing.T, targetFile func() File, targetInfo 
 		},
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
 			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
-				return targetFile(), nil
+				return &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+					write: func(p []byte) (int, error) { return len(p), nil },
+					chmod: chmodWithoutError,
+					close: closeWithoutError,
+				}, nil
 			}
 			if name == writeTestFileName {
 				targetCreated = true
@@ -746,12 +751,12 @@ func makeFakeFallbackWriteRoot(t *testing.T, targetFile func() File, targetInfo 
 
 func assertExclusiveCreateCleanup(t *testing.T, removed []string) {
 	t.Helper()
-	if len(removed) != 1 {
-		t.Fatalf("expected cleanup for incomplete temp target, got %v", removed)
+	for _, name := range removed {
+		if name == writeTestFileName {
+			return
+		}
 	}
-	if removed[0] != writeTestFileName && !strings.HasPrefix(filepath.Base(removed[0]), atomicTempPrefix) {
-		t.Fatalf("expected incomplete write cleanup path, got %v", removed)
-	}
+	t.Fatalf("expected cleanup for incomplete target, got %v", removed)
 }
 
 func assertWriteIfAbsentFallbackCleanup(t *testing.T, expectedErr error, targetFile func(*bool) File) {
@@ -10563,6 +10568,62 @@ func TestAtomicIfAbsentLinklessFallbackLeavesNoPartialTarget(t *testing.T) {
 		t.Fatalf("linkless if-absent fallback exposed a target: %v", err)
 	}
 	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestWriteFileIfAbsentAtRootPreservesAtomicCleanupFailureBeforeExclusiveFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failSession bool
+	}{
+		{name: "staged candidate"},
+		{name: "session candidate", failSession: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rootDir := t.TempDir()
+			base := openTestRoot(t, rootDir)
+			cleanupErr := errors.New("atomic cleanup failed")
+			targetOpened := false
+			sessionTemp := ""
+			root := &fakeRoot{
+				Root: base,
+				openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+					if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && sessionTemp == "" {
+						sessionTemp = name
+					}
+					if name == "target" {
+						targetOpened = true
+					}
+					return base.OpenFile(name, flag, perm)
+				},
+				linkIfMatches: func(_ string, newName string, _ fs.FileInfo, _ string) error {
+					if newName == "target" {
+						return syscall.EPERM
+					}
+					return errIdentityBoundLinkUnavailable
+				},
+				removeIfMatches: func(name string, _ fs.FileInfo, _ string) error {
+					if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && (name == sessionTemp) == tc.failSession {
+						return cleanupErr
+					}
+					return base.Remove(name)
+				},
+			}
+
+			err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: "target"}, []byte("completed"), 0o600)
+			if sessionTemp == "" {
+				t.Fatal("atomic session did not create a temporary candidate")
+			}
+			if !errors.Is(err, errIdentityBoundReplacementUnsupported) || !errors.Is(err, cleanupErr) {
+				t.Fatalf("expected unsupported atomic attempt and preserved cleanup error, got %v", err)
+			}
+			if targetOpened {
+				t.Fatal("exclusive fallback must not run after atomic cleanup failure")
+			}
+			if _, statErr := os.Lstat(filepath.Join(rootDir, "target")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("atomic cleanup failure published target through fallback: %v", statErr)
+			}
+		})
+	}
 }
 
 func TestWriteRootIfAbsentLinklessFallbackLeavesNoPartialTargetOnCloseError(t *testing.T) {

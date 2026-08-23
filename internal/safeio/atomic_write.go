@@ -41,6 +41,14 @@ type publishRenameError struct {
 	cleanupErr error
 }
 
+// atomicWriteCleanupError keeps cleanup failures distinguishable from an
+// unsupported atomic operation. Callers that can safely choose a weaker
+// fallback must not discard a failed cleanup from the atomic attempt.
+type atomicWriteCleanupError struct {
+	err        error
+	cleanupErr error
+}
+
 const (
 	committedTargetChangedBeforeValidation = "committed target changed before validation"
 	temporaryFileChangedBeforeCommit       = "temporary file changed before commit"
@@ -77,6 +85,29 @@ func publishRenameCleanup(err error) error {
 		return publishErr.cleanupErr
 	}
 	return nil
+}
+
+func (e *atomicWriteCleanupError) Error() string {
+	return errors.Join(e.err, e.cleanupErr).Error()
+}
+
+func (e *atomicWriteCleanupError) Unwrap() []error {
+	if e.err == nil {
+		return []error{e.cleanupErr}
+	}
+	return []error{e.err, e.cleanupErr}
+}
+
+func withAtomicWriteCleanup(err, cleanupErr error) error {
+	if cleanupErr == nil {
+		return err
+	}
+	return &atomicWriteCleanupError{err: err, cleanupErr: cleanupErr}
+}
+
+func atomicWriteCleanupFailed(err error) bool {
+	var cleanupErr *atomicWriteCleanupError
+	return errors.As(err, &cleanupErr) && cleanupErr.cleanupErr != nil
 }
 
 func publishRenameSource(err error, fallback string) string {
@@ -302,6 +333,9 @@ func stageIdentityBoundFileKeepingSourceLive(root Root, sourceRel string, expect
 	if !errors.Is(err, errIdentityBoundLinkUnavailable) {
 		return "", nil, err
 	}
+	if atomicWriteCleanupFailed(err) {
+		return "", nil, err
+	}
 	stagedRel, stagedInfo, copyErr := stageIdentityBoundCopy(root, sourceRel, expected, message, liveSource)
 	if copyErr != nil {
 		return "", nil, fmt.Errorf("%w: %s: %w", errIdentityBoundReplacementUnsupported, sourceRel, copyErr)
@@ -330,8 +364,7 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 	}
 	defer func() {
 		if closeSource {
-			closeErr := source.Close()
-			returnErr = errors.Join(returnErr, closeErr)
+			returnErr = withAtomicWriteCleanup(returnErr, source.Close())
 		}
 	}()
 
@@ -359,7 +392,7 @@ func stageIdentityBoundCopy(root Root, sourceRel string, expected fs.FileInfo, m
 		cleanupStagedInfo := stagedInfo
 		defer func() {
 			if !stagedReady {
-				returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, cleanupStagedInfo))
+				returnErr = withAtomicWriteCleanup(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, cleanupStagedInfo))
 			}
 		}()
 		if _, err := io.Copy(staged, source); err != nil {
@@ -576,7 +609,7 @@ func writeFileAtomicallyIfAbsentAtRoot(root Root, targetRel string, data []byte,
 		return err
 	}
 	defer func() {
-		returnErr = errors.Join(returnErr, session.cleanup())
+		returnErr = withAtomicWriteCleanup(returnErr, session.cleanup())
 	}()
 
 	if err := session.writeAndPrepare(data, perm); err != nil {
@@ -609,7 +642,7 @@ func (s *atomicWriteSession) publishIfAbsent() error {
 
 func publishStagedIdentityBoundIfAbsent(root Root, sourceRel, stagedRel, targetRel string, stagedInfo fs.FileInfo) (returnErr error) {
 	defer func() {
-		returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
+		returnErr = withAtomicWriteCleanup(returnErr, cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo))
 	}()
 	if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, temporaryFileChangedBeforeCommit); err != nil {
 		if errors.Is(err, os.ErrExist) {
