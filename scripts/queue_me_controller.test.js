@@ -388,6 +388,39 @@ test('a current fork branch can arm auto-merge without a branch update', async (
   assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
 });
 
+test('controller resets non-squash auto-merge before arming a queued pull request', async () => {
+  const leader = makePull(10);
+  const harness = makeHarness({
+    pulls: [leader],
+    initialStates: {
+      10: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'MERGE' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, [10]);
+  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
+  assert.match(commentsFor(harness, 10), /Squash auto-merge is armed/);
+});
+
+test('controller resets auto-merge when GitHub state does not include a squash method', async () => {
+  const leader = makePull(10);
+  const harness = makeHarness({
+    pulls: [leader],
+    initialStates: {
+      10: { autoMergeRequest: { enabledAt: 'before' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, [10]);
+  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
+});
+
 test('a rebase conflict advances the queue and retries the blocked pull request after an update', async () => {
   const leader = makePull(10);
   const follower = makePull(20);
@@ -439,6 +472,29 @@ test('a conflict skip refreshes queued followers behind the selected eligible pu
   assert.match(commentsFor(harness, 30), /Queued behind #20/);
   assert.match(commentsFor(harness, 30), /rebase conflicts/);
   assert.doesNotMatch(commentsFor(harness, 30), /Queued behind #10/);
+});
+
+test('a conflict-skipped follower with non-squash auto-merge is reset before it advances', async () => {
+  const blocked = makePull(10);
+  const selected = makePull(20);
+  const harness = makeHarness({
+    pulls: [blocked, selected],
+    initialComments: {
+      10: [
+        '<!-- queue-me-controller -->\n## Queue status\n\nGitHub could not rebase this pull request onto `main` because of merge conflicts.\n\n<!-- queue-me-conflict-block head=head-10 base=base-sha -->',
+      ],
+    },
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'manual', mergeMethod: 'MERGE' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, [20]);
+  assert.deepEqual(harness.calls.armed, [20]);
+  assert.deepEqual(harness.calls.armExpectedHeads, ['head-20']);
+  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
 
 test('an unchanged conflicted pull request is skipped until its head or base changes', async () => {

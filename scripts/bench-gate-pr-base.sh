@@ -13,6 +13,8 @@ refs/pull/*/merge)
 		is_pr_merge_checkout=true
 	fi
 	;;
+*)
+	;;
 esac
 
 if [ "$is_pr_merge_checkout" = true ] && [ -n "$base_ref" ] && git rev-parse --verify -q --end-of-options "HEAD^2^{commit}" >/dev/null; then

@@ -212,13 +212,17 @@ async function disableAutoMerge(github, owner, repo, number) {
   if (!state?.autoMergeRequest) {
     return;
   }
+  await disableAutoMergeByID(github, state.id);
+}
+
+async function disableAutoMergeByID(github, pullRequestId) {
   await github.graphql(
     `mutation DisableQueueAutoMerge($pullRequestId: ID!) {
       disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
         pullRequest { number }
       }
     }`,
-    { pullRequestId: state.id },
+    { pullRequestId },
   );
 }
 
@@ -296,28 +300,60 @@ async function armAutoMerge(github, pullRequestId, expectedHeadOid) {
   );
 }
 
-async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefOid }) {
-  assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid);
-  if (state.autoMergeRequest) {
-    return 'armed';
-  }
-  if (state.mergeable === 'MERGEABLE' && state.mergeStateStatus === 'CLEAN') {
-    await mergeNow(github, state.id, state.headRefOid);
-    return 'merged';
-  }
-  try {
-    await armAutoMerge(github, state.id, state.headRefOid);
-    return 'armed';
-  } catch (error) {
-    const refreshed = await pullStateByID(github, state.id);
-    if (refreshed.headRefOid !== state.headRefOid) {
+async function resetNonSquashAutoMerge(
+  github,
+  state,
+  { expectedBaseRefName, expectedBaseRefOid },
+) {
+  let current = state;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const method = current.autoMergeRequest?.mergeMethod;
+    if (!current.autoMergeRequest || method === 'SQUASH') {
+      return current;
+    }
+    await disableAutoMergeByID(github, current.id);
+    const refreshed = await pullStateByID(github, current.id);
+    if (refreshed.headRefOid !== current.headRefOid) {
       throw new Error(
-        `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
+        `Pull request head moved from ${shortSHA(current.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while resetting non-squash auto-merge.`,
       );
     }
     assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
+    current = refreshed;
+  }
+  throw new Error(
+    `Pull request auto-merge remained configured as ${current.autoMergeRequest.mergeMethod || 'unknown'} after reset.`,
+  );
+}
+
+async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefOid }) {
+  assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid);
+  const expectedBaseState = { expectedBaseRefName, expectedBaseRefOid };
+  let current = await resetNonSquashAutoMerge(github, state, expectedBaseState);
+  if (current.autoMergeRequest) {
+    return 'armed';
+  }
+  if (current.mergeable === 'MERGEABLE' && current.mergeStateStatus === 'CLEAN') {
+    await mergeNow(github, current.id, current.headRefOid);
+    return 'merged';
+  }
+  try {
+    await armAutoMerge(github, current.id, current.headRefOid);
+    return 'armed';
+  } catch (error) {
+    let refreshed = await pullStateByID(github, current.id);
+    if (refreshed.headRefOid !== current.headRefOid) {
+      throw new Error(
+        `Pull request head moved from ${shortSHA(current.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
+      );
+    }
+    assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
+    refreshed = await resetNonSquashAutoMerge(github, refreshed, expectedBaseState);
+    if (refreshed.autoMergeRequest) {
+      return 'armed';
+    }
     if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
-      await mergeNow(github, refreshed.id, state.headRefOid);
+      await mergeNow(github, refreshed.id, refreshed.headRefOid);
       return 'merged';
     }
     throw error;
