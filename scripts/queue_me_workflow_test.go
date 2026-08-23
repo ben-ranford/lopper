@@ -70,9 +70,9 @@ func TestQueueMeControllerContract(t *testing.T) {
 	controller := readConfig(t, "scripts/queue_me_controller.js")
 	for _, fragment := range []string{
 		"compareCommitsWithBasehead",
-		"updatePullRequestBranch",
+		"assertCanonicalCommitIdentity",
+		"Queue identity audit failed",
 		"expectedHeadOid",
-		"updateMethod: REBASE",
 		"enablePullRequestAutoMerge",
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
@@ -87,6 +87,8 @@ func TestQueueMeControllerContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"requestReviews",
 		"force-push",
+		"updatePullRequestBranch",
+		"updateMethod: REBASE",
 		"process.env.QUEUE_APP_PRIVATE_KEY",
 	} {
 		if strings.Contains(controller, forbidden) {

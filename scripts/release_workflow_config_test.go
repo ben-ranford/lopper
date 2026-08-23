@@ -3167,6 +3167,8 @@ func TestMakefileBenchGatePreservesInvalidExitCodes(t *testing.T) {
 		`report_harness_change_requires_approval() { \`,
 		`status_code="$1";`,
 		`printf "%s\n" "$status_code" > "$(MEMORY_BENCH_STATUS)"`,
+		`summary_error="$diagnostic";`,
+		`summary_error="$2";`,
 		`write_invalid_memory_summary "$summary_error";`,
 		`write_harness_change_requires_approval_summary "$summary_error";`,
 		`write_memory_bench_status "2";`,

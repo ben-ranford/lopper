@@ -2304,6 +2304,8 @@ func identityWarningDetail(kind, path string, err error) string {
 		return "permission denied"
 	case errors.Is(err, fs.ErrNotExist):
 		return "not found"
+	case errors.Is(err, safeio.ErrFileTooLarge):
+		return safeio.ErrFileTooLarge.Error()
 	case kind == "parse":
 		return identityParseLabel(path)
 	default:
