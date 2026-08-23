@@ -65,9 +65,11 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 	}
 
 	fallbackSourceRel, sourceWasQuarantined := moveFallbackCopySourceState(renameErr, sourceRel)
-	copiedSourceInfo, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, sourceInfo)
+	fallbackSourceInfo := publishRenameSourceInfo(renameErr, sourceInfo)
+	_, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, fallbackSourceInfo)
 	if errors.Is(copyErr, os.ErrNotExist) && filepath.Clean(fallbackSourceRel) != filepath.Clean(sourceRel) {
-		copiedSourceInfo, copyErr = copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
+		fallbackSourceInfo = sourceInfo
+		_, copyErr = copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
 		sourceWasQuarantined = false
 	}
 	if copyErr != nil {
@@ -77,12 +79,11 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 			restoreQuarantinedMoveSourceAfterFallbackFailure(root, sourceRel, fallbackSourceRel, sourceInfo, sourceWasQuarantined),
 		)
 	}
-	sourceInfo = copiedSourceInfo
 
 	return errors.Join(
 		publishRenameCleanup(renameErr),
 		removeCopiedMoveSource(root, sourceRel, sourceInfo),
-		cleanupCopiedMoveFallbackSource(root, sourceRel, fallbackSourceRel, sourceInfo),
+		cleanupCopiedMoveFallbackSource(root, sourceRel, fallbackSourceRel, fallbackSourceInfo),
 		cleanupMoveSourceStagingDir(root, sourceRel, fallbackSourceRel),
 	)
 }

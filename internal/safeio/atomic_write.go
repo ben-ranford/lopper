@@ -36,6 +36,7 @@ type identityBoundStateOperationsRoot interface {
 
 type publishRenameError struct {
 	sourceRel  string
+	sourceInfo fs.FileInfo
 	err        error
 	cleanupErr error
 }
@@ -86,7 +87,19 @@ func publishRenameSource(err error, fallback string) string {
 	return fallback
 }
 
+func publishRenameSourceInfo(err error, fallback fs.FileInfo) fs.FileInfo {
+	var publishErr *publishRenameError
+	if errors.As(err, &publishErr) && publishErr.sourceInfo != nil {
+		return publishErr.sourceInfo
+	}
+	return fallback
+}
+
 func withPublishRenameSource(err error, sourceRel string) error {
+	return withPublishRenameSourceInfo(err, sourceRel, nil)
+}
+
+func withPublishRenameSourceInfo(err error, sourceRel string, sourceInfo fs.FileInfo) error {
 	if err == nil {
 		return nil
 	}
@@ -95,13 +108,17 @@ func withPublishRenameSource(err error, sourceRel string) error {
 		if publishErr.sourceRel != "" {
 			sourceRel = publishErr.sourceRel
 		}
+		if publishErr.sourceInfo != nil {
+			sourceInfo = publishErr.sourceInfo
+		}
 		return &publishRenameError{
 			sourceRel:  sourceRel,
+			sourceInfo: sourceInfo,
 			err:        publishErr.err,
 			cleanupErr: publishErr.cleanupErr,
 		}
 	}
-	return &publishRenameError{sourceRel: sourceRel, err: err}
+	return &publishRenameError{sourceRel: sourceRel, sourceInfo: sourceInfo, err: err}
 }
 
 func newAtomicWriteSession(root Root, targetRel string, perm os.FileMode) (*atomicWriteSession, error) {
@@ -222,7 +239,7 @@ func publishIdentityBoundReplacingWithSourceState(root Root, sourceRel, targetRe
 	}
 	stagedConsumed, err := renameFileIfMatches(root, stagedRel, targetRel, stagedInfo, sourceMessage)
 	if err != nil {
-		return false, withPublishRenameSource(err, stagedRel)
+		return false, withPublishRenameSourceInfo(err, stagedRel, stagedInfo)
 	}
 	return !stagedConsumed, verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, targetMessage)
 }
