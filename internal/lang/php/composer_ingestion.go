@@ -16,6 +16,7 @@ type composerData struct {
 	NamespaceToDep       map[string]string
 	LocalNamespaces      map[string]struct{}
 	UsageIncomplete      bool
+	ShortOpenTags        bool
 }
 
 type composerManifest struct {
@@ -59,6 +60,7 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectDeclaredDependencies(manifest, data.DeclaredDependencies)
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
+	data.ShortOpenTags = detectPHPShortOpenTags(repoPath)
 
 	if err := loadComposerLockMappings(repoPath, &data); isPureOversizedFileError(err) {
 		data.UsageIncomplete = true
@@ -179,4 +181,59 @@ func unmarshalRepoJSON(filename string, bytes []byte, dest any) error {
 
 func isPureOversizedFileError(err error) bool {
 	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
+}
+
+func detectPHPShortOpenTags(repoPath string) bool {
+	for _, filename := range []string{".user.ini", "php.ini", ".htaccess"} {
+		if phpConfigEnablesShortOpenTags(repoPath, filename) {
+			return true
+		}
+	}
+	return false
+}
+
+func phpConfigEnablesShortOpenTags(repoPath, filename string) bool {
+	path := filepath.Join(repoPath, filename)
+	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, maxPHPConfigBytes)
+	if err != nil {
+		return false
+	}
+	return parsesShortOpenTagEnabled(string(bytes))
+}
+
+func parsesShortOpenTagEnabled(content string) bool {
+	for _, rawLine := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
+			fields := strings.Fields(lower)
+			if len(fields) >= 3 && fields[1] == "short_open_tag" {
+				return isPHPConfigTruthy(fields[2])
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(lower, "=")
+		if !ok || strings.TrimSpace(key) != "short_open_tag" {
+			continue
+		}
+		return isPHPConfigTruthy(strings.TrimSpace(value))
+	}
+	return false
+}
+
+func isPHPConfigTruthy(value string) bool {
+	if comment := strings.IndexAny(value, ";#"); comment >= 0 {
+		value = value[:comment]
+	}
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	switch value {
+	case "1", "on", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }

@@ -236,6 +236,23 @@ func TestLoadComposerDataAndLocalNamespaces(t *testing.T) {
 	if _, ok := data.LocalNamespaces["Tests"]; !ok {
 		t.Fatalf("missing Tests local namespace")
 	}
+	if data.ShortOpenTags {
+		t.Fatalf("did not expect short open tags without explicit PHP configuration")
+	}
+	writeFile(t, filepath.Join(repo, ".user.ini"), "short_open_tag = On\n")
+	data, warnings, err = loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("load data with short-open config: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings with short-open config: %#v", warnings)
+	}
+	if !data.ShortOpenTags {
+		t.Fatalf("expected .user.ini to enable short open tags")
+	}
+	if !parsesShortOpenTagEnabled("php_value memory_limit 128M\nphp_value short_open_tag On # comment\n") {
+		t.Fatalf("expected parser to skip unrelated php_value directives before short_open_tag")
+	}
 }
 
 func TestLoadComposerDataWarnsAndContinuesWhenLockIsOversized(t *testing.T) {
@@ -1226,9 +1243,33 @@ func TestParsePHPImportsParsesConfiguredShortOpenTags(t *testing.T) {
 		"<? use Vendor\\Package\\Client;\n" +
 		"$factory = new \\Vendor\\Package\\Factory(); ?>\n")
 
-	assertParsedVendorPackageModules(t, "short-open.php", content,
-		[]string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"},
-		"expected short-open PHP imports and references to be active")
+	resolver := composerResolver{
+		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
+		allowPHPShortOpenTags: true,
+	}
+	parsed := parsePHPImports(content, "short-open.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client", "Vendor\\Package\\Factory"})
+}
+
+func TestParsePHPImportsHonorsDisabledShortOpenTags(t *testing.T) {
+	content := []byte("<?target use Vendor\\Package\\TemplateOnly; ?>\n" +
+		"<?php use Vendor\\Package\\Client;\n")
+
+	assertParsedVendorPackageModules(t, "short-disabled.php", content,
+		[]string{"Vendor\\Package\\Client"},
+		"expected non-PHP processing instructions to stay inactive when short tags are disabled")
+}
+
+func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
+	content := []byte("<?xml();\n" +
+		"use Vendor\\Package\\Client;\n")
+
+	resolver := composerResolver{
+		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
+		allowPHPShortOpenTags: true,
+	}
+	parsed := parsePHPImports(content, "xml-call.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
 }
 
 func TestParsePHPImportsReturnsToTemplateAfterCommentCloseTags(t *testing.T) {
@@ -1240,7 +1281,7 @@ func TestParsePHPImportsReturnsToTemplateAfterCommentCloseTags(t *testing.T) {
 		{name: "php hash comment", region: "<?php # done ?>"},
 		{name: "php block comment", region: "<?php /* done */ ?>"},
 		{name: "php string before close", region: "<?php echo '?>'; ?>"},
-		{name: "short tag line comment", region: "<? // done ?>"},
+		{name: "echo tag line comment", region: "<?= // done ?>"},
 	}
 
 	for _, tc := range tests {
@@ -1262,9 +1303,12 @@ func TestParsePHPImportsExcludesXMLDeclarationsWhenShortOpenTagsAreSupported(t *
 		"<?xml-stylesheet type=\"text/xsl\" href=\"style.xsl\"?>\n" +
 		"<? use Vendor\\Package\\Client; ?>\n")
 
-	assertParsedVendorPackageModules(t, "xml-template.php", content,
-		[]string{"Vendor\\Package\\Client"},
-		"expected XML declarations to stay inactive and short-open PHP to parse")
+	resolver := composerResolver{
+		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
+		allowPHPShortOpenTags: true,
+	}
+	parsed := parsePHPImports(content, "xml-template.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Vendor\\Package\\Client"})
 }
 
 func TestMaskInactivePHPRegionsHelperBranches(t *testing.T) {
@@ -1317,6 +1361,19 @@ func TestImportParserScansPastMalformedUseStatement(t *testing.T) {
 	}
 }
 
+func TestParsePHPImportsContinuesMultilineUseWhenNamespaceSegmentIsUse(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{
+		"Foo\\Bar": "foo/bar",
+		"Use\\Baz": "use/baz",
+	}}
+	content := []byte(helpersPHPHeader +
+		"use Foo\\Bar,\n" +
+		"    Use\\Baz;\n")
+
+	parsed := parsePHPImports(content, "use-segment.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Foo\\Bar", "Use\\Baz"})
+}
+
 func assertNoSameLineUseStatement(t *testing.T, text string) {
 	t.Helper()
 	if match, ok := nextSameLineUseStatement(text, 0); ok || match != (phpUseStatementMatch{}) {
@@ -1360,12 +1417,6 @@ func TestImportParserContextTrackerHelperBranches(t *testing.T) {
 	tracker.popBraceFrame()
 
 	anonymousClass := "return new class($factory, function () { return new \\stdClass(); }) extends \\stdClass {"
-	if isClassLikeDeclarationBeforeBrace(anonymousClass, strings.IndexByte(anonymousClass, '{')) {
-		t.Fatalf("expected closure argument body not to be class-like")
-	}
-	if !isClassLikeDeclarationBeforeBrace(anonymousClass, len(anonymousClass)-1) {
-		t.Fatalf("expected anonymous class with closure argument to be class-like")
-	}
 	classLikeBraces := findPHPClassLikeBraceOffsets(anonymousClass)
 	if _, ok := classLikeBraces[strings.IndexByte(anonymousClass, '{')]; ok {
 		t.Fatalf("expected linear brace index to skip closure argument body")
@@ -1380,64 +1431,36 @@ func TestImportParserContextTrackerHelperBranches(t *testing.T) {
 
 func TestClassLikeDeclarationScanStartDelimiterBranches(t *testing.T) {
 	balancedBracket := "return new class([function () { return 1; }]) {"
-	if !isClassLikeDeclarationBeforeBrace(balancedBracket, len(balancedBracket)-1) {
+	classLikeBraces := findPHPClassLikeBraceOffsets(balancedBracket)
+	if _, ok := classLikeBraces[len(balancedBracket)-1]; !ok {
 		t.Fatalf("expected balanced bracket expression inside anonymous class declaration to stay class-like")
-	}
-
-	bracketBoundary := "prefix [class C {"
-	if got := classLikeDeclarationScanStart(bracketBoundary, len(bracketBoundary)-1); got != strings.IndexByte(bracketBoundary, '[')+1 {
-		t.Fatalf("expected unmatched bracket to bound declaration scan, got %d", got)
-	}
-
-	parenBoundary := "prefix (class C {"
-	if got := classLikeDeclarationScanStart(parenBoundary, len(parenBoundary)-1); got != strings.IndexByte(parenBoundary, '(')+1 {
-		t.Fatalf("expected unmatched parenthesis to bound declaration scan, got %d", got)
-	}
-
-	braceBoundary := "if ($x) { class C {"
-	if got := classLikeDeclarationScanStart(braceBoundary, len(braceBoundary)-1); got != strings.IndexByte(braceBoundary, '{')+1 {
-		t.Fatalf("expected unmatched brace to bound declaration scan, got %d", got)
-	}
-
-	balance := phpReverseDelimiterBalance{paren: 1, bracket: 1, brace: 1}
-	if boundary, ok := balance.openingDelimiterBoundary(&balance.paren); ok || boundary != 0 || balance.paren != 0 {
-		t.Fatalf("expected nested opening delimiter to reduce depth, boundary=%d ok=%v balance=%#v", boundary, ok, balance)
-	}
-	nestedBalance := phpReverseDelimiterBalance{brace: 1}
-	if boundary, ok := nestedBalance.scanReverse('('); boundary != 0 || ok {
-		t.Fatalf("expected nested opening delimiter not to produce boundary, boundary=%d ok=%v", boundary, ok)
 	}
 }
 
 func TestImportParserNamespaceDeclarationHelperBranches(t *testing.T) {
-	if _, ok := parseNamespaceDeclarationCandidate("namespace App;", []int{0}); ok {
-		t.Fatalf("expected malformed namespace candidate range to fail")
-	}
-	if _, ok := parseNamespaceDeclarationCandidate("xxx", []int{0, 3}); ok {
-		t.Fatalf("expected namespace candidate without keyword to fail")
-	}
-	if _, ok := parseNamespaceDeclarationCandidate("namespace ;", []int{0, len("namespace ;")}); ok {
-		t.Fatalf("expected namespace candidate without name to fail")
-	}
-	if isClassLikeDeclarationBeforeBrace("", 0) {
-		t.Fatalf("expected non-positive brace offset not to be class-like")
-	}
-	if !isClassLikeDeclarationBeforeBrace("class C {", len("class C ")) {
-		t.Fatalf("expected declaration at start of text to be class-like")
-	}
-	if !followsCompletedNamespaceDeclaration("namespace A; ") {
+	completion := phpNamespaceLineCompletion{}
+	completion.advanceTo("namespace A; ", len("namespace A; "))
+	if !completion.followsCompletedNamespaceDeclaration() {
 		t.Fatalf("expected semicolon namespace declaration to allow following same-line namespace")
 	}
-	if !followsCompletedNamespaceDeclaration("namespace A { class C {} } ") {
+	completion = phpNamespaceLineCompletion{}
+	completion.advanceTo("namespace A { class C {} } ", len("namespace A { class C {} } "))
+	if !completion.followsCompletedNamespaceDeclaration() {
 		t.Fatalf("expected completed namespace block to allow following same-line namespace")
 	}
-	if !followsCompletedNamespaceDeclaration("declare(strict_types=1); namespace A; ") {
+	completion = phpNamespaceLineCompletion{}
+	completion.advanceTo("declare(strict_types=1); namespace A; ", len("declare(strict_types=1); namespace A; "))
+	if !completion.followsCompletedNamespaceDeclaration() {
 		t.Fatalf("expected namespace after previous same-line statement to allow following namespace")
 	}
-	if followsCompletedNamespaceDeclaration("doWork(); ") {
+	completion = phpNamespaceLineCompletion{}
+	completion.advanceTo("doWork(); ", len("doWork(); "))
+	if completion.followsCompletedNamespaceDeclaration() {
 		t.Fatalf("expected arbitrary same-line statement not to allow following namespace")
 	}
-	if followsCompletedNamespaceDeclaration("namespace A ") {
+	completion = phpNamespaceLineCompletion{}
+	completion.advanceTo("namespace A ", len("namespace A "))
+	if completion.followsCompletedNamespaceDeclaration() {
 		t.Fatalf("expected incomplete namespace declaration not to allow following namespace")
 	}
 }
@@ -1455,9 +1478,6 @@ func TestImportParserMaskLineAndSplitHelperBranches(t *testing.T) {
 	}
 	if got := lineTextAt("a\nb", 3); got != "" {
 		t.Fatalf("expected out-of-range line text to be empty, got %q", got)
-	}
-	if start := classLikeDeclarationScanStart("class C {", len("class C {")+10); start != len("class C {") {
-		t.Fatalf("expected oversized brace offset to clamp before scanning, got %d", start)
 	}
 	if masked := withMaskedPHPHeredocRange("abc", nil, 2, 2); len(masked) != 0 {
 		t.Fatalf("expected empty heredoc mask range to stay nil, got %q", string(masked))

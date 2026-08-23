@@ -61,8 +61,6 @@ const (
 )
 
 var namespaceRefPattern = regexp.MustCompile(`\\?[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*(?:\\[A-Za-z_\x{80}-\x{10FFFF}][A-Za-z0-9_\x{80}-\x{10FFFF}]*)+`)
-var namespaceDeclPrefixPattern = regexp.MustCompile(`^\s*(?:<\?php\b\s*)?(?:declare\s*\([^)]*\)\s*;\s*)*$`)
-var classLikeDeclarationBeforeBracePattern = regexp.MustCompile(`(?is)\b(?:class|interface|trait|enum)\b.*$`)
 var dynamicPattern = regexp.MustCompile(`(?m)(new\s+\$[A-Za-z_]|\$[A-Za-z_][A-Za-z0-9_]*\s*::|\b(class_exists|interface_exists|trait_exists|method_exists)\s*\()`) //nolint:lll
 
 func parseImports(content []byte, filePath string, resolver composerResolver) ([]importBinding, map[string]int, int) {
@@ -71,7 +69,7 @@ func parseImports(content []byte, filePath string, resolver composerResolver) ([
 }
 
 func parsePHPImports(content []byte, filePath string, resolver composerResolver) importParseResult {
-	activePHP := maskInactivePHPRegions(string(content))
+	activePHP := maskInactivePHPRegionsWithShortOpenTags(string(content), resolver.allowPHPShortOpenTags)
 	phpMasked := maskPHPHeredocNowdocBodies(activePHP)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	text := string(sanitized)
@@ -136,7 +134,7 @@ func parseUseStatementByContext(statement, filePath string, line int, resolver c
 }
 
 func parseNamespaceReferences(content []byte, filePath string, resolver composerResolver) ([]importBinding, int) {
-	activePHP := maskInactivePHPRegions(string(content))
+	activePHP := maskInactivePHPRegionsWithShortOpenTags(string(content), resolver.allowPHPShortOpenTags)
 	phpMasked := maskPHPHeredocNowdocBodies(activePHP)
 	sanitized := shared.MaskCommentsAndStringsForFile([]byte(phpMasked), filePath)
 	return parseNamespaceReferencesText(string(sanitized), filePath, resolver)
@@ -304,12 +302,22 @@ func findPHPUseStatementEnd(text string, statementStart int) (int, int, bool) {
 		case '\n', '\r':
 			lineStart := nextPHPLineStart(text, nextPHPLineEnd(text, offset))
 			nextToken := skipHorizontalWhitespace(text, lineStart)
-			if hasKeywordAt(text, nextToken, "use") {
+			if hasKeywordAt(text, nextToken, "use") && !useStatementContinuesAfterNewline(text, statementStart, offset) {
 				return offset, lineStart, false
 			}
 		}
 	}
 	return len(text), len(text), false
+}
+
+func useStatementContinuesAfterNewline(text string, statementStart, newlineOffset int) bool {
+	for offset := newlineOffset - 1; offset >= statementStart; offset-- {
+		if isPHPWhitespace(text[offset]) {
+			continue
+		}
+		return text[offset] == ','
+	}
+	return false
 }
 
 func skipPHPWhitespace(text string, offset int) int {
@@ -356,31 +364,6 @@ func findNamespaceDeclarationRanges(text string) [][]int {
 		ranges = append(ranges, []int{declaration.start, declaration.end})
 	}
 	return ranges
-}
-
-func isNamespaceDeclarationCandidate(text string, start int) bool {
-	lineStart := strings.LastIndexByte(text[:start], '\n') + 1
-	prefix := text[lineStart:start]
-	if namespaceDeclPrefixPattern.MatchString(prefix) {
-		return true
-	}
-	return followsCompletedNamespaceDeclaration(prefix)
-}
-
-func followsCompletedNamespaceDeclaration(prefix string) bool {
-	trimmed := strings.TrimRight(prefix, " \t\r")
-	if strings.HasSuffix(trimmed, "}") {
-		return true
-	}
-	if !strings.HasSuffix(trimmed, ";") {
-		return false
-	}
-	previous := strings.TrimSpace(trimmed[:len(trimmed)-1])
-	start := strings.LastIndex(previous, ";")
-	if start >= 0 {
-		previous = strings.TrimSpace(previous[start+1:])
-	}
-	return strings.HasPrefix(strings.ToLower(previous), "namespace ")
 }
 
 type phpBraceFrame struct {
@@ -676,42 +659,6 @@ func isPHPNamespaceIdentifierPartByte(ch byte) bool {
 	return isPHPNamespaceIdentifierStartByte(ch) || ch >= '0' && ch <= '9'
 }
 
-func parseNamespaceDeclarationCandidate(text string, candidate []int) (phpNamespaceDeclaration, bool) {
-	if !isMaskableRange(candidate) || !isNamespaceDeclarationCandidate(text, candidate[0]) {
-		return phpNamespaceDeclaration{}, false
-	}
-	raw := text[candidate[0]:candidate[1]]
-	keywordIndex := strings.Index(strings.ToLower(raw), "namespace")
-	if keywordIndex < 0 {
-		return phpNamespaceDeclaration{}, false
-	}
-	body := strings.TrimSpace(raw[keywordIndex+len("namespace"):])
-	bracketed := strings.HasSuffix(body, "{")
-	name := normalizeNamespace(strings.TrimRight(body, " \t\r\n;{"))
-	if name == "" {
-		return phpNamespaceDeclaration{}, false
-	}
-	braceOffset := -1
-	if bracketed {
-		braceOffset = candidate[0] + strings.LastIndexByte(raw, '{')
-	}
-	return phpNamespaceDeclaration{
-		start:       candidate[0],
-		end:         candidate[1],
-		braceOffset: braceOffset,
-		name:        name,
-		bracketed:   bracketed,
-	}, true
-}
-
-func isClassLikeDeclarationBeforeBrace(text string, braceOffset int) bool {
-	if braceOffset <= 0 {
-		return false
-	}
-	start := classLikeDeclarationScanStart(text, braceOffset)
-	return classLikeDeclarationBeforeBracePattern.MatchString(text[start:braceOffset])
-}
-
 func findPHPClassLikeBraceOffsets(text string) map[int]struct{} {
 	var stack []byte
 	boundaries := []int{0}
@@ -773,71 +720,15 @@ func popPHPClassLikeDelimiter(stack []byte, boundaries []int, classLikeKeywordOf
 	return stack[:len(stack)-1], boundaries[:len(boundaries)-1], classLikeKeywordOffsets[:len(classLikeKeywordOffsets)-1]
 }
 
-func classLikeDeclarationScanStart(text string, braceOffset int) int {
-	if braceOffset > len(text) {
-		braceOffset = len(text)
-	}
-	minStart := braceOffset - maxPHPNamespaceAncestorBytes
-	if minStart < 0 {
-		minStart = 0
-	}
-	balance := phpReverseDelimiterBalance{}
-	for i := braceOffset - 1; i >= minStart; i-- {
-		if boundary, ok := balance.scanReverse(text[i]); ok {
-			return i + boundary
-		}
-	}
-	return minStart
-}
-
-type phpReverseDelimiterBalance struct {
-	paren   int
-	bracket int
-	brace   int
-}
-
-func (b *phpReverseDelimiterBalance) scanReverse(ch byte) (int, bool) {
-	switch ch {
-	case ')':
-		b.paren++
-	case '(':
-		return b.openingDelimiterBoundary(&b.paren)
-	case ']':
-		b.bracket++
-	case '[':
-		return b.openingDelimiterBoundary(&b.bracket)
-	case '}':
-		b.brace++
-	case '{':
-		return b.openingDelimiterBoundary(&b.brace)
-	case ';':
-		if b.atTopLevel() {
-			return 1, true
-		}
-	}
-	return 0, false
-}
-
-func (b *phpReverseDelimiterBalance) openingDelimiterBoundary(depth *int) (int, bool) {
-	if *depth > 0 {
-		*depth--
-		return 0, false
-	}
-	if b.atTopLevel() {
-		return 1, true
-	}
-	return 0, false
-}
-
-func (b *phpReverseDelimiterBalance) atTopLevel() bool {
-	return b.paren == 0 && b.bracket == 0 && b.brace == 0
-}
-
 func maskInactivePHPRegions(text string) string {
+	return maskInactivePHPRegionsWithShortOpenTags(text, false)
+}
+
+func maskInactivePHPRegionsWithShortOpenTags(text string, allowShortOpenTag bool) string {
 	masked := ensureMaskedText(text, nil)
 	maskByteRange(masked, 0, len(masked))
 	for offset := 0; offset < len(text); {
-		openStart, codeStart, ok := nextPHPOpenTag(text, offset)
+		openStart, codeStart, ok := nextPHPOpenTag(text, offset, allowShortOpenTag)
 		if !ok {
 			break
 		}
@@ -851,7 +742,7 @@ func maskInactivePHPRegions(text string) string {
 	return string(masked)
 }
 
-func nextPHPOpenTag(text string, offset int) (int, int, bool) {
+func nextPHPOpenTag(text string, offset int, allowShortOpenTag bool) (int, int, bool) {
 	for offset < len(text) {
 		relative := strings.Index(text[offset:], "<?")
 		if relative < 0 {
@@ -865,7 +756,7 @@ func nextPHPOpenTag(text string, offset int) (int, int, bool) {
 		if tagEnd <= len(text) && strings.EqualFold(text[start:tagEnd], "<?php") && (tagEnd == len(text) || !isPHPIdentifierByte(text[tagEnd])) {
 			return start, tagEnd, true
 		}
-		if !isXMLDeclarationOpenTag(text, start) {
+		if allowShortOpenTag && !isXMLDeclarationOpenTag(text, start) {
 			return start, start + len("<?"), true
 		}
 		offset = start + len("<?")
@@ -877,7 +768,7 @@ func isXMLDeclarationOpenTag(text string, start int) bool {
 	tagEnd := start + len("<?xml")
 	return tagEnd <= len(text) &&
 		strings.EqualFold(text[start:tagEnd], "<?xml") &&
-		(tagEnd == len(text) || !isPHPIdentifierByte(text[tagEnd]))
+		(tagEnd == len(text) || text[tagEnd] == '?' || text[tagEnd] == '-' || isPHPWhitespace(text[tagEnd]))
 }
 
 func findPHPRegionEnd(text string, offset int) (int, int) {

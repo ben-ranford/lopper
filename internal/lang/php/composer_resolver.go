@@ -3,9 +3,10 @@ package php
 import "strings"
 
 type composerResolver struct {
-	namespaceToDep map[string]string
-	localNamespace map[string]struct{}
-	declared       map[string]struct{}
+	namespaceToDep        map[string]string
+	localNamespace        map[string]struct{}
+	declared              map[string]struct{}
+	allowPHPShortOpenTags bool
 }
 
 type dependencyResolution struct {
@@ -16,9 +17,10 @@ type dependencyResolution struct {
 
 func newComposerResolver(data composerData) composerResolver {
 	return composerResolver{
-		namespaceToDep: data.NamespaceToDep,
-		localNamespace: data.LocalNamespaces,
-		declared:       data.DeclaredDependencies,
+		namespaceToDep:        data.NamespaceToDep,
+		localNamespace:        data.LocalNamespaces,
+		declared:              data.DeclaredDependencies,
+		allowPHPShortOpenTags: data.ShortOpenTags,
 	}
 }
 
