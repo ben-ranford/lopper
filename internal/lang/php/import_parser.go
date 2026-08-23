@@ -570,9 +570,9 @@ func (t *phpContextTracker) addNamespaceUses(statement string, partLimit int) {
 func namespaceUseParts(statement string, partLimit int) (string, []string) {
 	statement = strings.TrimSpace(statement)
 	if open := strings.IndexByte(statement, '{'); open >= 0 {
-		close := strings.LastIndex(statement, "}")
-		if close > open {
-			parts, _ := splitUseParts(statement[open+1:close], partLimit)
+		closingBrace := strings.LastIndex(statement, "}")
+		if closingBrace > open {
+			parts, _ := splitUseParts(statement[open+1:closingBrace], partLimit)
 			return normalizeNamespace(stripUseImportQualifier(statement[:open])), parts
 		}
 	}
