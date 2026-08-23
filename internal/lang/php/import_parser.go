@@ -1462,8 +1462,15 @@ func parseClassBodyUsePart(part, filePath string, line int, resolver composerRes
 	if module == "" {
 		return importBinding{}, "", false, false, false
 	}
-	if !absolute && currentNamespace != "" {
-		module = normalizeNamespace(currentNamespace + `\` + module)
+	if !absolute {
+		if namespaceRelative, relativeModule := splitNamespaceRelativeModule(module); namespaceRelative {
+			module = relativeModule
+			if currentNamespace != "" {
+				module = normalizeNamespace(currentNamespace + `\` + module)
+			}
+		} else if currentNamespace != "" {
+			module = normalizeNamespace(currentNamespace + `\` + module)
+		}
 	}
 	if local == "" {
 		local = lastNamespaceSegment(module)
@@ -1479,6 +1486,14 @@ func parseClassBodyUsePart(part, filePath string, line int, resolver composerRes
 
 	binding := newImportBinding(filePath, usePartLocalLine(part, line, local), dependency, module, local, lastNamespaceSegment(module), false)
 	return binding, normalizeDependencyID(dependency), true, false, false
+}
+
+func splitNamespaceRelativeModule(module string) (bool, string) {
+	const namespacePrefix = `namespace\`
+	if len(module) <= len(namespacePrefix) || !strings.EqualFold(module[:len(namespacePrefix)], namespacePrefix) {
+		return false, module
+	}
+	return true, module[len(namespacePrefix):]
 }
 
 func parseUsePart(part, base, filePath string, line int, resolver composerResolver) (importBinding, string, bool, bool, bool) {
