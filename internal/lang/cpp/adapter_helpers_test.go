@@ -130,7 +130,7 @@ func TestCompileContextNostdincXXKeepsCSystemRootProvenance(t *testing.T) {
 	requireCompileContextSearchPathSystem(t, ctx, "/usr/include/c++/v1", true)
 }
 
-func TestCompileContextNostdincAffectsOnlyLaterDashIProvenance(t *testing.T) {
+func TestCompileContextNostdincAppliesCommandWide(t *testing.T) {
 	repo := t.TempDir()
 	args := []string{"c++", "-I/usr/local/include", "-nostdinc", "-I/usr/include", "-c", "src/" + testMainCPPFileName}
 	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
@@ -140,8 +140,22 @@ func TestCompileContextNostdincAffectsOnlyLaterDashIProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load compile context: %v", err)
 	}
-	requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", true)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/local/include", false)
 	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", false)
+}
+
+func TestCompileContextNostdincXXAppliesCommandWide(t *testing.T) {
+	repo := t.TempDir()
+	args := []string{"c++", "-I/usr/include/c++/13", "-nostdinc++", "-I/usr/include", "-c", "src/" + testMainCPPFileName}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include/c++/13", false)
+	requireCompileContextSearchPathSystem(t, ctx, "/usr/include", true)
 }
 
 func compileContextSearchPathSystem(ctx compileContext, wantPath string) (bool, bool) {

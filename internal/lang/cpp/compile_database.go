@@ -20,6 +20,9 @@ const (
 	nostdincFlag        = "-nostdinc"
 	nostdincxxFlag      = "-nostdinc++"
 	maxCompileDatabases = 64
+
+	appleSDKUsrIncludeFragment    = ".sdk/usr/include"
+	appleSDKUsrCXXIncludeFragment = appleSDKUsrIncludeFragment + "/c++/"
 )
 
 type compileCommandEntry struct {
@@ -228,19 +231,14 @@ func extractIncludeDirs(args []string, baseDir string) []string {
 
 func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPath {
 	items := make([]includeSearchPath, 0)
-	promoteCompilerDefaultCSystemRoots := true
-	promoteCompilerDefaultCXXSystemRoots := true
+	promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots := compilerDefaultSystemRootPromotion(args)
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" {
 			continue
 		}
 		switch {
-		case arg == nostdincFlag:
-			promoteCompilerDefaultCSystemRoots = false
-			promoteCompilerDefaultCXXSystemRoots = false
-		case arg == nostdincxxFlag:
-			promoteCompilerDefaultCXXSystemRoots = false
+		case arg == nostdincFlag || arg == nostdincxxFlag:
 		case arg == includeFlag || arg == isystemFlag || arg == iquoteFlag:
 			if i+1 >= len(args) {
 				continue
@@ -256,6 +254,20 @@ func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPat
 		}
 	}
 	return normalizeCompileSearchPaths(items)
+}
+
+func compilerDefaultSystemRootPromotion(args []string) (bool, bool) {
+	promoteCSystemRoots := true
+	promoteCXXSystemRoots := true
+	for _, raw := range args {
+		switch strings.TrimSpace(raw) {
+		case nostdincFlag:
+			return false, false
+		case nostdincxxFlag:
+			promoteCXXSystemRoots = false
+		}
+	}
+	return promoteCSystemRoots, promoteCXXSystemRoots
 }
 
 func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
@@ -343,22 +355,22 @@ func isDefaultAppleCXXSystemIncludeRoot(path string) bool {
 }
 
 func isDefaultAppleSDKCIncludeRoot(path string) bool {
-	return isDefaultAppleSDKIncludeRoot(path) && !strings.Contains(path, ".sdk/usr/include/c++/")
+	return isDefaultAppleSDKIncludeRoot(path) && !strings.Contains(path, appleSDKUsrCXXIncludeFragment)
 }
 
 func isDefaultAppleSDKCXXIncludeRoot(path string) bool {
-	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, ".sdk/usr/include/c++/") {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, appleSDKUsrCXXIncludeFragment) {
 		return false
 	}
 	return true
 }
 
 func isDefaultAppleSDKIncludeRoot(path string) bool {
-	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, ".sdk/usr/include") {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, appleSDKUsrIncludeFragment) {
 		return false
 	}
-	return strings.HasSuffix(path, ".sdk/usr/include") ||
-		strings.Contains(path, ".sdk/usr/include/c++/")
+	return strings.HasSuffix(path, appleSDKUsrIncludeFragment) ||
+		strings.Contains(path, appleSDKUsrCXXIncludeFragment)
 }
 
 func isDefaultAppleCompilerRuntimeIncludeRoot(path string) bool {
