@@ -45,8 +45,9 @@ type phpUseStatementScan struct {
 }
 
 type phpUseContext struct {
-	classBody bool
-	namespace string
+	classBody     bool
+	namespace     string
+	namespaceUses map[string]string
 }
 
 type phpCodeState uint8
@@ -97,6 +98,9 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 		line := lineIndex.lineNumberAt(match.statementStart)
 		context := contextTracker.advanceTo(match.start)
 		bindings, groupedDeps, unresolvedCount, consumedParts, bindingLimitHit, resolutionLimitHit := parseUseStatementByContext(statement, filePath, line, resolver, remainingUseParts, context)
+		if !context.classBody {
+			contextTracker.addNamespaceUses(statement, remainingUseParts)
+		}
 		if bindingLimitHit {
 			result.useBindingLimitHit = true
 		}
@@ -124,7 +128,7 @@ func parsePHPImports(content []byte, filePath string, resolver composerResolver)
 
 func parseUseStatementByContext(statement, filePath string, line int, resolver composerResolver, partLimit int, context phpUseContext) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
 	if context.classBody {
-		bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit := parseClassBodyUseStatement(statement, filePath, line, resolver, partLimit, context.namespace)
+		bindings, groupedDeps, unresolved, consumedParts, limitHit, resolutionLimitHit := parseClassBodyUseStatement(statement, filePath, line, resolver, partLimit, context.namespace, context.namespaceUses)
 		for i := range bindings {
 			bindings[i].Wildcard = true
 		}
@@ -458,6 +462,7 @@ type phpBraceFrame struct {
 	classLike         bool
 	namespaceFrame    bool
 	previousNamespace string
+	previousUses      map[string]string
 }
 
 type phpNamespaceDeclaration struct {
@@ -473,6 +478,7 @@ type phpContextTracker struct {
 	offset                    int
 	frames                    []phpBraceFrame
 	currentNamespace          string
+	currentNamespaceUses      map[string]string
 	semicolonNamespaceByStart map[int]string
 	bracketedNamespaceByBrace map[int]string
 	classLikeBraceByOffset    map[int]struct{}
@@ -492,6 +498,7 @@ func newPHPContextTracker(text string, allowShortOpenTags bool) phpContextTracke
 	return phpContextTracker{
 		text:                      text,
 		frames:                    make([]phpBraceFrame, 0, 8),
+		currentNamespaceUses:      make(map[string]string),
 		semicolonNamespaceByStart: semicolonNamespaceByStart,
 		bracketedNamespaceByBrace: bracketedNamespaceByBrace,
 		classLikeBraceByOffset:    findPHPClassLikeBraceOffsets(text),
@@ -508,6 +515,7 @@ func (t *phpContextTracker) advanceTo(offset int) phpUseContext {
 	for i := t.offset; i < offset; i++ {
 		if namespace, ok := t.semicolonNamespaceByStart[i]; ok {
 			t.currentNamespace = namespace
+			t.currentNamespaceUses = make(map[string]string)
 		}
 		switch t.text[i] {
 		case '{':
@@ -522,9 +530,34 @@ func (t *phpContextTracker) advanceTo(offset int) phpUseContext {
 
 func (t *phpContextTracker) currentContext() phpUseContext {
 	return phpUseContext{
-		classBody: len(t.frames) > 0 && t.frames[len(t.frames)-1].classLike,
-		namespace: t.currentNamespace,
+		classBody:     len(t.frames) > 0 && t.frames[len(t.frames)-1].classLike,
+		namespace:     t.currentNamespace,
+		namespaceUses: t.currentNamespaceUses,
 	}
+}
+
+func (t *phpContextTracker) addNamespaceUses(statement string, partLimit int) {
+	base, parts := namespaceUseParts(statement, partLimit)
+	for _, part := range parts {
+		module, alias, ok := parseUsePartModuleAndLocal(part, base)
+		if !ok {
+			continue
+		}
+		t.currentNamespaceUses[strings.ToLower(alias)] = module
+	}
+}
+
+func namespaceUseParts(statement string, partLimit int) (string, []string) {
+	statement = strings.TrimSpace(statement)
+	if open := strings.IndexByte(statement, '{'); open >= 0 {
+		close := strings.LastIndex(statement, "}")
+		if close > open {
+			parts, _ := splitUseParts(statement[open+1:close], partLimit)
+			return normalizeNamespace(stripUseImportQualifier(statement[:open])), parts
+		}
+	}
+	parts, _ := splitUseParts(statement, partLimit)
+	return "", parts
 }
 
 func (t *phpContextTracker) pushBraceFrame(offset int) {
@@ -532,8 +565,10 @@ func (t *phpContextTracker) pushBraceFrame(offset int) {
 		t.frames = append(t.frames, phpBraceFrame{
 			namespaceFrame:    true,
 			previousNamespace: t.currentNamespace,
+			previousUses:      t.currentNamespaceUses,
 		})
 		t.currentNamespace = namespace
+		t.currentNamespaceUses = make(map[string]string)
 		return
 	}
 	_, classLike := t.classLikeBraceByOffset[offset]
@@ -548,6 +583,7 @@ func (t *phpContextTracker) popBraceFrame() {
 	t.frames = t.frames[:len(t.frames)-1]
 	if frame.namespaceFrame {
 		t.currentNamespace = frame.previousNamespace
+		t.currentNamespaceUses = frame.previousUses
 	}
 }
 
@@ -1382,10 +1418,10 @@ func parseFlatUseStatement(statement, filePath string, line int, resolver compos
 	return imports, map[string]struct{}{}, unresolved, len(parts), limitHit, resolutionLimitHit
 }
 
-func parseClassBodyUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int, currentNamespace string) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
+func parseClassBodyUseStatement(statement, filePath string, line int, resolver composerResolver, partLimit int, currentNamespace string, namespaceUses map[string]string) ([]importBinding, map[string]struct{}, int, int, bool, bool) {
 	statement = traitUseList(statement)
 	parts, limitHit := splitUseParts(statement, partLimit)
-	imports, groupedDeps, unresolved, resolutionLimitHit := parseClassBodyUseParts(parts, filePath, line, resolver, currentNamespace)
+	imports, groupedDeps, unresolved, resolutionLimitHit := parseClassBodyUseParts(parts, filePath, line, resolver, currentNamespace, namespaceUses)
 	return imports, groupedDeps, unresolved, len(parts), limitHit, resolutionLimitHit
 }
 
@@ -1431,12 +1467,12 @@ func parseUseParts(parts []string, base, filePath string, line int, resolver com
 	return imports, groupedDeps, unresolved, false
 }
 
-func parseClassBodyUseParts(parts []string, filePath string, line int, resolver composerResolver, currentNamespace string) ([]importBinding, map[string]struct{}, int, bool) {
+func parseClassBodyUseParts(parts []string, filePath string, line int, resolver composerResolver, currentNamespace string, namespaceUses map[string]string) ([]importBinding, map[string]struct{}, int, bool) {
 	imports := make([]importBinding, 0)
 	groupedDeps := make(map[string]struct{})
 	unresolved := 0
 	for _, part := range parts {
-		binding, dep, ok, unresolvedImport, resolutionLimitHit := parseClassBodyUsePart(strings.TrimSpace(part), filePath, line, resolver, currentNamespace)
+		binding, dep, ok, unresolvedImport, resolutionLimitHit := parseClassBodyUsePart(strings.TrimSpace(part), filePath, line, resolver, currentNamespace, namespaceUses)
 		if resolutionLimitHit {
 			return imports, groupedDeps, unresolved, true
 		}
@@ -1454,7 +1490,7 @@ func parseClassBodyUseParts(parts []string, filePath string, line int, resolver 
 	return imports, groupedDeps, unresolved, false
 }
 
-func parseClassBodyUsePart(part, filePath string, line int, resolver composerResolver, currentNamespace string) (importBinding, string, bool, bool, bool) {
+func parseClassBodyUsePart(part, filePath string, line int, resolver composerResolver, currentNamespace string, namespaceUses map[string]string) (importBinding, string, bool, bool, bool) {
 	raw := stripUseImportQualifier(part)
 	absolute := strings.HasPrefix(strings.TrimSpace(raw), `\`)
 	module, local := splitAlias(raw)
@@ -1468,6 +1504,8 @@ func parseClassBodyUsePart(part, filePath string, line int, resolver composerRes
 			if currentNamespace != "" {
 				module = normalizeNamespace(currentNamespace + `\` + module)
 			}
+		} else if expandedModule, ok := expandNamespaceUseAlias(module, namespaceUses); ok {
+			module = expandedModule
 		} else if currentNamespace != "" {
 			module = normalizeNamespace(currentNamespace + `\` + module)
 		}
@@ -1486,6 +1524,18 @@ func parseClassBodyUsePart(part, filePath string, line int, resolver composerRes
 
 	binding := newImportBinding(filePath, usePartLocalLine(part, line, local), dependency, module, local, lastNamespaceSegment(module), false)
 	return binding, normalizeDependencyID(dependency), true, false, false
+}
+
+func expandNamespaceUseAlias(module string, namespaceUses map[string]string) (string, bool) {
+	first, rest, hasSeparator := strings.Cut(module, `\`)
+	target, ok := namespaceUses[strings.ToLower(first)]
+	if !ok {
+		return module, false
+	}
+	if !hasSeparator {
+		return target, true
+	}
+	return normalizeNamespace(target + `\` + rest), true
 }
 
 func splitNamespaceRelativeModule(module string) (bool, string) {

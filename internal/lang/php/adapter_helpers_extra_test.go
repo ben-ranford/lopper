@@ -1457,6 +1457,15 @@ func TestParsePHPImportsResolvesNamespaceRelativeTraitUseInNamedNamespace(t *tes
 	assertImportModules(t, parsed.imports, []string{"App\\Vendor\\Package\\FeatureTrait"})
 }
 
+func TestParsePHPImportsResolvesImportedAliasBeforeTraitNamespaceLookup(t *testing.T) {
+	resolver := composerResolver{namespaceToDep: map[string]string{
+		"Acme\\Other\\Package": "acme/other-package",
+		"Vendor\\Package":      "vendor/package",
+	}}
+	parsed := parsePHPImports([]byte("<?php use Acme\\Other as Vendor; class C { use Vendor\\Package\\FeatureTrait; }"), "trait-import-alias.php", resolver)
+	assertImportModules(t, parsed.imports, []string{"Acme\\Other\\Package\\FeatureTrait"})
+}
+
 func TestParsePHPImportsTreatsXMLCallAsShortTagPHPWhenEnabled(t *testing.T) {
 	resolver := composerResolver{
 		namespaceToDep:        map[string]string{"Vendor\\Package": "vendor/package"},
@@ -1813,16 +1822,16 @@ func TestImportParserUseResolutionLimitHelperBranches(t *testing.T) {
 	if _, _, _, resolutionLimitHit := parseUseParts([]string{hugeModule}, "", "x.php", 1, limitResolver, false); !resolutionLimitHit {
 		t.Fatalf("expected ordinary use part to report namespace resolution limit")
 	}
-	if _, _, _, resolutionLimitHit := parseClassBodyUseParts([]string{hugeModule}, "x.php", 1, limitResolver, ""); !resolutionLimitHit {
+	if _, _, _, resolutionLimitHit := parseClassBodyUseParts([]string{hugeModule}, "x.php", 1, limitResolver, "", nil); !resolutionLimitHit {
 		t.Fatalf("expected class-body use part to report namespace resolution limit")
 	}
-	if _, _, _, unresolved, _ := parseClassBodyUsePart("Unknown\\Pkg\\Trait", "x.php", 1, composerResolver{}, ""); !unresolved {
+	if _, _, _, unresolved, _ := parseClassBodyUsePart("Unknown\\Pkg\\Trait", "x.php", 1, composerResolver{}, "", nil); !unresolved {
 		t.Fatalf("expected unresolved class-body trait use to be counted")
 	}
-	if _, _, unresolved, resolutionLimitHit := parseClassBodyUseParts([]string{"Unknown\\Pkg\\Trait"}, "x.php", 1, composerResolver{}, ""); unresolved == 0 || resolutionLimitHit {
+	if _, _, unresolved, resolutionLimitHit := parseClassBodyUseParts([]string{"Unknown\\Pkg\\Trait"}, "x.php", 1, composerResolver{}, "", nil); unresolved == 0 || resolutionLimitHit {
 		t.Fatalf("expected class-body use parts to count unresolved trait without limit, unresolved=%d limit=%v", unresolved, resolutionLimitHit)
 	}
-	if binding, dep, ok, unresolved, limitHit := parseClassBodyUsePart("", "x.php", 1, composerResolver{}, ""); ok || unresolved || limitHit || dep != "" || binding != (importBinding{}) {
+	if binding, dep, ok, unresolved, limitHit := parseClassBodyUsePart("", "x.php", 1, composerResolver{}, "", nil); ok || unresolved || limitHit || dep != "" || binding != (importBinding{}) {
 		t.Fatalf("expected empty class-body use part to be ignored, binding=%#v dep=%q unresolved=%v limit=%v ok=%v", binding, dep, unresolved, limitHit, ok)
 	}
 	if binding, dep, ok, unresolved, limitHit := parseUsePart(hugeModule, "", "x.php", 1, limitResolver); ok || unresolved || !limitHit || dep != "" || binding != (importBinding{}) {
