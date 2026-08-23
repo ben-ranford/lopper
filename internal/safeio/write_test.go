@@ -8771,6 +8771,30 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 		assertFileContent(t, stagedPath, "source")
 	})
 
+	t.Run("reports retained staging to move recovery", func(t *testing.T) {
+		rootDir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+			t.Fatalf("create quarantine: %v", err)
+		}
+		stagedPath := filepath.Join(rootDir, "quarantine", "entry")
+		if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+			t.Fatalf("seed quarantine: %v", err)
+		}
+		expected := statTestPath(t, stagedPath)
+		base := openTestRoot(t, rootDir)
+		root := &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
+			link: linkUnsupported,
+		}}
+
+		err := restoreRetainedAliasSource(root, filepath.Join("quarantine", "entry"), "source", expected)
+		if !errors.Is(err, errIdentityBoundRestoreRetainedStaging) {
+			t.Fatalf("expected retained staging error, got %v", err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+		assertFileContent(t, stagedPath, "source")
+	})
+
 	t.Run("safe failure preserves raced original and quarantine", func(t *testing.T) {
 		files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo, "source": changedInfo}
 		root := newIdentityMapRoot(t, files, identityMapRootHooks{
@@ -8788,6 +8812,27 @@ func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
 		requireSameFileInfo(t, files["source"], changedInfo, "source")
 		requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
 	})
+}
+
+func TestRestoreQuarantinedMoveSourceAfterFallbackFailureCleansRestoredStaging(t *testing.T) {
+	rootDir := t.TempDir()
+	stagingDir := filepath.Join(rootDir, atomicTempPrefix+"move")
+	if err := os.Mkdir(stagingDir, 0o700); err != nil {
+		t.Fatalf("create move staging: %v", err)
+	}
+	stagedRel := filepath.Join(atomicTempPrefix+"move", "entry")
+	stagedPath := filepath.Join(rootDir, stagedRel)
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed move staging: %v", err)
+	}
+
+	root := openTestRoot(t, rootDir)
+	if err := restoreQuarantinedMoveSourceAfterFallbackFailure(root, "source", stagedRel, statTestPath(t, stagedPath), true); err != nil {
+		t.Fatalf("restore quarantined move source: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertPathAbsent(t, stagedPath)
+	assertPathAbsent(t, stagingDir)
 }
 
 func TestCleanupCreatedFileIfSameFileBranches(t *testing.T) {
@@ -9182,7 +9227,7 @@ func testRestoreCopySourceChangesAfterCopy(t *testing.T) {
 	rootDir, base, expected := setupRestoreCopy(t)
 	changedInfo := newPinnedTargetInfo(t, "changed")
 	root := &fakeRoot{Root: base, open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
-		return failRestoreSourceStatAfterFirst(file, expected, changedInfo)
+		return failRestoreSourceStatAfterSecond(file, expected, changedInfo)
 	})}
 	restored, err := restoreCopy(root, expected)
 	if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
@@ -9246,11 +9291,11 @@ func failRestoreTargetStatAfterFirst(base Root, statErr error) func(File) File {
 	}
 }
 
-func failRestoreSourceStatAfterFirst(file File, expected, changedInfo fs.FileInfo) File {
+func failRestoreSourceStatAfterSecond(file File, expected, changedInfo fs.FileInfo) File {
 	statCalls := 0
 	return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
 		statCalls++
-		if statCalls == 1 {
+		if statCalls <= 2 {
 			return expected, nil
 		}
 		return changedInfo, nil
