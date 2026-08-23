@@ -150,6 +150,84 @@ type relinkedAliasRaceState struct {
 	retainedStagingReplaced             bool
 }
 
+// falseAliasScanRetainedStagingState models a target that disappears during
+// the advisory alias scan, then returns as the source alias before the staged
+// rename. The state-aware rename reports that the staging link was retained.
+type falseAliasScanRetainedStagingState struct {
+	*aliasScanRaceState
+	sourceCleanupCalls int
+}
+
+func newFalseAliasScanRetainedStagingState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *falseAliasScanRetainedStagingState {
+	return &falseAliasScanRetainedStagingState{
+		aliasScanRaceState: newAliasScanRaceState(t, sourceInfo, dirInfo),
+	}
+}
+
+func (s *falseAliasScanRetainedStagingState) root() *renameStateOnlyRoot {
+	base := &fakeRoot{
+		lstat: s.lstat,
+		chmod: chmodNameWithoutError(s.t, "source"),
+		open:  s.openFalseAliasRace,
+	}
+	return &renameStateOnlyRoot{
+		Root:                 base,
+		linkIfMatches:        s.linkIfMatches,
+		renameIfMatches:      s.renameIfMatches,
+		renameIfMatchesState: s.renameIfMatchesState,
+		removeIfMatches:      s.removeIfMatches,
+	}
+}
+
+func (s *falseAliasScanRetainedStagingState) openFalseAliasRace(name string) (File, error) {
+	if name != "." {
+		s.t.Fatalf("unexpected directory open %q", name)
+		return nil, fs.ErrInvalid
+	}
+	return &fakeReadDirFile{
+		fakeFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return s.dirInfo, nil },
+			close: closeWithoutError,
+		},
+		readDir: func(int) ([]fs.DirEntry, error) {
+			s.readDirCalls++
+			if s.readDirCalls > 1 {
+				// Before publication they address the same entry again.
+				return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+			}
+			// The first scan observes two names while they temporarily appear
+			// distinct.
+			return []fs.DirEntry{
+				&namedDirEntry{name: "source"},
+				&namedDirEntry{name: "SOURCE"},
+			}, nil
+		},
+	}, nil
+}
+
+func (s *falseAliasScanRetainedStagingState) renameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	if !s.files[oldName] {
+		return false, os.ErrNotExist
+	}
+	if newName != "SOURCE" {
+		return false, fmt.Errorf("unexpected target rename %q", newName)
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	// The target was absent when the scan completed, but is restored as the
+	// same entry before publication. The staged-to-target rename is a no-op.
+	s.files["SOURCE"] = true
+	return false, nil
+}
+
+func (s *falseAliasScanRetainedStagingState) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.sourceInfo, name)
+	if name == "source" {
+		s.sourceCleanupCalls++
+		return errors.New("must not remove source after retained staging")
+	}
+	return s.remove(name)
+}
+
 func newRelinkedAliasRaceState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *relinkedAliasRaceState {
 	return &relinkedAliasRaceState{aliasScanRaceState: newAliasScanRaceState(t, sourceInfo, dirInfo)}
 }
@@ -8396,6 +8474,36 @@ func TestPrepareRemovesRelinkedHardLinkAfterAliasScan(t *testing.T) {
 	}
 	if state.readDirCalls != 1 {
 		t.Fatalf("expected one advisory alias scan, got %d", state.readDirCalls)
+	}
+}
+
+func TestPreparePreservesSourceWhenFalseAliasScanRetainsStaging(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"primary",
+		atomicTempPrefix+"cleanup",
+		atomicTempPrefix+"cleanup-retry",
+		atomicTempPrefix+"cleanup-final",
+		atomicTempPrefix+"cleanup-last",
+	)
+	state := newFalseAliasScanRetainedStagingState(t, sourceInfo, statTestPath(t, t.TempDir()))
+
+	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("prepare and rename returned error: %v", err)
+	}
+	if !state.files["source"] || !state.files["SOURCE"] {
+		t.Fatalf("retained publication must preserve both alias paths, files=%#v", state.files)
+	}
+	if state.sourceCleanupCalls != 0 {
+		t.Fatalf("source cleanup ran %d times after retained staging", state.sourceCleanupCalls)
+	}
+	if state.readDirCalls != 2 {
+		t.Fatalf("expected the advisory and retained-publication alias scans, got %d directory scans", state.readDirCalls)
+	}
+	for name, exists := range state.files {
+		if exists && strings.HasPrefix(name, atomicTempPrefix) {
+			t.Fatalf("staging entry leaked after retained publication: %s", name)
+		}
 	}
 }
 
