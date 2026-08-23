@@ -7858,6 +7858,90 @@ func TestPrepareUsesDirectoryReadDirFallbackWithoutCleanupFailure(t *testing.T) 
 	}
 }
 
+func TestPrepareRevalidatesAliasBeforeSkippingSourceCleanup(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	files := map[string]bool{"source": true, "SOURCE": true}
+	readDirCalls := 0
+
+	fileExists := func(name string) bool {
+		return files[name]
+	}
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "." {
+				return dirInfo, nil
+			}
+			if fileExists(name) {
+				return sourceInfo, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+					close: closeWithoutError,
+				},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					readDirCalls++
+					if readDirCalls == 1 {
+						// Model a concurrent unlink after target Lstat but before
+						// the original alias enumeration completes.
+						files["SOURCE"] = false
+						return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+					}
+					return []fs.DirEntry{
+						&namedDirEntry{name: "source"},
+						&namedDirEntry{name: "SOURCE"},
+					}, nil
+				},
+			}, nil
+		},
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if !fileExists(oldName) {
+				return os.ErrNotExist
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			files[newName] = true
+			return nil
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if !fileExists(oldName) {
+				return os.ErrNotExist
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			files[oldName] = false
+			files[newName] = true
+			return nil
+		},
+		remove: func(name string) error {
+			if !fileExists(name) {
+				return os.ErrNotExist
+			}
+			files[name] = false
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("prepare and rename returned error: %v", err)
+	}
+	if files["source"] {
+		t.Fatal("expected source cleanup after the published target no longer aliased it")
+	}
+	if !files["SOURCE"] {
+		t.Fatal("expected published target to remain")
+	}
+	if readDirCalls != 2 {
+		t.Fatalf("expected alias decision to be revalidated after publication, got %d directory scans", readDirCalls)
+	}
+}
+
 func lstatMappedPaths(t *testing.T, infos map[string]fs.FileInfo, errs map[string]error) func(string) (fs.FileInfo, error) {
 	t.Helper()
 	return func(name string) (fs.FileInfo, error) {
