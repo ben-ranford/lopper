@@ -255,6 +255,9 @@ func (r *fakeRoot) Lstat(name string) (fs.FileInfo, error) {
 	if r.lstat != nil {
 		return r.lstat(name)
 	}
+	if r.Root == nil {
+		return nil, errors.ErrUnsupported
+	}
 	return r.Root.Lstat(name)
 }
 
