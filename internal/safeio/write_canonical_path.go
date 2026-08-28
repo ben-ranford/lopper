@@ -60,7 +60,7 @@ func (r *searchOnlyWriteRoot) OpenFile(name string, flag int, perm os.FileMode) 
 	if name != "." {
 		return nil, fmt.Errorf("search-only write root only supports root descriptor access")
 	}
-	fd, err := unix.Dup(int(r.file.Fd()))
+	fd, err := unix.FcntlInt(r.file.Fd(), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}

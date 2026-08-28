@@ -581,6 +581,40 @@ func TestSearchOnlyWriteRootOpenFilePropagatesDupFailure(t *testing.T) {
 	}
 }
 
+func TestSearchOnlyWriteRootOpenFileSetsCloseOnExec(t *testing.T) {
+	root, err := OpenCanonicalSearchOnlyWriteRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenCanonicalSearchOnlyWriteRoot returned error: %v", err)
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close search-only write root: %v", closeErr)
+		}
+	}()
+	searchRoot, ok := root.root.(*searchOnlyWriteRoot)
+	if !ok {
+		t.Fatalf("expected search-only root implementation, got %T", root.root)
+	}
+
+	file, err := searchRoot.OpenFile(".", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile root descriptor returned error: %v", err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close duplicated root descriptor: %v", closeErr)
+		}
+	}()
+
+	flags, err := unix.FcntlInt(file.(*os.File).Fd(), unix.F_GETFD, 0)
+	if err != nil {
+		t.Fatalf("get descriptor flags: %v", err)
+	}
+	if flags&unix.FD_CLOEXEC == 0 {
+		t.Fatalf("expected duplicated root descriptor to be close-on-exec, flags=%d", flags)
+	}
+}
+
 func TestOpenSearchOnlyCanonicalDirectoryPropagatesAbsolutePathError(t *testing.T) {
 	expectedErr := errors.New("directory abs failed")
 	withFileSystem(t, &fakeFileSystem{abs: func(string) (string, error) {
