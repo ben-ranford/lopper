@@ -1325,6 +1325,7 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 					openFile: func(string, int, os.FileMode) (File, error) {
 						return writtenRegularFakeFile(tempInfo, nil), nil
 					},
+					lstat:  func(string) (fs.FileInfo, error) { return tempInfo, nil },
 					link:   func(string, string) error { return nil },
 					remove: func(string) error { return errors.New("remove temp failed") },
 				}, writeTestFileName, []byte("after"), 0o600)
@@ -1350,6 +1351,8 @@ func TestAtomicIfAbsentErrorBranchesForCoverage(t *testing.T) {
 					openFile: func(string, int, os.FileMode) (File, error) {
 						return writtenRegularFakeFile(tempInfo, nil), nil
 					},
+					lstat:  func(string) (fs.FileInfo, error) { return tempInfo, nil },
+					link:   func(string, string) error { return nil },
 					rename: func(string, string) error { return errors.New("pinned rename failed") },
 					remove: func(string) error { return nil },
 				}, writeTestFileName, []byte("after"), 0o600, nil, false)
