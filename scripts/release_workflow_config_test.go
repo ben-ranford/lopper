@@ -6186,23 +6186,82 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	cacheDir := filepath.Join(t.TempDir(), "gocache")
+	moduleCacheDir := currentGoModuleCache(t, goPath)
+	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
 	for _, dir := range []string{homeDir, cacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create Go environment directory: %v", err)
 		}
 	}
-	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n")
+	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire "+currentGoModRequirement(t, "golang.org/x/sys")+"\n")
+	writeFile(t, filepath.Join(repo, "go.sum"), currentGoSumEntries(t, "golang.org/x/sys"))
+	runGitCommand(t, repo, "add", "go.mod", "go.sum")
+	runGitCommand(t, repo, "commit", "-m", "add Go module")
 	return repo, map[string]string{
 		"GO":                          goPath,
 		"GO_BIN":                      goPath,
 		"GO_TOOLCHAIN":                "local",
 		"HOME":                        homeDir,
 		"GOCACHE":                     cacheDir,
+		"GOMODCACHE":                  moduleCacheDir,
 		"BENCH_COUNT":                 "1",
 		"BENCH_TIME":                  "1x",
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
 	}
+}
+
+func currentGoModuleCache(t *testing.T, goPath string) string {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "env", "GOMODCACHE")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("resolve current GOMODCACHE: %v", err)
+	}
+	moduleCacheDir := strings.TrimSpace(string(output))
+	if moduleCacheDir == "" {
+		t.Fatal("go env GOMODCACHE returned an empty path")
+	}
+	return moduleCacheDir
+}
+
+func ensureCurrentGoModuleCached(t *testing.T, goPath, moduleCacheDir, modulePath string) {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "mod", "download", modulePath)
+	cmd.Dir = repoPath(t, ".")
+	cmd.Env = append(gitexec.SanitizedEnv(), "GOMODCACHE="+moduleCacheDir, "GOTOOLCHAIN=local")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("populate reused module cache for %s: %v\n%s", modulePath, err, output)
+	}
+}
+
+func currentGoModRequirement(t *testing.T, modulePath string) string {
+	t.Helper()
+
+	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(modulePath) + `\s+([^\s]+)`)
+	matches := pattern.FindStringSubmatch(readConfig(t, "go.mod"))
+	if len(matches) != 2 {
+		t.Fatalf("go.mod missing required module %s", modulePath)
+	}
+	return modulePath + " " + matches[1]
+}
+
+func currentGoSumEntries(t *testing.T, modulePath string) string {
+	t.Helper()
+
+	var entries []string
+	for _, line := range strings.Split(readConfig(t, "go.sum"), "\n") {
+		if strings.HasPrefix(line, modulePath+" ") || strings.HasPrefix(line, modulePath+"/go.mod ") {
+			entries = append(entries, line)
+		}
+	}
+	if len(entries) == 0 {
+		t.Fatalf("go.sum missing checksum entries for %s", modulePath)
+	}
+	return strings.Join(entries, "\n") + "\n"
 }
 
 func writeExecutableFile(t *testing.T, path string, contents string) {

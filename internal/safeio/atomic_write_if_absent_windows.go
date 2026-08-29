@@ -15,8 +15,8 @@ import (
 
 var windowsNoReplaceRenameFn = windowsNoReplaceRename
 
-func fallbackAtomicIfAbsent(root Root, tempRel, targetRel string, tempInfo fs.FileInfo, linkErr error) error {
-	if !windowsHardLinkUnsupported(linkErr, tempRel, targetRel) {
+func fallbackAtomicIfAbsent(root Root, tempRel, attemptedLinkSourceRel, targetRel string, tempInfo fs.FileInfo, linkErr error) error {
+	if !windowsHardLinkUnsupported(linkErr, attemptedLinkSourceRel, targetRel) {
 		return linkErr
 	}
 	rootInfo, err := root.Lstat(".")
@@ -29,11 +29,10 @@ func fallbackAtomicIfAbsent(root Root, tempRel, targetRel string, tempInfo fs.Fi
 	return nil
 }
 
-func windowsHardLinkUnsupported(err error, oldName, newName string) bool {
+func windowsHardLinkUnsupported(err error, _ string, newName string) bool {
 	var linkErr *os.LinkError
 	if !errors.As(err, &linkErr) ||
 		linkErr.Op != "linkat" ||
-		linkErr.Old != oldName ||
 		linkErr.New != newName {
 		return false
 	}
