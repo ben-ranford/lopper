@@ -301,6 +301,35 @@ func TestLoadComposerDataMarksInterpolatedShortOpenTagConfigIncomplete(t *testin
 	}
 }
 
+func TestPhpConfigBooleanSettingPreservesHashInsideQuotes(t *testing.T) {
+	if enabled, found, incomplete := phpConfigBooleanSetting(`"on#off"`); enabled || found || !incomplete {
+		t.Fatalf("expected quoted value with embedded '#' to stay unresolved rather than truncate to 'on', got enabled=%v found=%v incomplete=%v", enabled, found, incomplete)
+	}
+	if enabled, found, incomplete := phpConfigBooleanSetting(`on # trailing comment`); !enabled || !found || incomplete {
+		t.Fatalf("expected an unquoted trailing comment to still be stripped, got enabled=%v found=%v incomplete=%v", enabled, found, incomplete)
+	}
+}
+
+func TestLoadComposerDataMarksScopedHtaccessDirectiveIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, ".htaccess"), "php_flag short_open_tag On\n<Files \"template.php\">\nphp_flag short_open_tag Off\n</Files>\n")
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("load data with scoped .htaccess directive: %v", err)
+	}
+	if data.ShortOpenTags {
+		t.Fatal("did not expect a scoped .htaccess directive to be applied file-wide")
+	}
+	if !data.ShortOpenTagPolicy.incompleteForFile(filepath.Join(repo, "src", "index.php")) {
+		t.Fatal("expected scoped .htaccess directive to mark files under that directory incomplete")
+	}
+	if !containsWarning(warnings, "could not resolve PHP short_open_tag config .htaccess") {
+		t.Fatalf("expected unresolved PHP config warning for scoped .htaccess directive, got %#v", warnings)
+	}
+}
+
 func TestLoadComposerDataTracksOversizedShortOpenTagConfigByDirectory(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
@@ -2553,7 +2582,7 @@ func testPHPConfigBoundaryBranches(t *testing.T) {
 	if enabled, found, incomplete := phpConfigBooleanSetting("maybe"); enabled || found || !incomplete {
 		t.Fatalf("expected unknown PHP boolean setting to be incomplete, got enabled=%v found=%v incomplete=%v", enabled, found, incomplete)
 	}
-	if enabled, found, incomplete := parseShortOpenTagSetting("unrelated_setting = on"); enabled || found || incomplete {
+	if enabled, found, incomplete := parseShortOpenTagSetting("unrelated_setting = on", false); enabled || found || incomplete {
 		t.Fatalf("expected unrelated PHP setting to be ignored, got enabled=%v found=%v incomplete=%v", enabled, found, incomplete)
 	}
 

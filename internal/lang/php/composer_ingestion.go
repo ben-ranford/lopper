@@ -413,16 +413,21 @@ func phpConfigShortOpenTagSetting(repoPath, path string) (bool, bool, bool, erro
 		}
 		return false, false, false, err
 	}
-	enabled, found, incomplete := parseShortOpenTagSetting(string(bytes))
+	scopedSectionsPossible := strings.EqualFold(filepath.Base(path), ".htaccess")
+	enabled, found, incomplete := parseShortOpenTagSetting(string(bytes), scopedSectionsPossible)
 	return enabled, found, incomplete, nil
 }
 
 func parsesShortOpenTagEnabled(content string) bool {
-	enabled, found, _ := parseShortOpenTagSetting(content)
+	enabled, found, _ := parseShortOpenTagSetting(content, false)
 	return found && enabled
 }
 
-func parseShortOpenTagSetting(content string) (bool, bool, bool) {
+// scopedSectionsPossible marks Apache-style config files (.htaccess) where directives
+// can be scoped inside <Files>/<Directory>/<If> blocks. This parser is line-oriented and
+// cannot resolve that scoping, so any section tag makes the setting unresolved rather than
+// risk silently applying a scoped directive file-wide.
+func parseShortOpenTagSetting(content string, scopedSectionsPossible bool) (bool, bool, bool) {
 	enabled := false
 	found := false
 	incomplete := false
@@ -430,6 +435,9 @@ func parseShortOpenTagSetting(content string) (bool, bool, bool) {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 			continue
+		}
+		if scopedSectionsPossible && strings.HasPrefix(line, "<") {
+			return false, false, true
 		}
 		lower := strings.ToLower(line)
 		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
@@ -449,9 +457,7 @@ func parseShortOpenTagSetting(content string) (bool, bool, bool) {
 }
 
 func phpConfigBooleanSetting(value string) (bool, bool, bool) {
-	if comment := strings.IndexAny(value, ";#"); comment >= 0 {
-		value = value[:comment]
-	}
+	value = stripIniCommentOutsideQuotes(value)
 	value = strings.TrimSpace(value)
 	value = strings.Trim(value, `"'`)
 	switch value {
@@ -462,4 +468,25 @@ func phpConfigBooleanSetting(value string) (bool, bool, bool) {
 	default:
 		return false, false, true
 	}
+}
+
+// stripIniCommentOutsideQuotes truncates value at the first ';' or '#' that is not
+// inside a quoted string, matching PHP's INI parser, which preserves those characters
+// inside quotes rather than treating them as a comment start.
+func stripIniCommentOutsideQuotes(value string) string {
+	var quote byte
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == ';' || c == '#':
+			return value[:i]
+		}
+	}
+	return value
 }
