@@ -406,7 +406,12 @@ BEGIN {
 	line = parts[1] + 0
 	next
 }
-/^\+/ && $0 !~ /^\+\+\+/ {
+/^\+/ {
+	# The genuine "+++ b/..." file header is already consumed and
+	# skipped by the rule above (which reaches this line first and
+	# "next"s past it); excluding "^\+\+\+" here too would also discard
+	# a real added line whose own content happens to start with two
+	# extra plus characters (e.g. an added C/C++ increment statement).
 	content = substr($0, 2)
 	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
 	if (check_file && tolower(content) ~ pattern) {

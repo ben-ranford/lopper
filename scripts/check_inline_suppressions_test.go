@@ -176,6 +176,33 @@ func TestInlineSuppressionCheckMatchesUppercaseExtensionCaseInsensitively(t *tes
 	}
 }
 
+func TestInlineSuppressionCheckDetectsAddedLineStartingWithDoublePlus(t *testing.T) {
+	t.Parallel()
+
+	// A raw diff "+" prefix over content that itself starts with "++" and
+	// has no leading whitespace (e.g. an unindented added C/C++ increment
+	// statement) produces a line beginning with three literal "+"
+	// characters, colliding with the genuine "+++ b/..." file-header
+	// exclusion unless that exclusion is scoped to just the header line.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	marker := "nolint:staticcheck"
+	line := "++counter; //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	content := "package main\n\nfunc main() {\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected an added line starting with ++ to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record for a line beginning with ++, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsTrackedMarkerInRenamedSource(t *testing.T) {
 	t.Parallel()
 

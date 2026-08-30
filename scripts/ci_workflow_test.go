@@ -331,6 +331,16 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`)
 	assertWorkflowMarkerOrder(t, gate.Run, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`, `missing=("${fingerprints[@]}")`)
+	// Without a trailing marker-boundary check, a longer word like
+	// "nolinter" or "nosection" would also match and could false-positive
+	// this required check against an otherwise valid PR. And ".githooks/"
+	// must be anchored to the repository root, matching isSourceFile()
+	// and source_file_pattern exactly, or a nested .githooks/ directory
+	// would similarly cause a false count mismatch.
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"`,
+		`test("^\\.githooks/|`,
+	})
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {

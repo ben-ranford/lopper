@@ -199,7 +199,7 @@ jobs:
           ts_prefix="ts"
           eslint_prefix="eslint"
           coverage_prefix="coverage"
-          suspect_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))"
+          suspect_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
           # Scope to the same source-file extensions the detector itself
           # covers, so documentation/config prose mentioning marker syntax
           # (this PR, being the one introducing the feature, has plenty)
@@ -209,7 +209,7 @@ jobs:
           # e.g. main.GO or component.TSX must not be silently skipped by
           # this scope filter while the trusted tracker still finds it.
           suspect_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate \
-              --jq '.[] | select(.filename | test("(^|/)\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")) | .patch // empty' \
+              --jq '.[] | select(.filename | test("^\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")) | .patch // empty' \
             | grep -E '^\+' \
             | grep -Eic "${suspect_pattern}" || true)"
           suspect_count="${suspect_count:-0}"
