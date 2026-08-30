@@ -551,6 +551,31 @@ func TestAnalysisCacheRuntimeTraceResolvesRelativeToRepoRootForNestedCandidateRo
 	}
 }
 
+func TestAnalysisCacheRuntimeTraceExclusionRemapsIntoScopedWorkspace(t *testing.T) {
+	trueRepo := t.TempDir()
+	scopedRoot := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(scopedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{stableRepoPath: trueRepo, analysisRepoPath: scopedRoot}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(scopedRoot, req, trueRepo)
+	before, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(scopedRoot, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a runtime trace exclusion resolved against the true repo root to be remapped into a scoped workspace copy's candidate root")
+	}
+}
+
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	missingPath := filepath.Join(dir, cacheMissingFileName)

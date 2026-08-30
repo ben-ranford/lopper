@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 const (
@@ -30,16 +32,18 @@ type lockFallback struct {
 type dependencyParser func(repoPath, path string) (map[string]struct{}, []string, error)
 
 type packagingDiscoveryCoordinator struct {
-	repoPath     string
-	dependencies map[string]struct{}
-	warnings     []string
+	repoPath      string
+	excludedPaths map[string]struct{}
+	dependencies  map[string]struct{}
+	warnings      []string
 }
 
-func collectDeclaredDependencies(ctx context.Context, repoPath string) (map[string]struct{}, []string, error) {
+func collectDeclaredDependencies(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (map[string]struct{}, []string, error) {
 	coordinator := packagingDiscoveryCoordinator{
-		repoPath:     repoPath,
-		dependencies: make(map[string]struct{}),
-		warnings:     make([]string, 0),
+		repoPath:      repoPath,
+		excludedPaths: excludedPaths,
+		dependencies:  make(map[string]struct{}),
+		warnings:      make([]string, 0),
 	}
 	if err := coordinator.collect(ctx); err != nil {
 		return nil, nil, err
@@ -62,6 +66,9 @@ func (c *packagingDiscoveryCoordinator) collect(ctx context.Context) error {
 func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry) error {
 	if !entry.IsDir() {
 		return nil
+	}
+	if shared.IsExcludedPath(c.excludedPaths, path) {
+		return filepath.SkipDir
 	}
 	if path != c.repoPath && shouldSkipDir(entry.Name()) {
 		return filepath.SkipDir

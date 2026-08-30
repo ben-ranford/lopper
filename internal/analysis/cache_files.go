@@ -64,15 +64,35 @@ func (c *analysisCache) cacheAnalysisExclusions(rootPath string, req Request, tr
 	}
 	if tracePath := strings.TrimSpace(req.RuntimeTracePath); tracePath != "" {
 		tracePath = runtimeTracePathForRepo(repoPath, tracePath)
-		addCacheExcludedPath(files, rootPath, tracePath)
-		addCacheExcludedPath(files, rootPath, runtime.TraceStatePath(tracePath))
+		addCacheExcludedPath(files, rootPath, c.remapIntoAnalysisTree(repoPath, tracePath))
+		addCacheExcludedPath(files, rootPath, c.remapIntoAnalysisTree(repoPath, runtime.TraceStatePath(tracePath)))
 	} else if strings.TrimSpace(req.RuntimeTestCommand) != "" {
-		addCacheExcludedPath(directories, rootPath, filepath.Dir(runtime.DefaultTracePath(repoPath)))
+		addCacheExcludedPath(directories, rootPath, c.remapIntoAnalysisTree(repoPath, filepath.Dir(runtime.DefaultTracePath(repoPath))))
 	}
 	return cacheAnalysisExclusions{
 		directories: sortedCacheExcludedPaths(directories),
 		files:       sortedCacheExcludedPaths(files),
 	}
+}
+
+// remapIntoAnalysisTree translates a path resolved against the true repository
+// (repoPath) into its equivalent under the tree candidate roots are actually
+// scanned in (c.analysisRepoPath). When a scope walk copies the repository into
+// a temporary workspace, an artifact like the runtime trace file is created
+// under repoPath but candidate roots live under the copy; without this
+// remapping, the exclusion's containment check against a candidate root would
+// always fail and the artifact would remain visible to hashing and scanning.
+// When no scoped copy is in play, analysisRepoPath equals repoPath and this is
+// a no-op.
+func (c *analysisCache) remapIntoAnalysisTree(repoPath, candidatePath string) string {
+	if c == nil || strings.TrimSpace(c.analysisRepoPath) == "" || c.analysisRepoPath == filepath.Clean(repoPath) {
+		return candidatePath
+	}
+	relativePath, err := filepath.Rel(repoPath, candidatePath)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return candidatePath
+	}
+	return filepath.Join(c.analysisRepoPath, relativePath)
 }
 
 func runtimeTracePathForRepo(rootPath, tracePath string) string {

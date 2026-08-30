@@ -93,7 +93,7 @@ func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPat
 	if repoPath == "" {
 		return result, fmt.Errorf("repo path is empty")
 	}
-	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath)
+	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath, excludedPaths)
 	if err != nil {
 		return result, err
 	}
