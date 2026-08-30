@@ -194,6 +194,8 @@ func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T)
 	for _, want := range []string{
 		"issue list",
 		"issue create",
+		"author:github-actions[bot]",
+		`select(.author.login == "github-actions[bot]"`,
 		"Location: `main.go:4`",
 		"Source: https://github.com/ben-ranford/lopper/blob/abc123/main.go#L4",
 		"Rationale: temporary scanner false positive",

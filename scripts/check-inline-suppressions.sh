@@ -114,12 +114,15 @@ write_tracking_body() {
 gh_issue_list() {
 	local repo="$1"
 	local fingerprint="$2"
+	# Fingerprints are SHA-256 hex digests, so this marker is safe to inline into the jq string literal below.
+	local marker="<!-- lopper-inline-suppression:${fingerprint} -->"
+	local jq_filter="[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"${marker}\")))][0].number"
 
 	if [[ -n "$repo" ]]; then
-		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number'
+		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
 		return
 	fi
-	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint}" --json number --jq '.[0].number'
+	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
 }
 
 gh_issue_comment() {

@@ -160,6 +160,47 @@ test('tracks fork pull request suppressions from trusted diff recomputation', as
   assert.match(harness.calls.infos.join('\n'), /Opened inline suppression tracking issue #101/);
 });
 
+test('detects an added suppression line that itself begins with ++', async () => {
+  const line = '++counter; ' + trackedLine();
+  const patch = patchFor(line);
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch,
+        additions: 5,
+        deletions: 0,
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Location: `main\.go:4`/);
+});
+
+test('percent-encodes URL-significant characters in source links', async () => {
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'odd name#1.go',
+        status: 'added',
+        patch: patchFor(trackedLine()),
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(
+    harness.calls.created[0].body,
+    /Source: https:\/\/github\.com\/octo\/lopper\/blob\/head-sha\/odd%20name%231\.go#L4/,
+  );
+});
+
 test('recognizes supported inline suppression marker forms without matching quoted text', () => {
   const matchingLines = [
     '\t_ = 1 /' + '/no' + 'sec G404',

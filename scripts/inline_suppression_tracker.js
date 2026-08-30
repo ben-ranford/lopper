@@ -141,7 +141,8 @@ function isSourceFile(file) {
 }
 
 function sourceURLFor({ serverURL, owner, repo, headSHA, file, line }) {
-  return `${serverURL || 'https://github.com'}/${owner}/${repo}/blob/${headSHA}/${file}#L${line}`;
+  const encodedFile = file.split('/').map(encodeURIComponent).join('/');
+  return `${serverURL || 'https://github.com'}/${owner}/${repo}/blob/${headSHA}/${encodedFile}#L${line}`;
 }
 
 function escapeFence(value) {
@@ -333,9 +334,6 @@ function patchLineStats(patch, file) {
       hunk = { oldLines: header.oldLines, newLines: header.newLines, oldSeen: 0, newSeen: 0 };
       continue;
     }
-    if (rawLine.startsWith('+++') || rawLine.startsWith('---')) {
-      continue;
-    }
     if (!hunk) {
       continue;
     }
@@ -382,9 +380,6 @@ function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
   for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
-      continue;
-    }
-    if (rawLine.startsWith('+++')) {
       continue;
     }
     if (rawLine.startsWith('+')) {
