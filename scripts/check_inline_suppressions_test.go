@@ -1,7 +1,10 @@
 package scripts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +13,15 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
+
+func suppressionFingerprint(file, content string, occurrence int) string {
+	payload := file + "\n" + content
+	if occurrence > 1 {
+		payload += fmt.Sprintf("\noccurrence:%d", occurrence)
+	}
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
 
 const mainGoPath = "main.go"
 
@@ -337,6 +349,45 @@ func TestInlineSuppressionCheckTracksDuplicateSuppressionsSeparately(t *testing.
 	logContent := readFile(t, logPath)
 	if got := strings.Count(logContent, "issue create"); got != 2 {
 		t.Fatalf("issue create count = %d, want 2; log:\n%s", got, logContent)
+	}
+}
+
+func TestInlineSuppressionCheckCountsPreExistingOccurrenceOutsideTheDiff(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+
+	marker := "nolint:staticcheck"
+	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	// The first occurrence is already committed on the base branch, so it
+	// never appears in the diff this check scans; only the second, newly
+	// staged occurrence does. The occurrence ordinal must still be derived
+	// from the complete file (matching the trusted tracker, which sees this
+	// pre-existing line as diff context) rather than only from lines visible
+	// in this zero-context diff, or the two fingerprints would disagree.
+	baseline := "package main\n\nfunc main() {\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), baseline)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "pre-existing suppression")
+
+	withSecond := "package main\n\nfunc main() {\n" + line + "\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), withSecond)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the newly staged occurrence to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected exactly one new suppression record, got %#v", records.Suppressions)
+	}
+
+	want := suppressionFingerprint(mainGoPath, line, 2)
+	if got := records.Suppressions[0].Fingerprint; got != want {
+		t.Fatalf("fingerprint = %s, want occurrence-2 fingerprint %s (pre-existing occurrence outside the diff was not counted)", got, want)
 	}
 }
 

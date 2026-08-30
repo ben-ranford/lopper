@@ -77,6 +77,24 @@ fingerprint_for_occurrence() {
 	printf '%s\n%s\noccurrence:%s' "$file" "$content" "$occurrence" | shasum -a 256 | awk '{ print $1 }'
 }
 
+occurrence_in_file() {
+	local file="$1"
+	local target_line="$2"
+	local target_content="$3"
+
+	# Derive the occurrence ordinal from the complete file at its current
+	# (target-side) state rather than only lines visible in this diff: the
+	# trusted tracker (which sees GitHub's default context lines) and this
+	# zero-context diff must agree on the exact same fingerprint for a given
+	# suppression, and only counting from the full file is diff-shape
+	# independent.
+	awk -v target_line="$target_line" -v target_content="$target_content" '
+		NR > target_line { exit }
+		$0 == target_content { count++ }
+		END { print count + 0 }
+	' "$file"
+}
+
 source_url_for_match() {
 	local file="$1"
 	local line="$2"
@@ -240,7 +258,6 @@ write_tracking_records() {
 	local records_file="$2"
 	local output_dir
 	local tmp_output
-	local seen_file
 	local first=1
 	local file
 	local line
@@ -248,7 +265,6 @@ write_tracking_records() {
 	local rationale
 	local owner
 	local removal_condition
-	local base_fingerprint
 	local fingerprint
 	local location_url
 	local occurrence
@@ -256,8 +272,6 @@ write_tracking_records() {
 	output_dir="$(dirname "$output_file")"
 	mkdir -p "$output_dir"
 	tmp_output="$(create_temp_file)"
-	seen_file="$(create_temp_file)"
-	: >"$seen_file"
 
 	{
 		printf '{\n'
@@ -271,17 +285,14 @@ write_tracking_records() {
 		removal_condition="$(extract_metadata_field "$content" "remove-when|removal-condition|removal")"
 
 		if [[ -z "$rationale" || -z "$owner" || -z "$removal_condition" ]]; then
-			rm -f "$tmp_output" "$seen_file"
+			rm -f "$tmp_output"
 			echo "Missing inline suppression tracking metadata for ${file}:${line}." >&2
 			echo "$content" >&2
 			echo "Add same-line metadata: rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>." >&2
 			return 1
 		fi
 
-		base_fingerprint="$(fingerprint_for_match "$file" "$content")"
-		occurrence="$(grep -Fxc "$base_fingerprint" "$seen_file" || true)"
-		occurrence=$((occurrence + 1))
-		printf '%s\n' "$base_fingerprint" >>"$seen_file"
+		occurrence="$(occurrence_in_file "$file" "$line" "$content")"
 		fingerprint="$(fingerprint_for_occurrence "$file" "$content" "$occurrence")"
 		location_url="$(source_url_for_match "$file" "$line")"
 
@@ -310,31 +321,21 @@ write_tracking_records() {
 	} >>"$tmp_output"
 
 	mv "$tmp_output" "$output_file"
-	rm -f "$seen_file"
 }
 
 track_records_with_gh() {
 	local records_file="$1"
-	local seen_file
 	local file
 	local line
 	local content
-	local base_fingerprint
 	local occurrence
 
-	seen_file="$(create_temp_file)"
-	: >"$seen_file"
 	while IFS= read -r -d '' file && IFS= read -r -d '' line && IFS= read -r -d '' content; do
-		base_fingerprint="$(fingerprint_for_match "$file" "$content")"
-		occurrence="$(grep -Fxc "$base_fingerprint" "$seen_file" || true)"
-		occurrence=$((occurrence + 1))
-		printf '%s\n' "$base_fingerprint" >>"$seen_file"
+		occurrence="$(occurrence_in_file "$file" "$line" "$content")"
 		if ! ensure_tracking_issue "$file" "$line" "$content" "$occurrence"; then
-			rm -f "$seen_file"
 			return 1
 		fi
 	done <"$records_file"
-	rm -f "$seen_file"
 }
 
 if ! git diff --cached --quiet --exit-code -- .; then

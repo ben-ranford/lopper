@@ -294,6 +294,16 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		"sleep 15",
 		"exit 1",
 	})
+	// The wait must share one deadline across every fingerprint (outer
+	// `seq 1 40` loop polling all still-missing fingerprints per round),
+	// not an independent 40-round wait nested inside a per-fingerprint
+	// loop -- otherwise a persistently failed tracker could sleep for
+	// MAX_RECORDS x 10 minutes instead of reporting promptly.
+	assertWorkflowMarkerOrder(t, gate.Run, `for _ in $(seq 1 40); do`, `for fingerprint in "${missing[@]}"; do`)
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`missing=("${fingerprints[@]}")`,
+		"still_missing=()",
+	})
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {

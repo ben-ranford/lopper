@@ -14,6 +14,22 @@ function patchFor(line) {
   return `@@ -0,0 +1,5 @@\n+package main\n+\n+func main() {\n+${line}\n+}\n`;
 }
 
+function reconstructFileFromPatch(patch) {
+  if (typeof patch !== 'string') {
+    return '';
+  }
+  const lines = [];
+  for (const rawLine of (patch.endsWith('\n') ? patch.slice(0, -1) : patch).split('\n')) {
+    if (rawLine.startsWith('@@ ') || rawLine.startsWith('\\')) {
+      continue;
+    }
+    if (rawLine.startsWith('+') || rawLine.startsWith(' ')) {
+      lines.push(rawLine.slice(1));
+    }
+  }
+  return lines.join('\n');
+}
+
 function patchStats(patch) {
   const stats = { additions: 0, deletions: 0 };
   for (const rawLine of patch.split('\n')) {
@@ -108,6 +124,13 @@ function makeHarness(options = {}) {
           return { data: currentPull };
         },
         listFiles: async () => {},
+      },
+      repos: {
+        getContent: async ({ path: filePath }) => {
+          const file = files.find((candidate) => candidate.filename === filePath);
+          const content = reconstructFileFromPatch(file?.patch);
+          return { data: { type: 'file', content: Buffer.from(content, 'utf8').toString('base64') } };
+        },
       },
       search: {
         issuesAndPullRequests: async (input) => {

@@ -197,22 +197,31 @@ jobs:
             exit 0
           fi
 
-          missing=()
-          for fingerprint in "${fingerprints[@]}"; do
-            found=""
-            for _ in $(seq 1 40); do
+          # Poll every still-missing fingerprint together under one shared
+          # deadline (40 rounds x 15s = 10 minutes total), not an
+          # independent wait per fingerprint -- otherwise a persistently
+          # failed tracker run could make this step sleep for up to
+          # MAX_RECORDS x 10 minutes instead of reporting promptly.
+          missing=("${fingerprints[@]}")
+          for _ in $(seq 1 40); do
+            if [ "${#missing[@]}" -eq 0 ]; then
+              break
+            fi
+            still_missing=()
+            for fingerprint in "${missing[@]}"; do
               found="$(gh issue list --state open \
                 --search "lopper-inline-suppression:${fingerprint} lopper-inline-suppression-pr:${PR_NUMBER} author:github-actions[bot]" \
                 --json number,author,body \
                 --jq "[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"lopper-inline-suppression:${fingerprint}\")) and (.body // \"\" | contains(\"lopper-inline-suppression-pr:${PR_NUMBER}\")))][0].number")"
-              if [ -n "${found}" ]; then
-                break
+              if [ -z "${found}" ]; then
+                still_missing+=("${fingerprint}")
               fi
-              sleep 15
             done
-            if [ -z "${found}" ]; then
-              missing+=("${fingerprint}")
+            missing=("${still_missing[@]}")
+            if [ "${#missing[@]}" -eq 0 ]; then
+              break
             fi
+            sleep 15
           done
 
           if [ "${#missing[@]}" -gt 0 ]; then

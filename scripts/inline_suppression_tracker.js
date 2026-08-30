@@ -149,21 +149,27 @@ function escapeFence(value) {
   return value.replaceAll('```', '``\u200b`');
 }
 
-function occurrenceKeyFor(file, content) {
-  return `${file}\0${content}`;
-}
-
-function nextOccurrence(occurrences, file, content) {
-  if (!occurrences) {
-    return 1;
+async function occurrenceInFile({ github, context, file, ref, targetLine, targetContent }) {
+  const { data } = await github.rest.repos.getContent({
+    owner: context.repo.owner,
+    repo: context.repo.repo,
+    path: file,
+    ref,
+  });
+  if (Array.isArray(data) || data.type !== 'file' || typeof data.content !== 'string') {
+    throw new TypeError(`Unable to fetch full content for ${file} to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
   }
-  const key = occurrenceKeyFor(file, content);
-  const occurrence = (occurrences.get(key) || 0) + 1;
-  occurrences.set(key, occurrence);
-  return occurrence;
+  const lines = Buffer.from(data.content, 'base64').toString('utf8').split('\n');
+  let count = 0;
+  for (let index = 0; index < targetLine && index < lines.length; index += 1) {
+    if (lines[index] === targetContent) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
-function addSuppression(records, { file, line, content, context, headSHA, occurrences, occurrence }) {
+function addSuppression(records, { file, line, content, context, headSHA, occurrence }) {
   validateFile(file);
   if (!Number.isInteger(line) || line < 1 || line > 1000000) {
     throw new RangeError('Invalid inline suppression line.');
@@ -179,8 +185,7 @@ function addSuppression(records, { file, line, content, context, headSHA, occurr
     'remove_when',
     1024,
   );
-  const resolvedOccurrence = occurrence || nextOccurrence(occurrences, file, content);
-  const fingerprint = fingerprintFor(file, content, resolvedOccurrence);
+  const fingerprint = fingerprintFor(file, content, occurrence);
   if (records.has(fingerprint)) {
     return;
   }
@@ -376,7 +381,7 @@ function assertCompletePatch(file) {
   }
 }
 
-function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
+async function scanPatch(records, { github, file, patch, context, headSHA }) {
   validateFile(file);
   if (typeof patch !== 'string') {
     throw new TypeError(`Inline suppression diff patch is unavailable for ${file}; refusing to publish tracking mutations.`);
@@ -391,16 +396,18 @@ function scanPatch(records, { file, patch, context, headSHA, occurrences }) {
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
       if (hasInlineSuppressionMarker(content)) {
-        const occurrence = nextOccurrence(occurrences, file, content);
-        addSuppression(records, { file, line, content, context, headSHA, occurrences, occurrence });
-      }
-      line += 1;
-      continue;
-    }
-    if (rawLine.startsWith(' ')) {
-      const content = rawLine.slice(1);
-      if (hasInlineSuppressionMarker(content)) {
-        nextOccurrence(occurrences, file, content);
+        // Derive the occurrence ordinal from the complete head file, not
+        // just this diff's context window: the self-hosted shell gate sees
+        // a zero-context diff and must land on the exact same fingerprint.
+        const occurrence = await occurrenceInFile({
+          github,
+          context,
+          file,
+          ref: headSHA,
+          targetLine: line,
+          targetContent: content,
+        });
+        addSuppression(records, { file, line, content, context, headSHA, occurrence });
       }
       line += 1;
       continue;
@@ -474,9 +481,8 @@ async function listChangedFiles({ github, context, pull, expectedCount }) {
   return files;
 }
 
-function collectSuppressionRecords({ files, context, pull }) {
+async function collectSuppressionRecords({ github, files, context, pull }) {
   const records = new Map();
-  const occurrences = new Map();
   for (const file of files) {
     if (!TRACKED_FILE_STATUSES.has(file.status) || !isSourceFile(file.filename)) {
       continue;
@@ -490,12 +496,12 @@ function collectSuppressionRecords({ files, context, pull }) {
       continue;
     }
     assertCompletePatch(file);
-    scanPatch(records, {
+    await scanPatch(records, {
+      github,
       file: file.filename,
       patch: file.patch,
       context,
       headSHA: pull.head.sha,
-      occurrences,
     });
   }
   if (records.size > MAX_RECORDS) {
@@ -519,7 +525,7 @@ async function recomputeSuppressionRecords({ github, context }) {
   if (refreshedPull.changed_files !== count) {
     throw new RangeError('Pull request changed file count drifted while recomputing inline suppression records; refusing to publish tracking mutations.');
   }
-  const records = collectSuppressionRecords({ files, context, pull });
+  const records = await collectSuppressionRecords({ github, files, context, pull });
   return { records, pull };
 }
 
