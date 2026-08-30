@@ -246,44 +246,59 @@ func TestInlineSuppressionCheckDetectsTrackedMarkerInRenamedSource(t *testing.T)
 	}
 }
 
-func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T) {
-	t.Parallel()
+// runTrackedSuppressionCheck writes content, runs the check in "track" mode
+// with the given extra env, asserts wantOutput appears in its output and
+// every entry of wantLogSubstrings appears in the mock gh log, then returns
+// that log content for any further caller-specific assertions.
+func runTrackedSuppressionCheck(t *testing.T, content string, extraEnv []string, wantOutput string, wantLogSubstrings []string) string {
+	t.Helper()
 
 	repoDir := newInlineSuppressionRepo(t)
 	ghPath, logPath := newMockGH(t)
-	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithTrackedSuppression("nolint:staticcheck"))
+	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
 	runCommand(t, repoDir, "git", "add", mainGoPath)
 
-	output, err := runSuppressionCheckWithEnv(repoDir,
-		"GH_BIN="+ghPath,
-		"SUPPRESSION_TRACKING_MODE=track",
-		"SUPPRESSION_GITHUB_REPOSITORY=ben-ranford/lopper",
-		"GITHUB_SHA=abc123",
-		"GITHUB_SERVER_URL=https://github.com",
-	)
+	env := append([]string{"GH_BIN=" + ghPath, "SUPPRESSION_TRACKING_MODE=track"}, extraEnv...)
+	output, err := runSuppressionCheckWithEnv(repoDir, env...)
 	if err != nil {
 		t.Fatalf("expected tracked suppression to pass, output:\n%s", output)
 	}
-	if !strings.Contains(output, "Opened GitHub tracking issue for inline suppression main.go:4") {
-		t.Fatalf("expected created issue message, got:\n%s", output)
+	if !strings.Contains(output, wantOutput) {
+		t.Fatalf("expected %q in output, got:\n%s", wantOutput, output)
 	}
 
 	logContent := readFile(t, logPath)
-	for _, want := range []string{
-		"issue list",
-		"issue create",
-		"author:github-actions[bot]",
-		`select(.author.login == "github-actions[bot]"`,
-		"Location: `main.go:4`",
-		"Source: https://github.com/ben-ranford/lopper/blob/abc123/main.go#L4",
-		"Rationale: temporary scanner false positive",
-		"Owner: @security",
-		"Removal condition: analyzer handles generated guard",
-	} {
+	for _, want := range wantLogSubstrings {
 		if !strings.Contains(logContent, want) {
 			t.Fatalf("expected mock gh log to contain %q, got:\n%s", want, logContent)
 		}
 	}
+	return logContent
+}
+
+func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T) {
+	t.Parallel()
+
+	runTrackedSuppressionCheck(t,
+		mainGoWithTrackedSuppression("nolint:staticcheck"),
+		[]string{
+			"SUPPRESSION_GITHUB_REPOSITORY=ben-ranford/lopper",
+			"GITHUB_SHA=abc123",
+			"GITHUB_SERVER_URL=https://github.com",
+		},
+		"Opened GitHub tracking issue for inline suppression main.go:4",
+		[]string{
+			"issue list",
+			"issue create",
+			"author:github-actions[bot]",
+			`select(.author.login == "github-actions[bot]"`,
+			"Location: `main.go:4`",
+			"Source: https://github.com/ben-ranford/lopper/blob/abc123/main.go#L4",
+			"Rationale: temporary scanner false positive",
+			"Owner: @security",
+			"Removal condition: analyzer handles generated guard",
+		},
+	)
 }
 
 func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing.T) {
@@ -320,27 +335,12 @@ func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing
 func TestInlineSuppressionCheckUpdatesExistingTrackingIssue(t *testing.T) {
 	t.Parallel()
 
-	repoDir := newInlineSuppressionRepo(t)
-	ghPath, logPath := newMockGH(t)
-	writeFile(t, filepath.Join(repoDir, mainGoPath), mainGoWithTrackedSuppression("nosec G404"))
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-
-	output, err := runSuppressionCheckWithEnv(repoDir,
-		"GH_BIN="+ghPath,
-		"SUPPRESSION_TRACKING_MODE=track",
-		"GH_MOCK_EXISTING_ISSUE=77",
+	logContent := runTrackedSuppressionCheck(t,
+		mainGoWithTrackedSuppression("nosec G404"),
+		[]string{"GH_MOCK_EXISTING_ISSUE=77"},
+		"Updated GitHub tracking issue #77 for inline suppression main.go:4",
+		[]string{"issue comment 77"},
 	)
-	if err != nil {
-		t.Fatalf("expected existing tracked suppression to pass, output:\n%s", output)
-	}
-	if !strings.Contains(output, "Updated GitHub tracking issue #77 for inline suppression main.go:4") {
-		t.Fatalf("expected updated issue message, got:\n%s", output)
-	}
-
-	logContent := readFile(t, logPath)
-	if !strings.Contains(logContent, "issue comment 77") {
-		t.Fatalf("expected mock gh to comment on issue 77, got:\n%s", logContent)
-	}
 	if strings.Contains(logContent, "issue create") {
 		t.Fatalf("did not expect mock gh to create a new issue, got:\n%s", logContent)
 	}

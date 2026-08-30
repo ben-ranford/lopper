@@ -575,17 +575,21 @@ test('rejects a base branch that advanced past the event before reading pull fil
   assert.equal(harness.calls.created.length, 0);
 });
 
-test('scans renamed source files for tracked suppressions', async () => {
-  const harness = makeHarness({
+function makeRenamedOrCopiedHarness(status, filename, extra = {}) {
+  return makeHarness({
     files: [
       {
-        filename: 'renamed.go',
+        filename,
         previous_filename: 'main.go',
-        status: 'renamed',
-        patch: patchFor(trackedLine('nosec G404')),
+        status,
+        ...extra,
       },
     ],
   });
+}
+
+test('scans renamed source files for tracked suppressions', async () => {
+  const harness = makeRenamedOrCopiedHarness('renamed', 'renamed.go', { patch: patchFor(trackedLine('nosec G404')) });
 
   await trackInlineSuppressions(harness.args);
 
@@ -594,17 +598,7 @@ test('scans renamed source files for tracked suppressions', async () => {
 });
 
 test('skips patchless pure source renames', async () => {
-  const harness = makeHarness({
-    files: [
-      {
-        filename: 'renamed.go',
-        previous_filename: 'main.go',
-        status: 'renamed',
-        additions: 0,
-        deletions: 0,
-      },
-    ],
-  });
+  const harness = makeRenamedOrCopiedHarness('renamed', 'renamed.go', { additions: 0, deletions: 0 });
 
   await trackInlineSuppressions(harness.args);
 
@@ -617,16 +611,7 @@ test('scans copied source files for tracked suppressions', async () => {
   // recognizes as a copy of another; that new path introduces another
   // live occurrence of any suppression in the copied content and must be
   // tracked under its own fingerprint, not silently skipped.
-  const harness = makeHarness({
-    files: [
-      {
-        filename: 'copy.go',
-        previous_filename: 'main.go',
-        status: 'copied',
-        patch: patchFor(trackedLine('nosec G404')),
-      },
-    ],
-  });
+  const harness = makeRenamedOrCopiedHarness('copied', 'copy.go', { patch: patchFor(trackedLine('nosec G404')) });
 
   await trackInlineSuppressions(harness.args);
 
@@ -640,17 +625,7 @@ test('fails closed on a patchless copy instead of silently skipping it', async (
   // a genuinely new occurrence at a new path; if GitHub omits the patch
   // (e.g. because the content already exists elsewhere), there is no
   // record-scoped way to safely skip it, so this must fail closed.
-  const harness = makeHarness({
-    files: [
-      {
-        filename: 'copy.go',
-        previous_filename: 'main.go',
-        status: 'copied',
-        additions: 0,
-        deletions: 0,
-      },
-    ],
-  });
+  const harness = makeRenamedOrCopiedHarness('copied', 'copy.go', { additions: 0, deletions: 0 });
 
   await assert.rejects(
     () => trackInlineSuppressions(harness.args),
