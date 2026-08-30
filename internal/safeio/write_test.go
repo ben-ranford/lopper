@@ -3,6 +3,7 @@ package safeio
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -18,11 +19,296 @@ const (
 	openRootErrFmt      = "open root: %v"
 	closeRootErrFmt     = "close root: %v"
 	closeTempFileErrFmt = "close temp file: %v"
+	sourceChangedMsg    = "source changed"
 )
 
 type modeOverrideFileInfo struct {
 	fs.FileInfo
 	mode os.FileMode
+}
+
+type namedDirEntry struct {
+	name string
+}
+
+func (e *namedDirEntry) Name() string {
+	return e.name
+}
+
+func (e *namedDirEntry) IsDir() bool {
+	return false
+}
+
+func (e *namedDirEntry) Type() fs.FileMode {
+	return 0
+}
+
+func (e *namedDirEntry) Info() (fs.FileInfo, error) {
+	return nil, fs.ErrInvalid
+}
+
+type aliasScanRaceState struct {
+	t            *testing.T
+	sourceInfo   fs.FileInfo
+	dirInfo      fs.FileInfo
+	files        map[string]bool
+	readDirCalls int
+}
+
+func newAliasScanRaceState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *aliasScanRaceState {
+	return &aliasScanRaceState{
+		t:          t,
+		sourceInfo: sourceInfo,
+		dirInfo:    dirInfo,
+		files:      map[string]bool{"source": true, "SOURCE": true},
+	}
+}
+
+func (s *aliasScanRaceState) root() *fakeRoot {
+	return &fakeRoot{
+		lstat:           s.lstat,
+		chmod:           chmodNameWithoutError(s.t, "source"),
+		open:            s.open,
+		linkIfMatches:   s.linkIfMatches,
+		renameIfMatches: s.renameIfMatches,
+		remove:          s.remove,
+	}
+}
+
+func (s *aliasScanRaceState) lstat(name string) (fs.FileInfo, error) {
+	if name == "." {
+		return s.dirInfo, nil
+	}
+	if s.files[name] {
+		return s.sourceInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *aliasScanRaceState) open(name string) (File, error) {
+	if name != "." {
+		s.t.Fatalf("unexpected directory open %q", name)
+		return nil, fs.ErrInvalid
+	}
+	return &fakeReadDirFile{
+		fakeFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return s.dirInfo, nil },
+			close: closeWithoutError,
+		},
+		readDir: s.readDir,
+	}, nil
+}
+
+func (s *aliasScanRaceState) readDir(int) ([]fs.DirEntry, error) {
+	s.readDirCalls++
+	if s.readDirCalls == 1 {
+		// Model a concurrent unlink after target Lstat but before the original
+		// alias enumeration completes.
+		s.files["SOURCE"] = false
+		return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+	}
+	return []fs.DirEntry{
+		&namedDirEntry{name: "source"},
+		&namedDirEntry{name: "SOURCE"},
+	}, nil
+}
+
+func (s *aliasScanRaceState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	s.files[newName] = true
+	return nil
+}
+
+func (s *aliasScanRaceState) renameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	s.files[oldName] = false
+	s.files[newName] = true
+	return nil
+}
+
+func (s *aliasScanRaceState) remove(name string) error {
+	if !s.files[name] {
+		return os.ErrNotExist
+	}
+	s.files[name] = false
+	return nil
+}
+
+type relinkedAliasRaceState struct {
+	*aliasScanRaceState
+	sourceRemovals                      int
+	sourceRestores                      int
+	targetReplacement                   fs.FileInfo
+	targetReplaced                      bool
+	replaceRetainedStagingAfterRecovery bool
+	retainedStagingReplaced             bool
+}
+
+// falseAliasScanRetainedStagingState models a target that disappears during
+// the advisory alias scan, then returns as the source alias before the staged
+// rename. The state-aware rename reports that the staging link was retained.
+type falseAliasScanRetainedStagingState struct {
+	*aliasScanRaceState
+	sourceCleanupCalls int
+}
+
+func newFalseAliasScanRetainedStagingState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *falseAliasScanRetainedStagingState {
+	return &falseAliasScanRetainedStagingState{
+		aliasScanRaceState: newAliasScanRaceState(t, sourceInfo, dirInfo),
+	}
+}
+
+func (s *falseAliasScanRetainedStagingState) root() *renameStateOnlyRoot {
+	base := &fakeRoot{
+		lstat: s.lstat,
+		chmod: chmodNameWithoutError(s.t, "source"),
+		open:  s.openFalseAliasRace,
+	}
+	return &renameStateOnlyRoot{
+		Root:                 base,
+		linkIfMatches:        s.linkIfMatches,
+		renameIfMatches:      s.renameIfMatches,
+		renameIfMatchesState: s.renameIfMatchesState,
+		removeIfMatches:      s.removeIfMatches,
+	}
+}
+
+func (s *falseAliasScanRetainedStagingState) openFalseAliasRace(name string) (File, error) {
+	if name != "." {
+		s.t.Fatalf("unexpected directory open %q", name)
+		return nil, fs.ErrInvalid
+	}
+	return &fakeReadDirFile{
+		fakeFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return s.dirInfo, nil },
+			close: closeWithoutError,
+		},
+		readDir: func(int) ([]fs.DirEntry, error) {
+			s.readDirCalls++
+			if s.readDirCalls > 1 {
+				// Before publication they address the same entry again.
+				return []fs.DirEntry{&namedDirEntry{name: "source"}}, nil
+			}
+			// The first scan observes two names while they temporarily appear
+			// distinct.
+			return []fs.DirEntry{
+				&namedDirEntry{name: "source"},
+				&namedDirEntry{name: "SOURCE"},
+			}, nil
+		},
+	}, nil
+}
+
+func (s *falseAliasScanRetainedStagingState) renameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	if !s.files[oldName] {
+		return false, os.ErrNotExist
+	}
+	if newName != "SOURCE" {
+		return false, fmt.Errorf("unexpected target rename %q", newName)
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	// The target was absent when the scan completed, but is restored as the
+	// same entry before publication. The staged-to-target rename is a no-op.
+	s.files["SOURCE"] = true
+	return false, nil
+}
+
+func (s *falseAliasScanRetainedStagingState) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.sourceInfo, name)
+	if name == "source" {
+		s.sourceCleanupCalls++
+		// On the target platform these spellings resolve to one entry, so
+		// removing source also removes target until the retained link restores it.
+		s.files["SOURCE"] = false
+	}
+	return s.remove(name)
+}
+
+func newRelinkedAliasRaceState(t *testing.T, sourceInfo, dirInfo fs.FileInfo) *relinkedAliasRaceState {
+	return &relinkedAliasRaceState{aliasScanRaceState: newAliasScanRaceState(t, sourceInfo, dirInfo)}
+}
+
+func (s *relinkedAliasRaceState) root() *renameStateOnlyRoot {
+	base := &fakeRoot{
+		lstat: s.lstat,
+		chmod: chmodNameWithoutError(s.t, "source"),
+		open:  s.open,
+		link:  s.link,
+	}
+	return &renameStateOnlyRoot{
+		Root:                 base,
+		linkIfMatches:        s.linkIfMatches,
+		renameIfMatches:      s.renameIfMatches,
+		renameIfMatchesState: s.renameIfMatchesState,
+		removeIfMatches:      s.removeIfMatches,
+	}
+}
+
+func (s *relinkedAliasRaceState) lstat(name string) (fs.FileInfo, error) {
+	if name == "SOURCE" && s.targetReplaced {
+		return s.targetReplacement, nil
+	}
+	return s.aliasScanRaceState.lstat(name)
+}
+
+func (s *relinkedAliasRaceState) link(oldName, newName string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	if s.files[newName] {
+		return os.ErrExist
+	}
+	if newName == "source" {
+		s.sourceRestores++
+	}
+	s.files[newName] = true
+	return nil
+}
+
+func (s *relinkedAliasRaceState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	if s.retainedStagingReplaced && strings.HasPrefix(oldName, atomicTempPrefix+"retained") {
+		return fmt.Errorf("%s: %s", message, oldName)
+	}
+	if s.files[newName] {
+		if newName == "SOURCE" && s.targetReplaced && s.replaceRetainedStagingAfterRecovery {
+			s.retainedStagingReplaced = true
+		}
+		return os.ErrExist
+	}
+	err := s.aliasScanRaceState.linkIfMatches(oldName, newName, expected, message)
+	if err == nil && newName == "source" {
+		s.sourceRestores++
+	}
+	return err
+}
+
+func (s *relinkedAliasRaceState) renameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	if !s.files[oldName] {
+		return false, os.ErrNotExist
+	}
+	if newName != "SOURCE" {
+		return false, fmt.Errorf("unexpected target rename %q", newName)
+	}
+	requireSameFileInfo(s.t, expected, s.sourceInfo, oldName)
+	// Recreate the distinct hard link after the initial alias scan. The staged
+	// path remains because its rename observes the same underlying file.
+	s.files["SOURCE"] = true
+	return false, nil
+}
+
+func (s *relinkedAliasRaceState) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.sourceInfo, name)
+	if name == "source" {
+		s.sourceRemovals++
+		s.targetReplaced = s.targetReplacement != nil
+	}
+	return s.remove(name)
 }
 
 type unsafeTargetModeCase struct {
@@ -52,8 +338,25 @@ type exclusiveCreatedTargetCase struct {
 	cleanup   bool
 }
 
+type rootNamer interface {
+	rootName() string
+}
+
+type namedFakeRoot struct {
+	*fakeRoot
+	name string
+}
+
+func (r *namedFakeRoot) rootName() string {
+	return r.name
+}
+
 func (i *modeOverrideFileInfo) Mode() os.FileMode {
 	return i.mode
+}
+
+func (i *modeOverrideFileInfo) IsDir() bool {
+	return i.mode.IsDir()
 }
 
 func unsafeTargetModeCases() []unsafeTargetModeCase {
@@ -116,6 +419,15 @@ func (f *truncatingFakeFile) Truncate(size int64) error {
 	return f.truncate(size)
 }
 
+type seekableFakeFile struct {
+	*fakeFile
+	seek func(offset int64, whence int) (int64, error)
+}
+
+func (f *seekableFakeFile) Seek(offset int64, whence int) (int64, error) {
+	return f.seek(offset, whence)
+}
+
 func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
 	t.Helper()
 	dir := t.TempDir()
@@ -130,12 +442,42 @@ func writePinnedTargetInfoPair(t *testing.T) (fs.FileInfo, fs.FileInfo) {
 	return statTestPath(t, originalPath), statTestPath(t, changedPath)
 }
 
+func replaceFileAtPathWithDistinctIdentity(t *testing.T, path string, expected fs.FileInfo, replacement string) {
+	t.Helper()
+
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	replacementPath := filepath.Join(dir, "."+base+".replacement")
+	originalPath := filepath.Join(dir, "."+base+".original")
+
+	if err := os.WriteFile(replacementPath, []byte(replacement), 0o600); err != nil {
+		t.Fatalf("write replacement file: %v", err)
+	}
+	if err := os.Rename(path, originalPath); err != nil {
+		t.Fatalf("move original aside: %v", err)
+	}
+	if err := os.Rename(replacementPath, path); err != nil {
+		t.Fatalf("publish replacement file: %v", err)
+	}
+	if err := os.Remove(originalPath); err != nil {
+		t.Fatalf("remove displaced original: %v", err)
+	}
+
+	replacementInfo := statTestPath(t, path)
+	if os.SameFile(expected, replacementInfo) {
+		t.Fatalf("expected replacement at %s to change file identity", path)
+	}
+}
+
 func newExclusiveCreateRoot(t *testing.T, targetInfo fs.FileInfo) (*fakeRoot, *exclusiveCreateState) {
 	t.Helper()
 
 	state := &exclusiveCreateState{}
 	return &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return targetInfo, nil
+			}
 			if name != writeTestFileName {
 				t.Fatalf("unexpected target lookup: %s", name)
 			}
@@ -145,41 +487,61 @@ func newExclusiveCreateRoot(t *testing.T, targetInfo fs.FileInfo) (*fakeRoot, *e
 			}
 			return targetInfo, nil
 		},
-		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			assertExclusiveCreateOpen(t, name, flag, perm)
-			return &fakeFile{
-				stat: func() (fs.FileInfo, error) { return targetInfo, nil },
-				write: func(p []byte) (int, error) {
-					state.wroteTarget = append([]byte(nil), p...)
-					return len(p), nil
-				},
-				chmod: func(mode os.FileMode) error {
-					state.chmodTarget = mode
-					return nil
-				},
-				close: func() error {
-					state.targetClosed = true
-					return nil
-				},
-			}, nil
-		},
-		link: func(string, string) error {
-			t.Fatal("write-if-absent should not link through a replaceable temp pathname")
-			return nil
-		},
+		openFile: exclusiveCreateOpenFile(t, targetInfo, state),
+		link:     atomicTempPublishLink(t, writeTestFileName),
+		remove:   removeOnlyTempPath(t),
 	}, state
 }
 
 func assertExclusiveCreateOpen(t *testing.T, name string, flag int, perm os.FileMode) {
 	t.Helper()
-	if name != writeTestFileName {
-		t.Fatalf("unexpected create path: %s", name)
+	if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+		t.Fatalf("unexpected temp create path: %s", name)
 	}
 	if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
-		t.Fatalf("unexpected target open flags: %#x", flag)
+		t.Fatalf("unexpected temp open flags: %#x", flag)
 	}
 	if perm != 0o640 {
 		t.Fatalf("unexpected target perm: %#o", perm)
+	}
+}
+
+func atomicTempPublishLink(t *testing.T, finalName string) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
+			t.Fatalf("unexpected temp publish source: %s", oldName)
+		}
+		if newName != finalName && !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+			t.Fatalf("unexpected temp publish target: %s", newName)
+		}
+		return nil
+	}
+}
+
+func exclusiveCreateOpenFile(t *testing.T, targetInfo fs.FileInfo, state *exclusiveCreateState) func(string, int, os.FileMode) (File, error) {
+	t.Helper()
+	return func(name string, flag int, perm os.FileMode) (File, error) {
+		assertExclusiveCreateOpen(t, name, flag, perm)
+		return exclusiveCreateFile(targetInfo, state), nil
+	}
+}
+
+func exclusiveCreateFile(targetInfo fs.FileInfo, state *exclusiveCreateState) File {
+	return &fakeFile{
+		stat: func() (fs.FileInfo, error) { return targetInfo, nil },
+		write: func(p []byte) (int, error) {
+			state.wroteTarget = append([]byte(nil), p...)
+			return len(p), nil
+		},
+		chmod: func(mode os.FileMode) error {
+			state.chmodTarget = mode
+			return nil
+		},
+		close: func() error {
+			state.targetClosed = true
+			return nil
+		},
 	}
 }
 
@@ -195,7 +557,7 @@ func assertExclusiveCreateSuccess(t *testing.T, state *exclusiveCreateState) {
 		t.Fatal("expected exclusive-create target file to close")
 	}
 	if state.lstatCalls != 2 {
-		t.Fatalf("expected target revalidation after close, got %d lookups", state.lstatCalls)
+		t.Fatalf("expected initial target lookup and post-publish revalidation, got %d lookups", state.lstatCalls)
 	}
 }
 
@@ -213,13 +575,17 @@ func assertExclusiveCreatedTargetRejected(t *testing.T, tc exclusiveCreatedTarge
 				close: func() error { closed = true; return nil },
 			}, nil
 		},
-		lstat: func(string) (fs.FileInfo, error) {
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tc.fileInfo, nil
+			}
 			lstatCalls++
 			if lstatCalls == 1 {
 				return nil, os.ErrNotExist
 			}
 			return tc.pathInfo, tc.lstatErr
 		},
+		link:   atomicTempPublishLink(t, writeTestFileName),
 		remove: func(string) error { removed = true; return nil },
 	}
 
@@ -310,10 +676,19 @@ func newCommittedTargetTestRoot(t *testing.T, tempInfo fs.FileInfo, lstat func(s
 			return newCommittedTargetTempFile(t, tempInfo, closeFn), nil
 		},
 		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
 			if name != writeTestFileName {
 				t.Fatalf("unexpected lstat path: %s", name)
 			}
 			return lstat(name)
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: rename,
 		remove: remove,
@@ -502,14 +877,34 @@ func assertWriteRootRejectsNonRelativeTargets(t *testing.T, invoke func(*WriteRo
 	}
 }
 
-func makeFakeFallbackWriteRoot(targetFile func() File, remove func(string) error) *fakeRoot {
+func makeFakeFallbackWriteRoot(t *testing.T, targetFile func() File, targetInfo fs.FileInfo, remove func(string) error) *fakeRoot {
+	t.Helper()
 	if remove == nil {
 		remove = func(string) error { return nil }
 	}
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	targetCreated := false
 	return &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
+			if name == writeTestFileName && targetCreated {
+				return targetInfo, nil
+			}
+			return nil, os.ErrNotExist
+		},
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+					write: func(p []byte) (int, error) { return len(p), nil },
+					chmod: chmodWithoutError,
+					close: closeWithoutError,
+				}, nil
+			}
 			if name == writeTestFileName {
+				targetCreated = true
 				return targetFile(), nil
 			}
 			return &fakeFile{
@@ -518,19 +913,21 @@ func makeFakeFallbackWriteRoot(targetFile func() File, remove func(string) error
 				close: func() error { return nil },
 			}, nil
 		},
-		link:   func(string, string) error { return errors.ErrUnsupported },
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return errIdentityBoundLinkUnavailable
+		},
 		remove: remove,
 	}
 }
 
 func assertExclusiveCreateCleanup(t *testing.T, removed []string) {
 	t.Helper()
-	if len(removed) != 1 {
-		t.Fatalf("expected cleanup for incomplete exclusive-create target, got %v", removed)
+	for _, name := range removed {
+		if name == writeTestFileName {
+			return
+		}
 	}
-	if removed[0] != writeTestFileName {
-		t.Fatalf("expected exclusive-create target cleanup for %q, got %v", writeTestFileName, removed)
-	}
+	t.Fatalf("expected cleanup for incomplete target, got %v", removed)
 }
 
 func assertWriteIfAbsentFallbackCleanup(t *testing.T, expectedErr error, targetFile func(*bool) File) {
@@ -553,7 +950,7 @@ func assertWriteIfAbsentFallbackCleanup(t *testing.T, expectedErr error, targetF
 		fake.stat = func() (fs.FileInfo, error) { return targetInfo, nil }
 		return fake
 	}
-	root := makeFakeFallbackWriteRoot(withTargetInfo, remove)
+	root := makeFakeFallbackWriteRoot(t, withTargetInfo, targetInfo, remove)
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {
@@ -1718,13 +2115,13 @@ func TestWriteFileIfAbsentAtRootPropagatesUnexpectedLookupError(t *testing.T) {
 	}
 }
 
-func TestWriteFileIfAbsentAtRootPropagatesExclusiveCreateError(t *testing.T) {
-	expectedErr := errors.New("exclusive create failure")
+func TestWriteFileIfAbsentAtRootPropagatesTempCreateError(t *testing.T) {
+	expectedErr := errors.New("temp create failure")
 	root := &fakeRoot{
 		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
-			if name != writeTestFileName {
-				t.Fatalf("unexpected create path: %s", name)
+			if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				t.Fatalf("unexpected temp create path: %s", name)
 			}
 			if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
 				t.Fatalf("unexpected create flags: %#x", flag)
@@ -1735,11 +2132,11 @@ func TestWriteFileIfAbsentAtRootPropagatesExclusiveCreateError(t *testing.T) {
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected exclusive create error, got %v", err)
+		t.Fatalf("expected temp create error, got %v", err)
 	}
 }
 
-func TestWriteFileIfAbsentAtRootCreatesTargetExclusivelyWithoutLinking(t *testing.T) {
+func TestWriteFileIfAbsentAtRootCreatesTargetWithPreparedTempLink(t *testing.T) {
 	targetInfo := newPinnedTargetInfo(t, "target")
 	root, state := newExclusiveCreateRoot(t, targetInfo)
 
@@ -1750,15 +2147,119 @@ func TestWriteFileIfAbsentAtRootCreatesTargetExclusivelyWithoutLinking(t *testin
 	assertExclusiveCreateSuccess(t, state)
 }
 
+func TestWriteFileAtomicallyIfAbsentAtRootPublishesCompletedTemp(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "target")
+	var events []string
+	root := newAtomicIfAbsentPublishOrderRoot(t, tempInfo, &events)
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if err != nil {
+		t.Fatalf("expected atomic-if-absent publish success, got %v", err)
+	}
+	want := []string{"open-temp", "write-temp:hello", "chmod-temp", "stat-temp", "stat-temp", "lstat-temp", "link-cleanup", "lstat-temp", "close-temp", "lstat-temp", "link-target", "lstat-target", "lstat-temp", "lstat-temp", "link-cleanup", "lstat-temp", "lstat-temp", "remove-temp", "lstat-temp", "remove-temp", "lstat-temp", "lstat-temp", "link-cleanup", "lstat-temp", "lstat-temp", "remove-temp", "lstat-temp", "remove-temp"}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected publish order: got %v want %v", events, want)
+	}
+}
+
+func newAtomicIfAbsentPublishOrderRoot(t *testing.T, tempInfo fs.FileInfo, events *[]string) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{
+		lstat:    atomicIfAbsentPublishOrderLstat(t, tempInfo, events),
+		openFile: atomicIfAbsentPublishOrderOpenFile(t, tempInfo, events),
+		link:     atomicIfAbsentPublishOrderLink(t, events),
+		remove:   atomicIfAbsentPublishOrderRemove(t, events),
+	}
+}
+
+func atomicIfAbsentPublishOrderLstat(t *testing.T, tempInfo fs.FileInfo, events *[]string) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	return func(name string) (fs.FileInfo, error) {
+		if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			*events = append(*events, "lstat-temp")
+			return tempInfo, nil
+		}
+		if name != writeTestFileName {
+			t.Fatalf("unexpected target lookup: %s", name)
+		}
+		*events = append(*events, "lstat-target")
+		return tempInfo, nil
+	}
+}
+
+func atomicIfAbsentPublishOrderOpenFile(t *testing.T, tempInfo fs.FileInfo, events *[]string) func(string, int, os.FileMode) (File, error) {
+	t.Helper()
+	return func(name string, flag int, perm os.FileMode) (File, error) {
+		if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("unexpected temp create path: %s", name)
+		}
+		if flag != os.O_RDWR|os.O_CREATE|os.O_EXCL {
+			t.Fatalf("unexpected temp open flags: %#x", flag)
+		}
+		*events = append(*events, "open-temp")
+		return atomicIfAbsentPublishOrderFile(tempInfo, events), nil
+	}
+}
+
+func atomicIfAbsentPublishOrderFile(tempInfo fs.FileInfo, events *[]string) *fakeFile {
+	return &fakeFile{
+		stat: func() (fs.FileInfo, error) {
+			*events = append(*events, "stat-temp")
+			return tempInfo, nil
+		},
+		write: func(p []byte) (int, error) {
+			*events = append(*events, "write-temp:"+string(p))
+			return len(p), nil
+		},
+		chmod: func(os.FileMode) error {
+			*events = append(*events, "chmod-temp")
+			return nil
+		},
+		close: func() error {
+			*events = append(*events, "close-temp")
+			return nil
+		},
+	}
+}
+
+func atomicIfAbsentPublishOrderLink(t *testing.T, events *[]string) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
+			t.Fatalf("unexpected publish link source %q -> %q", oldName, newName)
+		}
+		switch {
+		case newName == writeTestFileName:
+			*events = append(*events, "link-target")
+		case strings.HasPrefix(filepath.Base(newName), atomicTempPrefix):
+			*events = append(*events, "link-cleanup")
+		default:
+			t.Fatalf("unexpected publish link target %q -> %q", oldName, newName)
+		}
+		return nil
+	}
+}
+
+func atomicIfAbsentPublishOrderRemove(t *testing.T, events *[]string) func(string) error {
+	t.Helper()
+	return func(name string) error {
+		if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("unexpected temp cleanup path: %s", name)
+		}
+		*events = append(*events, "remove-temp")
+		return nil
+	}
+}
+
 func TestWriteFileIfAbsentAtRootRejectsInvalidCreatedTarget(t *testing.T) {
 	openedInfo, changedInfo := writePinnedTargetInfoPair(t)
 	cases := []struct {
 		exclusiveCreatedTargetCase
 	}{
-		{exclusiveCreatedTargetCase{name: "opened nonregular", fileInfo: &modeOverrideFileInfo{FileInfo: openedInfo, mode: os.ModeDir | 0o755}, wantError: "not a regular file", cleanup: true}},
-		{exclusiveCreatedTargetCase{name: "target symlink", fileInfo: openedInfo, pathInfo: &modeOverrideFileInfo{FileInfo: openedInfo, mode: os.ModeSymlink | 0o777}, wantError: "became a symlink"}},
-		{exclusiveCreatedTargetCase{name: "target replaced", fileInfo: openedInfo, pathInfo: changedInfo, wantError: "changed before validation"}},
-		{exclusiveCreatedTargetCase{name: "target lookup error", fileInfo: openedInfo, lstatErr: errors.New("target lookup failure"), wantError: "target lookup failure"}},
+		{exclusiveCreatedTargetCase{name: "opened nonregular", fileInfo: &modeOverrideFileInfo{FileInfo: openedInfo, mode: os.ModeDir | 0o755}, wantError: "temporary file is not regular", cleanup: true}},
+		{exclusiveCreatedTargetCase{name: "target symlink", fileInfo: openedInfo, pathInfo: &modeOverrideFileInfo{FileInfo: openedInfo, mode: os.ModeSymlink | 0o777}, wantError: committedTargetChangedBeforeValidation, cleanup: true}},
+		{exclusiveCreatedTargetCase{name: "target replaced", fileInfo: openedInfo, pathInfo: changedInfo, wantError: "changed before validation", cleanup: true}},
+		{exclusiveCreatedTargetCase{name: "target lookup error", fileInfo: openedInfo, lstatErr: errors.New("target lookup failure"), wantError: "target lookup failure", cleanup: true}},
 	}
 
 	for _, tc := range cases {
@@ -1774,7 +2275,6 @@ func TestWriteFileIfAbsentAtRootCleansUpCreatedTargetPreparationErrors(t *testin
 		name     string
 		statErr  error
 		chmodErr error
-		wantErr  error
 	}{
 		{name: "stat", statErr: errors.New("target stat failure")},
 		{name: "chmod", chmodErr: errors.New("target chmod failure")},
@@ -1782,47 +2282,98 @@ func TestWriteFileIfAbsentAtRootCleansUpCreatedTargetPreparationErrors(t *testin
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			closed := false
-			removed := false
-			root := &fakeRoot{
-				openFile: func(string, int, os.FileMode) (File, error) {
-					return &fakeFile{
-						stat:  func() (fs.FileInfo, error) { return targetInfo, tc.statErr },
-						write: func(p []byte) (int, error) { return len(p), nil },
-						chmod: func(os.FileMode) error { return tc.chmodErr },
-						close: func() error { closed = true; return nil },
-					}, nil
-				},
-				lstat:  func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
-				remove: func(string) error { removed = true; return nil },
-			}
-
-			err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
-			if !errors.Is(err, tc.statErr) && !errors.Is(err, tc.chmodErr) {
-				t.Fatalf("expected preparation error, got %v", err)
-			}
-			if !closed || !removed {
-				t.Fatalf("expected created target cleanup, closed=%t removed=%t", closed, removed)
-			}
+			assertCreatedTargetPreparationErrorCleanup(t, targetInfo, tc.statErr, tc.chmodErr)
 		})
 	}
 }
 
-func TestWriteFileIfAbsentAtRootReturnsExistWhenTargetAppearsAfterLookup(t *testing.T) {
+func assertCreatedTargetPreparationErrorCleanup(t *testing.T, targetInfo fs.FileInfo, statErr, chmodErr error) {
+	t.Helper()
+	closed := false
+	removedTarget := false
+	targetLstats := 0
 	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		openFile: createdTargetPreparationOpenFile(targetInfo, statErr, chmodErr, &closed),
+		lstat:    createdTargetPreparationLstat(targetInfo, &targetLstats),
+		remove:   createdTargetPreparationRemove(&removedTarget),
+	}
+
+	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
+	if !errors.Is(err, statErr) && !errors.Is(err, chmodErr) {
+		t.Fatalf("expected preparation error, got %v", err)
+	}
+	if !closed || removedTarget {
+		t.Fatalf("unexpected final target cleanup during atomic temp preparation, closed=%t removedTarget=%t", closed, removedTarget)
+	}
+}
+
+func createdTargetPreparationOpenFile(targetInfo fs.FileInfo, statErr, chmodErr error, closed *bool) func(string, int, os.FileMode) (File, error) {
+	return func(string, int, os.FileMode) (File, error) {
+		return &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return targetInfo, statErr },
+			write: func(p []byte) (int, error) { return len(p), nil },
+			chmod: func(os.FileMode) error { return chmodErr },
+			close: func() error { *closed = true; return nil },
+		}, nil
+	}
+}
+
+func createdTargetPreparationLstat(targetInfo fs.FileInfo, targetLstats *int) func(string) (fs.FileInfo, error) {
+	return func(name string) (fs.FileInfo, error) {
+		if name != writeTestFileName {
+			return nil, os.ErrNotExist
+		}
+		(*targetLstats)++
+		if *targetLstats == 1 {
+			return nil, os.ErrNotExist
+		}
+		return targetInfo, nil
+	}
+}
+
+func createdTargetPreparationRemove(removedTarget *bool) func(string) error {
+	return func(name string) error {
+		if name == writeTestFileName {
+			*removedTarget = true
+		}
+		return nil
+	}
+}
+
+func TestWriteFileIfAbsentAtRootReturnsExistWhenTargetAppearsAfterLookup(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
+			return nil, os.ErrNotExist
+		},
 	}
 	root.openFile = func(name string, flag int, perm os.FileMode) (File, error) {
-		if name == writeTestFileName {
-			return nil, os.ErrExist
+		if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("unexpected temp create path: %s", name)
 		}
-		t.Fatalf("unexpected create path: %s", name)
-		return nil, nil
+		return &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return tempInfo, nil },
+			write: func(p []byte) (int, error) { return len(p), nil },
+			chmod: chmodWithoutError,
+			close: closeWithoutError,
+		}, nil
+	}
+	root.link = func(oldName, newName string) error {
+		if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
+			t.Fatalf("unexpected publish link source: %s", oldName)
+		}
+		if newName == writeTestFileName {
+			return os.ErrExist
+		}
+		return nil
 	}
 
 	err := writeFileIfAbsentAtRoot(root, rootedTarget{rel: writeTestFileName}, []byte("hello"), 0o600)
 	if !errors.Is(err, os.ErrExist) {
-		t.Fatalf("expected os.ErrExist from exclusive create, got %v", err)
+		t.Fatalf("expected os.ErrExist from publish link, got %v", err)
 	}
 }
 
@@ -2020,6 +2571,38 @@ func TestOpenTargetParentReturnsExistingRootForTopLevelTarget(t *testing.T) {
 	}
 }
 
+func TestOpenTargetParentPreservesAbsoluteNameForNamedChildRoot(t *testing.T) {
+	childInfo := statTestPath(t, t.TempDir())
+	child := &namedFakeRoot{
+		fakeRoot: &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return childInfo, nil },
+			close: closeWithoutError,
+		},
+		name: "objects",
+	}
+	root := &fakeRoot{
+		lstat:    func(string) (fs.FileInfo, error) { return childInfo, nil },
+		openRoot: func(string) (Root, error) { return child, nil },
+	}
+	writeRoot := &WriteRoot{root: root, rootAbs: "/root"}
+	target := rootedTarget{rootAbs: "/root", rel: filepath.Join("objects", writeTestFileName)}
+
+	parent, closeParent, err := writeRoot.openTargetParent(target, false, 0)
+	if err != nil {
+		t.Fatalf("expected nested target parent lookup to succeed, got %v", err)
+	}
+	if !closeParent {
+		t.Fatal("expected nested target parent to be caller-owned")
+	}
+	named, ok := parent.(rootNamer)
+	if !ok {
+		t.Fatalf("expected named parent root, got %T", parent)
+	}
+	if got, want := named.rootName(), filepath.Join("/root", "objects"); got != want {
+		t.Fatalf("unexpected target parent root name: got %q want %q", got, want)
+	}
+}
+
 func TestOpenTargetParentClosesNextWhenOwnedParentCloseFails(t *testing.T) {
 	firstInfo := statTestPath(t, t.TempDir())
 	secondInfo := statTestPath(t, t.TempDir())
@@ -2123,6 +2706,12 @@ func TestWriteFileAtRootReturnsExistingTargetCloseError(t *testing.T) {
 				stat:  func() (fs.FileInfo, error) { return fileInfo, nil },
 				close: func() error { return expectedErr },
 			}, nil
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: func(string, string) error { return nil },
 		remove: func(string) error { return nil },
@@ -2507,11 +3096,20 @@ func withAtomicWriteFileSystem(t *testing.T, tempFile File, remove func(string) 
 	}
 	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
 		return &fakeRoot{
-			lstat: func(string) (fs.FileInfo, error) {
+			lstat: func(name string) (fs.FileInfo, error) {
+				if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+					return tempInfo, nil
+				}
 				return nil, os.ErrNotExist
 			},
 			openFile: func(string, int, os.FileMode) (File, error) {
 				return tempFile, nil
+			},
+			link: func(oldName, newName string) error {
+				if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+					return errors.ErrUnsupported
+				}
+				return nil
 			},
 			remove: remove,
 			close: func() error {
@@ -2572,7 +3170,10 @@ func TestWriteFileReplacingWithinRootJoinsRenameErrorWithCleanupFailure(t *testi
 	cleanupErr := errors.New("cleanup failure")
 	tempInfo := newPinnedTargetInfo(t, "temp")
 	root := &fakeRoot{
-		lstat: func(string) (fs.FileInfo, error) {
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
 			return nil, os.ErrNotExist
 		},
 		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
@@ -2582,6 +3183,12 @@ func TestWriteFileReplacingWithinRootJoinsRenameErrorWithCleanupFailure(t *testi
 				chmod: chmodWithoutError,
 				close: closeWithoutError,
 			}, nil
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: func(string, string) error {
 			return renameErr
@@ -2616,6 +3223,9 @@ func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutFallback(t *testin
 	targetOpened := false
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
 			if name != writeTestFileName {
 				return nil, os.ErrNotExist
 			}
@@ -2635,6 +3245,12 @@ func TestWriteFileReplacingWithinRootReturnsRenameErrorWithoutFallback(t *testin
 				chmod: chmodWithoutError,
 				close: closeWithoutError,
 			}, nil
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: func(string, string) error {
 			return renameErr
@@ -2665,6 +3281,9 @@ func TestWriteAtomicReplacementReturnsPinnedTargetCloseErrorAfterCommit(t *testi
 
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
 			if name != writeTestFileName {
 				t.Fatalf("unexpected lstat path: %s", name)
 			}
@@ -2683,6 +3302,12 @@ func TestWriteAtomicReplacementReturnsPinnedTargetCloseErrorAfterCommit(t *testi
 				chmod: chmodWithoutError,
 				close: closeWithoutError,
 			}, nil
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: func(string, string) error { return nil },
 		remove: func(string) error { return nil },
@@ -2707,10 +3332,19 @@ func TestWriteAtomicReplacementReturnsPinnedTargetOpenError(t *testing.T) {
 	root := &fakeRoot{
 		openFile: openTargetOrTempFile(writeTestFileName, openTarget, tempInfo, nil),
 		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
 			if name != writeTestFileName {
 				t.Fatalf("unexpected lstat path: %s", name)
 			}
 			return tempInfo, nil
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: func(string, string) error { return nil },
 		remove: func(string) error { return nil },
@@ -2757,7 +3391,7 @@ func TestWriteAtomicReplacementVerifiesCommittedTarget(t *testing.T) {
 		t.Fatalf("expected committed target validation success, got %v", err)
 	}
 	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+		t.Fatalf("expected publish rename only, got %d", renameCalls)
 	}
 	if lstatCalls != 1 {
 		t.Fatalf("expected one committed target lstat, got %d", lstatCalls)
@@ -2765,8 +3399,8 @@ func TestWriteAtomicReplacementVerifiesCommittedTarget(t *testing.T) {
 	if !tempClosed {
 		t.Fatal("expected temp file close before rename validation")
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no temp cleanup remove after successful rename, got %d", removeCalls)
+	if removeCalls != 4 {
+		t.Fatalf("expected identity-bound cleanup for original temp and staged link, got %d removes", removeCalls)
 	}
 }
 
@@ -2793,17 +3427,17 @@ func TestWriteAtomicReplacementRejectsChangedCommittedTarget(t *testing.T) {
 	root := newCommittedTargetTestRoot(t, tempInfo, lstat, rename, remove, closeFn)
 
 	err := writeAtomicReplacement(root, writeTestFileName, []byte("after"), 0o600, statTestPath(t, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected committed target validation error, got %v", err)
 	}
 	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+		t.Fatalf("expected publish rename only, got %d", renameCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected temp file close before committed target mismatch")
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no cleanup remove after committed target mismatch, got %d", removeCalls)
+	if removeCalls != 4 {
+		t.Fatalf("expected identity-bound cleanup without removing mismatched target, got %d removes", removeCalls)
 	}
 }
 
@@ -2837,7 +3471,7 @@ func TestWriteAtomicReplacementReturnsCloseErrorBeforeRename(t *testing.T) {
 	if lstatCalls != 0 {
 		t.Fatalf("expected no lstat after close failure, got %d", lstatCalls)
 	}
-	if removeCalls != 1 {
+	if removeCalls != 4 {
 		t.Fatalf("expected temp cleanup after close failure, got %d removes", removeCalls)
 	}
 }
@@ -2867,13 +3501,13 @@ func TestWriteAtomicReplacementWithPinnedTargetKeepsCommittedTargetIdentity(t *t
 		t.Fatalf("expected committed target validation success, got %v", err)
 	}
 	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+		t.Fatalf("expected publish rename only, got %d", renameCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected committed temp file to be closed")
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no cleanup remove after successful rename, got %d", removeCalls)
+	if removeCalls != 4 {
+		t.Fatalf("expected identity-bound cleanup for original temp and staged link, got %d removes", removeCalls)
 	}
 }
 
@@ -2895,17 +3529,17 @@ func TestWriteAtomicReplacementWithPinnedTargetRejectsChangedCommittedTarget(t *
 	root := newCommittedTargetValidationRoot(t, tempInfo, lstatTarget, rename, remove, &tempClosed)
 
 	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, target, false)
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected committed target validation error, got %v", err)
 	}
 	if renameCalls != 1 {
-		t.Fatalf("expected one rename attempt, got %d", renameCalls)
+		t.Fatalf("expected publish rename only, got %d", renameCalls)
 	}
 	if !tempClosed {
 		t.Fatal("expected temp file to be closed during cleanup")
 	}
-	if removeCalls != 0 {
-		t.Fatalf("expected no cleanup remove after committed target mismatch, got %d", removeCalls)
+	if removeCalls != 4 {
+		t.Fatalf("expected identity-bound cleanup without removing mismatched target, got %d removes", removeCalls)
 	}
 	if string(*targetData) != "before" {
 		t.Fatalf("expected no fallback overwrite after committed target mismatch, got %q", string(*targetData))
@@ -2997,9 +3631,18 @@ func TestWriteAtomicReplacementWithPinnedTargetReturnsCloseErrorBeforeRename(t *
 				close: func() error { return expectedErr },
 			}, nil
 		},
-		lstat: func(string) (fs.FileInfo, error) {
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return tempInfo, nil
+			}
 			lstatCalls++
 			return targetInfo, nil
+		},
+		link: func(oldName, newName string) error {
+			if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
 		},
 		rename: func(string, string) error {
 			renameCalls++
@@ -3025,10 +3668,223 @@ func TestWriteAtomicReplacementWithPinnedTargetReturnsCloseErrorBeforeRename(t *
 	if lstatCalls != 0 {
 		t.Fatalf("expected no committed target lstat after close failure, got %d", lstatCalls)
 	}
-	if removeCalls != 1 {
+	if removeCalls != 4 {
 		t.Fatalf("expected temp cleanup after close failure, got %d removes", removeCalls)
 	}
 	assertFileContent(t, targetPath, "before")
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootPublishesWithHardLinkAndRemovesTemp(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	linkCalls := 0
+	publishCalls := 0
+	removeCalls := 0
+	lstatCalls := 0
+
+	tempFile, tempClosed := newTrackedAtomicTempFile(tempInfo, nil, nil)
+	root := newAtomicIfAbsentRoot(t, tempFile, func(oldName, newName string) error {
+		linkCalls++
+		if newName == writeTestFileName {
+			publishCalls++
+			assertAtomicTempPath(t, "hard-link source", oldName)
+			return nil
+		}
+		assertAtomicTempPath(t, "identity-bound staging source", oldName)
+		assertAtomicTempPath(t, "identity-bound staging link", newName)
+		return nil
+	}, func(name string) error {
+		removeCalls++
+		assertAtomicTempPath(t, "temp removal", name)
+		return nil
+	})
+	root.lstat = func(name string) (fs.FileInfo, error) {
+		if strings.HasPrefix(name, atomicTempPrefix) {
+			return tempInfo, nil
+		}
+		if name != writeTestFileName {
+			t.Fatalf("unexpected committed target lookup: %s", name)
+		}
+		lstatCalls++
+		return tempInfo, nil
+	}
+
+	if err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640); err != nil {
+		t.Fatalf("writeFileAtomicallyIfAbsentAtRoot returned error: %v", err)
+	}
+	if publishCalls != 1 {
+		t.Fatalf("expected one hard-link publish, got %d", publishCalls)
+	}
+	if linkCalls < 2 {
+		t.Fatalf("expected staging and publish hard links, got %d", linkCalls)
+	}
+	if removeCalls != 4 {
+		t.Fatalf("expected identity-bound staged and original temp cleanup after hard-link publish, got %d removes", removeCalls)
+	}
+	if lstatCalls != 1 {
+		t.Fatalf("expected one committed target validation lookup, got %d", lstatCalls)
+	}
+	if !*tempClosed {
+		t.Fatal("expected temp file to close before hard-link publish")
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootPropagatesTempCreationError(t *testing.T) {
+	expectedErr := errors.New("temp creation failure")
+	root := &fakeRoot{
+		openFile: func(string, int, os.FileMode) (File, error) {
+			return nil, expectedErr
+		},
+		link: func(oldName, newName string) error {
+			t.Fatalf("unexpected hard-link publish after temp creation failure: %s -> %s", oldName, newName)
+			return nil
+		},
+	}
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected temp creation error, got %v", err)
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootCleansTempAfterPreparationErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		writeErr error
+		closeErr error
+	}{
+		{name: "write", writeErr: errors.New("temp write failure")},
+		{name: "close", closeErr: errors.New("temp close failure")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := tt.closeErr
+			if tt.writeErr != nil {
+				want = tt.writeErr
+			}
+			assertWriteFileAtomicallyIfAbsentCleansTempAfterPreparationError(t, tt.writeErr, tt.closeErr, want)
+		})
+	}
+}
+
+func assertWriteFileAtomicallyIfAbsentCleansTempAfterPreparationError(t *testing.T, writeErr, closeErr, want error) {
+	t.Helper()
+
+	cleanupErr := errors.New("temp cleanup failure")
+	tempFile, tempClosed := newTrackedAtomicTempFile(newPinnedTargetInfo(t, "temp"), writeErr, closeErr)
+	removeCalls := 0
+	root := newAtomicIfAbsentRoot(t, tempFile, func(oldName, newName string) error {
+		if newName == writeTestFileName {
+			t.Fatalf("unexpected hard-link publish after temp preparation failure: %s -> %s", oldName, newName)
+		}
+		return nil
+	}, func(name string) error {
+		removeCalls++
+		assertAtomicTempPath(t, "temp cleanup", name)
+		return cleanupErr
+	})
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, want) {
+		t.Fatalf("expected temp preparation error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup error to be joined, got %v", err)
+	}
+	wantRemoveCalls := 6
+	if writeErr != nil {
+		wantRemoveCalls = 1
+	}
+	if removeCalls != wantRemoveCalls {
+		t.Fatalf("expected %d temp cleanup removes, got %d", wantRemoveCalls, removeCalls)
+	}
+	if !*tempClosed {
+		t.Fatal("expected temp close to be attempted before cleanup")
+	}
+}
+
+func TestWriteFileAtomicallyIfAbsentAtRootReturnsTempRemoveErrorAfterHardLink(t *testing.T) {
+	removeErr := errors.New("temp remove failure")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	tempFile, _ := newTrackedAtomicTempFile(tempInfo, nil, nil)
+	linkCalls := 0
+	publishCalls := 0
+	root := newAtomicIfAbsentRoot(t, tempFile, func(oldName, newName string) error {
+		linkCalls++
+		if newName == writeTestFileName {
+			publishCalls++
+		}
+		return nil
+	}, func(name string) error {
+		assertAtomicTempPath(t, "temp removal", name)
+		return removeErr
+	})
+	root.lstat = func(name string) (fs.FileInfo, error) {
+		if strings.HasPrefix(name, atomicTempPrefix) {
+			return tempInfo, nil
+		}
+		if name != writeTestFileName {
+			t.Fatalf("unexpected committed target validation path: %s", name)
+		}
+		return tempInfo, nil
+	}
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o640)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected temp remove error, got %v", err)
+	}
+	if publishCalls != 1 {
+		t.Fatalf("expected one hard-link publish before temp remove error, got %d", publishCalls)
+	}
+	if linkCalls < 2 {
+		t.Fatalf("expected staging and publish hard links before temp remove error, got %d", linkCalls)
+	}
+}
+
+func newTrackedAtomicTempFile(info fs.FileInfo, writeErr, closeErr error) (*fakeFile, *bool) {
+	closed := false
+	return &fakeFile{
+		stat: func() (fs.FileInfo, error) {
+			return info, nil
+		},
+		write: func(p []byte) (int, error) {
+			if writeErr != nil {
+				return 0, writeErr
+			}
+			return len(p), nil
+		},
+		chmod: chmodWithoutError,
+		close: func() error {
+			closed = true
+			return closeErr
+		},
+	}, &closed
+}
+
+func newAtomicIfAbsentRoot(t *testing.T, tempFile File, link func(string, string) error, remove func(string) error) *fakeRoot {
+	t.Helper()
+
+	return &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			assertAtomicTempPath(t, "temp open", name)
+			return tempFile, nil
+		},
+		link:   link,
+		remove: remove,
+		lstat: func(name string) (fs.FileInfo, error) {
+			if !strings.HasPrefix(name, atomicTempPrefix) {
+				return nil, errors.ErrUnsupported
+			}
+			return tempFile.Stat()
+		},
+	}
+}
+
+func assertAtomicTempPath(t *testing.T, label, name string) {
+	t.Helper()
+
+	if !strings.HasPrefix(name, atomicTempPrefix) {
+		t.Fatalf("unexpected %s path: %s", label, name)
+	}
 }
 
 func TestAtomicWriteSessionVerifyCommittedTargetRejectsMissingSnapshot(t *testing.T) {
@@ -3040,6 +3896,234 @@ func TestAtomicWriteSessionVerifyCommittedTargetRejectsMissingSnapshot(t *testin
 	err := session.verifyCommittedTarget()
 	if err == nil || !strings.Contains(err.Error(), "temporary file info unavailable after commit") {
 		t.Fatalf("expected missing temp snapshot error, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionCommitRejectsChangedTempPathBeforePublish(t *testing.T) {
+	tempInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	session := &atomicWriteSession{
+		root: &fakeRoot{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+					t.Fatalf("unexpected lstat path: %s", name)
+				}
+				return changedInfo, nil
+			},
+			link: func(oldName, newName string) error {
+				if oldName != ".safeio-atomic-test" || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+					t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+				}
+				return nil
+			},
+			rename: func(string, string) error {
+				renameCalls++
+				return nil
+			},
+			remove: func(name string) error {
+				if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+					t.Fatalf("unexpected cleanup path: %s", name)
+				}
+				return nil
+			},
+		},
+		targetRel: writeTestFileName,
+		tempRel:   ".safeio-atomic-test",
+		tempInfo:  tempInfo,
+	}
+
+	err := session.commit()
+	if err == nil || !strings.Contains(err.Error(), temporaryFileChangedBeforeCommit) {
+		t.Fatalf("expected changed temp path rejection, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no rename after temp substitution, got %d", renameCalls)
+	}
+}
+
+func TestAtomicWriteSessionCommitRejectsHardLinksUnsupported(t *testing.T) {
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	renameCalls := 0
+	removeCalls := 0
+	session := &atomicWriteSession{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
+			mkdir: func(string, os.FileMode) error { return nil },
+			lstat: func(name string) (fs.FileInfo, error) {
+				switch name {
+				case ".safeio-atomic-test", writeTestFileName:
+					return tempInfo, nil
+				default:
+					t.Fatalf("unexpected lstat path: %s", name)
+					return nil, os.ErrNotExist
+				}
+			},
+			link: func(string, string) error {
+				return errors.ErrUnsupported
+			},
+			open: func(string) (File, error) {
+				return nil, errors.ErrUnsupported
+			},
+			rename: func(oldName, newName string) error {
+				if oldName != ".safeio-atomic-test" || newName != writeTestFileName {
+					t.Fatalf("unexpected direct rename %q -> %q", oldName, newName)
+				}
+				renameCalls++
+				return nil
+			},
+			remove: func(string) error {
+				removeCalls++
+				return nil
+			},
+		}},
+		targetRel: writeTestFileName,
+		tempRel:   ".safeio-atomic-test",
+		tempInfo:  tempInfo,
+	}
+
+	err := session.commit()
+	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("expected identity-bound replacement unsupported error, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no direct rename fallback, got %d", renameCalls)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected only quarantine directory cleanup, got %d removes", removeCalls)
+	}
+}
+
+func TestAtomicWriteSessionCommitPreservesMismatchedTargetAfterRename(t *testing.T) {
+	tempInfo, changedInfo := writePinnedTargetInfoPair(t)
+	fixture := newAtomicCommitTargetMismatchFixture(t, tempInfo, changedInfo)
+	session := fixture.session()
+
+	err := session.commit()
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
+		t.Fatalf("expected committed target validation error, got %v", err)
+	}
+	fixture.assertRenameCalls(t, 1)
+	fixture.assertRemoveCalls(t, 2)
+	if session.tempRel != ".safeio-atomic-test" {
+		t.Fatalf("expected original temp path to remain cleanup-owned, got %q", session.tempRel)
+	}
+}
+
+func TestAtomicWriteSessionCommitPreservesConcurrentReplacementAfterRename(t *testing.T) {
+	tempInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	fixture := newAtomicCommitTargetMismatchFixture(t, tempInfo, tempInfo)
+	fixture.afterRename = func() { fixture.targetInfo = replacementInfo }
+	fixture.remove = func(name string) error {
+		if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("must not remove concurrent replacement by pathname: %s", name)
+		}
+		fixture.removeCalls++
+		return nil
+	}
+	session := fixture.session()
+
+	err := session.commit()
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
+		t.Fatalf("expected committed target validation error, got %v", err)
+	}
+	fixture.assertRenameCalls(t, 1)
+	fixture.assertRemoveCalls(t, 2)
+	if !os.SameFile(fixture.targetInfo, replacementInfo) {
+		t.Fatalf("expected concurrent replacement to remain published, got %v", fixture.targetInfo)
+	}
+	if session.tempRel != ".safeio-atomic-test" {
+		t.Fatalf("expected original temp path to remain cleanup-owned, got %q", session.tempRel)
+	}
+}
+
+type atomicCommitTargetMismatchFixture struct {
+	t           *testing.T
+	tempInfo    fs.FileInfo
+	targetInfo  fs.FileInfo
+	renameCalls int
+	removeCalls int
+	afterRename func()
+	remove      func(string) error
+}
+
+func newAtomicCommitTargetMismatchFixture(t *testing.T, tempInfo, targetInfo fs.FileInfo) *atomicCommitTargetMismatchFixture {
+	t.Helper()
+	fixture := &atomicCommitTargetMismatchFixture{t: t, tempInfo: tempInfo, targetInfo: targetInfo}
+	fixture.remove = func(string) error {
+		fixture.removeCalls++
+		return nil
+	}
+	return fixture
+}
+
+func (f *atomicCommitTargetMismatchFixture) session() *atomicWriteSession {
+	return &atomicWriteSession{
+		root: &fakeRoot{
+			lstat:  f.lstat,
+			link:   f.link,
+			rename: f.rename,
+			remove: f.remove,
+		},
+		targetRel: writeTestFileName,
+		tempRel:   ".safeio-atomic-test",
+		tempInfo:  f.tempInfo,
+	}
+}
+
+func (f *atomicCommitTargetMismatchFixture) lstat(name string) (fs.FileInfo, error) {
+	switch name {
+	case ".safeio-atomic-test":
+		return f.tempInfo, nil
+	case writeTestFileName:
+		return f.targetInfo, nil
+	default:
+		return f.lstatStagedTemp(name)
+	}
+}
+
+func (f *atomicCommitTargetMismatchFixture) lstatStagedTemp(name string) (fs.FileInfo, error) {
+	if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+		return f.tempInfo, nil
+	}
+	f.t.Fatalf("unexpected lstat path: %s", name)
+	return nil, os.ErrNotExist
+}
+
+func (f *atomicCommitTargetMismatchFixture) link(oldName, newName string) error {
+	if !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		f.t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+	}
+	if oldName == ".safeio-atomic-test" || strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) {
+		return nil
+	}
+	f.t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+	return nil
+}
+
+func (f *atomicCommitTargetMismatchFixture) rename(oldName, newName string) error {
+	if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return nil
+	}
+	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != writeTestFileName {
+		f.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+	}
+	f.renameCalls++
+	if f.afterRename != nil {
+		f.afterRename()
+	}
+	return nil
+}
+
+func (f *atomicCommitTargetMismatchFixture) assertRenameCalls(t *testing.T, want int) {
+	t.Helper()
+	if f.renameCalls != want {
+		t.Fatalf("expected %d rename attempts, got %d", want, f.renameCalls)
+	}
+}
+
+func (f *atomicCommitTargetMismatchFixture) assertRemoveCalls(t *testing.T, want int) {
+	t.Helper()
+	if f.removeCalls != want {
+		t.Fatalf("expected %d removes, got %d", want, f.removeCalls)
 	}
 }
 
@@ -3100,7 +4184,7 @@ func TestAtomicWriteSessionVerifyCommittedTargetRejectsNonRegularCommittedTarget
 	}
 
 	err := session.verifyCommittedTarget()
-	if err == nil || !strings.Contains(err.Error(), "committed target changed before validation") {
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
 		t.Fatalf("expected non-regular committed target error, got %v", err)
 	}
 }
@@ -3664,6 +4748,16 @@ func chmodWithoutError(os.FileMode) error {
 	return nil
 }
 
+func chmodNameWithoutError(t *testing.T, wantName string) func(string, os.FileMode) error {
+	t.Helper()
+	return func(name string, _ os.FileMode) error {
+		if name != wantName {
+			t.Fatalf("unexpected chmod path: %s", name)
+		}
+		return nil
+	}
+}
+
 func closeWithoutError() error {
 	return nil
 }
@@ -3759,21 +4853,7 @@ func TestMoveFileUnderFallsBackToCopyAndSetsMode(t *testing.T) {
 		t.Fatalf("write source file: %v", err)
 	}
 
-	withFileSystem(t, &fakeFileSystem{openRoot: func(name string) (Root, error) {
-		root, err := (&osFileSystem{}).OpenRoot(name)
-		if err != nil {
-			return nil, err
-		}
-		return &fakeRoot{
-			Root: root,
-			rename: func(oldName, newName string) error {
-				if strings.Contains(oldName, atomicTempPrefix) {
-					return root.Rename(oldName, newName)
-				}
-				return syscall.EXDEV
-			},
-		}, nil
-	}})
+	withFileSystem(t, moveFallbackCopyFileSystem())
 
 	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
 		t.Fatalf("MoveFileUnder returned error: %v", err)
@@ -3781,18 +4861,94 @@ func TestMoveFileUnderFallsBackToCopyAndSetsMode(t *testing.T) {
 	assertMovedFileResult(t, sourcePath, targetPath, "copied", "be removed after copy fallback")
 }
 
+func moveFallbackCopyFileSystem() FileSystem {
+	return &fakeFileSystem{openRoot: func(name string) (Root, error) {
+		root, err := (&osFileSystem{}).OpenRoot(name)
+		if err != nil {
+			return nil, err
+		}
+		return moveFallbackCopyRoot(root), nil
+	}}
+}
+
+func moveFallbackCopyRoot(root Root) Root {
+	directPublishAttempts := 0
+	fallbackPublished := false
+	return &fakeRoot{
+		Root: root,
+		rename: func(oldName, newName string) error {
+			return moveFallbackCopyRename(root, oldName, newName, &directPublishAttempts, &fallbackPublished)
+		},
+	}
+}
+
+func moveFallbackCopyRename(root Root, oldName, newName string, attempts *int, fallbackPublished *bool) error {
+	if strings.Contains(oldName, atomicTempPrefix) && strings.Contains(newName, atomicTempPrefix) {
+		return root.Rename(oldName, newName)
+	}
+	if strings.Contains(oldName, atomicTempPrefix) && newName == "snapshots/final.json" {
+		(*attempts)++
+		if *attempts == 1 {
+			return syscall.EXDEV
+		}
+		*fallbackPublished = true
+		return root.Rename(oldName, newName)
+	}
+	if oldName == "snapshots/temp.json" && strings.Contains(newName, atomicTempPrefix) && *fallbackPublished {
+		return root.Rename(oldName, newName)
+	}
+	return syscall.EXDEV
+}
+
+func lstatSourceOrTemp(t *testing.T, sourceInfo fs.FileInfo) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	return func(name string) (fs.FileInfo, error) {
+		if name == "target" {
+			return nil, os.ErrNotExist
+		}
+		if name != "source" && !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("unexpected lstat path: %s", name)
+		}
+		return sourceInfo, nil
+	}
+}
+
+func assertIdentityBoundSourceLink(t *testing.T, oldName, newName string) {
+	t.Helper()
+	if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+	}
+}
+
+func identityBoundSourceLink(t *testing.T, linkErr error, calls *int) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		(*calls)++
+		assertIdentityBoundSourceLink(t, oldName, newName)
+		return linkErr
+	}
+}
+
 func TestMoveFileUnderReturnsRenameErrorWithoutFallback(t *testing.T) {
 	rootDir := t.TempDir()
-	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
-	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	sourcePath := filepath.Join(rootDir, "temp.json")
+	targetPath := filepath.Join(rootDir, "final.json")
 	renameErr := errors.New("rename failure")
+	sourceInfo := processFileInfo()
 
 	withFileSystem(t, &fakeFileSystem{openRoot: func(string) (Root, error) {
 		return &fakeRoot{
-			chmod: func(string, os.FileMode) error {
+			mkdirAll: func(string, os.FileMode) error {
 				return nil
 			},
-			mkdirAll: func(string, os.FileMode) error {
+			lstat: func(string) (fs.FileInfo, error) {
+				return sourceInfo, nil
+			},
+			chmod: func(string, os.FileMode) error { return nil },
+			link: func(oldName, newName string) error {
+				if (oldName != "temp.json" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+					t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+				}
 				return nil
 			},
 			rename: func(string, string) error {
@@ -3829,7 +4985,10 @@ func TestMoveFileWithinRootPreservesSourceOnNonEXDEVRenameError(t *testing.T) {
 	failingRoot := &fakeRoot{
 		Root: root,
 		rename: func(oldName, newName string) error {
-			if oldName != filepath.Join("snapshots", "temp.json") || newName != filepath.Join("snapshots", "final.json") {
+			if strings.Contains(oldName, atomicTempPrefix) && strings.Contains(newName, atomicTempPrefix) {
+				return root.Rename(oldName, newName)
+			}
+			if !strings.Contains(oldName, atomicTempPrefix) || newName != filepath.Join("snapshots", "final.json") {
 				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 			}
 			return renameErr
@@ -3849,41 +5008,83 @@ func TestMoveFileWithinRootPreservesSourceOnNonEXDEVRenameError(t *testing.T) {
 }
 
 func TestMoveFileWithinRootPreservesSourceOnChmodError(t *testing.T) {
-	rootDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(rootDir, "snapshots"), 0o755); err != nil {
-		t.Fatalf("create source dir: %v", err)
-	}
-	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
-	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
-	if err := os.WriteFile(sourcePath, []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write source file: %v", err)
-	}
-
 	chmodErr := errors.New("chmod failure")
-	root := openTestRoot(t, rootDir)
+	sourceInfo := processFileInfo()
 	failingRoot := &fakeRoot{
-		Root: root,
-		chmod: func(name string, perm os.FileMode) error {
-			if name != filepath.Join("snapshots", "temp.json") || perm != 0o640 {
-				t.Fatalf("unexpected chmod %q %#o", name, perm)
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(string) (fs.FileInfo, error) {
+			return sourceInfo, nil
+		},
+		chmod: func(_ string, perm os.FileMode) error {
+			if perm != 0o640 {
+				t.Fatalf("unexpected chmod perm %#o", perm)
 			}
 			return chmodErr
 		},
 		rename: func(oldName, newName string) error {
+			if oldName != "source" || newName != "target" {
+				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			}
 			t.Fatalf("unexpected rename %q -> %q", oldName, newName)
 			return nil
 		},
 	}
 
-	err := MoveFileWithinRoot(failingRoot, filepath.Join("snapshots", "temp.json"), filepath.Join("snapshots", "final.json"), 0o750, 0o640)
+	err := MoveFileWithinRoot(failingRoot, "source", "target", 0o750, 0o640)
 	if !errors.Is(err, chmodErr) {
 		t.Fatalf("expected chmod error without fallback copy, got %v", err)
 	}
-	if _, err := os.Stat(sourcePath); err != nil {
-		t.Fatalf("expected source file to remain after chmod error, got %v", err)
+}
+
+func TestMoveFileUnderRenamesUnreadableSource(t *testing.T) {
+	if runtimeGOOS == "windows" {
+		t.Skip("POSIX mode bits required")
 	}
-	if _, err := os.Stat(targetPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected target file to remain absent after chmod error, got %v", err)
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
+	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("hello"), 0o200); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+	if err := os.Chmod(sourcePath, 0o200); err != nil {
+		t.Fatalf("make source unreadable: %v", err)
+	}
+
+	if err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640); err != nil {
+		t.Fatalf("MoveFileUnder returned error: %v", err)
+	}
+	assertMovedFileResult(t, sourcePath, targetPath, "hello", "be renamed away")
+}
+
+func TestMoveFileWithinRootSameSourceAndTargetPreservesFile(t *testing.T) {
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, "same.txt")
+	if err := os.WriteFile(path, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed same-path source: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+
+	if err := MoveFileWithinRoot(root, "same.txt", "same.txt", 0o750, 0o640); err != nil {
+		t.Fatalf("MoveFileWithinRoot returned error: %v", err)
+	}
+	assertFileContent(t, path, "same")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat same-path file: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("expected same-path move to chmod to 0640, got %#o", info.Mode().Perm())
+	}
+	matches, err := filepath.Glob(filepath.Join(rootDir, atomicTempPrefix+"*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("same-path move leaked staging entries: %v", matches)
 	}
 }
 
@@ -3938,11 +5139,11 @@ func TestMoveFileUnderValidationAndSetupErrors(t *testing.T) {
 
 func TestMoveFileUnderCopyFallbackIgnoresMissingSourceRemoval(t *testing.T) {
 	rootDir := t.TempDir()
-	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
-	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
 
 	withMoveFallbackFileSystem(t, moveFallbackConfig{
-		sourcePath:      filepath.Join("snapshots", "temp.json"),
+		sourcePath:      "source",
 		sourceData:      "copied",
 		sourceRemoveErr: os.ErrNotExist,
 	})
@@ -3963,6 +5164,380 @@ func TestMoveFileWithinRootReturnsSourceRemovalErrorAfterCopyFallback(t *testing
 	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); !errors.Is(err, sourceRemoveErr) {
 		t.Fatalf("expected source removal error after copy fallback, got %v", err)
 	}
+}
+
+func TestMoveFileWithinRootPreservesReplacedSourceAfterCopyFallback(t *testing.T) {
+	state := newReplacedSourceMoveFallbackState(t)
+
+	root := newReplacedSourceMoveFallbackRoot(t, state)
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeFallback) {
+		t.Fatalf("expected changed source fallback rejection, got %v", err)
+	}
+	if state.published != "original" {
+		t.Fatalf("expected pinned original data to be published, got %q", state.published)
+	}
+	if !os.SameFile(state.sourceInfo, state.replacementInfo) {
+		t.Fatalf("expected replacement source to remain published at source path, got %v", state.sourceInfo)
+	}
+	if state.removeCalls != 0 {
+		t.Fatalf("expected replacement source not to be removed, got %d remove calls", state.removeCalls)
+	}
+}
+
+func TestMoveFileWithinRootRejectsFallbackSourceReplacementAfterEXDEV(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	fixture := newFallbackSourceReplacementAfterEXDEVFixture(t, originalInfo, replacementInfo)
+
+	err := MoveFileWithinRoot(fixture.root(), "source", "target", 0o750, 0o640)
+	if err == nil || !errors.Is(err, syscall.EXDEV) || !strings.Contains(err.Error(), "move source changed before fallback copy") {
+		t.Fatalf("expected EXDEV plus fallback source replacement error, got %v", err)
+	}
+	fixture.assertFallbackSourceOpens(t, 1)
+	fixture.assertTempOpens(t, 0)
+}
+
+type fallbackSourceReplacementAfterEXDEVFixture struct {
+	t               *testing.T
+	originalInfo    fs.FileInfo
+	replacementInfo fs.FileInfo
+	fallbackStarted bool
+	openCalls       int
+	tempOpenCalls   int
+}
+
+func newFallbackSourceReplacementAfterEXDEVFixture(t *testing.T, originalInfo, replacementInfo fs.FileInfo) *fallbackSourceReplacementAfterEXDEVFixture {
+	t.Helper()
+	return &fallbackSourceReplacementAfterEXDEVFixture{
+		t:               t,
+		originalInfo:    originalInfo,
+		replacementInfo: replacementInfo,
+	}
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) root() *fakeRoot {
+	return &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    f.lstat,
+		chmod:    chmodNameWithoutError(f.t, "source"),
+		link:     f.link,
+		rename:   f.rename,
+		remove:   f.remove,
+		open:     f.open,
+		openFile: f.openFile,
+	}
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) lstat(name string) (fs.FileInfo, error) {
+	switch {
+	case name == "source" && f.fallbackStarted:
+		return f.replacementInfo, nil
+	case name == "source":
+		return f.originalInfo, nil
+	case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+		return f.originalInfo, nil
+	default:
+		return nil, os.ErrNotExist
+	}
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) link(oldName, newName string) error {
+	assertIdentityBoundSourceLink(f.t, oldName, newName)
+	return nil
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) rename(oldName, newName string) error {
+	if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return nil
+	}
+	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
+		f.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+	}
+	f.fallbackStarted = true
+	return syscall.EXDEV
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) remove(name string) error {
+	if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+		f.t.Fatalf("unexpected cleanup path: %s", name)
+	}
+	return nil
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) open(name string) (File, error) {
+	if name != "source" {
+		f.t.Fatalf("unexpected open path: %s", name)
+	}
+	f.openCalls++
+	return f.replacedSourceFile(), nil
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) replacedSourceFile() File {
+	return &fakeFile{
+		stat:  func() (fs.FileInfo, error) { return f.replacementInfo, nil },
+		read:  f.failIfRead,
+		close: closeWithoutError,
+	}
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) failIfRead([]byte) (int, error) {
+	f.t.Fatal("fallback copy must stop before reading replaced source")
+	return 0, nil
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) openFile(string, int, os.FileMode) (File, error) {
+	f.tempOpenCalls++
+	return nil, errors.New("unexpected temp creation after fallback source replacement")
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) assertFallbackSourceOpens(t *testing.T, want int) {
+	t.Helper()
+	if f.openCalls != want {
+		t.Fatalf("expected %d fallback source opens, got %d", want, f.openCalls)
+	}
+}
+
+func (f *fallbackSourceReplacementAfterEXDEVFixture) assertTempOpens(t *testing.T, want int) {
+	t.Helper()
+	if f.tempOpenCalls != want {
+		t.Fatalf("expected %d temp opens, got %d", want, f.tempOpenCalls)
+	}
+}
+
+type replacedSourceMoveFallbackState struct {
+	originalInfo    fs.FileInfo
+	replacementInfo fs.FileInfo
+	tempInfo        fs.FileInfo
+	sourceInfo      fs.FileInfo
+	sourceStage     bool
+	tempExists      bool
+	tempStage       bool
+	targetExists    bool
+	removeCalls     int
+	published       string
+}
+
+func newReplacedSourceMoveFallbackState(t *testing.T) *replacedSourceMoveFallbackState {
+	t.Helper()
+
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	return &replacedSourceMoveFallbackState{
+		originalInfo:    originalInfo,
+		replacementInfo: replacementInfo,
+		tempInfo:        newPinnedTargetInfo(t, "temp"),
+		sourceInfo:      originalInfo,
+	}
+}
+
+func newReplacedSourceMoveFallbackRoot(t *testing.T, state *replacedSourceMoveFallbackState) *fakeRoot {
+	t.Helper()
+
+	return &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    state.lstat,
+		open:     state.openSource(t),
+		chmod:    chmodNameWithoutError(t, "source"),
+		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
+			return state.openTemp(t, name)
+		},
+		link:   state.link(t),
+		rename: state.rename(t),
+		remove: state.remove(t),
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) lstat(name string) (fs.FileInfo, error) {
+	if name == "source" {
+		return s.sourceInfo, nil
+	}
+	if isMoveFallbackTempPath(name) {
+		return s.tempPathInfo()
+	}
+	if name == "target" && s.targetExists {
+		return s.tempInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *replacedSourceMoveFallbackState) tempPathInfo() (fs.FileInfo, error) {
+	if s.sourceStage {
+		return s.sourceInfo, nil
+	}
+	if s.tempStage || s.tempExists {
+		return s.tempInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *replacedSourceMoveFallbackState) openSource(t *testing.T) func(string) (File, error) {
+	t.Helper()
+
+	return func(name string) (File, error) {
+		if name != "source" {
+			t.Fatalf("unexpected source open %q", name)
+		}
+		reader := strings.NewReader("original")
+		return &fakeFile{
+			read: func(p []byte) (int, error) {
+				s.sourceInfo = s.replacementInfo
+				return reader.Read(p)
+			},
+			stat:  func() (fs.FileInfo, error) { return s.originalInfo, nil },
+			chmod: chmodWithoutError,
+			close: closeWithoutError,
+		}, nil
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) openTemp(t *testing.T, name string) (File, error) {
+	t.Helper()
+
+	if !isMoveFallbackTempPath(name) {
+		t.Fatalf("unexpected temp open %q", name)
+	}
+	s.tempExists = true
+	return &fakeFile{
+		write: func(p []byte) (int, error) {
+			s.published += string(p)
+			return len(p), nil
+		},
+		stat:  func() (fs.FileInfo, error) { return s.tempInfo, nil },
+		chmod: chmodWithoutError,
+		close: closeWithoutError,
+	}, nil
+}
+
+func (s *replacedSourceMoveFallbackState) link(t *testing.T) func(string, string) error {
+	t.Helper()
+
+	return func(oldName, newName string) error {
+		return s.linkReplacedSourceMoveFallback(t, oldName, newName)
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) linkReplacedSourceMoveFallback(t *testing.T, oldName, newName string) error {
+	t.Helper()
+	if isMoveFallbackTempPath(oldName) && s.sourceStage && newName == "source" {
+		s.sourceStage = false
+		return nil
+	}
+	if !isMoveFallbackTempPath(newName) {
+		t.Fatalf("unexpected identity-bound link target %q", newName)
+	}
+	return s.linkReplacedSourceMoveFallbackTempTarget(t, oldName)
+}
+
+func (s *replacedSourceMoveFallbackState) linkReplacedSourceMoveFallbackTempTarget(t *testing.T, oldName string) error {
+	t.Helper()
+	if s.linkReplacedSourceFromSource(oldName) {
+		return nil
+	}
+	if s.linkReplacedSourceFromStagedSource(oldName) {
+		return nil
+	}
+	if s.linkReplacedSourceFromTemp(oldName) {
+		return nil
+	}
+	t.Fatalf("unexpected identity-bound link source %q", oldName)
+	return nil
+}
+
+func (s *replacedSourceMoveFallbackState) linkReplacedSourceFromSource(oldName string) bool {
+	if oldName != "source" {
+		return false
+	}
+	s.sourceStage = true
+	return true
+}
+
+func (s *replacedSourceMoveFallbackState) linkReplacedSourceFromStagedSource(oldName string) bool {
+	return isMoveFallbackTempPath(oldName) && s.sourceStage
+}
+
+func (s *replacedSourceMoveFallbackState) linkReplacedSourceFromTemp(oldName string) bool {
+	if !isMoveFallbackTempPath(oldName) || !s.tempExists {
+		return false
+	}
+	s.tempStage = true
+	return true
+}
+
+func (s *replacedSourceMoveFallbackState) rename(t *testing.T) func(string, string) error {
+	t.Helper()
+
+	return func(oldName, newName string) error {
+		return s.renameReplacedSourceMoveFallback(t, oldName, newName)
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) renameReplacedSourceMoveFallback(t *testing.T, oldName, newName string) error {
+	t.Helper()
+	if oldName == "source" && isMoveFallbackTempPath(newName) {
+		s.sourceStage = true
+		return nil
+	}
+	if isMoveFallbackTempPath(oldName) && isMoveFallbackTempPath(newName) {
+		return s.renameReplacedSourceStage()
+	}
+	if isMoveFallbackTempPath(oldName) && newName == "source" {
+		s.sourceStage = false
+		return nil
+	}
+	return s.renameReplacedSourceTarget(t, oldName, newName)
+}
+
+func (s *replacedSourceMoveFallbackState) renameReplacedSourceStage() error {
+	if s.sourceStage {
+		return nil
+	}
+	if s.tempStage {
+		s.tempStage = false
+	}
+	return nil
+}
+
+func (s *replacedSourceMoveFallbackState) renameReplacedSourceTarget(t *testing.T, oldName, newName string) error {
+	t.Helper()
+	if isMoveFallbackTempPath(oldName) && s.sourceStage && newName == "target" {
+		return syscall.EXDEV
+	}
+	if !isMoveFallbackTempPath(oldName) || !s.tempStage || newName != "target" {
+		t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+	}
+	s.tempExists = false
+	s.tempStage = false
+	s.targetExists = true
+	return nil
+}
+
+func (s *replacedSourceMoveFallbackState) remove(t *testing.T) func(string) error {
+	t.Helper()
+
+	return func(name string) error {
+		return s.removeReplacedSourceMoveFallback(t, name)
+	}
+}
+
+func (s *replacedSourceMoveFallbackState) removeReplacedSourceMoveFallback(t *testing.T, name string) error {
+	t.Helper()
+	if isMoveFallbackTempPath(name) {
+		return s.removeReplacedSourceTempPath()
+	}
+	if name != "source" {
+		t.Fatalf("unexpected removal %q", name)
+	}
+	s.removeCalls++
+	return nil
+}
+
+func (s *replacedSourceMoveFallbackState) removeReplacedSourceTempPath() error {
+	if s.sourceStage {
+		s.sourceStage = false
+		return nil
+	}
+	s.tempExists = false
+	s.tempStage = false
+	return nil
 }
 
 func TestMoveFileWithinRootPreservesSourceWhenCopyFallbackFails(t *testing.T) {
@@ -3997,6 +5572,8 @@ func TestMoveFileWithinRootPreservesSourceWhenCopyFallbackFails(t *testing.T) {
 type moveFallbackConfig struct {
 	sourcePath      string
 	sourceData      string
+	sourceInfo      fs.FileInfo
+	tempInfo        fs.FileInfo
 	sourceReadErr   error
 	sourceCloseErr  error
 	tempRemoveErr   error
@@ -4020,12 +5597,18 @@ const (
 )
 
 type moveFallbackState struct {
-	sourceData   string
-	sourceExists bool
-	tempData     string
-	tempExists   bool
-	targetData   string
-	targetExists bool
+	sourceData        string
+	sourceExists      bool
+	sourceStageExists bool
+	sourceStagePath   string
+	sourceCleanupPath string
+	sourceOpenCalls   int
+	sourceCloseCalls  int
+	tempData          string
+	tempExists        bool
+	tempStageExists   bool
+	targetData        string
+	targetExists      bool
 }
 
 func withMoveFallbackFileSystem(t *testing.T, cfg moveFallbackConfig) {
@@ -4036,18 +5619,39 @@ func withMoveFallbackFileSystem(t *testing.T, cfg moveFallbackConfig) {
 }
 
 func newMoveFallbackRoot(cfg moveFallbackConfig) *fakeRoot {
+	cfg = withMoveFallbackDefaultInfos(cfg)
 	state := newMoveFallbackState(cfg)
 	return &fakeRoot{
 		open:     newMoveFallbackOpenHook(cfg, state),
 		openFile: newMoveFallbackOpenFileHook(cfg, state),
+		lstat:    newMoveFallbackLstatHook(cfg, state),
 		chmod: func(string, os.FileMode) error {
 			return nil
 		},
 		mkdirAll: func(string, os.FileMode) error { return nil },
+		link:     newMoveFallbackLinkHook(cfg, state),
 		rename:   newMoveFallbackRenameHook(cfg, state),
 		remove:   newMoveFallbackRemoveHook(cfg, state),
 		close:    func() error { return cfg.rootCloseErr },
 	}
+}
+
+func withMoveFallbackDefaultInfos(cfg moveFallbackConfig) moveFallbackConfig {
+	if cfg.sourceInfo == nil {
+		cfg.sourceInfo = processFileInfo()
+	}
+	if cfg.tempInfo == nil {
+		cfg.tempInfo = processFileInfo()
+	}
+	return cfg
+}
+
+func processFileInfo() fs.FileInfo {
+	info, err := os.Stat(os.Args[0])
+	if err != nil {
+		return nil
+	}
+	return info
 }
 
 func newMoveFallbackState(cfg moveFallbackConfig) *moveFallbackState {
@@ -4070,11 +5674,29 @@ func (c *moveFallbackConfig) failure(stage moveFallbackFailureStage) error {
 	return nil
 }
 
+func newMoveFallbackLstatHook(cfg moveFallbackConfig, state *moveFallbackState) func(string) (fs.FileInfo, error) {
+	return func(name string) (fs.FileInfo, error) {
+		switch {
+		case name == cfg.sourcePath && state.sourceExists:
+			return cfg.sourceInfo, nil
+		case name == state.sourceStagePath || name == state.sourceCleanupPath:
+			return cfg.sourceInfo, nil
+		case isMoveFallbackTempPath(name) && (state.tempExists || state.tempStageExists):
+			return cfg.tempInfo, nil
+		case state.targetExists:
+			return cfg.tempInfo, nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+}
+
 func newMoveFallbackOpenHook(cfg moveFallbackConfig, state *moveFallbackState) func(string) (File, error) {
 	return func(name string) (File, error) {
 		if name != cfg.sourcePath {
 			return nil, errors.New("unexpected source open path")
 		}
+		state.sourceOpenCalls++
 		if err := cfg.failure(moveFallbackFailSourceOpen); err != nil {
 			return nil, err
 		}
@@ -4094,7 +5716,15 @@ func newMoveFallbackSourceFile(cfg moveFallbackConfig, state *moveFallbackState)
 			}
 			return reader.Read(p)
 		},
-		close: func() error { return cfg.sourceCloseErr },
+		close: func() error {
+			state.sourceCloseCalls++
+			if state.sourceCloseCalls > 0 {
+				return cfg.sourceCloseErr
+			}
+			return nil
+		},
+		stat:  func() (fs.FileInfo, error) { return cfg.sourceInfo, nil },
+		chmod: chmodWithoutError,
 	}
 }
 
@@ -4123,43 +5753,151 @@ func newMoveFallbackTempFile(cfg moveFallbackConfig, state *moveFallbackState) F
 		},
 		close: func() error { return cfg.failure(moveFallbackFailTempClose) },
 		chmod: func(os.FileMode) error { return cfg.failure(moveFallbackFailTempChmod) },
+		stat:  func() (fs.FileInfo, error) { return cfg.tempInfo, nil },
 	}
 }
 
-func newMoveFallbackRenameHook(cfg moveFallbackConfig, state *moveFallbackState) func(string, string) error {
-	return func(oldName, _ string) error {
-		if oldName == cfg.sourcePath {
-			return syscall.EXDEV
-		}
-		if !isMoveFallbackTempPath(oldName) {
-			return nil
-		}
-		if err := cfg.failure(moveFallbackFailTempRename); err != nil {
-			return err
-		}
-		state.targetData = state.tempData
-		state.targetExists = true
-		state.tempData = ""
-		state.tempExists = false
+func newMoveFallbackLinkHook(cfg moveFallbackConfig, state *moveFallbackState) func(string, string) error {
+	return func(oldName, newName string) error {
+		return state.linkMoveFallbackName(cfg, oldName, newName)
+	}
+}
+
+func (s *moveFallbackState) linkMoveFallbackName(cfg moveFallbackConfig, oldName, newName string) error {
+	if oldName == s.sourceStagePath && newName == cfg.sourcePath {
+		s.sourceExists = true
 		return nil
 	}
+	if !isMoveFallbackTempPath(newName) {
+		return errors.New("unexpected identity-bound link target")
+	}
+	return s.linkMoveFallbackTempTarget(cfg, oldName, newName)
+}
+
+func (s *moveFallbackState) linkMoveFallbackTempTarget(cfg moveFallbackConfig, oldName, newName string) error {
+	switch {
+	case oldName == cfg.sourcePath:
+		s.sourceStageExists = true
+		s.sourceStagePath = newName
+	case oldName == s.sourceStagePath && s.sourceStageExists:
+		s.sourceCleanupPath = newName
+	case isMoveFallbackTempPath(oldName) && s.tempExists:
+		s.tempStageExists = true
+	case isMoveFallbackTempPath(oldName):
+	default:
+		return errors.New("unexpected identity-bound link source")
+	}
+	return nil
+}
+
+func newMoveFallbackRenameHook(cfg moveFallbackConfig, state *moveFallbackState) func(string, string) error {
+	return func(oldName, newName string) error {
+		return state.renameMoveFallbackName(cfg, oldName, newName)
+	}
+}
+
+func (s *moveFallbackState) renameMoveFallbackName(cfg moveFallbackConfig, oldName, newName string) error {
+	if oldName == cfg.sourcePath && isMoveFallbackTempPath(newName) {
+		s.stageSourceForMove(newName)
+		return nil
+	}
+	if oldName == s.sourceStagePath && isMoveFallbackTempPath(newName) {
+		s.sourceStageExists = false
+		s.sourceStagePath = ""
+		s.sourceCleanupPath = newName
+		return nil
+	}
+	if isMoveFallbackTempPath(oldName) && isMoveFallbackTempPath(newName) {
+		s.tempStageExists = false
+		return nil
+	}
+	if isMoveFallbackTempPath(oldName) && newName == cfg.sourcePath {
+		s.restoreSourceAfterMoveCleanup()
+		return nil
+	}
+	return s.renameMoveFallbackTarget(cfg, oldName, newName)
+}
+
+func (s *moveFallbackState) stageSourceForMove(newName string) {
+	s.sourceExists = false
+	s.sourceStageExists = true
+	s.sourceStagePath = newName
+	s.sourceCleanupPath = newName
+}
+
+func (s *moveFallbackState) restoreSourceAfterMoveCleanup() {
+	s.sourceExists = true
+	s.sourceStageExists = false
+	s.sourceStagePath = ""
+	s.sourceCleanupPath = ""
+}
+
+func (s *moveFallbackState) renameMoveFallbackTarget(cfg moveFallbackConfig, oldName, newName string) error {
+	if oldName == s.sourceStagePath && s.sourceStageExists {
+		return syscall.EXDEV
+	}
+	if !isMoveFallbackTempPath(oldName) || !s.tempStageExists {
+		return nil
+	}
+	if err := cfg.failure(moveFallbackFailTempRename); err != nil {
+		return err
+	}
+	s.publishMoveFallbackTemp()
+	return nil
+}
+
+func (s *moveFallbackState) publishMoveFallbackTemp() {
+	s.targetData = s.tempData
+	s.targetExists = true
+	s.tempData = ""
+	s.tempExists = false
+	s.tempStageExists = false
 }
 
 func newMoveFallbackRemoveHook(cfg moveFallbackConfig, state *moveFallbackState) func(string) error {
 	return func(name string) error {
-		if isMoveFallbackTempPath(name) {
-			state.tempData = ""
-			state.tempExists = false
-			return cfg.tempRemoveErr
-		}
-		if name != cfg.sourcePath {
-			return nil
-		}
-		if cfg.sourceRemoveErr == nil {
-			state.sourceExists = false
-		}
-		return cfg.sourceRemoveErr
+		return state.removeMoveFallbackName(cfg, name)
 	}
+}
+
+func (s *moveFallbackState) removeMoveFallbackName(cfg moveFallbackConfig, name string) error {
+	switch {
+	case name == cfg.sourcePath && s.sourceExists:
+		return s.removeMoveFallbackSource(cfg.sourceRemoveErr)
+	case name == s.sourceCleanupPath && s.sourceCleanupPath != "":
+		s.sourceCleanupPath = ""
+		return nil
+	case name == s.sourceStagePath && s.sourceStageExists:
+		return s.removeMoveFallbackSourceStage(cfg.sourceRemoveErr)
+	case isMoveFallbackTempPath(name):
+		s.tempData = ""
+		s.tempExists = false
+		s.tempStageExists = false
+		return cfg.tempRemoveErr
+	default:
+		return nil
+	}
+}
+
+func (s *moveFallbackState) removeMoveFallbackSource(sourceRemoveErr error) error {
+	if sourceRemoveErr == nil || errors.Is(sourceRemoveErr, os.ErrNotExist) {
+		s.sourceExists = false
+	}
+	return sourceRemoveErr
+}
+
+func (s *moveFallbackState) removeMoveFallbackSourceStage(sourceRemoveErr error) error {
+	if s.sourceStagePath != s.sourceCleanupPath {
+		s.sourceStageExists = false
+		s.sourceStagePath = ""
+		return nil
+	}
+	if sourceRemoveErr == nil || errors.Is(sourceRemoveErr, os.ErrNotExist) {
+		s.sourceStageExists = false
+		s.sourceStagePath = ""
+		s.sourceCleanupPath = ""
+	}
+	return sourceRemoveErr
 }
 
 func isMoveFallbackTempPath(name string) bool {
@@ -4177,67 +5915,8 @@ func assertMoveFallbackFailureState(t *testing.T, state *moveFallbackState, want
 	if state.tempExists {
 		t.Fatalf("expected temp cleanup after fallback failure, found %q", state.tempData)
 	}
-}
-
-func copyRootWithOpenError(openErr error) *fakeRoot {
-	return &fakeRoot{
-		open: func(string) (File, error) { return nil, openErr },
-	}
-}
-
-func copyRootWithTempOpenError(openFileErr error) *fakeRoot {
-	return copyRootWithTempFile(tempFileOptions{openFileErr: openFileErr})
-}
-
-func copyRootWithTempChmodError(chmodErr error) *fakeRoot {
-	return copyRootWithTempFile(tempFileOptions{data: "x", chmodErr: chmodErr})
-}
-
-func copyRootWithTempCloseError(closeErr error) *fakeRoot {
-	return copyRootWithTempFile(tempFileOptions{data: "x", closeErr: closeErr})
-}
-
-func copyRootWithTempRenameError(renameErr error) *fakeRoot {
-	return copyRootWithTempFile(tempFileOptions{data: "x", renameErr: renameErr})
-}
-
-type tempFileOptions struct {
-	data        string
-	openFileErr error
-	chmodErr    error
-	closeErr    error
-	renameErr   error
-}
-
-func copyRootWithTempFile(opts tempFileOptions) *fakeRoot {
-	return &fakeRoot{
-		open: func(string) (File, error) {
-			return &fakeFile{
-				read: func(p []byte) (int, error) {
-					copy(p, opts.data)
-					return len(opts.data), io.EOF
-				},
-				close: closeWithoutError,
-			}, nil
-		},
-		mkdirAll: func(string, os.FileMode) error { return nil },
-		openFile: func(string, int, os.FileMode) (File, error) {
-			if opts.openFileErr != nil {
-				return nil, opts.openFileErr
-			}
-			return &fakeFile{
-				write: func(p []byte) (int, error) { return len(p), nil },
-				close: func() error { return opts.closeErr },
-				chmod: func(os.FileMode) error { return opts.chmodErr },
-			}, nil
-		},
-		rename: func(oldName, _ string) error {
-			if strings.Contains(oldName, atomicTempPrefix) {
-				return opts.renameErr
-			}
-			return nil
-		},
-		remove: func(string) error { return nil },
+	if state.sourceStageExists || state.sourceStagePath != "" || state.sourceCleanupPath != "" || state.tempStageExists {
+		t.Fatalf("expected staged links cleaned after fallback failure, got sourceStage=%t sourceStagePath=%q cleanupPath=%q tempStage=%t", state.sourceStageExists, state.sourceStagePath, state.sourceCleanupPath, state.tempStageExists)
 	}
 }
 
@@ -4301,21 +5980,19 @@ func TestCreateTempFileWithinRootCreatesRemovableTempFile(t *testing.T) {
 
 func TestMoveFileUnderJoinsPrimaryAndCleanupErrors(t *testing.T) {
 	rootDir := t.TempDir()
-	sourcePath := filepath.Join(rootDir, "snapshots", "temp.json")
-	targetPath := filepath.Join(rootDir, "snapshots", "final.json")
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
 	primaryErr := errors.New("copy read failure")
 	sourceCloseErr := errors.New("close source failure")
 	tempRemoveErr := errors.New("remove temp failure")
-	sourceRemoveErr := errors.New("remove source failure")
 	rootCloseErr := errors.New("close root failure")
 
 	withMoveFallbackFileSystem(t, moveFallbackConfig{
-		sourcePath:      filepath.Join("snapshots", "temp.json"),
-		sourceReadErr:   primaryErr,
-		sourceCloseErr:  sourceCloseErr,
-		tempRemoveErr:   tempRemoveErr,
-		sourceRemoveErr: sourceRemoveErr,
-		rootCloseErr:    rootCloseErr,
+		sourcePath:     "source",
+		sourceReadErr:  primaryErr,
+		sourceCloseErr: sourceCloseErr,
+		tempRemoveErr:  tempRemoveErr,
+		rootCloseErr:   rootCloseErr,
 	})
 
 	err := MoveFileUnder(rootDir, sourcePath, targetPath, 0o750, 0o640)
@@ -4327,53 +6004,6097 @@ func TestMoveFileUnderJoinsPrimaryAndCleanupErrors(t *testing.T) {
 			t.Fatalf("expected joined error to include %v, got %v", expected, err)
 		}
 	}
-	if errors.Is(err, sourceRemoveErr) {
-		t.Fatalf("expected fallback failure to preserve source instead of removing it, got %v", err)
-	}
 }
 
 func TestPrepareAndRenameWithinRootErrors(t *testing.T) {
 	chmodErr := errors.New("chmod failure")
+	sourceInfo := processFileInfo()
 	chmodRoot := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    func(string) (fs.FileInfo, error) { return sourceInfo, nil },
 		chmod: func(string, os.FileMode) error {
 			return chmodErr
 		},
 	}
-	if err := prepareAndRenameWithinRoot(chmodRoot, "source", "target", 0o640); !errors.Is(err, chmodErr) {
+	if err := MoveFileWithinRoot(chmodRoot, "source", "target", 0o750, 0o640); !errors.Is(err, chmodErr) {
 		t.Fatalf("expected chmod error, got %v", err)
 	}
 
 	renameErr := errors.New("rename failure")
 	renameRoot := &fakeRoot{
-		chmod: func(string, os.FileMode) error {
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    func(string) (fs.FileInfo, error) { return sourceInfo, nil },
+		chmod:    chmodNameWithoutError(t, "source"),
+		link: func(oldName, newName string) error {
+			if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
 			return nil
 		},
 		rename: func(string, string) error {
 			return renameErr
 		},
+		remove: func(name string) error {
+			if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				t.Fatalf("unexpected cleanup path %q", name)
+			}
+			return nil
+		},
 	}
-	if err := prepareAndRenameWithinRoot(renameRoot, "source", "target", 0o640); !errors.Is(err, renameErr) {
+	if err := MoveFileWithinRoot(renameRoot, "source", "target", 0o750, 0o640); !errors.Is(err, renameErr) {
 		t.Fatalf("expected rename error, got %v", err)
 	}
 }
 
-func TestCopyFileWithinRootErrorBranches(t *testing.T) {
+func TestPrepareAndRenameWithinRootRejectsChangedSourceBeforeRename(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	lstatCalls := 0
+	renameCalls := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		mkdir:    func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != "source" {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			lstatCalls++
+			if lstatCalls == 1 {
+				return sourceInfo, nil
+			}
+			return changedInfo, nil
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+	}}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
+		t.Fatalf("expected changed source rejection, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no rename after source substitution, got %d", renameCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootRejectsSubstitutedStagedSourceBeforePublish(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	removeCalls := 0
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == "source":
+				return sourceInfo, nil
+			case name == "target":
+				return nil, os.ErrNotExist
+			case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+				return changedInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		link: func(oldName, newName string) error {
+			if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+		remove: func(name string) error {
+			if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				t.Fatalf("unexpected cleanup path: %s", name)
+			}
+			removeCalls++
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
+		t.Fatalf("expected staged source substitution rejection, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no target publish after staged source substitution, got %d renames", renameCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected substituted staged link to remain untouched, got %d removes", removeCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAfterValidation(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	stagedValidated := false
+	renameCalls := 0
+	removeCalls := 0
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == "source":
+				return sourceInfo, nil
+			case name == "target":
+				return nil, os.ErrNotExist
+			case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+				if stagedValidated {
+					return changedInfo, nil
+				}
+				stagedValidated = true
+				return sourceInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		link: func(oldName, newName string) error {
+			if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
+		t.Fatalf("expected staged source swap rejection, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no target publish after staged source swap, got %d renames", renameCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected substituted staged path not to be removed, got %d removes", removeCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootRejectsStagedSourceSwapAtPublish(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	root := &fakeRoot{
+		mkdirAll:        func(string, os.FileMode) error { return nil },
+		lstat:           lstatSourceOrAtomicTemp(t, sourceInfo),
+		chmod:           chmodNameWithoutError(t, "source"),
+		link:            linkSourceOrAtomicTempToAtomicTemp(t),
+		rename:          failRawRename(t, "publish must use identity-bound rename"),
+		renameIfMatches: rejectStagedSourceSwapAtPublish(t, sourceInfo, changedInfo, &renameCalls),
+		removeIfMatches: acceptAtomicTempCleanupForIdentity(t, sourceInfo),
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move source changed before rename") {
+		t.Fatalf("expected operation-time staged source swap rejection, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one identity-bound rename attempt, got %d", renameCalls)
+	}
+}
+
+func lstatSourceOrAtomicTemp(t *testing.T, info fs.FileInfo) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	return func(name string) (fs.FileInfo, error) {
+		if name == "target" {
+			return nil, os.ErrNotExist
+		}
+		if name == "source" || strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			return info, nil
+		}
+		t.Fatalf("unexpected lstat path: %s", name)
+		return nil, os.ErrNotExist
+	}
+}
+
+func linkSourceOrAtomicTempToAtomicTemp(t *testing.T) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		oldOK := oldName == "source" || strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)
+		newOK := strings.HasPrefix(filepath.Base(newName), atomicTempPrefix)
+		if !oldOK || !newOK {
+			t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+		}
+		return nil
+	}
+}
+
+func failRawRename(t *testing.T, message string) func(string, string) error {
+	t.Helper()
+	return func(string, string) error {
+		t.Fatal(message)
+		return nil
+	}
+}
+
+func rejectStagedSourceSwapAtPublish(t *testing.T, sourceInfo, changedInfo fs.FileInfo, calls *int) func(string, string, fs.FileInfo, string) error {
+	t.Helper()
+	return func(oldName, newName string, expected fs.FileInfo, message string) error {
+		if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
+			t.Fatalf("unexpected identity-bound rename %q -> %q", oldName, newName)
+		}
+		(*calls)++
+		requireSameFileInfo(t, expected, sourceInfo, "source identity")
+		return identityMismatchError(message, oldName, changedInfo, sourceInfo)
+	}
+}
+
+func acceptAtomicTempCleanupForIdentity(t *testing.T, expectedInfo fs.FileInfo) func(string, fs.FileInfo, string) error {
+	t.Helper()
+	return func(name string, expected fs.FileInfo, _ string) error {
+		if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("unexpected cleanup path: %s", name)
+		}
+		requireSameFileInfo(t, expected, expectedInfo, "cleanup source identity")
+		return nil
+	}
+}
+
+func requireSameFileInfo(t *testing.T, got, want fs.FileInfo, label string) {
+	t.Helper()
+	if !os.SameFile(got, want) {
+		t.Fatalf("expected %s, got %v", label, got)
+	}
+}
+
+func identityMismatchError(message, name string, replacementInfo, originalInfo fs.FileInfo) error {
+	if os.SameFile(replacementInfo, originalInfo) {
+		return nil
+	}
+	return fmt.Errorf("%s: %s", message, name)
+}
+
+func useRandomTempNames(t *testing.T, names ...string) *int {
+	t.Helper()
+	calls := 0
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) {
+		if calls >= len(names) {
+			return "", fmt.Errorf("unexpected random temp name call %d", calls+1)
+		}
+		name := names[calls]
+		calls++
+		return name, nil
+	}
+	t.Cleanup(func() {
+		randomTempNameFn = originalRandomTempNameFn
+	})
+	return &calls
+}
+
+func lstatOriginalForNames(t *testing.T, info fs.FileInfo, names ...string) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		allowed[name] = struct{}{}
+	}
+	return func(name string) (fs.FileInfo, error) {
+		if _, ok := allowed[name]; ok {
+			return info, nil
+		}
+		t.Fatalf("unexpected lstat path: %s", name)
+		return nil, os.ErrNotExist
+	}
+}
+
+func requireExactLinks(t *testing.T, pairs ...[2]string) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		for _, pair := range pairs {
+			if oldName == pair[0] && newName == pair[1] {
+				return nil
+			}
+		}
+		t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+		return nil
+	}
+}
+
+func countAndFailRawRemove(t *testing.T, calls *int, message string) func(string) error {
+	t.Helper()
+	return func(name string) error {
+		(*calls)++
+		t.Fatalf("%s, got raw remove of %s", message, name)
+		return nil
+	}
+}
+
+func rejectSourceSwapAtRemoval(t *testing.T, originalInfo, replacementInfo fs.FileInfo, cleanupNames []string, sourceChecks *int) func(string, fs.FileInfo, string) error {
+	t.Helper()
+	return func(name string, expected fs.FileInfo, message string) error {
+		requireSameFileInfo(t, expected, originalInfo, name)
+		if name == "source" {
+			(*sourceChecks)++
+			return identityMismatchError(message, name, replacementInfo, originalInfo)
+		}
+		requireOneOfNames(t, name, cleanupNames...)
+		return nil
+	}
+}
+
+func rejectTempSwapAtRemoval(t *testing.T, originalInfo, replacementInfo fs.FileInfo, tempRel, quarantineRel string, removeChecks *int) func(string, fs.FileInfo, string) error {
+	t.Helper()
+	return func(name string, expected fs.FileInfo, message string) error {
+		requireSameFileInfo(t, expected, originalInfo, name)
+		if name == tempRel {
+			(*removeChecks)++
+			return identityMismatchError(message, name, replacementInfo, originalInfo)
+		}
+		requireOneOfNames(t, name, quarantineRel)
+		return nil
+	}
+}
+
+func requireOneOfNames(t *testing.T, got string, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		if got == name {
+			return
+		}
+	}
+	t.Fatalf("unexpected identity-bound cleanup path: %s", got)
+}
+
+type rootWithoutIdentity struct {
+	Root
+}
+
+// plainFileHandleRoot represents a conforming Root whose directory handles
+// expose only the public File contract, not the optional ReadDirFile method.
+type plainFileHandleRoot struct {
+	Root
+}
+
+func (r *plainFileHandleRoot) Open(name string) (File, error) {
+	file, err := r.Root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &fakeFile{File: file}, nil
+}
+
+func TestPathOperationIfMatchesSupportsPlainRoot(t *testing.T) {
+	t.Run("link", func(t *testing.T) {
+		rootDir := t.TempDir()
+		sourcePath := filepath.Join(rootDir, "source")
+		if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+			t.Fatalf("seed source: %v", err)
+		}
+		expected := statTestPath(t, sourcePath)
+		root := openPlainRoot(t, rootDir)
+
+		if err := linkFileIfMatches(root, "source", "target", expected, sourceChangedMsg); err != nil {
+			t.Fatalf("linkFileIfMatches returned error: %v", err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "target"), "source")
+		assertNoAtomicStagingEntries(t, rootDir)
+	})
+
+	t.Run("rename", func(t *testing.T) {
+		rootDir := t.TempDir()
+		sourcePath := filepath.Join(rootDir, "source")
+		if err := os.WriteFile(sourcePath, []byte("source"), 0o000); err != nil {
+			t.Fatalf("seed source: %v", err)
+		}
+		expected := statTestPath(t, sourcePath)
+		root := openPlainRoot(t, rootDir)
+
+		consumed, err := renameFileIfMatches(root, "source", "target", expected, sourceChangedMsg)
+		if err != nil {
+			t.Fatalf("renameFileIfMatches returned error: %v", err)
+		}
+		if !consumed {
+			t.Fatal("expected plain-root rename to consume the source")
+		}
+		assertPathAbsent(t, sourcePath)
+		targetPath := filepath.Join(rootDir, "target")
+		if err := os.Chmod(targetPath, 0o600); err != nil {
+			t.Fatalf("chmod target: %v", err)
+		}
+		assertFileContent(t, targetPath, "source")
+		assertNoAtomicStagingEntries(t, rootDir)
+	})
+}
+
+func TestPlainRootRenameRestoresSourceAfterQuarantineSnapshotFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"quarantine",
+		atomicTempPrefix+"restore",
+		atomicTempPrefix+"restore-cleanup",
+		atomicTempPrefix+"quarantine-cleanup",
+	)
+	state := newPlainRootSnapshotFailureState(sourceInfo)
+
+	consumed, err := renameFileIfMatches(state.root(), "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, state.snapshotErr) {
+		t.Fatalf("expected snapshot error, got %v", err)
+	}
+	if consumed {
+		t.Fatal("expected source not to be consumed after snapshot failure")
+	}
+	if !state.files["source"] || state.files[state.quarantineRel] || state.files["target"] {
+		t.Fatalf("expected source restored without target publish, files=%#v", state.files)
+	}
+}
+
+type plainRootSnapshotFailureState struct {
+	sourceInfo    fs.FileInfo
+	snapshotErr   error
+	files         map[string]bool
+	quarantineRel string
+	lstatFailed   bool
+}
+
+func newPlainRootSnapshotFailureState(sourceInfo fs.FileInfo) *plainRootSnapshotFailureState {
+	return &plainRootSnapshotFailureState{
+		sourceInfo:  sourceInfo,
+		snapshotErr: errors.New("snapshot failed"),
+		files:       map[string]bool{"source": true},
+	}
+}
+
+func (s *plainRootSnapshotFailureState) root() Root {
+	return &rootWithoutIdentity{Root: &fakeRoot{
+		mkdir:  func(string, os.FileMode) error { return nil },
+		rename: s.rename,
+		lstat:  s.lstat,
+		link:   s.link,
+		remove: s.remove,
+	}}
+}
+
+func (s *plainRootSnapshotFailureState) rename(oldName, newName string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	if oldName == "source" && s.quarantineRel == "" {
+		s.quarantineRel = newName
+	}
+	s.files[oldName] = false
+	s.files[newName] = true
+	return nil
+}
+
+func (s *plainRootSnapshotFailureState) lstat(name string) (fs.FileInfo, error) {
+	if name == s.quarantineRel && s.files[name] && !s.lstatFailed {
+		s.lstatFailed = true
+		return nil, s.snapshotErr
+	}
+	if s.files[name] {
+		return s.sourceInfo, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *plainRootSnapshotFailureState) link(oldName, newName string) error {
+	if !s.files[oldName] {
+		return os.ErrNotExist
+	}
+	if s.files[newName] {
+		return os.ErrExist
+	}
+	s.files[newName] = true
+	return nil
+}
+
+func (s *plainRootSnapshotFailureState) remove(name string) error {
+	if !s.files[name] {
+		return os.ErrNotExist
+	}
+	s.files[name] = false
+	return nil
+}
+
+func TestPublishIdentityBoundIfAbsentSupportsPlainRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	root := openPlainRoot(t, rootDir)
+
+	if err := publishIdentityBoundIfAbsent(root, "source", "target", expected); err != nil {
+		t.Fatalf("publishIdentityBoundIfAbsent returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, filepath.Join(rootDir, "target"), "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestPublishIdentityBoundReplacingSupportsPlainRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o000); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	root := openPlainRoot(t, rootDir)
+
+	consumed, err := publishIdentityBoundReplacingWithSourceState(root, "source", "target", expected, sourceChangedMsg, "target changed")
+	if err != nil {
+		t.Fatalf("publishIdentityBoundReplacingWithSourceState returned error: %v", err)
+	}
+	if consumed {
+		t.Fatal("expected plain-root replacement to leave the staged source for outer cleanup")
+	}
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		t.Fatalf("chmod target: %v", err)
+	}
+	assertFileContent(t, targetPath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestRemoveFileIfMatchesSupportsPlainRoot(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	root := openPlainRoot(t, rootDir)
+
+	if err := removeFileIfMatches(root, "source", expected, sourceChangedMsg); err != nil {
+		t.Fatalf("removeFileIfMatches returned error: %v", err)
+	}
+	assertPathAbsent(t, sourcePath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestRemoveFileIfMatchesRejectsEmptyAndMissingIdentity(t *testing.T) {
+	root := &fakeRoot{}
+	if err := removeFileIfMatches(root, "", nil, sourceChangedMsg); err != nil {
+		t.Fatalf("empty path should be a no-op, got %v", err)
+	}
+	if err := removeFileIfMatches(root, "source", nil, sourceChangedMsg); err == nil {
+		t.Fatal("expected missing identity rejection")
+	}
+}
+
+func TestIdentityBoundQuarantinePathUsesSourceDirectory(t *testing.T) {
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	var mkdirPath string
+	root := &fakeRoot{
+		mkdir: func(name string, perm os.FileMode) error {
+			mkdirPath = name
+			return nil
+		},
+	}
+
+	quarantineDir, quarantineRel, err := identityBoundQuarantinePath(root, filepath.Join("nested", "source"))
+	if err != nil {
+		t.Fatalf("identityBoundQuarantinePath returned error: %v", err)
+	}
+	wantDir := filepath.Join("nested", atomicTempPrefix+"quarantine")
+	if quarantineDir != wantDir {
+		t.Fatalf("unexpected quarantine dir: got %q want %q", quarantineDir, wantDir)
+	}
+	if quarantineRel != filepath.Join(wantDir, "entry") {
+		t.Fatalf("unexpected quarantine path: %q", quarantineRel)
+	}
+	if mkdirPath != wantDir {
+		t.Fatalf("expected quarantine mkdir in source directory, got %q", mkdirPath)
+	}
+}
+
+func TestCloseCreatedFileWithoutIdentityDoesNotRemovePath(t *testing.T) {
+	statErr := errors.New("staged stat failure")
+	closeErr := errors.New("close failed")
+	closed := false
+
+	err := closeCreatedFileWithoutIdentity(&fakeFile{close: func() error {
+		closed = true
+		return closeErr
+	}}, statErr)
+	if !errors.Is(err, statErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("expected staged stat and close errors, got %v", err)
+	}
+	if !closed {
+		t.Fatal("expected created file to be closed")
+	}
+}
+
+func TestStageIdentityBoundCopyRejectsPathChangedAfterClose(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	stagedRel := atomicTempPrefix + "stage"
+	useRandomTempNames(t, stagedRel)
+	removeChecks := 0
+
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != stagedRel {
+				t.Fatalf("unexpected staging path: %s", name)
+			}
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: func(os.FileMode) error { return nil },
+				stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != stagedRel {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return changedInfo, nil
+		},
+		removeIfMatches: func(string, fs.FileInfo, string) error {
+			removeChecks++
+			return nil
+		},
+	}
+	source := seekableSourceFile(sourceInfo, "original", nil, nil)
+
+	_, _, err := stageIdentityBoundCopy(root, "source", sourceInfo, sourceChangedMsg, source)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected changed staging path rejection, got %v", err)
+	}
+	if removeChecks != 0 {
+		t.Fatalf("expected changed staging path to be preserved, got %d removals", removeChecks)
+	}
+}
+
+func TestCommitPreparedSourceRejectsStagingChangedAfterClose(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	stagedRel := atomicTempPrefix + "stage"
+	useRandomTempNames(t, stagedRel)
+	closed := false
+	renamed := false
+	root := &fakeRoot{
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != "temp" || newName != stagedRel {
+				t.Fatalf("unexpected staging link %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			return nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != stagedRel {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			if closed {
+				return changedInfo, nil
+			}
+			return sourceInfo, nil
+		},
+		renameIfMatches: func(string, string, fs.FileInfo, string) error {
+			renamed = true
+			return nil
+		},
+	}
+	session := &atomicWriteSession{
+		root:      root,
+		tempRel:   "temp",
+		targetRel: "target",
+		tempInfo:  sourceInfo,
+		tempFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return sourceInfo, nil },
+			close: func() error {
+				closed = true
+				return nil
+			},
+		},
+	}
+
+	err := session.commitPreparedSource(sourceChangedMsg, committedTargetChangedBeforeValidation)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected post-close staging identity rejection, got %v", err)
+	}
+	if renamed {
+		t.Fatal("must not publish a staging path that changed after closing the open handle")
+	}
+}
+
+func TestStageIdentityBoundFileDoesNotTreatPostLinkCleanupErrorAsLinklessFallback(t *testing.T) {
+	postLinkCleanupErr := withAtomicWriteCleanup(syscall.EPERM, errors.New("post-link cleanup failed"))
+	openCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return postLinkCleanupErr
+		},
+		open: func(string) (File, error) {
+			openCalls++
+			return nil, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundFile(root, "source", newPinnedTargetInfo(t, "source"), sourceChangedMsg)
+	if !errors.Is(err, postLinkCleanupErr) {
+		t.Fatalf("expected post-link cleanup error, got %v", err)
+	}
+	if errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("post-link cleanup error must not trigger linkless fallback: %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected no copy fallback open, got %d opens", openCalls)
+	}
+}
+
+func TestStageIdentityBoundFileDoesNotDiscardJoinedRawUnsupportedLinkFailure(t *testing.T) {
+	secondaryErr := errors.New("secondary link failure")
+	openCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return errors.Join(syscall.EPERM, secondaryErr)
+		},
+		open: func(string) (File, error) {
+			openCalls++
+			return nil, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundFile(root, "source", newPinnedTargetInfo(t, "source"), sourceChangedMsg)
+	if !errors.Is(err, syscall.EPERM) || !errors.Is(err, secondaryErr) {
+		t.Fatalf("expected joined raw link failure, got %v", err)
+	}
+	if errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("joined raw link failure must not trigger copy fallback: %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected no copy fallback open, got %d opens", openCalls)
+	}
+}
+
+func TestStageIdentityBoundFileCopiesForRawUnsupportedIdentityLink(t *testing.T) {
+	for _, linkErr := range []error{errors.ErrUnsupported, syscall.EOPNOTSUPP, syscall.EPERM} {
+		t.Run(linkErr.Error(), func(t *testing.T) {
+			rootDir := t.TempDir()
+			sourcePath := filepath.Join(rootDir, "source")
+			if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+				t.Fatalf("seed source: %v", err)
+			}
+			base := openTestRoot(t, rootDir)
+			root := &fakeRoot{
+				Root: base,
+				linkIfMatches: func(string, string, fs.FileInfo, string) error {
+					return linkErr
+				},
+			}
+
+			stagedRel, stagedInfo, err := stageIdentityBoundFile(root, "source", statTestPath(t, sourcePath), sourceChangedMsg)
+			if err != nil {
+				t.Fatalf("raw unsupported link did not copy fallback: %v", err)
+			}
+			if err := cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo); err != nil {
+				t.Fatalf("cleanup copied staging file: %v", err)
+			}
+			assertNoAtomicStagingEntries(t, rootDir)
+		})
+	}
+}
+
+func TestPlatformIdentityBoundLinkUnsupportedRejectsUnrelatedError(t *testing.T) {
+	if platformIdentityBoundLinkUnsupported(errors.New("unrelated link error")) {
+		t.Fatal("unrelated error must not select the linkless fallback")
+	}
+}
+
+func TestStageIdentityBoundFileRejectsLiveSourceMismatchBeforeLink(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "expected")
+	liveInfo := newPinnedTargetInfo(t, "replacement")
+	linkCalls := 0
+	root := &fakeRoot{
+		link: func(string, string) error {
+			linkCalls++
+			return nil
+		},
+	}
+	liveSource := &fakeFile{
+		stat: func() (fs.FileInfo, error) {
+			return liveInfo, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundFileKeepingSourceLive(root, "source", expected, sourceChangedMsg, liveSource)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected live source mismatch rejection, got %v", err)
+	}
+	if linkCalls != 0 {
+		t.Fatalf("expected no path link after live source mismatch, got %d", linkCalls)
+	}
+}
+
+func TestPublishRenameErrorHelpersPreserveSourceAndCleanup(t *testing.T) {
+	causeErr := errors.New("rename failed")
+	cleanupErr := errors.New("cleanup failed")
+	wrapped := &publishRenameError{sourceRel: "staged", err: causeErr, cleanupErr: cleanupErr}
+
+	if got := wrapped.Error(); !strings.Contains(got, causeErr.Error()) || !strings.Contains(got, cleanupErr.Error()) {
+		t.Fatalf("expected joined publish error, got %q", got)
+	}
+	if cleanup := publishRenameCleanup(causeErr); cleanup != nil {
+		t.Fatalf("plain error should not have publish cleanup, got %v", cleanup)
+	}
+	if source := publishRenameSource(causeErr, "fallback"); source != "fallback" {
+		t.Fatalf("plain error should use fallback source, got %q", source)
+	}
+	if err := withPublishRenameSource(nil, "ignored"); err != nil {
+		t.Fatalf("nil publish error should remain nil, got %v", err)
+	}
+	rewrapped := withPublishRenameSource(wrapped, "replacement")
+	if source := publishRenameSource(rewrapped, "fallback"); source != "staged" {
+		t.Fatalf("existing publish source should win, got %q", source)
+	}
+	if !errors.Is(publishRenameCleanup(rewrapped), cleanupErr) {
+		t.Fatalf("expected cleanup error to survive rewrap, got %v", publishRenameCleanup(rewrapped))
+	}
+	if source := publishRenameSource(withPublishRenameSource(causeErr, "new-source"), "fallback"); source != "new-source" {
+		t.Fatalf("expected new publish source, got %q", source)
+	}
+}
+
+func TestOpenStagingCopySourceLiveSourceValidationBranches(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "expected")
+	statErr := errors.New("live stat failed")
+	seekErr := errors.New("seek failed")
 	for _, tc := range []struct {
-		name string
-		err  error
-		root func(error) *fakeRoot
+		name    string
+		source  File
+		wantErr string
+		wantIs  error
 	}{
-		{name: "open source error", err: errors.New("open source failure"), root: copyRootWithOpenError},
-		{name: "create temp file error", err: errors.New("open temp failure"), root: copyRootWithTempOpenError},
-		{name: "temp chmod error", err: errors.New("temp chmod failure"), root: copyRootWithTempChmodError},
-		{name: "temp close error", err: errors.New("temp close failure"), root: copyRootWithTempCloseError},
-		{name: "rename temp file error", err: errors.New("rename temp failure"), root: copyRootWithTempRenameError},
+		{
+			name:   "stat error",
+			source: &fakeFile{stat: func() (fs.FileInfo, error) { return nil, statErr }},
+			wantIs: statErr,
+		},
+		{
+			name: "missing rewind",
+			source: &fakeFile{
+				stat: func() (fs.FileInfo, error) { return expected, nil },
+			},
+			wantIs: errors.ErrUnsupported,
+		},
+		{
+			name: "seek error",
+			source: &seekableFakeFile{
+				fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }},
+				seek:     func(int64, int) (int64, error) { return 0, seekErr },
+			},
+			wantIs: seekErr,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := copyFileWithinRoot(tc.root(tc.err), "source", "target", 0o640)
-			if !errors.Is(err, tc.err) {
-				t.Fatalf("expected %s, got %v", tc.name, err)
+			_, _, err := openStagingCopySource(&fakeRoot{}, "source", expected, sourceChangedMsg, tc.source)
+			assertMoveFileWithinRootError(t, err, tc.wantIs, tc.wantErr)
+		})
+	}
+
+	t.Run("non seekable live source reopens source", func(t *testing.T) {
+		opened := false
+		liveSource := &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }}
+		reopenedSource := &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return expected, nil },
+			close: closeWithoutError,
+		}
+		root := &fakeRoot{
+			open: func(name string) (File, error) {
+				if name != "source" {
+					t.Fatalf("unexpected reopen path: %s", name)
+				}
+				opened = true
+				return reopenedSource, nil
+			},
+		}
+
+		source, closeSource, err := openStagingCopySource(root, "source", expected, sourceChangedMsg, liveSource)
+		if err != nil {
+			t.Fatalf("expected reopen success, got %v", err)
+		}
+		if source != reopenedSource || !closeSource || !opened {
+			t.Fatalf("expected reopened source with cleanup, source=%#v close=%t opened=%t", source, closeSource, opened)
+		}
+	})
+
+	t.Run("non seekable live source closes reopened mismatch", func(t *testing.T) {
+		closed := false
+		_, changedInfo := writePinnedTargetInfoPair(t)
+		liveSource := &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }}
+		root := &fakeRoot{
+			open: func(name string) (File, error) {
+				if name != "source" {
+					t.Fatalf("unexpected reopen path: %s", name)
+				}
+				return &fakeFile{
+					stat: func() (fs.FileInfo, error) { return changedInfo, nil },
+					close: func() error {
+						closed = true
+						return nil
+					},
+				}, nil
+			},
+		}
+
+		_, _, err := openStagingCopySource(root, "source", expected, sourceChangedMsg, liveSource)
+		if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+			t.Fatalf("expected reopened source mismatch, got %v", err)
+		}
+		if !closed {
+			t.Fatal("expected mismatched reopened source to close")
+		}
+	})
+}
+
+func TestStageIdentityBoundCopyFailureBranches(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "expected")
+	randomErr := errors.New("random failed")
+	openErr := errors.New("open staged failed")
+	statErr := errors.New("staged stat failed")
+	copyErr := errors.New("copy failed")
+	chmodErr := errors.New("chmod failed")
+	closeErr := errors.New("close failed")
+
+	for _, tc := range []struct {
+		name    string
+		random  func() (string, error)
+		open    func(fs.FileInfo) func(string, int, os.FileMode) (File, error)
+		source  File
+		wantErr string
+		wantIs  error
+	}{
+		{
+			name:   "random name",
+			random: func() (string, error) { return "", randomErr },
+			open:   stagingOpenSuccess,
+			wantIs: randomErr,
+		},
+		{
+			name: "open collision exhaustion",
+			random: func() (string, error) {
+				return atomicTempPrefix + "stage", nil
+			},
+			open: func(fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+				return func(string, int, os.FileMode) (File, error) { return nil, os.ErrExist }
+			},
+			wantErr: "too many collisions",
+		},
+		{
+			name: "open error",
+			open: func(fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+				return func(string, int, os.FileMode) (File, error) { return nil, openErr }
+			},
+			wantIs: openErr,
+		},
+		{
+			name: "stat error cleans created file",
+			open: func(fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+				return stagingOpenWithFile(&fakeFile{
+					stat:  func() (fs.FileInfo, error) { return nil, statErr },
+					close: closeWithoutError,
+				})
+			},
+			wantIs: statErr,
+		},
+		{
+			name: "non regular staged file",
+			open: func(info fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+				return stagingOpenWithFile(&fakeFile{
+					stat: func() (fs.FileInfo, error) {
+						return &modeOverrideFileInfo{FileInfo: info, mode: os.ModeDir | 0o755}, nil
+					},
+					close: closeWithoutError,
+				})
+			},
+			wantErr: sourceChangedMsg,
+		},
+		{
+			name:   "copy error",
+			open:   stagingOpenSuccess,
+			source: seekableSourceFile(expected, "", copyErr, nil),
+			wantIs: copyErr,
+		},
+		{
+			name: "chmod error",
+			open: func(info fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+				return stagingOpenWithFile(&fakeFile{
+					stat:  func() (fs.FileInfo, error) { return info, nil },
+					write: func(p []byte) (int, error) { return len(p), nil },
+					chmod: func(os.FileMode) error { return chmodErr },
+					close: closeWithoutError,
+				})
+			},
+			wantIs: chmodErr,
+		},
+		{
+			name: "close error",
+			open: func(info fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+				return stagingOpenWithFile(&fakeFile{
+					stat:  func() (fs.FileInfo, error) { return info, nil },
+					write: func(p []byte) (int, error) { return len(p), nil },
+					chmod: chmodWithoutError,
+					close: func() error { return closeErr },
+				})
+			},
+			wantIs: closeErr,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := tc.source
+			if source == nil {
+				source = seekableSourceFile(expected, "source", nil, nil)
+			}
+			assertStageIdentityBoundCopyFailure(t, expected, tc.random, tc.open(expected), source, tc.wantIs, tc.wantErr)
+		})
+	}
+}
+
+func TestStageIdentityBoundCopyCleansStagedFileWhenReopenedSourceCloseFails(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "expected")
+	sourceCloseErr := errors.New("source close failed")
+	stagedRel := atomicTempPrefix + "stage"
+	useRandomTempNames(t, stagedRel)
+
+	removedStaged := false
+	sourceReader := strings.NewReader("payload")
+	liveSource := &fakeFile{stat: func() (fs.FileInfo, error) { return expected, nil }}
+	reopenedSource := &fakeFile{
+		read: func(p []byte) (int, error) {
+			return sourceReader.Read(p)
+		},
+		stat: func() (fs.FileInfo, error) { return expected, nil },
+		close: func() error {
+			return sourceCloseErr
+		},
+	}
+	root := &fakeRoot{
+		open: func(name string) (File, error) {
+			if name != "source" {
+				t.Fatalf("unexpected source open path %q", name)
+			}
+			return reopenedSource, nil
+		},
+		openFile: stagingOpenSuccess(expected),
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source", stagedRel:
+				return expected, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+		link: func(string, string) error {
+			return errors.ErrUnsupported
+		},
+		remove: func(name string) error {
+			if name == stagedRel {
+				removedStaged = true
+			}
+			return nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundCopy(root, "source", expected, sourceChangedMsg, liveSource)
+	if !errors.Is(err, sourceCloseErr) {
+		t.Fatalf("expected reopened source close error, got %v", err)
+	}
+	if !removedStaged {
+		t.Fatal("expected staged copy cleanup to remain armed until reopened source closes")
+	}
+}
+
+func TestStageIdentityBoundCopyPreservesStickyModeBit(t *testing.T) {
+	wantMode := os.ModeSticky | 0o675
+	expected := chmoddedPinnedTargetInfo(t, "source", wantMode)
+	var openMode os.FileMode
+	var chmodMode os.FileMode
+	root := &fakeRoot{
+		openFile: func(_ string, _ int, mode os.FileMode) (File, error) {
+			openMode = mode
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				stat:  func() (fs.FileInfo, error) { return expected, nil },
+				chmod: func(mode os.FileMode) error {
+					chmodMode = mode
+					return nil
+				},
+				close: closeWithoutError,
+			}, nil
+		},
+		lstat: func(string) (fs.FileInfo, error) {
+			return expected, nil
+		},
+	}
+
+	_, _, err := stageIdentityBoundCopy(root, "source", expected, sourceChangedMsg, seekableSourceFile(expected, "source", nil, nil))
+	if err != nil {
+		t.Fatalf("stageIdentityBoundCopy returned error: %v", err)
+	}
+	if openMode != wantMode {
+		t.Fatalf("expected OpenFile mode %v, got %v", wantMode, openMode)
+	}
+	if chmodMode != wantMode {
+		t.Fatalf("expected Chmod mode %v, got %v", wantMode, chmodMode)
+	}
+}
+
+func TestChmodSupportedModePreservesSpecialBits(t *testing.T) {
+	mode := os.ModeSetuid | os.ModeSetgid | os.ModeSticky | 0o675
+	if got := chmodSupportedMode(mode); got != mode {
+		t.Fatalf("expected chmod-supported mode %v, got %v", mode, got)
+	}
+}
+
+func chmoddedPinnedTargetInfo(t *testing.T, contents string, mode os.FileMode) fs.FileInfo {
+	t.Helper()
+
+	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(targetInfoPath, []byte(contents), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	if err := os.Chmod(targetInfoPath, mode); err != nil {
+		t.Fatalf("chmod target info path: %v", err)
+	}
+	return statTestPath(t, targetInfoPath)
+}
+
+func stagingOpenSuccess(info fs.FileInfo) func(string, int, os.FileMode) (File, error) {
+	return stagingOpenWithFile(&fakeFile{
+		stat:  func() (fs.FileInfo, error) { return info, nil },
+		write: func(p []byte) (int, error) { return len(p), nil },
+		chmod: chmodWithoutError,
+		close: closeWithoutError,
+	})
+}
+
+func stagingOpenWithFile(file File) func(string, int, os.FileMode) (File, error) {
+	return func(string, int, os.FileMode) (File, error) {
+		return file, nil
+	}
+}
+
+func seekableSourceFile(info fs.FileInfo, data string, readErr, seekErr error) File {
+	reader := bytes.NewReader([]byte(data))
+	return &seekableFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return info, nil },
+			read: func(p []byte) (int, error) {
+				if readErr != nil {
+					return 0, readErr
+				}
+				return reader.Read(p)
+			},
+		},
+		seek: func(offset int64, whence int) (int64, error) {
+			if seekErr != nil {
+				return 0, seekErr
+			}
+			return reader.Seek(offset, whence)
+		},
+	}
+}
+
+func assertStageIdentityBoundCopyFailure(t *testing.T, expected fs.FileInfo, random func() (string, error), open func(string, int, os.FileMode) (File, error), source File, wantIs error, wantErr string) {
+	t.Helper()
+	if random == nil {
+		useRandomTempNames(t, atomicTempPrefix+"stage", atomicTempPrefix+"cleanup")
+	} else {
+		originalRandomTempNameFn := randomTempNameFn
+		randomTempNameFn = random
+		t.Cleanup(func() {
+			randomTempNameFn = originalRandomTempNameFn
+		})
+	}
+	root := &fakeRoot{
+		openFile: open,
+		lstat: func(string) (fs.FileInfo, error) {
+			return nil, os.ErrNotExist
+		},
+		remove: func(string) error { return nil },
+	}
+
+	_, _, err := stageIdentityBoundCopy(root, "source", expected, sourceChangedMsg, source)
+	assertMoveFileWithinRootError(t, err, wantIs, wantErr)
+}
+
+type identityMapRootHooks struct {
+	mkdir  func(string, os.FileMode) error
+	link   func(string, string) error
+	rename func(string, string) error
+	remove func(string) error
+	lstat  func(string) (fs.FileInfo, error)
+}
+
+func newIdentityMapRoot(t *testing.T, files map[string]fs.FileInfo, hooks identityMapRootHooks) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{
+		mkdir:  identityMapMkdir(hooks),
+		link:   identityMapLink(files, hooks),
+		rename: identityMapRename(files, hooks),
+		remove: identityMapRemove(files, hooks),
+		lstat:  identityMapLstat(files, hooks),
+	}
+}
+
+func identityMapMkdir(hooks identityMapRootHooks) func(string, os.FileMode) error {
+	return func(name string, perm os.FileMode) error {
+		if hooks.mkdir != nil {
+			return hooks.mkdir(name, perm)
+		}
+		return nil
+	}
+}
+
+func identityMapLink(files map[string]fs.FileInfo, hooks identityMapRootHooks) func(string, string) error {
+	return func(oldName, newName string) error {
+		if hooks.link != nil {
+			return hooks.link(oldName, newName)
+		}
+		info, ok := files[oldName]
+		if !ok {
+			return os.ErrNotExist
+		}
+		if _, exists := files[newName]; exists {
+			return os.ErrExist
+		}
+		files[newName] = info
+		return nil
+	}
+}
+
+func identityMapRename(files map[string]fs.FileInfo, hooks identityMapRootHooks) func(string, string) error {
+	return func(oldName, newName string) error {
+		if hooks.rename != nil {
+			return hooks.rename(oldName, newName)
+		}
+		info, ok := files[oldName]
+		if !ok {
+			return os.ErrNotExist
+		}
+		files[newName] = info
+		delete(files, oldName)
+		return nil
+	}
+}
+
+func identityMapRemove(files map[string]fs.FileInfo, hooks identityMapRootHooks) func(string) error {
+	return func(name string) error {
+		if hooks.remove != nil {
+			return hooks.remove(name)
+		}
+		if _, ok := files[name]; !ok {
+			return os.ErrNotExist
+		}
+		delete(files, name)
+		return nil
+	}
+}
+
+func identityMapLstat(files map[string]fs.FileInfo, hooks identityMapRootHooks) func(string) (fs.FileInfo, error) {
+	return func(name string) (fs.FileInfo, error) {
+		if hooks.lstat != nil {
+			return hooks.lstat(name)
+		}
+		info, ok := files[name]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return info, nil
+	}
+}
+
+type identityOnlyRoot struct {
+	Root
+	linkIfMatches   func(oldName, newName string, expected fs.FileInfo, message string) error
+	renameIfMatches func(oldName, newName string, expected fs.FileInfo, message string) error
+	removeIfMatches func(name string, expected fs.FileInfo, message string) error
+}
+
+func (r *identityOnlyRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	return r.linkIfMatches(oldName, newName, expected, message)
+}
+
+func (r *identityOnlyRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	return r.renameIfMatches(oldName, newName, expected, message)
+}
+
+func (r *identityOnlyRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
+	return r.removeIfMatches(name, expected, message)
+}
+
+type renameStateOnlyRoot struct {
+	Root
+	renameIfMatchesState func(oldName, newName string, expected fs.FileInfo, message string) (bool, error)
+	linkIfMatches        func(oldName, newName string, expected fs.FileInfo, message string) error
+	renameIfMatches      func(oldName, newName string, expected fs.FileInfo, message string) error
+	removeIfMatches      func(name string, expected fs.FileInfo, message string) error
+}
+
+func (r *renameStateOnlyRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+	return r.renameIfMatchesState(oldName, newName, expected, message)
+}
+
+func (r *renameStateOnlyRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	return r.renameIfMatches(oldName, newName, expected, message)
+}
+
+func (r *renameStateOnlyRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	return r.linkIfMatches(oldName, newName, expected, message)
+}
+
+func (r *renameStateOnlyRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) error {
+	return r.removeIfMatches(name, expected, message)
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootBranches(t *testing.T) {
+	regularInfo := newPinnedTargetInfo(t, "regular")
+	openErr := errors.New("open failed")
+	writeErr := errors.New("write failed")
+	chmodErr := errors.New("chmod failed")
+	closeErr := errors.New("close failed")
+
+	for _, tc := range []struct {
+		name    string
+		open    func(*bool) func(string, int, os.FileMode) (File, error)
+		lstat   func(string) (fs.FileInfo, error)
+		wantErr string
+		wantIs  error
+	}{
+		{
+			name: "open error",
+			open: func(*bool) func(string, int, os.FileMode) (File, error) {
+				return func(string, int, os.FileMode) (File, error) { return nil, openErr }
+			},
+			wantIs: openErr,
+		},
+		{
+			name: "non regular created target",
+			open: exclusiveBranchOpen(&modeOverrideFileInfo{FileInfo: regularInfo, mode: os.ModeDir | 0o755}, nil, nil, nil),
+			lstat: func(string) (fs.FileInfo, error) {
+				return regularInfo, nil
+			},
+			wantErr: "not regular",
+		},
+		{
+			name:   "write error",
+			open:   exclusiveBranchOpen(regularInfo, writeErr, nil, nil),
+			lstat:  lstatOriginalForNames(t, regularInfo, writeTestFileName),
+			wantIs: writeErr,
+		},
+		{
+			name:   "chmod error",
+			open:   exclusiveBranchOpen(regularInfo, nil, chmodErr, nil),
+			lstat:  lstatOriginalForNames(t, regularInfo, writeTestFileName),
+			wantIs: chmodErr,
+		},
+		{
+			name:   "close error",
+			open:   exclusiveBranchOpen(regularInfo, nil, nil, closeErr),
+			lstat:  lstatOriginalForNames(t, regularInfo, writeTestFileName),
+			wantIs: closeErr,
+		},
+		{
+			name:  "success",
+			open:  exclusiveBranchOpen(regularInfo, nil, nil, nil),
+			lstat: lstatOriginalForNames(t, regularInfo, writeTestFileName),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			closed := false
+			root := &fakeRoot{
+				openFile:        tc.open(&closed),
+				lstat:           tc.lstat,
+				linkIfMatches:   func(string, string, fs.FileInfo, string) error { return errIdentityBoundLinkUnavailable },
+				removeIfMatches: func(string, fs.FileInfo, string) error { return nil },
+			}
+			err := writeFileExclusivelyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o600)
+			if tc.wantIs == nil && tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected success, got %v", err)
+				}
+				if !closed {
+					t.Fatal("expected successful exclusive target close")
+				}
+				return
+			}
+			assertMoveFileWithinRootError(t, err, tc.wantIs, tc.wantErr)
+		})
+	}
+}
+
+func exclusiveBranchOpen(info fs.FileInfo, writeErr, chmodErr, closeErr error) func(*bool) func(string, int, os.FileMode) (File, error) {
+	return func(closed *bool) func(string, int, os.FileMode) (File, error) {
+		return func(string, int, os.FileMode) (File, error) {
+			return &fakeFile{
+				stat: func() (fs.FileInfo, error) { return info, nil },
+				write: func(p []byte) (int, error) {
+					if writeErr != nil {
+						return 0, writeErr
+					}
+					return len(p), nil
+				},
+				chmod: func(os.FileMode) error { return chmodErr },
+				close: func() error {
+					*closed = true
+					return closeErr
+				},
+			}, nil
+		}
+	}
+}
+
+func TestBasicRootLinkRenameRemoveErrorBranches(t *testing.T) {
+	t.Run("link quarantine mkdir error", testBasicRootLinkQuarantineMkdirError)
+	t.Run("link source failure", testBasicRootLinkSourceFailure)
+	t.Run("link quarantine lstat failure", testBasicRootLinkQuarantineLstatFailure)
+	t.Run("target link cleanup failure marks atomic cleanup", testBasicRootLinkTargetLinkCleanupFailure)
+	t.Run("target stat failure cleans target and quarantine links", testBasicRootLinkTargetStatFailureCleansAllPaths)
+	t.Run("link final cleanup failure", testBasicRootLinkFinalCleanupFailure)
+}
+
+func testBasicRootLinkQuarantineMkdirError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	mkdirErr := errors.New("mkdir failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		mkdir: func(string, os.FileMode) error { return mkdirErr },
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, mkdirErr) {
+		t.Fatalf("expected mkdir error, got %v", err)
+	}
+}
+
+func testBasicRootLinkSourceFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	linkErr := errors.New("link failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		link: func(string, string) error { return linkErr },
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("expected link error, got %v", err)
+	}
+}
+
+func testBasicRootLinkQuarantineLstatFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasSuffix(name, "entry") {
+				return nil, lstatErr
+			}
+			return sourceInfo, nil
+		},
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat error, got %v", err)
+	}
+}
+
+func testBasicRootLinkTargetLinkCleanupFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	linkErr := syscall.EPERM
+	cleanupErr := errors.New("quarantine cleanup failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"cleanup")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		link: func(oldName, newName string) error {
+			if newName == "target" {
+				return linkErr
+			}
+			info, ok := files[oldName]
+			if !ok {
+				return os.ErrNotExist
+			}
+			files[newName] = info
+			return nil
+		},
+		remove: func(name string) error {
+			if filepath.Base(name) == "entry" {
+				return cleanupErr
+			}
+			delete(files, name)
+			return nil
+		},
+	})
+
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("expected target link error, got %v", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected quarantine cleanup error, got %v", err)
+	}
+	if !atomicWriteCleanupFailed(err) {
+		t.Fatalf("expected atomic cleanup marker, got %v", err)
+	}
+}
+
+func testBasicRootLinkTargetStatFailureCleansAllPaths(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"source-quarantine",
+		atomicTempPrefix+"target-cleanup",
+		atomicTempPrefix+"source-cleanup",
+	)
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	targetStatErr := errors.New("target stat failed")
+	failTargetStat := true
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "target" && failTargetStat {
+				failTargetStat = false
+				return nil, targetStatErr
+			}
+			info, ok := files[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return info, nil
+		},
+	})
+
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, targetStatErr) {
+		t.Fatalf("expected target stat error, got %v", err)
+	}
+	if len(files) != 1 || files["source"] == nil {
+		t.Fatalf("target stat cleanup leaked paths: %#v", files)
+	}
+}
+
+func testBasicRootLinkFinalCleanupFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	removeErr := errors.New("remove failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine", atomicTempPrefix+"cleanup")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		remove: func(name string) error {
+			if strings.Contains(name, "entry") {
+				return removeErr
+			}
+			delete(files, name)
+			return nil
+		},
+	})
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected cleanup error, got %v", err)
+	}
+}
+
+func TestBasicRootRenameErrorBranches(t *testing.T) {
+	t.Run("rename source failure", testBasicRootRenameSourceFailure)
+	t.Run("missing expected identity rejects before rename", testBasicRootRenameMissingExpectedIdentity)
+	t.Run("rename quarantine lstat failure preserves source", testBasicRootRenameQuarantineLstatFailure)
+}
+
+func testBasicRootRenameSourceFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	renameErr := errors.New("rename failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		rename: func(string, string) error { return renameErr },
+	})
+	_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error, got %v", err)
+	}
+}
+
+func testBasicRootRenameMissingExpectedIdentity(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+		rename: func(string, string) error {
+			renameCalls++
+			return nil
+		},
+	})
+	_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", nil, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected missing identity rejection, got %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("expected no rename without expected identity, got %d", renameCalls)
+	}
+}
+
+func testBasicRootRenameQuarantineLstatFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	lstatFailed := false
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if strings.HasSuffix(name, "entry") && !lstatFailed {
+				lstatFailed = true
+				return nil, lstatErr
+			}
+			info, ok := files[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return info, nil
+		},
+	})
+	_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat error, got %v", err)
+	}
+	if source := publishRenameSource(err, "fallback"); source != "source" {
+		t.Fatalf("expected restored source in publish error, got %q", source)
+	}
+	if _, ok := files["source"]; !ok {
+		t.Fatal("expected source restored after quarantine lstat failure")
+	}
+	for name := range files {
+		if strings.HasSuffix(name, "entry") || name == "target" {
+			t.Fatalf("unexpected path after restore: %s", name)
+		}
+	}
+}
+
+func TestBasicRootRenameRestoreBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+
+	t.Run("rename mismatch restore conflict", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		files := map[string]fs.FileInfo{"source": changedInfo}
+		root := newIdentityMapRoot(t, files, identityMapRootHooks{
+			link: func(string, string) error { return os.ErrExist },
+		})
+		_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+		if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) || !errors.Is(err, os.ErrExist) {
+			t.Fatalf("expected mismatch restore conflict, got %v", err)
+		}
+	})
+}
+
+func TestBasicRootRenameTargetRestoreBranches(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	renameErr := errors.New("rename failed")
+
+	t.Run("rename target failure restore conflict", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		files := map[string]fs.FileInfo{"source": sourceInfo}
+		linkCalls := 0
+		root := newIdentityMapRoot(t, files, identityMapRootHooks{
+			link: func(string, string) error {
+				linkCalls++
+				return os.ErrExist
+			},
+			rename: func(oldName, newName string) error {
+				if oldName == "source" {
+					files[newName] = sourceInfo
+					delete(files, oldName)
+					return nil
+				}
+				if strings.HasSuffix(oldName, "entry") && newName == "target" {
+					return renameErr
+				}
+				return nil
+			},
+		})
+		_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+		if !errors.Is(err, renameErr) || !errors.Is(err, os.ErrExist) {
+			t.Fatalf("expected rename and restore errors, got %v", err)
+		}
+		if linkCalls != 1 {
+			t.Fatalf("expected one restore link attempt, got %d", linkCalls)
+		}
+	})
+}
+
+func TestBasicRootRenameLeftoverStagingBranch(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+
+	useRandomTempNames(t, atomicTempPrefix+"quarantine")
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		rename: renameSourceThenLeaveChangedStaging(files, sourceInfo, changedInfo),
+	})
+	consumed, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if err == nil || consumed || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected leftover staging mismatch, consumed=%t err=%v", consumed, err)
+	}
+}
+
+func renameSourceThenLeaveChangedStaging(files map[string]fs.FileInfo, sourceInfo, changedInfo fs.FileInfo) func(string, string) error {
+	return func(oldName, newName string) error {
+		switch {
+		case oldName == "source":
+			files[newName] = sourceInfo
+			delete(files, oldName)
+		case strings.HasSuffix(oldName, "entry") && newName == "target":
+			files[newName] = sourceInfo
+			files[oldName] = changedInfo
+		}
+		return nil
+	}
+}
+
+func TestBasicRootRemoveErrorBranches(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+	renameErr := errors.New("rename failed")
+
+	t.Run("remove source rename failure", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+			rename: func(string, string) error { return renameErr },
+		})
+		err := removeFileIfMatchesUsingBasicRoot(root, "source", sourceInfo, sourceChangedMsg)
+		if !errors.Is(err, renameErr) {
+			t.Fatalf("expected rename error, got %v", err)
+		}
+	})
+
+	t.Run("remove quarantine lstat failure", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+			lstat: func(name string) (fs.FileInfo, error) {
+				if strings.HasSuffix(name, "entry") {
+					return nil, lstatErr
+				}
+				return sourceInfo, nil
+			},
+		})
+		err := removeFileIfMatchesUsingBasicRoot(root, "source", sourceInfo, sourceChangedMsg)
+		if !errors.Is(err, lstatErr) {
+			t.Fatalf("expected lstat error, got %v", err)
+		}
+	})
+}
+
+func TestBasicRootRemoveRestoreBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	removeErr := errors.New("remove failed")
+
+	t.Run("remove mismatch restore conflict", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": changedInfo}, identityMapRootHooks{
+			link: func(string, string) error { return os.ErrExist },
+		})
+		err := removeFileIfMatchesUsingBasicRoot(root, "source", sourceInfo, sourceChangedMsg)
+		if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) || !errors.Is(err, os.ErrExist) {
+			t.Fatalf("expected mismatch restore conflict, got %v", err)
+		}
+	})
+
+	t.Run("remove target disappeared", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+			remove: func(string) error { return os.ErrNotExist },
+		})
+		err := removeFileIfMatchesUsingBasicRoot(root, "source", sourceInfo, sourceChangedMsg)
+		if err != nil {
+			t.Fatalf("missing quarantined target should be accepted, got %v", err)
+		}
+	})
+
+	t.Run("remove failure preserves quarantine", func(t *testing.T) {
+		useRandomTempNames(t, atomicTempPrefix+"quarantine")
+		root := newIdentityMapRoot(t, map[string]fs.FileInfo{"source": sourceInfo}, identityMapRootHooks{
+			remove: func(name string) error {
+				if strings.HasSuffix(name, "entry") {
+					return removeErr
+				}
+				return nil
+			},
+		})
+		err := removeFileIfMatchesUsingBasicRoot(root, "source", sourceInfo, sourceChangedMsg)
+		if !errors.Is(err, removeErr) {
+			t.Fatalf("expected remove error, got %v", err)
+		}
+	})
+}
+
+func TestIdentityHelperRemainingBranches(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+
+	t.Run("renameFileIfMatches uses identity root without state", func(t *testing.T) {
+		renamed := false
+		root := &identityOnlyRoot{
+			Root:          &fakeRoot{},
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+			renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+				if oldName != "source" || newName != "target" {
+					t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+				}
+				requireSameFileInfo(t, expected, sourceInfo, oldName)
+				renamed = true
+				return nil
+			},
+			removeIfMatches: func(string, fs.FileInfo, string) error { return nil },
+		}
+		consumed, err := renameFileIfMatches(root, "source", "target", sourceInfo, sourceChangedMsg)
+		if err != nil || !consumed || !renamed {
+			t.Fatalf("expected identity-root rename, consumed=%t renamed=%t err=%v", consumed, renamed, err)
+		}
+	})
+}
+
+func TestIdentityHelperOpenStagingCopySourceBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	t.Run("open staging copy source stat failure and mismatch", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			lstat   fs.FileInfo
+			stat    func() (fs.FileInfo, error)
+			wantErr string
+			wantIs  error
+		}{
+			{
+				name:   "stat error",
+				lstat:  sourceInfo,
+				stat:   func() (fs.FileInfo, error) { return nil, lstatErr },
+				wantIs: lstatErr,
+			},
+			{
+				name:    "identity mismatch",
+				lstat:   changedInfo,
+				stat:    func() (fs.FileInfo, error) { return changedInfo, nil },
+				wantErr: sourceChangedMsg,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				assertOpenStagingCopySourceValidationFailure(t, sourceInfo, tc.lstat, tc.stat, tc.wantIs, tc.wantErr)
+			})
+		}
+	})
+
+}
+
+func assertOpenStagingCopySourceValidationFailure(t *testing.T, sourceInfo, lstatInfo fs.FileInfo, stat func() (fs.FileInfo, error), wantIs error, wantErr string) {
+	t.Helper()
+	closed := false
+	root := &fakeRoot{
+		lstat: stagingCopySourceValidationLstat(t, lstatInfo),
+		open:  stagingCopySourceValidationOpen(t, stat, &closed),
+	}
+	_, closeSource, err := openStagingCopySource(root, "source", sourceInfo, sourceChangedMsg, nil)
+	assertMoveFileWithinRootError(t, err, wantIs, wantErr)
+	if closeSource {
+		t.Fatal("failed openStagingCopySource should not require caller close")
+	}
+	if !closed {
+		t.Fatal("expected opened source to close on validation failure")
+	}
+}
+
+func stagingCopySourceValidationLstat(t *testing.T, info fs.FileInfo) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	return func(name string) (fs.FileInfo, error) {
+		if name != "source" {
+			t.Fatalf("unexpected lstat path: %s", name)
+		}
+		return info, nil
+	}
+}
+
+func stagingCopySourceValidationOpen(t *testing.T, stat func() (fs.FileInfo, error), closed *bool) func(string) (File, error) {
+	t.Helper()
+	return func(name string) (File, error) {
+		if name != "source" {
+			t.Fatalf("unexpected open path: %s", name)
+		}
+		return &fakeFile{
+			stat:  stat,
+			close: func() error { *closed = true; return nil },
+		}, nil
+	}
+}
+
+func TestIdentityHelperInfoAndCleanupBranches(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	closeErr := errors.New("close failed")
+	removeErr := errors.New("remove failed")
+
+	t.Run("published regular file info rejects non regular", func(t *testing.T) {
+		root := &fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) {
+				return &modeOverrideFileInfo{FileInfo: sourceInfo, mode: os.ModeDir | 0o755}, nil
+			},
+		}
+		if _, err := publishedRegularFileInfo(root, "source", sourceChangedMsg); err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+			t.Fatalf("expected non-regular rejection, got %v", err)
+		}
+	})
+
+	t.Run("same regular file rejects nil and non regular", func(t *testing.T) {
+		if sameRegularFile(nil, sourceInfo) {
+			t.Fatal("nil expected must not match")
+		}
+		if sameRegularFile(&modeOverrideFileInfo{FileInfo: sourceInfo, mode: os.ModeDir | 0o755}, sourceInfo) {
+			t.Fatal("non-regular expected must not match")
+		}
+	})
+
+	t.Run("close without identity keeps close error", func(t *testing.T) {
+		err := closeCreatedFileWithoutIdentity(&fakeFile{close: func() error { return closeErr }}, removeErr)
+		if !errors.Is(err, closeErr) || !errors.Is(err, removeErr) {
+			t.Fatalf("expected primary and close errors, got %v", err)
+		}
+	})
+}
+
+func TestIdentityHelperCleanupBranches(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	t.Run("cleanup no-op and stat failures", func(t *testing.T) {
+		if err := cleanupAtomicTempFileIfMatches(&fakeRoot{}, "", nil); err != nil {
+			t.Fatalf("empty cleanup path should be no-op, got %v", err)
+		}
+		if err := cleanupAtomicTempFileIfMatches(&fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+		}, "source", sourceInfo); !errors.Is(err, lstatErr) {
+			t.Fatalf("expected cleanup lstat error, got %v", err)
+		}
+		if err := cleanupAtomicTempFileIfMatches(&fakeRoot{
+			lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+		}, "source", sourceInfo); err != nil {
+			t.Fatalf("missing cleanup path should be accepted, got %v", err)
+		}
+		if err := cleanupAtomicTempFileIfMatches(&fakeRoot{
+			lstat:         lstatOriginalForNames(t, sourceInfo, "source"),
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return os.ErrNotExist },
+		}, "source", sourceInfo); err != nil {
+			t.Fatalf("missing cleanup staging source should be accepted, got %v", err)
+		}
+	})
+}
+
+func TestIdentityHelperQuarantineBranches(t *testing.T) {
+	t.Run("quarantine path collisions and errors", func(t *testing.T) {
+		useRandomTempNames(t,
+			atomicTempPrefix+"one",
+			atomicTempPrefix+"two",
+			atomicTempPrefix+"three",
+			atomicTempPrefix+"four",
+			atomicTempPrefix+"five",
+			atomicTempPrefix+"six",
+			atomicTempPrefix+"seven",
+			atomicTempPrefix+"eight",
+			atomicTempPrefix+"nine",
+			atomicTempPrefix+"ten",
+		)
+		root := &fakeRoot{mkdir: func(string, os.FileMode) error { return os.ErrExist }}
+		if _, _, err := identityBoundQuarantinePath(root, "source"); err == nil || !strings.Contains(err.Error(), "too many collisions") {
+			t.Fatalf("expected quarantine collision exhaustion, got %v", err)
+		}
+	})
+}
+
+func TestTargetAliasProbesUnrelatedSpelling(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, changedInfo, "target"),
+	}, "source", "target", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
+	}
+
+	aliases, err = targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, changedInfo, "SOURCE"),
+	}, "source", "SOURCE", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("distinct target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasRecognizesShortNameAlias(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"Long File.txt": sourceInfo,
+				"LONGFI~1.TXT":  sourceInfo,
+				".":             dirInfo,
+			},
+			nil,
+		),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{
+					stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+					close: func() error { return nil },
+				},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					return []fs.DirEntry{&namedDirEntry{name: "Long File.txt"}}, nil
+				},
+			}, nil
+		},
+	}
+
+	aliases, err := targetAliasesSource(root, "Long File.txt", "LONGFI~1.TXT", sourceInfo)
+	if err != nil || !aliases {
+		t.Fatalf("short-name alias should be detected, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestPrepareRejectsAliasedMoveWithLegacyIdentityRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		entries []fs.DirEntry
+	}{
+		{name: "incomplete scan", entries: nil},
+		{name: "one matching entry", entries: []fs.DirEntry{&namedDirEntry{name: "source"}}},
+		{name: "two matching entries", entries: []fs.DirEntry{&namedDirEntry{name: "source"}, &namedDirEntry{name: "TARGET"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, readDirCalls := newLegacyAliasedMoveRoot(t, tc.entries)
+
+			if _, err := prepareAndRenameWithinRoot(root, "source", "TARGET", 0o600); !errors.Is(err, errLegacyIdentityAliasStateIndeterminate) {
+				t.Fatalf("expected aliased legacy move rejection, got %v", err)
+			}
+			if *readDirCalls != 1 {
+				t.Fatalf("expected one alias scan, got %d", *readDirCalls)
 			}
 		})
+	}
+}
+
+func newLegacyAliasedMoveRoot(t *testing.T, entries []fs.DirEntry) (*identityOnlyRoot, *int) {
+	t.Helper()
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	readDirCalls := 0
+	base := &fakeRoot{
+		lstat: lstatMappedPaths(t, map[string]fs.FileInfo{
+			"source": sourceInfo,
+			"TARGET": sourceInfo,
+			".":      dirInfo,
+		}, nil),
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeReadDirFile{
+				fakeFile: &fakeFile{stat: func() (fs.FileInfo, error) { return dirInfo, nil }, close: closeWithoutError},
+				readDir: func(int) ([]fs.DirEntry, error) {
+					readDirCalls++
+					return entries, nil
+				},
+			}, nil
+		},
+	}
+	root := &identityOnlyRoot{
+		Root: base,
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			t.Fatal("aliased legacy move must not create staging")
+			return nil
+		},
+		renameIfMatches: func(string, string, fs.FileInfo, string) error {
+			t.Fatal("aliased legacy move must not rename")
+			return nil
+		},
+		removeIfMatches: func(string, fs.FileInfo, string) error {
+			t.Fatal("aliased legacy move must not clean up")
+			return nil
+		},
+	}
+	return root, &readDirCalls
+}
+
+func TestPrepareAllowsExactPathWithLegacyIdentityRoot(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	renameCalls := 0
+	root := &identityOnlyRoot{
+		Root: &fakeRoot{
+			lstat: lstatOriginalForNames(t, sourceInfo, "source"),
+			chmod: chmodNameWithoutError(t, "source"),
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != "source" || newName != "source" {
+				t.Fatalf("unexpected exact-path rename %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			renameCalls++
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "source", 0o600); err != nil {
+		t.Fatalf("exact-path legacy move returned error: %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one exact-path rename, got %d", renameCalls)
+	}
+}
+
+func TestTargetAliasMissingTarget(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+	}, "source", "source", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("missing alias target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasLstatError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	if _, err := targetAliasesSource(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}, "source", "source", sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected alias lstat error, got %v", err)
+	}
+}
+
+func TestTargetAliasExactSelf(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, sourceInfo, "source"),
+	}, "source", "source", sourceInfo)
+	if err != nil || !aliases {
+		t.Fatalf("exact path should alias itself, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasRejectsNonregularTarget(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatOriginalForNames(t, dirInfo, "SOURCE"),
+	}, "source", "SOURCE", sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("nonregular target should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasSourceParentLstatError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{filepath.Join("b", "é"): sourceInfo},
+			map[string]error{"a": lstatErr},
+		),
+	}
+	if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected source parent lstat error, got %v", err)
+	}
+}
+
+func TestTargetAliasTargetParentLstatError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	lstatErr := errors.New("lstat failed")
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				filepath.Join("b", "é"): sourceInfo,
+				"a":                     dirInfo,
+			},
+			map[string]error{"b": lstatErr},
+		),
+	}
+	if _, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected target parent lstat error, got %v", err)
+	}
+}
+
+func TestTargetAliasRejectsDifferentParentDirectory(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	changedDirInfo := statTestPath(t, t.TempDir())
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				filepath.Join("b", "é"): sourceInfo,
+				"a":                     dirInfo,
+				"b":                     changedDirInfo,
+			},
+			nil,
+		),
+	}
+	aliases, err := targetAliasesSource(root, filepath.Join("a", "é"), filepath.Join("b", "é"), sourceInfo)
+	if err != nil || aliases {
+		t.Fatalf("different parent directories should not alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestTargetAliasPropagatesDirectoryCountError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	countErr := errors.New("count directory failed")
+
+	aliases, err := targetAliasesSource(&fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"SOURCE": sourceInfo,
+				".":      dirInfo,
+			},
+			nil,
+		),
+		open: func(string) (File, error) { return nil, countErr },
+	}, "source", "SOURCE", sourceInfo)
+	if !errors.Is(err, countErr) || aliases {
+		t.Fatalf("expected count error without alias, aliases=%t err=%v", aliases, err)
+	}
+}
+
+func TestPrepareFallsBackToLinklessRename(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "source" || name == "target" || name == "." {
+				return sourceInfo, nil
+			}
+			t.Fatalf("unexpected lstat path: %s", name)
+			return nil, os.ErrNotExist
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return errIdentityBoundLinkUnavailable
+		},
+		open: func(string) (File, error) {
+			return nil, errors.ErrUnsupported
+		},
+		renameIfMatches: assertLinklessRename(t, sourceInfo),
+	}
+	if _, err := prepareAndRenameWithinRoot(root, "source", "target", 0o600); err != nil {
+		t.Fatalf("expected linkless rename fallback success, got %v", err)
+	}
+}
+
+func TestPrepareDoesNotSuppressDirectoryCloseFailureWithReadDirFallback(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+	closeErr := errors.New("close directory")
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"source": sourceInfo,
+				"SOURCE": sourceInfo,
+				".":      dirInfo,
+			},
+			nil,
+		),
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+				close: func() error { return closeErr },
+			}, nil
+		},
+		renameIfMatches: func(string, string, fs.FileInfo, string) error {
+			t.Fatal("close failure must not select the linkless fallback")
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "SOURCE", 0o600); !errors.Is(err, closeErr) {
+		t.Fatalf("expected directory close error, got %v", err)
+	}
+}
+
+func TestPrepareUsesDirectoryReadDirFallbackWithoutCleanupFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	dirInfo := statTestPath(t, t.TempDir())
+
+	root := &fakeRoot{
+		lstat: lstatMappedPaths(t,
+			map[string]fs.FileInfo{
+				"source": sourceInfo,
+				"SOURCE": sourceInfo,
+				".":      dirInfo,
+			},
+			nil,
+		),
+		chmod: chmodNameWithoutError(t, "source"),
+		open: func(name string) (File, error) {
+			if name != "." {
+				t.Fatalf("unexpected directory open %q", name)
+			}
+			return &fakeFile{
+				stat:  func() (fs.FileInfo, error) { return dirInfo, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+		renameIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != "source" || newName != "SOURCE" {
+				t.Fatalf("unexpected linkless rename %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			return nil
+		},
+	}
+
+	if _, err := prepareAndRenameWithinRoot(root, "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("expected linkless fallback success, got %v", err)
+	}
+}
+
+func TestPrepareRemovesSourceWhenAliasScanChangesBeforePublication(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	state := newAliasScanRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
+
+	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("prepare and rename returned error: %v", err)
+	}
+	if state.files["source"] {
+		t.Fatal("expected source cleanup after the published target no longer aliased it")
+	}
+	if !state.files["SOURCE"] {
+		t.Fatal("expected published target to remain")
+	}
+	if state.readDirCalls != 1 {
+		t.Fatalf("expected source cleanup to rely on the publication result, got %d directory scans", state.readDirCalls)
+	}
+}
+
+func TestPrepareRemovesRelinkedHardLinkAfterAliasScan(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	state := newRelinkedAliasRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
+
+	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("prepare and rename returned error: %v", err)
+	}
+	if state.files["source"] || !state.files["SOURCE"] {
+		t.Fatalf("expected source removal and retained target, files=%#v", state.files)
+	}
+	if state.sourceRemovals != 1 {
+		t.Fatalf("expected exactly one original-source removal, got %d", state.sourceRemovals)
+	}
+	if state.readDirCalls != 1 {
+		t.Fatalf("expected one advisory alias scan, got %d", state.readDirCalls)
+	}
+}
+
+func TestPrepareRestoresTargetWhenFalseAliasScanRetainsStaging(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"primary",
+		atomicTempPrefix+"cleanup",
+		atomicTempPrefix+"cleanup-retry",
+		atomicTempPrefix+"cleanup-final",
+		atomicTempPrefix+"cleanup-last",
+		atomicTempPrefix+"retained-primary",
+		atomicTempPrefix+"retained-cleanup",
+		atomicTempPrefix+"retained-cleanup-retry",
+		atomicTempPrefix+"retained-cleanup-final",
+	)
+	state := newFalseAliasScanRetainedStagingState(t, sourceInfo, statTestPath(t, t.TempDir()))
+
+	if _, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600); err != nil {
+		t.Fatalf("prepare and rename returned error: %v", err)
+	}
+	if state.files["source"] || !state.files["SOURCE"] {
+		t.Fatalf("retained publication must safely reconstruct target, files=%#v", state.files)
+	}
+	if state.sourceCleanupCalls != 1 {
+		t.Fatalf("expected one source cleanup through retained staging, got %d", state.sourceCleanupCalls)
+	}
+	if state.readDirCalls != 1 {
+		t.Fatalf("expected one advisory alias scan, got %d directory scans", state.readDirCalls)
+	}
+	for name, exists := range state.files {
+		if exists && strings.HasPrefix(name, atomicTempPrefix) {
+			t.Fatalf("staging entry leaked after retained publication: %s", name)
+		}
+	}
+}
+
+func TestPrepareRestoresSourceWhenRelinkedTargetChangesDuringRecovery(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"primary",
+		atomicTempPrefix+"retained",
+		atomicTempPrefix+"cleanup-one",
+		atomicTempPrefix+"cleanup-two",
+		atomicTempPrefix+"cleanup-three",
+		atomicTempPrefix+"cleanup-four",
+		atomicTempPrefix+"cleanup-five",
+	)
+	state := newRelinkedAliasRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
+	state.targetReplacement = changedInfo
+
+	_, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600)
+	if err == nil || !strings.Contains(err.Error(), moveTargetChangedBeforeValidate) {
+		t.Fatalf("expected target recovery failure, got %v", err)
+	}
+	if !state.files["source"] || !state.files["SOURCE"] {
+		t.Fatalf("expected restored source and raced target, files=%#v", state.files)
+	}
+	if state.sourceRemovals != 1 || state.sourceRestores != 1 {
+		t.Fatalf("expected one source removal and restoration, removals=%d restores=%d", state.sourceRemovals, state.sourceRestores)
+	}
+	for name, exists := range state.files {
+		if exists && strings.HasPrefix(name, atomicTempPrefix) {
+			t.Fatalf("retained staging entry leaked after source restoration: %s", name)
+		}
+	}
+}
+
+func TestPrepareDoesNotRestoreReplacedRetainedStaging(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	useRandomTempNames(t,
+		atomicTempPrefix+"primary",
+		atomicTempPrefix+"retained",
+		atomicTempPrefix+"cleanup-one",
+		atomicTempPrefix+"cleanup-two",
+		atomicTempPrefix+"cleanup-three",
+	)
+	state := newRelinkedAliasRaceState(t, sourceInfo, statTestPath(t, t.TempDir()))
+	state.targetReplacement = changedInfo
+	state.replaceRetainedStagingAfterRecovery = true
+
+	_, err := prepareAndRenameWithinRoot(state.root(), "source", "SOURCE", 0o600)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeCleanup) {
+		t.Fatalf("expected retained staging identity failure, got %v", err)
+	}
+	if state.files["source"] {
+		t.Fatalf("must not restore source from replaced retained staging, files=%#v", state.files)
+	}
+	if !state.files["SOURCE"] {
+		t.Fatalf("expected raced target to remain, files=%#v", state.files)
+	}
+	if state.sourceRestores != 0 {
+		t.Fatalf("expected no source restoration from replaced staging, got %d", state.sourceRestores)
+	}
+}
+
+func lstatMappedPaths(t *testing.T, infos map[string]fs.FileInfo, errs map[string]error) func(string) (fs.FileInfo, error) {
+	t.Helper()
+	return func(name string) (fs.FileInfo, error) {
+		if err, ok := errs[name]; ok {
+			return nil, err
+		}
+		if info, ok := infos[name]; ok {
+			return info, nil
+		}
+		t.Fatalf("unexpected lstat path: %s", name)
+		return nil, os.ErrNotExist
+	}
+}
+
+func assertLinklessRename(t *testing.T, sourceInfo fs.FileInfo) func(string, string, fs.FileInfo, string) error {
+	t.Helper()
+	return func(oldName, newName string, expected fs.FileInfo, message string) error {
+		if oldName != "source" || newName != "target" {
+			t.Fatalf("unexpected linkless rename %q -> %q", oldName, newName)
+		}
+		requireSameFileInfo(t, expected, sourceInfo, oldName)
+		return nil
+	}
+}
+
+func TestFinalSafeIOCoverageBranches(t *testing.T) {
+	t.Run("open staging copy second stat failure", testFinalSafeIOOpenStagingCopySecondStatFailure)
+	t.Run("publish staged if absent returns unexpected link error", testFinalSafeIOPublishStagedUnexpectedLinkError)
+	t.Run("publish staged if absent preserves cleanup error on existing target", testFinalSafeIOPublishStagedExistingTargetCleanupError)
+	t.Run("retained move recovery preserves existing-target cleanup error", testFinalSafeIORetainedMoveExistingTargetCleanupError)
+	t.Run("publish if absent joins close and cleanup errors", testFinalSafeIOPublishIfAbsentJoinsCloseAndCleanupErrors)
+}
+
+func testFinalSafeIOOpenStagingCopySecondStatFailure(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+	statCalls := 0
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return sourceInfo, nil },
+		open: func(string) (File, error) {
+			return &fakeFile{
+				stat: func() (fs.FileInfo, error) {
+					statCalls++
+					if statCalls == 1 {
+						return sourceInfo, nil
+					}
+					return nil, lstatErr
+				},
+				close: closeWithoutError,
+			}, nil
+		},
+	}
+	_, _, err := openStagingCopySource(root, "source", sourceInfo, sourceChangedMsg, nil)
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected second stat failure, got %v", err)
+	}
+}
+
+func testFinalSafeIOPublishStagedUnexpectedLinkError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	linkErr := errors.New("link failed")
+	err := publishStagedIdentityBoundIfAbsent(&fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error { return linkErr },
+		lstat:         lstatOriginalForNames(t, sourceInfo, "stage"),
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, sourceInfo, name)
+			return nil
+		},
+	}, "source", "stage", "target", sourceInfo)
+	if !errors.Is(err, linkErr) {
+		t.Fatalf("expected staged link error, got %v", err)
+	}
+}
+
+func testFinalSafeIOPublishStagedExistingTargetCleanupError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	cleanupErr := errors.New("quarantine cleanup failed")
+	err := publishStagedIdentityBoundIfAbsent(&fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return withAtomicWriteCleanup(os.ErrExist, cleanupErr)
+		},
+		lstat: lstatOriginalForNames(t, sourceInfo, "stage"),
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, sourceInfo, name)
+			return nil
+		},
+	}, "source", "stage", "target", sourceInfo)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected existing-target cleanup error, got %v", err)
+	}
+}
+
+func testFinalSafeIORetainedMoveExistingTargetCleanupError(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	cleanupErr := errors.New("retained quarantine cleanup failed")
+	sourceRemoved := false
+	sourceRestored := false
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return sourceInfo, nil },
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, sourceInfo, oldName)
+			switch {
+			case oldName == "stage" && newName == "target":
+				return withAtomicWriteCleanup(os.ErrExist, cleanupErr)
+			case oldName == "stage" && newName == "source":
+				sourceRestored = true
+				return nil
+			case oldName == "source" && strings.HasPrefix(newName, atomicTempPrefix):
+				return nil
+			case strings.HasPrefix(oldName, atomicTempPrefix) && strings.HasPrefix(newName, atomicTempPrefix):
+				return nil
+			default:
+				t.Fatalf("unexpected link %q -> %q", oldName, newName)
+				return nil
+			}
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, sourceInfo, name)
+			switch name {
+			case "source":
+				sourceRemoved = true
+			case "stage":
+			default:
+				if !strings.HasPrefix(name, atomicTempPrefix) {
+					t.Fatalf("unexpected removal %q", name)
+				}
+			}
+			return nil
+		},
+	}
+
+	err := retainedStagingMoveFinalizer(root, "source", "target", sourceInfo)("stage", sourceInfo)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected retained cleanup error, got %v", err)
+	}
+	if !sourceRemoved || !sourceRestored {
+		t.Fatalf("expected failed retained cleanup to restore source, removed=%t restored=%t", sourceRemoved, sourceRestored)
+	}
+}
+
+func testFinalSafeIOPublishIfAbsentJoinsCloseAndCleanupErrors(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	removeErr := errors.New("remove failed")
+	closeErr := errors.New("close failed")
+	session := &atomicWriteSession{
+		root:      &fakeRoot{},
+		tempRel:   "stage",
+		targetRel: "target",
+		tempInfo:  sourceInfo,
+		tempFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return sourceInfo, nil },
+			close: func() error { return closeErr },
+		},
+	}
+	session.root = &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "stage" || strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return sourceInfo, nil
+			}
+			t.Fatalf("unexpected lstat path: %s", name)
+			return nil, os.ErrNotExist
+		},
+		removeIfMatches: func(string, fs.FileInfo, string) error {
+			return removeErr
+		},
+	}
+	err := session.publishIfAbsent()
+	if !errors.Is(err, closeErr) || !errors.Is(err, removeErr) {
+		t.Fatalf("expected close and cleanup errors, got %v", err)
+	}
+}
+
+func TestFinalSafeIOMoveCleanupBranches(t *testing.T) {
+	sourceInfo, _ := writePinnedTargetInfoPair(t)
+	renameErr := errors.New("rename failed")
+
+	t.Run("rename linkless source reports rename error", func(t *testing.T) {
+		root := &fakeRoot{
+			renameIfMatches: func(string, string, fs.FileInfo, string) error { return renameErr },
+		}
+		if err := renameLinklessMoveSource(root, "source", "target", sourceInfo); !errors.Is(err, renameErr) {
+			t.Fatalf("expected linkless rename error, got %v", err)
+		}
+	})
+
+	t.Run("rename linkless source cleans when state reports unconsumed", func(t *testing.T) {
+		cleaned := false
+		root := &renameStateOnlyRoot{
+			Root: &fakeRoot{
+				lstat: lstatOriginalForNames(t, sourceInfo, "target"),
+			},
+			renameIfMatchesState: func(string, string, fs.FileInfo, string) (bool, error) {
+				return false, nil
+			},
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return errIdentityBoundLinkUnavailable },
+			removeIfMatches: func(string, fs.FileInfo, string) error {
+				cleaned = true
+				return nil
+			},
+		}
+		if err := renameLinklessMoveSource(root, "source", "target", sourceInfo); err != nil {
+			t.Fatalf("expected unconsumed linkless cleanup success, got %v", err)
+		}
+		if !cleaned {
+			t.Fatal("expected unconsumed source cleanup")
+		}
+	})
+
+	t.Run("rename linkless source validates target when state reports unconsumed", func(t *testing.T) {
+		_, changedInfo := writePinnedTargetInfoPair(t)
+		cleaned := false
+		root := &renameStateOnlyRoot{
+			Root: &fakeRoot{
+				lstat: lstatOriginalForNames(t, changedInfo, "target"),
+			},
+			renameIfMatchesState: func(string, string, fs.FileInfo, string) (bool, error) {
+				return false, nil
+			},
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return errIdentityBoundLinkUnavailable },
+			removeIfMatches: func(string, fs.FileInfo, string) error {
+				cleaned = true
+				return nil
+			},
+		}
+		err := renameLinklessMoveSource(root, "source", "target", sourceInfo)
+		if err == nil || !strings.Contains(err.Error(), "move target changed before validation") {
+			t.Fatalf("expected target validation failure, got %v", err)
+		}
+		if !cleaned {
+			t.Fatal("expected cleanup to still remove the unconsumed source alias")
+		}
+	})
+}
+
+func TestFinalSafeIORemoveIdentityBranches(t *testing.T) {
+	t.Run("remove identity bound missing source during staging", testFinalSafeIORemoveMissingSourceDuringStaging)
+	t.Run("remove identity bound ignores missing source after cleanup link", testFinalSafeIORemoveMissingSourceAfterCleanupLink)
+	t.Run("restore quarantined path reports cleanup failure", testFinalSafeIORestoreCleanupFailure)
+	t.Run("rename restore cleanup failure keeps retry armed", testFinalSafeIORenameRestoreCleanupRetry)
+}
+
+func testFinalSafeIORemoveMissingSourceDuringStaging(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	err := removeIdentityBound(&fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error { return os.ErrNotExist },
+	}, "source", sourceInfo, sourceChangedMsg)
+	if err != nil {
+		t.Fatalf("missing source during removal staging should be accepted, got %v", err)
+	}
+}
+
+func testFinalSafeIORemoveMissingSourceAfterCleanupLink(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	cleanupRel := atomicTempPrefix + "cleanup"
+	cleanupGuardRel := atomicTempPrefix + "cleanup-guard"
+	useRandomTempNames(t, cleanupRel, cleanupGuardRel)
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+		lstat:         lstatOriginalForNames(t, sourceInfo, cleanupRel, cleanupGuardRel),
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if name == "source" {
+				return os.ErrNotExist
+			}
+			requireSameFileInfo(t, expected, sourceInfo, name)
+			return nil
+		},
+	}
+	if err := removeIdentityBound(root, "source", sourceInfo, sourceChangedMsg); err != nil {
+		t.Fatalf("missing source after cleanup link should be accepted, got %v", err)
+	}
+}
+
+func testFinalSafeIORestoreCleanupFailure(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	removeErr := errors.New("remove failed")
+	useRandomTempNames(t, atomicTempPrefix+"restore")
+	files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		remove: func(name string) error {
+			if strings.HasSuffix(name, "entry") {
+				return removeErr
+			}
+			return nil
+		},
+	})
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+	if !restored || retained || !errors.Is(err, removeErr) {
+		t.Fatalf("expected restore cleanup failure, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+}
+
+func testFinalSafeIORenameRestoreCleanupRetry(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	removeErr := errors.New("remove failed")
+	useRandomTempNames(t, atomicTempPrefix+"restore", atomicTempPrefix+"retry")
+	files := map[string]fs.FileInfo{"source": changedInfo}
+	removeCalls := 0
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		remove: func(name string) error {
+			if name == filepath.Join(atomicTempPrefix+"restore", "entry") {
+				removeCalls++
+				if removeCalls == 1 {
+					return removeErr
+				}
+			}
+			delete(files, name)
+			return nil
+		},
+	})
+	_, err := renameFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if err == nil || !errors.Is(err, removeErr) {
+		t.Fatalf("expected restore cleanup failure, got %v", err)
+	}
+	requireSameFileInfo(t, files["source"], changedInfo, "restored source")
+	for name := range files {
+		if strings.Contains(name, "entry") {
+			t.Fatalf("expected deferred cleanup retry to remove staged entry, still have %s", name)
+		}
+	}
+}
+
+func TestRestoreQuarantinedPathNoReplaceLinklessBranches(t *testing.T) {
+	t.Run("restores by validated copy when original is absent", testRestoreQuarantinedPathNoReplaceByCopy)
+	t.Run("retains source when published copy is replaced after validation", testRestoreQuarantinedPathNoReplaceRetainsRacedCopySource)
+	t.Run("reports retained staging to move recovery", testRestoreQuarantinedPathNoReplaceReportsRetainedStaging)
+	t.Run("safe failure preserves raced original and quarantine", testRestoreQuarantinedPathNoReplacePreservesRacedOriginal)
+}
+
+func testRestoreQuarantinedPathNoReplaceByCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "quarantine", "entry"), []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+	expected := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
+	root := linklessTestRoot(openTestRoot(t, rootDir))
+
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+	if !restored || !retained || err != nil {
+		t.Fatalf("expected retained linkless copy restore, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "source")
+}
+
+func testRestoreQuarantinedPathNoReplaceRetainsRacedCopySource(t *testing.T) {
+	rootDir := t.TempDir()
+	quarantineDir := filepath.Join(rootDir, "quarantine")
+	if err := os.Mkdir(quarantineDir, 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	stagedPath := filepath.Join(quarantineDir, "entry")
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+	expected := statTestPath(t, stagedPath)
+	base := openTestRoot(t, rootDir)
+	sourcePath := filepath.Join(rootDir, "source")
+	publishedCopyReplaced := false
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: unsupportedLink,
+		lstat: func(name string) (fs.FileInfo, error) {
+			info, err := base.Lstat(name)
+			if name == "source" && err == nil && !publishedCopyReplaced {
+				publishedCopyReplaced = true
+				if err := os.Remove(sourcePath); err != nil {
+					t.Fatalf("replace published copy: %v", err)
+				}
+				if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
+					t.Fatalf("write concurrent replacement: %v", err)
+				}
+			}
+			return info, err
+		},
+	}}
+
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, expected)
+	if !restored || !retained || err != nil {
+		t.Fatalf("expected retained copy restore after publication race, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	if !publishedCopyReplaced {
+		t.Fatal("expected published copy replacement race")
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertFileContent(t, stagedPath, "source")
+}
+
+func testRestoreQuarantinedPathNoReplaceReportsRetainedStaging(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	stagedPath := filepath.Join(rootDir, "quarantine", "entry")
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+	expected := statTestPath(t, stagedPath)
+
+	err := restoreRetainedAliasSource(linklessTestRoot(openTestRoot(t, rootDir)), filepath.Join("quarantine", "entry"), "source", expected)
+	if !errors.Is(err, errIdentityBoundRestoreRetainedStaging) {
+		t.Fatalf("expected retained staging error, got %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, stagedPath, "source")
+}
+
+func testRestoreQuarantinedPathNoReplacePreservesRacedOriginal(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	files := map[string]fs.FileInfo{"quarantine/entry": sourceInfo, "source": changedInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{
+		link: unsupportedLink,
+		rename: func(oldName, newName string) error {
+			t.Fatalf("linkless restore must preserve raced target, got rename %q -> %q", oldName, newName)
+			return nil
+		},
+	})
+
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+	if restored || retained || !errors.Is(err, errIdentityBoundLinkUnavailable) {
+		t.Fatalf("expected linkless restore safe failure, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	requireSameFileInfo(t, files["source"], changedInfo, "source")
+	requireSameFileInfo(t, files["quarantine/entry"], sourceInfo, "quarantine/entry")
+}
+
+func linklessTestRoot(root Root) Root {
+	return &rootWithoutIdentity{Root: &fakeRoot{Root: root, link: unsupportedLink}}
+}
+
+func unsupportedLink(string, string) error {
+	return syscall.EPERM
+}
+
+func TestRestoreQuarantinedMoveSourceAfterFallbackFailureCleansRestoredStaging(t *testing.T) {
+	rootDir := t.TempDir()
+	stagingDir := filepath.Join(rootDir, atomicTempPrefix+"move")
+	if err := os.Mkdir(stagingDir, 0o700); err != nil {
+		t.Fatalf("create move staging: %v", err)
+	}
+	stagedRel := filepath.Join(atomicTempPrefix+"move", "entry")
+	stagedPath := filepath.Join(rootDir, stagedRel)
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed move staging: %v", err)
+	}
+
+	root := openTestRoot(t, rootDir)
+	if err := restoreQuarantinedMoveSourceAfterFallbackFailure(root, "source", stagedRel, statTestPath(t, stagedPath), true); err != nil {
+		t.Fatalf("restore quarantined move source: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertPathAbsent(t, stagedPath)
+	assertPathAbsent(t, stagingDir)
+}
+
+func TestRestoreOriginalFromQuarantineReportsRetainedStaging(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	stagedRel := filepath.Join("quarantine", "entry")
+	stagedPath := filepath.Join(rootDir, stagedRel)
+	if err := os.WriteFile(stagedPath, []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed quarantine: %v", err)
+	}
+
+	state := &basicRootRenameState{
+		root:           linklessTestRoot(openTestRoot(t, rootDir)),
+		oldName:        "source",
+		quarantineDir:  "quarantine",
+		quarantineRel:  stagedRel,
+		quarantineInfo: statTestPath(t, stagedPath),
+		message:        sourceChangedMsg,
+		cleanupDir:     true,
+	}
+	err := state.restoreOriginalFromQuarantine()
+	if !errors.Is(err, errIdentityBoundRestoreRetainedStaging) {
+		t.Fatalf("expected retained staging error, got %v", err)
+	}
+	if state.cleanupDir || state.cleanupQuarantineEntry {
+		t.Fatalf("expected retained staging cleanup to be disabled, state=%+v", state)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	assertFileContent(t, stagedPath, "source")
+}
+
+func TestCleanupCreatedFileIfSameFileBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	cleanupMsg := "created cleanup changed"
+
+	assertCleanupCreatedFileIfSameFileSimpleBranches(t, sourceInfo, changedInfo, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileRemovesMatchingInode(t, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileReturnsQuarantineStatFailure(t, sourceInfo, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileRestoresRacedRenameMismatch(t, sourceInfo, changedInfo, cleanupMsg)
+	assertCleanupCreatedFileIfSameFileReturnsRemoveFailure(t, sourceInfo, cleanupMsg)
+}
+
+func assertCleanupCreatedFileIfSameFileSimpleBranches(t *testing.T, sourceInfo, changedInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{}, "", sourceInfo, cleanupMsg); err != nil {
+		t.Fatalf("empty cleanup path should be ignored: %v", err)
+	}
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{}, "source", nil, cleanupMsg); err == nil || !strings.Contains(err.Error(), cleanupMsg) {
+		t.Fatalf("expected missing identity error, got %v", err)
+	}
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }}, "source", sourceInfo, cleanupMsg); err != nil {
+		t.Fatalf("missing cleanup path should be ignored: %v", err)
+	}
+	lstatErr := errors.New("cleanup lstat failed")
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr }}, "source", sourceInfo, cleanupMsg); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected lstat failure, got %v", err)
+	}
+	if err := cleanupCreatedFileIfSameFile(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil }}, "source", sourceInfo, cleanupMsg); err != nil {
+		t.Fatalf("changed cleanup path should be preserved: %v", err)
+	}
+}
+
+func assertCleanupCreatedFileIfSameFileRemovesMatchingInode(t *testing.T, cleanupMsg string) {
+	t.Helper()
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(path, []byte("created"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	info := statTestPath(t, path)
+	root := openTestRoot(t, rootDir)
+	if err := cleanupCreatedFileIfSameFile(root, "source", info, cleanupMsg); err != nil {
+		t.Fatalf("cleanup matching created file: %v", err)
+	}
+	assertPathAbsent(t, path)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func assertCleanupCreatedFileIfSameFileReturnsQuarantineStatFailure(t *testing.T, sourceInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	statErr := errors.New("quarantine stat failed")
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{lstat: func(name string) (fs.FileInfo, error) {
+		if strings.Contains(name, "entry") {
+			return nil, statErr
+		}
+		if info, ok := files[name]; ok {
+			return info, nil
+		}
+		return nil, os.ErrNotExist
+	}})
+	if err := cleanupCreatedFileIfSameFile(root, "source", sourceInfo, cleanupMsg); !errors.Is(err, statErr) {
+		t.Fatalf("expected quarantine stat failure, got %v", err)
+	}
+}
+
+func assertCleanupCreatedFileIfSameFileRestoresRacedRenameMismatch(t *testing.T, sourceInfo, changedInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{rename: func(oldName, newName string) error {
+		files[newName] = changedInfo
+		delete(files, oldName)
+		return nil
+	}})
+	err := cleanupCreatedFileIfSameFile(root, "source", sourceInfo, cleanupMsg)
+	if err == nil || !strings.Contains(err.Error(), cleanupMsg) {
+		t.Fatalf("expected cleanup mismatch error, got %v", err)
+	}
+	requireSameFileInfo(t, files["source"], changedInfo, "restored changed source")
+}
+
+func assertCleanupCreatedFileIfSameFileReturnsRemoveFailure(t *testing.T, sourceInfo fs.FileInfo, cleanupMsg string) {
+	t.Helper()
+	files := map[string]fs.FileInfo{"source": sourceInfo}
+	removeErr := errors.New("remove failed")
+	root := newIdentityMapRoot(t, files, identityMapRootHooks{remove: func(name string) error {
+		if strings.Contains(name, "entry") {
+			return removeErr
+		}
+		delete(files, name)
+		return nil
+	}})
+	if err := cleanupCreatedFileIfSameFile(root, "source", sourceInfo, cleanupMsg); !errors.Is(err, removeErr) {
+		t.Fatalf("expected remove failure, got %v", err)
+	}
+}
+
+func TestFinalSafeIOActiveHelperBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	root := assertFinalSafeIORootNameBranches(t)
+	assertFinalSafeIOLinkAndStagingClassifiers(t)
+	assertFinalSafeIORandomSetupErrors(t, sourceInfo)
+	assertFinalSafeIOCountDirectoryBranches(t, root, sourceInfo)
+	assertFinalSafeIORetryAndUnconsumedCleanupBranches(t, sourceInfo)
+}
+
+func assertFinalSafeIORootNameBranches(t *testing.T) Root {
+	t.Helper()
+	root := openTestRoot(t, t.TempDir())
+	rootImpl, ok := root.(*osRoot)
+	if !ok {
+		t.Fatalf("expected osRoot test root")
+	}
+	if rootImpl.rootName() == "" {
+		t.Fatal("expected fallback root name")
+	}
+	unnamedRoot := &osRoot{root: rootImpl.root}
+	if unnamedRoot.rootName() == "" {
+		t.Fatal("expected unnamed root to use underlying root name")
+	}
+	return root
+}
+
+func assertFinalSafeIOLinkAndStagingClassifiers(t *testing.T) {
+	t.Helper()
+	linkErr := &os.LinkError{Op: "linkat", Old: "attempted", New: "target", Err: syscall.EPERM}
+	if got := attemptedTargetLinkSource(linkErr, "fallback", "target"); got != "attempted" {
+		t.Fatalf("expected attempted link source, got %q", got)
+	}
+	if got := attemptedTargetLinkSource(&os.LinkError{Op: "link", Old: "attempted", New: "target", Err: syscall.EPERM}, "fallback", "target"); got != "fallback" {
+		t.Fatalf("expected fallback for non-linkat error, got %q", got)
+	}
+	if isMoveSourceStagingEntry("source", "source") {
+		t.Fatal("same source must not be a staging entry")
+	}
+	if !isMoveSourceStagingEntry("source", filepath.Join(atomicTempPrefix+"move", "entry")) {
+		t.Fatal("expected quarantine entry to be recognized")
+	}
+}
+
+func assertFinalSafeIORandomSetupErrors(t *testing.T, sourceInfo fs.FileInfo) {
+	t.Helper()
+	randomErr := errors.New("random failed")
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) { return "", randomErr }
+	_, _, err := identityBoundQuarantinePath(&fakeRoot{}, "source")
+	randomTempNameFn = originalRandomTempNameFn
+	if !errors.Is(err, randomErr) {
+		t.Fatalf("expected random quarantine error, got %v", err)
+	}
+	randomTempNameFn = func() (string, error) { return "", randomErr }
+	_, err = newBasicRootRenameState(&fakeRoot{}, "source", "target", sourceInfo, sourceChangedMsg)
+	randomTempNameFn = originalRandomTempNameFn
+	if !errors.Is(err, randomErr) {
+		t.Fatalf("expected random rename-state error, got %v", err)
+	}
+}
+
+func assertFinalSafeIOCountDirectoryBranches(t *testing.T, root Root, sourceInfo fs.FileInfo) {
+	t.Helper()
+	readErr := errors.New("read dir failed")
+	countRoot := readDirErrorRoot(root, readErr)
+	if _, err := countDirectoryEntriesAddressingBothNames(countRoot, ".", "source", "target", sourceInfo); !errors.Is(err, readErr) {
+		t.Fatalf("expected read dir error, got %v", err)
+	}
+	lstatErr := errors.New("entry lstat failed")
+	countRoot = countDirectoryLstatErrorRoot(t, root, lstatErr)
+	if _, err := countDirectoryEntriesAddressingBothNames(countRoot, ".", "source", "target", sourceInfo); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected entry lstat error after missing entry skip, got %v", err)
+	}
+}
+
+func readDirErrorRoot(root Root, readErr error) *fakeRoot {
+	return &fakeRoot{Root: root, open: func(name string) (File, error) {
+		file, err := root.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeReadDirFile{fakeFile: &fakeFile{File: file}, readDir: func(int) ([]fs.DirEntry, error) { return nil, readErr }}, nil
+	}}
+}
+
+func countDirectoryLstatErrorRoot(t *testing.T, root Root, lstatErr error) *fakeRoot {
+	t.Helper()
+	return &fakeRoot{Root: root, open: func(name string) (File, error) {
+		file, err := root.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeReadDirFile{fakeFile: &fakeFile{File: file}, readDir: func(int) ([]fs.DirEntry, error) {
+			return []fs.DirEntry{&namedDirEntry{name: "ignored"}, &namedDirEntry{name: "source"}, &namedDirEntry{name: "target"}}, nil
+		}}, nil
+	}, lstat: func(name string) (fs.FileInfo, error) {
+		switch name {
+		case ".":
+			return root.Lstat(name)
+		case filepath.Join(".", "source"):
+			return nil, os.ErrNotExist
+		case filepath.Join(".", "target"):
+			return nil, lstatErr
+		default:
+			t.Fatalf("unexpected count lstat path: %s", name)
+			return nil, os.ErrNotExist
+		}
+	}}
+}
+
+func assertFinalSafeIORetryAndUnconsumedCleanupBranches(t *testing.T, sourceInfo fs.FileInfo) {
+	t.Helper()
+	if err := retryCleanupAtomicTempFileIfStillMatches(&fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }}, "missing", sourceInfo, sourceChangedMsg); err != nil {
+		t.Fatalf("missing retry cleanup path should be ignored: %v", err)
+	}
+	randomErr := errors.New("random failed")
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) { return "", randomErr }
+	err := removeFileIfMatchesUsingBasicRoot(&fakeRoot{}, "source", sourceInfo, sourceChangedMsg)
+	randomTempNameFn = originalRandomTempNameFn
+	if !errors.Is(err, randomErr) {
+		t.Fatalf("expected random remove setup error, got %v", err)
+	}
+	state := &basicRootRenameState{root: &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, errors.New("finish failed") }}, quarantineRel: "staged", quarantineInfo: sourceInfo, message: sourceChangedMsg}
+	if _, err := state.removeUnconsumedQuarantineEntry(); err == nil || state.cleanupDir {
+		t.Fatalf("expected failed unconsumed cleanup to disable dir cleanup, err=%v cleanupDir=%t", err, state.cleanupDir)
+	}
+}
+
+func TestRestoreQuarantinedPathNoReplaceByCopyErrorBranches(t *testing.T) {
+	t.Run("missing staged source", testRestoreCopyMissingStagedSource)
+	t.Run("source identity mismatch before copy", testRestoreCopySourceIdentityMismatch)
+	t.Run("original already exists", testRestoreCopyOriginalExists)
+	t.Run("created target stat failure preserves concurrent replacement", testRestoreCopyInitialStatFailure)
+	t.Run("copy source read failure cleans candidate", testRestoreCopyReadFailure)
+	t.Run("copy source read failure joins target stat failure", testRestoreCopyReadAndStatFailure)
+	t.Run("created target chmod failure cleans candidate", testRestoreCopyChmodFailure)
+	t.Run("created target chmod failure with target stat failure preserves candidate", testRestoreCopyChmodAndStatFailure)
+	t.Run("created target post-copy stat failure cleans candidate", testRestoreCopyPostCopyStatFailure)
+	t.Run("created target close failure cleans candidate", testRestoreCopyCloseFailure)
+	t.Run("source identity mismatch after copy cleans candidate", testRestoreCopySourceChangesAfterCopy)
+	t.Run("restored path identity mismatch leaves candidate for retry cleanup", testRestoreCopyPublishedPathMismatch)
+	t.Run("restored path validation failure leaves candidate for retry cleanup", testRestoreCopyPublishedPathStatFailure)
+}
+
+func setupRestoreCopy(t *testing.T) (string, Root, fs.FileInfo) {
+	t.Helper()
+	rootDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootDir, "staged"), []byte("source"), 0o640); err != nil {
+		t.Fatalf("seed staged source: %v", err)
+	}
+	return rootDir, openTestRoot(t, rootDir), statTestPath(t, filepath.Join(rootDir, "staged"))
+}
+
+func restoreCopy(root Root, expected fs.FileInfo) (bool, error) {
+	restored, _, err := restoreQuarantinedPathNoReplaceByCopy(root, "staged", "source", sourceChangedMsg, expected, syscall.EPERM)
+	return restored, err
+}
+
+func testRestoreCopyMissingStagedSource(t *testing.T) {
+	root := openTestRoot(t, t.TempDir())
+	restored, err := restoreCopy(root, newPinnedTargetInfo(t, "missing"))
+	if restored || !errors.Is(err, errIdentityBoundLinkUnavailable) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing staged source error, restored=%t err=%v", restored, err)
+	}
+}
+
+func testRestoreCopySourceIdentityMismatch(t *testing.T) {
+	_, root, _ := setupRestoreCopy(t)
+	restored, err := restoreCopy(root, newPinnedTargetInfo(t, "changed"))
+	if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected staged source identity mismatch, restored=%t err=%v", restored, err)
+	}
+}
+
+func testRestoreCopyOriginalExists(t *testing.T) {
+	rootDir, root, expected := setupRestoreCopy(t)
+	if err := os.WriteFile(filepath.Join(rootDir, "source"), []byte("newer"), 0o640); err != nil {
+		t.Fatalf("seed raced source: %v", err)
+	}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected no-replace create failure, restored=%t err=%v", restored, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "newer")
+}
+
+func testRestoreCopyInitialStatFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	statErr := errors.New("stat restored failed")
+	sourcePath := filepath.Join(rootDir, "source")
+	root := &fakeRoot{Root: base, openFile: failingRestoreTargetOpen(base, func(file File) File {
+		return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
+			if err := os.Remove(sourcePath); err != nil {
+				t.Fatalf("replace unknown-identity candidate: %v", err)
+			}
+			if err := os.WriteFile(sourcePath, []byte("replacement"), 0o600); err != nil {
+				t.Fatalf("write concurrent replacement: %v", err)
+			}
+			return nil, statErr
+		}}
+	})}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, statErr) {
+		t.Fatalf("expected created target stat failure, restored=%t err=%v", restored, err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+}
+
+func testRestoreCopyReadFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	readErr := errors.New("read staged failed")
+	root := &fakeRoot{Root: base, open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
+		return &fakeFile{File: file, read: func([]byte) (int, error) { return 0, readErr }}
+	})}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, readErr) {
+		t.Fatalf("expected read failure, restored=%t err=%v", restored, err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+}
+
+func testRestoreCopyReadAndStatFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	readErr := errors.New("read staged failed")
+	statErr := errors.New("stat partial restore failed")
+	root := &fakeRoot{
+		Root: base,
+		open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
+			return &fakeFile{File: file, read: func([]byte) (int, error) { return 0, readErr }}
+		}),
+		openFile: failingRestoreTargetOpen(base, failRestoreTargetStatAfterFirst(base, statErr)),
+	}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, readErr) || !errors.Is(err, statErr) {
+		t.Fatalf("expected read and stat failures, restored=%t err=%v", restored, err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+}
+
+func testRestoreCopyChmodFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	chmodErr := errors.New("chmod restored failed")
+	root := &fakeRoot{Root: base, openFile: failingRestoreTargetOpen(base, func(file File) File {
+		return &fakeFile{File: file, chmod: func(os.FileMode) error { return chmodErr }}
+	})}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, chmodErr) {
+		t.Fatalf("expected chmod failure, restored=%t err=%v", restored, err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+}
+
+func testRestoreCopyChmodAndStatFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	chmodErr := errors.New("chmod restored failed")
+	statErr := errors.New("stat chmod candidate failed")
+	root := &fakeRoot{Root: base, openFile: failingRestoreTargetOpen(base, func(file File) File {
+		wrapped := failRestoreTargetStatAfterFirst(base, statErr)(file)
+		return &fakeFile{File: wrapped, chmod: func(os.FileMode) error { return chmodErr }}
+	})}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, chmodErr) || !errors.Is(err, statErr) {
+		t.Fatalf("expected chmod and stat failures, restored=%t err=%v", restored, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+}
+
+func testRestoreCopyPostCopyStatFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	statErr := errors.New("stat completed restore failed")
+	root := &fakeRoot{Root: base, openFile: failingRestoreTargetOpen(base, failRestoreTargetStatAfterFirst(base, statErr))}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, statErr) {
+		t.Fatalf("expected post-copy stat failure, restored=%t err=%v", restored, err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+}
+
+func testRestoreCopyCloseFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	closeErr := errors.New("close restored failed")
+	root := &fakeRoot{Root: base, openFile: failingRestoreTargetOpen(base, func(file File) File {
+		return &fakeFile{File: file, close: func() error { return closeFileWithError(file, closeErr) }}
+	})}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, closeErr) {
+		t.Fatalf("expected close failure, restored=%t err=%v", restored, err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+}
+
+func testRestoreCopySourceChangesAfterCopy(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	changedInfo := newPinnedTargetInfo(t, "changed")
+	root := &fakeRoot{Root: base, open: wrapOpenedSourceFile(t, base, "staged", func(file File) File {
+		return failRestoreSourceStatAfterSecond(file, expected, changedInfo)
+	})}
+	restored, err := restoreCopy(root, expected)
+	if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected post-copy staged source mismatch, restored=%t err=%v", restored, err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "source"))
+}
+
+func testRestoreCopyPublishedPathMismatch(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	changedInfo := newPinnedTargetInfo(t, "changed")
+	root := &fakeRoot{Root: base, lstat: func(name string) (fs.FileInfo, error) {
+		if name == "source" {
+			return changedInfo, nil
+		}
+		return base.Lstat(name)
+	}}
+	restored, err := restoreCopy(root, expected)
+	if restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected restored path identity mismatch, restored=%t err=%v", restored, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+}
+
+func testRestoreCopyPublishedPathStatFailure(t *testing.T) {
+	rootDir, base, expected := setupRestoreCopy(t)
+	lstatErr := errors.New("restored lstat failed")
+	root := &fakeRoot{Root: base, lstat: func(name string) (fs.FileInfo, error) {
+		if name == "source" {
+			return nil, lstatErr
+		}
+		return base.Lstat(name)
+	}}
+	restored, err := restoreCopy(root, expected)
+	if restored || !errors.Is(err, lstatErr) {
+		t.Fatalf("expected restored path validation failure, restored=%t err=%v", restored, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+}
+
+func failingRestoreTargetOpen(base Root, wrap func(File) File) func(string, int, os.FileMode) (File, error) {
+	return func(name string, flag int, perm os.FileMode) (File, error) {
+		file, err := base.OpenFile(name, flag, perm)
+		if err != nil {
+			return nil, err
+		}
+		return wrap(file), nil
+	}
+}
+
+func failRestoreTargetStatAfterFirst(base Root, statErr error) func(File) File {
+	return func(file File) File {
+		statCalls := 0
+		return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
+			statCalls++
+			if statCalls == 1 {
+				return file.Stat()
+			}
+			return nil, statErr
+		}}
+	}
+}
+
+func failRestoreSourceStatAfterSecond(file File, expected, changedInfo fs.FileInfo) File {
+	statCalls := 0
+	return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
+		statCalls++
+		if statCalls <= 2 {
+			return expected, nil
+		}
+		return changedInfo, nil
+	}}
+}
+
+func TestFinishRestoredQuarantinedPathBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+
+	restored, err := finishRestoredQuarantinedPath(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+	}, "staged", sourceChangedMsg, sourceInfo)
+	if !restored || err != nil {
+		t.Fatalf("missing staged cleanup should be accepted, restored=%t err=%v", restored, err)
+	}
+
+	restored, err = finishRestoredQuarantinedPath(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return changedInfo, nil },
+	}, "staged", sourceChangedMsg, sourceInfo)
+	if !restored || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected staged identity mismatch, restored=%t err=%v", restored, err)
+	}
+}
+
+func TestRemoveFileIfStillMatchesUsesIdentityBoundRemoval(t *testing.T) {
+	expected := newPinnedTargetInfo(t, "source")
+	removeCalls := 0
+	root := &identityOnlyRoot{removeIfMatches: func(name string, got fs.FileInfo, message string) error {
+		removeCalls++
+		if name != "staged" || message != sourceChangedMsg {
+			t.Fatalf("unexpected identity-bound removal %q: %s", name, message)
+		}
+		requireSameFileInfo(t, got, expected, name)
+		return nil
+	}}
+
+	if err := removeFileIfStillMatches(root, "staged", expected, sourceChangedMsg); err != nil {
+		t.Fatalf("identity-bound removal returned error: %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one identity-bound removal, got %d", removeCalls)
+	}
+}
+
+func TestFinalSafeIOPathUtilityBranches(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	t.Run("prepare returns alias lstat error", func(t *testing.T) {
+		lstatCalls := 0
+		root := &fakeRoot{
+			mkdirAll: func(string, os.FileMode) error { return nil },
+			chmod:    chmodNameWithoutError(t, "source"),
+			lstat: func(string) (fs.FileInfo, error) {
+				lstatCalls++
+				if lstatCalls == 1 || lstatCalls == 2 {
+					return sourceInfo, nil
+				}
+				return nil, lstatErr
+			},
+		}
+		if _, err := prepareAndRenameWithinRoot(root, "source", "source", 0o600); !errors.Is(err, lstatErr) {
+			t.Fatalf("expected alias lstat error, got %v", err)
+		}
+	})
+
+	t.Run("split pinned path skips empty segments", func(t *testing.T) {
+		clean, parts := splitPinnedPath(filepath.Join(string(os.PathSeparator), "a", ".", "b"))
+		if clean == "" || len(parts) != 2 || parts[0] != "a" || parts[1] != "b" {
+			t.Fatalf("unexpected split path clean=%q parts=%v", clean, parts)
+		}
+	})
+
+	t.Run("joined sentinel ignores nil causes", func(t *testing.T) {
+		if !arePureSentinelCauses([]error{nil, os.ErrNotExist}, []error{os.ErrNotExist}) {
+			t.Fatal("expected nil joined cause to be ignored")
+		}
+	})
+
+	t.Run("same regular file rejects non regular actual", func(t *testing.T) {
+		if sameRegularFile(sourceInfo, &modeOverrideFileInfo{FileInfo: changedInfo, mode: os.ModeDir | 0o755}) {
+			t.Fatal("non-regular actual must not match")
+		}
+	})
+}
+
+func TestFinalSafeIOQuarantineCleanupResidualBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+
+	t.Run("missing verified quarantine is already clean", func(t *testing.T) {
+		root := &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist }}
+		if err := removeVerifiedQuarantinedFile(root, "quarantine/entry", sourceInfo, sourceChangedMsg); err != nil {
+			t.Fatalf("missing quarantined cleanup should be accepted: %v", err)
+		}
+	})
+
+	t.Run("mismatched created cleanup preserves an un-restorable quarantine", func(t *testing.T) {
+		restoreErr := errors.New("restore blocked")
+		cleanupDir, cleanupEntry, err := restoreMismatchedCreatedCleanup(&fakeRoot{
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return restoreErr },
+		}, "quarantine/entry", "source", sourceChangedMsg, sourceInfo)
+		if cleanupDir || cleanupEntry || !errors.Is(err, restoreErr) {
+			t.Fatalf("expected un-restorable quarantine to be preserved, cleanupDir=%t cleanupEntry=%t err=%v", cleanupDir, cleanupEntry, err)
+		}
+	})
+
+	t.Run("mismatched created cleanup retains a restored entry after cleanup failure", func(t *testing.T) {
+		rootDir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+			t.Fatalf("create quarantine: %v", err)
+		}
+		stagedPath := filepath.Join(rootDir, "quarantine", "entry")
+		if err := os.WriteFile(stagedPath, []byte("source"), 0o600); err != nil {
+			t.Fatalf("seed quarantined source: %v", err)
+		}
+		stagedInfo := statTestPath(t, stagedPath)
+		removeErr := errors.New("staged cleanup failed")
+		base := openTestRoot(t, rootDir)
+		root := &fakeRoot{Root: base, remove: func(name string) error {
+			if name == filepath.Join("quarantine", "entry") {
+				return removeErr
+			}
+			return base.Remove(name)
+		}}
+
+		cleanupDir, cleanupEntry, err := restoreMismatchedCreatedCleanup(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, stagedInfo)
+		if !cleanupDir || !cleanupEntry || !errors.Is(err, removeErr) {
+			t.Fatalf("expected restored entry cleanup retry, cleanupDir=%t cleanupEntry=%t err=%v", cleanupDir, cleanupEntry, err)
+		}
+		assertFileContent(t, filepath.Join(rootDir, "source"), "source")
+	})
+
+	t.Run("created cleanup returns a failed quarantine rename", func(t *testing.T) {
+		renameErr := errors.New("quarantine rename failed")
+		root := &fakeRoot{
+			mkdir:  func(string, os.FileMode) error { return nil },
+			rename: func(string, string) error { return renameErr },
+		}
+		if err := removeCreatedFileIfSameFile(root, "source", sourceInfo, sourceChangedMsg); !errors.Is(err, renameErr) {
+			t.Fatalf("expected quarantine rename failure, got %v", err)
+		}
+	})
+
+	t.Run("fallback source absence requires a distinct staged path", func(t *testing.T) {
+		if fallbackCopySourceIsAbsent(&fakeRoot{}, "source", "source") {
+			t.Fatal("the live source path must not be treated as an absent staged fallback")
+		}
+	})
+}
+
+func TestFinalSafeIOStateErrorBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+
+	t.Run("nested publish error keeps its source identity", func(t *testing.T) {
+		original := &publishRenameError{sourceRel: "staged", sourceInfo: sourceInfo, err: errors.New("publish failed")}
+		wrapped := withPublishRenameSourceInfo(original, "source", newPinnedTargetInfo(t, "replacement"))
+		var got *publishRenameError
+		if !errors.As(wrapped, &got) {
+			t.Fatalf("expected publish rename error, got %v", wrapped)
+		}
+		if got.sourceRel != "staged" {
+			t.Fatalf("expected preserved staged source, got %q", got.sourceRel)
+		}
+		requireSameFileInfo(t, got.sourceInfo, sourceInfo, "preserved source identity")
+	})
+
+	t.Run("non-regular rename identity is rejected", func(t *testing.T) {
+		nonRegular := &modeOverrideFileInfo{FileInfo: sourceInfo, mode: os.ModeDir | 0o700}
+		if _, err := renameFileIfMatchesUsingBasicRoot(&fakeRoot{}, "source", "target", nonRegular, sourceChangedMsg); err == nil {
+			t.Fatal("expected non-regular expected identity rejection")
+		}
+	})
+
+	t.Run("failed restore disables stale quarantine cleanup", func(t *testing.T) {
+		restoreErr := errors.New("restore rejected")
+		state := &basicRootRenameState{
+			root:                   &fakeRoot{linkIfMatches: func(string, string, fs.FileInfo, string) error { return restoreErr }},
+			oldName:                "source",
+			expected:               sourceInfo,
+			message:                sourceChangedMsg,
+			quarantineRel:          "quarantine/entry",
+			cleanupDir:             true,
+			cleanupQuarantineEntry: true,
+		}
+		if err := state.restoreSourceAfterSnapshotFailure(errors.New("snapshot failed")); !errors.Is(err, restoreErr) {
+			t.Fatalf("expected restore failure, got %v", err)
+		}
+		if state.cleanupDir || state.cleanupQuarantineEntry {
+			t.Fatalf("failed restore retained cleanup state: dir=%t entry=%t", state.cleanupDir, state.cleanupQuarantineEntry)
+		}
+	})
+
+	t.Run("post-rename stat failure retains the quarantine", func(t *testing.T) {
+		lstatErr := errors.New("staged lstat failed")
+		state := &basicRootRenameState{
+			root:          &fakeRoot{lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr }},
+			message:       sourceChangedMsg,
+			quarantineRel: "quarantine/entry",
+			cleanupDir:    true,
+		}
+		consumed, err := state.finishAfterTargetRename()
+		if consumed || !errors.Is(err, lstatErr) || state.cleanupDir {
+			t.Fatalf("expected quarantined stat failure, consumed=%t cleanupDir=%t err=%v", consumed, state.cleanupDir, err)
+		}
+	})
+
+	t.Run("created cleanup returns quarantine creation failure", func(t *testing.T) {
+		mkdirErr := errors.New("quarantine mkdir failed")
+		if err := removeCreatedFileIfSameFile(&fakeRoot{mkdir: func(string, os.FileMode) error { return mkdirErr }}, "source", sourceInfo, sourceChangedMsg); !errors.Is(err, mkdirErr) {
+			t.Fatalf("expected quarantine mkdir failure, got %v", err)
+		}
+	})
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootCleansTargetAfterPostChmodStatFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	statErr := errors.New("post-chmod stat failed")
+	statCalls := 0
+	root := &fakeRoot{Root: base, openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+		file, err := base.OpenFile(name, flag, perm)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeFile{File: file, stat: func() (fs.FileInfo, error) {
+			statCalls++
+			if statCalls == 3 {
+				return nil, statErr
+			}
+			return file.Stat()
+		}}, nil
+	}}
+
+	err := writeFileExclusivelyIfAbsentAtRoot(root, "target", []byte("completed"), 0o600)
+	if !errors.Is(err, statErr) {
+		t.Fatalf("expected post-chmod stat failure, got %v", err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "target"))
+}
+
+func TestCleanupAtomicTempFileIfMatchesRejectsMissingIdentity(t *testing.T) {
+	err := cleanupAtomicTempFileIfMatches(&fakeRoot{}, ".safeio-atomic-temp", nil)
+	if err == nil || !strings.Contains(err.Error(), "cleanup file identity unavailable") {
+		t.Fatalf("expected missing cleanup identity rejection, got %v", err)
+	}
+}
+
+func TestVerifyPublishedPathMatchesInfoRejectsNilAndNonRegularExpected(t *testing.T) {
+	root := &fakeRoot{}
+	if err := verifyPublishedPathMatchesInfo(root, "source", nil, sourceChangedMsg); err == nil {
+		t.Fatal("expected nil identity rejection")
+	}
+	dirInfo := &modeOverrideFileInfo{FileInfo: newPinnedTargetInfo(t, "source"), mode: os.ModeDir | 0o755}
+	if err := verifyPublishedPathMatchesInfo(root, "source", dirInfo, sourceChangedMsg); err == nil {
+		t.Fatal("expected non-regular identity rejection")
+	}
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	modeMismatch := &modeOverrideFileInfo{FileInfo: sourceInfo, mode: 0o600}
+	root = &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			return sourceInfo, nil
+		},
+	}
+	if err := verifyPublishedPathMatchesInfo(root, "source", modeMismatch, sourceChangedMsg); err == nil {
+		t.Fatal("expected metadata mismatch rejection")
+	}
+}
+
+func TestStageIdentityBoundLinkRejectsNilAndNonRegularExpected(t *testing.T) {
+	root := &fakeRoot{}
+	if _, err := stageIdentityBoundLink(root, "source", nil, sourceChangedMsg); err == nil {
+		t.Fatal("expected nil identity rejection")
+	}
+	dirInfo := &modeOverrideFileInfo{FileInfo: newPinnedTargetInfo(t, "source"), mode: os.ModeDir | 0o755}
+	if _, err := stageIdentityBoundLink(root, "source", dirInfo, sourceChangedMsg); err == nil {
+		t.Fatal("expected non-regular identity rejection")
+	}
+}
+
+func TestStageIdentityBoundLinkFailsAfterNameCollisions(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return os.ErrExist
+		},
+	}
+
+	_, err := stageIdentityBoundLink(root, "source", info, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), "too many collisions") {
+		t.Fatalf("expected staging collision exhaustion, got %v", err)
+	}
+}
+
+func TestStageIdentityBoundLinkPreservesCleanupFailureOnCollision(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	cleanupErr := errors.New("quarantine cleanup failed")
+	linkCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			linkCalls++
+			return withAtomicWriteCleanup(os.ErrExist, cleanupErr)
+		},
+	}
+
+	_, err := stageIdentityBoundLink(root, "source", info, sourceChangedMsg)
+	if !errors.Is(err, cleanupErr) || !atomicWriteCleanupFailed(err) {
+		t.Fatalf("expected collision cleanup failure, got %v", err)
+	}
+	if linkCalls != 1 {
+		t.Fatalf("cleanup failure must stop retries, got %d link attempts", linkCalls)
+	}
+}
+
+func TestPublishIdentityBoundIfAbsentHandlesExistUnsupportedAndVerifyFailure(t *testing.T) {
+	for _, tc := range publishIdentityBoundIfAbsentCases(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			assertPublishIdentityBoundIfAbsentOutcome(t, tc)
+		})
+	}
+}
+
+type publishIdentityBoundIfAbsentCase struct {
+	name     string
+	info     fs.FileInfo
+	linkErr  error
+	lstat    func(string) (fs.FileInfo, error)
+	wantErr  error
+	wantText string
+}
+
+func publishIdentityBoundIfAbsentCases(t *testing.T) []publishIdentityBoundIfAbsentCase {
+	t.Helper()
+
+	info, replacementInfo := writePinnedTargetInfoPair(t)
+	return []publishIdentityBoundIfAbsentCase{
+		{name: "exists", info: info, linkErr: os.ErrExist, wantErr: os.ErrExist},
+		{name: "unsupported", info: info, linkErr: syscall.EXDEV, wantErr: errIdentityBoundReplacementUnsupported},
+		{name: "verify", info: info, lstat: lstatOriginalForNames(t, replacementInfo, "target"), wantText: committedTargetChangedBeforeValidation},
+	}
+}
+
+func assertPublishIdentityBoundIfAbsentOutcome(t *testing.T, tc publishIdentityBoundIfAbsentCase) {
+	t.Helper()
+
+	err := publishIdentityBoundIfAbsent(publishIdentityBoundIfAbsentRoot(tc), "source", "target", tc.info)
+	if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+		t.Fatalf("expected %v, got %v", tc.wantErr, err)
+	}
+	if tc.wantText != "" && (err == nil || !strings.Contains(err.Error(), tc.wantText)) {
+		t.Fatalf("expected %q, got %v", tc.wantText, err)
+	}
+}
+
+func publishIdentityBoundIfAbsentRoot(tc publishIdentityBoundIfAbsentCase) *fakeRoot {
+	linkCalls := 0
+	return &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			linkCalls++
+			if linkCalls == 2 {
+				return tc.linkErr
+			}
+			return nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "target" && tc.lstat != nil {
+				return tc.lstat(name)
+			}
+			return tc.info, nil
+		},
+	}
+}
+
+func TestPublishIdentityBoundIfAbsentVerifiesLinkedTarget(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return nil
+		},
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "target" || strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+				return info, nil
+			}
+			t.Fatalf("unexpected lstat path: %s", name)
+			return nil, os.ErrNotExist
+		},
+	}
+
+	if err := publishIdentityBoundIfAbsent(root, "source", "target", info); err != nil {
+		t.Fatalf("expected publish-if-absent success, got %v", err)
+	}
+}
+
+func TestPublishIdentityBoundReplacingWithSourceStateJoinsCleanupErrors(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	renameErr := errors.New("rename failed")
+	cleanupErr := errors.New("cleanup failed")
+
+	t.Run("rename error", func(t *testing.T) {
+		stagedRel := atomicTempPrefix + "stage"
+		cleanupRel := atomicTempPrefix + "cleanup"
+		useRandomTempNames(t, stagedRel, cleanupRel)
+		root := &fakeRoot{
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+			renameIfMatches: func(string, string, fs.FileInfo, string) error {
+				return renameErr
+			},
+			lstat: lstatOriginalForNames(t, info, stagedRel, cleanupRel),
+			removeIfMatches: func(string, fs.FileInfo, string) error {
+				return cleanupErr
+			},
+		}
+
+		_, err := publishIdentityBoundReplacingWithSourceState(root, "source", "target", info, sourceChangedMsg, committedTargetChangedBeforeValidation)
+		if !errors.Is(err, renameErr) || !errors.Is(err, cleanupErr) {
+			t.Fatalf("expected rename and cleanup errors, got %v", err)
+		}
+		if cleanup := publishRenameCleanup(err); !errors.Is(cleanup, cleanupErr) {
+			t.Fatalf("expected publish cleanup error, got %v", cleanup)
+		}
+	})
+
+	t.Run("unconsumed cleanup error", func(t *testing.T) {
+		stagedRel := atomicTempPrefix + "stage"
+		cleanupRel := atomicTempPrefix + "cleanup"
+		useRandomTempNames(t, stagedRel, cleanupRel)
+		root := &renameStateOnlyRoot{
+			Root: &fakeRoot{
+				lstat: lstatOriginalForNames(t, info, stagedRel, cleanupRel, "target"),
+			},
+			renameIfMatchesState: func(string, string, fs.FileInfo, string) (bool, error) {
+				return false, nil
+			},
+			linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+			removeIfMatches: func(string, fs.FileInfo, string) error {
+				return cleanupErr
+			},
+		}
+
+		_, err := publishIdentityBoundReplacingWithSourceState(root, "source", "target", info, sourceChangedMsg, committedTargetChangedBeforeValidation)
+		if !errors.Is(err, cleanupErr) {
+			t.Fatalf("expected cleanup error, got %v", err)
+		}
+	})
+}
+
+func TestCommitPreparedSourceValidatesTargetAfterUnconsumedRename(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	_, changedInfo := writePinnedTargetInfoPair(t)
+	stagedRel := atomicTempPrefix + "stage"
+	cleanupRel := atomicTempPrefix + "cleanup"
+	cleanupRel2 := atomicTempPrefix + "cleanup2"
+	cleanupRel3 := atomicTempPrefix + "cleanup3"
+	useRandomTempNames(t, stagedRel, cleanupRel, cleanupRel2, cleanupRel3)
+	tempClosed := false
+	removeChecks := 0
+	root := &renameStateOnlyRoot{
+		Root: &fakeRoot{
+			lstat: lstatOriginalForNames(t, info, "temp", stagedRel, "target", cleanupRel, cleanupRel2, cleanupRel3),
+		},
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			cleanupName := newName == cleanupRel || newName == cleanupRel2 || newName == cleanupRel3
+			if (oldName != "temp" || newName != stagedRel) && (oldName != stagedRel || !cleanupName) {
+				t.Fatalf("unexpected staging link %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, info, oldName)
+			return nil
+		},
+		renameIfMatchesState: func(oldName, newName string, expected fs.FileInfo, message string) (bool, error) {
+			if oldName != stagedRel || newName != "target" {
+				t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, info, oldName)
+			return false, nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			removeChecks++
+			requireOneOfNames(t, name, stagedRel, cleanupRel, cleanupRel2, cleanupRel3)
+			requireSameFileInfo(t, expected, info, name)
+			return nil
+		},
+	}
+	session := &atomicWriteSession{
+		root:      root,
+		tempRel:   "temp",
+		targetRel: "target",
+		tempInfo:  info,
+		tempFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return info, nil },
+			close: func() error { tempClosed = true; return nil },
+		},
+	}
+
+	if err := session.commitPreparedSource(sourceChangedMsg, committedTargetChangedBeforeValidation); err != nil {
+		t.Fatalf("expected unconsumed commit success after target validation, got %v", err)
+	}
+	if !tempClosed {
+		t.Fatal("expected temp file to be closed")
+	}
+	if removeChecks == 0 {
+		t.Fatal("expected staged cleanup after unconsumed rename")
+	}
+
+	useRandomTempNames(t, stagedRel, cleanupRel, cleanupRel2, cleanupRel3)
+	root = &renameStateOnlyRoot{
+		Root: &fakeRoot{
+			lstat: lstatOriginalForNames(t, info, "temp", stagedRel, cleanupRel, cleanupRel2, cleanupRel3),
+		},
+		linkIfMatches: func(string, string, fs.FileInfo, string) error { return nil },
+		renameIfMatchesState: func(string, string, fs.FileInfo, string) (bool, error) {
+			return false, nil
+		},
+		removeIfMatches: func(string, fs.FileInfo, string) error { return nil },
+	}
+	root.Root = &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == "target" {
+				return changedInfo, nil
+			}
+			return lstatOriginalForNames(t, info, "temp", stagedRel, cleanupRel, cleanupRel2, cleanupRel3)(name)
+		},
+	}
+	session = &atomicWriteSession{
+		root:      root,
+		tempRel:   "temp",
+		targetRel: "target",
+		tempInfo:  info,
+		tempFile: &fakeFile{
+			stat:  func() (fs.FileInfo, error) { return info, nil },
+			close: closeWithoutError,
+		},
+	}
+	err := session.commitPreparedSource(sourceChangedMsg, committedTargetChangedBeforeValidation)
+	if err == nil || !strings.Contains(err.Error(), committedTargetChangedBeforeValidation) {
+		t.Fatalf("expected unconsumed commit target validation failure, got %v", err)
+	}
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootDoesNotRemoveTargetWhenInitialStatFails(t *testing.T) {
+	statErr := errors.New("created target stat failure")
+	closed := false
+	removed := false
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected exclusive target open: %s", name)
+			}
+			return &fakeFile{
+				stat: func() (fs.FileInfo, error) {
+					return nil, statErr
+				},
+				close: func() error {
+					closed = true
+					return nil
+				},
+			}, nil
+		},
+		remove: func(name string) error {
+			if name == writeTestFileName {
+				removed = true
+			}
+			return nil
+		},
+	}
+	err := writeFileExclusivelyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o600)
+	if !errors.Is(err, statErr) {
+		t.Fatalf("expected stat error, got %v", err)
+	}
+	if !closed {
+		t.Fatal("expected created file handle to close")
+	}
+	if removed {
+		t.Fatal("must not remove final target path when created inode identity is unavailable")
+	}
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootReturnsPostWriteStatError(t *testing.T) {
+	targetInfo := newPinnedTargetInfo(t, writeTestFileName)
+	statErr := errors.New("post-write stat failed")
+	cleanupRel := ".safeio-atomic-created-cleanup"
+	useRandomTempNames(t, cleanupRel)
+	removeChecks := 0
+	root := &fakeRoot{
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected exclusive target open: %s", name)
+			}
+			statCalls := 0
+			return &fakeFile{
+				write: func(p []byte) (int, error) { return len(p), nil },
+				chmod: func(os.FileMode) error { return nil },
+				stat: func() (fs.FileInfo, error) {
+					statCalls++
+					if statCalls == 2 {
+						return nil, statErr
+					}
+					return targetInfo, nil
+				},
+				close: closeWithoutError,
+			}, nil
+		},
+		lstat: lstatOriginalForNames(t, targetInfo, writeTestFileName, cleanupRel),
+		linkIfMatches: func(oldName, newName string, expected fs.FileInfo, message string) error {
+			if oldName != writeTestFileName || newName != cleanupRel {
+				t.Fatalf("unexpected cleanup link %q -> %q", oldName, newName)
+			}
+			requireSameFileInfo(t, expected, targetInfo, oldName)
+			return nil
+		},
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			if name != writeTestFileName && name != cleanupRel {
+				t.Fatalf("unexpected cleanup removal: %s", name)
+			}
+			requireSameFileInfo(t, expected, targetInfo, name)
+			removeChecks++
+			return nil
+		},
+	}
+	err := writeFileExclusivelyIfAbsentAtRoot(root, writeTestFileName, []byte("hello"), 0o600)
+	if !errors.Is(err, statErr) {
+		t.Fatalf("expected post-write stat error, got %v", err)
+	}
+	if removeChecks != 2 {
+		t.Fatalf("expected failed create cleanup to use original target identity twice, got %d removals", removeChecks)
+	}
+}
+
+func TestWriteFileExclusivelyIfAbsentAtRootCleansModifiedTargetOnChmodFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	chmodErr := errors.New("chmod failed")
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			file, err := base.OpenFile(name, flag, perm)
+			if err != nil {
+				return nil, err
+			}
+			return &fakeFile{
+				File:  file,
+				chmod: func(os.FileMode) error { return chmodErr },
+			}, nil
+		},
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+	}}
+
+	err := writeFileExclusivelyIfAbsentAtRoot(root, "target", []byte("hello"), 0o600)
+	if !errors.Is(err, chmodErr) {
+		t.Fatalf("expected chmod error, got %v", err)
+	}
+	assertPathAbsent(t, filepath.Join(rootDir, "target"))
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestWriteRootIfAbsentLinklessFallbackReturnsPostWriteStatError(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	statErr := errors.New("post-write stat failed")
+	root := &WriteRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				statCalls := 0
+				return &fakeFile{
+					File: file,
+					stat: func() (fs.FileInfo, error) {
+						statCalls++
+						if statCalls == 2 {
+							return nil, statErr
+						}
+						return file.Stat()
+					},
+				}, nil
+			},
+		}},
+		rootAbs: rootDir,
+	}
+
+	err := root.WriteFileCreatingParentsIfAbsent("target", []byte("completed"), 0o600, 0o750)
+	if !errors.Is(err, statErr) {
+		t.Fatalf("expected post-write stat failure, got %v", err)
+	}
+}
+
+func TestLinkFileIfMatchesUsingBasicRootPreservesTargetSubstitutedAfterPublish(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	root := &fakeRoot{
+		Root: base,
+		link: func(oldName, newName string) error {
+			if err := base.Link(oldName, newName); err != nil {
+				return err
+			}
+			if newName == "target" {
+				if err := os.Remove(targetPath); err != nil {
+					t.Fatalf("replace linked target: %v", err)
+				}
+				if err := os.WriteFile(targetPath, []byte("winner"), 0o600); err != nil {
+					t.Fatalf("seed winner target: %v", err)
+				}
+			}
+			return nil
+		},
+	}
+
+	err := linkFileIfMatchesUsingBasicRoot(root, "source", "target", sourceInfo, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected target substitution rejection, got %v", err)
+	}
+	assertFileContent(t, targetPath, "winner")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestRemoveIdentityBoundRejectsMissingIdentityAndFallsBackWithoutLinks(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	if err := removeIdentityBound(&fakeRoot{}, "source", nil, sourceChangedMsg); err == nil {
+		t.Fatal("expected missing source identity rejection")
+	}
+	removeCalls := 0
+	root := &fakeRoot{
+		linkIfMatches: func(string, string, fs.FileInfo, string) error {
+			return syscall.EXDEV
+		},
+		lstat: lstatOriginalForNames(t, info, "source"),
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+	err := removeIdentityBound(root, "source", info, sourceChangedMsg)
+	if err != nil {
+		t.Fatalf("expected direct identity-bound removal fallback, got %v", err)
+	}
+	if removeCalls != 1 {
+		t.Fatalf("expected one direct removal fallback, got %d", removeCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootFallsBackToRenameWhenStagingCopyUnavailable(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	renameCalls := 0
+	removeCalls := 0
+	targetPublished := false
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case "source":
+				return sourceInfo, nil
+			case "target":
+				if targetPublished {
+					return sourceInfo, nil
+				}
+				return nil, os.ErrNotExist
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		link: func(string, string) error {
+			return errors.ErrUnsupported
+		},
+		open: func(string) (File, error) {
+			return nil, errors.ErrUnsupported
+		},
+		rename: func(oldName, newName string) error {
+			if oldName != "source" || newName != "target" {
+				t.Fatalf("unexpected direct rename %q -> %q", oldName, newName)
+			}
+			renameCalls++
+			targetPublished = true
+			return nil
+		},
+		remove: func(string) error {
+			removeCalls++
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err != nil {
+		t.Fatalf("expected direct rename fallback, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected one direct rename fallback, got %d", renameCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("direct rename fallback should not remove staging links, got %d removes", removeCalls)
+	}
+}
+
+func TestMoveFileWithinRootIdentityBoundStagingErrors(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	for _, tc := range []struct {
+		name     string
+		random   func() (string, error)
+		linkErr  error
+		wantErr  string
+		wantLink bool
+	}{
+		{
+			name:    "random name error",
+			random:  func() (string, error) { return "", errors.New("random failure") },
+			wantErr: "random failure",
+		},
+		{
+			name:     "link failure",
+			random:   func() (string, error) { return atomicTempPrefix + "stage", nil },
+			linkErr:  errors.New("link failure"),
+			wantErr:  "link failure",
+			wantLink: true,
+		},
+		{
+			name:     "collision exhaustion",
+			random:   func() (string, error) { return atomicTempPrefix + "stage", nil },
+			linkErr:  os.ErrExist,
+			wantErr:  "too many collisions",
+			wantLink: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertMoveFileWithinRootIdentityBoundStagingError(t, sourceInfo, tc.random, tc.linkErr, tc.wantErr, tc.wantLink)
+		})
+	}
+}
+
+func assertMoveFileWithinRootIdentityBoundStagingError(t *testing.T, sourceInfo fs.FileInfo, random func() (string, error), linkErr error, wantErr string, wantLink bool) {
+	t.Helper()
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = random
+	defer func() {
+		randomTempNameFn = originalRandomTempNameFn
+	}()
+
+	linkCalls := 0
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    lstatSourceOrTemp(t, sourceInfo),
+		chmod:    chmodNameWithoutError(t, "source"),
+		link:     identityBoundSourceLink(t, linkErr, &linkCalls),
+		rename: func(string, string) error {
+			t.Fatal("staging failure must abort before rename")
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("expected %q error, got %v", wantErr, err)
+	}
+	if (linkCalls > 0) != wantLink {
+		t.Fatalf("expected link called=%t, got %d calls", wantLink, linkCalls)
+	}
+}
+
+func TestRemoveIdentityBoundDoesNotOverwriteNewerSourceDuringCleanup(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	stagedRel := ".safeio-atomic-stage"
+	randomCalls := 0
+	removeCalls := 0
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) {
+		randomCalls++
+		return stagedRel, nil
+	}
+	defer func() {
+		randomTempNameFn = originalRandomTempNameFn
+	}()
+
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case stagedRel:
+				return replacementInfo, nil
+			case "source":
+				return originalInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		link: func(oldName, newName string) error {
+			if oldName != "source" || newName != stagedRel {
+				t.Fatalf("cleanup must identity-link source first, got link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		remove: func(name string) error {
+			removeCalls++
+			t.Fatalf("must not remove substituted staged source: %s", name)
+			return nil
+		},
+	}
+
+	err := removeIdentityBound(root, "source", originalInfo, "move source changed before cleanup")
+	if err == nil || !strings.Contains(err.Error(), "move source changed before cleanup") {
+		t.Fatalf("expected identity mismatch rejection, got %v", err)
+	}
+	if randomCalls != 1 {
+		t.Fatalf("expected one staging name, got %d", randomCalls)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected no removal after cleanup identity mismatch, got %d removes", removeCalls)
+	}
+}
+
+func TestRemoveIdentityBoundRejectsSourceSwapAtRemoval(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	stageNames := []string{".safeio-atomic-source-stage", ".safeio-atomic-cleanup-stage"}
+	randomCalls := useRandomTempNames(t, stageNames...)
+	sourceRemoveChecks := 0
+	rawRemoveCalls := 0
+
+	root := &fakeRoot{
+		lstat:           lstatOriginalForNames(t, originalInfo, "source", stageNames[0], stageNames[1]),
+		link:            requireExactLinks(t, [2]string{"source", stageNames[0]}, [2]string{stageNames[0], stageNames[1]}),
+		remove:          countAndFailRawRemove(t, &rawRemoveCalls, "removal must be identity-conditional"),
+		removeIfMatches: rejectSourceSwapAtRemoval(t, originalInfo, replacementInfo, stageNames, &sourceRemoveChecks),
+	}
+
+	err := removeIdentityBound(root, "source", originalInfo, "move source changed before cleanup")
+	if err == nil || !strings.Contains(err.Error(), "move source changed before cleanup") {
+		t.Fatalf("expected source cleanup identity rejection, got %v", err)
+	}
+	if sourceRemoveChecks != 1 {
+		t.Fatalf("expected one source removal identity check, got %d", sourceRemoveChecks)
+	}
+	if *randomCalls != 2 {
+		t.Fatalf("expected two staging names, got %d", *randomCalls)
+	}
+	if rawRemoveCalls != 0 {
+		t.Fatalf("expected no raw removals, got %d", rawRemoveCalls)
+	}
+}
+
+func TestRemoveFileIfMatchesUsingBasicRootPreservesQuarantineSwapBeforeFinalRemoval(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	state := newQuarantineSwapState(t, originalInfo, replacementInfo)
+	useRandomTempNames(t, state.quarantineDir)
+
+	root := &fakeRoot{
+		mkdir:  state.mkdir,
+		lstat:  state.lstat,
+		rename: state.rename,
+		remove: state.remove,
+	}
+
+	err := removeFileIfMatchesUsingBasicRoot(root, "source", originalInfo, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected quarantined identity mismatch, got %v", err)
+	}
+	if state.quarantineStats < 2 {
+		t.Fatalf("expected final quarantine identity validation, got %d stats", state.quarantineStats)
+	}
+	if state.removed {
+		t.Fatal("substituted quarantine entry must be preserved")
+	}
+}
+
+type quarantineSwapState struct {
+	t               *testing.T
+	originalInfo    fs.FileInfo
+	replacementInfo fs.FileInfo
+	quarantineDir   string
+	quarantineRel   string
+	quarantineStats int
+	removed         bool
+}
+
+func newQuarantineSwapState(t *testing.T, originalInfo, replacementInfo fs.FileInfo) *quarantineSwapState {
+	quarantineDir := ".safeio-atomic-quarantine"
+	return &quarantineSwapState{
+		t:               t,
+		originalInfo:    originalInfo,
+		replacementInfo: replacementInfo,
+		quarantineDir:   quarantineDir,
+		quarantineRel:   filepath.Join(quarantineDir, "entry"),
+	}
+}
+
+func (s *quarantineSwapState) mkdir(name string, perm os.FileMode) error {
+	if name != s.quarantineDir || perm != 0o700 {
+		s.t.Fatalf("unexpected quarantine directory creation %q %#o", name, perm)
+	}
+	return nil
+}
+
+func (s *quarantineSwapState) lstat(name string) (fs.FileInfo, error) {
+	switch name {
+	case "source":
+		return s.originalInfo, nil
+	case s.quarantineRel:
+		s.quarantineStats++
+		if s.quarantineStats == 1 {
+			return s.originalInfo, nil
+		}
+		return s.replacementInfo, nil
+	default:
+		return nil, os.ErrNotExist
+	}
+}
+
+func (s *quarantineSwapState) rename(oldName, newName string) error {
+	if oldName != "source" || newName != s.quarantineRel {
+		s.t.Fatalf("unexpected quarantine rename %q -> %q", oldName, newName)
+	}
+	return nil
+}
+
+func (s *quarantineSwapState) remove(name string) error {
+	if name == s.quarantineRel {
+		s.removed = true
+		s.t.Fatal("must not remove substituted quarantine entry")
+	}
+	return nil
+}
+
+func TestCleanupAtomicTempFileIfMatchesDoesNotRemoveQuarantinedSwap(t *testing.T) {
+	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
+	tempRel := ".safeio-atomic-source"
+	quarantineRel := ".safeio-atomic-quarantine"
+	removeCalls := 0
+	originalRandomTempNameFn := randomTempNameFn
+	randomTempNameFn = func() (string, error) {
+		return quarantineRel, nil
+	}
+	defer func() {
+		randomTempNameFn = originalRandomTempNameFn
+	}()
+
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch name {
+			case tempRel:
+				return originalInfo, nil
+			case quarantineRel:
+				return changedInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return nil, os.ErrNotExist
+		},
+		link: func(oldName, newName string) error {
+			if oldName != tempRel || newName != quarantineRel {
+				t.Fatalf("unexpected cleanup link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		remove: func(name string) error {
+			removeCalls++
+			t.Fatalf("must not remove substituted quarantined path: %s", name)
+			return nil
+		},
+	}
+
+	if err := cleanupAtomicTempFileIfMatches(root, tempRel, originalInfo); err == nil || !strings.Contains(err.Error(), "cleanup file changed before removal") {
+		t.Fatalf("expected substituted cleanup identity mismatch, got %v", err)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected no removal after quarantine identity mismatch, got %d removes", removeCalls)
+	}
+}
+
+func TestCleanupAtomicTempFileIfMatchesRejectsTempSwapAtRemoval(t *testing.T) {
+	originalInfo, replacementInfo := writePinnedTargetInfoPair(t)
+	tempRel := ".safeio-atomic-source"
+	quarantineRel := ".safeio-atomic-quarantine"
+	removeChecks := 0
+	rawRemoveCalls := 0
+	useRandomTempNames(t, quarantineRel)
+
+	root := &fakeRoot{
+		lstat:           lstatOriginalForNames(t, originalInfo, tempRel, quarantineRel),
+		link:            requireExactLinks(t, [2]string{tempRel, quarantineRel}),
+		remove:          countAndFailRawRemove(t, &rawRemoveCalls, "cleanup must be identity-conditional"),
+		removeIfMatches: rejectTempSwapAtRemoval(t, originalInfo, replacementInfo, tempRel, quarantineRel, &removeChecks),
+	}
+
+	if err := cleanupAtomicTempFileIfMatches(root, tempRel, originalInfo); err == nil || !strings.Contains(err.Error(), "cleanup file changed before removal") {
+		t.Fatalf("expected operation-time cleanup identity rejection, got %v", err)
+	}
+	if removeChecks != 1 {
+		t.Fatalf("expected one temp removal identity check, got %d", removeChecks)
+	}
+	if rawRemoveCalls != 0 {
+		t.Fatalf("expected no raw removals, got %d", rawRemoveCalls)
+	}
+}
+
+func TestCleanupAtomicTempFileIfMatchesRetriesRestoredCandidateAfterCleanupError(t *testing.T) {
+	info := newPinnedTargetInfo(t, "source")
+	tempRel := ".safeio-atomic-source"
+	cleanupRel := ".safeio-atomic-cleanup"
+	removeErr := errors.New("cleanup remove failed")
+	removeChecks := 0
+	useRandomTempNames(t, cleanupRel)
+
+	root := &fakeRoot{
+		lstat:  lstatOriginalForNames(t, info, tempRel, cleanupRel),
+		link:   requireExactLinks(t, [2]string{tempRel, cleanupRel}),
+		remove: countAndFailRawRemove(t, new(int), "cleanup must be identity-conditional"),
+		removeIfMatches: func(name string, expected fs.FileInfo, message string) error {
+			requireSameFileInfo(t, expected, info, name)
+			switch name {
+			case tempRel:
+				removeChecks++
+				if removeChecks == 1 {
+					return removeErr
+				}
+				return nil
+			case cleanupRel:
+				return nil
+			default:
+				t.Fatalf("unexpected cleanup path: %s", name)
+				return nil
+			}
+		},
+	}
+
+	err := cleanupAtomicTempFileIfMatches(root, tempRel, info)
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("expected original cleanup error to be preserved, got %v", err)
+	}
+	if removeChecks != 2 {
+		t.Fatalf("expected cleanup retry against restored candidate, got %d checks", removeChecks)
+	}
+}
+
+func TestRetryCleanupAtomicTempFileIfStillMatchesBranches(t *testing.T) {
+	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
+	lstatErr := errors.New("lstat failed")
+
+	if err := retryCleanupAtomicTempFileIfStillMatches(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}, ".safeio-atomic-source", originalInfo, "cleanup changed"); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected retry lstat error, got %v", err)
+	}
+
+	removeCalls := 0
+	err := retryCleanupAtomicTempFileIfStillMatches(&fakeRoot{
+		lstat:  lstatOriginalForNames(t, changedInfo, ".safeio-atomic-source"),
+		remove: func(string) error { removeCalls++; return nil },
+	}, ".safeio-atomic-source", originalInfo, "cleanup changed")
+	if err != nil {
+		t.Fatalf("expected changed retry target to be ignored, got %v", err)
+	}
+	if removeCalls != 0 {
+		t.Fatalf("expected changed retry target to be preserved, got %d removes", removeCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootRejectsChangedTargetAfterRename(t *testing.T) {
+	sourceInfo, changedInfo := writePinnedTargetInfoPair(t)
+	fixture := newChangedTargetAfterRenameFixture(t, sourceInfo, changedInfo)
+
+	err := MoveFileWithinRoot(fixture.root(), "source", "target", 0o750, 0o640)
+	if err == nil || !strings.Contains(err.Error(), "move target changed before validation") {
+		t.Fatalf("expected changed target rejection, got %v", err)
+	}
+	fixture.assertSourceLstats(t, 3)
+	fixture.assertRenameCalls(t, 1)
+}
+
+type changedTargetAfterRenameFixture struct {
+	t                *testing.T
+	sourceInfo       fs.FileInfo
+	changedInfo      fs.FileInfo
+	sourceLstatCalls int
+	renameCalls      int
+}
+
+func newChangedTargetAfterRenameFixture(t *testing.T, sourceInfo, changedInfo fs.FileInfo) *changedTargetAfterRenameFixture {
+	t.Helper()
+	return &changedTargetAfterRenameFixture{t: t, sourceInfo: sourceInfo, changedInfo: changedInfo}
+}
+
+func (f *changedTargetAfterRenameFixture) root() *fakeRoot {
+	return &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    f.lstat,
+		chmod:    chmodNameWithoutError(f.t, "source"),
+		link:     f.link,
+		rename:   f.rename,
+	}
+}
+
+func (f *changedTargetAfterRenameFixture) lstat(name string) (fs.FileInfo, error) {
+	switch {
+	case name == "source":
+		f.sourceLstatCalls++
+		return f.sourceInfo, nil
+	case strings.HasPrefix(filepath.Base(name), atomicTempPrefix):
+		return f.sourceInfo, nil
+	case name == "target":
+		return f.changedInfo, nil
+	default:
+		f.t.Fatalf("unexpected lstat path: %s", name)
+		return nil, os.ErrNotExist
+	}
+}
+
+func (f *changedTargetAfterRenameFixture) link(oldName, newName string) error {
+	assertIdentityBoundSourceLink(f.t, oldName, newName)
+	return nil
+}
+
+func (f *changedTargetAfterRenameFixture) rename(oldName, newName string) error {
+	if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+		return nil
+	}
+	if !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) || newName != "target" {
+		f.t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+	}
+	f.renameCalls++
+	return nil
+}
+
+func (f *changedTargetAfterRenameFixture) assertSourceLstats(t *testing.T, want int) {
+	t.Helper()
+	if f.sourceLstatCalls != want {
+		t.Fatalf("expected %d source lstats, got %d", want, f.sourceLstatCalls)
+	}
+}
+
+func (f *changedTargetAfterRenameFixture) assertRenameCalls(t *testing.T, want int) {
+	t.Helper()
+	if f.renameCalls != want {
+		t.Fatalf("expected %d renames, got %d", want, f.renameCalls)
+	}
+}
+
+func TestPrepareAndRenameWithinRootReturnsSourceCleanupErrorAfterPublish(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	cleanupErr := errors.New("cleanup remove failure")
+	renameCalls := 0
+	root := &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat: func(name string) (fs.FileInfo, error) {
+			switch {
+			case name == "source", strings.HasPrefix(filepath.Base(name), atomicTempPrefix), name == "target", name == ".":
+				return sourceInfo, nil
+			default:
+				t.Fatalf("unexpected lstat path: %s", name)
+				return nil, os.ErrNotExist
+			}
+		},
+		chmod: chmodNameWithoutError(t, "source"),
+		link: func(oldName, newName string) error {
+			if (oldName != "source" && !strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) || !strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+				t.Fatalf("unexpected identity-bound link %q -> %q", oldName, newName)
+			}
+			return nil
+		},
+		rename: func(oldName, newName string) error {
+			renameCalls++
+			if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && newName == "target" {
+				return nil
+			}
+			t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+			return nil
+		},
+		remove: func(name string) error {
+			if name == "source" {
+				return cleanupErr
+			}
+			return nil
+		},
+	}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected source cleanup error, got %v", err)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("expected publish rename only, got %d", renameCalls)
+	}
+}
+
+func TestChmodAndSnapshotMoveSourceErrorBranches(t *testing.T) {
+	lstatErr := errors.New("lstat failure")
+	regularInfo := newPinnedTargetInfo(t, "source")
+	for _, tc := range []struct {
+		name    string
+		root    Root
+		wantErr string
+		wantIs  error
+	}{
+		{
+			name: "initial lstat error",
+			root: &fakeRoot{
+				mkdirAll: func(string, os.FileMode) error { return nil },
+				lstat: func(string) (fs.FileInfo, error) {
+					return nil, lstatErr
+				},
+			},
+			wantIs: lstatErr,
+		},
+		{
+			name: "non regular source",
+			root: &fakeRoot{
+				mkdirAll: func(string, os.FileMode) error { return nil },
+				lstat: func(string) (fs.FileInfo, error) {
+					return &modeOverrideFileInfo{FileInfo: regularInfo, mode: os.ModeDir | 0o755}, nil
+				},
+			},
+			wantErr: "move source is not a regular file",
+		},
+		{
+			name: "updated lstat error",
+			root: func() Root {
+				lstatCalls := 0
+				return &fakeRoot{
+					mkdirAll: func(string, os.FileMode) error { return nil },
+					lstat: func(string) (fs.FileInfo, error) {
+						lstatCalls++
+						if lstatCalls == 1 {
+							return regularInfo, nil
+						}
+						return nil, lstatErr
+					},
+					chmod: chmodNameWithoutError(t, "source"),
+				}
+			}(),
+			wantIs: lstatErr,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := MoveFileWithinRoot(tc.root, "source", "target", 0o750, 0o640)
+			assertMoveFileWithinRootError(t, err, tc.wantIs, tc.wantErr)
+		})
+	}
+}
+
+func TestCopyFileWithinRootRejectsInvalidSourceStat(t *testing.T) {
+	statErr := errors.New("stat failure")
+	regularInfo := newPinnedTargetInfo(t, "source")
+	for _, tc := range []copyInvalidSourceStatCase{
+		{
+			name:   "stat error",
+			stat:   func() (fs.FileInfo, error) { return nil, statErr },
+			wantIs: statErr,
+		},
+		{
+			name: "non regular source",
+			stat: func() (fs.FileInfo, error) {
+				return &modeOverrideFileInfo{FileInfo: regularInfo, mode: os.ModeDir | 0o755}, nil
+			},
+			wantErr: "move source is not a regular file",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertCopyFileWithinRootRejectsInvalidSourceStat(t, regularInfo, tc)
+		})
+	}
+}
+
+type copyInvalidSourceStatCase struct {
+	name    string
+	stat    func() (fs.FileInfo, error)
+	wantErr string
+	wantIs  error
+}
+
+func assertCopyFileWithinRootRejectsInvalidSourceStat(t *testing.T, regularInfo fs.FileInfo, tc copyInvalidSourceStatCase) {
+	t.Helper()
+	root := copyInvalidSourceStatRoot(t, regularInfo, tc.stat)
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	assertMoveFileWithinRootError(t, err, tc.wantIs, tc.wantErr)
+}
+
+func assertMoveFileWithinRootError(t *testing.T, err, wantIs error, wantErr string) {
+	t.Helper()
+	switch {
+	case wantIs != nil && !errors.Is(err, wantIs):
+		t.Fatalf("expected %v, got %v", wantIs, err)
+	case wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)):
+		t.Fatalf("expected %q error, got %v", wantErr, err)
+	}
+}
+
+func copyInvalidSourceStatRoot(t *testing.T, regularInfo fs.FileInfo, invalidStat func() (fs.FileInfo, error)) Root {
+	t.Helper()
+	return &fakeRoot{
+		mkdirAll: func(string, os.FileMode) error { return nil },
+		lstat:    lstatSourceOrTemp(t, regularInfo),
+		chmod:    chmodNameWithoutError(t, "source"),
+		link:     identityBoundSourceLink(t, nil, new(int)),
+		rename:   exdevSourceOrTempToTarget(t),
+		remove:   removeOnlyTempPath(t),
+		open:     invalidSourceStatOpen(t, regularInfo, invalidStat),
+	}
+}
+
+func exdevSourceOrTempToTarget(t *testing.T) func(string, string) error {
+	t.Helper()
+	return func(oldName, newName string) error {
+		if strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix) && strings.HasPrefix(filepath.Base(newName), atomicTempPrefix) {
+			return nil
+		}
+		if (oldName == "source" || strings.HasPrefix(filepath.Base(oldName), atomicTempPrefix)) && newName == "target" {
+			return syscall.EXDEV
+		}
+		t.Fatalf("unexpected rename %q -> %q", oldName, newName)
+		return nil
+	}
+}
+
+func removeOnlyTempPath(t *testing.T) func(string) error {
+	t.Helper()
+	return func(name string) error {
+		if !strings.HasPrefix(filepath.Base(name), atomicTempPrefix) {
+			t.Fatalf("unexpected cleanup path: %s", name)
+		}
+		return nil
+	}
+}
+
+func invalidSourceStatOpen(t *testing.T, regularInfo fs.FileInfo, invalidStat func() (fs.FileInfo, error)) func(string) (File, error) {
+	t.Helper()
+	statCalls := 0
+	return func(name string) (File, error) {
+		if name != "source" {
+			t.Fatalf("unexpected source open path: %s", name)
+		}
+		return &fakeFile{
+			stat:  invalidSourceStatSequence(regularInfo, invalidStat, &statCalls),
+			close: closeWithoutError,
+		}, nil
+	}
+}
+
+func invalidSourceStatSequence(regularInfo fs.FileInfo, invalidStat func() (fs.FileInfo, error), calls *int) func() (fs.FileInfo, error) {
+	return func() (fs.FileInfo, error) {
+		(*calls)++
+		if *calls == 1 {
+			return regularInfo, nil
+		}
+		return invalidStat()
+	}
+}
+
+func TestIdentityBoundPublishRejectsSubstitutedSourceWithoutPublishingIt(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
+	root := openTestRoot(t, rootDir)
+
+	err := publishIdentityBoundReplacing(root, "source", "target", expected, sourceChangedMsg, "target changed")
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected substituted-source rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("substituted source was published at target: %v", err)
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestIdentityBoundIfAbsentRejectsSubstitutedSourceWithoutPartialTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
+	root := openTestRoot(t, rootDir)
+
+	err := publishIdentityBoundIfAbsent(root, "source", "target", expected)
+	if err == nil || !strings.Contains(err.Error(), temporaryFileChangedBeforeCommit) {
+		t.Fatalf("expected substituted-source rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	if _, err := os.Lstat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("if-absent publish left a target: %v", err)
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestOSRootRenameIfMatchesQuarantinesSubstitution(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
+	root := openTestRoot(t, rootDir)
+	osRoot, ok := root.(*osRoot)
+	if !ok {
+		t.Fatal("expected production osRoot")
+	}
+
+	consumed, err := osRoot.RenameIfMatchesState("source", "target", expected, sourceChangedMsg)
+	if err == nil || consumed {
+		t.Fatalf("expected quarantined substitution rejection, consumed=%t err=%v", consumed, err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestOSRootRemoveIfMatchesQuarantinesSubstitution(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
+	root := openTestRoot(t, rootDir)
+	osRoot, ok := root.(*osRoot)
+	if !ok {
+		t.Fatal("expected production osRoot")
+	}
+
+	err := osRoot.RemoveIfMatches("source", expected, sourceChangedMsg)
+	if err == nil {
+		t.Fatal("expected substituted-source removal rejection")
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestRestoreQuarantinedPathNoReplaceRetainsStagedEntryWhenOriginalReappears(t *testing.T) {
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "quarantine"), 0o700); err != nil {
+		t.Fatalf("create quarantine: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "quarantine", "entry"), []byte("displaced"), 0o600); err != nil {
+		t.Fatalf("seed quarantined entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "source"), []byte("newer"), 0o600); err != nil {
+		t.Fatalf("seed concurrent source: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	stagedInfo := statTestPath(t, filepath.Join(rootDir, "quarantine", "entry"))
+
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, filepath.Join("quarantine", "entry"), "source", sourceChangedMsg, stagedInfo)
+	if restored || retained || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected no-replace restore conflict, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "source"), "newer")
+	assertFileContent(t, filepath.Join(rootDir, "quarantine", "entry"), "displaced")
+}
+
+func TestRestoreQuarantinedPathNoReplaceRejectsReplacedStagingEntry(t *testing.T) {
+	expected, replacement := writePinnedTargetInfoPair(t)
+	restoredSource := false
+	rawLinkCalls := 0
+	root := &identityOnlyRoot{
+		Root: &fakeRoot{
+			link: func(string, string) error {
+				rawLinkCalls++
+				return nil
+			},
+		},
+		linkIfMatches: func(oldName, newName string, gotExpected fs.FileInfo, message string) error {
+			if oldName != "quarantine/entry" || newName != "source" || message != sourceChangedMsg {
+				t.Fatalf("unexpected restore link %q -> %q (%s)", oldName, newName, message)
+			}
+			if !sameRegularFile(gotExpected, replacement) {
+				return fmt.Errorf("%s: %s", message, oldName)
+			}
+			restoredSource = true
+			return nil
+		},
+	}
+
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, "quarantine/entry", "source", sourceChangedMsg, expected)
+	if restored || retained || err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected replaced staging rejection, restored=%t retained=%t err=%v", restored, retained, err)
+	}
+	if restoredSource || rawLinkCalls != 0 {
+		t.Fatalf("must not restore a replacement, restored=%t rawLinkCalls=%d", restoredSource, rawLinkCalls)
+	}
+}
+
+func TestAtomicReplacementFallsBackToPreparedCopyWhenLinksUnsupported(t *testing.T) {
+	rootDir := t.TempDir()
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: openTestRoot(t, rootDir),
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+	}}
+
+	if err := WriteFileReplacingWithinRoot(root, "target", []byte("completed"), 0o600); err != nil {
+		t.Fatalf("linkless replacement returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "target"), "completed")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFallsBackToPreparedCopyWhenLinksUnsupported(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("completed"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: openTestRoot(t, rootDir),
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+	}}
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("linkless move returned error: %v", err)
+	}
+	if _, err := os.Lstat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("linkless move left source: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "target"), "completed")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveLinklessUnreadableSourceUsesRenameBeforeCopyFallback(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("completed"), 0o200); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(sourcePath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("restore source permissions: %v", err)
+		}
+	})
+	base := openTestRoot(t, rootDir)
+	openCalls := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			openCalls++
+			return base.Open(name)
+		},
+	}}
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("linkless unreadable move returned error: %v", err)
+	}
+	if openCalls == 0 {
+		t.Fatal("expected initial linkless copy attempt to observe unreadable source")
+	}
+	if _, err := os.Lstat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("linkless move left source: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "target"), "completed")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveLinklessUnreadableSourceRestoresAfterTargetRenameFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("completed"), 0o200); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("seed target directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(sourcePath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("restore source permissions: %v", err)
+		}
+	})
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+	}}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil {
+		t.Fatal("expected target directory rename failure")
+	}
+	assertFileContent(t, sourcePath, "completed")
+	if info := statTestPath(t, sourcePath); info.Mode().Perm() != 0o640 {
+		t.Fatalf("expected restored source mode 0640, got %#o", info.Mode().Perm())
+	}
+	if info := statTestPath(t, targetPath); !info.IsDir() {
+		t.Fatal("target directory was replaced")
+	}
+	assertRetainedAtomicStagingEntry(t, rootDir, "completed")
+}
+
+func TestWriteRootIfAbsentFallsBackToExclusiveCreateWhenLinksUnsupported(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	root := &WriteRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+		}},
+		rootAbs: rootDir,
+	}
+
+	targetRel := filepath.Join("reports", "target")
+	if err := root.WriteFileCreatingParentsIfAbsent(targetRel, []byte("completed"), 0o640, 0o750); err != nil {
+		t.Fatalf("linkless if-absent create returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, targetRel), "completed")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestWriteRootIfAbsentLinklessFallbackRejectsExistingTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	targetRel := filepath.Join("reports", "target")
+	if err := os.MkdirAll(filepath.Join(rootDir, "reports"), 0o750); err != nil {
+		t.Fatalf("create target parent: %v", err)
+	}
+	targetPath := filepath.Join(rootDir, targetRel)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	base := openTestRoot(t, rootDir)
+	root := &WriteRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+		}},
+		rootAbs: rootDir,
+	}
+
+	err := root.WriteFileCreatingParentsIfAbsent(targetRel, []byte("after"), 0o640, 0o750)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("expected existing target rejection on linkless root, got %v", err)
+	}
+	assertFileContent(t, targetPath, "before")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestAtomicIfAbsentLinklessFallbackLeavesNoPartialTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: openTestRoot(t, rootDir),
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+	}}
+
+	err := writeFileAtomicallyIfAbsentAtRoot(root, "target", []byte("completed"), 0o600)
+	if err == nil || !errors.Is(err, errIdentityBoundReplacementUnsupported) {
+		t.Fatalf("expected atomic linkless-if-absent rejection, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(rootDir, "target")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("linkless if-absent fallback exposed a target: %v", err)
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestWriteFileIfAbsentAtRootPreservesAtomicCleanupFailureBeforeExclusiveFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failSession bool
+	}{
+		{name: "staged candidate"},
+		{name: "session candidate", failSession: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testWriteFileIfAbsentAtRootPreservesAtomicCleanupFailure(t, tc.failSession)
+		})
+	}
+}
+
+func testWriteFileIfAbsentAtRootPreservesAtomicCleanupFailure(t *testing.T, failSession bool) {
+	fixture := newAtomicCleanupFailureFixture(t, failSession)
+	err := writeFileIfAbsentAtRoot(fixture.root(), rootedTarget{rel: "target"}, []byte("completed"), 0o600)
+	fixture.assertNoFallback(t, err)
+}
+
+type atomicCleanupFailureFixture struct {
+	base         Root
+	rootDir      string
+	cleanupErr   error
+	failSession  bool
+	targetOpened bool
+	sessionTemp  string
+}
+
+func newAtomicCleanupFailureFixture(t *testing.T, failSession bool) *atomicCleanupFailureFixture {
+	rootDir := t.TempDir()
+	return &atomicCleanupFailureFixture{
+		base:        openTestRoot(t, rootDir),
+		rootDir:     rootDir,
+		cleanupErr:  errors.New("atomic cleanup failed"),
+		failSession: failSession,
+	}
+}
+
+func (f *atomicCleanupFailureFixture) root() *fakeRoot {
+	return &fakeRoot{
+		Root:            f.base,
+		openFile:        f.openFile,
+		linkIfMatches:   f.linkIfMatches,
+		removeIfMatches: f.removeIfMatches,
+	}
+}
+
+func (f *atomicCleanupFailureFixture) openFile(name string, flag int, perm os.FileMode) (File, error) {
+	if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && f.sessionTemp == "" {
+		f.sessionTemp = name
+	}
+	if name == "target" {
+		f.targetOpened = true
+	}
+	return f.base.OpenFile(name, flag, perm)
+}
+
+func (*atomicCleanupFailureFixture) linkIfMatches(_ string, newName string, _ fs.FileInfo, _ string) error {
+	if newName == "target" {
+		return syscall.EPERM
+	}
+	return errIdentityBoundLinkUnavailable
+}
+
+func (f *atomicCleanupFailureFixture) removeIfMatches(name string, _ fs.FileInfo, _ string) error {
+	if strings.HasPrefix(filepath.Base(name), atomicTempPrefix) && (name == f.sessionTemp) == f.failSession {
+		return f.cleanupErr
+	}
+	return f.base.Remove(name)
+}
+
+func (f *atomicCleanupFailureFixture) assertNoFallback(t *testing.T, err error) {
+	t.Helper()
+	if f.sessionTemp == "" {
+		t.Fatal("atomic session did not create a temporary candidate")
+	}
+	if !errors.Is(err, errIdentityBoundReplacementUnsupported) || !errors.Is(err, f.cleanupErr) {
+		t.Fatalf("expected unsupported atomic attempt and preserved cleanup error, got %v", err)
+	}
+	if f.targetOpened {
+		t.Fatal("exclusive fallback must not run after atomic cleanup failure")
+	}
+	if _, statErr := os.Lstat(filepath.Join(f.rootDir, "target")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("atomic cleanup failure published target through fallback: %v", statErr)
+	}
+}
+
+func TestWriteRootIfAbsentLinklessFallbackLeavesNoPartialTargetOnCloseError(t *testing.T) {
+	rootDir := t.TempDir()
+	base := openTestRoot(t, rootDir)
+	closeErr := errors.New("close target failure")
+	root := &WriteRoot{
+		root: &rootWithoutIdentity{Root: &fakeRoot{
+			Root: base,
+			link: func(string, string) error {
+				return syscall.EPERM
+			},
+			openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+				file, err := base.OpenFile(name, flag, perm)
+				if err != nil {
+					return nil, err
+				}
+				if name != "target" {
+					return file, nil
+				}
+				return &fakeFile{
+					File: file,
+					close: func() error {
+						if err := file.Close(); err != nil {
+							return err
+						}
+						return closeErr
+					},
+				}, nil
+			},
+		}},
+		rootAbs: rootDir,
+	}
+
+	err := root.WriteFileCreatingParentsIfAbsent("target", []byte("completed"), 0o600, 0o750)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected linkless close failure, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(rootDir, "target")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("linkless fallback left a partial target: %v", err)
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyFailureCleansUpPrivateCandidate(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	readErr := errors.New("copy failed")
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			file, err := base.Open(name)
+			if err != nil {
+				return nil, err
+			}
+			return &fakeFile{
+				File: file,
+				read: func([]byte) (int, error) {
+					return 0, readErr
+				},
+			}, nil
+		},
+	}}
+
+	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if err == nil || !errors.Is(err, readErr) {
+		t.Fatalf("expected linkless copy failure, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyRejectsSourceSwapAfterCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	swapped := false
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			return &fakeFile{
+				File: file,
+				read: swapSourceAfterEOF(t, file, sourcePath, expected, &swapped),
+			}
+		}),
+	}}
+
+	stagedRel, stagedInfo, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if err != nil {
+		t.Fatalf("path-only source swap should not invalidate pinned source copy: %v", err)
+	}
+	if err := cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo); err != nil {
+		t.Fatalf("cleanup staged copy: %v", err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyRejectsLiveSourceChangeAfterCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	changedInfo := newPinnedTargetInfo(t, "changed")
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			statCalls := 0
+			return &fakeFile{
+				File: file,
+				stat: func() (fs.FileInfo, error) {
+					statCalls++
+					if statCalls == 1 {
+						return expected, nil
+					}
+					return changedInfo, nil
+				},
+			}
+		}),
+	}}
+
+	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if err == nil || !strings.Contains(err.Error(), sourceChangedMsg) {
+		t.Fatalf("expected live source identity rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestLinklessStagingCopyCleansCandidateWhenReopenedSourceCloseFails(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	closeErr := errors.New("close source failed")
+	base := openTestRoot(t, rootDir)
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			return &fakeFile{
+				File: file,
+				close: func() error {
+					if err := file.Close(); err != nil {
+						return err
+					}
+					return closeErr
+				},
+			}
+		}),
+	}}
+
+	_, _, err := stageIdentityBoundFile(root, "source", expected, sourceChangedMsg)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected source close error, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestCopyFileWithinRootRejectsSourceSwapAfterCopy(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	swapped := false
+	root := &fakeRoot{
+		Root: base,
+		open: wrapOpenedSourceFile(t, base, "source", func(file File) File {
+			return &fakeFile{
+				File: file,
+				read: swapSourceAfterEOF(t, file, sourcePath, expected, &swapped),
+			}
+		}),
+	}
+
+	_, err := copyFileWithinRoot(root, "source", "target", 0o640, expected)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeFallback) {
+		t.Fatalf("expected fallback source identity rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "replacement")
+	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestCopyFileWithinRootRejectsSourceInPlaceChangeBeforeFallbackOpen(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	expected := statTestPath(t, sourcePath)
+	base := openTestRoot(t, rootDir)
+	changed := false
+	root := &fakeRoot{
+		Root: base,
+		open: func(name string) (File, error) {
+			if name == "source" && !changed {
+				if err := os.WriteFile(sourcePath, []byte("changed in place"), 0o600); err != nil {
+					t.Fatalf("change source in place: %v", err)
+				}
+				changed = true
+			}
+			return base.Open(name)
+		},
+	}
+
+	_, err := copyFileWithinRoot(root, "source", "target", 0o640, expected)
+	if err == nil || !strings.Contains(err.Error(), moveSourceChangedBeforeFallback) {
+		t.Fatalf("expected fallback source metadata rejection, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "changed in place")
+	assertPathAbsent(t, targetPath)
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootCopiesFromQuarantinedSourceAfterLinklessRenameEXDEV(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	sourceQuarantineRel := ""
+	sourceQuarantineRenameFailed := false
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+		rename: func(oldName, newName string) error {
+			if oldName == "source" {
+				sourceQuarantineRel = newName
+				return base.Rename(oldName, newName)
+			}
+			if oldName == sourceQuarantineRel && newName == "target" {
+				sourceQuarantineRenameFailed = true
+				return syscall.EXDEV
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("move fallback returned error: %v", err)
+	}
+	if !sourceQuarantineRenameFailed {
+		t.Fatal("expected direct rename of the quarantined source to fail with EXDEV")
+	}
+	assertPathAbsent(t, sourcePath)
+	assertFileContent(t, targetPath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootRemovesOriginalSourceAfterStagedEXDEVFallback(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	targetRenameAttempts := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		rename: func(oldName, newName string) error {
+			if newName == "target" {
+				targetRenameAttempts++
+				if targetRenameAttempts == 1 {
+					return syscall.EXDEV
+				}
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("move fallback returned error: %v", err)
+	}
+	assertPathAbsent(t, sourcePath)
+	assertFileContent(t, targetPath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootRestoresLinklessSourceAfterEXDEVFallbackCopyFailure(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	stagedOpenAttempts := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				return nil, os.ErrPermission
+			}
+			stagedOpenAttempts++
+			if stagedOpenAttempts == 1 {
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+		rename: func(oldName, newName string) error {
+			if newName == "target" {
+				return syscall.EXDEV
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !errors.Is(err, syscall.EXDEV) || !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected EXDEV fallback-copy failure, got %v", err)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertPathAbsent(t, targetPath)
+	assertRetainedAtomicStagingEntry(t, rootDir, "source")
+}
+
+func TestMoveFileWithinRootRestoresQuarantinedSourceWhenFallbackTargetCreationFails(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	failedTargetCreation := false
+	sourceOpenAttempts := 0
+	root := &rootWithoutIdentity{Root: &fakeRoot{
+		Root: base,
+		link: func(string, string) error {
+			return syscall.EPERM
+		},
+		open: func(name string) (File, error) {
+			if name == "source" {
+				sourceOpenAttempts++
+				return nil, os.ErrPermission
+			}
+			return base.Open(name)
+		},
+		openFile: func(name string, flag int, perm os.FileMode) (File, error) {
+			if !failedTargetCreation && isMoveFallbackTempPath(name) {
+				failedTargetCreation = true
+				return nil, os.ErrNotExist
+			}
+			return base.OpenFile(name, flag, perm)
+		},
+		rename: func(oldName, newName string) error {
+			if newName == "target" {
+				return syscall.EXDEV
+			}
+			return base.Rename(oldName, newName)
+		},
+	}}
+
+	err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640)
+	if err == nil || !errors.Is(err, syscall.EXDEV) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected EXDEV fallback target-creation failure, got %v", err)
+	}
+	if sourceOpenAttempts != 1 {
+		t.Fatalf("expected only the initial linkless staging attempt to open the original source, got %d opens", sourceOpenAttempts)
+	}
+	assertFileContent(t, sourcePath, "source")
+	assertPathAbsent(t, targetPath)
+	assertRetainedAtomicStagingEntry(t, rootDir, "source")
+}
+
+func TestMoveFileWithinRootRetriesLiveSourceAfterQuarantinedFallbackDisappears(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	base := openTestRoot(t, rootDir)
+	scenario := newLiveSourceFallbackRetryScenario(t, base)
+
+	if err := MoveFileWithinRoot(scenario.root(), "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("fallback retry returned error: %v", err)
+	}
+	if !scenario.failedTargetCreation || scenario.sourceOpenAttempts != 2 {
+		t.Fatalf("expected failed staged copy and live-source retry, targetFailure=%t sourceOpens=%d", scenario.failedTargetCreation, scenario.sourceOpenAttempts)
+	}
+	assertPathAbsent(t, sourcePath)
+	assertFileContent(t, targetPath, "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+type liveSourceFallbackRetryScenario struct {
+	t                    *testing.T
+	base                 Root
+	stagedSourceRel      string
+	sourceOpenAttempts   int
+	failedTargetCreation bool
+	targetRenameAttempts int
+}
+
+func newLiveSourceFallbackRetryScenario(t *testing.T, base Root) *liveSourceFallbackRetryScenario {
+	t.Helper()
+	return &liveSourceFallbackRetryScenario{t: t, base: base}
+}
+
+func (s *liveSourceFallbackRetryScenario) root() Root {
+	return &rootWithoutIdentity{Root: &fakeRoot{
+		Root:     s.base,
+		link:     s.link,
+		open:     s.open,
+		openFile: s.openFile,
+		rename:   s.rename,
+	}}
+}
+
+func (s *liveSourceFallbackRetryScenario) link(string, string) error {
+	return syscall.EPERM
+}
+
+func (s *liveSourceFallbackRetryScenario) open(name string) (File, error) {
+	if name != "source" {
+		return s.base.Open(name)
+	}
+	s.sourceOpenAttempts++
+	if s.sourceOpenAttempts == 1 {
+		return nil, os.ErrPermission
+	}
+	return s.base.Open(name)
+}
+
+func (s *liveSourceFallbackRetryScenario) openFile(name string, flag int, perm os.FileMode) (File, error) {
+	if s.failedTargetCreation || s.stagedSourceRel == "" || !isMoveFallbackTempPath(name) {
+		return s.base.OpenFile(name, flag, perm)
+	}
+	s.failedTargetCreation = true
+	if err := s.base.Rename(s.stagedSourceRel, "source"); err != nil {
+		s.t.Fatalf("restore staged source before fallback retry: %v", err)
+	}
+	return nil, os.ErrNotExist
+}
+
+func (s *liveSourceFallbackRetryScenario) rename(oldName, newName string) error {
+	if newName == "target" {
+		s.targetRenameAttempts++
+		if s.targetRenameAttempts == 1 {
+			return syscall.EXDEV
+		}
+	}
+	if oldName == "source" {
+		s.stagedSourceRel = newName
+	}
+	return s.base.Rename(oldName, newName)
+}
+
+func TestMoveFallbackCopySourceAndStagingDirCleanupBranches(t *testing.T) {
+	sourceInfo := newPinnedTargetInfo(t, "source")
+	renameErr := &moveLinklessRenameError{err: withPublishRenameSource(syscall.EXDEV, filepath.Join(atomicTempPrefix+"move", "entry"))}
+	if renameErr.Error() == "" {
+		t.Fatal("expected linkless rename error text")
+	}
+	if got := moveFallbackCopySource(renameErr, "source"); got != filepath.Join(atomicTempPrefix+"move", "entry") {
+		t.Fatalf("expected published fallback source, got %q", got)
+	}
+	genericRenameErr := withPublishRenameSource(syscall.EXDEV, filepath.Join(atomicTempPrefix+"generic", "entry"))
+	if got := moveFallbackCopySource(genericRenameErr, "source"); got != filepath.Join(atomicTempPrefix+"generic", "entry") {
+		t.Fatalf("expected generic published fallback source, got %q", got)
+	}
+
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{}, "source", "source"); err != nil {
+		t.Fatalf("same source cleanup should be ignored: %v", err)
+	}
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{}, "source", filepath.Join(atomicTempPrefix+"move", "not-entry")); err != nil {
+		t.Fatalf("non-entry cleanup should be ignored: %v", err)
+	}
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, os.ErrNotExist },
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); err != nil {
+		t.Fatalf("missing staging dir cleanup should be ignored: %v", err)
+	}
+
+	lstatErr := errors.New("lstat failed")
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); !errors.Is(err, lstatErr) {
+		t.Fatalf("expected staging dir lstat error, got %v", err)
+	}
+
+	removed := false
+	dirInfo := statTestPath(t, t.TempDir())
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return dirInfo, nil },
+		remove: func(string) error {
+			removed = true
+			return os.ErrNotExist
+		},
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); err != nil {
+		t.Fatalf("missing staging dir removal should be ignored, got %v", err)
+	}
+	if !removed {
+		t.Fatal("expected staging dir cleanup remove")
+	}
+
+	fileInfo := &modeOverrideFileInfo{FileInfo: sourceInfo, mode: 0o600}
+	if err := cleanupMoveSourceStagingDir(&fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return fileInfo, nil },
+		remove: func(string) error {
+			t.Fatal("non-directory staging path must be preserved")
+			return nil
+		},
+	}, "source", filepath.Join(atomicTempPrefix+"move", "entry")); err != nil {
+		t.Fatalf("non-directory staging dir cleanup should be ignored: %v", err)
+	}
+}
+
+func swapSourceAfterEOF(t *testing.T, file File, sourcePath string, expected fs.FileInfo, swapped *bool) func([]byte) (int, error) {
+	t.Helper()
+	return func(p []byte) (int, error) {
+		n, err := file.Read(p)
+		if errors.Is(err, io.EOF) && !*swapped {
+			replaceFileAtPathWithDistinctIdentity(t, sourcePath, expected, "replacement")
+			*swapped = true
+		}
+		return n, err
+	}
+}
+
+func wrapOpenedSourceFile(t *testing.T, base Root, sourceRel string, wrap func(File) File) func(string) (File, error) {
+	t.Helper()
+	return func(name string) (File, error) {
+		file, err := base.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		if name != sourceRel {
+			return file, nil
+		}
+		return wrap(file), nil
+	}
+}
+
+func TestMoveFileWithinRootDistinctHardLinkAliasRemovesSource(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	if err := os.Link(sourcePath, targetPath); err != nil {
+		t.Skipf("hard links unsupported: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+
+	if err := MoveFileWithinRoot(root, "source", "target", 0o750, 0o640); err != nil {
+		t.Fatalf("hard-link alias move returned error: %v", err)
+	}
+	if _, err := os.Lstat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected original source alias to be removed, got %v", err)
+	}
+	assertFileContent(t, targetPath, "same")
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("expected target mode 0640, got %#o", info.Mode().Perm())
+	}
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootSameEntryAliasIgnoresOtherHardLinks(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("same-entry case alias regression requires the default macOS filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "File")
+	targetPath := filepath.Join(rootDir, "file")
+	otherPath := filepath.Join(rootDir, "other")
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is case-sensitive")
+	}
+	if err := os.Link(sourcePath, otherPath); err != nil {
+		t.Skipf("hard links unsupported: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	aliases, err := targetAliasesSource(root, "File", "file", sourceInfo)
+	if err != nil {
+		t.Fatalf("check alias: %v", err)
+	}
+	if !aliases {
+		t.Fatal("expected same-entry alias detection to ignore unrelated hard links")
+	}
+}
+
+func TestMoveFileWithinRootCaseOnlyAliasPreservesFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("case-insensitive alias regression requires the default macOS filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "File")
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(filepath.Join(rootDir, "file"))
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is case-sensitive")
+	}
+	root := openTestRoot(t, rootDir)
+
+	if err := MoveFileWithinRoot(root, "File", "file", 0o750, 0o640); err != nil {
+		t.Fatalf("case-only move returned error: %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "file"), "same")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootCaseOnlyAliasSupportsPlainFileRoot(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("case-insensitive alias regression requires the default macOS filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "File")
+	targetPath := filepath.Join(rootDir, "file")
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is case-sensitive")
+	}
+	root := &plainFileHandleRoot{Root: openPlainRoot(t, rootDir)}
+
+	if err := MoveFileWithinRoot(root, "File", "file", 0o750, 0o640); err != nil {
+		t.Fatalf("case-only move through plain File root returned error: %v", err)
+	}
+	assertFileContent(t, targetPath, "same")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestMoveFileWithinRootCanonicalUnicodeAliasPreservesFile(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("canonical alias regression requires a normalization-insensitive filesystem")
+	}
+
+	rootDir := t.TempDir()
+	sourceRel := "\u00e9"
+	targetRel := "e\u0301"
+	sourcePath := filepath.Join(rootDir, sourceRel)
+	targetPath := filepath.Join(rootDir, targetRel)
+	if err := os.WriteFile(sourcePath, []byte("same"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo, err := os.Lstat(targetPath)
+	if err != nil || !os.SameFile(sourceInfo, targetInfo) {
+		t.Skip("temporary directory is normalization-sensitive")
+	}
+	root := openTestRoot(t, rootDir)
+
+	if err := MoveFileWithinRoot(root, sourceRel, targetRel, 0o750, 0o640); err != nil {
+		t.Fatalf("canonical alias move returned error: %v", err)
+	}
+	assertFileContent(t, targetPath, "same")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func TestPublishRenameSourcePrefersStagedName(t *testing.T) {
+	err := &publishRenameError{sourceRel: ".safeio-atomic-stage", err: errors.New("rename failed")}
+	if got := publishRenameSource(err, ".safeio-atomic-original"); got != ".safeio-atomic-stage" {
+		t.Fatalf("expected staged fallback source, got %q", got)
+	}
+}
+
+func TestRootRenameIfMatchesRenamesExpectedFile(t *testing.T) {
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("seed source: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	sourceInfo := statTestPath(t, sourcePath)
+	filesystemRoot, ok := root.(*osRoot)
+	if !ok {
+		t.Fatalf("test root does not support RenameIfMatches")
+	}
+
+	if err := filesystemRoot.RenameIfMatches("source.txt", "target.txt", sourceInfo, sourceChangedMsg); err != nil {
+		t.Fatalf("RenameIfMatches returned error: %v", err)
+	}
+
+	if _, err := os.Lstat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source to be renamed away, got %v", err)
+	}
+	assertFileContent(t, filepath.Join(rootDir, "target.txt"), "source")
+	assertNoAtomicStagingEntries(t, rootDir)
+}
+
+func assertNoAtomicStagingEntries(t *testing.T, rootDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		t.Fatalf("read root entries: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), atomicTempPrefix) {
+			t.Fatalf("leaked atomic staging entry: %s", entry.Name())
+		}
+	}
+}
+
+func assertRetainedAtomicStagingEntry(t *testing.T, rootDir, wantContent string) {
+	t.Helper()
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		t.Fatalf("read root entries: %v", err)
+	}
+	retained := 0
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), atomicTempPrefix) {
+			continue
+		}
+		retained++
+		if !entry.IsDir() {
+			t.Fatalf("retained atomic staging entry is not a directory: %s", entry.Name())
+		}
+		assertFileContent(t, filepath.Join(rootDir, entry.Name(), "entry"), wantContent)
+	}
+	if retained != 1 {
+		t.Fatalf("expected one retained atomic staging entry, got %d", retained)
 	}
 }

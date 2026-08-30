@@ -10,6 +10,7 @@ type Report struct {
 	RepoPath             string               `json:"repoPath"`
 	Scope                *ScopeMetadata       `json:"scope,omitempty"`
 	Dependencies         []DependencyReport   `json:"dependencies"`
+	UsageIncomplete      bool                 `json:"-"`
 	UsageUncertainty     *UsageUncertainty    `json:"usageUncertainty,omitempty"`
 	Summary              *Summary             `json:"summary,omitempty"`
 	LanguageBreakdown    []LanguageSummary    `json:"languageBreakdown,omitempty"`

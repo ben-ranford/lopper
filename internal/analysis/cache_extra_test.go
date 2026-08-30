@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/runtime"
 )
 
 const (
@@ -59,6 +62,52 @@ func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
 	var nilCache *analysisCache
 	if nilCache.metadataSnapshot() != nil {
 		t.Fatalf("expected nil snapshot for nil cache")
+	}
+}
+
+func TestCachePathAndRelevantFileBoundaryBranches(t *testing.T) {
+	var nilCache *analysisCache
+	cachePath := filepath.Join(t.TempDir(), cacheDirName)
+	if got := nilCache.stableCacheRoot(cachePath); got != cachePath {
+		t.Fatalf("expected nil cache to preserve cache root, got %q", got)
+	}
+
+	repo := t.TempDir()
+	outside := t.TempDir()
+	symlink := filepath.Join(repo, "linked-cache")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatalf("create cache symlink: %v", err)
+	}
+	if !cachePathEscapesRepo(symlink, repo) {
+		t.Fatal("expected symlinked cache path to be rejected")
+	}
+	if _, err := prepareWritableAnalysisCacheRoot(filepath.Join(repo, "missing", cacheDirName)); err == nil {
+		t.Fatal("expected missing cache root to require deferred creation")
+	}
+	cache := &analysisCache{options: resolvedCacheOptions{Path: repo}}
+	writeRoot, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open cache write root: %v", err)
+	}
+	if err := writeRoot.Close(); err != nil {
+		t.Fatalf("close cache write root: %v", err)
+	}
+
+	exclusions := cacheExcludedPathSet(cacheAnalysisExclusions{files: []string{"", filepath.Join(repo, "trace.ndjson")}})
+	if len(exclusions) != 1 {
+		t.Fatalf("expected only non-empty cache exclusion, got %#v", exclusions)
+	}
+	if !shouldSkipCacheDir(cacheDirName) || isCacheRelevantFile("README.txt") {
+		t.Fatal("expected cache directory and unsupported file handling")
+	}
+	if _, err := collectPHPShortOpenTagTraversalEntries(filepath.Join(repo, "missing-root"), cacheAnalysisExclusions{}); err == nil {
+		t.Fatal("expected missing short-open-tag traversal root to fail")
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "objects", "broken.json"), 0o750); err != nil {
+		t.Fatalf("create malformed cache object path: %v", err)
+	}
+	if _, reason, err := readCachedPayload(repo, "broken"); err != nil || reason != "object-read-error" {
+		t.Fatalf("expected malformed cache object read to invalidate, reason=%q err=%v", reason, err)
 	}
 }
 
@@ -374,6 +423,156 @@ func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
 	}
 	if lockOrConfigFile("README.md") {
 		t.Fatalf("did not expect README.md to be treated as a cache-relevant config file")
+	}
+}
+
+func TestAnalysisCacheCollectsPHPShortOpenTagConfigs(t *testing.T) {
+	repo := t.TempDir()
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		mustWriteFile(t, filepath.Join(repo, filename), []byte("short_open_tag = On\n"))
+	}
+
+	cache := &analysisCache{}
+	records, err := cache.collectRelevantFiles(repo)
+	if err != nil {
+		t.Fatalf("collect relevant files: %v", err)
+	}
+	collected := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		collected[record.relativePath] = struct{}{}
+	}
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		if _, ok := collected[filename]; !ok {
+			t.Fatalf("expected %s to participate in cache invalidation, got %#v", filename, collected)
+		}
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagConfigChangesInvalidateInputDigest(t *testing.T) {
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		t.Run(filename, func(t *testing.T) {
+			repo := t.TempDir()
+			configPath := filepath.Join(repo, filename)
+			mustWriteFile(t, configPath, []byte("short_open_tag = Off\n"))
+
+			cache := &analysisCache{}
+			before, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest before config update: %v", err)
+			}
+			mustWriteFile(t, configPath, []byte("short_open_tag = On\n"))
+			after, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest after config update: %v", err)
+			}
+			if before == after {
+				t.Fatalf("expected %s update to invalidate the input digest", filename)
+			}
+		})
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagTraversalCutoffInvalidatesInputDigest(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteFile(t, filepath.Join(repo, "z-config", "php.ini"), []byte("short_open_tag = On\n"))
+
+	cache := &analysisCache{}
+	before, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest before traversal change: %v", err)
+	}
+	for i := 0; i < shared.PHPShortOpenTagConfigWalkEntryLimit; i++ {
+		if err := os.Mkdir(filepath.Join(repo, fmt.Sprintf("a-%04d", i)), 0o750); err != nil {
+			t.Fatalf("create traversal entry %d: %v", i, err)
+		}
+	}
+	after, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest after traversal change: %v", err)
+	}
+	if before == after {
+		t.Fatal("expected PHP short_open_tag traversal cutoff to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(repo, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	exclusions := cache.cacheAnalysisExclusions(repo, Request{RuntimeTracePath: tracePath})
+	before, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	mustWriteFile(t, runtime.TraceStatePath(filepath.Join(repo, tracePath)), []byte("{\"schema\":\"v2\"}\n"))
+	afterTrace, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != afterTrace {
+		t.Fatal("expected generated runtime trace artifacts not to invalidate the static input digest")
+	}
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'after';\n"))
+	afterSource, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after source change: %v", err)
+	}
+	if afterTrace == afterSource {
+		t.Fatal("expected source beside an explicit runtime trace to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheRuntimeTraceResolvesRelativeToRepoRootForNestedCandidateRoots(t *testing.T) {
+	repo := t.TempDir()
+	nestedRoot := filepath.Join(repo, "pkg")
+	tracePath := filepath.Join("pkg", "tests", "trace.ndjson")
+	sourcePath := filepath.Join(nestedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(nestedRoot, req, repo)
+	before, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a relative runtime trace path to resolve against the repository root, excluding trace artifacts from a nested candidate root's digest")
+	}
+}
+
+func TestAnalysisCacheRuntimeTraceExclusionRemapsIntoScopedWorkspace(t *testing.T) {
+	trueRepo := t.TempDir()
+	scopedRoot := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(scopedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{stableRepoPath: trueRepo, analysisRepoPath: scopedRoot}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(scopedRoot, req, trueRepo)
+	before, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(scopedRoot, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a runtime trace exclusion resolved against the true repo root to be remapped into a scoped workspace copy's candidate root")
 	}
 }
 

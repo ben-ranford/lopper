@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 const (
@@ -30,16 +32,18 @@ type lockFallback struct {
 type dependencyParser func(repoPath, path string) (map[string]struct{}, []string, error)
 
 type packagingDiscoveryCoordinator struct {
-	repoPath     string
-	dependencies map[string]struct{}
-	warnings     []string
+	repoPath      string
+	excludedPaths map[string]struct{}
+	dependencies  map[string]struct{}
+	warnings      []string
 }
 
-func collectDeclaredDependencies(ctx context.Context, repoPath string) (map[string]struct{}, []string, error) {
+func collectDeclaredDependencies(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (map[string]struct{}, []string, error) {
 	coordinator := packagingDiscoveryCoordinator{
-		repoPath:     repoPath,
-		dependencies: make(map[string]struct{}),
-		warnings:     make([]string, 0),
+		repoPath:      repoPath,
+		excludedPaths: excludedPaths,
+		dependencies:  make(map[string]struct{}),
+		warnings:      make([]string, 0),
 	}
 	if err := coordinator.collect(ctx); err != nil {
 		return nil, nil, err
@@ -63,11 +67,14 @@ func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry
 	if !entry.IsDir() {
 		return nil
 	}
+	if shared.IsExcludedPath(c.excludedPaths, path) {
+		return filepath.SkipDir
+	}
 	if path != c.repoPath && shouldSkipDir(entry.Name()) {
 		return filepath.SkipDir
 	}
 
-	dirDependencies, dirWarnings, err := collectDirectoryDeclaredDependencies(c.repoPath, path)
+	dirDependencies, dirWarnings, err := collectDirectoryDeclaredDependencies(c.repoPath, path, c.excludedPaths)
 	if err != nil {
 		return err
 	}
@@ -76,8 +83,8 @@ func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry
 	return nil
 }
 
-func collectDirectoryDeclaredDependencies(repoPath, dir string) (map[string]struct{}, []string, error) {
-	files, err := pythonPackagingFiles(dir)
+func collectDirectoryDeclaredDependencies(repoPath, dir string, excludedPaths map[string]struct{}) (map[string]struct{}, []string, error) {
+	files, err := pythonPackagingFiles(dir, excludedPaths)
 	if err != nil {
 		return nil, nil, normalizePackagingStageError("discovery", err)
 	}
@@ -125,7 +132,7 @@ func normalizePackagingStageError(stage string, err error) error {
 	return fmt.Errorf("python packaging %s: %w", stage, err)
 }
 
-func pythonPackagingFiles(dir string) (map[string]struct{}, error) {
+func pythonPackagingFiles(dir string, excludedPaths map[string]struct{}) (map[string]struct{}, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -134,6 +141,9 @@ func pythonPackagingFiles(dir string) (map[string]struct{}, error) {
 	files := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
+			continue
+		}
+		if shared.IsExcludedPath(excludedPaths, filepath.Join(dir, entry.Name())) {
 			continue
 		}
 		files[entry.Name()] = struct{}{}
