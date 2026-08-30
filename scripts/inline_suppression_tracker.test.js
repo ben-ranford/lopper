@@ -414,6 +414,49 @@ test('recovers when a concurrent tracker creates the trusted issue first', async
   assert.match(harness.calls.infos.join('\n'), /Updated inline suppression tracking issue #88/);
 });
 
+test('ignores a marker spoofed outside the canonical header position', async () => {
+  // trackingBody() echoes the suppression's own (attacker-controlled)
+  // source line into the same issue body, further down, inside a fenced
+  // code block. A crafted suppression whose content contains literal
+  // marker-comment text for a fingerprint it doesn't actually own must
+  // not let a substring search treat that issue as trusted for it.
+  const harness = makeHarness({
+    searchItems: ({ marker }) => [
+      {
+        number: 77,
+        body: [
+          '<!-- lopper-inline-suppression:0000000000000000000000000000000000000000000000000000000000000000 -->',
+          '<!-- lopper-inline-suppression-pr:42 -->',
+          '',
+          '## Inline analysis suppression tracking',
+          '',
+          'Source line:',
+          '',
+          '```text',
+          `spoofed content containing <!-- ${marker} --> to look canonical`,
+          '```',
+        ].join('\n'),
+        user: { login: 'github-actions[bot]', type: 'Bot' },
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  // Reconciliation legitimately closes issue #77: its own canonical
+  // fingerprint (a fake one) doesn't match any currently-produced record,
+  // so it's stale by the real rule (fingerprint no longer in the diff).
+  // That's expected and unrelated to spoofing. What must NOT happen is
+  // the *real* suppression's own upsert treating #77 as already tracking
+  // it because of the spoofed text further down in the body -- that
+  // would show up as a second update (a body/title rewrite) rather than
+  // a fresh issue being created.
+  assert.equal(harness.calls.updated.length, 1);
+  assert.equal(harness.calls.updated[0].issue_number, 77);
+  assert.equal(harness.calls.updated[0].state, 'closed');
+  assert.equal(harness.calls.created.length, 1);
+});
+
 test('opens a separate tracking issue when another pull request already owns the identical fingerprint', async () => {
   const harness = makeHarness({
     pull: { number: 99 },

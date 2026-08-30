@@ -600,7 +600,18 @@ function fingerprintFromIssueBody(body) {
 }
 
 function issueBodyIncludesMarker(issue, marker) {
-  return typeof issue.body === 'string' && issue.body.includes(`<!-- ${marker} -->`);
+  if (typeof issue.body !== 'string') {
+    return false;
+  }
+  // trackingBody() always writes the fingerprint marker on the issue
+  // body's first line and the pull marker on its second; requiring an
+  // exact match there (rather than a substring search anywhere in the
+  // body) keeps a suppression's own attacker-controlled source-line
+  // content -- also echoed into this same body, further down -- from
+  // being able to spoof a canonical marker for a fingerprint or pull
+  // number it doesn't actually own.
+  const headerLines = issue.body.split('\n', 2);
+  return headerLines.includes(`<!-- ${marker} -->`);
 }
 
 function issueHasTrustedTrackerOwner(issue) {
