@@ -133,7 +133,21 @@ function makeHarness(options = {}) {
         getContent: async ({ path: filePath }) => {
           const file = files.find((candidate) => candidate.filename === filePath);
           const content = reconstructFileFromPatch(file?.patch);
-          return { data: { type: 'file', content: Buffer.from(content, 'utf8').toString('base64') } };
+          if (options.oversizedContentFiles?.includes(filePath)) {
+            return { data: { type: 'file', content: '', encoding: 'none', sha: `blob-sha:${filePath}` } };
+          }
+          return {
+            data: { type: 'file', content: Buffer.from(content, 'utf8').toString('base64'), encoding: 'base64', sha: `blob-sha:${filePath}` },
+          };
+        },
+      },
+      git: {
+        getBlob: async ({ file_sha: fileSha }) => {
+          calls.blobFetches = (calls.blobFetches || 0) + 1;
+          const filePath = fileSha.replace(/^blob-sha:/, '');
+          const file = files.find((candidate) => candidate.filename === filePath);
+          const content = reconstructFileFromPatch(file?.patch);
+          return { data: { encoding: 'base64', content: Buffer.from(content, 'utf8').toString('base64') } };
         },
       },
       search: {
@@ -226,6 +240,29 @@ test('percent-encodes URL-significant characters in source links', async () => {
     harness.calls.created[0].body,
     /Source: https:\/\/github\.com\/octo\/lopper\/blob\/head-sha\/odd%20name%231\.go#L4/,
   );
+});
+
+test('falls back to the Git Blobs API when the Contents API omits inline content', async () => {
+  // Files over the Contents API's 1 MiB limit come back with an empty
+  // `content` and `encoding: "none"`; treating that as zero lines would
+  // assign every occurrence 0 and desync from the trusted full-checkout
+  // count. This must fetch the blob directly instead.
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'huge.go',
+        status: 'added',
+        patch: patchFor(trackedLine()),
+      },
+    ],
+    oversizedContentFiles: ['huge.go'],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.equal(harness.calls.blobFetches, 1);
+  assert.match(harness.calls.created[0].body, /Location: `huge\.go:4`/);
 });
 
 test('ignores code-side assignments before the suppression marker when extracting metadata', async () => {

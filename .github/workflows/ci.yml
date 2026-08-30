@@ -186,13 +186,40 @@ jobs:
           # cannot itself gate the merge; this step closes that gap with a
           # read-only wait/verify that a trusted tracking issue was actually
           # published for every suppression this PR adds, on this head.
+          # The suppression detector and Makefile that produce
+          # SUPPRESSIONS_FILE are themselves PR-controlled checked-out code,
+          # so a PR could neuter them to silently omit this artifact while
+          # still adding an untracked suppression, making the checks below
+          # trivially pass. Before trusting an empty/missing artifact,
+          # independently confirm via GitHub's own diff data (which the PR
+          # cannot alter) that no suppression-marker-shaped line was added.
+          # Built from pieces, like check-inline-suppressions.sh, so this
+          # gate does not match its own source.
+          no_prefix="no"
+          ts_prefix="ts"
+          eslint_prefix="eslint"
+          coverage_prefix="coverage"
+          suspect_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))"
+          suspect_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].patch // empty' \
+            | grep -E '^\+' \
+            | grep -Eic "${suspect_pattern}" || true)"
+          suspect_count="${suspect_count:-0}"
+
           if [ ! -s "${SUPPRESSIONS_FILE}" ]; then
-            echo "No inline suppression tracking output was produced; nothing to verify."
+            if [ "${suspect_count}" -gt 0 ]; then
+              echo "::error::No inline suppression tracking output was produced, but GitHub's own diff for this pull request contains ${suspect_count} line(s) that look like a newly added suppression marker. This can happen if the suppression detector or Makefile target was modified to skip producing its artifact; refusing to treat this as nothing to verify." >&2
+              exit 1
+            fi
+            echo "No inline suppression tracking output was produced, and GitHub's diff independently confirms no suppression markers were added; nothing to verify."
             exit 0
           fi
 
           mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}")
           if [ "${#fingerprints[@]}" -eq 0 ]; then
+            if [ "${suspect_count}" -gt 0 ]; then
+              echo "::error::No inline suppressions were recorded in this pull request's tracking output, but GitHub's own diff contains ${suspect_count} line(s) that look like a newly added suppression marker. This can happen if the suppression detector was modified to under-report; refusing to treat this as nothing to verify." >&2
+              exit 1
+            fi
             echo "No inline suppressions were recorded in this pull request."
             exit 0
           fi

@@ -156,10 +156,30 @@ async function occurrenceInFile({ github, context, file, ref, targetLine, target
     path: file,
     ref,
   });
-  if (Array.isArray(data) || data.type !== 'file' || typeof data.content !== 'string') {
+  if (Array.isArray(data) || data.type !== 'file') {
     throw new TypeError(`Unable to fetch full content for ${file} to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
   }
-  const lines = Buffer.from(data.content, 'base64').toString('utf8').split('\n');
+  // For files over the Contents API's 1 MiB inline limit, GitHub returns an
+  // empty `content` with `encoding: "none"` rather than an error; accepting
+  // that as zero lines would assign every suppression occurrence 0 and
+  // desync from the trusted count derived from the full checkout. Fall back
+  // to the Git Blobs API (no such inline-size limit) in that case.
+  let base64Content = data.encoding === 'base64' && typeof data.content === 'string' ? data.content : undefined;
+  if (base64Content === undefined) {
+    if (typeof data.sha !== 'string') {
+      throw new TypeError(`Unable to fetch complete content for ${file} to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
+    }
+    const blob = await github.rest.git.getBlob({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      file_sha: data.sha,
+    });
+    if (blob.data.encoding !== 'base64' || typeof blob.data.content !== 'string') {
+      throw new TypeError(`Unable to fetch complete content for ${file} (blob encoding ${blob.data.encoding}) to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
+    }
+    base64Content = blob.data.content;
+  }
+  const lines = Buffer.from(base64Content, 'base64').toString('utf8').split('\n');
   let count = 0;
   for (let index = 0; index < targetLine && index < lines.length; index += 1) {
     if (lines[index] === targetContent) {

@@ -304,6 +304,17 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
 	})
+	// SUPPRESSIONS_FILE is produced by PR-controlled checked-out code (the
+	// suppression detector and Makefile), so a PR could neuter it to
+	// silently omit the artifact while still adding an untracked
+	// suppression. The empty/missing-artifact early-outs must not be
+	// trusted blindly; they must be corroborated against GitHub's own
+	// (PR-uncontrollable) diff data first.
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate`,
+		"suspect_count",
+	})
+	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `if [ ! -s "${SUPPRESSIONS_FILE}" ]; then`)
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
