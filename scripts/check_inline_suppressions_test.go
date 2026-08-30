@@ -181,6 +181,27 @@ func TestInlineSuppressionCheckMatchesUppercaseExtensionCaseInsensitively(t *tes
 	assertSuppressionDetectedForFilename(t, "main.GO")
 }
 
+func assertSuppressionDetectedForLine(t *testing.T, line string) suppressionRecords {
+	t.Helper()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	content := "package main\n\nfunc main() {\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the suppression to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+	return records
+}
+
 func TestInlineSuppressionCheckDetectsAddedLineStartingWithDoublePlus(t *testing.T) {
 	t.Parallel()
 
@@ -189,23 +210,9 @@ func TestInlineSuppressionCheckDetectsAddedLineStartingWithDoublePlus(t *testing
 	// statement) produces a line beginning with three literal "+"
 	// characters, colliding with the genuine "+++ b/..." file-header
 	// exclusion unless that exclusion is scoped to just the header line.
-	repoDir := newInlineSuppressionRepo(t)
-	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	marker := "nolint:staticcheck"
 	line := "++counter; //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
-	content := "package main\n\nfunc main() {\n" + line + "\n}\n"
-	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
-	if err != nil {
-		t.Fatalf("expected an added line starting with ++ to be detected, output:\n%s", output)
-	}
-
-	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record for a line beginning with ++, got %#v", records.Suppressions)
-	}
+	assertSuppressionDetectedForLine(t, line)
 }
 
 func TestInlineSuppressionCheckDetectsTrackedMarkerInRenamedSource(t *testing.T) {
@@ -631,6 +638,38 @@ func TestInlineSuppressionCheckIgnoresQuotedMarkersInSource(t *testing.T) {
 	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
 		t.Fatalf("expected pass message, got:\n%s", output)
 	}
+}
+
+func TestInlineSuppressionCheckIgnoresURLSchemesInSource(t *testing.T) {
+	t.Parallel()
+
+	// A URL scheme ("http://...") must not be mistaken for a comment
+	// delimiter just because the marker-boundary check was loosened to
+	// recognize comments with no leading whitespace.
+	repoDir := newInlineSuppressionRepo(t)
+	source := "package main\n\nconst url = \"http:" + "//" + "nosec.example.com\"\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheck(repoDir)
+	if err != nil {
+		t.Fatalf("expected URL scheme to pass, output:\n%s", output)
+	}
+	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
+		t.Fatalf("expected pass message, got:\n%s", output)
+	}
+}
+
+func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.T) {
+	t.Parallel()
+
+	// A comment delimiter needs no preceding whitespace: it can follow
+	// code directly, with no space in between. All three detection
+	// layers previously required whitespace or start-of-line before the
+	// comment prefix, so such a line was invisible to all of them.
+	marker := "nolint:staticcheck"
+	line := "call();//" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	assertSuppressionDetectedForLine(t, line)
 }
 
 func mainGoWithoutComment() string {

@@ -297,6 +297,10 @@ test('recognizes supported inline suppression marker forms without matching quot
     '\t_ = 1 /' + '/ eslint-' + 'disable-next-line no-console',
     '\t_ = 1 /' + '/ pragma: ' + 'no cover',
     '\t_ = 1 /' + '/ coverage: ' + 'ignore',
+    // A comment delimiter needs no preceding whitespace: it can follow
+    // code directly.
+    'call();/' + '/no' + 'lint rationale=x; owner=y; remove-when=z',
+    'value=1' + '# no' + 'qa rationale=x; owner=y; remove-when=z',
   ];
   for (const line of matchingLines) {
     assert.equal(testables.hasInlineSuppressionMarker(line), true, line);
@@ -308,6 +312,8 @@ test('recognizes supported inline suppression marker forms without matching quot
     '\t_ = 1 /' + '/ no' + 'linter',
     '\t_ = 1 /' + '/ coverage: ' + 'ignored',
     '\t_ = 1 /' + '/ pragma: ' + 'no coverage',
+    // A URL scheme must not be mistaken for a comment delimiter.
+    'const url = "http:/' + '/no' + 'sec.example.com";',
   ];
   for (const line of ignoredLines) {
     assert.equal(testables.hasInlineSuppressionMarker(line), false, line);
@@ -561,6 +567,56 @@ test('skips patchless pure source renames', async () => {
 
   assert.equal(harness.calls.created.length, 0);
   assert.deepEqual(harness.calls.infos, ['No inline suppression records were produced.']);
+});
+
+test('scans copied source files for tracked suppressions', async () => {
+  // GitHub's own copy detection reports status "copied" for a file it
+  // recognizes as a copy of another; that new path introduces another
+  // live occurrence of any suppression in the copied content and must be
+  // tracked under its own fingerprint, not silently skipped.
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'copy.go',
+        previous_filename: 'main.go',
+        status: 'copied',
+        patch: patchFor(trackedLine('nosec G404')),
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.equal(harness.calls.created[0].title, 'ci: track inline suppression in copy.go:4');
+});
+
+test('fails closed on a patchless copy instead of silently skipping it', async () => {
+  // Unlike a pure rename (same occurrence, just moved -- safe to skip
+  // when patchless), a copy with byte-identical content still introduces
+  // a genuinely new occurrence at a new path; if GitHub omits the patch
+  // (e.g. because the content already exists elsewhere), there is no
+  // record-scoped way to safely skip it, so this must fail closed.
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'copy.go',
+        previous_filename: 'main.go',
+        status: 'copied',
+        additions: 0,
+        deletions: 0,
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'TypeError',
+      message: /Inline suppression diff patch is unavailable for copy\.go/,
+    },
+  );
+  assert.equal(harness.calls.created.length, 0);
 });
 
 test('tracks repeated identical suppressions with distinct fingerprints', async () => {

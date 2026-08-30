@@ -346,6 +346,14 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"`,
 		`test("^\\.githooks/|`,
 	})
+	// A comment delimiter needs no preceding whitespace -- it can follow
+	// code directly -- so the leading boundary excludes only
+	// quote/backtick (string literals) and ":" (URL schemes) rather than
+	// requiring whitespace or start-of-line.
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`suspect_pattern="(^|[^\"'`,
+		`(//|/[*]+|#)`,
+	})
 	// SUPPRESSIONS_FILE is PR-controlled, and each fingerprint from it is
 	// later interpolated directly into a `gh issue list --jq` expression;
 	// an unvalidated value containing jq syntax (e.g. `")))] | 1 #`) could

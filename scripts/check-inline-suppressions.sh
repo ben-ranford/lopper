@@ -10,8 +10,15 @@ marker_ts_prefix="ts"
 marker_eslint_prefix="eslint"
 marker_coverage_prefix="coverage"
 # Build marker names from pieces so this gate does not match its own source.
-marker_start_pattern="(//|/\\*+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore))"
-marker_pattern="(^|[[:space:]])(${marker_start_pattern})([^[:alnum:]_-]|$)"
+marker_start_pattern="(//|/[*]+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore))"
+# A comment delimiter needs no preceding whitespace in any of the covered
+# languages -- a marker immediately following code with no space in
+# between is still a valid suppression -- so requiring it would miss such
+# lines entirely. Excluding quote/backtick characters keeps a marker word
+# inside a string literal from matching, and excluding ":" keeps a URL
+# scheme (http://nolint...) from matching;
+# everything else is a valid preceding position.
+marker_pattern="(^|[^\\\"'\`:])(${marker_start_pattern})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
 diff_scope=""
 gh_bin="${GH_BIN:-gh}"

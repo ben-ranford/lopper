@@ -8,7 +8,7 @@ const COMMENT_PREFIXES = ['//', '/*', '#'];
 const NO_MARKERS = new Set(['nosec', 'nosonar', 'nolint', 'noqa']);
 const ESLINT_MARKERS = new Set(['eslint-disable', 'eslint-disable-next-line', 'eslint-disable-line']);
 const TS_MARKERS = new Set(['ts-ignore', 'ts-expect-error']);
-const TRACKED_FILE_STATUSES = new Set(['added', 'modified', 'renamed']);
+const TRACKED_FILE_STATUSES = new Set(['added', 'modified', 'renamed', 'copied']);
 const TRUSTED_TRACKER_LOGINS = new Set(['github-actions[bot]']);
 const SOURCE_EXTENSIONS = new Set([
   'bash',
@@ -50,8 +50,18 @@ function isMetadataBoundary(char) {
   return char === undefined || isWhitespace(char) || char === ';' || char === ',';
 }
 
+const UNSAFE_COMMENT_PRECEDING_CHARS = new Set(['"', "'", '`', ':']);
+
+// A comment delimiter needs no preceding whitespace in any of the covered
+// languages -- a marker immediately following code with no space in
+// between is still a valid suppression -- so requiring it caused every
+// detector to miss such lines entirely. Excluding quote/backtick
+// characters keeps a marker word
+// inside a string literal (`"//nosec"`) from matching, and excluding ":"
+// keeps a URL scheme (`http://nolint...`) from matching; everything else,
+// including alphanumerics and punctuation, is a valid position.
 function isCommentBoundary(char) {
-  return char === undefined || isWhitespace(char);
+  return char === undefined || !UNSAFE_COMMENT_PRECEDING_CHARS.has(char);
 }
 
 function isMarkerBoundary(char) {

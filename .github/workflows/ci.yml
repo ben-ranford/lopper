@@ -199,7 +199,15 @@ jobs:
           ts_prefix="ts"
           eslint_prefix="eslint"
           coverage_prefix="coverage"
-          suspect_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
+          # A comment delimiter needs no preceding whitespace in any of the
+          # covered languages -- a marker immediately following code with
+          # no space in between is still a valid suppression -- so
+          # requiring it would miss such lines entirely. Excluding
+          # quote/backtick characters keeps a marker word inside a string
+          # literal from matching, and excluding ":" keeps a URL scheme
+          # (http://nolint...) from matching; everything else is a valid
+          # preceding position.
+          suspect_pattern="(^|[^\"'\`:])((//|/[*]+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
           # Scope to the same source-file extensions the detector itself
           # covers, so documentation/config prose mentioning marker syntax
           # (this PR, being the one introducing the feature, has plenty)
