@@ -43,6 +43,18 @@ jobs:
             apt-get update
             apt-get install -y shellcheck
           fi
+          if ! command -v ruby >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y ruby
+          fi
+          if ! command -v node >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y nodejs
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
+          fi
           go version
 
       - name: Install shellcheck
@@ -609,6 +621,18 @@ jobs:
           if ! command -v shellcheck >/dev/null 2>&1; then
             apt-get update
             apt-get install -y shellcheck
+          fi
+          if ! command -v ruby >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y ruby
+          fi
+          if ! command -v node >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y nodejs
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
           fi
           go version
 
