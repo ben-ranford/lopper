@@ -1,6 +1,8 @@
 package golang
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -9,6 +11,10 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/safeio"
 	"golang.org/x/mod/modfile"
+)
+
+const (
+	maxGoModBytes = 2 * 1024 * 1024
 )
 
 func workspaceRootModuleDirs(repoPath string, moduleInfo moduleInfo) (map[string]struct{}, error) {
@@ -39,9 +45,33 @@ func goWorkModuleDirs(repoPath string) (map[string]struct{}, error) {
 	return workspaceRoots, nil
 }
 
+type nestedModuleDirDiscovery struct {
+	dirs          map[string]struct{}
+	oversizedDirs map[string]struct{}
+}
+
 func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) (map[string]struct{}, error) {
-	dirs := make(map[string]struct{})
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	discovery, err := discoverNestedModuleDirs(repoPath, workspaceModuleDirs)
+	if err != nil {
+		return nil, err
+	}
+	return discovery.dirs, nil
+}
+
+func discoverNestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) (nestedModuleDirDiscovery, error) {
+	discovery := nestedModuleDirDiscovery{
+		dirs:          make(map[string]struct{}),
+		oversizedDirs: make(map[string]struct{}),
+	}
+	err := filepath.WalkDir(repoPath, discovery.visit(repoPath, workspaceModuleDirs))
+	if err != nil {
+		return nestedModuleDirDiscovery{}, err
+	}
+	return discovery, nil
+}
+
+func (d *nestedModuleDirDiscovery) visit(repoPath string, workspaceModuleDirs map[string]struct{}) fs.WalkDirFunc {
+	return func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -54,54 +84,152 @@ func nestedModuleDirs(repoPath string, workspaceModuleDirs map[string]struct{}) 
 		if path == repoPath {
 			return nil
 		}
-		exists, err := manifestPathExists(filepath.Join(path, goModName))
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return nil
-		}
-		if _, ok := workspaceModuleDirs[path]; ok {
-			return nil
-		}
-		dirs[path] = struct{}{}
-		return filepath.SkipDir
-	})
-	if err != nil {
-		return nil, err
+		return d.addDirIfModule(repoPath, workspaceModuleDirs, path)
 	}
-	return dirs, nil
+}
+
+func (d *nestedModuleDirDiscovery) addDirIfModule(repoPath string, workspaceModuleDirs map[string]struct{}, path string) error {
+	exists, err := manifestPathExists(filepath.Join(path, goModName))
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if _, ok := workspaceModuleDirs[path]; ok {
+		return nil
+	}
+	d.dirs[path] = struct{}{}
+	if isOversizedModuleDir(repoPath, path) {
+		d.oversizedDirs[path] = struct{}{}
+		return nil
+	}
+	return filepath.SkipDir
+}
+
+func isOversizedModuleDir(repoPath, dir string) bool {
+	oversized, err := goModExceedsReadLimit(repoPath, filepath.Join(dir, goModName), maxGoModBytes)
+	return err == nil && oversized
+}
+
+func goModExceedsReadLimit(repoPath, goModPath string, maxBytes int64) (_ bool, err error) {
+	relPath, err := filepath.Rel(repoPath, goModPath)
+	if err != nil {
+		return false, err
+	}
+	root, err := safeio.OpenRootNoFollow(repoPath)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	file, err := safeio.OpenFileWithinRoot(root, relPath)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular() && info.Size() > maxBytes, nil
 }
 
 func discoverNestedModules(repoPath string) ([]string, []string, map[string]string, error) {
-	nestedDirs, err := nestedModuleDirs(repoPath, nil)
+	discovery, err := discoverNestedModuleDirs(repoPath, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return discoverNestedModulesFromDirs(repoPath, nestedDirs)
+	modules, dependencies, replacements, _, _, err := discoverNestedModulesFromDirsWithKnownOversized(repoPath, discovery.dirs, discovery.oversizedDirs)
+	return modules, dependencies, replacements, err
 }
 
-func discoverNestedModulesFromDirs(repoPath string, nestedDirs map[string]struct{}) ([]string, []string, map[string]string, error) {
-	modules := make([]string, 0, len(nestedDirs))
-	dependencies := make([]string, 0)
-	replacements := make(map[string]string)
+func discoverNestedModulesFromDirsWithKnownOversized(repoPath string, nestedDirs, knownOversizedDirs map[string]struct{}) ([]string, []string, map[string]string, map[string]struct{}, map[string]struct{}, error) {
+	metadata := newNestedModuleMetadata(len(nestedDirs))
 	for dir := range nestedDirs {
-		modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
-		if err != nil {
-			continue
-		}
-		if modulePath != "" {
-			modules = append(modules, modulePath)
-		}
-		dependencies = append(dependencies, deps...)
-		for replacementImport, dependency := range moduleReplacements {
-			if _, ok := replacements[replacementImport]; !ok {
-				replacements[replacementImport] = dependency
-			}
+		if err := metadata.addDir(repoPath, dir, isKnownOversizedNonRoot(repoPath, dir, knownOversizedDirs)); err != nil {
+			return nil, nil, nil, nil, nil, err
 		}
 	}
 
-	return uniqueStrings(modules), uniqueStrings(dependencies), replacements, nil
+	return metadata.result()
+}
+
+type nestedModuleMetadata struct {
+	modules       []string
+	dependencies  []string
+	replacements  map[string]string
+	oversizedDirs map[string]struct{}
+	trustedDirs   map[string]struct{}
+}
+
+func newNestedModuleMetadata(dirCount int) nestedModuleMetadata {
+	return nestedModuleMetadata{
+		modules:       make([]string, 0, dirCount),
+		dependencies:  make([]string, 0),
+		replacements:  make(map[string]string),
+		oversizedDirs: make(map[string]struct{}),
+		trustedDirs:   make(map[string]struct{}),
+	}
+}
+
+func isKnownOversizedNonRoot(repoPath, dir string, knownOversizedDirs map[string]struct{}) bool {
+	_, knownOversized := knownOversizedDirs[dir]
+	return knownOversized && !isOversizedRootDir(repoPath, dir)
+}
+
+func (m *nestedModuleMetadata) addDir(repoPath, dir string, knownOversized bool) error {
+	if knownOversized {
+		return m.addOversizedDir(repoPath, dir)
+	}
+	modulePath, deps, moduleReplacements, err := loadGoModFromDir(repoPath, dir)
+	if isPureGoModSizeLimit(err) && !isOversizedRootDir(repoPath, dir) {
+		return m.addOversizedDir(repoPath, dir)
+	}
+	if err != nil {
+		return nil
+	}
+	m.addTrustedModule(dir, modulePath)
+	m.dependencies = append(m.dependencies, deps...)
+	m.addReplacements(moduleReplacements)
+	return nil
+}
+
+func (m *nestedModuleMetadata) addOversizedDir(repoPath, dir string) error {
+	m.oversizedDirs[dir] = struct{}{}
+	modulePath, err := readOversizedGoModModulePath(repoPath, filepath.Join(dir, goModName))
+	if err != nil {
+		return err
+	}
+	m.addTrustedModule(dir, modulePath)
+	return nil
+}
+
+func (m *nestedModuleMetadata) addTrustedModule(dir, modulePath string) {
+	if modulePath == "" {
+		return
+	}
+	m.modules = append(m.modules, modulePath)
+	m.trustedDirs[dir] = struct{}{}
+}
+
+func (m *nestedModuleMetadata) addReplacements(moduleReplacements map[string]string) {
+	for replacementImport, dependency := range moduleReplacements {
+		if _, ok := m.replacements[replacementImport]; !ok {
+			m.replacements[replacementImport] = dependency
+		}
+	}
+}
+
+func (m *nestedModuleMetadata) result() ([]string, []string, map[string]string, map[string]struct{}, map[string]struct{}, error) {
+	return uniqueStrings(m.modules), uniqueStrings(m.dependencies), m.replacements, m.oversizedDirs, m.trustedDirs, nil
 }
 
 func normalizedDirSet(dirs map[string]struct{}) map[string]struct{} {
@@ -133,11 +261,11 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 	file, err := modfile.Parse(goModName, content, nil)
 	if err != nil && file == nil {
 		normalized := normalizeInlineGoModRequireBlocks(content)
-		if string(normalized) != string(content) {
+		if !bytes.Equal(normalized, content) {
 			file, err = modfile.Parse(goModName, normalized, nil)
 		}
 	}
-	if err != nil && file == nil {
+	if err != nil {
 		return "", []string{}, map[string]string{}
 	}
 	if file == nil {
@@ -148,20 +276,69 @@ func parseGoMod(content []byte) (string, []string, map[string]string) {
 }
 
 func normalizeInlineGoModRequireBlocks(content []byte) []byte {
-	lines := strings.Split(string(content), "\n")
-	changed := false
-	for i, rawLine := range lines {
-		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
-		if !ok {
-			continue
-		}
-		lines[i] = normalizedLine
-		changed = true
-	}
-	if !changed {
+	if len(content) > maxGoModBytes {
 		return content
 	}
-	return []byte(strings.Join(lines, "\n"))
+	if !goModFallbackNeedsNormalization(content) {
+		return content
+	}
+
+	normalized, ok := buildNormalizedInlineGoModRequireBlocks(content)
+	if !ok {
+		return content
+	}
+	return normalized
+}
+
+func goModFallbackNeedsNormalization(content []byte) bool {
+	for cursor := 0; cursor < len(content); {
+		line, nextCursor := nextGoModFallbackLine(content, cursor)
+		rawLine := string(line)
+		normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine)
+		if ok && normalizedLine != rawLine {
+			return true
+		}
+		if nextCursor < 0 {
+			break
+		}
+		cursor = nextCursor
+	}
+	return false
+}
+
+func buildNormalizedInlineGoModRequireBlocks(content []byte) ([]byte, bool) {
+	var normalized strings.Builder
+	normalized.Grow(len(content))
+	for cursor := 0; cursor < len(content); {
+		line, nextCursor := nextGoModFallbackLine(content, cursor)
+		writeNormalizedGoModFallbackLine(&normalized, line)
+		if nextCursor < 0 {
+			break
+		}
+		normalized.WriteByte('\n')
+		cursor = nextCursor
+	}
+	return []byte(normalized.String()), true
+}
+
+func nextGoModFallbackLine(content []byte, cursor int) ([]byte, int) {
+	end := cursor
+	for end < len(content) && content[end] != '\n' {
+		end++
+	}
+	if end == len(content) {
+		return content[cursor:end], -1
+	}
+	return content[cursor:end], end + 1
+}
+
+func writeNormalizedGoModFallbackLine(builder *strings.Builder, line []byte) {
+	rawLine := string(line)
+	if normalizedLine, ok := normalizeInlineGoModRequireLine(rawLine); ok {
+		builder.WriteString(normalizedLine)
+		return
+	}
+	builder.Write(line)
 }
 
 func normalizeInlineGoModRequireLine(rawLine string) (string, bool) {
@@ -298,6 +475,9 @@ func loadGoWorkLocalModules(repoPath string) ([]string, error) {
 			continue
 		}
 		modulePath, _, _, err := loadGoModFromDir(repoPath, resolved)
+		if isPureGoModSizeLimit(err) {
+			modulePath, err = readOversizedGoModModulePath(repoPath, filepath.Join(resolved, goModName))
+		}
 		if err != nil || modulePath == "" {
 			continue
 		}
@@ -355,7 +535,7 @@ func normalizeGoWorkPath(value string) string {
 
 func loadGoModFromDir(repoPath, dir string) (string, []string, map[string]string, error) {
 	goModPath := filepath.Join(dir, goModName)
-	content, err := safeio.ReadFileUnder(repoPath, goModPath)
+	content, err := safeio.ReadFileUnderLimit(repoPath, goModPath, maxGoModBytes)
 	if err != nil {
 		return "", nil, nil, err
 	}
