@@ -327,6 +327,12 @@ toolchain-check:
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH (required for shell script CI checks)"; exit 1)
 	@command -v ruby >/dev/null 2>&1 || (echo "ruby not found in PATH (required for automation integrity YAML/JSON checks)"; exit 1)
 	@command -v node >/dev/null 2>&1 || (echo "node not found in PATH (required for automation integrity JavaScript syntax checks)"; exit 1)
+	@node_major="$$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"; \
+	if [ "$$node_major" -lt 20 ]; then \
+		echo "Node.js 20.x or newer is required (found major version $$node_major)."; \
+		echo "Install/update Node from https://nodejs.org/ or use NodeSource (see .github/workflows/ci.yml)."; \
+		exit 1; \
+	fi
 	@command -v python3 >/dev/null 2>&1 || (echo "python3 not found in PATH (required for Python-based CI checks)"; exit 1)
 
 toolchain-install:
