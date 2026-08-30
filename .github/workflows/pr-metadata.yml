@@ -21,15 +21,15 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
 
       - name: Write PR body
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         with:
           script: |
             const fs = require('node:fs');
@@ -39,7 +39,7 @@ jobs:
             core.exportVariable('PR_BODY_FILE', bodyPath);
 
       - name: Read repository merge policy
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         with:
           script: |
             const { data: repo } = await github.rest.repos.get({

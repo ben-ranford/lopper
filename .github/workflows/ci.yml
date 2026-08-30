@@ -43,6 +43,23 @@ jobs:
             apt-get update
             apt-get install -y shellcheck
           fi
+          if ! command -v ruby >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y ruby
+          fi
+          if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -lt 20 ]; then
+            apt-get update
+            apt-get install -y ca-certificates curl gnupg
+            mkdir -p /usr/share/keyrings
+            curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+            echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+            apt-get update
+            apt-get install -y nodejs
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
+          fi
           go version
 
       - name: Install shellcheck
@@ -589,13 +606,13 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Setup Go
         if: ${{ !env.ACT }}
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
 
@@ -609,6 +626,23 @@ jobs:
           if ! command -v shellcheck >/dev/null 2>&1; then
             apt-get update
             apt-get install -y shellcheck
+          fi
+          if ! command -v ruby >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y ruby
+          fi
+          if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -lt 20 ]; then
+            apt-get update
+            apt-get install -y ca-certificates curl gnupg
+            mkdir -p /usr/share/keyrings
+            curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+            echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+            apt-get update
+            apt-get install -y nodejs
+          fi
+          if ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y python3
           fi
           go version
 
@@ -710,18 +744,18 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - macos-26
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
       - &ci_smoke_checkout
         name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - &ci_smoke_setup_go
         name: Setup Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
 
@@ -736,7 +770,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macos-latest
+          - macos-26
     permissions:
       contents: read
     steps:
@@ -745,7 +779,7 @@ jobs:
       - *ci_smoke_setup_go
 
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
           cache: npm
@@ -790,7 +824,7 @@ jobs:
 
       - name: Checkout tap formula
         if: ${{ steps.tap.outputs.exists == 'true' }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ben-ranford/homebrew-tap
           path: homebrew-tap
