@@ -47,8 +47,8 @@ jobs:
             apt-get update
             apt-get install -y ruby
           fi
-          if ! command -v node >/dev/null 2>&1; then
-            apt-get update
+          if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -lt 20 ]; then
+            curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
             apt-get install -y nodejs
           fi
           if ! command -v python3 >/dev/null 2>&1; then
@@ -626,8 +626,8 @@ jobs:
             apt-get update
             apt-get install -y ruby
           fi
-          if ! command -v node >/dev/null 2>&1; then
-            apt-get update
+          if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -lt 20 ]; then
+            curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
             apt-get install -y nodejs
           fi
           if ! command -v python3 >/dev/null 2>&1; then
