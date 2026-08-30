@@ -74,7 +74,7 @@ func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry
 		return filepath.SkipDir
 	}
 
-	dirDependencies, dirWarnings, err := collectDirectoryDeclaredDependencies(c.repoPath, path)
+	dirDependencies, dirWarnings, err := collectDirectoryDeclaredDependencies(c.repoPath, path, c.excludedPaths)
 	if err != nil {
 		return err
 	}
@@ -83,8 +83,8 @@ func (c *packagingDiscoveryCoordinator) walkEntry(path string, entry fs.DirEntry
 	return nil
 }
 
-func collectDirectoryDeclaredDependencies(repoPath, dir string) (map[string]struct{}, []string, error) {
-	files, err := pythonPackagingFiles(dir)
+func collectDirectoryDeclaredDependencies(repoPath, dir string, excludedPaths map[string]struct{}) (map[string]struct{}, []string, error) {
+	files, err := pythonPackagingFiles(dir, excludedPaths)
 	if err != nil {
 		return nil, nil, normalizePackagingStageError("discovery", err)
 	}
@@ -132,7 +132,7 @@ func normalizePackagingStageError(stage string, err error) error {
 	return fmt.Errorf("python packaging %s: %w", stage, err)
 }
 
-func pythonPackagingFiles(dir string) (map[string]struct{}, error) {
+func pythonPackagingFiles(dir string, excludedPaths map[string]struct{}) (map[string]struct{}, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -141,6 +141,9 @@ func pythonPackagingFiles(dir string) (map[string]struct{}, error) {
 	files := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() {
+			continue
+		}
+		if shared.IsExcludedPath(excludedPaths, filepath.Join(dir, entry.Name())) {
 			continue
 		}
 		files[entry.Name()] = struct{}{}
