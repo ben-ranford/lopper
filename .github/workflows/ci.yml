@@ -204,8 +204,12 @@ jobs:
           # covers, so documentation/config prose mentioning marker syntax
           # (this PR, being the one introducing the feature, has plenty)
           # can't inflate this into a false mismatch below.
+          # Case-insensitive, like the trusted tracker's fileExtension()
+          # (which lowercases before matching): a suppression added to
+          # e.g. main.GO or component.TSX must not be silently skipped by
+          # this scope filter while the trusted tracker still finds it.
           suspect_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate \
-              --jq '.[] | select(.filename | test("(^|/)\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$")) | .patch // empty' \
+              --jq '.[] | select(.filename | test("(^|/)\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")) | .patch // empty' \
             | grep -E '^\+' \
             | grep -Eic "${suspect_pattern}" || true)"
           suspect_count="${suspect_count:-0}"
@@ -216,9 +220,12 @@ jobs:
           # is nonempty but under-reports. Compare the independent count
           # against every run of this detector, not only the empty case;
           # a mismatch fails closed rather than trusting a nonzero count.
+          # Fingerprints are deduplicated first: a tampered detector could
+          # otherwise repeat an already-tracked fingerprint to pad
+          # recorded_count high enough to mask a genuinely untracked one.
           recorded_count=0
           if [ -s "${SUPPRESSIONS_FILE}" ]; then
-            mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}")
+            mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}" | sort -u)
             recorded_count="${#fingerprints[@]}"
           fi
 

@@ -320,6 +320,13 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		"suspect_count",
 		`recorded_count="${#fingerprints[@]}"`,
 		`if [ "${suspect_count}" -gt "${recorded_count}" ]; then`,
+		// The trusted tracker's fileExtension() lowercases before matching
+		// (main.GO, component.TSX), so this scope filter must too, or a
+		// failed/pending trusted run on such a file wouldn't be waited for.
+		`; "i"))`,
+		// A tampered detector could repeat an already-tracked fingerprint
+		// to pad recorded_count and mask a genuinely untracked one.
+		`jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}" | sort -u`,
 	})
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`)

@@ -149,6 +149,33 @@ func TestInlineSuppressionCheckDetectsTrackedMarkerWithoutGitHubCredentials(t *t
 	}
 }
 
+func TestInlineSuppressionCheckMatchesUppercaseExtensionCaseInsensitively(t *testing.T) {
+	t.Parallel()
+
+	// The trusted tracker's fileExtension() lowercases before matching, so
+	// it recognizes a suppression added to e.g. main.GO. This detector's
+	// source-file scope must not silently skip such files while the
+	// trusted tracker still finds and tracks them.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	uppercasePath := "main.GO"
+	writeFile(t, filepath.Join(repoDir, uppercasePath), mainGoWithTrackedSuppression("nolint:staticcheck"))
+	runCommand(t, repoDir, "git", "add", uppercasePath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected uppercase-extension suppression detection to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record for %s, got %#v", uppercasePath, records.Suppressions)
+	}
+	if records.Suppressions[0].File != uppercasePath {
+		t.Fatalf("record file = %q, want %q", records.Suppressions[0].File, uppercasePath)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsTrackedMarkerInRenamedSource(t *testing.T) {
 	t.Parallel()
 

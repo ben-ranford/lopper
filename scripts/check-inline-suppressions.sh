@@ -381,7 +381,7 @@ BEGIN {
 }
 /^\+\+\+ b\// {
 	file = substr($0, 7)
-	check_file = (file ~ file_pattern)
+	check_file = (tolower(file) ~ file_pattern)
 	next
 }
 /^@@ / {
