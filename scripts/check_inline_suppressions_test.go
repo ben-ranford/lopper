@@ -213,8 +213,9 @@ func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing
 
 	repoDir := newInlineSuppressionRepo(t)
 	ghPath, logPath := newMockGH(t)
-	content := "package main\n\nfunc main() {\n\towner := service //nolint:staticcheck " +
-		"// rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n}\n"
+	marker := "nolint:staticcheck"
+	content := "package main\n\nfunc main() {\n\towner := service //" + marker +
+		" // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n}\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
 	runCommand(t, repoDir, "git", "add", mainGoPath)
 
