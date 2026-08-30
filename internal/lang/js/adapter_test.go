@@ -175,6 +175,35 @@ func TestAdapterAnalysePropagatesRowFreeIncompleteScan(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseHonoursExcludedPathsDuringScan(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, testIndexJS), []byte(testModuleExportsStub), 0o644); err != nil {
+		t.Fatalf(testWriteSourceErrFmt, err)
+	}
+	excludedDir := filepath.Join(repo, ".artifacts")
+	if err := os.MkdirAll(excludedDir, 0o755); err != nil {
+		t.Fatalf("mkdir excluded dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(excludedDir, "broken.js"), []byte("const broken = {\n"), 0o644); err != nil {
+		t.Fatalf(testWriteSourceErrFmt, err)
+	}
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.AnalysisOptions{
+		RepoPath:      repo,
+		ExcludedPaths: []string{excludedDir},
+		TopN:          1,
+	})
+	if err != nil {
+		t.Fatalf(testAnalyseErrFmt, err)
+	}
+	if reportData.UsageIncomplete {
+		t.Fatalf("expected excluded directory not to affect scan completeness, got %#v", reportData)
+	}
+	if strings.Contains(strings.Join(reportData.Warnings, "\n"), "parse errors") {
+		t.Fatalf("expected excluded directory's malformed source to be skipped, got warnings %#v", reportData.Warnings)
+	}
+}
+
 func TestAdapterAnalyseSuppressesSignalsForSyntaxRecoveryScan(t *testing.T) {
 	repo, _, _ := setupLodashFixture(t, "import { map, filter } from \"lodash\";\nmap([1], (x) => x)\nconst broken = {\nfilter([1], Boolean)\n")
 	if err := os.WriteFile(filepath.Join(repo, "unused.js"), []byte("import { map } from \"lodash\";\n"), 0o644); err != nil {
