@@ -81,6 +81,7 @@ occurrence_in_file() {
 	local file="$1"
 	local target_line="$2"
 	local target_content="$3"
+	local head_parent
 
 	# Derive the occurrence ordinal from the complete file at its current
 	# (target-side) state rather than only lines visible in this diff: the
@@ -88,11 +89,24 @@ occurrence_in_file() {
 	# zero-context diff must agree on the exact same fingerprint for a given
 	# suppression, and only counting from the full file is diff-shape
 	# independent.
-	awk -v target_line="$target_line" -v target_content="$target_content" '
+	#
+	# For pull_request CI runs, actions/checkout's default behavior checks
+	# out the synthetic PR merge commit (base + head merged), not the PR's
+	# own head tree. If the base branch independently added an identical
+	# suppression after this PR was opened, this working tree would see
+	# both copies while the trusted tracker (which reads pull.head.sha via
+	# the API) sees only the PR's own, producing a different ordinal. When
+	# HEAD is such a merge commit (exactly two parents), read the second
+	# parent's tree -- the PR's own head -- instead of the working tree.
+	if head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
+		git show "${head_parent}:${file}" 2>/dev/null
+	else
+		cat -- "$file"
+	fi | awk -v target_line="$target_line" -v target_content="$target_content" '
 		NR > target_line { exit }
 		$0 == target_content { count++ }
 		END { print count + 0 }
-	' "$file"
+	'
 }
 
 source_url_for_match() {

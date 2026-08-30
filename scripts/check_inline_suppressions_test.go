@@ -379,6 +379,67 @@ func TestInlineSuppressionCheckTracksDuplicateSuppressionsSeparately(t *testing.
 	}
 }
 
+func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t *testing.T) {
+	t.Parallel()
+
+	// actions/checkout's default pull_request behavior checks out the
+	// synthetic PR merge commit (base + head merged), not the PR's own
+	// head tree. If the base branch independently adds an identical
+	// suppression after the PR opened, that merge commit's working tree
+	// contains both copies, while the trusted tracker (which reads
+	// pull.head.sha via the API) sees only the PR's own -- producing a
+	// different occurrence ordinal unless this reads from the PR's own
+	// head tree instead of the merged working tree.
+	repoDir := newInlineSuppressionRepo(t)
+	marker := "nolint:staticcheck"
+	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+
+	base := "package main\n\nfunc main() {\n\tx := 1\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), base)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	runCommand(t, repoDir, "git", "checkout", "-b", "pr")
+	prContent := "package main\n\nfunc main() {\n\tx := 1\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), prContent)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "pr adds its own suppression")
+
+	runCommand(t, repoDir, "git", "checkout", "main")
+	mainContent := "package main\n\nfunc main() {\n" + line + "\n\tx := 1\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), mainContent)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "main independently adds an identical suppression")
+
+	runCommand(t, repoDir, "git", "merge", "--no-edit", "pr")
+
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_BASE="+baseSHA, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the merge-commit scan to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 2 {
+		t.Fatalf("expected two suppression records (one per branch's addition), got %#v", records.Suppressions)
+	}
+
+	prFingerprint := suppressionFingerprint(mainGoPath, line, 1)
+	found := false
+	for _, record := range records.Suppressions {
+		if record.Fingerprint == prFingerprint {
+			found = true
+		}
+		if record.Fingerprint == suppressionFingerprint(mainGoPath, line, 2) {
+			t.Fatalf("a record used the occurrence-2 fingerprint, meaning it counted main's independent addition against the PR's own occurrence: %#v", records.Suppressions)
+		}
+	}
+	if !found {
+		t.Fatalf("expected a record with the PR's own occurrence-1 fingerprint %s, got %#v", prFingerprint, records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckCountsPreExistingOccurrenceOutsideTheDiff(t *testing.T) {
 	t.Parallel()
 
