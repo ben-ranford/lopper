@@ -307,6 +307,32 @@ func TestInlineSuppressionCheckTracksDuplicateSuppressionsSeparately(t *testing.
 	}
 }
 
+func TestInlineSuppressionCheckPreservesColonsInFilePaths(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	oddPath := filepath.Join(repoDir, "odd:name.go")
+	if err := os.WriteFile(oddPath, []byte(mainGoWithTrackedSuppression("nolint:staticcheck")), 0o644); err != nil {
+		t.Fatalf("write odd:name.go: %v", err)
+	}
+	runCommand(t, repoDir, "git", "add", "odd:name.go")
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected colon-path suppression detection to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+	record := records.Suppressions[0]
+	if record.File != "odd:name.go" || record.Line != 4 {
+		t.Fatalf("record location = %q:%d, want \"odd:name.go\":4", record.File, record.Line)
+	}
+}
+
 func TestInlineSuppressionCheckAllowsDocumentationMentions(t *testing.T) {
 	t.Parallel()
 

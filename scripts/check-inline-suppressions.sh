@@ -254,7 +254,7 @@ write_tracking_records() {
 		printf '  "suppressions": [\n'
 	} >"$tmp_output"
 
-	while IFS=: read -r file line content; do
+	while IFS= read -r -d '' file && IFS= read -r -d '' line && IFS= read -r -d '' content; do
 		rationale="$(extract_metadata_field "$content" "rationale|reason")"
 		owner="$(extract_metadata_field "$content" "owner")"
 		removal_condition="$(extract_metadata_field "$content" "remove-when|removal-condition|removal")"
@@ -313,7 +313,7 @@ track_records_with_gh() {
 
 	seen_file="$(create_temp_file)"
 	: >"$seen_file"
-	while IFS=: read -r file line content; do
+	while IFS= read -r -d '' file && IFS= read -r -d '' line && IFS= read -r -d '' content; do
 		base_fingerprint="$(fingerprint_for_match "$file" "$content")"
 		occurrence="$(grep -Fxc "$base_fingerprint" "$seen_file" || true)"
 		occurrence=$((occurrence + 1))
@@ -384,7 +384,9 @@ BEGIN {
 	content = substr($0, 2)
 	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
 	if (check_file && tolower(content) ~ pattern) {
-		printf "%s:%d:%s\n", file, line, content
+		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
+		# for file paths or diff content that legitimately contain those bytes.
+		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0
 		found = 1
 	}
 	line++
@@ -402,7 +404,7 @@ if [[ "$awk_status" -ne 0 ]]; then
 		exit "$awk_status"
 	fi
 	echo "Inline suppression markers require tracking metadata in $diff_scope." >&2
-	cat "$tmp_matches" >&2
+	tr '\0' '\n' <"$tmp_matches" >&2
 	echo "Each new suppression must include same-line rationale, owner, and remove-when metadata." >&2
 	case "$tracking_mode" in
 		detect)
