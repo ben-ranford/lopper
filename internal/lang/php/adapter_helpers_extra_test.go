@@ -330,6 +330,26 @@ func TestLoadComposerDataMarksScopedHtaccessDirectiveIncomplete(t *testing.T) {
 	}
 }
 
+func TestLoadComposerDataIgnoresUnrelatedHtaccessSectionBlocks(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))
+	writeFile(t, filepath.Join(repo, ".htaccess"), "php_flag short_open_tag On\n<IfModule mod_rewrite.c>\nRewriteEngine On\n</IfModule>\n")
+
+	data, warnings, err := loadComposerData(repo)
+	if err != nil {
+		t.Fatalf("load data with unrelated .htaccess section block: %v", err)
+	}
+	if !data.ShortOpenTags {
+		t.Fatal("expected the file-wide short_open_tag directive to apply despite an unrelated section block")
+	}
+	if data.ShortOpenTagPolicy.incompleteForFile(filepath.Join(repo, "src", "index.php")) {
+		t.Fatal("did not expect a section block without a short_open_tag directive to mark the config incomplete")
+	}
+	if containsWarning(warnings, "could not resolve PHP short_open_tag config .htaccess") {
+		t.Fatalf("did not expect an unresolved PHP config warning for an unrelated section block, got %#v", warnings)
+	}
+}
+
 func TestLoadComposerDataTracksOversizedShortOpenTagConfigByDirectory(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, helpersComposerJSON), fmt.Sprintf(`{"require":{%q:"^1.0"}}`, helpersVendorLibDependency))

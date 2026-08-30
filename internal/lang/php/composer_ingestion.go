@@ -425,24 +425,37 @@ func parsesShortOpenTagEnabled(content string) bool {
 
 // scopedSectionsPossible marks Apache-style config files (.htaccess) where directives
 // can be scoped inside <Files>/<Directory>/<If> blocks. This parser is line-oriented and
-// cannot resolve that scoping, so any section tag makes the setting unresolved rather than
-// risk silently applying a scoped directive file-wide.
+// cannot resolve that scoping, so a short_open_tag directive found inside any section
+// makes the setting unresolved rather than risk silently applying a scoped directive
+// file-wide. Sections that never set short_open_tag (e.g. <IfModule mod_rewrite.c>) do
+// not affect the result.
 func parseShortOpenTagSetting(content string, scopedSectionsPossible bool) (bool, bool, bool) {
 	enabled := false
 	found := false
 	incomplete := false
+	sectionDepth := 0
 	for _, rawLine := range strings.Split(content, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if scopedSectionsPossible && strings.HasPrefix(line, "<") {
-			return false, false, true
+			if strings.HasPrefix(line, "</") {
+				if sectionDepth > 0 {
+					sectionDepth--
+				}
+			} else {
+				sectionDepth++
+			}
+			continue
 		}
 		lower := strings.ToLower(line)
 		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
 			fields := strings.Fields(lower)
 			if len(fields) >= 3 && fields[1] == "short_open_tag" {
+				if sectionDepth > 0 {
+					return false, false, true
+				}
 				enabled, found, incomplete = phpConfigBooleanSetting(fields[2])
 			}
 			continue
@@ -450,6 +463,9 @@ func parseShortOpenTagSetting(content string, scopedSectionsPossible bool) (bool
 		key, value, ok := strings.Cut(lower, "=")
 		if !ok || strings.TrimSpace(key) != "short_open_tag" {
 			continue
+		}
+		if sectionDepth > 0 {
+			return false, false, true
 		}
 		enabled, found, incomplete = phpConfigBooleanSetting(value)
 	}

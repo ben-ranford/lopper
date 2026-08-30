@@ -41,6 +41,30 @@ func TestAdapterDetectWithPythonSource(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseHonoursExcludedPathsDuringScan(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import numpy\nnumpy.array([1])\n")
+
+	excludedDir := filepath.Join(repo, ".artifacts")
+	testutil.MustWriteFile(t, filepath.Join(excludedDir, "trace_helper.py"), "import requests\nrequests.get('x')\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath:      repo,
+		Dependency:    "requests",
+		ExcludedPaths: []string{excludedDir},
+	})
+	if err != nil {
+		t.Fatalf("analyse: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 {
+		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
+	}
+	dep := reportData.Dependencies[0]
+	if dep.UsedExportsCount != 0 {
+		t.Fatalf("expected excluded directory's import to be skipped, got used count %d", dep.UsedExportsCount)
+	}
+}
+
 func TestAdapterAnalyseDependency(t *testing.T) {
 	source := "import requests\nfrom numpy import array, mean\narray([1])\nrequests.get('x')\n"
 	dep := analysePythonDependency(t, source, "numpy")

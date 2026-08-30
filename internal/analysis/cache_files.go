@@ -45,19 +45,29 @@ func (c *analysisCache) collectRelevantFilesWithExclusions(rootPath string, excl
 	return files, nil
 }
 
-func (c *analysisCache) cacheAnalysisExclusions(rootPath string, req Request) cacheAnalysisExclusions {
+// cacheAnalysisExclusions resolves the cache/trace exclusions for rootPath, the
+// subtree whose cache digest is being computed. trueRepoPathOverride, when given,
+// is the top-level repository root that relative runtime-trace paths were actually
+// captured against; it defaults to rootPath so nested candidate roots (e.g. package
+// scope in a monorepo) still resolve a relative --runtime-trace path against the
+// repository root rather than the nested subtree.
+func (c *analysisCache) cacheAnalysisExclusions(rootPath string, req Request, trueRepoPathOverride ...string) cacheAnalysisExclusions {
 	rootPath = filepath.Clean(rootPath)
+	repoPath := rootPath
+	if len(trueRepoPathOverride) > 0 && strings.TrimSpace(trueRepoPathOverride[0]) != "" {
+		repoPath = filepath.Clean(trueRepoPathOverride[0])
+	}
 	directories := make(map[string]struct{})
 	files := make(map[string]struct{})
 	if c != nil && strings.TrimSpace(c.options.Path) != "" {
 		addCacheExcludedPath(directories, rootPath, c.options.Path)
 	}
 	if tracePath := strings.TrimSpace(req.RuntimeTracePath); tracePath != "" {
-		tracePath = runtimeTracePathForRepo(rootPath, tracePath)
+		tracePath = runtimeTracePathForRepo(repoPath, tracePath)
 		addCacheExcludedPath(files, rootPath, tracePath)
 		addCacheExcludedPath(files, rootPath, runtime.TraceStatePath(tracePath))
 	} else if strings.TrimSpace(req.RuntimeTestCommand) != "" {
-		addCacheExcludedPath(directories, rootPath, filepath.Dir(runtime.DefaultTracePath(rootPath)))
+		addCacheExcludedPath(directories, rootPath, filepath.Dir(runtime.DefaultTracePath(repoPath)))
 	}
 	return cacheAnalysisExclusions{
 		directories: sortedCacheExcludedPaths(directories),

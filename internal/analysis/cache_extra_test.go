@@ -526,6 +526,31 @@ func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.
 	}
 }
 
+func TestAnalysisCacheRuntimeTraceResolvesRelativeToRepoRootForNestedCandidateRoots(t *testing.T) {
+	repo := t.TempDir()
+	nestedRoot := filepath.Join(repo, "pkg")
+	tracePath := filepath.Join("pkg", "tests", "trace.ndjson")
+	sourcePath := filepath.Join(nestedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(nestedRoot, req, repo)
+	before, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a relative runtime trace path to resolve against the repository root, excluding trace artifacts from a nested candidate root's digest")
+	}
+}
+
 func TestHashFileOrMissingAndWriteFileAtomic(t *testing.T) {
 	dir := t.TempDir()
 	missingPath := filepath.Join(dir, cacheMissingFileName)

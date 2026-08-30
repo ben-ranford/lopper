@@ -15,14 +15,14 @@ import (
 // ErrIncompleteCoverage reports that an enforced analysis policy cannot trust partial dependency coverage.
 var ErrIncompleteCoverage = errors.New("complete dependency coverage is required")
 
-func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
+		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache, trueRepoPathOverride...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -43,7 +43,7 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
 }
 
-func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
@@ -61,7 +61,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		}
 		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
-		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot)
+		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot, trueRepoPathOverride...)
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
@@ -72,7 +72,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			continue
 		}
 
-		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req)
+		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...)
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
 			ExcludedPaths:                     exclusions.directories,
@@ -151,8 +151,8 @@ func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
 	return false
 }
 
-func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string) (cacheEntryDescriptor, report.Report, bool) {
-	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot)
+func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, report.Report, bool) {
+	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot, trueRepoPathOverride...)
 	if err != nil {
 		cache.warn("analysis cache skipped for " + adapterID + ":" + normalizedRoot + ": " + err.Error())
 		return cacheEntryDescriptor{}, report.Report{}, false

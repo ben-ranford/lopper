@@ -30,11 +30,11 @@ type cacheInputDigestMemoKey struct {
 	exclusions      string
 }
 
-func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
-	return c.prepareEntryWithSchemaVersion(req, adapterID, normalizedRoot, analysisCacheSchemaVersion)
+func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
+	return c.prepareEntryWithSchemaVersion(req, adapterID, normalizedRoot, analysisCacheSchemaVersion, trueRepoPathOverride...)
 }
 
-func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, normalizedRoot, schemaVersion string) (cacheEntryDescriptor, error) {
+func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, normalizedRoot, schemaVersion string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return cacheEntryDescriptor{}, nil
 	}
@@ -82,7 +82,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
-	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath, c.cacheAnalysisExclusions(normalizedRoot, req))
+	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath, c.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...))
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
