@@ -240,6 +240,19 @@ jobs:
           if [ -s "${SUPPRESSIONS_FILE}" ]; then
             mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}" | sort -u)
             recorded_count="${#fingerprints[@]}"
+            # SUPPRESSIONS_FILE is PR-controlled; a fingerprint is later
+            # interpolated into a `gh issue list --jq` expression below. An
+            # unvalidated value containing jq syntax could be crafted to
+            # make an empty search result look like a match, defeating the
+            # whole verification. Fingerprints are always sha256 hex
+            # digests, so require exactly that shape before trusting any of
+            # them.
+            for fingerprint in "${fingerprints[@]}"; do
+              if [[ ! "${fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::This pull request's tracking output contains a fingerprint that is not a 64-character hex digest; refusing to trust a malformed or tampered artifact." >&2
+                exit 1
+              fi
+            done
           fi
 
           if [ "${suspect_count}" -gt "${recorded_count}" ]; then

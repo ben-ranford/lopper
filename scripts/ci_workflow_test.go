@@ -346,6 +346,14 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"`,
 		`test("^\\.githooks/|`,
 	})
+	// SUPPRESSIONS_FILE is PR-controlled, and each fingerprint from it is
+	// later interpolated directly into a `gh issue list --jq` expression;
+	// an unvalidated value containing jq syntax (e.g. `")))] | 1 #`) could
+	// make an empty search result look like a match, defeating the whole
+	// verification. Every fingerprint must be validated as a 64-character
+	// hex digest before any of them are used, closing that injection path.
+	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count="${#fingerprints[@]}"`, `if [[ ! "${fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then`)
+	assertWorkflowMarkerOrder(t, gate.Run, `if [[ ! "${fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then`, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`)
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
