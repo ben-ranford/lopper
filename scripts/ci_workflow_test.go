@@ -38,7 +38,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
 	verify := workflowJobByName(t, workflow.Jobs, "verify")
-	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read"})
+	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read", "issues": "read"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, verify, "ci verify")
 	assertWorkflowStepOrder(t, verify, "Run coverage gate", "Stage PR report inputs", "Upload PR report inputs", "Upload binary artifact", "Fail workflow on coverage gate")
 	assertWorkflowStringValues(t, []workflowStringValue{
@@ -266,6 +266,33 @@ func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
 		`GH_TOKEN`,
+	})
+}
+
+func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	assertWorkflowStepOrder(t, verify, "Run CI target", "Verify inline suppression tracking issues were published", "Prove regression tests for fix PRs")
+
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	if gate.If != "${{ github.event_name == 'pull_request' && !env.ACT }}" {
+		t.Fatalf("suppression tracking gate must only run for pull_request events, got if: %q", gate.If)
+	}
+	assertWorkflowStepEnv(t, gate, "suppression tracking gate", map[string]string{
+		"GH_TOKEN":          "${{ github.token }}",
+		"PR_NUMBER":         "${{ github.event.pull_request.number }}",
+		"SUPPRESSIONS_FILE": ".artifacts/inline-suppressions.json",
+	})
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		"jq -r '.suppressions[].fingerprint'",
+		`author:github-actions[bot]`,
+		`lopper-inline-suppression-pr:${PR_NUMBER}`,
+		"sleep 15",
+		"exit 1",
 	})
 }
 

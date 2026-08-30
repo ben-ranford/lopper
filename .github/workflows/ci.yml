@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
     outputs:
       pr_report_artifact_id: ${{ steps.upload_pr_report_inputs.outputs.artifact-id }}
     steps:
@@ -169,6 +170,56 @@ jobs:
           else
             make ci
           fi
+
+      - name: Verify inline suppression tracking issues were published
+        if: ${{ github.event_name == 'pull_request' && !env.ACT }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SUPPRESSIONS_FILE: .artifacts/inline-suppressions.json
+        run: |
+          # This job runs on `pull_request` (head-associated, so it can be a
+          # required check), but new suppressions are only ever mutated via
+          # `issues:write` from the separate `pull_request_target` tracking
+          # workflow (forked PRs get a read-only GITHUB_TOKEN here). That
+          # workflow's own check is not attached to this head SHA and so
+          # cannot itself gate the merge; this step closes that gap with a
+          # read-only wait/verify that a trusted tracking issue was actually
+          # published for every suppression this PR adds, on this head.
+          if [ ! -s "${SUPPRESSIONS_FILE}" ]; then
+            echo "No inline suppression tracking output was produced; nothing to verify."
+            exit 0
+          fi
+
+          mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}")
+          if [ "${#fingerprints[@]}" -eq 0 ]; then
+            echo "No inline suppressions were recorded in this pull request."
+            exit 0
+          fi
+
+          missing=()
+          for fingerprint in "${fingerprints[@]}"; do
+            found=""
+            for _ in $(seq 1 40); do
+              found="$(gh issue list --state open \
+                --search "lopper-inline-suppression:${fingerprint} lopper-inline-suppression-pr:${PR_NUMBER} author:github-actions[bot]" \
+                --json number,author,body \
+                --jq "[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"lopper-inline-suppression:${fingerprint}\")) and (.body // \"\" | contains(\"lopper-inline-suppression-pr:${PR_NUMBER}\")))][0].number")"
+              if [ -n "${found}" ]; then
+                break
+              fi
+              sleep 15
+            done
+            if [ -z "${found}" ]; then
+              missing+=("${fingerprint}")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::No trusted inline suppression tracking issue was found for fingerprint(s): ${missing[*]}. The 'inline suppression tracking' workflow must publish a tracking issue for every new suppression before this required check can pass; re-run it or check its logs if this persists." >&2
+            exit 1
+          fi
+          echo "Verified a trusted tracking issue exists for every inline suppression in this pull request."
 
       - name: Prove regression tests for fix PRs
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}

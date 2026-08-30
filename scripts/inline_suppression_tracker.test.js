@@ -85,7 +85,7 @@ function makeHarness(options = {}) {
   };
   const trustedIssue = (number, marker) => ({
     number,
-    body: `<!-- ${marker} -->\n\n## Inline analysis suppression tracking`,
+    body: `<!-- ${marker} -->\n<!-- lopper-inline-suppression-pr:${pull.number} -->\n\n## Inline analysis suppression tracking`,
     user: { login: 'github-actions[bot]', type: 'Bot' },
   });
   const github = {
@@ -201,6 +201,27 @@ test('percent-encodes URL-significant characters in source links', async () => {
   );
 });
 
+test('ignores code-side assignments before the suppression marker when extracting metadata', async () => {
+  const line = 'owner := service ' + trackedLine();
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch: patchFor(line),
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  const { body } = harness.calls.created[0];
+  assert.match(body, /Owner: @security/);
+  assert.doesNotMatch(body, /Owner: = service/);
+  assert.doesNotMatch(body, /Owner: service/);
+});
+
 test('recognizes supported inline suppression marker forms without matching quoted text', () => {
   const matchingLines = [
     '\t_ = 1 /' + '/no' + 'sec G404',
@@ -292,7 +313,7 @@ test('recovers when a concurrent tracker creates the trusted issue first', async
       return [
         {
           number: 88,
-          body: `<!-- ${marker} -->`,
+          body: `<!-- ${marker} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
           user: { login: 'github-actions[bot]', type: 'Bot' },
         },
       ];
@@ -305,6 +326,32 @@ test('recovers when a concurrent tracker creates the trusted issue first', async
   assert.equal(harness.calls.updated.length, 1);
   assert.equal(harness.calls.updated[0].issue_number, 88);
   assert.match(harness.calls.infos.join('\n'), /Updated inline suppression tracking issue #88/);
+});
+
+test('opens a separate tracking issue when another pull request already owns the identical fingerprint', async () => {
+  const harness = makeHarness({
+    pull: { number: 99 },
+    searchItems: ({ marker }) => {
+      if (!marker || !marker.startsWith('lopper-inline-suppression:')) {
+        return [];
+      }
+      // A different pull request (#42) already has a trusted, open issue for
+      // this exact fingerprint; it must not be reused/overwritten for #99.
+      return [
+        {
+          number: 77,
+          body: `<!-- ${marker} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.updated.length, 0);
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /lopper-inline-suppression-pr:99/);
 });
 
 test('closes tracking issues for suppressions that disappeared from the pull diff', async () => {
@@ -367,7 +414,8 @@ test('does not close a tracking issue whose suppression is still present in the 
 
   await trackInlineSuppressions(harness.args);
 
-  assert.equal(harness.calls.updated.length, 0);
+  const closeCalls = harness.calls.updated.filter((call) => call.state === 'closed');
+  assert.equal(closeCalls.length, 0);
 });
 
 test('rejects stale event payloads before reading pull file diffs', async () => {

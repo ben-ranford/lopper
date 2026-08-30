@@ -10,7 +10,8 @@ marker_ts_prefix="ts"
 marker_eslint_prefix="eslint"
 marker_coverage_prefix="coverage"
 # Build marker names from pieces so this gate does not match its own source.
-marker_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
+marker_start_pattern="(//|/\\*+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore))"
+marker_pattern="(^|[[:space:]])(${marker_start_pattern})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
 diff_scope=""
 gh_bin="${GH_BIN:-gh}"
@@ -43,8 +44,15 @@ trim_value() {
 extract_metadata_field() {
 	local content="$1"
 	local value=""
+	local scope="$content"
+	local marker_match
 
-	if [[ "$content" =~ (^|[[:space:];,])($2)[[:space:]]*[:=][[:space:]]*([^;]+) ]]; then
+	marker_match="$(printf '%s' "$content" | grep -oE "${marker_start_pattern}.*" | head -n1 || true)"
+	if [[ -n "$marker_match" ]]; then
+		scope="$marker_match"
+	fi
+
+	if [[ "$scope" =~ (^|[[:space:];,])($2)[[:space:]]*[:=][[:space:]]*([^;]+) ]]; then
 		value="$(trim_value "${BASH_REMATCH[3]}")"
 	fi
 	printf '%s\n' "$value"

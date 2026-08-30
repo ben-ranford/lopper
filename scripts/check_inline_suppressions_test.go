@@ -208,6 +208,36 @@ func TestInlineSuppressionCheckCreatesTrackingIssueForStagedMarker(t *testing.T)
 	}
 }
 
+func TestInlineSuppressionCheckIgnoresCodeSideAssignmentsBeforeMarker(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	ghPath, logPath := newMockGH(t)
+	content := "package main\n\nfunc main() {\n\towner := service //nolint:staticcheck " +
+		"// rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), content)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir,
+		"GH_BIN="+ghPath,
+		"SUPPRESSION_TRACKING_MODE=track",
+		"SUPPRESSION_GITHUB_REPOSITORY=ben-ranford/lopper",
+		"GITHUB_SHA=abc123",
+		"GITHUB_SERVER_URL=https://github.com",
+	)
+	if err != nil {
+		t.Fatalf("expected tracked suppression to pass, output:\n%s", output)
+	}
+
+	logContent := readFile(t, logPath)
+	if !strings.Contains(logContent, "Owner: @security") {
+		t.Fatalf("expected owner taken from the suppression comment, got:\n%s", logContent)
+	}
+	if strings.Contains(logContent, "Owner: = service") || strings.Contains(logContent, "Owner: service") {
+		t.Fatalf("expected the code-side `owner := service` assignment before the marker not to be treated as metadata, got:\n%s", logContent)
+	}
+}
+
 func TestInlineSuppressionCheckUpdatesExistingTrackingIssue(t *testing.T) {
 	t.Parallel()
 

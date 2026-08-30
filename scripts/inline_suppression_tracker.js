@@ -170,10 +170,12 @@ function addSuppression(records, { file, line, content, context, headSHA, occurr
   }
   validateString(content, 'content', 4096);
 
-  const rationale = validateString(metadataValue(content, ['rationale', 'reason']), 'rationale', 1024);
-  const owner = validateString(metadataValue(content, ['owner']), 'owner', 256);
+  const markerIndex = commentPrefixIndexForMarker(content);
+  const metadataScope = markerIndex === -1 ? content : content.slice(markerIndex);
+  const rationale = validateString(metadataValue(metadataScope, ['rationale', 'reason']), 'rationale', 1024);
+  const owner = validateString(metadataValue(metadataScope, ['owner']), 'owner', 256);
   const removeWhen = validateString(
-    metadataValue(content, ['remove-when', 'removal-condition', 'removal']),
+    metadataValue(metadataScope, ['remove-when', 'removal-condition', 'removal']),
     'remove_when',
     1024,
   );
@@ -278,17 +280,21 @@ function markerStartAfterPrefix(content, index, prefix) {
   return cursor;
 }
 
-function hasInlineSuppressionMarker(content) {
+function commentPrefixIndexForMarker(content) {
   for (let index = 0; index < content.length; index += 1) {
     if (!isCommentBoundary(content[index - 1])) {
       continue;
     }
     const prefix = COMMENT_PREFIXES.find((candidate) => content.startsWith(candidate, index));
     if (prefix && hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {
-      return true;
+      return index;
     }
   }
-  return false;
+  return -1;
+}
+
+function hasInlineSuppressionMarker(content) {
+  return commentPrefixIndexForMarker(content) !== -1;
 }
 
 function parseHunkHeader(rawLine, file) {
@@ -569,15 +575,22 @@ function isTrustedTrackingIssue(issue, marker) {
 
 async function upsertTrackingIssue({ github, context, record, pullNumber }) {
   const marker = `lopper-inline-suppression:${record.fingerprint}`;
+  const pullMarker = pullMarkerFor(pullNumber);
   const title = `ci: track inline suppression in ${record.file}:${record.line}`;
   const body = trackingBody(record, pullNumber);
+  // Scope reuse to (fingerprint, pull) so two different pull requests that
+  // happen to add an identical suppression never share one tracking issue:
+  // closing one PR's suppression would otherwise close the issue for the
+  // other PR's still-present exception.
   const searchTrackingIssue = async () => github.rest.search.issuesAndPullRequests({
-    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
+    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker} ${pullMarker}`,
     per_page: 2,
   });
   const findTrustedExisting = async () => {
     const results = await searchTrackingIssue();
-    return results.data.items.find((item) => isTrustedTrackingIssue(item, marker));
+    return results.data.items.find(
+      (item) => isTrustedTrackingIssue(item, marker) && issueBodyIncludesMarker(item, pullMarker),
+    );
   };
   const existing = await findTrustedExisting();
   if (existing) {
