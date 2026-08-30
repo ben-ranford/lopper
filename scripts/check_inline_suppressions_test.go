@@ -764,6 +764,15 @@ func withoutGitEnv() []string {
 		if strings.HasPrefix(entry, "GIT_") {
 			continue
 		}
+		// This test binary itself runs as a step inside GitHub Actions CI,
+		// so GITHUB_EVENT_NAME is ambiently "pull_request" there even
+		// though these tests aren't simulating that context by default;
+		// leaving it in would leak actual CI state into subprocess runs
+		// that specifically mean to exercise the non-CI (local dev) path.
+		// Tests that do want it set pass it explicitly via env... instead.
+		if strings.HasPrefix(entry, "GITHUB_EVENT_NAME=") {
+			continue
+		}
 		filtered = append(filtered, entry)
 	}
 	return filtered
