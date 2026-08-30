@@ -238,9 +238,13 @@ func TestInlineSuppressionTrackerControllerFailsClosedBeforeMutations(t *testing
 		"github.rest.search.issuesAndPullRequests",
 		"github.rest.issues.update",
 		"github.rest.issues.create",
+		"lopper-inline-suppression-pr:",
+		"reconcileDisappearedSuppressions",
+		"state: 'closed'",
 	})
 	assertWorkflowMarkerOrder(t, controller, "records.size > MAX_RECORDS", "return records;")
-	assertWorkflowMarkerOrder(t, controller, "const records = await recomputeSuppressionRecords({ github, context });", "await upsertTrackingIssue({ github, context, record });")
+	assertWorkflowMarkerOrder(t, controller, "const { records, pull } = await recomputeSuppressionRecords({ github, context });", "await reconcileDisappearedSuppressions({ github, context, pull, records, core });")
+	assertWorkflowMarkerOrder(t, controller, "await reconcileDisappearedSuppressions({ github, context, pull, records, core });", "await upsertTrackingIssue({ github, context, record, pullNumber: pull.number });")
 	assertWorkflowStepRunOmitsAll(t, workflowStepConfig{Run: controller}, "inline suppression tracker controller", []string{
 		"inline-suppressions.json",
 		"pr-report-inputs",

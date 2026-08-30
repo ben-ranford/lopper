@@ -363,11 +363,11 @@ function assertCompletePatch(file) {
   if (typeof file.patch !== 'string') {
     return;
   }
+  if (!Number.isInteger(file.additions) || !Number.isInteger(file.deletions)) {
+    throw truncatedPatchError(file.filename);
+  }
   const stats = patchLineStats(file.patch, file.filename);
-  if (
-    (Number.isInteger(file.additions) && stats.additions !== file.additions) ||
-    (Number.isInteger(file.deletions) && stats.deletions !== file.deletions)
-  ) {
+  if (stats.additions !== file.additions || stats.deletions !== file.deletions) {
     throw truncatedPatchError(file.filename);
   }
 }
@@ -518,12 +518,18 @@ async function recomputeSuppressionRecords({ github, context }) {
   if (refreshedPull.changed_files !== count) {
     throw new RangeError('Pull request changed file count drifted while recomputing inline suppression records; refusing to publish tracking mutations.');
   }
-  return collectSuppressionRecords({ files, context, pull });
+  const records = collectSuppressionRecords({ files, context, pull });
+  return { records, pull };
 }
 
-function trackingBody(record) {
+function pullMarkerFor(pullNumber) {
+  return `lopper-inline-suppression-pr:${pullNumber}`;
+}
+
+function trackingBody(record, pullNumber) {
   return [
     `<!-- lopper-inline-suppression:${record.fingerprint} -->`,
+    `<!-- ${pullMarkerFor(pullNumber)} -->`,
     '',
     '## Inline analysis suppression tracking',
     '',
@@ -539,6 +545,13 @@ function trackingBody(record) {
     escapeFence(record.content),
     '```',
   ].join('\n');
+}
+
+function fingerprintFromIssueBody(body) {
+  if (typeof body !== 'string') {
+    return undefined;
+  }
+  return body.match(/lopper-inline-suppression:([0-9a-f]{64})/)?.[1];
 }
 
 function issueBodyIncludesMarker(issue, marker) {
@@ -559,9 +572,10 @@ function isTrustedTrackingIssue(issue, marker) {
   );
 }
 
-async function upsertTrackingIssue({ github, context, record }) {
+async function upsertTrackingIssue({ github, context, record, pullNumber }) {
   const marker = `lopper-inline-suppression:${record.fingerprint}`;
   const title = `ci: track inline suppression in ${record.file}:${record.line}`;
+  const body = trackingBody(record, pullNumber);
   const searchTrackingIssue = async () => github.rest.search.issuesAndPullRequests({
     q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
     per_page: 2,
@@ -577,7 +591,7 @@ async function upsertTrackingIssue({ github, context, record }) {
       repo: context.repo.repo,
       issue_number: existing.number,
       title,
-      body: trackingBody(record),
+      body,
     });
     return { action: 'updated', number: existing.number };
   }
@@ -587,7 +601,7 @@ async function upsertTrackingIssue({ github, context, record }) {
       owner: context.repo.owner,
       repo: context.repo.repo,
       title,
-      body: trackingBody(record),
+      body,
     });
   } catch (error) {
     const concurrentExisting = await findTrustedExisting();
@@ -597,7 +611,7 @@ async function upsertTrackingIssue({ github, context, record }) {
         repo: context.repo.repo,
         issue_number: concurrentExisting.number,
         title,
-        body: trackingBody(record),
+        body,
       });
       return { action: 'updated', number: concurrentExisting.number };
     }
@@ -606,15 +620,43 @@ async function upsertTrackingIssue({ github, context, record }) {
   return { action: 'opened', number: created.data.number };
 }
 
+async function findTrustedTrackingIssuesForPull({ github, context, pullNumber }) {
+  const marker = pullMarkerFor(pullNumber);
+  const results = await github.rest.search.issuesAndPullRequests({
+    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
+    per_page: 100,
+  });
+  return results.data.items.filter((item) => isTrustedTrackingIssue(item, marker));
+}
+
+async function reconcileDisappearedSuppressions({ github, context, pull, records, core }) {
+  const tracked = await findTrustedTrackingIssuesForPull({ github, context, pullNumber: pull.number });
+  for (const issue of tracked) {
+    const fingerprint = fingerprintFromIssueBody(issue.body);
+    if (!fingerprint || records.has(fingerprint)) {
+      continue;
+    }
+    await github.rest.issues.update({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      issue_number: issue.number,
+      state: 'closed',
+      state_reason: 'not_planned',
+    });
+    core.info(`Closed inline suppression tracking issue #${issue.number}; the suppression no longer appears in pull request #${pull.number}.`);
+  }
+}
+
 async function trackInlineSuppressions({ github, context, core }) {
-  const records = await recomputeSuppressionRecords({ github, context });
+  const { records, pull } = await recomputeSuppressionRecords({ github, context });
+  await reconcileDisappearedSuppressions({ github, context, pull, records, core });
   if (records.size === 0) {
     core.info('No inline suppression records were produced.');
     return;
   }
 
   for (const record of records.values()) {
-    const result = await upsertTrackingIssue({ github, context, record });
+    const result = await upsertTrackingIssue({ github, context, record, pullNumber: pull.number });
     const verb = result.action === 'updated' ? 'Updated' : 'Opened';
     core.info(`${verb} inline suppression tracking issue #${result.number} for ${record.file}:${record.line}.`);
   }

@@ -233,12 +233,19 @@ test('does not reuse a public fingerprint marker without trusted tracker ownersh
 });
 
 test('recovers when a concurrent tracker creates the trusted issue first', async () => {
-  const searchCalls = [];
+  const fingerprintAttempts = new Map();
   const harness = makeHarness({
     createError: new Error('already exists'),
     searchItems: ({ marker }) => {
-      searchCalls.push(marker);
-      if (searchCalls.length === 1) {
+      // Reconciliation issues its own search (for the PR-scoped marker) before
+      // any per-fingerprint lookup; ignore it so call-count bookkeeping below
+      // only tracks the fingerprint-marker search this test exercises.
+      if (!marker || !marker.startsWith('lopper-inline-suppression:')) {
+        return [];
+      }
+      const attempts = (fingerprintAttempts.get(marker) || 0) + 1;
+      fingerprintAttempts.set(marker, attempts);
+      if (attempts === 1) {
         return [];
       }
       return [
@@ -257,6 +264,69 @@ test('recovers when a concurrent tracker creates the trusted issue first', async
   assert.equal(harness.calls.updated.length, 1);
   assert.equal(harness.calls.updated[0].issue_number, 88);
   assert.match(harness.calls.infos.join('\n'), /Updated inline suppression tracking issue #88/);
+});
+
+test('closes tracking issues for suppressions that disappeared from the pull diff', async () => {
+  const staleFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'modified',
+        patch: [
+          '@@ -1,5 +1,4 @@',
+          ' package main',
+          ' ',
+          ' func main() {',
+          `-${trackedLine('nolint:staticcheck')}`,
+          ' }',
+          '',
+        ].join('\n'),
+      },
+    ],
+    searchItems: ({ input }) => {
+      if (!input.q.includes('lopper-inline-suppression-pr:')) {
+        return [];
+      }
+      return [
+        {
+          number: 99,
+          body: `<!-- lopper-inline-suppression:${staleFingerprint} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 0);
+  assert.equal(harness.calls.updated.length, 1);
+  assert.equal(harness.calls.updated[0].issue_number, 99);
+  assert.equal(harness.calls.updated[0].state, 'closed');
+  assert.match(harness.calls.infos.join('\n'), /Closed inline suppression tracking issue #99; the suppression no longer appears in pull request #42/);
+});
+
+test('does not close a tracking issue whose suppression is still present in the pull diff', async () => {
+  const currentFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
+  const harness = makeHarness({
+    searchItems: ({ input }) => {
+      if (!input.q.includes('lopper-inline-suppression-pr:')) {
+        return [];
+      }
+      return [
+        {
+          number: 55,
+          body: `<!-- lopper-inline-suppression:${currentFingerprint} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.updated.length, 0);
 });
 
 test('rejects stale event payloads before reading pull file diffs', async () => {
@@ -446,6 +516,33 @@ test('fails closed when a pull file patch is truncated', async () => {
         status: 'modified',
         additions: 5,
         deletions: 0,
+        patch: '@@ -0,0 +1,1 @@\n+package main\n',
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'RangeError',
+      message: /diff patch for main\.go is incomplete or truncated.*refusing to publish tracking mutations/,
+    },
+  );
+  assert.equal(harness.calls.created.length, 0);
+});
+
+test('fails closed when a pull file patch is present but additions/deletions are missing', async () => {
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'modified',
+        // additions/deletions explicitly unset: without a trustworthy
+        // line-count baseline from GitHub, a truncated patch cannot be
+        // distinguished from a complete one, so this must fail closed
+        // rather than silently skip the completeness check.
+        additions: undefined,
+        deletions: undefined,
         patch: '@@ -0,0 +1,1 @@\n+package main\n',
       },
     ],
