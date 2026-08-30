@@ -149,6 +149,28 @@ func TestInlineSuppressionCheckDetectsTrackedMarkerWithoutGitHubCredentials(t *t
 	}
 }
 
+func assertSuppressionDetectedForFilename(t *testing.T, filename string) {
+	t.Helper()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	writeFile(t, filepath.Join(repoDir, filename), mainGoWithTrackedSuppression("nolint:staticcheck"))
+	runCommand(t, repoDir, "git", "add", filename)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected suppression detection to pass for %q, output:\n%s", filename, output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record for %q, got %#v", filename, records.Suppressions)
+	}
+	if records.Suppressions[0].File != filename {
+		t.Fatalf("record file = %q, want %q", records.Suppressions[0].File, filename)
+	}
+}
+
 func TestInlineSuppressionCheckMatchesUppercaseExtensionCaseInsensitively(t *testing.T) {
 	t.Parallel()
 
@@ -156,24 +178,7 @@ func TestInlineSuppressionCheckMatchesUppercaseExtensionCaseInsensitively(t *tes
 	// it recognizes a suppression added to e.g. main.GO. This detector's
 	// source-file scope must not silently skip such files while the
 	// trusted tracker still finds and tracks them.
-	repoDir := newInlineSuppressionRepo(t)
-	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	uppercasePath := "main.GO"
-	writeFile(t, filepath.Join(repoDir, uppercasePath), mainGoWithTrackedSuppression("nolint:staticcheck"))
-	runCommand(t, repoDir, "git", "add", uppercasePath)
-
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
-	if err != nil {
-		t.Fatalf("expected uppercase-extension suppression detection to pass, output:\n%s", output)
-	}
-
-	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record for %s, got %#v", uppercasePath, records.Suppressions)
-	}
-	if records.Suppressions[0].File != uppercasePath {
-		t.Fatalf("record file = %q, want %q", records.Suppressions[0].File, uppercasePath)
-	}
+	assertSuppressionDetectedForFilename(t, "main.GO")
 }
 
 func TestInlineSuppressionCheckDetectsAddedLineStartingWithDoublePlus(t *testing.T) {
@@ -526,24 +531,7 @@ func TestInlineSuppressionCheckParsesTabTerminatedFilenames(t *testing.T) {
 
 	// Git appends a trailing tab to a "+++ b/<path>" diff header when
 	// <path> needs disambiguation, e.g. because it contains a space.
-	repoDir := newInlineSuppressionRepo(t)
-	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	spacedPath := "odd name.go"
-	writeFile(t, filepath.Join(repoDir, spacedPath), mainGoWithTrackedSuppression("nolint:staticcheck"))
-	runCommand(t, repoDir, "git", "add", spacedPath)
-
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
-	if err != nil {
-		t.Fatalf("expected a space-containing filename to be detected, output:\n%s", output)
-	}
-
-	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record for %q, got %#v", spacedPath, records.Suppressions)
-	}
-	if records.Suppressions[0].File != spacedPath {
-		t.Fatalf("record file = %q, want %q", records.Suppressions[0].File, spacedPath)
-	}
+	assertSuppressionDetectedForFilename(t, "odd name.go")
 }
 
 func TestInlineSuppressionCheckCountsPreExistingOccurrenceOutsideTheDiff(t *testing.T) {
