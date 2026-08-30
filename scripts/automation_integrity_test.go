@@ -272,6 +272,28 @@ func TestAutomationExamplesRejectsSkippedAndMaskedRequiredCommands(t *testing.T)
 	})
 }
 
+func TestAutomationExamplesRejectsShellTerminatingAndChain(t *testing.T) {
+	t.Parallel()
+
+	output, err := runAutomationExamplesFixture(t, `pre-commit:
+  commands:
+    automation-integrity:
+      run: exit 0 && make automation-integrity
+    lopper-json-report:
+      run: exec true && go run ./cmd/lopper analyse --repo . --language all --format json --output .artifacts/lopper-pre-commit.json
+    mutation-guard:
+      run: exit 0 && git diff --exit-code -- . ':!.artifacts'
+`)
+	if err == nil {
+		t.Fatalf("expected exit/exec-guarded contracts to fail, got success:\n%s", output)
+	}
+	assertOutputContainsAll(t, string(output), []string{
+		"missing automation integrity command",
+		"missing lopper JSON report command",
+		"missing mutation guard command",
+	})
+}
+
 func TestAutomationExamplesRejectsMaskedRequiredCommandFailures(t *testing.T) {
 	t.Parallel()
 

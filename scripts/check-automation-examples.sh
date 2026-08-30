@@ -145,6 +145,14 @@ def known_failure_command?(words)
 	words == ["false"]
 end
 
+def shell_terminating_command?(words)
+	%w[exit exec].include?(words[0])
+end
+
+def breaks_and_chain?(words)
+	known_failure_command?(words) || shell_terminating_command?(words)
+end
+
 def fallback_masks_chain_success?(segments, index)
 	later_segments = segments[(index + 1)..-1] || []
 	later_segments.any? { |segment| segment[:operator] == "||" }
@@ -152,7 +160,7 @@ end
 
 def skipped_by_known_failed_and_chain?(segments, index)
 	segments[0...index].any? do |segment|
-		known_failure_command?(command_words(segment))
+		breaks_and_chain?(command_words(segment))
 	end && segment_and_chain?(segments[index])
 end
 
