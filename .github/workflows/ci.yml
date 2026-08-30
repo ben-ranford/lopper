@@ -200,27 +200,35 @@ jobs:
           eslint_prefix="eslint"
           coverage_prefix="coverage"
           suspect_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))"
-          suspect_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].patch // empty' \
+          # Scope to the same source-file extensions the detector itself
+          # covers, so documentation/config prose mentioning marker syntax
+          # (this PR, being the one introducing the feature, has plenty)
+          # can't inflate this into a false mismatch below.
+          suspect_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate \
+              --jq '.[] | select(.filename | test("(^|/)\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$")) | .patch // empty' \
             | grep -E '^\+' \
             | grep -Eic "${suspect_pattern}" || true)"
           suspect_count="${suspect_count:-0}"
 
-          if [ ! -s "${SUPPRESSIONS_FILE}" ]; then
-            if [ "${suspect_count}" -gt 0 ]; then
-              echo "::error::No inline suppression tracking output was produced, but GitHub's own diff for this pull request contains ${suspect_count} line(s) that look like a newly added suppression marker. This can happen if the suppression detector or Makefile target was modified to skip producing its artifact; refusing to treat this as nothing to verify." >&2
-              exit 1
-            fi
-            echo "No inline suppression tracking output was produced, and GitHub's diff independently confirms no suppression markers were added; nothing to verify."
-            exit 0
+          # A PR could also leave the detector partially working -- e.g. it
+          # already has one published suppression, adds a second, and tweaks
+          # the detector to keep emitting only the first -- so the artifact
+          # is nonempty but under-reports. Compare the independent count
+          # against every run of this detector, not only the empty case;
+          # a mismatch fails closed rather than trusting a nonzero count.
+          recorded_count=0
+          if [ -s "${SUPPRESSIONS_FILE}" ]; then
+            mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}")
+            recorded_count="${#fingerprints[@]}"
           fi
 
-          mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}")
-          if [ "${#fingerprints[@]}" -eq 0 ]; then
-            if [ "${suspect_count}" -gt 0 ]; then
-              echo "::error::No inline suppressions were recorded in this pull request's tracking output, but GitHub's own diff contains ${suspect_count} line(s) that look like a newly added suppression marker. This can happen if the suppression detector was modified to under-report; refusing to treat this as nothing to verify." >&2
-              exit 1
-            fi
-            echo "No inline suppressions were recorded in this pull request."
+          if [ "${suspect_count}" -gt "${recorded_count}" ]; then
+            echo "::error::GitHub's own diff for this pull request independently counts ${suspect_count} line(s) that look like a newly added suppression marker, but only ${recorded_count} were recorded in this pull request's tracking output. This can happen if the suppression detector or Makefile target was modified to under-report; refusing to trust the artifact." >&2
+            exit 1
+          fi
+
+          if [ "${recorded_count}" -eq 0 ]; then
+            echo "No inline suppressions were recorded in this pull request, and GitHub's diff independently confirms no suppression markers were added; nothing to verify."
             exit 0
           fi
 

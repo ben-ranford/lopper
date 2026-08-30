@@ -309,12 +309,21 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// silently omit the artifact while still adding an untracked
 	// suppression. The empty/missing-artifact early-outs must not be
 	// trusted blindly; they must be corroborated against GitHub's own
-	// (PR-uncontrollable) diff data first.
+	// (PR-uncontrollable) diff data first. This must be compared against
+	// every run of the detector, not only when the artifact is fully
+	// empty -- a PR could leave the detector partially working (already
+	// has one published suppression, adds a second, tweaks the detector
+	// to keep emitting only the first) so the artifact is nonempty but
+	// under-reports.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		`gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate`,
 		"suspect_count",
+		`recorded_count="${#fingerprints[@]}"`,
+		`if [ "${suspect_count}" -gt "${recorded_count}" ]; then`,
 	})
-	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `if [ ! -s "${SUPPRESSIONS_FILE}" ]; then`)
+	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
+	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`)
+	assertWorkflowMarkerOrder(t, gate.Run, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`, `missing=("${fingerprints[@]}")`)
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
