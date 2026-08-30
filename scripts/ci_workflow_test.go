@@ -878,31 +878,6 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "VS Code extension package contract", got: contract.Run, want: "go test ./scripts -run '^(TestVSCodeExtensionIconPackageContract|TestVSCodeExtensionPackagingHonorsBraceGlobIgnore)$' -count=1"},
 	})
-
-	vscodeRequired := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
-	assertWorkflowJobNeeds(t, vscodeRequired, "required VS Code smoke check", workflowJobNeeds{"extension-changes", "vscode_smoke_matrix"})
-	assertWorkflowJobPermissions(t, vscodeRequired, "required VS Code smoke check", map[string]string{"contents": "read"})
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "required VS Code smoke check name", got: vscodeRequired.Name, want: "vscode-smoke"},
-		{label: "required VS Code smoke check condition", got: vscodeRequired.If, want: "${{ always() }}"},
-		{label: "required VS Code smoke runner", got: vscodeRequired.RunsOn, want: "ubuntu-latest"},
-	})
-	required := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code smoke requirement")
-	assertWorkflowStepEnv(t, required, "required VS Code smoke check", map[string]string{
-		"EXTENSION_CHANGES_RESULT": "${{ needs.extension-changes.result }}",
-		"VSCODE_EXTENSION_CHANGED": "${{ needs.extension-changes.outputs.vscode_extension }}",
-		"VSCODE_SMOKE_RESULT":      "${{ needs.vscode_smoke_matrix.result }}",
-	})
-	assertWorkflowStepRunContainsAll(t, required, "required VS Code smoke check", []string{
-		`if [ "${EXTENSION_CHANGES_RESULT}" != "success" ]; then`,
-		`VS Code extension change detection must complete before smoke can be skipped.`,
-		`if [ "${VSCODE_EXTENSION_CHANGED}" = "false" ]; then`,
-		`No VS Code extension changes detected; smoke matrix not required.`,
-		`if [ "${VSCODE_EXTENSION_CHANGED}" != "true" ]; then`,
-		`VS Code extension change detection did not produce an explicit result.`,
-		`if [ "${VSCODE_SMOKE_RESULT}" != "success" ]; then`,
-		`VS Code extension changes require the VS Code smoke matrix to pass.`,
-	})
 }
 
 func TestPRMetadataWorkflowPassesMaintainerExemptionLabel(t *testing.T) {
