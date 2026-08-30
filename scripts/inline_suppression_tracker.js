@@ -451,13 +451,21 @@ function assertMutablePull(pull) {
   }
 }
 
-function assertCurrentHeadMatchesEvent({ eventPull, currentPull }) {
+function assertCurrentPullMatchesEvent({ eventPull, currentPull }) {
   if (!currentPull?.head?.sha) {
     throw new TypeError('Current pull request head SHA is unavailable; refusing to publish tracking mutations.');
   }
   if (currentPull.head.sha !== eventPull.head.sha) {
     throw new RangeError(
       `Pull request #${eventPull.number} head changed from event SHA ${eventPull.head.sha} to ${currentPull.head.sha}; refusing to use stale inline suppression diff records.`,
+    );
+  }
+  if (!currentPull?.base?.sha) {
+    throw new TypeError('Current pull request base SHA is unavailable; refusing to publish tracking mutations.');
+  }
+  if (currentPull.base.sha !== eventPull.base.sha) {
+    throw new RangeError(
+      `Pull request #${eventPull.number} base changed from event SHA ${eventPull.base.sha} to ${currentPull.base.sha}; refusing to use a diff computed against a different base than the event.`,
     );
   }
 }
@@ -515,13 +523,13 @@ async function recomputeSuppressionRecords({ github, context }) {
   assertMutablePull(eventPull);
   const pull = await fetchCurrentPull({ github, context, pull: eventPull });
   assertMutablePull(pull);
-  assertCurrentHeadMatchesEvent({ eventPull, currentPull: pull });
+  assertCurrentPullMatchesEvent({ eventPull, currentPull: pull });
   const count = await changedFileCount({ github, context, pull });
   assertTrustedFileCount(count);
   const files = await listChangedFiles({ github, context, pull, expectedCount: count });
   const refreshedPull = await fetchCurrentPull({ github, context, pull: eventPull });
   assertMutablePull(refreshedPull);
-  assertCurrentHeadMatchesEvent({ eventPull, currentPull: refreshedPull });
+  assertCurrentPullMatchesEvent({ eventPull, currentPull: refreshedPull });
   if (refreshedPull.changed_files !== count) {
     throw new RangeError('Pull request changed file count drifted while recomputing inline suppression records; refusing to publish tracking mutations.');
   }
@@ -588,8 +596,12 @@ async function upsertTrackingIssue({ github, context, record, pullNumber }) {
   // happen to add an identical suppression never share one tracking issue:
   // closing one PR's suppression would otherwise close the issue for the
   // other PR's still-present exception.
+  // Constrain the search itself to the trusted author: without this, an
+  // untrusted issue matching the marker text could occupy the capped
+  // result set ahead of the real trusted issue and make this incorrectly
+  // conclude none exists, creating an accumulating duplicate each run.
   const searchTrackingIssue = async () => github.rest.search.issuesAndPullRequests({
-    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker} ${pullMarker}`,
+    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open author:github-actions[bot] ${marker} ${pullMarker}`,
     per_page: 2,
   });
   const findTrustedExisting = async () => {
@@ -637,7 +649,7 @@ async function upsertTrackingIssue({ github, context, record, pullNumber }) {
 async function findTrustedTrackingIssuesForPull({ github, context, pullNumber }) {
   const marker = pullMarkerFor(pullNumber);
   const results = await github.rest.search.issuesAndPullRequests({
-    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open ${marker}`,
+    q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open author:github-actions[bot] ${marker}`,
     per_page: 100,
   });
   return results.data.items.filter((item) => isTrustedTrackingIssue(item, marker));

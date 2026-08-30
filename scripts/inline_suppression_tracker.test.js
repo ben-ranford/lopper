@@ -89,6 +89,10 @@ function makeHarness(options = {}) {
       ...pull.head,
       sha: options.currentHeadSHA ?? pull.head.sha,
     },
+    base: {
+      ...pull.base,
+      sha: options.currentBaseSHA ?? pull.base.sha,
+    },
   };
 
   const calls = {
@@ -317,6 +321,22 @@ test('does not reuse a public fingerprint marker without trusted tracker ownersh
   assert.match(harness.calls.created[0].body, /Inline analysis suppression tracking/);
 });
 
+test('constrains tracking issue searches to the trusted author', async () => {
+  // A capped result set (per_page: 2) ranked by GitHub's own relevance
+  // scoring could otherwise put two untrusted marker-matching issues ahead
+  // of the real trusted one, making this incorrectly conclude none exists
+  // and create an accumulating duplicate every run. Restricting the search
+  // query itself to the trusted author closes that gap server-side.
+  const harness = makeHarness();
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.ok(harness.calls.searches.length > 0);
+  for (const search of harness.calls.searches) {
+    assert.match(search.q, /author:github-actions\[bot\]/);
+  }
+});
+
 test('recovers when a concurrent tracker creates the trusted issue first', async () => {
   const fingerprintAttempts = new Map();
   const harness = makeHarness({
@@ -449,6 +469,20 @@ test('rejects stale event payloads before reading pull file diffs', async () => 
     {
       name: 'RangeError',
       message: /head changed from event SHA head-sha to new-head-sha.*refusing to use stale inline suppression diff records/,
+    },
+  );
+  assert.equal(harness.calls.paginated, 0);
+  assert.equal(harness.calls.created.length, 0);
+});
+
+test('rejects a base branch that advanced past the event before reading pull file diffs', async () => {
+  const harness = makeHarness({ currentBaseSHA: 'new-base-sha' });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'RangeError',
+      message: /base changed from event SHA base-sha to new-base-sha.*refusing to use a diff computed against a different base/,
     },
   );
   assert.equal(harness.calls.paginated, 0);
