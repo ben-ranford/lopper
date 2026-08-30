@@ -249,7 +249,7 @@ func (s *phpShortOpenTagConfigWalkState) scan(ctx context.Context, path string, 
 	if err := shared.WalkContextErr(ctx, walkErr); err != nil {
 		return err
 	}
-	if path != s.root && isExcludedPath(s.excludedPaths, path) {
+	if path != s.root && shared.IsExcludedPath(s.excludedPaths, path) {
 		if entry.IsDir() {
 			return filepath.SkipDir
 		}

@@ -3,6 +3,7 @@ package php
 import (
 	"context"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
@@ -24,7 +25,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 
 	state := analysisPipelineState{
 		repoPath:      repoPath,
-		excludedPaths: excludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles),
+		excludedPaths: shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles),
 	}
 	if err := runComposerIngestionStage(ctx, &state); err != nil {
 		return report.Report{}, err

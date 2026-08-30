@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
-	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -72,31 +71,5 @@ func isExcludedScanPath(excludedPaths map[string]struct{}, path string) bool {
 	if len(excludedPaths) == 0 {
 		return false
 	}
-	_, excluded := excludedPaths[filepath.Clean(path)]
-	return excluded
-}
-
-// excludedPathsForRepo resolves the analysis cache's directory/file
-// exclusions into an absolute-path set scoped to repoPath, mirroring the
-// PHP adapter's exclusion handling so cache-excluded inputs (for example the
-// default runtime trace directory) do not affect fresh JS/TS scans.
-func excludedPathsForRepo(repoPath string, directories, files []string) map[string]struct{} {
-	if len(directories) == 0 && len(files) == 0 {
-		return nil
-	}
-	repoPath = filepath.Clean(repoPath)
-	paths := append(append([]string(nil), directories...), files...)
-	excludedPaths := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		cleanedPath := filepath.Clean(path)
-		relativePath, err := filepath.Rel(repoPath, cleanedPath)
-		if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
-			continue
-		}
-		excludedPaths[cleanedPath] = struct{}{}
-	}
-	return excludedPaths
+	return shared.IsExcludedPath(excludedPaths, path)
 }

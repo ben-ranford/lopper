@@ -103,7 +103,7 @@ func contextErr(ctx context.Context) error {
 }
 
 func (c *scanCoordinator) scanEntry(path string, entry fs.DirEntry) error {
-	if isExcludedPath(c.excludedPaths, path) {
+	if shared.IsExcludedPath(c.excludedPaths, path) {
 		if entry.IsDir() {
 			return filepath.SkipDir
 		}
@@ -120,7 +120,7 @@ func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanSt
 }
 
 func scanDirEntryWithExcludedPaths(repoPath string, path string, entry fs.DirEntry, state *scanState, excludedPaths map[string]struct{}) error {
-	if isExcludedPath(excludedPaths, path) {
+	if shared.IsExcludedPath(excludedPaths, path) {
 		return filepath.SkipDir
 	}
 	if shouldSkipDir(entry.Name()) {
@@ -131,32 +131,6 @@ func scanDirEntryWithExcludedPaths(repoPath string, path string, entry fs.DirEnt
 		return filepath.SkipDir
 	}
 	return nil
-}
-
-func excludedPathsForRepo(repoPath string, directories, files []string) map[string]struct{} {
-	if len(directories) == 0 && len(files) == 0 {
-		return nil
-	}
-	repoPath = filepath.Clean(repoPath)
-	paths := append(append([]string(nil), directories...), files...)
-	excludedPaths := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		cleanedPath := filepath.Clean(path)
-		relativePath, err := filepath.Rel(repoPath, cleanedPath)
-		if err != nil || relativePath == "." || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
-			continue
-		}
-		excludedPaths[cleanedPath] = struct{}{}
-	}
-	return excludedPaths
-}
-
-func isExcludedPath(paths map[string]struct{}, path string) bool {
-	_, excluded := paths[filepath.Clean(path)]
-	return excluded
 }
 
 func (c *scanCoordinator) scanFile(path string) error {

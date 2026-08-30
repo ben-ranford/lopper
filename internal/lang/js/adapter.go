@@ -31,7 +31,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		RepoPath:    repoPath,
 	}
 
-	excludedPaths := excludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles)
+	excludedPaths := shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles)
 	scanResult, err := ScanRepoWithExcludedPaths(ctx, repoPath, excludedPaths)
 	if err != nil {
 		return report.Report{}, err
