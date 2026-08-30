@@ -442,7 +442,11 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	runCommand(t, repoDir, "git", "merge", "--no-edit", "pr")
 
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_BASE="+baseSHA, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	output, err := runSuppressionCheckWithEnv(repoDir,
+		"SUPPRESSION_BASE="+baseSHA,
+		"SUPPRESSION_TRACKING_OUTPUT="+outputPath,
+		"GITHUB_EVENT_NAME=pull_request",
+	)
 	if err != nil {
 		t.Fatalf("expected the merge-commit scan to pass, output:\n%s", output)
 	}
@@ -464,6 +468,81 @@ func TestInlineSuppressionCheckReadsOccurrencesFromThePRHeadNotTheMergeCommit(t 
 	}
 	if !found {
 		t.Fatalf("expected a record with the PR's own occurrence-1 fingerprint %s, got %#v", prFingerprint, records.Suppressions)
+	}
+}
+
+func TestInlineSuppressionCheckIgnoresOrdinaryLocalMergeCommits(t *testing.T) {
+	t.Parallel()
+
+	// An ordinary local merge (merging an updated main into a topic
+	// branch, as make suppression-check might run after) is also a
+	// two-parent commit, but its second parent is the merged-in branch,
+	// not "this change's own head". Without GITHUB_EVENT_NAME=pull_request
+	// signaling an actual CI checkout of GitHub's synthetic PR merge, the
+	// second-parent heuristic must not activate: topic.go only exists on
+	// the topic side, so reading it from the wrong parent would fail
+	// outright under pipefail instead of falling back to the working tree.
+	repoDir := newInlineSuppressionRepo(t)
+	writeFile(t, filepath.Join(repoDir, mainGoPath), "package main\n\nfunc main() {\n\tx := 1\n}\n")
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(testutil.GitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+	runCommand(t, repoDir, "git", "checkout", "-b", "topic")
+	marker := "nolint:staticcheck"
+	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	topicContent := "package main\n\nfunc topic() {\n" + line + "\n}\n"
+	topicPath := "topic.go"
+	writeFile(t, filepath.Join(repoDir, topicPath), topicContent)
+	runCommand(t, repoDir, "git", "add", topicPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "topic adds its own suppression in a topic-only file")
+
+	runCommand(t, repoDir, "git", "checkout", "main")
+	writeFile(t, filepath.Join(repoDir, mainGoPath), "package main\n\nfunc main() {\n\tx := 2\n}\n")
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "main advances independently")
+
+	runCommand(t, repoDir, "git", "checkout", "topic")
+	runCommand(t, repoDir, "git", "merge", "--no-edit", "main")
+
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	// Deliberately not setting GITHUB_EVENT_NAME, simulating a local run.
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_BASE="+baseSHA, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected a local merge-commit scan to fall back to the working tree and pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+	if records.Suppressions[0].File != topicPath {
+		t.Fatalf("record file = %q, want %q", records.Suppressions[0].File, topicPath)
+	}
+}
+
+func TestInlineSuppressionCheckParsesTabTerminatedFilenames(t *testing.T) {
+	t.Parallel()
+
+	// Git appends a trailing tab to a "+++ b/<path>" diff header when
+	// <path> needs disambiguation, e.g. because it contains a space.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	spacedPath := "odd name.go"
+	writeFile(t, filepath.Join(repoDir, spacedPath), mainGoWithTrackedSuppression("nolint:staticcheck"))
+	runCommand(t, repoDir, "git", "add", spacedPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected a space-containing filename to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record for %q, got %#v", spacedPath, records.Suppressions)
+	}
+	if records.Suppressions[0].File != spacedPath {
+		t.Fatalf("record file = %q, want %q", records.Suppressions[0].File, spacedPath)
 	}
 }
 

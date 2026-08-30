@@ -98,7 +98,14 @@ occurrence_in_file() {
 	# the API) sees only the PR's own, producing a different ordinal. When
 	# HEAD is such a merge commit (exactly two parents), read the second
 	# parent's tree -- the PR's own head -- instead of the working tree.
-	if head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
+	#
+	# Gated on actually being a pull_request CI run: an ordinary local
+	# merge commit (e.g. merging an updated main into a topic branch) is
+	# also two-parent, but its second parent is the merged-in branch, not
+	# "this change's own head" -- treating it the same way would read the
+	# wrong tree, or fail outright for a topic-only file that doesn't
+	# exist on that other side.
+	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
 		git show "${head_parent}:${file}" 2>/dev/null
 	else
 		cat -- "$file"
@@ -395,6 +402,10 @@ BEGIN {
 }
 /^\+\+\+ b\// {
 	file = substr($0, 7)
+	# Git appends a trailing tab to disambiguate a "+++ b/<path>" header
+	# when <path> itself needs it (e.g. contains a space); strip it so
+	# the extension patterns "$" anchor still matches the real filename.
+	sub(/\t$/, "", file)
 	check_file = (tolower(file) ~ file_pattern)
 	next
 }

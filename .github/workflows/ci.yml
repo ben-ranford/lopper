@@ -208,8 +208,21 @@ jobs:
           # (which lowercases before matching): a suppression added to
           # e.g. main.GO or component.TSX must not be silently skipped by
           # this scope filter while the trusted tracker still finds it.
-          suspect_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate \
-              --jq '.[] | select(.filename | test("^\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")) | .patch // empty' \
+          source_file_test='.filename | test("^\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")'
+          pr_files_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate)"
+
+          # GitHub omits `patch` entirely for files it considers too large
+          # or whose diff it truncates. Treating that as "no suspect lines"
+          # would let a PR pair an oversized source file with a tampered
+          # detector/Makefile to make both counts read zero and merge an
+          # untracked suppression; fail closed instead of guessing.
+          incomplete_count="$(echo "${pr_files_json}" | jq "[.[] | select(${source_file_test}) | select(.patch == null)] | length")"
+          if [ "${incomplete_count:-0}" -gt 0 ]; then
+            echo "::error::GitHub's pull-files API omitted the patch for ${incomplete_count} source file(s) in this pull request (typically because the file or diff is too large); the independent suppression scan cannot make a safe determination for those files. Refusing to trust an under-scanned diff." >&2
+            exit 1
+          fi
+
+          suspect_count="$(echo "${pr_files_json}" | jq -r ".[] | select(${source_file_test}) | .patch // empty" \
             | grep -E '^\+' \
             | grep -Eic "${suspect_pattern}" || true)"
           suspect_count="${suspect_count:-0}"
