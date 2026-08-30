@@ -61,8 +61,18 @@ func scanUnicodeTokenUsage(content []byte, importCount map[string]int, usage map
 }
 
 func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage map[string]int) {
-	var lineStarts []int
-	haveLineStarts := false
+	importsByLine := declarationImportsByLine(imports, usage)
+	if len(importsByLine) == 0 {
+		return
+	}
+	lineStarts := lineStartOffsets(content)
+	for line, lineImports := range importsByLine {
+		subtractDeclarationLineTokenHits(content, lineStarts, lineImports, line, usage)
+	}
+}
+
+func declarationImportsByLine(imports []ImportRecord, usage map[string]int) map[int][]ImportRecord {
+	importsByLine := make(map[int][]ImportRecord)
 	for _, imported := range imports {
 		if imported.Wildcard || imported.Local == "" {
 			continue
@@ -75,13 +85,26 @@ func subtractDeclarationTokenHits(content []byte, imports []ImportRecord, usage 
 			usage[imported.Local] -= declarationHits
 			continue
 		}
-		if !haveLineStarts {
-			lineStarts = lineStartOffsets(content)
-			haveLineStarts = true
+		importsByLine[imported.Location.Line] = append(importsByLine[imported.Location.Line], imported)
+	}
+	return importsByLine
+}
+
+func subtractDeclarationLineTokenHits(content []byte, lineStarts []int, lineImports []ImportRecord, line int, usage map[string]int) {
+	lineContent, ok := declarationLineContent(content, lineStarts, line)
+	if !ok {
+		return
+	}
+	lineTokens := declarationLineTokens(lineContent)
+	for _, imported := range lineImports {
+		if _, ok := lineTokens[imported.Local]; !ok {
+			continue
 		}
-		if declarationLineContainsToken(content, lineStarts, imported.Location.Line, imported.Local) {
-			usage[imported.Local] -= declarationHits
+		declarationHits := imported.DeclarationTokenHits
+		if declarationHits <= 0 {
+			declarationHits = 1
 		}
+		usage[imported.Local] -= declarationHits
 	}
 }
 
@@ -94,8 +117,19 @@ func clampUsageCounts(importCount, usage map[string]int) {
 }
 
 func declarationLineContainsToken(content []byte, lineStarts []int, line int, token string) bool {
-	if line <= 0 || line > len(lineStarts) {
+	lineContent, ok := declarationLineContent(content, lineStarts, line)
+	if !ok {
 		return false
+	}
+	if containsNonASCII(token) {
+		return containsUnicodeIdentifierToken(lineContent, token)
+	}
+	return containsWordToken(lineContent, token)
+}
+
+func declarationLineContent(content []byte, lineStarts []int, line int) ([]byte, bool) {
+	if line <= 0 || line > len(lineStarts) {
+		return nil, false
 	}
 	lineStart := lineStarts[line-1]
 	lineEnd := len(content)
@@ -103,12 +137,36 @@ func declarationLineContainsToken(content []byte, lineStarts []int, line int, to
 		lineEnd = lineStarts[line] - 1
 	}
 	if lineStart < 0 || lineStart >= lineEnd || lineEnd > len(content) {
-		return false
+		return nil, false
 	}
-	if containsNonASCII(token) {
-		return containsUnicodeIdentifierToken(content[lineStart:lineEnd], token)
+	return content[lineStart:lineEnd], true
+}
+
+func declarationLineTokens(content []byte) map[string]struct{} {
+	tokens := make(map[string]struct{})
+	if containsNonASCIIBytes(content) {
+		for index := 0; index < len(content); {
+			start, end, ok := nextUnicodeIdentifier(content, index)
+			if !ok {
+				return tokens
+			}
+			tokens[string(content[start:end])] = struct{}{}
+			index = end
+		}
+		return tokens
 	}
-	return containsWordToken(content[lineStart:lineEnd], token)
+	for i := 0; i < len(content); {
+		if !isWordByte(content[i]) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(content) && isWordByte(content[i]) {
+			i++
+		}
+		tokens[string(content[start:i])] = struct{}{}
+	}
+	return tokens
 }
 
 func lineStartOffsets(content []byte) []int {
@@ -204,12 +262,13 @@ func containsNonASCIIBytes(value []byte) bool {
 }
 
 type maskProfile struct {
-	lineSlashSlash bool
-	lineHash       bool
-	blockSlashStar bool
-	singleQuote    bool
-	doubleQuote    bool
-	backtickQuote  bool
+	lineSlashSlash       bool
+	lineHash             bool
+	hashBracketAttribute bool
+	blockSlashStar       bool
+	singleQuote          bool
+	doubleQuote          bool
+	backtickQuote        bool
 }
 
 var defaultMaskProfile = maskProfile{
@@ -249,6 +308,16 @@ func maskProfileForFile(filePath string) maskProfile {
 			singleQuote:   true,
 			doubleQuote:   true,
 			backtickQuote: true,
+		}
+	case ".php":
+		return maskProfile{
+			lineSlashSlash:       true,
+			lineHash:             true,
+			hashBracketAttribute: true,
+			blockSlashStar:       true,
+			singleQuote:          true,
+			doubleQuote:          true,
+			backtickQuote:        true,
 		}
 	default:
 		return defaultMaskProfile
@@ -341,6 +410,9 @@ func scanCode(content []byte, index int, profile maskProfile) (int, scannerState
 	}
 	ch := content[index]
 	if profile.lineHash && ch == '#' {
+		if profile.hashBracketAttribute && index+1 < len(content) && content[index+1] == '[' {
+			return index + 1, scannerStateCode
+		}
 		maskNonNewline(content, index)
 		return index + 1, scannerStateLineComment
 	}

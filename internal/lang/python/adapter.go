@@ -37,7 +37,8 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		RepoPath:    repoPath,
 	}
 
-	scanResult, err := scanRepo(ctx, repoPath)
+	excludedPaths := shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles)
+	scanResult, err := scanRepoWithExcludedPaths(ctx, repoPath, excludedPaths)
 	if err != nil {
 		return report.Report{}, err
 	}
@@ -81,6 +82,10 @@ type scanResult struct {
 }
 
 func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
+	return scanRepoWithExcludedPaths(ctx, repoPath, nil)
+}
+
+func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (scanResult, error) {
 	result := scanResult{
 		DeclaredDependencies: make(map[string]struct{}),
 		ImportedDependencies: make(map[string]struct{}),
@@ -88,7 +93,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	if repoPath == "" {
 		return result, fmt.Errorf("repo path is empty")
 	}
-	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath)
+	declaredDependencies, warnings, err := collectDeclaredDependencies(ctx, repoPath, excludedPaths)
 	if err != nil {
 		return result, err
 	}
@@ -102,7 +107,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return scanPythonRepoEntry(repoPath, path, entry, &result)
+		return scanPythonRepoEntry(repoPath, path, entry, &result, excludedPaths)
 	})
 	if err != nil {
 		return result, err
@@ -113,7 +118,13 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	return result, nil
 }
 
-func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result *scanResult) error {
+func scanPythonRepoEntry(repoPath string, path string, entry fs.DirEntry, result *scanResult, excludedPaths map[string]struct{}) error {
+	if shared.IsExcludedPath(excludedPaths, path) {
+		if entry.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	}
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir

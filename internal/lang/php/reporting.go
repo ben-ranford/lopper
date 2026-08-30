@@ -2,6 +2,7 @@ package php
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
@@ -37,6 +38,13 @@ func buildTopPHPDependencies(topN int, scan scanResult, minUsagePercent int, wei
 		depReport, depWarnings := buildDependencyReport(dependency, scan, minUsagePercent)
 		reports = append(reports, depReport)
 		warnings = append(warnings, depWarnings...)
+	}
+	if scan.UsageIncomplete {
+		sort.Slice(reports, func(i, j int) bool {
+			return reports[i].Name < reports[j].Name
+		})
+		warnings = append(warnings, "top-N removal ranking disabled because PHP dependency coverage is incomplete")
+		return reports, warnings
 	}
 	shared.SortReportsByWaste(reports, weights)
 	if topN > 0 && topN < len(reports) {
@@ -74,6 +82,11 @@ func buildDependencyReport(dependency string, scan scanResult, minUsagePercent i
 		UsedImports:          stats.UsedImports,
 		UnusedImports:        stats.UnusedImports,
 	}
+	if scan.UsageIncomplete {
+		dep.UsageIncomplete = true
+		dep.SuppressedUnusedImports = dep.UnusedImports
+		dep.UnusedImports = nil
+	}
 	if grouped := scan.GroupedImportsByDependency[dependency]; grouped > 0 {
 		dep.RiskCues = append(dep.RiskCues, report.RiskCue{
 			Code:     "grouped-use-import",
@@ -94,7 +107,7 @@ func buildDependencyReport(dependency string, scan scanResult, minUsagePercent i
 
 func buildRecommendations(dep report.DependencyReport, minUsagePercent int) []report.Recommendation {
 	recs := make([]report.Recommendation, 0, 3)
-	if len(dep.UsedImports) == 0 && len(dep.UnusedImports) > 0 {
+	if !dep.UsageIncomplete && len(dep.UsedImports) == 0 && len(dep.UnusedImports) > 0 {
 		recs = append(recs, report.Recommendation{
 			Code:      "remove-unused-dependency",
 			Priority:  "high",
@@ -118,7 +131,7 @@ func buildRecommendations(dep report.DependencyReport, minUsagePercent int) []re
 			Rationale: "Static analysis can under-report usage when class names are resolved dynamically.",
 		})
 	}
-	if dep.TotalExportsCount > 0 && dep.UsedPercent < float64(minUsagePercent) {
+	if !dep.UsageIncomplete && dep.TotalExportsCount > 0 && dep.UsedPercent < float64(minUsagePercent) {
 		recs = append(recs, report.Recommendation{
 			Code:      "low-usage-dependency",
 			Priority:  "medium",

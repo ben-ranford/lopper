@@ -51,6 +51,7 @@ func prepareAnalyseExecution(ctx context.Context, req Request) (preparedAnalyseE
 		},
 	}
 	policy := analysisRequestPolicy{
+		saveBaseline:            req.Analyse.SaveBaseline,
 		thresholds:              req.Analyse.Thresholds,
 		advisorySourcePath:      req.Analyse.AdvisorySourcePath,
 		advisorySourceTrustRoot: req.Analyse.AdvisorySourceTrustRoot,

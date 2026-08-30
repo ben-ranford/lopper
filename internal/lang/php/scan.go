@@ -21,6 +21,7 @@ type scanResult struct {
 	DeclaredDependencies       map[string]struct{}
 	GroupedImportsByDependency map[string]int
 	DynamicUsageByDependency   map[string]int
+	UsageIncomplete            bool
 }
 
 type fileScan struct {
@@ -31,34 +32,48 @@ type fileScan struct {
 }
 
 type scanState struct {
-	visited              int
-	unresolvedNamespaces int
-	foundPHP             bool
-	skippedLargeFiles    int
-	skippedNestedPackage int
+	visited                       int
+	unresolvedNamespaces          int
+	foundPHP                      bool
+	skippedLargeFiles             int
+	skippedNestedPackage          int
+	useStatementLimitHits         int
+	useBindingLimitHits           int
+	namespaceDeclarationLimitHits int
+	namespaceReferenceLimitHits   int
+	namespaceResolutionLimitHits  int
 }
 
 type scanCoordinator struct {
-	repoPath string
-	resolver composerResolver
-	result   scanResult
-	state    scanState
+	repoPath           string
+	excludedPaths      map[string]struct{}
+	resolver           composerResolver
+	shortOpenTagPolicy phpShortOpenTagPolicy
+	result             scanResult
+	state              scanState
 }
 
-func newScanCoordinator(repoPath string, composer composerData) scanCoordinator {
+func newScanCoordinatorWithExcludedPaths(repoPath string, composer composerData, excludedPaths map[string]struct{}) scanCoordinator {
 	return scanCoordinator{
-		repoPath: repoPath,
-		resolver: newComposerResolver(composer),
+		repoPath:      repoPath,
+		excludedPaths: excludedPaths,
+		resolver:      newComposerResolver(composer),
 		result: scanResult{
 			DeclaredDependencies:       composer.DeclaredDependencies,
 			GroupedImportsByDependency: make(map[string]int),
 			DynamicUsageByDependency:   make(map[string]int),
+			UsageIncomplete:            composer.UsageIncomplete,
 		},
+		shortOpenTagPolicy: composer.ShortOpenTagPolicy,
 	}
 }
 
 func scanRepo(ctx context.Context, repoPath string, composer composerData) (scanResult, error) {
-	coordinator := newScanCoordinator(repoPath, composer)
+	return scanRepoWithExcludedPaths(ctx, repoPath, composer, nil)
+}
+
+func scanRepoWithExcludedPaths(ctx context.Context, repoPath string, composer composerData, excludedPaths map[string]struct{}) (scanResult, error) {
+	coordinator := newScanCoordinatorWithExcludedPaths(repoPath, composer, excludedPaths)
 	return coordinator.scan(ctx)
 }
 
@@ -88,13 +103,26 @@ func contextErr(ctx context.Context) error {
 }
 
 func (c *scanCoordinator) scanEntry(path string, entry fs.DirEntry) error {
+	if shared.IsExcludedPath(c.excludedPaths, path) {
+		if entry.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	}
 	if entry.IsDir() {
-		return scanDirEntry(c.repoPath, path, entry, &c.state)
+		return scanDirEntryWithExcludedPaths(c.repoPath, path, entry, &c.state, c.excludedPaths)
 	}
 	return c.scanFile(path)
 }
 
 func scanDirEntry(repoPath string, path string, entry fs.DirEntry, state *scanState) error {
+	return scanDirEntryWithExcludedPaths(repoPath, path, entry, state, nil)
+}
+
+func scanDirEntryWithExcludedPaths(repoPath string, path string, entry fs.DirEntry, state *scanState, excludedPaths map[string]struct{}) error {
+	if shared.IsExcludedPath(excludedPaths, path) {
+		return filepath.SkipDir
+	}
 	if shouldSkipDir(entry.Name()) {
 		return filepath.SkipDir
 	}
@@ -109,6 +137,7 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.visited++
 	if c.state.visited > maxScanFiles {
 		c.result.Warnings = append(c.result.Warnings, fmt.Sprintf("scan stopped after %d files to keep analysis bounded", maxScanFiles))
+		c.result.UsageIncomplete = true
 		return fs.SkipAll
 	}
 	if !strings.EqualFold(filepath.Ext(path), ".php") {
@@ -117,15 +146,23 @@ func (c *scanCoordinator) scanFile(path string) error {
 	c.state.foundPHP = true
 
 	content, relPath, err := readPHPFile(c.repoPath, path)
-	if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
+	if isPureOversizedFileError(err) {
 		c.state.skippedLargeFiles++
+		c.result.UsageIncomplete = true
 		return nil
 	}
 	if err != nil {
 		return err
 	}
 
-	parsed := parsePHPImports(content, relPath, c.resolver)
+	resolver := c.resolver
+	if c.shortOpenTagPolicy.hasSettings() {
+		resolver.allowPHPShortOpenTags = c.shortOpenTagPolicy.enabledForFile(path)
+		if c.shortOpenTagPolicy.incompleteForFile(path) {
+			c.result.UsageIncomplete = true
+		}
+	}
+	parsed := parsePHPImports(content, relPath, resolver)
 	usage := shared.CountUsage(content, parsed.imports)
 	dynamic := hasDynamicPatterns(content)
 
@@ -134,6 +171,26 @@ func (c *scanCoordinator) scanFile(path string) error {
 		incrementDynamicUsage(c.result.DynamicUsageByDependency, parsed.imports)
 	}
 	c.state.unresolvedNamespaces += parsed.unresolvedCount
+	if parsed.useStatementLimitHit {
+		c.state.useStatementLimitHits++
+		c.result.UsageIncomplete = true
+	}
+	if parsed.useBindingLimitHit {
+		c.state.useBindingLimitHits++
+		c.result.UsageIncomplete = true
+	}
+	if parsed.namespaceDeclarationLimitHit {
+		c.state.namespaceDeclarationLimitHits++
+		c.result.UsageIncomplete = true
+	}
+	if parsed.namespaceReferenceLimitHit {
+		c.state.namespaceReferenceLimitHits++
+		c.result.UsageIncomplete = true
+	}
+	if parsed.namespaceResolutionLimitHit {
+		c.state.namespaceResolutionLimitHits++
+		c.result.UsageIncomplete = true
+	}
 	c.result.Files = append(c.result.Files, fileScan{
 		Path:    relPath,
 		Imports: parsed.imports,
@@ -187,6 +244,21 @@ func appendScanWarnings(result *scanResult, state scanState) {
 	}
 	if state.skippedLargeFiles > 0 {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d large PHP file(s) above %d bytes", state.skippedLargeFiles, maxScannablePHPFile))
+	}
+	if state.useStatementLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP use import scan after %d statement(s) in %d file(s) to keep analysis bounded", maxPHPUseStatementsPerFile, state.useStatementLimitHits))
+	}
+	if state.useBindingLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP use import scan after %d binding part(s) in %d file(s) to keep analysis bounded", maxPHPUseStatementsPerFile, state.useBindingLimitHits))
+	}
+	if state.namespaceDeclarationLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace declaration scan after %d declaration(s) in %d file(s) to keep analysis bounded", maxPHPNamespaceDeclarationsPerFile, state.namespaceDeclarationLimitHits))
+	}
+	if state.namespaceReferenceLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace reference scan after %d match(es) in %d file(s) to keep analysis bounded", maxPHPNamespaceReferencesPerFile, state.namespaceReferenceLimitHits))
+	}
+	if state.namespaceResolutionLimitHits > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("stopped PHP namespace resolution after %d segment(s) or %d ancestor lookup byte(s) in %d file(s) to keep analysis bounded", maxPHPNamespaceSegmentsPerLookup, maxPHPNamespaceAncestorBytes, state.namespaceResolutionLimitHits))
 	}
 	if len(result.DynamicUsageByDependency) > 0 {
 		result.Warnings = append(result.Warnings, "dynamic loading/reflection patterns detected; dependency usage may be under-reported")
