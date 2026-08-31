@@ -2359,6 +2359,40 @@ func TestRestoreMovedAnalysisCacheReplacementRestoresIdentityAndOwnerToken(t *te
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
+func TestVerifyAnalysisCacheQuarantineRestoresChildPopulatedDuringTheRace(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	reservation := createAnalysisCacheQuarantineReservationWithOwner(t, repo, root, reservationName, quarantineName, "owned-token")
+
+	// Simulate: the candidate was empty when last checked and got renamed
+	// into quarantine, but another initializer added an entry to it in the
+	// narrow window between that check and the rename landing.
+	quarantinePath := filepath.Join(repo, quarantineName)
+	if err := os.Mkdir(quarantinePath, 0o750); err != nil {
+		t.Fatalf("create quarantined child: %v", err)
+	}
+	childInfo, err := os.Lstat(quarantinePath)
+	if err != nil {
+		t.Fatalf("stat quarantined child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantinePath, "adopted-by-another-initializer"), []byte("live cache data"), 0o600); err != nil {
+		t.Fatalf("populate quarantined child: %v", err)
+	}
+
+	if _, _, err := verifyAnalysisCacheQuarantine(root, reservation, cacheKeysDirName, childInfo); err == nil {
+		t.Fatal("expected a quarantine child populated during the race to be reported")
+	}
+
+	restoredPath := filepath.Join(repo, cacheKeysDirName)
+	assertAnalysisCacheDirExists(t, restoredPath)
+	if _, err := os.Stat(filepath.Join(restoredPath, "adopted-by-another-initializer")); err != nil {
+		t.Fatalf("expected other initializer's data to survive the restore: %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
 func TestRemoveAnalysisCacheQuarantineRemovesReservationDirectoryWhenPathLstatFails(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)

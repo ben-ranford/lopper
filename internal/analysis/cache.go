@@ -542,9 +542,6 @@ func quarantineAnalysisCacheChildReservation(root safeio.Root, name string, chil
 }
 
 func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInfo fs.FileInfo, attempt int) (analysisCacheQuarantineReservation, bool, error) {
-	if empty, err := analysisCacheChildIsEmpty(root, name); err == nil && !empty {
-		return analysisCacheQuarantineReservation{}, false, nil
-	}
 	reservationName := fmt.Sprintf(".lopper-cache-rollback-%s-%d", filepath.Base(name), attempt)
 	quarantineName := filepath.Join(reservationName, filepath.Base(name))
 	reservation, retry, err := reserveAnalysisCacheQuarantine(root, reservationName, quarantineName)
@@ -558,15 +555,20 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 }
 
 // renameAnalysisCacheChildIntoReservation moves name into the reservation
-// directory reserveAnalysisCacheQuarantine just created. It pins and
-// re-verifies the reservation's identity immediately before the rename and
-// renames directly into that pinned handle, rather than re-resolving the
-// reservation by path -- if another same-user process renamed the
-// reservation away and installed a replacement between reservation creation
-// and this call, a path-based rename would move the child into that
-// replacement instead, and later cleanup (which rejects the mismatched
-// identity) would leave it stranded and hidden.
+// directory reserveAnalysisCacheQuarantine just created. Immediately before
+// the rename -- as late as possible, to keep the window as narrow as this
+// package can make it -- it re-verifies that name is still empty (another
+// initializer may have populated it since the caller's own candidate check)
+// and that the reservation's identity still matches what
+// reserveAnalysisCacheQuarantine observed, then renames directly into that
+// pinned handle rather than re-resolving the reservation by path. Neither
+// check is atomic with the rename itself (no such primitive exists), so
+// verifyAnalysisCacheQuarantine re-checks emptiness once more after the
+// rename and restores the child if anything slipped through.
 func renameAnalysisCacheChildIntoReservation(root safeio.Root, reservation analysisCacheQuarantineReservation, name string) (returnErr error) {
+	if empty, err := analysisCacheChildIsEmpty(root, name); err == nil && !empty {
+		return fmt.Errorf("rollback candidate %s is no longer empty: %w", name, os.ErrNotExist)
+	}
 	reservationRoot, err := root.OpenRoot(reservation.name)
 	if err != nil {
 		return err
@@ -671,6 +673,15 @@ func handleAnalysisCacheQuarantineRenameError(root safeio.Root, reservation anal
 func verifyAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQuarantineReservation, name string, childInfo fs.FileInfo) (analysisCacheQuarantineReservation, bool, error) {
 	quarantineInfo, infoErr := root.Lstat(reservation.quarantineName)
 	if infoErr == nil && sameAnalysisCacheRollbackTarget(quarantineInfo, childInfo) {
+		// The emptiness check in renameAnalysisCacheChildIntoReservation is
+		// not atomic with the rename itself. Re-check now: if another
+		// initializer populated the candidate in that window, its data just
+		// got moved into quarantine alongside ours. Restore it rather than
+		// leaving it hidden and risking a later ENOTEMPTY cleanup failure.
+		if empty, emptyErr := analysisCacheChildIsEmpty(root, reservation.quarantineName); emptyErr == nil && !empty {
+			restoreErr := restoreMovedAnalysisCacheReplacement(root, reservation, name, quarantineInfo)
+			return analysisCacheQuarantineReservation{}, false, errors.Join(fmt.Errorf("rollback candidate %s was populated while quarantining", name), restoreErr)
+		}
 		return reservation, false, nil
 	}
 	if infoErr == nil {
