@@ -111,11 +111,22 @@ func snapshotPinnedWindowsFallbackTarget(root Root, targetRel string, replacemen
 	return io.ReadAll(reader)
 }
 
+// restoreWindowsFallbackTarget rolls the fallback overwrite back to
+// rollbackData. It reuses overwritePinnedFile -- the same identity-check-then-write
+// primitive the primary fallback overwrite itself uses -- passing the
+// ownership content check in as its beforeRevalidate hook instead of running
+// it as a separate, independently returning step. That keeps the ownership
+// check and the identity check that immediately precedes the write adjacent
+// within one call, rather than letting a caller resume between them: a
+// concurrent same-key writer that replaces the target's identity after the
+// ownership check reads matching content, but before the rollback writes,
+// is still caught by overwritePinnedFile's own Lstat/Stat/SameFile check
+// immediately before it truncates and writes.
 func restoreWindowsFallbackTarget(root Root, targetRel string, replacementFile File, rollbackData, fallbackData []byte, primaryErr error) error {
-	if err := verifyWindowsFallbackWriteOwnership(root, targetRel, replacementFile, fallbackData); err != nil {
-		return errors.Join(primaryErr, fmt.Errorf("skip Windows fallback rollback: %w", err))
+	verifyOwnership := func() error {
+		return verifyWindowsFallbackWriteOwnership(root, targetRel, replacementFile, fallbackData)
 	}
-	if err := truncateAndWritePinnedFile(targetRel, replacementFile, rollbackData); err != nil {
+	if err := overwritePinnedFile(root, targetRel, replacementFile, rollbackData, verifyOwnership); err != nil {
 		return errors.Join(primaryErr, fmt.Errorf("rollback Windows fallback replacement: %w", err))
 	}
 	if err := verifyOverwrittenTarget(root, targetRel, replacementFile); err != nil {

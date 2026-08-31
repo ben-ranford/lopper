@@ -367,6 +367,65 @@ func TestWriteAtomicReplacementWindowsFallbackPostWriteFailureSkipsRollbackAfter
 	}
 }
 
+// TestRestoreWindowsFallbackTargetRejectsIdentityChangedBetweenOwnershipCheckAndWrite
+// covers a narrower race than TestWriteAtomicReplacementWindowsFallbackPostWriteFailureSkipsRollbackAfterConcurrentWrite:
+// there, the concurrent write happens well before the rollback's ownership
+// check even starts (inside postWrite), which the ownership check's own
+// content comparison already catches. Here, the target's identity changes
+// strictly between the ownership check's read completing and the rollback
+// write -- a window the ownership check alone cannot see, since it already
+// finished reading by the time the replacement happens.
+func TestRestoreWindowsFallbackTargetRejectsIdentityChangedBetweenOwnershipCheckAndWrite(t *testing.T) {
+	info, replacedInfo := writePinnedTargetInfoPair(t)
+	target := &windowsFallbackTarget{data: []byte("after")}
+	targetFile := target.file(t, info)
+
+	lstatCalls := 0
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			lstatCalls++
+			if lstatCalls == 1 {
+				// The ownership check's own Lstat, run first: the target
+				// still resolves to our own fallback overwrite here.
+				return info, nil
+			}
+			// A concurrent same-key writer replaced the target between the
+			// ownership check's read and the write-adjacent Lstat that
+			// immediately precedes the rollback write.
+			return replacedInfo, nil
+		},
+		open: func(name string) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected rollback snapshot path: %s", name)
+			}
+			reader := strings.NewReader(string(target.data))
+			return &fakeFile{
+				read:  reader.Read,
+				stat:  func() (fs.FileInfo, error) { return info, nil },
+				close: closeWithoutError,
+			}, nil
+		},
+	}
+
+	primaryErr := errors.New("post-write validation failure")
+	err := restoreWindowsFallbackTarget(root, writeTestFileName, targetFile, []byte("before"), []byte("after"), primaryErr)
+	if !errors.Is(err, primaryErr) {
+		t.Fatalf("expected primary error to be preserved, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "target changed before replacement") {
+		t.Fatalf("expected rollback to reject the identity change caught right before the write, got %v", err)
+	}
+	if target.truncateCalls != 0 || target.writeCalls != 0 {
+		t.Fatalf("rollback must not write once the target's identity changed: truncate=%d write=%d", target.truncateCalls, target.writeCalls)
+	}
+	if string(target.data) != "after" {
+		t.Fatalf("expected the concurrent writer's data to remain untouched, got %q", string(target.data))
+	}
+}
+
 func TestWriteAtomicReplacementRejectsRetargetedDestinationAfterWindowsFallback(t *testing.T) {
 	originalInfo, changedInfo := writePinnedTargetInfoPair(t)
 	targetFile, targetData := newPinnedFallbackTargetFile(t, originalInfo, "before")
