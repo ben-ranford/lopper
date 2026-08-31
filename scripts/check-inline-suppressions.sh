@@ -37,23 +37,28 @@ marker_start_pattern="$marker_start_pattern_all"
 # marker preceded by ordinary text inside an otherwise-open string, such as
 # `"Use //nolint to suppress"`.
 #
-# "#" is the one exception: a hash-only language (YAML, shell, Python,
-# Ruby...) only ever starts a comment with a genuinely free-standing "#" --
-# preceded by whitespace or nothing at all -- never one embedded in a
-# scalar/word, such as the fragment identifier in
-# `url: https://example.test/#noqa` (YAML) or the literal character in
-# `echo foo#nolint` (shell). Mirrors isCommentBoundary in the trusted
-# tracker.
-marker_pattern_hash="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+# "#" does not follow one universal rule even among hash-only languages:
+# Python and Ruby start a comment with "#" anywhere outside a string, just
+# like "//" does in slash-style languages, but YAML requires "#" to be
+# separated from the preceding scalar by whitespace (or start the line),
+# and shell only treats it as a comment when it begins a word. Mirrors
+# STRICT_HASH_BOUNDARY_EXTENSIONS/isCommentBoundary in the trusted tracker.
+marker_pattern_hash_strict="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_hash_lenient="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
 # PHP (and any other extension covered by neither set) keeps the original
-# lenient boundary for "#" too: unlike a true hash-only language, PHP's "#"
-# needs no free-standing rule.
+# lenient boundary for "#" too: unlike YAML/shell, PHP's "#" needs no
+# free-standing rule.
 marker_pattern_all="(^|[^:])(${marker_start_pattern_all})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
-# Same extension classification as HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS
-# in the trusted JS tracker.
-hash_only_file_pattern="\\.(bash|ksh|py|rb|sh|ya?ml|zsh)$"
+# Same extension classification as STRICT_HASH_BOUNDARY_EXTENSIONS/
+# SLASH_STYLE_EXTENSIONS in the trusted JS tracker. Python/Ruby are
+# hash-only for prefix-set purposes but use the lenient boundary, so they
+# fall through to marker_pattern_all's shape (not selected by either
+# pattern below); see the active_pattern selection where they route to
+# marker_pattern_hash_lenient explicitly.
+strict_hash_file_pattern="\\.(bash|ksh|sh|ya?ml|zsh)$"
+lenient_hash_file_pattern="\\.(py|rb)$"
 slash_style_file_pattern="\\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$"
 diff_scope=""
 diff_mode=""
@@ -495,11 +500,13 @@ done < <(awk '/^\+\+\+ b\// { f = substr($0, 7); sub(/\t$/, "", f); printf "%s%c
 
 set +e
 awk \
-	-v pattern_hash="$marker_pattern_hash" \
+	-v pattern_hash_strict="$marker_pattern_hash_strict" \
+	-v pattern_hash_lenient="$marker_pattern_hash_lenient" \
 	-v pattern_slash="$marker_pattern_slash" \
 	-v pattern_all="$marker_pattern_all" \
 	-v file_pattern="$source_file_pattern" \
-	-v hash_only_file_pattern="$hash_only_file_pattern" \
+	-v strict_hash_file_pattern="$strict_hash_file_pattern" \
+	-v lenient_hash_file_pattern="$lenient_hash_file_pattern" \
 	-v slash_style_file_pattern="$slash_style_file_pattern" '
 BEGIN {
 	file = ""
@@ -548,11 +555,16 @@ function seed_quote_state(   idx, prior_count, seed) {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
-function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote) {
+function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote, strict_hash_boundary_language) {
 	result = ""
 	quote = initial_quote
 	n = length(s)
 	past_comment_start = 0
+	# "#" does not follow one universal boundary rule: Python/Ruby start a
+	# comment with "#" anywhere outside a string, but YAML/shell require it
+	# free-standing. Mirrors STRICT_HASH_BOUNDARY_EXTENSIONS in the trusted
+	# tracker.
+	strict_hash_boundary_language = (tolower(file) ~ /\.(bash|ksh|sh|ya?ml|zsh)$/)
 	# Rust and C/C++ have no multi-character single-quoted strings: a
 	# leading apostrophe is either a self-contained char literal (two or
 	# three characters, e.g. x or a backslash escape, between two
@@ -609,7 +621,11 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 			# only marks that a quote left dangling at end of line from
 			# here on is comment prose, not an unterminated string, and
 			# must not carry into the next line.
-			if (i == 1 || substr(s, i - 1, 1) != ":") {
+			if (c == "#" && strict_hash_boundary_language) {
+				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/) {
+					past_comment_start = 1
+				}
+			} else if (i == 1 || substr(s, i - 1, 1) != ":") {
 				past_comment_start = 1
 			}
 		}
@@ -630,8 +646,10 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# the extension patterns "$" anchor still matches the real filename.
 	sub(/\t$/, "", file)
 	check_file = (tolower(file) ~ file_pattern)
-	if (tolower(file) ~ hash_only_file_pattern) {
-		active_pattern = pattern_hash
+	if (tolower(file) ~ strict_hash_file_pattern) {
+		active_pattern = pattern_hash_strict
+	} else if (tolower(file) ~ lenient_hash_file_pattern) {
+		active_pattern = pattern_hash_lenient
 	} else if (tolower(file) ~ slash_style_file_pattern) {
 		active_pattern = pattern_slash
 	} else {

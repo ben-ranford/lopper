@@ -895,6 +895,31 @@ func TestInlineSuppressionCheckRequiresAFreeStandingHashInAHashOnlyLanguage(t *t
 	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo foo#nolint\n")
 }
 
+func TestInlineSuppressionCheckDoesNotRequireAFreeStandingHashInPythonOrRuby(t *testing.T) {
+	t.Parallel()
+
+	// Unlike YAML/shell, Python and Ruby start a comment with "#" anywhere
+	// outside a string -- exactly like "//" does in slash-style languages --
+	// with no whitespace requirement. Applying the YAML/shell free-standing
+	// rule there too would reject a valid suppression immediately following
+	// code with no space in between.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	line := "value = unsafe()#noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	writeFile(t, filepath.Join(repoDir, "calc.py"), line)
+	runCommand(t, repoDir, "git", "add", "calc.py")
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the marker immediately after code to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsAFreeStandingHashMarkerInShell(t *testing.T) {
 	t.Parallel()
 

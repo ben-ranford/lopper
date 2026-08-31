@@ -222,22 +222,27 @@ jobs:
           # every prefix, since PHP alone among the covered languages
           # supports both styles.
           #
-          # "#" is also a narrower case within hash-only languages
-          # themselves: it only starts a comment when free-standing --
-          # preceded by whitespace or nothing at all -- never embedded in a
+          # "#" does not follow one universal boundary rule even within
+          # hash-only languages: Python and Ruby start a comment with "#"
+          # anywhere outside a string -- exactly like "//" does in
+          # slash-style languages -- but YAML/shell only start one with a
+          # genuinely free-standing "#", never one embedded in a
           # scalar/word, such as the fragment identifier in
           # `url: https://example.test/#noqa` (YAML) or the literal
           # character in `echo foo#nolint` (shell). Mirrors
-          # isCommentBoundary in the trusted tracker.
-          suspect_pattern_hash="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
+          # STRICT_HASH_BOUNDARY_EXTENSIONS/isCommentBoundary in the
+          # trusted tracker.
+          suspect_pattern_hash_strict="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
+          suspect_pattern_hash_lenient="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           # PHP (and any other extension covered by neither set) keeps the
-          # original lenient boundary for "#" too: unlike a true hash-only
-          # language, PHP's "#" needs no free-standing rule.
+          # original lenient boundary for "#" too: unlike YAML/shell, PHP's
+          # "#" needs no free-standing rule.
           suspect_pattern_all="(^|[^:])((//|/[*]+|#)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
-          # Same extension classification as HASH_ONLY_EXTENSIONS/
+          # Same extension classification as STRICT_HASH_BOUNDARY_EXTENSIONS/
           # SLASH_STYLE_EXTENSIONS in the trusted JS tracker.
-          hash_only_file_pattern='\.(bash|ksh|py|rb|sh|ya?ml|zsh)$'
+          strict_hash_file_pattern='\.(bash|ksh|sh|ya?ml|zsh)$'
+          lenient_hash_file_pattern='\.(py|rb)$'
           slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'
           # Scope to the same source-file extensions the detector itself
           # covers, so documentation/config prose mentioning marker syntax
@@ -308,8 +313,10 @@ jobs:
           echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test})" | while IFS= read -r file_json; do
             filename="$(echo "${file_json}" | jq -r '.filename')"
             lower_filename="$(echo "${filename}" | tr '[:upper:]' '[:lower:]')"
-            if [[ "${lower_filename}" =~ ${hash_only_file_pattern} ]]; then
-              active_suspect_pattern="${suspect_pattern_hash}"
+            if [[ "${lower_filename}" =~ ${strict_hash_file_pattern} ]]; then
+              active_suspect_pattern="${suspect_pattern_hash_strict}"
+            elif [[ "${lower_filename}" =~ ${lenient_hash_file_pattern} ]]; then
+              active_suspect_pattern="${suspect_pattern_hash_lenient}"
             elif [[ "${lower_filename}" =~ ${slash_style_file_pattern} ]]; then
               active_suspect_pattern="${suspect_pattern_slash}"
             else
@@ -332,7 +339,7 @@ jobs:
                 full_lines[FNR] = $0
                 next
               }
-              function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote) {
+              function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote, strict_hash_boundary_language) {
                 result = ""
                 quote = initial_quote
                 n = length(s)
@@ -346,6 +353,11 @@ jobs:
                 # swallow the rest of the line, hiding a real suppression
                 # comment after it.
                 narrow_single_quote = (tolower(fname) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)
+                # "#" does not follow one universal boundary rule:
+                # Python/Ruby start a comment with "#" anywhere outside a
+                # string, but YAML/shell require it free-standing. Mirrors
+                # STRICT_HASH_BOUNDARY_EXTENSIONS in the trusted tracker.
+                strict_hash_boundary_language = (tolower(fname) ~ /\.(bash|ksh|sh|ya?ml|zsh)$/)
                 # POSIX shell single-quoted strings have no escape character
                 # at all: a backslash inside one is literal, and the string
                 # closes at the very next apostrophe -- there is no way to
@@ -395,7 +407,11 @@ jobs:
                     # that a quote left dangling at end of line from here
                     # on is comment prose, not an unterminated string, and
                     # must not carry into the next line.
-                    if (i == 1 || substr(s, i - 1, 1) != ":") {
+                    if (c == "#" && strict_hash_boundary_language) {
+                      if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/) {
+                        past_comment_start = 1
+                      }
+                    } else if (i == 1 || substr(s, i - 1, 1) != ":") {
                       past_comment_start = 1
                     }
                   }

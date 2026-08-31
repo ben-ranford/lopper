@@ -428,6 +428,23 @@ test('honors shell single-quote escaping rules', () => {
   assert.equal(testables.hasInlineSuppressionMarker(line, 'build.js'), false, line);
 });
 
+test('does not require a free-standing "#" in Python or Ruby', () => {
+  // Unlike YAML/shell, Python and Ruby start a comment with "#" anywhere
+  // outside a string -- exactly like "//" does in slash-style languages --
+  // with no whitespace requirement. Applying the YAML/shell free-standing
+  // rule there too would reject a valid suppression immediately following
+  // code with no space in between.
+  const pyLine = 'value = unsafe()#' + 'noqa rationale=temporary; owner=@me; remove-when=fixed';
+  assert.equal(testables.hasInlineSuppressionMarker(pyLine, 'calc.py'), true, pyLine);
+
+  const rbLine = 'value = unsafe()#' + 'noqa rationale=temporary; owner=@me; remove-when=fixed';
+  assert.equal(testables.hasInlineSuppressionMarker(rbLine, 'calc.rb'), true, rbLine);
+
+  // YAML and shell still require the free-standing rule.
+  const yamlLine = 'url: https://example.test/#noqa';
+  assert.equal(testables.hasInlineSuppressionMarker(yamlLine, 'deploy.yaml'), false, yamlLine);
+});
+
 test('selects comment prefixes per language extension', () => {
   assert.deepEqual(testables.commentPrefixesFor('calc.py'), ['#']);
   assert.deepEqual(testables.commentPrefixesFor('script.sh'), ['#']);

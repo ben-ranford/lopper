@@ -9,6 +9,15 @@ const MAX_RECORDS = 100;
 // floor division, not a comment start, and treating it as one rejects
 // valid code for missing suppression metadata it was never meant to carry.
 const HASH_ONLY_EXTENSIONS = new Set(['bash', 'ksh', 'py', 'rb', 'sh', 'yaml', 'yml', 'zsh']);
+// Within the hash-only languages, "#" itself does not follow one universal
+// rule: Python and Ruby start a comment with "#" anywhere outside a string,
+// exactly like "//" does in slash-style languages, but YAML requires "#" to
+// be separated from the preceding scalar by whitespace (or start the line),
+// and shell only treats it as a comment when it begins a word. Requiring
+// free-standing "#" for Python/Ruby too would reject a valid suppression
+// immediately following code with no space in between, such as
+// `value = unsafe()# noqa ...`.
+const STRICT_HASH_BOUNDARY_EXTENSIONS = new Set(['bash', 'ksh', 'sh', 'yaml', 'yml', 'zsh']);
 // POSIX shell single-quoted strings have no escape character at all -- a
 // backslash inside one is a literal character, and the string can only be
 // closed by the next literal "'"; there is no way to place an escaped quote
@@ -111,19 +120,19 @@ function isMetadataBoundary(char) {
 // only that character misses a marker preceded by ordinary text inside an
 // otherwise-open string, such as `"Use //nolint to suppress"`.
 //
-// "#" is the one exception: a HASH_ONLY_EXTENSIONS language (YAML, shell,
-// Python, Ruby...) only ever starts a comment with a genuinely free-standing
-// "#" -- preceded by whitespace or nothing at all -- never one embedded in
-// a scalar/word, such as the fragment identifier in
+// "#" is the one exception, and only in a STRICT_HASH_BOUNDARY_EXTENSIONS
+// language (YAML, shell): there, "#" only ever starts a comment when
+// genuinely free-standing -- preceded by whitespace or nothing at all --
+// never one embedded in a scalar/word, such as the fragment identifier in
 // `url: https://example.test/#noqa` (YAML) or the literal character in
-// `echo foo#nolint` (shell). "//"/"/*" need no equivalent rule: those
-// two-character prefixes are already visually distinct from ordinary code
-// in the languages that use them.
-function isCommentBoundary(char, isHashPrefixInHashOnlyLanguage) {
+// `echo foo#nolint` (shell). Python and Ruby are also hash-only languages
+// but need no such rule: "#" starts a comment there exactly like "//" does
+// in slash-style languages, immediately after code with no space required.
+function isCommentBoundary(char, isHashPrefixWithStrictBoundary) {
   if (char === undefined) {
     return true;
   }
-  if (isHashPrefixInHashOnlyLanguage) {
+  if (isHashPrefixWithStrictBoundary) {
     return isWhitespace(char);
   }
   return char !== ':';
@@ -162,7 +171,7 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 // masking of anything genuinely quoted later in the very same comment.
 function quoteStateAt(content, index, file, initialQuote) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
-  const hashOnlyLanguage = typeof file === 'string' && HASH_ONLY_EXTENSIONS.has(fileExtension(file));
+  const strictHashBoundaryLanguage = typeof file === 'string' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(fileExtension(file));
   const shellLanguage = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
   let pastCommentStart = false;
@@ -186,7 +195,7 @@ function quoteStateAt(content, index, file, initialQuote) {
       continue;
     }
     if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
-      if (isCommentBoundary(content[cursor - 1], char === '#' && hashOnlyLanguage)) {
+      if (isCommentBoundary(content[cursor - 1], char === '#' && strictHashBoundaryLanguage)) {
         pastCommentStart = true;
       }
     }
@@ -497,7 +506,7 @@ function markerStartAfterPrefix(content, index, prefix) {
 
 function commentPrefixIndexForMarker(content, file, initialQuote) {
   const prefixes = commentPrefixesFor(file);
-  const hashOnlyLanguage = typeof file === 'string' && HASH_ONLY_EXTENSIONS.has(fileExtension(file));
+  const strictHashBoundaryLanguage = typeof file === 'string' && STRICT_HASH_BOUNDARY_EXTENSIONS.has(fileExtension(file));
   for (let index = 0; index < content.length; index += 1) {
     // The boundary rule for "#" depends on which language this file is, so
     // the candidate prefix must be known before it can be checked.
@@ -505,7 +514,7 @@ function commentPrefixIndexForMarker(content, file, initialQuote) {
     if (!prefix) {
       continue;
     }
-    if (!isCommentBoundary(content[index - 1], prefix === '#' && hashOnlyLanguage)) {
+    if (!isCommentBoundary(content[index - 1], prefix === '#' && strictHashBoundaryLanguage)) {
       continue;
     }
     if (isInsideQuotedRegion(content, index, file, initialQuote)) {
