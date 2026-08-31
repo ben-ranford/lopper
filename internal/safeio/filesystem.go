@@ -50,7 +50,38 @@ type ReadDirFile interface {
 	ReadDir(count int) ([]fs.DirEntry, error)
 }
 
-var ErrTargetPathSymlink = errors.New("target path is a symlink")
+var (
+	ErrTargetPathSymlink              = errors.New("target path is a symlink")
+	ErrSearchOnlyWriteRootUnsupported = errors.New("search-only write root is not supported")
+)
+
+// errReadDirFileUnsupported marks directory handles that satisfy File but do
+// not expose directory enumeration. Root deliberately requires only File from
+// Open, so callers that can safely avoid enumeration may select a fallback.
+var errReadDirFileUnsupported = fmt.Errorf("%w: directory file does not implement ReadDir", fs.ErrInvalid)
+
+type readDirFileUnsupportedError struct {
+	cleanupErr error
+}
+
+func (e *readDirFileUnsupportedError) Error() string {
+	if e.cleanupErr == nil {
+		return errReadDirFileUnsupported.Error()
+	}
+	return fmt.Sprintf("%v: %v", errReadDirFileUnsupported, e.cleanupErr)
+}
+
+func (e *readDirFileUnsupportedError) Unwrap() []error {
+	if e.cleanupErr == nil {
+		return []error{errReadDirFileUnsupported}
+	}
+	return []error{errReadDirFileUnsupported, e.cleanupErr}
+}
+
+func readDirFileUnsupportedWithoutCleanupError(err error) bool {
+	var unsupported *readDirFileUnsupportedError
+	return errors.As(err, &unsupported) && unsupported.cleanupErr == nil
+}
 
 var fileSystem FileSystem = &osFileSystem{}
 var runtimeGOOS = runtime.GOOS
@@ -386,15 +417,11 @@ func OpenPinnedDirectory(root Root, name string) (_ ReadDirFile, err error) {
 		}
 		return &pinnedReadDirFile{ReadDirFile: dir, roots: roots}, nil
 	}
-	if len(roots) > 0 {
-		err = closeRootsWithError(roots, fs.ErrInvalid)
-	} else {
-		err = fs.ErrInvalid
-	}
+	err = closeRootsWithError(roots, nil)
 	if closeErr := file.Close(); closeErr != nil {
-		return nil, errors.Join(err, closeErr)
+		err = errors.Join(err, closeErr)
 	}
-	return nil, err
+	return nil, &readDirFileUnsupportedError{cleanupErr: err}
 }
 
 type pinnedFile struct {
@@ -582,6 +609,17 @@ func (r *osRoot) Link(oldName, newName string) error {
 	return r.root.Link(oldName, newName)
 }
 
+func ignoreRemoveNotExist(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (r *osRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, message string) (returnErr error) {
+	return linkFileIfMatchesUsingBasicRoot(r, oldName, newName, expected, message)
+}
+
 func (r *osRoot) Rename(oldName, newName string) error {
 	return r.root.Rename(oldName, newName)
 }
@@ -670,8 +708,134 @@ func RenameNoReplace(root Root, oldName, newName string) error {
 	return err
 }
 
+func (r *osRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	_, err := r.RenameIfMatchesState(oldName, newName, expected, message)
+	return err
+}
+
+// RenameIfMatchesState renames only the inode validated after it has been
+// quarantined under a private staging directory. The result reports whether
+// oldName was consumed; a false result is a same-inode rename no-op.
+func (r *osRoot) RenameIfMatchesState(oldName, newName string, expected fs.FileInfo, message string) (_ bool, returnErr error) {
+	return renameFileIfMatchesUsingBasicRoot(r, oldName, newName, expected, message)
+}
+
 func (r *osRoot) Remove(name string) error {
 	return r.root.Remove(name)
+}
+
+func (r *osRoot) RemoveIfMatches(name string, expected fs.FileInfo, message string) (returnErr error) {
+	return removeFileIfMatchesUsingBasicRoot(r, name, expected, message)
+}
+
+func identityBoundQuarantinePath(root Root, sourceRel string) (string, string, error) {
+	dir := filepath.Dir(sourceRel)
+	if dir == "." {
+		dir = ""
+	}
+	for range 10 {
+		name, err := randomTempNameFn()
+		if err != nil {
+			return "", "", err
+		}
+		quarantineDir := filepath.Join(dir, name)
+		if err := root.Mkdir(quarantineDir, 0o700); errors.Is(err, os.ErrExist) {
+			continue
+		} else if err != nil {
+			return "", "", err
+		}
+		return quarantineDir, filepath.Join(quarantineDir, "entry"), nil
+	}
+	return "", "", fmt.Errorf("create identity-bound quarantine: too many collisions")
+}
+
+func restoreQuarantinedPathNoReplace(root Root, stagedRel, originalRel, message string, expected fs.FileInfo) (restored, retained bool, returnErr error) {
+	linkErr := linkFileIfMatches(root, stagedRel, originalRel, expected, message)
+	if linkErr == nil {
+		restored, returnErr = finishRestoredQuarantinedPath(root, stagedRel, message, expected)
+		return restored, false, returnErr
+	}
+	if !identityBoundLinkFallbackEligible(linkErr) {
+		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), linkErr)
+	}
+	return restoreQuarantinedPathNoReplaceByCopy(root, stagedRel, originalRel, message, expected, linkErr)
+}
+
+func restoreQuarantinedPathNoReplaceByCopy(root Root, stagedRel, originalRel, message string, expected fs.FileInfo, linkErr error) (restored, retained bool, returnErr error) {
+	source, err := OpenPinnedFile(root, stagedRel)
+	if err != nil {
+		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, source.Close())
+	}()
+	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
+		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+
+	target, err := root.OpenFile(originalRel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, chmodSupportedMode(expected.Mode()))
+	if err != nil {
+		return false, false, errors.Join(fmt.Errorf("%s: %s", message, originalRel), errIdentityBoundLinkUnavailable, linkErr, err)
+	}
+	createdInfo, err := target.Stat()
+	if err != nil {
+		// No identity is available for the exclusively created path. A concurrent
+		// replacement between the failed Stat and any path lookup must never be
+		// removed as if it were our candidate.
+		return false, false, closeCreatedFileWithoutIdentity(target, err)
+	}
+	cleanupCreated := true
+	defer func() {
+		if cleanupCreated && !restored {
+			returnErr = errors.Join(returnErr, cleanupAtomicTempFileIfMatches(root, originalRel, createdInfo))
+		}
+	}()
+	if _, err := io.Copy(target, source); err != nil {
+		if info, statErr := target.Stat(); statErr == nil {
+			createdInfo = info
+		} else {
+			err = errors.Join(err, statErr)
+		}
+		return false, false, closeFilePreservingPrimary(target, err)
+	}
+	if err := target.Chmod(chmodSupportedMode(expected.Mode())); err != nil {
+		if info, statErr := target.Stat(); statErr == nil {
+			createdInfo = info
+		} else {
+			err = errors.Join(err, statErr)
+		}
+		return false, false, closeFilePreservingPrimary(target, err)
+	}
+	refreshedInfo, err := target.Stat()
+	if err != nil {
+		cleanupCreated = false
+		return false, false, errors.Join(err, target.Close(), cleanupCreatedFileIfSameFile(root, originalRel, createdInfo, message))
+	}
+	createdInfo = refreshedInfo
+	if err := target.Close(); err != nil {
+		return false, false, err
+	}
+	if _, err := validateLiveSourceInfo(source, stagedRel, expected, message); err != nil {
+		return false, false, err
+	}
+	restoredInfo, err := publishedRegularFileInfo(root, originalRel, message)
+	if err != nil {
+		return false, false, err
+	}
+	if !sameRegularFile(createdInfo, restoredInfo) {
+		return false, false, fmt.Errorf("%s: %s", message, originalRel)
+	}
+	// Without a hard link, a path-only check of originalRel cannot bind the
+	// staged source to that copy. Retain staging so a writer that replaces the
+	// copy immediately after this check cannot cause us to delete the source.
+	return true, true, nil
+}
+
+func finishRestoredQuarantinedPath(root Root, stagedRel, message string, expected fs.FileInfo) (bool, error) {
+	if err := removeFileIfStillMatches(root, stagedRel, expected, message); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func (r *osRoot) Close() error {

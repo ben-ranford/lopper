@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const analysisCacheSchemaVersion = "v4"
+const analysisCacheSchemaVersion = "v5"
 
 type cacheEntryDescriptor struct {
 	KeyLabel    string
@@ -21,18 +21,20 @@ type cacheDigestInput struct {
 	sortKey      string
 	path         string
 	allowMissing bool
+	literal      string
 }
 
 type cacheInputDigestMemoKey struct {
 	normalizedRoot  string
 	cleanConfigPath string
+	exclusions      string
 }
 
-func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string) (cacheEntryDescriptor, error) {
-	return c.prepareEntryWithSchemaVersion(req, adapterID, normalizedRoot, analysisCacheSchemaVersion)
+func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
+	return c.prepareEntryWithSchemaVersion(req, adapterID, normalizedRoot, analysisCacheSchemaVersion, trueRepoPathOverride...)
 }
 
-func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, normalizedRoot, schemaVersion string) (cacheEntryDescriptor, error) {
+func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, normalizedRoot, schemaVersion string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return cacheEntryDescriptor{}, nil
 	}
@@ -80,7 +82,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
-	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath)
+	inputDigest, err := c.memoizedInputDigest(normalizedRoot, req.ConfigPath, c.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...))
 	if err != nil {
 		return cacheEntryDescriptor{}, err
 	}
@@ -107,18 +109,19 @@ func normalizedScopeCacheIdentity(req Request) *scopeCacheIdentity {
 	return identity
 }
 
-func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string, error) {
+func (c *analysisCache) memoizedInputDigest(rootPath, configPath string, exclusions cacheAnalysisExclusions) (string, error) {
 	if c.inputDigestMemo == nil {
 		c.inputDigestMemo = make(map[cacheInputDigestMemoKey]string)
 	}
 	memoKey := cacheInputDigestMemoKey{
 		normalizedRoot:  filepath.Clean(rootPath),
 		cleanConfigPath: cleanConfigPath(configPath),
+		exclusions:      strings.Join(exclusions.directories, "\x00") + "\n" + strings.Join(exclusions.files, "\x00"),
 	}
 	if digest, ok := c.inputDigestMemo[memoKey]; ok {
 		return digest, nil
 	}
-	digest, err := c.computeInputDigest(memoKey.normalizedRoot, memoKey.cleanConfigPath)
+	digest, err := c.computeInputDigestWithExclusions(memoKey.normalizedRoot, memoKey.cleanConfigPath, exclusions)
 	if err != nil {
 		return "", err
 	}
@@ -127,17 +130,31 @@ func (c *analysisCache) memoizedInputDigest(rootPath, configPath string) (string
 }
 
 func (c *analysisCache) computeInputDigest(rootPath, configPath string) (string, error) {
+	return c.computeInputDigestWithExclusions(rootPath, configPath, c.cacheAnalysisExclusions(rootPath, Request{}))
+}
+
+func (c *analysisCache) computeInputDigestWithExclusions(rootPath, configPath string, exclusions cacheAnalysisExclusions) (string, error) {
 	rootPath = filepath.Clean(rootPath)
-	files, err := c.collectRelevantFiles(rootPath)
+	files, err := c.collectRelevantFilesWithExclusions(rootPath, exclusions)
+	if err != nil {
+		return "", err
+	}
+	traversalEntries, err := collectPHPShortOpenTagTraversalEntries(rootPath, exclusions)
 	if err != nil {
 		return "", err
 	}
 
-	inputs := make([]cacheDigestInput, 0, len(files)+1)
+	inputs := make([]cacheDigestInput, 0, len(files)+len(traversalEntries)+1)
 	for _, file := range files {
 		inputs = append(inputs, cacheDigestInput{
 			sortKey: file.relativePath,
 			path:    file.absolutePath,
+		})
+	}
+	for _, entry := range traversalEntries {
+		inputs = append(inputs, cacheDigestInput{
+			sortKey: "php-short-open-tag-traversal\x00" + entry.relativePath,
+			literal: entry.kind,
 		})
 	}
 
@@ -187,7 +204,11 @@ func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {
 	if _, err := io.WriteString(w, "\x00"); err != nil {
 		return err
 	}
-	if input.allowMissing {
+	if input.literal != "" {
+		if _, err := io.WriteString(w, input.literal); err != nil {
+			return err
+		}
+	} else if input.allowMissing {
 		if err := writeFileDigestOrMissing(w, input.path); err != nil {
 			return err
 		}

@@ -68,6 +68,24 @@ func TestAnnotateDependencyIdentitiesUsesSupportedManifests(t *testing.T) {
 	}
 }
 
+func TestIdentityHelperGuardBranches(t *testing.T) {
+	if got := canonicalIdentityName("unknown", "", "  Mixed Name  "); got != "mixed name" {
+		t.Fatalf("expected trimmed fallback canonical name, got %q", got)
+	}
+	if got := canonicalIdentityEcosystem("unknown", ""); got != "unknown" {
+		t.Fatalf("expected language-derived canonical ecosystem fallback, got %q", got)
+	}
+	if purl, ok := scopedNPMPackageURL("npm", "", "@scope", "1.0.0"); ok || purl != "" {
+		t.Fatalf("expected malformed scoped npm package to be rejected, purl=%q ok=%v", purl, ok)
+	}
+	if got := escapePURLPathSegments(" /github.com//acme/ ", " lib "); got != "github.com/acme/lib" {
+		t.Fatalf("expected empty PURL path segments to be skipped, got %q", got)
+	}
+	if name, ok := packageLockResolvedName([]string{"@scope", "pkg", "extra"}, ""); ok || name != "" {
+		t.Fatalf("expected unsupported package-lock path shape to be rejected, name=%q ok=%v", name, ok)
+	}
+}
+
 func writeIdentityFixtures(t *testing.T, repoPath string) {
 	t.Helper()
 

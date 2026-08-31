@@ -74,6 +74,7 @@ type workflowConfig struct {
 type workflowJobConfig struct {
 	ContinueOnError bool                 `yaml:"continue-on-error"`
 	If              string               `yaml:"if"`
+	Name            string               `yaml:"name"`
 	Env             map[string]string    `yaml:"env"`
 	Needs           workflowJobNeeds     `yaml:"needs"`
 	Outputs         map[string]string    `yaml:"outputs"`
@@ -6047,12 +6048,12 @@ func workflowStepWithString(t *testing.T, step workflowStepConfig, key string) s
 	return value
 }
 
-func TestAnalysisCacheSchemaInvalidatesV3TopNEntries(t *testing.T) {
-	const expectedDeclaration = `const analysisCacheSchemaVersion = "v4"`
+func TestAnalysisCacheSchemaInvalidatesPreV5Entries(t *testing.T) {
+	const expectedDeclaration = `const analysisCacheSchemaVersion = "v5"`
 
 	source := readConfig(t, "internal/analysis/cache_entry.go")
 	if !strings.Contains(source, expectedDeclaration) {
-		t.Fatalf("analysis cache schema must invalidate v3 top-N entries; expected %q", expectedDeclaration)
+		t.Fatalf("analysis cache schema must invalidate pre-v5 entries; expected %q", expectedDeclaration)
 	}
 }
 
@@ -6186,17 +6187,17 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	}
 	homeDir := filepath.Join(t.TempDir(), "home")
 	cacheDir := filepath.Join(t.TempDir(), "gocache")
-	moduleCacheDir := filepath.Join(t.TempDir(), "gomodcache")
-	for _, dir := range []string{homeDir, cacheDir, moduleCacheDir} {
+	moduleCacheDir := currentGoModuleCache(t, goPath)
+	ensureCurrentGoModuleCached(t, goPath, moduleCacheDir, "golang.org/x/sys")
+	for _, dir := range []string{homeDir, cacheDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("create Go environment directory: %v", err)
 		}
 	}
-	t.Cleanup(func() {
-		restoreOwnerWriteForTestTree(t, moduleCacheDir)
-	})
-	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire golang.org/x/sys v0.41.0\n")
-	writeFile(t, filepath.Join(repo, "go.sum"), "golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=\n"+"golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=\n")
+	writeFile(t, filepath.Join(repo, "go.mod"), "module github.com/ben-ranford/lopper\n\ngo 1.26.0\n\nrequire "+currentGoModRequirement(t, "golang.org/x/sys")+"\n")
+	writeFile(t, filepath.Join(repo, "go.sum"), currentGoSumEntries(t, "golang.org/x/sys"))
+	runGitCommand(t, repo, "add", "go.mod", "go.sum")
+	runGitCommand(t, repo, "commit", "-m", "add Go module")
 	return repo, map[string]string{
 		"GO":                          goPath,
 		"GO_BIN":                      goPath,
@@ -6211,41 +6212,6 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	}
 }
 
-func restoreOwnerWriteForTestTree(t *testing.T, root string) {
-	t.Helper()
-
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if errors.Is(walkErr, os.ErrNotExist) {
-				return nil
-			}
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		mode := info.Mode()
-		writableMode := mode | 0o600
-		if entry.IsDir() {
-			writableMode = mode | 0o700
-		}
-		if writableMode == mode {
-			return nil
-		}
-		return os.Chmod(path, writableMode)
-	})
-	if err != nil {
-		t.Fatalf("restore Go module cache owner write permissions: %v", err)
-	}
-}
-
 func writeBenchGateSafeioStub(t *testing.T, repo string) {
 	t.Helper()
 
@@ -6257,6 +6223,59 @@ func OpenFile(name string) (*os.File, error) {
 	return os.Open(name)
 }
 `)
+}
+
+func currentGoModuleCache(t *testing.T, goPath string) string {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "env", "GOMODCACHE")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("resolve current GOMODCACHE: %v", err)
+	}
+	moduleCacheDir := strings.TrimSpace(string(output))
+	if moduleCacheDir == "" {
+		t.Fatal("go env GOMODCACHE returned an empty path")
+	}
+	return moduleCacheDir
+}
+
+func ensureCurrentGoModuleCached(t *testing.T, goPath, moduleCacheDir, modulePath string) {
+	t.Helper()
+
+	cmd := exec.Command(goPath, "mod", "download", modulePath)
+	cmd.Dir = repoPath(t, ".")
+	cmd.Env = append(gitexec.SanitizedEnv(), "GOMODCACHE="+moduleCacheDir, "GOTOOLCHAIN=local")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("populate reused module cache for %s: %v\n%s", modulePath, err, output)
+	}
+}
+
+func currentGoModRequirement(t *testing.T, modulePath string) string {
+	t.Helper()
+
+	pattern := regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(modulePath) + `\s+([^\s]+)`)
+	matches := pattern.FindStringSubmatch(readConfig(t, "go.mod"))
+	if len(matches) != 2 {
+		t.Fatalf("go.mod missing required module %s", modulePath)
+	}
+	return modulePath + " " + matches[1]
+}
+
+func currentGoSumEntries(t *testing.T, modulePath string) string {
+	t.Helper()
+
+	var entries []string
+	for _, line := range strings.Split(readConfig(t, "go.sum"), "\n") {
+		if strings.HasPrefix(line, modulePath+" ") || strings.HasPrefix(line, modulePath+"/go.mod ") {
+			entries = append(entries, line)
+		}
+	}
+	if len(entries) == 0 {
+		t.Fatalf("go.sum missing checksum entries for %s", modulePath)
+	}
+	return strings.Join(entries, "\n") + "\n"
 }
 
 func writeExecutableFile(t *testing.T, path string, contents string) {

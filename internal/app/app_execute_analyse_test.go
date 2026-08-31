@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/featureflags"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -86,6 +87,38 @@ func TestExecuteAnalyseAnalyzerError(t *testing.T) {
 	_, err := application.Execute(context.Background(), req)
 	if !errors.Is(err, expected) {
 		t.Fatalf("expected analyzer error, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseFailOnIncreaseRequiresCompletePHPCoverageInAutoMode(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "composer.json"), []byte(`{"require":{"vendor/lib":"^1.0"}}`), 0o600); err != nil {
+		t.Fatalf("write composer.json: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	oversizedPHP := "<?php\n" + strings.Repeat(" ", 2*1024*1024)
+	if err := os.WriteFile(filepath.Join(repo, "src", "oversized.php"), []byte(oversizedPHP), 0o600); err != nil {
+		t.Fatalf("write oversized PHP source: %v", err)
+	}
+
+	application := New(nil, nil)
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Language = "auto"
+	req.Analyse.TopN = 1
+	req.Analyse.CacheEnabled = false
+	req.Analyse.Thresholds = thresholds.Defaults()
+	req.Analyse.Thresholds.FailOnIncreasePercent = 0
+
+	_, err := application.Execute(context.Background(), req)
+	if !errors.Is(err, analysis.ErrIncompleteCoverage) {
+		t.Fatalf("expected fail-on-increase auto mode to require complete PHP coverage, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "php") || !strings.Contains(err.Error(), "incomplete usage") {
+		t.Fatalf("expected PHP incomplete coverage details, got %v", err)
 	}
 }
 

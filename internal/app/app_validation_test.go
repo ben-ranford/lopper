@@ -5,12 +5,48 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/analysis"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
+	"github.com/ben-ranford/lopper/internal/testutil"
 	"github.com/ben-ranford/lopper/internal/thresholds"
 )
+
+func reachableLibReport(repoPath, version string) report.Report {
+	dep := report.DependencyReport{
+		Language:          "js-ts",
+		Name:              "reachable-lib",
+		UsedExportsCount:  1,
+		TotalExportsCount: 1,
+		UsedPercent:       100,
+		UsedImports:       []report.ImportUse{{Name: "default", Module: "reachable-lib"}},
+	}
+	if version != "" {
+		dep.Identity = &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: version}
+	}
+	return report.Report{
+		RepoPath:     repoPath,
+		Dependencies: []report.DependencyReport{dep},
+	}
+}
+
+func enforcedPHPCoverageRequest(repo, language string) Request {
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Language = language
+	req.Analyse.ScopeMode = ScopeModeRepo
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.CacheEnabled = false
+	req.Analyse.Thresholds.LicenseDenyList = []string{deniedLicenseSPDX}
+	req.Analyse.Thresholds.LicenseFailOnDeny = true
+	return req
+}
 
 func TestExecuteAnalyseFailOnIncreaseZeroToleranceThreshold(t *testing.T) {
 	delta := 0.1
@@ -317,21 +353,7 @@ func TestExecuteAnalyseReachableVulnerabilityThresholdError(t *testing.T) {
 		t.Fatalf("write advisory source: %v", err)
 	}
 	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			RepoPath: tmp,
-			Dependencies: []report.DependencyReport{
-				{
-					Language:          "js-ts",
-					Name:              "reachable-lib",
-					UsedExportsCount:  1,
-					TotalExportsCount: 1,
-					UsedPercent:       100,
-					UsedImports: []report.ImportUse{
-						{Name: "default", Module: "reachable-lib"},
-					},
-				},
-			},
-		},
+		report: reachableLibReport(tmp, ""),
 	}
 	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
 
@@ -350,6 +372,109 @@ func TestExecuteAnalyseReachableVulnerabilityThresholdError(t *testing.T) {
 	}
 	if !strings.Contains(output, `"vulnerabilities"`) || !strings.Contains(output, `"GHSA-threshold"`) {
 		t.Fatalf("expected formatted vulnerability output on threshold failure, got %q", output)
+	}
+}
+
+func TestExecuteAnalyseAllLanguageOversizedComposerManifestFailsClosedForEnforcedGate(t *testing.T) {
+	repo := t.TempDir()
+	advisoryPath := filepath.Join(repo, "security", "advisories.yml")
+	testutil.MustWriteFile(t, advisoryPath, `advisories:
+  - id: GHSA-vendor-lib
+    package: vendor/lib
+    ecosystem: composer
+    severity: high
+    source: fixture
+`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "src", "index.php"), "<?php\nuse Vendor\\Lib\\Thing;\nThing::run();\n")
+	manifestPrefix := `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}`
+	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), manifestPrefix+strings.Repeat(" ", 2*1024*1024)+"}\n")
+
+	req := DefaultRequest()
+	req.Mode = ModeAnalyse
+	req.RepoPath = repo
+	req.Analyse.Language = "all"
+	req.Analyse.TopN = 1
+	req.Analyse.Format = report.FormatJSON
+	req.Analyse.AdvisorySourcePath = advisoryPath
+	req.Analyse.AdvisorySourceTrustRoot = repo
+	req.Analyse.Thresholds.ReachableVulnerabilityPriority = report.VulnerabilityPriorityHigh
+	req.Analyse.Features = mustVulnerabilityPreviewFeatureSet(t)
+	req.Analyse.CacheEnabled = false
+
+	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
+	if !errors.Is(err, safeio.ErrFileTooLarge) {
+		t.Fatalf("expected oversized composer manifest to fail closed under enforced all-language policy, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseAllLanguageIncompletePHPCoverageFailsClosedForEnforcedGate(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		setup func(t *testing.T, repo string)
+	}{
+		{
+			name: "oversized composer lock",
+			setup: func(t *testing.T, repo string) {
+				testutil.MustWriteFile(t, filepath.Join(repo, "src", "index.php"), "<?php\nuse Vendor\\Lib\\Thing;\nThing::run();\n")
+				testutil.MustWritePaddedFile(t, filepath.Join(repo, "composer.lock"), "{}", (8*1024*1024)+1)
+			},
+		},
+		{
+			name: "oversized php source",
+			setup: func(t *testing.T, repo string) {
+				testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), "<?php\n", (2*1024*1024)+1)
+			},
+		},
+		{
+			name: "bounded file scan",
+			setup: func(t *testing.T, repo string) {
+				for i := 0; i < 2050; i++ {
+					testutil.MustWriteFile(t, filepath.Join(repo, "src", "generated", "file-"+strconv.Itoa(i)+".txt"), "x\n")
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}}`+"\n")
+			tt.setup(t, repo)
+
+			req := enforcedPHPCoverageRequest(repo, "all")
+
+			_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
+			if !errors.Is(err, analysis.ErrIncompleteCoverage) {
+				t.Fatalf("expected incomplete PHP coverage to fail closed under enforced all-language policy, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "php:vendor/lib") {
+				t.Fatalf("expected dependency details in incomplete coverage error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestExecuteAnalyseAllLanguageIncompletePHPCoverageWithoutDependencyRowsFailsClosedForEnforcedGate(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{}}`+"\n")
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), "<?php\n", (2*1024*1024)+1)
+
+	req := enforcedPHPCoverageRequest(repo, "all")
+
+	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
+	if !errors.Is(err, analysis.ErrIncompleteCoverage) {
+		t.Fatalf("expected dependency-row-free incomplete PHP coverage to fail closed under enforced all-language policy, got %v", err)
+	}
+}
+
+func TestExecuteAnalyseAutoIncompletePHPCoverageFailsClosedForEnforcedGate(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "composer.json"), `{"require":{"vendor/lib":"1.0.0"},"autoload":{"psr-4":{"Vendor\\Lib\\":"src/"}}}`+"\n")
+	testutil.MustWritePaddedFile(t, filepath.Join(repo, "src", "oversized.php"), "<?php\n", (2*1024*1024)+1)
+
+	req := enforcedPHPCoverageRequest(repo, "")
+
+	_, err := (&App{Analyzer: analysis.NewService(), Formatter: report.NewFormatter()}).Execute(context.Background(), req)
+	if !errors.Is(err, analysis.ErrIncompleteCoverage) {
+		t.Fatalf("expected auto-mode incomplete PHP coverage to fail closed under enforced policy, got %v", err)
 	}
 }
 
@@ -464,22 +589,7 @@ func assertReachableVulnerabilityThresholdFromAdvisoryVersion(t *testing.T, file
 		t.Fatalf("write advisory source: %v", err)
 	}
 	analyzer := &fakeAnalyzer{
-		report: report.Report{
-			RepoPath: tmp,
-			Dependencies: []report.DependencyReport{
-				{
-					Language:          "js-ts",
-					Name:              "reachable-lib",
-					Identity:          &report.DependencyIdentity{Ecosystem: "npm", Name: "reachable-lib", Version: version},
-					UsedExportsCount:  1,
-					TotalExportsCount: 1,
-					UsedPercent:       100,
-					UsedImports: []report.ImportUse{
-						{Name: "default", Module: "reachable-lib"},
-					},
-				},
-			},
-		},
+		report: reachableLibReport(tmp, version),
 	}
 	application := &App{Analyzer: analyzer, Formatter: report.NewFormatter()}
 
