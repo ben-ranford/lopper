@@ -229,7 +229,7 @@ func removeCreatedAnalysisCacheRoots(openedRoots []openedAnalysisCacheRoot, useR
 			continue
 		}
 		parent := opened.parent
-		if useRollbackParents {
+		if useRollbackParents && opened.rollbackParent != nil {
 			parent = opened.rollbackParent
 		}
 		rollbackErr = errors.Join(rollbackErr, rollbackCreatedAnalysisCacheChild(parent, opened.name, nil, opened.info, opened.created))
@@ -541,7 +541,11 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 }
 
 func reserveAnalysisCacheQuarantine(root safeio.Root, reservationName, quarantineName string) (analysisCacheQuarantineReservation, bool, error) {
-	reservation := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, generateAnalysisCacheQuarantineToken())
+	token, err := generateAnalysisCacheQuarantineToken()
+	if err != nil {
+		return analysisCacheQuarantineReservation{}, false, err
+	}
+	reservation := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, token)
 	if err := root.Mkdir(reservationName, 0o700); err != nil {
 		if errors.Is(err, os.ErrExist) || errors.Is(err, fs.ErrExist) {
 			return analysisCacheQuarantineReservation{}, true, nil
@@ -645,12 +649,14 @@ func writeAnalysisCacheQuarantineOwner(root safeio.Root, reservation analysisCac
 	return err
 }
 
-func generateAnalysisCacheQuarantineToken() string {
+var quarantineTokenEntropySource = rand.Read
+
+func generateAnalysisCacheQuarantineToken() (string, error) {
 	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return ""
+	if _, err := quarantineTokenEntropySource(token[:]); err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(token[:])
+	return hex.EncodeToString(token[:]), nil
 }
 
 func removeAnalysisCacheQuarantineReservation(root safeio.Root, reservation analysisCacheQuarantineReservation) error {

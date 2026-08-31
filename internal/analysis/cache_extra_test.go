@@ -752,6 +752,25 @@ func createAnalysisCacheQuarantineReservationWithOwner(t *testing.T, repo string
 	return reservation
 }
 
+func TestRemoveCreatedAnalysisCacheRootsFallsBackToLiveParentWhenRollbackParentMissing(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	_, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+
+	opened := []openedAnalysisCacheRoot{{
+		parent:         root,
+		rollbackParent: nil,
+		name:           cacheKeysDirName,
+		info:           childInfo,
+		created:        true,
+	}}
+
+	if err := removeCreatedAnalysisCacheRoots(opened, true); err != nil {
+		t.Fatalf("remove created cache roots with missing rollback parent: %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, cacheKeysDirName))
+}
+
 func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
 	cache := &analysisCache{
 		metadata: report.CacheMetadata{Invalidations: []report.CacheInvalidation{{Key: "k", Reason: "reason"}}},
@@ -2104,6 +2123,30 @@ func TestReserveAnalysisCacheQuarantineReturnsMkdirFailure(t *testing.T) {
 	if !errors.Is(err, mkdirErr) {
 		t.Fatalf("expected mkdir error, got %v", err)
 	}
+}
+
+func TestReserveAnalysisCacheQuarantineAbortsWhenTokenEntropyFails(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	entropyErr := errors.New("entropy source failed")
+
+	original := quarantineTokenEntropySource
+	quarantineTokenEntropySource = func([]byte) (int, error) { return 0, entropyErr }
+	t.Cleanup(func() { quarantineTokenEntropySource = original })
+
+	_, retry, err := reserveAnalysisCacheQuarantine(
+		root,
+		reservationName,
+		filepath.Join(reservationName, cacheKeysDirName),
+	)
+	if retry {
+		t.Fatal("expected token entropy failure not to retry")
+	}
+	if !errors.Is(err, entropyErr) {
+		t.Fatalf("expected token entropy error to be preserved, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
 func TestReserveAnalysisCacheQuarantinePreservesSwappedReservationWhenLstatFails(t *testing.T) {
