@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"syscall"
+
+	win "golang.org/x/sys/windows"
 )
 
 func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (returnErr error) {
@@ -23,6 +25,27 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 	defer func() {
 		if closeErr := closeReplacementFile(); closeErr != nil {
 			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+
+	// The ownership check that guards the eventual rollback (below) reads
+	// the target's current content, then a later, separate step trusts that
+	// read; an identity check adjacent to the rollback write (see
+	// restoreWindowsFallbackTarget) catches a concurrent writer that
+	// replaces the target's identity in between, but not one that reuses
+	// this same still-open inode the way this exact fallback path itself
+	// does. Hold an exclusive lock across the whole transaction -- the
+	// overwrite, its post-write check, and any rollback -- so a second,
+	// concurrent same-key writer taking this same fallback path for this
+	// same target blocks until this one fully finishes, rather than
+	// interleaving with it.
+	unlockReplacementFile, err := lockPinnedReplacementFile(replacementFile)
+	if err != nil {
+		return errors.Join(fallback.renameErr, err)
+	}
+	defer func() {
+		if unlockErr := unlockReplacementFile(); unlockErr != nil {
+			returnErr = errors.Join(returnErr, unlockErr)
 		}
 	}()
 
@@ -48,6 +71,33 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 		return err
 	}
 	return nil
+}
+
+// lockPinnedReplacementFile takes a whole-file exclusive byte-range lock on
+// replacementFile via LockFileEx, blocking until any other holder (this same
+// fallback path running for a concurrent same-key writer) releases it. Only
+// a genuine *os.File exposes the underlying handle this requires; test
+// doubles and any other File implementation skip locking entirely rather
+// than fail, since they never run concurrently with a second real writer.
+// The lock is released automatically by the OS if the process exits before
+// calling the returned unlock, so a crash mid-transaction cannot leave it
+// held forever.
+func lockPinnedReplacementFile(file File) (unlock func() error, returnErr error) {
+	osFile, ok := file.(*os.File)
+	if !ok {
+		return func() error { return nil }, nil
+	}
+	handle := win.Handle(osFile.Fd())
+	overlapped := new(win.Overlapped)
+	if err := win.LockFileEx(handle, win.LOCKFILE_EXCLUSIVE_LOCK, 0, ^uint32(0), ^uint32(0), overlapped); err != nil {
+		return nil, fmt.Errorf("lock pinned replacement file: %w", err)
+	}
+	return func() error {
+		if err := win.UnlockFileEx(handle, 0, ^uint32(0), ^uint32(0), overlapped); err != nil {
+			return fmt.Errorf("unlock pinned replacement file: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 func atomicRenameSourceRel(err error, fallbackRel string) string {

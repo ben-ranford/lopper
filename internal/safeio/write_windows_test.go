@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -467,6 +468,82 @@ func TestWriteAtomicReplacementRejectsRetargetedDestinationAfterWindowsFallback(
 	}
 	if string(*targetData) != "after" {
 		t.Fatalf("expected fallback overwrite before retarget detection, got %q", string(*targetData))
+	}
+}
+
+// TestLockPinnedReplacementFileSerializesConcurrentHolders uses two real
+// *os.File handles to the same on-disk file -- not the fakeRoot/fakeFile
+// mocks used elsewhere in this file -- because the property under test
+// (LockFileEx-based mutual exclusion) is a genuine kernel behavior a mock
+// cannot simulate. Two separate handles to the same file, raced from two
+// goroutines within one process, still exercise the real OS-level lock: it
+// is keyed on the underlying file, not on which handle or thread holds it.
+func TestLockPinnedReplacementFileSerializesConcurrentHolders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(path, []byte("data"), 0o640); err != nil {
+		t.Fatalf("seed lock target: %v", err)
+	}
+
+	firstFile, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open first handle: %v", err)
+	}
+	defer firstFile.Close()
+	secondFile, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open second handle: %v", err)
+	}
+	defer secondFile.Close()
+
+	unlockFirst, err := lockPinnedReplacementFile(firstFile)
+	if err != nil {
+		t.Fatalf("acquire first lock: %v", err)
+	}
+
+	acquired := make(chan time.Time, 1)
+	go func() {
+		unlockSecond, lockErr := lockPinnedReplacementFile(secondFile)
+		if lockErr != nil {
+			t.Errorf("acquire second lock: %v", lockErr)
+			acquired <- time.Time{}
+			return
+		}
+		acquired <- time.Now()
+		if unlockErr := unlockSecond(); unlockErr != nil {
+			t.Errorf("release second lock: %v", unlockErr)
+		}
+	}()
+
+	// Give the second goroutine a chance to attempt (and block on) its lock
+	// before releasing the first, so a successful acquisition genuinely
+	// proves it waited rather than winning a race that happened not to
+	// overlap.
+	time.Sleep(100 * time.Millisecond)
+	releasedAt := time.Now()
+	if unlockErr := unlockFirst(); unlockErr != nil {
+		t.Fatalf("release first lock: %v", unlockErr)
+	}
+
+	select {
+	case acquiredAt := <-acquired:
+		if acquiredAt.IsZero() {
+			t.Fatal("second lock acquisition failed, see prior error")
+		}
+		if acquiredAt.Before(releasedAt) {
+			t.Fatalf("second lock acquired at %v before first released at %v", acquiredAt, releasedAt)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for second lock acquisition")
+	}
+}
+
+func TestLockPinnedReplacementFileSkipsNonOSFile(t *testing.T) {
+	unlock, err := lockPinnedReplacementFile(&fakeFile{})
+	if err != nil {
+		t.Fatalf("expected a non-*os.File to skip locking without error, got %v", err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("expected the no-op unlock to succeed, got %v", err)
 	}
 }
 
