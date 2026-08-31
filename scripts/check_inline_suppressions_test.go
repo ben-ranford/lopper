@@ -833,6 +833,33 @@ func TestInlineSuppressionCheckDetectsMarkerAfterAMultilineTemplateLiteral(t *te
 	}
 }
 
+func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrophe(t *testing.T) {
+	t.Parallel()
+
+	// An apostrophe inside a genuine line comment (e.g. "don't") is
+	// comment prose, not code; it must not be treated as opening a
+	// string that leaks into the next added line and masks a real
+	// suppression comment there, the same way an actual unterminated
+	// string legitimately would.
+	marker := "nolint:staticcheck"
+	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	source := "package main\n\nfunc main() {\n\t// don" + "'" + "t use this path\n" + line + "\n}\n"
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected marker after a comment containing an apostrophe to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.T) {
 	t.Parallel()
 

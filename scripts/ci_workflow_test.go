@@ -341,6 +341,16 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// (main.GO, component.TSX), so this scope filter must too, or a
 		// failed/pending trusted run on such a file wouldn't be waited for.
 		`; "i")`,
+		// GitHub's pull-files endpoint returns at most 3000 files -- the
+		// same MAX_CHANGED_FILES limit the trusted tracker enforces -- so
+		// a PR with more changed files than that can never have all of
+		// them retrieved here; a suppression beyond the first 3000 would
+		// be invisible to this scan while the trusted tracker correctly
+		// refuses to publish anything for the oversized diff.
+		`changed_files="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.changed_files')"`,
+		`if [ "${changed_files:-0}" -gt 3000 ]; then`,
+		`pr_files_count="$(echo "${pr_files_json}" | jq 'length')"`,
+		`if [ "${pr_files_count:-0}" -ne "${changed_files:-0}" ]; then`,
 		// A tampered detector could repeat an already-tracked fingerprint
 		// to pad recorded_count and mask a genuinely untracked one.
 		`jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}"`,
@@ -402,6 +412,15 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`/^@@ / { quote_state = ""; next }`,
 		`masked = mask_quoted_regions(content, quote_state)`,
 		`quote_state = final_quote_state`,
+		// An apostrophe inside a genuine line comment (e.g. "don't") is
+		// comment prose, not code; once a real, unquoted line-comment
+		// delimiter is reached, quote tracking must stop for the rest of
+		// the line so a stray apostrophe there can't be mistaken for an
+		// opening string and leak into later positions or the next line.
+		// The remainder is appended unmodified (not masked further, and
+		// not discarded) since it can still contain the marker itself.
+		`if ((c == "/" && substr(s, i + 1, 1) == "/") || c == "#") {`,
+		`result = result substr(s, i)`,
 		// Each record is a distinct occurrence and must have its own
 		// distinct fingerprint; deduplicating with sort -u before counting
 		// would let a tampered detector report two records with identical

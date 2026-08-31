@@ -560,6 +560,33 @@ test('recognizes a marker after a multi-line template literal closes on a later 
   assert.match(harness.calls.created[0].body, /Location: `main\.js:3`/);
 });
 
+test('recognizes a marker on the line after an ordinary comment containing an apostrophe', async () => {
+  // An apostrophe inside a genuine line comment (e.g. "don't") is comment
+  // prose, not code; it must not be treated as opening a string that
+  // leaks into the next added line and masks a real suppression comment
+  // there, the same way a real unterminated string legitimately would.
+  const patch = [
+    '@@ -0,0 +1,2 @@',
+    "+\t// don't use this path",
+    '+\t_ = 1 //' + 'nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard',
+    '',
+  ].join('\n');
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch,
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Location: `main\.go:2`/);
+});
+
 test('closes tracking issues for suppressions that disappeared from the pull diff', async () => {
   const staleFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
   const harness = makeHarness({

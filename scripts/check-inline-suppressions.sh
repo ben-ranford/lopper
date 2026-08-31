@@ -483,6 +483,21 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 			}
 			continue
 		}
+		if ((c == "/" && substr(s, i + 1, 1) == "/") || c == "#") {
+			# Once a genuine line-comment delimiter is reached outside any
+			# quoted region, everything after it on this line is comment
+			# prose, not code; a quote or apostrophe there must not be
+			# treated as opening a string, which would otherwise leak
+			# into later positions on this same line or carry an
+			# incorrect state into the next line. Append the remainder
+			# unmodified (unlike a quoted region, comment text is never
+			# masked) rather than discarding it, since it can still
+			# contain the marker this whole scan is looking for.
+			if (i == 1 || substr(s, i - 1, 1) != ":") {
+				result = result substr(s, i)
+				break
+			}
+		}
 		if (c == "\"" || c == "'"'"'" || c == "`") {
 			quote = c
 			result = result c

@@ -111,6 +111,17 @@ function quoteStateAt(content, index, file, initialQuote) {
       }
       continue;
     }
+    if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
+      if (isCommentBoundary(content[cursor - 1])) {
+        // Once a genuine line-comment delimiter is reached outside any
+        // quoted region, everything after it on this line is comment
+        // prose, not code; an apostrophe or quote character there (e.g.
+        // "// don't use this path") must not be treated as opening a
+        // string, which would otherwise leak into this line's own later
+        // positions or carry an incorrect state into the next line.
+        break;
+      }
+    }
     if (char === '"' || char === "'" || char === '`') {
       quote = char;
     }
