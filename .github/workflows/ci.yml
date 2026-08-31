@@ -329,7 +329,7 @@ jobs:
 
           missing_suspects="$(comm -23 <(sort -u "${suspect_pairs_file}") <(sort -u "${recorded_pairs_file}") | wc -l | tr -d ' ')"
           if [ "${missing_suspects:-0}" -gt 0 ]; then
-            echo "::error::GitHub's own diff for this pull request independently found ${missing_suspects} newly added line(s) that look like a suppression marker but are not present in this pull request's tracking output (matched by file and exact line content). This can happen if the suppression detector or Makefile target was modified to under-report, or if a tracked suppression was silently swapped for an untracked one; refusing to trust the artifact." >&2
+            echo "::error::GitHub's own diff for this pull request independently found ${suspect_count} suspect line(s), ${missing_suspects} of which are not present in this pull request's tracking output (matched by file and exact line content). This can happen if the suppression detector or Makefile target was modified to under-report, or if a tracked suppression was silently swapped for an untracked one; refusing to trust the artifact." >&2
             exit 1
           fi
 
