@@ -548,7 +548,7 @@ function seed_quote_state(   idx, prior_count, seed) {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
-function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start) {
+function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote) {
 	result = ""
 	quote = initial_quote
 	n = length(s)
@@ -562,10 +562,20 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# string delimiter would let one of these swallow the rest of the
 	# line, hiding a real suppression comment after it.
 	narrow_single_quote = (tolower(file) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)
+	# POSIX shell single-quoted strings have no escape character at all: a
+	# backslash inside one is literal, and the string closes at the very
+	# next apostrophe -- there is no way to escape a quote within single
+	# quotes. Treating "\" as escaping the following character there, the
+	# way it does for every other quote/language combination, would let a
+	# trailing backslash before the closing quote swallow that quote as
+	# escaped content, leaving the string open and masking a real
+	# suppression comment that follows it on the same line.
+	shell_language = (tolower(file) ~ /\.(bash|ksh|sh|zsh)$/)
 	for (i = 1; i <= n; i++) {
 		c = substr(s, i, 1)
 		if (quote != "") {
-			if (c == "\\" && i < n) {
+			no_escapes_in_this_quote = (quote == "'"'"'" && shell_language)
+			if (c == "\\" && i < n && !no_escapes_in_this_quote) {
 				result = result "xx"
 				i++
 				continue

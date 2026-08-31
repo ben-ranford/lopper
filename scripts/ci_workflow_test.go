@@ -396,7 +396,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// otherwise-open string literal (e.g. `"Use //nolint to
 		// suppress"`); blanking out quoted-region interiors before
 		// matching mirrors the trusted tracker's isInsideQuotedRegion.
-		"function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start)",
+		"function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote)",
 		`tolower(masked) ~ pat`,
 		// Rust and C/C++ have no multi-character single-quoted strings, so
 		// treating every apostrophe as a generic string delimiter would let
@@ -865,6 +865,73 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 	}
 	if !strings.Contains(output, "deploy.yaml\x01") {
 		t.Fatalf("expected a suspect for a genuine free-standing \"#\" marker, output:\n%q", output)
+	}
+}
+
+// TestCIWorkflowSuspectScanHonorsShellSingleQuoteEscapingRules actually
+// runs the embedded per-file suspect scan against a shell file whose added
+// line closes a single-quoted string with a trailing backslash immediately
+// before the closing quote -- valid POSIX shell, where backslash is literal
+// inside single quotes -- proving the independent scan agrees with the
+// trusted tracker and the shell detector that the string closes there.
+func TestCIWorkflowSuspectScanHonorsShellSingleQuoteEscapingRules(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const varsStart = `no_prefix="no"`
+	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
+	}
+	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
+	if varsEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
+	}
+	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
+
+	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
+	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
+	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
+	if loopStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
+	}
+	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
+	if loopEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
+	}
+	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
+
+	blob := "echo foo\n"
+	patch := "@@ -1 +1 @@\n-echo foo\n+echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	fileJSON, err := json.Marshal(map[string]string{"filename": "build.sh", "sha": "deadbeef", "patch": patch})
+	if err != nil {
+		t.Fatalf("marshal file_json fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	fakeGH := "#!/usr/bin/env bash\nif [ \"$1\" = api ]; then printf '%s' \"$BLOB_CONTENT_B64\"; exit 0; fi\nexit 1\n"
+	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
+
+	script := "set -euo pipefail\n" + varsBlock + "\nfile_json=" + shellQuote(string(fileJSON)) + "\n" + loopBody
+
+	output, err := runShellCommand(dir, script, map[string]string{
+		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
+		"GITHUB_REPOSITORY": "octo/lopper",
+	})
+	if err != nil {
+		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
+	}
+	if !strings.Contains(output, "build.sh\x01echo 'foo\\' #noqa") {
+		t.Fatalf("expected the suspect scan to detect the marker after the closed single-quoted string, output:\n%q", output)
 	}
 }
 

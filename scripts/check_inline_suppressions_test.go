@@ -915,6 +915,33 @@ func TestInlineSuppressionCheckDetectsAFreeStandingHashMarkerInShell(t *testing.
 	}
 }
 
+func TestInlineSuppressionCheckHonorsShellSingleQuoteEscapingRules(t *testing.T) {
+	t.Parallel()
+
+	// POSIX shell single-quoted strings have no escape character at all: a
+	// backslash inside one is literal, and the string closes at the very
+	// next apostrophe. Treating "\" as escaping the following character,
+	// the way every other quote/language combination does, would let a
+	// trailing backslash before the closing quote swallow that quote as
+	// escaped content, leaving the string open and masking the real
+	// suppression comment that follows it.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	line := "echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	writeFile(t, filepath.Join(repoDir, "build.sh"), line)
+	runCommand(t, repoDir, "git", "add", "build.sh")
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the marker after the closed single-quoted string to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrophe(t *testing.T) {
 	t.Parallel()
 

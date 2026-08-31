@@ -412,6 +412,22 @@ test('requires a free-standing "#" to start a comment in a hash-only language', 
   assert.equal(testables.hasInlineSuppressionMarker(jsLine, 'main.js'), true, jsLine);
 });
 
+test('honors shell single-quote escaping rules', () => {
+  // POSIX shell single-quoted strings have no escape character at all: a
+  // backslash inside one is literal, and the string closes at the very
+  // next "'" -- there is no way to escape a quote within single quotes.
+  // Treating "\" as escaping the following character (as it does in every
+  // other covered language) would swallow this closing quote as escaped
+  // content, leaving the string open and masking the real comment after it.
+  const line = "echo 'foo\\' #noqa rationale=x; owner=y; remove-when=z";
+  assert.equal(testables.hasInlineSuppressionMarker(line, 'build.sh'), true, line);
+
+  // Non-shell languages keep escaping intact: the identical shape stays
+  // inside an (in this snippet, unterminated) string for JS, where a
+  // backslash genuinely does escape the following quote.
+  assert.equal(testables.hasInlineSuppressionMarker(line, 'build.js'), false, line);
+});
+
 test('selects comment prefixes per language extension', () => {
   assert.deepEqual(testables.commentPrefixesFor('calc.py'), ['#']);
   assert.deepEqual(testables.commentPrefixesFor('script.sh'), ['#']);

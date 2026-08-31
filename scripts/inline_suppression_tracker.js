@@ -9,6 +9,16 @@ const MAX_RECORDS = 100;
 // floor division, not a comment start, and treating it as one rejects
 // valid code for missing suppression metadata it was never meant to carry.
 const HASH_ONLY_EXTENSIONS = new Set(['bash', 'ksh', 'py', 'rb', 'sh', 'yaml', 'yml', 'zsh']);
+// POSIX shell single-quoted strings have no escape character at all -- a
+// backslash inside one is a literal character, and the string can only be
+// closed by the next literal "'"; there is no way to place an escaped quote
+// inside single quotes (shell scripts work around this by closing, adding
+// an escaped/double-quoted quote, and reopening). Treating "\" as escaping
+// the following character there, the way it does in every other covered
+// language's quoted strings, makes a trailing backslash before the closing
+// quote swallow that quote as escaped content, leaving the string open and
+// masking a real suppression comment that follows it on the same line.
+const SHELL_EXTENSIONS = new Set(['bash', 'ksh', 'sh', 'zsh']);
 const SLASH_STYLE_EXTENSIONS = new Set([
   'c',
   'cc',
@@ -153,12 +163,14 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 function quoteStateAt(content, index, file, initialQuote) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
   const hashOnlyLanguage = typeof file === 'string' && HASH_ONLY_EXTENSIONS.has(fileExtension(file));
+  const shellLanguage = typeof file === 'string' && SHELL_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
   let pastCommentStart = false;
   for (let cursor = 0; cursor < index; cursor += 1) {
     const char = content[cursor];
     if (quote !== undefined) {
-      if (char === '\\') {
+      const noEscapesInThisQuote = quote === "'" && shellLanguage;
+      if (char === '\\' && !noEscapesInThisQuote) {
         cursor += 1;
       } else if (char === quote) {
         quote = undefined;
