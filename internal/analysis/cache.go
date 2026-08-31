@@ -499,10 +499,24 @@ func finishConditionalAnalysisCacheRemoval(root safeio.Root, reservation analysi
 	if reservation.quarantineName == "" {
 		return nil
 	}
-	if err := removeAnalysisCacheQuarantine(root, reservation); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeAnalysisCacheQuarantine(root, reservation); err != nil && !analysisCacheQuarantineTargetConfirmedGone(root, reservation, err) {
 		return errors.Join(lstatErr, err)
 	}
 	return lstatErr
+}
+
+// analysisCacheQuarantineTargetConfirmedGone reports whether an ErrNotExist
+// from removeAnalysisCacheQuarantine reflects the quarantined child actually
+// being removed, rather than the reservation's owner marker or identity
+// having been lost to a concurrent process -- openOwnedAnalysisCacheQuarantineReservation
+// reports both cases as ErrNotExist, but only the former means rollback is
+// complete.
+func analysisCacheQuarantineTargetConfirmedGone(root safeio.Root, reservation analysisCacheQuarantineReservation, removeErr error) bool {
+	if !errors.Is(removeErr, os.ErrNotExist) {
+		return false
+	}
+	_, err := root.Lstat(reservation.quarantineName)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.FileInfo) (string, error) {
@@ -528,6 +542,9 @@ func quarantineAnalysisCacheChildReservation(root safeio.Root, name string, chil
 }
 
 func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInfo fs.FileInfo, attempt int) (analysisCacheQuarantineReservation, bool, error) {
+	if empty, err := analysisCacheChildIsEmpty(root, name); err == nil && !empty {
+		return analysisCacheQuarantineReservation{}, false, nil
+	}
 	reservationName := fmt.Sprintf(".lopper-cache-rollback-%s-%d", filepath.Base(name), attempt)
 	quarantineName := filepath.Join(reservationName, filepath.Base(name))
 	reservation, retry, err := reserveAnalysisCacheQuarantine(root, reservationName, quarantineName)
@@ -538,6 +555,28 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 		return handleAnalysisCacheQuarantineRenameError(root, reservation, name, childInfo, err)
 	}
 	return verifyAnalysisCacheQuarantine(root, reservation, name, childInfo)
+}
+
+// analysisCacheChildIsEmpty reports whether name is an empty directory. A
+// rollback candidate that is no longer empty may have been reused or
+// populated by another cache initializer sharing the same directory; moving
+// it into quarantine would hide that initializer's live cache data. Treat a
+// non-empty directory as adopted by someone else rather than a rollback
+// target.
+func analysisCacheChildIsEmpty(root safeio.Root, name string) (bool, error) {
+	dir, err := safeio.OpenPinnedDirectory(root, name)
+	if err != nil {
+		return false, err
+	}
+	entries, readErr := dir.ReadDir(1)
+	closeErr := dir.Close()
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return false, errors.Join(readErr, closeErr)
+	}
+	if closeErr != nil {
+		return false, closeErr
+	}
+	return len(entries) == 0, nil
 }
 
 func reserveAnalysisCacheQuarantine(root safeio.Root, reservationName, quarantineName string) (analysisCacheQuarantineReservation, bool, error) {

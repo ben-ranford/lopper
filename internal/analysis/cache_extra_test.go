@@ -1956,6 +1956,28 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 	t.Run("does not replace occupied quarantine directory", testQuarantineAnalysisCacheChildPreservesOccupiedDirectory)
 	t.Run("does not replace occupied quarantine child directory", testQuarantineAnalysisCacheChildPreservesOccupiedChildDirectory)
 	t.Run("reports reserve exhaustion after repeated collisions", testQuarantineAnalysisCacheChildReportsReserveExhaustion)
+	t.Run("skips quarantine for a directory populated by another initializer", testQuarantineAnalysisCacheChildSkipsNonEmptyDirectory)
+}
+
+func testQuarantineAnalysisCacheChildSkipsNonEmptyDirectory(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	if err := os.WriteFile(filepath.Join(childPath, "adopted-by-another-initializer"), []byte("live cache data"), 0o600); err != nil {
+		t.Fatalf("populate child before rollback: %v", err)
+	}
+
+	quarantineName, err := quarantineAnalysisCacheChild(root, cacheKeysDirName, childInfo)
+	if err != nil {
+		t.Fatalf("quarantine populated child: %v", err)
+	}
+	if quarantineName != "" {
+		t.Fatalf("expected populated child to skip quarantine, got %q", quarantineName)
+	}
+	assertAnalysisCacheDirExists(t, childPath)
+	if _, err := os.Stat(filepath.Join(childPath, "adopted-by-another-initializer")); err != nil {
+		t.Fatalf("expected other initializer's data to remain at its expected path: %v", err)
+	}
 }
 
 func testQuarantineAnalysisCacheChildNilInfo(t *testing.T) {
@@ -2482,6 +2504,35 @@ func TestFinishConditionalAnalysisCacheRemovalBranches(t *testing.T) {
 	reservation := newAnalysisCacheQuarantineReservation(".lopper-cache-rollback-missing-0", filepath.Join(".lopper-cache-rollback-missing-0", "missing"), "token")
 	if err := finishConditionalAnalysisCacheRemoval(root, reservation, lstatErr, nil); !errors.Is(err, lstatErr) {
 		t.Fatalf("expected missing reservation cleanup to preserve lstat error, got %v", err)
+	}
+}
+
+func TestFinishConditionalAnalysisCacheRemovalPropagatesOwnershipLossWhenTargetStillExists(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	reservation := newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "original-token")
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("stat reservation: %v", err)
+	}
+	reservation.info = info
+	if err := os.WriteFile(filepath.Join(repo, reservation.ownerName), []byte("replaced-by-another-process"), 0o600); err != nil {
+		t.Fatalf("write replaced owner marker: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, quarantineName), 0o750); err != nil {
+		t.Fatalf("create quarantined child: %v", err)
+	}
+
+	if err := finishConditionalAnalysisCacheRemoval(root, reservation, nil, nil); err == nil {
+		t.Fatal("expected ownership loss with the quarantined child still present to be reported")
+	}
+	if _, err := os.Lstat(filepath.Join(repo, quarantineName)); err != nil {
+		t.Fatalf("expected quarantined child to remain untouched, stat err=%v", err)
 	}
 }
 
