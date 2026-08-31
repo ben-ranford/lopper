@@ -867,6 +867,18 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 			patch:    "@@ -1 +1 @@\n-echo foo\n+echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
 			want:     "build.sh\x011\x01echo 'foo\\' #noqa",
 		},
+		{
+			// A CRLF-encoded file preserves a trailing "\r" as part of
+			// each diff line's content; the suspect record built from it
+			// must strip that CR, matching what the trusted tracker
+			// computes for the same line, or the two never agree on the
+			// exact content that was actually added.
+			name:     "strips a trailing CR from a CRLF-encoded file",
+			filename: "main.go",
+			blob:     "package main\r\n",
+			patch:    "@@ -1 +1 @@\r\n-package main\r\n+package main //nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\r\n",
+			want:     "main.go\x011\x01package main //nolint:staticcheck",
+		},
 	}
 
 	for _, tc := range cases {
@@ -879,6 +891,9 @@ func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testin
 			}
 			if !strings.Contains(output, tc.want) {
 				t.Fatalf("expected %q in the suspect scan output, got:\n%q", tc.want, output)
+			}
+			if strings.Contains(output, "\r") {
+				t.Fatalf("expected no bare CR in the suspect scan output, got:\n%q", output)
 			}
 		})
 	}

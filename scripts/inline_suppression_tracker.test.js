@@ -645,6 +645,29 @@ test('recognizes a marker after a multi-line template literal closes on a later 
   assert.match(harness.calls.created[0].body, /Location: `main\.js:3`/);
 });
 
+test('normalizes CRLF line endings before validating suppression content', async () => {
+  // Git preserves a CRLF-encoded file's own trailing "\r" as part of each
+  // patch line's content; without stripping it, the disallowed-control
+  // character check would reject an otherwise valid suppression, and the
+  // trusted workflow would never publish its tracking issue.
+  const line = trackedLine();
+  const patch = `@@ -0,0 +1,5 @@\r\n+package main\r\n+\r\n+func main() {\r\n+${line}\r\n+}\r\n`;
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch,
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.doesNotMatch(harness.calls.created[0].body, /\r/);
+});
+
 test('seeds quote state from the complete head file across a diff context gap', async () => {
   // GitHub's default 3-line diff context cannot reveal a multi-line
   // construct that opens further above a hunk than that window reaches.

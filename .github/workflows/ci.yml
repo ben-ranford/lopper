@@ -529,6 +529,12 @@ jobs:
               }
               /^\+/ {
                 content = substr($0, 2)
+                # A CRLF-encoded file preserves a trailing "\r" as part of
+                # a diff line content; stripping it keeps this content --
+                # and the suspect record built from it -- identical to
+                # what the trusted tracker computes for the same line,
+                # which strips it too.
+                sub(/\r$/, "", content)
                 # Quote state carries across lines within a hunk: a
                 # multi-line string (e.g. a JavaScript template literal)
                 # that closes partway through a later line must not make
@@ -558,6 +564,7 @@ jobs:
                 # quote-affecting characters must still be tracked even
                 # though it is not itself scanned for a suspect marker.
                 content = substr($0, 2)
+                sub(/\r$/, "", content)
                 mask_quoted_regions(content, quote_state)
                 quote_state = final_quote_state
                 line++
@@ -709,6 +716,13 @@ jobs:
                         bundle_files[current_file] = []
                         continue
                     if current_file is not None:
+                        # A CRLF-encoded file preserves a trailing "\r" on
+                        # every line after splitting on "\n" alone;
+                        # stripping it here keeps this comparison identical
+                        # to what the trusted tracker computes for the
+                        # same line, which strips it too.
+                        if entry.endswith(b"\r"):
+                            entry = entry[:-1]
                         bundle_files[current_file].append(entry)
 
             data = sys.stdin.buffer.read()

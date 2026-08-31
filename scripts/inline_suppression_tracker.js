@@ -551,6 +551,16 @@ function patchLines(patch) {
   return (patch.endsWith('\n') ? patch.slice(0, -1) : patch).split('\n');
 }
 
+// Git's patch (and a CRLF-encoded file's own content) retains the line's
+// original trailing "\r" for a CRLF-encoded source file; comparing or
+// validating that content without stripping it would either reject an
+// otherwise valid suppression as containing a disallowed control character
+// or desync the fingerprint/occurrence count from the self-hosted shell
+// gate, which reads the same file through a different path.
+function stripTrailingCR(line) {
+  return line.endsWith('\r') ? line.slice(0, -1) : line;
+}
+
 function truncatedPatchError(file) {
   return new RangeError(`Inline suppression diff patch for ${file} is incomplete or truncated; refusing to publish tracking mutations.`);
 }
@@ -637,7 +647,7 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
   // gate reads the same complete file and must land on the same answers
   // for both.
   const headContent = await fetchFullFileContent({ github, context, file, ref: headSHA });
-  const headLines = headContent.split('\n');
+  const headLines = headContent.split('\n').map(stripTrailingCR);
 
   let line = 0;
   // Quote state carries across lines within a hunk: a multi-line string
@@ -653,7 +663,7 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
       continue;
     }
     if (rawLine.startsWith('+')) {
-      const content = rawLine.slice(1);
+      const content = stripTrailingCR(rawLine.slice(1));
       if (hasInlineSuppressionMarker(content, file, quoteState)) {
         if (records.size >= MAX_RECORDS) {
           throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
@@ -672,7 +682,7 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
       // Context line: part of the resulting file, so its quote-affecting
       // characters must still be tracked even though it isn't scanned for
       // suppression markers (it isn't newly added by this pull request).
-      const content = rawLine.slice(1);
+      const content = stripTrailingCR(rawLine.slice(1));
       quoteState = carryQuoteState(content, file, quoteState);
       line += 1;
     }

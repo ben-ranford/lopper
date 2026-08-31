@@ -184,7 +184,8 @@ occurrence_in_file() {
 		# file; with `set -o pipefail` above, the resulting SIGPIPE makes
 		# the producer exit 141 and fails this whole pipeline even though
 		# the count itself is already correct. Keep consuming to EOF.
-		NR <= target_line && $0 == target_content { count++ }
+		{ line = $0; sub(/\r$/, "", line) }
+		NR <= target_line && line == target_content { count++ }
 		END { print count + 0 }
 	'
 }
@@ -680,6 +681,11 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# a real added line whose own content happens to start with two
 	# extra plus characters (e.g. an added C/C++ increment statement).
 	content = substr($0, 2)
+	# A CRLF-encoded file preserves a trailing "\r" as part of a diff
+	# line content; stripping it keeps this content -- and the
+	# fingerprint/pair record built from it -- identical to what the
+	# trusted tracker computes for the same line, which strips it too.
+	sub(/\r$/, "", content)
 	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
 	# Quote state carries across added lines within a hunk: a multi-line
 	# string (e.g. a JavaScript template literal) that closes partway

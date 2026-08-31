@@ -928,6 +928,36 @@ func TestInlineSuppressionCheckHonorsShellSingleQuoteEscapingRules(t *testing.T)
 	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
 }
 
+func TestInlineSuppressionCheckNormalizesCRLFLineEndings(t *testing.T) {
+	t.Parallel()
+
+	// A CRLF-encoded file preserves a trailing "\r" as part of each diff
+	// line's content. Without stripping it, the recorded content (and the
+	// fingerprint computed from it) would include a byte the trusted
+	// tracker's own stripped content never has, desyncing the two and
+	// causing the required verification job to fail even after the
+	// trusted tracker correctly publishes its tracking issue.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	line := "value := unsafe() //nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	source := "package main\r\n\r\nfunc main() {\r\n\t" + line + "\r\n}\r\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the marker in a CRLF-encoded file to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+	if strings.Contains(records.Suppressions[0].Content, "\r") {
+		t.Fatalf("expected recorded content to have its trailing CR stripped, got %q", records.Suppressions[0].Content)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrophe(t *testing.T) {
 	t.Parallel()
 
