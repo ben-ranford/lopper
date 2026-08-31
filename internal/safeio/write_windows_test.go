@@ -551,12 +551,11 @@ func TestLockPinnedReplacementFileSkipsNonOSFile(t *testing.T) {
 // drives the full fallback transaction end to end against a real on-disk
 // file and a real *os.File (via openPinnedReplacementTarget, the same
 // production path fallbackAtomicReplacement's caller uses), rather than the
-// mocks used elsewhere in this file. That matters here specifically: the
-// bug this guards against -- snapshotPinnedWindowsFallbackTarget deadlocking
-// against lockPinnedReplacementFile's own lock by reading through a second,
-// independently-opened handle -- only manifests against a real OS handle
-// and a real LockFileEx call; a mock has no lock to deadlock against and
-// would pass either way.
+// mocks used elsewhere in this file. That matters here specifically:
+// snapshotPinnedWindowsFallbackTarget reads through the already-open
+// replacementFile handle rather than a second, independently-opened one, and
+// only a real OS handle and a real Seek/Read round trip can tell that apart
+// from a mock, which would happily serve either path identically.
 func TestFallbackAtomicReplacementRollbackReadsSnapshotThroughLockedHandle(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
@@ -596,6 +595,76 @@ func TestFallbackAtomicReplacementRollbackReadsSnapshotThroughLockedHandle(t *te
 	}
 	if string(data) != "before" {
 		t.Fatalf("expected rollback to restore the original data, got %q", string(data))
+	}
+}
+
+// TestFallbackAtomicReplacementDoesNotBlockConcurrentReadersOfLiveTarget
+// proves lockFallbackTransaction's coordination lock -- unlike the whole-file
+// lock this fallback path used to take directly on the live target -- never
+// touches the target itself. A concurrent reader opening its own independent
+// handle to that same path (the same shape as analysisCache.lookup reading a
+// cache pointer through ReadFileUnder, which does not participate in this
+// fallback path's locking protocol at all) must be able to read it while a
+// fallback transaction is in flight, rather than failing with a Windows lock
+// violation. This only exercises the real bug against a genuine *os.File and
+// a real LockFileEx call, via openPinnedReplacementTarget and openTestRoot,
+// the same production paths used elsewhere in this file; a mock has no lock
+// to block against and would pass regardless.
+func TestFallbackAtomicReplacementDoesNotBlockConcurrentReadersOfLiveTarget(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	info := statTestPath(t, targetPath)
+
+	replacementFile, err := openPinnedReplacementTarget(root, writeTestFileName, info)
+	if err != nil {
+		t.Fatalf("open pinned replacement target: %v", err)
+	}
+	defer replacementFile.Close()
+
+	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
+
+	inPostWrite := make(chan struct{})
+	releasePostWrite := make(chan struct{})
+	fallbackDone := make(chan error, 1)
+	go func() {
+		fallbackDone <- fallbackAtomicReplacement(root, atomicReplacementFallback{
+			oldName:         ".safeio-atomic-temp",
+			newName:         writeTestFileName,
+			replacementFile: replacementFile,
+			data:            []byte("after"),
+			renameErr:       renameErr,
+			postWrite: func() error {
+				close(inPostWrite)
+				<-releasePostWrite
+				return nil
+			},
+		})
+	}()
+
+	select {
+	case <-inPostWrite:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for fallback transaction to reach its post-write hook")
+	}
+
+	// The fallback transaction is mid-flight here, blocked in postWrite while
+	// still holding its coordination lock. Reading through this independent
+	// handle must still succeed.
+	data, readErr := os.ReadFile(targetPath)
+	close(releasePostWrite)
+
+	if err := <-fallbackDone; err != nil {
+		t.Fatalf("expected fallback overwrite to succeed, got %v", err)
+	}
+	if readErr != nil {
+		t.Fatalf("expected concurrent read of live target to succeed while fallback transaction was in flight, got %v", readErr)
+	}
+	if string(data) != "after" {
+		t.Fatalf("expected concurrent read to observe the fallback's write, got %q", string(data))
 	}
 }
 

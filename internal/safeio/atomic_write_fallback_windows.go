@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	win "golang.org/x/sys/windows"
@@ -35,17 +36,23 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 	// restoreWindowsFallbackTarget) catches a concurrent writer that
 	// replaces the target's identity in between, but not one that reuses
 	// this same still-open inode the way this exact fallback path itself
-	// does. Hold an exclusive lock across the whole transaction -- the
-	// overwrite, its post-write check, and any rollback -- so a second,
-	// concurrent same-key writer taking this same fallback path for this
-	// same target blocks until this one fully finishes, rather than
-	// interleaving with it.
-	unlockReplacementFile, err := lockPinnedReplacementFile(replacementFile)
+	// does. Serialize the whole transaction -- the overwrite, its
+	// post-write check, and any rollback -- against a second, concurrent
+	// same-key writer taking this same fallback path for this same target,
+	// so the two never interleave. That serialization is done through a
+	// dedicated coordination file next to the target rather than an
+	// exclusive lock on the target itself: a Windows byte-range lock on the
+	// live target would also block an unrelated concurrent reader (for
+	// example analysisCache.lookup reading this same cache pointer through
+	// ReadFileUnder) for the whole transaction, turning an ordinary read
+	// into a spurious fatal error instead of the cache-miss-or-stale-read it
+	// would see from a plain concurrent rename.
+	unlockFallbackTransaction, err := lockFallbackTransaction(root, fallback.newName)
 	if err != nil {
 		return errors.Join(fallback.renameErr, err)
 	}
 	defer func() {
-		if unlockErr := unlockReplacementFile(); unlockErr != nil {
+		if unlockErr := unlockFallbackTransaction(); unlockErr != nil {
 			returnErr = errors.Join(returnErr, unlockErr)
 		}
 	}()
@@ -75,11 +82,12 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 }
 
 // lockPinnedReplacementFile takes a whole-file exclusive byte-range lock on
-// replacementFile via LockFileEx, blocking until any other holder (this same
-// fallback path running for a concurrent same-key writer) releases it. Only
-// a genuine *os.File exposes the underlying handle this requires; test
-// doubles and any other File implementation skip locking entirely rather
-// than fail, since they never run concurrently with a second real writer.
+// file via LockFileEx, blocking until any other holder (this same fallback
+// path running for a concurrent same-key writer, coordinating through the
+// same file -- see lockFallbackTransaction) releases it. Only a genuine
+// *os.File exposes the underlying handle this requires; test doubles and any
+// other File implementation skip locking entirely rather than fail, since
+// they never run concurrently with a second real writer.
 // The lock is released automatically by the OS if the process exits before
 // calling the returned unlock, so a crash mid-transaction cannot leave it
 // held forever.
@@ -101,6 +109,42 @@ func lockPinnedReplacementFile(file File) (unlock func() error, returnErr error)
 	}, nil
 }
 
+// lockFallbackTransaction serializes concurrent writers taking this same
+// Windows fallback path for the same target, without ever locking the live
+// target file itself. It opens (creating if necessary) a dedicated
+// coordination file next to targetRel and takes lockPinnedReplacementFile's
+// exclusive lock on that instead; the coordination file's own content is
+// never read or written, only its lock state matters. Concurrent same-key
+// writers all derive the same coordination path and so correctly serialize
+// against each other, while a concurrent reader of the live target (for
+// example analysisCache.lookup via ReadFileUnder) never touches the
+// coordination file and so is never blocked by this lock.
+func lockFallbackTransaction(root Root, targetRel string) (unlock func() error, returnErr error) {
+	lockFile, err := root.OpenFile(fallbackLockFileRel(targetRel), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open fallback coordination lock: %w", err)
+	}
+	unlockFile, err := lockPinnedReplacementFile(lockFile)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("lock fallback coordination file: %w", err), lockFile.Close())
+	}
+	return func() error {
+		return errors.Join(unlockFile(), lockFile.Close())
+	}, nil
+}
+
+// fallbackLockFileRel returns the coordination lock path for targetRel: the
+// same directory, with a name namespaced by atomicTempPrefix so it can never
+// collide with a real cache entry.
+func fallbackLockFileRel(targetRel string) string {
+	lockBase := atomicTempPrefix + "fallback-lock-" + filepath.Base(targetRel)
+	dir := filepath.Dir(targetRel)
+	if dir == "." {
+		return lockBase
+	}
+	return filepath.Join(dir, lockBase)
+}
+
 func atomicRenameSourceRel(err error, fallbackRel string) string {
 	var publishErr *publishRenameError
 	if errors.As(err, &publishErr) && publishErr.sourceRel != "" {
@@ -112,8 +156,7 @@ func atomicRenameSourceRel(err error, fallbackRel string) string {
 // replacementFileForWindowsFallback returns the handle this fallback
 // transaction writes (and, when needsReadAccess is true, later reads back
 // through -- see snapshotPinnedWindowsFallbackTarget) for its rollback
-// snapshot. Reading through a second handle would deadlock against this
-// one's own lock, so a rollback-eligible caller can never simply reuse a
+// snapshot. A rollback-eligible caller can never simply reuse a
 // caller-supplied write-only handle (see openPinnedReplacementTarget, which
 // must stay write-only for callers whose target permits writing but not
 // reading) -- it needs a fresh read/write handle instead. But an ordinary,
@@ -163,12 +206,9 @@ func replacementFileForWindowsFallback(root Root, targetRel string, replacementF
 }
 
 // snapshotPinnedWindowsFallbackTarget reads the target's current content
-// through the already-open, already-locked replacementFile handle rather
-// than opening a second handle via root.Open. Windows byte-range locks
-// (lockPinnedReplacementFile) block overlapping access through *any* other
-// handle in the locking process, not just other processes -- a second
-// handle here would deadlock against our own lock instead of racing a
-// concurrent writer.
+// through the already-open replacementFile handle rather than opening a
+// second handle via root.Open, avoiding a redundant reopen and re-resolving
+// the target by path a second time.
 func snapshotPinnedWindowsFallbackTarget(root Root, targetRel string, replacementFile File) ([]byte, error) {
 	pathInfo, err := root.Lstat(targetRel)
 	if err != nil {

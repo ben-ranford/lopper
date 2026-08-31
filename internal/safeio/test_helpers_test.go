@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -240,10 +241,22 @@ func (r *fakeRoot) Open(name string) (File, error) {
 }
 
 func (r *fakeRoot) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
+	// The Windows fallback path's own coordination lock file (see
+	// lockFallbackTransaction) is opened alongside whatever target the test
+	// is exercising, but no test here cares about it: intercept it before
+	// reaching any test's bespoke openFile mock so tests written against a
+	// single expected path/handle don't need to special-case it themselves.
+	if isFallbackLockFileName(name) {
+		return &fakeFile{close: closeWithoutError}, nil
+	}
 	if r.openFile != nil {
 		return r.openFile(name, flag, perm)
 	}
 	return r.Root.OpenFile(name, flag, perm)
+}
+
+func isFallbackLockFileName(name string) bool {
+	return strings.HasPrefix(filepath.Base(name), atomicTempPrefix+"fallback-lock-")
 }
 
 func (r *fakeRoot) OpenRoot(name string) (Root, error) {
