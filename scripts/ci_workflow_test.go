@@ -784,48 +784,13 @@ printf '[{"filename":"a.go"},{"filename":"b.go"},{"filename":"c.go"}][{"filename
 // exact gap a purely textual assertion could never catch, since the awk
 // program is syntactically identical whether or not the seeding logic is
 // wired up correctly to the blob it just fetched.
-func TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent(t *testing.T) {
-	t.Parallel()
+// runSuspectScan executes the real per-file suspect scan loop body from the
+// "verify" gate against a synthetic file_json fixture, stubbing `gh` to
+// serve the given blob content for any `gh api` call.
+func runSuspectScan(t *testing.T, varsBlock, loopBody, filename, sha, patch, blob string) (string, error) {
+	t.Helper()
 
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
-
-	const varsStart = `no_prefix="no"`
-	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
-	}
-	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
-	if varsEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
-	}
-	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
-
-	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
-	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
-	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
-	if loopStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
-	}
-	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
-	if loopEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
-	}
-	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
-
-	// The opening backtick sits 3 lines above the hunk -- further back than
-	// the patch's own 3-line context window reveals (the hunk below starts
-	// at "line2", one line after the opener).
-	blob := "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`;\n"
-	patch := "@@ -4,4 +4,4 @@\n line2\n line3\n line4\n-tail`;\n+tail`; //" +
-		"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
-	fileJSON, err := json.Marshal(map[string]string{
-		"filename": "tpl.js",
-		"sha":      "deadbeef",
-		"patch":    patch,
-	})
+	fileJSON, err := json.Marshal(map[string]string{"filename": filename, "sha": sha, "patch": patch})
 	if err != nil {
 		t.Fatalf("marshal file_json fixture: %v", err)
 	}
@@ -842,17 +807,80 @@ func TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent(t *testing.T) {
 	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
 
 	script := "set -euo pipefail\n" + varsBlock + "\nfile_json=" + shellQuote(string(fileJSON)) + "\n" + loopBody
-
-	output, err := runShellCommand(dir, script, map[string]string{
+	return runShellCommand(dir, script, map[string]string{
 		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
 		"GITHUB_REPOSITORY": "octo/lopper",
 	})
-	if err != nil {
-		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
+}
+
+// TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules actually
+// runs the embedded per-file suspect scan (not just asserting on its source
+// text) against synthetic files covering three independent Codex-described
+// scenarios: a template-literal backtick opening further above a hunk than
+// the patch's own context window reveals, a hash marker immediately after
+// code with no space in a language that needs no free-standing rule, and a
+// single-quoted shell string whose trailing backslash is a literal
+// character, not an escape. Table-driven so the shared scan-and-assert
+// shape exists exactly once.
+func TestCIWorkflowSuspectScanDetectsMarkersAcrossLanguageQuotingRules(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
+
+	cases := []struct {
+		name     string
+		filename string
+		blob     string
+		patch    string
+		want     string
+	}{
+		{
+			// The opening backtick sits 3 lines above the hunk -- further
+			// back than the patch's own 3-line context window reveals (the
+			// hunk below starts at "line2", one line after the opener).
+			name:     "seeds quote state from blob content beyond the patch context window",
+			filename: "tpl.js",
+			blob:     "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`;\n",
+			patch: "@@ -4,4 +4,4 @@\n line2\n line3\n line4\n-tail`;\n+tail`; //" +
+				"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			want: "tpl.js\x017\x01tail`; //eslint-disable-line",
+		},
+		{
+			name:     "does not require a free-standing hash in Python",
+			filename: "calc.py",
+			blob:     "value = safe()\n",
+			patch:    "@@ -1 +1 @@\n-value = safe()\n+value = unsafe()#noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			want:     "calc.py\x011\x01value = unsafe()#noqa",
+		},
+		{
+			// POSIX shell single-quoted strings have no escape character:
+			// the backslash before the closing quote is literal, so the
+			// string closes there and the real marker after it is a
+			// suspect, not masked as still-quoted content.
+			name:     "honors shell single-quote escaping rules",
+			filename: "build.sh",
+			blob:     "echo foo\n",
+			patch:    "@@ -1 +1 @@\n-echo foo\n+echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n",
+			want:     "build.sh\x011\x01echo 'foo\\' #noqa",
+		},
 	}
-	if !strings.Contains(output, "tpl.js\x017\x01tail`; //eslint-disable-line") {
-		t.Fatalf("expected the suspect scan to detect the marker beyond the patch context window via the seeded blob content, output:\n%q", output)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSuspectScan(t, varsBlock, loopBody, tc.filename, "deadbeef", tc.patch, tc.blob)
+			if err != nil {
+				t.Fatalf("expected the suspect scan to run, output:\n%s", output)
+			}
+			if !strings.Contains(output, tc.want) {
+				t.Fatalf("expected %q in the suspect scan output, got:\n%q", tc.want, output)
+			}
+		})
 	}
 }
 
@@ -868,54 +896,11 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
-
-	const varsStart = `no_prefix="no"`
-	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
-	}
-	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
-	if varsEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
-	}
-	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
-
-	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
-	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
-	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
-	if loopStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
-	}
-	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
-	if loopEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
-	}
-	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
-	script := "set -euo pipefail\n" + varsBlock + "\nfile_json="
-
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	fakeGH := "#!/usr/bin/env bash\nif [ \"$1\" = api ]; then printf '%s' \"$BLOB_CONTENT_B64\"; exit 0; fi\nexit 1\n"
-	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
-	env := func(blob string) map[string]string {
-		return map[string]string{
-			"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-			"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
-			"GITHUB_REPOSITORY": "octo/lopper",
-		}
-	}
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
 	fragmentBlob := "url: https://example.test/#noqa\n"
 	fragmentPatch := "@@ -0,0 +1 @@\n+url: https://example.test/#noqa\n"
-	fragmentJSON, err := json.Marshal(map[string]string{"filename": "deploy.yaml", "sha": "deadbeef", "patch": fragmentPatch})
-	if err != nil {
-		t.Fatalf("marshal fragment file_json fixture: %v", err)
-	}
-	output, err := runShellCommand(dir, script+shellQuote(string(fragmentJSON))+"\n"+loopBody, env(fragmentBlob))
+	output, err := runSuspectScan(t, varsBlock, loopBody, "deploy.yaml", "deadbeef", fragmentPatch, fragmentBlob)
 	if err != nil {
 		t.Fatalf("expected the suspect scan to run for the URL fragment case, output:\n%s", output)
 	}
@@ -925,82 +910,12 @@ func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *te
 
 	genuineBlob := "url: https://example.test/path # noqa\n"
 	genuinePatch := "@@ -0,0 +1 @@\n+url: https://example.test/path # noqa\n"
-	genuineJSON, err := json.Marshal(map[string]string{"filename": "deploy.yaml", "sha": "deadbeef", "patch": genuinePatch})
-	if err != nil {
-		t.Fatalf("marshal genuine file_json fixture: %v", err)
-	}
-	output, err = runShellCommand(dir, script+shellQuote(string(genuineJSON))+"\n"+loopBody, env(genuineBlob))
+	output, err = runSuspectScan(t, varsBlock, loopBody, "deploy.yaml", "deadbeef", genuinePatch, genuineBlob)
 	if err != nil {
 		t.Fatalf("expected the suspect scan to run for the free-standing hash case, output:\n%s", output)
 	}
 	if !strings.Contains(output, "deploy.yaml\x01") {
 		t.Fatalf("expected a suspect for a genuine free-standing \"#\" marker, output:\n%q", output)
-	}
-}
-
-// TestCIWorkflowSuspectScanDoesNotRequireAFreeStandingHashInPythonOrRuby
-// actually runs the embedded per-file suspect scan against a Python file
-// whose added line has "#" immediately after code with no space, proving
-// the independent scan agrees with the trusted tracker and the shell
-// detector that Python (unlike YAML/shell) needs no free-standing rule.
-func TestCIWorkflowSuspectScanDoesNotRequireAFreeStandingHashInPythonOrRuby(t *testing.T) {
-	t.Parallel()
-
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
-
-	const varsStart = `no_prefix="no"`
-	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
-	}
-	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
-	if varsEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
-	}
-	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
-
-	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
-	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
-	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
-	if loopStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
-	}
-	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
-	if loopEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
-	}
-	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
-
-	blob := "value = safe()\n"
-	patch := "@@ -1 +1 @@\n-value = safe()\n+value = unsafe()#noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
-	fileJSON, err := json.Marshal(map[string]string{"filename": "calc.py", "sha": "deadbeef", "patch": patch})
-	if err != nil {
-		t.Fatalf("marshal file_json fixture: %v", err)
-	}
-
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	fakeGH := "#!/usr/bin/env bash\nif [ \"$1\" = api ]; then printf '%s' \"$BLOB_CONTENT_B64\"; exit 0; fi\nexit 1\n"
-	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
-
-	script := "set -euo pipefail\n" + varsBlock + "\nfile_json=" + shellQuote(string(fileJSON)) + "\n" + loopBody
-
-	output, err := runShellCommand(dir, script, map[string]string{
-		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
-		"GITHUB_REPOSITORY": "octo/lopper",
-	})
-	if err != nil {
-		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
-	}
-	if !strings.Contains(output, "calc.py\x011\x01value = unsafe()#noqa") {
-		t.Fatalf("expected the suspect scan to detect the marker immediately after code, output:\n%q", output)
 	}
 }
 
@@ -1016,30 +931,7 @@ func TestCIWorkflowSuspectScanSkipsBlobFetchForMarkerlessPatches(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
-
-	const varsStart = `no_prefix="no"`
-	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
-	}
-	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
-	if varsEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
-	}
-	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
-
-	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
-	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
-	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
-	if loopStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
-	}
-	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
-	if loopEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
-	}
-	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
+	varsBlock, loopBody := extractSuspectScanVarsAndLoop(t, gate)
 
 	patch := "@@ -1 +1 @@\n-value = safe()\n+value = still_safe()\n"
 	fileJSON, err := json.Marshal(map[string]string{"filename": "calc.py", "sha": "deadbeef", "patch": patch})
@@ -1069,73 +961,6 @@ func TestCIWorkflowSuspectScanSkipsBlobFetchForMarkerlessPatches(t *testing.T) {
 	}
 	if _, statErr := os.Stat(ghCallsPath); statErr == nil {
 		t.Fatalf("expected no gh invocation for a patch with no marker-shaped text, output:\n%q", output)
-	}
-}
-
-// TestCIWorkflowSuspectScanHonorsShellSingleQuoteEscapingRules actually
-// runs the embedded per-file suspect scan against a shell file whose added
-// line closes a single-quoted string with a trailing backslash immediately
-// before the closing quote -- valid POSIX shell, where backslash is literal
-// inside single quotes -- proving the independent scan agrees with the
-// trusted tracker and the shell detector that the string closes there.
-func TestCIWorkflowSuspectScanHonorsShellSingleQuoteEscapingRules(t *testing.T) {
-	t.Parallel()
-
-	var workflow workflowConfig
-	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
-
-	const varsStart = `no_prefix="no"`
-	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
-	}
-	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
-	if varsEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
-	}
-	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
-
-	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
-	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
-	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
-	if loopStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
-	}
-	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
-	if loopEndRelIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
-	}
-	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
-
-	blob := "echo foo\n"
-	patch := "@@ -1 +1 @@\n-echo foo\n+echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
-	fileJSON, err := json.Marshal(map[string]string{"filename": "build.sh", "sha": "deadbeef", "patch": patch})
-	if err != nil {
-		t.Fatalf("marshal file_json fixture: %v", err)
-	}
-
-	dir := t.TempDir()
-	binDir := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir bin: %v", err)
-	}
-	fakeGH := "#!/usr/bin/env bash\nif [ \"$1\" = api ]; then printf '%s' \"$BLOB_CONTENT_B64\"; exit 0; fi\nexit 1\n"
-	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
-
-	script := "set -euo pipefail\n" + varsBlock + "\nfile_json=" + shellQuote(string(fileJSON)) + "\n" + loopBody
-
-	output, err := runShellCommand(dir, script, map[string]string{
-		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
-		"GITHUB_REPOSITORY": "octo/lopper",
-	})
-	if err != nil {
-		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
-	}
-	if !strings.Contains(output, "build.sh\x011\x01echo 'foo\\' #noqa") {
-		t.Fatalf("expected the suspect scan to detect the marker after the closed single-quoted string, output:\n%q", output)
 	}
 }
 
@@ -1796,6 +1621,40 @@ func overlayShellEnv(base []string, env map[string]string) []string {
 
 func shellQuote(path string) string {
 	return "'" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
+}
+
+// extractSuspectScanVarsAndLoop pulls the suspect-pattern variable setup and
+// the per-file suspect scan loop body out of the real "verify" gate's run
+// script, for tests that execute that body directly against a synthetic
+// file_json fixture.
+func extractSuspectScanVarsAndLoop(t *testing.T, gate workflowStepConfig) (varsBlock string, loopBody string) {
+	t.Helper()
+
+	const varsStart = `no_prefix="no"`
+	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
+	}
+	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
+	if varsEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
+	}
+	varsBlock = gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
+
+	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
+	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
+	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
+	if loopStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
+	}
+	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
+	if loopEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
+	}
+	loopBody = gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
+
+	return varsBlock, loopBody
 }
 
 func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *testing.T) {
