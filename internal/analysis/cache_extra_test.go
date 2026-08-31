@@ -2427,6 +2427,29 @@ func TestVerifyAnalysisCacheQuarantineRestoresChildWhenEmptinessCheckFails(t *te
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
+func TestRemoveAnalysisCacheQuarantineRestoresChildWhenRemovalFindsItNonEmpty(t *testing.T) {
+	repo, root, reservation, reservationName, _ := setupQuarantinedChildForVerification(t)
+
+	// Simulate: verifyAnalysisCacheQuarantine's post-rename emptiness check
+	// already passed, but another initializer added an entry to the
+	// quarantined child before this separate cleanup call runs.
+	quarantinePath := filepath.Join(repo, reservation.quarantineName)
+	if err := os.WriteFile(filepath.Join(quarantinePath, "adopted-by-another-initializer"), []byte("live cache data"), 0o600); err != nil {
+		t.Fatalf("populate quarantined child: %v", err)
+	}
+
+	if err := removeAnalysisCacheQuarantine(root, reservation); err == nil {
+		t.Fatal("expected non-empty quarantine removal to be reported")
+	}
+
+	restoredPath := filepath.Join(repo, cacheKeysDirName)
+	assertAnalysisCacheDirExists(t, restoredPath)
+	if _, err := os.Stat(filepath.Join(restoredPath, "adopted-by-another-initializer")); err != nil {
+		t.Fatalf("expected other initializer's data to survive the restore: %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
 func TestRemoveAnalysisCacheQuarantineRemovesReservationDirectoryWhenPathLstatFails(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)

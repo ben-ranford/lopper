@@ -859,6 +859,15 @@ func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 	removeErr := reservationRoot.Remove(filepath.Base(reservation.quarantineName))
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		closeErr := reservationRoot.Close()
+		if isAnalysisCacheNonEmptyDirectoryError(removeErr) {
+			// Another initializer added an entry to the quarantined child
+			// after verifyAnalysisCacheQuarantine's post-rename emptiness
+			// check but before this removal -- that window can't be closed
+			// entirely (the removal itself is a separate call, possibly
+			// much later). Restore it rather than leaving that
+			// initializer's live data hidden inside the reservation.
+			return errors.Join(removeErr, closeErr, restoreQuarantinedChildAfterFailedRemoval(root, reservation))
+		}
 		return errors.Join(removeErr, closeErr)
 	}
 	removeOwnerErr := reservationRoot.Remove(analysisCacheQuarantineOwnerFile)
@@ -870,6 +879,18 @@ func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 		return closeErr
 	}
 	return removeAnalysisCacheQuarantineReservationDirectory(root, reservation)
+}
+
+// restoreQuarantinedChildAfterFailedRemoval moves a quarantined child that
+// turned out to be non-empty back to its original name, so whatever another
+// initializer added to it stays visible at its expected path instead of
+// being hidden inside a reservation that cleanup can no longer remove.
+func restoreQuarantinedChildAfterFailedRemoval(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
+	movedInfo, err := root.Lstat(reservation.quarantineName)
+	if err != nil {
+		return err
+	}
+	return restoreMovedAnalysisCacheReplacement(root, reservation, filepath.Base(reservation.quarantineName), movedInfo)
 }
 
 func openOwnedAnalysisCacheQuarantineReservation(root safeio.Root, reservation analysisCacheQuarantineReservation) (safeio.Root, error) {
