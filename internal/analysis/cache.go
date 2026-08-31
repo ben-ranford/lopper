@@ -499,11 +499,20 @@ func finishConditionalAnalysisCacheRemoval(root safeio.Root, reservation analysi
 	if reservation.quarantineName == "" {
 		return nil
 	}
-	if err := removeAnalysisCacheQuarantine(root, reservation); err != nil && !analysisCacheQuarantineTargetConfirmedGone(root, reservation, err) {
+	if err := removeAnalysisCacheQuarantine(root, reservation); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			// err wraps os.ErrNotExist even though the quarantined target
 			// was just confirmed present (the reservation's identity or
-			// owner token was lost, not the target itself).
+			// owner token was lost, not the target itself). A fresh path
+			// lookup of reservation.quarantineName can't tell "genuinely
+			// removed" apart from "another same-user process renamed the
+			// reservation directory itself away" -- both leave nothing at
+			// that path, yet in the latter case the quarantined data is
+			// still there, just hidden inside the displaced reservation
+			// with no live handle left to reach it. Since this call only
+			// ever runs immediately after quarantineAnalysisCacheChildReservation
+			// verified the reservation moments ago, treat any such loss as
+			// unverified rather than risk misreading a display as removal.
 			// rollbackCreatedAnalysisCacheChild, the caller of
 			// conditionallyRemoveAnalysisCacheChild, treats any
 			// ErrNotExist-matching error as "nothing to roll back" and
@@ -514,20 +523,6 @@ func finishConditionalAnalysisCacheRemoval(root safeio.Root, reservation analysi
 		return errors.Join(lstatErr, err)
 	}
 	return lstatErr
-}
-
-// analysisCacheQuarantineTargetConfirmedGone reports whether an ErrNotExist
-// from removeAnalysisCacheQuarantine reflects the quarantined child actually
-// being removed, rather than the reservation's owner marker or identity
-// having been lost to a concurrent process -- openOwnedAnalysisCacheQuarantineReservation
-// reports both cases as ErrNotExist, but only the former means rollback is
-// complete.
-func analysisCacheQuarantineTargetConfirmedGone(root safeio.Root, reservation analysisCacheQuarantineReservation, removeErr error) bool {
-	if !errors.Is(removeErr, os.ErrNotExist) {
-		return false
-	}
-	_, err := root.Lstat(reservation.quarantineName)
-	return errors.Is(err, os.ErrNotExist)
 }
 
 func quarantineAnalysisCacheChild(root safeio.Root, name string, childInfo fs.FileInfo) (string, error) {

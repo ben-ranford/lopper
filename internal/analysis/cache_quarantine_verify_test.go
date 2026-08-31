@@ -970,6 +970,36 @@ func TestFinishConditionalAnalysisCacheRemovalPropagatesOwnershipLossWhenTargetS
 	}
 }
 
+func TestFinishConditionalAnalysisCacheRemovalPropagatesLossWhenReservationIsRenamedAway(t *testing.T) {
+	repo, root, reservation, reservationName, _ := setupQuarantinedChildForVerification(t)
+	quarantinedDataPath := filepath.Join(repo, reservation.quarantineName, "live-data")
+	if err := os.WriteFile(quarantinedDataPath, []byte("still needed"), 0o600); err != nil {
+		t.Fatalf("populate quarantined child: %v", err)
+	}
+	// Simulate: another same-user process renames the whole reservation
+	// directory away between quarantine verification and this cleanup call.
+	// A fresh path lookup of reservation.quarantineName (or reservation.name)
+	// can't tell this apart from the child having actually been removed --
+	// both leave nothing at the old path -- so the fix must report this as
+	// unverified rather than silently discard the reservation and lose the
+	// still-live "live-data" file hidden inside the displaced directory.
+	displacedPath := filepath.Join(repo, "displaced-by-another-process")
+	if err := os.Rename(filepath.Join(repo, reservationName), displacedPath); err != nil {
+		t.Fatalf("simulate reservation displaced by another process: %v", err)
+	}
+
+	err := finishConditionalAnalysisCacheRemoval(root, reservation, nil, nil)
+	if err == nil {
+		t.Fatal("expected a displaced reservation to be reported rather than assumed cleaned up")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the displaced-reservation error not to match os.ErrNotExist (callers would discard it), got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(displacedPath, filepath.Base(reservation.quarantineName), "live-data")); err != nil {
+		t.Fatalf("expected the still-live data to remain reachable at the displaced location, stat err=%v", err)
+	}
+}
+
 func TestIgnoreAnalysisCacheOccupiedReservationCleanupBranches(t *testing.T) {
 	if err := ignoreAnalysisCacheOccupiedReservationCleanup(nil); err != nil {
 		t.Fatalf("nil cleanup error: %v", err)
