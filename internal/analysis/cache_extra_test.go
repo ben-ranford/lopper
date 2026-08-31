@@ -1928,9 +1928,16 @@ func testConditionallyRemoveAnalysisCacheChildPreservesSwappedReservation(t *tes
 	if err := conditionallyRemoveAnalysisCacheChild(wrappedRoot, cacheKeysDirName, childInfo); err != nil {
 		t.Fatalf("conditionally remove cache child: %v", err)
 	}
-	assertAnalysisCachePathAbsent(t, childPath)
+	// The reservation is swapped out from under the rollback the moment it is
+	// first pinned (renameAnalysisCacheChildIntoReservation re-verifies
+	// identity immediately before the rename), so the child is never moved
+	// into the replacement -- it stays exactly where it started, and neither
+	// the replacement reservation nor the original (now moved aside) one is
+	// touched, matching the mock's Remove Fatalf guard against unsafe
+	// pathname-only removal.
+	assertAnalysisCacheDirExists(t, childPath)
 	assertAnalysisCacheSameFile(t, filepath.Join(repo, reservationName), wrappedRoot.replacementInfo)
-	assertAnalysisCacheDirExists(t, filepath.Join(repo, "replacement-reservation", cacheKeysDirName))
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, "replacement-reservation", cacheKeysDirName))
 }
 
 func testConditionallyRemoveAnalysisCacheChildCleansReservations(t *testing.T) {

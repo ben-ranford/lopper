@@ -211,21 +211,22 @@ func (f *fakeFileSystem) OpenRootNoFollow(name string) (Root, error) {
 
 type fakeRoot struct {
 	Root
-	chmod           func(name string, perm os.FileMode) error
-	mkdirAll        func(name string, perm os.FileMode) error
-	open            func(name string) (File, error)
-	openFile        func(name string, flag int, perm os.FileMode) (File, error)
-	openRoot        func(name string) (Root, error)
-	lstat           func(name string) (fs.FileInfo, error)
-	mkdir           func(name string, perm os.FileMode) error
-	link            func(oldName, newName string) error
-	linkIfMatches   func(oldName, newName string, expected fs.FileInfo, message string) error
-	rename          func(oldName, newName string) error
-	renameNoReplace func(oldName, newName string) error
-	renameIfMatches func(oldName, newName string, expected fs.FileInfo, message string) error
-	remove          func(name string) error
-	removeIfMatches func(name string, expected fs.FileInfo, message string) error
-	close           func() error
+	chmod               func(name string, perm os.FileMode) error
+	mkdirAll            func(name string, perm os.FileMode) error
+	open                func(name string) (File, error)
+	openFile            func(name string, flag int, perm os.FileMode) (File, error)
+	openRoot            func(name string) (Root, error)
+	lstat               func(name string) (fs.FileInfo, error)
+	mkdir               func(name string, perm os.FileMode) error
+	link                func(oldName, newName string) error
+	linkIfMatches       func(oldName, newName string, expected fs.FileInfo, message string) error
+	rename              func(oldName, newName string) error
+	renameNoReplace     func(oldName, newName string) error
+	renameNoReplaceInto func(oldName string, newRoot Root, newName string) error
+	renameIfMatches     func(oldName, newName string, expected fs.FileInfo, message string) error
+	remove              func(name string) error
+	removeIfMatches     func(name string, expected fs.FileInfo, message string) error
+	close               func() error
 }
 
 func (r *fakeRoot) Open(name string) (File, error) {
@@ -319,6 +320,13 @@ func (r *fakeRoot) RenameNoReplace(oldName, newName string) error {
 		return r.renameNoReplace(oldName, newName)
 	}
 	return RenameNoReplace(r.Root, oldName, newName)
+}
+
+func (r *fakeRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName string) error {
+	if r.renameNoReplaceInto != nil {
+		return r.renameNoReplaceInto(oldName, newRoot, newName)
+	}
+	return RenameNoReplaceInto(r.Root, oldName, newRoot, newName)
 }
 
 func (r *fakeRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {

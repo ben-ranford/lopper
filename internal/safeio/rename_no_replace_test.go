@@ -175,6 +175,101 @@ func TestRenameNoReplaceDispatchesDedicatedNoReplaceMethod(t *testing.T) {
 	}
 }
 
+func TestRenameNoReplaceIntoMovesDirectoryIntoPinnedRoot(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	destDir := filepath.Join(rootDir, "dest")
+	if err := os.Mkdir(sourcePath, 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	root := openTestRoot(t, rootDir)
+	destRoot := openTestRoot(t, destDir)
+
+	if err := RenameNoReplaceInto(root, "source", destRoot, "target"); err != nil {
+		t.Fatalf("rename no-replace into: %v", err)
+	}
+
+	assertRenameNoReplacePathAbsent(t, sourcePath)
+	assertRenameNoReplaceSameFile(t, filepath.Join(destDir, "target"), sourceInfo)
+}
+
+func TestRenameNoReplaceIntoPreservesOccupiedDestination(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	destDir := filepath.Join(rootDir, "dest")
+	targetPath := filepath.Join(destDir, "target")
+	if err := os.Mkdir(sourcePath, 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	if err := os.Mkdir(targetPath, 0o750); err != nil {
+		t.Fatalf("create occupied target: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	targetInfo := statTestPath(t, targetPath)
+	root := openTestRoot(t, rootDir)
+	destRoot := openTestRoot(t, destDir)
+
+	err := RenameNoReplaceInto(root, "source", destRoot, "target")
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("rename no-replace into error = %v, want existing target", err)
+	}
+
+	assertRenameNoReplaceSameFile(t, sourcePath, sourceInfo)
+	assertRenameNoReplaceSameFile(t, targetPath, targetInfo)
+}
+
+func TestRenameNoReplaceIntoRejectsNonOsRootDestination(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootDir, "source"), 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	destRoot := &fakeRoot{Root: openTestRoot(t, t.TempDir())}
+
+	err := RenameNoReplaceInto(root, "source", destRoot, "target")
+	if !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("rename no-replace into non-osRoot destination = %v, want invalid", err)
+	}
+}
+
+func TestRenameNoReplaceIntoFailsClosedWithoutSupport(t *testing.T) {
+	root := renameNoReplaceUnsupportedRoot{Root: openTestRoot(t, t.TempDir())}
+	destRoot := openTestRoot(t, t.TempDir())
+	err := RenameNoReplaceInto(root, "source", destRoot, "target")
+	if !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("rename no-replace into unsupported root error = %v, want invalid", err)
+	}
+}
+
+func TestRenameNoReplaceIntoDispatchesDedicatedMethod(t *testing.T) {
+	expectedErr := fs.ErrExist
+	root := &fakeRoot{
+		Root: openTestRoot(t, t.TempDir()),
+		renameNoReplaceInto: func(oldName string, newRoot Root, newName string) error {
+			if oldName != "source" || newName != "target" {
+				t.Fatalf("RenameNoReplaceInto args = %q, %q; want source, target", oldName, newName)
+			}
+			return expectedErr
+		},
+	}
+	destRoot := openTestRoot(t, t.TempDir())
+
+	err := RenameNoReplaceInto(root, "source", destRoot, "target")
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("rename no-replace into error = %v, want %v", err, expectedErr)
+	}
+}
+
 func TestRenameNoReplaceRejectsNULNames(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
 	root := openTestRoot(t, t.TempDir())

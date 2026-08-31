@@ -551,10 +551,46 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 	if retry || err != nil {
 		return analysisCacheQuarantineReservation{}, retry, err
 	}
-	if err := safeio.RenameNoReplace(root, name, quarantineName); err != nil {
+	if err := renameAnalysisCacheChildIntoReservation(root, reservation, name); err != nil {
 		return handleAnalysisCacheQuarantineRenameError(root, reservation, name, childInfo, err)
 	}
 	return verifyAnalysisCacheQuarantine(root, reservation, name, childInfo)
+}
+
+// renameAnalysisCacheChildIntoReservation moves name into the reservation
+// directory reserveAnalysisCacheQuarantine just created. It pins and
+// re-verifies the reservation's identity immediately before the rename and
+// renames directly into that pinned handle, rather than re-resolving the
+// reservation by path -- if another same-user process renamed the
+// reservation away and installed a replacement between reservation creation
+// and this call, a path-based rename would move the child into that
+// replacement instead, and later cleanup (which rejects the mismatched
+// identity) would leave it stranded and hidden.
+func renameAnalysisCacheChildIntoReservation(root safeio.Root, reservation analysisCacheQuarantineReservation, name string) (returnErr error) {
+	reservationRoot, err := root.OpenRoot(reservation.name)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := reservationRoot.Close(); returnErr != nil {
+			returnErr = errors.Join(returnErr, closeErr)
+		}
+	}()
+	info, err := reservationRoot.Lstat(".")
+	if err != nil {
+		return err
+	}
+	if !sameAnalysisCacheRollbackTarget(info, reservation.info) {
+		return fmt.Errorf("reservation directory changed before rename: %w", os.ErrNotExist)
+	}
+	err = safeio.RenameNoReplaceInto(root, name, reservationRoot, filepath.Base(reservation.quarantineName))
+	if errors.Is(err, fs.ErrInvalid) {
+		// root does not support the pinned-destination rename trait (e.g. a
+		// test double). Fall back to the path-based rename rather than
+		// failing every caller of this optional capability.
+		return safeio.RenameNoReplace(root, name, reservation.quarantineName)
+	}
+	return err
 }
 
 // analysisCacheChildIsEmpty reports whether name is an empty directory. A

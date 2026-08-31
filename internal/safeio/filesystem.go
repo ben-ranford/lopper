@@ -652,6 +652,27 @@ func (r *osRoot) RenameNoReplace(oldName, newName string) (returnErr error) {
 	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newBase)
 }
 
+func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName string) (returnErr error) {
+	oldParent, oldBase, err := resolveRenameNoReplaceTarget(oldName)
+	if err != nil {
+		return err
+	}
+	newParentRoot, ok := newRoot.(*osRoot)
+	if !ok {
+		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
+	}
+
+	oldParentRoot, closeOldParent, err := r.openRenameNoReplaceParent(oldParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeOldParent(returnErr)
+	}()
+
+	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newName)
+}
+
 func resolveRenameNoReplaceTarget(name string) (string, string, error) {
 	rel, err := resolveRelativeTarget(name, rejectRootTarget)
 	if err != nil {
@@ -701,6 +722,24 @@ func RenameNoReplace(root Root, oldName, newName string) error {
 		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
 	}
 	results := method.Call([]reflect.Value{reflect.ValueOf(oldName), reflect.ValueOf(newName)})
+	if len(results) != 1 || results[0].IsNil() {
+		return nil
+	}
+	err, _ := results[0].Interface().(error)
+	return err
+}
+
+// RenameNoReplaceInto renames oldName (resolved from oldRoot) directly into
+// an already-open, caller-verified newRoot as newName, without re-resolving
+// newRoot's path. Use this when newRoot's identity has already been pinned
+// and verified, and a fresh path lookup could resolve to a directory a
+// concurrent process swapped in after that verification.
+func RenameNoReplaceInto(oldRoot Root, oldName string, newRoot Root, newName string) error {
+	method := reflect.ValueOf(oldRoot).MethodByName("RenameNoReplaceInto")
+	if !method.IsValid() {
+		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
+	}
+	results := method.Call([]reflect.Value{reflect.ValueOf(oldName), reflect.ValueOf(newRoot), reflect.ValueOf(newName)})
 	if len(results) != 1 || results[0].IsNil() {
 		return nil
 	}
