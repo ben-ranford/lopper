@@ -37,6 +37,16 @@ const ALL_COMMENT_PREFIXES = ['//', '/*', '#'];
 const NO_MARKERS = new Set(['nosec', 'nosonar', 'nolint', 'noqa']);
 const ESLINT_MARKERS = new Set(['eslint-disable', 'eslint-disable-next-line', 'eslint-disable-line']);
 const TS_MARKERS = new Set(['ts-ignore', 'ts-expect-error']);
+// Every literal substring that must appear, case-insensitively, somewhere
+// in a patch for it to have any chance of containing a recognized marker
+// (see hasMarkerAfterCommentPrefix) -- independent of comment/quote state,
+// which only affects whether a *position* counts, never whether the text
+// exists at all. Used as a cheap pre-filter to avoid a Contents/Blob API
+// fetch for every scanned file regardless of whether it could possibly
+// contain a suppression, which a PR with many changed source files (up to
+// the 3000-file trusted diff limit) could otherwise use to exhaust the
+// workflow's API quota or job timeout before publishing anything.
+const MARKER_SUBSTRINGS = [...NO_MARKERS, 'eslint-disable', ...TS_MARKERS, 'coverage', 'pragma'];
 const TRACKED_FILE_STATUSES = new Set(['added', 'modified', 'renamed', 'copied']);
 const TRUSTED_TRACKER_LOGINS = new Set(['github-actions[bot]']);
 const SOURCE_EXTENSIONS = new Set([
@@ -556,10 +566,23 @@ function assertCompletePatch(file) {
   }
 }
 
+function patchCouldContainMarker(patch) {
+  const lower = patch.toLowerCase();
+  return MARKER_SUBSTRINGS.some((substring) => lower.includes(substring));
+}
+
 async function scanPatch(records, { github, file, patch, context, headSHA }) {
   validateFile(file);
   if (typeof patch !== 'string') {
     throw new TypeError(`Inline suppression diff patch is unavailable for ${file}; refusing to publish tracking mutations.`);
+  }
+
+  // No recognized marker name appears anywhere in this patch, so no line
+  // in it -- regardless of comment or quote state -- could possibly match
+  // one; skip the Contents/Blob API fetch entirely rather than paying for
+  // it on every scanned file.
+  if (!patchCouldContainMarker(patch)) {
+    return;
   }
 
   // The diff's own context window (GitHub's default 3 lines) cannot reveal

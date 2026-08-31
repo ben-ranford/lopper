@@ -236,7 +236,13 @@ jobs:
           # (which lowercases before matching): a suppression added to
           # e.g. main.GO or component.TSX must not be silently skipped by
           # this scope filter while the trusted tracker still finds it.
-          source_file_test='.filename | test("^\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")'
+          # Mirrors TRACKED_FILE_STATUSES in the trusted JS tracker, which
+          # excludes "removed": a deleted file can never contain an added
+          # suppression line, so scanning it (and enforcing patch
+          # completeness for it) has no tracking benefit and would fail a
+          # PR closed merely for deleting a large source file whose patch
+          # GitHub omits.
+          source_file_test='(.filename | test("^\\.githooks/|\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$"; "i")) and .status != "removed"'
           # GitHub's pull-files endpoint returns at most 3000 files; a PR
           # with more changed files than that can never have all of them
           # retrieved, so a suppression added beyond the first 3000 would

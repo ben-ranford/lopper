@@ -729,6 +729,70 @@ func TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent(t *testing.T) {
 	}
 }
 
+// TestCIWorkflowIncompletePatchCheckExemptsRemovedFiles actually runs the
+// real incomplete-patch gate against a synthetic pull-files response where
+// a large deleted source file has its patch omitted (as GitHub does for
+// large diffs), proving a removed file no longer fails the required check
+// even though it can never contain an added suppression line.
+func TestCIWorkflowIncompletePatchCheckExemptsRemovedFiles(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const varsStart = `source_file_test=`
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the source-file test")
+	}
+	varsLineEnd := strings.Index(gate.Run[varsStartIdx:], "\n")
+	if varsLineEnd == -1 {
+		t.Fatalf("suppression tracking gate source-file test is unterminated")
+	}
+	varsLine := gate.Run[varsStartIdx : varsStartIdx+varsLineEnd]
+
+	const checkStart = `incomplete_count="$(echo "${pr_files_json}"`
+	const checkEnd = "\nfi\n"
+	checkStartIdx := strings.Index(gate.Run, checkStart)
+	if checkStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the incomplete-patch check")
+	}
+	checkEndRelIdx := strings.Index(gate.Run[checkStartIdx:], checkEnd)
+	if checkEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the incomplete-patch check end marker")
+	}
+	checkBlock := gate.Run[checkStartIdx : checkStartIdx+checkEndRelIdx+len(checkEnd)]
+
+	dir := t.TempDir()
+
+	removedFileJSON, err := json.Marshal([]map[string]any{
+		{"filename": "big.go", "status": "removed", "additions": 0, "deletions": 5000, "patch": nil},
+	})
+	if err != nil {
+		t.Fatalf("marshal removed-file fixture: %v", err)
+	}
+	script := "set -euo pipefail\n" + varsLine + "\npr_files_json=" + shellQuote(string(removedFileJSON)) + "\n" + checkBlock
+	if output, err := runShellCommand(dir, script, nil); err != nil {
+		t.Fatalf("expected a removed file with an omitted patch to pass, output:\n%s", output)
+	}
+
+	incompleteAddedJSON, err := json.Marshal([]map[string]any{
+		{"filename": "big.go", "status": "added", "additions": 5000, "deletions": 0, "patch": nil},
+	})
+	if err != nil {
+		t.Fatalf("marshal incomplete-added-file fixture: %v", err)
+	}
+	script = "set -euo pipefail\n" + varsLine + "\npr_files_json=" + shellQuote(string(incompleteAddedJSON)) + "\n" + checkBlock
+	output, err := runShellCommand(dir, script, nil)
+	if err == nil {
+		t.Fatalf("expected an added file with an omitted patch to still fail closed, output:\n%s", output)
+	}
+	if !strings.Contains(output, "omitted the patch for") {
+		t.Fatalf("expected an omitted-patch rejection message, got:\n%s", output)
+	}
+}
+
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
 	t.Helper()
 

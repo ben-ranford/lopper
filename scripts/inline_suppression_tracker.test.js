@@ -1148,6 +1148,28 @@ test('stops fetching occurrences once the record limit is reached', async () => 
   );
 });
 
+test('skips the head-content fetch entirely for files with no possible marker', async () => {
+  // A PR with many changed source files, none of which contain any
+  // marker-shaped text, must not pay for a Contents/Blob API fetch on
+  // every one of them regardless -- up to the 3000-file trusted diff
+  // limit, that could exhaust the workflow's API quota or job timeout
+  // before publishing anything.
+  const files = [];
+  for (let index = 0; index < 20; index += 1) {
+    files.push({
+      filename: `pkg/file${index}.go`,
+      status: 'added',
+      patch: `@@ -0,0 +1,3 @@\n+package main\n+\n+func f${index}() { _ = ${index} }\n`,
+    });
+  }
+  const harness = makeHarness({ files });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 0);
+  assert.equal(harness.calls.contentFetches ?? 0, 0);
+});
+
 test('rejects path traversal before issue mutation', async () => {
   const harness = makeHarness({
     files: [
