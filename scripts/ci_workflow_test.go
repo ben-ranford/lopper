@@ -1,6 +1,8 @@
 package scripts
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -407,11 +409,20 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// closing delimiter looks like it opens a fresh quoted region and
 		// masks a real suppression comment following it -- silently, since
 		// the scan then reports no suspects rather than failing loudly.
-		// Reset only at hunk boundaries, where a zero-context diff has
-		// unseen content this scan never reads.
-		`/^@@ / { quote_state = ""; next }`,
 		`masked = mask_quoted_regions(content, quote_state)`,
 		`quote_state = final_quote_state`,
+		// GitHub's default 3-line patch context still cannot reveal a
+		// construct opened further above a hunk than that window reaches;
+		// seed each hunk's starting state from the complete blob fetched
+		// above (bundled as the first ARGV file, read while FNR == NR)
+		// instead of resetting to "no open quote" at the boundary.
+		`gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${file_sha}" --jq '.content' | base64 -d >"${content_tmp}"`,
+		"FNR == NR {",
+		"full_lines[FNR] = $0",
+		"function seed_quote_state(   idx, prior_count, seed)",
+		`quote_state = seed_quote_state()`,
+		`' "${content_tmp}" -`,
+		`rm -f "${content_tmp}"`,
 		// An apostrophe inside a genuine line comment (e.g. "don't") is
 		// comment prose, not code; a real, unquoted line-comment
 		// delimiter marks that a quote left dangling from there to end
@@ -551,6 +562,85 @@ func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
 	}
 	if !strings.Contains(output, "does not match its own recorded file and content") {
 		t.Fatalf("expected a fingerprint-binding rejection message, got:\n%s", output)
+	}
+}
+
+// TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent actually runs the
+// embedded per-file suspect scan (not just asserting on its source text)
+// against a synthetic file whose closing template-literal backtick sits
+// further above a hunk than the patch's own context window reaches -- the
+// exact gap a purely textual assertion could never catch, since the awk
+// program is syntactically identical whether or not the seeding logic is
+// wired up correctly to the blob it just fetched.
+func TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const varsStart = `no_prefix="no"`
+	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
+	}
+	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
+	if varsEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
+	}
+	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
+
+	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
+	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
+	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
+	if loopStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
+	}
+	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
+	if loopEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
+	}
+	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
+
+	// The opening backtick sits 3 lines above the hunk -- further back than
+	// the patch's own 3-line context window reveals (the hunk below starts
+	// at "line2", one line after the opener).
+	blob := "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`;\n"
+	patch := "@@ -4,4 +4,4 @@\n line2\n line3\n line4\n-tail`;\n+tail`; //" +
+		"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	fileJSON, err := json.Marshal(map[string]string{
+		"filename": "tpl.js",
+		"sha":      "deadbeef",
+		"patch":    patch,
+	})
+	if err != nil {
+		t.Fatalf("marshal file_json fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	// Stands in for the real `gh api .../git/blobs/<sha> --jq '.content'`
+	// call: the script under test only cares that this prints the blob's
+	// base64 content to stdout, not that it actually reached GitHub.
+	fakeGH := "#!/usr/bin/env bash\nif [ \"$1\" = api ]; then printf '%s' \"$BLOB_CONTENT_B64\"; exit 0; fi\nexit 1\n"
+	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
+
+	script := "set -euo pipefail\n" + varsBlock + "\nfile_json=" + shellQuote(string(fileJSON)) + "\n" + loopBody
+
+	output, err := runShellCommand(dir, script, map[string]string{
+		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
+		"GITHUB_REPOSITORY": "octo/lopper",
+	})
+	if err != nil {
+		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
+	}
+	if !strings.Contains(output, "tpl.js\x01tail`; //eslint-disable-line") {
+		t.Fatalf("expected the suspect scan to detect the marker beyond the patch context window via the seeded blob content, output:\n%q", output)
 	}
 }
 

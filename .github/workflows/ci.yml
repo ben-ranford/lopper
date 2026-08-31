@@ -289,7 +289,23 @@ jobs:
             else
               active_suspect_pattern="${suspect_pattern_all}"
             fi
+            # GitHub's default 3-line patch context can hide a multi-line
+            # construct (e.g. an open template literal) that begins further
+            # above a hunk than that window reaches; seeding every hunk's
+            # quote state as "no open quote" could mask a real suppression
+            # comment after it, or the reverse. Fetch the complete blob at
+            # this file's own pull-files SHA (no path-encoding needed, and
+            # no Contents API inline-size limit) so the scan below can
+            # derive each hunk's starting quote state from it instead.
+            file_sha="$(echo "${file_json}" | jq -r '.sha')"
+            content_tmp="$(mktemp)"
+            gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${file_sha}" --jq '.content' | base64 -d >"${content_tmp}"
             echo "${file_json}" | jq -r '.patch // empty' | awk -v pat="${active_suspect_pattern}" -v fname="${filename}" '
+              FNR == NR {
+                full_line_count = FNR
+                full_lines[FNR] = $0
+                next
+              }
               function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start) {
                 result = ""
                 quote = initial_quote
@@ -356,16 +372,39 @@ jobs:
                 final_quote_state = (past_comment_start ? "" : quote)
                 return result
               }
+              # The quote state to seed a hunk beginning at 1-indexed
+              # `line`: derived from the complete blob content read above,
+              # not just the 3-line context window the patch itself carries.
+              function seed_quote_state(   idx, prior_count, seed) {
+                seed = ""
+                prior_count = line - 1
+                if (full_line_count + 0 < prior_count) {
+                  prior_count = full_line_count + 0
+                }
+                for (idx = 1; idx <= prior_count; idx++) {
+                  mask_quoted_regions(full_lines[idx], seed)
+                  seed = final_quote_state
+                }
+                return seed
+              }
               /^\+\+\+ / { next }
-              # A zero-context diff has no unchanged lines between hunks,
-              # so within one hunk consecutive added lines are genuinely
-              # adjacent in the resulting file, but across the gap to the
-              # next hunk there is unseen content this scan never reads;
-              # quote state cannot be trusted to carry across that gap.
-              /^@@ / { quote_state = ""; next }
+              /^@@ / {
+                hunk = $0
+                sub(/^@@ -[0-9]+(,[0-9]+)? \+/, "", hunk)
+                sub(/ .*/, "", hunk)
+                split(hunk, parts, ",")
+                line = parts[1] + 0
+                # Unlike a zero-context diff, this patch carries real
+                # unchanged context lines around each hunk, but not far
+                # enough back to reveal a construct opened many lines
+                # above; derive the starting state from the complete blob
+                # instead of guessing "no open quote".
+                quote_state = seed_quote_state()
+                next
+              }
               /^\+/ {
                 content = substr($0, 2)
-                # Quote state carries across added lines within a hunk: a
+                # Quote state carries across lines within a hunk: a
                 # multi-line string (e.g. a JavaScript template literal)
                 # that closes partway through a later line must not make
                 # that later scan think the closing delimiter opens a new
@@ -376,8 +415,22 @@ jobs:
                 if (tolower(masked) ~ pat) {
                   printf "%s\001%s\n", fname, content
                 }
+                line++
+                next
               }
-            '
+              /^-/ { next }
+              /^\\/ { next }
+              {
+                # Context line: part of the resulting file, so its
+                # quote-affecting characters must still be tracked even
+                # though it is not itself scanned for a suspect marker.
+                content = substr($0, 2)
+                mask_quoted_regions(content, quote_state)
+                quote_state = final_quote_state
+                line++
+              }
+            ' "${content_tmp}" -
+            rm -f "${content_tmp}"
           done > "${suspect_pairs_file}"
           suspect_count="$(wc -l < "${suspect_pairs_file}" | tr -d ' ')"
 
