@@ -10,15 +10,66 @@ marker_ts_prefix="ts"
 marker_eslint_prefix="eslint"
 marker_coverage_prefix="coverage"
 # Build marker names from pieces so this gate does not match its own source.
-marker_pattern="(^|[[:space:]])((//|/\\*+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
+marker_names="(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore))"
+# Python/Ruby/YAML/shell only ever treat "#" as a comment delimiter, so "//"
+# in e.g. Python's `value = numerator // noqa` is floor division, not a
+# comment -- matching it there would reject valid code for missing
+# suppression metadata it was never meant to carry. Mirrors
+# HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS in the trusted JS tracker; PHP
+# and any other extension not covered by either set keep recognizing every
+# prefix, since PHP alone among the covered languages supports both styles.
+marker_start_pattern_hash="#[[:space:]]*${marker_names}"
+marker_start_pattern_slash="(//|/[*]+)[[:space:]]*${marker_names}"
+marker_start_pattern_all="(//|/[*]+|#)[[:space:]]*${marker_names}"
+# Used to locate the marker's start within content that already matched one
+# of the language-specific patterns above, so the broadest pattern is safe
+# here regardless of the source language.
+marker_start_pattern="$marker_start_pattern_all"
+# A "//"/"/*" comment delimiter needs no preceding whitespace in any of the
+# covered languages -- a marker immediately following code with no space in
+# between is still a valid suppression -- so requiring it would miss such
+# lines entirely. Excluding ":" keeps a URL scheme (http://nolint...) from
+# matching; everything else is a valid preceding position. Whether the
+# comment delimiter falls inside a string literal is handled separately by
+# mask_quoted_regions below (mirroring the trusted tracker's
+# isInsideQuotedRegion), which tracks quote state rather than only the
+# single preceding character -- checking only that character misses a
+# marker preceded by ordinary text inside an otherwise-open string, such as
+# `"Use //nolint to suppress"`.
+#
+# "#" does not follow one universal rule even among hash-only languages:
+# Python and Ruby start a comment with "#" anywhere outside a string, just
+# like "//" does in slash-style languages, but YAML requires "#" to be
+# separated from the preceding scalar by whitespace (or start the line),
+# and shell only treats it as a comment when it begins a word. Mirrors
+# STRICT_HASH_BOUNDARY_EXTENSIONS/isCommentBoundary in the trusted tracker.
+marker_pattern_hash_strict="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_hash_lenient="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
+# PHP (and any other extension covered by neither set) keeps the original
+# lenient boundary for "#" too: unlike YAML/shell, PHP's "#" needs no
+# free-standing rule.
+marker_pattern_all="(^|[^:])(${marker_start_pattern_all})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
+# Same extension classification as STRICT_HASH_BOUNDARY_EXTENSIONS/
+# SLASH_STYLE_EXTENSIONS in the trusted JS tracker. Python/Ruby are
+# hash-only for prefix-set purposes but use the lenient boundary, so they
+# fall through to marker_pattern_all's shape (not selected by either
+# pattern below); see the active_pattern selection where they route to
+# marker_pattern_hash_lenient explicitly.
+strict_hash_file_pattern="\\.(bash|ksh|sh|ya?ml|zsh)$"
+lenient_hash_file_pattern="\\.(py|rb)$"
+slash_style_file_pattern="\\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$"
 diff_scope=""
+diff_mode=""
+gh_bin="${GH_BIN:-gh}"
+tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
+tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
 
 create_temp_file() {
-	local template="${TMPDIR:-/tmp}/inline-suppressions.XXXXXX"
 	local temp_file=""
 
-	if temp_file="$(mktemp "$template" 2>/dev/null)"; then
+	if temp_file="$(mktemp "${TMPDIR:-/tmp}/inline-suppressions.XXXXXX" 2>/dev/null)"; then
 		printf '%s\n' "$temp_file"
 		return 0
 	fi
@@ -31,12 +82,369 @@ create_temp_file() {
 	return 1
 }
 
+trim_value() {
+	local value="$1"
+	value="${value#"${value%%[![:space:]]*}"}"
+	value="${value%"${value##*[![:space:]]}"}"
+	printf '%s\n' "$value"
+}
+
+extract_metadata_field() {
+	local content="$1"
+	local value=""
+	local scope="$content"
+	local marker_match
+
+	marker_match="$(printf '%s' "$content" | grep -oE "${marker_start_pattern}.*" | head -n1 || true)"
+	if [[ -n "$marker_match" ]]; then
+		scope="$marker_match"
+	fi
+
+	if [[ "$scope" =~ (^|[[:space:];,])($2)[[:space:]]*[:=][[:space:]]*([^;]+) ]]; then
+		value="$(trim_value "${BASH_REMATCH[3]}")"
+	fi
+	printf '%s\n' "$value"
+}
+
+fingerprint_for_match() {
+	local file="$1"
+	local content="$2"
+
+	printf '%s\n%s' "$file" "$content" | shasum -a 256 | awk '{ print $1 }'
+}
+
+fingerprint_for_occurrence() {
+	local file="$1"
+	local content="$2"
+	local occurrence="$3"
+
+	if [[ "$occurrence" -le 1 ]]; then
+		fingerprint_for_match "$file" "$content"
+		return
+	fi
+	printf '%s\n%s\noccurrence:%s' "$file" "$content" "$occurrence" | shasum -a 256 | awk '{ print $1 }'
+}
+
+read_full_file_content() {
+	local file="$1"
+	local head_parent
+
+	# The complete file at its current (target-side) state, not just the
+	# lines visible in this diff: the trusted tracker (which sees GitHub's
+	# default context lines) and this zero-context diff must agree on
+	# exactly the same content, both for occurrence counting and for
+	# seeding a hunk's starting quote state from content the diff's own
+	# context window never reveals.
+	#
+	# For pull_request CI runs, actions/checkout's default behavior checks
+	# out the synthetic PR merge commit (base + head merged), not the PR's
+	# own head tree. If the base branch independently added an identical
+	# suppression after this PR was opened, this working tree would see
+	# both copies while the trusted tracker (which reads pull.head.sha via
+	# the API) sees only the PR's own, producing a different ordinal. When
+	# HEAD is such a merge commit (exactly two parents), read the second
+	# parent's tree -- the PR's own head -- instead of the working tree.
+	#
+	# Gated on actually being a pull_request CI run: an ordinary local
+	# merge commit (e.g. merging an updated main into a topic branch) is
+	# also two-parent, but its second parent is the merged-in branch, not
+	# "this change's own head" -- treating it the same way would read the
+	# wrong tree, or fail outright for a topic-only file that doesn't
+	# exist on that other side.
+	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
+		git show "${head_parent}:${file}" 2>/dev/null
+	elif [[ "$diff_mode" == "staged" ]]; then
+		# When the diff being checked is `git diff --cached`, the file being
+		# scanned is the index's content, not the working tree's. If the
+		# working tree was subsequently edited (partial staging) or the file
+		# was deleted after staging, reading the working tree here would
+		# compute the occurrence ordinal against different content than what
+		# is actually staged, desyncing the fingerprint from the trusted
+		# tracker's (which reads the equivalent committed/staged state).
+		git show ":${file}" 2>/dev/null
+	else
+		cat -- "$file" 2>/dev/null
+	fi
+}
+
+occurrence_in_file() {
+	local file="$1"
+	local target_line="$2"
+	local target_content="$3"
+
+	# Derive the occurrence ordinal from the complete file at its current
+	# (target-side) state rather than only lines visible in this diff: the
+	# trusted tracker (which sees GitHub's default context lines) and this
+	# zero-context diff must agree on the exact same fingerprint for a given
+	# suppression, and only counting from the full file is diff-shape
+	# independent.
+	read_full_file_content "$file" | awk -v target_line="$target_line" -v target_content="$target_content" '
+		# Exiting once NR exceeds target_line closes this pipe read end
+		# before the producer (cat/git show) has finished writing a large
+		# file; with `set -o pipefail` above, the resulting SIGPIPE makes
+		# the producer exit 141 and fails this whole pipeline even though
+		# the count itself is already correct. Keep consuming to EOF.
+		{ line = $0; sub(/\r$/, "", line) }
+		NR <= target_line && line == target_content { count++ }
+		END { print count + 0 }
+	'
+}
+
+source_url_for_match() {
+	local file="$1"
+	local line="$2"
+	local repo="${SUPPRESSION_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+	local server="${GITHUB_SERVER_URL:-https://github.com}"
+	local sha="${GITHUB_SHA:-}"
+
+	if [[ -n "$repo" && -n "$sha" ]]; then
+		printf '%s/%s/blob/%s/%s#L%s\n' "$server" "$repo" "$sha" "$file" "$line"
+		return 0
+	fi
+
+	printf '%s:%s\n' "$file" "$line"
+}
+
+write_tracking_body() {
+	local body_file="$1"
+	local file="$2"
+	local line="$3"
+	local content="$4"
+	local rationale="$5"
+	local owner="$6"
+	local removal_condition="$7"
+	local fingerprint="$8"
+	local location_url
+
+	location_url="$(source_url_for_match "$file" "$line")"
+	{
+		printf '<!-- lopper-inline-suppression:%s -->\n\n' "$fingerprint"
+		printf '## Inline analysis suppression tracking\n\n'
+		printf '%s\n' "- Location: \`${file}:${line}\`"
+		printf '%s\n' "- Source: ${location_url}"
+		printf '%s\n' "- Rationale: ${rationale}"
+		printf '%s\n' "- Owner: ${owner}"
+		printf '%s\n\n' "- Removal condition: ${removal_condition}"
+		printf 'Source line:\n\n'
+		printf '```text\n'
+		printf '%s\n' "$content"
+		printf '```\n'
+	} >"$body_file"
+}
+
+gh_issue_list() {
+	local repo="$1"
+	local fingerprint="$2"
+	# Fingerprints are SHA-256 hex digests, so this marker is safe to inline into the jq string literal below.
+	local marker="<!-- lopper-inline-suppression:${fingerprint} -->"
+	local jq_filter="[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"${marker}\")))][0].number"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue list --repo "$repo" --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
+		return
+	fi
+	"$gh_bin" issue list --state open --search "lopper-inline-suppression:${fingerprint} author:github-actions[bot]" --json number,author,body --jq "$jq_filter"
+}
+
+gh_issue_comment() {
+	local repo="$1"
+	local issue_number="$2"
+	local body_file="$3"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue comment "$issue_number" --repo "$repo" --body-file "$body_file"
+		return
+	fi
+	"$gh_bin" issue comment "$issue_number" --body-file "$body_file"
+}
+
+gh_issue_create() {
+	local repo="$1"
+	local title="$2"
+	local body_file="$3"
+
+	if [[ -n "$repo" ]]; then
+		"$gh_bin" issue create --repo "$repo" --title "$title" --body-file "$body_file"
+		return
+	fi
+	"$gh_bin" issue create --title "$title" --body-file "$body_file"
+}
+
+ensure_tracking_issue() {
+	local file="$1"
+	local line="$2"
+	local content="$3"
+	local occurrence="${4:-1}"
+	local rationale
+	local owner
+	local removal_condition
+	local fingerprint
+	local body_file
+	local title
+	local existing_issue
+	local created_issue
+	local repo="${SUPPRESSION_GITHUB_REPOSITORY:-${GITHUB_REPOSITORY:-}}"
+
+	rationale="$(extract_metadata_field "$content" "rationale|reason")"
+	owner="$(extract_metadata_field "$content" "owner")"
+	removal_condition="$(extract_metadata_field "$content" "remove-when|removal-condition|removal")"
+
+	if [[ -z "$rationale" || -z "$owner" || -z "$removal_condition" ]]; then
+		echo "Missing inline suppression tracking metadata for ${file}:${line}." >&2
+		echo "$content" >&2
+		echo "Add same-line metadata: rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>." >&2
+		return 1
+	fi
+
+	if ! command -v "$gh_bin" >/dev/null 2>&1; then
+		echo "Unable to track inline suppression ${file}:${line}: GitHub CLI '$gh_bin' was not found." >&2
+		echo "Install gh or set GH_BIN; CI must provide GH_TOKEN/GITHUB_TOKEN with issues:write." >&2
+		return 1
+	fi
+
+	fingerprint="$(fingerprint_for_occurrence "$file" "$content" "$occurrence")"
+	body_file="$(create_temp_file)"
+	write_tracking_body "$body_file" "$file" "$line" "$content" "$rationale" "$owner" "$removal_condition" "$fingerprint"
+	title="ci: track inline suppression in ${file}:${line}"
+
+	existing_issue="$(gh_issue_list "$repo" "$fingerprint" 2>/dev/null)" || {
+		rm -f "$body_file"
+		echo "Unable to search GitHub tracking issues for ${file}:${line}." >&2
+		echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be verified." >&2
+		return 1
+	}
+
+	if [[ -n "$existing_issue" ]]; then
+		gh_issue_comment "$repo" "$existing_issue" "$body_file" >/dev/null || {
+			rm -f "$body_file"
+			echo "Unable to update GitHub tracking issue #${existing_issue} for ${file}:${line}." >&2
+			echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be updated." >&2
+			return 1
+		}
+		rm -f "$body_file"
+		echo "Updated GitHub tracking issue #${existing_issue} for inline suppression ${file}:${line}."
+		return 0
+	fi
+
+	created_issue="$(gh_issue_create "$repo" "$title" "$body_file" 2>/dev/null)" || {
+		rm -f "$body_file"
+		echo "Unable to create GitHub tracking issue for inline suppression ${file}:${line}." >&2
+		echo "Ensure gh is authenticated and CI grants issues:write; new inline suppressions fail closed when tracking cannot be created." >&2
+		return 1
+	}
+
+	rm -f "$body_file"
+	echo "Opened GitHub tracking issue for inline suppression ${file}:${line}: ${created_issue}"
+	return 0
+}
+
+json_escape() {
+	local value="$1"
+	value="${value//\\/\\\\}"
+	value="${value//\"/\\\"}"
+	value="${value//$'\t'/\\t}"
+	value="${value//$'\r'/\\r}"
+	value="${value//$'\n'/\\n}"
+	printf '%s' "$value"
+}
+
+write_tracking_records() {
+	local output_file="$1"
+	local records_file="$2"
+	local output_dir
+	local tmp_output
+	local first=1
+	local file
+	local line
+	local content
+	local rationale
+	local owner
+	local removal_condition
+	local fingerprint
+	local location_url
+	local occurrence
+
+	output_dir="$(dirname "$output_file")"
+	mkdir -p "$output_dir"
+	tmp_output="$(create_temp_file)"
+
+	{
+		printf '{\n'
+		printf '  "schema": "lopper-inline-suppressions-v1",\n'
+		printf '  "suppressions": [\n'
+	} >"$tmp_output"
+
+	while IFS= read -r -d '' file && IFS= read -r -d '' line && IFS= read -r -d '' content; do
+		rationale="$(extract_metadata_field "$content" "rationale|reason")"
+		owner="$(extract_metadata_field "$content" "owner")"
+		removal_condition="$(extract_metadata_field "$content" "remove-when|removal-condition|removal")"
+
+		if [[ -z "$rationale" || -z "$owner" || -z "$removal_condition" ]]; then
+			rm -f "$tmp_output"
+			echo "Missing inline suppression tracking metadata for ${file}:${line}." >&2
+			echo "$content" >&2
+			echo "Add same-line metadata: rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>." >&2
+			return 1
+		fi
+
+		occurrence="$(occurrence_in_file "$file" "$line" "$content")"
+		fingerprint="$(fingerprint_for_occurrence "$file" "$content" "$occurrence")"
+		location_url="$(source_url_for_match "$file" "$line")"
+
+		if [[ "$first" -eq 0 ]]; then
+			printf ',\n' >>"$tmp_output"
+		fi
+		first=0
+		{
+			printf '    {\n'
+			printf '      "fingerprint": "%s",\n' "$(json_escape "$fingerprint")"
+			printf '      "file": "%s",\n' "$(json_escape "$file")"
+			printf '      "line": %s,\n' "$line"
+			printf '      "source": "%s",\n' "$(json_escape "$location_url")"
+			printf '      "content": "%s",\n' "$(json_escape "$content")"
+			printf '      "rationale": "%s",\n' "$(json_escape "$rationale")"
+			printf '      "owner": "%s",\n' "$(json_escape "$owner")"
+			printf '      "remove_when": "%s"\n' "$(json_escape "$removal_condition")"
+			printf '    }'
+		} >>"$tmp_output"
+	done <"$records_file"
+
+	{
+		printf '\n'
+		printf '  ]\n'
+		printf '}\n'
+	} >>"$tmp_output"
+
+	mv "$tmp_output" "$output_file"
+}
+
+track_records_with_gh() {
+	local records_file="$1"
+	local file
+	local line
+	local content
+	local occurrence
+
+	while IFS= read -r -d '' file && IFS= read -r -d '' line && IFS= read -r -d '' content; do
+		occurrence="$(occurrence_in_file "$file" "$line" "$content")"
+		if ! ensure_tracking_issue "$file" "$line" "$content" "$occurrence"; then
+			return 1
+		fi
+	done <"$records_file"
+}
+
 if ! git diff --cached --quiet --exit-code -- .; then
 	diff_scope="staged changes"
-	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AM --relative --)
+	diff_mode="staged"
+	# core.quotePath=false stops git from C-style-quoting/escaping non-ASCII
+	# path bytes in the "+++ b/<path>" header; the awk parser below only
+	# strips a plain trailing tab, so a quoted/escaped path wouldn't match
+	# it at all and the file's suppressions would go undetected.
+	diff_args=(git -c core.quotePath=false diff --cached --unified=0 --no-color --diff-filter=AMR --relative --)
 elif ! git diff --quiet --exit-code -- .; then
 	diff_scope="working tree changes"
-	diff_args=(git diff --unified=0 --no-color --diff-filter=AM --relative --)
+	diff_mode="worktree"
+	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
 	base_ref="$requested_base_ref"
 	used_fallback=0
@@ -58,23 +466,197 @@ else
 	else
 		diff_scope="branch changes vs $base_ref"
 	fi
-	diff_args=(git diff --unified=0 --no-color --diff-filter=AM --relative "$base_commit..HEAD" --)
+	diff_mode="branch"
+	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
 fi
 
 tmp_matches="$(create_temp_file)"
-trap 'rm -f "$tmp_matches"' EXIT INT TERM
+tmp_diff="$(create_temp_file)"
+tmp_bundle="$(create_temp_file)"
+trap 'rm -f "$tmp_matches" "$tmp_diff" "$tmp_bundle"' EXIT INT TERM
+
+"${diff_args[@]}" >"$tmp_diff"
+
+# GitHub's default 3-line diff context can hide a multi-line construct (e.g.
+# an open template literal) that begins further above a hunk than that
+# window reaches; seeding every hunk's quote state as "no open quote" would
+# make a closing delimiter later in the hunk look like a fresh opener,
+# masking a real suppression comment after it -- or the reverse. Read each
+# changed source file's complete content once, up front, so the main scan
+# below can derive each hunk's starting quote state from it instead of
+# guessing. \001-prefixed marker lines (mirroring the NUL-delimited match
+# records below) delimit one file's content from the next; a bare filename
+# could otherwise collide with real file content.
+: >"$tmp_bundle"
+while IFS= read -r -d '' bundle_file; do
+	lower_bundle_file="$(printf '%s' "$bundle_file" | tr '[:upper:]' '[:lower:]')"
+	if [[ "$lower_bundle_file" =~ $source_file_pattern ]]; then
+		{
+			printf '\001%s\n' "$bundle_file"
+			read_full_file_content "$bundle_file"
+			printf '\n'
+		} >>"$tmp_bundle"
+	fi
+done < <(awk '/^\+\+\+ b\// { f = substr($0, 7); sub(/\t$/, "", f); printf "%s%c", f, 0 }' "$tmp_diff")
 
 set +e
-"${diff_args[@]}" | awk -v pattern="$marker_pattern" -v file_pattern="$source_file_pattern" '
+awk \
+	-v pattern_hash_strict="$marker_pattern_hash_strict" \
+	-v pattern_hash_lenient="$marker_pattern_hash_lenient" \
+	-v pattern_slash="$marker_pattern_slash" \
+	-v pattern_all="$marker_pattern_all" \
+	-v file_pattern="$source_file_pattern" \
+	-v strict_hash_file_pattern="$strict_hash_file_pattern" \
+	-v lenient_hash_file_pattern="$lenient_hash_file_pattern" \
+	-v slash_style_file_pattern="$slash_style_file_pattern" '
 BEGIN {
 	file = ""
 	line = 0
 	found = 0
 	check_file = 0
+	quote_state = ""
+	active_pattern = pattern_all
+	bundle_file = ""
+}
+# The first ARGV file is the \001-delimited content bundle built above;
+# FNR==NR is true only while reading it (FNR resets to 1 when awk moves on
+# to the diff, the second ARGV file, while NR keeps counting), so this rule
+# never fires once the actual diff scan below begins.
+FNR == NR {
+	if (substr($0, 1, 1) == "\001") {
+		bundle_file = substr($0, 2)
+		full_line_count[bundle_file] = 0
+		next
+	}
+	full_line_count[bundle_file]++
+	full_lines[bundle_file, full_line_count[bundle_file]] = $0
+	next
+}
+# The quote state to seed a hunk beginning at 1-indexed `line`: derived from
+# the complete head file bundled above, not just the surrounding diff
+# context window. Mirrors quoteStateSeedFromLines in the trusted tracker.
+function seed_quote_state(   idx, prior_count, seed) {
+	seed = ""
+	prior_count = line - 1
+	if (full_line_count[file] + 0 < prior_count) {
+		prior_count = full_line_count[file] + 0
+	}
+	for (idx = 1; idx <= prior_count; idx++) {
+		mask_quoted_regions(full_lines[file, idx], seed)
+		seed = final_quote_state
+	}
+	return seed
+}
+# Checking only the character immediately preceding a candidate comment
+# delimiter misses a marker preceded by ordinary text inside an otherwise
+# still-open string literal, e.g. `"Use //nolint to suppress"`. Blanking
+# out the interior of every quoted region (single/double/backtick, with
+# backslash-escaping) before matching removes any comment-delimiter-shaped
+# text found only inside a string, while leaving real code -- including a
+# delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
+# untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
+# both detectors agree on what counts as a suppression.
+function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start, shell_language, no_escapes_in_this_quote, strict_hash_boundary_language) {
+	result = ""
+	quote = initial_quote
+	n = length(s)
+	past_comment_start = 0
+	# "#" does not follow one universal boundary rule: Python/Ruby start a
+	# comment with "#" anywhere outside a string, but YAML/shell require it
+	# free-standing. Mirrors STRICT_HASH_BOUNDARY_EXTENSIONS in the trusted
+	# tracker.
+	strict_hash_boundary_language = (tolower(file) ~ /\.(bash|ksh|sh|ya?ml|zsh)$/)
+	# Rust and C/C++ have no multi-character single-quoted strings: a
+	# leading apostrophe is either a self-contained char literal (two or
+	# three characters, e.g. x or a backslash escape, between two
+	# apostrophes), a Rust lifetime (e.g. static or a), or a C++14 digit
+	# separator grouping the digits of a large number -- none of which
+	# close the way a real string does. Treating every apostrophe as a
+	# string delimiter would let one of these swallow the rest of the
+	# line, hiding a real suppression comment after it.
+	narrow_single_quote = (tolower(file) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)
+	# POSIX shell single-quoted strings have no escape character at all: a
+	# backslash inside one is literal, and the string closes at the very
+	# next apostrophe -- there is no way to escape a quote within single
+	# quotes. Treating "\" as escaping the following character there, the
+	# way it does for every other quote/language combination, would let a
+	# trailing backslash before the closing quote swallow that quote as
+	# escaped content, leaving the string open and masking a real
+	# suppression comment that follows it on the same line.
+	shell_language = (tolower(file) ~ /\.(bash|ksh|sh|zsh)$/)
+	for (i = 1; i <= n; i++) {
+		c = substr(s, i, 1)
+		if (quote != "") {
+			no_escapes_in_this_quote = (quote == "'"'"'" && shell_language)
+			if (c == "\\" && i < n && !no_escapes_in_this_quote) {
+				result = result "xx"
+				i++
+				continue
+			}
+			if (c == quote) {
+				result = result c
+				quote = ""
+			} else {
+				result = result "x"
+			}
+			continue
+		}
+		if (c == "'"'"'" && narrow_single_quote) {
+			if (substr(s, i + 1, 1) == "\\" && substr(s, i + 3, 1) == "'"'"'") {
+				result = result c "xx" "'"'"'"
+				i += 3
+			} else if (substr(s, i + 1, 1) != "'"'"'" && substr(s, i + 2, 1) == "'"'"'") {
+				result = result c "x" "'"'"'"
+				i += 2
+			} else {
+				result = result c
+			}
+			continue
+		}
+		if ((c == "/" && substr(s, i + 1, 1) == "/") || c == "#") {
+			# A genuine line-comment delimiter outside any quoted region
+			# does not itself change how the rest of the line is masked
+			# (a well-formed quoted span later in the same comment, e.g.
+			# a backtick-quoted example, still needs its interior masked
+			# so example marker text is not mistaken for a real one); it
+			# only marks that a quote left dangling at end of line from
+			# here on is comment prose, not an unterminated string, and
+			# must not carry into the next line.
+			if (c == "#" && strict_hash_boundary_language) {
+				if (i == 1 || substr(s, i - 1, 1) ~ /[[:space:]]/) {
+					past_comment_start = 1
+				}
+			} else if (i == 1 || substr(s, i - 1, 1) != ":") {
+				past_comment_start = 1
+			}
+		}
+		if (c == "\"" || c == "'"'"'" || c == "`") {
+			quote = c
+			result = result c
+			continue
+		}
+		result = result c
+	}
+	final_quote_state = (past_comment_start ? "" : quote)
+	return result
 }
 /^\+\+\+ b\// {
 	file = substr($0, 7)
-	check_file = (file ~ file_pattern)
+	# Git appends a trailing tab to disambiguate a "+++ b/<path>" header
+	# when <path> itself needs it (e.g. contains a space); strip it so
+	# the extension patterns "$" anchor still matches the real filename.
+	sub(/\t$/, "", file)
+	check_file = (tolower(file) ~ file_pattern)
+	if (tolower(file) ~ strict_hash_file_pattern) {
+		active_pattern = pattern_hash_strict
+	} else if (tolower(file) ~ lenient_hash_file_pattern) {
+		active_pattern = pattern_hash_lenient
+	} else if (tolower(file) ~ slash_style_file_pattern) {
+		active_pattern = pattern_slash
+	} else {
+		active_pattern = pattern_all
+	}
+	quote_state = ""
 	next
 }
 /^@@ / {
@@ -83,13 +665,39 @@ BEGIN {
 	sub(/ .*/, "", hunk)
 	split(hunk, parts, ",")
 	line = parts[1] + 0
+	# A zero-context diff (--unified=0) has no unchanged lines between
+	# hunks, so within one hunk consecutive added lines are genuinely
+	# adjacent in the resulting file; but across the gap to the next hunk
+	# there is unseen content this diff never reads. Derive the state from
+	# the complete head file bundled above instead of guessing "no open
+	# quote".
+	quote_state = seed_quote_state()
 	next
 }
-/^\+/ && $0 !~ /^\+\+\+/ {
+/^\+/ {
+	# The genuine "+++ b/..." file header is already consumed and
+	# skipped by the rule above (which reaches this line first and
+	# "next"s past it); excluding "^\+\+\+" here too would also discard
+	# a real added line whose own content happens to start with two
+	# extra plus characters (e.g. an added C/C++ increment statement).
 	content = substr($0, 2)
+	# A CRLF-encoded file preserves a trailing "\r" as part of a diff
+	# line content; stripping it keeps this content -- and the
+	# fingerprint/pair record built from it -- identical to what the
+	# trusted tracker computes for the same line, which strips it too.
+	sub(/\r$/, "", content)
 	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
-	if (check_file && tolower(content) ~ pattern) {
-		printf "%s:%d:%s\n", file, line, content
+	# Quote state carries across added lines within a hunk: a multi-line
+	# string (e.g. a JavaScript template literal) that closes partway
+	# through a later line must not make that later scan think the
+	# closing delimiter opens a new quoted region, which would mask a
+	# real suppression comment following it on the same line.
+	masked = mask_quoted_regions(content, quote_state)
+	quote_state = final_quote_state
+	if (check_file && tolower(masked) ~ active_pattern) {
+		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
+		# for file paths or diff content that legitimately contain those bytes.
+		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0
 		found = 1
 	}
 	line++
@@ -98,7 +706,7 @@ BEGIN {
 END {
 	exit(found ? 1 : 0)
 }
-' >"$tmp_matches"
+' "$tmp_bundle" "$tmp_diff" >"$tmp_matches"
 awk_status=$?
 set -e
 
@@ -106,10 +714,31 @@ if [[ "$awk_status" -ne 0 ]]; then
 	if [[ "$awk_status" -ne 1 || ! -s "$tmp_matches" ]]; then
 		exit "$awk_status"
 	fi
-	echo "Inline suppression markers are not allowed in $diff_scope." >&2
-	cat "$tmp_matches" >&2
-	echo "Remove the marker and address the underlying issue instead." >&2
-	exit 1
+	echo "Inline suppression markers require tracking metadata in $diff_scope." >&2
+	tr '\0' '\n' <"$tmp_matches" >&2
+	echo "Each new suppression must include same-line rationale, owner, and remove-when metadata." >&2
+	case "$tracking_mode" in
+		detect)
+			if [[ -n "$tracking_output" ]]; then
+				write_tracking_records "$tracking_output" "$tmp_matches"
+			else
+				validation_output="$(create_temp_file)"
+				write_tracking_records "$validation_output" "$tmp_matches"
+				rm -f "$validation_output"
+			fi
+			echo "Inline suppression metadata passed ($diff_scope)"
+			exit 0
+			;;
+		track)
+			track_records_with_gh "$tmp_matches"
+			echo "Inline suppression tracking passed ($diff_scope)"
+			exit 0
+			;;
+		*)
+			echo "Unsupported SUPPRESSION_TRACKING_MODE '$tracking_mode'; expected 'detect' or 'track'." >&2
+			exit 1
+			;;
+	esac
 fi
 
 echo "Inline suppression check passed ($diff_scope)"

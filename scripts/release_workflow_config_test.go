@@ -74,6 +74,7 @@ type workflowConfig struct {
 type workflowJobConfig struct {
 	ContinueOnError bool                 `yaml:"continue-on-error"`
 	If              string               `yaml:"if"`
+	Name            string               `yaml:"name"`
 	Env             map[string]string    `yaml:"env"`
 	Needs           workflowJobNeeds     `yaml:"needs"`
 	Outputs         map[string]string    `yaml:"outputs"`

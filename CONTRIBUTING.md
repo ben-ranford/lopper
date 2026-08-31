@@ -26,7 +26,8 @@ make demos-check
 
 `make ci` includes automation integrity validation, goroutine leak detection, and the curated memory benchmark delta gate against `origin/main`.
 The automation integrity gate requires Linux or macOS tooling with Ruby, Node.js, Python 3, and POSIX shell syntax support; Docker-based `act` runs should target Linux-backed jobs because hosted macOS runners are not available locally.
-It also blocks newly introduced inline suppression markers in source files, so fix the underlying finding instead of adding `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, or coverage-bypass comments.
+It also tracks newly introduced inline suppression markers in source files, so fix the underlying finding instead of adding `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, or coverage-bypass comments.
+If an inline suppression is unavoidable, the same added line must include `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`, and CI must be able to create or update the linked GitHub tracking issue.
 If a change intentionally increases the tracked memory benchmarks beyond the configured thresholds, note that in the PR and ask a maintainer to apply the `memory-approved` label.
 
 ## VS Code Extension
