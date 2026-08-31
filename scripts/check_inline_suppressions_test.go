@@ -788,10 +788,10 @@ func TestInlineSuppressionCheckDetectsMarkerAfterACPlusPlusDigitSeparator(t *tes
 	t.Parallel()
 
 	// C++14 digit separators group the digits of a large numeric literal
-	// with apostrophes (e.g. 1'000) that never close the way a real string
-	// does. Treating every apostrophe as a generic string delimiter would
-	// make the unterminated separator swallow the rest of the line, hiding
-	// the real suppression comment that follows it.
+	// with apostrophes that never close the way a real string does.
+	// Treating every apostrophe as a generic string delimiter would make
+	// the unterminated separator swallow the rest of the line, hiding the
+	// real suppression comment that follows it.
 	line := "\tauto n = 1'000; //NOLINT rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
 	assertSuppressionDetectedForNarrowSingleQuoteSource(t, "main.cpp", "int main() {", "}", line)
 }
