@@ -447,18 +447,29 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// unrelated, still-open fingerprint borrowed from a different
 		// suppression. A fingerprint is a deterministic function of only
 		// (file, content, occurrence), so it must be recomputed and
-		// matched for some occurrence.
+		// matched exactly.
 		//
-		// MAX_RECORDS (100) bounds how many NEW records a PR can
-		// introduce, not the occurrence ordinal among lines already
-		// present in the complete file; a file with over 100 pre-existing
-		// identical suppression lines legitimately produces occurrence
-		// 101 or higher, so the search range must extend well past 100.
-		// Doing that search in-process (Python) instead of one shasum
-		// subprocess per candidate keeps a wide search range fast.
-		"MAX_OCCURRENCE = 100000",
-		"bound = hashlib.sha256(base).hexdigest().encode() == fingerprint",
-		"for occurrence in range(2, MAX_OCCURRENCE + 1):",
+		// Searching for any occurrence for which the hash happens to
+		// match (rather than deriving the one true occurrence from the
+		// complete head file) would accept a fingerprint that was valid
+		// on an earlier head but has since gone stale -- e.g. an
+		// identical suppression published at occurrence 1 whose true
+		// ordinal becomes 2 once an identical line lands in the base
+		// branch ahead of it.
+		"occurrence = sum(1 for candidate in lines[:line] if candidate == content)",
+		"if occurrence < 1:",
+		`suffix = (b"\noccurrence:%d" % occurrence) if occurrence > 1 else b""`,
+		"expected = hashlib.sha256(base + suffix).hexdigest().encode()",
+		"if expected != fingerprint:",
+	})
+	// The occurrence bundle must be built from each record's file, looked
+	// up by the SHA GitHub's own pull-files response provides (not a
+	// PR-controlled path), and fail closed if a record names a file
+	// outside this pull request's changed files.
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`mapfile -t occurrence_bundle_files < <(jq -r '.suppressions[].file' "${SUPPRESSIONS_FILE}" | sort -u)`,
+		`occurrence_bundle_file_sha="$(echo "${pr_files_json}" | jq -r --arg f "${occurrence_bundle_file_name}" '[.[] | select(.filename == $f)][0].sha // empty')"`,
+		`gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${occurrence_bundle_file_sha}" --jq '.content' | base64 -d`,
 	})
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${recorded_count}" -gt 100 ]; then`)
@@ -543,25 +554,99 @@ func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
 	if invocationEnd == -1 {
 		t.Fatalf("suppression tracking gate is missing the fingerprint-binding invocation line")
 	}
-	script := "set -euo pipefail\n" + gate.Run[startIdx:invocationStart+invocationEnd]
-
 	dir := t.TempDir()
 	suppressionsPath := filepath.Join(dir, "inline-suppressions.json")
+	bundlePath := filepath.Join(dir, "occurrence-bundle")
+	writeFile(t, bundlePath, "\x01main.go\nline one\n")
+
+	// The extracted invocation line itself sets OCCURRENCE_BUNDLE_FILE from
+	// this bash variable (OCCURRENCE_BUNDLE_FILE="${occurrence_bundle_file}"
+	// python3 ...), so it must be defined here rather than passed only via
+	// the process environment.
+	script := "set -euo pipefail\noccurrence_bundle_file=" + shellQuote(bundlePath) + "\n" + gate.Run[startIdx:invocationStart+invocationEnd]
 
 	valid := suppressionFingerprint("main.go", "line one", 1)
-	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+valid+`"}]}`)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+valid+`","line":1}]}`)
 	if output, err := runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath}); err != nil {
-		t.Fatalf("expected a fingerprint bound to its own (file, content) to pass, output:\n%s", output)
+		t.Fatalf("expected a fingerprint bound to its own (file, content, true occurrence) to pass, output:\n%s", output)
 	}
 
 	reused := suppressionFingerprint("main.go", "different content", 1)
-	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+reused+`"}]}`)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+reused+`","line":1}]}`)
 	output, err := runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath})
 	if err == nil {
 		t.Fatalf("expected a fingerprint reused from different content to be rejected, output:\n%s", output)
 	}
-	if !strings.Contains(output, "does not match its own recorded file and content") {
+	if !strings.Contains(output, "does not match its own recorded file, content, and true occurrence") {
 		t.Fatalf("expected a fingerprint-binding rejection message, got:\n%s", output)
+	}
+}
+
+// TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift
+// reproduces the exact scenario the occurrence-ordinal Codex finding
+// described: an identical suppression published at occurrence 1 on an
+// earlier head, where the base branch has since gained an identical line
+// ahead of this pull request's own, making the true occurrence 2. A
+// fingerprint that is merely valid for *some* ordinal (the old occurrence-1
+// shape) must not satisfy the gate; only the one true occurrence -- derived
+// from the complete head file, not searched for -- may.
+func TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const startMarker = "fingerprint_binding_script='"
+	const endMarker = `fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"` + "\n"
+	startIdx := strings.Index(gate.Run, startMarker)
+	if startIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding script")
+	}
+	endIdx := strings.Index(gate.Run[startIdx:], endMarker)
+	if endIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding dedent line")
+	}
+	invocationStart := startIdx + endIdx + len(endMarker)
+	invocationEnd := strings.Index(gate.Run[invocationStart:], "\n")
+	if invocationEnd == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding invocation line")
+	}
+	dir := t.TempDir()
+	suppressionsPath := filepath.Join(dir, "inline-suppressions.json")
+	bundlePath := filepath.Join(dir, "occurrence-bundle")
+	// An identical line now appears at both line 1 and line 4: the pull
+	// request's own added line (line 4) is now the *second* occurrence,
+	// even though it was the first (and only) one when originally
+	// published.
+	writeFile(t, bundlePath, "\x01main.go\ntarget line\nother\ncode\ntarget line\n")
+
+	script := "set -euo pipefail\noccurrence_bundle_file=" + shellQuote(bundlePath) + "\n" + gate.Run[startIdx:invocationStart+invocationEnd]
+
+	stale := suppressionFingerprint("main.go", "target line", 1)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"target line","fingerprint":"`+stale+`","line":4}]}`)
+	output, err := runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath})
+	if err == nil {
+		t.Fatalf("expected a stale occurrence-1 fingerprint to be rejected once the true occurrence became 2, output:\n%s", output)
+	}
+	if !strings.Contains(output, "true occurrence 2") {
+		t.Fatalf("expected a true-occurrence-2 rejection message, got:\n%s", output)
+	}
+
+	correct := suppressionFingerprint("main.go", "target line", 2)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"target line","fingerprint":"`+correct+`","line":4}]}`)
+	if output, err := runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath}); err != nil {
+		t.Fatalf("expected the true occurrence-2 fingerprint to pass, output:\n%s", output)
+	}
+
+	forged := suppressionFingerprint("main.go", "never appears in the file", 1)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"never appears in the file","fingerprint":"`+forged+`","line":1}]}`)
+	output, err = runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath})
+	if err == nil {
+		t.Fatalf("expected a record whose content never appears in the head file to be rejected, output:\n%s", output)
+	}
+	if !strings.Contains(output, "does not actually appear at its claimed line") {
+		t.Fatalf("expected a does-not-appear rejection message, got:\n%s", output)
 	}
 }
 

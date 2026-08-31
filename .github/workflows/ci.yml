@@ -499,28 +499,49 @@ jobs:
             # fields as raw bytes instead so no escaping is introduced.
             jq -j '.suppressions[] | .file, "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"
 
+            # A fingerprint's occurrence suffix must match this suppression's
+            # TRUE position in the complete head file, not merely some
+            # ordinal for which the hash happens to match. If an identical
+            # suppression published at occurrence 1 on an earlier head later
+            # becomes occurrence 2 (e.g. an identical line lands in the base
+            # branch ahead of this one), a PR-controlled artifact could keep
+            # emitting the stale occurrence-1 fingerprint; searching for any
+            # ordinal that satisfies the hash would accept it merely because
+            # it was once valid, letting a now-stale, still-open issue
+            # satisfy this check even though the trusted tracker's current
+            # recomputation has moved on. Fetch each referenced file's
+            # complete blob (via the SHA GitHub's pull-files response
+            # already provides) and bundle it the same way the suspect scan
+            # above does, so the verification below can compute the one true
+            # occurrence directly instead of searching for one that fits.
+            occurrence_bundle_file="$(mktemp)"
+            mapfile -t occurrence_bundle_files < <(jq -r '.suppressions[].file' "${SUPPRESSIONS_FILE}" | sort -u)
+            for occurrence_bundle_file_name in "${occurrence_bundle_files[@]}"; do
+              occurrence_bundle_file_sha="$(echo "${pr_files_json}" | jq -r --arg f "${occurrence_bundle_file_name}" '[.[] | select(.filename == $f)][0].sha // empty')"
+              if [ -z "${occurrence_bundle_file_sha}" ]; then
+                echo "::error::This pull request's tracking output records a suppression in ${occurrence_bundle_file_name}, which is not among this pull request's changed files; refusing to trust a tampered artifact." >&2
+                exit 1
+              fi
+              {
+                printf '\001%s\n' "${occurrence_bundle_file_name}"
+                gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${occurrence_bundle_file_sha}" --jq '.content' | base64 -d
+                printf '\n'
+              } >>"${occurrence_bundle_file}"
+            done
+
             # The exact-pair comparison above validates (file, content), and
             # the polling loop below validates that a fingerprint has an
             # open trusted issue -- but neither ties a record's own
-            # fingerprint to its own (file, content). PR-controlled code can
-            # therefore pair suppression B's real file/content with
-            # suppression A's still-open fingerprint: the pair check accepts
-            # B (its content is genuinely recorded) and the polling loop
-            # accepts A's issue, while B itself was never published. A
-            # fingerprint is sha256(file "\n" content ["\noccurrence:" N]),
-            # a deterministic function of only those inputs, so recomputing
-            # it and requiring a match rejects any fingerprint that does not
-            # actually belong to its record's file and content.
-            #
-            # MAX_RECORDS (100) bounds how many NEW records a pull request
-            # can introduce, not the occurrence ordinal among lines already
-            # present in the complete file -- a file with over 100
-            # pre-existing identical suppression lines legitimately produces
-            # occurrence 101 or higher for one more added line, so the
-            # search range must extend well past 100. Doing that search
-            # in-process (instead of one shasum subprocess per candidate)
-            # keeps it fast: ~100,000 sha256 digests take well under a
-            # second in Python.
+            # fingerprint to its own (file, content, occurrence). PR-
+            # controlled code can therefore pair suppression B's real
+            # file/content with suppression A's still-open fingerprint: the
+            # pair check accepts B (its content is genuinely recorded) and
+            # the polling loop accepts A's issue, while B itself was never
+            # published. A fingerprint is sha256(file "\n" content
+            # ["\noccurrence:" N]), a deterministic function of only those
+            # inputs plus the one true N derived from the bundle above, so
+            # recomputing it and requiring an exact match rejects any
+            # fingerprint that does not actually belong to its record.
             # python3 -c requires top-level statements at column 0, but a
             # YAML block scalar's own dedenting (removing the indentation of
             # its first line from every line) leaves an unpredictable
@@ -532,33 +553,52 @@ jobs:
             # than guessing a specific amount to strip.
             fingerprint_binding_script='
             import hashlib
+            import os
             import sys
 
-            MAX_OCCURRENCE = 100000
+            bundle_files = {}
+            current_file = None
+            with open(os.environ["OCCURRENCE_BUNDLE_FILE"], "rb") as handle:
+                for raw_line in handle:
+                    entry = raw_line[:-1] if raw_line.endswith(b"\n") else raw_line
+                    if entry[:1] == b"\x01":
+                        current_file = entry[1:]
+                        bundle_files[current_file] = []
+                        continue
+                    if current_file is not None:
+                        bundle_files[current_file].append(entry)
 
             data = sys.stdin.buffer.read()
             for record in data.split(b"\n"):
                 if not record:
                     continue
                 parts = record.split(b"\x01")
-                if len(parts) != 3:
+                if len(parts) != 4:
                     print("::error::This pull request tracking output contains a malformed record; refusing to trust a tampered artifact.", file=sys.stderr)
                     sys.exit(1)
-                file, content, fingerprint = parts
+                file, content, fingerprint, line_field = parts
+                if not line_field.isdigit():
+                    print("::error::This pull request tracking output contains a non-numeric line for a record; refusing to trust a tampered artifact.", file=sys.stderr)
+                    sys.exit(1)
+                line = int(line_field)
+                lines = bundle_files.get(file)
+                if lines is None:
+                    print("::error::This pull request tracking output records a suppression whose file content could not be verified; refusing to trust a tampered artifact.", file=sys.stderr)
+                    sys.exit(1)
+                occurrence = sum(1 for candidate in lines[:line] if candidate == content)
+                if occurrence < 1:
+                    print("::error::This pull request tracking output records a suppression that does not actually appear at its claimed line in the complete head file; refusing to trust a tampered artifact.", file=sys.stderr)
+                    sys.exit(1)
                 base = file + b"\n" + content
-                bound = hashlib.sha256(base).hexdigest().encode() == fingerprint
-                if not bound:
-                    for occurrence in range(2, MAX_OCCURRENCE + 1):
-                        candidate = hashlib.sha256(base + ("\noccurrence:%d" % occurrence).encode()).hexdigest().encode()
-                        if candidate == fingerprint:
-                            bound = True
-                            break
-                if not bound:
-                    print("::error::This pull request tracking output contains a fingerprint that does not match its own recorded file and content for any occurrence up to " + str(MAX_OCCURRENCE) + "; refusing to trust a tampered artifact.", file=sys.stderr)
+                suffix = (b"\noccurrence:%d" % occurrence) if occurrence > 1 else b""
+                expected = hashlib.sha256(base + suffix).hexdigest().encode()
+                if expected != fingerprint:
+                    print("::error::This pull request tracking output contains a fingerprint that does not match its own recorded file, content, and true occurrence " + str(occurrence) + "; refusing to trust a tampered artifact.", file=sys.stderr)
                     sys.exit(1)
             '
             fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"
-            jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\n"' "${SUPPRESSIONS_FILE}" | python3 -c "${fingerprint_binding_dedented}"
+            jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\u0001", (.line | tostring), "\n"' "${SUPPRESSIONS_FILE}" | OCCURRENCE_BUNDLE_FILE="${occurrence_bundle_file}" python3 -c "${fingerprint_binding_dedented}"
+            rm -f "${occurrence_bundle_file}"
           fi
 
           # comm requires sorted input but -- given sorted, duplicate-
