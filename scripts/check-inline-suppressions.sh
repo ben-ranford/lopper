@@ -25,8 +25,8 @@ marker_start_pattern_all="(//|/[*]+|#)[[:space:]]*${marker_names}"
 # of the language-specific patterns above, so the broadest pattern is safe
 # here regardless of the source language.
 marker_start_pattern="$marker_start_pattern_all"
-# A comment delimiter needs no preceding whitespace in any of the covered
-# languages -- a marker immediately following code with no space in
+# A "//"/"/*" comment delimiter needs no preceding whitespace in any of the
+# covered languages -- a marker immediately following code with no space in
 # between is still a valid suppression -- so requiring it would miss such
 # lines entirely. Excluding ":" keeps a URL scheme (http://nolint...) from
 # matching; everything else is a valid preceding position. Whether the
@@ -36,8 +36,19 @@ marker_start_pattern="$marker_start_pattern_all"
 # single preceding character -- checking only that character misses a
 # marker preceded by ordinary text inside an otherwise-open string, such as
 # `"Use //nolint to suppress"`.
-marker_pattern_hash="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+#
+# "#" is the one exception: a hash-only language (YAML, shell, Python,
+# Ruby...) only ever starts a comment with a genuinely free-standing "#" --
+# preceded by whitespace or nothing at all -- never one embedded in a
+# scalar/word, such as the fragment identifier in
+# `url: https://example.test/#noqa` (YAML) or the literal character in
+# `echo foo#nolint` (shell). Mirrors isCommentBoundary in the trusted
+# tracker.
+marker_pattern_hash="(^|[[:space:]])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
 marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
+# PHP (and any other extension covered by neither set) keeps the original
+# lenient boundary for "#" too: unlike a true hash-only language, PHP's "#"
+# needs no free-standing rule.
 marker_pattern_all="(^|[^:])(${marker_start_pattern_all})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
 # Same extension classification as HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS

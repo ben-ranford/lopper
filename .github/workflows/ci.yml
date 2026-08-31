@@ -200,10 +200,10 @@ jobs:
           eslint_prefix="eslint"
           coverage_prefix="coverage"
           marker_names="(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore))"
-          # A comment delimiter needs no preceding whitespace in any of the
-          # covered languages -- a marker immediately following code with
-          # no space in between is still a valid suppression -- so
-          # requiring it would miss such lines entirely. Excluding ":"
+          # A "//"/"/*" comment delimiter needs no preceding whitespace in
+          # any of the covered languages -- a marker immediately following
+          # code with no space in between is still a valid suppression --
+          # so requiring it would miss such lines entirely. Excluding ":"
           # keeps a URL scheme (http://nolint...) from matching; everything
           # else is a valid preceding position. Whether the delimiter falls
           # inside a string literal is handled separately, by masking
@@ -221,8 +221,19 @@ jobs:
           # other extension not covered by either set keep recognizing
           # every prefix, since PHP alone among the covered languages
           # supports both styles.
-          suspect_pattern_hash="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
+          #
+          # "#" is also a narrower case within hash-only languages
+          # themselves: it only starts a comment when free-standing --
+          # preceded by whitespace or nothing at all -- never embedded in a
+          # scalar/word, such as the fragment identifier in
+          # `url: https://example.test/#noqa` (YAML) or the literal
+          # character in `echo foo#nolint` (shell). Mirrors
+          # isCommentBoundary in the trusted tracker.
+          suspect_pattern_hash="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
+          # PHP (and any other extension covered by neither set) keeps the
+          # original lenient boundary for "#" too: unlike a true hash-only
+          # language, PHP's "#" needs no free-standing rule.
           suspect_pattern_all="(^|[^:])((//|/[*]+|#)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"
           # Same extension classification as HASH_ONLY_EXTENSIONS/
           # SLASH_STYLE_EXTENSIONS in the trusted JS tracker.

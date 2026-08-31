@@ -100,8 +100,23 @@ function isMetadataBoundary(char) {
 // rather than only inspecting the single preceding character -- checking
 // only that character misses a marker preceded by ordinary text inside an
 // otherwise-open string, such as `"Use //nolint to suppress"`.
-function isCommentBoundary(char) {
-  return char === undefined || char !== ':';
+//
+// "#" is the one exception: a HASH_ONLY_EXTENSIONS language (YAML, shell,
+// Python, Ruby...) only ever starts a comment with a genuinely free-standing
+// "#" -- preceded by whitespace or nothing at all -- never one embedded in
+// a scalar/word, such as the fragment identifier in
+// `url: https://example.test/#noqa` (YAML) or the literal character in
+// `echo foo#nolint` (shell). "//"/"/*" need no equivalent rule: those
+// two-character prefixes are already visually distinct from ordinary code
+// in the languages that use them.
+function isCommentBoundary(char, isHashPrefixInHashOnlyLanguage) {
+  if (char === undefined) {
+    return true;
+  }
+  if (isHashPrefixInHashOnlyLanguage) {
+    return isWhitespace(char);
+  }
+  return char !== ':';
 }
 
 // Scans content[0, index) tracking single/double/backtick-quoted regions
@@ -137,6 +152,7 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 // masking of anything genuinely quoted later in the very same comment.
 function quoteStateAt(content, index, file, initialQuote) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
+  const hashOnlyLanguage = typeof file === 'string' && HASH_ONLY_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
   let pastCommentStart = false;
   for (let cursor = 0; cursor < index; cursor += 1) {
@@ -158,7 +174,7 @@ function quoteStateAt(content, index, file, initialQuote) {
       continue;
     }
     if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
-      if (isCommentBoundary(content[cursor - 1])) {
+      if (isCommentBoundary(content[cursor - 1], char === '#' && hashOnlyLanguage)) {
         pastCommentStart = true;
       }
     }
@@ -468,15 +484,22 @@ function markerStartAfterPrefix(content, index, prefix) {
 }
 
 function commentPrefixIndexForMarker(content, file, initialQuote) {
+  const prefixes = commentPrefixesFor(file);
+  const hashOnlyLanguage = typeof file === 'string' && HASH_ONLY_EXTENSIONS.has(fileExtension(file));
   for (let index = 0; index < content.length; index += 1) {
-    if (!isCommentBoundary(content[index - 1])) {
+    // The boundary rule for "#" depends on which language this file is, so
+    // the candidate prefix must be known before it can be checked.
+    const prefix = prefixes.find((candidate) => content.startsWith(candidate, index));
+    if (!prefix) {
+      continue;
+    }
+    if (!isCommentBoundary(content[index - 1], prefix === '#' && hashOnlyLanguage)) {
       continue;
     }
     if (isInsideQuotedRegion(content, index, file, initialQuote)) {
       continue;
     }
-    const prefix = commentPrefixesFor(file).find((candidate) => content.startsWith(candidate, index));
-    if (prefix && hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {
+    if (hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {
       return index;
     }
   }

@@ -866,6 +866,55 @@ func TestInlineSuppressionCheckSeedsQuoteStateAcrossADiffContextGap(t *testing.T
 	}
 }
 
+func assertSuppressionCheckPassesForSourceNamed(t *testing.T, filename string, source string) {
+	t.Helper()
+
+	repoDir := newInlineSuppressionRepo(t)
+	writeFile(t, filepath.Join(repoDir, filename), source)
+	runCommand(t, repoDir, "git", "add", filename)
+
+	output, err := runSuppressionCheck(repoDir)
+	if err != nil {
+		t.Fatalf("expected the check to pass, output:\n%s", output)
+	}
+	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
+		t.Fatalf("expected pass message, got:\n%s", output)
+	}
+}
+
+func TestInlineSuppressionCheckRequiresAFreeStandingHashInAHashOnlyLanguage(t *testing.T) {
+	t.Parallel()
+
+	// YAML requires "#" to be separated from the preceding scalar by
+	// whitespace (or start the line); a "#" embedded in a URL's fragment
+	// identifier is not a comment delimiter.
+	assertSuppressionCheckPassesForSourceNamed(t, "deploy.yaml", "url: https://example.test/#noqa\n")
+
+	// Shell only treats "#" as a comment when it begins a word; "#" glued
+	// directly onto the preceding token is a literal character.
+	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo foo#nolint\n")
+}
+
+func TestInlineSuppressionCheckDetectsAFreeStandingHashMarkerInShell(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	line := "echo foo #nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	writeFile(t, filepath.Join(repoDir, "build.sh"), line)
+	runCommand(t, repoDir, "git", "add", "build.sh")
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the free-standing hash marker to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrophe(t *testing.T) {
 	t.Parallel()
 

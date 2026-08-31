@@ -500,7 +500,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS in the trusted JS tracker,
 	// rather than always matching every comment style universally.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
-		`suspect_pattern_hash="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_pattern_hash="(^|[[:space:]])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
 		`hash_only_file_pattern=`,
 		`slash_style_file_pattern=`,
@@ -726,6 +726,88 @@ func TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent(t *testing.T) {
 	}
 	if !strings.Contains(output, "tpl.js\x01tail`; //eslint-disable-line") {
 		t.Fatalf("expected the suspect scan to detect the marker beyond the patch context window via the seeded blob content, output:\n%q", output)
+	}
+}
+
+// TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage
+// actually runs the embedded per-file suspect scan against a YAML file
+// whose added line contains "#" only as part of a URL fragment identifier,
+// not a comment, proving the independent scan agrees with the trusted
+// tracker and the shell detector that a hash-only language's "#" must be
+// free-standing to count.
+func TestCIWorkflowSuspectScanRequiresAFreeStandingHashInAHashOnlyLanguage(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const varsStart = `no_prefix="no"`
+	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
+	}
+	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
+	if varsEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
+	}
+	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
+
+	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
+	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
+	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
+	if loopStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
+	}
+	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
+	if loopEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
+	}
+	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
+	script := "set -euo pipefail\n" + varsBlock + "\nfile_json="
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	fakeGH := "#!/usr/bin/env bash\nif [ \"$1\" = api ]; then printf '%s' \"$BLOB_CONTENT_B64\"; exit 0; fi\nexit 1\n"
+	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
+	env := func(blob string) map[string]string {
+		return map[string]string{
+			"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"BLOB_CONTENT_B64":  base64.StdEncoding.EncodeToString([]byte(blob)),
+			"GITHUB_REPOSITORY": "octo/lopper",
+		}
+	}
+
+	fragmentBlob := "url: https://example.test/#noqa\n"
+	fragmentPatch := "@@ -0,0 +1 @@\n+url: https://example.test/#noqa\n"
+	fragmentJSON, err := json.Marshal(map[string]string{"filename": "deploy.yaml", "sha": "deadbeef", "patch": fragmentPatch})
+	if err != nil {
+		t.Fatalf("marshal fragment file_json fixture: %v", err)
+	}
+	output, err := runShellCommand(dir, script+shellQuote(string(fragmentJSON))+"\n"+loopBody, env(fragmentBlob))
+	if err != nil {
+		t.Fatalf("expected the suspect scan to run for the URL fragment case, output:\n%s", output)
+	}
+	if strings.Contains(output, "deploy.yaml\x01") {
+		t.Fatalf("expected no suspect for a \"#\" embedded in a URL fragment, output:\n%q", output)
+	}
+
+	genuineBlob := "url: https://example.test/path # noqa\n"
+	genuinePatch := "@@ -0,0 +1 @@\n+url: https://example.test/path # noqa\n"
+	genuineJSON, err := json.Marshal(map[string]string{"filename": "deploy.yaml", "sha": "deadbeef", "patch": genuinePatch})
+	if err != nil {
+		t.Fatalf("marshal genuine file_json fixture: %v", err)
+	}
+	output, err = runShellCommand(dir, script+shellQuote(string(genuineJSON))+"\n"+loopBody, env(genuineBlob))
+	if err != nil {
+		t.Fatalf("expected the suspect scan to run for the free-standing hash case, output:\n%s", output)
+	}
+	if !strings.Contains(output, "deploy.yaml\x01") {
+		t.Fatalf("expected a suspect for a genuine free-standing \"#\" marker, output:\n%q", output)
 	}
 }
 

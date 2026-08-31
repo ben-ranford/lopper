@@ -390,6 +390,28 @@ test('does not treat Python floor division as a comment prefix', () => {
   assert.equal(testables.hasInlineSuppressionMarker(jsLine, 'calc.js'), true, jsLine);
 });
 
+test('requires a free-standing "#" to start a comment in a hash-only language', () => {
+  // YAML requires "#" to be separated from the preceding scalar by
+  // whitespace (or start the line); a "#" embedded in a URL's fragment
+  // identifier is not a comment delimiter.
+  const yamlLine = 'url: https://example.test/#noqa';
+  assert.equal(testables.hasInlineSuppressionMarker(yamlLine, 'deploy.yaml'), false, yamlLine);
+
+  // Shell only treats "#" as a comment when it begins a word; "#" glued
+  // directly onto the preceding token is a literal character.
+  const shellLine = 'echo foo#nolint';
+  assert.equal(testables.hasInlineSuppressionMarker(shellLine, 'build.sh'), false, shellLine);
+
+  // A free-standing "#" -- preceded by whitespace -- is still recognized.
+  const genuineLine = 'echo foo #nolint rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(genuineLine, 'build.sh'), true, genuineLine);
+
+  // Slash-style languages are unaffected: "//" needs no equivalent
+  // free-standing rule.
+  const jsLine = 'call();//' + 'nolint rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(jsLine, 'main.js'), true, jsLine);
+});
+
 test('selects comment prefixes per language extension', () => {
   assert.deepEqual(testables.commentPrefixesFor('calc.py'), ['#']);
   assert.deepEqual(testables.commentPrefixesFor('script.sh'), ['#']);
