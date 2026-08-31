@@ -28,7 +28,7 @@ func TestOpenPinnedReplacementTargetIfNeededOpensPinnedTargetOnWindows(t *testin
 			if name != writeTestFileName {
 				t.Fatalf("unexpected pinned target path: %s", name)
 			}
-			if flag != os.O_RDWR {
+			if flag != os.O_WRONLY {
 				t.Fatalf("unexpected pinned target flag: %d", flag)
 			}
 			openCalls++
@@ -852,20 +852,17 @@ func TestFallbackAtomicReplacementAllowsRollbackRequiredReplacement(t *testing.T
 			lstatCalls++
 			return info, nil
 		},
-		open: func(name string) (File, error) {
-			if name != writeTestFileName {
-				t.Fatalf("unexpected rollback snapshot path: %s", name)
-			}
-			reader := strings.NewReader("before")
-			return &fakeFile{
-				read:  reader.Read,
-				stat:  func() (fs.FileInfo, error) { return info, nil },
-				close: closeWithoutError,
-			}, nil
-		},
+		// replacementFileForWindowsFallback always opens its own read/write
+		// handle rather than trusting the caller-supplied targetFile (which
+		// is pinned write-only in production, see write.go), reusing
+		// targetFile's already-verified identity as the expected identity
+		// instead of a fresh path lookup -- a fresh wrapper sharing the
+		// same target state stands in for that fresh handle here.
 		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
-			t.Fatalf("fallback should use the supplied pinned target, not open %s", name)
-			return nil, nil
+			if name != writeTestFileName {
+				t.Fatalf("unexpected pinned target open: %s", name)
+			}
+			return target.file(t, info), nil
 		},
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
@@ -910,6 +907,15 @@ func TestFallbackAtomicReplacementRollbackRequiredSnapshotFailurePreventsMutatio
 				t.Fatalf("unexpected lstat path: %s", name)
 			}
 			return info, nil
+		},
+		// replacementFileForWindowsFallback always opens its own read/write
+		// handle; a fresh wrapper sharing target's state (including
+		// readErr) stands in for that fresh handle here.
+		openFile: func(name string, _ int, _ os.FileMode) (File, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected pinned target open: %s", name)
+			}
+			return target.file(t, info), nil
 		},
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)

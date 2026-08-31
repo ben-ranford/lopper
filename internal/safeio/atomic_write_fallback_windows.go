@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"syscall"
 
@@ -108,12 +109,28 @@ func atomicRenameSourceRel(err error, fallbackRel string) string {
 	return fallbackRel
 }
 
+// replacementFileForWindowsFallback always opens its own fresh, read/write
+// handle rather than trusting a caller-supplied replacementFile: this
+// fallback both writes the overwrite and, for a rollback-eligible caller,
+// later reads the target back through that exact same handle (see
+// snapshotPinnedWindowsFallbackTarget) -- reading through a second handle
+// would deadlock against this one's own lock. A caller-supplied
+// replacementFile is pinned write-only (see openPinnedReplacementTarget,
+// which must stay write-only for callers whose target permits writing but
+// not reading), so it can't serve that read; when one is supplied, its
+// already-verified identity (via Stat, not a fresh path lookup) is reused
+// as the expected identity for this handle instead of re-resolving by
+// path, preserving the same anti-TOCTOU guarantee early pinning exists
+// for. The caller-supplied handle itself is left for its own owner to
+// close, as established by every caller of this function.
 func replacementFileForWindowsFallback(root Root, targetRel string, replacementFile File) (File, func() error, error) {
+	var info fs.FileInfo
+	var err error
 	if replacementFile != nil {
-		return replacementFile, func() error { return nil }, nil
+		info, err = replacementFile.Stat()
+	} else {
+		info, err = root.Lstat(targetRel)
 	}
-
-	info, err := root.Lstat(targetRel)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -124,7 +141,7 @@ func replacementFileForWindowsFallback(root Root, targetRel string, replacementF
 		return nil, nil, fmt.Errorf("target path is not a regular file before replacement: %s", targetRel)
 	}
 
-	file, err := openPinnedReplacementTarget(root, targetRel, info)
+	file, err := openFlaggedPinnedReplacementTarget(root, targetRel, info, os.O_RDWR)
 	if err != nil {
 		return nil, nil, err
 	}

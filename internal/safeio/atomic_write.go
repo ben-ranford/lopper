@@ -968,7 +968,18 @@ func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, a
 }
 
 func openPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {
-	file, err := root.OpenFile(targetRel, os.O_RDWR, 0)
+	return openFlaggedPinnedReplacementTarget(root, targetRel, expectedInfo, os.O_WRONLY)
+}
+
+// openFlaggedPinnedReplacementTarget lets a Windows-only caller (see
+// replacementFileForWindowsFallback in atomic_write_fallback_windows.go)
+// request O_RDWR instead of the write-only default above: that fallback
+// must read the target back through this same handle later, but opening
+// O_RDWR unconditionally here would require read permission on the target
+// even for callers whose target permits only writing (mode 0200, for
+// example), breaking otherwise-valid replacements on every platform.
+func openFlaggedPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo, flag int) (File, error) {
+	file, err := root.OpenFile(targetRel, flag, 0)
 	if err != nil {
 		return nil, err
 	}

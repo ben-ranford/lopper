@@ -207,6 +207,44 @@ func TestAnalysisCacheStableRootUsesAnalysisRepoMapping(t *testing.T) {
 	}
 }
 
+// TestPublishPointerRejectsAlreadyInvalidWriteRoot exercises
+// publishPointer's own leading validateWriteRoot guard directly, calling
+// publishPointer with a write root whose identity has already gone stale
+// before the call -- distinct from the other root-replacement tests here,
+// which all inject the swap mid-write via a hook and so exercise later
+// validateWriteRoot call sites instead.
+func TestPublishPointerRejectsAlreadyInvalidWriteRoot(t *testing.T) {
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	mustMkdirCacheLayout(t, replacementRoot)
+
+	writeRoot, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := writeRoot.Close(); closeErr != nil {
+			t.Errorf("close write root: %v", closeErr)
+		}
+	})
+
+	if err := os.Rename(cachePath, movedRoot); err != nil {
+		t.Fatalf("move cache root: %v", err)
+	}
+	if err := os.Rename(replacementRoot, cachePath); err != nil {
+		t.Fatalf("install replacement cache root: %v", err)
+	}
+
+	err = cache.publishPointer(writeRoot, filepath.Join(cacheKeysDirName, "key.json"), []byte("{}"))
+	if err == nil {
+		t.Fatal("expected publishPointer to reject an already-invalid write root")
+	}
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
+}
+
 func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
 	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 1, "between cache writes")
 }
@@ -475,6 +513,49 @@ func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 		t.Fatalf("read preserved cache object: %v", err)
 	} else if string(got) != "existing complete object" {
 		t.Fatalf("existing cache object = %q, want preserved content", got)
+	}
+}
+
+func TestValidateObservedAnalysisCacheDirectoryIdentityBranches(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
+	info, err := os.Lstat(cachePath)
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+
+	if err := validateObservedAnalysisCacheDirectoryIdentity(cachePath, info, info); err != nil {
+		t.Fatalf("expected matching identity to pass, got %v", err)
+	}
+	if err := validateObservedAnalysisCacheDirectoryIdentity(cachePath, info, nil); err == nil {
+		t.Fatal("expected nil observed info to fail")
+	}
+}
+
+// publishPointer is validateWriteRoot's only remaining caller now that
+// openWriteRoot validates identity via safeio's own root.VerifyIdentity
+// instead (see openWriteRoot); this exercises validateWriteRoot's own
+// RootInfo failure branch directly, which publishPointer's existing tests
+// don't reach.
+func TestValidateWriteRootPropagatesRootInfoError(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+
+	root, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close write root: %v", err)
+	}
+
+	if err := cache.validateWriteRoot(root); err == nil {
+		t.Fatal("expected a closed write root to fail RootInfo")
 	}
 }
 

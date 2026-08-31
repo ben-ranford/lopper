@@ -1855,6 +1855,67 @@ func TestVerifyOverwrittenTargetReturnsLstatError(t *testing.T) {
 	}
 }
 
+func TestRunPinnedOverwriteFallbackPropagatesOverwriteError(t *testing.T) {
+	lstatErr := errors.New("lstat target failed")
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) { return nil, lstatErr },
+	}
+	target := &fakeFile{}
+
+	err := runPinnedOverwriteFallback(root, writeTestFileName, target, []byte("after"), errors.New("primary error"), pinnedReplacementChecks{})
+	if !errors.Is(err, lstatErr) {
+		t.Fatalf("expected overwrite error to propagate, got %v", err)
+	}
+}
+
+func TestRunPinnedOverwriteFallbackPropagatesVerificationError(t *testing.T) {
+	info := newPinnedTargetInfo(t, "before")
+	target, _ := newPinnedFallbackTargetFile(t, info, "before")
+	lstatCalls := 0
+	verifyErr := errors.New("verification lstat failed")
+	root := &fakeRoot{
+		lstat: func(string) (fs.FileInfo, error) {
+			lstatCalls++
+			if lstatCalls == 1 {
+				// overwritePinnedFile's own pre-write identity Lstat must
+				// succeed for this test to reach verifyOverwrittenTarget's
+				// separate post-write Lstat.
+				return info, nil
+			}
+			return nil, verifyErr
+		},
+	}
+
+	err := runPinnedOverwriteFallback(root, writeTestFileName, target, []byte("after"), errors.New("primary error"), pinnedReplacementChecks{})
+	if !errors.Is(err, verifyErr) {
+		t.Fatalf("expected verification error to propagate, got %v", err)
+	}
+}
+
+func TestAtomicWriteSessionCommitPropagatesPublishReadinessError(t *testing.T) {
+	expectedErr := errors.New("publish readiness failed")
+	originalReady := writeFilePublishReadyFn
+	writeFilePublishReadyFn = func() error { return expectedErr }
+	t.Cleanup(func() { writeFilePublishReadyFn = originalReady })
+
+	session := &atomicWriteSession{
+		root:      &fakeRoot{},
+		tempRel:   ".safeio-atomic-temp",
+		targetRel: writeTestFileName,
+	}
+
+	err := session.commit(func() error {
+		t.Fatal("commitReady should not run after publish readiness failure")
+		return nil
+	}, func(string, string) error {
+		t.Fatal("rename should not run after publish readiness failure")
+		return nil
+	})
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected publish readiness error, got %v", err)
+	}
+}
+
 func TestAtomicWriteSessionCommitReadyErrorPreventsRename(t *testing.T) {
 	commitErr := errors.New("commit not ready")
 	session := &atomicWriteSession{
