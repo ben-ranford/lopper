@@ -570,7 +570,15 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 		return handleAnalysisCacheQuarantineRenameError(root, reservation, name, childInfo, err)
 	}
 	resultReservation, resultRetry, resultErr := quarantineAnalysisCacheChildIntoOpenReservation(root, reservationRoot, reservation, name, childInfo)
-	if closeErr := reservationRoot.Close(); closeErr != nil {
+	if closeErr := reservationRoot.Close(); closeErr != nil && resultErr != nil {
+		// Only fold the close error in alongside an already-failed attempt.
+		// A close failure on an otherwise-verified quarantine must not
+		// discard resultReservation here: quarantineAnalysisCacheChildReservation's
+		// loop treats any non-nil error as "nothing usable," so joining
+		// closeErr into a nil resultErr would turn a completed,
+		// identity-verified quarantine into a lost one -- the created cache
+		// child would remain stranded under .lopper-cache-rollback-* with
+		// no further attempt to clean it up.
 		resultErr = errors.Join(resultErr, closeErr)
 	}
 	return resultReservation, resultRetry, resultErr

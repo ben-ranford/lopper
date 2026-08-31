@@ -401,6 +401,32 @@ func (r *closeErrorAnalysisCacheRoot) Close() error {
 	return errors.Join(r.err, r.Root.Close())
 }
 
+// onceCloseErrorOnOpenRootAnalysisCacheRoot fails the Close of exactly one
+// OpenRoot(name) result -- the first -- and returns the real root
+// thereafter, so a test can inject a close failure at one specific point in
+// a multi-step flow (e.g. the quarantine rename+verify's own reservation
+// handle) without also breaking a later, independent reopen of the same
+// name (e.g. cleanup's own openOwnedAnalysisCacheQuarantineReservation).
+type onceCloseErrorOnOpenRootAnalysisCacheRoot struct {
+	safeio.Root
+	name    string
+	err     error
+	applied bool
+}
+
+func (r *onceCloseErrorOnOpenRootAnalysisCacheRoot) OpenRoot(name string) (safeio.Root, error) {
+	next, err := r.Root.OpenRoot(name)
+	if err != nil || name != r.name || r.applied {
+		return next, err
+	}
+	r.applied = true
+	return &closeErrorAnalysisCacheRoot{Root: next, err: r.err}, nil
+}
+
+func (r *onceCloseErrorOnOpenRootAnalysisCacheRoot) RenameNoReplace(oldName, newName string) error {
+	return safeio.RenameNoReplace(r.Root, oldName, newName)
+}
+
 type lstatErrorAnalysisCacheRoot struct {
 	safeio.Root
 	name string
@@ -1830,6 +1856,25 @@ func TestConditionallyRemoveAnalysisCacheChildBranches(t *testing.T) {
 	t.Run("failed quarantine removal does not overwrite replacement", testConditionallyRemoveAnalysisCacheChildRemoveFailurePreservesReplacement)
 	t.Run("replacement reservation is not removed after quarantine cleanup", testConditionallyRemoveAnalysisCacheChildPreservesSwappedReservation)
 	t.Run("successful rollback removes reservation directories", testConditionallyRemoveAnalysisCacheChildCleansReservations)
+	t.Run("survives a reservation close error after a verified quarantine", testConditionallyRemoveAnalysisCacheChildSurvivesReservationCloseError)
+}
+
+func testConditionallyRemoveAnalysisCacheChildSurvivesReservationCloseError(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	childPath, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	closeErr := errors.New("reservation close failed")
+	wrappedRoot := &onceCloseErrorOnOpenRootAnalysisCacheRoot{
+		Root: root,
+		name: ".lopper-cache-rollback-keys-0",
+		err:  closeErr,
+	}
+
+	if err := conditionallyRemoveAnalysisCacheChild(wrappedRoot, cacheKeysDirName, childInfo); err != nil {
+		t.Fatalf("conditionally remove cache child despite reservation close error: %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, childPath)
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, ".lopper-cache-rollback-keys-0"))
 }
 
 func testConditionallyRemoveAnalysisCacheChildNilInfo(t *testing.T) {
@@ -1993,6 +2038,45 @@ func TestQuarantineAnalysisCacheChildBranches(t *testing.T) {
 	t.Run("does not replace occupied quarantine child directory", testQuarantineAnalysisCacheChildPreservesOccupiedChildDirectory)
 	t.Run("reports reserve exhaustion after repeated collisions", testQuarantineAnalysisCacheChildReportsReserveExhaustion)
 	t.Run("skips quarantine for a directory populated by another initializer", testQuarantineAnalysisCacheChildSkipsNonEmptyDirectory)
+	t.Run("reports reservation open failure", testQuarantineAnalysisCacheChildReportsReservationOpenFailure)
+	t.Run("joins rename and reservation close errors", testQuarantineAnalysisCacheChildJoinsRenameAndCloseErrors)
+}
+
+func testQuarantineAnalysisCacheChildReportsReservationOpenFailure(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	_, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	openErr := errors.New("reservation open failed")
+
+	quarantineName, err := quarantineAnalysisCacheChild(&openRootErrorAnalysisCacheRoot{Root: root, err: openErr}, cacheKeysDirName, childInfo)
+	if !errors.Is(err, openErr) {
+		t.Fatalf("expected reservation open error, got %v", err)
+	}
+	if quarantineName != "" {
+		t.Fatalf("expected reservation open failure to skip quarantine, got %q", quarantineName)
+	}
+}
+
+func testQuarantineAnalysisCacheChildJoinsRenameAndCloseErrors(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	_, childInfo := createAnalysisCacheChild(t, repo, cacheKeysDirName)
+	renameErr := errors.New("rename into reservation failed")
+	closeErr := errors.New("reservation close failed")
+	renameFailingRoot := &renameErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: renameErr}
+	wrappedRoot := &onceCloseErrorOnOpenRootAnalysisCacheRoot{
+		Root: renameFailingRoot,
+		name: ".lopper-cache-rollback-keys-0",
+		err:  closeErr,
+	}
+
+	_, err := quarantineAnalysisCacheChild(wrappedRoot, cacheKeysDirName, childInfo)
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected rename error to be preserved, got %v", err)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected reservation close error to be preserved, got %v", err)
+	}
 }
 
 func testQuarantineAnalysisCacheChildSkipsNonEmptyDirectory(t *testing.T) {

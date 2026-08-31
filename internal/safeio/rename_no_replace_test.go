@@ -267,6 +267,48 @@ func TestRenameNoReplaceIntoRejectsSymlinkDestinationParent(t *testing.T) {
 	assertRenameNoReplacePathAbsent(t, outsideTargetPath)
 }
 
+func TestRenameNoReplaceIntoRejectsEscapingSource(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	destDir := filepath.Join(rootDir, "dest")
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	destRoot := openTestRoot(t, destDir)
+
+	err := RenameNoReplaceInto(root, filepath.Join("..", "source"), destRoot, "target")
+	if !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("rename no-replace into escaping source error = %v, want path escape", err)
+	}
+}
+
+func TestRenameNoReplaceIntoRejectsSymlinkSourceParent(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	destDir := filepath.Join(rootDir, "dest")
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	outsideDir := t.TempDir()
+	outsideSourcePath := filepath.Join(outsideDir, "source")
+	if err := os.Mkdir(outsideSourcePath, 0o750); err != nil {
+		t.Fatalf("create outside source: %v", err)
+	}
+	outsideSourceInfo := statTestPath(t, outsideSourcePath)
+	makeRenameNoReplaceSymlink(t, outsideDir, filepath.Join(rootDir, "link"))
+	root := openTestRoot(t, rootDir)
+	destRoot := openTestRoot(t, destDir)
+
+	err := RenameNoReplaceInto(root, filepath.Join("link", "source"), destRoot, "target")
+	if err == nil {
+		t.Fatal("rename no-replace into through symlink source parent succeeded")
+	}
+
+	assertRenameNoReplaceSameFile(t, outsideSourcePath, outsideSourceInfo)
+	assertRenameNoReplacePathAbsent(t, filepath.Join(destDir, "target"))
+}
+
 func TestRenameNoReplaceIntoRejectsNonOsRootDestination(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
 	rootDir := t.TempDir()
