@@ -384,13 +384,22 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// otherwise-open string literal (e.g. `"Use //nolint to
 		// suppress"`); blanking out quoted-region interiors before
 		// matching mirrors the trusted tracker's isInsideQuotedRegion.
-		"function mask_quoted_regions(s,    result, i, c, quote, n, is_rust)",
+		"function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote)",
 		`tolower(mask_quoted_regions(content)) ~ pat`,
-		// Rust has no multi-character single-quoted strings, so treating
-		// every apostrophe as a generic string delimiter would let an
-		// unterminated lifetime (e.g. 'static) swallow the rest of the
-		// line and hide a real suppression comment after it.
-		`is_rust = (tolower(fname) ~ /\.rs$/)`,
+		// Rust and C/C++ have no multi-character single-quoted strings, so
+		// treating every apostrophe as a generic string delimiter would let
+		// an unterminated Rust lifetime or C++ digit separator swallow the
+		// rest of the line and hide a real suppression comment after it.
+		`narrow_single_quote = (tolower(fname) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)`,
+		// Neither the exact-pair comparison (file, content) nor the
+		// polling loop (fingerprint has an open issue) ties a record's own
+		// fingerprint to its own file and content; PR-controlled code
+		// could pair a genuinely-recorded (file, content) with an
+		// unrelated, still-open fingerprint borrowed from a different
+		// suppression. A fingerprint is a deterministic function of only
+		// (file, content, occurrence), so it must be recomputed and
+		// matched for some occurrence up to the record limit.
+		`while IFS=$'\001' read -r bound_file bound_content bound_fingerprint; do`,
 	})
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${recorded_count}" -gt 100 ]; then`)

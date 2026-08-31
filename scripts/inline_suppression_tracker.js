@@ -71,15 +71,19 @@ function isCommentBoundary(char) {
 // C-like/scripting comment and string syntax, not a full per-language
 // lexer, but it is what the covered SOURCE_EXTENSIONS all agree on.
 //
-// Rust has no multi-character single-quoted strings: a leading "'" there is
-// either a self-contained char literal ('x' or '\x') or a lifetime ('static,
-// 'a) that never closes. Treating every "'" as a string delimiter would let
-// a lifetime swallow the rest of the line, hiding a real suppression comment
-// that follows it (e.g. `&'static str = "x"; // coverage: ignore`); for a
-// .rs file, only the narrow char-literal shape opens (and immediately
-// closes) a quoted region.
+// Rust and C/C++ have no multi-character single-quoted strings: a leading
+// "'" there is either a self-contained char literal ('x' or '\x'), a Rust
+// lifetime ('static, 'a) that never closes, or a C++14 digit separator
+// (1'000'000) that never closes either. Treating every "'" as a string
+// delimiter would let one of these swallow the rest of the line, hiding a
+// real suppression comment that follows it -- for example, a lifetime
+// preceding a coverage-ignore marker, or a digit separator preceding a
+// lint-suppression marker; for these languages, only the narrow
+// char-literal shape opens (and immediately closes) a quoted region.
+const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', 'h', 'hh', 'hpp']);
+
 function isInsideQuotedRegion(content, index, file) {
-  const rustCharLiteralsOnly = typeof file === 'string' && fileExtension(file) === 'rs';
+  const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
   let quote;
   for (let cursor = 0; cursor < index; cursor += 1) {
     const char = content[cursor];
@@ -91,7 +95,7 @@ function isInsideQuotedRegion(content, index, file) {
       }
       continue;
     }
-    if (char === "'" && rustCharLiteralsOnly) {
+    if (char === "'" && narrowSingleQuoteLanguage) {
       if (content[cursor + 1] === '\\' && content[cursor + 3] === "'") {
         cursor += 3;
       } else if (content[cursor + 1] !== "'" && content[cursor + 2] === "'") {

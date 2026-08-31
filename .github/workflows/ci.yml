@@ -248,17 +248,19 @@ jobs:
           echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test})" | while IFS= read -r file_json; do
             filename="$(echo "${file_json}" | jq -r '.filename')"
             echo "${file_json}" | jq -r '.patch // empty' | awk -v pat="${suspect_pattern}" -v fname="${filename}" '
-              function mask_quoted_regions(s,    result, i, c, quote, n, is_rust) {
+              function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) {
                 result = ""
                 quote = ""
                 n = length(s)
-                # Rust has no multi-character single-quoted strings: a
-                # leading apostrophe is either a self-contained char
-                # literal or a lifetime that never closes. Treating every
-                # apostrophe as a string delimiter would let a lifetime
+                # Rust and C/C++ have no multi-character single-quoted
+                # strings: a leading apostrophe is either a self-contained
+                # char literal, a Rust lifetime, or a C++14 digit separator
+                # grouping the digits of a large number -- none of which
+                # close the way a real string does. Treating every
+                # apostrophe as a string delimiter would let one of these
                 # swallow the rest of the line, hiding a real suppression
                 # comment after it.
-                is_rust = (tolower(fname) ~ /\.rs$/)
+                narrow_single_quote = (tolower(fname) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)
                 for (i = 1; i <= n; i++) {
                   c = substr(s, i, 1)
                   if (quote != "") {
@@ -275,7 +277,7 @@ jobs:
                     }
                     continue
                   }
-                  if (c == "'"'"'" && is_rust) {
+                  if (c == "'"'"'" && narrow_single_quote) {
                     if (substr(s, i + 1, 1) == "\\" && substr(s, i + 3, 1) == "'"'"'") {
                       result = result c "xx" "'"'"'"
                       i += 3
@@ -351,6 +353,40 @@ jobs:
             # match, rejecting an otherwise valid PR. Emit the delimiter and
             # fields as raw bytes instead so no escaping is introduced.
             jq -j '.suppressions[] | .file, "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"
+
+            # The exact-pair comparison above validates (file, content), and
+            # the polling loop below validates that a fingerprint has an
+            # open trusted issue -- but neither ties a record's own
+            # fingerprint to its own (file, content). PR-controlled code can
+            # therefore pair suppression B's real file/content with
+            # suppression A's still-open fingerprint: the pair check accepts
+            # B (its content is genuinely recorded) and the polling loop
+            # accepts A's issue, while B itself was never published. A
+            # fingerprint is sha256(file "\n" content ["\noccurrence:" N]),
+            # a deterministic function of only those inputs, so recomputing
+            # it for occurrences 1..100 (the trusted tracker's own
+            # per-pull-request record limit) and requiring a match rejects
+            # any fingerprint that does not actually belong to its record's
+            # file and content, without needing to know the true occurrence.
+            while IFS=$'\001' read -r bound_file bound_content bound_fingerprint; do
+              bound=0
+              candidate="$(printf '%s\n%s' "${bound_file}" "${bound_content}" | shasum -a 256 | awk '{ print $1 }')"
+              if [ "${candidate}" = "${bound_fingerprint}" ]; then
+                bound=1
+              else
+                for occurrence in $(seq 2 100); do
+                  candidate="$(printf '%s\n%s\noccurrence:%s' "${bound_file}" "${bound_content}" "${occurrence}" | shasum -a 256 | awk '{ print $1 }')"
+                  if [ "${candidate}" = "${bound_fingerprint}" ]; then
+                    bound=1
+                    break
+                  fi
+                done
+              fi
+              if [ "${bound}" -eq 0 ]; then
+                echo "::error::This pull request's tracking output contains a fingerprint that does not match its own recorded file and content for any occurrence up to 100; refusing to trust a tampered artifact." >&2
+                exit 1
+              fi
+            done < <(jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\n"' "${SUPPRESSIONS_FILE}")
           fi
 
           # comm requires sorted input but -- given sorted, duplicate-

@@ -716,6 +716,26 @@ func TestInlineSuppressionCheckDetectsMarkerImmediatelyAfterAClosedString(t *tes
 	}
 }
 
+func assertSuppressionDetectedForNarrowSingleQuoteSource(t *testing.T, path string, wrapperStart string, wrapperEnd string, line string) {
+	t.Helper()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	source := wrapperStart + "\n" + line + "\n" + wrapperEnd + "\n"
+	writeFile(t, filepath.Join(repoDir, path), source)
+	runCommand(t, repoDir, "git", "add", path)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the marker in %q to pass, output:\n%s", path, output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerAfterARustLifetime(t *testing.T) {
 	t.Parallel()
 
@@ -725,23 +745,20 @@ func TestInlineSuppressionCheckDetectsMarkerAfterARustLifetime(t *testing.T) {
 	// covered languages require) would make the unterminated lifetime
 	// swallow the rest of the line, hiding the real suppression comment
 	// that follows it.
-	repoDir := newInlineSuppressionRepo(t)
-	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
 	line := "\tlet value: &'static str = \"x\"; //coverage: ignore // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
-	source := "fn main() {\n" + line + "\n}\n"
-	rustPath := "main.rs"
-	writeFile(t, filepath.Join(repoDir, rustPath), source)
-	runCommand(t, repoDir, "git", "add", rustPath)
+	assertSuppressionDetectedForNarrowSingleQuoteSource(t, "main.rs", "fn main() {", "}", line)
+}
 
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
-	if err != nil {
-		t.Fatalf("expected marker after a Rust lifetime to pass, output:\n%s", output)
-	}
+func TestInlineSuppressionCheckDetectsMarkerAfterACPlusPlusDigitSeparator(t *testing.T) {
+	t.Parallel()
 
-	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
-	}
+	// C++14 digit separators group the digits of a large numeric literal
+	// with apostrophes (e.g. 1'000) that never close the way a real string
+	// does. Treating every apostrophe as a generic string delimiter would
+	// make the unterminated separator swallow the rest of the line, hiding
+	// the real suppression comment that follows it.
+	line := "\tauto n = 1'000; //NOLINT rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	assertSuppressionDetectedForNarrowSingleQuoteSource(t, "main.cpp", "int main() {", "}", line)
 }
 
 func TestInlineSuppressionCheckIgnoresURLSchemesInSource(t *testing.T) {

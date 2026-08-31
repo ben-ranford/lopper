@@ -435,19 +435,21 @@ BEGIN {
 # backslash-escaping) before matching removes any comment-delimiter-shaped
 # text found only inside a string, while leaving real code -- including a
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
-# untouched. Mirrors the trusted tracker'"'"'s isInsideQuotedRegion exactly so
+# untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
-function mask_quoted_regions(s,    result, i, c, quote, n, is_rust) {
+function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) {
 	result = ""
 	quote = ""
 	n = length(s)
-	# Rust has no multi-character single-quoted strings: a leading
-	# apostrophe is either a self-contained char literal (two or three
-	# characters, e.g. x or a backslash escape, between two apostrophes)
-	# or a lifetime (e.g. static or a) that never closes. Treating every
-	# apostrophe as a string delimiter would let a lifetime swallow the
-	# rest of the line, hiding a real suppression comment after it.
-	is_rust = (tolower(file) ~ /\.rs$/)
+	# Rust and C/C++ have no multi-character single-quoted strings: a
+	# leading apostrophe is either a self-contained char literal (two or
+	# three characters, e.g. x or a backslash escape, between two
+	# apostrophes), a Rust lifetime (e.g. static or a), or a C++14 digit
+	# separator grouping the digits of a large number -- none of which
+	# close the way a real string does. Treating every apostrophe as a
+	# string delimiter would let one of these swallow the rest of the
+	# line, hiding a real suppression comment after it.
+	narrow_single_quote = (tolower(file) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)
 	for (i = 1; i <= n; i++) {
 		c = substr(s, i, 1)
 		if (quote != "") {
@@ -464,7 +466,7 @@ function mask_quoted_regions(s,    result, i, c, quote, n, is_rust) {
 			}
 			continue
 		}
-		if (c == "'"'"'" && is_rust) {
+		if (c == "'"'"'" && narrow_single_quote) {
 			if (substr(s, i + 1, 1) == "\\" && substr(s, i + 3, 1) == "'"'"'") {
 				result = result c "xx" "'"'"'"
 				i += 3

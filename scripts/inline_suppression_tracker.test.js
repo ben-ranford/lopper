@@ -348,6 +348,26 @@ test('recognizes a marker following a Rust lifetime without treating it as an op
   assert.equal(testables.hasInlineSuppressionMarker(pythonLine, 'tool.py'), false, pythonLine);
 });
 
+test('recognizes a marker following a C++ digit separator without treating it as an open string', () => {
+  // C++14 digit separators group the digits of a large numeric literal with
+  // apostrophes (1'000'000) that never close the way a real string does;
+  // treating every apostrophe as a generic string delimiter would make the
+  // unterminated separator swallow the rest of the line, hiding the real
+  // suppression comment that follows it.
+  const line = '\tauto n = 1' + "'000; //" + 'NOLINT rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(line, 'src/main.cpp'), true, line);
+  assert.equal(testables.hasInlineSuppressionMarker(line), false, line);
+
+  // A genuine C/C++ char literal on the same line still masks correctly.
+  const charLiteralLine = "\tchar c = '0'" + '; //' + 'NOLINT rationale=x; owner=y; remove-when=z';
+  assert.equal(testables.hasInlineSuppressionMarker(charLiteralLine, 'src/main.c'), true, charLiteralLine);
+
+  // Every C/C++ header/source extension is covered, not just .cpp.
+  for (const file of ['main.c', 'main.cc', 'main.cxx', 'main.h', 'main.hh', 'main.hpp']) {
+    assert.equal(testables.hasInlineSuppressionMarker(line, file), true, file);
+  }
+});
+
 test('classifies source files without path validation side effects', () => {
   assert.equal(testables.isSourceFile('internal/main.go'), true);
   assert.equal(testables.isSourceFile('web/component.TSX'), true);
