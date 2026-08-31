@@ -470,6 +470,97 @@ func TestWriteAtomicReplacementRejectsRetargetedDestinationAfterWindowsFallback(
 	}
 }
 
+func TestFallbackAtomicReplacementAcceptsActualQuarantineRenameSourceOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
+	renameErr := &publishRenameError{
+		sourceRel: quarantineRel,
+		err:       errors.Join(windowsReplaceExistingError(quarantineRel, writeTestFileName), nil),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, atomicReplacementFallback{
+		oldName:         ".safeio-atomic-temp",
+		newName:         writeTestFileName,
+		replacementFile: targetFile,
+		data:            []byte("after"),
+		renameErr:       renameErr,
+	})
+	if err != nil {
+		t.Fatalf("fallbackAtomicReplacement returned error: %v", err)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
+	}
+}
+
+func TestFallbackAtomicReplacementRejectsRetainedQuarantineStagingOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
+	restoreErr := errIdentityBoundRestoreRetainedStaging
+	renameErr := &publishRenameError{
+		sourceRel: quarantineRel,
+		err: errors.Join(
+			windowsReplaceExistingError(quarantineRel, writeTestFileName),
+			restoreErr,
+		),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, atomicReplacementFallback{
+		oldName:         ".safeio-atomic-temp",
+		newName:         writeTestFileName,
+		replacementFile: targetFile,
+		data:            []byte("after"),
+		renameErr:       renameErr,
+	})
+	if !errors.Is(err, renameErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("expected retained staging error to be preserved, got %v", err)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("fallback must not overwrite after retained source recovery, got %q", string(*targetData))
+	}
+}
+
+func TestFallbackAtomicReplacementRejectsWrongIdentityBoundStagedRenameSourceOnWindows(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	const tempRel = ".safeio-atomic-temp"
+	renameErr := &publishRenameError{
+		sourceRel: tempRel + ".staged",
+		err:       windowsReplaceExistingError("other-staged", writeTestFileName),
+	}
+
+	err := fallbackAtomicReplacement(&fakeRoot{}, atomicReplacementFallback{
+		oldName:         tempRel,
+		newName:         writeTestFileName,
+		replacementFile: targetFile,
+		data:            []byte("after"),
+		renameErr:       renameErr,
+	})
+	if err == nil {
+		t.Fatal("expected mismatched staged source to reject fallback")
+	}
+	if !errors.Is(err, renameErr) {
+		t.Fatalf("expected original rename error, got %v", err)
+	}
+	if string(*targetData) != "before" {
+		t.Fatalf("wrong-source fallback mutated target data: %q", string(*targetData))
+	}
+}
+
 func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *testing.T) {
 	targetInfoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(targetInfoPath, []byte("before"), 0o640); err != nil {
@@ -493,6 +584,45 @@ func TestWriteFileReplacingWithinRootFallsBackWhenTargetAppearsBeforeRename(t *t
 	}
 	if string(target.data) != "after" {
 		t.Fatalf("expected late fallback overwrite data, got %q", string(target.data))
+	}
+}
+
+func TestWriteAtomicReplacementWithPinnedTargetReturnsCleanupAfterSuccessfulWindowsFallback(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetFile, targetData := newPinnedFallbackTargetFile(t, info, "before")
+	tempInfo := newPinnedTargetInfo(t, "temp")
+	cleanupErr := errors.New("publish cleanup failure")
+	quarantineRel := filepath.Join("nested", ".safeio-atomic-quarantine", "entry")
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name == writeTestFileName {
+				return info, nil
+			}
+			return tempInfo, nil
+		},
+		openFile: openTargetOrTempFile(writeTestFileName, func() (File, error) {
+			return targetFile, nil
+		}, tempInfo, nil),
+		renameIfMatches: func(string, string, fs.FileInfo, string) error {
+			return &publishRenameError{
+				sourceRel:  quarantineRel,
+				err:        windowsReplaceExistingError(quarantineRel, writeTestFileName),
+				cleanupErr: cleanupErr,
+			}
+		},
+		remove: func(string) error { return nil },
+	}
+
+	err := writeAtomicReplacementWithPinnedTarget(root, writeTestFileName, []byte("after"), 0o600, targetFile, true)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected cleanup failure after successful fallback, got %v", err)
+	}
+	if string(*targetData) != "after" {
+		t.Fatalf("expected fallback overwrite data, got %q", string(*targetData))
 	}
 }
 
@@ -750,6 +880,125 @@ func TestWriteFileAtomicallyIfAbsentFallsBackToWindowsNoReplaceRename(t *testing
 	}
 }
 
+func TestPublishStagedIfAbsentNoReplaceFallbackUsesAttemptedLinkSource(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	state := newWindowsPublishStagedFallbackState(t, rootInfo, tempInfo)
+	restoreWindowsNoReplaceRename(t, state.publish)
+
+	if err := publishStagedIdentityBoundIfAbsent(state.root, "source", state.stagedRel, state.targetRel, tempInfo); err != nil {
+		t.Fatalf("publishStagedIdentityBoundIfAbsent returned error: %v", err)
+	}
+	if !state.targetPublished {
+		t.Fatal("expected no-replace fallback to publish the target")
+	}
+}
+
+func TestPublishStagedIfAbsentNoReplaceFallbackPreservesLinkCleanupFailure(t *testing.T) {
+	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
+	state := newWindowsPublishStagedFallbackState(t, rootInfo, tempInfo)
+	cleanupErr := errors.New("quarantine cleanup failed")
+	state.linkErr = withAtomicWriteCleanup(
+		&os.LinkError{Op: "linkat", Old: ".safeio-atomic-target-link", New: state.targetRel, Err: errors.ErrUnsupported},
+		cleanupErr,
+	)
+	publishCalls := 0
+	original := windowsNoReplaceRenameFn
+	windowsNoReplaceRenameFn = func(Root, fs.FileInfo, string, string, fs.FileInfo) error {
+		publishCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		windowsNoReplaceRenameFn = original
+	})
+
+	err := publishStagedIdentityBoundIfAbsent(state.root, "source", state.stagedRel, state.targetRel, tempInfo)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("expected link cleanup failure, got %v", err)
+	}
+	if publishCalls != 0 || state.targetPublished {
+		t.Fatalf("fallback must not publish after link cleanup failure, calls=%d published=%t", publishCalls, state.targetPublished)
+	}
+}
+
+type windowsPublishStagedFallbackState struct {
+	t               *testing.T
+	root            *fakeRoot
+	rootInfo        fs.FileInfo
+	tempInfo        fs.FileInfo
+	stagedRel       string
+	targetRel       string
+	targetPublished bool
+	linkErr         error
+}
+
+func newWindowsPublishStagedFallbackState(t *testing.T, rootInfo, tempInfo fs.FileInfo) *windowsPublishStagedFallbackState {
+	state := &windowsPublishStagedFallbackState{
+		t:         t,
+		rootInfo:  rootInfo,
+		tempInfo:  tempInfo,
+		stagedRel: ".safeio-atomic-temp",
+		targetRel: writeTestFileName,
+	}
+	state.root = &fakeRoot{
+		linkIfMatches:   state.linkIfMatches,
+		lstat:           state.lstat,
+		removeIfMatches: state.removeIfMatches,
+	}
+	return state
+}
+
+func (s *windowsPublishStagedFallbackState) linkIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.tempInfo, oldName)
+	if oldName != s.stagedRel || newName != s.targetRel || message != temporaryFileChangedBeforeCommit {
+		s.t.Fatalf("unexpected publish link %q -> %q (%s)", oldName, newName, message)
+	}
+	if s.linkErr != nil {
+		return s.linkErr
+	}
+	return &os.LinkError{Op: "linkat", Old: ".safeio-atomic-target-link", New: s.targetRel, Err: errors.ErrUnsupported}
+}
+
+func (s *windowsPublishStagedFallbackState) lstat(name string) (fs.FileInfo, error) {
+	if name == "." {
+		return s.rootInfo, nil
+	}
+	if name == s.targetRel {
+		if s.targetPublished {
+			return s.tempInfo, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	if name == s.stagedRel {
+		if s.targetPublished {
+			return nil, os.ErrNotExist
+		}
+		return s.tempInfo, nil
+	}
+	s.t.Fatalf("unexpected lstat path: %s", name)
+	return nil, os.ErrNotExist
+}
+
+func (s *windowsPublishStagedFallbackState) removeIfMatches(name string, expected fs.FileInfo, message string) error {
+	requireSameFileInfo(s.t, expected, s.tempInfo, name)
+	if name != s.stagedRel || message != cleanupFileChangedBeforeRemoval {
+		s.t.Fatalf("unexpected cleanup %q (%s)", name, message)
+	}
+	return nil
+}
+
+func (s *windowsPublishStagedFallbackState) publish(gotRoot Root, gotRootInfo fs.FileInfo, tempRel, targetRel string, gotTempInfo fs.FileInfo) error {
+	if gotRoot != s.root {
+		s.t.Fatal("fallback received a different root")
+	}
+	requireSameFileInfo(s.t, gotRootInfo, s.rootInfo, "root identity")
+	if tempRel != s.stagedRel || targetRel != s.targetRel {
+		s.t.Fatalf("unexpected no-replace rename %q -> %q", tempRel, targetRel)
+	}
+	requireSameFileInfo(s.t, gotTempInfo, s.tempInfo, "staged identity")
+	s.targetPublished = true
+	return nil
+}
+
 func TestWriteFileAtomicallyIfAbsentNoReplaceFallbackPreservesExistingTarget(t *testing.T) {
 	rootInfo, tempInfo := writePinnedTargetInfoPair(t)
 	root := newWindowsNoReplaceIfAbsentRoot(t, rootInfo, tempInfo)
@@ -787,7 +1036,7 @@ func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T
 		{name: "invalid function", err: linkError("linkat", tempName, writeTestFileName, syscall.Errno(1)), want: true},
 		{name: "target exists", err: linkError("linkat", tempName, writeTestFileName, syscall.ERROR_ALREADY_EXISTS)},
 		{name: "wrong operation", err: linkError("link", tempName, writeTestFileName, errors.ErrUnsupported)},
-		{name: "wrong source", err: linkError("linkat", "other-temp", writeTestFileName, errors.ErrUnsupported)},
+		{name: "private staging source", err: linkError("linkat", "other-temp", writeTestFileName, errors.ErrUnsupported), want: true},
 		{name: "wrong target", err: linkError("linkat", tempName, "other-target", errors.ErrUnsupported)},
 		{name: "raw unsupported", err: errors.ErrUnsupported},
 	}
@@ -797,6 +1046,34 @@ func TestWindowsHardLinkUnsupportedFallbackMatchesOnlyExpectedShape(t *testing.T
 			if got != tt.want {
 				t.Fatalf("unexpected fallback decision: got %t want %t", got, tt.want)
 			}
+		})
+	}
+}
+
+func TestStageIdentityBoundFileCopiesForWindowsHardLinkUnsupportedErrors(t *testing.T) {
+	for _, linkErr := range []error{syscall.ERROR_PRIVILEGE_NOT_HELD, syscall.Errno(1)} {
+		t.Run(linkErr.Error(), func(t *testing.T) {
+			rootDir := t.TempDir()
+			sourcePath := filepath.Join(rootDir, "source")
+			if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+				t.Fatalf("seed source: %v", err)
+			}
+			root := &fakeRoot{
+				Root: openTestRoot(t, rootDir),
+				linkIfMatches: func(string, string, fs.FileInfo, string) error {
+					return &os.LinkError{Op: "linkat", Old: "source", New: ".safeio-atomic-staging", Err: linkErr}
+				},
+			}
+
+			stagedRel, stagedInfo, err := stageIdentityBoundFile(root, "source", statTestPath(t, sourcePath), sourceChangedMsg)
+			if err != nil {
+				t.Fatalf("unsupported Windows link did not copy fallback: %v", err)
+			}
+			assertFileContent(t, filepath.Join(rootDir, stagedRel), "source")
+			if err := cleanupAtomicTempFileIfMatches(root, stagedRel, stagedInfo); err != nil {
+				t.Fatalf("cleanup copied staging file: %v", err)
+			}
+			assertNoAtomicStagingEntries(t, rootDir)
 		})
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,8 +14,10 @@ import (
 	"testing"
 	_ "unsafe"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	runtimetrace "github.com/ben-ranford/lopper/internal/runtime"
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
@@ -41,77 +45,6 @@ type analysisCacheLookupCase struct {
 	wantReason   string
 	wantHit      bool
 	wantRepoPath string
-}
-
-func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
-	cache := &analysisCache{
-		metadata: report.CacheMetadata{Invalidations: []report.CacheInvalidation{{Key: "k", Reason: "reason"}}},
-		warnings: []string{},
-	}
-
-	cache.warn("")
-	cache.warn("cache warning")
-	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || warnings[0] != "cache warning" {
-		t.Fatalf("unexpected warnings: %#v", warnings)
-	}
-	if len(cache.takeWarnings()) != 0 {
-		t.Fatalf("expected warnings to be drained")
-	}
-
-	snapshot := cache.metadataSnapshot()
-	if snapshot == nil || len(snapshot.Invalidations) != 1 {
-		t.Fatalf("unexpected snapshot: %#v", snapshot)
-	}
-	cache.metadata.Invalidations[0].Reason = "mutated"
-	if snapshot.Invalidations[0].Reason == "mutated" {
-		t.Fatalf("expected snapshot invalidations to be copied")
-	}
-
-	var nilCache *analysisCache
-	if nilCache.metadataSnapshot() != nil {
-		t.Fatalf("expected nil snapshot for nil cache")
-	}
-}
-
-func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
-	repo := t.TempDir()
-	blockingPath := filepath.Join(repo, "not-a-dir")
-	if err := os.WriteFile(blockingPath, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write blocking file: %v", err)
-	}
-
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: blockingPath}}, repo)
-	if cache.cacheable {
-		t.Fatalf("expected cache to be non-cacheable when path is invalid")
-	}
-	if len(cache.takeWarnings()) == 0 {
-		t.Fatalf("expected warning when cache directory init fails")
-	}
-}
-
-func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "missing", cacheDirName)
-
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if cache.cacheable {
-		t.Fatal("expected missing cache root to be unavailable pending capability-bound creation")
-	}
-	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "#1494") {
-		t.Fatalf("warnings = %#v, want #1494 capability-bound creation guidance", warnings)
-	}
-	for _, path := range []string{
-		filepath.Join(repo, "missing"),
-		cachePath,
-		filepath.Join(cachePath, cacheKeysDirName),
-		filepath.Join(cachePath, cacheObjectsDirName),
-	} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("cache initialization created %s: %v", path, err)
-		}
-	}
 }
 
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
@@ -545,6 +478,67 @@ func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 	}
 }
 
+func TestAnalysisCacheOpenWriteRootFailureBranches(t *testing.T) {
+	t.Run("open canonical write root failure after validation", testAnalysisCacheOpenWriteRootCanonicalOpenFailure)
+	t.Run("opened canonical root must match pinned identity", testAnalysisCacheOpenWriteRootIdentityMismatch)
+	t.Run("second validation after opening write root fails closed", testAnalysisCacheOpenWriteRootSecondValidationFailure)
+}
+
+func testAnalysisCacheOpenWriteRootCanonicalOpenFailure(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	renamedPath := filepath.Join(fixture.repo, "cache-renamed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call != 1 {
+			return false, nil
+		}
+		if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+			t.Fatalf("rename cache root before canonical open: %v", err)
+		}
+		return true, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "open canonical root") {
+		t.Fatalf("open write root error = %v, want canonical open failure", err)
+	}
+}
+
+func testAnalysisCacheOpenWriteRootIdentityMismatch(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	renamedPath := filepath.Join(fixture.repo, "cache-renamed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call != 1 {
+			return false, nil
+		}
+		if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+			t.Fatalf("rename cache root before canonical open: %v", err)
+		}
+		mustMkdirCacheLayout(t, fixture.cachePath)
+		return true, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "pinned root identity changed") {
+		t.Fatalf("open write root identity error = %v, want identity mismatch", err)
+	}
+}
+
+func testAnalysisCacheOpenWriteRootSecondValidationFailure(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	validationErr := errors.New("post-open validation failed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call == 2 {
+			return true, validationErr
+		}
+		return false, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); !errors.Is(err, validationErr) {
+		t.Fatalf("open write root error = %v, want %v", err, validationErr)
+	}
+}
+
 func TestCachePathEscapesRepoHandlesResolvedAndMissingPaths(t *testing.T) {
 	repo := t.TempDir()
 	inside := filepath.Join(repo, cacheDirName)
@@ -639,6 +633,28 @@ func assertAnalysisCachePathAbsent(t *testing.T, path string) {
 	}
 }
 
+func assertAnalysisCacheDirExists(t *testing.T, path string) {
+	t.Helper()
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be a directory, info=%#v err=%v", path, info, err)
+	}
+}
+
+func assertAnalysisCacheSameFile(t *testing.T, path string, want fs.FileInfo) {
+	t.Helper()
+	got, err := os.Lstat(path)
+	if err != nil || !os.SameFile(got, want) {
+		t.Fatalf("expected %q to keep identity, got=%#v want=%#v err=%v", path, got, want, err)
+	}
+}
+
+func assertAnalysisCacheQuarantineSuffix(t *testing.T, quarantineName, suffix string) {
+	t.Helper()
+	if !strings.HasSuffix(filepath.Dir(quarantineName), suffix) {
+		t.Fatalf("expected quarantine suffix %s, got %q", suffix, quarantineName)
+	}
+}
+
 func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {
 	t.Helper()
 
@@ -669,6 +685,156 @@ func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
 	}
 	if lockOrConfigFile("README.md") {
 		t.Fatalf("did not expect README.md to be treated as a cache-relevant config file")
+	}
+}
+
+func TestAnalysisCacheCollectsPHPShortOpenTagConfigs(t *testing.T) {
+	repo := t.TempDir()
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		mustWriteFile(t, filepath.Join(repo, filename), []byte("short_open_tag = On\n"))
+	}
+
+	cache := &analysisCache{}
+	records, err := cache.collectRelevantFiles(repo)
+	if err != nil {
+		t.Fatalf("collect relevant files: %v", err)
+	}
+	collected := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		collected[record.relativePath] = struct{}{}
+	}
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		if _, ok := collected[filename]; !ok {
+			t.Fatalf("expected %s to participate in cache invalidation, got %#v", filename, collected)
+		}
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagConfigChangesInvalidateInputDigest(t *testing.T) {
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		t.Run(filename, func(t *testing.T) {
+			repo := t.TempDir()
+			configPath := filepath.Join(repo, filename)
+			mustWriteFile(t, configPath, []byte("short_open_tag = Off\n"))
+
+			cache := &analysisCache{}
+			before, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest before config update: %v", err)
+			}
+			mustWriteFile(t, configPath, []byte("short_open_tag = On\n"))
+			after, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest after config update: %v", err)
+			}
+			if before == after {
+				t.Fatalf("expected %s update to invalidate the input digest", filename)
+			}
+		})
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagTraversalCutoffInvalidatesInputDigest(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteFile(t, filepath.Join(repo, "z-config", "php.ini"), []byte("short_open_tag = On\n"))
+
+	cache := &analysisCache{}
+	before, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest before traversal change: %v", err)
+	}
+	for i := 0; i < shared.PHPShortOpenTagConfigWalkEntryLimit; i++ {
+		if err := os.Mkdir(filepath.Join(repo, fmt.Sprintf("a-%04d", i)), 0o750); err != nil {
+			t.Fatalf("create traversal entry %d: %v", i, err)
+		}
+	}
+	after, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest after traversal change: %v", err)
+	}
+	if before == after {
+		t.Fatal("expected PHP short_open_tag traversal cutoff to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(repo, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	exclusions := cache.cacheAnalysisExclusions(repo, Request{RuntimeTracePath: tracePath})
+	before, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	mustWriteFile(t, runtimetrace.TraceStatePath(filepath.Join(repo, tracePath)), []byte("{\"schema\":\"v2\"}\n"))
+	afterTrace, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != afterTrace {
+		t.Fatal("expected generated runtime trace artifacts not to invalidate the static input digest")
+	}
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'after';\n"))
+	afterSource, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after source change: %v", err)
+	}
+	if afterTrace == afterSource {
+		t.Fatal("expected source beside an explicit runtime trace to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheRuntimeTraceResolvesRelativeToRepoRootForNestedCandidateRoots(t *testing.T) {
+	repo := t.TempDir()
+	nestedRoot := filepath.Join(repo, "pkg")
+	tracePath := filepath.Join("pkg", "tests", "trace.ndjson")
+	sourcePath := filepath.Join(nestedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(nestedRoot, req, repo)
+	before, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a relative runtime trace path to resolve against the repository root, excluding trace artifacts from a nested candidate root's digest")
+	}
+}
+
+func TestAnalysisCacheRuntimeTraceExclusionRemapsIntoScopedWorkspace(t *testing.T) {
+	trueRepo := t.TempDir()
+	scopedRoot := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(scopedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{stableRepoPath: trueRepo, analysisRepoPath: scopedRoot}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(scopedRoot, req, trueRepo)
+	before, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(scopedRoot, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a runtime trace exclusion resolved against the true repo root to be remapped into a scoped workspace copy's candidate root")
 	}
 }
 

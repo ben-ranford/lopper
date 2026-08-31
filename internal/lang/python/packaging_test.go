@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -241,7 +242,7 @@ requests==2.32.0
 urllib3>=2.2.3
 `)
 
-	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 	if err != nil {
 		t.Fatalf(collectDirectoryErrFmt, err)
 	}
@@ -367,7 +368,7 @@ name = "urllib3"
 version = "2.2.1"
 `)
 
-	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 	if err != nil {
 		t.Fatalf(collectDirectoryErrFmt, err)
 	}
@@ -401,7 +402,7 @@ name = ""
 version = "0.1.0"
 `)
 
-	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 	if err != nil {
 		t.Fatalf(collectDirectoryErrFmt, err)
 	}
@@ -430,7 +431,7 @@ name = "Requests"
 version = "2.32.3"
 `+strings.Repeat("# filler\n", int(ManifestReadLimitBytes)/len("# filler\n")+1))
 
-			dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+			dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 			if err != nil {
 				t.Fatalf(collectDirectoryErrFmt, err)
 			}
@@ -706,7 +707,7 @@ dependencies = ["requests>=2"]
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, err := collectDeclaredDependencies(ctx, repo)
+	_, _, err := collectDeclaredDependencies(ctx, repo, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled context error, got %v", err)
 	}
@@ -715,7 +716,7 @@ dependencies = ["requests>=2"]
 func TestCollectDirectoryDeclaredDependenciesWithoutPackagingFiles(t *testing.T) {
 	repo := t.TempDir()
 
-	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 	if err != nil {
 		t.Fatalf(collectDirectoryErrFmt, err)
 	}
@@ -723,7 +724,7 @@ func TestCollectDirectoryDeclaredDependenciesWithoutPackagingFiles(t *testing.T)
 		t.Fatalf("expected empty result without packaging files, got deps=%#v warnings=%#v", dependencies, warnings)
 	}
 
-	if _, err := pythonPackagingFiles(filepath.Join(repo, "missing")); err == nil {
+	if _, err := pythonPackagingFiles(filepath.Join(repo, "missing"), nil); err == nil {
 		t.Fatal("expected read error for missing packaging directory")
 	}
 }
@@ -736,12 +737,45 @@ func TestCollectDeclaredDependenciesSkipsAndPropagatesErrors(t *testing.T) {
 dependencies = ["requests>=2"]
 `)
 
-		dependencies, warnings, err := collectDeclaredDependencies(context.Background(), repo)
+		dependencies, warnings, err := collectDeclaredDependencies(context.Background(), repo, nil)
 		if err != nil {
 			t.Fatalf("collect declared dependencies: %v", err)
 		}
 		if len(dependencies) != 0 || len(warnings) != 0 {
 			t.Fatalf("expected skipped .venv contents, got deps=%#v warnings=%#v", dependencies, warnings)
+		}
+	})
+
+	t.Run("skips caller-excluded directories", func(t *testing.T) {
+		repo := t.TempDir()
+		excludedDir := filepath.Join(repo, ".artifacts")
+		testutil.MustWriteFile(t, filepath.Join(excludedDir, pythonPyprojectFile), `
+[project]
+dependencies = ["requests>=2"]
+`)
+
+		excludedPaths := shared.ExcludedPathsForRepo(repo, []string{excludedDir}, nil)
+		dependencies, warnings, err := collectDeclaredDependencies(context.Background(), repo, excludedPaths)
+		if err != nil {
+			t.Fatalf("collect declared dependencies: %v", err)
+		}
+		if len(dependencies) != 0 || len(warnings) != 0 {
+			t.Fatalf("expected excluded directory contents to be skipped, got deps=%#v warnings=%#v", dependencies, warnings)
+		}
+	})
+
+	t.Run("skips individually caller-excluded manifests", func(t *testing.T) {
+		repo := t.TempDir()
+		excludedManifest := filepath.Join(repo, pythonRequirementsTxt)
+		testutil.MustWriteFile(t, excludedManifest, "requests>=2\n")
+
+		excludedPaths := shared.ExcludedPathsForRepo(repo, nil, []string{excludedManifest})
+		dependencies, warnings, err := collectDeclaredDependencies(context.Background(), repo, excludedPaths)
+		if err != nil {
+			t.Fatalf("collect declared dependencies: %v", err)
+		}
+		if len(dependencies) != 0 || len(warnings) != 0 {
+			t.Fatalf("expected excluded manifest to be skipped, got deps=%#v warnings=%#v", dependencies, warnings)
 		}
 	})
 
@@ -760,7 +794,7 @@ dependencies = ["requests>=2"]
 			t.Fatalf("chmod blocked dir: %v", err)
 		}
 
-		if _, _, err := collectDeclaredDependencies(context.Background(), repo); err == nil {
+		if _, _, err := collectDeclaredDependencies(context.Background(), repo, nil); err == nil {
 			t.Fatal("expected collectDeclaredDependencies to propagate directory read error")
 		}
 	})
@@ -781,7 +815,7 @@ func TestCollectDirectoryDeclaredDependenciesEmptyFallbackSkipsWarning(t *testin
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, pythonPoetryLockName), `version = "1.0"`)
 
-	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo)
+	dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 	if err != nil {
 		t.Fatalf(collectDirectoryErrFmt, err)
 	}
@@ -800,7 +834,7 @@ func TestPythonPackagingFilesIgnoreChildDirectories(t *testing.T) {
 		t.Fatalf("mkdir nested dir: %v", err)
 	}
 
-	files, err := pythonPackagingFiles(repo)
+	files, err := pythonPackagingFiles(repo, nil)
 	if err != nil {
 		t.Fatalf("pythonPackagingFiles: %v", err)
 	}
@@ -870,7 +904,7 @@ func assertCollectDirectoryReadError(t *testing.T, fileName, content string) {
 	outsideDir := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(outsideDir, fileName), content)
 
-	if _, _, err := collectDirectoryDeclaredDependencies(repo, outsideDir); err == nil {
+	if _, _, err := collectDirectoryDeclaredDependencies(repo, outsideDir, nil); err == nil {
 		t.Fatal("expected collect directory read error")
 	}
 }

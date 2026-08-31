@@ -3,16 +3,18 @@ package php
 import (
 	"context"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/workspace"
 )
 
 type analysisPipelineState struct {
-	repoPath string
-	composer composerData
-	scan     scanResult
-	warnings []string
+	repoPath      string
+	excludedPaths map[string]struct{}
+	composer      composerData
+	scan          scanResult
+	warnings      []string
 }
 
 func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Result, error) {
@@ -21,8 +23,11 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	state := analysisPipelineState{repoPath: repoPath}
-	if err := runComposerIngestionStage(&state); err != nil {
+	state := analysisPipelineState{
+		repoPath:      repoPath,
+		excludedPaths: shared.ExcludedPathsForRepo(repoPath, req.ExcludedPaths, req.ExcludedFiles),
+	}
+	if err := runComposerIngestionStage(ctx, &state); err != nil {
 		return report.Report{}, err
 	}
 	if err := runPHPScanStage(ctx, &state); err != nil {
@@ -31,8 +36,8 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	return a.runPHPReportAssemblyStage(req, state), nil
 }
 
-func runComposerIngestionStage(state *analysisPipelineState) error {
-	composerData, warnings, err := loadComposerData(state.repoPath)
+func runComposerIngestionStage(ctx context.Context, state *analysisPipelineState) error {
+	composerData, warnings, err := loadComposerDataWithExcludedPaths(ctx, state.repoPath, state.excludedPaths)
 	if err != nil {
 		return err
 	}
@@ -42,7 +47,7 @@ func runComposerIngestionStage(state *analysisPipelineState) error {
 }
 
 func runPHPScanStage(ctx context.Context, state *analysisPipelineState) error {
-	scan, err := scanRepo(ctx, state.repoPath, state.composer)
+	scan, err := scanRepoWithExcludedPaths(ctx, state.repoPath, state.composer, state.excludedPaths)
 	if err != nil {
 		return err
 	}
@@ -53,9 +58,10 @@ func runPHPScanStage(ctx context.Context, state *analysisPipelineState) error {
 
 func (a *Adapter) runPHPReportAssemblyStage(req language.Request, state analysisPipelineState) report.Report {
 	result := report.Report{
-		GeneratedAt: a.Clock(),
-		RepoPath:    state.repoPath,
-		Warnings:    append([]string(nil), state.warnings...),
+		GeneratedAt:     a.Clock(),
+		RepoPath:        state.repoPath,
+		UsageIncomplete: state.scan.UsageIncomplete,
+		Warnings:        append([]string(nil), state.warnings...),
 	}
 
 	dependencies, warnings := buildRequestedPHPDependencies(req, state.scan)

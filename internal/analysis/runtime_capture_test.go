@@ -78,7 +78,7 @@ func TestServiceRuntimeCaptureRefreshesTraceOnCacheHit(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "console.log('hello')\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestPackageJSONFileName), "{\n  \"name\": \"demo\"\n}\n")
 
-	counterPath := filepath.Join(repo, "runtime-counter.txt")
+	counterPath := filepath.Join(t.TempDir(), "runtime-counter.txt")
 	t.Setenv("LOPPER_RUNTIME_COUNTER", counterPath)
 	t.Setenv("LOPPER_RUNTIME_BIN_DIRS", setupFakeAnalysisRuntimeTool(t))
 

@@ -682,14 +682,13 @@ func TestOpenCommandOutputDestinationClosesRootOnBoundaryError(t *testing.T) {
 	boundaryErr := errors.New("boundary failure")
 	originalOpen := openCommandOutputWriteRootFn
 	originalAccepted := commandOutputBoundaryAcceptedFn
+	var openedRoot *safeio.WriteRoot
 	openCommandOutputWriteRootFn = func(rootPath string) (*safeio.WriteRoot, error) {
 		root, err := safeio.OpenWriteRoot(rootPath)
 		if err != nil {
 			return nil, err
 		}
-		if err := root.Close(); err != nil {
-			return nil, err
-		}
+		openedRoot = root
 		return root, nil
 	}
 	commandOutputBoundaryAcceptedFn = func() error { return boundaryErr }
@@ -707,6 +706,39 @@ func TestOpenCommandOutputDestinationClosesRootOnBoundaryError(t *testing.T) {
 	}
 	if !errors.Is(err, boundaryErr) {
 		t.Fatalf("expected boundary error, got %v", err)
+	}
+	if openedRoot == nil {
+		t.Fatal("expected output root to be opened")
+	}
+	if _, rootErr := openedRoot.RootInfo(); rootErr == nil {
+		t.Fatal("expected output root to be closed after boundary error")
+	}
+}
+
+func TestOpenResolvedCommandOutputDestinationClosesRootOnIdentityError(t *testing.T) {
+	workspace := t.TempDir()
+	openedRoot, err := safeio.OpenWriteRoot(workspace)
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	if err := openedRoot.Close(); err != nil {
+		t.Fatalf("pre-close write root: %v", err)
+	}
+
+	destination, err := openResolvedCommandOutputDestination(commandOutputDestination{rootAbs: workspace}, func(rootPath string) (*safeio.WriteRoot, error) {
+		if rootPath != workspace {
+			t.Fatalf("unexpected root path: %q", rootPath)
+		}
+		return openedRoot, nil
+	})
+	if destination.root != nil {
+		if closeErr := destination.root.Close(); closeErr != nil {
+			t.Fatalf("close unexpected destination root: %v", closeErr)
+		}
+		t.Fatal("expected destination root to remain nil")
+	}
+	if err == nil {
+		t.Fatal("expected root identity error")
 	}
 }
 

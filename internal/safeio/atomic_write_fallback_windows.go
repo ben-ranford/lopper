@@ -12,7 +12,7 @@ import (
 )
 
 func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (returnErr error) {
-	if !windowsReplaceExistingRenameFallback(fallback.renameErr, fallback.oldName, fallback.newName) {
+	if !windowsReplaceExistingRenameFallback(fallback.renameErr, atomicRenameSourceRel(fallback.renameErr, fallback.oldName), fallback.newName) {
 		return fallback.renameErr
 	}
 
@@ -48,6 +48,14 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 		return err
 	}
 	return nil
+}
+
+func atomicRenameSourceRel(err error, fallbackRel string) string {
+	var publishErr *publishRenameError
+	if errors.As(err, &publishErr) && publishErr.sourceRel != "" {
+		return publishErr.sourceRel
+	}
+	return fallbackRel
 }
 
 func replacementFileForWindowsFallback(root Root, targetRel string, replacementFile File) (File, func() error, error) {
@@ -147,14 +155,28 @@ func verifyWindowsFallbackWriteOwnership(root Root, targetRel string, replacemen
 }
 
 func windowsReplaceExistingRenameFallback(err error, oldName, newName string) bool {
-	var linkErr *os.LinkError
-	if !errors.As(err, &linkErr) ||
-		linkErr.Op != "renameat" ||
-		linkErr.Old != oldName ||
-		linkErr.New != newName {
-		return false
+	return onlyWindowsReplaceExistingRename(publishRenameCause(err), oldName, newName)
+}
+
+func onlyWindowsReplaceExistingRename(err error, oldName, newName string) bool {
+	if linkErr, ok := err.(*os.LinkError); ok {
+		return linkErr.Op == "renameat" &&
+			linkErr.Old == oldName &&
+			linkErr.New == newName &&
+			isWindowsReplaceExistingError(linkErr.Err)
 	}
-	errno, ok := linkErr.Err.(syscall.Errno)
+	if joined, ok := err.(UnwrapAller); ok {
+		causes := joined.Unwrap()
+		return len(causes) == 1 && causes[0] != nil && onlyWindowsReplaceExistingRename(causes[0], oldName, newName)
+	}
+	if wrapped, ok := err.(Unwrapper); ok {
+		return wrapped.Unwrap() != nil && onlyWindowsReplaceExistingRename(wrapped.Unwrap(), oldName, newName)
+	}
+	return false
+}
+
+func isWindowsReplaceExistingError(err error) bool {
+	errno, ok := err.(syscall.Errno)
 	return ok &&
 		(errno == syscall.ERROR_ALREADY_EXISTS || errno == syscall.ERROR_FILE_EXISTS)
 }
