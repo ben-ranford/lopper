@@ -431,6 +431,7 @@ BEGIN {
 	line = 0
 	found = 0
 	check_file = 0
+	quote_state = ""
 }
 # Checking only the character immediately preceding a candidate comment
 # delimiter misses a marker preceded by ordinary text inside an otherwise
@@ -441,9 +442,9 @@ BEGIN {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
-function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) {
+function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote) {
 	result = ""
-	quote = ""
+	quote = initial_quote
 	n = length(s)
 	# Rust and C/C++ have no multi-character single-quoted strings: a
 	# leading apostrophe is either a self-contained char literal (two or
@@ -489,6 +490,7 @@ function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) 
 		}
 		result = result c
 	}
+	final_quote_state = quote
 	return result
 }
 /^\+\+\+ b\// {
@@ -498,6 +500,7 @@ function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) 
 	# the extension patterns "$" anchor still matches the real filename.
 	sub(/\t$/, "", file)
 	check_file = (tolower(file) ~ file_pattern)
+	quote_state = ""
 	next
 }
 /^@@ / {
@@ -506,6 +509,12 @@ function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) 
 	sub(/ .*/, "", hunk)
 	split(hunk, parts, ",")
 	line = parts[1] + 0
+	# A zero-context diff (--unified=0) has no unchanged lines between
+	# hunks, so within one hunk consecutive added lines are genuinely
+	# adjacent in the resulting file; but across the gap to the next
+	# hunk there is unseen content this scan never reads, so quote state
+	# cannot be trusted to carry across that boundary.
+	quote_state = ""
 	next
 }
 /^\+/ {
@@ -516,7 +525,14 @@ function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) 
 	# extra plus characters (e.g. an added C/C++ increment statement).
 	content = substr($0, 2)
 	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
-	if (check_file && tolower(mask_quoted_regions(content)) ~ pattern) {
+	# Quote state carries across added lines within a hunk: a multi-line
+	# string (e.g. a JavaScript template literal) that closes partway
+	# through a later line must not make that later scan think the
+	# closing delimiter opens a new quoted region, which would mask a
+	# real suppression comment following it on the same line.
+	masked = mask_quoted_regions(content, quote_state)
+	quote_state = final_quote_state
+	if (check_file && tolower(masked) ~ pattern) {
 		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
 		# for file paths or diff content that legitimately contain those bytes.
 		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0

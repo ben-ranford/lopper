@@ -805,6 +805,34 @@ func TestInlineSuppressionCheckIgnoresURLSchemesInSource(t *testing.T) {
 	assertSuppressionCheckPassesForSource(t, "package main\n\nconst url = \"http:"+"//"+"nosec.example.com\"\n")
 }
 
+func TestInlineSuppressionCheckDetectsMarkerAfterAMultilineTemplateLiteral(t *testing.T) {
+	t.Parallel()
+
+	// Quote state resets per line by default; a template literal opened on
+	// one added line and closed on a later added line must carry that
+	// state across, or the closing backtick looks like it opens a fresh
+	// quoted region and masks the real suppression comment that follows
+	// it -- silently reporting nothing found rather than failing loudly,
+	// since the marker itself becomes invisible to the scan.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	source := "const s = `line one\nline two\ntail`; //" +
+		"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	jsPath := "main.js"
+	writeFile(t, filepath.Join(repoDir, jsPath), source)
+	runCommand(t, repoDir, "git", "add", jsPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected marker after a multi-line template literal to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.T) {
 	t.Parallel()
 

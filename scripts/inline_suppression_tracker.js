@@ -82,9 +82,17 @@ function isCommentBoundary(char) {
 // char-literal shape opens (and immediately closes) a quoted region.
 const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', 'h', 'hh', 'hpp']);
 
-function isInsideQuotedRegion(content, index, file) {
+// Runs the quote-tracking state machine across content[0, index), starting
+// from `initialQuote` (the quote character already open when this line
+// began, or undefined if none), and returns the quote character still open
+// at that position (or undefined). Called with index = content.length, this
+// gives the state to carry into the next line -- a multi-line string (e.g.
+// a JavaScript template literal) that closes partway through a later line
+// must not make that line's scan think the closing delimiter opens a new
+// quoted region, which would mask a real suppression comment following it.
+function quoteStateAt(content, index, file, initialQuote) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
-  let quote;
+  let quote = initialQuote;
   for (let cursor = 0; cursor < index; cursor += 1) {
     const char = content[cursor];
     if (quote !== undefined) {
@@ -107,7 +115,11 @@ function isInsideQuotedRegion(content, index, file) {
       quote = char;
     }
   }
-  return quote !== undefined;
+  return quote;
+}
+
+function isInsideQuotedRegion(content, index, file, initialQuote) {
+  return quoteStateAt(content, index, file, initialQuote) !== undefined;
 }
 
 function isMarkerBoundary(char) {
@@ -245,14 +257,14 @@ async function occurrenceInFile({ github, context, file, ref, targetLine, target
   return count;
 }
 
-function addSuppression(records, { file, line, content, context, headSHA, occurrence }) {
+function addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote }) {
   validateFile(file);
   if (!Number.isInteger(line) || line < 1 || line > 1000000) {
     throw new RangeError('Invalid inline suppression line.');
   }
   validateString(content, 'content', 4096);
 
-  const markerIndex = commentPrefixIndexForMarker(content, file);
+  const markerIndex = commentPrefixIndexForMarker(content, file, initialQuote);
   const metadataScope = markerIndex === -1 ? content : content.slice(markerIndex);
   const rationale = validateString(metadataValue(metadataScope, ['rationale', 'reason']), 'rationale', 1024);
   const owner = validateString(metadataValue(metadataScope, ['owner']), 'owner', 256);
@@ -361,12 +373,12 @@ function markerStartAfterPrefix(content, index, prefix) {
   return cursor;
 }
 
-function commentPrefixIndexForMarker(content, file) {
+function commentPrefixIndexForMarker(content, file, initialQuote) {
   for (let index = 0; index < content.length; index += 1) {
     if (!isCommentBoundary(content[index - 1])) {
       continue;
     }
-    if (isInsideQuotedRegion(content, index, file)) {
+    if (isInsideQuotedRegion(content, index, file, initialQuote)) {
       continue;
     }
     const prefix = COMMENT_PREFIXES.find((candidate) => content.startsWith(candidate, index));
@@ -377,8 +389,8 @@ function commentPrefixIndexForMarker(content, file) {
   return -1;
 }
 
-function hasInlineSuppressionMarker(content, file) {
-  return commentPrefixIndexForMarker(content, file) !== -1;
+function hasInlineSuppressionMarker(content, file, initialQuote) {
+  return commentPrefixIndexForMarker(content, file, initialQuote) !== -1;
 }
 
 function parseHunkHeader(rawLine, file) {
@@ -467,14 +479,23 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
   }
 
   let line = 0;
+  // Quote state carries across lines within a hunk: a multi-line string
+  // (e.g. a JavaScript template literal) that closes partway through a
+  // later line must not make that line's scan think the closing delimiter
+  // opens a new quoted region, which would mask a real suppression comment
+  // following it on the same line. Reset at each hunk boundary -- the gap
+  // of omitted unchanged lines between hunks can't be tracked through, so
+  // carrying state across it would be guessing rather than deriving it.
+  let quoteState;
   for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
+      quoteState = undefined;
       continue;
     }
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
-      if (hasInlineSuppressionMarker(content, file)) {
+      if (hasInlineSuppressionMarker(content, file, quoteState)) {
         // Check the record limit before issuing the occurrence lookup, not
         // only after every file has been fully scanned: an untrusted PR
         // that adds hundreds of properly annotated marker lines would
@@ -496,12 +517,21 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
           targetLine: line,
           targetContent: content,
         });
-        addSuppression(records, { file, line, content, context, headSHA, occurrence });
+        addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote: quoteState });
       }
+      quoteState = quoteStateAt(content, content.length, file, quoteState);
       line += 1;
       continue;
     }
-    if (!rawLine.startsWith('-') && !rawLine.startsWith('\\')) {
+    if (rawLine.startsWith('-')) {
+      continue;
+    }
+    if (!rawLine.startsWith('\\')) {
+      // Context line: part of the resulting file, so its quote-affecting
+      // characters must still be tracked even though it isn't scanned for
+      // suppression markers (it isn't newly added by this pull request).
+      const content = rawLine.slice(1);
+      quoteState = quoteStateAt(content, content.length, file, quoteState);
       line += 1;
     }
   }

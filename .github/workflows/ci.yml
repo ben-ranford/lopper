@@ -248,9 +248,9 @@ jobs:
           echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test})" | while IFS= read -r file_json; do
             filename="$(echo "${file_json}" | jq -r '.filename')"
             echo "${file_json}" | jq -r '.patch // empty' | awk -v pat="${suspect_pattern}" -v fname="${filename}" '
-              function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote) {
+              function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote) {
                 result = ""
-                quote = ""
+                quote = initial_quote
                 n = length(s)
                 # Rust and C/C++ have no multi-character single-quoted
                 # strings: a leading apostrophe is either a self-contained
@@ -296,12 +296,27 @@ jobs:
                   }
                   result = result c
                 }
+                final_quote_state = quote
                 return result
               }
               /^\+\+\+ / { next }
+              # A zero-context diff has no unchanged lines between hunks,
+              # so within one hunk consecutive added lines are genuinely
+              # adjacent in the resulting file, but across the gap to the
+              # next hunk there is unseen content this scan never reads;
+              # quote state cannot be trusted to carry across that gap.
+              /^@@ / { quote_state = ""; next }
               /^\+/ {
                 content = substr($0, 2)
-                if (tolower(mask_quoted_regions(content)) ~ pat) {
+                # Quote state carries across added lines within a hunk: a
+                # multi-line string (e.g. a JavaScript template literal)
+                # that closes partway through a later line must not make
+                # that later scan think the closing delimiter opens a new
+                # quoted region, which would mask a real suppression
+                # comment following it on the same line.
+                masked = mask_quoted_regions(content, quote_state)
+                quote_state = final_quote_state
+                if (tolower(masked) ~ pat) {
                   printf "%s\001%s\n", fname, content
                 }
               }
@@ -312,14 +327,34 @@ jobs:
           # A PR could also leave the detector partially working -- e.g. it
           # already has one published suppression, adds a second, and tweaks
           # the detector to keep emitting only the first -- so the artifact
-          # is nonempty but under-reports. Fingerprints are deduplicated
-          # first: a tampered detector could otherwise repeat an
-          # already-tracked fingerprint to pad recorded_count high enough to
-          # mask a genuinely untracked one.
+          # is nonempty but under-reports.
           recorded_count=0
           recorded_pairs_file="$(mktemp)"
           if [ -s "${SUPPRESSIONS_FILE}" ]; then
-            mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}" | sort -u)
+            mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}")
+            # Every record is a distinct occurrence and must therefore have
+            # its own distinct, occurrence-specific fingerprint. A tampered
+            # detector could otherwise report two records with identical
+            # (file, content) -- passing the exact-pair multiset comparison,
+            # which preserves multiplicity -- while reusing the first
+            # occurrence's already-tracked fingerprint for both; that single
+            # still-open issue would then satisfy the polling loop even
+            # though the second occurrence's issue was never published.
+            # Deduplicating with `sort -u` before counting would silently
+            # accept this by collapsing the reused fingerprint to one
+            # instead of rejecting the artifact for containing it twice.
+            if [ "${#fingerprints[@]}" -gt 0 ]; then
+              # `printf '%s\n'` with no array elements still runs its format
+              # once, printing a single empty line -- counting that as one
+              # unique fingerprint would wrongly flag a genuinely empty
+              # array as a duplicate, so this comparison only runs once
+              # there is at least one fingerprint to check.
+              unique_fingerprint_count="$(printf '%s\n' "${fingerprints[@]}" | sort -u | wc -l | tr -d ' ')"
+              if [ "${unique_fingerprint_count}" -ne "${#fingerprints[@]}" ]; then
+                echo "::error::This pull request's tracking output contains the same fingerprint for more than one record; each occurrence must have its own distinct fingerprint. Refusing to trust a tampered artifact." >&2
+                exit 1
+              fi
+            fi
             recorded_count="${#fingerprints[@]}"
             # SUPPRESSIONS_FILE is PR-controlled; a fingerprint is later
             # interpolated into a `gh issue list --jq` expression below. An

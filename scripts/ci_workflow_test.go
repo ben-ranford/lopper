@@ -343,7 +343,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`; "i")`,
 		// A tampered detector could repeat an already-tracked fingerprint
 		// to pad recorded_count and mask a genuinely untracked one.
-		`jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}" | sort -u`,
+		`jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}"`,
 		// GitHub omits `patch` for large/truncated files; treating that as
 		// "no suspect lines" would let a PR pair an oversized file with a
 		// tampered detector to make both counts read zero.
@@ -384,13 +384,30 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// otherwise-open string literal (e.g. `"Use //nolint to
 		// suppress"`); blanking out quoted-region interiors before
 		// matching mirrors the trusted tracker's isInsideQuotedRegion.
-		"function mask_quoted_regions(s,    result, i, c, quote, n, narrow_single_quote)",
-		`tolower(mask_quoted_regions(content)) ~ pat`,
+		"function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote)",
+		`tolower(masked) ~ pat`,
 		// Rust and C/C++ have no multi-character single-quoted strings, so
 		// treating every apostrophe as a generic string delimiter would let
 		// an unterminated Rust lifetime or C++ digit separator swallow the
 		// rest of the line and hide a real suppression comment after it.
 		`narrow_single_quote = (tolower(fname) ~ /\.(rs|c|cc|cpp|cxx|h|hh|hpp)$/)`,
+		// Quote state resets per line by default; a multi-line string
+		// (e.g. a JavaScript template literal) that closes partway
+		// through a later added line must carry that state across, or the
+		// closing delimiter looks like it opens a fresh quoted region and
+		// masks a real suppression comment following it -- silently, since
+		// the scan then reports no suspects rather than failing loudly.
+		// Reset only at hunk boundaries, where a zero-context diff has
+		// unseen content this scan never reads.
+		`/^@@ / { quote_state = ""; next }`,
+		`masked = mask_quoted_regions(content, quote_state)`,
+		`quote_state = final_quote_state`,
+		// Each record is a distinct occurrence and must have its own
+		// distinct fingerprint; deduplicating with sort -u before counting
+		// would let a tampered detector report two records with identical
+		// (file, content) -- passing the exact-pair multiset comparison --
+		// while reusing one already-tracked fingerprint for both.
+		`unique_fingerprint_count="$(printf '%s\n' "${fingerprints[@]}" | sort -u | wc -l | tr -d ' ')"`,
 		// Neither the exact-pair comparison (file, content) nor the
 		// polling loop (fingerprint has an open issue) ties a record's own
 		// fingerprint to its own file and content; PR-controlled code

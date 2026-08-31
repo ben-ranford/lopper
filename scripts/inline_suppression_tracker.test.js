@@ -532,6 +532,34 @@ test('opens a separate tracking issue when another pull request already owns the
   assert.match(harness.calls.created[0].body, /lopper-inline-suppression-pr:99/);
 });
 
+test('recognizes a marker after a multi-line template literal closes on a later line', async () => {
+  // Quote state resets per line by default; a template literal opened on
+  // one added line and closed on a later added line must carry that state
+  // across, or the closing backtick looks like it opens a fresh quoted
+  // region and masks the real suppression comment that follows it.
+  const patch = [
+    '@@ -0,0 +1,3 @@',
+    '+const s = `line one',
+    '+line two',
+    '+tail`; //' + 'eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard',
+    '',
+  ].join('\n');
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.js',
+        status: 'added',
+        patch,
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Location: `main\.js:3`/);
+});
+
 test('closes tracking issues for suppressions that disappeared from the pull diff', async () => {
   const staleFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
   const harness = makeHarness({
