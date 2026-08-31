@@ -833,6 +833,39 @@ func TestInlineSuppressionCheckDetectsMarkerAfterAMultilineTemplateLiteral(t *te
 	}
 }
 
+func TestInlineSuppressionCheckSeedsQuoteStateAcrossADiffContextGap(t *testing.T) {
+	t.Parallel()
+
+	// check-inline-suppressions.sh diffs with --unified=0, so a change to
+	// only the closing line of a multi-line template literal shows zero
+	// context: the opening backtick, several lines above, never appears in
+	// the diff at all. Resetting quote state to "no open quote" at the
+	// hunk boundary -- instead of deriving it from the complete head file
+	// -- would make the closing backtick look like a fresh opener and mask
+	// the real suppression comment that follows it.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	jsPath := "tpl.js"
+	base := "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`;\n"
+	writeFile(t, filepath.Join(repoDir, jsPath), base)
+	runCommand(t, repoDir, "git", "add", jsPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "add template literal")
+
+	changed := "package main\n\nvar tpl = `line1\nline2\nline3\nline4\ntail`; //" +
+		"eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	writeFile(t, filepath.Join(repoDir, jsPath), changed)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the marker beyond the diff context gap to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrophe(t *testing.T) {
 	t.Parallel()
 

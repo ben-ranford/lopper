@@ -109,18 +109,16 @@ fingerprint_for_occurrence() {
 	printf '%s\n%s\noccurrence:%s' "$file" "$content" "$occurrence" | shasum -a 256 | awk '{ print $1 }'
 }
 
-occurrence_in_file() {
+read_full_file_content() {
 	local file="$1"
-	local target_line="$2"
-	local target_content="$3"
 	local head_parent
 
-	# Derive the occurrence ordinal from the complete file at its current
-	# (target-side) state rather than only lines visible in this diff: the
-	# trusted tracker (which sees GitHub's default context lines) and this
-	# zero-context diff must agree on the exact same fingerprint for a given
-	# suppression, and only counting from the full file is diff-shape
-	# independent.
+	# The complete file at its current (target-side) state, not just the
+	# lines visible in this diff: the trusted tracker (which sees GitHub's
+	# default context lines) and this zero-context diff must agree on
+	# exactly the same content, both for occurrence counting and for
+	# seeding a hunk's starting quote state from content the diff's own
+	# context window never reveals.
 	#
 	# For pull_request CI runs, actions/checkout's default behavior checks
 	# out the synthetic PR merge commit (base + head merged), not the PR's
@@ -149,8 +147,22 @@ occurrence_in_file() {
 		# tracker's (which reads the equivalent committed/staged state).
 		git show ":${file}" 2>/dev/null
 	else
-		cat -- "$file"
-	fi | awk -v target_line="$target_line" -v target_content="$target_content" '
+		cat -- "$file" 2>/dev/null
+	fi
+}
+
+occurrence_in_file() {
+	local file="$1"
+	local target_line="$2"
+	local target_content="$3"
+
+	# Derive the occurrence ordinal from the complete file at its current
+	# (target-side) state rather than only lines visible in this diff: the
+	# trusted tracker (which sees GitHub's default context lines) and this
+	# zero-context diff must agree on the exact same fingerprint for a given
+	# suppression, and only counting from the full file is diff-shape
+	# independent.
+	read_full_file_content "$file" | awk -v target_line="$target_line" -v target_content="$target_content" '
 		# Exiting once NR exceeds target_line closes this pipe read end
 		# before the producer (cat/git show) has finished writing a large
 		# file; with `set -o pipefail` above, the resulting SIGPIPE makes
@@ -442,10 +454,36 @@ else
 fi
 
 tmp_matches="$(create_temp_file)"
-trap 'rm -f "$tmp_matches"' EXIT INT TERM
+tmp_diff="$(create_temp_file)"
+tmp_bundle="$(create_temp_file)"
+trap 'rm -f "$tmp_matches" "$tmp_diff" "$tmp_bundle"' EXIT INT TERM
+
+"${diff_args[@]}" >"$tmp_diff"
+
+# GitHub's default 3-line diff context can hide a multi-line construct (e.g.
+# an open template literal) that begins further above a hunk than that
+# window reaches; seeding every hunk's quote state as "no open quote" would
+# make a closing delimiter later in the hunk look like a fresh opener,
+# masking a real suppression comment after it -- or the reverse. Read each
+# changed source file's complete content once, up front, so the main scan
+# below can derive each hunk's starting quote state from it instead of
+# guessing. \001-prefixed marker lines (mirroring the NUL-delimited match
+# records below) delimit one file's content from the next; a bare filename
+# could otherwise collide with real file content.
+: >"$tmp_bundle"
+while IFS= read -r -d '' bundle_file; do
+	lower_bundle_file="$(printf '%s' "$bundle_file" | tr '[:upper:]' '[:lower:]')"
+	if [[ "$lower_bundle_file" =~ $source_file_pattern ]]; then
+		{
+			printf '\001%s\n' "$bundle_file"
+			read_full_file_content "$bundle_file"
+			printf '\n'
+		} >>"$tmp_bundle"
+	fi
+done < <(awk '/^\+\+\+ b\// { f = substr($0, 7); sub(/\t$/, "", f); printf "%s%c", f, 0 }' "$tmp_diff")
 
 set +e
-"${diff_args[@]}" | awk \
+awk \
 	-v pattern_hash="$marker_pattern_hash" \
 	-v pattern_slash="$marker_pattern_slash" \
 	-v pattern_all="$marker_pattern_all" \
@@ -459,6 +497,36 @@ BEGIN {
 	check_file = 0
 	quote_state = ""
 	active_pattern = pattern_all
+	bundle_file = ""
+}
+# The first ARGV file is the \001-delimited content bundle built above;
+# FNR==NR is true only while reading it (FNR resets to 1 when awk moves on
+# to the diff, the second ARGV file, while NR keeps counting), so this rule
+# never fires once the actual diff scan below begins.
+FNR == NR {
+	if (substr($0, 1, 1) == "\001") {
+		bundle_file = substr($0, 2)
+		full_line_count[bundle_file] = 0
+		next
+	}
+	full_line_count[bundle_file]++
+	full_lines[bundle_file, full_line_count[bundle_file]] = $0
+	next
+}
+# The quote state to seed a hunk beginning at 1-indexed `line`: derived from
+# the complete head file bundled above, not just the surrounding diff
+# context window. Mirrors quoteStateSeedFromLines in the trusted tracker.
+function seed_quote_state(   idx, prior_count, seed) {
+	seed = ""
+	prior_count = line - 1
+	if (full_line_count[file] + 0 < prior_count) {
+		prior_count = full_line_count[file] + 0
+	}
+	for (idx = 1; idx <= prior_count; idx++) {
+		mask_quoted_regions(full_lines[file, idx], seed)
+		seed = final_quote_state
+	}
+	return seed
 }
 # Checking only the character immediately preceding a candidate comment
 # delimiter misses a marker preceded by ordinary text inside an otherwise
@@ -559,10 +627,11 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	line = parts[1] + 0
 	# A zero-context diff (--unified=0) has no unchanged lines between
 	# hunks, so within one hunk consecutive added lines are genuinely
-	# adjacent in the resulting file; but across the gap to the next
-	# hunk there is unseen content this scan never reads, so quote state
-	# cannot be trusted to carry across that boundary.
-	quote_state = ""
+	# adjacent in the resulting file; but across the gap to the next hunk
+	# there is unseen content this diff never reads. Derive the state from
+	# the complete head file bundled above instead of guessing "no open
+	# quote".
+	quote_state = seed_quote_state()
 	next
 }
 /^\+/ {
@@ -592,7 +661,7 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 END {
 	exit(found ? 1 : 0)
 }
-' >"$tmp_matches"
+' "$tmp_bundle" "$tmp_diff" >"$tmp_matches"
 awk_status=$?
 set -e
 
