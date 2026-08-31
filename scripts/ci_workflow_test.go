@@ -394,7 +394,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// otherwise-open string literal (e.g. `"Use //nolint to
 		// suppress"`); blanking out quoted-region interiors before
 		// matching mirrors the trusted tracker's isInsideQuotedRegion.
-		"function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote)",
+		"function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start)",
 		`tolower(masked) ~ pat`,
 		// Rust and C/C++ have no multi-character single-quoted strings, so
 		// treating every apostrophe as a generic string delimiter would let
@@ -413,14 +413,16 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`masked = mask_quoted_regions(content, quote_state)`,
 		`quote_state = final_quote_state`,
 		// An apostrophe inside a genuine line comment (e.g. "don't") is
-		// comment prose, not code; once a real, unquoted line-comment
-		// delimiter is reached, quote tracking must stop for the rest of
-		// the line so a stray apostrophe there can't be mistaken for an
-		// opening string and leak into later positions or the next line.
-		// The remainder is appended unmodified (not masked further, and
-		// not discarded) since it can still contain the marker itself.
+		// comment prose, not code; a real, unquoted line-comment
+		// delimiter marks that a quote left dangling from there to end
+		// of line must not carry into the next line -- but does not by
+		// itself change how the rest of the line is masked, since a
+		// well-formed quoted span later in the same comment (e.g. a
+		// backtick-quoted example) still needs its interior masked, or
+		// example marker text becomes indistinguishable from a real one.
 		`if ((c == "/" && substr(s, i + 1, 1) == "/") || c == "#") {`,
-		`result = result substr(s, i)`,
+		`past_comment_start = 1`,
+		`final_quote_state = (past_comment_start ? "" : quote)`,
 		// Each record is a distinct occurrence and must have its own
 		// distinct fingerprint; deduplicating with sort -u before counting
 		// would let a tampered detector report two records with identical

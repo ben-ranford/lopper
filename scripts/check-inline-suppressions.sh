@@ -442,10 +442,11 @@ BEGIN {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors isInsideQuotedRegion in the trusted tracker exactly so
 # both detectors agree on what counts as a suppression.
-function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote) {
+function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow_single_quote, past_comment_start) {
 	result = ""
 	quote = initial_quote
 	n = length(s)
+	past_comment_start = 0
 	# Rust and C/C++ have no multi-character single-quoted strings: a
 	# leading apostrophe is either a self-contained char literal (two or
 	# three characters, e.g. x or a backslash escape, between two
@@ -484,18 +485,16 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 			continue
 		}
 		if ((c == "/" && substr(s, i + 1, 1) == "/") || c == "#") {
-			# Once a genuine line-comment delimiter is reached outside any
-			# quoted region, everything after it on this line is comment
-			# prose, not code; a quote or apostrophe there must not be
-			# treated as opening a string, which would otherwise leak
-			# into later positions on this same line or carry an
-			# incorrect state into the next line. Append the remainder
-			# unmodified (unlike a quoted region, comment text is never
-			# masked) rather than discarding it, since it can still
-			# contain the marker this whole scan is looking for.
+			# A genuine line-comment delimiter outside any quoted region
+			# does not itself change how the rest of the line is masked
+			# (a well-formed quoted span later in the same comment, e.g.
+			# a backtick-quoted example, still needs its interior masked
+			# so example marker text is not mistaken for a real one); it
+			# only marks that a quote left dangling at end of line from
+			# here on is comment prose, not an unterminated string, and
+			# must not carry into the next line.
 			if (i == 1 || substr(s, i - 1, 1) != ":") {
-				result = result substr(s, i)
-				break
+				past_comment_start = 1
 			}
 		}
 		if (c == "\"" || c == "'"'"'" || c == "`") {
@@ -505,7 +504,7 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 		}
 		result = result c
 	}
-	final_quote_state = quote
+	final_quote_state = (past_comment_start ? "" : quote)
 	return result
 }
 /^\+\+\+ b\// {

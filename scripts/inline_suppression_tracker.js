@@ -84,15 +84,22 @@ const NARROW_SINGLE_QUOTE_EXTENSIONS = new Set(['rs', 'c', 'cc', 'cpp', 'cxx', '
 
 // Runs the quote-tracking state machine across content[0, index), starting
 // from `initialQuote` (the quote character already open when this line
-// began, or undefined if none), and returns the quote character still open
-// at that position (or undefined). Called with index = content.length, this
-// gives the state to carry into the next line -- a multi-line string (e.g.
-// a JavaScript template literal) that closes partway through a later line
-// must not make that line's scan think the closing delimiter opens a new
-// quoted region, which would mask a real suppression comment following it.
+// began, or undefined if none). Returns { quote, pastCommentStart }: `quote`
+// is the quote character still open at `index` (or undefined) -- used
+// as-is for within-line checks, so a well-formed quoted span later in a
+// comment (e.g. a backtick-quoted example inside a "#" comment) still masks
+// correctly. `pastCommentStart` reports whether a genuine, unquoted line
+// comment delimiter was seen anywhere before `index`; callers computing the
+// state to carry into the *next* line (content.length) must discard `quote`
+// when this is true, since an apostrophe left dangling in comment prose
+// (e.g. "// don't use this path") is not an unterminated string in code and
+// must not corrupt the following line's own scan -- but discarding it
+// unconditionally, rather than only for that carry-over, would also break
+// masking of anything genuinely quoted later in the very same comment.
 function quoteStateAt(content, index, file, initialQuote) {
   const narrowSingleQuoteLanguage = typeof file === 'string' && NARROW_SINGLE_QUOTE_EXTENSIONS.has(fileExtension(file));
   let quote = initialQuote;
+  let pastCommentStart = false;
   for (let cursor = 0; cursor < index; cursor += 1) {
     const char = content[cursor];
     if (quote !== undefined) {
@@ -113,24 +120,27 @@ function quoteStateAt(content, index, file, initialQuote) {
     }
     if ((char === '/' && content[cursor + 1] === '/') || char === '#') {
       if (isCommentBoundary(content[cursor - 1])) {
-        // Once a genuine line-comment delimiter is reached outside any
-        // quoted region, everything after it on this line is comment
-        // prose, not code; an apostrophe or quote character there (e.g.
-        // "// don't use this path") must not be treated as opening a
-        // string, which would otherwise leak into this line's own later
-        // positions or carry an incorrect state into the next line.
-        break;
+        pastCommentStart = true;
       }
     }
     if (char === '"' || char === "'" || char === '`') {
       quote = char;
     }
   }
-  return quote;
+  return { quote, pastCommentStart };
 }
 
 function isInsideQuotedRegion(content, index, file, initialQuote) {
-  return quoteStateAt(content, index, file, initialQuote) !== undefined;
+  return quoteStateAt(content, index, file, initialQuote).quote !== undefined;
+}
+
+// The quote state to carry into the line following `content`: undefined if
+// a genuine line comment was seen anywhere on this line (any quote left
+// open past that point is comment prose, not an unterminated string), or
+// the quote otherwise still open at end of line.
+function carryQuoteState(content, file, initialQuote) {
+  const { quote, pastCommentStart } = quoteStateAt(content, content.length, file, initialQuote);
+  return pastCommentStart ? undefined : quote;
 }
 
 function isMarkerBoundary(char) {
@@ -530,7 +540,7 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
         });
         addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote: quoteState });
       }
-      quoteState = quoteStateAt(content, content.length, file, quoteState);
+      quoteState = carryQuoteState(content, file, quoteState);
       line += 1;
       continue;
     }
@@ -542,7 +552,7 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
       // characters must still be tracked even though it isn't scanned for
       // suppression markers (it isn't newly added by this pull request).
       const content = rawLine.slice(1);
-      quoteState = quoteStateAt(content, content.length, file, quoteState);
+      quoteState = carryQuoteState(content, file, quoteState);
       line += 1;
     }
   }

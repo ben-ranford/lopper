@@ -860,6 +860,22 @@ func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrop
 	}
 }
 
+func TestInlineSuppressionCheckIgnoresMarkerShapedExampleTextQuotedInAComment(t *testing.T) {
+	t.Parallel()
+
+	// Stopping quote tracking at a genuine comment delimiter must not stop
+	// *masking* for the rest of that same line: a well-formed quoted span
+	// later in the very same comment (e.g. documentation quoting an
+	// example marker in backticks) still needs its interior masked, or
+	// the example text is indistinguishable from a real suppression. Only
+	// the carry into the *next* line should discard a comment's dangling
+	// quote state, not the comment's own remaining content. This is the
+	// exact shape of comment this detector's own source file uses to
+	// document itself.
+	source := "package main\n\n// e.g. `\"Use //nolint to suppress\"`. Blanking out the region.\nfunc main() {}\n"
+	assertSuppressionCheckPassesForSource(t, source)
+}
+
 func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.T) {
 	t.Parallel()
 

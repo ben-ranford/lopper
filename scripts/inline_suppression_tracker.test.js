@@ -587,6 +587,31 @@ test('recognizes a marker on the line after an ordinary comment containing an ap
   assert.match(harness.calls.created[0].body, /Location: `main\.go:2`/);
 });
 
+test('ignores marker-shaped example text quoted inside an ordinary comment', async () => {
+  // Stopping quote tracking at a genuine comment delimiter must not stop
+  // *masking* for the rest of that same line: a well-formed quoted span
+  // later in the very same comment (e.g. documentation quoting an example
+  // marker in backticks) still needs its interior masked, or the example
+  // text is indistinguishable from a real suppression. Only the *carry
+  // into the next line* should discard a comment's dangling quote state,
+  // not the comment's own remaining content.
+  const line = '\t// e.g. `"Use ' + '//nolint' + ' to suppress"`. Blanking out the region.';
+  const patch = ['@@ -0,0 +1,1 @@', '+' + line, ''].join('\n');
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch,
+      },
+    ],
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 0);
+});
+
 test('closes tracking issues for suppressions that disappeared from the pull diff', async () => {
   const staleFingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
   const harness = makeHarness({
