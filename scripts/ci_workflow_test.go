@@ -398,8 +398,18 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// unrelated, still-open fingerprint borrowed from a different
 		// suppression. A fingerprint is a deterministic function of only
 		// (file, content, occurrence), so it must be recomputed and
-		// matched for some occurrence up to the record limit.
-		`while IFS=$'\001' read -r bound_file bound_content bound_fingerprint; do`,
+		// matched for some occurrence.
+		//
+		// MAX_RECORDS (100) bounds how many NEW records a PR can
+		// introduce, not the occurrence ordinal among lines already
+		// present in the complete file; a file with over 100 pre-existing
+		// identical suppression lines legitimately produces occurrence
+		// 101 or higher, so the search range must extend well past 100.
+		// Doing that search in-process (Python) instead of one shasum
+		// subprocess per candidate keeps a wide search range fast.
+		"MAX_OCCURRENCE = 100000",
+		"bound = hashlib.sha256(base).hexdigest().encode() == fingerprint",
+		"for occurrence in range(2, MAX_OCCURRENCE + 1):",
 	})
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${recorded_count}" -gt 100 ]; then`)

@@ -364,29 +364,45 @@ jobs:
             # accepts A's issue, while B itself was never published. A
             # fingerprint is sha256(file "\n" content ["\noccurrence:" N]),
             # a deterministic function of only those inputs, so recomputing
-            # it for occurrences 1..100 (the trusted tracker's own
-            # per-pull-request record limit) and requiring a match rejects
-            # any fingerprint that does not actually belong to its record's
-            # file and content, without needing to know the true occurrence.
-            while IFS=$'\001' read -r bound_file bound_content bound_fingerprint; do
-              bound=0
-              candidate="$(printf '%s\n%s' "${bound_file}" "${bound_content}" | shasum -a 256 | awk '{ print $1 }')"
-              if [ "${candidate}" = "${bound_fingerprint}" ]; then
-                bound=1
-              else
-                for occurrence in $(seq 2 100); do
-                  candidate="$(printf '%s\n%s\noccurrence:%s' "${bound_file}" "${bound_content}" "${occurrence}" | shasum -a 256 | awk '{ print $1 }')"
-                  if [ "${candidate}" = "${bound_fingerprint}" ]; then
-                    bound=1
-                    break
-                  fi
-                done
-              fi
-              if [ "${bound}" -eq 0 ]; then
-                echo "::error::This pull request's tracking output contains a fingerprint that does not match its own recorded file and content for any occurrence up to 100; refusing to trust a tampered artifact." >&2
-                exit 1
-              fi
-            done < <(jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\n"' "${SUPPRESSIONS_FILE}")
+            # it and requiring a match rejects any fingerprint that does not
+            # actually belong to its record's file and content.
+            #
+            # MAX_RECORDS (100) bounds how many NEW records a pull request
+            # can introduce, not the occurrence ordinal among lines already
+            # present in the complete file -- a file with over 100
+            # pre-existing identical suppression lines legitimately produces
+            # occurrence 101 or higher for one more added line, so the
+            # search range must extend well past 100. Doing that search
+            # in-process (instead of one shasum subprocess per candidate)
+            # keeps it fast: ~100,000 sha256 digests take well under a
+            # second in Python.
+            jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\n"' "${SUPPRESSIONS_FILE}" | python3 -c '
+            import hashlib
+            import sys
+
+            MAX_OCCURRENCE = 100000
+
+            data = sys.stdin.buffer.read()
+            for record in data.split(b"\n"):
+                if not record:
+                    continue
+                parts = record.split(b"\x01")
+                if len(parts) != 3:
+                    print("::error::This pull request tracking output contains a malformed record; refusing to trust a tampered artifact.", file=sys.stderr)
+                    sys.exit(1)
+                file, content, fingerprint = parts
+                base = file + b"\n" + content
+                bound = hashlib.sha256(base).hexdigest().encode() == fingerprint
+                if not bound:
+                    for occurrence in range(2, MAX_OCCURRENCE + 1):
+                        candidate = hashlib.sha256(base + ("\noccurrence:%d" % occurrence).encode()).hexdigest().encode()
+                        if candidate == fingerprint:
+                            bound = True
+                            break
+                if not bound:
+                    print("::error::This pull request tracking output contains a fingerprint that does not match its own recorded file and content for any occurrence up to " + str(MAX_OCCURRENCE) + "; refusing to trust a tampered artifact.", file=sys.stderr)
+                    sys.exit(1)
+            '
           fi
 
           # comm requires sorted input but -- given sorted, duplicate-

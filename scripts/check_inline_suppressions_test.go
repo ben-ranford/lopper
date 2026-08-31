@@ -580,6 +580,41 @@ func TestInlineSuppressionCheckCountsPreExistingOccurrenceOutsideTheDiff(t *test
 	}
 }
 
+func TestInlineSuppressionCheckSurvivesOccurrenceCountingInALargeFile(t *testing.T) {
+	t.Parallel()
+
+	// occurrence_in_file's awk exits as soon as it passes the target line,
+	// closing its read end of the pipe while the producer (cat/git show) is
+	// still writing a sufficiently large file. Under `set -o pipefail`, the
+	// resulting SIGPIPE makes the producer exit 141 and fails the whole
+	// pipeline even though the count itself is already correct; the
+	// suppression must still be tracked instead of aborting the check.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+
+	marker := "nolint:staticcheck"
+	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	var builder strings.Builder
+	builder.WriteString("package main\n\nfunc main() {\n")
+	builder.WriteString(line)
+	builder.WriteString("\n}\n")
+	for i := 0; i < 200000; i++ {
+		builder.WriteString("// filler line to force a large enough file to fill the pipe buffer\n")
+	}
+	writeFile(t, filepath.Join(repoDir, mainGoPath), builder.String())
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected occurrence counting in a large file to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckPreservesColonsInFilePaths(t *testing.T) {
 	t.Parallel()
 

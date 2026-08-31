@@ -131,8 +131,12 @@ occurrence_in_file() {
 	else
 		cat -- "$file"
 	fi | awk -v target_line="$target_line" -v target_content="$target_content" '
-		NR > target_line { exit }
-		$0 == target_content { count++ }
+		# Exiting once NR exceeds target_line closes this pipe read end
+		# before the producer (cat/git show) has finished writing a large
+		# file; with `set -o pipefail` above, the resulting SIGPIPE makes
+		# the producer exit 141 and fails this whole pipeline even though
+		# the count itself is already correct. Keep consuming to EOF.
+		NR <= target_line && $0 == target_content { count++ }
 		END { print count + 0 }
 	'
 }
