@@ -10,7 +10,21 @@ marker_ts_prefix="ts"
 marker_eslint_prefix="eslint"
 marker_coverage_prefix="coverage"
 # Build marker names from pieces so this gate does not match its own source.
-marker_start_pattern="(//|/[*]+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore))"
+marker_names="(@?(${marker_no_prefix}(sec|sonar|lint|qa)|${marker_eslint_prefix}-disable(-next-line|-line)?|${marker_ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${marker_no_prefix}[[:space:]]+cover|${marker_coverage_prefix}:[[:space:]]*ignore))"
+# Python/Ruby/YAML/shell only ever treat "#" as a comment delimiter, so "//"
+# in e.g. Python's `value = numerator // noqa` is floor division, not a
+# comment -- matching it there would reject valid code for missing
+# suppression metadata it was never meant to carry. Mirrors
+# HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS in the trusted JS tracker; PHP
+# and any other extension not covered by either set keep recognizing every
+# prefix, since PHP alone among the covered languages supports both styles.
+marker_start_pattern_hash="#[[:space:]]*${marker_names}"
+marker_start_pattern_slash="(//|/[*]+)[[:space:]]*${marker_names}"
+marker_start_pattern_all="(//|/[*]+|#)[[:space:]]*${marker_names}"
+# Used to locate the marker's start within content that already matched one
+# of the language-specific patterns above, so the broadest pattern is safe
+# here regardless of the source language.
+marker_start_pattern="$marker_start_pattern_all"
 # A comment delimiter needs no preceding whitespace in any of the covered
 # languages -- a marker immediately following code with no space in
 # between is still a valid suppression -- so requiring it would miss such
@@ -22,8 +36,14 @@ marker_start_pattern="(//|/[*]+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|
 # single preceding character -- checking only that character misses a
 # marker preceded by ordinary text inside an otherwise-open string, such as
 # `"Use //nolint to suppress"`.
-marker_pattern="(^|[^:])(${marker_start_pattern})([^[:alnum:]_-]|$)"
+marker_pattern_hash="(^|[^:])(${marker_start_pattern_hash})([^[:alnum:]_-]|$)"
+marker_pattern_slash="(^|[^:])(${marker_start_pattern_slash})([^[:alnum:]_-]|$)"
+marker_pattern_all="(^|[^:])(${marker_start_pattern_all})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
+# Same extension classification as HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS
+# in the trusted JS tracker.
+hash_only_file_pattern="\\.(bash|ksh|py|rb|sh|ya?ml|zsh)$"
+slash_style_file_pattern="\\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$"
 diff_scope=""
 diff_mode=""
 gh_bin="${GH_BIN:-gh}"
@@ -425,13 +445,20 @@ tmp_matches="$(create_temp_file)"
 trap 'rm -f "$tmp_matches"' EXIT INT TERM
 
 set +e
-"${diff_args[@]}" | awk -v pattern="$marker_pattern" -v file_pattern="$source_file_pattern" '
+"${diff_args[@]}" | awk \
+	-v pattern_hash="$marker_pattern_hash" \
+	-v pattern_slash="$marker_pattern_slash" \
+	-v pattern_all="$marker_pattern_all" \
+	-v file_pattern="$source_file_pattern" \
+	-v hash_only_file_pattern="$hash_only_file_pattern" \
+	-v slash_style_file_pattern="$slash_style_file_pattern" '
 BEGIN {
 	file = ""
 	line = 0
 	found = 0
 	check_file = 0
 	quote_state = ""
+	active_pattern = pattern_all
 }
 # Checking only the character immediately preceding a candidate comment
 # delimiter misses a marker preceded by ordinary text inside an otherwise
@@ -514,6 +541,13 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# the extension patterns "$" anchor still matches the real filename.
 	sub(/\t$/, "", file)
 	check_file = (tolower(file) ~ file_pattern)
+	if (tolower(file) ~ hash_only_file_pattern) {
+		active_pattern = pattern_hash
+	} else if (tolower(file) ~ slash_style_file_pattern) {
+		active_pattern = pattern_slash
+	} else {
+		active_pattern = pattern_all
+	}
 	quote_state = ""
 	next
 }
@@ -546,7 +580,7 @@ function mask_quoted_regions(s, initial_quote,    result, i, c, quote, n, narrow
 	# real suppression comment following it on the same line.
 	masked = mask_quoted_regions(content, quote_state)
 	quote_state = final_quote_state
-	if (check_file && tolower(masked) ~ pattern) {
+	if (check_file && tolower(masked) ~ active_pattern) {
 		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
 		# for file paths or diff content that legitimately contain those bytes.
 		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0

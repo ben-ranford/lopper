@@ -461,7 +461,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// and source_file_pattern exactly, or a nested .githooks/ directory
 	// would similarly cause a false count mismatch.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
-		`|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"`,
+		`|${coverage_prefix}:[[:space:]]*ignore))"`,
 		`test("^\\.githooks/|`,
 	})
 	// A comment delimiter needs no preceding whitespace -- it can follow
@@ -469,8 +469,23 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// schemes) rather than requiring whitespace or start-of-line; string
 	// literals are handled separately by mask_quoted_regions.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
-		`suspect_pattern="(^|[^:])`,
+		`suspect_pattern_all="(^|[^:])`,
 		`(//|/[*]+|#)`,
+	})
+	// Python/Ruby/YAML/shell only ever treat "#" as a comment delimiter, so
+	// "//" there is not a comment start (e.g. Python floor division); the
+	// active pattern must be chosen per file extension, mirroring
+	// HASH_ONLY_EXTENSIONS/SLASH_STYLE_EXTENSIONS in the trusted JS tracker,
+	// rather than always matching every comment style universally.
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`suspect_pattern_hash="(^|[^:])(#[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`suspect_pattern_slash="(^|[^:])((//|/[*]+)[[:space:]]*${marker_names})([^[:alnum:]_-]|$)"`,
+		`hash_only_file_pattern=`,
+		`slash_style_file_pattern=`,
+		`active_suspect_pattern="${suspect_pattern_hash}"`,
+		`active_suspect_pattern="${suspect_pattern_slash}"`,
+		`active_suspect_pattern="${suspect_pattern_all}"`,
+		`awk -v pat="${active_suspect_pattern}" -v fname="${filename}"`,
 	})
 	// SUPPRESSIONS_FILE is PR-controlled, and each fingerprint from it is
 	// later interpolated directly into a `gh issue list --jq` expression;

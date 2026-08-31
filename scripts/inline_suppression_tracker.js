@@ -4,7 +4,36 @@ const crypto = require('node:crypto');
 
 const MAX_CHANGED_FILES = 3000;
 const MAX_RECORDS = 100;
-const COMMENT_PREFIXES = ['//', '/*', '#'];
+// Recognizing every prefix in every language is wrong, not just permissive:
+// Python only has "#" comments, so "//" in `value = numerator // noqa` is
+// floor division, not a comment start, and treating it as one rejects
+// valid code for missing suppression metadata it was never meant to carry.
+const HASH_ONLY_EXTENSIONS = new Set(['bash', 'ksh', 'py', 'rb', 'sh', 'yaml', 'yml', 'zsh']);
+const SLASH_STYLE_EXTENSIONS = new Set([
+  'c',
+  'cc',
+  'cjs',
+  'cpp',
+  'cs',
+  'cxx',
+  'go',
+  'h',
+  'hh',
+  'hpp',
+  'java',
+  'js',
+  'jsx',
+  'kt',
+  'kts',
+  'mjs',
+  'rs',
+  'swift',
+  'ts',
+  'tsx',
+]);
+// PHP alone among the covered languages supports both hash and slash-style
+// comments.
+const ALL_COMMENT_PREFIXES = ['//', '/*', '#'];
 const NO_MARKERS = new Set(['nosec', 'nosonar', 'nolint', 'noqa']);
 const ESLINT_MARKERS = new Set(['eslint-disable', 'eslint-disable-next-line', 'eslint-disable-line']);
 const TS_MARKERS = new Set(['ts-ignore', 'ts-expect-error']);
@@ -229,6 +258,20 @@ function isSourceFile(file) {
   return file.startsWith('.githooks/') || SOURCE_EXTENSIONS.has(fileExtension(file));
 }
 
+function commentPrefixesFor(file) {
+  if (typeof file !== 'string') {
+    return ALL_COMMENT_PREFIXES;
+  }
+  const ext = fileExtension(file);
+  if (SLASH_STYLE_EXTENSIONS.has(ext)) {
+    return ['//', '/*'];
+  }
+  if (HASH_ONLY_EXTENSIONS.has(ext)) {
+    return ['#'];
+  }
+  return ALL_COMMENT_PREFIXES;
+}
+
 function sourceURLFor({ serverURL, owner, repo, headSHA, file, line }) {
   const encodedFile = file.split('/').map(encodeURIComponent).join('/');
   return `${serverURL || 'https://github.com'}/${owner}/${repo}/blob/${headSHA}/${encodedFile}#L${line}`;
@@ -402,7 +445,7 @@ function commentPrefixIndexForMarker(content, file, initialQuote) {
     if (isInsideQuotedRegion(content, index, file, initialQuote)) {
       continue;
     }
-    const prefix = COMMENT_PREFIXES.find((candidate) => content.startsWith(candidate, index));
+    const prefix = commentPrefixesFor(file).find((candidate) => content.startsWith(candidate, index));
     if (prefix && hasMarkerAfterCommentPrefix(content, markerStartAfterPrefix(content, index, prefix))) {
       return index;
     }
@@ -880,6 +923,7 @@ module.exports.testables = {
   MAX_CHANGED_FILES,
   MAX_RECORDS,
   addSuppression,
+  commentPrefixesFor,
   escapeFence,
   fingerprintFor,
   hasInlineSuppressionMarker,

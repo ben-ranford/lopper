@@ -888,6 +888,47 @@ func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.
 	assertSuppressionDetectedForLine(t, line)
 }
 
+func TestInlineSuppressionCheckIgnoresPythonFloorDivisionAsACommentPrefix(t *testing.T) {
+	t.Parallel()
+
+	// Python only has "#" comments, so "//" here is floor division, not the
+	// start of a comment. Recognizing every comment style universally would
+	// reject this valid code for missing suppression metadata it was never
+	// meant to carry.
+	source := "value = numerator " + "/" + "/ noqa denominator\n"
+	repoDir := newInlineSuppressionRepo(t)
+	writeFile(t, filepath.Join(repoDir, "calc.py"), source)
+	runCommand(t, repoDir, "git", "add", "calc.py")
+
+	output, err := runSuppressionCheck(repoDir)
+	if err != nil {
+		t.Fatalf("expected Python floor division to pass, output:\n%s", output)
+	}
+	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
+		t.Fatalf("expected pass message, got:\n%s", output)
+	}
+}
+
+func TestInlineSuppressionCheckDetectsGenuineHashMarkerInAPythonFile(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	line := "value = numerator " + "/" + "/ denominator  # noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
+	writeFile(t, filepath.Join(repoDir, "calc.py"), line)
+	runCommand(t, repoDir, "git", "add", "calc.py")
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected the genuine hash marker to be detected, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func mainGoWithoutComment() string {
 	return "package main\n\nfunc main() {\n\t_ = 1\n}\n"
 }

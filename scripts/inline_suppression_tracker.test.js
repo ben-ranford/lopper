@@ -369,6 +369,31 @@ test('recognizes a marker following a C++ digit separator without treating it as
   }
 });
 
+test('does not treat Python floor division as a comment prefix', () => {
+  // Python only has "#" comments, so "//" here is floor division, not the
+  // start of a comment. Recognizing "//" universally would make this line
+  // look like it carries a suppression marker it was never meant to carry.
+  const line = '\tvalue = numerator ' + '/' + '/ noqa denominator';
+  assert.equal(testables.hasInlineSuppressionMarker(line, 'calc.py'), false, line);
+
+  // A genuine hash-comment marker on the same kind of file is still found.
+  const hashLine = '\tvalue = numerator ' + '/' + '/ denominator  # noqa';
+  assert.equal(testables.hasInlineSuppressionMarker(hashLine, 'calc.py'), true, hashLine);
+
+  // Slash-style languages keep recognizing "//" comments as before.
+  const jsLine = '\tconst value = numerator ' + '/' + '/ denominator; //' + 'noqa';
+  assert.equal(testables.hasInlineSuppressionMarker(jsLine, 'calc.js'), true, jsLine);
+});
+
+test('selects comment prefixes per language extension', () => {
+  assert.deepEqual(testables.commentPrefixesFor('calc.py'), ['#']);
+  assert.deepEqual(testables.commentPrefixesFor('script.sh'), ['#']);
+  assert.deepEqual(testables.commentPrefixesFor('deploy.yaml'), ['#']);
+  assert.deepEqual(testables.commentPrefixesFor('main.go'), ['//', '/*']);
+  assert.deepEqual(testables.commentPrefixesFor('app.ts'), ['//', '/*']);
+  assert.deepEqual(testables.commentPrefixesFor('index.php'), ['//', '/*', '#']);
+});
+
 test('classifies source files without path validation side effects', () => {
   assert.equal(testables.isSourceFile('internal/main.go'), true);
   assert.equal(testables.isSourceFile('web/component.TSX'), true);
