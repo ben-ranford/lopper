@@ -70,7 +70,16 @@ function isCommentBoundary(char) {
 // unterminated string literal. This is a heuristic shared across common
 // C-like/scripting comment and string syntax, not a full per-language
 // lexer, but it is what the covered SOURCE_EXTENSIONS all agree on.
-function isInsideQuotedRegion(content, index) {
+//
+// Rust has no multi-character single-quoted strings: a leading "'" there is
+// either a self-contained char literal ('x' or '\x') or a lifetime ('static,
+// 'a) that never closes. Treating every "'" as a string delimiter would let
+// a lifetime swallow the rest of the line, hiding a real suppression comment
+// that follows it (e.g. `&'static str = "x"; // coverage: ignore`); for a
+// .rs file, only the narrow char-literal shape opens (and immediately
+// closes) a quoted region.
+function isInsideQuotedRegion(content, index, file) {
+  const rustCharLiteralsOnly = typeof file === 'string' && fileExtension(file) === 'rs';
   let quote;
   for (let cursor = 0; cursor < index; cursor += 1) {
     const char = content[cursor];
@@ -79,6 +88,14 @@ function isInsideQuotedRegion(content, index) {
         cursor += 1;
       } else if (char === quote) {
         quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" && rustCharLiteralsOnly) {
+      if (content[cursor + 1] === '\\' && content[cursor + 3] === "'") {
+        cursor += 3;
+      } else if (content[cursor + 1] !== "'" && content[cursor + 2] === "'") {
+        cursor += 2;
       }
       continue;
     }
@@ -231,7 +248,7 @@ function addSuppression(records, { file, line, content, context, headSHA, occurr
   }
   validateString(content, 'content', 4096);
 
-  const markerIndex = commentPrefixIndexForMarker(content);
+  const markerIndex = commentPrefixIndexForMarker(content, file);
   const metadataScope = markerIndex === -1 ? content : content.slice(markerIndex);
   const rationale = validateString(metadataValue(metadataScope, ['rationale', 'reason']), 'rationale', 1024);
   const owner = validateString(metadataValue(metadataScope, ['owner']), 'owner', 256);
@@ -340,12 +357,12 @@ function markerStartAfterPrefix(content, index, prefix) {
   return cursor;
 }
 
-function commentPrefixIndexForMarker(content) {
+function commentPrefixIndexForMarker(content, file) {
   for (let index = 0; index < content.length; index += 1) {
     if (!isCommentBoundary(content[index - 1])) {
       continue;
     }
-    if (isInsideQuotedRegion(content, index)) {
+    if (isInsideQuotedRegion(content, index, file)) {
       continue;
     }
     const prefix = COMMENT_PREFIXES.find((candidate) => content.startsWith(candidate, index));
@@ -356,8 +373,8 @@ function commentPrefixIndexForMarker(content) {
   return -1;
 }
 
-function hasInlineSuppressionMarker(content) {
-  return commentPrefixIndexForMarker(content) !== -1;
+function hasInlineSuppressionMarker(content, file) {
+  return commentPrefixIndexForMarker(content, file) !== -1;
 }
 
 function parseHunkHeader(rawLine, file) {
@@ -453,7 +470,7 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
     }
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
-      if (hasInlineSuppressionMarker(content)) {
+      if (hasInlineSuppressionMarker(content, file)) {
         // Derive the occurrence ordinal from the complete head file, not
         // just this diff's context window: the self-hosted shell gate sees
         // a zero-context diff and must land on the exact same fingerprint.

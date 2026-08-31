@@ -360,7 +360,19 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// independent scan to what was actually added.
 		`suspect_pairs_file="$(mktemp)"`,
 		`recorded_pairs_file="$(mktemp)"`,
-		`comm -23 <(sort -u "${suspect_pairs_file}") <(sort -u "${recorded_pairs_file}")`,
+		// comm requires sorted input, but deduplicating first (sort -u)
+		// would collapse a PR that adds the same suspect line twice into
+		// one suspect and let a tampered detector satisfy it by reporting
+		// only one occurrence's record; plain `sort` preserves multiplicity
+		// so comm computes a correct multiset difference instead.
+		`comm -23 <(sort "${suspect_pairs_file}") <(sort "${recorded_pairs_file}")`,
+		// jq's @tsv formatter escapes tab/newline/backslash/CR within a
+		// field, but the suspect side reads content un-escaped straight
+		// from the diff; comparing an escaped recorded pair against its
+		// un-escaped suspect pair would never match a suppression whose
+		// content contains one of those bytes. Emitting raw fields with an
+		// explicit delimiter avoids introducing any escaping.
+		`jq -j '.suppressions[] | .file, "\u0001", .content, "\n"'`,
 		// The trusted tracker never publishes more than MAX_RECORDS (100)
 		// entries per PR; a larger recorded_count is necessarily tampered
 		// and must be rejected before the polling loop issues one gh issue
@@ -372,8 +384,13 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// otherwise-open string literal (e.g. `"Use //nolint to
 		// suppress"`); blanking out quoted-region interiors before
 		// matching mirrors the trusted tracker's isInsideQuotedRegion.
-		"function mask_quoted_regions(s,    result, i, c, quote, n)",
+		"function mask_quoted_regions(s,    result, i, c, quote, n, is_rust)",
 		`tolower(mask_quoted_regions(content)) ~ pat`,
+		// Rust has no multi-character single-quoted strings, so treating
+		// every apostrophe as a generic string delimiter would let an
+		// unterminated lifetime (e.g. 'static) swallow the rest of the
+		// line and hide a real suppression comment after it.
+		`is_rust = (tolower(fname) ~ /\.rs$/)`,
 	})
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${recorded_count}" -gt 100 ]; then`)

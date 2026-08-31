@@ -248,10 +248,17 @@ jobs:
           echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test})" | while IFS= read -r file_json; do
             filename="$(echo "${file_json}" | jq -r '.filename')"
             echo "${file_json}" | jq -r '.patch // empty' | awk -v pat="${suspect_pattern}" -v fname="${filename}" '
-              function mask_quoted_regions(s,    result, i, c, quote, n) {
+              function mask_quoted_regions(s,    result, i, c, quote, n, is_rust) {
                 result = ""
                 quote = ""
                 n = length(s)
+                # Rust has no multi-character single-quoted strings: a
+                # leading apostrophe is either a self-contained char
+                # literal or a lifetime that never closes. Treating every
+                # apostrophe as a string delimiter would let a lifetime
+                # swallow the rest of the line, hiding a real suppression
+                # comment after it.
+                is_rust = (tolower(fname) ~ /\.rs$/)
                 for (i = 1; i <= n; i++) {
                   c = substr(s, i, 1)
                   if (quote != "") {
@@ -265,6 +272,18 @@ jobs:
                       quote = ""
                     } else {
                       result = result "x"
+                    }
+                    continue
+                  }
+                  if (c == "'"'"'" && is_rust) {
+                    if (substr(s, i + 1, 1) == "\\" && substr(s, i + 3, 1) == "'"'"'") {
+                      result = result c "xx" "'"'"'"
+                      i += 3
+                    } else if (substr(s, i + 1, 1) != "'"'"'" && substr(s, i + 2, 1) == "'"'"'") {
+                      result = result c "x" "'"'"'"
+                      i += 2
+                    } else {
+                      result = result c
                     }
                     continue
                   }
@@ -324,10 +343,26 @@ jobs:
               echo "::error::This pull request's tracking output records ${recorded_count} suppressions, exceeding the trusted tracker's 100-record publication limit; refusing to trust a malformed or tampered artifact." >&2
               exit 1
             fi
-            jq -r '.suppressions[] | [.file, .content] | @tsv' "${SUPPRESSIONS_FILE}" | awk -F'\t' '{ printf "%s\001%s\n", $1, $2 }' > "${recorded_pairs_file}"
+            # jq's @tsv formatter escapes tab/newline/backslash/CR within a
+            # field (e.g. a literal backslash becomes the two characters
+            # "\\"), but the suspect side below reads the same content
+            # un-escaped straight from the diff; comparing an escaped
+            # recorded pair against its un-escaped suspect pair would never
+            # match, rejecting an otherwise valid PR. Emit the delimiter and
+            # fields as raw bytes instead so no escaping is introduced.
+            jq -j '.suppressions[] | .file, "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"
           fi
 
-          missing_suspects="$(comm -23 <(sort -u "${suspect_pairs_file}") <(sort -u "${recorded_pairs_file}") | wc -l | tr -d ' ')"
+          # comm requires sorted input but -- given sorted, duplicate-
+          # preserving input -- still computes a correct *multiset*
+          # difference: plain `sort` (not `sort -u`) is required here.
+          # Deduplicating first would let a PR add the same suspect line
+          # twice while a tampered detector reports only one occurrence's
+          # (correctly fingerprinted) record; the duplicate suspect and its
+          # single matching recorded pair would collapse to one of each and
+          # compare as fully satisfied, hiding the untracked second
+          # occurrence.
+          missing_suspects="$(comm -23 <(sort "${suspect_pairs_file}") <(sort "${recorded_pairs_file}") | wc -l | tr -d ' ')"
           if [ "${missing_suspects:-0}" -gt 0 ]; then
             echo "::error::GitHub's own diff for this pull request independently found ${suspect_count} suspect line(s), ${missing_suspects} of which are not present in this pull request's tracking output (matched by file and exact line content). This can happen if the suppression detector or Makefile target was modified to under-report, or if a tracked suppression was silently swapped for an untracked one; refusing to trust the artifact." >&2
             exit 1

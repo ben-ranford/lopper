@@ -437,10 +437,17 @@ BEGIN {
 # delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
 # untouched. Mirrors the trusted tracker'"'"'s isInsideQuotedRegion exactly so
 # both detectors agree on what counts as a suppression.
-function mask_quoted_regions(s,    result, i, c, quote, n) {
+function mask_quoted_regions(s,    result, i, c, quote, n, is_rust) {
 	result = ""
 	quote = ""
 	n = length(s)
+	# Rust has no multi-character single-quoted strings: a leading
+	# apostrophe is either a self-contained char literal (two or three
+	# characters, e.g. x or a backslash escape, between two apostrophes)
+	# or a lifetime (e.g. static or a) that never closes. Treating every
+	# apostrophe as a string delimiter would let a lifetime swallow the
+	# rest of the line, hiding a real suppression comment after it.
+	is_rust = (tolower(file) ~ /\.rs$/)
 	for (i = 1; i <= n; i++) {
 		c = substr(s, i, 1)
 		if (quote != "") {
@@ -454,6 +461,18 @@ function mask_quoted_regions(s,    result, i, c, quote, n) {
 				quote = ""
 			} else {
 				result = result "x"
+			}
+			continue
+		}
+		if (c == "'"'"'" && is_rust) {
+			if (substr(s, i + 1, 1) == "\\" && substr(s, i + 3, 1) == "'"'"'") {
+				result = result c "xx" "'"'"'"
+				i += 3
+			} else if (substr(s, i + 1, 1) != "'"'"'" && substr(s, i + 2, 1) == "'"'"'") {
+				result = result c "x" "'"'"'"
+				i += 2
+			} else {
+				result = result c
 			}
 			continue
 		}

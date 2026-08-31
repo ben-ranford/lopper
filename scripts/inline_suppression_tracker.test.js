@@ -328,6 +328,26 @@ test('recognizes supported inline suppression marker forms without matching quot
   }
 });
 
+test('recognizes a marker following a Rust lifetime without treating it as an open string', () => {
+  // Rust has no multi-character single-quoted strings, so a leading "'" is
+  // either a self-contained char literal or a lifetime that never closes.
+  // Treating every "'" as a generic string delimiter (as other languages
+  // require) would make the unterminated lifetime swallow the rest of the
+  // line, hiding the real suppression comment that follows it.
+  const line = '\tlet value: &' + "'static str = \"x\"; //" + 'coverage: ignore';
+  assert.equal(testables.hasInlineSuppressionMarker(line, 'src/lib.rs'), true, line);
+  assert.equal(testables.hasInlineSuppressionMarker(line), false, line);
+
+  // A genuine Rust char literal still masks its content as a quoted region.
+  const charLiteralLine = "\tlet marker = '/'" + "; //" + 'coverage: ignore';
+  assert.equal(testables.hasInlineSuppressionMarker(charLiteralLine, 'src/lib.rs'), true, charLiteralLine);
+
+  // Non-Rust files keep the original behavior: a single quote still opens a
+  // real multi-character string.
+  const pythonLine = 'help = \'Use /' + '/no' + "lint to suppress'";
+  assert.equal(testables.hasInlineSuppressionMarker(pythonLine, 'tool.py'), false, pythonLine);
+});
+
 test('classifies source files without path validation side effects', () => {
   assert.equal(testables.isSourceFile('internal/main.go'), true);
   assert.equal(testables.isSourceFile('web/component.TSX'), true);

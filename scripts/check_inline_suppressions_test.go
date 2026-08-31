@@ -716,6 +716,34 @@ func TestInlineSuppressionCheckDetectsMarkerImmediatelyAfterAClosedString(t *tes
 	}
 }
 
+func TestInlineSuppressionCheckDetectsMarkerAfterARustLifetime(t *testing.T) {
+	t.Parallel()
+
+	// Rust has no multi-character single-quoted strings: a leading
+	// apostrophe here starts a lifetime ('static) that never closes.
+	// Treating every apostrophe as a generic string delimiter (as other
+	// covered languages require) would make the unterminated lifetime
+	// swallow the rest of the line, hiding the real suppression comment
+	// that follows it.
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	line := "\tlet value: &'static str = \"x\"; //coverage: ignore // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	source := "fn main() {\n" + line + "\n}\n"
+	rustPath := "main.rs"
+	writeFile(t, filepath.Join(repoDir, rustPath), source)
+	runCommand(t, repoDir, "git", "add", rustPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected marker after a Rust lifetime to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+	}
+}
+
 func TestInlineSuppressionCheckIgnoresURLSchemesInSource(t *testing.T) {
 	t.Parallel()
 
