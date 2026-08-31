@@ -939,6 +939,74 @@ func TestCIWorkflowSuspectScanDoesNotRequireAFreeStandingHashInPythonOrRuby(t *t
 	}
 }
 
+// TestCIWorkflowSuspectScanSkipsBlobFetchForMarkerlessPatches actually runs
+// the embedded per-file suspect scan against a patch containing no
+// marker-shaped text at all, proving the blob fetch (a `gh api` call) is
+// skipped entirely rather than paid for on every scanned file -- a PR with
+// many changed source files but no suppressions could otherwise force up to
+// 3,000 sequential authenticated requests in this required check.
+func TestCIWorkflowSuspectScanSkipsBlobFetchForMarkerlessPatches(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const varsStart = `no_prefix="no"`
+	const varsEnd = `slash_style_file_pattern='\.(c|cc|cjs|cpp|cs|cxx|go|h|hh|hpp|java|js|jsx|kt|kts|mjs|rs|swift|ts|tsx)$'` + "\n"
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup")
+	}
+	varsEndRelIdx := strings.Index(gate.Run[varsStartIdx:], varsEnd)
+	if varsEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the suspect-pattern variable setup end marker")
+	}
+	varsBlock := gate.Run[varsStartIdx : varsStartIdx+varsEndRelIdx+len(varsEnd)]
+
+	const loopBodyStart = `filename="$(echo "${file_json}" | jq -r '.filename')"`
+	const loopBodyEnd = `rm -f "${content_tmp}"` + "\n"
+	loopStartIdx := strings.Index(gate.Run, loopBodyStart)
+	if loopStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body")
+	}
+	loopEndRelIdx := strings.Index(gate.Run[loopStartIdx:], loopBodyEnd)
+	if loopEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the per-file suspect scan loop body end marker")
+	}
+	loopBody := gate.Run[loopStartIdx : loopStartIdx+loopEndRelIdx+len(loopBodyEnd)]
+
+	patch := "@@ -1 +1 @@\n-value = safe()\n+value = still_safe()\n"
+	fileJSON, err := json.Marshal(map[string]string{"filename": "calc.py", "sha": "deadbeef", "patch": patch})
+	if err != nil {
+		t.Fatalf("marshal file_json fixture: %v", err)
+	}
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	ghCallsPath := filepath.Join(dir, "gh-calls")
+	// Records each invocation instead of just succeeding, so the test can
+	// assert on whether it was called at all.
+	fakeGH := "#!/usr/bin/env bash\necho called >> " + shellQuote(ghCallsPath) + "\nexit 1\n"
+	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
+
+	script := "set -euo pipefail\n" + varsBlock + "\nfile_json=" + shellQuote(string(fileJSON)) + "\n" + loopBody
+
+	output, err := runShellCommand(dir, script, map[string]string{
+		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_REPOSITORY": "octo/lopper",
+	})
+	if err != nil {
+		t.Fatalf("expected the suspect scan to run without needing gh at all, output:\n%s", output)
+	}
+	if _, statErr := os.Stat(ghCallsPath); statErr == nil {
+		t.Fatalf("expected no gh invocation for a patch with no marker-shaped text, output:\n%q", output)
+	}
+}
+
 // TestCIWorkflowSuspectScanHonorsShellSingleQuoteEscapingRules actually
 // runs the embedded per-file suspect scan against a shell file whose added
 // line closes a single-quoted string with a trailing backslash immediately

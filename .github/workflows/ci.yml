@@ -322,18 +322,31 @@ jobs:
             else
               active_suspect_pattern="${suspect_pattern_all}"
             fi
-            # GitHub's default 3-line patch context can hide a multi-line
-            # construct (e.g. an open template literal) that begins further
-            # above a hunk than that window reaches; seeding every hunk's
-            # quote state as "no open quote" could mask a real suppression
-            # comment after it, or the reverse. Fetch the complete blob at
-            # this file's own pull-files SHA (no path-encoding needed, and
-            # no Contents API inline-size limit) so the scan below can
-            # derive each hunk's starting quote state from it instead.
-            file_sha="$(echo "${file_json}" | jq -r '.sha')"
+            patch="$(echo "${file_json}" | jq -r '.patch // empty')"
             content_tmp="$(mktemp)"
-            gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${file_sha}" --jq '.content' | base64 -d >"${content_tmp}"
-            echo "${file_json}" | jq -r '.patch // empty' | awk -v pat="${active_suspect_pattern}" -v fname="${filename}" '
+            # No recognized marker name appears anywhere in this patch, so
+            # no line in it -- regardless of comment or quote state -- could
+            # possibly match one; skip the blob fetch entirely rather than
+            # paying for it on every scanned file. A PR with many changed
+            # source files but no marker-shaped text could otherwise force
+            # up to 3,000 sequential authenticated API requests in this
+            # required check. Mirrors patchCouldContainMarker/
+            # MARKER_SUBSTRINGS in the trusted tracker.
+            lower_patch="$(printf '%s' "${patch}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "${lower_patch}" == *nosec* || "${lower_patch}" == *nosonar* || "${lower_patch}" == *nolint* || "${lower_patch}" == *noqa* || "${lower_patch}" == *eslint-disable* || "${lower_patch}" == *ts-ignore* || "${lower_patch}" == *ts-expect-error* || "${lower_patch}" == *coverage* || "${lower_patch}" == *pragma* ]]; then
+              # GitHub's default 3-line patch context can hide a multi-line
+              # construct (e.g. an open template literal) that begins
+              # further above a hunk than that window reaches; seeding
+              # every hunk's quote state as "no open quote" could mask a
+              # real suppression comment after it, or the reverse. Fetch
+              # the complete blob at this file's own pull-files SHA (no
+              # path-encoding needed, and no Contents API inline-size
+              # limit) so the scan below can derive each hunk's starting
+              # quote state from it instead.
+              file_sha="$(echo "${file_json}" | jq -r '.sha')"
+              gh api "repos/${GITHUB_REPOSITORY}/git/blobs/${file_sha}" --jq '.content' | base64 -d >"${content_tmp}"
+            fi
+            printf '%s\n' "${patch}" | awk -v pat="${active_suspect_pattern}" -v fname="${filename}" '
               FNR == NR {
                 full_line_count = FNR
                 full_lines[FNR] = $0
