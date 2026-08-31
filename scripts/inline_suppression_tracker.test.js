@@ -133,7 +133,12 @@ function makeHarness(options = {}) {
         getContent: async ({ path: filePath }) => {
           calls.contentFetches = (calls.contentFetches || 0) + 1;
           const file = files.find((candidate) => candidate.filename === filePath);
-          const content = reconstructFileFromPatch(file?.patch);
+          // A real head file can contain content the diff's own 3-line
+          // context window never reveals (e.g. a multi-line construct
+          // opening many lines above a hunk); options.fullFileContents lets
+          // a test simulate that gap instead of the content always being
+          // exactly reconstructable from the patch alone.
+          const content = options.fullFileContents?.[filePath] ?? reconstructFileFromPatch(file?.patch);
           if (options.oversizedContentFiles?.includes(filePath)) {
             return { data: { type: 'file', content: '', encoding: 'none', sha: `blob-sha:${filePath}` } };
           }
@@ -147,7 +152,7 @@ function makeHarness(options = {}) {
           calls.blobFetches = (calls.blobFetches || 0) + 1;
           const filePath = fileSha.replace(/^blob-sha:/, '');
           const file = files.find((candidate) => candidate.filename === filePath);
-          const content = reconstructFileFromPatch(file?.patch);
+          const content = options.fullFileContents?.[filePath] ?? reconstructFileFromPatch(file?.patch);
           return { data: { encoding: 'base64', content: Buffer.from(content, 'utf8').toString('base64') } };
         },
       },
@@ -583,6 +588,48 @@ test('recognizes a marker after a multi-line template literal closes on a later 
 
   assert.equal(harness.calls.created.length, 1);
   assert.match(harness.calls.created[0].body, /Location: `main\.js:3`/);
+});
+
+test('seeds quote state from the complete head file across a diff context gap', async () => {
+  // GitHub's default 3-line diff context cannot reveal a multi-line
+  // construct that opens further above a hunk than that window reaches.
+  // Resetting to "no open quote" at the hunk boundary -- instead of
+  // deriving it from the complete head file -- would make the closing
+  // backtick below look like a fresh opener and mask the real suppression
+  // comment that follows it.
+  const fullFile = [
+    'package main',
+    '',
+    'var tpl = `line1',
+    'line2',
+    'line3',
+    'line4',
+    'tail`; //' + 'eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard',
+    '',
+  ].join('\n');
+  const patch = [
+    '@@ -5,3 +5,3 @@',
+    ' line3',
+    ' line4',
+    '-tail`;',
+    '+tail`; //' + 'eslint-disable-line rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard',
+    '',
+  ].join('\n');
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.js',
+        status: 'modified',
+        patch,
+      },
+    ],
+    fullFileContents: { 'main.js': fullFile },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 1);
+  assert.match(harness.calls.created[0].body, /Location: `main\.js:7`/);
 });
 
 test('recognizes a marker on the line after an ordinary comment containing an apostrophe', async () => {

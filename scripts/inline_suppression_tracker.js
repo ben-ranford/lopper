@@ -281,7 +281,7 @@ function escapeFence(value) {
   return value.replaceAll('```', '``\u200b`');
 }
 
-async function occurrenceInFile({ github, context, file, ref, targetLine, targetContent }) {
+async function fetchFullFileContent({ github, context, file, ref }) {
   const { data } = await github.rest.repos.getContent({
     owner: context.repo.owner,
     repo: context.repo.repo,
@@ -289,17 +289,18 @@ async function occurrenceInFile({ github, context, file, ref, targetLine, target
     ref,
   });
   if (Array.isArray(data) || data.type !== 'file') {
-    throw new TypeError(`Unable to fetch full content for ${file} to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
+    throw new TypeError(`Unable to fetch full content for ${file} to scan for inline suppressions; refusing to publish tracking mutations.`);
   }
   // For files over the Contents API's 1 MiB inline limit, GitHub returns an
   // empty `content` with `encoding: "none"` rather than an error; accepting
-  // that as zero lines would assign every suppression occurrence 0 and
-  // desync from the trusted count derived from the full checkout. Fall back
-  // to the Git Blobs API (no such inline-size limit) in that case.
+  // that as an empty file would silently drop both the occurrence count and
+  // the seeded quote state, desyncing from the trusted count derived from
+  // the full checkout. Fall back to the Git Blobs API (no such inline-size
+  // limit) in that case.
   let base64Content = data.encoding === 'base64' && typeof data.content === 'string' ? data.content : undefined;
   if (base64Content === undefined) {
     if (typeof data.sha !== 'string') {
-      throw new TypeError(`Unable to fetch complete content for ${file} to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
+      throw new TypeError(`Unable to fetch complete content for ${file} to scan for inline suppressions; refusing to publish tracking mutations.`);
     }
     const blob = await github.rest.git.getBlob({
       owner: context.repo.owner,
@@ -307,11 +308,14 @@ async function occurrenceInFile({ github, context, file, ref, targetLine, target
       file_sha: data.sha,
     });
     if (blob.data.encoding !== 'base64' || typeof blob.data.content !== 'string') {
-      throw new TypeError(`Unable to fetch complete content for ${file} (blob encoding ${blob.data.encoding}) to compute an inline suppression occurrence; refusing to publish tracking mutations.`);
+      throw new TypeError(`Unable to fetch complete content for ${file} (blob encoding ${blob.data.encoding}) to scan for inline suppressions; refusing to publish tracking mutations.`);
     }
     base64Content = blob.data.content;
   }
-  const lines = Buffer.from(base64Content, 'base64').toString('utf8').split('\n');
+  return Buffer.from(base64Content, 'base64').toString('utf8');
+}
+
+function occurrenceInLines(lines, targetLine, targetContent) {
   let count = 0;
   for (let index = 0; index < targetLine && index < lines.length; index += 1) {
     if (lines[index] === targetContent) {
@@ -319,6 +323,22 @@ async function occurrenceInFile({ github, context, file, ref, targetLine, target
     }
   }
   return count;
+}
+
+// The quote state to seed a hunk beginning at 1-indexed `hunkStartLine`:
+// derived from the complete head file, not just the diff's own context
+// window. A multi-line construct (e.g. an open template literal) can begin
+// further above a hunk than GitHub's default 3-line context reaches;
+// resetting to "no open quote" at every hunk boundary would make such a
+// closing delimiter later in the hunk look like a new opener, potentially
+// masking a real suppression comment or misreading ordinary code as one.
+function quoteStateSeedFromLines(lines, hunkStartLine, file) {
+  let quoteState;
+  const priorLineCount = Math.min(hunkStartLine - 1, lines.length);
+  for (let index = 0; index < priorLineCount; index += 1) {
+    quoteState = carryQuoteState(lines[index], file, quoteState);
+  }
+  return quoteState;
 }
 
 function addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote }) {
@@ -542,45 +562,36 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
     throw new TypeError(`Inline suppression diff patch is unavailable for ${file}; refusing to publish tracking mutations.`);
   }
 
+  // The diff's own context window (GitHub's default 3 lines) cannot reveal
+  // a multi-line construct that opens further above a hunk than that
+  // window reaches; only the complete head file can. Fetch it once per
+  // file and reuse it both to seed each hunk's starting quote state and to
+  // derive each marker's true occurrence ordinal -- the self-hosted shell
+  // gate reads the same complete file and must land on the same answers
+  // for both.
+  const headContent = await fetchFullFileContent({ github, context, file, ref: headSHA });
+  const headLines = headContent.split('\n');
+
   let line = 0;
   // Quote state carries across lines within a hunk: a multi-line string
   // (e.g. a JavaScript template literal) that closes partway through a
   // later line must not make that line's scan think the closing delimiter
   // opens a new quoted region, which would mask a real suppression comment
-  // following it on the same line. Reset at each hunk boundary -- the gap
-  // of omitted unchanged lines between hunks can't be tracked through, so
-  // carrying state across it would be guessing rather than deriving it.
+  // following it on the same line.
   let quoteState;
   for (const rawLine of patchLines(patch)) {
     if (rawLine.startsWith('@@ ')) {
       line = parseHunkStart(rawLine, file);
-      quoteState = undefined;
+      quoteState = quoteStateSeedFromLines(headLines, line, file);
       continue;
     }
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
       if (hasInlineSuppressionMarker(content, file, quoteState)) {
-        // Check the record limit before issuing the occurrence lookup, not
-        // only after every file has been fully scanned: an untrusted PR
-        // that adds hundreds of properly annotated marker lines would
-        // otherwise force hundreds of Contents/Blob API calls (one per
-        // marker, up to the 3000-file boundary) before this limit is ever
-        // enforced, risking the write-token workflow's API quota or its
-        // job timeout instead of failing promptly.
         if (records.size >= MAX_RECORDS) {
           throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
         }
-        // Derive the occurrence ordinal from the complete head file, not
-        // just this diff's context window: the self-hosted shell gate sees
-        // a zero-context diff and must land on the exact same fingerprint.
-        const occurrence = await occurrenceInFile({
-          github,
-          context,
-          file,
-          ref: headSHA,
-          targetLine: line,
-          targetContent: content,
-        });
+        const occurrence = occurrenceInLines(headLines, line, content);
         addSuppression(records, { file, line, content, context, headSHA, occurrence, initialQuote: quoteState });
       }
       quoteState = carryQuoteState(content, file, quoteState);
