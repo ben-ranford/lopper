@@ -500,6 +500,17 @@ func finishConditionalAnalysisCacheRemoval(root safeio.Root, reservation analysi
 		return nil
 	}
 	if err := removeAnalysisCacheQuarantine(root, reservation); err != nil && !analysisCacheQuarantineTargetConfirmedGone(root, reservation, err) {
+		if errors.Is(err, os.ErrNotExist) {
+			// err wraps os.ErrNotExist even though the quarantined target
+			// was just confirmed present (the reservation's identity or
+			// owner token was lost, not the target itself).
+			// rollbackCreatedAnalysisCacheChild, the caller of
+			// conditionallyRemoveAnalysisCacheChild, treats any
+			// ErrNotExist-matching error as "nothing to roll back" and
+			// discards it -- reformat so this failure can't be mistaken for
+			// that unrelated, genuinely benign case.
+			err = fmt.Errorf("rollback candidate %s remains in an unverifiable reservation: %s", reservation.quarantineName, err.Error())
+		}
 		return errors.Join(lstatErr, err)
 	}
 	return lstatErr

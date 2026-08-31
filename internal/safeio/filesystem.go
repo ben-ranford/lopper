@@ -657,11 +657,11 @@ func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName strin
 	if err != nil {
 		return err
 	}
-	confinedNewName, err := resolveRelativeTarget(newName, rejectRootTarget)
+	newParent, newBase, err := resolveRenameNoReplaceTarget(newName)
 	if err != nil {
 		return err
 	}
-	newParentRoot, ok := newRoot.(*osRoot)
+	newRootOs, ok := newRoot.(*osRoot)
 	if !ok {
 		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
 	}
@@ -674,7 +674,19 @@ func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName strin
 		returnErr = closeOldParent(returnErr)
 	}()
 
-	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, confinedNewName)
+	// Pin the destination parent the same symlink-safe way
+	// openRenameNoReplaceParent already pins oldParent: a nested newName
+	// (e.g. "link/target") must not let an intermediate symlink component
+	// carry the rename outside the already-open newRoot.
+	newParentRoot, closeNewParent, err := newRootOs.openRenameNoReplaceParent(newParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeNewParent(returnErr)
+	}()
+
+	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newBase)
 }
 
 func resolveRenameNoReplaceTarget(name string) (string, string, error) {

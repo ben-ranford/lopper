@@ -2591,8 +2591,19 @@ func TestFinishConditionalAnalysisCacheRemovalPropagatesOwnershipLossWhenTargetS
 		t.Fatalf("create quarantined child: %v", err)
 	}
 
-	if err := finishConditionalAnalysisCacheRemoval(root, reservation, nil, nil); err == nil {
+	err = finishConditionalAnalysisCacheRemoval(root, reservation, nil, nil)
+	if err == nil {
 		t.Fatal("expected ownership loss with the quarantined child still present to be reported")
+	}
+	// rollbackCreatedAnalysisCacheChild treats any error matching
+	// os.ErrNotExist from this call as "nothing left to roll back" and
+	// discards it -- the underlying failure here (identity/owner mismatch,
+	// not the quarantined target being gone) happens to be built from an
+	// os.ErrNotExist-wrapping error internally, so it must not itself match
+	// errors.Is(_, os.ErrNotExist), or that caller would silently swallow
+	// exactly the failure this test exists to catch.
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected ownership-loss error not to match os.ErrNotExist (callers would discard it), got %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(repo, quarantineName)); err != nil {
 		t.Fatalf("expected quarantined child to remain untouched, stat err=%v", err)

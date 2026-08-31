@@ -251,6 +251,22 @@ func TestRenameNoReplaceIntoRejectsDestinationEscapingWithDotDot(t *testing.T) {
 	assertRenameNoReplacePathAbsent(t, filepath.Join(rootDir, "escaped"))
 }
 
+func TestRenameNoReplaceIntoRejectsSymlinkDestinationParent(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	_, destDir, sourcePath, sourceInfo, root, destRoot := setupRenameNoReplaceIntoFixture(t)
+	outsideDir := t.TempDir()
+	makeRenameNoReplaceSymlink(t, outsideDir, filepath.Join(destDir, "link"))
+	outsideTargetPath := filepath.Join(outsideDir, "target")
+
+	err := RenameNoReplaceInto(root, "source", destRoot, filepath.Join("link", "target"))
+	if err == nil {
+		t.Fatal("rename no-replace into through symlink destination parent succeeded")
+	}
+
+	assertRenameNoReplaceSameFile(t, sourcePath, sourceInfo)
+	assertRenameNoReplacePathAbsent(t, outsideTargetPath)
+}
+
 func TestRenameNoReplaceIntoRejectsNonOsRootDestination(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
 	rootDir := t.TempDir()
