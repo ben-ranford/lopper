@@ -694,26 +694,10 @@ func TestInlineSuppressionCheckAllowsDocumentationMentions(t *testing.T) {
 	}
 }
 
-func assertSuppressionCheckPassesForSource(t *testing.T, source string) {
-	t.Helper()
-
-	repoDir := newInlineSuppressionRepo(t)
-	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-
-	output, err := runSuppressionCheck(repoDir)
-	if err != nil {
-		t.Fatalf("expected the check to pass, output:\n%s", output)
-	}
-	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
-		t.Fatalf("expected pass message, got:\n%s", output)
-	}
-}
-
 func TestInlineSuppressionCheckIgnoresQuotedMarkersInSource(t *testing.T) {
 	t.Parallel()
 
-	assertSuppressionCheckPassesForSource(t, "package main\n\nconst marker = \""+"//"+"nosec"+"\"\n")
+	assertSuppressionCheckPassesForSourceNamed(t, mainGoPath, "package main\n\nconst marker = \""+"//"+"nosec"+"\"\n")
 }
 
 func TestInlineSuppressionCheckIgnoresMarkerTextInsideAnOpenStringLiteral(t *testing.T) {
@@ -723,7 +707,7 @@ func TestInlineSuppressionCheckIgnoresMarkerTextInsideAnOpenStringLiteral(t *tes
 	// not a quote, but the delimiter is still inside the still-open string
 	// started earlier on the line; checking only that single preceding
 	// character would miss this.
-	assertSuppressionCheckPassesForSource(t, "package main\n\nconst help = \"Use "+"//"+"nolint to suppress\"\n")
+	assertSuppressionCheckPassesForSourceNamed(t, mainGoPath, "package main\n\nconst help = \"Use "+"//"+"nolint to suppress\"\n")
 }
 
 func TestInlineSuppressionCheckDetectsMarkerImmediatelyAfterAClosedString(t *testing.T) {
@@ -802,7 +786,7 @@ func TestInlineSuppressionCheckIgnoresURLSchemesInSource(t *testing.T) {
 	// A URL scheme ("http://...") must not be mistaken for a comment
 	// delimiter just because the marker-boundary check was loosened to
 	// recognize comments with no leading whitespace.
-	assertSuppressionCheckPassesForSource(t, "package main\n\nconst url = \"http:"+"//"+"nosec.example.com\"\n")
+	assertSuppressionCheckPassesForSourceNamed(t, mainGoPath, "package main\n\nconst url = \"http:"+"//"+"nosec.example.com\"\n")
 }
 
 func TestInlineSuppressionCheckDetectsMarkerAfterAMultilineTemplateLiteral(t *testing.T) {
@@ -895,23 +879,17 @@ func TestInlineSuppressionCheckRequiresAFreeStandingHashInAHashOnlyLanguage(t *t
 	assertSuppressionCheckPassesForSourceNamed(t, "build.sh", "echo foo#nolint\n")
 }
 
-func TestInlineSuppressionCheckDoesNotRequireAFreeStandingHashInPythonOrRuby(t *testing.T) {
-	t.Parallel()
+func assertSuppressionDetectedForFileAndLine(t *testing.T, filename string, line string) {
+	t.Helper()
 
-	// Unlike YAML/shell, Python and Ruby start a comment with "#" anywhere
-	// outside a string -- exactly like "//" does in slash-style languages --
-	// with no whitespace requirement. Applying the YAML/shell free-standing
-	// rule there too would reject a valid suppression immediately following
-	// code with no space in between.
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	line := "value = unsafe()#noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
-	writeFile(t, filepath.Join(repoDir, "calc.py"), line)
-	runCommand(t, repoDir, "git", "add", "calc.py")
+	writeFile(t, filepath.Join(repoDir, filename), line)
+	runCommand(t, repoDir, "git", "add", filename)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
-		t.Fatalf("expected the marker immediately after code to be detected, output:\n%s", output)
+		t.Fatalf("expected the marker to be detected, output:\n%s", output)
 	}
 
 	records := readSuppressionRecords(t, outputPath)
@@ -920,24 +898,21 @@ func TestInlineSuppressionCheckDoesNotRequireAFreeStandingHashInPythonOrRuby(t *
 	}
 }
 
+func TestInlineSuppressionCheckDoesNotRequireAFreeStandingHashInPythonOrRuby(t *testing.T) {
+	t.Parallel()
+
+	// Unlike YAML/shell, Python and Ruby start a comment with "#" anywhere
+	// outside a string -- exactly like "//" does in slash-style languages --
+	// with no whitespace requirement. Applying the YAML/shell free-standing
+	// rule there too would reject a valid suppression immediately following
+	// code with no space in between.
+	assertSuppressionDetectedForFileAndLine(t, "calc.py", "value = unsafe()#noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
+}
+
 func TestInlineSuppressionCheckDetectsAFreeStandingHashMarkerInShell(t *testing.T) {
 	t.Parallel()
 
-	repoDir := newInlineSuppressionRepo(t)
-	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	line := "echo foo #nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
-	writeFile(t, filepath.Join(repoDir, "build.sh"), line)
-	runCommand(t, repoDir, "git", "add", "build.sh")
-
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
-	if err != nil {
-		t.Fatalf("expected the free-standing hash marker to be detected, output:\n%s", output)
-	}
-
-	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
-	}
+	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo foo #nolint rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
 }
 
 func TestInlineSuppressionCheckHonorsShellSingleQuoteEscapingRules(t *testing.T) {
@@ -950,21 +925,7 @@ func TestInlineSuppressionCheckHonorsShellSingleQuoteEscapingRules(t *testing.T)
 	// trailing backslash before the closing quote swallow that quote as
 	// escaped content, leaving the string open and masking the real
 	// suppression comment that follows it.
-	repoDir := newInlineSuppressionRepo(t)
-	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	line := "echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n"
-	writeFile(t, filepath.Join(repoDir, "build.sh"), line)
-	runCommand(t, repoDir, "git", "add", "build.sh")
-
-	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
-	if err != nil {
-		t.Fatalf("expected the marker after the closed single-quoted string to be detected, output:\n%s", output)
-	}
-
-	records := readSuppressionRecords(t, outputPath)
-	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
-	}
+	assertSuppressionDetectedForFileAndLine(t, "build.sh", "echo 'foo\\' #noqa rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard\n")
 }
 
 func TestInlineSuppressionCheckDetectsMarkerOnLineAfterCommentContainingApostrophe(t *testing.T) {
@@ -1007,7 +968,7 @@ func TestInlineSuppressionCheckIgnoresMarkerShapedExampleTextQuotedInAComment(t 
 	// exact shape of comment this detector's own source file uses to
 	// document itself.
 	source := "package main\n\n// e.g. `\"Use //nolint to suppress\"`. Blanking out the region.\nfunc main() {}\n"
-	assertSuppressionCheckPassesForSource(t, source)
+	assertSuppressionCheckPassesForSourceNamed(t, mainGoPath, source)
 }
 
 func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.T) {
