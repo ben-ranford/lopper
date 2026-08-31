@@ -859,6 +859,33 @@ func TestRemoveAnalysisCacheQuarantinePreservesCloseError(t *testing.T) {
 	}
 }
 
+func TestRemoveAnalysisCacheQuarantineRemovesReservationDirectoryDespiteCloseError(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	reservation := createAnalysisCacheQuarantineReservationWithOwner(t, repo, root, reservationName, quarantineName, "owned-token")
+	reservationRoot := openQuarantinedChildReservationRoot(t, repo, reservationName, quarantineName)
+	closeErr := errors.New("close reservation failed")
+
+	err := removeAnalysisCacheQuarantine(
+		&openNamedRootAnalysisCacheRoot{
+			Root: root,
+			name: reservationName,
+			root: &closeErrorAnalysisCacheRoot{Root: reservationRoot, err: closeErr},
+		},
+		reservation,
+	)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("expected reservation close error to be preserved, got %v", err)
+	}
+	// The child and owner marker were both removed before Close failed, so
+	// the now-empty reservation directory must still be removed rather than
+	// stranded -- otherwise quarantineAnalysisCacheChildReservation's retry
+	// loop would treat this suffix as permanently occupied.
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
 func TestRemoveAnalysisCacheQuarantineReservationBranches(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)

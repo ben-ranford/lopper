@@ -919,10 +919,16 @@ func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 	if removeOwnerErr != nil && !errors.Is(removeOwnerErr, os.ErrNotExist) {
 		return errors.Join(removeOwnerErr, closeErr)
 	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return removeAnalysisCacheQuarantineReservationDirectory(root, reservation)
+	// The child and owner marker are already removed at this point, so
+	// attempt the reservation directory's own removal regardless of
+	// closeErr -- it operates on root, not the (possibly now-unusable)
+	// reservationRoot, so a close failure doesn't prevent it. Returning
+	// early here instead would permanently strand the now-empty
+	// .lopper-cache-rollback-* directory: quarantineAnalysisCacheChildReservation's
+	// retry loop treats an existing name at that suffix as occupied, and
+	// repeated close failures could exhaust all 16 reservation slots.
+	dirErr := removeAnalysisCacheQuarantineReservationDirectory(root, reservation)
+	return errors.Join(closeErr, dirErr)
 }
 
 // restoreQuarantinedChildAfterFailedRemoval moves a quarantined child that
