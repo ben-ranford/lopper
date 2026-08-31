@@ -202,12 +202,15 @@ jobs:
           # A comment delimiter needs no preceding whitespace in any of the
           # covered languages -- a marker immediately following code with
           # no space in between is still a valid suppression -- so
-          # requiring it would miss such lines entirely. Excluding
-          # quote/backtick characters keeps a marker word inside a string
-          # literal from matching, and excluding ":" keeps a URL scheme
-          # (http://nolint...) from matching; everything else is a valid
-          # preceding position.
-          suspect_pattern="(^|[^\"'\`:])((//|/[*]+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
+          # requiring it would miss such lines entirely. Excluding ":"
+          # keeps a URL scheme (http://nolint...) from matching; everything
+          # else is a valid preceding position. Whether the delimiter falls
+          # inside a string literal is handled separately, by masking
+          # quoted regions before this pattern is applied (mirroring the
+          # trusted tracker's isInsideQuotedRegion) -- checking only the
+          # single preceding character misses a marker preceded by
+          # ordinary text inside an otherwise-open string.
+          suspect_pattern="(^|[^:])((//|/[*]+|#)[[:space:]]*(@?(${no_prefix}(sec|sonar|lint|qa)|${eslint_prefix}-disable(-next-line|-line)?|${ts_prefix}-(ignore|expect-error)|pragma:[[:space:]]*${no_prefix}[[:space:]]+cover|${coverage_prefix}:[[:space:]]*ignore)))([^[:alnum:]_-]|$)"
           # Scope to the same source-file extensions the detector itself
           # covers, so documentation/config prose mentioning marker syntax
           # (this PR, being the one introducing the feature, has plenty)
@@ -223,28 +226,77 @@ jobs:
           # or whose diff it truncates. Treating that as "no suspect lines"
           # would let a PR pair an oversized source file with a tampered
           # detector/Makefile to make both counts read zero and merge an
-          # untracked suppression; fail closed instead of guessing.
-          incomplete_count="$(echo "${pr_files_json}" | jq "[.[] | select(${source_file_test}) | select(.patch == null)] | length")"
+          # untracked suppression; fail closed instead of guessing. A pure
+          # rename (no content change) is also patchless but genuinely
+          # empty of suspect lines -- the trusted tracker explicitly
+          # exempts this exact shape (status "renamed", zero
+          # additions/deletions) rather than treating it as incomplete, so
+          # mirror that exemption here instead of failing every rename.
+          incomplete_count="$(echo "${pr_files_json}" | jq "[.[] | select(${source_file_test}) | select(.patch == null) | select(.status != \"renamed\" or .additions != 0 or .deletions != 0)] | length")"
           if [ "${incomplete_count:-0}" -gt 0 ]; then
             echo "::error::GitHub's pull-files API omitted the patch for ${incomplete_count} source file(s) in this pull request (typically because the file or diff is too large); the independent suppression scan cannot make a safe determination for those files. Refusing to trust an under-scanned diff." >&2
             exit 1
           fi
 
-          suspect_count="$(echo "${pr_files_json}" | jq -r ".[] | select(${source_file_test}) | .patch // empty" \
-            | grep -E '^\+' \
-            | grep -Eic "${suspect_pattern}" || true)"
-          suspect_count="${suspect_count:-0}"
+          # Extract (file, added-line-content) pairs for every suspect line,
+          # not just a count: comparing cardinalities alone lets a PR swap a
+          # tracked suppression for an untracked one of the same shape (add
+          # one, remove one) while the counts stay equal. Matching by exact
+          # content -- the same "Source line" text the trusted tracker
+          # records -- ties the independent scan to what was actually added.
+          suspect_pairs_file="$(mktemp)"
+          echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test})" | while IFS= read -r file_json; do
+            filename="$(echo "${file_json}" | jq -r '.filename')"
+            echo "${file_json}" | jq -r '.patch // empty' | awk -v pat="${suspect_pattern}" -v fname="${filename}" '
+              function mask_quoted_regions(s,    result, i, c, quote, n) {
+                result = ""
+                quote = ""
+                n = length(s)
+                for (i = 1; i <= n; i++) {
+                  c = substr(s, i, 1)
+                  if (quote != "") {
+                    if (c == "\\" && i < n) {
+                      result = result "xx"
+                      i++
+                      continue
+                    }
+                    if (c == quote) {
+                      result = result c
+                      quote = ""
+                    } else {
+                      result = result "x"
+                    }
+                    continue
+                  }
+                  if (c == "\"" || c == "'"'"'" || c == "`") {
+                    quote = c
+                    result = result c
+                    continue
+                  }
+                  result = result c
+                }
+                return result
+              }
+              /^\+\+\+ / { next }
+              /^\+/ {
+                content = substr($0, 2)
+                if (tolower(mask_quoted_regions(content)) ~ pat) {
+                  printf "%s\001%s\n", fname, content
+                }
+              }
+            '
+          done > "${suspect_pairs_file}"
+          suspect_count="$(wc -l < "${suspect_pairs_file}" | tr -d ' ')"
 
           # A PR could also leave the detector partially working -- e.g. it
           # already has one published suppression, adds a second, and tweaks
           # the detector to keep emitting only the first -- so the artifact
-          # is nonempty but under-reports. Compare the independent count
-          # against every run of this detector, not only the empty case;
-          # a mismatch fails closed rather than trusting a nonzero count.
-          # Fingerprints are deduplicated first: a tampered detector could
-          # otherwise repeat an already-tracked fingerprint to pad
-          # recorded_count high enough to mask a genuinely untracked one.
+          # is nonempty but under-reports. Fingerprints are deduplicated
+          # first: a tampered detector could otherwise repeat an
+          # already-tracked fingerprint to pad recorded_count high enough to
+          # mask a genuinely untracked one.
           recorded_count=0
+          recorded_pairs_file="$(mktemp)"
           if [ -s "${SUPPRESSIONS_FILE}" ]; then
             mapfile -t fingerprints < <(jq -r '.suppressions[].fingerprint' "${SUPPRESSIONS_FILE}" | sort -u)
             recorded_count="${#fingerprints[@]}"
@@ -261,10 +313,23 @@ jobs:
                 exit 1
               fi
             done
+            # The trusted tracker never publishes more than MAX_RECORDS (100)
+            # entries per pull request, so a larger recorded_count is
+            # necessarily a tampered artifact. Reject it before the polling
+            # loop below issues one gh issue list request per fingerprint --
+            # otherwise a PR-controlled detector could emit thousands of
+            # distinct valid-looking fingerprints and exhaust the repository
+            # token's API quota or the job's timeout.
+            if [ "${recorded_count}" -gt 100 ]; then
+              echo "::error::This pull request's tracking output records ${recorded_count} suppressions, exceeding the trusted tracker's 100-record publication limit; refusing to trust a malformed or tampered artifact." >&2
+              exit 1
+            fi
+            jq -r '.suppressions[] | [.file, .content] | @tsv' "${SUPPRESSIONS_FILE}" | awk -F'\t' '{ printf "%s\001%s\n", $1, $2 }' > "${recorded_pairs_file}"
           fi
 
-          if [ "${suspect_count}" -gt "${recorded_count}" ]; then
-            echo "::error::GitHub's own diff for this pull request independently counts ${suspect_count} line(s) that look like a newly added suppression marker, but only ${recorded_count} were recorded in this pull request's tracking output. This can happen if the suppression detector or Makefile target was modified to under-report; refusing to trust the artifact." >&2
+          missing_suspects="$(comm -23 <(sort -u "${suspect_pairs_file}") <(sort -u "${recorded_pairs_file}") | wc -l | tr -d ' ')"
+          if [ "${missing_suspects:-0}" -gt 0 ]; then
+            echo "::error::GitHub's own diff for this pull request independently found ${missing_suspects} newly added line(s) that look like a suppression marker but are not present in this pull request's tracking output (matched by file and exact line content). This can happen if the suppression detector or Makefile target was modified to under-report, or if a tracked suppression was silently swapped for an untracked one; refusing to trust the artifact." >&2
             exit 1
           fi
 
@@ -285,10 +350,15 @@ jobs:
             fi
             still_missing=()
             for fingerprint in "${missing[@]}"; do
+              # A substring `contains` check accepts the marker text
+              # anywhere in the body, including inside the echoed "Source
+              # line" of an attacker-controlled suppression comment; require
+              # it in the canonical first-two-lines header position instead,
+              # matching the trusted controller's own issueBodyIncludesMarker.
               found="$(gh issue list --state open \
                 --search "lopper-inline-suppression:${fingerprint} lopper-inline-suppression-pr:${PR_NUMBER} author:github-actions[bot]" \
                 --json number,author,body \
-                --jq "[.[] | select(.author.login == \"github-actions[bot]\" and (.body // \"\" | contains(\"lopper-inline-suppression:${fingerprint}\")) and (.body // \"\" | contains(\"lopper-inline-suppression-pr:${PR_NUMBER}\")))][0].number")"
+                --jq "[.[] | select(.author.login == \"github-actions[bot]\" and ((.body // \"\") | test(\"^<!-- lopper-inline-suppression:${fingerprint} -->\\n<!-- lopper-inline-suppression-pr:${PR_NUMBER} -->\")))][0].number")"
               if [ -z "${found}" ]; then
                 still_missing+=("${fingerprint}")
               fi

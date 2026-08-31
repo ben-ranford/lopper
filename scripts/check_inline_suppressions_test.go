@@ -583,27 +583,63 @@ func TestInlineSuppressionCheckCountsPreExistingOccurrenceOutsideTheDiff(t *test
 func TestInlineSuppressionCheckPreservesColonsInFilePaths(t *testing.T) {
 	t.Parallel()
 
+	assertSuppressionDetectedForFilename(t, "odd:name.go")
+}
+
+func TestInlineSuppressionCheckReadsStagedOccurrencesFromTheIndex(t *testing.T) {
+	t.Parallel()
+
 	repoDir := newInlineSuppressionRepo(t)
 	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
-	oddPath := filepath.Join(repoDir, "odd:name.go")
-	if err := os.WriteFile(oddPath, []byte(mainGoWithTrackedSuppression("nolint:staticcheck")), 0o644); err != nil {
-		t.Fatalf("write odd:name.go: %v", err)
-	}
-	runCommand(t, repoDir, "git", "add", "odd:name.go")
+
+	marker := "nolint:staticcheck"
+	line := "\t_ = 1 //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+
+	// The first occurrence is already committed on the base branch, so it
+	// never appears in the diff; the newly staged second occurrence does,
+	// and must be assigned occurrence 2.
+	baseline := "package main\n\nfunc main() {\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), baseline)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+	runCommand(t, repoDir, "git", "commit", "-m", "pre-existing suppression")
+
+	staged := "package main\n\nfunc main() {\n" + line + "\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), staged)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	// Then edit the working tree only (no re-staging) so the committed,
+	// pre-existing first occurrence no longer matches there. If occurrence
+	// counting reads the working tree instead of the index for a
+	// staged-diff run, it would see only one remaining match up to the
+	// target line and misidentify the new suppression as occurrence 1
+	// instead of 2.
+	worktreeOnly := "package main\n\nfunc main() {\n\t_ = 2 // unrelated\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), worktreeOnly)
 
 	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
 	if err != nil {
-		t.Fatalf("expected colon-path suppression detection to pass, output:\n%s", output)
+		t.Fatalf("expected the staged occurrence to pass, output:\n%s", output)
 	}
 
 	records := readSuppressionRecords(t, outputPath)
 	if len(records.Suppressions) != 1 {
-		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
+		t.Fatalf("expected exactly one new suppression record, got %#v", records.Suppressions)
 	}
-	record := records.Suppressions[0]
-	if record.File != "odd:name.go" || record.Line != 4 {
-		t.Fatalf("record location = %q:%d, want \"odd:name.go\":4", record.File, record.Line)
+
+	want := suppressionFingerprint(mainGoPath, line, 2)
+	if got := records.Suppressions[0].Fingerprint; got != want {
+		t.Fatalf("fingerprint = %s, want occurrence-2 fingerprint %s (occurrence was computed from the working tree instead of the staged index)", got, want)
 	}
+}
+
+func TestInlineSuppressionCheckHandlesNonASCIIFilePaths(t *testing.T) {
+	t.Parallel()
+
+	// Git C-style-quotes and octal-escapes non-ASCII path bytes in a diff's
+	// "+++ b/<path>" header by default; a parser that only strips a plain
+	// trailing tab wouldn't recognize this header at all and would silently
+	// skip every suppression in the file.
+	assertSuppressionDetectedForFilename(t, "café.go")
 }
 
 func TestInlineSuppressionCheckAllowsDocumentationMentions(t *testing.T) {
@@ -623,20 +659,60 @@ func TestInlineSuppressionCheckAllowsDocumentationMentions(t *testing.T) {
 	}
 }
 
-func TestInlineSuppressionCheckIgnoresQuotedMarkersInSource(t *testing.T) {
-	t.Parallel()
+func assertSuppressionCheckPassesForSource(t *testing.T, source string) {
+	t.Helper()
 
 	repoDir := newInlineSuppressionRepo(t)
-	source := "package main\n\nconst marker = \"" + "//" + "nosec" + "\"\n"
 	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
 	runCommand(t, repoDir, "git", "add", mainGoPath)
 
 	output, err := runSuppressionCheck(repoDir)
 	if err != nil {
-		t.Fatalf("expected quoted marker to pass, output:\n%s", output)
+		t.Fatalf("expected the check to pass, output:\n%s", output)
 	}
 	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
 		t.Fatalf("expected pass message, got:\n%s", output)
+	}
+}
+
+func TestInlineSuppressionCheckIgnoresQuotedMarkersInSource(t *testing.T) {
+	t.Parallel()
+
+	assertSuppressionCheckPassesForSource(t, "package main\n\nconst marker = \""+"//"+"nosec"+"\"\n")
+}
+
+func TestInlineSuppressionCheckIgnoresMarkerTextInsideAnOpenStringLiteral(t *testing.T) {
+	t.Parallel()
+
+	// The character immediately before the comment delimiter is a space,
+	// not a quote, but the delimiter is still inside the still-open string
+	// started earlier on the line; checking only that single preceding
+	// character would miss this.
+	assertSuppressionCheckPassesForSource(t, "package main\n\nconst help = \"Use "+"//"+"nolint to suppress\"\n")
+}
+
+func TestInlineSuppressionCheckDetectsMarkerImmediatelyAfterAClosedString(t *testing.T) {
+	t.Parallel()
+
+	repoDir := newInlineSuppressionRepo(t)
+	outputPath := filepath.Join(repoDir, ".artifacts", "inline-suppressions.json")
+	marker := "nolint:staticcheck"
+	// The comment delimiter is preceded by a closed string's closing quote,
+	// not open string content; this is real code and must still be
+	// detected, distinguishing a closed string from an unterminated one.
+	line := "\t_ = \"done\" //" + marker + " // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard"
+	source := "package main\n\nfunc main() {\n" + line + "\n}\n"
+	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
+	runCommand(t, repoDir, "git", "add", mainGoPath)
+
+	output, err := runSuppressionCheckWithEnv(repoDir, "SUPPRESSION_TRACKING_OUTPUT="+outputPath)
+	if err != nil {
+		t.Fatalf("expected marker after a closed string to pass, output:\n%s", output)
+	}
+
+	records := readSuppressionRecords(t, outputPath)
+	if len(records.Suppressions) != 1 {
+		t.Fatalf("expected one suppression record, got %#v", records.Suppressions)
 	}
 }
 
@@ -646,18 +722,7 @@ func TestInlineSuppressionCheckIgnoresURLSchemesInSource(t *testing.T) {
 	// A URL scheme ("http://...") must not be mistaken for a comment
 	// delimiter just because the marker-boundary check was loosened to
 	// recognize comments with no leading whitespace.
-	repoDir := newInlineSuppressionRepo(t)
-	source := "package main\n\nconst url = \"http:" + "//" + "nosec.example.com\"\n"
-	writeFile(t, filepath.Join(repoDir, mainGoPath), source)
-	runCommand(t, repoDir, "git", "add", mainGoPath)
-
-	output, err := runSuppressionCheck(repoDir)
-	if err != nil {
-		t.Fatalf("expected URL scheme to pass, output:\n%s", output)
-	}
-	if !strings.Contains(output, "Inline suppression check passed (staged changes)") {
-		t.Fatalf("expected pass message, got:\n%s", output)
-	}
+	assertSuppressionCheckPassesForSource(t, "package main\n\nconst url = \"http:"+"//"+"nosec.example.com\"\n")
 }
 
 func TestInlineSuppressionCheckDetectsMarkerWithoutLeadingWhitespace(t *testing.T) {

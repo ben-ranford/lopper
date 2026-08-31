@@ -50,18 +50,43 @@ function isMetadataBoundary(char) {
   return char === undefined || isWhitespace(char) || char === ';' || char === ',';
 }
 
-const UNSAFE_COMMENT_PRECEDING_CHARS = new Set(['"', "'", '`', ':']);
-
 // A comment delimiter needs no preceding whitespace in any of the covered
 // languages -- a marker immediately following code with no space in
 // between is still a valid suppression -- so requiring it caused every
-// detector to miss such lines entirely. Excluding quote/backtick
-// characters keeps a marker word
-// inside a string literal (`"//nosec"`) from matching, and excluding ":"
-// keeps a URL scheme (`http://nolint...`) from matching; everything else,
-// including alphanumerics and punctuation, is a valid position.
+// detector to miss such lines entirely. Excluding ":" keeps a URL scheme
+// (`http://nolint...`) from matching; everything else, including
+// alphanumerics and punctuation, is a valid preceding position. Whether the
+// candidate position falls inside a string literal (e.g. `"Use //nolint"`)
+// is handled separately by isInsideQuotedRegion, which tracks quote state
+// rather than only inspecting the single preceding character -- checking
+// only that character misses a marker preceded by ordinary text inside an
+// otherwise-open string, such as `"Use //nolint to suppress"`.
 function isCommentBoundary(char) {
-  return char === undefined || !UNSAFE_COMMENT_PRECEDING_CHARS.has(char);
+  return char === undefined || char !== ':';
+}
+
+// Scans content[0, index) tracking single/double/backtick-quoted regions
+// (with backslash-escaping) to determine whether `index` falls inside an
+// unterminated string literal. This is a heuristic shared across common
+// C-like/scripting comment and string syntax, not a full per-language
+// lexer, but it is what the covered SOURCE_EXTENSIONS all agree on.
+function isInsideQuotedRegion(content, index) {
+  let quote;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    const char = content[cursor];
+    if (quote !== undefined) {
+      if (char === '\\') {
+        cursor += 1;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+    }
+  }
+  return quote !== undefined;
 }
 
 function isMarkerBoundary(char) {
@@ -318,6 +343,9 @@ function markerStartAfterPrefix(content, index, prefix) {
 function commentPrefixIndexForMarker(content) {
   for (let index = 0; index < content.length; index += 1) {
     if (!isCommentBoundary(content[index - 1])) {
+      continue;
+    }
+    if (isInsideQuotedRegion(content, index)) {
       continue;
     }
     const prefix = COMMENT_PREFIXES.find((candidate) => content.startsWith(candidate, index));
@@ -714,7 +742,43 @@ async function reconcileDisappearedSuppressions({ github, context, pull, records
   }
 }
 
+async function cleanupClosedPullTrackingIssues({ github, context, core }) {
+  const pull = context.payload.pull_request;
+  if (!pull?.number) {
+    throw new TypeError('Pull request number is required to clean up inline suppression tracking issues.');
+  }
+  const tracked = await findTrustedTrackingIssuesForPull({ github, context, pullNumber: pull.number });
+  for (const issue of tracked) {
+    await github.rest.issues.update({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      issue_number: issue.number,
+      state: 'closed',
+      state_reason: 'not_planned',
+    });
+    core.info(`Closed inline suppression tracking issue #${issue.number}; pull request #${pull.number} closed without merging.`);
+  }
+}
+
 async function trackInlineSuppressions({ github, context, core }) {
+  if (context.payload.action === 'closed') {
+    // Every other trigger (opened/edited/synchronize/reopened/ready_for_review)
+    // only ever runs while the pull request is open, so reconciliation for a
+    // suppression that disappears mid-review is already handled by
+    // reconcileDisappearedSuppressions on the next such event. A pull request
+    // that closes without merging gets no further event, so its bot-created
+    // issues would otherwise stay open indefinitely for suppressions that
+    // never entered the repository. A merged pull request's suppressions did
+    // land, so its tracking issues correctly remain open; nothing to do.
+    const pull = context.payload.pull_request;
+    if (pull?.merged) {
+      core.info(`Pull request #${pull.number} merged; its inline suppression tracking issues remain open.`);
+      return;
+    }
+    await cleanupClosedPullTrackingIssues({ github, context, core });
+    return;
+  }
+
   const { records, pull } = await recomputeSuppressionRecords({ github, context });
   await reconcileDisappearedSuppressions({ github, context, pull, records, core });
   if (records.size === 0) {

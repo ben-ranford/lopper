@@ -176,7 +176,7 @@ function makeHarness(options = {}) {
       github,
       context: {
         repo: { owner: 'octo', repo: 'lopper' },
-        payload: { pull_request: pull },
+        payload: { pull_request: pull, action: options.action },
       },
       core: {
         info: (message) => calls.infos.push(message),
@@ -301,6 +301,10 @@ test('recognizes supported inline suppression marker forms without matching quot
     // code directly.
     'call();/' + '/no' + 'lint rationale=x; owner=y; remove-when=z',
     'value=1' + '# no' + 'qa rationale=x; owner=y; remove-when=z',
+    // A comment delimiter immediately after a *closed* string literal is
+    // real code, not text inside the string; only an *unterminated* quoted
+    // region should suppress the match.
+    '\t_ = "done" /' + '/no' + 'sec G404',
   ];
   for (const line of matchingLines) {
     assert.equal(testables.hasInlineSuppressionMarker(line), true, line);
@@ -314,6 +318,10 @@ test('recognizes supported inline suppression marker forms without matching quot
     '\t_ = 1 /' + '/ pragma: ' + 'no coverage',
     // A URL scheme must not be mistaken for a comment delimiter.
     'const url = "http:/' + '/no' + 'sec.example.com";',
+    // The marker-shaped text is preceded by ordinary characters, not a
+    // quote, but is still inside an unterminated string literal; checking
+    // only the single preceding character misses this.
+    'const help = "Use /' + '/no' + 'lint to suppress";',
   ];
   for (const line of ignoredLines) {
     assert.equal(testables.hasInlineSuppressionMarker(line), false, line);
@@ -545,6 +553,77 @@ test('does not close a tracking issue whose suppression is still present in the 
 
   const closeCalls = harness.calls.updated.filter((call) => call.state === 'closed');
   assert.equal(closeCalls.length, 0);
+});
+
+test('closes all tracking issues when a pull request closes without merging', async () => {
+  const fingerprintA = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
+  const fingerprintB = testables.fingerprintFor('other.go', trackedLine('nosec G404'), 1);
+  const harness = makeHarness({
+    action: 'closed',
+    pull: { merged: false },
+    searchItems: ({ input }) => {
+      if (!input.q.includes('lopper-inline-suppression-pr:')) {
+        return [];
+      }
+      return [
+        {
+          number: 61,
+          body: `<!-- lopper-inline-suppression:${fingerprintA} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+        {
+          number: 62,
+          body: `<!-- lopper-inline-suppression:${fingerprintB} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 0);
+  // A closed-without-merging pull request never had its diff recomputed --
+  // recomputeSuppressionRecords would reject a non-open pull outright, and
+  // cleanup does not need it.
+  assert.equal(harness.calls.gets.length, 0);
+  assert.equal(harness.calls.updated.length, 2);
+  const closedNumbers = harness.calls.updated.map((call) => call.issue_number).sort();
+  assert.deepEqual(closedNumbers, [61, 62]);
+  for (const call of harness.calls.updated) {
+    assert.equal(call.state, 'closed');
+    assert.equal(call.state_reason, 'not_planned');
+  }
+  assert.match(harness.calls.infos.join('\n'), /Closed inline suppression tracking issue #61; pull request #42 closed without merging\./);
+  assert.match(harness.calls.infos.join('\n'), /Closed inline suppression tracking issue #62; pull request #42 closed without merging\./);
+});
+
+test('leaves tracking issues open when a pull request closes because it merged', async () => {
+  const fingerprint = testables.fingerprintFor('main.go', trackedLine('nolint:staticcheck'), 1);
+  const harness = makeHarness({
+    action: 'closed',
+    pull: { merged: true },
+    searchItems: ({ input }) => {
+      if (!input.q.includes('lopper-inline-suppression-pr:')) {
+        return [];
+      }
+      return [
+        {
+          number: 71,
+          body: `<!-- lopper-inline-suppression:${fingerprint} -->\n<!-- lopper-inline-suppression-pr:42 -->`,
+          user: { login: 'github-actions[bot]', type: 'Bot' },
+        },
+      ];
+    },
+  });
+
+  await trackInlineSuppressions(harness.args);
+
+  assert.equal(harness.calls.created.length, 0);
+  assert.equal(harness.calls.updated.length, 0);
+  assert.equal(harness.calls.gets.length, 0);
+  assert.equal(harness.calls.searches.length, 0);
+  assert.match(harness.calls.infos.join('\n'), /Pull request #42 merged; its inline suppression tracking issues remain open\./);
 });
 
 test('rejects stale event payloads before reading pull file diffs', async () => {

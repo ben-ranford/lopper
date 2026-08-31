@@ -8,6 +8,13 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+      # A pull request that closes without merging gets no further event of
+      # any other type, so its bot-created tracking issues would otherwise
+      # remain open indefinitely for suppressions that never entered the
+      # repository; trackInlineSuppressions dispatches this action to a
+      # dedicated cleanup path instead of the normal recompute-and-publish
+      # flow (which requires an open pull request).
+      - closed
 
 permissions:
   contents: read

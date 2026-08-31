@@ -24,6 +24,14 @@ type pullRequestTriggerWorkflow struct {
 	On pullRequestWorkflowOn `yaml:"on"`
 }
 
+type pullRequestTargetWorkflowOn struct {
+	PullRequestTarget pullRequestTrigger `yaml:"pull_request_target"`
+}
+
+type pullRequestTargetTriggerWorkflow struct {
+	On pullRequestTargetWorkflowOn `yaml:"on"`
+}
+
 type workflowActionCheck struct {
 	jobName   string
 	stepName  string
@@ -208,6 +216,16 @@ func TestInlineSuppressionTrackingWorkflowUsesTrustedPullRequestTarget(t *testin
 		}
 	}
 
+	// A pull request that closes without merging gets no further
+	// opened/edited/synchronize/reopened/ready_for_review event, so without
+	// a "closed" trigger its bot-created tracking issues would remain open
+	// indefinitely for suppressions that never entered the repository.
+	var trigger pullRequestTargetTriggerWorkflow
+	readYAMLConfig(t, ".github/workflows/inline-suppression-tracking.yml", &trigger)
+	if !slices.Contains(trigger.On.PullRequestTarget.Types, "closed") {
+		t.Fatalf("inline suppression tracking workflow must trigger on the \"closed\" pull_request_target event, got types: %v", trigger.On.PullRequestTarget.Types)
+	}
+
 	track := workflowJobByName(t, workflow.Jobs, "track")
 	assertWorkflowJobOmitsCheckout(t, track, "inline suppression tracking")
 	assertWorkflowJobStepRunsOmitAllFold(t, track, "inline suppression tracking", []string{
@@ -319,7 +337,6 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate`,
 		"suspect_count",
 		`recorded_count="${#fingerprints[@]}"`,
-		`if [ "${suspect_count}" -gt "${recorded_count}" ]; then`,
 		// The trusted tracker's fileExtension() lowercases before matching
 		// (main.GO, component.TSX), so this scope filter must too, or a
 		// failed/pending trusted run on such a file wouldn't be waited for.
@@ -332,10 +349,37 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// tampered detector to make both counts read zero.
 		"select(.patch == null)",
 		"Refusing to trust an under-scanned diff",
+		// A pure rename (status "renamed", zero additions/deletions) is also
+		// patchless but genuinely has no suspect lines; the trusted tracker
+		// exempts this exact shape, so the incomplete-patch scan must too or
+		// every content-preserving rename fails this required check.
+		`select(.status != \"renamed\" or .additions != 0 or .deletions != 0)`,
+		// Comparing only cardinalities lets a PR swap a tracked suppression
+		// for an untracked one of the same shape while the counts stay
+		// equal; matching (file, exact line content) pairs instead ties the
+		// independent scan to what was actually added.
+		`suspect_pairs_file="$(mktemp)"`,
+		`recorded_pairs_file="$(mktemp)"`,
+		`comm -23 <(sort -u "${suspect_pairs_file}") <(sort -u "${recorded_pairs_file}")`,
+		// The trusted tracker never publishes more than MAX_RECORDS (100)
+		// entries per PR; a larger recorded_count is necessarily tampered
+		// and must be rejected before the polling loop issues one gh issue
+		// list request per fingerprint, or a PR-controlled detector could
+		// emit thousands of fingerprints and exhaust the API quota/timeout.
+		`if [ "${recorded_count}" -gt 100 ]; then`,
+		// Checking only the single character before a candidate comment
+		// delimiter misses a marker preceded by ordinary text inside an
+		// otherwise-open string literal (e.g. `"Use //nolint to
+		// suppress"`); blanking out quoted-region interiors before
+		// matching mirrors the trusted tracker's isInsideQuotedRegion.
+		"function mask_quoted_regions(s,    result, i, c, quote, n)",
+		`tolower(mask_quoted_regions(content)) ~ pat`,
 	})
 	assertWorkflowMarkerOrder(t, gate.Run, "suspect_count=", `recorded_count=0`)
-	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`)
-	assertWorkflowMarkerOrder(t, gate.Run, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`, `missing=("${fingerprints[@]}")`)
+	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count=0`, `if [ "${recorded_count}" -gt 100 ]; then`)
+	assertWorkflowMarkerOrder(t, gate.Run, `if [ "${recorded_count}" -gt 100 ]; then`, `missing_suspects="$(comm -23`)
+	assertWorkflowMarkerOrder(t, gate.Run, `missing_suspects="$(comm -23`, `if [ "${missing_suspects:-0}" -gt 0 ]; then`)
+	assertWorkflowMarkerOrder(t, gate.Run, `if [ "${missing_suspects:-0}" -gt 0 ]; then`, `missing=("${fingerprints[@]}")`)
 	// Without a trailing marker-boundary check, a longer word like
 	// "nolinter" or "nosection" would also match and could false-positive
 	// this required check against an otherwise valid PR. And ".githooks/"
@@ -347,11 +391,11 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		`test("^\\.githooks/|`,
 	})
 	// A comment delimiter needs no preceding whitespace -- it can follow
-	// code directly -- so the leading boundary excludes only
-	// quote/backtick (string literals) and ":" (URL schemes) rather than
-	// requiring whitespace or start-of-line.
+	// code directly -- so the leading boundary excludes only ":" (URL
+	// schemes) rather than requiring whitespace or start-of-line; string
+	// literals are handled separately by mask_quoted_regions.
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
-		`suspect_pattern="(^|[^\"'`,
+		`suspect_pattern="(^|[^:])`,
 		`(//|/[*]+|#)`,
 	})
 	// SUPPRESSIONS_FILE is PR-controlled, and each fingerprint from it is
@@ -361,7 +405,14 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	// verification. Every fingerprint must be validated as a 64-character
 	// hex digest before any of them are used, closing that injection path.
 	assertWorkflowMarkerOrder(t, gate.Run, `recorded_count="${#fingerprints[@]}"`, `if [[ ! "${fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then`)
-	assertWorkflowMarkerOrder(t, gate.Run, `if [[ ! "${fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then`, `if [ "${suspect_count}" -gt "${recorded_count}" ]; then`)
+	assertWorkflowMarkerOrder(t, gate.Run, `if [[ ! "${fingerprint}" =~ ^[0-9a-f]{64}$ ]]; then`, `if [ "${recorded_count}" -gt 100 ]; then`)
+	// A substring `contains` check on the tracking issue body accepts the
+	// marker text anywhere, including inside an attacker-controlled echoed
+	// "Source line"; the poll must require it in the canonical first-two-
+	// lines header position, matching issueBodyIncludesMarker's contract.
+	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
+		`test(\"^<!-- lopper-inline-suppression:${fingerprint} -->\\n<!-- lopper-inline-suppression-pr:${PR_NUMBER} -->\")`,
+	})
 }
 
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {

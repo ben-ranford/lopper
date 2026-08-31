@@ -14,13 +14,18 @@ marker_start_pattern="(//|/[*]+|#)[[:space:]]*(@?(${marker_no_prefix}(sec|sonar|
 # A comment delimiter needs no preceding whitespace in any of the covered
 # languages -- a marker immediately following code with no space in
 # between is still a valid suppression -- so requiring it would miss such
-# lines entirely. Excluding quote/backtick characters keeps a marker word
-# inside a string literal from matching, and excluding ":" keeps a URL
-# scheme (http://nolint...) from matching;
-# everything else is a valid preceding position.
-marker_pattern="(^|[^\\\"'\`:])(${marker_start_pattern})([^[:alnum:]_-]|$)"
+# lines entirely. Excluding ":" keeps a URL scheme (http://nolint...) from
+# matching; everything else is a valid preceding position. Whether the
+# comment delimiter falls inside a string literal is handled separately by
+# mask_quoted_regions below (mirroring the trusted tracker's
+# isInsideQuotedRegion), which tracks quote state rather than only the
+# single preceding character -- checking only that character misses a
+# marker preceded by ordinary text inside an otherwise-open string, such as
+# `"Use //nolint to suppress"`.
+marker_pattern="(^|[^:])(${marker_start_pattern})([^[:alnum:]_-]|$)"
 source_file_pattern="(^\\.githooks/|.*\\.(go|sh|bash|zsh|ksh|py|rb|php|js|jsx|cjs|mjs|ts|tsx|java|kt|kts|swift|rs|c|cc|cpp|cxx|h|hpp|hh|cs|ya?ml)$)"
 diff_scope=""
+diff_mode=""
 gh_bin="${GH_BIN:-gh}"
 tracking_mode="${SUPPRESSION_TRACKING_MODE:-detect}"
 tracking_output="${SUPPRESSION_TRACKING_OUTPUT:-}"
@@ -114,6 +119,15 @@ occurrence_in_file() {
 	# exist on that other side.
 	if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]] && head_parent="$(git rev-parse --verify -q HEAD^2 2>/dev/null)"; then
 		git show "${head_parent}:${file}" 2>/dev/null
+	elif [[ "$diff_mode" == "staged" ]]; then
+		# When the diff being checked is `git diff --cached`, the file being
+		# scanned is the index's content, not the working tree's. If the
+		# working tree was subsequently edited (partial staging) or the file
+		# was deleted after staging, reading the working tree here would
+		# compute the occurrence ordinal against different content than what
+		# is actually staged, desyncing the fingerprint from the trusted
+		# tracker's (which reads the equivalent committed/staged state).
+		git show ":${file}" 2>/dev/null
 	else
 		cat -- "$file"
 	fi | awk -v target_line="$target_line" -v target_content="$target_content" '
@@ -368,10 +382,16 @@ track_records_with_gh() {
 
 if ! git diff --cached --quiet --exit-code -- .; then
 	diff_scope="staged changes"
-	diff_args=(git diff --cached --unified=0 --no-color --diff-filter=AMR --relative --)
+	diff_mode="staged"
+	# core.quotePath=false stops git from C-style-quoting/escaping non-ASCII
+	# path bytes in the "+++ b/<path>" header; the awk parser below only
+	# strips a plain trailing tab, so a quoted/escaped path wouldn't match
+	# it at all and the file's suppressions would go undetected.
+	diff_args=(git -c core.quotePath=false diff --cached --unified=0 --no-color --diff-filter=AMR --relative --)
 elif ! git diff --quiet --exit-code -- .; then
 	diff_scope="working tree changes"
-	diff_args=(git diff --unified=0 --no-color --diff-filter=AMR --relative --)
+	diff_mode="worktree"
+	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative --)
 else
 	base_ref="$requested_base_ref"
 	used_fallback=0
@@ -393,7 +413,8 @@ else
 	else
 		diff_scope="branch changes vs $base_ref"
 	fi
-	diff_args=(git diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
+	diff_mode="branch"
+	diff_args=(git -c core.quotePath=false diff --unified=0 --no-color --diff-filter=AMR --relative "$base_commit..HEAD" --)
 fi
 
 tmp_matches="$(create_temp_file)"
@@ -406,6 +427,44 @@ BEGIN {
 	line = 0
 	found = 0
 	check_file = 0
+}
+# Checking only the character immediately preceding a candidate comment
+# delimiter misses a marker preceded by ordinary text inside an otherwise
+# still-open string literal, e.g. `"Use //nolint to suppress"`. Blanking
+# out the interior of every quoted region (single/double/backtick, with
+# backslash-escaping) before matching removes any comment-delimiter-shaped
+# text found only inside a string, while leaving real code -- including a
+# delimiter immediately after a *closed* string, e.g. `"done" //nosec` --
+# untouched. Mirrors the trusted tracker'"'"'s isInsideQuotedRegion exactly so
+# both detectors agree on what counts as a suppression.
+function mask_quoted_regions(s,    result, i, c, quote, n) {
+	result = ""
+	quote = ""
+	n = length(s)
+	for (i = 1; i <= n; i++) {
+		c = substr(s, i, 1)
+		if (quote != "") {
+			if (c == "\\" && i < n) {
+				result = result "xx"
+				i++
+				continue
+			}
+			if (c == quote) {
+				result = result c
+				quote = ""
+			} else {
+				result = result "x"
+			}
+			continue
+		}
+		if (c == "\"" || c == "'"'"'" || c == "`") {
+			quote = c
+			result = result c
+			continue
+		}
+		result = result c
+	}
+	return result
 }
 /^\+\+\+ b\// {
 	file = substr($0, 7)
@@ -432,7 +491,7 @@ BEGIN {
 	# extra plus characters (e.g. an added C/C++ increment statement).
 	content = substr($0, 2)
 	# Use POSIX tolower() instead of gawk IGNORECASE so this works with BSD awk and mawk.
-	if (check_file && tolower(content) ~ pattern) {
+	if (check_file && tolower(mask_quoted_regions(content)) ~ pattern) {
 		# NUL-delimited fields: a colon or newline delimiter would be ambiguous
 		# for file paths or diff content that legitimately contain those bytes.
 		printf "%s%c%d%c%s%c", file, 0, line, 0, content, 0
