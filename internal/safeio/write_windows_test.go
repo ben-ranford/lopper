@@ -835,6 +835,65 @@ func TestFallbackAtomicReplacementRejectsUnsafeTargetThatAppearsAfterRename(t *t
 	}
 }
 
+// TestFallbackAtomicReplacementReusesWriteOnlyHandleWithoutRollback proves
+// an ordinary (non-rollback-eligible) fallback never reopens the target: it
+// reuses the caller-supplied handle exactly as given, deliberately without
+// read support, standing in for a real write-only-permission target that
+// an O_RDWR reopen would reject outright.
+func TestFallbackAtomicReplacementReusesWriteOnlyHandleWithoutRollback(t *testing.T) {
+	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
+	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target info path: %v", err)
+	}
+	info := statTestPath(t, infoPath)
+	targetData := []byte("before")
+	targetFile := &truncatingFakeFile{
+		fakeFile: &fakeFile{
+			stat: func() (fs.FileInfo, error) { return info, nil },
+			write: func(p []byte) (int, error) {
+				targetData = append(targetData[:0], p...)
+				return len(p), nil
+			},
+			close: closeWithoutError,
+		},
+		truncate: func(size int64) error {
+			if size != 0 {
+				t.Fatalf("unexpected truncate size: %d", size)
+			}
+			targetData = targetData[:0]
+			return nil
+		},
+		seek: func(offset int64, whence int) (int64, error) { return offset, nil },
+	}
+	root := &fakeRoot{
+		lstat: func(name string) (fs.FileInfo, error) {
+			if name != writeTestFileName {
+				t.Fatalf("unexpected lstat path: %s", name)
+			}
+			return info, nil
+		},
+		openFile: func(string, int, os.FileMode) (File, error) {
+			t.Fatal("ordinary, non-rollback fallback must reuse the caller-supplied handle, not reopen it")
+			return nil, nil
+		},
+	}
+	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
+
+	err := fallbackAtomicReplacement(root, atomicReplacementFallback{
+		oldName:         ".safeio-atomic-temp",
+		newName:         writeTestFileName,
+		replacementFile: targetFile,
+		data:            []byte("after"),
+		renameErr:       renameErr,
+	})
+	if err != nil {
+		t.Fatalf("expected write-only fallback overwrite to succeed, got %v", err)
+	}
+	if string(targetData) != "after" {
+		t.Fatalf("expected target data to be overwritten, got %q", string(targetData))
+	}
+}
+
 func TestFallbackAtomicReplacementAllowsRollbackRequiredReplacement(t *testing.T) {
 	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {

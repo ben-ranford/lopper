@@ -19,7 +19,7 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 		return fallback.renameErr
 	}
 
-	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, fallback.newName, fallback.replacementFile)
+	replacementFile, closeReplacementFile, err := replacementFileForWindowsFallback(root, fallback.newName, fallback.replacementFile, fallback.rollbackOnPostWriteFailure)
 	if err != nil {
 		return errors.Join(fallback.renameErr, err)
 	}
@@ -109,21 +109,31 @@ func atomicRenameSourceRel(err error, fallbackRel string) string {
 	return fallbackRel
 }
 
-// replacementFileForWindowsFallback always opens its own fresh, read/write
-// handle rather than trusting a caller-supplied replacementFile: this
-// fallback both writes the overwrite and, for a rollback-eligible caller,
-// later reads the target back through that exact same handle (see
-// snapshotPinnedWindowsFallbackTarget) -- reading through a second handle
-// would deadlock against this one's own lock. A caller-supplied
-// replacementFile is pinned write-only (see openPinnedReplacementTarget,
-// which must stay write-only for callers whose target permits writing but
-// not reading), so it can't serve that read; when one is supplied, its
-// already-verified identity (via Stat, not a fresh path lookup) is reused
-// as the expected identity for this handle instead of re-resolving by
-// path, preserving the same anti-TOCTOU guarantee early pinning exists
-// for. The caller-supplied handle itself is left for its own owner to
-// close, as established by every caller of this function.
-func replacementFileForWindowsFallback(root Root, targetRel string, replacementFile File) (File, func() error, error) {
+// replacementFileForWindowsFallback returns the handle this fallback
+// transaction writes (and, when needsReadAccess is true, later reads back
+// through -- see snapshotPinnedWindowsFallbackTarget) for its rollback
+// snapshot. Reading through a second handle would deadlock against this
+// one's own lock, so a rollback-eligible caller can never simply reuse a
+// caller-supplied write-only handle (see openPinnedReplacementTarget, which
+// must stay write-only for callers whose target permits writing but not
+// reading) -- it needs a fresh read/write handle instead. But an ordinary,
+// non-rollback replacement never reads at all, so demanding read access
+// for it too would regress exactly the write-only-target callers
+// openPinnedReplacementTarget's own write-only default exists to support;
+// that case reuses the caller-supplied handle unchanged, or opens its own
+// write-only one if none was supplied. When a caller-supplied handle exists
+// but this function must open its own (because it needs read access), the
+// caller-supplied handle's already-verified identity (via Stat, not a
+// fresh path lookup) becomes the expected identity for the fresh handle
+// instead of re-resolving by path, preserving the same anti-TOCTOU
+// guarantee early pinning exists for. A caller-supplied handle is always
+// left for its own owner to close, as established by every caller of this
+// function.
+func replacementFileForWindowsFallback(root Root, targetRel string, replacementFile File, needsReadAccess bool) (File, func() error, error) {
+	if !needsReadAccess && replacementFile != nil {
+		return replacementFile, func() error { return nil }, nil
+	}
+
 	var info fs.FileInfo
 	var err error
 	if replacementFile != nil {
@@ -141,7 +151,11 @@ func replacementFileForWindowsFallback(root Root, targetRel string, replacementF
 		return nil, nil, fmt.Errorf("target path is not a regular file before replacement: %s", targetRel)
 	}
 
-	file, err := openFlaggedPinnedReplacementTarget(root, targetRel, info, os.O_RDWR)
+	flag := os.O_WRONLY
+	if needsReadAccess {
+		flag = os.O_RDWR
+	}
+	file, err := openFlaggedPinnedReplacementTarget(root, targetRel, info, flag)
 	if err != nil {
 		return nil, nil, err
 	}
