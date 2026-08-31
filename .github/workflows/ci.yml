@@ -479,7 +479,15 @@ jobs:
                 masked = mask_quoted_regions(content, quote_state)
                 quote_state = final_quote_state
                 if (tolower(masked) ~ pat) {
-                  printf "%s\001%s\n", fname, content
+                  # Binding the suspect to its actual added-line number (not
+                  # just file+content) ties the occurrence recomputation
+                  # below to a position the diff data from GitHub proves
+                  # this pull request actually added, instead of trusting
+                  # whatever line the (PR-controlled) tracking artifact
+                  # claims -- otherwise a tampered artifact could bind an
+                  # unrelated, already-correct earlier line to a suppression
+                  # whose true occurrence has since drifted.
+                  printf "%s\001%d\001%s\n", fname, line, content
                 }
                 line++
                 next
@@ -563,7 +571,17 @@ jobs:
             # recorded pair against its un-escaped suspect pair would never
             # match, rejecting an otherwise valid PR. Emit the delimiter and
             # fields as raw bytes instead so no escaping is introduced.
-            jq -j '.suppressions[] | .file, "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"
+            #
+            # Including .line (not just file and content) ties each record
+            # to the specific added-line position GitHub's own diff data
+            # proves this pull request actually added. Without it, a
+            # tampered artifact could bind a suppression's real (file,
+            # content) -- which does appear as a genuine suspect -- to an
+            # unrelated line the trusted tracker never used for its
+            # occurrence recomputation, letting the true occurrence drift
+            # (e.g. an identical line landing in the base branch ahead of
+            # this one) go undetected.
+            jq -j '.suppressions[] | .file, "\u0001", (.line | tostring), "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"
 
             # A fingerprint's occurrence suffix must match this suppression's
             # TRUE position in the complete head file, not merely some

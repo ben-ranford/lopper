@@ -383,8 +383,11 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		// from the diff; comparing an escaped recorded pair against its
 		// un-escaped suspect pair would never match a suppression whose
 		// content contains one of those bytes. Emitting raw fields with an
-		// explicit delimiter avoids introducing any escaping.
-		`jq -j '.suppressions[] | .file, "\u0001", .content, "\n"'`,
+		// explicit delimiter avoids introducing any escaping. Including
+		// .line ties each record to the specific added-line position
+		// the diff data from GitHub proves this pull request actually
+		// added, not merely whatever line a tampered artifact claims.
+		`jq -j '.suppressions[] | .file, "\u0001", (.line | tostring), "\u0001", .content, "\n"'`,
 		// The trusted tracker never publishes more than MAX_RECORDS (100)
 		// entries per PR; a larger recorded_count is necessarily tampered
 		// and must be rejected before the polling loop issues one gh issue
@@ -587,6 +590,68 @@ func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
 	}
 }
 
+// TestCIWorkflowMissingSuspectsCheckRejectsARecordBoundToTheWrongLine
+// actually runs the real recorded_pairs_file build and the missing_suspects
+// comparison against a SUPPRESSIONS_FILE record whose (file, content) is
+// genuinely a suspect but whose claimed line is not the one GitHub's own
+// diff data shows was actually added -- reproducing the exact scenario the
+// line-binding Codex finding described: a tampered artifact could
+// previously bind a real (file, content) pair to an unrelated, unchanged
+// line, letting the true occurrence at the real position drift undetected.
+func TestCIWorkflowMissingSuspectsCheckRejectsARecordBoundToTheWrongLine(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const recordedLine = `jq -j '.suppressions[] | .file, "\u0001", (.line | tostring), "\u0001", .content, "\n"' "${SUPPRESSIONS_FILE}" > "${recorded_pairs_file}"`
+	if !strings.Contains(gate.Run, recordedLine) {
+		t.Fatalf("suppression tracking gate is missing the recorded_pairs_file build")
+	}
+
+	const missingLine = `missing_suspects="$(comm -23 <(sort "${suspect_pairs_file}") <(sort "${recorded_pairs_file}") | wc -l | tr -d ' ')"`
+	if !strings.Contains(gate.Run, missingLine) {
+		t.Fatalf("suppression tracking gate is missing the missing_suspects comparison")
+	}
+
+	script := "set -euo pipefail\nrecorded_pairs_file=\"$(mktemp)\"\n" + recordedLine + "\n" + missingLine + "\nprintf '%s' \"${missing_suspects}\"\n"
+
+	dir := t.TempDir()
+	suppressionsPath := filepath.Join(dir, "inline-suppressions.json")
+	suspectPairsPath := filepath.Join(dir, "suspect-pairs")
+	// The real suspect scan would produce this for a genuine "// noqa"
+	// added at line 7 of some_file.go.
+	writeFile(t, suspectPairsPath, "some_file.go\x017\x01value := unsafe() //noqa\n")
+
+	fingerprint := suppressionFingerprint("some_file.go", "value := unsafe() //noqa", 1)
+	wrongLineJSON := `{"suppressions":[{"file":"some_file.go","content":"value := unsafe() //noqa","fingerprint":"` + fingerprint + `","line":3}]}`
+	writeFile(t, suppressionsPath, wrongLineJSON)
+	output, err := runShellCommand(dir, script, map[string]string{
+		"SUPPRESSIONS_FILE":  suppressionsPath,
+		"suspect_pairs_file": suspectPairsPath,
+	})
+	if err != nil {
+		t.Fatalf("expected the comparison to run, output:\n%s", output)
+	}
+	if strings.TrimSpace(output) == "0" {
+		t.Fatalf("expected a record bound to the wrong line to still count as a missing suspect, output:\n%q", output)
+	}
+
+	correctLineJSON := `{"suppressions":[{"file":"some_file.go","content":"value := unsafe() //noqa","fingerprint":"` + fingerprint + `","line":7}]}`
+	writeFile(t, suppressionsPath, correctLineJSON)
+	output, err = runShellCommand(dir, script, map[string]string{
+		"SUPPRESSIONS_FILE":  suppressionsPath,
+		"suspect_pairs_file": suspectPairsPath,
+	})
+	if err != nil {
+		t.Fatalf("expected the comparison to run, output:\n%s", output)
+	}
+	if strings.TrimSpace(output) != "0" {
+		t.Fatalf("expected a record bound to the correct line to satisfy the suspect, output:\n%q", output)
+	}
+}
+
 // TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift
 // reproduces the exact scenario the occurrence-ordinal Codex finding
 // described: an identical suppression published at occurrence 1 on an
@@ -786,7 +851,7 @@ func TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
 	}
-	if !strings.Contains(output, "tpl.js\x01tail`; //eslint-disable-line") {
+	if !strings.Contains(output, "tpl.js\x017\x01tail`; //eslint-disable-line") {
 		t.Fatalf("expected the suspect scan to detect the marker beyond the patch context window via the seeded blob content, output:\n%q", output)
 	}
 }
@@ -934,7 +999,7 @@ func TestCIWorkflowSuspectScanDoesNotRequireAFreeStandingHashInPythonOrRuby(t *t
 	if err != nil {
 		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
 	}
-	if !strings.Contains(output, "calc.py\x01value = unsafe()#noqa") {
+	if !strings.Contains(output, "calc.py\x011\x01value = unsafe()#noqa") {
 		t.Fatalf("expected the suspect scan to detect the marker immediately after code, output:\n%q", output)
 	}
 }
@@ -1069,7 +1134,7 @@ func TestCIWorkflowSuspectScanHonorsShellSingleQuoteEscapingRules(t *testing.T) 
 	if err != nil {
 		t.Fatalf("expected the suspect scan to run, output:\n%s", output)
 	}
-	if !strings.Contains(output, "build.sh\x01echo 'foo\\' #noqa") {
+	if !strings.Contains(output, "build.sh\x011\x01echo 'foo\\' #noqa") {
 		t.Fatalf("expected the suspect scan to detect the marker after the closed single-quoted string, output:\n%q", output)
 	}
 }
