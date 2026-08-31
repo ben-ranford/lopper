@@ -706,7 +706,16 @@ func analysisCacheQuarantineOwnerTokenMatches(root safeio.Root, ownerName, owner
 	if err != nil {
 		return false
 	}
-	data, err := io.ReadAll(file)
+	info, statErr := file.Stat()
+	var data []byte
+	switch {
+	case statErr != nil:
+		err = statErr
+	case !info.Mode().IsRegular():
+		err = fmt.Errorf("owner file is not a regular file: %s", ownerName)
+	default:
+		data, err = io.ReadAll(io.LimitReader(file, int64(len(ownerToken))+1))
+	}
 	closeErr := file.Close()
 	return err == nil && closeErr == nil && string(data) == ownerToken
 }

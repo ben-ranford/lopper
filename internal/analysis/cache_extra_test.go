@@ -2593,6 +2593,61 @@ func TestAnalysisCacheQuarantineHelperPredicates(t *testing.T) {
 	}
 }
 
+type readCountingAnalysisCacheRoot struct {
+	safeio.Root
+	name      string
+	totalRead int
+}
+
+func (r *readCountingAnalysisCacheRoot) Open(name string) (safeio.File, error) {
+	file, err := r.Root.Open(name)
+	if err != nil || name != r.name {
+		return file, err
+	}
+	return &readCountingAnalysisCacheFile{File: file, root: r}, nil
+}
+
+type readCountingAnalysisCacheFile struct {
+	safeio.File
+	root *readCountingAnalysisCacheRoot
+}
+
+func (f *readCountingAnalysisCacheFile) Read(p []byte) (int, error) {
+	n, err := f.File.Read(p)
+	f.root.totalRead += n
+	return n, err
+}
+
+func TestAnalysisCacheQuarantineOwnerTokenMatchesBoundsReadsAndRejectsOversizedOwnerFiles(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	ownerName := filepath.Join(reservationName, analysisCacheQuarantineOwnerFile)
+	token := "owned-token"
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create reservation: %v", err)
+	}
+	oversized := token + strings.Repeat("x", 1<<20)
+	if err := os.WriteFile(filepath.Join(repo, ownerName), []byte(oversized), 0o600); err != nil {
+		t.Fatalf("write oversized owner file: %v", err)
+	}
+
+	counting := &readCountingAnalysisCacheRoot{Root: root, name: ownerName}
+	if analysisCacheQuarantineOwnerTokenMatches(counting, ownerName, token) {
+		t.Fatal("expected oversized owner file to be rejected")
+	}
+	if maxAllowed := len(token) + 1; counting.totalRead > maxAllowed {
+		t.Fatalf("expected owner token read to be bounded to %d bytes, read %d", maxAllowed, counting.totalRead)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, ownerName), []byte(token), 0o600); err != nil {
+		t.Fatalf("write valid owner file: %v", err)
+	}
+	if !analysisCacheQuarantineOwnerTokenMatches(root, ownerName, token) {
+		t.Fatal("expected exact token match to succeed")
+	}
+}
+
 func TestAnalysisCacheQuarantineDestinationExistsBranches(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)
