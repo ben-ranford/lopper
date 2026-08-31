@@ -227,6 +227,57 @@ func TestRenameNoReplaceIntoPreservesOccupiedDestination(t *testing.T) {
 	assertRenameNoReplaceSameFile(t, targetPath, targetInfo)
 }
 
+func TestRenameNoReplaceIntoRejectsAbsoluteDestinationEscapingPinnedRoot(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	destDir := filepath.Join(rootDir, "dest")
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.Mkdir(sourcePath, 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	root := openTestRoot(t, rootDir)
+	destRoot := openTestRoot(t, destDir)
+	outsideDir := t.TempDir()
+	escapeTarget := filepath.Join(outsideDir, "escaped")
+
+	err := RenameNoReplaceInto(root, "source", destRoot, escapeTarget)
+	if !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("rename no-replace into absolute destination error = %v, want path escape", err)
+	}
+
+	assertRenameNoReplaceSameFile(t, sourcePath, sourceInfo)
+	assertRenameNoReplacePathAbsent(t, escapeTarget)
+	assertRenameNoReplacePathAbsent(t, filepath.Join(destDir, "escaped"))
+}
+
+func TestRenameNoReplaceIntoRejectsDestinationEscapingWithDotDot(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	destDir := filepath.Join(rootDir, "dest")
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.Mkdir(sourcePath, 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+	root := openTestRoot(t, rootDir)
+	destRoot := openTestRoot(t, destDir)
+
+	err := RenameNoReplaceInto(root, "source", destRoot, filepath.Join("..", "escaped"))
+	if !errors.Is(err, ErrPathEscapesRoot) {
+		t.Fatalf("rename no-replace into dot-dot destination error = %v, want path escape", err)
+	}
+
+	assertRenameNoReplaceSameFile(t, sourcePath, sourceInfo)
+	assertRenameNoReplacePathAbsent(t, filepath.Join(rootDir, "escaped"))
+}
+
 func TestRenameNoReplaceIntoRejectsNonOsRootDestination(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
 	rootDir := t.TempDir()

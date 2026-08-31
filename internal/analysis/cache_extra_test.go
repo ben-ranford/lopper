@@ -2393,6 +2393,34 @@ func TestVerifyAnalysisCacheQuarantineRestoresChildPopulatedDuringTheRace(t *tes
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
+func TestVerifyAnalysisCacheQuarantineRestoresChildWhenEmptinessCheckFails(t *testing.T) {
+	repo := t.TempDir()
+	root := openAnalysisCacheTestRoot(t, repo)
+	reservationName := ".lopper-cache-rollback-keys-0"
+	quarantineName := filepath.Join(reservationName, cacheKeysDirName)
+	reservation := createAnalysisCacheQuarantineReservationWithOwner(t, repo, root, reservationName, quarantineName, "owned-token")
+
+	quarantinePath := filepath.Join(repo, quarantineName)
+	if err := os.Mkdir(quarantinePath, 0o750); err != nil {
+		t.Fatalf("create quarantined child: %v", err)
+	}
+	childInfo, err := os.Lstat(quarantinePath)
+	if err != nil {
+		t.Fatalf("stat quarantined child: %v", err)
+	}
+	emptyCheckErr := errors.New("emptiness check lstat denied")
+	wrappedRoot := &lstatErrorAnalysisCacheRoot{Root: root, name: reservationName, err: emptyCheckErr}
+
+	_, _, verifyErr := verifyAnalysisCacheQuarantine(wrappedRoot, reservation, cacheKeysDirName, childInfo)
+	if !errors.Is(verifyErr, emptyCheckErr) {
+		t.Fatalf("expected emptiness-check error to be preserved, got %v", verifyErr)
+	}
+
+	restoredPath := filepath.Join(repo, cacheKeysDirName)
+	assertAnalysisCacheDirExists(t, restoredPath)
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
 func TestRemoveAnalysisCacheQuarantineRemovesReservationDirectoryWhenPathLstatFails(t *testing.T) {
 	repo := t.TempDir()
 	root := openAnalysisCacheTestRoot(t, repo)

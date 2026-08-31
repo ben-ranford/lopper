@@ -657,6 +657,10 @@ func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName strin
 	if err != nil {
 		return err
 	}
+	confinedNewName, err := resolveRelativeTarget(newName, rejectRootTarget)
+	if err != nil {
+		return err
+	}
 	newParentRoot, ok := newRoot.(*osRoot)
 	if !ok {
 		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
@@ -670,7 +674,7 @@ func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName strin
 		returnErr = closeOldParent(returnErr)
 	}()
 
-	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newName)
+	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, confinedNewName)
 }
 
 func resolveRenameNoReplaceTarget(name string) (string, string, error) {

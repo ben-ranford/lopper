@@ -678,9 +678,15 @@ func verifyAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 		// initializer populated the candidate in that window, its data just
 		// got moved into quarantine alongside ours. Restore it rather than
 		// leaving it hidden and risking a later ENOTEMPTY cleanup failure.
-		if empty, emptyErr := analysisCacheChildIsEmpty(root, reservation.quarantineName); emptyErr == nil && !empty {
+		// Treat a failure to determine emptiness the same as "not empty" --
+		// fail closed rather than accepting an unverified quarantine.
+		if empty, emptyErr := analysisCacheChildIsEmpty(root, reservation.quarantineName); emptyErr != nil || !empty {
 			restoreErr := restoreMovedAnalysisCacheReplacement(root, reservation, name, quarantineInfo)
-			return analysisCacheQuarantineReservation{}, false, errors.Join(fmt.Errorf("rollback candidate %s was populated while quarantining", name), restoreErr)
+			verifyErr := emptyErr
+			if verifyErr == nil {
+				verifyErr = fmt.Errorf("rollback candidate %s was populated while quarantining", name)
+			}
+			return analysisCacheQuarantineReservation{}, false, errors.Join(verifyErr, restoreErr)
 		}
 		return reservation, false, nil
 	}
