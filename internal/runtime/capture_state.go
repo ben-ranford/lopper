@@ -48,6 +48,11 @@ func runtimeTraceStatePath(tracePath string) string {
 	return tracePath + runtimeTraceStateSuffix
 }
 
+// TraceStatePath returns the sidecar path maintained for a runtime trace.
+func TraceStatePath(tracePath string) string {
+	return runtimeTraceStatePath(tracePath)
+}
+
 func parseRuntimeTraceState(stateData []byte) (runtimeTraceState, bool) {
 	var state runtimeTraceState
 	if err := json.Unmarshal(stateData, &state); err != nil {

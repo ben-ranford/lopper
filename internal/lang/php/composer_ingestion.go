@@ -1,8 +1,11 @@
 package php
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +14,15 @@ import (
 	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
+var errPHPShortOpenTagConfigWalkLimit = errors.New("php short_open_tag config discovery limit exceeded")
+
 type composerData struct {
 	DeclaredDependencies map[string]struct{}
 	NamespaceToDep       map[string]string
 	LocalNamespaces      map[string]struct{}
+	UsageIncomplete      bool
+	ShortOpenTags        bool
+	ShortOpenTagPolicy   phpShortOpenTagPolicy
 }
 
 type composerManifest struct {
@@ -40,6 +48,14 @@ type composerPackage struct {
 }
 
 func loadComposerData(repoPath string) (composerData, []string, error) {
+	return loadComposerDataWithContext(context.Background(), repoPath)
+}
+
+func loadComposerDataWithContext(ctx context.Context, repoPath string) (composerData, []string, error) {
+	return loadComposerDataWithExcludedPaths(ctx, repoPath, nil)
+}
+
+func loadComposerDataWithExcludedPaths(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (composerData, []string, error) {
 	data := composerData{
 		DeclaredDependencies: make(map[string]struct{}),
 		NamespaceToDep:       make(map[string]string),
@@ -58,12 +74,21 @@ func loadComposerData(repoPath string) (composerData, []string, error) {
 		collectDeclaredDependencies(manifest, data.DeclaredDependencies)
 		collectLocalNamespaces(manifest, data.LocalNamespaces)
 	}
+	shortOpenTagPolicy, shortOpenTagWarnings, err := detectPHPShortOpenTagsWithExcludedPaths(ctx, repoPath, excludedPaths)
+	if err != nil {
+		return data, nil, err
+	}
+	data.ShortOpenTags = shortOpenTagPolicy.anyEnabled()
+	data.ShortOpenTagPolicy = shortOpenTagPolicy
+	if shortOpenTagPolicy.discoveryIncomplete {
+		data.UsageIncomplete = true
+	}
+	warnings = append(warnings, shortOpenTagWarnings...)
 
-	if err := loadComposerLockMappings(repoPath, &data); err != nil {
-		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
-			warnings = append(warnings, fmt.Sprintf("%s skipped: %v", composerLockName, err))
-			return data, warnings, nil
-		}
+	if err := loadComposerLockMappings(repoPath, &data); isPureOversizedFileError(err) {
+		data.UsageIncomplete = true
+		warnings = append(warnings, fmt.Sprintf("skipped composer.lock because it exceeds %d bytes", maxComposerLockBytes))
+	} else if err != nil {
 		return data, nil, err
 	}
 	return data, warnings, nil
@@ -175,4 +200,309 @@ func unmarshalRepoJSON(filename string, bytes []byte, dest any) error {
 		return fmt.Errorf("parse %s: %w", filename, err)
 	}
 	return nil
+}
+
+func isPureOversizedFileError(err error) bool {
+	return shared.IsPureSentinelError(err, safeio.ErrFileTooLarge)
+}
+
+type phpShortOpenTagPolicy struct {
+	dirSettings         map[string]phpShortOpenTagDirSetting
+	incompleteDirs      map[string]int
+	discoveryIncomplete bool
+}
+
+type phpShortOpenTagDirSetting struct {
+	enabled  bool
+	priority int
+}
+
+func detectPHPShortOpenTagsWithExcludedPaths(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (phpShortOpenTagPolicy, []string, error) {
+	policy := phpShortOpenTagPolicy{
+		dirSettings:    make(map[string]phpShortOpenTagDirSetting),
+		incompleteDirs: make(map[string]int),
+	}
+	warnings := make([]string, 0)
+	root := filepath.Clean(repoPath)
+	state := phpShortOpenTagConfigWalkState{root: root, excludedPaths: excludedPaths}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		return state.scan(ctx, path, entry, walkErr, &policy, &warnings)
+	})
+	if errors.Is(err, errPHPShortOpenTagConfigWalkLimit) {
+		policy.discoveryIncomplete = true
+		warnings = append(warnings, phpShortOpenTagConfigWalkLimitWarning())
+		return policy, warnings, nil
+	}
+	if err != nil {
+		return phpShortOpenTagPolicy{}, nil, err
+	}
+	return policy, warnings, nil
+}
+
+type phpShortOpenTagConfigWalkState struct {
+	root          string
+	excludedPaths map[string]struct{}
+	visited       int
+}
+
+func (s *phpShortOpenTagConfigWalkState) scan(ctx context.Context, path string, entry fs.DirEntry, walkErr error, policy *phpShortOpenTagPolicy, warnings *[]string) error {
+	if err := shared.WalkContextErr(ctx, walkErr); err != nil {
+		return err
+	}
+	if path != s.root && shared.IsExcludedPath(s.excludedPaths, path) {
+		if entry.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	}
+	if path != s.root && entry.IsDir() && (shouldSkipDir(entry.Name()) || hasComposerManifest(path)) {
+		return filepath.SkipDir
+	}
+	if path != s.root {
+		s.visited++
+		if s.visited > maxPHPConfigWalkEntries {
+			return errPHPShortOpenTagConfigWalkLimit
+		}
+	}
+	return scanPHPShortOpenTagConfigEntry(s.root, path, entry, nil, policy, warnings)
+}
+
+func phpShortOpenTagConfigWalkLimitWarning() string {
+	return fmt.Sprintf("PHP short_open_tag config discovery stopped after %d traversal entries to keep analysis bounded; dependency usage may be incomplete", maxPHPConfigWalkEntries)
+}
+
+func scanPHPShortOpenTagConfigEntry(root, path string, entry fs.DirEntry, walkErr error, policy *phpShortOpenTagPolicy, warnings *[]string) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if entry.IsDir() {
+		return scanPHPShortOpenTagConfigDir(root, path, entry)
+	}
+	priority := phpConfigFilePriority(entry.Name())
+	if priority == 0 {
+		return nil
+	}
+	return scanPHPShortOpenTagConfigFile(root, path, priority, policy, warnings)
+}
+
+func scanPHPShortOpenTagConfigDir(root, path string, entry fs.DirEntry) error {
+	if path == root {
+		return nil
+	}
+	if shouldSkipDir(entry.Name()) || hasComposerManifest(path) {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func scanPHPShortOpenTagConfigFile(root, path string, priority int, policy *phpShortOpenTagPolicy, warnings *[]string) error {
+	enabled, found, incomplete, err := phpConfigShortOpenTagSetting(root, path)
+	if isPureOversizedFileError(err) {
+		policy.setIncompleteDir(filepath.Dir(path), priority)
+		*warnings = append(*warnings, phpShortOpenTagConfigOversizedWarning(root, path))
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if incomplete {
+		policy.setIncompleteDir(filepath.Dir(path), priority)
+		*warnings = append(*warnings, phpShortOpenTagConfigUnresolvedWarning(root, path))
+		return nil
+	}
+	if found {
+		policy.setDirSetting(filepath.Dir(path), enabled, priority)
+	}
+	return nil
+}
+
+func phpShortOpenTagConfigOversizedWarning(root, path string) string {
+	relPath, err := filepath.Rel(root, path)
+	if err != nil {
+		relPath = path
+	}
+	return fmt.Sprintf("skipped PHP short_open_tag config %s because it exceeds %d bytes", relPath, maxPHPConfigBytes)
+}
+
+func phpShortOpenTagConfigUnresolvedWarning(root, path string) string {
+	relPath, err := filepath.Rel(root, path)
+	if err != nil {
+		relPath = path
+	}
+	return fmt.Sprintf("could not resolve PHP short_open_tag config %s; dependency usage may be incomplete", relPath)
+}
+
+func (p *phpShortOpenTagPolicy) anyEnabled() bool {
+	for _, setting := range p.dirSettings {
+		if setting.enabled {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *phpShortOpenTagPolicy) hasSettings() bool {
+	return len(p.dirSettings) > 0 || len(p.incompleteDirs) > 0
+}
+
+func (p *phpShortOpenTagPolicy) enabledForFile(path string) bool {
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		if setting, ok := p.dirSettings[dir]; ok {
+			return setting.enabled
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+func (p *phpShortOpenTagPolicy) incompleteForFile(path string) bool {
+	dir := filepath.Dir(filepath.Clean(path))
+	for {
+		setting, hasSetting := p.dirSettings[dir]
+		incompletePriority, hasIncompleteSetting := p.incompleteDirs[dir]
+		if hasIncompleteSetting && (!hasSetting || incompletePriority >= setting.priority) {
+			return true
+		}
+		if hasSetting {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+func (p *phpShortOpenTagPolicy) setIncompleteDir(dir string, priority int) {
+	if existing, ok := p.incompleteDirs[dir]; ok && existing > priority {
+		return
+	}
+	p.incompleteDirs[dir] = priority
+}
+
+func (p *phpShortOpenTagPolicy) setDirSetting(dir string, enabled bool, priority int) {
+	if existing, ok := p.dirSettings[dir]; ok && existing.priority > priority {
+		return
+	}
+	p.dirSettings[dir] = phpShortOpenTagDirSetting{enabled: enabled, priority: priority}
+}
+
+func phpConfigFilePriority(filename string) int {
+	switch filename {
+	case "php.ini":
+		return 1
+	case ".user.ini":
+		return 2
+	case ".htaccess":
+		return 3
+	default:
+		return 0
+	}
+}
+
+func phpConfigShortOpenTagSetting(repoPath, path string) (bool, bool, bool, error) {
+	bytes, err := safeio.ReadFileUnderLimit(repoPath, path, maxPHPConfigBytes)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, false, nil
+		}
+		return false, false, false, err
+	}
+	scopedSectionsPossible := strings.EqualFold(filepath.Base(path), ".htaccess")
+	enabled, found, incomplete := parseShortOpenTagSetting(string(bytes), scopedSectionsPossible)
+	return enabled, found, incomplete, nil
+}
+
+func parsesShortOpenTagEnabled(content string) bool {
+	enabled, found, _ := parseShortOpenTagSetting(content, false)
+	return found && enabled
+}
+
+// scopedSectionsPossible marks Apache-style config files (.htaccess) where directives
+// can be scoped inside <Files>/<Directory>/<If> blocks. This parser is line-oriented and
+// cannot resolve that scoping, so a short_open_tag directive found inside any section
+// makes the setting unresolved rather than risk silently applying a scoped directive
+// file-wide. Sections that never set short_open_tag (e.g. <IfModule mod_rewrite.c>) do
+// not affect the result.
+func parseShortOpenTagSetting(content string, scopedSectionsPossible bool) (bool, bool, bool) {
+	enabled := false
+	found := false
+	incomplete := false
+	sectionDepth := 0
+	for _, rawLine := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if scopedSectionsPossible && strings.HasPrefix(line, "<") {
+			if strings.HasPrefix(line, "</") {
+				if sectionDepth > 0 {
+					sectionDepth--
+				}
+			} else {
+				sectionDepth++
+			}
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "php_value") || strings.HasPrefix(lower, "php_flag") {
+			fields := strings.Fields(lower)
+			if len(fields) >= 3 && fields[1] == "short_open_tag" {
+				if sectionDepth > 0 {
+					return false, false, true
+				}
+				enabled, found, incomplete = phpConfigBooleanSetting(fields[2])
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(lower, "=")
+		if !ok || strings.TrimSpace(key) != "short_open_tag" {
+			continue
+		}
+		if sectionDepth > 0 {
+			return false, false, true
+		}
+		enabled, found, incomplete = phpConfigBooleanSetting(value)
+	}
+	return enabled, found, incomplete
+}
+
+func phpConfigBooleanSetting(value string) (bool, bool, bool) {
+	value = stripIniCommentOutsideQuotes(value)
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	switch value {
+	case "1", "on", "true", "yes":
+		return true, true, false
+	case "", "0", "off", "false", "no", "none":
+		return false, true, false
+	default:
+		return false, false, true
+	}
+}
+
+// stripIniCommentOutsideQuotes truncates value at the first ';' or '#' that is not
+// inside a quoted string, matching PHP's INI parser, which preserves those characters
+// inside quotes rather than treating them as a comment start.
+func stripIniCommentOutsideQuotes(value string) string {
+	var quote byte
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == ';' || c == '#':
+			return value[:i]
+		}
+	}
+	return value
 }

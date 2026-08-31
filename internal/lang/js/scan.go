@@ -73,6 +73,10 @@ var skipDirectories = map[string]bool{
 }
 
 func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
+	return ScanRepoWithExcludedPaths(ctx, repoPath, nil)
+}
+
+func ScanRepoWithExcludedPaths(ctx context.Context, repoPath string, excludedPaths map[string]struct{}) (ScanResult, error) {
 	result := ScanResult{}
 	if repoPath == "" {
 		return result, errors.New("repo path is empty")
@@ -80,9 +84,10 @@ func ScanRepo(ctx context.Context, repoPath string) (ScanResult, error) {
 
 	parser := newSourceParser()
 	state := scanRepoState{
-		parser:   parser,
-		repoPath: repoPath,
-		result:   &result,
+		parser:        parser,
+		repoPath:      repoPath,
+		result:        &result,
+		excludedPaths: excludedPaths,
 	}
 
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
