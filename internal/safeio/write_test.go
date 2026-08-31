@@ -620,11 +620,27 @@ func assertExclusiveCreatedTargetCleanup(t *testing.T, cleanup, closed, removed 
 func newPinnedFallbackTargetFile(t *testing.T, info fs.FileInfo, initial string) (File, *[]byte) {
 	t.Helper()
 	targetData := []byte(initial)
+	// readOffset tracks this fake handle's own read position, mirroring a
+	// real *os.File: the Windows fallback path reads the rollback snapshot
+	// through this same handle (rather than a second one, which would
+	// deadlock against its own lock -- see snapshotPinnedWindowsFallbackTarget),
+	// so callers that exercise that path need Read/Seek to behave like a
+	// real file over targetData's current content, not a fixed initial one.
+	readOffset := 0
 	targetFile := &truncatingFakeFile{
 		fakeFile: &fakeFile{
 			stat: func() (fs.FileInfo, error) { return info, nil },
+			read: func(p []byte) (int, error) {
+				if readOffset >= len(targetData) {
+					return 0, io.EOF
+				}
+				n := copy(p, targetData[readOffset:])
+				readOffset += n
+				return n, nil
+			},
 			write: func(p []byte) (int, error) {
 				targetData = append(targetData, p...)
+				readOffset = len(targetData)
 				return len(p), nil
 			},
 			close: closeWithoutError,
@@ -634,7 +650,15 @@ func newPinnedFallbackTargetFile(t *testing.T, info fs.FileInfo, initial string)
 				t.Fatalf("unexpected truncate size: %d", size)
 			}
 			targetData = targetData[:0]
+			readOffset = 0
 			return nil
+		},
+		seek: func(offset int64, whence int) (int64, error) {
+			if whence != io.SeekStart || offset != 0 {
+				t.Fatalf("unexpected seek: offset=%d whence=%d", offset, whence)
+			}
+			readOffset = 0
+			return 0, nil
 		},
 	}
 	return targetFile, &targetData

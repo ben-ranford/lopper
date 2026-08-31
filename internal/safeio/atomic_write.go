@@ -968,7 +968,7 @@ func pinnedOverwritePermissionFallbackAllowed(err error, replacementFile File, a
 }
 
 func openPinnedReplacementTarget(root Root, targetRel string, expectedInfo fs.FileInfo) (File, error) {
-	file, err := root.OpenFile(targetRel, os.O_WRONLY, 0)
+	file, err := root.OpenFile(targetRel, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -131,7 +131,14 @@ func replacementFileForWindowsFallback(root Root, targetRel string, replacementF
 	return file, file.Close, nil
 }
 
-func snapshotPinnedWindowsFallbackTarget(root Root, targetRel string, replacementFile File) (_ []byte, returnErr error) {
+// snapshotPinnedWindowsFallbackTarget reads the target's current content
+// through the already-open, already-locked replacementFile handle rather
+// than opening a second handle via root.Open. Windows byte-range locks
+// (lockPinnedReplacementFile) block overlapping access through *any* other
+// handle in the locking process, not just other processes -- a second
+// handle here would deadlock against our own lock instead of racing a
+// concurrent writer.
+func snapshotPinnedWindowsFallbackTarget(root Root, targetRel string, replacementFile File) ([]byte, error) {
 	pathInfo, err := root.Lstat(targetRel)
 	if err != nil {
 		return nil, err
@@ -151,22 +158,14 @@ func snapshotPinnedWindowsFallbackTarget(root Root, targetRel string, replacemen
 		return nil, fmt.Errorf("target changed before rollback snapshot: %s", targetRel)
 	}
 
-	reader, err := root.Open(targetRel)
-	if err != nil {
+	seeker, ok := replacementFile.(io.Seeker)
+	if !ok {
+		return nil, fmt.Errorf("target does not support seeking for rollback snapshot: %s", targetRel)
+	}
+	if _, err := seeker.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
-	defer func() {
-		returnErr = errors.Join(returnErr, reader.Close())
-	}()
-
-	readerInfo, err := reader.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !readerInfo.Mode().IsRegular() || !os.SameFile(openedInfo, readerInfo) {
-		return nil, fmt.Errorf("target changed while opening rollback snapshot: %s", targetRel)
-	}
-	return io.ReadAll(reader)
+	return io.ReadAll(replacementFile)
 }
 
 // restoreWindowsFallbackTarget rolls the fallback overwrite back to

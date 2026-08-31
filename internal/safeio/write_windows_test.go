@@ -28,7 +28,7 @@ func TestOpenPinnedReplacementTargetIfNeededOpensPinnedTargetOnWindows(t *testin
 			if name != writeTestFileName {
 				t.Fatalf("unexpected pinned target path: %s", name)
 			}
-			if flag != os.O_WRONLY {
+			if flag != os.O_RDWR {
 				t.Fatalf("unexpected pinned target flag: %d", flag)
 			}
 			openCalls++
@@ -547,6 +547,58 @@ func TestLockPinnedReplacementFileSkipsNonOSFile(t *testing.T) {
 	}
 }
 
+// TestFallbackAtomicReplacementRollbackReadsSnapshotThroughLockedHandle
+// drives the full fallback transaction end to end against a real on-disk
+// file and a real *os.File (via openPinnedReplacementTarget, the same
+// production path fallbackAtomicReplacement's caller uses), rather than the
+// mocks used elsewhere in this file. That matters here specifically: the
+// bug this guards against -- snapshotPinnedWindowsFallbackTarget deadlocking
+// against lockPinnedReplacementFile's own lock by reading through a second,
+// independently-opened handle -- only manifests against a real OS handle
+// and a real LockFileEx call; a mock has no lock to deadlock against and
+// would pass either way.
+func TestFallbackAtomicReplacementRollbackReadsSnapshotThroughLockedHandle(t *testing.T) {
+	rootDir := t.TempDir()
+	targetPath := filepath.Join(rootDir, writeTestFileName)
+	if err := os.WriteFile(targetPath, []byte("before"), 0o640); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	root := openTestRoot(t, rootDir)
+	info := statTestPath(t, targetPath)
+
+	replacementFile, err := openPinnedReplacementTarget(root, writeTestFileName, info)
+	if err != nil {
+		t.Fatalf("open pinned replacement target: %v", err)
+	}
+	defer replacementFile.Close()
+
+	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
+	postWriteErr := errors.New("post-write validation failure")
+
+	err = fallbackAtomicReplacement(root, atomicReplacementFallback{
+		oldName:                    ".safeio-atomic-temp",
+		newName:                    writeTestFileName,
+		replacementFile:            replacementFile,
+		data:                       []byte("after"),
+		renameErr:                  renameErr,
+		postWrite:                  func() error { return postWriteErr },
+		rollbackOnPostWriteFailure: true,
+	})
+	if !errors.Is(err, postWriteErr) {
+		t.Fatalf("expected post-write error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "unsupported operation") || strings.Contains(strings.ToLower(err.Error()), "lock violation") {
+		t.Fatalf("rollback snapshot must read through the already-locked handle itself, not a second one: %v", err)
+	}
+	data, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		t.Fatalf("read restored target: %v", readErr)
+	}
+	if string(data) != "before" {
+		t.Fatalf("expected rollback to restore the original data, got %q", string(data))
+	}
+}
+
 func TestFallbackAtomicReplacementAcceptsActualQuarantineRenameSourceOnWindows(t *testing.T) {
 	infoPath := filepath.Join(t.TempDir(), writeTestFileName)
 	if err := os.WriteFile(infoPath, []byte("before"), 0o640); err != nil {
@@ -846,21 +898,18 @@ func TestFallbackAtomicReplacementRollbackRequiredSnapshotFailurePreventsMutatio
 		t.Fatalf("seed target info path: %v", err)
 	}
 	info := statTestPath(t, infoPath)
-	target := &windowsFallbackTarget{data: []byte("before")}
-	targetFile := target.file(t, info)
 	snapshotErr := errors.New("rollback snapshot failure")
+	// The rollback snapshot now reads through the already-pinned
+	// replacementFile handle itself (see snapshotPinnedWindowsFallbackTarget),
+	// not a second handle opened via root.Open -- fail it there instead.
+	target := &windowsFallbackTarget{data: []byte("before"), readErr: snapshotErr}
+	targetFile := target.file(t, info)
 	root := &fakeRoot{
 		lstat: func(name string) (fs.FileInfo, error) {
 			if name != writeTestFileName {
 				t.Fatalf("unexpected lstat path: %s", name)
 			}
 			return info, nil
-		},
-		open: func(name string) (File, error) {
-			if name != writeTestFileName {
-				t.Fatalf("unexpected rollback snapshot path: %s", name)
-			}
-			return nil, snapshotErr
 		},
 	}
 	renameErr := windowsReplaceExistingError(".safeio-atomic-temp", writeTestFileName)
@@ -1360,6 +1409,7 @@ type windowsFallbackTarget struct {
 	data          []byte
 	offset        int64
 	closeErr      error
+	readErr       error
 	openCalls     int
 	closeCalls    int
 	truncateCalls int
@@ -1371,6 +1421,21 @@ func (s *windowsFallbackTarget) file(t *testing.T, info fs.FileInfo) File {
 	return &truncatingFakeFile{
 		fakeFile: &fakeFile{
 			stat: func() (fs.FileInfo, error) { return info, nil },
+			// The Windows fallback path reads its rollback snapshot through
+			// this same handle rather than a second one (a second handle
+			// would deadlock against lockPinnedReplacementFile's own lock),
+			// so Read must reflect s.data/s.offset like a real file.
+			read: func(p []byte) (int, error) {
+				if s.readErr != nil {
+					return 0, s.readErr
+				}
+				if s.offset < 0 || int(s.offset) >= len(s.data) {
+					return 0, io.EOF
+				}
+				n := copy(p, s.data[int(s.offset):])
+				s.offset += int64(n)
+				return n, nil
+			},
 			write: func(p []byte) (int, error) {
 				s.writeCalls++
 				if s.offset < 0 {
