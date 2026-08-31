@@ -468,6 +468,56 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	})
 }
 
+// TestCIWorkflowFingerprintBindingScriptExecutesCorrectly actually runs the
+// embedded Python fingerprint-binding script (not just asserting on its
+// source text): the script is indented to satisfy the YAML block scalar it
+// lives in, and python3 -c rejects indented top-level code, so a purely
+// textual assertion could never catch that mismatch -- it takes real
+// execution, which is exactly how this bug first reached CI.
+func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const startMarker = "fingerprint_binding_script='"
+	const endMarker = `fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"` + "\n"
+	startIdx := strings.Index(gate.Run, startMarker)
+	if startIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding script")
+	}
+	endIdx := strings.Index(gate.Run[startIdx:], endMarker)
+	if endIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding dedent line")
+	}
+	invocationStart := startIdx + endIdx + len(endMarker)
+	invocationEnd := strings.Index(gate.Run[invocationStart:], "\n")
+	if invocationEnd == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding invocation line")
+	}
+	script := "set -euo pipefail\n" + gate.Run[startIdx:invocationStart+invocationEnd]
+
+	dir := t.TempDir()
+	suppressionsPath := filepath.Join(dir, "inline-suppressions.json")
+
+	valid := suppressionFingerprint("main.go", "line one", 1)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+valid+`"}]}`)
+	if output, err := runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath}); err != nil {
+		t.Fatalf("expected a fingerprint bound to its own (file, content) to pass, output:\n%s", output)
+	}
+
+	reused := suppressionFingerprint("main.go", "different content", 1)
+	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+reused+`"}]}`)
+	output, err := runShellCommand(dir, script, map[string]string{"SUPPRESSIONS_FILE": suppressionsPath})
+	if err == nil {
+		t.Fatalf("expected a fingerprint reused from different content to be rejected, output:\n%s", output)
+	}
+	if !strings.Contains(output, "does not match its own recorded file and content") {
+		t.Fatalf("expected a fingerprint-binding rejection message, got:\n%s", output)
+	}
+}
+
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
 	t.Helper()
 

@@ -411,7 +411,16 @@ jobs:
             # in-process (instead of one shasum subprocess per candidate)
             # keeps it fast: ~100,000 sha256 digests take well under a
             # second in Python.
-            jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\n"' "${SUPPRESSIONS_FILE}" | python3 -c '
+            # python3 -c requires top-level statements at column 0, but a
+            # YAML block scalar's own dedenting (removing the indentation of
+            # its first line from every line) leaves an unpredictable
+            # residual indentation here, not a fixed number of spaces --
+            # it depends on this whole step's other, differently-nested
+            # bash lines. Bootstrap through a second, single-line python3
+            # invocation using textwrap.dedent, which removes exactly
+            # whatever common leading whitespace is actually left, rather
+            # than guessing a specific amount to strip.
+            fingerprint_binding_script='
             import hashlib
             import sys
 
@@ -438,6 +447,8 @@ jobs:
                     print("::error::This pull request tracking output contains a fingerprint that does not match its own recorded file and content for any occurrence up to " + str(MAX_OCCURRENCE) + "; refusing to trust a tampered artifact.", file=sys.stderr)
                     sys.exit(1)
             '
+            fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"
+            jq -j '.suppressions[] | .file, "\u0001", .content, "\u0001", .fingerprint, "\n"' "${SUPPRESSIONS_FILE}" | python3 -c "${fingerprint_binding_dedented}"
           fi
 
           # comm requires sorted input but -- given sorted, duplicate-
