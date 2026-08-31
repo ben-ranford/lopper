@@ -175,20 +175,26 @@ func TestRenameNoReplaceDispatchesDedicatedNoReplaceMethod(t *testing.T) {
 	}
 }
 
-func TestRenameNoReplaceIntoMovesDirectoryIntoPinnedRoot(t *testing.T) {
-	skipRenameNoReplaceUnsupportedPlatform(t)
-	rootDir := t.TempDir()
-	sourcePath := filepath.Join(rootDir, "source")
-	destDir := filepath.Join(rootDir, "dest")
+func setupRenameNoReplaceIntoFixture(t *testing.T) (rootDir, destDir, sourcePath string, sourceInfo os.FileInfo, root, destRoot Root) {
+	t.Helper()
+	rootDir = t.TempDir()
+	destDir = filepath.Join(rootDir, "dest")
+	sourcePath = filepath.Join(rootDir, "source")
 	if err := os.Mkdir(sourcePath, 0o750); err != nil {
 		t.Fatalf("create source: %v", err)
 	}
 	if err := os.Mkdir(destDir, 0o750); err != nil {
 		t.Fatalf("create dest: %v", err)
 	}
-	sourceInfo := statTestPath(t, sourcePath)
-	root := openTestRoot(t, rootDir)
-	destRoot := openTestRoot(t, destDir)
+	sourceInfo = statTestPath(t, sourcePath)
+	root = openTestRoot(t, rootDir)
+	destRoot = openTestRoot(t, destDir)
+	return rootDir, destDir, sourcePath, sourceInfo, root, destRoot
+}
+
+func TestRenameNoReplaceIntoMovesDirectoryIntoPinnedRoot(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	_, destDir, sourcePath, sourceInfo, root, destRoot := setupRenameNoReplaceIntoFixture(t)
 
 	if err := RenameNoReplaceInto(root, "source", destRoot, "target"); err != nil {
 		t.Fatalf("rename no-replace into: %v", err)
@@ -200,23 +206,12 @@ func TestRenameNoReplaceIntoMovesDirectoryIntoPinnedRoot(t *testing.T) {
 
 func TestRenameNoReplaceIntoPreservesOccupiedDestination(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
-	rootDir := t.TempDir()
-	sourcePath := filepath.Join(rootDir, "source")
-	destDir := filepath.Join(rootDir, "dest")
+	_, destDir, sourcePath, sourceInfo, root, destRoot := setupRenameNoReplaceIntoFixture(t)
 	targetPath := filepath.Join(destDir, "target")
-	if err := os.Mkdir(sourcePath, 0o750); err != nil {
-		t.Fatalf("create source: %v", err)
-	}
-	if err := os.Mkdir(destDir, 0o750); err != nil {
-		t.Fatalf("create dest: %v", err)
-	}
 	if err := os.Mkdir(targetPath, 0o750); err != nil {
 		t.Fatalf("create occupied target: %v", err)
 	}
-	sourceInfo := statTestPath(t, sourcePath)
 	targetInfo := statTestPath(t, targetPath)
-	root := openTestRoot(t, rootDir)
-	destRoot := openTestRoot(t, destDir)
 
 	err := RenameNoReplaceInto(root, "source", destRoot, "target")
 	if !errors.Is(err, os.ErrExist) {
@@ -229,18 +224,7 @@ func TestRenameNoReplaceIntoPreservesOccupiedDestination(t *testing.T) {
 
 func TestRenameNoReplaceIntoRejectsAbsoluteDestinationEscapingPinnedRoot(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
-	rootDir := t.TempDir()
-	destDir := filepath.Join(rootDir, "dest")
-	sourcePath := filepath.Join(rootDir, "source")
-	if err := os.Mkdir(sourcePath, 0o750); err != nil {
-		t.Fatalf("create source: %v", err)
-	}
-	if err := os.Mkdir(destDir, 0o750); err != nil {
-		t.Fatalf("create dest: %v", err)
-	}
-	sourceInfo := statTestPath(t, sourcePath)
-	root := openTestRoot(t, rootDir)
-	destRoot := openTestRoot(t, destDir)
+	_, destDir, sourcePath, sourceInfo, root, destRoot := setupRenameNoReplaceIntoFixture(t)
 	outsideDir := t.TempDir()
 	escapeTarget := filepath.Join(outsideDir, "escaped")
 
@@ -256,18 +240,7 @@ func TestRenameNoReplaceIntoRejectsAbsoluteDestinationEscapingPinnedRoot(t *test
 
 func TestRenameNoReplaceIntoRejectsDestinationEscapingWithDotDot(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
-	rootDir := t.TempDir()
-	destDir := filepath.Join(rootDir, "dest")
-	sourcePath := filepath.Join(rootDir, "source")
-	if err := os.Mkdir(sourcePath, 0o750); err != nil {
-		t.Fatalf("create source: %v", err)
-	}
-	if err := os.Mkdir(destDir, 0o750); err != nil {
-		t.Fatalf("create dest: %v", err)
-	}
-	sourceInfo := statTestPath(t, sourcePath)
-	root := openTestRoot(t, rootDir)
-	destRoot := openTestRoot(t, destDir)
+	rootDir, _, sourcePath, sourceInfo, root, destRoot := setupRenameNoReplaceIntoFixture(t)
 
 	err := RenameNoReplaceInto(root, "source", destRoot, filepath.Join("..", "escaped"))
 	if !errors.Is(err, ErrPathEscapesRoot) {
