@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
@@ -135,9 +136,17 @@ func lockFallbackTransaction(root Root, targetRel string) (unlock func() error, 
 
 // fallbackLockFileRel returns the coordination lock path for targetRel: the
 // same directory, with a name namespaced by atomicTempPrefix so it can never
-// collide with a real cache entry.
+// collide with a real cache entry. The name is a fixed-length digest of the
+// full targetRel rather than targetRel's own basename: NTFS caps a path
+// component at 255 characters, and a target whose basename already sits
+// near that limit would overflow once a literal prefix was added, blocking
+// an otherwise valid replacement. Every concurrent writer for the same
+// target still derives the identical digest, so they correctly serialize
+// against each other.
 func fallbackLockFileRel(targetRel string) string {
-	lockBase := atomicTempPrefix + "fallback-lock-" + filepath.Base(targetRel)
+	digest := fnv.New64a()
+	_, _ = digest.Write([]byte(targetRel))
+	lockBase := fmt.Sprintf("%sfallback-lock-%x", atomicTempPrefix, digest.Sum64())
 	dir := filepath.Dir(targetRel)
 	if dir == "." {
 		return lockBase
