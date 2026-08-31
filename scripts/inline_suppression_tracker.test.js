@@ -131,6 +131,7 @@ function makeHarness(options = {}) {
       },
       repos: {
         getContent: async ({ path: filePath }) => {
+          calls.contentFetches = (calls.contentFetches || 0) + 1;
           const file = files.find((candidate) => candidate.filename === filePath);
           const content = reconstructFileFromPatch(file?.patch);
           if (options.oversizedContentFiles?.includes(filePath)) {
@@ -958,6 +959,41 @@ test('fails closed above the GitHub 3000-file pull diff boundary', async () => {
     },
   );
   assert.equal(harness.calls.created.length, 0);
+});
+
+test('stops fetching occurrences once the record limit is reached', async () => {
+  // An untrusted PR that adds far more than MAX_RECORDS properly annotated
+  // marker lines must not force one Contents/Blob API call per marker
+  // before the limit is enforced -- that could exhaust the write-token
+  // workflow's API quota or its job timeout instead of failing promptly.
+  const lineCount = testables.MAX_RECORDS + 50;
+  const lines = [];
+  for (let index = 0; index < lineCount; index += 1) {
+    lines.push(`\t_ = ${index} //nolint:staticcheck // rationale=temporary scanner false positive; owner=@security; remove-when=analyzer handles generated guard`);
+  }
+  const patch = `@@ -0,0 +1,${lineCount + 4} @@\n+package main\n+\n+func main() {\n${lines.map((line) => `+${line}`).join('\n')}\n+}\n`;
+  const harness = makeHarness({
+    files: [
+      {
+        filename: 'main.go',
+        status: 'added',
+        patch,
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => trackInlineSuppressions(harness.args),
+    {
+      name: 'RangeError',
+      message: new RegExp(`exceed the ${testables.MAX_RECORDS}-record publication limit`),
+    },
+  );
+  assert.equal(harness.calls.created.length, 0);
+  assert.ok(
+    harness.calls.contentFetches <= testables.MAX_RECORDS,
+    `expected at most ${testables.MAX_RECORDS} content fetches, got ${harness.calls.contentFetches}`,
+  );
 });
 
 test('rejects path traversal before issue mutation', async () => {

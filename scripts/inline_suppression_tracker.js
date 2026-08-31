@@ -475,6 +475,16 @@ async function scanPatch(records, { github, file, patch, context, headSHA }) {
     if (rawLine.startsWith('+')) {
       const content = rawLine.slice(1);
       if (hasInlineSuppressionMarker(content, file)) {
+        // Check the record limit before issuing the occurrence lookup, not
+        // only after every file has been fully scanned: an untrusted PR
+        // that adds hundreds of properly annotated marker lines would
+        // otherwise force hundreds of Contents/Blob API calls (one per
+        // marker, up to the 3000-file boundary) before this limit is ever
+        // enforced, risking the write-token workflow's API quota or its
+        // job timeout instead of failing promptly.
+        if (records.size >= MAX_RECORDS) {
+          throw new RangeError(`Inline suppression records exceed the ${MAX_RECORDS}-record publication limit.`);
+        }
         // Derive the occurrence ordinal from the complete head file, not
         // just this diff's context window: the self-hosted shell gate sees
         // a zero-context diff and must land on the exact same fingerprint.
@@ -817,6 +827,7 @@ async function trackInlineSuppressions({ github, context, core }) {
 module.exports = trackInlineSuppressions;
 module.exports.testables = {
   MAX_CHANGED_FILES,
+  MAX_RECORDS,
   addSuppression,
   escapeFence,
   fingerprintFor,
