@@ -266,7 +266,16 @@ jobs:
             echo "::error::This pull request changes ${changed_files} files, exceeding the 3000-file trusted diff limit; the independent suppression scan cannot retrieve all of them via GitHub's pull-files API. Refusing to trust an under-scanned diff." >&2
             exit 1
           fi
-          pr_files_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate)"
+          # `gh api --paginate` requests every page but concatenates their
+          # raw JSON bodies back to back -- e.g. two 100-item pages become
+          # the two-document stream "[...][...]", not one combined array.
+          # `jq 'length'` (and every `.[]`/`.[...]` filter below) would then
+          # silently apply to each page separately instead of the whole
+          # pull request, breaking the file-count comparison and any
+          # per-file SHA lookup for a suppression on a later page. `jq -s
+          # 'add'` slurps the whole multi-document stream into one array of
+          # arrays and concatenates them into a single flat array.
+          pr_files_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate | jq -s 'add')"
           pr_files_count="$(echo "${pr_files_json}" | jq 'length')"
           if [ "${pr_files_count:-0}" -ne "${changed_files:-0}" ]; then
             echo "::error::GitHub's pull-files API returned ${pr_files_count} file(s) but this pull request reports ${changed_files} changed file(s); refusing to trust an incomplete diff." >&2

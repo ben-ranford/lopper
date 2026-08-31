@@ -650,6 +650,63 @@ func TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift(t *te
 	}
 }
 
+// TestCIWorkflowFlattensPaginatedPullFilesResponse actually runs the
+// pr_files_json fetch against a fake `gh` that reproduces `gh api
+// --paginate`'s real, documented behavior for a multi-page result:
+// concatenated raw JSON bodies ("[...][...]"), not one combined array. It
+// asserts on the resulting value's own content -- not just the surrounding
+// script's exit code -- because the count-mismatch check downstream uses
+// `if [ ... -ne ... ]`, and bash's `[` treats a non-numeric comparison as
+// merely "false" rather than a script-ending error; the real damage (per
+// the Codex finding) is silent, further downstream, where a per-file
+// lookup keyed off pr_files_json would only ever see the first page.
+func TestCIWorkflowFlattensPaginatedPullFilesResponse(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const start = `pr_files_json="$(gh api`
+	startIdx := strings.Index(gate.Run, start)
+	if startIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the pr_files_json fetch")
+	}
+	lineEnd := strings.Index(gate.Run[startIdx:], "\n")
+	if lineEnd == -1 {
+		t.Fatalf("suppression tracking gate pr_files_json fetch is unterminated")
+	}
+	line := gate.Run[startIdx : startIdx+lineEnd]
+	script := "set -euo pipefail\n" + line + "\nprintf '%s' \"${pr_files_json}\"\n"
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	// Reproduces two 3-item and 2-item pages concatenated as gh actually
+	// emits them for `--paginate`, not wrapped in an outer array.
+	fakeGH := `#!/usr/bin/env bash
+printf '[{"filename":"a.go"},{"filename":"b.go"},{"filename":"c.go"}][{"filename":"d.go"},{"filename":"e.go"}]'
+`
+	writeFileMode(t, filepath.Join(binDir, "gh"), fakeGH, 0o755)
+
+	output, err := runShellCommand(dir, script, map[string]string{
+		"PATH":              binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"GITHUB_REPOSITORY": "octo/lopper",
+		"PR_NUMBER":         "1",
+	})
+	if err != nil {
+		t.Fatalf("expected the pr_files_json fetch to run, output:\n%s", output)
+	}
+
+	jqCmd := exec.Command("jq", "-e", ". | type == \"array\" and length == 5")
+	jqCmd.Stdin = strings.NewReader(output)
+	if jqErr := jqCmd.Run(); jqErr != nil {
+		t.Fatalf("expected pr_files_json to be one flat 5-element array combining both pages, got:\n%q", output)
+	}
+}
+
 // TestCIWorkflowSuspectScanSeedsQuoteStateFromBlobContent actually runs the
 // embedded per-file suspect scan (not just asserting on its source text)
 // against a synthetic file whose closing template-literal backtick sits
