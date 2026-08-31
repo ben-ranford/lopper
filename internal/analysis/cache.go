@@ -559,36 +559,46 @@ func quarantineAnalysisCacheChildAttempt(root safeio.Root, name string, childInf
 	if retry || err != nil {
 		return analysisCacheQuarantineReservation{}, retry, err
 	}
-	if err := renameAnalysisCacheChildIntoReservation(root, reservation, name); err != nil {
+	// Pin the reservation once and keep it open through the rename and its
+	// immediate verification, rather than reopening it by path for each
+	// step -- if another same-user process renamed the reservation away
+	// and installed a replacement in between, a fresh path lookup could
+	// silently resolve into that replacement instead of the reservation
+	// this attempt actually moved the candidate into.
+	reservationRoot, err := root.OpenRoot(reservation.name)
+	if err != nil {
 		return handleAnalysisCacheQuarantineRenameError(root, reservation, name, childInfo, err)
 	}
-	return verifyAnalysisCacheQuarantine(root, reservation, name, childInfo)
+	resultReservation, resultRetry, resultErr := quarantineAnalysisCacheChildIntoOpenReservation(root, reservationRoot, reservation, name, childInfo)
+	if closeErr := reservationRoot.Close(); closeErr != nil {
+		resultErr = errors.Join(resultErr, closeErr)
+	}
+	return resultReservation, resultRetry, resultErr
 }
 
-// renameAnalysisCacheChildIntoReservation moves name into the reservation
-// directory reserveAnalysisCacheQuarantine just created. Immediately before
-// the rename -- as late as possible, to keep the window as narrow as this
-// package can make it -- it re-verifies that name is still empty (another
-// initializer may have populated it since the caller's own candidate check)
-// and that the reservation's identity still matches what
-// reserveAnalysisCacheQuarantine observed, then renames directly into that
-// pinned handle rather than re-resolving the reservation by path. Neither
-// check is atomic with the rename itself (no such primitive exists), so
-// verifyAnalysisCacheQuarantine re-checks emptiness once more after the
-// rename and restores the child if anything slipped through.
-func renameAnalysisCacheChildIntoReservation(root safeio.Root, reservation analysisCacheQuarantineReservation, name string) (returnErr error) {
+func quarantineAnalysisCacheChildIntoOpenReservation(root, reservationRoot safeio.Root, reservation analysisCacheQuarantineReservation, name string, childInfo fs.FileInfo) (analysisCacheQuarantineReservation, bool, error) {
+	if err := renameAnalysisCacheChildIntoReservation(root, reservationRoot, reservation, name); err != nil {
+		return handleAnalysisCacheQuarantineRenameError(root, reservation, name, childInfo, err)
+	}
+	return verifyAnalysisCacheQuarantine(root, reservationRoot, reservation, name, childInfo)
+}
+
+// renameAnalysisCacheChildIntoReservation moves name into reservationRoot,
+// the already-pinned reservation directory reserveAnalysisCacheQuarantine
+// just created. Immediately before the rename -- as late as possible, to
+// keep the window as narrow as this package can make it -- it re-verifies
+// that name is still empty (another initializer may have populated it since
+// the caller's own candidate check) and that the reservation's identity
+// still matches what reserveAnalysisCacheQuarantine observed, then renames
+// directly into the pinned handle rather than re-resolving the reservation
+// by path. Neither check is atomic with the rename itself (no such
+// primitive exists), so verifyAnalysisCacheQuarantine re-checks emptiness
+// once more after the rename and restores the child if anything slipped
+// through.
+func renameAnalysisCacheChildIntoReservation(root, reservationRoot safeio.Root, reservation analysisCacheQuarantineReservation, name string) error {
 	if empty, err := analysisCacheChildIsEmpty(root, name); err == nil && !empty {
 		return fmt.Errorf("rollback candidate %s is no longer empty: %w", name, os.ErrNotExist)
 	}
-	reservationRoot, err := root.OpenRoot(reservation.name)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := reservationRoot.Close(); returnErr != nil {
-			returnErr = errors.Join(returnErr, closeErr)
-		}
-	}()
 	info, err := reservationRoot.Lstat(".")
 	if err != nil {
 		return err
@@ -681,8 +691,18 @@ func handleAnalysisCacheQuarantineRenameError(root safeio.Root, reservation anal
 	return analysisCacheQuarantineReservation{}, false, errors.Join(renameErr, removeReservationErr)
 }
 
-func verifyAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQuarantineReservation, name string, childInfo fs.FileInfo) (analysisCacheQuarantineReservation, bool, error) {
-	quarantineInfo, infoErr := root.Lstat(reservation.quarantineName)
+// verifyAnalysisCacheQuarantine looks up the just-quarantined child through
+// reservationRoot, the same pinned handle renameAnalysisCacheChildIntoReservation
+// just renamed into, rather than re-resolving reservation.quarantineName by
+// path from root. A path-based lookup here would be vulnerable to the same
+// reservation-swap race the pinned rename itself guards against: if another
+// same-user process renamed the reservation away and installed a
+// replacement between the rename and this verification, a fresh path lookup
+// could resolve into that replacement (or ErrNotExist) instead of the
+// reservation this attempt actually used.
+func verifyAnalysisCacheQuarantine(root, reservationRoot safeio.Root, reservation analysisCacheQuarantineReservation, name string, childInfo fs.FileInfo) (analysisCacheQuarantineReservation, bool, error) {
+	quarantineBase := filepath.Base(reservation.quarantineName)
+	quarantineInfo, infoErr := reservationRoot.Lstat(quarantineBase)
 	if infoErr == nil && sameAnalysisCacheRollbackTarget(quarantineInfo, childInfo) {
 		// The emptiness check in renameAnalysisCacheChildIntoReservation is
 		// not atomic with the rename itself. Re-check now: if another
@@ -691,8 +711,8 @@ func verifyAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 		// leaving it hidden and risking a later ENOTEMPTY cleanup failure.
 		// Treat a failure to determine emptiness the same as "not empty" --
 		// fail closed rather than accepting an unverified quarantine.
-		if empty, emptyErr := analysisCacheChildIsEmpty(root, reservation.quarantineName); emptyErr != nil || !empty {
-			restoreErr := restoreMovedAnalysisCacheReplacement(root, reservation, name, quarantineInfo)
+		if empty, emptyErr := analysisCacheChildIsEmpty(reservationRoot, quarantineBase); emptyErr != nil || !empty {
+			restoreErr := restoreMovedAnalysisCacheReplacement(root, reservationRoot, reservation, name, quarantineInfo)
 			verifyErr := emptyErr
 			if verifyErr == nil {
 				verifyErr = fmt.Errorf("rollback candidate %s was populated while quarantining", name)
@@ -703,13 +723,16 @@ func verifyAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 	}
 	if infoErr == nil {
 		infoErr = errors.New("rollback target changed while quarantining: " + name)
-		restoreErr := restoreMovedAnalysisCacheReplacement(root, reservation, name, quarantineInfo)
+		restoreErr := restoreMovedAnalysisCacheReplacement(root, reservationRoot, reservation, name, quarantineInfo)
 		return analysisCacheQuarantineReservation{}, false, errors.Join(infoErr, restoreErr)
 	}
 	return analysisCacheQuarantineReservation{}, false, infoErr
 }
 
-func restoreMovedAnalysisCacheReplacement(root safeio.Root, reservation analysisCacheQuarantineReservation, name string, movedInfo fs.FileInfo) error {
+// restoreMovedAnalysisCacheReplacement moves the quarantined child back to
+// name using reservationRoot, the pinned handle its caller already holds,
+// rather than re-resolving the reservation by path.
+func restoreMovedAnalysisCacheReplacement(root, reservationRoot safeio.Root, reservation analysisCacheQuarantineReservation, name string, movedInfo fs.FileInfo) error {
 	if movedInfo == nil {
 		return nil
 	}
@@ -718,7 +741,14 @@ func restoreMovedAnalysisCacheReplacement(root safeio.Root, reservation analysis
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := safeio.RenameNoReplace(root, reservation.quarantineName, name); err != nil {
+	err := safeio.RenameNoReplaceInto(reservationRoot, filepath.Base(reservation.quarantineName), root, name)
+	if errors.Is(err, fs.ErrInvalid) {
+		// reservationRoot does not support the pinned-source rename trait
+		// (e.g. a test double). Fall back to the path-based rename rather
+		// than failing every caller of this optional capability.
+		err = safeio.RenameNoReplace(root, reservation.quarantineName, name)
+	}
+	if err != nil {
 		return err
 	}
 	restoredInfo, err := root.Lstat(name)
@@ -858,16 +888,20 @@ func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 	}
 	removeErr := reservationRoot.Remove(filepath.Base(reservation.quarantineName))
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		closeErr := reservationRoot.Close()
 		if isAnalysisCacheNonEmptyDirectoryError(removeErr) {
 			// Another initializer added an entry to the quarantined child
 			// after verifyAnalysisCacheQuarantine's post-rename emptiness
 			// check but before this removal -- that window can't be closed
 			// entirely (the removal itself is a separate call, possibly
 			// much later). Restore it rather than leaving that
-			// initializer's live data hidden inside the reservation.
-			return errors.Join(removeErr, closeErr, restoreQuarantinedChildAfterFailedRemoval(root, reservation))
+			// initializer's live data hidden inside the reservation, using
+			// the reservation handle already open and identity-verified
+			// above instead of reopening it by path.
+			restoreErr := restoreQuarantinedChildAfterFailedRemoval(root, reservationRoot, reservation)
+			closeErr := reservationRoot.Close()
+			return errors.Join(removeErr, restoreErr, closeErr)
 		}
+		closeErr := reservationRoot.Close()
 		return errors.Join(removeErr, closeErr)
 	}
 	removeOwnerErr := reservationRoot.Remove(analysisCacheQuarantineOwnerFile)
@@ -885,12 +919,13 @@ func removeAnalysisCacheQuarantine(root safeio.Root, reservation analysisCacheQu
 // turned out to be non-empty back to its original name, so whatever another
 // initializer added to it stays visible at its expected path instead of
 // being hidden inside a reservation that cleanup can no longer remove.
-func restoreQuarantinedChildAfterFailedRemoval(root safeio.Root, reservation analysisCacheQuarantineReservation) error {
-	movedInfo, err := root.Lstat(reservation.quarantineName)
+func restoreQuarantinedChildAfterFailedRemoval(root, reservationRoot safeio.Root, reservation analysisCacheQuarantineReservation) error {
+	quarantineBase := filepath.Base(reservation.quarantineName)
+	movedInfo, err := reservationRoot.Lstat(quarantineBase)
 	if err != nil {
 		return err
 	}
-	return restoreMovedAnalysisCacheReplacement(root, reservation, filepath.Base(reservation.quarantineName), movedInfo)
+	return restoreMovedAnalysisCacheReplacement(root, reservationRoot, reservation, quarantineBase, movedInfo)
 }
 
 func openOwnedAnalysisCacheQuarantineReservation(root safeio.Root, reservation analysisCacheQuarantineReservation) (safeio.Root, error) {

@@ -418,6 +418,23 @@ func (r *lstatErrorAnalysisCacheRoot) RenameNoReplace(oldName, newName string) e
 	return safeio.RenameNoReplace(r.Root, oldName, newName)
 }
 
+type secondLstatErrorAnalysisCacheRoot struct {
+	safeio.Root
+	name  string
+	err   error
+	calls int
+}
+
+func (r *secondLstatErrorAnalysisCacheRoot) Lstat(name string) (fs.FileInfo, error) {
+	if name == r.name {
+		r.calls++
+		if r.calls >= 2 {
+			return nil, r.err
+		}
+	}
+	return r.Root.Lstat(name)
+}
+
 type reservationLstatSwapAfterOpenAnalysisCacheRoot struct {
 	safeio.Root
 	t               *testing.T
@@ -2279,9 +2296,19 @@ func TestRestoreMovedAnalysisCacheReplacementPreservesPreRenameTargetRace(t *tes
 		oldName: quarantineName,
 		newName: cacheKeysDirName,
 	}
+	reservationRoot, err := safeio.OpenRoot(filepath.Join(repo, reservationName))
+	if err != nil {
+		t.Fatalf("open reservation root: %v", err)
+	}
+	defer func() {
+		if err := reservationRoot.Close(); err != nil {
+			t.Fatalf("close reservation root: %v", err)
+		}
+	}()
 
 	err = restoreMovedAnalysisCacheReplacement(
 		wrappedRoot,
+		reservationRoot,
 		newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "test-token"),
 		cacheKeysDirName,
 		movedInfo,
@@ -2297,7 +2324,7 @@ func TestRestoreMovedAnalysisCacheReplacementBranches(t *testing.T) {
 	t.Run("nil moved info noops", func(t *testing.T) {
 		repo := t.TempDir()
 		root := openAnalysisCacheTestRoot(t, repo)
-		if err := restoreMovedAnalysisCacheReplacement(root, analysisCacheQuarantineReservation{}, cacheKeysDirName, nil); err != nil {
+		if err := restoreMovedAnalysisCacheReplacement(root, root, analysisCacheQuarantineReservation{}, cacheKeysDirName, nil); err != nil {
 			t.Fatalf("restore nil moved info: %v", err)
 		}
 	})
@@ -2308,7 +2335,7 @@ func TestRestoreMovedAnalysisCacheReplacementBranches(t *testing.T) {
 		_, movedInfo := createAnalysisCacheChild(t, repo, "moved-child")
 		createAnalysisCacheChild(t, repo, cacheKeysDirName)
 
-		err := restoreMovedAnalysisCacheReplacement(root, analysisCacheQuarantineReservation{}, cacheKeysDirName, movedInfo)
+		err := restoreMovedAnalysisCacheReplacement(root, root, analysisCacheQuarantineReservation{}, cacheKeysDirName, movedInfo)
 		if err == nil || !strings.Contains(err.Error(), "restore target occupied") {
 			t.Fatalf("expected occupied restore target error, got %v", err)
 		}
@@ -2320,7 +2347,8 @@ func TestRestoreMovedAnalysisCacheReplacementBranches(t *testing.T) {
 		_, movedInfo := createAnalysisCacheChild(t, repo, "moved-child")
 		lstatErr := errors.New("restore target lstat failed")
 
-		err := restoreMovedAnalysisCacheReplacement(&lstatErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}, analysisCacheQuarantineReservation{}, cacheKeysDirName, movedInfo)
+		wrappedRoot := &lstatErrorAnalysisCacheRoot{Root: root, name: cacheKeysDirName, err: lstatErr}
+		err := restoreMovedAnalysisCacheReplacement(wrappedRoot, wrappedRoot, analysisCacheQuarantineReservation{}, cacheKeysDirName, movedInfo)
 		if !errors.Is(err, lstatErr) {
 			t.Fatalf("expected target lstat error, got %v", err)
 		}
@@ -2339,8 +2367,9 @@ func TestRestoreMovedAnalysisCacheReplacementBranches(t *testing.T) {
 			t.Fatalf("create quarantined child: %v", err)
 		}
 		_, differentInfo := createAnalysisCacheChild(t, repo, "different-child")
+		reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
 
-		err := restoreMovedAnalysisCacheReplacement(root, newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "token"), cacheKeysDirName, differentInfo)
+		err := restoreMovedAnalysisCacheReplacement(root, reservationRoot, newAnalysisCacheQuarantineReservation(reservationName, quarantineName, "token"), cacheKeysDirName, differentInfo)
 		if err == nil || !strings.Contains(err.Error(), "changed while restoring") {
 			t.Fatalf("expected changed restored identity error, got %v", err)
 		}
@@ -2361,8 +2390,9 @@ func TestRestoreMovedAnalysisCacheReplacementRestoresIdentityAndOwnerToken(t *te
 	if err != nil {
 		t.Fatalf("stat quarantined replacement: %v", err)
 	}
+	reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
 
-	if err := restoreMovedAnalysisCacheReplacement(root, reservation, cacheKeysDirName, movedInfo); err != nil {
+	if err := restoreMovedAnalysisCacheReplacement(root, reservationRoot, reservation, cacheKeysDirName, movedInfo); err != nil {
 		t.Fatalf("restore moved replacement: %v", err)
 	}
 
@@ -2400,7 +2430,8 @@ func TestVerifyAnalysisCacheQuarantineRestoresChildPopulatedDuringTheRace(t *tes
 		t.Fatalf("populate quarantined child: %v", err)
 	}
 
-	if _, _, err := verifyAnalysisCacheQuarantine(root, reservation, cacheKeysDirName, childInfo); err == nil {
+	reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
+	if _, _, err := verifyAnalysisCacheQuarantine(root, reservationRoot, reservation, cacheKeysDirName, childInfo); err == nil {
 		t.Fatal("expected a quarantine child populated during the race to be reported")
 	}
 
@@ -2415,9 +2446,13 @@ func TestVerifyAnalysisCacheQuarantineRestoresChildPopulatedDuringTheRace(t *tes
 func TestVerifyAnalysisCacheQuarantineRestoresChildWhenEmptinessCheckFails(t *testing.T) {
 	repo, root, reservation, reservationName, childInfo := setupQuarantinedChildForVerification(t)
 	emptyCheckErr := errors.New("emptiness check lstat denied")
-	wrappedRoot := &lstatErrorAnalysisCacheRoot{Root: root, name: reservationName, err: emptyCheckErr}
+	reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
+	// The first Lstat call for cacheKeysDirName is verifyAnalysisCacheQuarantine's
+	// own identity check, which must succeed; only the second (from
+	// analysisCacheChildIsEmpty's re-check) should fail.
+	wrappedReservationRoot := &secondLstatErrorAnalysisCacheRoot{Root: reservationRoot, name: cacheKeysDirName, err: emptyCheckErr}
 
-	_, _, verifyErr := verifyAnalysisCacheQuarantine(wrappedRoot, reservation, cacheKeysDirName, childInfo)
+	_, _, verifyErr := verifyAnalysisCacheQuarantine(root, wrappedReservationRoot, reservation, cacheKeysDirName, childInfo)
 	if !errors.Is(verifyErr, emptyCheckErr) {
 		t.Fatalf("expected emptiness-check error to be preserved, got %v", verifyErr)
 	}
@@ -2425,6 +2460,39 @@ func TestVerifyAnalysisCacheQuarantineRestoresChildWhenEmptinessCheckFails(t *te
 	restoredPath := filepath.Join(repo, cacheKeysDirName)
 	assertAnalysisCacheDirExists(t, restoredPath)
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
+func TestVerifyAnalysisCacheQuarantineUsesPinnedReservationAcrossASwap(t *testing.T) {
+	repo, root, reservation, reservationName, childInfo := setupQuarantinedChildForVerification(t)
+	reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
+
+	// Simulate: another same-user process renames the reservation away and
+	// installs an empty replacement in between the rename landing and this
+	// verification call -- reservationRoot is the same open handle
+	// renameAnalysisCacheChildIntoReservation already pinned, so it still
+	// refers to the original directory (and the quarantined child inside
+	// it) by descriptor, unaffected by its name changing.
+	if err := os.Rename(filepath.Join(repo, reservationName), filepath.Join(repo, "displaced-reservation")); err != nil {
+		t.Fatalf("move reservation aside: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(repo, reservationName), 0o700); err != nil {
+		t.Fatalf("create replacement reservation: %v", err)
+	}
+
+	// A path-based lookup for the quarantined child from the outer root
+	// would now resolve into the empty replacement and find nothing --
+	// confirming what the pre-fix code would have hit.
+	if _, err := root.Lstat(reservation.quarantineName); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected a path-based lookup to now miss the quarantined child, got info err=%v", err)
+	}
+
+	verified, _, err := verifyAnalysisCacheQuarantine(root, reservationRoot, reservation, cacheKeysDirName, childInfo)
+	if err != nil {
+		t.Fatalf("expected verification through the pinned reservation to succeed despite the path-level swap: %v", err)
+	}
+	if verified.quarantineName != reservation.quarantineName {
+		t.Fatalf("expected the original reservation to be confirmed, got %+v", verified)
+	}
 }
 
 func TestRemoveAnalysisCacheQuarantineRestoresChildWhenRemovalFindsItNonEmpty(t *testing.T) {
