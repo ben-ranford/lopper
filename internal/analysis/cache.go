@@ -734,7 +734,14 @@ func verifyAnalysisCacheQuarantine(root, reservationRoot safeio.Root, reservatio
 		restoreErr := restoreMovedAnalysisCacheReplacement(root, reservationRoot, reservation, name, quarantineInfo)
 		return analysisCacheQuarantineReservation{}, false, errors.Join(infoErr, restoreErr)
 	}
-	return analysisCacheQuarantineReservation{}, false, infoErr
+	// The Lstat itself failed, so quarantineInfo carries no observed state to
+	// restore or verify against. Attempt the move-back anyway through the
+	// still-pinned reservationRoot rather than abandoning the child under
+	// .lopper-cache-rollback-* on what may be a transient error; childInfo,
+	// the pre-quarantine identity, is the only reference available to
+	// confirm the restored entry is the one this attempt actually moved.
+	restoreErr := restoreMovedAnalysisCacheReplacement(root, reservationRoot, reservation, name, childInfo)
+	return analysisCacheQuarantineReservation{}, false, errors.Join(infoErr, restoreErr)
 }
 
 // restoreMovedAnalysisCacheReplacement moves the quarantined child back to

@@ -711,6 +711,26 @@ func TestVerifyAnalysisCacheQuarantineRestoresChildWhenEmptinessCheckFails(t *te
 	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
 }
 
+func TestVerifyAnalysisCacheQuarantineRestoresChildWhenItsOwnLstatFails(t *testing.T) {
+	repo, root, reservation, reservationName, childInfo := setupQuarantinedChildForVerification(t)
+	statErr := errors.New("transient lstat failure")
+	reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
+	// Unlike TestVerifyAnalysisCacheQuarantineRestoresChildWhenEmptinessCheckFails,
+	// this fails the verification's own first Lstat call, before any quarantine
+	// state has been observed -- exercising the fallback path that restores
+	// using the pre-quarantine childInfo rather than a freshly-read quarantineInfo.
+	wrappedReservationRoot := &lstatErrorAnalysisCacheRoot{Root: reservationRoot, name: cacheKeysDirName, err: statErr}
+
+	_, _, verifyErr := verifyAnalysisCacheQuarantine(root, wrappedReservationRoot, reservation, cacheKeysDirName, childInfo)
+	if !errors.Is(verifyErr, statErr) {
+		t.Fatalf("expected the verification lstat error to be preserved, got %v", verifyErr)
+	}
+
+	restoredPath := filepath.Join(repo, cacheKeysDirName)
+	assertAnalysisCacheSameFile(t, restoredPath, childInfo)
+	assertAnalysisCachePathAbsent(t, filepath.Join(repo, reservationName))
+}
+
 func TestVerifyAnalysisCacheQuarantineUsesPinnedReservationAcrossASwap(t *testing.T) {
 	repo, root, reservation, reservationName, childInfo := setupQuarantinedChildForVerification(t)
 	reservationRoot := openAnalysisCacheTestRoot(t, filepath.Join(repo, reservationName))
