@@ -303,6 +303,65 @@ jobs:
             exit 1
           fi
 
+          # A non-null but truncated patch is a separate incompleteness
+          # GitHub can return alongside a genuinely present `patch` field:
+          # the parsed hunks account for fewer additions/deletions than the
+          # file's own reported totals. Treating that as "these are all the
+          # added lines" would let a suppression beyond the truncated
+          # portion escape the independent scan while the trusted tracker's
+          # own patchLineStats/assertCompletePatch already refuses to trust
+          # the same input. Mirror that check here instead of only testing
+          # for a null patch.
+          truncated_patch_count=0
+          while IFS= read -r truncated_check_file_json; do
+            truncated_check_filename="$(echo "${truncated_check_file_json}" | jq -r '.filename')"
+            truncated_check_patch="$(echo "${truncated_check_file_json}" | jq -r '.patch')"
+            truncated_check_additions="$(echo "${truncated_check_file_json}" | jq -r '.additions')"
+            truncated_check_deletions="$(echo "${truncated_check_file_json}" | jq -r '.deletions')"
+            if ! printf '%s\n' "${truncated_check_patch}" | awk -v want_add="${truncated_check_additions}" -v want_del="${truncated_check_deletions}" '
+              function flush_hunk() {
+                if (in_hunk && (old_seen != old_lines || new_seen != new_lines)) {
+                  bad = 1
+                }
+              }
+              /^@@ / {
+                flush_hunk()
+                line = $0
+                sub(/^@@ -/, "", line)
+                sub(/ @@.*/, "", line)
+                split(line, halves, " ")
+                old_part = halves[1]
+                new_part = halves[2]
+                sub(/^\+/, "", new_part)
+                split(old_part, o, ",")
+                split(new_part, n, ",")
+                old_lines = (o[2] == "" ? 1 : o[2] + 0)
+                new_lines = (n[2] == "" ? 1 : n[2] + 0)
+                old_seen = 0
+                new_seen = 0
+                in_hunk = 1
+                next
+              }
+              !in_hunk { next }
+              /^\+/ { add++; new_seen++; next }
+              /^-/ { del++; old_seen++; next }
+              /^\\/ { next }
+              { old_seen++; new_seen++ }
+              END {
+                flush_hunk()
+                if (bad || add != want_add || del != want_del) {
+                  exit 1
+                }
+              }
+            '; then
+              truncated_patch_count=$((truncated_patch_count + 1))
+              echo "::error::GitHub's pull-files API returned a truncated patch for ${truncated_check_filename} (its parsed hunks do not account for the file's reported ${truncated_check_additions} addition(s)/${truncated_check_deletions} deletion(s)); the independent suppression scan cannot make a safe determination for this file. Refusing to trust an under-scanned diff." >&2
+            fi
+          done < <(echo "${pr_files_json}" | jq -c ".[] | select(${source_file_test}) | select(.patch != null)")
+          if [ "${truncated_patch_count}" -gt 0 ]; then
+            exit 1
+          fi
+
           # Extract (file, added-line-content) pairs for every suspect line,
           # not just a count: comparing cardinalities alone lets a PR swap a
           # tracked suppression for an untracked one of the same shape (add

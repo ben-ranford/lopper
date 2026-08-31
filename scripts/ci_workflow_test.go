@@ -1028,6 +1028,89 @@ func TestCIWorkflowIncompletePatchCheckExemptsRemovedFiles(t *testing.T) {
 	}
 }
 
+// TestCIWorkflowRejectsANonNullButTruncatedPatch actually runs the real
+// truncated-patch gate against a synthetic pull-files response where a
+// file's patch is present but its parsed hunks account for fewer
+// additions/deletions than the file's own reported totals -- the exact
+// scenario the Codex finding described: GitHub can truncate a patch
+// without setting it to null, and a suppression beyond the truncated
+// portion would otherwise escape the independent scan entirely while the
+// trusted tracker's own patchLineStats/assertCompletePatch already refuses
+// to trust the same input.
+func TestCIWorkflowRejectsANonNullButTruncatedPatch(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+
+	const varsStart = `source_file_test=`
+	varsStartIdx := strings.Index(gate.Run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the source-file test")
+	}
+	varsLineEnd := strings.Index(gate.Run[varsStartIdx:], "\n")
+	if varsLineEnd == -1 {
+		t.Fatalf("suppression tracking gate source-file test is unterminated")
+	}
+	varsLine := gate.Run[varsStartIdx : varsStartIdx+varsLineEnd]
+
+	const checkStart = "truncated_patch_count=0"
+	const checkEnd = `if [ "${truncated_patch_count}" -gt 0 ]; then` + "\n  exit 1\nfi\n"
+	checkStartIdx := strings.Index(gate.Run, checkStart)
+	if checkStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the truncated-patch check")
+	}
+	checkEndRelIdx := strings.Index(gate.Run[checkStartIdx:], checkEnd)
+	if checkEndRelIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the truncated-patch check end marker")
+	}
+	checkBlock := gate.Run[checkStartIdx : checkStartIdx+checkEndRelIdx+len(checkEnd)]
+
+	dir := t.TempDir()
+
+	// The file reports 5 additions, but the patch itself shows only 1 --
+	// GitHub truncated it without setting patch to null.
+	truncatedJSON, err := json.Marshal([]map[string]any{
+		{
+			"filename":  "big.go",
+			"status":    "modified",
+			"additions": 5,
+			"deletions": 0,
+			"patch":     "@@ -1,1 +1,1 @@\n-old line\n+new line",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal truncated-patch fixture: %v", err)
+	}
+	script := "set -euo pipefail\n" + varsLine + "\npr_files_json=" + shellQuote(string(truncatedJSON)) + "\n" + checkBlock
+	output, err := runShellCommand(dir, script, nil)
+	if err == nil {
+		t.Fatalf("expected a non-null but truncated patch to fail closed, output:\n%s", output)
+	}
+	if !strings.Contains(output, "truncated patch") {
+		t.Fatalf("expected a truncated-patch rejection message, got:\n%s", output)
+	}
+
+	// The complete, matching patch for the same file must still pass.
+	completeJSON, err := json.Marshal([]map[string]any{
+		{
+			"filename":  "big.go",
+			"status":    "modified",
+			"additions": 1,
+			"deletions": 1,
+			"patch":     "@@ -1,1 +1,1 @@\n-old line\n+new line",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal complete-patch fixture: %v", err)
+	}
+	script = "set -euo pipefail\n" + varsLine + "\npr_files_json=" + shellQuote(string(completeJSON)) + "\n" + checkBlock
+	if output, err := runShellCommand(dir, script, nil); err != nil {
+		t.Fatalf("expected a complete, matching patch to pass, output:\n%s", output)
+	}
+}
+
 func assertWorkflowMarkerOrder(t *testing.T, script string, beforeMarker string, afterMarker string) {
 	t.Helper()
 
