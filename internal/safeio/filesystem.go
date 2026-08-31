@@ -394,6 +394,22 @@ func (r *namedRootAt) rootName() string {
 	return r.name
 }
 
+// RenameNoReplace and RenameNoReplaceInto are optional traits dispatched by
+// reflection on the concrete Root value (see RenameNoReplace,
+// RenameNoReplaceInto below): embedding the Root interface only promotes the
+// interface's own declared methods, not the runtime type's full method set,
+// so without these forwarding methods reflect.ValueOf(*namedRootAt) can
+// never see *osRoot's native no-replace rename implementation and every
+// rename through a root obtained via OpenRootNoFollow silently falls back to
+// fs.ErrInvalid.
+func (r *namedRootAt) RenameNoReplace(oldName, newName string) error {
+	return RenameNoReplace(r.Root, oldName, newName)
+}
+
+func (r *namedRootAt) RenameNoReplaceInto(oldName string, newRoot Root, newName string) error {
+	return RenameNoReplaceInto(r.Root, oldName, newRoot, newName)
+}
+
 func OpenPinnedFile(root Root, name string) (_ File, err error) {
 	file, roots, err := openPinnedPath(root, name, pinnedChildExpectFile)
 	if err != nil {
@@ -660,6 +676,13 @@ func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName strin
 	newParent, newBase, err := resolveRenameNoReplaceTarget(newName)
 	if err != nil {
 		return err
+	}
+	// newRoot may itself be a *namedRootAt (e.g. the caller opened it via
+	// OpenRootNoFollow too); unwrap it before the concrete-type assertion
+	// below, or a wrapped destination root would be rejected as fs.ErrInvalid
+	// even though it pins a real *osRoot underneath.
+	if named, ok := newRoot.(*namedRootAt); ok {
+		newRoot = named.Root
 	}
 	newRootOs, ok := newRoot.(*osRoot)
 	if !ok {

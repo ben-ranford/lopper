@@ -352,6 +352,89 @@ func TestRenameNoReplaceIntoDispatchesDedicatedMethod(t *testing.T) {
 	}
 }
 
+func TestRenameNoReplaceWorksThroughNamedRootFromOpenRootNoFollow(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	sourcePath := filepath.Join(rootDir, "source")
+	targetPath := filepath.Join(rootDir, "target")
+	if err := os.Mkdir(sourcePath, 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+
+	// OpenRootNoFollow wraps the *osRoot it opens in *namedRootAt whenever
+	// the requested path is absolute (rootWithName), unlike openTestRoot's
+	// plain OpenRoot used everywhere else in this file -- reproduce that
+	// wrapping exactly, or this regression goes uncaught.
+	root, err := OpenRootNoFollow(rootDir)
+	if err != nil {
+		t.Fatalf("open root no-follow: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
+	if _, ok := root.(*namedRootAt); !ok {
+		t.Fatalf("expected OpenRootNoFollow to return a *namedRootAt, got %T", root)
+	}
+
+	if err := RenameNoReplace(root, "source", "target"); err != nil {
+		t.Fatalf("rename no-replace through named root: %v", err)
+	}
+
+	assertRenameNoReplacePathAbsent(t, sourcePath)
+	assertRenameNoReplaceSameFile(t, targetPath, sourceInfo)
+}
+
+func TestRenameNoReplaceIntoWorksThroughNamedRootsFromOpenRootNoFollow(t *testing.T) {
+	skipRenameNoReplaceUnsupportedPlatform(t)
+	rootDir := t.TempDir()
+	destDir := filepath.Join(rootDir, "dest")
+	sourcePath := filepath.Join(rootDir, "source")
+	if err := os.Mkdir(sourcePath, 0o750); err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	if err := os.Mkdir(destDir, 0o750); err != nil {
+		t.Fatalf("create dest: %v", err)
+	}
+	sourceInfo := statTestPath(t, sourcePath)
+
+	// Both sides wrapped in *namedRootAt: this exercises reflection dispatch
+	// finding namedRootAt.RenameNoReplaceInto on oldRoot AND the destination
+	// unwrapping inside (*osRoot).RenameNoReplaceInto's newRoot type
+	// assertion, since newRoot here is a *namedRootAt too, not a bare
+	// *osRoot.
+	root, err := OpenRootNoFollow(rootDir)
+	if err != nil {
+		t.Fatalf("open root no-follow: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Fatalf("close root: %v", closeErr)
+		}
+	})
+	destRoot, err := OpenRootNoFollow(destDir)
+	if err != nil {
+		t.Fatalf("open dest root no-follow: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := destRoot.Close(); closeErr != nil {
+			t.Fatalf("close dest root: %v", closeErr)
+		}
+	})
+	if _, ok := destRoot.(*namedRootAt); !ok {
+		t.Fatalf("expected OpenRootNoFollow to return a *namedRootAt, got %T", destRoot)
+	}
+
+	if err := RenameNoReplaceInto(root, "source", destRoot, "target"); err != nil {
+		t.Fatalf("rename no-replace into through named roots: %v", err)
+	}
+
+	assertRenameNoReplacePathAbsent(t, sourcePath)
+	assertRenameNoReplaceSameFile(t, filepath.Join(destDir, "target"), sourceInfo)
+}
+
 func TestRenameNoReplaceRejectsNULNames(t *testing.T) {
 	skipRenameNoReplaceUnsupportedPlatform(t)
 	root := openTestRoot(t, t.TempDir())
