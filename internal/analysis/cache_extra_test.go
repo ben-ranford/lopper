@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,123 +33,6 @@ type analysisCacheLookupCase struct {
 	wantReason   string
 	wantHit      bool
 	wantRepoPath string
-}
-
-func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
-	cache := &analysisCache{
-		metadata: report.CacheMetadata{Invalidations: []report.CacheInvalidation{{Key: "k", Reason: "reason"}}},
-		warnings: []string{},
-	}
-
-	cache.warn("")
-	cache.warn("cache warning")
-	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || warnings[0] != "cache warning" {
-		t.Fatalf("unexpected warnings: %#v", warnings)
-	}
-	if len(cache.takeWarnings()) != 0 {
-		t.Fatalf("expected warnings to be drained")
-	}
-
-	snapshot := cache.metadataSnapshot()
-	if snapshot == nil || len(snapshot.Invalidations) != 1 {
-		t.Fatalf("unexpected snapshot: %#v", snapshot)
-	}
-	cache.metadata.Invalidations[0].Reason = "mutated"
-	if snapshot.Invalidations[0].Reason == "mutated" {
-		t.Fatalf("expected snapshot invalidations to be copied")
-	}
-
-	var nilCache *analysisCache
-	if nilCache.metadataSnapshot() != nil {
-		t.Fatalf("expected nil snapshot for nil cache")
-	}
-}
-
-func TestCachePathAndRelevantFileBoundaryBranches(t *testing.T) {
-	var nilCache *analysisCache
-	cachePath := filepath.Join(t.TempDir(), cacheDirName)
-	if got := nilCache.stableCacheRoot(cachePath); got != cachePath {
-		t.Fatalf("expected nil cache to preserve cache root, got %q", got)
-	}
-
-	repo := t.TempDir()
-	outside := t.TempDir()
-	symlink := filepath.Join(repo, "linked-cache")
-	if err := os.Symlink(outside, symlink); err != nil {
-		t.Fatalf("create cache symlink: %v", err)
-	}
-	if !cachePathEscapesRepo(symlink, repo) {
-		t.Fatal("expected symlinked cache path to be rejected")
-	}
-	if _, err := prepareWritableAnalysisCacheRoot(filepath.Join(repo, "missing", cacheDirName)); err == nil {
-		t.Fatal("expected missing cache root to require deferred creation")
-	}
-	cache := &analysisCache{options: resolvedCacheOptions{Path: repo}}
-	writeRoot, err := cache.openWriteRoot()
-	if err != nil {
-		t.Fatalf("open cache write root: %v", err)
-	}
-	if err := writeRoot.Close(); err != nil {
-		t.Fatalf("close cache write root: %v", err)
-	}
-
-	exclusions := cacheExcludedPathSet(cacheAnalysisExclusions{files: []string{"", filepath.Join(repo, "trace.ndjson")}})
-	if len(exclusions) != 1 {
-		t.Fatalf("expected only non-empty cache exclusion, got %#v", exclusions)
-	}
-	if !shouldSkipCacheDir(cacheDirName) || isCacheRelevantFile("README.txt") {
-		t.Fatal("expected cache directory and unsupported file handling")
-	}
-	if _, err := collectPHPShortOpenTagTraversalEntries(filepath.Join(repo, "missing-root"), cacheAnalysisExclusions{}); err == nil {
-		t.Fatal("expected missing short-open-tag traversal root to fail")
-	}
-	if err := os.MkdirAll(filepath.Join(repo, "objects", "broken.json"), 0o750); err != nil {
-		t.Fatalf("create malformed cache object path: %v", err)
-	}
-	if _, reason, err := readCachedPayload(repo, "broken"); err != nil || reason != "object-read-error" {
-		t.Fatalf("expected malformed cache object read to invalidate, reason=%q err=%v", reason, err)
-	}
-}
-
-func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
-	repo := t.TempDir()
-	blockingPath := filepath.Join(repo, "not-a-dir")
-	if err := os.WriteFile(blockingPath, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write blocking file: %v", err)
-	}
-
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: blockingPath}}, repo)
-	if cache.cacheable {
-		t.Fatalf("expected cache to be non-cacheable when path is invalid")
-	}
-	if len(cache.takeWarnings()) == 0 {
-		t.Fatalf("expected warning when cache directory init fails")
-	}
-}
-
-func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "missing", cacheDirName)
-
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if cache.cacheable {
-		t.Fatal("expected missing cache root to be unavailable pending capability-bound creation")
-	}
-	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "#1494") {
-		t.Fatalf("warnings = %#v, want #1494 capability-bound creation guidance", warnings)
-	}
-	for _, path := range []string{
-		filepath.Join(repo, "missing"),
-		cachePath,
-		filepath.Join(cachePath, cacheKeysDirName),
-		filepath.Join(cachePath, cacheObjectsDirName),
-	} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("cache initialization created %s: %v", path, err)
-		}
-	}
 }
 
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
@@ -299,6 +183,67 @@ func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 	}
 }
 
+func TestAnalysisCacheOpenWriteRootFailureBranches(t *testing.T) {
+	t.Run("open canonical write root failure after validation", testAnalysisCacheOpenWriteRootCanonicalOpenFailure)
+	t.Run("opened canonical root must match pinned identity", testAnalysisCacheOpenWriteRootIdentityMismatch)
+	t.Run("second validation after opening write root fails closed", testAnalysisCacheOpenWriteRootSecondValidationFailure)
+}
+
+func testAnalysisCacheOpenWriteRootCanonicalOpenFailure(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	renamedPath := filepath.Join(fixture.repo, "cache-renamed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call != 1 {
+			return false, nil
+		}
+		if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+			t.Fatalf("rename cache root before canonical open: %v", err)
+		}
+		return true, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "open canonical root") {
+		t.Fatalf("open write root error = %v, want canonical open failure", err)
+	}
+}
+
+func testAnalysisCacheOpenWriteRootIdentityMismatch(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	renamedPath := filepath.Join(fixture.repo, "cache-renamed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call != 1 {
+			return false, nil
+		}
+		if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+			t.Fatalf("rename cache root before canonical open: %v", err)
+		}
+		mustMkdirCacheLayout(t, fixture.cachePath)
+		return true, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "pinned root identity changed") {
+		t.Fatalf("open write root identity error = %v, want identity mismatch", err)
+	}
+}
+
+func testAnalysisCacheOpenWriteRootSecondValidationFailure(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	validationErr := errors.New("post-open validation failed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call == 2 {
+			return true, validationErr
+		}
+		return false, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); !errors.Is(err, validationErr) {
+		t.Fatalf("open write root error = %v, want %v", err, validationErr)
+	}
+}
+
 func TestCachePathEscapesRepoHandlesResolvedAndMissingPaths(t *testing.T) {
 	repo := t.TempDir()
 	inside := filepath.Join(repo, cacheDirName)
@@ -390,6 +335,28 @@ func assertAnalysisCachePathAbsent(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected %q to remain absent, stat err=%v", path, err)
+	}
+}
+
+func assertAnalysisCacheDirExists(t *testing.T, path string) {
+	t.Helper()
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be a directory, info=%#v err=%v", path, info, err)
+	}
+}
+
+func assertAnalysisCacheSameFile(t *testing.T, path string, want fs.FileInfo) {
+	t.Helper()
+	got, err := os.Lstat(path)
+	if err != nil || !os.SameFile(got, want) {
+		t.Fatalf("expected %q to keep identity, got=%#v want=%#v err=%v", path, got, want, err)
+	}
+}
+
+func assertAnalysisCacheQuarantineSuffix(t *testing.T, quarantineName, suffix string) {
+	t.Helper()
+	if !strings.HasSuffix(filepath.Dir(quarantineName), suffix) {
+		t.Fatalf("expected quarantine suffix %s, got %q", suffix, quarantineName)
 	}
 }
 

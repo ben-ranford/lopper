@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"syscall"
@@ -393,6 +394,22 @@ func (r *namedRootAt) rootName() string {
 	return r.name
 }
 
+// RenameNoReplace and RenameNoReplaceInto are optional traits dispatched by
+// reflection on the concrete Root value (see RenameNoReplace,
+// RenameNoReplaceInto below): embedding the Root interface only promotes the
+// interface's own declared methods, not the runtime type's full method set,
+// so without these forwarding methods reflect.ValueOf(*namedRootAt) can
+// never see *osRoot's native no-replace rename implementation and every
+// rename through a root obtained via OpenRootNoFollow silently falls back to
+// fs.ErrInvalid.
+func (r *namedRootAt) RenameNoReplace(oldName, newName string) error {
+	return RenameNoReplace(r.Root, oldName, newName)
+}
+
+func (r *namedRootAt) RenameNoReplaceInto(oldName string, newRoot Root, newName string) error {
+	return RenameNoReplaceInto(r.Root, oldName, newRoot, newName)
+}
+
 func OpenPinnedFile(root Root, name string) (_ File, err error) {
 	file, roots, err := openPinnedPath(root, name, pinnedChildExpectFile)
 	if err != nil {
@@ -621,6 +638,152 @@ func (r *osRoot) LinkIfMatches(oldName, newName string, expected fs.FileInfo, me
 
 func (r *osRoot) Rename(oldName, newName string) error {
 	return r.root.Rename(oldName, newName)
+}
+
+func (r *osRoot) RenameNoReplace(oldName, newName string) (returnErr error) {
+	oldParent, oldBase, err := resolveRenameNoReplaceTarget(oldName)
+	if err != nil {
+		return err
+	}
+	newParent, newBase, err := resolveRenameNoReplaceTarget(newName)
+	if err != nil {
+		return err
+	}
+
+	oldParentRoot, closeOldParent, err := r.openRenameNoReplaceParent(oldParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeOldParent(returnErr)
+	}()
+	newParentRoot, closeNewParent, err := r.openRenameNoReplaceParent(newParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeNewParent(returnErr)
+	}()
+
+	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newBase)
+}
+
+func (r *osRoot) RenameNoReplaceInto(oldName string, newRoot Root, newName string) (returnErr error) {
+	oldParent, oldBase, err := resolveRenameNoReplaceTarget(oldName)
+	if err != nil {
+		return err
+	}
+	newParent, newBase, err := resolveRenameNoReplaceTarget(newName)
+	if err != nil {
+		return err
+	}
+	// newRoot may itself be a *namedRootAt (e.g. the caller opened it via
+	// OpenRootNoFollow too); unwrap it before the concrete-type assertion
+	// below, or a wrapped destination root would be rejected as fs.ErrInvalid
+	// even though it pins a real *osRoot underneath.
+	if named, ok := newRoot.(*namedRootAt); ok {
+		newRoot = named.Root
+	}
+	newRootOs, ok := newRoot.(*osRoot)
+	if !ok {
+		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
+	}
+
+	oldParentRoot, closeOldParent, err := r.openRenameNoReplaceParent(oldParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeOldParent(returnErr)
+	}()
+
+	// Pin the destination parent the same symlink-safe way
+	// openRenameNoReplaceParent already pins oldParent: a nested newName
+	// (e.g. "link/target") must not let an intermediate symlink component
+	// carry the rename outside the already-open newRoot.
+	newParentRoot, closeNewParent, err := newRootOs.openRenameNoReplaceParent(newParent)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = closeNewParent(returnErr)
+	}()
+
+	return renameNoReplaceBetweenRoots(oldParentRoot, newParentRoot, oldBase, newBase)
+}
+
+func resolveRenameNoReplaceTarget(name string) (string, string, error) {
+	rel, err := resolveRelativeTarget(name, rejectRootTarget)
+	if err != nil {
+		return "", "", err
+	}
+	return filepath.Dir(rel), filepath.Base(rel), nil
+}
+
+func (r *osRoot) openRenameNoReplaceParent(parent string) (*osRoot, func(error) error, error) {
+	if parent == "." {
+		return r, func(err error) error { return err }, nil
+	}
+
+	_, parts := splitPinnedPath(parent)
+	opened := make([]Root, 0, len(parts))
+	current := Root(r)
+	currentPath := ""
+	for _, part := range parts {
+		currentPath = filepath.Join(currentPath, part)
+		next, err := openRootChildNoFollow(current, part, currentPath)
+		if err != nil {
+			return nil, nil, closeRootsWithError(opened, err)
+		}
+		opened = append(opened, next)
+		current = next
+	}
+
+	parentRoot := current.(*osRoot)
+	return parentRoot, func(err error) error {
+		return closeRenameNoReplaceParentRoots(opened, err)
+	}, nil
+}
+
+func closeRenameNoReplaceParentRoots(roots []Root, primary error) error {
+	for idx := len(roots) - 1; idx >= 0; idx-- {
+		closeErr := roots[idx].Close()
+		if primary != nil {
+			primary = errors.Join(primary, closeErr)
+		}
+	}
+	return primary
+}
+
+func RenameNoReplace(root Root, oldName, newName string) error {
+	method := reflect.ValueOf(root).MethodByName("RenameNoReplace")
+	if !method.IsValid() {
+		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
+	}
+	results := method.Call([]reflect.Value{reflect.ValueOf(oldName), reflect.ValueOf(newName)})
+	if len(results) != 1 || results[0].IsNil() {
+		return nil
+	}
+	err, _ := results[0].Interface().(error)
+	return err
+}
+
+// RenameNoReplaceInto renames oldName (resolved from oldRoot) directly into
+// an already-open, caller-verified newRoot as newName, without re-resolving
+// newRoot's path. Use this when newRoot's identity has already been pinned
+// and verified, and a fresh path lookup could resolve to a directory a
+// concurrent process swapped in after that verification.
+func RenameNoReplaceInto(oldRoot Root, oldName string, newRoot Root, newName string) error {
+	method := reflect.ValueOf(oldRoot).MethodByName("RenameNoReplaceInto")
+	if !method.IsValid() {
+		return &os.LinkError{Op: "rename_noreplace", Old: oldName, New: newName, Err: fs.ErrInvalid}
+	}
+	results := method.Call([]reflect.Value{reflect.ValueOf(oldName), reflect.ValueOf(newRoot), reflect.ValueOf(newName)})
+	if len(results) != 1 || results[0].IsNil() {
+		return nil
+	}
+	err, _ := results[0].Interface().(error)
+	return err
 }
 
 func (r *osRoot) RenameIfMatches(oldName, newName string, expected fs.FileInfo, message string) error {
