@@ -63,6 +63,47 @@ func TestHelper(t *testing.T) {}
 	}
 }
 
+// TestBenchGateFingerprintsCompilerDirectiveOnSelectedDeclaration proves
+// that adding a compiler directive comment (e.g. //go:noinline) to a
+// benchmark-reachable helper changes the fingerprint even though the
+// declaration's own text is unchanged. A directive comment attaches as the
+// declaration's Doc comment, positioned before decl.Pos(); hashing only
+// [decl.Pos(), decl.End()) would miss it even though it can change
+// inlining, escape analysis, and therefore the benchmark's own allocations.
+func TestBenchGateFingerprintsCompilerDirectiveOnSelectedDeclaration(t *testing.T) {
+	assertBenchGateFingerprintsBaseThenHeadFiles(t,
+		map[string]string{
+			"bench_test.go": `package benchpkg
+
+import "testing"
+
+var sink int
+
+func BenchmarkValue(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		sink += helperValue()
+	}
+}
+`,
+			"helper_test.go": `package benchpkg
+
+func helperValue() int {
+	return 1
+}
+`,
+		},
+		map[string]string{
+			"helper_test.go": `package benchpkg
+
+//go:noinline
+func helperValue() int {
+	return 1
+}
+`,
+		},
+	)
+}
+
 func TestBenchGateFingerprintsTestMainHarnessFiles(t *testing.T) {
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
@@ -141,18 +182,13 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 // otherwise excluded (see importCanAffectBenchmark) to avoid making nearly
 // every test file a root via universally-imported packages like "testing".
 func TestBenchGateFingerprintsStdlibRegistrationSideEffectImport(t *testing.T) {
-	fixture := newBenchGateFixture(t, "benchpkg")
-	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
-		"setup_test.go": `package benchpkg
-
-import "testing"
-
-func TestOnly(t *testing.T) {}
-`,
-	}))
-	fixture.commit("base")
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
-		"setup_test.go": `package benchpkg
+	for _, tc := range []struct {
+		name     string
+		headFile string
+	}{
+		{
+			name: "image/png",
+			headFile: `package benchpkg
 
 import (
 	"bytes"
@@ -166,10 +202,39 @@ func TestOnly(t *testing.T) {
 	_ = buf
 }
 `,
-	})
-	fixture.commit("head")
+		},
+		{
+			name: "crypto/sha3",
+			headFile: `package benchpkg
 
-	assertBenchGateHarnessMismatch(t, fixture)
+import (
+	"crypto/sha3"
+	"testing"
+)
+
+func TestOnly(t *testing.T) {
+	_ = sha3.New256
+}
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newBenchGateFixture(t, "benchpkg")
+			fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
+				"setup_test.go": `package benchpkg
+
+import "testing"
+
+func TestOnly(t *testing.T) {}
+`,
+			}))
+			fixture.commit("base")
+			fixture.writeBenchmarkPackage("benchpkg", map[string]string{"setup_test.go": tc.headFile})
+			fixture.commit("head")
+
+			assertBenchGateHarnessMismatch(t, fixture)
+		})
+	}
 }
 
 // TestBenchGateFingerprintsDotlessExternalModuleImport proves a named import
@@ -263,9 +328,9 @@ func importInitSetupTestFile(importDecl, body string) string {
 }
 
 func TestBenchGateFingerprintsInterfaceDispatchedMethods(t *testing.T) {
-	fixture := newBenchGateFixture(t, "benchpkg")
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
-		"bench_test.go": `package benchpkg
+	assertBenchGateFingerprintsBaseThenHeadFiles(t,
+		map[string]string{
+			"bench_test.go": `package benchpkg
 
 import (
 	"fmt"
@@ -282,22 +347,34 @@ func BenchmarkValue(b *testing.B) {
 	}
 }
 `,
-		"stringer_test.go": `package benchpkg
+			"stringer_test.go": `package benchpkg
 
 func (benchValue) String() string {
 	return "base"
 }
 `,
-	})
-	fixture.commit("base")
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
-		"stringer_test.go": `package benchpkg
+		},
+		map[string]string{
+			"stringer_test.go": `package benchpkg
 
 func (benchValue) String() string {
 	return "head"
 }
 `,
-	})
+		},
+	)
+}
+
+// assertBenchGateFingerprintsBaseThenHeadFiles is the shared fixture for
+// tests that write a base commit's files, then overwrite a subset with a
+// head commit's files, and assert the harness fingerprint mismatches.
+func assertBenchGateFingerprintsBaseThenHeadFiles(t *testing.T, baseFiles, headFiles map[string]string) {
+	t.Helper()
+
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", baseFiles)
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", headFiles)
 	fixture.commit("head")
 
 	assertBenchGateHarnessMismatch(t, fixture)
@@ -702,6 +779,52 @@ func TestNoise(t *testing.T) {
 	output, exitCode := fixture.runBenchGate()
 	if exitCode != 0 {
 		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+}
+
+// TestBenchGateRoutesSelectorBuildFailureThroughInvalidGate proves that a
+// failure building the embedded harness selector (e.g. GOCACHE or the
+// temporary filesystem becomes unavailable) is routed through
+// fail_invalid_memory_gate rather than letting the script's top-level set -e
+// exit raw on go build's own status. A raw exit would skip writing the
+// invalid-status artifact and leave a stale summary/status from a previous
+// run in place.
+func TestBenchGateRoutesSelectorBuildFailureThroughInvalidGate(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(nil))
+	fixture.commit("base")
+	fixture.writeFile("README.md", "head commit marker\n")
+	fixture.commit("head")
+
+	realGoBin := fixture.goBin
+	fakeGoPath := filepath.Join(t.TempDir(), "go")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"build\" ]; then\n" +
+		"\tfor arg in \"$@\"; do\n" +
+		"\t\tcase \"$arg\" in\n" +
+		"\t\t*benchharness.go) exit 1 ;;\n" +
+		"\t\tesac\n" +
+		"\tdone\n" +
+		"fi\n" +
+		"exec \"" + realGoBin + "\" \"$@\"\n"
+	if err := os.WriteFile(fakeGoPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake go wrapper: %v", err)
+	}
+	fixture.goBin = fakeGoPath
+
+	output, exitCode := fixture.runBenchGate()
+	if exitCode != 2 {
+		t.Fatalf("bench gate exit code = %d, want 2\n%s", exitCode, output)
+	}
+	if !strings.Contains(output, "Memory benchmark gate invalid") {
+		t.Fatalf("expected invalid-gate diagnostic, got:\n%s", output)
+	}
+	status, err := os.ReadFile(filepath.Join(fixture.root, ".artifacts", "memory-bench-status.txt"))
+	if err != nil {
+		t.Fatalf("read memory bench status: %v", err)
+	}
+	if got := strings.TrimSpace(string(status)); got != "2" {
+		t.Fatalf("expected memory bench status 2, got %q", got)
 	}
 }
 

@@ -465,7 +465,7 @@ func selectedDeclarationsSourceHash(source []byte, fset *token.FileSet, decls []
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Pos() < ordered[j].Pos() })
 	hash := sha256.New()
 	for _, decl := range ordered {
-		start := fset.Position(decl.Pos()).Offset
+		start := fset.Position(declHashRangeStart(decl)).Offset
 		end := fset.Position(decl.End()).Offset
 		if start < 0 || end > len(source) || start > end {
 			continue
@@ -474,6 +474,26 @@ func selectedDeclarationsSourceHash(source []byte, fset *token.FileSet, decls []
 		hash.Write([]byte("\n// --- decl boundary ---\n"))
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// declHashRangeStart returns the position the hash range should start at
+// for decl: its doc comment's start when present, rather than decl.Pos()
+// itself. decl.Pos() begins at the declaration keyword and excludes any
+// attached compiler directive (e.g. //go:noinline), which can change
+// inlining, escape analysis, and therefore benchmark allocations without
+// changing the declaration's own text.
+func declHashRangeStart(decl ast.Decl) token.Pos {
+	switch typed := decl.(type) {
+	case *ast.FuncDecl:
+		if typed.Doc != nil {
+			return typed.Doc.Pos()
+		}
+	case *ast.GenDecl:
+		if typed.Doc != nil {
+			return typed.Doc.Pos()
+		}
+	}
+	return decl.Pos()
 }
 
 func readFileList(stdin *os.File) ([]string, error) {
@@ -719,6 +739,7 @@ var stdlibRegistrationSideEffectImports = map[string]struct{}{
 	"crypto/sha1":    {},
 	"crypto/sha256":  {},
 	"crypto/sha512":  {},
+	"crypto/sha3":    {},
 }
 
 func importPath(spec *ast.ImportSpec) string {
@@ -1136,7 +1157,9 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 GOEOF
-GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src";
+if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src"; then
+	fail_invalid_memory_gate "benchmark harness selector could not be built.";
+fi;
 echo "Running memory benchmark delta against $base_ref.";
 : > "$base_output_tmp";
 : > "$head_output_tmp";
@@ -1225,7 +1248,9 @@ while IFS=$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; 
 done < "$bench_definitions_tmp";
 cp "$head_output_tmp" "$BENCH_HEAD_OUTPUT";
 benchdelta_bin="$bench_dir/benchdelta";
-GOFLAGS=-buildvcs=false run_validated_go "benchdelta helper build" build -o "$benchdelta_bin" ./tools/benchdelta;
+if ! GOFLAGS=-buildvcs=false run_validated_go "benchdelta helper build" build -o "$benchdelta_bin" ./tools/benchdelta; then
+	fail_invalid_memory_gate "benchdelta helper could not be built.";
+fi;
 set +e;
 "$benchdelta_bin" -base "$BENCH_BASE_OUTPUT" -head "$BENCH_HEAD_OUTPUT" -max-bytes-pct "$MEMORY_BENCH_MAX_BYTES_PCT" -max-allocs-pct "$MEMORY_BENCH_MAX_ALLOCS_PCT" -summary-out "$MEMORY_BENCH_SUMMARY";
 status=$?;
