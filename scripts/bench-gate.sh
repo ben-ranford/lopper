@@ -409,6 +409,9 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			for _, name := range declaredNames(decl) {
 				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
 			}
+			if recvType := methodReceiverTypeName(decl); recvType != "" {
+				decls[recvType] = append(decls[recvType], harnessDecl{file: rel, decl: decl})
+			}
 			if rootDeclarationCanAffectBenchmark(decl, modInfo) {
 				roots = append(roots, harnessDecl{file: rel, decl: decl})
 			}
@@ -570,10 +573,43 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 		return false
 	}
 	if decl.Recv != nil {
-		return true
+		return false
 	}
 	name := decl.Name.Name
 	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
+}
+
+// methodReceiverTypeName returns the base identifier of decl's receiver
+// type, or "" if decl isn't a method. Indexing a method under its receiver
+// type name (alongside its own method name) lets it enter the reachability
+// graph when the type itself becomes reachable -- including via implicit
+// interface dispatch (e.g. fmt.Stringer), since a benchmark that constructs
+// or otherwise references the concrete type already makes the type name
+// reachable without needing to name the method directly. This replaces
+// treating every method as an unconditional root, which pulled in any file
+// declaring a method regardless of whether its receiver type was ever
+// reachable from a benchmark.
+func methodReceiverTypeName(decl ast.Decl) string {
+	funcDecl, ok := decl.(*ast.FuncDecl)
+	if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+		return ""
+	}
+	return receiverTypeExprName(funcDecl.Recv.List[0].Type)
+}
+
+func receiverTypeExprName(expr ast.Expr) string {
+	switch typed := expr.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.StarExpr:
+		return receiverTypeExprName(typed.X)
+	case *ast.IndexExpr:
+		return receiverTypeExprName(typed.X)
+	case *ast.IndexListExpr:
+		return receiverTypeExprName(typed.X)
+	default:
+		return ""
+	}
 }
 
 func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modInfo moduleInfo) bool {
@@ -615,7 +651,36 @@ func importCanAffectBenchmark(spec *ast.ImportSpec, modInfo moduleInfo) bool {
 	if spec.Name != nil && spec.Name.Name == "_" {
 		return true
 	}
+	if _, ok := stdlibRegistrationSideEffectImports[path]; ok {
+		return true
+	}
 	return modInfo.tracks(path)
+}
+
+// stdlibRegistrationSideEffectImports lists standard-library packages whose
+// init() registers global state consumed by unrelated code -- the same
+// category of side effect a blank import always counts for. Unlike a blank
+// import, these are commonly imported by name because their exported API is
+// also used directly (e.g. image/png via png.Decode while its init() also
+// registers the "png" codec for image.Decode callers elsewhere in the same
+// test binary). A named import of one of these still needs to count,
+// otherwise a change confined to an ordinary test file that imports one can
+// silently leave a benchmark's fingerprint unchanged even though the
+// benchmark's runtime behavior changed. This is a deliberately small,
+// documented allowlist of known cases rather than treating every standard
+// library import as root-worthy, which would make nearly every test file a
+// root (via universally-imported packages like "testing" or "fmt") and
+// defeat selective fingerprinting entirely.
+var stdlibRegistrationSideEffectImports = map[string]struct{}{
+	"image/gif":      {},
+	"image/jpeg":     {},
+	"image/png":      {},
+	"net/http/pprof": {},
+	"expvar":         {},
+	"crypto/md5":     {},
+	"crypto/sha1":    {},
+	"crypto/sha256":  {},
+	"crypto/sha512":  {},
 }
 
 func importPath(spec *ast.ImportSpec) string {

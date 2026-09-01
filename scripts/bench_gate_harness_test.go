@@ -132,6 +132,46 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 	}
 }
 
+// TestBenchGateFingerprintsStdlibRegistrationSideEffectImport proves that a
+// named import of a standard-library package with a known cross-package
+// registration side effect (image/png registers a codec via init(), used by
+// any image.Decode caller in the same test binary) still counts as able to
+// affect the benchmark, even though it appears only in an ordinary test
+// function unrelated to the benchmark itself. Standard-library imports are
+// otherwise excluded (see importCanAffectBenchmark) to avoid making nearly
+// every test file a root via universally-imported packages like "testing".
+func TestBenchGateFingerprintsStdlibRegistrationSideEffectImport(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
+		"setup_test.go": `package benchpkg
+
+import "testing"
+
+func TestOnly(t *testing.T) {}
+`,
+	}))
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"setup_test.go": `package benchpkg
+
+import (
+	"bytes"
+	"image/png"
+	"testing"
+)
+
+func TestOnly(t *testing.T) {
+	var buf bytes.Buffer
+	_ = png.Encode
+	_ = buf
+}
+`,
+	})
+	fixture.commit("head")
+
+	assertBenchGateHarnessMismatch(t, fixture)
+}
+
 // TestBenchGateFingerprintsDotlessExternalModuleImport proves a named import
 // of an external module with a dotless, slash-free path (valid via a local
 // replace directive, as tested here) still counts as able to affect the
@@ -261,6 +301,63 @@ func (benchValue) String() string {
 	fixture.commit("head")
 
 	assertBenchGateHarnessMismatch(t, fixture)
+}
+
+// TestBenchGateIgnoresMethodOnUnreachableReceiverType proves that a method
+// declared on a type used only by an ordinary test -- never constructed or
+// otherwise referenced from any benchmark -- no longer forces the file into
+// the harness fingerprint. Methods were previously always roots regardless
+// of receiver reachability (to support implicit interface dispatch, see
+// TestBenchGateFingerprintsInterfaceDispatchedMethods above); scoping that
+// to reachable receiver types keeps that support while no longer
+// invalidating benchmarks on unrelated ordinary-test method changes.
+func TestBenchGateIgnoresMethodOnUnreachableReceiverType(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
+		"helper_test.go": `package benchpkg
+
+import "testing"
+
+type unrelatedHelper struct{}
+
+func (unrelatedHelper) doThing() int {
+	return 1
+}
+
+func TestUnrelated(t *testing.T) {
+	h := unrelatedHelper{}
+	if h.doThing() != 1 {
+		t.Fatal("nope")
+	}
+}
+`,
+	}))
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"helper_test.go": `package benchpkg
+
+import "testing"
+
+type unrelatedHelper struct{}
+
+func (unrelatedHelper) doThing() int {
+	return 2
+}
+
+func TestUnrelated(t *testing.T) {
+	h := unrelatedHelper{}
+	if h.doThing() != 2 {
+		t.Fatal("nope")
+	}
+}
+`,
+	})
+	fixture.commit("head")
+
+	output, exitCode := fixture.runBenchGate()
+	if exitCode != 0 {
+		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
 }
 
 func benchmarkHarnessPackageFiles(extra map[string]string) map[string]string {
