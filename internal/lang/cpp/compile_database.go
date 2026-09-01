@@ -17,7 +17,13 @@ const (
 	includeFlag         = "-I"
 	isystemFlag         = "-isystem"
 	iquoteFlag          = "-iquote"
+	nostdincFlag        = "-nostdinc"
+	nostdincxxFlag      = "-nostdinc++"
+	nostdlibincFlag     = "-nostdlibinc"
 	maxCompileDatabases = 64
+
+	appleSDKUsrIncludeFragment    = ".sdk/usr/include"
+	appleSDKUsrCXXIncludeFragment = appleSDKUsrIncludeFragment + "/c++/"
 )
 
 type compileCommandEntry struct {
@@ -30,17 +36,28 @@ type compileCommandEntry struct {
 type compileContext struct {
 	HasCompileDatabase bool
 	IncludeDirs        []string
+	IncludeSearchPaths []includeSearchPath
+	SourceIncludeDirs  map[string][]includeSearchPath
+	SourceContexts     []compileSourceContext
 	SourceFiles        []string
 	Warnings           []string
 }
 
+type compileSourceContext struct {
+	Path               string
+	IncludeSearchPaths []includeSearchPath
+}
+
 type compileContextCollector struct {
-	repoPath      string
-	includeDirSet map[string]struct{}
-	sourceFileSet map[string]struct{}
-	warnings      []string
-	visited       int
-	found         bool
+	repoPath           string
+	includeDirSet      map[string]struct{}
+	includeSearchPaths map[string]includeSearchPath
+	sourceIncludeDirs  map[string][]includeSearchPath
+	sourceContexts     []compileSourceContext
+	sourceFileSet      map[string]struct{}
+	warnings           []string
+	visited            int
+	found              bool
 }
 
 func loadCompileContext(repoPath string) (compileContext, error) {
@@ -63,9 +80,11 @@ func newCompileContextCollector(repoPath string) (*compileContextCollector, erro
 		return nil, fmt.Errorf("repo path is empty")
 	}
 	return &compileContextCollector{
-		repoPath:      repoPath,
-		includeDirSet: make(map[string]struct{}),
-		sourceFileSet: make(map[string]struct{}),
+		repoPath:           repoPath,
+		includeDirSet:      make(map[string]struct{}),
+		includeSearchPaths: make(map[string]includeSearchPath),
+		sourceIncludeDirs:  make(map[string][]includeSearchPath),
+		sourceFileSet:      make(map[string]struct{}),
 	}, nil
 }
 
@@ -78,7 +97,7 @@ func (c *compileContextCollector) visit(path string) error {
 		return fs.SkipAll
 	}
 
-	warnings, err := collectCompileDatabase(path, c.repoPath, c.includeDirSet, c.sourceFileSet)
+	warnings, err := collectCompileDatabase(path, c.repoPath, c.includeDirSet, c.includeSearchPaths, c.sourceIncludeDirs, &c.sourceContexts, c.sourceFileSet)
 	c.warnings = append(c.warnings, warnings...)
 	if err != nil {
 		return err
@@ -91,6 +110,9 @@ func (c *compileContextCollector) result() compileContext {
 	result := compileContext{
 		HasCompileDatabase: c.found,
 		IncludeDirs:        shared.SortedKeys(c.includeDirSet),
+		IncludeSearchPaths: sortedIncludeSearchPaths(c.includeSearchPaths),
+		SourceIncludeDirs:  copySourceIncludeDirs(c.sourceIncludeDirs),
+		SourceContexts:     copyCompileSourceContexts(c.sourceContexts),
 		SourceFiles:        shared.SortedKeys(c.sourceFileSet),
 		Warnings:           append([]string(nil), c.warnings...),
 	}
@@ -100,7 +122,7 @@ func (c *compileContextCollector) result() compileContext {
 	return result
 }
 
-func collectCompileDatabase(path, repoPath string, includeDirSet, sourceFileSet map[string]struct{}) ([]string, error) {
+func collectCompileDatabase(path, repoPath string, includeDirSet map[string]struct{}, includeSearchPathSet map[string]includeSearchPath, sourceIncludeDirs map[string][]includeSearchPath, sourceContexts *[]compileSourceContext, sourceFileSet map[string]struct{}) ([]string, error) {
 	entries, warnings, err := readCompileDatabase(path, repoPath)
 	if err != nil || len(entries) == 0 {
 		return warnings, err
@@ -108,8 +130,19 @@ func collectCompileDatabase(path, repoPath string, includeDirSet, sourceFileSet 
 
 	for _, entry := range entries {
 		baseDir := resolveCompileDirectory(path, entry.Directory)
-		recordCompileSource(sourceFileSet, resolveCompilePath(baseDir, entry.File))
-		recordCompileIncludes(includeDirSet, entry.compileArgs(), baseDir)
+		sourcePath := resolveCompilePath(baseDir, entry.File)
+		recordCompileSource(sourceFileSet, sourcePath)
+		includePaths := extractIncludeSearchPaths(entry.compileArgs(), baseDir)
+		recordCompileIncludes(includeDirSet, includeSearchPathSet, includePaths)
+		if sourcePath != "" && isCPPSourceFile(sourcePath) {
+			if _, ok := sourceIncludeDirs[sourcePath]; !ok {
+				sourceIncludeDirs[sourcePath] = append([]includeSearchPath(nil), includePaths...)
+			}
+			*sourceContexts = append(*sourceContexts, compileSourceContext{
+				Path:               sourcePath,
+				IncludeSearchPaths: append([]includeSearchPath(nil), includePaths...),
+			})
+		}
 	}
 	return warnings, nil
 }
@@ -149,10 +182,20 @@ func recordCompileSource(sourceFileSet map[string]struct{}, sourcePath string) {
 	sourceFileSet[sourcePath] = struct{}{}
 }
 
-func recordCompileIncludes(includeDirSet map[string]struct{}, args []string, baseDir string) {
-	for _, includeDir := range extractIncludeDirs(args, baseDir) {
-		if includeDir != "" {
-			includeDirSet[includeDir] = struct{}{}
+func recordCompileIncludes(includeDirSet map[string]struct{}, includeSearchPathSet map[string]includeSearchPath, includePaths []includeSearchPath) {
+	for _, includePath := range includePaths {
+		if includePath.Path == "" {
+			continue
+		}
+		includeDirSet[includePath.Path] = struct{}{}
+		existing, ok := includeSearchPathSet[includePath.Path]
+		switch {
+		case !ok:
+			includeSearchPathSet[includePath.Path] = includePath
+		case includePath.System && !existing.System:
+			includeSearchPathSet[includePath.Path] = includePath
+		case existing.QuoteOnly && !includePath.QuoteOnly:
+			includeSearchPathSet[includePath.Path] = includePath
 		}
 	}
 }
@@ -177,30 +220,55 @@ func resolveCompilePath(base, value string) string {
 }
 
 func extractIncludeDirs(args []string, baseDir string) []string {
+	paths := extractIncludeSearchPaths(args, baseDir)
 	seen := make(map[string]struct{})
 	items := make([]string, 0)
+	for _, includePath := range paths {
+		addIncludeDir(includePath.Path, seen, &items)
+	}
+	sort.Strings(items)
+	return items
+}
+
+func extractIncludeSearchPaths(args []string, baseDir string) []includeSearchPath {
+	items := make([]includeSearchPath, 0)
+	promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots := compilerDefaultSystemRootPromotion(args)
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" {
 			continue
 		}
 		switch {
+		case arg == nostdincFlag || arg == nostdincxxFlag || arg == nostdlibincFlag:
 		case arg == includeFlag || arg == isystemFlag || arg == iquoteFlag:
 			if i+1 >= len(args) {
 				continue
 			}
 			i++
-			addIncludeDir(resolveCompilePath(baseDir, args[i]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, args[i]), arg == isystemFlag, arg == iquoteFlag, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		case strings.HasPrefix(arg, includeFlag) && len(arg) > len(includeFlag):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len(includeFlag):]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(includeFlag):]), false, false, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		case strings.HasPrefix(arg, isystemFlag) && len(arg) > len(isystemFlag):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len(isystemFlag):]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(isystemFlag):]), true, false, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		case strings.HasPrefix(arg, iquoteFlag) && len(arg) > len(iquoteFlag):
-			addIncludeDir(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), seen, &items)
+			addIncludeSearchPath(resolveCompilePath(baseDir, arg[len(iquoteFlag):]), false, true, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots, &items)
 		}
 	}
-	sort.Strings(items)
-	return items
+	return normalizeCompileSearchPaths(items)
+}
+
+func compilerDefaultSystemRootPromotion(args []string) (bool, bool) {
+	promoteCSystemRoots := true
+	promoteCXXSystemRoots := true
+	for _, raw := range args {
+		switch strings.TrimSpace(raw) {
+		case nostdincFlag, nostdlibincFlag:
+			return false, false
+		case nostdincxxFlag:
+			promoteCXXSystemRoots = false
+		}
+	}
+	return promoteCSystemRoots, promoteCXXSystemRoots
 }
 
 func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
@@ -213,4 +281,235 @@ func addIncludeDir(path string, seen map[string]struct{}, items *[]string) {
 	}
 	seen[path] = struct{}{}
 	*items = append(*items, path)
+}
+
+func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots bool, items *[]includeSearchPath) {
+	if path == "" {
+		return
+	}
+	path = filepath.Clean(path)
+	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(canonicalIncludeRoot(path), promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots) {
+		system = true
+	}
+	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})
+}
+
+// canonicalIncludeRoot resolves symlinks in path for the purpose of
+// compiler-default-root comparison, so a -I root that's merely a symlink
+// alias for a real default (e.g. a sysroot staging directory symlinked to
+// /usr/include) is still recognized -- matching GCC's own `-E -v` output,
+// which resolves such aliases and lists the real target path rather than
+// the alias. Falls back to the literal cleaned path when it can't be
+// resolved (doesn't exist, permission denied, etc.), since an unresolvable
+// path can't be a resolved symlink to anything either -- this keeps
+// existing behavior for the common case of synthetic, non-existent -I
+// paths (as most compile database entries in practice, and in this
+// package's own tests, are).
+func canonicalIncludeRoot(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return filepath.Clean(resolved)
+}
+
+func isCompilerDefaultSystemIncludeRoot(path string, promoteCSystemRoots, promoteCXXSystemRoots bool) bool {
+	path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	if path == "" {
+		return false
+	}
+	if promoteCSystemRoots && isCompilerDefaultCSystemIncludeRoot(path) {
+		return true
+	}
+	return promoteCXXSystemRoots && isCompilerDefaultCXXSystemIncludeRoot(path)
+}
+
+func isCompilerDefaultCSystemIncludeRoot(path string) bool {
+	switch path {
+	case "/usr/include", "/usr/local/include", "/mingw/include", "/mingw64/include":
+		return true
+	}
+	switch strings.ToLower(path) {
+	case "/mingw/include", "/mingw64/include":
+		return true
+	}
+	return isDefaultUsrIncludeCSubroot(path) ||
+		isDefaultCompilerRuntimeIncludeRoot(path) ||
+		isDefaultAppleCSystemIncludeRoot(path)
+}
+
+func isCompilerDefaultCXXSystemIncludeRoot(path string) bool {
+	return isDefaultUsrIncludeCXXSubroot(path) ||
+		isDefaultAppleCXXSystemIncludeRoot(path)
+}
+
+func isDefaultUsrIncludeCSubroot(path string) bool {
+	const prefix = "/usr/include/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(suffix, "/")
+	return len(parts) == 1 && isLikelyMultiarchIncludePrefix(parts[0])
+}
+
+// isDefaultUsrIncludeCXXSubroot reports whether path is one of the exact
+// roots GCC's own driver adds automatically for C++ under /usr/include --
+// verified against `g++ -E -v`'s own search list: the plain version root
+// (c++/<version>), its multiarch variant (<multiarch>/c++/<version>), and
+// the version root's "backward" subdirectory. Any other subdirectory
+// nested under c++/<version>/ (e.g. a vendor's own "ext" or "vendor"
+// directory placed inside the compiler's include tree) is not something
+// GCC adds on its own, so an explicit -I for it should not be silently
+// promoted to system provenance.
+func isDefaultUsrIncludeCXXSubroot(path string) bool {
+	const prefix = "/usr/include/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(suffix, "/")
+	switch {
+	case len(parts) == 2 && parts[0] == "c++" && parts[1] != "":
+		return true
+	case len(parts) == 3 && parts[0] == "c++" && parts[1] != "" && parts[2] == "backward":
+		return true
+	case len(parts) == 3 && isLikelyMultiarchIncludePrefix(parts[0]) && parts[1] == "c++" && parts[2] != "":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDefaultAppleCSystemIncludeRoot(path string) bool {
+	path = strings.ToLower(path)
+	return isDefaultAppleCompilerRuntimeIncludeRoot(path) ||
+		isDefaultAppleSDKCIncludeRoot(path)
+}
+
+func isDefaultAppleCXXSystemIncludeRoot(path string) bool {
+	return isDefaultAppleSDKCXXIncludeRoot(strings.ToLower(path))
+}
+
+func isDefaultAppleSDKCIncludeRoot(path string) bool {
+	return isDefaultAppleSDKIncludeRoot(path) && !strings.Contains(path, appleSDKUsrCXXIncludeFragment)
+}
+
+func isDefaultAppleSDKCXXIncludeRoot(path string) bool {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, appleSDKUsrCXXIncludeFragment) {
+		return false
+	}
+	return true
+}
+
+func isDefaultAppleSDKIncludeRoot(path string) bool {
+	if !strings.Contains(path, "/sdks/") || !strings.Contains(path, appleSDKUsrIncludeFragment) {
+		return false
+	}
+	return strings.HasSuffix(path, appleSDKUsrIncludeFragment) ||
+		strings.Contains(path, appleSDKUsrCXXIncludeFragment)
+}
+
+func isDefaultAppleCompilerRuntimeIncludeRoot(path string) bool {
+	if !strings.HasSuffix(path, "/include") && !strings.HasSuffix(path, "/include-fixed") {
+		return false
+	}
+	return strings.HasPrefix(path, "/library/developer/commandlinetools/usr/lib/clang/") ||
+		strings.Contains(path, ".xctoolchain/usr/lib/clang/")
+}
+
+func isDefaultCompilerRuntimeIncludeRoot(path string) bool {
+	if !strings.HasSuffix(path, "/include") && !strings.HasSuffix(path, "/include-fixed") {
+		return false
+	}
+	for _, prefix := range []string{
+		"/usr/lib/gcc/",
+		"/usr/lib/clang/",
+		"/usr/local/lib/gcc/",
+		"/usr/local/lib/clang/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return (strings.HasPrefix(path, "/opt/homebrew/") || strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/")) &&
+		(strings.Contains(path, "/lib/gcc/") || strings.Contains(path, "/lib/clang/"))
+}
+
+func normalizeCompileSearchPaths(paths []includeSearchPath) []includeSearchPath {
+	systemPaths := compileSystemPathSet(paths)
+	result := make([]includeSearchPath, 0, len(paths))
+	result = appendCompileSearchPaths(result, paths, make(map[string]struct{}), func(includePath includeSearchPath) bool {
+		return includePath.QuoteOnly
+	})
+	result = appendCompileSearchPaths(result, paths, make(map[string]struct{}), func(includePath includeSearchPath) bool {
+		_, existsAsSystem := systemPaths[includePath.Path]
+		return !includePath.QuoteOnly && !includePath.System && !existsAsSystem
+	})
+	result = appendCompileSearchPaths(result, paths, make(map[string]struct{}), func(includePath includeSearchPath) bool {
+		return includePath.System
+	})
+	return result
+}
+
+func compileSystemPathSet(paths []includeSearchPath) map[string]struct{} {
+	systemPaths := make(map[string]struct{})
+	for _, includePath := range paths {
+		if includePath.System {
+			systemPaths[includePath.Path] = struct{}{}
+		}
+	}
+	return systemPaths
+}
+
+func appendCompileSearchPaths(result []includeSearchPath, paths []includeSearchPath, seen map[string]struct{}, include func(includeSearchPath) bool) []includeSearchPath {
+	for _, includePath := range paths {
+		if includePath.Path == "" || !include(includePath) {
+			continue
+		}
+		if _, ok := seen[includePath.Path]; ok {
+			continue
+		}
+		seen[includePath.Path] = struct{}{}
+		result = append(result, includePath)
+	}
+	return result
+}
+
+func sortedIncludeSearchPaths(paths map[string]includeSearchPath) []includeSearchPath {
+	keys := make([]string, 0, len(paths))
+	for key := range paths {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]includeSearchPath, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, paths[key])
+	}
+	return result
+}
+
+func copySourceIncludeDirs(sourceIncludeDirs map[string][]includeSearchPath) map[string][]includeSearchPath {
+	if len(sourceIncludeDirs) == 0 {
+		return nil
+	}
+	result := make(map[string][]includeSearchPath, len(sourceIncludeDirs))
+	for source, paths := range sourceIncludeDirs {
+		result[source] = append([]includeSearchPath(nil), paths...)
+	}
+	return result
+}
+
+func copyCompileSourceContexts(contexts []compileSourceContext) []compileSourceContext {
+	if len(contexts) == 0 {
+		return nil
+	}
+	result := make([]compileSourceContext, 0, len(contexts))
+	for _, context := range contexts {
+		result = append(result, compileSourceContext{
+			Path:               context.Path,
+			IncludeSearchPaths: append([]includeSearchPath(nil), context.IncludeSearchPaths...),
+		})
+	}
+	return result
 }
