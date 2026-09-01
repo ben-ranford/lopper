@@ -132,6 +132,57 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 	}
 }
 
+// TestBenchGateFingerprintsDotlessExternalModuleImport proves a named import
+// of an external module with a dotless, slash-free path (valid via a local
+// replace directive, as tested here) still counts as able to affect the
+// benchmark. The benchmark and an ordinary Test-prefixed function compile
+// into the same test binary, so that import's init() runs regardless of
+// whether the import path looks like a typical hosted module path.
+func TestBenchGateFingerprintsDotlessExternalModuleImport(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	// Extend the real go.mod/go.sum rather than replacing them: the fixture
+	// also carries copies of internal/safeio's real sources (via
+	// writeRepositoryHarness), and those need their own real transitive
+	// dependencies (golang.org/x/sys) to resolve.
+	realGoMod, err := os.ReadFile(repoPath(t, "go.mod"))
+	if err != nil {
+		t.Fatalf("read real go.mod: %v", err)
+	}
+	realGoSum, err := os.ReadFile(repoPath(t, "go.sum"))
+	if err != nil {
+		t.Fatalf("read real go.sum: %v", err)
+	}
+	fixture.writeFile("go.mod", string(realGoMod)+"\nrequire foo v0.0.0\n\nreplace foo => ./foovendor\n")
+	fixture.writeFile("go.sum", string(realGoSum))
+	fixture.writeFile("foovendor/go.mod", "module foo\n\ngo 1.27.0\n")
+	fixture.writeFile("foovendor/foo.go", "package foo\n\nfunc init() {}\n\nfunc Configure() {}\n")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
+		"setup_test.go": `package benchpkg
+
+import (
+	"testing"
+
+	"foo"
+)
+
+func TestOnly(t *testing.T) {
+	foo.Configure()
+}
+`,
+	}))
+	fixture.commit("base")
+
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"setup_test.go": `package benchpkg
+
+import "testing"
+
+func TestOnly(t *testing.T) {}
+`})
+	fixture.commit("head")
+
+	assertBenchGateHarnessMismatch(t, fixture)
+}
+
 func importInitSetupPackageFiles(setupTestFile string) map[string]string {
 	return benchmarkHarnessPackageFiles(map[string]string{
 		"setup_test.go": setupTestFile,

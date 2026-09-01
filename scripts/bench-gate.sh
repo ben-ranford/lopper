@@ -397,7 +397,6 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 	parsed := make(map[string]*ast.File, len(files))
 	decls := make(map[string][]harnessDecl)
 	roots := make([]harnessDecl, 0)
-	modulePath := modulePathForDir(dir)
 	for _, rel := range files {
 		abs := filepath.Join(dir, filepath.FromSlash(rel))
 		file, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.ParseComments)
@@ -409,7 +408,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			for _, name := range declaredNames(decl) {
 				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
 			}
-			if rootDeclarationCanAffectBenchmark(decl, modulePath) {
+			if rootDeclarationCanAffectBenchmark(decl) {
 				roots = append(roots, harnessDecl{file: rel, decl: decl})
 			}
 		}
@@ -514,12 +513,12 @@ func declarationTokenCanAffectBenchmark(tok token.Token) bool {
 	return tok == token.CONST || tok == token.TYPE || tok == token.VAR
 }
 
-func rootDeclarationCanAffectBenchmark(decl ast.Decl, modulePath string) bool {
+func rootDeclarationCanAffectBenchmark(decl ast.Decl) bool {
 	switch typed := decl.(type) {
 	case *ast.FuncDecl:
 		return rootFunctionCanAffectBenchmark(typed)
 	case *ast.GenDecl:
-		return rootGenDeclCanAffectBenchmark(typed, modulePath)
+		return rootGenDeclCanAffectBenchmark(typed)
 	default:
 		return false
 	}
@@ -536,10 +535,10 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
 }
 
-func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modulePath string) bool {
+func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
 	switch decl.Tok {
 	case token.IMPORT:
-		return genDeclHasBenchmarkImport(decl, modulePath)
+		return genDeclHasBenchmarkImport(decl)
 	case token.VAR:
 		return genDeclHasInitializedVar(decl)
 	default:
@@ -547,25 +546,26 @@ func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modulePath string) bool {
 	}
 }
 
-func genDeclHasBenchmarkImport(decl *ast.GenDecl, modulePath string) bool {
+func genDeclHasBenchmarkImport(decl *ast.GenDecl) bool {
 	for _, spec := range decl.Specs {
 		importSpec, ok := spec.(*ast.ImportSpec)
-		if ok && importCanAffectBenchmark(importSpec, modulePath) {
+		if ok && importCanAffectBenchmark(importSpec) {
 			return true
 		}
 	}
 	return false
 }
 
-func importCanAffectBenchmark(spec *ast.ImportSpec, modulePath string) bool {
+// importCanAffectBenchmark reports whether spec can affect benchmark setup.
+// Every non-embed import counts, regardless of path shape or blank-name
+// status: the benchmark and every ordinary test in the same package are
+// compiled into one test binary, so any named import's init() still runs
+// even if only an ordinary Test-prefixed function references it, and Go
+// modules place no format requirement on an import path (a bare, dotless
+// name is a fully valid external module reference via a replace directive).
+func importCanAffectBenchmark(spec *ast.ImportSpec) bool {
 	path := importPath(spec)
-	if path == "" || path == "embed" {
-		return false
-	}
-	if spec.Name != nil && spec.Name.Name == "_" {
-		return true
-	}
-	return mayHaveExternalInitSideEffects(path, modulePath)
+	return path != "" && path != "embed"
 }
 
 func importPath(spec *ast.ImportSpec) string {
@@ -577,40 +577,6 @@ func importPath(spec *ast.ImportSpec) string {
 		return ""
 	}
 	return value
-}
-
-func mayHaveExternalInitSideEffects(importPath, modulePath string) bool {
-	if modulePath != "" && (importPath == modulePath || strings.HasPrefix(importPath, modulePath+"/")) {
-		return true
-	}
-	firstSegment, _, _ := strings.Cut(importPath, "/")
-	return strings.Contains(firstSegment, ".") || strings.Contains(importPath, "/") || strings.HasPrefix(importPath, ".")
-}
-
-func modulePathForDir(dir string) string {
-	current := filepath.Clean(dir)
-	for {
-		content, err := os.ReadFile(filepath.Join(current, "go.mod"))
-		if err == nil {
-			return parseModulePath(content)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		current = parent
-	}
-}
-
-func parseModulePath(content []byte) string {
-	scanner := bufio.NewScanner(strings.NewReader(string(content)))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 && fields[0] == "module" {
-			return fields[1]
-		}
-	}
-	return ""
 }
 
 func genDeclHasInitializedVar(decl *ast.GenDecl) bool {
