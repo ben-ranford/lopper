@@ -426,7 +426,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			if recvType := methodReceiverTypeName(decl); recvType != "" {
 				decls[recvType] = append(decls[recvType], harnessDecl{file: rel, decl: decl})
 			}
-			for _, name := range importLocalAliasNames(decl) {
+			for _, name := range importLocalNames(decl) {
 				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
 			}
 			if rootDeclarationCanAffectBenchmark(decl, modInfo) {
@@ -673,17 +673,30 @@ func receiverTypeExprName(expr ast.Expr) string {
 	}
 }
 
-// importLocalAliasNames returns the explicit local aliases decl's import
-// specs bind, so an import can enter the reachability graph the same way
-// any other declaration does: by a reachable decl referencing its local
-// name (e.g. a benchmark calling rng.Read after `import rng "crypto/rand"`).
-// This is scoped to explicit aliases only, not every unaliased import's
-// derived default name -- unaliased default names (like "testing" or
-// "fmt") are shared by many unrelated files, and indexing those too would
-// let an unrelated file's reachable identifier of the same name pull in
-// that file's whole import block, reintroducing the over-inclusion this
-// selector already avoids for ubiquitous standard-library imports.
-func importLocalAliasNames(decl ast.Decl) []string {
+// importLocalNames returns the explicit local aliases decl's import specs
+// bind, so an import can enter the reachability graph the same way any
+// other declaration does: by a reachable decl referencing its local name
+// (e.g. a benchmark calling rng.Read after `import rng "crypto/rand"`).
+//
+// This is deliberately scoped to explicit aliases only, not every
+// unaliased import's derived default name. An earlier version of this
+// selector indexed default names too, on the theory that
+// selectedDeclarationsSourceHash only hashes the reached import decl's own
+// bytes, not the rest of the file, so cross-file collisions on a common
+// name like "testing" would be harmless. That theory missed that the
+// harness fingerprint also hashes which FILES appear in the manifest, not
+// just their selected bytes: merely adding a brand-new ordinary test file
+// that imports "testing" (true of nearly every _test.go file) made it a
+// newly reachable file the moment any benchmark referenced "testing" --
+// which is virtually always, since every benchmark takes a *testing.B.
+// That turned "add an unrelated ordinary test to a package with
+// benchmarks" into a guaranteed harness-fingerprint mismatch, a far more
+// common and more disruptive regression than the retained-alias gap this
+// mechanism exists to close. Explicit aliases don't have this problem in
+// practice: they're deliberately chosen and rarely collide with an
+// unrelated file's alias of the same name the way default names for
+// ubiquitous stdlib packages do.
+func importLocalNames(decl ast.Decl) []string {
 	genDecl, ok := decl.(*ast.GenDecl)
 	if !ok || genDecl.Tok != token.IMPORT {
 		return nil
