@@ -117,8 +117,10 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 	if !req.RequireCompleteCoverage {
 		return nil
 	}
-	if paths := coverageGapPaths(reportData.CoverageGaps); len(paths) > 0 {
-		return fmt.Errorf("%w: adapter %s at %s reported coverage gaps: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(paths, ", "))
+	if !req.DeferCoverageGapEnforcement {
+		if paths := coverageGapPaths(reportData.CoverageGaps); len(paths) > 0 {
+			return fmt.Errorf("%w: adapter %s at %s reported coverage gaps: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(paths, ", "))
+		}
 	}
 	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
 	if len(dependencies) == 0 {

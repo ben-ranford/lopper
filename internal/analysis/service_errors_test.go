@@ -215,6 +215,38 @@ func TestRunCandidateOnRootsCoverageGapIsFatalWhenRequired(t *testing.T) {
 	}
 }
 
+// TestRunCandidateOnRootsDeferredCoverageGapDoesNotFail proves
+// DeferCoverageGapEnforcement (set by PR review, which collects gaps into
+// its own base/head comparison instead of failing a revision immediately)
+// suppresses only the CoverageGaps check, not the broader
+// RequireCompleteCoverage mechanism: the gap-bearing report is returned
+// rather than rejected.
+func TestRunCandidateOnRootsDeferredCoverageGapDoesNotFail(t *testing.T) {
+	adapter := &testServiceAdapter{
+		id:     "ruby",
+		detect: language.Detection{Matched: true, Confidence: 90},
+		analyse: report.Report{CoverageGaps: []report.CoverageGap{{
+			Code: "ruby-oversized-gemspec",
+			Path: "big.gemspec",
+		}}},
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	reports, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                    ".",
+		Language:                    "ruby",
+		RequireCompleteCoverage:     true,
+		DeferCoverageGapEnforcement: true,
+	}, ".", candidate, nil)
+	if err != nil {
+		t.Fatalf("expected deferred coverage gap enforcement to let the revision analyse, got %v", err)
+	}
+	if len(reports) != 1 || len(reports[0].CoverageGaps) != 1 {
+		t.Fatalf("expected the coverage gap to be preserved on the returned report, got %#v", reports)
+	}
+}
+
 func TestRunCandidateOnRootsIncompleteCoverageReportPreservesOrdinaryPartialBehavior(t *testing.T) {
 	for _, tt := range []struct {
 		name string

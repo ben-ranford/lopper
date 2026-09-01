@@ -382,6 +382,12 @@ func (a *App) analysePRReviewWorktree(ctx context.Context, repoPath, callerRepoP
 		IncludePatterns:      append([]string{}, req.IncludePatterns...),
 		ExcludePatterns:      append([]string{}, req.ExcludePatterns...),
 		Features:             req.Features,
+		// PR review collects CoverageGaps into its own base/head comparison
+		// (see buildPRReviewArtifact) rather than failing a revision on
+		// first sight of one, so it must analyze both revisions even when
+		// RequireCompleteCoverage is set for other reasons (e.g. a
+		// reachable-vulnerability threshold).
+		DeferCoverageGapEnforcement: true,
 		Cache: &analysis.CacheOptions{
 			Enabled:  false,
 			ReadOnly: true,
