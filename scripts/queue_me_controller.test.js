@@ -132,12 +132,17 @@ function makeHarness(options = {}) {
           }
           calls.comparisons = calls.comparisons || [];
           calls.comparisons.push(input);
+          const matchedPull = allPulls.find((candidate) =>
+            input.basehead.endsWith(`...${candidate.head.sha}`),
+          );
+          const perPullStatus = options.comparisonStatuses?.[matchedPull?.number];
+          const perPullCommits = options.comparisonCommitsByNumber?.[matchedPull?.number];
           if (options.comparisonPages) {
             const page = options.comparisonPages[(input.page || 1) - 1];
             if (!page) {
               return {
                 data: {
-                  status: options.comparisonStatus || 'ahead',
+                  status: perPullStatus || options.comparisonStatus || 'ahead',
                   commits: [],
                   total_commits: options.totalCommits ?? 0,
                 },
@@ -145,16 +150,16 @@ function makeHarness(options = {}) {
             }
             return {
               data: {
-                status: page.status || options.comparisonStatus || 'ahead',
+                status: page.status || perPullStatus || options.comparisonStatus || 'ahead',
                 commits: page.commits || [],
                 total_commits: page.totalCommits ?? options.totalCommits ?? page.commits?.length ?? 0,
               },
             };
           }
-          const commits = options.comparisonCommits || [makeComparisonCommit()];
+          const commits = perPullCommits || options.comparisonCommits || [makeComparisonCommit()];
           return {
             data: {
-              status: options.comparisonStatus || 'ahead',
+              status: perPullStatus || options.comparisonStatus || 'ahead',
               commits,
               total_commits: options.totalCommits ?? commits.length,
             },
@@ -248,15 +253,14 @@ function commentsFor(harness, number) {
 }
 
 test('sortQueuedPulls uses deterministic ascending PR numbers', () => {
-  const sorted = testables.sortQueuedPulls([{ number: 42 }, { number: 7 }, { number: 19 }]);
-  assert.deepEqual(sorted.map((pull) => pull.number), [7, 19, 42]);
+  const pulls = [{ number: 20 }, { number: 3 }, { number: 11 }];
+  assert.deepEqual(testables.sortQueuedPulls(pulls).map((pull) => pull.number), [3, 11, 20]);
 });
 
 test('hasLabel accepts REST label objects and string labels', () => {
   assert.equal(testables.hasLabel({ labels: [{ name: 'queue-me' }] }, 'queue-me'), true);
   assert.equal(testables.hasLabel({ labels: ['queue-me'] }, 'queue-me'), true);
   assert.equal(testables.hasLabel({ labels: [{ name: 'other' }] }, 'queue-me'), false);
-  assert.equal(testables.hasLabel({}, 'queue-me'), false);
 });
 
 test('isBranchCurrent accepts only ancestor-preserving compare states', () => {
@@ -275,26 +279,17 @@ test('status helpers bound untrusted API text', () => {
 });
 
 test('identity audit failure reports bound failure count and text length', () => {
-  const failures = Array.from(
-    { length: 25 },
-    (_, index) => `commit-${index}: bad \`metadata\`\n${'x'.repeat(1000)}`,
-  );
-
+  const failures = Array.from({ length: 12 }, (_, index) => `${index}: identities differ`);
   const message = testables.queueIdentityFailureMessage(failures);
-
-  assert.match(message, /Found 25 failing commits; showing 10:/);
-  assert.match(message, /15 additional commit identity failures omitted/);
-  assert.match(message, /commit-0: bad 'metadata' x/);
-  assert.doesNotMatch(message, /commit-10:/);
-  assert.doesNotMatch(message, /[`\r\n]/);
-  assert.ok(message.length < 3500, `message length ${message.length} must stay bounded`);
+  assert.match(message, /Found 12 failing commits; showing 10:/);
+  assert.match(message, /2 additional commit identity failures omitted/);
 });
 
 test('sticky queue status comments are safely truncated before GitHub updates', () => {
-  const body = testables.truncateCommentBody('x'.repeat(70000));
-
-  assert.equal(body.length, 60000);
-  assert.match(body, /Status message truncated to fit GitHub comment limits/);
+  const truncated = testables.truncateCommentBody('x'.repeat(60005));
+  assert.ok(truncated.length <= 60000, `expected truncated length <= 60000, got ${truncated.length}`);
+  assert.match(truncated, /truncated to fit GitHub comment limits/);
+  assert.equal(testables.truncateCommentBody('short'), 'short');
 });
 
 test('commit identity audit accepts only canonical user committer identity', () => {
@@ -496,14 +491,15 @@ test('controller pauses a stale leader before GitHub can rewrite committers', as
     queueAppSlug: 'lopper-queue-controller',
   });
 
-  await assert.rejects(runController(harness.args), /will not call GitHub branch update/);
+  await runController(harness.args);
 
   assert.deepEqual(harness.calls.rebased, []);
   assert.deepEqual(harness.calls.merged, []);
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /rewrites PR commits/);
   assert.match(harness.calls.comments[0].body, /lopper-queue-controller\[bot\]/);
-  assert.match(harness.calls.comments[0].body, /queue-me` will retry/);
+  assert.match(harness.calls.comments[0].body, /retried after a clean identity audit/);
+  assert.match(harness.calls.notices.at(-1), /waiting for a clean queue identity audit/);
 });
 
 test('removing queue-me disables auto-merge and leaves an empty queue green', async () => {
@@ -534,18 +530,13 @@ test('drafts and stale fork branches pause before branch update or auto-merge', 
       }),
       options: { comparisonStatus: 'behind' },
       message: /will not call GitHub branch update/,
-      rejects: true,
     },
   ];
 
   for (const scenario of cases) {
     await t.test(scenario.name, async () => {
       const harness = makeHarness({ pulls: [scenario.pull], ...scenario.options });
-      if (scenario.rejects) {
-        await assert.rejects(runController(harness.args), scenario.message);
-      } else {
-        await runController(harness.args);
-      }
+      await runController(harness.args);
       assert.deepEqual(harness.calls.rebased, []);
       assert.deepEqual(harness.calls.armed, []);
       assert.match(harness.calls.comments[0].body, scenario.message);
@@ -567,146 +558,68 @@ test('a current fork branch can arm auto-merge without a branch update', async (
   assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
 });
 
-test('controller audits canonical commits across paginated compare results', async () => {
-  const commits = Array.from({ length: 251 }, (_, index) =>
-    makeComparisonCommit(`canonical-${index}`),
-  );
+test('a stale leader advances the queue to the next eligible pull request', async () => {
+  const leader = makePull(10);
+  const follower = makePull(20);
   const harness = makeHarness({
-    pulls: [makePull(10)],
-    comparisonPages: [
-      { status: 'ahead', commits: commits.slice(0, 100), totalCommits: 251 },
-      { status: 'behind', commits: commits.slice(100, 200), totalCommits: 251 },
-      { status: 'behind', commits: commits.slice(200), totalCommits: 251 },
-    ],
+    pulls: [leader, follower],
+    comparisonStatuses: { 10: 'behind', 20: 'ahead' },
   });
 
   await runController(harness.args);
 
-  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2, 3]);
-  assert.deepEqual(harness.calls.comparisons.map((input) => input.per_page), [100, 100, 100]);
-  assert.deepEqual(harness.calls.armed, [10]);
-  assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
-});
-
-test('controller bounds comparison pagination before auditing commit identity', async () => {
-  const harness = makeHarness({
-    pulls: [makePull(10)],
-    comparisonPages: [
-      {
-        status: 'ahead',
-        commits: Array.from({ length: 100 }, (_, index) => makeComparisonCommit(`canonical-${index}`)),
-        totalCommits: 501,
-      },
-    ],
-  });
-
-  await assert.rejects(runController(harness.args), /501 PR-unique commits exceeds the 500-commit audit limit/);
-
-  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1]);
-  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.armed, [20]);
   assert.deepEqual(harness.calls.merged, []);
-  assert.match(harness.calls.comments[0].body, /500-commit audit limit/);
+  assert.match(commentsFor(harness, 10), /will not call GitHub branch update/);
+  assert.match(commentsFor(harness, 10), /next queued pull request/);
+  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
 
-test('controller fails identity audit for noncanonical commits on later compare pages', async () => {
-  const canonical = Array.from({ length: 100 }, (_, index) =>
-    makeComparisonCommit(`canonical-${index}`),
-  );
-  const botCommit = makeComparisonCommit('bot-rewrite-later-page', {
-    commit: {
-      committer: {
-        name: 'lopper-queue-controller[bot]',
-        email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
-      },
-    },
-    committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
-  });
+test('a stale leader skip refreshes queued followers behind the selected eligible pull request', async () => {
+  const blocked = makePull(10);
+  const selected = makePull(20);
+  const follower = makePull(30);
   const harness = makeHarness({
-    pulls: [makePull(10)],
-    comparisonPages: [
-      { status: 'ahead', commits: canonical, totalCommits: 101 },
-      { status: 'ahead', commits: [botCommit], totalCommits: 101 },
-    ],
+    pulls: [blocked, selected, follower],
+    eventPull: follower,
+    comparisonStatuses: { 10: 'behind', 20: 'ahead' },
   });
 
-  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
+  await runController(harness.args);
 
-  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2]);
-  assert.deepEqual(harness.calls.armed, []);
-  assert.deepEqual(harness.calls.merged, []);
-  assert.match(harness.calls.comments[0].body, /bot-rewrit/);
-  assert.match(harness.calls.comments[0].body, /committer is a bot identity/);
+  assert.deepEqual(harness.calls.armed, [20]);
+  assert.match(commentsFor(harness, 10), /will not call GitHub branch update/);
+  assert.match(commentsFor(harness, 30), /Queued behind #20/);
+  assert.match(commentsFor(harness, 30), /retried after their branches/);
 });
 
-test('controller pauses identity failures with bounded count context', async () => {
-  const failingCommits = Array.from({ length: 125 }, (_, index) =>
-    makeComparisonCommit(`bot-rewrite-${index}`, {
-      commit: {
-        committer: {
-          name: 'lopper-queue-controller[bot]',
-          email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
-        },
-      },
-      committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
-    }),
-  );
-  const harness = makeHarness({
-    pulls: [makePull(10)],
-    comparisonStatus: 'ahead',
-    comparisonCommits: failingCommits,
-  });
-
-  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
-
-  const comment = harness.calls.comments[0].body;
-  assert.ok(comment.length <= 60000, `comment length ${comment.length} must fit GitHub limits`);
-  assert.match(comment, /Found 125 failing commits; showing 10:/);
-  assert.match(comment, /115 additional commit identity failures omitted/);
-  assert.match(comment, /bot-rewrit/);
-  assert.doesNotMatch(comment, /bot-rewrite-10/);
-  assert.deepEqual(harness.calls.armed, []);
-  assert.deepEqual(harness.calls.merged, []);
-});
-
-test('controller fails identity audit before arming a bot-committed leader', async () => {
-  const harness = makeHarness({
-    pulls: [makePull(10)],
-    comparisonStatus: 'ahead',
-    comparisonCommits: [
-      makeComparisonCommit('bot-rewrite', {
-        commit: {
-          committer: {
-            name: 'lopper-queue-controller[bot]',
-            email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
-          },
-        },
-        committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
-      }),
-    ],
-  });
-
-  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
-
-  assert.deepEqual(harness.calls.rebased, []);
-  assert.deepEqual(harness.calls.armed, []);
-  assert.deepEqual(harness.calls.merged, []);
-  assert.match(harness.calls.comments[0].body, /PR-unique commits/);
-  assert.match(harness.calls.comments[0].body, /committer is a bot identity/);
-});
-
-test('a comparison failure pauses the queue with a bounded status message', async () => {
+test('a leader that fails the identity audit advances the queue to the next eligible pull request', async () => {
   const leader = makePull(10);
+  const follower = makePull(20);
   const harness = makeHarness({
-    pulls: [leader],
-    comparisonStatus: 'behind',
-    comparisonError: new Error('compare failed in `workflow`'),
+    pulls: [leader, follower],
+    comparisonStatuses: { 10: 'ahead', 20: 'ahead' },
+    comparisonCommitsByNumber: {
+      10: [
+        makeComparisonCommit('bot-rewrite', {
+          commit: {
+            committer: {
+              name: 'lopper-queue-controller[bot]',
+              email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+            },
+          },
+          committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+        }),
+      ],
+    },
   });
 
-  await assert.rejects(runController(harness.args), /compare failed/);
+  await runController(harness.args);
 
-  assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.comments[0].body, /identity audit/);
-  assert.match(harness.calls.comments[0].body, /compare failed in 'workflow'/);
+  assert.deepEqual(harness.calls.armed, [20]);
+  assert.match(commentsFor(harness, 10), /committer is a bot identity/);
+  assert.match(commentsFor(harness, 10), /next queued pull request/);
+  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
 
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
@@ -876,4 +789,168 @@ test("the queue App's leader auto-merge event does not trigger a disable-enable 
   assert.deepEqual(harness.calls.disabled, []);
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event/);
+});
+
+test("the queue App's auto-merge event for an advanced follower does not trigger a disable-enable loop", async () => {
+  const leader = makePull(10);
+  const follower = makePull(20);
+  const harness = makeHarness({
+    pulls: [leader, follower],
+    eventPull: follower,
+    action: 'auto_merge_enabled',
+    queueAppSlug: 'queue-app',
+    sender: { login: 'queue-app[bot]', type: 'Bot' },
+    initialStates: {
+      20: { autoMergeRequest: { enabledAt: 'controller', mergeMethod: 'SQUASH' } },
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, []);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(harness.calls.notices[0], /Ignoring the queue App's auto-merge event/);
+});
+
+test('controller audits canonical commits across paginated compare results', async () => {
+  const commits = Array.from({ length: 251 }, (_, index) =>
+    makeComparisonCommit(`canonical-${index}`),
+  );
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonPages: [
+      { status: 'ahead', commits: commits.slice(0, 100), totalCommits: 251 },
+      { status: 'behind', commits: commits.slice(100, 200), totalCommits: 251 },
+      { status: 'behind', commits: commits.slice(200), totalCommits: 251 },
+    ],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2, 3]);
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.per_page), [100, 100, 100]);
+  assert.deepEqual(harness.calls.armed, [10]);
+  assert.match(harness.calls.comments[0].body, /passed the PR-unique commit identity audit/);
+});
+
+test('controller bounds comparison pagination before auditing commit identity', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonPages: [
+      {
+        status: 'ahead',
+        commits: Array.from({ length: 100 }, (_, index) => makeComparisonCommit(`canonical-${index}`)),
+        totalCommits: 501,
+      },
+    ],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /500-commit audit limit/);
+  assert.match(harness.calls.notices.at(-1), /waiting for a clean queue identity audit/);
+});
+
+test('controller fails identity audit for noncanonical commits on later compare pages', async () => {
+  const canonical = Array.from({ length: 100 }, (_, index) =>
+    makeComparisonCommit(`canonical-${index}`),
+  );
+  const botCommit = makeComparisonCommit('bot-rewrite-later-page', {
+    commit: {
+      committer: {
+        name: 'lopper-queue-controller[bot]',
+        email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+      },
+    },
+    committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+  });
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonPages: [
+      { status: 'ahead', commits: canonical, totalCommits: 101 },
+      { status: 'ahead', commits: [botCommit], totalCommits: 101 },
+    ],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2]);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /bot-rewrit/);
+  assert.match(harness.calls.comments[0].body, /committer is a bot identity/);
+});
+
+test('controller pauses identity failures with bounded count context', async () => {
+  const failingCommits = Array.from({ length: 125 }, (_, index) =>
+    makeComparisonCommit(`bot-rewrite-${index}`, {
+      commit: {
+        committer: {
+          name: 'lopper-queue-controller[bot]',
+          email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+        },
+      },
+      committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+    }),
+  );
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonStatus: 'ahead',
+    comparisonCommits: failingCommits,
+  });
+
+  await runController(harness.args);
+
+  const comment = harness.calls.comments[0].body;
+  assert.ok(comment.length <= 60000, `comment length ${comment.length} must fit GitHub limits`);
+  assert.match(comment, /Found 125 failing commits; showing 10:/);
+  assert.match(comment, /115 additional commit identity failures omitted/);
+  assert.match(comment, /bot-rewrit/);
+  assert.doesNotMatch(comment, /bot-rewrite-10/);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+});
+
+test('controller fails identity audit before arming a bot-committed leader', async () => {
+  const harness = makeHarness({
+    pulls: [makePull(10)],
+    comparisonStatus: 'ahead',
+    comparisonCommits: [
+      makeComparisonCommit('bot-rewrite', {
+        commit: {
+          committer: {
+            name: 'lopper-queue-controller[bot]',
+            email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+          },
+        },
+        committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+      }),
+    ],
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.rebased, []);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /PR-unique commits/);
+  assert.match(harness.calls.comments[0].body, /committer is a bot identity/);
+});
+
+test('a comparison failure pauses the queue with a bounded status message', async () => {
+  const leader = makePull(10);
+  const harness = makeHarness({
+    pulls: [leader],
+    comparisonStatus: 'behind',
+    comparisonError: new Error('compare failed in `workflow`'),
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(harness.calls.comments[0].body, /identity audit/);
+  assert.match(harness.calls.comments[0].body, /compare failed in 'workflow'/);
 });

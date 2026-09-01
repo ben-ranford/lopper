@@ -239,7 +239,11 @@ bench-delta:
 
 export MEMORY_BENCH_BASE GO GO_BIN GO_TOOLCHAIN BENCH_COUNT BENCH_TIME MEMORY_BENCH_PACKAGES MEMORY_BENCH_MAX_BYTES_PCT MEMORY_BENCH_MAX_ALLOCS_PCT BENCH_BASE_OUTPUT BENCH_HEAD_OUTPUT MEMORY_BENCH_SUMMARY MEMORY_BENCH_STATUS MEMORY_BENCH_ENFORCE GO_TEST_LDFLAGS
 bench-gate:
-	@./scripts/bench-gate.sh
+	@if [ -x ./scripts/bench-gate-pr-base.sh ]; then \
+		./scripts/bench-gate-pr-base.sh ./scripts/bench-gate.sh; \
+	else \
+		./scripts/bench-gate.sh; \
+	fi
 
 .PHONY: benchdelta-cov
 benchdelta-cov:

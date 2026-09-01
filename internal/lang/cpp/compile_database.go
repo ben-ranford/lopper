@@ -288,7 +288,9 @@ func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefault
 		return
 	}
 	path = filepath.Clean(path)
-	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(canonicalIncludeRoot(path), promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots) {
+	if !system && !quoteOnly &&
+		(isCompilerDefaultSystemIncludeRoot(path, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots) ||
+			isCompilerDefaultSystemIncludeRoot(canonicalIncludeRoot(path), promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots)) {
 		system = true
 	}
 	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})
@@ -305,6 +307,12 @@ func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefault
 // existing behavior for the common case of synthetic, non-existent -I
 // paths (as most compile database entries in practice, and in this
 // package's own tests, are).
+//
+// Callers must check the literal path against the default-root patterns as
+// well as the canonicalized one: on real Debian/Ubuntu installs, a default
+// root such as /usr/lib/clang/<version> is itself commonly a symlink into
+// the llvm-<version> package layout, so resolving it can walk the path back
+// out of the recognized default-root shape entirely.
 func canonicalIncludeRoot(path string) string {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {

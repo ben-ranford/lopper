@@ -131,6 +131,11 @@ function assertCanonicalCommitIdentity(comparison) {
   if (failures.length > 0) {
     throw queuePauseError(queueIdentityFailureMessage(failures));
   }
+  if (comparison?.total_commits > MAX_QUEUE_IDENTITY_COMMITS) {
+    throw queuePauseError(
+      `Queue identity audit failed: ${comparison.total_commits} PR-unique commits exceeds the ${MAX_QUEUE_IDENTITY_COMMITS}-commit audit limit.`,
+    );
+  }
 }
 
 async function ensureQueueLabel(github, owner, repo, queueLabel) {
@@ -230,6 +235,42 @@ async function syncStatusComment(
     issue_number: number,
     body: nextBody,
   });
+}
+
+function followerStatusBody(leaderNumber, { conflictSkipped = false } = {}) {
+  const orderingSummary = conflictSkipped
+    ? 'Earlier queued pull requests that are not yet eligible are retried after their branches or the base branch change.'
+    : 'Pull requests advance in ascending number order.';
+  return `## Queue status\n\nQueued behind #${leaderNumber}. ${orderingSummary}`;
+}
+
+async function syncFollowerStatuses({
+  github,
+  owner,
+  repo,
+  followers,
+  leaderNumber,
+  eventQueueEntry,
+  eventAction,
+  conflictSkipped = false,
+  disableFollowers = false,
+}) {
+  for (const follower of followers) {
+    if (disableFollowers) {
+      await disableAutoMerge(github, owner, repo, follower.number);
+    }
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      follower.number,
+      followerStatusBody(leaderNumber, { conflictSkipped }),
+      {
+        createIfMissing:
+          eventQueueEntry?.number === follower.number && eventAction === 'labeled',
+      },
+    );
+  }
 }
 
 async function disableAutoMerge(github, owner, repo, number) {
@@ -409,14 +450,132 @@ async function reconcileEventPull({
   );
 }
 
-function isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug }) {
+function isQueueAppAutoMergeEvent({ context, queueAppSlug }) {
   return (
     context.eventName === 'pull_request_target' &&
     context.payload.action === 'auto_merge_enabled' &&
-    eventPull?.number === leader.number &&
-    queueAppSlug &&
+    Boolean(queueAppSlug) &&
     context.payload.sender?.login === `${queueAppSlug}[bot]`
   );
+}
+
+async function armOrMergeQueuedPull({
+  github,
+  owner,
+  repo,
+  candidate,
+  defaultBranch,
+  defaultBranchSHA,
+  update,
+}) {
+  try {
+    const { data: latestBranch } = await github.rest.repos.getBranch({
+      owner,
+      repo,
+      branch: defaultBranch,
+    });
+    if (latestBranch.commit.sha !== defaultBranchSHA) {
+      throw new Error(
+        `Default branch ${defaultBranch} moved from ${shortSHA(defaultBranchSHA)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
+      );
+    }
+    const state = await pullState(github, owner, repo, candidate.number);
+    if (state.headRefOid !== update.headSHA) {
+      throw new Error(
+        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
+      );
+    }
+    const result = await armOrMerge(github, state, {
+      expectedBaseRefName: defaultBranch,
+      expectedBaseRefOid: defaultBranchSHA,
+    });
+    const queueSummary = `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit.`;
+    const mergeSummary = result === 'merged'
+      ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
+      : 'Squash auto-merge is armed and will wait for the repository ruleset.';
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      candidate.number,
+      `## Queue status\n\n${queueSummary}\n\n${mergeSummary}`,
+    );
+  } catch (error) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      candidate.number,
+      `## Queue status\n\nQueue paused while enabling or completing squash auto-merge.\n\n\`${safeError(error)}\``,
+    );
+    throw error;
+  }
+}
+
+async function advanceQueuedPull({
+  github,
+  owner,
+  repo,
+  candidate,
+  defaultBranch,
+  defaultBranchSHA,
+  queueAppSlug,
+  hasFollower,
+}) {
+  await disableAutoMerge(github, owner, repo, candidate.number);
+  if (candidate.draft) {
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      candidate.number,
+      '## Queue status\n\nQueue paused: the oldest eligible queued pull request is still a draft.',
+    );
+    return false;
+  }
+  let update;
+  try {
+    update = await verifyHeadForQueue(github, candidate, defaultBranchSHA);
+  } catch (error) {
+    const pauseMessage = error?.queuePauseMessage ||
+      `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
+    const retrySummary = hasFollower
+      ? ' The queue will continue with the next queued pull request.'
+      : '';
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      candidate.number,
+      `## Queue status\n\nQueue paused: ${pauseMessage}${retrySummary}\n\n\`${safeError(error)}\``,
+    );
+    return true;
+  }
+  if (update.needsCurrentBase) {
+    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
+    const retrySummary = hasFollower
+      ? 'The queue will continue with the next queued pull request. This pull request will be retried after a clean identity audit.'
+      : 'This pull request will be retried after a clean identity audit.';
+    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. Push a history that contains current \`${defaultBranch}\` while preserving canonical author and committer identity. ${retrySummary}`;
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      candidate.number,
+      `## Queue status\n\nQueue paused: ${message}`,
+    );
+    return true;
+  }
+  await armOrMergeQueuedPull({
+    github,
+    owner,
+    repo,
+    candidate,
+    defaultBranch,
+    defaultBranchSHA,
+    update,
+  });
+  return false;
 }
 
 async function runController({
@@ -457,112 +616,52 @@ async function runController({
     return;
   }
 
-  const leader = queued[0];
-  if (isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug })) {
-    core.notice(`Ignoring the queue App's auto-merge event for leader #${leader.number}.`);
+  if (isQueueAppAutoMergeEvent({ context, queueAppSlug })) {
+    core.notice(`Ignoring the queue App's auto-merge event for #${eventPull.number}.`);
     return;
   }
+
   const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
-  for (const follower of queued.slice(1)) {
-    await disableAutoMerge(github, owner, repo, follower.number);
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      follower.number,
-      `## Queue status\n\nQueued behind #${leader.number}. Pull requests advance in ascending number order.`,
-      {
-        createIfMissing:
-          eventQueueEntry?.number === follower.number && context.payload.action === 'labeled',
-      },
-    );
-  }
-  await disableAutoMerge(github, owner, repo, leader.number);
-  if (leader.draft) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: the oldest queued pull request is still a draft.`,
-    );
-    return;
-  }
   const { data: branch } = await github.rest.repos.getBranch({
     owner,
     repo,
     branch: defaultBranch,
   });
-  let update;
-  try {
-    update = await verifyHeadForQueue(github, leader, branch.commit.sha);
-  } catch (error) {
-    const pauseMessage = error?.queuePauseMessage ||
-      `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
-    await syncStatusComment(
+
+  for (const [index, candidate] of queued.entries()) {
+    const shouldAdvance = await advanceQueuedPull({
       github,
       owner,
       repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: ${pauseMessage}\n\n\`${safeError(error)}\``,
-    );
-    throw error;
-  }
-  if (update.needsCurrentBase) {
-    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
-    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. Push a history that contains current \`${defaultBranch}\` while preserving canonical author and committer identity; \`${queueLabel}\` will retry after the clean identity audit.`;
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: ${message}`,
-    );
-    throw new Error(`Queue paused: ${message}`);
+      candidate,
+      defaultBranch,
+      defaultBranchSHA: branch.commit.sha,
+      queueAppSlug,
+      hasFollower: index + 1 < queued.length,
+    });
+    if (!shouldAdvance) {
+      // Followers behind the selected (or paused-on-draft) candidate were
+      // never individually visited by this loop, so their auto-merge and
+      // status comment are synced exactly once here -- syncing the full
+      // remaining suffix on every skipped candidate above would cost
+      // O(queue length squared) GitHub API calls for a long queue with
+      // several unready entries in a row.
+      await syncFollowerStatuses({
+        github,
+        owner,
+        repo,
+        followers: queued.slice(index + 1),
+        leaderNumber: candidate.number,
+        eventQueueEntry,
+        eventAction: context.payload.action,
+        conflictSkipped: index > 0,
+        disableFollowers: true,
+      });
+      return;
+    }
   }
 
-  try {
-    const { data: latestBranch } = await github.rest.repos.getBranch({
-      owner,
-      repo,
-      branch: defaultBranch,
-    });
-    if (latestBranch.commit.sha !== branch.commit.sha) {
-      throw new Error(
-        `Default branch ${defaultBranch} moved from ${shortSHA(branch.commit.sha)} to ${shortSHA(latestBranch.commit.sha)} while advancing the queue.`,
-      );
-    }
-    const state = await pullState(github, owner, repo, leader.number);
-    if (state.headRefOid !== update.headSHA) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
-      );
-    }
-    const result = await armOrMerge(github, state, {
-      expectedBaseRefName: defaultBranch,
-      expectedBaseRefOid: branch.commit.sha,
-    });
-    const queueSummary = `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit.`;
-    const mergeSummary = result === 'merged'
-      ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
-      : 'Squash auto-merge is armed and will wait for the repository ruleset.';
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\n${queueSummary}\n\n${mergeSummary}`,
-    );
-  } catch (error) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused while enabling or completing squash auto-merge.\n\n\`${safeError(error)}\``,
-    );
-    throw error;
-  }
+  core.notice('Every queued pull request is waiting for a clean queue identity audit after a base branch update.');
 }
 
 module.exports = runController;
@@ -572,6 +671,7 @@ module.exports.testables = {
   hasLabel,
   isBranchCurrent,
   isBotIdentity,
+  isQueueAppAutoMergeEvent,
   labelName,
   queueIdentityFailureMessage,
   safeError,
