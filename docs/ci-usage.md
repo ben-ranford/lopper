@@ -3,7 +3,7 @@
 This repository includes these GitHub Actions workflows:
 
 - `.github/workflows/ci.yml`: runs checks on pull requests
-- `.github/workflows/queue-me.yml`: serializes pull requests carrying the `queue-me` label, rebases the oldest numbered pull request onto current `main`, and arms squash auto-merge
+- `.github/workflows/queue-me.yml`: serializes pull requests carrying the `queue-me` label, verifies the oldest numbered pull request contains current `main` with canonical PR-unique commit identity, and arms squash auto-merge
 - `.github/workflows/release.yml`: release-please-backed stable release workflow. On pushes to `main`, it creates or updates a release PR from Conventional Commits; when that release PR is merged, it creates a draft semver GitHub release, publishes assets, publishes images, optionally publishes the VS Code extension, publishes the draft release, updates the GitHub Action floating tags, and then updates the Homebrew tap with:
   - Linux/Windows artifacts from Ubuntu (cross-compiled with `zig`)
   - Darwin artifact from macOS (native arch)
@@ -36,9 +36,9 @@ Stable release automation:
 
 ## Pull request auto-merge queue
 
-`.github/workflows/queue-me.yml` provides a repository-hosted queue for the default branch without requiring GitHub's organization-only merge queue feature. Apply the `queue-me` label to any open, non-draft pull request targeting `main`. The controller evaluates labeled pull requests in ascending PR-number order, rebases the first entry it can advance, and enables squash auto-merge so the existing ruleset remains authoritative for checks, Sonar, metadata, and resolved conversations. If an older queued pull request cannot be rebased because of merge conflicts, the controller records the blocker, skips to the next queued pull request, and retries the conflicted entry only after that branch receives an update. A merge or any other push to `main` causes the next eligible entry to be rebased against the new exact base. Removing `queue-me` disables that pull request's auto-merge and advances the remaining queue.
+`.github/workflows/queue-me.yml` provides a repository-hosted queue for the default branch without requiring GitHub's organization-only merge queue feature. Apply the `queue-me` label to any open, non-draft pull request targeting `main`. The controller evaluates labeled pull requests in ascending PR-number order, requires each candidate to already contain the exact current `main`, audits PR-unique commits for matching canonical user author and committer identity, and enables squash auto-merge so the existing ruleset remains authoritative for checks, Sonar, metadata, and resolved conversations. Because GitHub branch update would rewrite PR commits with the queue App bot as committer, the controller never rebases a branch itself; if a queued pull request does not yet contain current `main` or fails the identity audit, it records the blocker, skips to the next queued pull request, and retries the blocked entry only after that branch or `main` changes. A merge or any other push to `main` causes the next eligible entry to be audited against the new exact base. Removing `queue-me` disables that pull request's auto-merge and advances the remaining queue.
 
-The workflow uses `pull_request_target`, but it never checks out a repository tree. It downloads only `scripts/queue_me_controller.js` from the exact trusted `github.workflow_sha` through GitHub's Contents API, writes that blob to runner temporary storage, and executes it. API writes use a repository-scoped GitHub App installation token so the rebase-generated `synchronize` event can start normal CI without the recursive-workflow restrictions of `GITHUB_TOKEN`.
+The workflow uses `pull_request_target`, but it never checks out a repository tree. It downloads only `scripts/queue_me_controller.js` from the exact trusted `github.workflow_sha` through GitHub's Contents API, writes that blob to runner temporary storage, and executes it. API writes use a repository-scoped GitHub App installation token so label, comment, and auto-merge events can start normal CI without the recursive-workflow restrictions of `GITHUB_TOKEN`.
 
 Configure the controller once:
 
@@ -49,7 +49,7 @@ Configure the controller once:
 5. Add its private key as repository secret `QUEUE_APP_PRIVATE_KEY`.
 6. Run the `queue me` workflow manually once. This creates the `queue-me` label when it is missing and reports an empty queue successfully.
 
-If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Rebase conflicts, draft queue leaders, and stale fork branches pause the queue and update one sticky status comment on the blocking pull request. Fork pull requests must be rebased manually when stale because the repository-scoped App token cannot write to a contributor's fork; once current with the default branch, they can advance through normal squash auto-merge. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
+If the App configuration is absent, the workflow exits successfully with a notice and performs no writes. Draft queue leaders, stale leaders, and identity-audit failures pause the queue and update one sticky status comment on the blocking pull request. Once a pull request branch contains the current default branch and passes the canonical author/committer audit, the existing `queue-me` label remains the trigger for normal squash auto-merge. The controller never requests reviews; ordinary review and stale-approval policy remains owned by the repository ruleset.
 
 Validate the no-credential path locally with `act workflow_dispatch -W .github/workflows/queue-me.yml --job advance --strict`; it must report the inactive-controller notice, skip token creation and API writes, and complete successfully.
 
@@ -64,10 +64,10 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -78,11 +78,11 @@ jobs:
   os-smoke:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
       - run: make smoke
@@ -137,7 +137,7 @@ jobs:
   lopper:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
@@ -182,7 +182,7 @@ jobs:
 
       - name: Upsert Lopper PR comment
         if: ${{ always() }}
-        uses: actions/github-script@v9
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
         with:
           script: |
             const fs = require('node:fs');
@@ -255,7 +255,7 @@ jobs:
   lopper:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Generate Lopper SARIF
         uses: ben-ranford/lopper@v1.7.0
@@ -283,7 +283,8 @@ jobs:
 - `make mod-check`: enforce `go mod tidy -diff` and `go mod verify`
 - `make dup-check`: fail when **new/changed Go lines** exceed duplication max percentage versus base ref (defaults: `DUPLICATION_MAX=3`, `DUPLICATION_TOKEN_THRESHOLD=55`, `DUPLICATION_BASE=origin/main`)
 - Dup checker is pinned to immutable revision `DUPL_VERSION=f008fcf5e62793d38bda510ee37aab8b0c68e76c`.
-- `make suppression-check`: fail when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments
+- `make suppression-check`: fail closed when staged, working-tree, or branch-added source lines introduce inline suppression markers such as `nosonar`, `nosec`, `nolint`, `noqa`, `eslint-disable`, `ts-ignore`, `ts-expect-error`, and coverage-bypass comments unless each new exception includes tracking metadata. Set `SUPPRESSION_TRACKING_OUTPUT` to emit bounded JSON records for a trusted issue-publication job.
+- `make automation-integrity`: fail when GitHub Actions use mutable action refs, workflows use unapproved runners, automation examples lose JSON or mutation-guard contracts, release config is not parseable, or checked-in automation scripts fail syntax checks. This target requires Ruby, Node.js, Python 3, and POSIX shell tools; its runner allowlist is `ubuntu-latest`, `ubuntu-24.04-arm`, `macos-26`, and `macos-26-intel`.
 - `make format-check`: fail if `gofmt` changes are needed
 - `make security`: run `gosec`
 - `make vuln-check`: run `govulncheck`
@@ -293,13 +294,21 @@ jobs:
 - `make bench-gate`: compare curated memory benchmark deltas against a base ref (defaults: `MEMORY_BENCH_BASE=origin/main`, `MEMORY_BENCH_MAX_BYTES_PCT=15`, `MEMORY_BENCH_MAX_ALLOCS_PCT=10`)
 - `make cov`: run tests with coverage profile and enforce both minimum total coverage (`COVERAGE_MIN`, default `98`) and minimum per-package coverage (`COVERAGE_PACKAGE_MIN`, default `98`), excluding helper-only packages such as `internal/testutil`, `internal/testsupport`, and the local CI helper tool `tools/benchdelta`
 - `make smoke`: run cross-OS smoke checks (`mod-check + test-race + build`)
-- `make ci`: `format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
+- `make ci`: `automation-integrity + format-check + mod-check + lint + actionlint + shellcheck + dup-check + suppression-check + security + vuln-check + test + test-leaks + test-race + bench-gate + build + cov`
 - `make mem-profiles`: capture package-focused alloc-space summaries for the watched hotspot packages and write them under `.artifacts/memory-profiles/`
 - `make toolchain-check`: verify required cross toolchain binaries plus `shellcheck`
 - `make toolchain-install`: install required OS toolchains (`go`, `zig`, `shellcheck`) on macOS/Linux
 - `make tools-install`: install pinned Go-based CI tools locally (`golangci-lint`, `gostyle`, `gosec`, `actionlint`, `govulncheck`)
 - `make setup`: bootstrap toolchain + module download + readiness checks
 - `make release VERSION=<tag>`: build release archives in `dist/` (host platform by default)
+
+Inline suppression tracking:
+
+- New inline analysis suppressions must include same-line metadata: `rationale=<why this exception is needed>; owner=<GitHub handle or team>; remove-when=<specific removal condition>`.
+- `make suppression-check` defaults to read-only detection. It validates the metadata and, when `SUPPRESSION_TRACKING_OUTPUT` is set, writes a bounded `lopper-inline-suppressions-v1` JSON artifact whose fingerprint is stable across ordinary line moves while retaining the current line as display metadata.
+- GitHub Actions jobs that execute PR-controlled code must not provide issue-write credentials to `make ci` or `make suppression-check`. The repository CI verify job uploads the bounded suppression artifact as tokenless detection evidence, and the separate trusted `publish-pr-reports` job recomputes authoritative records from the PR diff before using `issues: write` to create or update one tracking issue per suppression fingerprint.
+- Trusted manual callers may set `SUPPRESSION_TRACKING_MODE=track` with an authenticated `gh` CLI to create or update issues directly. Read-only CI, release, and rolling validation should keep the default detection mode.
+- Existing suppressions outside the current diff remain governed by the existing diff-scoped check and are not backfilled by this gate.
 
 Coverage artifacts:
 

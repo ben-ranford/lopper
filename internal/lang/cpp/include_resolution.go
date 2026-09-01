@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -42,18 +43,51 @@ type scanResult struct {
 	Warnings          []string
 	UnresolvedCount   int
 	UnresolvedSamples []string
+	SkippedLargeFiles int
 	Catalog           dependencyCatalog
+
+	seenUnresolvedEvidence map[unresolvedIncludeEvidence]struct{}
 }
 
 type includeResolver struct {
-	repoPath    string
-	includeDirs []string
-	catalog     dependencyCatalog
+	repoPath                  string
+	includeDirs               []string
+	includeSearchPaths        []includeSearchPath
+	sourceIncludeDirs         map[string][]includeSearchPath
+	sourceIncludeSearchPaths  []includeSearchPath
+	hasSourceIncludeSearchSet bool
+	catalog                   dependencyCatalog
+}
+
+type scanInput struct {
+	Path               string
+	IncludeSearchPaths []includeSearchPath
+	HasCompileCommand  bool
 }
 
 type includeLookup struct {
 	sourcePath string
 	header     string
+	delimiter  byte
+}
+
+type includeSearchPath struct {
+	Path            string
+	System          bool
+	QuoteOnly       bool
+	ProvenanceKnown bool
+}
+
+type includeResolution struct {
+	Path            string
+	Resolved        bool
+	System          bool
+	ProvenanceKnown bool
+}
+
+type unresolvedIncludeEvidence struct {
+	Header   string
+	Location report.Location
 }
 
 type scanStage struct {
@@ -64,47 +98,62 @@ type scanStage struct {
 func scanRepo(ctx context.Context, repoPath string, compileInfo compileContext, catalog dependencyCatalog) (scanResult, error) {
 	stage := scanStage{
 		scanner: includeResolver{
-			repoPath:    repoPath,
-			includeDirs: compileInfo.IncludeDirs,
-			catalog:     catalog,
+			repoPath:           repoPath,
+			includeDirs:        compileInfo.IncludeDirs,
+			includeSearchPaths: compileInfo.IncludeSearchPaths,
+			sourceIncludeDirs:  compileInfo.SourceIncludeDirs,
+			catalog:            catalog,
 		},
 		result: scanResult{Catalog: catalog},
 	}
 
-	files, warnings, err := resolveScanFiles(ctx, repoPath, compileInfo)
+	inputs, warnings, err := resolveScanInputs(ctx, repoPath, compileInfo)
 	if err != nil {
 		return stage.result, err
 	}
 	stage.result.Warnings = append(stage.result.Warnings, warnings...)
-	if len(files) == 0 {
+	if len(inputs) == 0 {
 		stage.result.Warnings = append(stage.result.Warnings, "no C/C++ source files found for analysis")
 		return stage.result, nil
 	}
 
-	for _, path := range files {
-		if err := stage.process(ctx, path); err != nil {
+	for _, input := range inputs {
+		if err := stage.process(ctx, input); err != nil {
 			return stage.result, err
 		}
 	}
+	stage.result.appendLargeFileWarning()
 	stage.result.appendUnresolvedSummaryWarning()
 	return stage.result, nil
 }
 
-func resolveScanFiles(ctx context.Context, repoPath string, compileInfo compileContext) ([]string, []string, error) {
+func resolveScanInputs(ctx context.Context, repoPath string, compileInfo compileContext) ([]scanInput, []string, error) {
+	if len(compileInfo.SourceContexts) > 0 {
+		inputs, warnings, err := filterCompileSourceContexts(repoPath, compileInfo.SourceContexts)
+		if err != nil {
+			return nil, warnings, err
+		}
+		if len(inputs) > 0 {
+			return inputs, warnings, nil
+		}
+		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
+		files, err := walkCPPFiles(ctx, repoPath)
+		return scanInputsForFiles(files), warnings, err
+	}
 	if len(compileInfo.SourceFiles) > 0 {
 		files, warnings, err := filterCompileSourceHints(repoPath, compileInfo.SourceFiles)
 		if err != nil {
 			return nil, warnings, err
 		}
 		if len(files) > 0 {
-			return files, warnings, nil
+			return scanInputsForFiles(files), warnings, nil
 		}
 		warnings = append(warnings, "compile database did not yield valid in-repo source files; falling back to repo scan")
 		files, err = walkCPPFiles(ctx, repoPath)
-		return files, warnings, err
+		return scanInputsForFiles(files), warnings, err
 	}
 	files, err := walkCPPFiles(ctx, repoPath)
-	return files, nil, err
+	return scanInputsForFiles(files), nil, err
 }
 
 func filterCompileSourceHints(repoPath string, sourceFiles []string) ([]string, []string, error) {
@@ -142,15 +191,66 @@ func filterCompileSourceHints(repoPath string, sourceFiles []string) ([]string, 
 	return files, warnings, nil
 }
 
-func (s *scanStage) process(ctx context.Context, path string) error {
+func filterCompileSourceContexts(repoPath string, contexts []compileSourceContext) ([]scanInput, []string, error) {
+	inputs := make([]scanInput, 0, len(contexts))
+	warnings := make([]string, 0)
+
+	for _, context := range contexts {
+		sourcePath := filepath.Clean(context.Path)
+		if !shared.IsPathWithin(repoPath, sourcePath) {
+			warnings = append(warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", sourcePath))
+			continue
+		}
+
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				warnings = append(warnings, fmt.Sprintf("skipping compile database file missing from repo: %s", relOrBase(repoPath, sourcePath)))
+				continue
+			}
+			return nil, warnings, err
+		}
+		if info.IsDir() {
+			warnings = append(warnings, fmt.Sprintf("skipping compile database path that is not a file: %s", relOrBase(repoPath, sourcePath)))
+			continue
+		}
+
+		inputs = append(inputs, scanInput{
+			Path:               sourcePath,
+			IncludeSearchPaths: append([]includeSearchPath(nil), context.IncludeSearchPaths...),
+			HasCompileCommand:  true,
+		})
+	}
+
+	return inputs, warnings, nil
+}
+
+func scanInputsForFiles(files []string) []scanInput {
+	inputs := make([]scanInput, 0, len(files))
+	for _, file := range files {
+		inputs = append(inputs, scanInput{Path: file})
+	}
+	return inputs
+}
+
+func (s *scanStage) process(ctx context.Context, input scanInput) error {
 	if ctx != nil && ctx.Err() != nil {
 		return ctx.Err()
 	}
 
-	scanFile, unresolvedSamples, unresolvedCount, err := s.scanner.scanFile(path)
+	scanner := s.scanner
+	if input.HasCompileCommand {
+		scanner.sourceIncludeSearchPaths = input.IncludeSearchPaths
+		scanner.hasSourceIncludeSearchSet = true
+	}
+	scanFile, unresolvedEvidence, err := scanner.scanFile(input.Path)
 	if err != nil {
+		if shared.IsPureSentinelError(err, safeio.ErrFileTooLarge) {
+			s.result.SkippedLargeFiles++
+			return nil
+		}
 		if strings.Contains(strings.ToLower(err.Error()), "path escapes root") {
-			s.result.Warnings = append(s.result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", path))
+			s.result.Warnings = append(s.result.Warnings, fmt.Sprintf("skipping compile database file outside repo boundary: %s", input.Path))
 			return nil
 		}
 		return err
@@ -158,9 +258,29 @@ func (s *scanStage) process(ctx context.Context, path string) error {
 	if len(scanFile.Includes) > 0 {
 		s.result.Files = append(s.result.Files, scanFile)
 	}
-	s.result.UnresolvedCount += unresolvedCount
-	s.result.appendSampleWarnings(unresolvedSamples)
+	s.result.recordUnresolvedEvidence(unresolvedEvidence)
 	return nil
+}
+
+func (r *scanResult) recordUnresolvedEvidence(evidence []unresolvedIncludeEvidence) {
+	for _, item := range evidence {
+		if !r.recordUnresolvedItem(item) {
+			continue
+		}
+		r.UnresolvedCount++
+		r.appendSampleWarnings([]string{item.sample()})
+	}
+}
+
+func (r *scanResult) recordUnresolvedItem(item unresolvedIncludeEvidence) bool {
+	if r.seenUnresolvedEvidence == nil {
+		r.seenUnresolvedEvidence = make(map[unresolvedIncludeEvidence]struct{})
+	}
+	if _, ok := r.seenUnresolvedEvidence[item]; ok {
+		return false
+	}
+	r.seenUnresolvedEvidence[item] = struct{}{}
+	return true
 }
 
 func (r *scanResult) appendSampleWarnings(samples []string) {
@@ -172,6 +292,13 @@ func (r *scanResult) appendSampleWarnings(samples []string) {
 	}
 }
 
+func (r *scanResult) appendLargeFileWarning() {
+	if r.SkippedLargeFiles == 0 {
+		return
+	}
+	r.Warnings = append(r.Warnings, fmt.Sprintf("skipped %d large C/C++ source file(s) above %d bytes", r.SkippedLargeFiles, maxScannableCPPFile))
+}
+
 func (r *scanResult) appendUnresolvedSummaryWarning() {
 	if r.UnresolvedCount == 0 {
 		return
@@ -181,6 +308,10 @@ func (r *scanResult) appendUnresolvedSummaryWarning() {
 		message += ": " + strings.Join(r.UnresolvedSamples, ", ")
 	}
 	r.Warnings = append(r.Warnings, message)
+}
+
+func (e *unresolvedIncludeEvidence) sample() string {
+	return fmt.Sprintf("%s:%d:%s", e.Location.File, e.Location.Line, e.Header)
 }
 
 func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
@@ -198,11 +329,11 @@ func walkCPPFiles(ctx context.Context, repoPath string) ([]string, error) {
 	return files, nil
 }
 
-func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error) {
+func (r *includeResolver) scanFile(path string) (fileScan, []unresolvedIncludeEvidence, error) {
 	scan := fileScan{}
-	content, err := safeio.ReadFileUnder(r.repoPath, path)
+	content, err := safeio.ReadFileUnderLimit(r.repoPath, path, maxScannableCPPFile)
 	if err != nil {
-		return scan, nil, 0, err
+		return scan, nil, err
 	}
 
 	relative, err := filepath.Rel(r.repoPath, path)
@@ -212,16 +343,19 @@ func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error)
 	scan.Path = relative
 
 	parsed := parseIncludes(content)
-	unresolvedSamples := make([]string, 0)
-	unresolvedCount := 0
+	unresolvedEvidence := make([]unresolvedIncludeEvidence, 0)
 	for _, include := range parsed {
 		dependency, unresolved := r.mapIncludeToDependency(path, include)
 		if dependency == "" {
 			if unresolved {
-				unresolvedCount++
-				if len(unresolvedSamples) < maxWarningSamples {
-					unresolvedSamples = append(unresolvedSamples, fmt.Sprintf("%s:%d:%s", relative, include.Line, include.Path))
-				}
+				unresolvedEvidence = append(unresolvedEvidence, unresolvedIncludeEvidence{
+					Header: include.Path,
+					Location: report.Location{
+						File:   relative,
+						Line:   include.Line,
+						Column: include.Column,
+					},
+				})
 			}
 			continue
 		}
@@ -236,7 +370,7 @@ func (r *includeResolver) scanFile(path string) (fileScan, []string, int, error)
 		})
 	}
 
-	return scan, unresolvedSamples, unresolvedCount, nil
+	return scan, unresolvedEvidence, nil
 }
 
 func parseIncludes(content []byte) []parsedInclude {
@@ -332,19 +466,23 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	if include.Delimiter != '<' && include.Delimiter != '"' {
 		return "", true
 	}
-	if isLikelyStdHeader(header) {
+	if isAngleStdHeader(header, include.Delimiter) {
 		return "", false
 	}
-	if r.includeResolvesWithinRepo(includeLookup{
+	resolution := r.resolveIncludePath(includeLookup{
 		sourcePath: sourcePath,
 		header:     header,
-	}) {
+		delimiter:  include.Delimiter,
+	})
+	if resolution.Resolved && shared.IsPathWithin(r.repoPath, resolution.Path) {
 		return "", false
 	}
 	if include.Delimiter == '"' {
-		return "", true
+		return "", !resolution.Resolved
 	}
-
+	if dependency, handled := r.suppressedStdHeaderDependency(header, resolution); handled {
+		return dependency, false
+	}
 	dependency := dependencyFromIncludePath(header)
 	if dependency == "" {
 		return "", true
@@ -352,22 +490,95 @@ func (r *includeResolver) mapIncludeToDependency(sourcePath string, include pars
 	return correlateDeclaredDependency(dependency, r.catalog), false
 }
 
-func (r *includeResolver) includeResolvesWithinRepo(include includeLookup) bool {
+func isAngleStdHeader(header string, delimiter byte) bool {
+	return delimiter == '<' && !strings.Contains(cleanIncludeHeader(header), "/") && isLikelyStdHeader(header)
+}
+
+func (r *includeResolver) suppressedStdHeaderDependency(header string, resolution includeResolution) (string, bool) {
+	if !isLikelyStdHeader(header) || !shouldSuppressQualifiedStdHeader(header, resolution) {
+		return "", false
+	}
+	if !resolution.Resolved && strings.Contains(cleanIncludeHeader(header), "/") {
+		return declaredIncludeDependency(header, r.catalog), true
+	}
+	return "", true
+}
+
+func (r *includeResolver) resolveIncludePath(include includeLookup) includeResolution {
 	sourceDir := filepath.Dir(include.sourcePath)
-	candidates := []string{filepath.Join(sourceDir, filepath.FromSlash(include.header))}
-	for _, includeDir := range r.includeDirs {
-		candidates = append(candidates, filepath.Join(includeDir, filepath.FromSlash(include.header)))
+	header := filepath.FromSlash(cleanIncludeHeader(include.header))
+	candidates := make([]includeResolution, 0)
+	if filepath.IsAbs(header) {
+		// filepath.Join(searchRoot, header) does not treat an absolute
+		// header as an override the way some other languages' path-join
+		// does -- it's appended as just another path segment, so an
+		// absolute #include (e.g. </usr/include/c++/13/vector>, which GCC
+		// itself accepts) could never resolve via the search-root loop
+		// below. Try it directly first; leave provenance undetermined so
+		// isLikelySystemIncludePath derives it from the path itself.
+		candidates = append(candidates, includeResolution{Path: header})
+	}
+	if include.delimiter == '"' {
+		candidates = append(candidates, includeResolution{
+			Path:            filepath.Join(sourceDir, header),
+			ProvenanceKnown: true,
+		})
+	}
+	for _, includePath := range r.includeSearchPathsForSource(include.sourcePath, include.delimiter) {
+		candidates = append(candidates, includeResolution{
+			Path:            filepath.Join(includePath.Path, header),
+			System:          includePath.System,
+			ProvenanceKnown: includePath.ProvenanceKnown,
+		})
 	}
 	for _, candidate := range candidates {
-		candidate = filepath.Clean(candidate)
-		if _, err := os.Stat(candidate); err != nil {
+		candidate.Path = filepath.Clean(candidate.Path)
+		if _, err := os.Stat(candidate.Path); err != nil {
 			continue
 		}
-		if shared.IsPathWithin(r.repoPath, candidate) {
-			return true
+		candidate.Resolved = true
+		return candidate
+	}
+	return includeResolution{}
+}
+
+func (r *includeResolver) includeSearchPathsForSource(sourcePath string, delimiter byte) []includeSearchPath {
+	if r.hasSourceIncludeSearchSet {
+		return filterIncludeSearchPathsForDelimiter(r.sourceIncludeSearchPaths, delimiter)
+	}
+	if len(r.sourceIncludeDirs) > 0 {
+		if paths, ok := r.sourceIncludeDirs[filepath.Clean(sourcePath)]; ok {
+			return filterIncludeSearchPathsForDelimiter(paths, delimiter)
 		}
 	}
-	return false
+	if len(r.includeSearchPaths) > 0 {
+		return filterIncludeSearchPathsForDelimiter(r.includeSearchPaths, delimiter)
+	}
+	if len(r.includeDirs) == 0 {
+		return nil
+	}
+	paths := make([]includeSearchPath, 0, len(r.includeDirs))
+	for _, includeDir := range r.includeDirs {
+		paths = append(paths, includeSearchPath{Path: includeDir})
+	}
+	return paths
+}
+
+func filterIncludeSearchPathsForDelimiter(paths []includeSearchPath, delimiter byte) []includeSearchPath {
+	if delimiter == '"' {
+		return paths
+	}
+	if delimiter != '<' {
+		return nil
+	}
+	filtered := make([]includeSearchPath, 0, len(paths))
+	for _, includePath := range paths {
+		if includePath.QuoteOnly {
+			continue
+		}
+		filtered = append(filtered, includePath)
+	}
+	return filtered
 }
 
 func dependencyFromIncludePath(header string) string {
@@ -401,12 +612,27 @@ func dependencyFromIncludePath(header string) string {
 }
 
 func isLikelyStdHeader(header string) bool {
-	header = strings.TrimSpace(filepath.ToSlash(header))
+	header = cleanIncludeHeader(header)
 	if header == "" {
 		return false
 	}
-	if strings.HasPrefix(header, "sys/") || strings.HasPrefix(header, "bits/") || strings.HasPrefix(header, "linux/") {
-		return true
+	// An absolute header (e.g. #include </usr/include/c++/13/vector>) isn't
+	// a namespace-qualified compiler header spelling at all -- it's a
+	// literal filesystem path GCC accepts as-is. Whether it's a compiler
+	// header is exactly whether that path itself sits under a known
+	// system root, which isLikelySystemIncludePath already determines by
+	// prefix; the qualified-namespace machinery below doesn't apply here.
+	if strings.HasPrefix(header, "/") {
+		return isLikelySystemIncludePath(header)
+	}
+	if remainder, ok := stripCXXVersionedRoot(header); ok {
+		return isLikelyStdHeader(remainder)
+	}
+	if strings.Contains(header, "/") {
+		if isKnownOSCompilerQualifiedHeader(header) {
+			return true
+		}
+		return isKnownCompilerQualifiedStdHeader(header)
 	}
 
 	base := strings.TrimSpace(filepath.Base(header))
@@ -415,6 +641,348 @@ func isLikelyStdHeader(header string) bool {
 	}
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	_, ok := cppStdHeaderSet[strings.ToLower(base)]
+	return ok
+}
+
+// stripCXXVersionedRoot recognizes a header written with GCC's own
+// versioned libstdc++ include root spelled out explicitly, e.g.
+// "c++/13/vector" or "c++/13/ext/random.tcc" (both compile: GCC's default
+// search root is /usr/include, under which /usr/include/c++/13/ is itself
+// a real, resolvable subdirectory). Stripping the "c++/<version>/" prefix
+// and re-classifying the remainder reuses the existing plain and
+// namespace-qualified header recognition for free, rather than
+// duplicating it for this rarer, explicitly-versioned spelling.
+func stripCXXVersionedRoot(header string) (string, bool) {
+	const prefix = "c++/"
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	rest := header[len(prefix):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return "", false
+	}
+	version, remainder := rest[:slash], rest[slash+1:]
+	if remainder == "" {
+		return "", false
+	}
+	for _, r := range version {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return remainder, true
+}
+
+func cleanIncludeHeader(header string) string {
+	header = strings.TrimSpace(filepath.ToSlash(header))
+	if header == "" {
+		return ""
+	}
+	cleaned := pathpkg.Clean(header)
+	if cleaned == "." {
+		return ""
+	}
+	return cleaned
+}
+
+func shouldSuppressQualifiedStdHeader(header string, resolution includeResolution) bool {
+	if !strings.Contains(cleanIncludeHeader(header), "/") {
+		return true
+	}
+	if !resolution.Resolved {
+		return true
+	}
+	if resolution.ProvenanceKnown {
+		return resolution.System && isLikelySystemIncludePath(resolution.Path)
+	}
+	return isLikelySystemIncludePath(resolution.Path)
+}
+
+func declaredIncludeDependency(header string, catalog dependencyCatalog) string {
+	dependency := dependencyFromIncludePath(header)
+	if dependency == "" || len(catalog.Declarations) == 0 {
+		return ""
+	}
+	if catalog.contains(dependency) {
+		return dependency
+	}
+	correlated := correlateDeclaredDependency(dependency, catalog)
+	if correlated != dependency {
+		return correlated
+	}
+	return ""
+}
+
+func isKnownOSCompilerQualifiedHeader(header string) bool {
+	parts := strings.Split(header, "/")
+	if len(parts) < 2 {
+		return false
+	}
+	if isLikelyMultiarchIncludePrefix(parts[0]) && len(parts) >= 3 {
+		parts = parts[1:]
+	}
+	namespace, leaf := parts[0], parts[len(parts)-1]
+	if leaf == "" {
+		return false
+	}
+	switch namespace {
+	case "sys", "linux", "asm", "asm-generic":
+		return filepath.Ext(leaf) == ".h"
+	case "bits":
+		return filepath.Ext(leaf) == ".h" || filepath.Ext(leaf) == ".tcc" || leaf == "stdc++.h"
+	default:
+		return isLikelyLibCXXImplementationHeader(namespace, leaf)
+	}
+}
+
+// isLikelyLibCXXImplementationHeader recognizes libc++'s implementation
+// namespace convention, e.g. <__thread/thread.h>, without needing an
+// exhaustive list of libc++'s many "__foo/" directories (libc++ has dozens,
+// and getting that list precisely right without a real install to verify
+// against risks being wrong in either direction). A leading double
+// underscore on a top-level path component is reserved for the
+// implementation by the language itself ([lex.name]): no conforming
+// third-party code can legitimately use one, so it's a reliable signal on
+// its own. Requiring the leaf's stem to also match a real standard header
+// name keeps this from suppressing something unexpected under a
+// reserved-looking name it doesn't actually recognize.
+func isLikelyLibCXXImplementationHeader(namespace, leaf string) bool {
+	if !strings.HasPrefix(namespace, "__") {
+		return false
+	}
+	stem := strings.TrimSuffix(leaf, filepath.Ext(leaf))
+	if stem == "" {
+		return false
+	}
+	_, ok := cppStdHeaderSet[strings.ToLower(stem)]
+	return ok
+}
+
+func isLikelyMultiarchIncludePrefix(prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || strings.ContainsAny(prefix, `/\`) {
+		return false
+	}
+	parts := strings.Split(prefix, "-")
+	if len(parts) < 3 {
+		return false
+	}
+	if len(parts) == 3 && parts[1] == "w64" && parts[2] == "mingw32" {
+		return isKnownMultiarchCPU(parts[0])
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		if parts[i] != "linux" {
+			continue
+		}
+		arch := strings.Join(parts[:i], "-")
+		abi := strings.Join(parts[i+1:], "-")
+		return isKnownMultiarchCPU(arch) && isKnownLinuxMultiarchABI(abi)
+	}
+	return false
+}
+
+func isKnownMultiarchCPU(arch string) bool {
+	switch arch {
+	case "aarch64", "alpha", "arm", "arm64", "armel", "armhf", "hppa", "i386", "i486", "i586", "i686", "loongarch64", "m68k", "mips", "mips64", "mips64el", "mipsel", "powerpc", "powerpc64", "powerpc64le", "ppc64", "ppc64le", "riscv64", "s390x", "sparc64", "x86_64":
+		return true
+	default:
+		return false
+	}
+}
+
+func isKnownLinuxMultiarchABI(abi string) bool {
+	switch abi {
+	case "android", "gnu", "gnuabin32", "gnuabi64", "gnueabi", "gnueabihf", "gnux32", "musl", "musleabi", "musleabihf":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLikelySystemIncludePath(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	path = filepath.ToSlash(filepath.Clean(path))
+	lowerPath := strings.ToLower(path)
+
+	return hasSystemIncludeRoot(path) ||
+		hasAppleSystemIncludePath(lowerPath) ||
+		hasWindowsSystemIncludePath(path, lowerPath) ||
+		hasCompilerRuntimeIncludePath(path)
+}
+
+func hasSystemIncludeRoot(path string) bool {
+	for _, prefix := range []string{
+		"/usr/include/",
+		"/usr/local/include/",
+		"/mingw/include/",
+		"/mingw64/include/",
+	} {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAppleSystemIncludePath(lowerPath string) bool {
+	if strings.Contains(lowerPath, "/sdks/") && strings.Contains(lowerPath, ".sdk/usr/include/") {
+		return true
+	}
+	return strings.Contains(lowerPath, ".xctoolchain/usr/lib/clang/") ||
+		strings.Contains(lowerPath, "/library/developer/commandlinetools/usr/lib/clang/")
+}
+
+func hasWindowsSystemIncludePath(path, lowerPath string) bool {
+	if !isWindowsStyleIncludePath(path) {
+		return false
+	}
+	for _, fragment := range []string{
+		"/mingw/include/",
+		"/mingw64/include/",
+		"/msvc/",
+	} {
+		if strings.Contains(lowerPath, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCompilerRuntimeIncludePath(path string) bool {
+	for _, fragment := range []string{
+		"/include/c++/",
+		"/include/c++/v1/",
+		"/lib/clang/",
+		"/lib/gcc/",
+		"/msvc/",
+	} {
+		if strings.Contains(path, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func isWindowsStyleIncludePath(path string) bool {
+	return len(path) >= 3 &&
+		((path[1] == ':' && path[2] == '/') ||
+			strings.HasPrefix(path, "//"))
+}
+
+func isKnownCompilerQualifiedStdHeader(header string) bool {
+	header = strings.TrimSpace(filepath.ToSlash(header))
+	parts := strings.Split(header, "/")
+	switch len(parts) {
+	case 2:
+		return isKnownCompilerQualifiedStdHeaderLeaf(parts[0], parts[1])
+	case 3:
+		return isKnownNestedCompilerQualifiedStdHeader(parts[0], parts[1], parts[2])
+	default:
+		return isKnownDeepCompilerQualifiedStdHeader(parts)
+	}
+}
+
+func isKnownCompilerQualifiedStdHeaderLeaf(namespace, leaf string) bool {
+	if _, ok := cppQualifiedStdHeaderNamespaceSet[namespace]; !ok {
+		return false
+	}
+	ext := filepath.Ext(leaf)
+	stem := strings.TrimSuffix(leaf, ext)
+	if stem == "" {
+		return false
+	}
+	switch ext {
+	case "":
+		return isKnownCompilerQualifiedStdHeaderStem(namespace, stem)
+	case ".h":
+		return isKnownCompilerQualifiedStdHHeader(namespace, stem)
+	case ".tcc":
+		return isKnownCompilerQualifiedStdHeaderTCCHeader(namespace, stem)
+	default:
+		return false
+	}
+}
+
+func isKnownCompilerQualifiedStdHeaderStem(namespace, stem string) bool {
+	if _, ok := cppStdHeaderSet[stem]; ok {
+		return true
+	}
+	if namespace != "backward" {
+		return false
+	}
+	_, ok := cppBackwardQualifiedStdHeaderStemSet[stem]
+	return ok
+}
+
+func isKnownCompilerQualifiedStdHHeader(namespace, stem string) bool {
+	var set map[string]struct{}
+	switch namespace {
+	case "backward":
+		set = cppBackwardQualifiedStdHeaderHStemSet
+	case "debug":
+		set = cppDebugQualifiedStdHeaderHStemSet
+	case "ext":
+		set = cppExtQualifiedStdHeaderHStemSet
+	case "parallel":
+		set = cppParallelQualifiedStdHeaderHStemSet
+	case "tr1":
+		set = cppTR1QualifiedStdHeaderHStemSet
+	default:
+		return false
+	}
+	_, ok := set[stem]
+	return ok
+}
+
+func isKnownCompilerQualifiedStdHeaderTCCHeader(namespace, stem string) bool {
+	var set map[string]struct{}
+	switch namespace {
+	case "debug":
+		set = cppDebugQualifiedStdHeaderTCCStemSet
+	case "ext":
+		set = cppExtQualifiedStdHeaderTCCStemSet
+	case "tr1":
+		set = cppTR1QualifiedStdHeaderTCCStemSet
+	default:
+		return false
+	}
+	_, ok := set[stem]
+	return ok
+}
+
+func isKnownNestedCompilerQualifiedStdHeader(namespace, subdir, leaf string) bool {
+	if namespace == "experimental" && subdir == "bits" && filepath.Ext(leaf) == ".tcc" {
+		stem := strings.TrimSuffix(leaf, ".tcc")
+		if stem == "" {
+			return false
+		}
+		_, ok := cppExperimentalBitsQualifiedStdHeaderTCCStemSet[stem]
+		return ok
+	}
+	if namespace != "ext" || subdir != "pb_ds" || filepath.Ext(leaf) != ".hpp" {
+		return false
+	}
+	stem := strings.TrimSuffix(leaf, ".hpp")
+	if stem == "" {
+		return false
+	}
+	_, ok := cppExtPBDSQualifiedStdHeaderHPPStemSet[stem]
+	return ok
+}
+
+func isKnownDeepCompilerQualifiedStdHeader(parts []string) bool {
+	if len(parts) < 5 || parts[0] != "ext" || parts[1] != "pb_ds" || parts[2] != "detail" {
+		return false
+	}
+	leaf := parts[len(parts)-1]
+	if filepath.Ext(leaf) != ".hpp" {
+		return false
+	}
+	path := strings.Join(parts[2:], "/")
+	_, ok := cppExtPBDSDetailQualifiedStdHeaderSet[path]
 	return ok
 }
 
@@ -446,7 +1014,166 @@ func isCPPSourceOrHeader(path string) bool {
 	}
 }
 
+func makeStringSet(values ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[value] = struct{}{}
+	}
+	return set
+}
+
 var cppStdHeaderSet = map[string]struct{}{
 	"algorithm": {}, "array": {}, "atomic": {}, "bitset": {}, "cassert": {}, "cctype": {}, "cerrno": {}, "cfenv": {}, "cfloat": {}, "charconv": {}, "chrono": {}, "cinttypes": {}, "ciso646": {}, "climits": {}, "clocale": {}, "cmath": {}, "codecvt": {}, "compare": {}, "complex": {}, "condition_variable": {}, "coroutine": {}, "csetjmp": {}, "csignal": {}, "cstdarg": {}, "cstddef": {}, "cstdint": {}, "cstdio": {}, "cstdlib": {}, "cstring": {}, "ctime": {}, "cuchar": {}, "cwchar": {}, "cwctype": {}, "deque": {}, "exception": {}, "execution": {}, "filesystem": {}, "forward_list": {}, "fstream": {}, "functional": {}, "future": {}, "initializer_list": {}, "iomanip": {}, "ios": {}, "iosfwd": {}, "iostream": {}, "istream": {}, "iterator": {}, "latch": {}, "limits": {}, "list": {}, "locale": {}, "map": {}, "memory": {}, "memory_resource": {}, "mutex": {}, "new": {}, "numbers": {}, "numeric": {}, "optional": {}, "ostream": {}, "queue": {}, "random": {}, "ranges": {}, "ratio": {}, "regex": {}, "scoped_allocator": {}, "semaphore": {}, "set": {}, "shared_mutex": {}, "source_location": {}, "span": {}, "sstream": {}, "stack": {}, "stdexcept": {}, "stop_token": {}, "streambuf": {}, "string": {}, "string_view": {}, "strstream": {}, "syncstream": {}, "system_error": {}, "thread": {}, "tuple": {}, "type_traits": {}, "typeindex": {}, "typeinfo": {}, "unordered_map": {}, "unordered_set": {}, "utility": {}, "valarray": {}, "variant": {}, "vector": {},
 	"assert": {}, "ctype": {}, "errno": {}, "float": {}, "inttypes": {}, "math": {}, "setjmp": {}, "signal": {}, "stdarg": {}, "stddef": {}, "stdint": {}, "stdio": {}, "stdlib": {}, "time": {}, "wchar": {}, "wctype": {},
 }
+
+var cppQualifiedStdHeaderNamespaceSet = makeStringSet(
+	"backward",
+	"debug",
+	"experimental",
+	"ext",
+	"parallel",
+	"tr1",
+	"tr2",
+)
+
+var cppBackwardQualifiedStdHeaderStemSet = makeStringSet(
+	"hash_map",
+	"hash_set",
+)
+
+var cppBackwardQualifiedStdHeaderHStemSet = makeStringSet(
+	"auto_ptr",
+	"backward_warning",
+	"binders",
+	"hash_fun",
+	"hashtable",
+)
+
+var cppDebugQualifiedStdHeaderHStemSet = makeStringSet(
+	"assertions",
+	"debug",
+	"functions",
+	"macros",
+	"map",
+	"safe_base",
+	"safe_iterator",
+	"set",
+)
+
+var cppExtQualifiedStdHeaderHStemSet = makeStringSet(
+	"aligned_buffer",
+	"alloc_traits",
+	"atomicity",
+	"numeric_traits",
+	"type_traits",
+)
+
+var cppParallelQualifiedStdHeaderHStemSet = makeStringSet(
+	"algo",
+	"algobase",
+	"algorithmfwd",
+	"balanced_quicksort",
+	"base",
+	"basic_iterator",
+	"checkers",
+	"compatibility",
+	"compiletime_settings",
+	"equally_split",
+	"features",
+	"find",
+	"find_selectors",
+	"for_each",
+	"for_each_selectors",
+	"iterator",
+	"list_partition",
+	"losertree",
+	"merge",
+	"multiseq_selection",
+	"multiway_merge",
+	"multiway_mergesort",
+	"numericfwd",
+	"omp_loop",
+	"omp_loop_static",
+	"par_loop",
+	"partial_sum",
+	"partition",
+	"parallel",
+	"quicksort",
+	"queue",
+	"random_number",
+	"random_shuffle",
+	"search",
+	"set_operations",
+	"settings",
+	"sort",
+	"tags",
+	"types",
+	"unique_copy",
+	"workstealing",
+)
+
+var cppTR1QualifiedStdHeaderHStemSet = makeStringSet(
+	"complex",
+	"ctype",
+	"float",
+	"inttypes",
+	"limits",
+	"math",
+	"random",
+	"stdarg",
+	"stdio",
+	"stdint",
+	"stdlib",
+	"type_traits",
+	"unordered_map",
+	"unordered_set",
+	"wchar",
+	"wctype",
+)
+
+var cppDebugQualifiedStdHeaderTCCStemSet = makeStringSet(
+	"safe_iterator",
+	"safe_local_iterator",
+	"safe_sequence",
+	"safe_unordered_container",
+)
+
+var cppExtQualifiedStdHeaderTCCStemSet = makeStringSet(
+	"random",
+	"vstring",
+)
+
+var cppTR1QualifiedStdHeaderTCCStemSet = makeStringSet(
+	"bessel_function",
+	"beta_function",
+	"ell_integral",
+	"exp_integral",
+	"gamma",
+	"hypergeometric",
+	"legendre_function",
+	"modified_bessel_func",
+	"poly_hermite",
+	"poly_laguerre",
+	"random",
+	"riemann_zeta",
+)
+
+var cppExperimentalBitsQualifiedStdHeaderTCCStemSet = makeStringSet(
+	"string_view",
+)
+
+var cppExtPBDSQualifiedStdHeaderHPPStemSet = makeStringSet(
+	"assoc_container",
+	"exception",
+	"hash_policy",
+	"list_update_policy",
+	"priority_queue",
+	"tag_and_trait",
+	"tree_policy",
+	"trie_policy",
+)
+
+var cppExtPBDSDetailQualifiedStdHeaderSet = makeStringSet(
+	"detail/unordered_iterator/iterator.hpp",
+)

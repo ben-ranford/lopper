@@ -4,9 +4,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
+)
+
+var errLegacyIdentityAliasStateIndeterminate = errors.New("cannot determine legacy source-target alias state")
+
+const (
+	moveSourceChangedBeforeCleanup  = "move source changed before cleanup"
+	moveSourceChangedBeforeRename   = "move source changed before rename"
+	moveSourceChangedBeforeFallback = "move source changed before fallback copy"
+	moveTargetChangedBeforeValidate = "move target changed before validation"
 )
 
 // MoveFileUnder atomically places sourcePath at targetPath only if both resolve under rootDir.
@@ -42,18 +53,12 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 	if err := root.MkdirAll(filepath.Dir(targetRel), dirPerm); err != nil {
 		return err
 	}
+	if filepath.Clean(sourceRel) == filepath.Clean(targetRel) {
+		_, err := chmodAndSnapshotMoveSource(root, sourceRel, filePerm)
+		return err
+	}
 
-	cleanupSource := false
-	defer func() {
-		if !cleanupSource {
-			return
-		}
-		if removeErr := root.Remove(sourceRel); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			returnErr = errors.Join(returnErr, removeErr)
-		}
-	}()
-
-	renameErr := prepareAndRenameWithinRoot(root, sourceRel, targetRel, filePerm)
+	sourceInfo, renameErr := prepareAndRenameWithinRoot(root, sourceRel, targetRel, filePerm)
 	if renameErr == nil {
 		return nil
 	}
@@ -61,39 +66,312 @@ func MoveFileWithinRoot(root Root, sourceRel, targetRel string, dirPerm, filePer
 		return renameErr
 	}
 
-	if copyErr := copyFileWithinRoot(root, sourceRel, targetRel, filePerm); copyErr != nil {
-		return errors.Join(renameErr, copyErr)
+	fallbackSourceRel, sourceWasQuarantined := moveFallbackCopySourceState(renameErr, sourceRel)
+	fallbackSourceInfo := publishRenameSourceInfo(renameErr, sourceInfo)
+	_, copyErr := copyFileWithinRoot(root, fallbackSourceRel, targetRel, filePerm, fallbackSourceInfo)
+	if errors.Is(copyErr, os.ErrNotExist) && fallbackCopySourceIsAbsent(root, sourceRel, fallbackSourceRel) {
+		fallbackSourceInfo = sourceInfo
+		_, copyErr = copyFileWithinRoot(root, sourceRel, targetRel, filePerm, sourceInfo)
+		sourceWasQuarantined = false
+	}
+	if copyErr != nil {
+		return errors.Join(
+			renameErr,
+			copyErr,
+			restoreQuarantinedMoveSourceAfterFallbackFailure(root, sourceRel, fallbackSourceRel, sourceInfo, sourceWasQuarantined),
+		)
 	}
 
-	cleanupSource = true
-	if err := root.Remove(sourceRel); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	cleanupSource = false
-	return nil
+	return errors.Join(
+		publishRenameCleanup(renameErr),
+		removeCopiedMoveSource(root, sourceRel, sourceInfo),
+		cleanupCopiedMoveFallbackSource(root, sourceRel, fallbackSourceRel, fallbackSourceInfo),
+		cleanupMoveSourceStagingDir(root, sourceRel, fallbackSourceRel),
+	)
 }
 
-func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) error {
-	if err := root.Chmod(sourceRel, filePerm); err != nil {
-		return err
-	}
-	return root.Rename(sourceRel, targetRel)
+type moveLinklessRenameError struct {
+	err error
 }
 
-func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (returnErr error) {
-	source, err := root.Open(sourceRel)
+func (e *moveLinklessRenameError) Error() string {
+	return e.err.Error()
+}
+
+func (e *moveLinklessRenameError) Unwrap() error {
+	return e.err
+}
+
+func moveFallbackCopySource(err error, sourceRel string) string {
+	fallbackSourceRel, _ := moveFallbackCopySourceState(err, sourceRel)
+	return fallbackSourceRel
+}
+
+func moveFallbackCopySourceState(err error, sourceRel string) (fallbackSourceRel string, sourceWasQuarantined bool) {
+	var linklessErr *moveLinklessRenameError
+	if errors.As(err, &linklessErr) {
+		return publishRenameSource(linklessErr.err, sourceRel), true
+	}
+	fallbackSourceRel = publishRenameSource(err, sourceRel)
+	if isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
+		return fallbackSourceRel, false
+	}
+	return sourceRel, false
+}
+
+func fallbackCopySourceIsAbsent(root Root, sourceRel, fallbackSourceRel string) bool {
+	if filepath.Clean(fallbackSourceRel) == filepath.Clean(sourceRel) {
+		return false
+	}
+	_, err := root.Lstat(fallbackSourceRel)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+func prepareAndRenameWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode) (fs.FileInfo, error) {
+	sourceInfo, err := chmodAndSnapshotMoveSource(root, sourceRel, filePerm)
+	if err != nil {
+		return nil, err
+	}
+	aliasRelation, err := classifyTargetAliasRelation(root, sourceRel, targetRel, sourceInfo)
+	if readDirFileUnsupportedWithoutCleanupError(err) {
+		// Root only promises File from Open. When two differently-spelled
+		// paths may address one directory entry, do the identity-checked
+		// quarantine rename instead of guessing from incomplete observations.
+		return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+	}
+	if err != nil {
+		return sourceInfo, err
+	}
+	if renameStateMayBeUnreported(root) {
+		if aliasRelation != targetDoesNotAliasSource {
+			if filepath.Clean(sourceRel) == filepath.Clean(targetRel) {
+				return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+			}
+			// A legacy root cannot report whether a rename consumed staging. Every
+			// differently-spelled alias observation is non-atomic: either a direct
+			// rename can leave a distinct hard-link source behind or staged cleanup
+			// can delete a same-entry target. Reject the ambiguous operation intact.
+			return sourceInfo, fmt.Errorf("%w: %q and %q", errLegacyIdentityAliasStateIndeterminate, sourceRel, targetRel)
+		}
+	}
+	stagedSourceRetained, err := publishIdentityBoundReplacingWithRetainedStaging(
+		root,
+		sourceRel,
+		targetRel,
+		sourceInfo,
+		moveSourceChangedBeforeRename,
+		moveTargetChangedBeforeValidate,
+		retainedStagingMoveFinalizer(root, sourceRel, targetRel, sourceInfo),
+	)
+	if err != nil {
+		if errors.Is(err, errIdentityBoundReplacementUnsupported) {
+			return sourceInfo, renameLinklessMoveSource(root, sourceRel, targetRel, sourceInfo)
+		}
+		return sourceInfo, err
+	}
+	if stagedSourceRetained {
+		return sourceInfo, nil
+	}
+	if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
+		return sourceInfo, err
+	}
+	return sourceInfo, nil
+}
+
+func retainedStagingMoveFinalizer(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) func(string, fs.FileInfo) error {
+	return func(stagedRel string, stagedInfo fs.FileInfo) error {
+		// Retained staging can represent either a same-entry alias or distinct
+		// hard links. Keep its identity-bound recovery link live while removing
+		// source, then ensure target names that exact entry in both cases.
+		if err := removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup); err != nil {
+			return err
+		}
+		if err := linkFileIfMatches(root, stagedRel, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil {
+			if atomicWriteCleanupFailed(err) || !errors.Is(err, os.ErrExist) {
+				return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))
+			}
+		}
+		if err := verifyPublishedPathMatchesInfo(root, targetRel, stagedInfo, moveTargetChangedBeforeValidate); err != nil {
+			return errors.Join(err, restoreRetainedAliasSource(root, stagedRel, sourceRel, stagedInfo))
+		}
+		return nil
+	}
+}
+
+func restoreRetainedAliasSource(root Root, stagedRel, sourceRel string, stagedInfo fs.FileInfo) error {
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, stagedRel, sourceRel, moveSourceChangedBeforeCleanup, stagedInfo)
 	if err != nil {
 		return err
+	}
+	if retained {
+		return errIdentityBoundRestoreRetainedStaging
+	}
+	if restored {
+		return nil
+	}
+	return fmt.Errorf("%s: %s", moveSourceChangedBeforeCleanup, sourceRel)
+}
+
+func renameStateMayBeUnreported(root Root) bool {
+	if _, reportsState := root.(identityBoundStateOperationsRoot); reportsState {
+		return false
+	}
+	_, usesIdentityBoundOperations := root.(identityBoundOperationsRoot)
+	return usesIdentityBoundOperations
+}
+
+func renameLinklessMoveSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) error {
+	sourceConsumed, err := renameFileIfMatches(root, sourceRel, targetRel, sourceInfo, moveSourceChangedBeforeRename)
+	if err != nil {
+		return &moveLinklessRenameError{err: err}
+	}
+	if sourceConsumed {
+		return verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, moveTargetChangedBeforeValidate)
+	}
+	return errors.Join(
+		verifyPublishedPathMatchesInfo(root, targetRel, sourceInfo, moveTargetChangedBeforeValidate),
+		removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup),
+	)
+}
+
+type targetAliasRelation uint8
+
+const (
+	targetDoesNotAliasSource targetAliasRelation = iota
+	targetAliasesSameDirectoryEntry
+	targetAliasesDistinctDirectoryEntries
+	targetAliasRelationIndeterminate
+)
+
+func targetAliasesSource(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (bool, error) {
+	relation, err := classifyTargetAliasRelation(root, sourceRel, targetRel, sourceInfo)
+	return relation == targetAliasesSameDirectoryEntry, err
+}
+
+func classifyTargetAliasRelation(root Root, sourceRel, targetRel string, sourceInfo fs.FileInfo) (targetAliasRelation, error) {
+	sourceClean := filepath.Clean(sourceRel)
+	targetClean := filepath.Clean(targetRel)
+	targetInfo, err := root.Lstat(targetClean)
+	if errors.Is(err, os.ErrNotExist) {
+		return targetDoesNotAliasSource, nil
+	}
+	if err != nil {
+		return targetDoesNotAliasSource, err
+	}
+	if !targetInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, targetInfo) {
+		return targetDoesNotAliasSource, nil
+	}
+	if sourceClean == targetClean {
+		return targetAliasesSameDirectoryEntry, nil
+	}
+	sourceParent := filepath.Dir(sourceClean)
+	targetParent := filepath.Dir(targetClean)
+	sourceParentInfo, err := root.Lstat(sourceParent)
+	if err != nil {
+		return targetDoesNotAliasSource, err
+	}
+	targetParentInfo, err := root.Lstat(targetParent)
+	if err != nil {
+		return targetDoesNotAliasSource, err
+	}
+	if !sourceParentInfo.IsDir() || !targetParentInfo.IsDir() || !os.SameFile(sourceParentInfo, targetParentInfo) {
+		return targetAliasesDistinctDirectoryEntries, nil
+	}
+	entries, err := countDirectoryEntriesAddressingBothNames(root, sourceParent, filepath.Base(sourceClean), filepath.Base(targetClean), sourceInfo)
+	if err != nil {
+		return targetDoesNotAliasSource, err
+	}
+	switch entries {
+	case 1:
+		return targetAliasesSameDirectoryEntry, nil
+	case 2:
+		return targetAliasesDistinctDirectoryEntries, nil
+	default:
+		return targetAliasRelationIndeterminate, nil
+	}
+}
+
+func countDirectoryEntriesAddressingBothNames(root Root, parentRel, sourceBase, targetBase string, sourceInfo fs.FileInfo) (_ int, returnErr error) {
+	dir, err := OpenPinnedDirectory(root, parentRel)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, dir.Close())
+	}()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if name != sourceBase && name != targetBase && !strings.EqualFold(name, sourceBase) && !strings.EqualFold(name, targetBase) {
+			continue
+		}
+		entryInfo, err := root.Lstat(filepath.Join(parentRel, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if entryInfo.Mode().IsRegular() && os.SameFile(sourceInfo, entryInfo) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func chmodAndSnapshotMoveSource(root Root, sourceRel string, filePerm os.FileMode) (os.FileInfo, error) {
+	sourceInfo, err := root.Lstat(sourceRel)
+	if err != nil {
+		return nil, err
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("move source is not a regular file: %s", sourceRel)
+	}
+	if err := root.Chmod(sourceRel, filePerm); err != nil {
+		return nil, err
+	}
+	updatedSourceInfo, err := root.Lstat(sourceRel)
+	if err != nil {
+		return nil, err
+	}
+	if !updatedSourceInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, updatedSourceInfo) {
+		return nil, fmt.Errorf("%s: %s", moveSourceChangedBeforeRename, sourceRel)
+	}
+	return updatedSourceInfo, nil
+}
+
+func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.FileMode, expectedSourceInfos ...fs.FileInfo) (_ os.FileInfo, returnErr error) {
+	var expectedSourceInfo fs.FileInfo
+	if len(expectedSourceInfos) > 0 {
+		expectedSourceInfo = expectedSourceInfos[0]
+	}
+	source, err := OpenPinnedFile(root, sourceRel)
+	if err != nil {
+		return nil, err
 	}
 	defer func() {
 		if closeErr := source.Close(); closeErr != nil {
 			returnErr = errors.Join(returnErr, closeErr)
 		}
 	}()
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("move source is not a regular file: %s", sourceRel)
+	}
+	if expectedSourceInfo != nil && !sameRegularFile(expectedSourceInfo, sourceInfo) {
+		return nil, fmt.Errorf("%s: %s", moveSourceChangedBeforeFallback, sourceRel)
+	}
 
 	session, err := newAtomicWriteSession(root, targetRel, filePerm)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		if cleanupErr := session.cleanup(); cleanupErr != nil {
@@ -102,17 +380,98 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 	}()
 
 	if _, err := io.Copy(session.tempFile, source); err != nil {
-		return err
+		return nil, err
 	}
 	if err := session.tempFile.Chmod(filePerm); err != nil {
+		return nil, err
+	}
+	if err := session.snapshotAndCloseTempFile(); err != nil {
+		return nil, err
+	}
+	if err := verifyPublishedPathMatchesInfo(root, sourceRel, sourceInfo, moveSourceChangedBeforeFallback); err != nil {
+		return nil, err
+	}
+	if err := session.commit(nil, nil); err != nil {
+		return nil, err
+	}
+	return sourceInfo, nil
+}
+
+func removeCopiedMoveSource(root Root, sourceRel string, sourceInfo os.FileInfo) error {
+	return removeIdentityBound(root, sourceRel, sourceInfo, moveSourceChangedBeforeCleanup)
+}
+
+func cleanupCopiedMoveFallbackSource(root Root, sourceRel, fallbackSourceRel string, sourceInfo os.FileInfo) error {
+	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
+		return nil
+	}
+	return cleanupAtomicTempFileIfMatches(root, fallbackSourceRel, sourceInfo)
+}
+
+func restoreQuarantinedMoveSourceAfterFallbackFailure(root Root, sourceRel, fallbackSourceRel string, sourceInfo fs.FileInfo, sourceWasQuarantined bool) error {
+	if !sourceWasQuarantined || !isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
+		return nil
+	}
+	restored, retained, err := restoreQuarantinedPathNoReplace(root, fallbackSourceRel, sourceRel, moveSourceChangedBeforeFallback, sourceInfo)
+	if !restored || retained {
 		return err
 	}
-	if err := session.closeTempFile(); err != nil {
+	return errors.Join(
+		err,
+		cleanupCopiedMoveFallbackSource(root, sourceRel, fallbackSourceRel, sourceInfo),
+		cleanupMoveSourceStagingDir(root, sourceRel, fallbackSourceRel),
+	)
+}
+
+func cleanupMoveSourceStagingDir(root Root, sourceRel, fallbackSourceRel string) error {
+	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
+		return nil
+	}
+	if !isMoveSourceStagingEntry(sourceRel, fallbackSourceRel) {
+		return nil
+	}
+	dir := filepath.Dir(fallbackSourceRel)
+	info, err := root.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	if err := root.Rename(session.tempRel, targetRel); err != nil {
+	if !info.IsDir() {
+		return nil
+	}
+	return ignoreRemoveNotExist(root.Remove(dir))
+}
+
+func isMoveSourceStagingEntry(sourceRel, fallbackSourceRel string) bool {
+	if filepath.Clean(sourceRel) == filepath.Clean(fallbackSourceRel) {
+		return false
+	}
+	dir := filepath.Dir(fallbackSourceRel)
+	return dir != "." && filepath.Base(fallbackSourceRel) == "entry" && strings.HasPrefix(filepath.Base(dir), atomicTempPrefix)
+}
+
+func removeIdentityBound(root Root, rel string, expected fs.FileInfo, message string) error {
+	if expected == nil {
+		return fmt.Errorf("%s: %s", message, rel)
+	}
+	cleanupRel, err := stageIdentityBoundLink(root, rel, expected, message)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if errors.Is(err, errIdentityBoundLinkUnavailable) || identityBoundLinkUnsupported(err) {
+			return removeFileIfMatches(root, rel, expected, message)
+		}
 		return err
 	}
-	session.tempRel = ""
-	return nil
+	if err := removeFileIfMatches(root, rel, expected, message); err != nil {
+		cleanupErr := cleanupAtomicTempFileIfMatches(root, cleanupRel, expected)
+		if errors.Is(err, os.ErrNotExist) {
+			return cleanupErr
+		}
+		return errors.Join(err, cleanupErr)
+	}
+	return cleanupAtomicTempFileIfMatches(root, cleanupRel, expected)
 }

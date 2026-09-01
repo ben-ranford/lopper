@@ -64,18 +64,39 @@ for artifact_destination in "$BENCH_BASE_OUTPUT" "$BENCH_HEAD_OUTPUT" "$MEMORY_B
 done
 # shellcheck disable=SC2046 # Each dirname is a single, intentionally unquoted path argument.
 mkdir -p $(dirname "$BENCH_BASE_OUTPUT") $(dirname "$BENCH_HEAD_OUTPUT") $(dirname "$MEMORY_BENCH_SUMMARY") $(dirname "$MEMORY_BENCH_STATUS");
+write_memory_bench_status() {
+	status_code="$1";
+	printf "%s\n" "$status_code" > "$MEMORY_BENCH_STATUS";
+};
 write_invalid_memory_summary() {
 	summary_error="$1";
 	printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark input could not be read for a safe memory comparison.\n" "$MEMORY_BENCH_MAX_BYTES_PCT" "$MEMORY_BENCH_MAX_ALLOCS_PCT" "$summary_error" > "$MEMORY_BENCH_SUMMARY";
-	printf "2\n" > "$MEMORY_BENCH_STATUS";
+	write_memory_bench_status "2";
+};
+write_harness_change_requires_approval_summary() {
+	summary_error="$1";
+	printf "## Memory Benchmarks\n\nThresholds: bytes/op <= +%s%%, allocs/op <= +%s%%\n\nBase benchmarks: unavailable\nHead benchmarks: unavailable\n\nInput errors:\n- %s\n\nComparison status: invalid\nResult: benchmark harness changed; add the memory-approved label to acknowledge the unmatched base definition.\n" "$MEMORY_BENCH_MAX_BYTES_PCT" "$MEMORY_BENCH_MAX_ALLOCS_PCT" "$summary_error" > "$MEMORY_BENCH_SUMMARY";
+	write_memory_bench_status "1";
 };
 fail_invalid_memory_gate() {
 	diagnostic="$1";
 	summary_error="$diagnostic";
-	if [ "$#" -gt 1 ]; then summary_error="$2"; fi;
 	printf "Memory benchmark gate invalid: %s\n" "$diagnostic" >&2;
+	if [ "$#" -gt 1 ]; then
+		summary_error="$2";
+	fi;
 	write_invalid_memory_summary "$summary_error";
 	exit 2;
+};
+report_harness_change_requires_approval() {
+	diagnostic="$1";
+	summary_error="$diagnostic";
+	printf "Memory benchmark approval required: %s\n" "$diagnostic" >&2;
+	if [ "$#" -gt 1 ]; then
+		summary_error="$2";
+	fi;
+	write_harness_change_requires_approval_summary "$summary_error";
+	exit 0;
 };
 run_configured_go_env() {
 	configured_go="$1"
@@ -241,56 +262,84 @@ if [ -z "$go_version_log" ] || [ "$reported_go_version" != "$expected_go_version
 fi;
 echo "Memory benchmark GO_BIN: $go_bin_path";
 echo "Memory benchmark Go toolchain: $expected_go_version";
+benchmark_harness_append_file() {
+	fingerprint_kind="$1";
+	fingerprint_file="$2";
+	fingerprint_hash="$3";
+	if [ -z "$fingerprint_hash" ]; then
+		if ! fingerprint_hash=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
+			return 1;
+		fi;
+	fi;
+	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash" >> "$fingerprint_manifest_tmp";
+};
 benchmark_harness_fingerprint() {
 	fingerprint_pkg="$1";
-	fingerprint_files_tmp=$(mktemp) || return 1;
-	fingerprint_manifest_tmp=$(mktemp) || { rm -f "$fingerprint_files_tmp"; return 1; };
+	fingerprint_go_files_tmp=$(mktemp) || return 1;
+	fingerprint_files_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp"; return 1; };
+	fingerprint_kind_files_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp"; return 1; };
+	fingerprint_manifest_tmp=$(mktemp) || { rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp"; return 1; };
 	if ! fingerprint_dir=$(GOFLAGS=-buildvcs=false run_validated_go "benchmark harness directory resolution for '$fingerprint_pkg'" list -f '{{.Dir}}' "$fingerprint_pkg" 2>/dev/null); then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
-	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .TestEmbedFiles}}{{printf "test-embed\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}{{range .XTestEmbedFiles}}{{printf "xtest-embed\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_files_tmp" 2>/dev/null; then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+	if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness file resolution for '$fingerprint_pkg'" list -test -f '{{range .TestGoFiles}}{{printf "test\t%s\n" .}}{{end}}{{range .XTestGoFiles}}{{printf "xtest\t%s\n" .}}{{end}}' "$fingerprint_pkg" > "$fingerprint_go_files_tmp" 2>/dev/null; then
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
+	if ! LC_ALL=C sort -u -o "$fingerprint_go_files_tmp" "$fingerprint_go_files_tmp"; then
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+		return 1;
+	fi;
+	: > "$fingerprint_files_tmp";
+	for fingerprint_kind in test xtest; do
+		awk -F "$(printf '\t')" -v kind="$fingerprint_kind" '$1 == kind { print $2 }' "$fingerprint_go_files_tmp" > "$fingerprint_kind_files_tmp";
+		if ! "$benchmark_harness_selector_bin" "$fingerprint_dir" "$fingerprint_kind" < "$fingerprint_kind_files_tmp" >> "$fingerprint_files_tmp"; then
+			rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
+			return 1;
+		fi;
+	done;
 	if ! LC_ALL=C sort -u -o "$fingerprint_files_tmp" "$fingerprint_files_tmp"; then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
 	: > "$fingerprint_manifest_tmp";
 	fingerprint_failed=0;
-	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file; do
+	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file fingerprint_hash; do
 		[ -n "$fingerprint_file" ] || continue;
-		if ! fingerprint_blob=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
-			fingerprint_failed=1;
-			break;
-		fi;
-		if ! printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_blob" >> "$fingerprint_manifest_tmp"; then
+		case "$fingerprint_kind" in
+			test|xtest) ;;
+			test-embed|xtest-embed) ;;
+			*) continue ;;
+		esac;
+		if ! benchmark_harness_append_file "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash"; then
 			fingerprint_failed=1;
 			break;
 		fi;
 	done < "$fingerprint_files_tmp";
+	LC_ALL=C sort -u -o "$fingerprint_manifest_tmp" "$fingerprint_manifest_tmp" || fingerprint_failed=1;
 	if [ "$fingerprint_failed" -ne 0 ] || ! fingerprint_value=$(git hash-object -- "$fingerprint_manifest_tmp" 2>/dev/null); then
-		rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+		rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 		return 1;
 	fi;
-	rm -f "$fingerprint_files_tmp" "$fingerprint_manifest_tmp";
+	rm -f "$fingerprint_go_files_tmp" "$fingerprint_files_tmp" "$fingerprint_kind_files_tmp" "$fingerprint_manifest_tmp";
 	printf "git-hash-object:%s\n" "$fingerprint_value";
 };
 format_benchmark_definition() {
 	invocation_pkg="$1";
 	invocation_selection="$2";
 	invocation_fingerprint="$3";
-	printf "package=%s selection=%s -run '^$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=TestGoFiles,TestEmbedFiles,XTestGoFiles,XTestEmbedFiles harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$invocation_pkg" "$invocation_selection" "$GO_TEST_LDFLAGS_ARGS" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_fingerprint" "$requested_go_toolchain" "$go_bin_path" "$GO_TEST_LDFLAGS_ARGS" "$invocation_selection" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_pkg";
+	printf "package=%s selection=%s -run '^$' GO_TEST_LDFLAGS_ARGS=%s flags=-benchmem -count=%s -benchtime=%s harness-files=benchmark-test-go-files,benchmark-test-embed-files harness-fingerprint=%s invocation=GOFLAGS=-buildvcs=false GOTOOLCHAIN=%s %s test %s -run '^$' -bench '%s' -benchmem -count=%s -benchtime=%s '%s'" "$invocation_pkg" "$invocation_selection" "$GO_TEST_LDFLAGS_ARGS" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_fingerprint" "$requested_go_toolchain" "$go_bin_path" "$GO_TEST_LDFLAGS_ARGS" "$invocation_selection" "$BENCH_COUNT" "$BENCH_TIME" "$invocation_pkg";
 };
-if ! git rev-parse --verify -q --end-of-options "$base_ref^{commit}" >/dev/null; then
+if ! base_commit=$(git rev-parse --verify -q --end-of-options "$base_ref^{commit}"); then
 	echo "Memory benchmark base ref '$base_ref' is missing or invalid; failing closed.";
 	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is missing or invalid.";
 fi;
-if ! base_commit=$(git merge-base -- "$base_ref" HEAD 2>/dev/null); then
-	echo "Memory benchmark base ref '$base_ref' is not related to HEAD; failing closed.";
-	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not related to HEAD.";
+if ! git merge-base --is-ancestor "$base_commit" HEAD >/dev/null 2>&1; then
+	echo "Memory benchmark base ref '$base_ref' is not an ancestor of HEAD; failing closed.";
+	fail_invalid_memory_gate "base benchmark input could not be read: requested base ref '$base_ref' is not an ancestor of HEAD.";
 fi;
+base_ref="$base_commit";
 bench_dir=$(mktemp -d);
 base_tree="$bench_dir/base";
 base_output_tmp=$(mktemp);
@@ -300,6 +349,863 @@ bench_definitions_tmp=$(mktemp);
 # shellcheck disable=SC2317,SC2329 # cleanup is invoked by trap.
 cleanup() { (unset GIT_INDEX_FILE; git worktree remove --force "$base_tree" >/dev/null 2>&1 || true); rm -rf "$bench_dir"; rm -f "$base_output_tmp" "$head_output_tmp" "$bench_packages_tmp" "$bench_definitions_tmp"; };
 trap cleanup EXIT INT TERM;
+benchmark_harness_selector_bin="$bench_dir/benchharness";
+benchmark_harness_selector_src="$bench_dir/benchharness.go";
+cat > "$benchmark_harness_selector_src" <<'GOEOF';
+package main
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+type harnessDecl struct {
+	file string
+	decl ast.Decl
+}
+
+func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: benchharness <package-dir> <test|xtest>")
+		os.Exit(2)
+	}
+
+	manifest, err := benchmarkHarnessManifest(os.Args[1], os.Args[2], os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve benchmark harness files: %v\n", err)
+		os.Exit(2)
+	}
+	for _, line := range manifest {
+		fmt.Println(line)
+	}
+}
+
+func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error) {
+	files, err := readFileList(stdin)
+	if err != nil {
+		return nil, err
+	}
+	parsed := make(map[string]*ast.File, len(files))
+	filesets := make(map[string]*token.FileSet, len(files))
+	sources := make(map[string][]byte, len(files))
+	decls := make(map[string][]harnessDecl)
+	roots := make([]harnessDecl, 0)
+	modInfo := loadModuleInfo(dir)
+	for _, rel := range files {
+		abs := filepath.Join(dir, filepath.FromSlash(rel))
+		src, err := os.ReadFile(abs)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", rel, err)
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, abs, src, parser.ParseComments)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", rel, err)
+		}
+		parsed[rel] = file
+		filesets[rel] = fset
+		sources[rel] = src
+		for _, decl := range file.Decls {
+			for _, name := range declaredNames(decl) {
+				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
+			}
+			if recvType := methodReceiverTypeName(decl); recvType != "" {
+				decls[recvType] = append(decls[recvType], harnessDecl{file: rel, decl: decl})
+			}
+			for _, name := range importLocalNames(decl) {
+				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
+			}
+			if rootDeclarationCanAffectBenchmark(decl, modInfo) {
+				roots = append(roots, harnessDecl{file: rel, decl: decl})
+			}
+		}
+	}
+
+	selectedDecls, seenNames := selectedBenchmarkHarnessFiles(roots, decls)
+	manifest := make([]string, 0, len(selectedDecls))
+	seen := make(map[string]struct{})
+	for _, rel := range files {
+		fileDecls, ok := selectedDecls[rel]
+		if !ok {
+			continue
+		}
+		declHash := selectedDeclarationsSourceHash(sources[rel], filesets[rel], fileDecls)
+		appendManifestLine(&manifest, seen, kind, rel, declHash)
+		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel], seenNames)
+		if err != nil {
+			return nil, fmt.Errorf("resolve embeds in %s: %w", rel, err)
+		}
+		for _, embedFile := range embedFiles {
+			appendManifestLine(&manifest, seen, kind+"-embed", embedFile, "")
+		}
+	}
+	sort.Strings(manifest)
+	return manifest, nil
+}
+
+// selectedDeclarationsSourceHash hashes only the source text of the
+// selected declarations within a file, rather than the file's full
+// contents, so a change confined to an unselected declaration in the same
+// file (e.g. an unrelated ordinary test's body) doesn't affect the
+// fingerprint. Declarations are ordered by source position for a stable
+// hash regardless of map iteration order.
+func selectedDeclarationsSourceHash(source []byte, fset *token.FileSet, decls []ast.Decl) string {
+	ordered := append([]ast.Decl(nil), decls...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Pos() < ordered[j].Pos() })
+	hash := sha256.New()
+	for _, decl := range ordered {
+		start := fset.Position(declHashRangeStart(decl)).Offset
+		end := fset.Position(decl.End()).Offset
+		if start < 0 || end > len(source) || start > end {
+			continue
+		}
+		hash.Write(source[start:end])
+		hash.Write([]byte("\n// --- decl boundary ---\n"))
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// declHashRangeStart returns the position the hash range should start at
+// for decl: its doc comment's start when present, rather than decl.Pos()
+// itself. decl.Pos() begins at the declaration keyword and excludes any
+// attached compiler directive (e.g. //go:noinline), which can change
+// inlining, escape analysis, and therefore benchmark allocations without
+// changing the declaration's own text.
+func declHashRangeStart(decl ast.Decl) token.Pos {
+	switch typed := decl.(type) {
+	case *ast.FuncDecl:
+		if typed.Doc != nil {
+			return typed.Doc.Pos()
+		}
+	case *ast.GenDecl:
+		if typed.Doc != nil {
+			return typed.Doc.Pos()
+		}
+	}
+	return decl.Pos()
+}
+
+func readFileList(stdin *os.File) ([]string, error) {
+	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	files := make([]string, 0)
+	for scanner.Scan() {
+		if rel := strings.TrimSpace(scanner.Text()); rel != "" {
+			files = append(files, filepath.ToSlash(rel))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel, hash string) {
+	line := kind + "\t" + filepath.ToSlash(rel) + "\t" + hash
+	if _, ok := seen[line]; ok {
+		return
+	}
+	seen[line] = struct{}{}
+	*manifest = append(*manifest, line)
+}
+
+// selectedBenchmarkHarnessFiles walks the reachability graph from roots and
+// returns the selected files plus seenNames: every declared name actually
+// pulled in, at the name (not whole-declaration) granularity. A root
+// decl's own names are all considered seen -- the criteria that make a
+// decl a root (an import, an initialized var, a benchmark/init/TestMain
+// function, a method) apply to the whole declaration, not to one name
+// within it -- but a decl reached only because something else referenced
+// one of its names contributes just that name, not its siblings. This
+// lets embeddedFilesForSelectedFile scope go:embed comments to the
+// specific spec that was actually reached, rather than every spec sharing
+// its enclosing declaration.
+func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) (map[string][]ast.Decl, map[string]struct{}) {
+	selected := make(map[string][]ast.Decl)
+	seenDecls := make(map[ast.Decl]struct{})
+	seenNames := make(map[string]struct{})
+	rootDecls := make(map[ast.Decl]struct{}, len(roots))
+	for _, root := range roots {
+		rootDecls[root.decl] = struct{}{}
+	}
+	queue := append([]harnessDecl(nil), roots...)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if _, ok := seenDecls[current.decl]; ok {
+			continue
+		}
+		seenDecls[current.decl] = struct{}{}
+		selected[current.file] = append(selected[current.file], current.decl)
+		selfDeclared := declaredNamesSet(current.decl)
+		if _, isRoot := rootDecls[current.decl]; isRoot {
+			for name := range selfDeclared {
+				seenNames[name] = struct{}{}
+			}
+		}
+		for name := range referencedPackageNames(current.decl) {
+			if _, isOwnDeclaration := selfDeclared[name]; isOwnDeclaration {
+				// referencedPackageNames walks the whole decl generically and
+				// cannot tell a declaration site from a use site, so a
+				// sibling in the same var/const/type group -- e.g. another
+				// name in the same var(...) block -- would otherwise look
+				// like this decl referencing itself.
+				continue
+			}
+			for _, next := range decls[name] {
+				seenNames[name] = struct{}{}
+				if _, ok := seenDecls[next.decl]; !ok {
+					queue = append(queue, next)
+				}
+			}
+		}
+	}
+	return selected, seenNames
+}
+
+func declaredNamesSet(decl ast.Decl) map[string]struct{} {
+	names := declaredNames(decl)
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set
+}
+
+func declaredNames(decl ast.Decl) []string {
+	switch typed := decl.(type) {
+	case *ast.FuncDecl:
+		if typed.Name == nil {
+			return nil
+		}
+		return []string{typed.Name.Name}
+	case *ast.GenDecl:
+		if !declarationTokenCanAffectBenchmark(typed.Tok) {
+			return nil
+		}
+		names := make([]string, 0, len(typed.Specs))
+		for _, spec := range typed.Specs {
+			switch typedSpec := spec.(type) {
+			case *ast.ValueSpec:
+				for _, name := range typedSpec.Names {
+					names = append(names, name.Name)
+				}
+			case *ast.TypeSpec:
+				names = append(names, typedSpec.Name.Name)
+			}
+		}
+		return names
+	default:
+		return nil
+	}
+}
+
+func declarationTokenCanAffectBenchmark(tok token.Token) bool {
+	return tok == token.CONST || tok == token.TYPE || tok == token.VAR
+}
+
+func rootDeclarationCanAffectBenchmark(decl ast.Decl, modInfo moduleInfo) bool {
+	switch typed := decl.(type) {
+	case *ast.FuncDecl:
+		return rootFunctionCanAffectBenchmark(typed)
+	case *ast.GenDecl:
+		return rootGenDeclCanAffectBenchmark(typed, modInfo)
+	default:
+		return false
+	}
+}
+
+func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
+	if decl.Name == nil {
+		return false
+	}
+	if decl.Recv != nil {
+		return false
+	}
+	name := decl.Name.Name
+	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
+}
+
+// methodReceiverTypeName returns the base identifier of decl's receiver
+// type, or "" if decl isn't a method. Indexing a method under its receiver
+// type name (alongside its own method name) lets it enter the reachability
+// graph when the type itself becomes reachable -- including via implicit
+// interface dispatch (e.g. fmt.Stringer), since a benchmark that constructs
+// or otherwise references the concrete type already makes the type name
+// reachable without needing to name the method directly. This replaces
+// treating every method as an unconditional root, which pulled in any file
+// declaring a method regardless of whether its receiver type was ever
+// reachable from a benchmark.
+func methodReceiverTypeName(decl ast.Decl) string {
+	funcDecl, ok := decl.(*ast.FuncDecl)
+	if !ok || funcDecl.Recv == nil || len(funcDecl.Recv.List) == 0 {
+		return ""
+	}
+	return receiverTypeExprName(funcDecl.Recv.List[0].Type)
+}
+
+func receiverTypeExprName(expr ast.Expr) string {
+	switch typed := expr.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.StarExpr:
+		return receiverTypeExprName(typed.X)
+	case *ast.IndexExpr:
+		return receiverTypeExprName(typed.X)
+	case *ast.IndexListExpr:
+		return receiverTypeExprName(typed.X)
+	default:
+		return ""
+	}
+}
+
+// importLocalNames returns the explicit local aliases decl's import specs
+// bind, so an import can enter the reachability graph the same way any
+// other declaration does: by a reachable decl referencing its local name
+// (e.g. a benchmark calling rng.Read after `import rng "crypto/rand"`).
+//
+// This is deliberately scoped to explicit aliases only, not every
+// unaliased import's derived default name. An earlier version of this
+// selector indexed default names too, on the theory that
+// selectedDeclarationsSourceHash only hashes the reached import decl's own
+// bytes, not the rest of the file, so cross-file collisions on a common
+// name like "testing" would be harmless. That theory missed that the
+// harness fingerprint also hashes which FILES appear in the manifest, not
+// just their selected bytes: merely adding a brand-new ordinary test file
+// that imports "testing" (true of nearly every _test.go file) made it a
+// newly reachable file the moment any benchmark referenced "testing" --
+// which is virtually always, since every benchmark takes a *testing.B.
+// That turned "add an unrelated ordinary test to a package with
+// benchmarks" into a guaranteed harness-fingerprint mismatch, a far more
+// common and more disruptive regression than the retained-alias gap this
+// mechanism exists to close. Explicit aliases don't have this problem in
+// practice: they're deliberately chosen and rarely collide with an
+// unrelated file's alias of the same name the way default names for
+// ubiquitous stdlib packages do.
+func importLocalNames(decl ast.Decl) []string {
+	genDecl, ok := decl.(*ast.GenDecl)
+	if !ok || genDecl.Tok != token.IMPORT {
+		return nil
+	}
+	names := make([]string, 0, len(genDecl.Specs))
+	for _, spec := range genDecl.Specs {
+		importSpec, ok := spec.(*ast.ImportSpec)
+		if !ok || importSpec.Name == nil {
+			continue
+		}
+		name := importSpec.Name.Name
+		if name == "_" || name == "." {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modInfo moduleInfo) bool {
+	switch decl.Tok {
+	case token.IMPORT:
+		return genDeclHasBenchmarkImport(decl, modInfo)
+	case token.VAR:
+		return genDeclHasInitializedVar(decl)
+	default:
+		return false
+	}
+}
+
+func genDeclHasBenchmarkImport(decl *ast.GenDecl, modInfo moduleInfo) bool {
+	for _, spec := range decl.Specs {
+		importSpec, ok := spec.(*ast.ImportSpec)
+		if ok && importCanAffectBenchmark(importSpec, modInfo) {
+			return true
+		}
+	}
+	return false
+}
+
+// importCanAffectBenchmark reports whether spec can affect benchmark setup.
+// A blank import always counts (it exists purely for its init() side
+// effect). A named import counts when it's tracked by the module: the
+// current module itself (or one of its subpackages), or any module listed
+// in go.mod's require directives, regardless of import-path shape -- Go
+// modules place no format requirement on a path, so a bare, dotless name is
+// a fully valid external module reference via a replace directive. Every
+// other named import is standard library: it ships with the Go toolchain
+// rather than being an independently versioned dependency of this repo, so
+// it isn't tracked here.
+func importCanAffectBenchmark(spec *ast.ImportSpec, modInfo moduleInfo) bool {
+	path := importPath(spec)
+	if path == "" || path == "embed" {
+		return false
+	}
+	if spec.Name != nil && spec.Name.Name == "_" {
+		return true
+	}
+	if _, ok := stdlibRegistrationSideEffectImports[path]; ok {
+		return true
+	}
+	return modInfo.tracks(path)
+}
+
+// stdlibRegistrationSideEffectImports lists standard-library packages whose
+// init() registers global state consumed by unrelated code -- the same
+// category of side effect a blank import always counts for. Unlike a blank
+// import, these are commonly imported by name because their exported API is
+// also used directly (e.g. image/png via png.Decode while its init() also
+// registers the "png" codec for image.Decode callers elsewhere in the same
+// test binary). A named import of one of these still needs to count,
+// otherwise a change confined to an ordinary test file that imports one can
+// silently leave a benchmark's fingerprint unchanged even though the
+// benchmark's runtime behavior changed. This is a deliberately small,
+// documented allowlist of known cases rather than treating every standard
+// library import as root-worthy, which would make nearly every test file a
+// root (via universally-imported packages like "testing" or "fmt") and
+// defeat selective fingerprinting entirely.
+var stdlibRegistrationSideEffectImports = map[string]struct{}{
+	"image/gif":      {},
+	"image/jpeg":     {},
+	"image/png":      {},
+	"net/http/pprof": {},
+	"expvar":         {},
+	"crypto/md5":     {},
+	"crypto/sha1":    {},
+	"crypto/sha256":  {},
+	"crypto/sha512":  {},
+	"crypto/sha3":    {},
+}
+
+func importPath(spec *ast.ImportSpec) string {
+	if spec == nil || spec.Path == nil {
+		return ""
+	}
+	value, err := strconv.Unquote(spec.Path.Value)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+// moduleInfo carries the current module's own path and the set of module
+// paths its go.mod declares as required, used to distinguish a tracked
+// dependency (first-party or third-party, any path shape) from a standard
+// library import, which is never declared in go.mod.
+type moduleInfo struct {
+	path     string
+	required map[string]struct{}
+}
+
+func (m moduleInfo) tracks(importPath string) bool {
+	if m.path != "" && (importPath == m.path || strings.HasPrefix(importPath, m.path+"/")) {
+		return true
+	}
+	for required := range m.required {
+		if importPath == required || strings.HasPrefix(importPath, required+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func loadModuleInfo(dir string) moduleInfo {
+	current := filepath.Clean(dir)
+	for {
+		content, err := os.ReadFile(filepath.Join(current, "go.mod"))
+		if err == nil {
+			return parseModuleInfo(content)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return moduleInfo{required: map[string]struct{}{}}
+		}
+		current = parent
+	}
+}
+
+func parseModuleInfo(content []byte) moduleInfo {
+	info := moduleInfo{required: make(map[string]struct{})}
+	inRequireBlock := false
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		trimmed := strings.TrimSpace(stripGoModLineComment(scanner.Text()))
+		if trimmed == "" {
+			continue
+		}
+		if inRequireBlock {
+			if trimmed == ")" {
+				inRequireBlock = false
+				continue
+			}
+			addRequiredModulePath(info.required, trimmed)
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "module":
+			if len(fields) >= 2 {
+				info.path = unquoteGoModToken(fields[1])
+			}
+		case "require":
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "require"))
+			if rest == "(" {
+				inRequireBlock = true
+				continue
+			}
+			addRequiredModulePath(info.required, rest)
+		}
+	}
+	return info
+}
+
+func addRequiredModulePath(required map[string]struct{}, spec string) {
+	fields := strings.Fields(spec)
+	if len(fields) == 0 {
+		return
+	}
+	required[unquoteGoModToken(fields[0])] = struct{}{}
+}
+
+// unquoteGoModToken unquotes a go.mod module-path token if it's quoted.
+// go.mod's grammar permits a module or require directive's path to be a
+// double-quoted or raw ("`"-delimited) Go string literal instead of a bare
+// token; without unquoting, a quoted path (e.g. require "example.com/dep"
+// v1.0.0) would never match the unquoted path an *ast.ImportSpec carries,
+// so a tracked import using that form would be missed.
+func unquoteGoModToken(token string) string {
+	if unquoted, err := strconv.Unquote(token); err == nil {
+		return unquoted
+	}
+	return token
+}
+
+func stripGoModLineComment(line string) string {
+	if idx := strings.Index(line, "//"); idx >= 0 {
+		return line[:idx]
+	}
+	return line
+}
+
+func genDeclHasInitializedVar(decl *ast.GenDecl) bool {
+	for _, spec := range decl.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if ok && len(valueSpec.Values) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func referencedPackageNames(node ast.Node) map[string]struct{} {
+	names := make(map[string]struct{})
+	ast.Inspect(node, func(n ast.Node) bool {
+		switch typed := n.(type) {
+		case *ast.Ident:
+			if typed.Name != "_" {
+				names[typed.Name] = struct{}{}
+			}
+		case *ast.SelectorExpr:
+			if typed.Sel != nil {
+				names[typed.Sel.Name] = struct{}{}
+			}
+		}
+		return true
+	})
+	return names
+}
+
+func isGoTestEntrypoint(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	suffix := name[len(prefix):]
+	if suffix == "" {
+		return true
+	}
+	first, _ := utf8.DecodeRuneInString(suffix)
+	return !unicode.IsLower(first)
+}
+
+// embeddedFilesForSelectedFile resolves the go:embed patterns attached to
+// this file's *selected* declarations only, not every //go:embed comment
+// anywhere in the file. A benchmark and an ordinary test can share one
+// _test.go file; fingerprinting every embed in the whole file would make an
+// ordinary test's fixture, unreachable from any benchmark, invalidate the
+// harness fingerprint when it changes.
+func embeddedFilesForSelectedFile(dir string, file *ast.File, seenNames map[string]struct{}) ([]string, error) {
+	if file == nil {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	files := make([]string, 0)
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, group := range embedDocCommentGroupsForSelectedSpecs(genDecl, seenNames) {
+			for _, comment := range group.List {
+				text := strings.TrimSpace(comment.Text)
+				if !strings.HasPrefix(text, "//go:embed") {
+					continue
+				}
+				patterns, err := parseEmbedPatterns(strings.TrimSpace(strings.TrimPrefix(text, "//go:embed")))
+				if err != nil {
+					return nil, err
+				}
+				for _, pattern := range patterns {
+					matches, err := resolveEmbedPattern(dir, pattern)
+					if err != nil {
+						return nil, err
+					}
+					for _, match := range matches {
+						if _, ok := seen[match]; ok {
+							continue
+						}
+						seen[match] = struct{}{}
+						files = append(files, match)
+					}
+				}
+			}
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// embedDocCommentGroupsForSelectedSpecs returns the doc comment for each of
+// decl's specs whose own declared name was actually reached (present in
+// seenNames), covering both a single ungrouped var declaration (Go attaches
+// its doc comment to the GenDecl itself, not the lone ValueSpec) and a
+// grouped var block (Go attaches each spec's own doc comment to that
+// ValueSpec directly). Scoping by spec, not by whether the whole decl was
+// selected, matters specifically for a grouped block: a benchmark
+// referencing only one of several embed vars in the same var(...) group
+// must not pull in the other vars' embed fixtures too.
+func embedDocCommentGroupsForSelectedSpecs(decl *ast.GenDecl, seenNames map[string]struct{}) []*ast.CommentGroup {
+	groups := make([]*ast.CommentGroup, 0, len(decl.Specs))
+	for _, spec := range decl.Specs {
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		doc := valueSpec.Doc
+		if doc == nil && len(decl.Specs) == 1 {
+			doc = decl.Doc
+		}
+		if doc == nil || !valueSpecNameIsSeen(valueSpec, seenNames) {
+			continue
+		}
+		groups = append(groups, doc)
+	}
+	return groups
+}
+
+func valueSpecNameIsSeen(spec *ast.ValueSpec, seenNames map[string]struct{}) bool {
+	for _, name := range spec.Names {
+		if _, ok := seenNames[name.Name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func parseEmbedPatterns(text string) ([]string, error) {
+	patterns := make([]string, 0)
+	for {
+		text = strings.TrimLeftFunc(text, unicode.IsSpace)
+		if text == "" {
+			return patterns, nil
+		}
+		switch text[0] {
+		case '`':
+			end := strings.IndexByte(text[1:], '`')
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated raw string literal in go:embed directive")
+			}
+			lit := text[:end+2]
+			value, err := strconv.Unquote(lit)
+			if err != nil {
+				return nil, err
+			}
+			patterns = append(patterns, value)
+			text = text[end+2:]
+		case '"':
+			end := 1
+			escaped := false
+			for end < len(text) {
+				ch := text[end]
+				if escaped {
+					escaped = false
+				} else if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					break
+				}
+				end++
+			}
+			if end >= len(text) {
+				return nil, fmt.Errorf("unterminated string literal in go:embed directive")
+			}
+			lit := text[:end+1]
+			value, err := strconv.Unquote(lit)
+			if err != nil {
+				return nil, err
+			}
+			patterns = append(patterns, value)
+			text = text[end+1:]
+		default:
+			end := strings.IndexFunc(text, unicode.IsSpace)
+			if end < 0 {
+				patterns = append(patterns, text)
+				text = ""
+			} else {
+				patterns = append(patterns, text[:end])
+				text = text[end:]
+			}
+		}
+	}
+}
+
+func resolveEmbedPattern(dir, pattern string) ([]string, error) {
+	includeHidden := false
+	if strings.HasPrefix(pattern, "all:") {
+		includeHidden = true
+		pattern = strings.TrimPrefix(pattern, "all:")
+	}
+	pattern = filepath.ToSlash(pattern)
+	if pattern == "" {
+		return nil, fmt.Errorf("empty go:embed pattern")
+	}
+	if hasPathMeta(pattern) {
+		return resolveEmbedGlob(dir, pattern, includeHidden)
+	}
+	abs := filepath.Join(dir, filepath.FromSlash(pattern))
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return embeddedFilesUnderDir(dir, abs, includeHidden)
+	}
+	if info.Mode().IsRegular() {
+		return []string{filepath.ToSlash(pattern)}, nil
+	}
+	return nil, nil
+}
+
+func resolveEmbedGlob(dir, pattern string, includeHidden bool) ([]string, error) {
+	files := make([]string, 0)
+	err := filepath.WalkDir(dir, func(abs string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if abs == dir {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, abs)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		matched, err := path.Match(pattern, rel)
+		if err != nil {
+			return err
+		}
+		if !matched {
+			return nil
+		}
+		if entry.IsDir() {
+			nested, err := embeddedFilesUnderDir(dir, abs, includeHidden)
+			if err != nil {
+				return err
+			}
+			files = append(files, nested...)
+			return filepath.SkipDir
+		}
+		if entry.Type().IsRegular() {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return uniqueStrings(files), nil
+}
+
+func embeddedFilesUnderDir(root, dir string, includeHidden bool) ([]string, error) {
+	files := make([]string, 0)
+	err := filepath.WalkDir(dir, func(abs string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if abs != dir && !includeHidden && hiddenEmbedName(entry.Name()) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, abs)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func hasPathMeta(pattern string) bool {
+	return strings.ContainsAny(pattern, "*?[")
+}
+
+func hiddenEmbedName(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := values[:0]
+	var last string
+	for i, value := range values {
+		if i > 0 && value == last {
+			continue
+		}
+		out = append(out, value)
+		last = value
+	}
+	return out
+}
+GOEOF
+if ! GOFLAGS=-buildvcs=false run_validated_go "benchmark harness selector build" build -o "$benchmark_harness_selector_bin" "$benchmark_harness_selector_src"; then
+	fail_invalid_memory_gate "benchmark harness selector could not be built.";
+fi;
 echo "Running memory benchmark delta against $base_ref.";
 : > "$base_output_tmp";
 : > "$head_output_tmp";
@@ -351,6 +1257,9 @@ while IFS=$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; 
 		fail_invalid_memory_gate "base benchmark harness fingerprint could not be resolved for package '$bench_pkg'.";
 	fi;
 	if [ "$base_harness_fingerprint" != "$harness_fingerprint" ]; then
+		if [ "$MEMORY_BENCH_ENFORCE" = "0" ]; then
+			report_harness_change_requires_approval "base benchmark definition for package '$bench_pkg' does not match the resolved head harness fingerprint.";
+		fi;
 		fail_invalid_memory_gate "base benchmark definition for package '$bench_pkg' does not match the resolved head harness fingerprint.";
 	fi;
 done < "$bench_definitions_tmp";
@@ -385,12 +1294,14 @@ while IFS=$(printf '\t') read -r bench_pkg bench_selection harness_fingerprint; 
 done < "$bench_definitions_tmp";
 cp "$head_output_tmp" "$BENCH_HEAD_OUTPUT";
 benchdelta_bin="$bench_dir/benchdelta";
-GOFLAGS=-buildvcs=false run_validated_go "benchdelta helper build" build -o "$benchdelta_bin" ./tools/benchdelta;
+if ! GOFLAGS=-buildvcs=false run_validated_go "benchdelta helper build" build -o "$benchdelta_bin" ./tools/benchdelta; then
+	fail_invalid_memory_gate "benchdelta helper could not be built.";
+fi;
 set +e;
 "$benchdelta_bin" -base "$BENCH_BASE_OUTPUT" -head "$BENCH_HEAD_OUTPUT" -max-bytes-pct "$MEMORY_BENCH_MAX_BYTES_PCT" -max-allocs-pct "$MEMORY_BENCH_MAX_ALLOCS_PCT" -summary-out "$MEMORY_BENCH_SUMMARY";
 status=$?;
 set -e;
-printf "%s\n" "$status" > "$MEMORY_BENCH_STATUS";
+write_memory_bench_status "$status";
 if [ "$MEMORY_BENCH_ENFORCE" = "0" ] && [ "$status" -eq 1 ]; then
 	exit 0;
 fi;

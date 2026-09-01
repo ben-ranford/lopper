@@ -4,12 +4,14 @@ import (
 	"regexp"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 const (
 	gemfileName     = "Gemfile"
 	gemfileLockName = "Gemfile.lock"
 	gemspecExt      = ".gemspec"
+	maxGemspecBytes = 1 * 1024 * 1024
 	maxDetectFiles  = 1024
 )
 
@@ -49,6 +51,7 @@ type fileScan struct {
 type scanResult struct {
 	Files                []fileScan
 	Warnings             []string
+	CoverageGaps         []report.CoverageGap
 	DeclaredDependencies map[string]struct{}
 	DeclaredSources      map[string]rubyDependencySource
 	ImportedDependencies map[string]struct{}

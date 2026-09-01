@@ -1,8 +1,12 @@
 'use strict';
 
 const COMMENT_MARKER = '<!-- queue-me-controller -->';
-const CONFLICT_BLOCK_RE = /<!-- queue-me-conflict-block head=([^\s>]+) base=([^\s>]+) -->/;
 const DEFAULT_QUEUE_LABEL = 'queue-me';
+const MAX_GITHUB_COMMENT_BODY_LENGTH = 60000;
+const MAX_QUEUE_IDENTITY_FAILURES = 10;
+const MAX_QUEUE_IDENTITY_FAILURE_LENGTH = 240;
+const MAX_QUEUE_IDENTITY_COMMITS = 500;
+const COMMENT_TRUNCATION_NOTICE = '\n\n_Status message truncated to fit GitHub comment limits._';
 
 function labelName(label) {
   return typeof label === 'string' ? label : label?.name;
@@ -29,23 +33,109 @@ function safeError(error) {
   return message.replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, 1200);
 }
 
-function isMergeConflict(error) {
-  return /\bconflict(?:s|ed|ing)?\b|\bpull request is not mergeable\b/i.test(safeError(error));
+function safeCommentText(value, maxLength) {
+  return String(value).replace(/[\r\n]+/g, ' ').replaceAll('`', "'").slice(0, maxLength);
 }
 
-function conflictBlockMarker(headSHA, baseSHA) {
-  return `<!-- queue-me-conflict-block head=${headSHA} base=${baseSHA} -->`;
+function truncateCommentBody(body) {
+  if (body.length <= MAX_GITHUB_COMMENT_BODY_LENGTH) {
+    return body;
+  }
+  return `${body.slice(0, MAX_GITHUB_COMMENT_BODY_LENGTH - COMMENT_TRUNCATION_NOTICE.length)}${COMMENT_TRUNCATION_NOTICE}`;
 }
 
-function parseConflictBlock(body) {
-  if (typeof body !== 'string') {
-    return null;
+function queuePauseError(message) {
+  const error = new Error(message);
+  error.queuePauseMessage = message;
+  return error;
+}
+
+function isBotIdentity(identity) {
+  const type = String(identity?.type || '').trim().toLowerCase();
+  const login = String(identity?.login || '').toLowerCase();
+  const name = String(identity?.name || '').toLowerCase();
+  const email = String(identity?.email || '').toLowerCase();
+  return (
+    type === 'bot' ||
+    login.endsWith('[bot]') ||
+    name.endsWith('[bot]') ||
+    email.includes('[bot]@') ||
+    email === 'noreply@github.com'
+  );
+}
+
+function githubLogin(identity) {
+  const login = String(identity?.login || '').trim().toLowerCase();
+  if (!login || isBotIdentity(identity)) {
+    return '';
   }
-  const match = CONFLICT_BLOCK_RE.exec(body);
-  if (!match) {
-    return null;
+  return login;
+}
+
+function sameCommitIdentity(commit) {
+  const authorLogin = githubLogin(commit?.author);
+  const committerLogin = githubLogin(commit?.committer);
+  return authorLogin !== '' && authorLogin === committerLogin;
+}
+
+function commitIdentityFailure(commit) {
+  const author = commit?.commit?.author || {};
+  const committer = commit?.commit?.committer || {};
+  const authorName = String(author.name || '').trim();
+  const authorEmail = String(author.email || '').trim();
+  const committerName = String(committer.name || '').trim();
+  const committerEmail = String(committer.email || '').trim();
+  const sha = shortSHA(commit?.sha);
+
+  if (!authorName || !authorEmail || !committerName || !committerEmail) {
+    return `${sha}: author and committer metadata must both be present`;
   }
-  return { headSHA: match[1], baseSHA: match[2] };
+  if (isBotIdentity(commit?.author) || isBotIdentity(author)) {
+    return `${sha}: author is a bot identity`;
+  }
+  if (isBotIdentity(commit?.committer) || isBotIdentity(committer)) {
+    return `${sha}: committer is a bot identity`;
+  }
+  const authorLogin = githubLogin(commit?.author);
+  const committerLogin = githubLogin(commit?.committer);
+  if (!authorLogin || !committerLogin) {
+    return `${sha}: cannot prove canonical author and committer GitHub identity`;
+  }
+  if (!sameCommitIdentity(commit)) {
+    return `${sha}: author and committer identities differ`;
+  }
+  return '';
+}
+
+function queueIdentityFailureMessage(failures) {
+  const shownFailures = failures
+    .slice(0, MAX_QUEUE_IDENTITY_FAILURES)
+    .map((failure) => safeCommentText(failure, MAX_QUEUE_IDENTITY_FAILURE_LENGTH));
+  const omitted = failures.length - shownFailures.length;
+  let omittedSummary = '';
+  if (omitted > 0) {
+    const omittedFailureNoun = omitted === 1 ? 'failure' : 'failures';
+    omittedSummary = `; ${omitted} additional commit identity ${omittedFailureNoun} omitted`;
+  }
+  return `Queue identity audit failed: PR-unique commits must use the same canonical user author and committer identity. Found ${failures.length} failing commit${failures.length === 1 ? '' : 's'}; showing ${shownFailures.length}: ${shownFailures.join('; ')}${omittedSummary}.`;
+}
+
+function assertCanonicalCommitIdentity(comparison) {
+  const commits = comparison?.commits || [];
+  if (comparison?.total_commits > commits.length) {
+    throw queuePauseError(
+      `Queue identity audit failed: GitHub returned ${commits.length} of ${comparison.total_commits} PR-unique commits, so the queue cannot prove canonical author and committer identity.`,
+    );
+  }
+  const failures = commits.map(commitIdentityFailure).filter(Boolean);
+  if (failures.length > 0) {
+    throw queuePauseError(queueIdentityFailureMessage(failures));
+  }
+  if (comparison?.total_commits > MAX_QUEUE_IDENTITY_COMMITS) {
+    throw queuePauseError(
+      `Queue identity audit failed: ${comparison.total_commits} PR-unique commits exceeds the ${MAX_QUEUE_IDENTITY_COMMITS}-commit audit limit.`,
+    );
+  }
 }
 
 async function ensureQueueLabel(github, owner, repo, queueLabel) {
@@ -103,35 +193,27 @@ function assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid)
   }
 }
 
-async function statusComment(github, owner, repo, number) {
-  const comments = await github.paginate(github.rest.issues.listComments, {
-    owner,
-    repo,
-    issue_number: number,
-    per_page: 100,
-  });
-  return comments.find(
-    (comment) =>
-      comment.user?.type === 'Bot' &&
-      typeof comment.body === 'string' &&
-      comment.body.includes(COMMENT_MARKER),
-  );
-}
-
 async function syncStatusComment(
   github,
   owner,
   repo,
   number,
   body,
-  { createIfMissing = true, preserveConflictBlock = false } = {},
+  { createIfMissing = true } = {},
 ) {
-  const existing = await statusComment(github, owner, repo, number);
-  const existingBlock = preserveConflictBlock ? parseConflictBlock(existing?.body) : null;
-  const bodyWithPreservedBlock = existingBlock
-    ? `${body}\n\n${conflictBlockMarker(existingBlock.headSHA, existingBlock.baseSHA)}`
-    : body;
-  const nextBody = `${COMMENT_MARKER}\n${bodyWithPreservedBlock}`;
+  const comments = await github.paginate(github.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number: number,
+    per_page: 100,
+  });
+  const existing = comments.find(
+    (comment) =>
+      comment.user?.type === 'Bot' &&
+      typeof comment.body === 'string' &&
+      comment.body.includes(COMMENT_MARKER),
+  );
+  const nextBody = truncateCommentBody(`${COMMENT_MARKER}\n${body}`);
   if (existing?.body === nextBody) {
     return;
   }
@@ -155,24 +237,9 @@ async function syncStatusComment(
   });
 }
 
-async function isBlockedOnSameHead(github, owner, repo, pull, defaultBranchSHA) {
-  const existing = await statusComment(github, owner, repo, pull.number);
-  const block = parseConflictBlock(existing?.body);
-  return block?.headSHA === pull.head.sha && block.baseSHA === defaultBranchSHA;
-}
-
-async function firstEligibleQueueIndex(github, owner, repo, queued, defaultBranchSHA) {
-  for (const [index, pull] of queued.entries()) {
-    if (!(await isBlockedOnSameHead(github, owner, repo, pull, defaultBranchSHA))) {
-      return index;
-    }
-  }
-  return queued.length;
-}
-
 function followerStatusBody(leaderNumber, { conflictSkipped = false } = {}) {
   const orderingSummary = conflictSkipped
-    ? 'Earlier queued pull requests with rebase conflicts are retried after their branches change.'
+    ? 'Earlier queued pull requests that are not yet eligible are retried after their branches or the base branch change.'
     : 'Pull requests advance in ascending number order.';
   return `## Queue status\n\nQueued behind #${leaderNumber}. ${orderingSummary}`;
 }
@@ -201,7 +268,6 @@ async function syncFollowerStatuses({
       {
         createIfMissing:
           eventQueueEntry?.number === follower.number && eventAction === 'labeled',
-        preserveConflictBlock: true,
       },
     );
   }
@@ -212,59 +278,55 @@ async function disableAutoMerge(github, owner, repo, number) {
   if (!state?.autoMergeRequest) {
     return;
   }
-  await disableAutoMergeByID(github, state.id);
-}
-
-async function disableAutoMergeByID(github, pullRequestId) {
   await github.graphql(
     `mutation DisableQueueAutoMerge($pullRequestId: ID!) {
       disablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
         pullRequest { number }
       }
     }`,
-    { pullRequestId },
+    { pullRequestId: state.id },
   );
 }
 
-async function rebaseOntoDefault(
+async function verifyHeadForQueue(
   github,
   pull,
   defaultBranchSHA,
-  { canUpdateBranch = true } = {},
 ) {
-  const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+  const comparisonRequest = {
     owner: pull.base.repo.owner.login,
     repo: pull.base.repo.name,
     basehead: `${defaultBranchSHA}...${pull.head.sha}`,
-  });
-  if (isBranchCurrent(comparison.status)) {
-    return { headSHA: pull.head.sha, rebased: false };
-  }
-  if (!canUpdateBranch) {
-    return { headSHA: pull.head.sha, rebased: false, needsManualRebase: true };
-  }
-  const result = await github.graphql(
-    `mutation RebaseQueuedPull($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
-      updatePullRequestBranch(input: {
-        pullRequestId: $pullRequestId
-        expectedHeadOid: $expectedHeadOid
-        updateMethod: REBASE
-      }) {
-        pullRequest {
-          headRefOid
-          number
-        }
-      }
-    }`,
-    {
-      pullRequestId: pull.node_id,
-      expectedHeadOid: pull.head.sha,
-    },
-  );
-  return {
-    headSHA: result.updatePullRequestBranch.pullRequest.headRefOid,
-    rebased: true,
+    per_page: 100,
   };
+  const { data: firstComparison } = await github.rest.repos.compareCommitsWithBasehead({
+    ...comparisonRequest,
+    page: 1,
+  });
+  if (firstComparison.total_commits > MAX_QUEUE_IDENTITY_COMMITS) {
+    throw queuePauseError(
+      `Queue identity audit failed: ${firstComparison.total_commits} PR-unique commits exceeds the ${MAX_QUEUE_IDENTITY_COMMITS}-commit audit limit.`,
+    );
+  }
+  const commits = [...(firstComparison.commits || [])];
+  let page = 2;
+  while (commits.length < firstComparison.total_commits) {
+    const { data: comparisonPage } = await github.rest.repos.compareCommitsWithBasehead({
+      ...comparisonRequest,
+      page,
+    });
+    page += 1;
+    commits.push(...(comparisonPage.commits || []));
+    if (!comparisonPage.commits?.length) {
+      break;
+    }
+  }
+  const comparison = { ...firstComparison, commits };
+  assertCanonicalCommitIdentity(comparison);
+  if (isBranchCurrent(comparison.status)) {
+    return { headSHA: pull.head.sha, needsCurrentBase: false };
+  }
+  return { headSHA: pull.head.sha, needsCurrentBase: true };
 }
 
 async function mergeNow(github, pullRequestId, expectedHeadOid) {
@@ -300,60 +362,28 @@ async function armAutoMerge(github, pullRequestId, expectedHeadOid) {
   );
 }
 
-async function resetNonSquashAutoMerge(
-  github,
-  state,
-  { expectedBaseRefName, expectedBaseRefOid },
-) {
-  let current = state;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const method = current.autoMergeRequest?.mergeMethod;
-    if (!current.autoMergeRequest || method === 'SQUASH') {
-      return current;
-    }
-    await disableAutoMergeByID(github, current.id);
-    const refreshed = await pullStateByID(github, current.id);
-    if (refreshed.headRefOid !== current.headRefOid) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(current.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while resetting non-squash auto-merge.`,
-      );
-    }
-    assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
-    current = refreshed;
-  }
-  throw new Error(
-    `Pull request auto-merge remained configured as ${current.autoMergeRequest.mergeMethod || 'unknown'} after reset.`,
-  );
-}
-
 async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefOid }) {
   assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid);
-  const expectedBaseState = { expectedBaseRefName, expectedBaseRefOid };
-  let current = await resetNonSquashAutoMerge(github, state, expectedBaseState);
-  if (current.autoMergeRequest) {
+  if (state.autoMergeRequest) {
     return 'armed';
   }
-  if (current.mergeable === 'MERGEABLE' && current.mergeStateStatus === 'CLEAN') {
-    await mergeNow(github, current.id, current.headRefOid);
+  if (state.mergeable === 'MERGEABLE' && state.mergeStateStatus === 'CLEAN') {
+    await mergeNow(github, state.id, state.headRefOid);
     return 'merged';
   }
   try {
-    await armAutoMerge(github, current.id, current.headRefOid);
+    await armAutoMerge(github, state.id, state.headRefOid);
     return 'armed';
   } catch (error) {
-    let refreshed = await pullStateByID(github, current.id);
-    if (refreshed.headRefOid !== current.headRefOid) {
+    const refreshed = await pullStateByID(github, state.id);
+    if (refreshed.headRefOid !== state.headRefOid) {
       throw new Error(
-        `Pull request head moved from ${shortSHA(current.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
+        `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
       );
     }
     assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
-    refreshed = await resetNonSquashAutoMerge(github, refreshed, expectedBaseState);
-    if (refreshed.autoMergeRequest) {
-      return 'armed';
-    }
     if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
-      await mergeNow(github, refreshed.id, refreshed.headRefOid);
+      await mergeNow(github, refreshed.id, state.headRefOid);
       return 'merged';
     }
     throw error;
@@ -420,50 +450,13 @@ async function reconcileEventPull({
   );
 }
 
-function isQueueAppAutoMergeEvent({ context, eventPull, queueAppSlug }) {
+function isQueueAppAutoMergeEvent({ context, queueAppSlug }) {
   return (
     context.eventName === 'pull_request_target' &&
     context.payload.action === 'auto_merge_enabled' &&
-    queueAppSlug &&
+    Boolean(queueAppSlug) &&
     context.payload.sender?.login === `${queueAppSlug}[bot]`
   );
-}
-
-async function rebaseQueuedPull({
-  github,
-  owner,
-  repo,
-  candidate,
-  defaultBranch,
-  defaultBranchSHA,
-  canUpdateBranch,
-  hasFollower,
-}) {
-  try {
-    return await rebaseOntoDefault(github, candidate, defaultBranchSHA, { canUpdateBranch });
-  } catch (error) {
-    if (!isMergeConflict(error)) {
-      await syncStatusComment(
-        github,
-        owner,
-        repo,
-        candidate.number,
-        `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`.\n\n\`${safeError(error)}\``,
-      );
-      throw error;
-    }
-    const retrySummary = hasFollower
-      ? 'The queue will continue with the next queued pull request. This pull request will be retried after its branch or the base branch changes.'
-      : 'This pull request will be retried after its branch or the base branch changes.';
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      candidate.number,
-      `## Queue status\n\nGitHub could not rebase this pull request onto \`${defaultBranch}\` because of merge conflicts. ${retrySummary}\n\n${conflictBlockMarker(candidate.head.sha, defaultBranchSHA)}\n\n\`${safeError(error)}\``,
-    );
-    return null;
-  }
 }
 
 async function armOrMergeQueuedPull({
@@ -496,9 +489,7 @@ async function armOrMergeQueuedPull({
       expectedBaseRefName: defaultBranch,
       expectedBaseRefOid: defaultBranchSHA,
     });
-    const rebaseSummary = update.rebased
-      ? `Rebased \`${shortSHA(candidate.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`
-      : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
+    const queueSummary = `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\` and passed the PR-unique commit identity audit.`;
     const mergeSummary = result === 'merged'
       ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
       : 'Squash auto-merge is armed and will wait for the repository ruleset.';
@@ -507,7 +498,7 @@ async function armOrMergeQueuedPull({
       owner,
       repo,
       candidate.number,
-      `## Queue status\n\n${rebaseSummary}\n\n${mergeSummary}`,
+      `## Queue status\n\n${queueSummary}\n\n${mergeSummary}`,
     );
   } catch (error) {
     await syncStatusComment(
@@ -528,7 +519,7 @@ async function advanceQueuedPull({
   candidate,
   defaultBranch,
   defaultBranchSHA,
-  canUpdateBranch,
+  queueAppSlug,
   isFirst,
   hasFollower,
 }) {
@@ -545,28 +536,35 @@ async function advanceQueuedPull({
     );
     return false;
   }
-  const update = await rebaseQueuedPull({
-    github,
-    owner,
-    repo,
-    candidate,
-    defaultBranch,
-    defaultBranchSHA,
-    canUpdateBranch,
-    hasFollower,
-  });
-  if (!update) {
-    return true;
-  }
-  if (update.needsManualRebase) {
+  let update;
+  try {
+    update = await verifyHeadForQueue(github, candidate, defaultBranchSHA);
+  } catch (error) {
+    const pauseMessage = error?.queuePauseMessage ||
+      `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
     await syncStatusComment(
       github,
       owner,
       repo,
       candidate.number,
-      `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
+      `## Queue status\n\nQueue paused: ${pauseMessage}\n\n\`${safeError(error)}\``,
     );
-    return false;
+    throw error;
+  }
+  if (update.needsCurrentBase) {
+    const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
+    const retrySummary = hasFollower
+      ? 'The queue will continue with the next queued pull request. This pull request will be retried after a clean identity audit.'
+      : 'This pull request will be retried after a clean identity audit.';
+    const message = `this pull request branch does not contain current \`${defaultBranch}\`. The queue will not call GitHub branch update because it rewrites PR commits with \`${queueCommitter}\` as committer. Push a history that contains current \`${defaultBranch}\` while preserving canonical author and committer identity. ${retrySummary}`;
+    await syncStatusComment(
+      github,
+      owner,
+      repo,
+      candidate.number,
+      `## Queue status\n\nQueue paused: ${message}`,
+    );
+    return true;
   }
   await armOrMergeQueuedPull({
     github,
@@ -618,28 +616,19 @@ async function runController({
     return;
   }
 
-  if (isQueueAppAutoMergeEvent({ context, eventPull, queueAppSlug })) {
+  if (isQueueAppAutoMergeEvent({ context, queueAppSlug })) {
     core.notice(`Ignoring the queue App's auto-merge event for #${eventPull.number}.`);
     return;
   }
+
   const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
   const { data: branch } = await github.rest.repos.getBranch({
     owner,
     repo,
     branch: defaultBranch,
   });
-  const activeIndex = await firstEligibleQueueIndex(github, owner, repo, queued, branch.commit.sha);
-  if (activeIndex >= queued.length) {
-    core.notice('Every queued pull request is waiting for a branch update after a rebase conflict.');
-    return;
-  }
-  let conflictSkipped = activeIndex > 0;
-  for (let index = activeIndex; index < queued.length; index += 1) {
-    const candidate = queued[index];
-    if (await isBlockedOnSameHead(github, owner, repo, candidate, branch.commit.sha)) {
-      conflictSkipped = true;
-      continue;
-    }
+
+  for (const [index, candidate] of queued.entries()) {
     await syncFollowerStatuses({
       github,
       owner,
@@ -648,8 +637,8 @@ async function runController({
       leaderNumber: candidate.number,
       eventQueueEntry,
       eventAction: context.payload.action,
-      conflictSkipped,
-      disableFollowers: index === activeIndex,
+      conflictSkipped: index > 0,
+      disableFollowers: index === 0,
     });
     const shouldAdvance = await advanceQueuedPull({
       github,
@@ -658,28 +647,31 @@ async function runController({
       candidate,
       defaultBranch,
       defaultBranchSHA: branch.commit.sha,
-      canUpdateBranch: candidate.head.repo?.full_name === repository.full_name,
+      queueAppSlug,
       isFirst: index === 0,
       hasFollower: index + 1 < queued.length,
     });
     if (!shouldAdvance) {
       return;
     }
-    conflictSkipped = true;
   }
 
-  core.notice('Every queued pull request is waiting for a branch update after a rebase conflict.');
+  core.notice('Every queued pull request is waiting for a clean queue identity audit after a base branch update.');
 }
 
 module.exports = runController;
 module.exports.testables = {
+  assertCanonicalCommitIdentity,
+  commitIdentityFailure,
   hasLabel,
   isBranchCurrent,
-  isMergeConflict,
+  isBotIdentity,
   isQueueAppAutoMergeEvent,
   labelName,
-  parseConflictBlock,
+  queueIdentityFailureMessage,
   safeError,
   shortSHA,
   sortQueuedPulls,
+  truncateCommentBody,
+  verifyHeadForQueue,
 };

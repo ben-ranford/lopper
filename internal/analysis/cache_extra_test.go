@@ -5,14 +5,30 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	_ "unsafe"
 
+	"github.com/ben-ranford/lopper/internal/lang/shared"
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	runtimetrace "github.com/ben-ranford/lopper/internal/runtime"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
+
+//go:linkname safeioWriteFileParentReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileParentReadyFn
+var safeioWriteFileParentReadyFn func() error
+
+//go:linkname safeioWriteFilePublishReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFilePublishReadyFn
+var safeioWriteFilePublishReadyFn func() error
+
+//go:linkname safeioWriteFileRenameReadyFn github.com/ben-ranford/lopper/internal/safeio.writeFileRenameReadyFn
+var safeioWriteFileRenameReadyFn func() error
 
 const (
 	cacheDirName          = ".lopper-cache"
@@ -29,77 +45,6 @@ type analysisCacheLookupCase struct {
 	wantReason   string
 	wantHit      bool
 	wantRepoPath string
-}
-
-func TestAnalysisCacheWarningLifecycleAndSnapshot(t *testing.T) {
-	cache := &analysisCache{
-		metadata: report.CacheMetadata{Invalidations: []report.CacheInvalidation{{Key: "k", Reason: "reason"}}},
-		warnings: []string{},
-	}
-
-	cache.warn("")
-	cache.warn("cache warning")
-	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || warnings[0] != "cache warning" {
-		t.Fatalf("unexpected warnings: %#v", warnings)
-	}
-	if len(cache.takeWarnings()) != 0 {
-		t.Fatalf("expected warnings to be drained")
-	}
-
-	snapshot := cache.metadataSnapshot()
-	if snapshot == nil || len(snapshot.Invalidations) != 1 {
-		t.Fatalf("unexpected snapshot: %#v", snapshot)
-	}
-	cache.metadata.Invalidations[0].Reason = "mutated"
-	if snapshot.Invalidations[0].Reason == "mutated" {
-		t.Fatalf("expected snapshot invalidations to be copied")
-	}
-
-	var nilCache *analysisCache
-	if nilCache.metadataSnapshot() != nil {
-		t.Fatalf("expected nil snapshot for nil cache")
-	}
-}
-
-func TestNewAnalysisCacheUnavailablePathAddsWarning(t *testing.T) {
-	repo := t.TempDir()
-	blockingPath := filepath.Join(repo, "not-a-dir")
-	if err := os.WriteFile(blockingPath, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write blocking file: %v", err)
-	}
-
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: blockingPath}}, repo)
-	if cache.cacheable {
-		t.Fatalf("expected cache to be non-cacheable when path is invalid")
-	}
-	if len(cache.takeWarnings()) == 0 {
-		t.Fatalf("expected warning when cache directory init fails")
-	}
-}
-
-func TestNewAnalysisCacheMissingRootFailsClosedWithoutCreation(t *testing.T) {
-	repo := t.TempDir()
-	cachePath := filepath.Join(repo, "missing", cacheDirName)
-
-	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
-	if cache.cacheable {
-		t.Fatal("expected missing cache root to be unavailable pending capability-bound creation")
-	}
-	warnings := cache.takeWarnings()
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "#1494") {
-		t.Fatalf("warnings = %#v, want #1494 capability-bound creation guidance", warnings)
-	}
-	for _, path := range []string{
-		filepath.Join(repo, "missing"),
-		cachePath,
-		filepath.Join(cachePath, cacheKeysDirName),
-		filepath.Join(cachePath, cacheObjectsDirName),
-	} {
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("cache initialization created %s: %v", path, err)
-		}
-	}
 }
 
 func TestNewAnalysisCacheObjectsDirInitFailureAddsWarning(t *testing.T) {
@@ -222,6 +167,327 @@ func TestAnalysisCacheStoreRejectsRootReplacementBeforeMutation(t *testing.T) {
 	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName))
 }
 
+func TestAnalysisCacheOpenWriteRootInitializesMissingIdentity(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := &analysisCache{options: resolvedCacheOptions{Enabled: true, Path: cachePath}, cacheable: true}
+
+	root, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close write root: %v", closeErr)
+		}
+	})
+	if cache.rootIdentity == nil {
+		t.Fatal("expected openWriteRoot to initialize cache root identity")
+	}
+}
+
+func TestAnalysisCacheStableRootUsesAnalysisRepoMapping(t *testing.T) {
+	stableRepo := filepath.Join(t.TempDir(), "stable")
+	analysisRepo := filepath.Join(t.TempDir(), "analysis")
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: false}}, stableRepo, analysisRepo)
+
+	got := cache.stableCacheRoot(filepath.Join(analysisRepo, "nested", cacheDirName))
+	want := filepath.Join(stableRepo, "nested", cacheDirName)
+	if got != want {
+		t.Fatalf("stable cache root = %q, want %q", got, want)
+	}
+	outside := filepath.Join(t.TempDir(), cacheDirName)
+	if got := cache.stableCacheRoot(outside); got != outside {
+		t.Fatalf("outside cache root = %q, want original %q", got, outside)
+	}
+	var nilCache *analysisCache
+	if got := nilCache.stableCacheRoot(outside); got != outside {
+		t.Fatalf("nil cache stable root = %q, want original %q", got, outside)
+	}
+}
+
+// TestPublishPointerRejectsAlreadyInvalidWriteRoot exercises
+// publishPointer's own leading validateWriteRoot guard directly, calling
+// publishPointer with a write root whose identity has already gone stale
+// before the call -- distinct from the other root-replacement tests here,
+// which all inject the swap mid-write via a hook and so exercise later
+// validateWriteRoot call sites instead.
+func TestPublishPointerRejectsAlreadyInvalidWriteRoot(t *testing.T) {
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	mustMkdirCacheLayout(t, replacementRoot)
+
+	writeRoot, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := writeRoot.Close(); closeErr != nil {
+			t.Errorf("close write root: %v", closeErr)
+		}
+	})
+
+	if err := os.Rename(cachePath, movedRoot); err != nil {
+		t.Fatalf("move cache root: %v", err)
+	}
+	if err := os.Rename(replacementRoot, cachePath); err != nil {
+		t.Fatalf("install replacement cache root: %v", err)
+	}
+
+	err = cache.publishPointer(writeRoot, filepath.Join(cacheKeysDirName, "key.json"), []byte("{}"))
+	if err == nil {
+		t.Fatal("expected publishPointer to reject an already-invalid write root")
+	}
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementBetweenWrites(t *testing.T) {
+	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 1, "between cache writes")
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementDuringPointerPublish(t *testing.T) {
+	assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t, 2, "during pointer publish")
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementAtPointerCommit(t *testing.T) {
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	mustMkdirCacheLayout(t, replacementRoot)
+
+	originalHook := safeioWriteFilePublishReadyFn
+	t.Cleanup(func() { safeioWriteFilePublishReadyFn = originalHook })
+	publishCalls := 0
+	safeioWriteFilePublishReadyFn = func() error {
+		publishCalls++
+		if publishCalls != 2 {
+			return nil
+		}
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		return os.Rename(replacementRoot, cachePath)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement at pointer commit to fail")
+	}
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
+	}
+	if publishCalls != 2 {
+		t.Fatalf("expected cache root swap at pointer commit, got %d publish calls", publishCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(cachePath, cacheKeysDirName, "key.json"))
+}
+
+func TestAnalysisCacheStoreRejectsKeysRetargetAtPointerCommit(t *testing.T) {
+	repo, cache, cachePath, _, _ := newReplaceableCacheForStoreTest(t)
+	keysPath := filepath.Join(cachePath, cacheKeysDirName)
+	movedKeys := filepath.Join(repo, "moved-keys")
+
+	originalHook := safeioWriteFilePublishReadyFn
+	t.Cleanup(func() { safeioWriteFilePublishReadyFn = originalHook })
+	publishCalls := 0
+	safeioWriteFilePublishReadyFn = func() error {
+		publishCalls++
+		if publishCalls != 2 {
+			return nil
+		}
+		if err := os.Rename(keysPath, movedKeys); err != nil {
+			return err
+		}
+		return os.Mkdir(keysPath, 0o750)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected keys retarget at pointer commit to fail")
+	}
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
+	}
+	if publishCalls != 2 {
+		t.Fatalf("expected keys retarget at pointer commit, got %d publish calls", publishCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedKeys, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+}
+
+func TestAnalysisCacheStoreRejectsKeysReplacementAfterParentPinned(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo, cache, cachePath, _, _ := newReplaceableCacheForStoreTest(t)
+	keysPath := filepath.Join(cachePath, cacheKeysDirName)
+	movedKeys := filepath.Join(repo, "moved-keys")
+
+	originalHook := safeioWriteFileParentReadyFn
+	t.Cleanup(func() { safeioWriteFileParentReadyFn = originalHook })
+	parentReadyCalls := 0
+	safeioWriteFileParentReadyFn = func() error {
+		parentReadyCalls++
+		if parentReadyCalls != 2 {
+			return nil
+		}
+		if err := os.Rename(keysPath, movedKeys); err != nil {
+			return err
+		}
+		return os.Mkdir(keysPath, 0o750)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected keys replacement after parent pin to fail")
+	}
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
+	}
+	if parentReadyCalls != 2 {
+		t.Fatalf("expected keys replacement during pointer publish, got %d parent-ready calls", parentReadyCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedKeys, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+}
+
+func TestAnalysisCacheStoreRejectsRootReplacementBetweenFinalCheckAndPointerRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory replacement semantics are covered on Unix")
+	}
+
+	repo, cache, cachePath, _, movedRoot := newReplaceableCacheForStoreTest(t)
+	keysPath := filepath.Join(cachePath, cacheKeysDirName)
+	replacementRoot := filepath.Join(repo, "cache-replacement")
+	if err := os.Mkdir(replacementRoot, 0o750); err != nil {
+		t.Fatalf("mkdir replacement root: %v", err)
+	}
+
+	originalHook := safeioWriteFileRenameReadyFn
+	t.Cleanup(func() { safeioWriteFileRenameReadyFn = originalHook })
+	renameReadyCalls := 0
+	safeioWriteFileRenameReadyFn = func() error {
+		renameReadyCalls++
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		if err := os.Rename(replacementRoot, cachePath); err != nil {
+			return err
+		}
+		return os.Rename(filepath.Join(movedRoot, cacheKeysDirName), keysPath)
+	}
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatal("expected root replacement after final parent check to fail")
+	}
+	if !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected directory identity error, got %v", err)
+	}
+	if renameReadyCalls != 1 {
+		t.Fatalf("expected one pointer rename-ready call, got %d", renameReadyCalls)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(keysPath, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+}
+
+func TestVerifyPinnedAnalysisCacheDirectoryRejectsRetargetedPath(t *testing.T) {
+	cachePath, root := retargetPinnedAnalysisCacheRoot(t)
+
+	if _, err := verifyPinnedAnalysisCacheDirectory(root, cachePath); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted cache root to be rejected, got %v", err)
+	}
+}
+
+func TestOpenOrCreatePinnedAnalysisCacheChildRejectsRetargetedParentPath(t *testing.T) {
+	cachePath, root := retargetPinnedAnalysisCacheRoot(t)
+
+	if _, err := openOrCreatePinnedAnalysisCacheChild(root, cachePath, cacheKeysDirName); err == nil || !strings.Contains(err.Error(), "directory identity changed") {
+		t.Fatalf("expected retargeted parent path to be rejected, got %v", err)
+	}
+}
+
+func retargetPinnedAnalysisCacheRoot(t *testing.T) (string, safeio.Root) {
+	t.Helper()
+
+	cachePath := filepath.Join(t.TempDir(), cacheDirName)
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("mkdir cache root: %v", err)
+	}
+	root, err := safeio.OpenRootNoFollow(cachePath)
+	if err != nil {
+		t.Fatalf("open cache root: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := root.Close(); closeErr != nil {
+			t.Errorf("close cache root: %v", closeErr)
+		}
+	})
+	movedRoot := filepath.Join(filepath.Dir(cachePath), "cache-moved")
+	if err := os.Rename(cachePath, movedRoot); err != nil {
+		t.Fatalf("move cache root: %v", err)
+	}
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("replace cache root: %v", err)
+	}
+
+	return cachePath, root
+}
+
+func assertAnalysisCacheStoreRejectsRootReplacementAfterWriteParentReady(t *testing.T, replaceOnCall int, stage string) {
+	t.Helper()
+	repo, cache, cachePath, outside, movedRoot := newReplaceableCacheForStoreTest(t)
+	withAnalysisCacheStoreReplacementAfterWriteParentReady(t, cachePath, outside, movedRoot, replaceOnCall)
+
+	err := cache.store(cacheEntryDescriptor{KeyDigest: "key", InputDigest: "input"}, report.Report{RepoPath: repo})
+	if err == nil {
+		t.Fatalf("expected root replacement %s to fail", stage)
+	}
+	if !isDirectoryIdentityOrMissingError(err) {
+		t.Fatalf("expected directory identity or missing-parent error, got %v", err)
+	}
+	assertAnalysisCachePathAbsent(t, filepath.Join(outside, cacheKeysDirName, "key.json"))
+	assertAnalysisCachePathAbsent(t, filepath.Join(movedRoot, cacheKeysDirName, "key.json"))
+}
+
+func newReplaceableCacheForStoreTest(t *testing.T) (string, *analysisCache, string, string, string) {
+	t.Helper()
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+	if !cache.cacheable {
+		t.Fatalf("expected cacheable setup, warnings=%#v", cache.takeWarnings())
+	}
+	return repo, cache, cachePath, t.TempDir(), filepath.Join(repo, "cache-holding")
+}
+
+func withAnalysisCacheStoreReplacementAfterWriteParentReady(t *testing.T, cachePath, outside, movedRoot string, replaceOnCall int) {
+	t.Helper()
+	originalHook := safeioWriteFileParentReadyFn
+	t.Cleanup(func() { safeioWriteFileParentReadyFn = originalHook })
+	callCount := 0
+	safeioWriteFileParentReadyFn = func() error {
+		callCount++
+		if callCount != replaceOnCall {
+			return nil
+		}
+		if err := os.Rename(cachePath, movedRoot); err != nil {
+			return err
+		}
+		return os.Symlink(outside, cachePath)
+	}
+}
+
+func isDirectoryIdentityOrMissingError(err error) bool {
+	return strings.Contains(err.Error(), "directory identity changed") || errors.Is(err, os.ErrNotExist)
+}
+
 func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 	repo := t.TempDir()
 	cachePath := filepath.Join(repo, cacheDirName)
@@ -247,6 +513,110 @@ func TestAnalysisCacheStorePreservesExistingObject(t *testing.T) {
 		t.Fatalf("read preserved cache object: %v", err)
 	} else if string(got) != "existing complete object" {
 		t.Fatalf("existing cache object = %q, want preserved content", got)
+	}
+}
+
+func TestValidateObservedAnalysisCacheDirectoryIdentityBranches(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	if err := os.Mkdir(cachePath, 0o750); err != nil {
+		t.Fatalf("create cache dir: %v", err)
+	}
+	info, err := os.Lstat(cachePath)
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+
+	if err := validateObservedAnalysisCacheDirectoryIdentity(cachePath, info, info); err != nil {
+		t.Fatalf("expected matching identity to pass, got %v", err)
+	}
+	if err := validateObservedAnalysisCacheDirectoryIdentity(cachePath, info, nil); err == nil {
+		t.Fatal("expected nil observed info to fail")
+	}
+}
+
+// publishPointer is validateWriteRoot's only remaining caller now that
+// openWriteRoot validates identity via safeio's own root.VerifyIdentity
+// instead (see openWriteRoot); this exercises validateWriteRoot's own
+// RootInfo failure branch directly, which publishPointer's existing tests
+// don't reach.
+func TestValidateWriteRootPropagatesRootInfoError(t *testing.T) {
+	repo := t.TempDir()
+	cachePath := filepath.Join(repo, cacheDirName)
+	mustMkdirCacheLayout(t, cachePath)
+	cache := newAnalysisCache(Request{Cache: &CacheOptions{Enabled: true, Path: cachePath}}, repo)
+
+	root, err := cache.openWriteRoot()
+	if err != nil {
+		t.Fatalf("open write root: %v", err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("close write root: %v", err)
+	}
+
+	if err := cache.validateWriteRoot(root); err == nil {
+		t.Fatal("expected a closed write root to fail RootInfo")
+	}
+}
+
+func TestAnalysisCacheOpenWriteRootFailureBranches(t *testing.T) {
+	t.Run("open canonical write root failure after validation", testAnalysisCacheOpenWriteRootCanonicalOpenFailure)
+	t.Run("opened canonical root must match pinned identity", testAnalysisCacheOpenWriteRootIdentityMismatch)
+	t.Run("second validation after opening write root fails closed", testAnalysisCacheOpenWriteRootSecondValidationFailure)
+}
+
+func testAnalysisCacheOpenWriteRootCanonicalOpenFailure(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	renamedPath := filepath.Join(fixture.repo, "cache-renamed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call != 1 {
+			return false, nil
+		}
+		if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+			t.Fatalf("rename cache root before canonical open: %v", err)
+		}
+		return true, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "open canonical root") {
+		t.Fatalf("open write root error = %v, want canonical open failure", err)
+	}
+}
+
+func testAnalysisCacheOpenWriteRootIdentityMismatch(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	renamedPath := filepath.Join(fixture.repo, "cache-renamed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call != 1 {
+			return false, nil
+		}
+		if err := os.Rename(fixture.cachePath, renamedPath); err != nil {
+			t.Fatalf("rename cache root before canonical open: %v", err)
+		}
+		mustMkdirCacheLayout(t, fixture.cachePath)
+		return true, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); err == nil || !strings.Contains(err.Error(), "pinned root identity changed") {
+		t.Fatalf("open write root identity error = %v, want identity mismatch", err)
+	}
+}
+
+func testAnalysisCacheOpenWriteRootSecondValidationFailure(t *testing.T) {
+	fixture := newAnalysisCacheWriteRootFixture(t)
+	validationErr := errors.New("post-open validation failed")
+
+	hookValidateAnalysisCacheRootCall(t, fixture.cachePath, func(call int) (bool, error) {
+		if call == 2 {
+			return true, validationErr
+		}
+		return false, nil
+	})
+
+	if _, err := fixture.cache.openWriteRoot(); !errors.Is(err, validationErr) {
+		t.Fatalf("open write root error = %v, want %v", err, validationErr)
 	}
 }
 
@@ -344,6 +714,28 @@ func assertAnalysisCachePathAbsent(t *testing.T, path string) {
 	}
 }
 
+func assertAnalysisCacheDirExists(t *testing.T, path string) {
+	t.Helper()
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("expected %q to be a directory, info=%#v err=%v", path, info, err)
+	}
+}
+
+func assertAnalysisCacheSameFile(t *testing.T, path string, want fs.FileInfo) {
+	t.Helper()
+	got, err := os.Lstat(path)
+	if err != nil || !os.SameFile(got, want) {
+		t.Fatalf("expected %q to keep identity, got=%#v want=%#v err=%v", path, got, want, err)
+	}
+}
+
+func assertAnalysisCacheQuarantineSuffix(t *testing.T, quarantineName, suffix string) {
+	t.Helper()
+	if !strings.HasSuffix(filepath.Dir(quarantineName), suffix) {
+		t.Fatalf("expected quarantine suffix %s, got %q", suffix, quarantineName)
+	}
+}
+
 func assertSymlinkedDefaultCachePathRejected(t *testing.T, repo, outside, description string) {
 	t.Helper()
 
@@ -374,6 +766,156 @@ func TestLockOrConfigFileRecognizesGradleVersionCatalogs(t *testing.T) {
 	}
 	if lockOrConfigFile("README.md") {
 		t.Fatalf("did not expect README.md to be treated as a cache-relevant config file")
+	}
+}
+
+func TestAnalysisCacheCollectsPHPShortOpenTagConfigs(t *testing.T) {
+	repo := t.TempDir()
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		mustWriteFile(t, filepath.Join(repo, filename), []byte("short_open_tag = On\n"))
+	}
+
+	cache := &analysisCache{}
+	records, err := cache.collectRelevantFiles(repo)
+	if err != nil {
+		t.Fatalf("collect relevant files: %v", err)
+	}
+	collected := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		collected[record.relativePath] = struct{}{}
+	}
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		if _, ok := collected[filename]; !ok {
+			t.Fatalf("expected %s to participate in cache invalidation, got %#v", filename, collected)
+		}
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagConfigChangesInvalidateInputDigest(t *testing.T) {
+	for _, filename := range []string{"php.ini", ".user.ini", ".htaccess"} {
+		t.Run(filename, func(t *testing.T) {
+			repo := t.TempDir()
+			configPath := filepath.Join(repo, filename)
+			mustWriteFile(t, configPath, []byte("short_open_tag = Off\n"))
+
+			cache := &analysisCache{}
+			before, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest before config update: %v", err)
+			}
+			mustWriteFile(t, configPath, []byte("short_open_tag = On\n"))
+			after, err := cache.computeInputDigest(repo, "")
+			if err != nil {
+				t.Fatalf("compute digest after config update: %v", err)
+			}
+			if before == after {
+				t.Fatalf("expected %s update to invalidate the input digest", filename)
+			}
+		})
+	}
+}
+
+func TestAnalysisCachePHPShortOpenTagTraversalCutoffInvalidatesInputDigest(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteFile(t, filepath.Join(repo, "z-config", "php.ini"), []byte("short_open_tag = On\n"))
+
+	cache := &analysisCache{}
+	before, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest before traversal change: %v", err)
+	}
+	for i := 0; i < shared.PHPShortOpenTagConfigWalkEntryLimit; i++ {
+		if err := os.Mkdir(filepath.Join(repo, fmt.Sprintf("a-%04d", i)), 0o750); err != nil {
+			t.Fatalf("create traversal entry %d: %v", i, err)
+		}
+	}
+	after, err := cache.computeInputDigest(repo, "")
+	if err != nil {
+		t.Fatalf("compute digest after traversal change: %v", err)
+	}
+	if before == after {
+		t.Fatal("expected PHP short_open_tag traversal cutoff to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheExplicitRuntimeTraceExcludesOnlyTraceArtifacts(t *testing.T) {
+	repo := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(repo, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	exclusions := cache.cacheAnalysisExclusions(repo, Request{RuntimeTracePath: tracePath})
+	before, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	mustWriteFile(t, runtimetrace.TraceStatePath(filepath.Join(repo, tracePath)), []byte("{\"schema\":\"v2\"}\n"))
+	afterTrace, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != afterTrace {
+		t.Fatal("expected generated runtime trace artifacts not to invalidate the static input digest")
+	}
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'after';\n"))
+	afterSource, err := cache.computeInputDigestWithExclusions(repo, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after source change: %v", err)
+	}
+	if afterTrace == afterSource {
+		t.Fatal("expected source beside an explicit runtime trace to invalidate the input digest")
+	}
+}
+
+func TestAnalysisCacheRuntimeTraceResolvesRelativeToRepoRootForNestedCandidateRoots(t *testing.T) {
+	repo := t.TempDir()
+	nestedRoot := filepath.Join(repo, "pkg")
+	tracePath := filepath.Join("pkg", "tests", "trace.ndjson")
+	sourcePath := filepath.Join(nestedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(nestedRoot, req, repo)
+	before, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(repo, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(nestedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a relative runtime trace path to resolve against the repository root, excluding trace artifacts from a nested candidate root's digest")
+	}
+}
+
+func TestAnalysisCacheRuntimeTraceExclusionRemapsIntoScopedWorkspace(t *testing.T) {
+	trueRepo := t.TempDir()
+	scopedRoot := t.TempDir()
+	tracePath := filepath.Join("tests", "trace.ndjson")
+	sourcePath := filepath.Join(scopedRoot, "tests", "source.php")
+	mustWriteFile(t, sourcePath, []byte("<?php echo 'before';\n"))
+
+	cache := &analysisCache{stableRepoPath: trueRepo, analysisRepoPath: scopedRoot}
+	req := Request{RuntimeTracePath: tracePath}
+
+	exclusions := cache.cacheAnalysisExclusions(scopedRoot, req, trueRepo)
+	before, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest before trace artifacts: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(scopedRoot, tracePath), []byte("{\"module\":\"example\"}\n"))
+	after, err := cache.computeInputDigestWithExclusions(scopedRoot, "", exclusions)
+	if err != nil {
+		t.Fatalf("compute digest after trace artifacts: %v", err)
+	}
+	if before != after {
+		t.Fatal("expected a runtime trace exclusion resolved against the true repo root to be remapped into a scoped workspace copy's candidate root")
 	}
 }
 

@@ -5,11 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -68,6 +71,241 @@ func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected warning for analyse failure in all-language mode")
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageCoverageErrorIsFatalWhenRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				err:    errors.Join(errors.New("read composer.json"), safeio.ErrFileTooLarge),
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, safeio.ErrFileTooLarge) {
+				t.Fatalf("expected oversized coverage error to be fatal when coverage is required, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageAdapterErrorIsFatalWhenCoverageRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			expected := errors.New("composer scan incomplete")
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				err:    expected,
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, expected) {
+				t.Fatalf("expected matched adapter error to be fatal when coverage is required, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
+	assertIncompleteCoverageReportFatal(t, "all", "expected incomplete coverage report to be fatal when coverage is required")
+}
+
+func TestRunCandidateOnRootsExplicitLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
+	assertIncompleteCoverageReportFatal(t, "php", "expected explicit-language incomplete coverage report to be fatal when coverage is required")
+}
+
+func assertIncompleteCoverageReportFatal(t *testing.T, languageID, wantMessage string) {
+	t.Helper()
+
+	adapter := &testServiceAdapter{
+		id:     "php",
+		detect: language.Detection{Matched: true, Confidence: 90},
+		analyse: report.Report{Dependencies: []report.DependencyReport{{
+			Name:            "vendor/lib",
+			UsageIncomplete: true,
+		}}},
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                ".",
+		Language:                languageID,
+		RequireCompleteCoverage: true,
+	}, ".", candidate, nil)
+	if !errors.Is(err, ErrIncompleteCoverage) {
+		t.Fatalf("%s, got %v", wantMessage, err)
+	}
+	if !strings.Contains(err.Error(), "php:vendor/lib") {
+		t.Fatalf("expected incomplete dependency details in error, got %v", err)
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageReportLevelIncompleteCoverageIsFatalWhenRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:      "php",
+				detect:  language.Detection{Matched: true, Confidence: 90},
+				analyse: report.Report{UsageIncomplete: true},
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, ErrIncompleteCoverage) {
+				t.Fatalf("expected report-level incomplete coverage to be fatal when coverage is required, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "reported incomplete usage coverage") {
+				t.Fatalf("expected report-level incomplete coverage details in error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestRunCandidateOnRootsCoverageGapIsFatalWhenRequired proves an oversized
+// gemspec (or any other CoverageGap-producing skip) is rejected under
+// RequireCompleteCoverage even when it never sets UsageIncomplete: the gap
+// mechanism records a structured CoverageGap instead, which
+// incompleteCoverageReportError must also check.
+func TestRunCandidateOnRootsCoverageGapIsFatalWhenRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "ruby"} {
+		t.Run(languageID, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:     "ruby",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				analyse: report.Report{CoverageGaps: []report.CoverageGap{{
+					Code: "ruby-oversized-gemspec",
+					Path: "big.gemspec",
+				}}},
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, ErrIncompleteCoverage) {
+				t.Fatalf("expected coverage gap to be fatal when coverage is required, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "big.gemspec") {
+				t.Fatalf("expected coverage gap path in error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestIncompleteCoverageDependenciesSkipsCompleteAndFallsBackToUnknownName(t *testing.T) {
+	dependencies := incompleteCoverageDependencies([]report.DependencyReport{
+		{Name: "complete-dep", UsageIncomplete: false},
+		{Name: "  ", UsageIncomplete: true},
+		{Name: "vendor/lib", Language: "php", UsageIncomplete: true},
+	})
+	want := []string{"<unknown>", "php:vendor/lib"}
+	if !reflect.DeepEqual(dependencies, want) {
+		t.Fatalf("expected complete dependency skipped and blank name to fall back to <unknown>, got %#v want %#v", dependencies, want)
+	}
+}
+
+func TestCoverageGapPathsFallsBackToCodeThenUnknown(t *testing.T) {
+	paths := coverageGapPaths([]report.CoverageGap{
+		{Path: "explicit.gemspec"},
+		{Path: "  ", Code: "ruby-oversized-gemspec"},
+		{Path: "  ", Code: "  "},
+	})
+	want := []string{"explicit.gemspec", "ruby-oversized-gemspec", "<unknown>"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("expected fallback chain path -> code -> <unknown>, got %#v want %#v", paths, want)
+	}
+}
+
+// TestRunCandidateOnRootsDeferredCoverageGapDoesNotFail proves
+// DeferCoverageGapEnforcement (set by PR review, which collects gaps into
+// its own base/head comparison instead of failing a revision immediately)
+// suppresses only the CoverageGaps check, not the broader
+// RequireCompleteCoverage mechanism: the gap-bearing report is returned
+// rather than rejected.
+func TestRunCandidateOnRootsDeferredCoverageGapDoesNotFail(t *testing.T) {
+	adapter := &testServiceAdapter{
+		id:     "ruby",
+		detect: language.Detection{Matched: true, Confidence: 90},
+		analyse: report.Report{CoverageGaps: []report.CoverageGap{{
+			Code: "ruby-oversized-gemspec",
+			Path: "big.gemspec",
+		}}},
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	reports, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                    ".",
+		Language:                    "ruby",
+		RequireCompleteCoverage:     true,
+		DeferCoverageGapEnforcement: true,
+	}, ".", candidate, nil)
+	if err != nil {
+		t.Fatalf("expected deferred coverage gap enforcement to let the revision analyse, got %v", err)
+	}
+	if len(reports) != 1 || len(reports[0].CoverageGaps) != 1 {
+		t.Fatalf("expected the coverage gap to be preserved on the returned report, got %#v", reports)
+	}
+}
+
+func TestRunCandidateOnRootsIncompleteCoverageReportPreservesOrdinaryPartialBehavior(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		req  Request
+	}{
+		{
+			name: "all language without complete coverage requirement",
+			req:  Request{RepoPath: ".", Language: "all"},
+		},
+		{
+			name: "single language without complete coverage requirement",
+			req:  Request{RepoPath: ".", Language: "php"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				analyse: report.Report{Dependencies: []report.DependencyReport{{
+					Name:            "vendor/lib",
+					UsageIncomplete: true,
+				}}},
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			reports, _, _, err := svc.runCandidateOnRoots(context.Background(), tt.req, ".", candidate, nil)
+			if err != nil {
+				t.Fatalf("expected ordinary partial report behavior, got %v", err)
+			}
+			if len(reports) != 1 || len(reports[0].Dependencies) != 1 || !reports[0].Dependencies[0].UsageIncomplete {
+				t.Fatalf("expected incomplete report to be preserved, got %#v", reports)
+			}
+		})
 	}
 }
 
@@ -161,6 +399,58 @@ func TestPrepareAnalysisResolveErrorAndHelperBranches(t *testing.T) {
 	adjustRelativeLocations(".", ".", deps)
 	if deps[0].UsedImports[0].Locations[0].File != "a.js" {
 		t.Fatalf("expected unchanged location when analyzed root equals repo root")
+	}
+
+	gaps := []report.CoverageGap{
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: " foo.gemspec "},
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: "/absolute/foo.gemspec"},
+		{Code: "pathless-gap", Language: "ruby"},
+	}
+	adjustRelativeCoverageGaps("/repo", "/repo/packages/a", gaps)
+	if gaps[0].Path != "packages/a/ foo.gemspec " {
+		t.Fatalf("expected relative coverage gap to be rebased without trimming filename whitespace, got %q", gaps[0].Path)
+	}
+	if gaps[1].Path != "/absolute/foo.gemspec" {
+		t.Fatalf("expected absolute coverage gap path to stay absolute, got %q", gaps[1].Path)
+	}
+	if gaps[2].Path != "" {
+		t.Fatalf("expected empty coverage gap path to remain empty, got %q", gaps[2].Path)
+	}
+}
+
+func TestAdjustRelativeCoverageGapsPreservesUnixLiteralBackslashes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+
+	gaps := []report.CoverageGap{
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: "a\\b.gemspec"},
+		{Code: report.CoverageGapRubyOversizedGemspec, Language: "ruby", Path: "a/b.gemspec"},
+	}
+	adjustRelativeCoverageGaps("/repo", "/repo/packages/a", gaps)
+
+	if gaps[0].Path != "packages/a/a\\b.gemspec" {
+		t.Fatalf("expected literal backslash coverage gap to be preserved while rebasing, got %q", gaps[0].Path)
+	}
+	if gaps[1].Path != "packages/a/a/b.gemspec" {
+		t.Fatalf("expected slash coverage gap to remain distinct while rebasing, got %q", gaps[1].Path)
+	}
+}
+
+func TestAdjustImportLocationsTreatsWindowsDriveLetterPathsAsAbsolute(t *testing.T) {
+	imports := []report.ImportUse{
+		{Locations: []report.Location{{File: `C:\repo\main.go`}, {File: "sub/dep.go"}, {File: ""}}},
+	}
+	adjustImportLocations("/repo", imports)
+
+	if got := imports[0].Locations[0].File; got != "C:/repo/main.go" {
+		t.Fatalf("expected drive-letter path to be treated as absolute and only slash-normalized, got %q", got)
+	}
+	if got := imports[0].Locations[1].File; got != "/repo/sub/dep.go" {
+		t.Fatalf("expected relative path to be rebased under prefix, got %q", got)
+	}
+	if got := imports[0].Locations[2].File; got != "/repo" {
+		t.Fatalf("expected empty path to be treated as non-absolute and rebased under prefix, got %q", got)
 	}
 }
 

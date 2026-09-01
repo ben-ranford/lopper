@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,10 @@ type commandOutputRootBoundary struct {
 
 type commandOutputDestination struct {
 	root       *safeio.WriteRoot
+	rootAbs    string
+	rootInfo   fs.FileInfo
 	targetPath string
+	outputAbs  string
 }
 
 func persistDashboardOutput(formatted, outputPath string, trustedRoots ...string) (string, error) {
@@ -62,6 +66,14 @@ func commandOutputRoot(outputPath string, trustedRoots ...string) (string, error
 }
 
 func openCommandOutputDestination(outputPath string, trustedRoots ...string) (commandOutputDestination, error) {
+	destination, err := resolveCommandOutputDestination(outputPath, trustedRoots...)
+	if err != nil {
+		return commandOutputDestination{}, err
+	}
+	return openResolvedCommandOutputDestination(destination, openCommandOutputWriteRootFn)
+}
+
+func resolveCommandOutputDestination(outputPath string, trustedRoots ...string) (commandOutputDestination, error) {
 	root, outputAbs, err := commandOutputRootBoundaryForPath(outputPath, trustedRoots...)
 	if err != nil {
 		return commandOutputDestination{}, err
@@ -73,8 +85,19 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 	if targetPath == ".." || strings.HasPrefix(targetPath, ".."+string(os.PathSeparator)) {
 		return commandOutputDestination{}, fmt.Errorf("output path escapes workspace: %s", outputPath)
 	}
-	writeRoot, err := openCommandOutputWriteRootFn(root.resolved)
+	return commandOutputDestination{rootAbs: root.resolved, targetPath: targetPath, outputAbs: outputAbs}, nil
+}
+
+func openResolvedCommandOutputDestination(destination commandOutputDestination, openRoot func(string) (*safeio.WriteRoot, error)) (commandOutputDestination, error) {
+	writeRoot, err := openRoot(destination.rootAbs)
 	if err != nil {
+		return commandOutputDestination{}, err
+	}
+	rootInfo, err := writeRoot.RootInfo()
+	if err != nil {
+		if closeErr := writeRoot.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return commandOutputDestination{}, err
 	}
 	if err := commandOutputBoundaryAcceptedFn(); err != nil {
@@ -83,7 +106,9 @@ func openCommandOutputDestination(outputPath string, trustedRoots ...string) (co
 		}
 		return commandOutputDestination{}, err
 	}
-	return commandOutputDestination{root: writeRoot, targetPath: targetPath}, nil
+	destination.root = writeRoot
+	destination.rootInfo = rootInfo
+	return destination, nil
 }
 
 func commandOutputRootBoundaryForPath(outputPath string, trustedRoots ...string) (commandOutputRootBoundary, string, error) {

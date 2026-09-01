@@ -35,6 +35,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		GeneratedAt:  a.Clock(),
 		RepoPath:     repoPath,
 		Dependencies: dependencies,
+		CoverageGaps: append([]report.CoverageGap{}, scan.CoverageGaps...),
 		Warnings:     append(scan.Warnings, warnings...),
 	}
 	result.Summary = report.ComputeSummary(result.Dependencies)
