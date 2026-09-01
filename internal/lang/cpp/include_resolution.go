@@ -824,6 +824,8 @@ func isKnownCompilerQualifiedStdHeaderLeaf(namespace, leaf string) bool {
 		return isKnownCompilerQualifiedStdHeaderStem(namespace, stem)
 	case ".h":
 		return isKnownCompilerQualifiedStdHHeader(namespace, stem)
+	case ".tcc":
+		return isKnownCompilerQualifiedStdHeaderTCCHeader(namespace, stem)
 	default:
 		return false
 	}
@@ -860,7 +862,31 @@ func isKnownCompilerQualifiedStdHHeader(namespace, stem string) bool {
 	return ok
 }
 
+func isKnownCompilerQualifiedStdHeaderTCCHeader(namespace, stem string) bool {
+	var set map[string]struct{}
+	switch namespace {
+	case "debug":
+		set = cppDebugQualifiedStdHeaderTCCStemSet
+	case "ext":
+		set = cppExtQualifiedStdHeaderTCCStemSet
+	case "tr1":
+		set = cppTR1QualifiedStdHeaderTCCStemSet
+	default:
+		return false
+	}
+	_, ok := set[stem]
+	return ok
+}
+
 func isKnownNestedCompilerQualifiedStdHeader(namespace, subdir, leaf string) bool {
+	if namespace == "experimental" && subdir == "bits" && filepath.Ext(leaf) == ".tcc" {
+		stem := strings.TrimSuffix(leaf, ".tcc")
+		if stem == "" {
+			return false
+		}
+		_, ok := cppExperimentalBitsQualifiedStdHeaderTCCStemSet[stem]
+		return ok
+	}
 	if namespace != "ext" || subdir != "pb_ds" || filepath.Ext(leaf) != ".hpp" {
 		return false
 	}
@@ -1029,6 +1055,37 @@ var cppTR1QualifiedStdHeaderHStemSet = makeStringSet(
 	"unordered_set",
 	"wchar",
 	"wctype",
+)
+
+var cppDebugQualifiedStdHeaderTCCStemSet = makeStringSet(
+	"safe_iterator",
+	"safe_local_iterator",
+	"safe_sequence",
+	"safe_unordered_container",
+)
+
+var cppExtQualifiedStdHeaderTCCStemSet = makeStringSet(
+	"random",
+	"vstring",
+)
+
+var cppTR1QualifiedStdHeaderTCCStemSet = makeStringSet(
+	"bessel_function",
+	"beta_function",
+	"ell_integral",
+	"exp_integral",
+	"gamma",
+	"hypergeometric",
+	"legendre_function",
+	"modified_bessel_func",
+	"poly_hermite",
+	"poly_laguerre",
+	"random",
+	"riemann_zeta",
+)
+
+var cppExperimentalBitsQualifiedStdHeaderTCCStemSet = makeStringSet(
+	"string_view",
 )
 
 var cppExtPBDSQualifiedStdHeaderHPPStemSet = makeStringSet(
