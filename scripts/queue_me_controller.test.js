@@ -136,6 +136,7 @@ function makeHarness(options = {}) {
             input.basehead.endsWith(`...${candidate.head.sha}`),
           );
           const perPullStatus = options.comparisonStatuses?.[matchedPull?.number];
+          const perPullCommits = options.comparisonCommitsByNumber?.[matchedPull?.number];
           if (options.comparisonPages) {
             const page = options.comparisonPages[(input.page || 1) - 1];
             if (!page) {
@@ -155,7 +156,7 @@ function makeHarness(options = {}) {
               },
             };
           }
-          const commits = options.comparisonCommits || [makeComparisonCommit()];
+          const commits = perPullCommits || options.comparisonCommits || [makeComparisonCommit()];
           return {
             data: {
               status: perPullStatus || options.comparisonStatus || 'ahead',
@@ -586,14 +587,39 @@ test('a stale leader skip refreshes queued followers behind the selected eligibl
 
   await runController(harness.args);
 
-  const followerComments = harness.calls.comments
-    .filter((comment) => comment.number === 30)
-    .map((comment) => comment.body);
   assert.deepEqual(harness.calls.armed, [20]);
-  assert.match(followerComments[0], /Queued behind #10/);
+  assert.match(commentsFor(harness, 10), /will not call GitHub branch update/);
   assert.match(commentsFor(harness, 30), /Queued behind #20/);
   assert.match(commentsFor(harness, 30), /retried after their branches/);
-  assert.doesNotMatch(commentsFor(harness, 30), /Queued behind #10/);
+});
+
+test('a leader that fails the identity audit advances the queue to the next eligible pull request', async () => {
+  const leader = makePull(10);
+  const follower = makePull(20);
+  const harness = makeHarness({
+    pulls: [leader, follower],
+    comparisonStatuses: { 10: 'ahead', 20: 'ahead' },
+    comparisonCommitsByNumber: {
+      10: [
+        makeComparisonCommit('bot-rewrite', {
+          commit: {
+            committer: {
+              name: 'lopper-queue-controller[bot]',
+              email: '123+lopper-queue-controller[bot]@users.noreply.github.com',
+            },
+          },
+          committer: { login: 'lopper-queue-controller[bot]', type: 'Bot' },
+        }),
+      ],
+    },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.armed, [20]);
+  assert.match(commentsFor(harness, 10), /committer is a bot identity/);
+  assert.match(commentsFor(harness, 10), /next queued pull request/);
+  assert.match(commentsFor(harness, 20), /Squash auto-merge is armed/);
 });
 
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
@@ -819,12 +845,13 @@ test('controller bounds comparison pagination before auditing commit identity', 
     ],
   });
 
-  await assert.rejects(runController(harness.args), /501 PR-unique commits exceeds the 500-commit audit limit/);
+  await runController(harness.args);
 
   assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1]);
   assert.deepEqual(harness.calls.armed, []);
   assert.deepEqual(harness.calls.merged, []);
   assert.match(harness.calls.comments[0].body, /500-commit audit limit/);
+  assert.match(harness.calls.notices.at(-1), /waiting for a clean queue identity audit/);
 });
 
 test('controller fails identity audit for noncanonical commits on later compare pages', async () => {
@@ -848,7 +875,7 @@ test('controller fails identity audit for noncanonical commits on later compare 
     ],
   });
 
-  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
+  await runController(harness.args);
 
   assert.deepEqual(harness.calls.comparisons.map((input) => input.page), [1, 2]);
   assert.deepEqual(harness.calls.armed, []);
@@ -875,7 +902,7 @@ test('controller pauses identity failures with bounded count context', async () 
     comparisonCommits: failingCommits,
   });
 
-  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
+  await runController(harness.args);
 
   const comment = harness.calls.comments[0].body;
   assert.ok(comment.length <= 60000, `comment length ${comment.length} must fit GitHub limits`);
@@ -904,7 +931,7 @@ test('controller fails identity audit before arming a bot-committed leader', asy
     ],
   });
 
-  await assert.rejects(runController(harness.args), /Queue identity audit failed/);
+  await runController(harness.args);
 
   assert.deepEqual(harness.calls.rebased, []);
   assert.deepEqual(harness.calls.armed, []);
@@ -921,7 +948,7 @@ test('a comparison failure pauses the queue with a bounded status message', asyn
     comparisonError: new Error('compare failed in `workflow`'),
   });
 
-  await assert.rejects(runController(harness.args), /compare failed/);
+  await runController(harness.args);
 
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /identity audit/);

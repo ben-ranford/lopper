@@ -520,12 +520,9 @@ async function advanceQueuedPull({
   defaultBranch,
   defaultBranchSHA,
   queueAppSlug,
-  isFirst,
   hasFollower,
 }) {
-  if (isFirst) {
-    await disableAutoMerge(github, owner, repo, candidate.number);
-  }
+  await disableAutoMerge(github, owner, repo, candidate.number);
   if (candidate.draft) {
     await syncStatusComment(
       github,
@@ -542,14 +539,17 @@ async function advanceQueuedPull({
   } catch (error) {
     const pauseMessage = error?.queuePauseMessage ||
       `GitHub could not compare this pull request with \`${defaultBranch}\` for the queue identity audit.`;
+    const retrySummary = hasFollower
+      ? ' The queue will continue with the next queued pull request.'
+      : '';
     await syncStatusComment(
       github,
       owner,
       repo,
       candidate.number,
-      `## Queue status\n\nQueue paused: ${pauseMessage}\n\n\`${safeError(error)}\``,
+      `## Queue status\n\nQueue paused: ${pauseMessage}${retrySummary}\n\n\`${safeError(error)}\``,
     );
-    throw error;
+    return true;
   }
   if (update.needsCurrentBase) {
     const queueCommitter = queueAppSlug ? `${queueAppSlug}[bot]` : 'the queue App bot';
@@ -629,17 +629,6 @@ async function runController({
   });
 
   for (const [index, candidate] of queued.entries()) {
-    await syncFollowerStatuses({
-      github,
-      owner,
-      repo,
-      followers: queued.slice(index + 1),
-      leaderNumber: candidate.number,
-      eventQueueEntry,
-      eventAction: context.payload.action,
-      conflictSkipped: index > 0,
-      disableFollowers: index === 0,
-    });
     const shouldAdvance = await advanceQueuedPull({
       github,
       owner,
@@ -648,10 +637,26 @@ async function runController({
       defaultBranch,
       defaultBranchSHA: branch.commit.sha,
       queueAppSlug,
-      isFirst: index === 0,
       hasFollower: index + 1 < queued.length,
     });
     if (!shouldAdvance) {
+      // Followers behind the selected (or paused-on-draft) candidate were
+      // never individually visited by this loop, so their auto-merge and
+      // status comment are synced exactly once here -- syncing the full
+      // remaining suffix on every skipped candidate above would cost
+      // O(queue length squared) GitHub API calls for a long queue with
+      // several unready entries in a row.
+      await syncFollowerStatuses({
+        github,
+        owner,
+        repo,
+        followers: queued.slice(index + 1),
+        leaderNumber: candidate.number,
+        eventQueueEntry,
+        eventAction: context.payload.action,
+        conflictSkipped: index > 0,
+        disableFollowers: true,
+      });
       return;
     }
   }
