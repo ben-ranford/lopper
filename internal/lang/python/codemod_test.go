@@ -174,6 +174,32 @@ func TestPythonCodemodNormalizesParenthesizedFromImportToOpeningLine(t *testing.
 	}
 }
 
+// TestPythonCodemodOpenerScanIgnoresImportLikeStringContent proves
+// pythonFromImportOpenerLines masks string content the same way parseImports
+// does before matching "from X import (" opener lines: an unbalanced,
+// import-like example inside a docstring must not be mistaken for a real
+// opener that swallows an unrelated later import as its "continuation".
+func TestPythonCodemodOpenerScanIgnoresImportLikeStringContent(t *testing.T) {
+	lines := []string{
+		`"""`,
+		"from bogus import (",
+		`"""`,
+		"from real import (",
+		"    get,",
+		")",
+	}
+	importsByLine := pythonImportsByLine(lines, []importBinding{{
+		Dependency: "real",
+		Module:     "real",
+		Name:       "get",
+		Local:      "get",
+		Location:   report.Location{File: "main.py", Line: 5},
+	}})
+	if len(importsByLine) != 1 || len(importsByLine[4]) != 1 {
+		t.Fatalf("expected the real import to group on opening line 4, not the docstring's bogus opener, got %#v", importsByLine)
+	}
+}
+
 // TestPythonCodemodGroupsLargeParenthesizedFromImportWithoutQuadraticScan
 // proves the fix for a reported quadratic slowdown: pythonImportStatementLine
 // used to backward-scan from every imported symbol's own line all the way to

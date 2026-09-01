@@ -142,18 +142,20 @@ func pythonFromImportOpenerLines(lines []string) map[int]int {
 	openers := make(map[int]int)
 	parenDepth := 0
 	openerLine := 0
+	var mask pythonStringMask
 	for i, raw := range lines {
 		line := i + 1
+		masked := stripComment(mask.codeLine(raw))
 		if parenDepth > 0 {
 			openers[line] = openerLine
-			parenDepth += fromImportParenthesisDelta(stripComment(raw))
+			parenDepth += fromImportParenthesisDelta(masked)
 			if parenDepth <= 0 {
 				parenDepth = 0
 				openerLine = 0
 			}
 			continue
 		}
-		matches := fromLinePattern.FindStringSubmatch(stripComment(raw))
+		matches := fromLinePattern.FindStringSubmatch(masked)
 		if len(matches) != 3 {
 			continue
 		}
