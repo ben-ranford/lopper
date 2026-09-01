@@ -139,41 +139,7 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 // into the same test binary, so that import's init() runs regardless of
 // whether the import path looks like a typical hosted module path.
 func TestBenchGateFingerprintsDotlessExternalModuleImport(t *testing.T) {
-	fixture := newBenchGateFixture(t, "benchpkg")
-	// writeRepositoryHarness already copied the real go.mod; append this
-	// test's require/replace to it rather than starting from scratch.
-	fixtureGoMod, err := os.ReadFile(filepath.Join(fixture.root, "go.mod"))
-	if err != nil {
-		t.Fatalf("read fixture go.mod: %v", err)
-	}
-	fixture.writeFile("go.mod", string(fixtureGoMod)+"\nrequire foo v0.0.0\n\nreplace foo => ./foovendor\n")
-	fixture.writeFile("foovendor/go.mod", "module foo\n\ngo 1.27.0\n")
-	fixture.writeFile("foovendor/foo.go", "package foo\n\nfunc init() {}\n\nfunc Configure() {}\n")
-	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
-		"setup_test.go": `package benchpkg
-
-import (
-	"testing"
-
-	"foo"
-)
-
-func TestOnly(t *testing.T) {
-	foo.Configure()
-}
-`,
-	}))
-	fixture.commit("base")
-
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"setup_test.go": `package benchpkg
-
-import "testing"
-
-func TestOnly(t *testing.T) {}
-`})
-	fixture.commit("head")
-
-	assertBenchGateHarnessMismatch(t, fixture)
+	assertBenchGateFingerprintsExternalModuleImport(t, "require foo v0.0.0\n\nreplace foo => ./foovendor\n")
 }
 
 // TestBenchGateFingerprintsQuotedGoModRequireImport proves a named import
@@ -184,12 +150,24 @@ func TestOnly(t *testing.T) {}
 // carries, so the import would be missed regardless of tracking it by
 // module membership.
 func TestBenchGateFingerprintsQuotedGoModRequireImport(t *testing.T) {
+	assertBenchGateFingerprintsExternalModuleImport(t, "require \"foo\" v0.0.0\n\nreplace \"foo\" => ./foovendor\n")
+}
+
+// assertBenchGateFingerprintsExternalModuleImport is the shared fixture for
+// both external-module-import tests above: a benchmark package where an
+// ordinary test's only distinguishing feature is a named import of a local
+// "foo" module declared by goModRequireReplace, removed between base and
+// head. writeRepositoryHarness already copied the real go.mod; the
+// directive is appended to it rather than starting from scratch.
+func assertBenchGateFingerprintsExternalModuleImport(t *testing.T, goModRequireReplace string) {
+	t.Helper()
+
 	fixture := newBenchGateFixture(t, "benchpkg")
 	fixtureGoMod, err := os.ReadFile(filepath.Join(fixture.root, "go.mod"))
 	if err != nil {
 		t.Fatalf("read fixture go.mod: %v", err)
 	}
-	fixture.writeFile("go.mod", string(fixtureGoMod)+"\nrequire \"foo\" v0.0.0\n\nreplace \"foo\" => ./foovendor\n")
+	fixture.writeFile("go.mod", string(fixtureGoMod)+"\n"+goModRequireReplace)
 	fixture.writeFile("foovendor/go.mod", "module foo\n\ngo 1.27.0\n")
 	fixture.writeFile("foovendor/foo.go", "package foo\n\nfunc init() {}\n\nfunc Configure() {}\n")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{

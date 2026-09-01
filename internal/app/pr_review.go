@@ -456,7 +456,7 @@ func buildPRReviewArtifact(input prReviewArtifactInput) prReviewArtifact {
 		{ID: prReviewCategoryPolicyChanged, Title: "Policy Changed Dependencies", Rows: prReviewPolicyRows(input.baseReport, input.headReport)},
 		{ID: prReviewCategoryNewlyReachable, Title: "Newly Reachable Vulnerabilities", Rows: prReviewNewlyReachableRows(input.headReport, comparison.NewReachableVulnerabilities, input.req.Thresholds.ReachableVulnerabilityPriority)},
 		{ID: prReviewCategoryMateriallyWorsened, Title: "Materially Worsened Dependencies", Rows: prReviewMaterialRows(input.baseReport, input.headReport, input.req.MaterialWasteBytes)},
-		{ID: prReviewCategoryCoverageGap, Title: "Coverage Gaps", Rows: prReviewCoverageGapRows(input.headReport.CoverageGaps, input.req.Thresholds.ReachableVulnerabilityPriority)},
+		{ID: prReviewCategoryCoverageGap, Title: "Coverage Gaps", Rows: prReviewCoverageGapRows(input.headReport.CoverageGaps, prReviewRequiresCompleteCoverage(input.req))},
 	}
 	for i := range sections {
 		sortPRReviewRows(sections[i].Rows)
@@ -687,9 +687,32 @@ func prReviewMaterialRows(baseReport, headReport report.Report, threshold int64)
 	return rows
 }
 
-func prReviewCoverageGapRows(gaps []report.CoverageGap, threshold string) []prReviewRow {
+// prReviewRequiresCompleteCoverage reports whether any policy PR review
+// enforces needs complete dependency coverage to be trustworthy -- not just
+// a reachable-vulnerability threshold. fail-on-increase, an uncertain-import
+// cap, and denied-license enforcement all rely on seeing every dependency
+// just as much: a gap that hides dependencies can hide a regression under
+// any of them, not only under vulnerability reachability. This mirrors
+// requiresCompleteCoverage's conditions but not its advisory-source gate
+// ahead of the reachable-threshold check: PR review's own reachability
+// determination doesn't require an advisory source the way the general
+// analyse command's does, so gating on one here would wrongly treat a
+// configured threshold as inactive.
+func prReviewRequiresCompleteCoverage(req PRReviewRequest) bool {
+	if req.Thresholds.FailOnIncreasePercent >= 0 {
+		return true
+	}
+	if req.Thresholds.MaxUncertainImportCount >= 0 {
+		return true
+	}
+	if req.Thresholds.LicenseFailOnDeny && len(req.Thresholds.LicenseDenyList) > 0 {
+		return true
+	}
+	return reachableVulnerabilityThresholdEnabled(req.Thresholds.ReachableVulnerabilityPriority)
+}
+
+func prReviewCoverageGapRows(gaps []report.CoverageGap, completeCoverageRequired bool) []prReviewRow {
 	rows := make([]prReviewRow, 0, len(gaps))
-	regression := reachableVulnerabilityThresholdEnabled(threshold)
 	for _, gap := range report.StableCoverageGaps(gaps) {
 		row := prReviewRow{
 			Category:           prReviewCategoryCoverageGap,
@@ -697,7 +720,7 @@ func prReviewCoverageGapRows(gaps []report.CoverageGap, threshold string) []prRe
 			Language:           strings.TrimSpace(gap.Language),
 			IdentityConfidence: "high",
 			EvidenceConfidence: "high",
-			Regression:         regression && isPRReviewReachableCoverageGap(gap),
+			Regression:         completeCoverageRequired,
 			Evidence:           compactPRReviewEvidence(gap.Evidence),
 		}
 		if row.Dependency == "" {
@@ -712,10 +735,6 @@ func prReviewCoverageGapRows(gaps []report.CoverageGap, threshold string) []prRe
 		rows = append(rows, row)
 	}
 	return rows
-}
-
-func isPRReviewReachableCoverageGap(gap report.CoverageGap) bool {
-	return strings.TrimSpace(gap.Code) == report.CoverageGapRubyOversizedGemspec
 }
 
 func prReviewRowForDependency(category string, dep report.DependencyReport) prReviewRow {

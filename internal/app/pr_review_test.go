@@ -1144,6 +1144,31 @@ func TestExecutePRReviewFailsClosedForOversizedRubyGemspecCoverageGap(t *testing
 	})
 }
 
+// TestExecutePRReviewFailsClosedForCoverageGapUnderFailOnIncreaseWithoutReachableThreshold
+// proves a coverage gap regresses under a complete-coverage policy other
+// than the reachable-vulnerability threshold: fail-on-increase relies on
+// seeing every dependency just as much, so an oversized gemspec must fail
+// the gate here too, with the reachable-vulnerability threshold left at its
+// default (off).
+func TestExecutePRReviewFailsClosedForCoverageGapUnderFailOnIncreaseWithoutReachableThreshold(t *testing.T) {
+	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
+	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
+	analyzer := prReviewOversizedGemspecAnalyzer("oversized.gemspec", nil, []string{"skipped oversized.gemspec because it exceeds 1048576 bytes"})
+	req := newExplicitSHAReviewRequest(repoPath, baseSHA, headSHA, "", features)
+	req.PRReview.FailOnRegression = true
+	req.PRReview.Thresholds.FailOnIncreasePercent = 0
+
+	output, err := (&App{Analyzer: analyzer}).Execute(context.Background(), req)
+	if !errors.Is(err, ErrPRReviewRegressions) {
+		t.Fatalf("expected oversized gemspec coverage gap to fail under fail-on-increase alone, got output=%q err=%v", output, err)
+	}
+	assertContainsAll(t, output, []string{
+		`"coverageGaps": 1`,
+		`"regressionCount": 1`,
+		`"id": "coverage-gap"`,
+	})
+}
+
 func TestExecutePRReviewRegressionGateFailsClosedForTypedOversizedGemspecCoverageGap(t *testing.T) {
 	repoPath, baseSHA, headSHA := createPRReviewGitRepo(t)
 	features := mustResolveAppTestFeatures(t, report.DependencySurfacePRReviewPreviewFeature, report.ReachabilityVulnerabilityPrioritizationPreviewFeature)
@@ -1339,7 +1364,7 @@ func TestPRReviewCoverageGapRowsUseStableFallbacks(t *testing.T) {
 		{
 			Evidence: []string{"missing code and path"},
 		},
-	}, report.VulnerabilityPriorityHigh)
+	}, false)
 
 	if len(rows) != 2 {
 		t.Fatalf("expected two coverage gap rows, got %#v", rows)
@@ -1348,18 +1373,21 @@ func TestPRReviewCoverageGapRowsUseStableFallbacks(t *testing.T) {
 		t.Fatalf("expected blank-code gap to use generic non-regression fallback, got %#v", rows[0])
 	}
 	if rows[1].Dependency != "generic-gap" || rows[1].Language != "ruby" || rows[1].Regression {
-		t.Fatalf("expected generic coded gap to use code fallback without reachable regression, got %#v", rows[1])
+		t.Fatalf("expected generic coded gap to use code fallback without regression when coverage is not required, got %#v", rows[1])
 	}
 	if !reflect.DeepEqual(rows[1].Evidence, []string{"second", "coverage gap: generic-gap"}) {
 		t.Fatalf("expected compact generic gap evidence, got %#v", rows[1].Evidence)
 	}
 
-	thresholdOffRows := prReviewCoverageGapRows([]report.CoverageGap{{
-		Code: report.CoverageGapRubyOversizedGemspec,
-		Path: "oversized.gemspec",
-	}}, report.VulnerabilityPriorityOff)
-	if len(thresholdOffRows) != 1 || thresholdOffRows[0].Regression {
-		t.Fatalf("expected threshold off to keep ruby coverage gap visible without regression, got %#v", thresholdOffRows)
+	// Any coverage gap regresses once a policy requires complete coverage,
+	// regardless of its code -- not only the Ruby oversized-gemspec code -- and
+	// regardless of the reachable-vulnerability threshold specifically.
+	requiredRows := prReviewCoverageGapRows([]report.CoverageGap{
+		{Code: report.CoverageGapRubyOversizedGemspec, Path: "oversized.gemspec"},
+		{Code: "generic-gap", Path: "other.file"},
+	}, true)
+	if len(requiredRows) != 2 || !requiredRows[0].Regression || !requiredRows[1].Regression {
+		t.Fatalf("expected every coverage gap to regress when complete coverage is required, got %#v", requiredRows)
 	}
 }
 
