@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -215,6 +216,30 @@ func TestRunCandidateOnRootsCoverageGapIsFatalWhenRequired(t *testing.T) {
 	}
 }
 
+func TestIncompleteCoverageDependenciesSkipsCompleteAndFallsBackToUnknownName(t *testing.T) {
+	dependencies := incompleteCoverageDependencies([]report.DependencyReport{
+		{Name: "complete-dep", UsageIncomplete: false},
+		{Name: "  ", UsageIncomplete: true},
+		{Name: "vendor/lib", Language: "php", UsageIncomplete: true},
+	})
+	want := []string{"<unknown>", "php:vendor/lib"}
+	if !reflect.DeepEqual(dependencies, want) {
+		t.Fatalf("expected complete dependency skipped and blank name to fall back to <unknown>, got %#v want %#v", dependencies, want)
+	}
+}
+
+func TestCoverageGapPathsFallsBackToCodeThenUnknown(t *testing.T) {
+	paths := coverageGapPaths([]report.CoverageGap{
+		{Path: "explicit.gemspec"},
+		{Path: "  ", Code: "ruby-oversized-gemspec"},
+		{Path: "  ", Code: "  "},
+	})
+	want := []string{"explicit.gemspec", "ruby-oversized-gemspec", "<unknown>"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("expected fallback chain path -> code -> <unknown>, got %#v want %#v", paths, want)
+	}
+}
+
 // TestRunCandidateOnRootsDeferredCoverageGapDoesNotFail proves
 // DeferCoverageGapEnforcement (set by PR review, which collects gaps into
 // its own base/head comparison instead of failing a revision immediately)
@@ -409,6 +434,23 @@ func TestAdjustRelativeCoverageGapsPreservesUnixLiteralBackslashes(t *testing.T)
 	}
 	if gaps[1].Path != "packages/a/a/b.gemspec" {
 		t.Fatalf("expected slash coverage gap to remain distinct while rebasing, got %q", gaps[1].Path)
+	}
+}
+
+func TestAdjustImportLocationsTreatsWindowsDriveLetterPathsAsAbsolute(t *testing.T) {
+	imports := []report.ImportUse{
+		{Locations: []report.Location{{File: `C:\repo\main.go`}, {File: "sub/dep.go"}, {File: ""}}},
+	}
+	adjustImportLocations("/repo", imports)
+
+	if got := imports[0].Locations[0].File; got != "C:/repo/main.go" {
+		t.Fatalf("expected drive-letter path to be treated as absolute and only slash-normalized, got %q", got)
+	}
+	if got := imports[0].Locations[1].File; got != "/repo/sub/dep.go" {
+		t.Fatalf("expected relative path to be rebased under prefix, got %q", got)
+	}
+	if got := imports[0].Locations[2].File; got != "/repo" {
+		t.Fatalf("expected empty path to be treated as non-absolute and rebased under prefix, got %q", got)
 	}
 }
 
