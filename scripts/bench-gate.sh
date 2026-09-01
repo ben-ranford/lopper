@@ -426,6 +426,9 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			if recvType := methodReceiverTypeName(decl); recvType != "" {
 				decls[recvType] = append(decls[recvType], harnessDecl{file: rel, decl: decl})
 			}
+			for _, name := range importLocalAliasNames(decl) {
+				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
+			}
 			if rootDeclarationCanAffectBenchmark(decl, modInfo) {
 				roots = append(roots, harnessDecl{file: rel, decl: decl})
 			}
@@ -668,6 +671,36 @@ func receiverTypeExprName(expr ast.Expr) string {
 	default:
 		return ""
 	}
+}
+
+// importLocalAliasNames returns the explicit local aliases decl's import
+// specs bind, so an import can enter the reachability graph the same way
+// any other declaration does: by a reachable decl referencing its local
+// name (e.g. a benchmark calling rng.Read after `import rng "crypto/rand"`).
+// This is scoped to explicit aliases only, not every unaliased import's
+// derived default name -- unaliased default names (like "testing" or
+// "fmt") are shared by many unrelated files, and indexing those too would
+// let an unrelated file's reachable identifier of the same name pull in
+// that file's whole import block, reintroducing the over-inclusion this
+// selector already avoids for ubiquitous standard-library imports.
+func importLocalAliasNames(decl ast.Decl) []string {
+	genDecl, ok := decl.(*ast.GenDecl)
+	if !ok || genDecl.Tok != token.IMPORT {
+		return nil
+	}
+	names := make([]string, 0, len(genDecl.Specs))
+	for _, spec := range genDecl.Specs {
+		importSpec, ok := spec.(*ast.ImportSpec)
+		if !ok || importSpec.Name == nil {
+			continue
+		}
+		name := importSpec.Name.Name
+		if name == "_" || name == "." {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modInfo moduleInfo) bool {

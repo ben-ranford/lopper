@@ -380,6 +380,51 @@ func assertBenchGateFingerprintsBaseThenHeadFiles(t *testing.T, baseFiles, headF
 	assertBenchGateHarnessMismatch(t, fixture)
 }
 
+// TestBenchGateFingerprintsSwitchedImportBehindRetainedAlias proves that
+// switching an import's target while keeping its local alias -- e.g.
+// `import rng "math/rand"` to `import rng "crypto/rand"` -- still counts,
+// even though the benchmark's own declaration text (which only mentions
+// rng.Read) is unchanged. Without indexing imports by their explicit local
+// aliases, that import decl was never reachable from the benchmark that
+// uses it, so the fingerprint stayed equal despite the benchmark now
+// executing different code.
+func TestBenchGateFingerprintsSwitchedImportBehindRetainedAlias(t *testing.T) {
+	assertBenchGateFingerprintsBaseThenHeadFiles(t,
+		map[string]string{
+			"bench_test.go": `package benchpkg
+
+import (
+	rng "math/rand"
+	"testing"
+)
+
+func BenchmarkValue(b *testing.B) {
+	buf := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		rng.Read(buf)
+	}
+}
+`,
+		},
+		map[string]string{
+			"bench_test.go": `package benchpkg
+
+import (
+	rng "crypto/rand"
+	"testing"
+)
+
+func BenchmarkValue(b *testing.B) {
+	buf := make([]byte, 16)
+	for i := 0; i < b.N; i++ {
+		rng.Read(buf)
+	}
+}
+`,
+		},
+	)
+}
+
 // TestBenchGateIgnoresMethodOnUnreachableReceiverType proves that a method
 // declared on a type used only by an ordinary test -- never constructed or
 // otherwise referenced from any benchmark -- no longer forces the file into
