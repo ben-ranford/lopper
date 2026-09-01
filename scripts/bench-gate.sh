@@ -649,7 +649,7 @@ func parseModuleInfo(content []byte) moduleInfo {
 		switch fields[0] {
 		case "module":
 			if len(fields) >= 2 {
-				info.path = fields[1]
+				info.path = unquoteGoModToken(fields[1])
 			}
 		case "require":
 			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "require"))
@@ -668,7 +668,20 @@ func addRequiredModulePath(required map[string]struct{}, spec string) {
 	if len(fields) == 0 {
 		return
 	}
-	required[fields[0]] = struct{}{}
+	required[unquoteGoModToken(fields[0])] = struct{}{}
+}
+
+// unquoteGoModToken unquotes a go.mod module-path token if it's quoted.
+// go.mod's grammar permits a module or require directive's path to be a
+// double-quoted or raw ("`"-delimited) Go string literal instead of a bare
+// token; without unquoting, a quoted path (e.g. require "example.com/dep"
+// v1.0.0) would never match the unquoted path an *ast.ImportSpec carries,
+// so a tracked import using that form would be missed.
+func unquoteGoModToken(token string) string {
+	if unquoted, err := strconv.Unquote(token); err == nil {
+		return unquoted
+	}
+	return token
 }
 
 func stripGoModLineComment(line string) string {

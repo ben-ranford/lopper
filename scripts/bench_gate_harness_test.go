@@ -176,6 +176,49 @@ func TestOnly(t *testing.T) {}
 	assertBenchGateHarnessMismatch(t, fixture)
 }
 
+// TestBenchGateFingerprintsQuotedGoModRequireImport proves a named import
+// of a module declared with go.mod's quoted-token directive form (require
+// "example.com/dep" v1.0.0, valid per Go's own modfile syntax) still counts
+// as able to affect the benchmark. Without unquoting, the required path
+// parsed from go.mod would never match the unquoted path an *ast.ImportSpec
+// carries, so the import would be missed regardless of tracking it by
+// module membership.
+func TestBenchGateFingerprintsQuotedGoModRequireImport(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixtureGoMod, err := os.ReadFile(filepath.Join(fixture.root, "go.mod"))
+	if err != nil {
+		t.Fatalf("read fixture go.mod: %v", err)
+	}
+	fixture.writeFile("go.mod", string(fixtureGoMod)+"\nrequire \"foo\" v0.0.0\n\nreplace \"foo\" => ./foovendor\n")
+	fixture.writeFile("foovendor/go.mod", "module foo\n\ngo 1.27.0\n")
+	fixture.writeFile("foovendor/foo.go", "package foo\n\nfunc init() {}\n\nfunc Configure() {}\n")
+	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
+		"setup_test.go": `package benchpkg
+
+import (
+	"testing"
+
+	"foo"
+)
+
+func TestOnly(t *testing.T) {
+	foo.Configure()
+}
+`,
+	}))
+	fixture.commit("base")
+
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"setup_test.go": `package benchpkg
+
+import "testing"
+
+func TestOnly(t *testing.T) {}
+`})
+	fixture.commit("head")
+
+	assertBenchGateHarnessMismatch(t, fixture)
+}
+
 func importInitSetupPackageFiles(setupTestFile string) map[string]string {
 	return benchmarkHarnessPackageFiles(map[string]string{
 		"setup_test.go": setupTestFile,
