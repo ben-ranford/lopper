@@ -429,8 +429,7 @@ func BenchmarkValue(b *testing.B) {
 }
 
 func TestBenchGateIgnoresOrdinaryTestOnlyEmbedFixtures(t *testing.T) {
-	fixture := newBenchGateFixture(t, "benchpkg")
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+	assertBenchGateIgnoresChangedOrdinaryFixture(t, map[string]string{
 		"bench_test.go": `package benchpkg
 
 import "testing"
@@ -455,14 +454,6 @@ func TestOrdinary(t *testing.T) {
 `,
 		"testdata/ordinary.txt": "base\n",
 	})
-	fixture.commit("base")
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"testdata/ordinary.txt": "head\n"})
-	fixture.commit("head")
-
-	output, exitCode := fixture.runBenchGate()
-	if exitCode != 0 {
-		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
-	}
 }
 
 // TestBenchGateIgnoresOrdinaryTestOnlyEmbedSharingVarGroupWithBenchmark
@@ -472,8 +463,7 @@ func TestOrdinary(t *testing.T) {
 // the same group, even though selecting the benchmark's own var marks the
 // whole surrounding *ast.GenDecl as reached.
 func TestBenchGateIgnoresOrdinaryTestOnlyEmbedSharingVarGroupWithBenchmark(t *testing.T) {
-	fixture := newBenchGateFixture(t, "benchpkg")
-	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+	assertBenchGateIgnoresChangedOrdinaryFixture(t, map[string]string{
 		"bench_test.go": `package benchpkg
 
 import (
@@ -501,6 +491,17 @@ func TestOrdinary(t *testing.T) {
 		"testdata/bench.txt":    "bench\n",
 		"testdata/ordinary.txt": "base\n",
 	})
+}
+
+// assertBenchGateIgnoresChangedOrdinaryFixture commits baseFiles, changes
+// only testdata/ordinary.txt for head, and asserts the harness fingerprint
+// still matches (exit 0): the benchmark package's shape is unrelated to
+// that ordinary-test-only fixture, however it's referenced.
+func assertBenchGateIgnoresChangedOrdinaryFixture(t *testing.T, baseFiles map[string]string) {
+	t.Helper()
+
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", baseFiles)
 	fixture.commit("base")
 	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"testdata/ordinary.txt": "head\n"})
 	fixture.commit("head")
