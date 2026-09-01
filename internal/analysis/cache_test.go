@@ -23,10 +23,12 @@ const (
 )
 
 type countingAdapter struct {
-	id              string
-	calls           int
-	usageIncomplete bool
-	hiddenImport    *report.ImportUse
+	id                    string
+	calls                 int
+	usageIncomplete       bool
+	reportUsageIncomplete bool
+	omitDependencies      bool
+	hiddenImport          *report.ImportUse
 }
 
 func (a *countingAdapter) ID() string { return a.id }
@@ -67,9 +69,13 @@ func (a *countingAdapter) Analyse(_ context.Context, req language.Request) (repo
 	if a.hiddenImport != nil {
 		dependency.SuppressedUnusedImports = []report.ImportUse{*a.hiddenImport}
 	}
-	return report.Report{
-		Dependencies: []report.DependencyReport{dependency},
-	}, nil
+	result := report.Report{
+		UsageIncomplete: a.reportUsageIncomplete,
+	}
+	if !a.omitDependencies {
+		result.Dependencies = []report.DependencyReport{dependency}
+	}
+	return result, nil
 }
 
 func markUsageIncompleteForTest(dependency *report.DependencyReport) bool {
@@ -233,6 +239,45 @@ func TestAnalysisCachePreservesUsageIncomplete(t *testing.T) {
 		t.Fatalf("marshal report: %v", err)
 	}
 	if strings.Contains(string(serialized), "usageIncomplete") || strings.Contains(string(serialized), "SuppressedUnusedImports") || strings.Contains(string(serialized), "suppressedUnusedImports") || strings.Contains(string(serialized), "src/hidden.js") {
+		t.Fatalf("did not expect internal incomplete-usage state in report JSON: %s", serialized)
+	}
+}
+
+func TestAnalysisCachePreservesReportUsageIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, cacheTestJSIndexFileName), "import dep from \"dep\"\n")
+
+	svc, adapter := newCacheTestService(t)
+	adapter.reportUsageIncomplete = true
+	adapter.omitDependencies = true
+	req := newCacheRequest(t, repo, filepath.Join(repo, cacheTestDirectoryName), false)
+
+	first, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first analyse: %v", err)
+	}
+	if !first.UsageIncomplete || len(first.Dependencies) != 0 {
+		t.Fatalf("expected dependency-row-free first analysis to preserve report usage incomplete, got %#v", first)
+	}
+
+	second, err := svc.Analyse(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second analyse: %v", err)
+	}
+	if adapter.calls != 1 {
+		t.Fatalf("expected second analysis to use cache, adapter calls=%d", adapter.calls)
+	}
+	if second.Cache == nil || second.Cache.Hits != 1 {
+		t.Fatalf("expected cache hit metadata, got %#v", second.Cache)
+	}
+	if !second.UsageIncomplete || len(second.Dependencies) != 0 {
+		t.Fatalf("expected cached dependency-row-free analysis to preserve report usage incomplete, got %#v", second)
+	}
+	serialized, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	if strings.Contains(string(serialized), "usageIncomplete") {
 		t.Fatalf("did not expect internal incomplete-usage state in report JSON: %s", serialized)
 	}
 }

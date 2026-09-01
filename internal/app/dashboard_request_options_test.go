@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -124,6 +125,55 @@ func TestResolveDashboardRequestAppliesDefaultLanguageAndOutputTrim(t *testing.T
 	}
 	if resolved.outputPath != "./out/report.json" {
 		t.Fatalf("expected output path to be trimmed, got %q", resolved.outputPath)
+	}
+}
+
+func TestDashboardRoutingOptionsCopiesOwnershipConfig(t *testing.T) {
+	config := dashboard.ConfigOwnership{
+		DefaultOwner:  "alex",
+		DefaultTeam:   "platform",
+		DefaultStatus: "planned",
+		DefaultDue:    "2026-09-01",
+		Rules: []dashboard.ConfigOwnershipRule{
+			{
+				Repo:       "api",
+				PathPrefix: "internal/",
+				Category:   "security",
+				Dependency: "golang.org/x/sys",
+				Owner:      "sam",
+				Team:       "infra",
+				Due:        "2026-09-15",
+				Status:     "investigating",
+			},
+		},
+	}
+
+	options := dashboardRoutingOptions(config)
+	if options.DefaultOwner != config.DefaultOwner ||
+		options.DefaultTeam != config.DefaultTeam ||
+		options.DefaultStatus != config.DefaultStatus ||
+		options.DefaultDue != config.DefaultDue {
+		t.Fatalf("expected defaults to copy from config, got %#v", options)
+	}
+	wantRules := []dashboard.RoutingRule{
+		{
+			Repo:       "api",
+			PathPrefix: "internal/",
+			Category:   "security",
+			Dependency: "golang.org/x/sys",
+			Owner:      "sam",
+			Team:       "infra",
+			Due:        "2026-09-15",
+			Status:     "investigating",
+		},
+	}
+	if !reflect.DeepEqual(options.Rules, wantRules) {
+		t.Fatalf("unexpected routing rules:\n got: %#v\nwant: %#v", options.Rules, wantRules)
+	}
+
+	config.Rules[0].Owner = "mutated"
+	if options.Rules[0].Owner != "sam" {
+		t.Fatalf("expected routing rules to be copied, got %#v", options.Rules)
 	}
 }
 

@@ -19,6 +19,7 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 
 	families := []reportFamilyMerger{
 		&warningsReportFamilyMerger{},
+		&usageCompletenessReportFamilyMerger{},
 		&usageUncertaintyReportFamilyMerger{},
 		&generatedAtReportFamilyMerger{},
 		newDependencyReportFamilyMerger(),
@@ -34,6 +35,18 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 		family.finalize(&result)
 	}
 	return result
+}
+
+type usageCompletenessReportFamilyMerger struct {
+	incomplete bool
+}
+
+func (m *usageCompletenessReportFamilyMerger) merge(current report.Report) {
+	m.incomplete = m.incomplete || current.UsageIncomplete
+}
+
+func (m *usageCompletenessReportFamilyMerger) finalize(result *report.Report) {
+	result.UsageIncomplete = m.incomplete
 }
 
 type warningsReportFamilyMerger struct {

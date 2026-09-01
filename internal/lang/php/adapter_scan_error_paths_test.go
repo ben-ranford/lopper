@@ -81,7 +81,7 @@ func testPHPResolverAndUseParsingBranches(t *testing.T) {
 	if dependency, resolved := resolver.dependencyFromModule(""); dependency != "" || resolved {
 		t.Fatalf("expected blank module to resolve empty/false, got dependency=%q resolved=%v", dependency, resolved)
 	}
-	if _, _, ok, unresolved := parseUsePart("", "", "x.php", 1, composerResolver{}); ok || unresolved {
+	if _, _, ok, unresolved, limitHit := parseUsePart("", "", "x.php", 1, composerResolver{}); ok || unresolved || limitHit {
 		t.Fatalf("expected blank use-part parse to fail without unresolved attribution")
 	}
 	if _, _, _, ok := parseNamespaceReferenceMetadata("ignored", []int{0}); ok {

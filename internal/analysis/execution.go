@@ -2,6 +2,8 @@ package analysis
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
@@ -10,14 +12,17 @@ import (
 	"github.com/ben-ranford/lopper/internal/report"
 )
 
-func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
+// ErrIncompleteCoverage reports that an enforced analysis policy cannot trust partial dependency coverage.
+var ErrIncompleteCoverage = errors.New("complete dependency coverage is required")
+
+func (s *Service) runCandidates(ctx context.Context, req Request, repoPath string, candidates []language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0, len(candidates))
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
 	lowConfidenceThreshold := resolveLowConfidenceWarningThreshold(req.LowConfidenceWarningPercent)
 	for _, candidate := range candidates {
 		warnings = append(warnings, lowConfidenceWarning(req.Language, candidate, lowConfidenceThreshold)...)
-		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache)
+		candidateReports, candidateWarnings, candidateRoots, err := s.runCandidateOnRoots(ctx, req, repoPath, candidate, cache, trueRepoPathOverride...)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -38,7 +43,7 @@ func lowConfidenceWarning(languageID string, candidate language.Candidate, lowCo
 	return []string{"low detection confidence for adapter " + candidate.Adapter.ID() + ": results may be partial"}
 }
 
-func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache) ([]report.Report, []string, []string, error) {
+func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath string, candidate language.Candidate, cache *analysisCache, trueRepoPathOverride ...string) ([]report.Report, []string, []string, error) {
 	reports := make([]report.Report, 0)
 	warnings := make([]string, 0)
 	analyzedRoots := make([]string, 0)
@@ -56,16 +61,22 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		}
 		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
-		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot)
+		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot, trueRepoPathOverride...)
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, cachedReport); err != nil {
+				return nil, nil, nil, err
+			}
 			reports = append(reports, cachedReport)
 			continue
 		}
 
+		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...)
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
+			ExcludedPaths:                     exclusions.directories,
+			ExcludedFiles:                     exclusions.files,
 			Dependency:                        req.Dependency,
 			TopN:                              req.TopN,
 			SuggestOnly:                       req.SuggestOnly,
@@ -76,6 +87,9 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 			IncludeRegistryProvenance:         req.IncludeRegistryProvenance,
 		})
 		if err != nil {
+			if shouldFailAdapterError(req) {
+				return nil, nil, nil, err
+			}
 			if isMultiLanguage(req.Language) {
 				warnings = append(warnings, err.Error())
 				continue
@@ -85,9 +99,48 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
+		if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, current); err != nil {
+			return nil, nil, nil, err
+		}
 		reports = append(reports, current)
 	}
 	return reports, warnings, analyzedRoots, nil
+}
+
+func shouldFailAdapterError(req Request) bool {
+	return req.RequireCompleteCoverage
+}
+
+func incompleteCoverageReportError(req Request, adapterID, root string, reportData report.Report) error {
+	if !req.RequireCompleteCoverage {
+		return nil
+	}
+	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
+	if len(dependencies) == 0 {
+		if reportData.UsageIncomplete {
+			return fmt.Errorf("%w: adapter %s at %s reported incomplete usage coverage", ErrIncompleteCoverage, adapterID, root)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
+}
+
+func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {
+	incomplete := make([]string, 0)
+	for _, dependency := range dependencies {
+		if !dependency.UsageIncomplete {
+			continue
+		}
+		name := strings.TrimSpace(dependency.Name)
+		if name == "" {
+			name = "<unknown>"
+		}
+		if languageID := strings.TrimSpace(dependency.Language); languageID != "" {
+			name = languageID + ":" + name
+		}
+		incomplete = append(incomplete, name)
+	}
+	return incomplete
 }
 
 func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
@@ -98,8 +151,8 @@ func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
 	return false
 }
 
-func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string) (cacheEntryDescriptor, report.Report, bool) {
-	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot)
+func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, report.Report, bool) {
+	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot, trueRepoPathOverride...)
 	if err != nil {
 		cache.warn("analysis cache skipped for " + adapterID + ":" + normalizedRoot + ": " + err.Error())
 		return cacheEntryDescriptor{}, report.Report{}, false
