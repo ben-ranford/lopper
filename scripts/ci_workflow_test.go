@@ -1221,8 +1221,10 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 
 	resolveBase := workflowStepByName(t, workflow.Jobs, "verify", "Resolve PR base ref")
 	assertWorkflowStepRunContainsAll(t, resolveBase, "resolve PR base ref", []string{
-		`printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"`,
-		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"`,
+		`printf 'BASE_REF=%s\n' "${base_ref}"`,
+		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"`,
+		`printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}"`,
+		`} >> "$GITHUB_ENV"`,
 	})
 
 	writeBody := workflowStepByName(t, workflow.Jobs, "verify", "Write PR body for regression proof")
@@ -1345,8 +1347,10 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 
 	resolveBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Resolve PR base ref")
 	assertWorkflowStepRunContainsAll(t, resolveBase, "resolve rolling PR base ref", []string{
-		`printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"`,
-		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"`,
+		`printf 'BASE_REF=%s\n' "${base_ref}"`,
+		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"`,
+		`printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}"`,
+		`} >> "$GITHUB_ENV"`,
 	})
 
 	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")

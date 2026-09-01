@@ -90,9 +90,11 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
-          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
-          printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}" >> "$GITHUB_ENV"
+          {
+            printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"
+            printf 'BASE_REF=%s\n' "${base_ref}"
+            printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}"
+          } >> "$GITHUB_ENV"
 
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
@@ -1348,9 +1350,11 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
-          printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
-          printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
-          printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}" >> "$GITHUB_ENV"
+          {
+            printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"
+            printf 'BASE_REF=%s\n' "${base_ref}"
+            printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}"
+          } >> "$GITHUB_ENV"
 
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
