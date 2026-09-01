@@ -149,6 +149,91 @@ func TestAdapterAnalyseSuggestOnlyPythonUnsafeSkips(t *testing.T) {
 	}
 }
 
+func TestAdapterAnalyseSuggestOnlyPythonSkipsParenthesizedFromImportAtOpeningLineAfterNestedBlankLineReplacement(t *testing.T) {
+	source := "value = f\"{f'''{\"\"\"\n" +
+		"\n" +
+		"import requests\n" +
+		"\"\"\"}'''}\"\n" +
+		"from numpy import (\n" +
+		"    array,\n" +
+		")\n"
+
+	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "numpy", true)
+	if dep.Codemod == nil {
+		t.Fatal("expected python codemod report")
+	}
+	if len(dep.Codemod.Suggestions) != 0 {
+		t.Fatalf("expected no safe suggestions for parenthesized multiline import, got %#v", dep.Codemod.Suggestions)
+	}
+	if len(dep.Codemod.Skips) != 1 {
+		t.Fatalf("expected one unsupported-syntax skip, got %#v", dep.Codemod.Skips)
+	}
+	skip := dep.Codemod.Skips[0]
+	if skip.ReasonCode != pythonCodemodReasonUnsupportedSyntax || skip.Line != 5 || skip.ImportName != "array" {
+		t.Fatalf("expected unsupported parenthesized skip on opening line 5, got %#v", skip)
+	}
+}
+
+func TestAdapterAnalyseSuggestOnlyPythonSkipsImportLikeMultilineStrings(t *testing.T) {
+	source := "\"\"\"\n" +
+		"import requests\n" +
+		"from requests import Session\n" +
+		`not closed by escaped delimiter: \"\""` + "\n" +
+		"import requests as escaped_double\n" +
+		"\"\"\"\n" +
+		"value = '''\n" +
+		"import requests as rq\n" +
+		`not closed by escaped delimiter: \'''` + "\n" +
+		"from requests import escaped_single\n" +
+		"'''\n" +
+		strings.Join([]string{
+			`normal = "not an import \`,
+			`import requests"`,
+			`raw_value = r"not an import \`,
+			`from requests import Session"`,
+			`formatted = f"not an import \`,
+			`import requests as rq"`,
+		}, "\n") + "\n"
+
+	dep := analysePythonDependencyWithOptions(t, map[string]string{testMainPy: source}, "requests", true)
+	if dep.TotalExportsCount != 0 || len(dep.UnusedImports) != 0 {
+		t.Fatalf("expected import-like multiline string contents to be ignored, got %#v", dep)
+	}
+	if dep.Codemod == nil {
+		t.Fatal("expected python codemod report")
+	}
+	if len(dep.Codemod.Suggestions) != 0 || len(dep.Codemod.Skips) != 0 {
+		t.Fatalf("expected no codemod actions for string contents, got %#v", dep.Codemod)
+	}
+}
+
+func TestAdapterAnalyseFindsImportsAfterContinuedShortStringCloses(t *testing.T) {
+	source := "value = \"text\\\n" +
+		"\"\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
+func TestAdapterAnalyseFindsImportsAfterBlankLineEndsContinuedShortStrings(t *testing.T) {
+	for _, source := range []string{
+		"value = \"text\\\n\nimport requests\n",
+		"value = f\"text\\\n\nimport requests\n",
+	} {
+		dep := analysePythonDependency(t, source, "requests")
+		assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+	}
+}
+
+func TestAdapterAnalyseFindsImportsAfterUncontinuedUnterminatedShortString(t *testing.T) {
+	source := "value = \"unfinished\n" +
+		"import requests\n"
+
+	dep := analysePythonDependency(t, source, "requests")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+}
+
 func TestAdapterAnalyseSuggestOnlyPythonCodemodCanBeDisabled(t *testing.T) {
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), "import requests\n")
@@ -207,6 +292,323 @@ func TestParseImportsHandlesParenthesizedFromImports(t *testing.T) {
 	}
 }
 
+func TestParseImportsSkipsImportLikeMultilineStrings(t *testing.T) {
+	repo := t.TempDir()
+	source := "'''module docs\n" +
+		"import requests\n" +
+		"from requests import Session\n" +
+		"'''\n" +
+		"message = \"\"\"ignore this too\n" +
+		"import pandas as pd\n" +
+		`not closed by escaped delimiter: \"\""` + "\n" +
+		"import requests as escaped_double\n" +
+		"\"\"\"\n" +
+		"other = '''ignore this too\n" +
+		`not closed by escaped delimiter: \'''` + "\n" +
+		"from requests import escaped_single\n" +
+		"'''\n" +
+		strings.Join([]string{
+			`normal = "not an import \`,
+			`import requests"`,
+			`raw_value = r"not an import \`,
+			`from requests import Session"`,
+			`formatted = f"not an import \`,
+			`import pandas as pd"`,
+		}, "\n") + "\n" +
+		"import numpy as np\n"
+
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the real import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{Dependency: "numpy", Module: "numpy", Name: "numpy", Local: "np"})
+	if imports[0].Location.Line != 20 {
+		t.Fatalf("expected real import on line 20, got location %+v", imports[0].Location)
+	}
+}
+
+func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
+	type importBoundaryCase struct {
+		name     string
+		source   string
+		want     importBinding
+		wantLine int
+	}
+
+	caseWithRealImport := func(name, source string, want importBinding, wantLine int) importBoundaryCase {
+		return importBoundaryCase{name: name, source: source, want: want, wantLine: wantLine}
+	}
+	requestsCase := func(name, source string, wantLine int) importBoundaryCase {
+		return caseWithRealImport(name, source, importBinding{
+			Dependency: "requests",
+			Module:     "requests",
+			Name:       "requests",
+			Local:      "requests",
+		}, wantLine)
+	}
+	numpyCase := func(name, source string, wantLine int) importBoundaryCase {
+		return caseWithRealImport(name, source, importBinding{
+			Dependency: "numpy",
+			Module:     "numpy",
+			Name:       "numpy",
+			Local:      "np",
+		}, wantLine)
+	}
+	numpyAfterHiddenImportCase := func(name string, hiddenLines []string, closingLine string) importBoundaryCase {
+		lines := append([]string{}, hiddenLines...)
+		lines = append(lines, "from pandas import DataFrame", closingLine, "import numpy as np")
+		return numpyCase(name, strings.Join(lines, "\n")+"\n", 6)
+	}
+
+	cases := []importBoundaryCase{
+		numpyCase(
+			"CRLF continued short string closes before real import",
+			"value = \"not an import \\\r\n"+
+				"import requests\"\r\n"+
+				"import numpy as np\r\n",
+			3,
+		),
+		requestsCase(
+			"f-string replacement delimiter does not close outer string",
+			`value = f"""{'"""'}"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"multiline replacement string resumes outer f-string",
+			"value = f\"\"\"{'''\n"+
+				"}\n"+
+				"\"\"\"\n"+
+				"'''}\"\"\"\n"+
+				"import requests\n",
+			5,
+		),
+		requestsCase(
+			"replacement comment brace does not unbalance depth",
+			"value = f\"\"\"{(\n"+
+				"1 # {\n"+
+				")}\"\"\"\n"+
+				"import requests\n",
+			4,
+		),
+		numpyCase(
+			"continued replacement short string hides import-like content",
+			"value = f\"\"\"{'not an import \\\r\n"+
+				"}\"\"\"\\\r\n"+
+				"import requests\\\r\n"+
+				"'}\"\"\"\r\n"+
+				"import numpy as np\r\n",
+			5,
+		),
+		requestsCase(
+			"nested f-string replacement preserves outer state",
+			`value = f"""{f'''{"'''"}'''}"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"nested short f-string replacement preserves outer state",
+			`value = f"""{f'{'"""'}'}"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		numpyCase(
+			"short f-string multiline replacement hides import-like content",
+			"value = f\"{'''\n"+
+				"import requests\n"+
+				"'''}\"\n"+
+				"import numpy as np\n",
+			4,
+		),
+		numpyCase(
+			"short f-string multiline replacement survives blank line",
+			"value = f\"{'''\n"+
+				"\n"+
+				"import requests\n"+
+				"'''}\"\n"+
+				"import numpy as np\n",
+			5,
+		),
+		requestsCase(
+			"format spec hash does not mask rest of line",
+			`value = f"{42:#08x}"`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"format spec quote fill does not start replacement string",
+			`value = f"{value:'<10}"`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"slice colon does not start format spec before replacement comment",
+			"value = f\"\"\"{items[\n"+
+				"0: # } \"\"\" comment\n"+
+				"2\n"+
+				"]}\"\"\"\n"+
+				"import requests\n",
+			5,
+		),
+		numpyCase(
+			"quoted comment is ignored before real import",
+			"# \"import requests\"\n"+
+				"import numpy as np\n",
+			2,
+		),
+		numpyCase(
+			"escaped backslash inside replacement triple string hides import-like content",
+			"value = f\"\"\"{'''\\\\\n"+
+				"import requests\n"+
+				"'''}\"\"\"\n"+
+				"import numpy as np\n",
+			4,
+		),
+		numpyCase(
+			"continued nested short f-string hides import-like content",
+			"value = f\"\"\"{f'not an import \\\n"+
+				"import requests'}\"\"\"\n"+
+				"import numpy as np\n",
+			3,
+		),
+		requestsCase(
+			"nested f-string literal brace text preserves outer state",
+			`value = f"""{f'a}}b'}"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"escaped outer f-string brace preserves outer state",
+			`value = f"""{{literal}}"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"dict literal braces inside replacement preserve outer state",
+			`value = f"""{ {'key': 'value'} }"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		numpyCase(
+			"template replacement delimiter preserves outer state",
+			"value = t\"\"\"{'\"\"\"'}\n"+
+				"import requests\n"+
+				"\"\"\"\n"+
+				"import numpy as np\n",
+			4,
+		),
+		numpyCase(
+			"uppercase template replacement delimiter preserves outer state",
+			"value = T'''{\"'''\"}\n"+
+				"import requests\n"+
+				"'''\n"+
+				"import numpy as np\n",
+			4,
+		),
+		numpyCase(
+			"raw f-string backslash before replacement brace preserves outer state",
+			"value = rf\"\"\"\\{'\"\"\"'}\n"+
+				"import requests\n"+
+				"\"\"\"\n"+
+				"import numpy as np\n",
+			4,
+		),
+		numpyCase(
+			"nested f-string format spec colon preserves outer state",
+			"value = f\"\"\"{f'{value:{width:#x}}'}\n"+
+				"import requests\n"+
+				"\"\"\"\n"+
+				"import numpy as np\n",
+			4,
+		),
+		requestsCase(
+			"nested format spec hash preserves outer state",
+			`value = f"{42:{3:#x}}"`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"nested format spec quote fill preserves outer state",
+			`value = f"""{42:{3:'<10}}"""`+"\n"+
+				"import requests\n",
+			2,
+		),
+		requestsCase(
+			"nested format field comment preserves outer state",
+			"value = f\"\"\"{42:{(\n"+
+				"3 # }} \"\"\" comment\n"+
+				")}}\"\"\"\n"+
+				"import requests\n",
+			4,
+		),
+		numpyAfterHiddenImportCase(
+			"nested format spec strings hide import-like content",
+			[]string{`value = f"""{42:{f'''width`, "import requests", "''':{3:#x}}}"},
+			`"""`,
+		),
+		numpyAfterHiddenImportCase(
+			"template replacement strings hide import-like content",
+			[]string{`value = t"""{'''`, "import requests", "'''}"},
+			`"""`,
+		),
+		numpyAfterHiddenImportCase(
+			"uppercase template replacement strings hide import-like content",
+			[]string{`value = T'''{"""`, "import requests", `"""}`},
+			"'''",
+		),
+		numpyAfterHiddenImportCase(
+			"raw f-string replacement brace hides embedded strings",
+			[]string{`value = rf"""\{'''`, "import requests", "'''}"},
+			`"""`,
+		),
+		numpyAfterHiddenImportCase(
+			"nested field comment hides import-like continuation",
+			[]string{`value = f"""{42:{(`, `3 # }} """ comment`, ")}}"},
+			`"""`,
+		),
+		numpyAfterHiddenImportCase(
+			"dict curly nesting delays format-spec detection",
+			[]string{`value = f"""{ {'key': '''`, "import requests", "'''} :{width}}"},
+			`"""`,
+		),
+		requestsCase(
+			"blank line resets continued nested short replacement string",
+			"value = f\"{'foo\\\n\nimport requests\n",
+			3,
+		),
+		requestsCase(
+			"keyword suffix is not mistaken for a string prefix",
+			"if\"\"\"{\"\"\":\nimport requests\n",
+			2,
+		),
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			imports := parseImports([]byte(tc.source), testMainPy, repo)
+			if len(imports) != 1 {
+				t.Fatalf("expected only the real import binding, got %#v", imports)
+			}
+			assertImportBinding(t, imports[0], tc.want)
+			if imports[0].Location.Line != tc.wantLine {
+				t.Fatalf("expected real import on line %d, got location %+v", tc.wantLine, imports[0].Location)
+			}
+			if tc.want.Dependency == "requests" {
+				dep := analysePythonDependency(t, tc.source, "requests")
+				assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", language: "python", used: 0, total: 1})
+				return
+			}
+			reportData := analysePythonTopN(t, tc.source, 5)
+			names := dependencyNames(reportData)
+			if slices.Contains(names, "requests") || slices.Contains(names, `requests\`) || slices.Contains(names, "pandas") {
+				t.Fatalf("expected import-like string contents to stay out of top-N imports, got %#v", names)
+			}
+			assertDependencyNamesInclude(t, names, tc.want.Dependency)
+		})
+	}
+}
+
 func assertImportBinding(t *testing.T, got importBinding, want importBinding) {
 	t.Helper()
 	if got.Dependency != want.Dependency || got.Module != want.Module || got.Name != want.Name || got.Local != want.Local {
@@ -218,6 +620,35 @@ func TestAdapterAnalyseDependencyWithParenthesizedFromImports(t *testing.T) {
 	source := "from requests import (\n    Session,\n    Response,\n)\nSession()\n"
 	dep := analysePythonDependency(t, source, "requests")
 	assertDependencyReport(t, dep, dependencyReportExpectation{name: "requests", used: 1, total: 2})
+}
+
+func TestAdapterAnalyseDependencyWithParenthesizedFromImportsAfterNestedBlankLineReplacement(t *testing.T) {
+	source := "value = f\"{f'''{\"\"\"\n" +
+		"\n" +
+		"import requests\n" +
+		"\"\"\"}'''}\"\n" +
+		"from numpy import (\n" +
+		"    array,\n" +
+		")\n" +
+		"array([1])\n"
+
+	repo := t.TempDir()
+	imports := parseImports([]byte(source), testMainPy, repo)
+	if len(imports) != 1 {
+		t.Fatalf("expected only the multiline from-import binding, got %#v", imports)
+	}
+	assertImportBinding(t, imports[0], importBinding{
+		Dependency: "numpy",
+		Module:     "numpy",
+		Name:       "array",
+		Local:      "array",
+	})
+	if imports[0].Location.Line != 6 {
+		t.Fatalf("expected multiline from-import symbol on line 6, got location %+v", imports[0].Location)
+	}
+
+	dep := analysePythonDependency(t, source, "numpy")
+	assertDependencyReport(t, dep, dependencyReportExpectation{name: "numpy", used: 1, total: 1})
 }
 
 type dependencyReportExpectation struct {
@@ -283,6 +714,21 @@ func analysePythonDependencyWithFeatureSet(t *testing.T, files map[string]string
 		t.Fatalf("expected one dependency report, got %d", len(reportData.Dependencies))
 	}
 	return reportData.Dependencies[0]
+}
+
+func analysePythonTopN(t *testing.T, source string, topN int) report.Result {
+	t.Helper()
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, testMainPy), source)
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{
+		RepoPath: repo,
+		TopN:     topN,
+	})
+	if err != nil {
+		t.Fatalf("analyse topN: %v", err)
+	}
+	return reportData
 }
 
 func mustPythonCodemodFeatureSet(t *testing.T, enabled bool) featureflags.Set {
