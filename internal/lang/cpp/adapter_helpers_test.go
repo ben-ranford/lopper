@@ -292,9 +292,13 @@ func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
 	args := []string{
 		"c++",
 		"-I/usr/include/c++/13",
+		"-I/usr/include/c++/13/backward",
+		"-I/usr/include/c++/13/ext",
 		"-I/usr/include/x86_64-linux-gnu",
 		"-I/usr/include/x86_64-linux-gnu/c++/13",
+		"-I/usr/include/x86_64-linux-gnu/c++/13/backward",
 		"-I/usr/include/not-a-multiarch",
+		"-I/usr/include/c++/13/vendor",
 		"-I/usr/lib/gcc/x86_64-linux-gnu/13/include",
 		"-I/usr/lib/gcc/x86_64-linux-gnu/13/include-fixed",
 		"-I/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
@@ -316,6 +320,7 @@ func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/usr/include/c++/13",
+		"/usr/include/c++/13/backward",
 		"/usr/include/x86_64-linux-gnu",
 		"/usr/include/x86_64-linux-gnu/c++/13",
 		"/usr/lib/gcc/x86_64-linux-gnu/13/include",
@@ -331,6 +336,9 @@ func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/usr/include/not-a-multiarch",
+		"/usr/include/c++/13/ext",
+		"/usr/include/c++/13/vendor",
+		"/usr/include/x86_64-linux-gnu/c++/13/backward",
 		"/usr/lib/gcc/x86_64-linux-gnu/13/plugin",
 		"/opt/acme/lib/clang/18/include",
 		"/USR/INCLUDE",

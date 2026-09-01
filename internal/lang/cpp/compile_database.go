@@ -334,6 +334,15 @@ func isDefaultUsrIncludeCSubroot(path string) bool {
 	return len(parts) == 1 && isLikelyMultiarchIncludePrefix(parts[0])
 }
 
+// isDefaultUsrIncludeCXXSubroot reports whether path is one of the exact
+// roots GCC's own driver adds automatically for C++ under /usr/include --
+// verified against `g++ -E -v`'s own search list: the plain version root
+// (c++/<version>), its multiarch variant (<multiarch>/c++/<version>), and
+// the version root's "backward" subdirectory. Any other subdirectory
+// nested under c++/<version>/ (e.g. a vendor's own "ext" or "vendor"
+// directory placed inside the compiler's include tree) is not something
+// GCC adds on its own, so an explicit -I for it should not be silently
+// promoted to system provenance.
 func isDefaultUsrIncludeCXXSubroot(path string) bool {
 	const prefix = "/usr/include/"
 	if !strings.HasPrefix(path, prefix) {
@@ -341,8 +350,16 @@ func isDefaultUsrIncludeCXXSubroot(path string) bool {
 	}
 	suffix := strings.TrimPrefix(path, prefix)
 	parts := strings.Split(suffix, "/")
-	return (len(parts) >= 2 && parts[0] == "c++" && parts[1] != "") ||
-		(len(parts) >= 3 && isLikelyMultiarchIncludePrefix(parts[0]) && parts[1] == "c++" && parts[2] != "")
+	switch {
+	case len(parts) == 2 && parts[0] == "c++" && parts[1] != "":
+		return true
+	case len(parts) == 3 && parts[0] == "c++" && parts[1] != "" && parts[2] == "backward":
+		return true
+	case len(parts) == 3 && isLikelyMultiarchIncludePrefix(parts[0]) && parts[1] == "c++" && parts[2] != "":
+		return true
+	default:
+		return false
+	}
 }
 
 func isDefaultAppleCSystemIncludeRoot(path string) bool {
