@@ -140,20 +140,13 @@ func TestBenchGateFingerprintsImportInitSetup(t *testing.T) {
 // whether the import path looks like a typical hosted module path.
 func TestBenchGateFingerprintsDotlessExternalModuleImport(t *testing.T) {
 	fixture := newBenchGateFixture(t, "benchpkg")
-	// Extend the real go.mod/go.sum rather than replacing them: the fixture
-	// also carries copies of internal/safeio's real sources (via
-	// writeRepositoryHarness), and those need their own real transitive
-	// dependencies (golang.org/x/sys) to resolve.
-	realGoMod, err := os.ReadFile(repoPath(t, "go.mod"))
+	// writeRepositoryHarness already copied the real go.mod; append this
+	// test's require/replace to it rather than starting from scratch.
+	fixtureGoMod, err := os.ReadFile(filepath.Join(fixture.root, "go.mod"))
 	if err != nil {
-		t.Fatalf("read real go.mod: %v", err)
+		t.Fatalf("read fixture go.mod: %v", err)
 	}
-	realGoSum, err := os.ReadFile(repoPath(t, "go.sum"))
-	if err != nil {
-		t.Fatalf("read real go.sum: %v", err)
-	}
-	fixture.writeFile("go.mod", string(realGoMod)+"\nrequire foo v0.0.0\n\nreplace foo => ./foovendor\n")
-	fixture.writeFile("go.sum", string(realGoSum))
+	fixture.writeFile("go.mod", string(fixtureGoMod)+"\nrequire foo v0.0.0\n\nreplace foo => ./foovendor\n")
 	fixture.writeFile("foovendor/go.mod", "module foo\n\ngo 1.27.0\n")
 	fixture.writeFile("foovendor/foo.go", "package foo\n\nfunc init() {}\n\nfunc Configure() {}\n")
 	fixture.writeBenchmarkPackage("benchpkg", benchmarkHarnessPackageFiles(map[string]string{
@@ -538,7 +531,12 @@ func newBenchGateFixture(t *testing.T, packageName string) benchGateFixture {
 }
 
 func (f *benchGateFixture) writeRepositoryHarness() {
-	f.writeFile("go.mod", "module github.com/ben-ranford/lopper\n\ngo 1.27.0\n")
+	// Copy the real go.mod/go.sum rather than writing a minimal one: the
+	// copied internal/safeio sources below carry their own real transitive
+	// dependencies (e.g. golang.org/x/sys on Linux), which a from-scratch
+	// go.mod wouldn't declare.
+	f.copyFile("go.mod")
+	f.copyFile("go.sum")
 	f.copyFile("scripts/bench-gate.sh")
 	f.copyFile("tools/benchdelta/main.go")
 

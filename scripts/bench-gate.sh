@@ -397,6 +397,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 	parsed := make(map[string]*ast.File, len(files))
 	decls := make(map[string][]harnessDecl)
 	roots := make([]harnessDecl, 0)
+	modInfo := loadModuleInfo(dir)
 	for _, rel := range files {
 		abs := filepath.Join(dir, filepath.FromSlash(rel))
 		file, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.ParseComments)
@@ -408,13 +409,13 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			for _, name := range declaredNames(decl) {
 				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
 			}
-			if rootDeclarationCanAffectBenchmark(decl) {
+			if rootDeclarationCanAffectBenchmark(decl, modInfo) {
 				roots = append(roots, harnessDecl{file: rel, decl: decl})
 			}
 		}
 	}
 
-	selected := selectedBenchmarkHarnessFiles(roots, decls)
+	selected, seenDecls := selectedBenchmarkHarnessFiles(roots, decls)
 	manifest := make([]string, 0, len(selected))
 	seen := make(map[string]struct{})
 	for _, rel := range files {
@@ -422,7 +423,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			continue
 		}
 		appendManifestLine(&manifest, seen, kind, rel)
-		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel])
+		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel], seenDecls)
 		if err != nil {
 			return nil, fmt.Errorf("resolve embeds in %s: %w", rel, err)
 		}
@@ -458,7 +459,7 @@ func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel 
 	*manifest = append(*manifest, line)
 }
 
-func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) map[string]struct{} {
+func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) (map[string]struct{}, map[ast.Decl]struct{}) {
 	selected := make(map[string]struct{})
 	seenDecls := make(map[ast.Decl]struct{})
 	queue := append([]harnessDecl(nil), roots...)
@@ -478,7 +479,7 @@ func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harne
 			}
 		}
 	}
-	return selected
+	return selected, seenDecls
 }
 
 func declaredNames(decl ast.Decl) []string {
@@ -513,12 +514,12 @@ func declarationTokenCanAffectBenchmark(tok token.Token) bool {
 	return tok == token.CONST || tok == token.TYPE || tok == token.VAR
 }
 
-func rootDeclarationCanAffectBenchmark(decl ast.Decl) bool {
+func rootDeclarationCanAffectBenchmark(decl ast.Decl, modInfo moduleInfo) bool {
 	switch typed := decl.(type) {
 	case *ast.FuncDecl:
 		return rootFunctionCanAffectBenchmark(typed)
 	case *ast.GenDecl:
-		return rootGenDeclCanAffectBenchmark(typed)
+		return rootGenDeclCanAffectBenchmark(typed, modInfo)
 	default:
 		return false
 	}
@@ -535,10 +536,10 @@ func rootFunctionCanAffectBenchmark(decl *ast.FuncDecl) bool {
 	return name == "init" || name == "TestMain" || isGoTestEntrypoint(name, "Benchmark")
 }
 
-func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
+func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl, modInfo moduleInfo) bool {
 	switch decl.Tok {
 	case token.IMPORT:
-		return genDeclHasBenchmarkImport(decl)
+		return genDeclHasBenchmarkImport(decl, modInfo)
 	case token.VAR:
 		return genDeclHasInitializedVar(decl)
 	default:
@@ -546,10 +547,10 @@ func rootGenDeclCanAffectBenchmark(decl *ast.GenDecl) bool {
 	}
 }
 
-func genDeclHasBenchmarkImport(decl *ast.GenDecl) bool {
+func genDeclHasBenchmarkImport(decl *ast.GenDecl, modInfo moduleInfo) bool {
 	for _, spec := range decl.Specs {
 		importSpec, ok := spec.(*ast.ImportSpec)
-		if ok && importCanAffectBenchmark(importSpec) {
+		if ok && importCanAffectBenchmark(importSpec, modInfo) {
 			return true
 		}
 	}
@@ -557,15 +558,24 @@ func genDeclHasBenchmarkImport(decl *ast.GenDecl) bool {
 }
 
 // importCanAffectBenchmark reports whether spec can affect benchmark setup.
-// Every non-embed import counts, regardless of path shape or blank-name
-// status: the benchmark and every ordinary test in the same package are
-// compiled into one test binary, so any named import's init() still runs
-// even if only an ordinary Test-prefixed function references it, and Go
-// modules place no format requirement on an import path (a bare, dotless
-// name is a fully valid external module reference via a replace directive).
-func importCanAffectBenchmark(spec *ast.ImportSpec) bool {
+// A blank import always counts (it exists purely for its init() side
+// effect). A named import counts when it's tracked by the module: the
+// current module itself (or one of its subpackages), or any module listed
+// in go.mod's require directives, regardless of import-path shape -- Go
+// modules place no format requirement on a path, so a bare, dotless name is
+// a fully valid external module reference via a replace directive. Every
+// other named import is standard library: it ships with the Go toolchain
+// rather than being an independently versioned dependency of this repo, so
+// it isn't tracked here.
+func importCanAffectBenchmark(spec *ast.ImportSpec, modInfo moduleInfo) bool {
 	path := importPath(spec)
-	return path != "" && path != "embed"
+	if path == "" || path == "embed" {
+		return false
+	}
+	if spec.Name != nil && spec.Name.Name == "_" {
+		return true
+	}
+	return modInfo.tracks(path)
 }
 
 func importPath(spec *ast.ImportSpec) string {
@@ -577,6 +587,95 @@ func importPath(spec *ast.ImportSpec) string {
 		return ""
 	}
 	return value
+}
+
+// moduleInfo carries the current module's own path and the set of module
+// paths its go.mod declares as required, used to distinguish a tracked
+// dependency (first-party or third-party, any path shape) from a standard
+// library import, which is never declared in go.mod.
+type moduleInfo struct {
+	path     string
+	required map[string]struct{}
+}
+
+func (m moduleInfo) tracks(importPath string) bool {
+	if m.path != "" && (importPath == m.path || strings.HasPrefix(importPath, m.path+"/")) {
+		return true
+	}
+	for required := range m.required {
+		if importPath == required || strings.HasPrefix(importPath, required+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func loadModuleInfo(dir string) moduleInfo {
+	current := filepath.Clean(dir)
+	for {
+		content, err := os.ReadFile(filepath.Join(current, "go.mod"))
+		if err == nil {
+			return parseModuleInfo(content)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return moduleInfo{required: map[string]struct{}{}}
+		}
+		current = parent
+	}
+}
+
+func parseModuleInfo(content []byte) moduleInfo {
+	info := moduleInfo{required: make(map[string]struct{})}
+	inRequireBlock := false
+	scanner := bufio.NewScanner(strings.NewReader(string(content)))
+	for scanner.Scan() {
+		trimmed := strings.TrimSpace(stripGoModLineComment(scanner.Text()))
+		if trimmed == "" {
+			continue
+		}
+		if inRequireBlock {
+			if trimmed == ")" {
+				inRequireBlock = false
+				continue
+			}
+			addRequiredModulePath(info.required, trimmed)
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "module":
+			if len(fields) >= 2 {
+				info.path = fields[1]
+			}
+		case "require":
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "require"))
+			if rest == "(" {
+				inRequireBlock = true
+				continue
+			}
+			addRequiredModulePath(info.required, rest)
+		}
+	}
+	return info
+}
+
+func addRequiredModulePath(required map[string]struct{}, spec string) {
+	fields := strings.Fields(spec)
+	if len(fields) == 0 {
+		return
+	}
+	required[fields[0]] = struct{}{}
+}
+
+func stripGoModLineComment(line string) string {
+	if idx := strings.Index(line, "//"); idx >= 0 {
+		return line[:idx]
+	}
+	return line
 }
 
 func genDeclHasInitializedVar(decl *ast.GenDecl) bool {
@@ -619,39 +718,71 @@ func isGoTestEntrypoint(name, prefix string) bool {
 	return !unicode.IsLower(first)
 }
 
-func embeddedFilesForSelectedFile(dir string, file *ast.File) ([]string, error) {
+// embeddedFilesForSelectedFile resolves the go:embed patterns attached to
+// this file's *selected* declarations only, not every //go:embed comment
+// anywhere in the file. A benchmark and an ordinary test can share one
+// _test.go file; fingerprinting every embed in the whole file would make an
+// ordinary test's fixture, unreachable from any benchmark, invalidate the
+// harness fingerprint when it changes.
+func embeddedFilesForSelectedFile(dir string, file *ast.File, seenDecls map[ast.Decl]struct{}) ([]string, error) {
 	if file == nil {
 		return nil, nil
 	}
 	seen := make(map[string]struct{})
 	files := make([]string, 0)
-	for _, group := range file.Comments {
-		for _, comment := range group.List {
-			text := strings.TrimSpace(comment.Text)
-			if !strings.HasPrefix(text, "//go:embed") {
-				continue
-			}
-			patterns, err := parseEmbedPatterns(strings.TrimSpace(strings.TrimPrefix(text, "//go:embed")))
-			if err != nil {
-				return nil, err
-			}
-			for _, pattern := range patterns {
-				matches, err := resolveEmbedPattern(dir, pattern)
+	for _, decl := range file.Decls {
+		if _, ok := seenDecls[decl]; !ok {
+			continue
+		}
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.VAR {
+			continue
+		}
+		for _, group := range embedDocCommentGroups(genDecl) {
+			for _, comment := range group.List {
+				text := strings.TrimSpace(comment.Text)
+				if !strings.HasPrefix(text, "//go:embed") {
+					continue
+				}
+				patterns, err := parseEmbedPatterns(strings.TrimSpace(strings.TrimPrefix(text, "//go:embed")))
 				if err != nil {
 					return nil, err
 				}
-				for _, match := range matches {
-					if _, ok := seen[match]; ok {
-						continue
+				for _, pattern := range patterns {
+					matches, err := resolveEmbedPattern(dir, pattern)
+					if err != nil {
+						return nil, err
 					}
-					seen[match] = struct{}{}
-					files = append(files, match)
+					for _, match := range matches {
+						if _, ok := seen[match]; ok {
+							continue
+						}
+						seen[match] = struct{}{}
+						files = append(files, match)
+					}
 				}
 			}
 		}
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// embedDocCommentGroups returns decl's own doc comment along with each of
+// its specs' individual doc comments, covering both a single ungrouped var
+// declaration (doc on the GenDecl itself) and a grouped var block where
+// go:embed immediately precedes one specific spec within the group.
+func embedDocCommentGroups(decl *ast.GenDecl) []*ast.CommentGroup {
+	groups := make([]*ast.CommentGroup, 0, 1)
+	if decl.Doc != nil {
+		groups = append(groups, decl.Doc)
+	}
+	for _, spec := range decl.Specs {
+		if valueSpec, ok := spec.(*ast.ValueSpec); ok && valueSpec.Doc != nil {
+			groups = append(groups, valueSpec.Doc)
+		}
+	}
+	return groups
 }
 
 func parseEmbedPatterns(text string) ([]string, error) {
