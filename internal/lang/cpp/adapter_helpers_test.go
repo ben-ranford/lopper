@@ -828,6 +828,27 @@ func TestMapIncludeToDependencySuppressesResolvedCompilerHeaderRoots(t *testing.
 	}
 }
 
+// TestMapIncludeToDependencyResolvesAbsoluteCompilerHeaderDirectly proves
+// that #include </abs/path/to/header> resolves and suppresses correctly
+// even with zero configured include search paths. filepath.Join(root,
+// absoluteHeader) never produces the real path (Go joins it as another
+// segment rather than treating it as an override), so before adding the
+// absolute header itself as a resolution candidate this was always
+// reported unresolved regardless of whether the file existed.
+func TestMapIncludeToDependencyResolvesAbsoluteCompilerHeaderDirectly(t *testing.T) {
+	repo := t.TempDir()
+	source := filepath.Join(repo, "src", testMainCPPFileName)
+	testutil.MustWriteFile(t, source, "int main() { return 0; }\n")
+
+	absoluteHeader := filepath.Join(t.TempDir(), "toolchain", "include", "c++", "13", "vector")
+	testutil.MustWriteFile(t, absoluteHeader, "// compiler header\n")
+
+	dep, unresolved := mapIncludeToDependency(repo, source, parsedInclude{Path: filepath.ToSlash(absoluteHeader), Delimiter: '<'}, nil, newDependencyCatalog())
+	if dep != "" || unresolved {
+		t.Fatalf("expected resolved absolute compiler header to be suppressed, got dep=%q unresolved=%v", dep, unresolved)
+	}
+}
+
 func TestMapIncludeToDependencyIgnoresRepoHeaderFromIncludeDir(t *testing.T) {
 	repo := t.TempDir()
 	source := filepath.Join(repo, "src", testMainCPPFileName)

@@ -508,6 +508,16 @@ func (r *includeResolver) resolveIncludePath(include includeLookup) includeResol
 	sourceDir := filepath.Dir(include.sourcePath)
 	header := filepath.FromSlash(cleanIncludeHeader(include.header))
 	candidates := make([]includeResolution, 0)
+	if filepath.IsAbs(header) {
+		// filepath.Join(searchRoot, header) does not treat an absolute
+		// header as an override the way some other languages' path-join
+		// does -- it's appended as just another path segment, so an
+		// absolute #include (e.g. </usr/include/c++/13/vector>, which GCC
+		// itself accepts) could never resolve via the search-root loop
+		// below. Try it directly first; leave provenance undetermined so
+		// isLikelySystemIncludePath derives it from the path itself.
+		candidates = append(candidates, includeResolution{Path: header})
+	}
 	if include.delimiter == '"' {
 		candidates = append(candidates, includeResolution{
 			Path:            filepath.Join(sourceDir, header),
@@ -605,6 +615,15 @@ func isLikelyStdHeader(header string) bool {
 	header = cleanIncludeHeader(header)
 	if header == "" {
 		return false
+	}
+	// An absolute header (e.g. #include </usr/include/c++/13/vector>) isn't
+	// a namespace-qualified compiler header spelling at all -- it's a
+	// literal filesystem path GCC accepts as-is. Whether it's a compiler
+	// header is exactly whether that path itself sits under a known
+	// system root, which isLikelySystemIncludePath already determines by
+	// prefix; the qualified-namespace machinery below doesn't apply here.
+	if strings.HasPrefix(header, "/") {
+		return isLikelySystemIncludePath(header)
 	}
 	if remainder, ok := stripCXXVersionedRoot(header); ok {
 		return isLikelyStdHeader(remainder)
