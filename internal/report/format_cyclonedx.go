@@ -159,9 +159,11 @@ func formatCycloneDXLicenses(license *DependencyLicense) []cycloneDXLicenseChoic
 }
 
 func formatCycloneDXBOMProperties(reportData Report) []cycloneDXProperty {
+	stableCoverageGaps := StableCoverageGaps(reportData.CoverageGaps)
 	props := make([]cycloneDXProperty, 0, 16)
 	appendCycloneDXProperty(&props, "lopper:export:format", string(FormatCycloneDX))
-	appendCycloneDXProperty(&props, "lopper:export:coverage", "direct-dependencies")
+	appendCycloneDXProperty(&props, "lopper:export:coverage", cycloneDXExportCoverage(stableCoverageGaps))
+	appendCycloneDXJSONProperty(&props, "lopper:coverage-gaps", stableCoverageGaps)
 	appendCycloneDXProperty(&props, "lopper:schema-version", reportData.SchemaVersion)
 	appendCycloneDXProperty(&props, "lopper:repo-path", reportData.RepoPath)
 	if reportData.Scope != nil {
@@ -191,6 +193,18 @@ func formatCycloneDXBOMProperties(reportData Report) []cycloneDXProperty {
 		appendCycloneDXJSONProperty(&props, "lopper:baseline:new-reachable-vulnerabilities", sortedVulnerabilityDeltas(reportData.BaselineComparison.NewReachableVulnerabilities))
 	}
 	return sortedCycloneDXProperties(props)
+}
+
+// cycloneDXExportCoverage reports whether the exported components represent
+// every direct dependency, or whether some were skipped (e.g. a gemspec
+// too large to parse) and are only visible via lopper:coverage-gaps.
+// Without this, a report with skipped dependencies would look complete to
+// downstream SBOM and vulnerability consumers.
+func cycloneDXExportCoverage(coverageGaps []CoverageGap) string {
+	if len(coverageGaps) > 0 {
+		return "direct-dependencies-incomplete"
+	}
+	return "direct-dependencies"
 }
 
 func formatCycloneDXComponentProperties(dep DependencyReport, baselineDelta DependencyDelta) []cycloneDXProperty {

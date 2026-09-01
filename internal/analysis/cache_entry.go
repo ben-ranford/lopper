@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const analysisCacheSchemaVersion = "v5"
+const analysisCacheSchemaVersion = "v6"
 
 type cacheEntryDescriptor struct {
 	KeyLabel    string

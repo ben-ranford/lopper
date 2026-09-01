@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -158,6 +159,200 @@ func TestMergeDependencySuppressesRemovalSignalsWhenUsageIsIncomplete(t *testing
 		t.Run(test.name, func(t *testing.T) {
 			assertIncompleteRemovalSignalsSuppressedAfterMerge(t, mergeDependency(test.left, test.right), wantUsedImports, wantSuppressedUnused)
 		})
+	}
+}
+
+func TestMergeReportsPreservesCoverageGapsForSingleAndMergedReports(t *testing.T) {
+	singleGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "gems/oversized.gem\u017fpec",
+		Evidence: []string{"single warning"},
+	}
+	sharedGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "pkg because it exceeds old/dependencies.gemspec",
+		Evidence: []string{"first warning"},
+	}
+	baselineNewGap := report.CoverageGap{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "baseline-new.gemspec",
+		Evidence: []string{"baseline comparison warning"},
+	}
+
+	for _, tc := range []struct {
+		name    string
+		reports []report.Report
+		want    []report.CoverageGap
+	}{
+		{
+			name: "single report",
+			reports: []report.Report{{
+				CoverageGaps: []report.CoverageGap{singleGap},
+			}},
+			want: []report.CoverageGap{singleGap},
+		},
+		{
+			name: "single report baseline comparison coverage gap",
+			reports: []report.Report{{
+				BaselineComparison: &report.BaselineComparison{
+					NewCoverageGaps: []report.CoverageGap{baselineNewGap},
+				},
+			}},
+			want: []report.CoverageGap{baselineNewGap},
+		},
+		{
+			name: "merged reports",
+			reports: []report.Report{
+				{CoverageGaps: []report.CoverageGap{sharedGap}},
+				{CoverageGaps: []report.CoverageGap{{Code: sharedGap.Code, Language: sharedGap.Language, Path: sharedGap.Path, Evidence: []string{"second warning"}}}},
+			},
+			want: []report.CoverageGap{{
+				Code:     sharedGap.Code,
+				Language: sharedGap.Language,
+				Path:     sharedGap.Path,
+				Evidence: []string{"first warning", "second warning"},
+			}},
+		},
+		{
+			name: "merged top-level and baseline comparison coverage gaps",
+			reports: []report.Report{
+				{CoverageGaps: []report.CoverageGap{singleGap}},
+				{BaselineComparison: &report.BaselineComparison{NewCoverageGaps: []report.CoverageGap{baselineNewGap}}},
+			},
+			want: []report.CoverageGap{baselineNewGap, singleGap},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			merged := mergeReports("/repo", tc.reports)
+			if !reflect.DeepEqual(merged.CoverageGaps, tc.want) {
+				t.Fatalf("mergeReports() coverage gaps = %#v, want %#v", merged.CoverageGaps, tc.want)
+			}
+		})
+	}
+}
+
+func TestMergeReportsRebasesCoverageGapsByCandidateRoot(t *testing.T) {
+	reports := []report.Report{
+		{
+			RepoPath: "/repo/packages/a",
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "foo.gemspec",
+				Evidence: []string{"package a"},
+			}},
+		},
+		{
+			RepoPath: "/repo/packages/b",
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "foo.gemspec",
+				Evidence: []string{"package b"},
+			}},
+		},
+		{
+			RepoPath: "/repo/packages/a",
+			CoverageGaps: []report.CoverageGap{{
+				Code:     report.CoverageGapRubyOversizedGemspec,
+				Language: "ruby",
+				Path:     "packages/a/already-rebased.gemspec",
+				Evidence: []string{"already rebased"},
+			}},
+		},
+	}
+
+	merged := mergeReports("/repo", reports)
+	want := []report.CoverageGap{
+		{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "packages/a/already-rebased.gemspec",
+			Evidence: []string{"already rebased"},
+		},
+		{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "packages/a/foo.gemspec",
+			Evidence: []string{"package a"},
+		},
+		{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "packages/b/foo.gemspec",
+			Evidence: []string{"package b"},
+		},
+	}
+	if !reflect.DeepEqual(merged.CoverageGaps, want) {
+		t.Fatalf("mergeReports() coverage gaps = %#v, want %#v", merged.CoverageGaps, want)
+	}
+}
+
+func TestMergeReportsKeepsMovedBaselineCoverageGapDifferential(t *testing.T) {
+	baseline := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/a",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "foo.gemspec",
+			Evidence: []string{"baseline package"},
+		}},
+	}})
+	current := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/b",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "foo.gemspec",
+			Evidence: []string{"current package"},
+		}},
+	}})
+
+	comparison := report.ComputeBaselineComparison(current, baseline)
+	want := []report.CoverageGap{{
+		Code:     report.CoverageGapRubyOversizedGemspec,
+		Language: "ruby",
+		Path:     "packages/b/foo.gemspec",
+		Evidence: []string{"current package"},
+	}}
+	if !reflect.DeepEqual(comparison.NewCoverageGaps, want) {
+		t.Fatalf("ComputeBaselineComparison() new coverage gaps = %#v, want %#v", comparison.NewCoverageGaps, want)
+	}
+}
+
+func TestMergeReportsPreservesUnixLiteralBackslashesInCoverageGapPaths(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+
+	baseline := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/a",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "a\\b.gemspec",
+			Evidence: []string{"baseline package"},
+		}},
+	}})
+	current := mergeReports("/repo", []report.Report{{
+		RepoPath: "/repo/packages/a",
+		CoverageGaps: []report.CoverageGap{{
+			Code:     report.CoverageGapRubyOversizedGemspec,
+			Language: "ruby",
+			Path:     "a/b.gemspec",
+			Evidence: []string{"current package"},
+		}},
+	}})
+
+	comparison := report.ComputeBaselineComparison(current, baseline)
+	if len(comparison.NewCoverageGaps) != 1 {
+		t.Fatalf("len(NewCoverageGaps) = %d, want distinct slash path: %#v", len(comparison.NewCoverageGaps), comparison.NewCoverageGaps)
+	}
+	if comparison.NewCoverageGaps[0].Path != "packages/a/a/b.gemspec" {
+		t.Fatalf("new coverage gap path = %q, want packages/a/a/b.gemspec", comparison.NewCoverageGaps[0].Path)
 	}
 }
 

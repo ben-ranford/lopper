@@ -10,6 +10,7 @@ type Report struct {
 	RepoPath             string               `json:"repoPath"`
 	Scope                *ScopeMetadata       `json:"scope,omitempty"`
 	Dependencies         []DependencyReport   `json:"dependencies"`
+	CoverageGaps         []CoverageGap        `json:"coverageGaps,omitempty"`
 	UsageIncomplete      bool                 `json:"-"`
 	UsageUncertainty     *UsageUncertainty    `json:"usageUncertainty,omitempty"`
 	Summary              *Summary             `json:"summary,omitempty"`
@@ -20,4 +21,11 @@ type Report struct {
 	Warnings             []string             `json:"warnings,omitempty"`
 	WasteIncreasePercent *float64             `json:"wasteIncreasePercent,omitempty"`
 	BaselineComparison   *BaselineComparison  `json:"baselineComparison,omitempty"`
+}
+
+type CoverageGap struct {
+	Code     string   `json:"code"`
+	Language string   `json:"language,omitempty"`
+	Path     string   `json:"path,omitempty"`
+	Evidence []string `json:"evidence,omitempty"`
 }

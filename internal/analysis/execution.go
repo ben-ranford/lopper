@@ -65,6 +65,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
+			adjustRelativeCoverageGaps(repoPath, normalizedRoot, cachedReport.CoverageGaps)
 			if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, cachedReport); err != nil {
 				return nil, nil, nil, err
 			}
@@ -99,6 +100,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		storeCachedReport(cache, candidate.Adapter.ID(), normalizedRoot, cacheEntry, current)
 		applyLanguageID(current.Dependencies, candidate.Adapter.ID())
 		adjustRelativeLocations(repoPath, normalizedRoot, current.Dependencies)
+		adjustRelativeCoverageGaps(repoPath, normalizedRoot, current.CoverageGaps)
 		if err := incompleteCoverageReportError(req, candidate.Adapter.ID(), normalizedRoot, current); err != nil {
 			return nil, nil, nil, err
 		}
@@ -115,6 +117,11 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 	if !req.RequireCompleteCoverage {
 		return nil
 	}
+	if !req.DeferCoverageGapEnforcement {
+		if paths := coverageGapPaths(reportData.CoverageGaps); len(paths) > 0 {
+			return fmt.Errorf("%w: adapter %s at %s reported coverage gaps: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(paths, ", "))
+		}
+	}
 	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
 	if len(dependencies) == 0 {
 		if reportData.UsageIncomplete {
@@ -123,6 +130,21 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 		return nil
 	}
 	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
+}
+
+func coverageGapPaths(gaps []report.CoverageGap) []string {
+	paths := make([]string, 0, len(gaps))
+	for _, gap := range gaps {
+		path := strings.TrimSpace(gap.Path)
+		if path == "" {
+			path = strings.TrimSpace(gap.Code)
+		}
+		if path == "" {
+			path = "<unknown>"
+		}
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {
@@ -197,6 +219,25 @@ func adjustRelativeLocations(repoPath string, analyzedRoot string, dependencies 
 	}
 }
 
+func adjustRelativeCoverageGaps(repoPath string, analyzedRoot string, gaps []report.CoverageGap) {
+	prefix, err := filepath.Rel(repoPath, analyzedRoot)
+	if err != nil || prefix == "." || prefix == "" {
+		return
+	}
+	normalizedPrefix := normalizeCoverageGapLocationPath(prefix)
+	for i := range gaps {
+		if gaps[i].Path == "" {
+			continue
+		}
+		normalizedPath := normalizeCoverageGapLocationPath(gaps[i].Path)
+		if isAbsoluteCoverageGapLocationPath(gaps[i].Path) {
+			gaps[i].Path = normalizedPath
+			continue
+		}
+		gaps[i].Path = path.Clean(path.Join(normalizedPrefix, normalizedPath))
+	}
+}
+
 func adjustImportLocations(prefix string, imports []report.ImportUse) {
 	normalizedPrefix := normalizeLocationPath(prefix)
 	for j := range imports {
@@ -214,6 +255,14 @@ func adjustImportLocations(prefix string, imports []report.ImportUse) {
 
 func normalizeLocationPath(value string) string {
 	return path.Clean(strings.ReplaceAll(value, "\\", "/"))
+}
+
+func normalizeCoverageGapLocationPath(value string) string {
+	return filepath.ToSlash(value)
+}
+
+func isAbsoluteCoverageGapLocationPath(value string) bool {
+	return value != "" && filepath.IsAbs(value)
 }
 
 func isAbsoluteLocationPath(value string) bool {

@@ -16,6 +16,7 @@ type BaselineComparison struct {
 	RuntimeImprovements         []DependencyDelta    `json:"runtimeImprovements,omitempty"`
 	Added                       []DependencyDelta    `json:"added,omitempty"`
 	Removed                     []DependencyDelta    `json:"removed,omitempty"`
+	NewCoverageGaps             []CoverageGap        `json:"newCoverageGaps,omitempty"`
 	NewDeniedLicenses           []DeniedLicenseDelta `json:"newDeniedLicenses,omitempty"`
 	NewReachableVulnerabilities []VulnerabilityDelta `json:"newReachableVulnerabilities,omitempty"`
 	UnchangedRows               int                  `json:"unchangedRows,omitempty"`

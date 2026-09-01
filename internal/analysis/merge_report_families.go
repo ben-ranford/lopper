@@ -1,7 +1,10 @@
 package analysis
 
 import (
+	"path"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ben-ranford/lopper/internal/report"
@@ -19,6 +22,7 @@ func mergeReports(repoPath string, reports []report.Report) report.Report {
 
 	families := []reportFamilyMerger{
 		&warningsReportFamilyMerger{},
+		newCoverageGapsReportFamilyMerger(repoPath),
 		&usageCompletenessReportFamilyMerger{},
 		&usageUncertaintyReportFamilyMerger{},
 		&generatedAtReportFamilyMerger{},
@@ -59,6 +63,63 @@ func (m *warningsReportFamilyMerger) merge(current report.Report) {
 
 func (m *warningsReportFamilyMerger) finalize(result *report.Report) {
 	result.Warnings = append([]string(nil), m.warnings...)
+}
+
+type coverageGapsReportFamilyMerger struct {
+	repoPath     string
+	coverageGaps []report.CoverageGap
+}
+
+func newCoverageGapsReportFamilyMerger(repoPath string) *coverageGapsReportFamilyMerger {
+	return &coverageGapsReportFamilyMerger{repoPath: repoPath}
+}
+
+func (m *coverageGapsReportFamilyMerger) merge(current report.Report) {
+	m.coverageGaps = append(m.coverageGaps, coverageGapsRebasedForMerge(m.repoPath, current)...)
+}
+
+func (m *coverageGapsReportFamilyMerger) finalize(result *report.Report) {
+	result.CoverageGaps = report.StableCoverageGaps(m.coverageGaps)
+}
+
+func coverageGapsRebasedForMerge(repoPath string, current report.Report) []report.CoverageGap {
+	gaps := append([]report.CoverageGap(nil), current.CoverageGaps...)
+	if current.BaselineComparison != nil {
+		gaps = append(gaps, current.BaselineComparison.NewCoverageGaps...)
+	}
+	if len(gaps) == 0 {
+		return nil
+	}
+	prefix, ok := reportRootPrefixForMerge(repoPath, current.RepoPath)
+	if !ok {
+		return gaps
+	}
+	for i := range gaps {
+		gaps[i].Path = rebaseCoverageGapPathForMerge(prefix, gaps[i].Path)
+	}
+	return gaps
+}
+
+func reportRootPrefixForMerge(repoPath, reportRepoPath string) (string, bool) {
+	if repoPath == "" || reportRepoPath == "" {
+		return "", false
+	}
+	prefix, err := filepath.Rel(filepath.Clean(repoPath), filepath.Clean(reportRepoPath))
+	if err != nil || prefix == "." || prefix == "" || prefix == ".." || strings.HasPrefix(prefix, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return normalizeCoverageGapLocationPath(prefix), true
+}
+
+func rebaseCoverageGapPathForMerge(prefix, value string) string {
+	if value == "" {
+		return value
+	}
+	normalizedPath := normalizeCoverageGapLocationPath(value)
+	if isAbsoluteCoverageGapLocationPath(value) || normalizedPath == prefix || strings.HasPrefix(normalizedPath, prefix+"/") {
+		return normalizedPath
+	}
+	return path.Clean(path.Join(prefix, normalizedPath))
 }
 
 type usageUncertaintyReportFamilyMerger struct {
