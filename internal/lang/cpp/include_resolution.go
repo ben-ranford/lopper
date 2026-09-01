@@ -606,6 +606,9 @@ func isLikelyStdHeader(header string) bool {
 	if header == "" {
 		return false
 	}
+	if remainder, ok := stripCXXVersionedRoot(header); ok {
+		return isLikelyStdHeader(remainder)
+	}
 	if strings.Contains(header, "/") {
 		if isKnownOSCompilerQualifiedHeader(header) {
 			return true
@@ -620,6 +623,36 @@ func isLikelyStdHeader(header string) bool {
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 	_, ok := cppStdHeaderSet[strings.ToLower(base)]
 	return ok
+}
+
+// stripCXXVersionedRoot recognizes a header written with GCC's own
+// versioned libstdc++ include root spelled out explicitly, e.g.
+// "c++/13/vector" or "c++/13/ext/random.tcc" (both compile: GCC's default
+// search root is /usr/include, under which /usr/include/c++/13/ is itself
+// a real, resolvable subdirectory). Stripping the "c++/<version>/" prefix
+// and re-classifying the remainder reuses the existing plain and
+// namespace-qualified header recognition for free, rather than
+// duplicating it for this rarer, explicitly-versioned spelling.
+func stripCXXVersionedRoot(header string) (string, bool) {
+	const prefix = "c++/"
+	if !strings.HasPrefix(header, prefix) {
+		return "", false
+	}
+	rest := header[len(prefix):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return "", false
+	}
+	version, remainder := rest[:slash], rest[slash+1:]
+	if remainder == "" {
+		return "", false
+	}
+	for _, r := range version {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return remainder, true
 }
 
 func cleanIncludeHeader(header string) string {
