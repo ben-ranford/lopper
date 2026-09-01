@@ -60,12 +60,17 @@ func TestBenchGateKeepsExplicitBaseForOrdinaryMergeCommit(t *testing.T) {
 	copyTree(t, repoPath(t, "tools/benchdelta"), filepath.Join(repo, "tools", "benchdelta"))
 	copyTree(t, repoPath(t, "internal/safeio"), filepath.Join(repo, "internal", "safeio"))
 	writeFile(t, filepath.Join(repo, "benchpkg", "bench_test.go"), benchmarkTestSource("benchpkg", "BenchmarkShared"))
-	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 1 }\n")
+	// init() is always a fingerprint root, unlike an ordinary unreferenced
+	// helper function: the harness fingerprint hashes only declarations
+	// reachable from benchmark/init/TestMain roots, so a plain
+	// benchmarkHarnessValue() that nothing calls would not move the
+	// fingerprint when its body changes below.
+	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), "package benchpkg\n\nfunc init() { benchmarkSink = make([]byte, 1) }\n")
 	runGitCommand(t, repo, "add", "go.mod", "benchpkg/bench_test.go", "benchpkg/harness_test.go", "tools/benchdelta", "internal/safeio")
 	runGitCommand(t, repo, "commit", "-m", "explicit base")
 	explicitBase := strings.TrimSpace(runGitCommand(t, repo, "rev-parse", "HEAD"))
 
-	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), "package benchpkg\n\nfunc benchmarkHarnessValue() int { return 2 }\n")
+	writeFile(t, filepath.Join(repo, "benchpkg", "harness_test.go"), "package benchpkg\n\nfunc init() { benchmarkSink = make([]byte, 2) }\n")
 	runGitCommand(t, repo, "add", "benchpkg/harness_test.go")
 	runGitCommand(t, repo, "commit", "-m", "first parent update")
 

@@ -592,7 +592,7 @@ test('a stale leader skip refreshes queued followers behind the selected eligibl
   assert.deepEqual(harness.calls.armed, [20]);
   assert.match(followerComments[0], /Queued behind #10/);
   assert.match(commentsFor(harness, 30), /Queued behind #20/);
-  assert.match(commentsFor(harness, 30), /identity audit/);
+  assert.match(commentsFor(harness, 30), /retried after their branches/);
   assert.doesNotMatch(commentsFor(harness, 30), /Queued behind #10/);
 });
 

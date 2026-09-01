@@ -6660,6 +6660,17 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 		"MEMORY_BENCH_ENFORCE":        "1",
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
+		// This test process's own CI job runs under a real pull_request
+		// event, so the outer environment already has GITHUB_REF pointing at
+		// a refs/pull/*/merge ref and GITHUB_EVENT_NAME=pull_request set.
+		// gitexec.SanitizedEnv() does not strip GITHUB_*/GH_* keys, so
+		// without overriding them here that outer context would leak into
+		// every nested bench-gate run and make bench-gate-pr-base.sh treat
+		// an ordinary test-fixture merge commit as a checked-out PR merge
+		// ref. Tests that want that behavior set these explicitly.
+		"GITHUB_REF":        "",
+		"GITHUB_EVENT_NAME": "",
+		"GH_EVENT_NAME":     "",
 	}
 }
 

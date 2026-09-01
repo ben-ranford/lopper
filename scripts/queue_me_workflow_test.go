@@ -77,8 +77,6 @@ func TestQueueMeControllerContract(t *testing.T) {
 		"disablePullRequestAutoMerge",
 		"mergePullRequest",
 		"mergeMethod: SQUASH",
-		"function isMergeConflict(error)",
-		"pull request is not mergeable",
 		"left.number - right.number",
 		"COMMENT_MARKER",
 	} {
@@ -103,18 +101,18 @@ func TestQueueMeControllerAdvancesPastConflictingLeaderContract(t *testing.T) {
 	controller := readConfig(t, "scripts/queue_me_controller.js")
 	docs := readConfig(t, "docs/ci-usage.md")
 	for _, fragment := range []string{
-		"function isMergeConflict(error)",
-		"pull request is not mergeable",
-		"Every queued pull request is waiting for a branch update after a rebase conflict.",
+		"function advanceQueuedPull(",
+		"needsCurrentBase",
+		"The queue will continue with the next queued pull request.",
+		"Every queued pull request is waiting for a clean queue identity audit after a base branch update.",
 	} {
 		if !strings.Contains(controller, fragment) {
 			t.Fatalf("queue-me controller conflict handling missing %q", fragment)
 		}
 	}
 	for _, fragment := range []string{
-		"rebases the first entry it can advance",
 		"skips to the next queued pull request",
-		"retries the conflicted entry only after that branch receives an update",
+		"retries the blocked entry only after that branch or",
 	} {
 		if !strings.Contains(docs, fragment) {
 			t.Fatalf("queue-me docs conflict ordering contract missing %q", fragment)
