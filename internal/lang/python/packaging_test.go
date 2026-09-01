@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	expectedDependencyInSetFmt = "expected dependency %q in %#v"
-	expectedNoDependenciesFmt  = "expected no dependencies, got %#v"
-	expectedWarningFmt         = "expected warning containing %q, got %#v"
-	collectDirectoryErrFmt     = "collect directory declared dependencies: %v"
-	parseRequirementsErrFmt    = "parse requirements dependencies: %v"
-	packagingTestDirMode       = 0o700
-	packagingBlockedDirMode    = 0o000
-	requirementsTxtSizeTest    = 1 * 1024 * 1024
+	expectedDependencyInSetFmt   = "expected dependency %q in %#v"
+	expectedNoDependenciesFmt    = "expected no dependencies, got %#v"
+	expectedWarningFmt           = "expected warning containing %q, got %#v"
+	collectDirectoryErrFmt       = "collect directory declared dependencies: %v"
+	parseRequirementsErrFmt      = "parse requirements dependencies: %v"
+	packagingTestDirMode         = 0o700
+	packagingBlockedDirMode      = 0o000
+	requirementsTxtSizeTest      = 1 * 1024 * 1024
+	pythonPackagingSizeLimitTest = 1024 * 1024
 )
 
 func TestParsePyprojectDependenciesModernSections(t *testing.T) {
@@ -222,8 +223,7 @@ func TestParseRequirementsDependenciesAcceptsExactSizeLimit(t *testing.T) {
 func TestParseRequirementsDependenciesSkipsOversizedFile(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonRequirementsTxt)
-	content := "requests==2.32.0\n" + strings.Repeat("#", requirementsTxtSizeTest+1-len("requests==2.32.0\n"))
-	testutil.MustWriteFile(t, path, content)
+	testutil.MustWritePaddedFile(t, path, "requests==2.32.0\n", maxRequirementsTxtBytes+1)
 
 	dependencies, warnings, err := parseRequirementsDependencies(repo, path)
 	if err != nil {
@@ -233,6 +233,16 @@ func TestParseRequirementsDependenciesSkipsOversizedFile(t *testing.T) {
 		t.Fatalf(expectedNoDependenciesFmt, dependencies)
 	}
 	assertWarningContains(t, warnings, "skipped requirements.txt above 1048576 bytes")
+}
+
+func TestPythonPackagingFileTooLargeClassificationPreservesMixedErrors(t *testing.T) {
+	closeErr := errors.New("close requirements file")
+	if !shared.IsPureSentinelError(safeio.ErrFileTooLarge, safeio.ErrFileTooLarge) {
+		t.Fatal("expected bare file-too-large sentinel to be treated as a size-limit warning")
+	}
+	if shared.IsPureSentinelError(errors.Join(safeio.ErrFileTooLarge, closeErr), safeio.ErrFileTooLarge) {
+		t.Fatal("expected mixed file-too-large and operational error to propagate")
+	}
 }
 
 func TestCollectDirectoryDeclaredDependenciesFromRequirementsTxt(t *testing.T) {
@@ -421,24 +431,24 @@ version = "0.1.0"
 	}
 }
 
-func TestCollectDirectoryDeclaredDependenciesUsesLargePackageLockFallback(t *testing.T) {
+func TestCollectDirectoryDeclaredDependenciesSkipsOversizedPackageLockFallback(t *testing.T) {
 	for _, lockName := range []string{pythonPoetryLockName, pythonUVLockName} {
 		t.Run(lockName, func(t *testing.T) {
 			repo := t.TempDir()
-			testutil.MustWriteFile(t, filepath.Join(repo, lockName), `
+			testutil.MustWritePaddedFile(t, filepath.Join(repo, lockName), `
 [[package]]
 name = "Requests"
 version = "2.32.3"
-`+strings.Repeat("# filler\n", int(ManifestReadLimitBytes)/len("# filler\n")+1))
+`, pythonPackagingSizeLimitTest+1)
 
 			dependencies, warnings, err := collectDirectoryDeclaredDependencies(repo, repo, nil)
 			if err != nil {
 				t.Fatalf(collectDirectoryErrFmt, err)
 			}
-			if _, ok := dependencies["requests"]; !ok {
-				t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+			if len(dependencies) != 0 {
+				t.Fatalf(expectedNoDependenciesFmt, dependencies)
 			}
-			assertWarningContains(t, warnings, "using "+lockName+" package entries as a fallback")
+			assertWarningContains(t, warnings, "skipped packaging file larger than")
 		})
 	}
 }
@@ -531,6 +541,55 @@ func TestParsePipfileLockDependenciesInvalidJSON(t *testing.T) {
 	assertInvalidParseWarning(t, repo, path, `{`, "invalid Pipfile.lock", "JSON decode error", parsePipfileLockDependencies)
 }
 
+func TestParsePipfileLockDependenciesSkipsOversizedFile(t *testing.T) {
+	assertPythonPackagingParserSkipsOversizedFile(t, pythonPipfileLockName, parsePipfileLockDependencies, "skipped Pipfile.lock larger than")
+}
+
+func TestPythonPackagingParsersAcceptExactSizeLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		file    string
+		content string
+		parser  dependencyParser
+	}{
+		{
+			name:    "Pipfile",
+			file:    pythonPipfileName,
+			content: exactByteLengthContent(t, "[packages]\nRequests = \">=2\"\n\n#", "", pythonPackagingSizeLimitTest),
+			parser:  parsePipfileDependencies,
+		},
+		{
+			name:    "Pipfile.lock",
+			file:    pythonPipfileLockName,
+			content: exactByteLengthContent(t, `{"default":{"Requests":{"version":"==2.32.0"}},"_pad":"`, `"}`, pythonPackagingSizeLimitTest),
+			parser:  parsePipfileLockDependencies,
+		},
+		{
+			name:    "package lock",
+			file:    pythonUVLockName,
+			content: exactByteLengthContent(t, "[[package]]\nname = \"Requests\"\nversion = \"2.32.0\"\n\n#", "", pythonPackagingSizeLimitTest),
+			parser:  parsePackageLockDependencies,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			path := filepath.Join(repo, tt.file)
+			testutil.MustWriteFile(t, path, tt.content)
+
+			dependencies, warnings, err := tt.parser(repo, path)
+			if err != nil {
+				t.Fatalf("parse exact-size %s: %v", tt.name, err)
+			}
+			if len(warnings) != 0 {
+				t.Fatalf("expected no warnings for exact-size %s, got %#v", tt.name, warnings)
+			}
+			if _, ok := dependencies["requests"]; !ok {
+				t.Fatalf(expectedDependencyInSetFmt, "requests", dependencies)
+			}
+		})
+	}
+}
+
 func TestParsePyprojectDependenciesInvalidTOML(t *testing.T) {
 	repo := t.TempDir()
 	path := filepath.Join(repo, pythonPyprojectFile)
@@ -569,6 +628,32 @@ func TestPythonManifestReadLimitAcceptsLargeManifestAndRejectsOverLimit(t *testi
 	_, _, err = parsePipfileDependencies(repo, oversizedPath)
 	if !errors.Is(err, safeio.ErrFileTooLarge) {
 		t.Fatalf("expected shared manifest read limit error, got %v", err)
+	}
+}
+
+func TestPythonLockfileParsersSkipOversizedFiles(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		file        string
+		parser      dependencyParser
+		wantWarning string
+	}{
+		{
+			name:        "Pipfile.lock",
+			file:        pythonPipfileLockName,
+			parser:      parsePipfileLockDependencies,
+			wantWarning: "skipped Pipfile.lock larger than",
+		},
+		{
+			name:        "package lock",
+			file:        pythonUVLockName,
+			parser:      parsePackageLockDependencies,
+			wantWarning: "skipped packaging file larger than",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assertPythonPackagingParserSkipsOversizedFile(t, tt.file, tt.parser, tt.wantWarning)
+		})
 	}
 }
 
@@ -896,6 +981,31 @@ func assertInvalidParseWarning(t *testing.T, repoPath, path, content, descriptio
 		t.Fatalf(expectedNoDependenciesFmt, dependencies)
 	}
 	assertWarningContains(t, warnings, warning)
+}
+
+func assertPythonPackagingParserSkipsOversizedFile(t *testing.T, file string, parser dependencyParser, warning string) {
+	t.Helper()
+	repo := t.TempDir()
+	path := filepath.Join(repo, file)
+	testutil.MustWriteFile(t, path, strings.Repeat("x", pythonPackagingSizeLimitTest+1))
+
+	dependencies, warnings, err := parser(repo, path)
+	if err != nil {
+		t.Fatalf("parse oversized %s: %v", file, err)
+	}
+	if len(dependencies) != 0 {
+		t.Fatalf(expectedNoDependenciesFmt, dependencies)
+	}
+	assertWarningContains(t, warnings, warning)
+}
+
+func exactByteLengthContent(t *testing.T, prefix, suffix string, size int) string {
+	t.Helper()
+	fillerLength := size - len(prefix) - len(suffix)
+	if fillerLength < 0 {
+		t.Fatalf("content framing exceeds requested size: prefix=%d suffix=%d size=%d", len(prefix), len(suffix), size)
+	}
+	return prefix + strings.Repeat("x", fillerLength) + suffix
 }
 
 func assertCollectDirectoryReadError(t *testing.T, fileName, content string) {

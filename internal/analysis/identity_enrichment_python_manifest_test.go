@@ -9,7 +9,10 @@ import (
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
-const analysisPythonManifestReadLimitBytes int64 = 16 << 20
+const (
+	analysisPythonManifestReadLimitBytes  int64 = 16 << 20
+	analysisPythonPackagingReadLimitBytes int64 = 1024 * 1024
+)
 
 func TestPythonIdentityUsesExactPyprojectAndPipfilePins(t *testing.T) {
 	repoPath := t.TempDir()
@@ -254,6 +257,108 @@ func TestPythonManifestIdentityWarnsOnManifestOverSharedReadLimit(t *testing.T) 
 	assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", "flask"), "pypi", "flask")
 	assertWarningsExact(t, repoPath, reportData.Warnings, []string{
 		"identity manifest read failed for Pipfile: file exceeds size limit",
+	})
+}
+
+func TestPythonIdentityReadsSupportedPackagingEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		fileName    string
+		body        string
+		collect     func(string, string, identityIndex, *identityWarningCollector)
+		wantVersion string
+	}{
+		{
+			name:        "poetry lock",
+			fileName:    poetryLockFileName,
+			body:        "[[package]]\nname = \"Requests\"\nversion = \"2.32.3\"\n",
+			collect:     collectPythonTOMLLockEvidence,
+			wantVersion: "2.32.3",
+		},
+		{
+			name:        "uv lock",
+			fileName:    uvLockFileName,
+			body:        "[[package]]\nname = \"Requests\"\nversion = \"2.32.4\"\n",
+			collect:     collectPythonTOMLLockEvidence,
+			wantVersion: "2.32.4",
+		},
+		{
+			name:        "Pipfile lock",
+			fileName:    "Pipfile.lock",
+			body:        `{"default":{"Requests":{"version":"==2.32.5"}}}`,
+			collect:     collectPipfileLockEvidence,
+			wantVersion: "2.32.5",
+		},
+		{
+			name:        "requirements",
+			fileName:    "requirements.txt",
+			body:        "Requests[security] == 2.32.6\n",
+			collect:     collectRequirementsEvidence,
+			wantVersion: "2.32.6",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoPath := t.TempDir()
+			path := filepath.Join(repoPath, tc.fileName)
+			testutil.MustWriteFile(t, path, tc.body)
+
+			index := identityIndex{}
+			warnings := newIdentityWarningCollector(repoPath)
+			tc.collect(repoPath, path, index, warnings)
+
+			assertSingleIdentityEvidence(t, index, identityKey("python", "requests"), tc.wantVersion, tc.fileName)
+			assertWarningsExact(t, repoPath, warnings.list(), nil)
+		})
+	}
+}
+
+func TestPythonIdentitySkipsOversizedTOMLLockEvidence(t *testing.T) {
+	for _, lockName := range []string{poetryLockFileName, uvLockFileName} {
+		t.Run(lockName, func(t *testing.T) {
+			repoPath := t.TempDir()
+			path := filepath.Join(repoPath, lockName)
+			testutil.MustWritePaddedFile(t, path, "[[package]]\nname = \"Requests\"\nversion = \"2.32.3\"\n", analysisPythonPackagingReadLimitBytes+1)
+
+			index := identityIndex{}
+			warnings := newIdentityWarningCollector(repoPath)
+			collectPythonTOMLLockEvidence(repoPath, path, index, warnings)
+
+			assertNoIdentityEvidence(t, index, identityKey("python", "requests"))
+			assertWarningsExact(t, repoPath, warnings.list(), []string{
+				"identity manifest read failed for " + lockName + ": file exceeds size limit",
+			})
+		})
+	}
+}
+
+func TestPythonIdentitySkipsOversizedPipfileLockEvidence(t *testing.T) {
+	repoPath := t.TempDir()
+	path := filepath.Join(repoPath, "Pipfile.lock")
+	testutil.MustWritePaddedFile(t, path, `{"default":{"Requests":{"version":"==2.32.3"}}}`, analysisPythonPackagingReadLimitBytes+1)
+
+	index := identityIndex{}
+	warnings := newIdentityWarningCollector(repoPath)
+	collectPipfileLockEvidence(repoPath, path, index, warnings)
+
+	assertNoIdentityEvidence(t, index, identityKey("python", "requests"))
+	assertWarningsExact(t, repoPath, warnings.list(), []string{
+		"identity manifest read failed for Pipfile.lock: file exceeds size limit",
+	})
+}
+
+func TestPythonIdentityWarnsOnOversizedRequirementsEvidence(t *testing.T) {
+	repoPath := t.TempDir()
+	path := filepath.Join(repoPath, "requirements.txt")
+	testutil.MustWritePaddedFile(t, path, "Requests==2.32.3\n", analysisPythonPackagingReadLimitBytes+1)
+	reportData := report.Report{Dependencies: []report.DependencyReport{
+		{Language: "python", Name: "requests"},
+	}}
+
+	annotateDependencyIdentities(repoPath, &reportData)
+
+	assertUnknownIdentity(t, findIdentityDependency(t, reportData, "python", "requests"), "pypi", "requests")
+	assertWarningsExact(t, repoPath, reportData.Warnings, []string{
+		"identity manifest read failed for requirements.txt: file exceeds size limit",
 	})
 }
 
