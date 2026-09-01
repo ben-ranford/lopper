@@ -288,10 +288,29 @@ func addIncludeSearchPath(path string, system, quoteOnly, promoteCompilerDefault
 		return
 	}
 	path = filepath.Clean(path)
-	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(path, promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots) {
+	if !system && !quoteOnly && isCompilerDefaultSystemIncludeRoot(canonicalIncludeRoot(path), promoteCompilerDefaultCSystemRoots, promoteCompilerDefaultCXXSystemRoots) {
 		system = true
 	}
 	*items = append(*items, includeSearchPath{Path: path, System: system, QuoteOnly: quoteOnly, ProvenanceKnown: true})
+}
+
+// canonicalIncludeRoot resolves symlinks in path for the purpose of
+// compiler-default-root comparison, so a -I root that's merely a symlink
+// alias for a real default (e.g. a sysroot staging directory symlinked to
+// /usr/include) is still recognized -- matching GCC's own `-E -v` output,
+// which resolves such aliases and lists the real target path rather than
+// the alias. Falls back to the literal cleaned path when it can't be
+// resolved (doesn't exist, permission denied, etc.), since an unresolvable
+// path can't be a resolved symlink to anything either -- this keeps
+// existing behavior for the common case of synthetic, non-existent -I
+// paths (as most compile database entries in practice, and in this
+// package's own tests, are).
+func canonicalIncludeRoot(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return filepath.Clean(resolved)
 }
 
 func isCompilerDefaultSystemIncludeRoot(path string, promoteCSystemRoots, promoteCXXSystemRoots bool) bool {

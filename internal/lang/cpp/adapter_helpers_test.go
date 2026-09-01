@@ -349,6 +349,39 @@ func TestCompileContextClassifiesCompilerDefaultRootsFromDashI(t *testing.T) {
 	}
 }
 
+// TestCompileContextCanonicalizesSymlinkedCompilerDefaultRoot proves that a
+// -I root which is itself a symlink to a real compiler default (e.g. a
+// sysroot staging directory aliasing /usr/include) is still recognized as
+// system provenance. GCC's own `-E -v` output resolves such aliases and
+// lists the real target path, not the alias; comparing the include root
+// against the literal, unresolved -I spelling would miss this and let a
+// recognized header under the alias be reported as an undeclared
+// dependency instead of suppressed.
+func TestCompileContextCanonicalizesSymlinkedCompilerDefaultRoot(t *testing.T) {
+	const target = "/usr/include"
+	if _, err := os.Stat(target); err != nil {
+		t.Skipf("compiler default root %s not present on this system: %v", target, err)
+	}
+
+	repo := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "sysroot")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", alias, target, err)
+	}
+
+	args := []string{"c++", "-I" + alias, "-c", "src/" + testMainCPPFileName}
+	payload := fmt.Sprintf(`[{"directory":".","file":"src/%s","arguments":%s}]`, testMainCPPFileName, mustJSON(t, args))
+	testutil.MustWriteFile(t, filepath.Join(repo, compileCommandsFile), payload)
+
+	ctx, err := loadCompileContext(repo)
+	if err != nil {
+		t.Fatalf("load compile context: %v", err)
+	}
+	if system, ok := compileContextSearchPathSystem(ctx, alias); !ok || !system {
+		t.Fatalf("expected symlinked alias %s of compiler default root %s to be system provenance, got system=%v ok=%v", alias, target, system, ok)
+	}
+}
+
 func TestCompileContextPromotesDuplicateIncludeProvenanceAcrossCommands(t *testing.T) {
 	repo := t.TempDir()
 	sdk := filepath.Join(repo, "sdk")
