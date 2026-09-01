@@ -143,9 +143,9 @@ func pythonFromImportOpenerLines(lines []string) map[int]int {
 	parenDepth := 0
 	openerLine := 0
 	for i, raw := range lines {
-		lineNum := i + 1
+		line := i + 1
 		if parenDepth > 0 {
-			openers[lineNum] = openerLine
+			openers[line] = openerLine
 			parenDepth += fromImportParenthesisDelta(stripComment(raw))
 			if parenDepth <= 0 {
 				parenDepth = 0
@@ -158,7 +158,7 @@ func pythonFromImportOpenerLines(lines []string) map[int]int {
 			continue
 		}
 		if delta := fromImportParenthesisDelta(strings.TrimSpace(matches[2])); delta > 0 {
-			openerLine = lineNum
+			openerLine = line
 			parenDepth = delta
 		}
 	}
