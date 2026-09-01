@@ -1,6 +1,6 @@
 module github.com/ben-ranford/lopper
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/pelletier/go-toml/v2 v2.4.3
