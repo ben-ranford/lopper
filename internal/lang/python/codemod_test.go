@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/report"
 )
@@ -170,6 +171,47 @@ func TestPythonCodemodNormalizesParenthesizedFromImportToOpeningLine(t *testing.
 	})
 	if len(simpleImports) != 1 || len(simpleImports[1]) != 2 {
 		t.Fatalf("expected simple imports to stay on line 1, got %#v", simpleImports)
+	}
+}
+
+// TestPythonCodemodGroupsLargeParenthesizedFromImportWithoutQuadraticScan
+// proves the fix for a reported quadratic slowdown: pythonImportStatementLine
+// used to backward-scan from every imported symbol's own line all the way to
+// the block's opener, making grouping O(n^2) in the number of symbols for a
+// single large parenthesized from-import. pythonFromImportOpenerLines now
+// resolves every symbol's opener in one forward pass instead. The generous
+// wall-clock bound below is loose enough to avoid flaking on a slow CI
+// runner, but tight enough that the old quadratic backward scan -- which at
+// this symbol count performs on the order of symbolCount^2/2 regex matches
+// -- would blow through it by orders of magnitude.
+func TestPythonCodemodGroupsLargeParenthesizedFromImportWithoutQuadraticScan(t *testing.T) {
+	const symbolCount = 4000
+	lines := make([]string, 0, symbolCount+2)
+	lines = append(lines, "from numpy import (")
+	imports := make([]importBinding, 0, symbolCount)
+	for i := range symbolCount {
+		name := fmt.Sprintf("symbol_%d", i)
+		lines = append(lines, "    "+name+",")
+		imports = append(imports, importBinding{
+			Dependency: "numpy",
+			Module:     "numpy",
+			Name:       name,
+			Local:      name,
+			Location:   report.Location{File: "main.py", Line: i + 2},
+		})
+	}
+	lines = append(lines, ")")
+
+	start := time.Now()
+	importsByLine := pythonImportsByLine(lines, imports)
+	elapsed := time.Since(start)
+
+	if len(importsByLine) != 1 || len(importsByLine[1]) != symbolCount {
+		t.Fatalf("expected all %d symbols to group on opening line 1, got %d groups with %d on line 1", symbolCount, len(importsByLine), len(importsByLine[1]))
+	}
+	const budget = 2 * time.Second
+	if elapsed > budget {
+		t.Fatalf("grouping %d symbols took %s, exceeding the %s budget for a linear scan", symbolCount, elapsed, budget)
 	}
 }
 

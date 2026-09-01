@@ -101,11 +101,12 @@ func buildPythonCodemodForFile(repoPath string, dependency string, file fileScan
 
 func pythonImportsByLine(lines []string, imports []importBinding) map[int][]importBinding {
 	grouped := make(map[int][]importBinding)
+	openerLines := pythonFromImportOpenerLines(lines)
 	for _, imported := range imports {
 		if imported.Location.Line <= 0 {
 			continue
 		}
-		statementLine := pythonImportStatementLine(lines, imported)
+		statementLine := pythonImportStatementLine(lines, imported, openerLines)
 		normalized := imported
 		normalized.Location.Line = statementLine
 		grouped[statementLine] = append(grouped[statementLine], normalized)
@@ -113,7 +114,7 @@ func pythonImportsByLine(lines []string, imports []importBinding) map[int][]impo
 	return grouped
 }
 
-func pythonImportStatementLine(lines []string, imported importBinding) int {
+func pythonImportStatementLine(lines []string, imported importBinding, openerLines map[int]int) int {
 	if imported.Location.Line <= 0 {
 		return imported.Location.Line
 	}
@@ -124,20 +125,44 @@ func pythonImportStatementLine(lines []string, imported importBinding) int {
 	if pythonLineStartsImport(sourceLine) {
 		return imported.Location.Line
 	}
-	for line := imported.Location.Line - 1; line >= 1; line-- {
-		candidate, ok := pythonSourceLine(lines, line)
-		if !ok {
-			break
-		}
-		matches := fromLinePattern.FindStringSubmatch(stripComment(candidate))
-		if len(matches) != 3 || strings.TrimSpace(matches[1]) != imported.Module {
-			continue
-		}
-		if fromImportParenthesisDelta(strings.TrimSpace(matches[2])) > 0 {
-			return line
-		}
+	if opener, ok := openerLines[imported.Location.Line]; ok {
+		return opener
 	}
 	return imported.Location.Line
+}
+
+// pythonFromImportOpenerLines maps each continuation line of a parenthesized
+// "from X import (...)" block to that block's opening line, via a single
+// forward pass tracking parenthesis depth. Determining each import's
+// statement line this way, once per file, avoids a separate backward scan
+// to the opener for every imported symbol: a large generated import block
+// with one symbol per line would otherwise make codemod generation
+// quadratic in the number of imported symbols.
+func pythonFromImportOpenerLines(lines []string) map[int]int {
+	openers := make(map[int]int)
+	parenDepth := 0
+	openerLine := 0
+	for i, raw := range lines {
+		lineNum := i + 1
+		if parenDepth > 0 {
+			openers[lineNum] = openerLine
+			parenDepth += fromImportParenthesisDelta(stripComment(raw))
+			if parenDepth <= 0 {
+				parenDepth = 0
+				openerLine = 0
+			}
+			continue
+		}
+		matches := fromLinePattern.FindStringSubmatch(stripComment(raw))
+		if len(matches) != 3 {
+			continue
+		}
+		if delta := fromImportParenthesisDelta(strings.TrimSpace(matches[2])); delta > 0 {
+			openerLine = lineNum
+			parenDepth = delta
+		}
+	}
+	return openers
 }
 
 func pythonLineStartsImport(sourceLine string) bool {
