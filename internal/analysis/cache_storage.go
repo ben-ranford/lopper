@@ -3,6 +3,7 @@ package analysis
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -141,7 +142,13 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	defer func() {
 		returnErr = errors.Join(returnErr, writeRoot.Close())
 	}()
+	if err := c.validateWriteRoot(writeRoot); err != nil {
+		return err
+	}
 	if err := writeRoot.WriteFileCreatingParentsAtomicallyIfAbsent(filepath.Join("objects", objectDigest+".json"), serializedPayload, 0o640, 0o750); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if err := c.validateWriteRoot(writeRoot); err != nil {
 		return err
 	}
 
@@ -150,11 +157,24 @@ func (c *analysisCache) store(entry cacheEntryDescriptor, data report.Report) (r
 	if err != nil {
 		return err
 	}
-	if err := writeRoot.WriteFileCreatingParents(filepath.Join("keys", entry.KeyDigest+".json"), serializedPointer, 0o640, 0o750); err != nil {
+	if err := c.publishPointer(writeRoot, filepath.Join("keys", entry.KeyDigest+".json"), serializedPointer); err != nil {
 		return err
 	}
 	c.metadata.Writes++
 	return nil
+}
+
+func (c *analysisCache) publishPointer(writeRoot *safeio.WriteRoot, pointerRel string, serializedPointer []byte) error {
+	if err := c.validateWriteRoot(writeRoot); err != nil {
+		return err
+	}
+	validatePointerParent := func(parentPath string, parentIdentity fs.FileInfo) error {
+		if err := validateAnalysisCacheRoot(parentPath, parentIdentity); err != nil {
+			return err
+		}
+		return c.validateWriteRoot(writeRoot)
+	}
+	return writeRoot.WriteFileCreatingParentsAfterParentReadyWithPinnedParentPublishCheck(pointerRel, serializedPointer, 0o640, 0o750, validatePointerParent)
 }
 
 func newCachedPayload(data report.Report) cachedPayload {

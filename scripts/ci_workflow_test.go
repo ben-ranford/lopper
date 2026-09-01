@@ -1761,18 +1761,28 @@ func TestCIWorkflowVerifiesVSCodePackageContractAfterInstallingDependencies(t *t
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
-	assertWorkflowStringValues(t, []workflowStringValue{
-		{label: "VS Code smoke condition", got: vscodeSmoke.If, want: ""},
-	})
-	if len(vscodeSmoke.Needs) != 0 {
-		t.Fatalf("VS Code smoke must not depend on a skip-producing change filter, got needs %v", vscodeSmoke.Needs)
+	if _, ok := workflow.Jobs["extension-changes"]; ok {
+		t.Fatal("ci workflow must not gate vscode-smoke on changed extension paths")
 	}
+	vscodeSmoke := workflowJobByName(t, workflow.Jobs, "vscode-smoke")
+	if vscodeSmoke.If != "" {
+		t.Fatalf("vscode-smoke if = %q, want unconditional pass/fail evidence", vscodeSmoke.If)
+	}
+	assertWorkflowJobNeeds(t, vscodeSmoke, "vscode-smoke", nil)
 	assertWorkflowStepOrder(t, vscodeSmoke, "Install extension dependencies", "Verify VS Code extension package contract", "Run VS Code smoke tests")
 	contract := workflowStepByName(t, workflow.Jobs, "vscode-smoke", "Verify VS Code extension package contract")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "VS Code extension package contract", got: contract.Run, want: "go test ./scripts -run '^(TestVSCodeExtensionIconPackageContract|TestVSCodeExtensionPackagingHonorsBraceGlobIgnore)$' -count=1"},
 	})
+	workflowText := readConfig(t, ".github/workflows/ci.yml")
+	for _, forbidden := range []string{
+		"needs.extension-changes.outputs.vscode_extension",
+		"dorny/paths-filter",
+	} {
+		if strings.Contains(workflowText, forbidden) {
+			t.Fatalf("ci workflow must not contain VS Code smoke skip fragment %q", forbidden)
+		}
+	}
 }
 
 func TestPRMetadataWorkflowPassesMaintainerExemptionLabel(t *testing.T) {

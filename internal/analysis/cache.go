@@ -1030,6 +1030,24 @@ func (c *analysisCache) openWriteRoot() (*safeio.WriteRoot, error) {
 	return root, nil
 }
 
+func (c *analysisCache) validateWriteRoot(writeRoot *safeio.WriteRoot) error {
+	observed, err := writeRoot.RootInfo()
+	if err != nil {
+		return err
+	}
+	if err := validateObservedAnalysisCacheDirectoryIdentity(c.options.Path, c.rootIdentity, observed); err != nil {
+		return err
+	}
+	return validateAnalysisCacheRoot(c.options.Path, c.rootIdentity)
+}
+
+func validateObservedAnalysisCacheDirectoryIdentity(path string, expected, observed fs.FileInfo) error {
+	if observed == nil || observed.Mode()&os.ModeSymlink != 0 || !observed.IsDir() || !os.SameFile(expected, observed) {
+		return fmt.Errorf("directory identity changed: %s", path)
+	}
+	return nil
+}
+
 func cachePathEscapesRepo(cachePath, repoPath string) bool {
 	if info, err := os.Lstat(cachePath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return true

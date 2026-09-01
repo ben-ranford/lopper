@@ -391,7 +391,7 @@ func copyFileWithinRoot(root Root, sourceRel, targetRel string, filePerm os.File
 	if err := verifyPublishedPathMatchesInfo(root, sourceRel, sourceInfo, moveSourceChangedBeforeFallback); err != nil {
 		return nil, err
 	}
-	if err := session.commit(); err != nil {
+	if err := session.commit(nil, nil); err != nil {
 		return nil, err
 	}
 	return sourceInfo, nil
