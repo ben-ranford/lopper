@@ -87,10 +87,12 @@ jobs:
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
           printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
           printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+          printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}" >> "$GITHUB_ENV"
 
       - name: Write PR body for regression proof
         if: ${{ github.event_name == 'pull_request' }}
@@ -156,7 +158,15 @@ jobs:
           fi
           checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"
           checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
-          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
+          current_head_sha="$(git rev-parse --verify -q HEAD 2>/dev/null || true)"
+          # A two-parent HEAD is only trustworthy as GitHub's synthetic PR
+          # merge checkout when HEAD^2 matches the PR's real head SHA and
+          # HEAD itself does not -- an ordinary merge commit that happens to
+          # live on the PR branch (e.g. a "merge main into feature" commit)
+          # can also satisfy a bare ancestor check on HEAD^1, silently
+          # narrowing the memory-benchmark comparison to just that commit's
+          # own delta instead of the whole PR.
+          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && [ -n "${PR_HEAD_SHA:-}" ] && [ "${current_head_sha}" != "${PR_HEAD_SHA}" ] && [ "${checkout_head_sha}" = "${PR_HEAD_SHA}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
             base_sha="${checkout_base_sha}"
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"
@@ -1335,10 +1345,12 @@ jobs:
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           base_ref="${PR_BASE_REF:-main}"
           printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}" >> "$GITHUB_ENV"
           printf 'BASE_REF=%s\n' "${base_ref}" >> "$GITHUB_ENV"
+          printf 'PR_HEAD_SHA=%s\n' "${PR_HEAD_SHA}" >> "$GITHUB_ENV"
 
       - name: Fetch PR base
         if: ${{ github.event_name == 'pull_request' }}
@@ -1393,7 +1405,15 @@ jobs:
           fi
           checkout_base_sha="$(git rev-parse --verify -q HEAD^1 2>/dev/null || true)"
           checkout_head_sha="$(git rev-parse --verify -q HEAD^2 2>/dev/null || true)"
-          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
+          current_head_sha="$(git rev-parse --verify -q HEAD 2>/dev/null || true)"
+          # A two-parent HEAD is only trustworthy as GitHub's synthetic PR
+          # merge checkout when HEAD^2 matches the PR's real head SHA and
+          # HEAD itself does not -- an ordinary merge commit that happens to
+          # live on the PR branch (e.g. a "merge main into feature" commit)
+          # can also satisfy a bare ancestor check on HEAD^1, silently
+          # narrowing the memory-benchmark comparison to just that commit's
+          # own delta instead of the whole PR.
+          if [ -n "${checkout_base_sha}" ] && [ -n "${checkout_head_sha}" ] && [ -n "${PR_HEAD_SHA:-}" ] && [ "${current_head_sha}" != "${PR_HEAD_SHA}" ] && [ "${checkout_head_sha}" = "${PR_HEAD_SHA}" ] && git merge-base --is-ancestor "${base_sha}" "${checkout_base_sha}"; then
             base_sha="${checkout_base_sha}"
           fi
           printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"

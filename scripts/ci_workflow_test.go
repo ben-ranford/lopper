@@ -1589,6 +1589,88 @@ func TestCIWorkflowFetchStepsHonorExplicitPRBaseSHA(t *testing.T) {
 	}
 }
 
+// TestCIWorkflowFetchStepDoesNotReinterpretOrdinaryPRBranchMergeAsCheckoutMerge
+// proves the "Fetch PR base" step does not narrow the memory-benchmark base
+// when the PR branch's own tip happens to be an ordinary merge commit (e.g.
+// "Merge main into feature"), which git structures identically to GitHub's
+// synthetic pull_request merge-ref checkout at the HEAD^1/HEAD^2 level
+// (HEAD^1 as some ancestor of the true base, HEAD^2 as the other parent). A
+// bare ancestor check on HEAD^1 alone cannot tell these apart; only PR_HEAD_SHA
+// matching HEAD^2 while differing from HEAD itself is trustworthy evidence
+// this is genuinely GitHub's synthetic merge, not the PR's own history.
+func TestCIWorkflowFetchStepDoesNotReinterpretOrdinaryPRBranchMergeAsCheckoutMerge(t *testing.T) {
+	t.Parallel()
+
+	var workflow workflowConfig
+	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
+
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	runGitCommand(t, t.TempDir(), "init", "--bare", origin)
+
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatalf("create seed repo: %v", err)
+	}
+	runGitCommand(t, seed, "init", "-b", "main")
+	runGitCommand(t, seed, "config", "user.name", "Ben Ranford")
+	runGitCommand(t, seed, "config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
+
+	writeFile(t, filepath.Join(seed, "README.md"), "base\n")
+	runGitCommand(t, seed, "add", "README.md")
+	runGitCommand(t, seed, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+
+	runGitCommand(t, seed, "checkout", "-b", "feature")
+	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-1\n")
+	runGitCommand(t, seed, "add", "feature.txt")
+	runGitCommand(t, seed, "commit", "-m", "feature work")
+	featurePreMergeSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+
+	runGitCommand(t, seed, "checkout", "main")
+	writeFile(t, filepath.Join(seed, "main.txt"), "drift\n")
+	runGitCommand(t, seed, "add", "main.txt")
+	runGitCommand(t, seed, "commit", "-m", "main drift")
+
+	runGitCommand(t, seed, "checkout", "feature")
+	runGitCommand(t, seed, "merge", "--no-ff", "-m", "Merge main into feature", "main")
+	featureHeadSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+
+	runGitCommand(t, seed, "remote", "add", "origin", origin)
+	runGitCommand(t, seed, "push", origin, "main", "feature")
+
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	runGitCommand(t, t.TempDir(), "clone", origin, worktree)
+	runGitCommand(t, worktree, "checkout", "feature")
+
+	for _, cfg := range []struct {
+		jobName  string
+		runLabel string
+	}{
+		{jobName: "verify", runLabel: "verify"},
+		{jobName: "verify-rolling", runLabel: "verify-rolling"},
+	} {
+		fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
+		githubEnv := filepath.Join(t.TempDir(), "github.env")
+		output, err := runShellCommand(worktree, fetchBase.Run, map[string]string{
+			"BASE_REF":    "main",
+			"BASE_SHA":    baseSHA,
+			"PR_HEAD_SHA": featureHeadSHA,
+			"GITHUB_ENV":  githubEnv,
+		})
+		if err != nil {
+			t.Fatalf("run %s fetch step: %v\n%s", cfg.runLabel, err, output)
+		}
+
+		envText := readFileText(t, githubEnv)
+		if !strings.Contains(envText, "MEMORY_BENCH_BASE="+baseSHA+"\n") {
+			t.Fatalf("%s fetch step must keep the whole-PR base %q when HEAD is an ordinary merge on the PR's own branch, got:\n%s", cfg.runLabel, baseSHA, envText)
+		}
+		if strings.Contains(envText, featurePreMergeSHA) {
+			t.Fatalf("%s fetch step must not narrow the base to the PR branch's own pre-merge tip %q:\n%s", cfg.runLabel, featurePreMergeSHA, envText)
+		}
+	}
+}
+
 func assertRunStepUsesImmutableBase(t *testing.T, scenario prBaseScenario, script string, cfg prBaseWorkflowJobConfig) {
 	t.Helper()
 
