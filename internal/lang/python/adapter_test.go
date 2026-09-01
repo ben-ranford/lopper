@@ -547,6 +547,16 @@ func TestParseImportsFStringAndContinuedStringBoundaries(t *testing.T) {
 			[]string{`value = f"""{ {'key': '''`, "import requests", "'''} :{width}}"},
 			`"""`,
 		),
+		requestsCase(
+			"blank line resets continued nested short replacement string",
+			"value = f\"{'foo\\\n\nimport requests\n",
+			3,
+		),
+		requestsCase(
+			"keyword suffix is not mistaken for a string prefix",
+			"if\"\"\"{\"\"\":\nimport requests\n",
+			2,
+		),
 	}
 
 	for _, tc := range cases {

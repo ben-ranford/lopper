@@ -262,10 +262,24 @@ func (m *pythonStringMask) resetShortStringOnBlankLine(line string) bool {
 		return false
 	}
 	m.shortQuote = 0
-	if len(m.multilineQuote) == 1 && len(m.multilineReplacementStrings) == 0 {
+	if len(m.multilineQuote) == 1 && !m.hasBlankLineSurvivableReplacementString() {
 		m.resetMultilineString()
 	}
 	return true
+}
+
+// hasBlankLineSurvivableReplacementString reports whether the innermost
+// active nested replacement string can legally contain a raw blank line.
+// Only a triple-quoted delimiter can: a short (single-character) delimiter
+// can span at most a backslash-continued line, and a truly blank following
+// line means that continuation ran out without closing the string, so the
+// whole outer mask should be abandoned rather than preserved.
+func (m *pythonStringMask) hasBlankLineSurvivableReplacementString() bool {
+	if len(m.multilineReplacementStrings) == 0 {
+		return false
+	}
+	state := m.multilineReplacementStrings[len(m.multilineReplacementStrings)-1]
+	return len(state.delimiter) == 3
 }
 
 func (m *pythonStringMask) maskMultilineString(line string, index *int, builder *strings.Builder) bool {
@@ -619,7 +633,18 @@ func hasPythonFStringPrefix(line string, quoteIndex int) bool {
 	for prefixStart > 0 && strings.ContainsRune("rRuUbBfFtT", rune(line[prefixStart-1])) {
 		prefixStart--
 	}
+	if prefixStart > 0 && isPythonIdentifierByte(line[prefixStart-1]) {
+		return false
+	}
 	return strings.ContainsAny(line[prefixStart:quoteIndex], "fFtT")
+}
+
+// isPythonIdentifierByte reports whether b can appear within a Python
+// identifier or keyword. A candidate string prefix immediately preceded by
+// one is actually the tail of that longer identifier -- e.g. the "f" in
+// "if" before a string literal -- not a standalone string prefix.
+func isPythonIdentifierByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 func continuePendingFromImport(pending **pendingFromImport, trimmed string, lineNoComment string, filePath string, repoPath string, index int) ([]importBinding, bool) {
