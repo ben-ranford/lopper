@@ -181,6 +181,40 @@ func TestRunCandidateOnRootsMultiLanguageReportLevelIncompleteCoverageIsFatalWhe
 	}
 }
 
+// TestRunCandidateOnRootsCoverageGapIsFatalWhenRequired proves an oversized
+// gemspec (or any other CoverageGap-producing skip) is rejected under
+// RequireCompleteCoverage even when it never sets UsageIncomplete: the gap
+// mechanism records a structured CoverageGap instead, which
+// incompleteCoverageReportError must also check.
+func TestRunCandidateOnRootsCoverageGapIsFatalWhenRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "ruby"} {
+		t.Run(languageID, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:     "ruby",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				analyse: report.Report{CoverageGaps: []report.CoverageGap{{
+					Code: "ruby-oversized-gemspec",
+					Path: "big.gemspec",
+				}}},
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, ErrIncompleteCoverage) {
+				t.Fatalf("expected coverage gap to be fatal when coverage is required, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "big.gemspec") {
+				t.Fatalf("expected coverage gap path in error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestRunCandidateOnRootsIncompleteCoverageReportPreservesOrdinaryPartialBehavior(t *testing.T) {
 	for _, tt := range []struct {
 		name string

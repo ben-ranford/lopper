@@ -117,6 +117,9 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 	if !req.RequireCompleteCoverage {
 		return nil
 	}
+	if paths := coverageGapPaths(reportData.CoverageGaps); len(paths) > 0 {
+		return fmt.Errorf("%w: adapter %s at %s reported coverage gaps: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(paths, ", "))
+	}
 	dependencies := incompleteCoverageDependencies(reportData.Dependencies)
 	if len(dependencies) == 0 {
 		if reportData.UsageIncomplete {
@@ -125,6 +128,21 @@ func incompleteCoverageReportError(req Request, adapterID, root string, reportDa
 		return nil
 	}
 	return fmt.Errorf("%w: adapter %s at %s reported incomplete usage for dependencies: %s", ErrIncompleteCoverage, adapterID, root, strings.Join(dependencies, ", "))
+}
+
+func coverageGapPaths(gaps []report.CoverageGap) []string {
+	paths := make([]string, 0, len(gaps))
+	for _, gap := range gaps {
+		path := strings.TrimSpace(gap.Path)
+		if path == "" {
+			path = strings.TrimSpace(gap.Code)
+		}
+		if path == "" {
+			path = "<unknown>"
+		}
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 func incompleteCoverageDependencies(dependencies []report.DependencyReport) []string {
