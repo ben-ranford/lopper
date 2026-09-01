@@ -44,7 +44,7 @@ func normalizePackagePart(value string) string {
 
 func shouldSkipDir(name string) bool {
 	switch name {
-	case ".git", ".idea", "node_modules", "vendor", "dist", "build", ".next", ".turbo", "coverage", "tmp", "cache":
+	case ".git", ".idea", ".lopper-cache", "node_modules", "vendor", "dist", "build", ".next", ".turbo", "coverage", "tmp", "cache":
 		return true
 	default:
 		return false

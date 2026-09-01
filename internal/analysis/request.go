@@ -42,5 +42,6 @@ type Request struct {
 	LicenseDenyList                   []string
 	IncludeRegistryProvenance         bool
 	VulnerabilityExceptions           []report.VulnerabilityException
+	RequireCompleteCoverage           bool
 	Cache                             *CacheOptions
 }

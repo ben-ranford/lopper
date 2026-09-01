@@ -1780,7 +1780,7 @@ func collectPythonIdentityEvidenceFromPaths(repoPath string, index identityIndex
 }
 
 func collectPythonTOMLLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -1804,7 +1804,7 @@ func collectPythonTOMLLockEvidence(repoPath, path string, index identityIndex, w
 }
 
 func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return
@@ -1837,7 +1837,7 @@ func collectPipfileLockEvidence(repoPath, path string, index identityIndex, warn
 var requirementVersionPattern = regexp.MustCompile(`^\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[A-Za-z0-9._,\s-]+\])?\s*==\s*([^;\s#]+)`)
 
 func collectRequirementsEvidence(repoPath, path string, index identityIndex, warnings *identityWarningCollector) {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, pythonlang.PackagingReadLimitBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return

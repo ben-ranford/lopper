@@ -11,6 +11,7 @@ type Report struct {
 	Scope                *ScopeMetadata       `json:"scope,omitempty"`
 	Dependencies         []DependencyReport   `json:"dependencies"`
 	CoverageGaps         []CoverageGap        `json:"coverageGaps,omitempty"`
+	UsageIncomplete      bool                 `json:"-"`
 	UsageUncertainty     *UsageUncertainty    `json:"usageUncertainty,omitempty"`
 	Summary              *Summary             `json:"summary,omitempty"`
 	LanguageBreakdown    []LanguageSummary    `json:"languageBreakdown,omitempty"`

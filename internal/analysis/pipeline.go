@@ -77,7 +77,7 @@ func (p *analysisPipeline) cleanup() {
 }
 
 func (p *analysisPipeline) execute(ctx context.Context) error {
-	reports, warnings, analyzedRoots, err := p.service.runCandidates(ctx, p.request, p.analysisRepoPath, p.candidates, p.cache)
+	reports, warnings, analyzedRoots, err := p.service.runCandidates(ctx, p.request, p.analysisRepoPath, p.candidates, p.cache, p.repoPath)
 	if err != nil {
 		return err
 	}

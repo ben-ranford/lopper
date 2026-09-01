@@ -11,6 +11,7 @@ import (
 
 	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/report"
+	"github.com/ben-ranford/lopper/internal/safeio"
 )
 
 const (
@@ -69,6 +70,151 @@ func TestRunCandidateOnRootsMultiLanguageErrorBecomesWarning(t *testing.T) {
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected warning for analyse failure in all-language mode")
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageCoverageErrorIsFatalWhenRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				err:    errors.Join(errors.New("read composer.json"), safeio.ErrFileTooLarge),
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, safeio.ErrFileTooLarge) {
+				t.Fatalf("expected oversized coverage error to be fatal when coverage is required, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageAdapterErrorIsFatalWhenCoverageRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			expected := errors.New("composer scan incomplete")
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				err:    expected,
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, expected) {
+				t.Fatalf("expected matched adapter error to be fatal when coverage is required, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
+	assertIncompleteCoverageReportFatal(t, "all", "expected incomplete coverage report to be fatal when coverage is required")
+}
+
+func TestRunCandidateOnRootsExplicitLanguageIncompleteCoverageReportIsFatalWhenRequired(t *testing.T) {
+	assertIncompleteCoverageReportFatal(t, "php", "expected explicit-language incomplete coverage report to be fatal when coverage is required")
+}
+
+func assertIncompleteCoverageReportFatal(t *testing.T, languageID, wantMessage string) {
+	t.Helper()
+
+	adapter := &testServiceAdapter{
+		id:     "php",
+		detect: language.Detection{Matched: true, Confidence: 90},
+		analyse: report.Report{Dependencies: []report.DependencyReport{{
+			Name:            "vendor/lib",
+			UsageIncomplete: true,
+		}}},
+	}
+	candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+	svc := &Service{}
+
+	_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+		RepoPath:                ".",
+		Language:                languageID,
+		RequireCompleteCoverage: true,
+	}, ".", candidate, nil)
+	if !errors.Is(err, ErrIncompleteCoverage) {
+		t.Fatalf("%s, got %v", wantMessage, err)
+	}
+	if !strings.Contains(err.Error(), "php:vendor/lib") {
+		t.Fatalf("expected incomplete dependency details in error, got %v", err)
+	}
+}
+
+func TestRunCandidateOnRootsMultiLanguageReportLevelIncompleteCoverageIsFatalWhenRequired(t *testing.T) {
+	for _, languageID := range []string{"all", "auto"} {
+		t.Run(languageID, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:      "php",
+				detect:  language.Detection{Matched: true, Confidence: 90},
+				analyse: report.Report{UsageIncomplete: true},
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			_, _, _, err := svc.runCandidateOnRoots(context.Background(), Request{
+				RepoPath:                ".",
+				Language:                languageID,
+				RequireCompleteCoverage: true,
+			}, ".", candidate, nil)
+			if !errors.Is(err, ErrIncompleteCoverage) {
+				t.Fatalf("expected report-level incomplete coverage to be fatal when coverage is required, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "reported incomplete usage coverage") {
+				t.Fatalf("expected report-level incomplete coverage details in error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCandidateOnRootsIncompleteCoverageReportPreservesOrdinaryPartialBehavior(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		req  Request
+	}{
+		{
+			name: "all language without complete coverage requirement",
+			req:  Request{RepoPath: ".", Language: "all"},
+		},
+		{
+			name: "single language without complete coverage requirement",
+			req:  Request{RepoPath: ".", Language: "php"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &testServiceAdapter{
+				id:     "php",
+				detect: language.Detection{Matched: true, Confidence: 90},
+				analyse: report.Report{Dependencies: []report.DependencyReport{{
+					Name:            "vendor/lib",
+					UsageIncomplete: true,
+				}}},
+			}
+			candidate := language.Candidate{Adapter: adapter, Detection: language.Detection{Matched: true, Confidence: 90, Roots: []string{"."}}}
+			svc := &Service{}
+
+			reports, _, _, err := svc.runCandidateOnRoots(context.Background(), tt.req, ".", candidate, nil)
+			if err != nil {
+				t.Fatalf("expected ordinary partial report behavior, got %v", err)
+			}
+			if len(reports) != 1 || len(reports[0].Dependencies) != 1 || !reports[0].Dependencies[0].UsageIncomplete {
+				t.Fatalf("expected incomplete report to be preserved, got %#v", reports)
+			}
+		})
 	}
 }
 

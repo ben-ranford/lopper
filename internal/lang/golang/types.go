@@ -19,6 +19,7 @@ type scanResult struct {
 	SkippedGeneratedFiles         int
 	SkippedBuildTaggedFiles       int
 	SkippedLargeFiles             int
+	SkippedOversizedMetadataFiles int
 	SkippedNestedModuleDirs       int
 }
 
@@ -28,11 +29,14 @@ type moduleInfo struct {
 	DeclaredDependencies       []string
 	NestedModuleDirs           map[string]struct{}
 	WorkspaceModuleExclusions  map[string]struct{}
+	TrustedModuleDirs          map[string]struct{}
+	OversizedModuleDirs        map[string]struct{}
 	ReplacementImports         map[string]string
 	VendoredImportDependencies map[string]string
 	VendoredDependencies       map[string]vendoredDependencyMetadata
 	VendoringWarnings          []string
 	VendoredProvenanceEnabled  bool
+	RootGoModTooLarge          bool
 }
 
 type goDependencyProvenance struct {
