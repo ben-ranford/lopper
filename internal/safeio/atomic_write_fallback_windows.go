@@ -6,11 +6,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"syscall"
 
 	win "golang.org/x/sys/windows"
@@ -40,20 +38,22 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 	// does. Serialize the whole transaction -- the overwrite, its
 	// post-write check, and any rollback -- against a second, concurrent
 	// same-key writer taking this same fallback path for this same target,
-	// so the two never interleave. That serialization is done through a
-	// dedicated coordination file next to the target rather than an
-	// exclusive lock on the target itself: a Windows byte-range lock on the
-	// live target would also block an unrelated concurrent reader (for
-	// example analysisCache.lookup reading this same cache pointer through
-	// ReadFileUnder) for the whole transaction, turning an ordinary read
-	// into a spurious fatal error instead of the cache-miss-or-stale-read it
-	// would see from a plain concurrent rename.
-	unlockFallbackTransaction, err := lockFallbackTransaction(root, fallback.newName)
+	// so the two never interleave. lockPinnedReplacementFile locks a fixed
+	// out-of-band byte range on replacementFile itself for this rather than
+	// the target's actual data range (or a separate coordination file): a
+	// concurrent writer taking this same path for the same target locks the
+	// same range on the same file and so still serializes correctly, but an
+	// unrelated concurrent reader (for example analysisCache.lookup reading
+	// this same cache pointer through ReadFileUnder, which only ever reads
+	// the data range) never overlaps it and so is never blocked -- and
+	// nothing is left behind in the caller's directory the way a separate
+	// coordination file would be.
+	unlockReplacementFile, err := lockPinnedReplacementFile(replacementFile)
 	if err != nil {
 		return errors.Join(fallback.renameErr, err)
 	}
 	defer func() {
-		if unlockErr := unlockFallbackTransaction(); unlockErr != nil {
+		if unlockErr := unlockReplacementFile(); unlockErr != nil {
 			returnErr = errors.Join(returnErr, unlockErr)
 		}
 	}()
@@ -82,13 +82,24 @@ func fallbackAtomicReplacement(root Root, fallback atomicReplacementFallback) (r
 	return nil
 }
 
-// lockPinnedReplacementFile takes a whole-file exclusive byte-range lock on
-// file via LockFileEx, blocking until any other holder (this same fallback
-// path running for a concurrent same-key writer, coordinating through the
-// same file -- see lockFallbackTransaction) releases it. Only a genuine
-// *os.File exposes the underlying handle this requires; test doubles and any
-// other File implementation skip locking entirely rather than fail, since
-// they never run concurrently with a second real writer.
+// fallbackTransactionLockOffset is the starting byte of the fixed,
+// out-of-band range lockPinnedReplacementFile locks on the target handle
+// for coordination. It sits far beyond any realistic file size (2^62), so
+// it never overlaps a target's actual data range [0, EOF) -- a concurrent
+// reader of that data range is therefore never affected by this lock, only
+// another writer that locks this same sentinel range on the same file.
+// Windows permits locking a range beyond the current end of file; the
+// target need not actually be this large.
+const fallbackTransactionLockOffset = uint64(1) << 62
+
+// lockPinnedReplacementFile takes an exclusive byte-range lock on the fixed
+// fallbackTransactionLockOffset sentinel range of file via LockFileEx,
+// blocking until any other holder (this same fallback path running for a
+// concurrent same-key writer, locking the same range on the same file)
+// releases it. Only a genuine *os.File exposes the underlying handle this
+// requires; test doubles and any other File implementation skip locking
+// entirely rather than fail, since they never run concurrently with a
+// second real writer.
 // The lock is released automatically by the OS if the process exits before
 // calling the returned unlock, so a crash mid-transaction cannot leave it
 // held forever.
@@ -98,60 +109,19 @@ func lockPinnedReplacementFile(file File) (unlock func() error, returnErr error)
 		return func() error { return nil }, nil
 	}
 	handle := win.Handle(osFile.Fd())
-	overlapped := new(win.Overlapped)
-	if err := win.LockFileEx(handle, win.LOCKFILE_EXCLUSIVE_LOCK, 0, ^uint32(0), ^uint32(0), overlapped); err != nil {
+	overlapped := &win.Overlapped{
+		Offset:     uint32(fallbackTransactionLockOffset & 0xFFFFFFFF),
+		OffsetHigh: uint32(fallbackTransactionLockOffset >> 32),
+	}
+	if err := win.LockFileEx(handle, win.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped); err != nil {
 		return nil, fmt.Errorf("lock pinned replacement file: %w", err)
 	}
 	return func() error {
-		if err := win.UnlockFileEx(handle, 0, ^uint32(0), ^uint32(0), overlapped); err != nil {
+		if err := win.UnlockFileEx(handle, 0, 1, 0, overlapped); err != nil {
 			return fmt.Errorf("unlock pinned replacement file: %w", err)
 		}
 		return nil
 	}, nil
-}
-
-// lockFallbackTransaction serializes concurrent writers taking this same
-// Windows fallback path for the same target, without ever locking the live
-// target file itself. It opens (creating if necessary) a dedicated
-// coordination file next to targetRel and takes lockPinnedReplacementFile's
-// exclusive lock on that instead; the coordination file's own content is
-// never read or written, only its lock state matters. Concurrent same-key
-// writers all derive the same coordination path and so correctly serialize
-// against each other, while a concurrent reader of the live target (for
-// example analysisCache.lookup via ReadFileUnder) never touches the
-// coordination file and so is never blocked by this lock.
-func lockFallbackTransaction(root Root, targetRel string) (unlock func() error, returnErr error) {
-	lockFile, err := root.OpenFile(fallbackLockFileRel(targetRel), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open fallback coordination lock: %w", err)
-	}
-	unlockFile, err := lockPinnedReplacementFile(lockFile)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("lock fallback coordination file: %w", err), lockFile.Close())
-	}
-	return func() error {
-		return errors.Join(unlockFile(), lockFile.Close())
-	}, nil
-}
-
-// fallbackLockFileRel returns the coordination lock path for targetRel: the
-// same directory, with a name namespaced by atomicTempPrefix so it can never
-// collide with a real cache entry. The name is a fixed-length digest of the
-// full targetRel rather than targetRel's own basename: NTFS caps a path
-// component at 255 characters, and a target whose basename already sits
-// near that limit would overflow once a literal prefix was added, blocking
-// an otherwise valid replacement. Every concurrent writer for the same
-// target still derives the identical digest, so they correctly serialize
-// against each other.
-func fallbackLockFileRel(targetRel string) string {
-	digest := fnv.New64a()
-	_, _ = digest.Write([]byte(targetRel))
-	lockBase := fmt.Sprintf("%sfallback-lock-%x", atomicTempPrefix, digest.Sum64())
-	dir := filepath.Dir(targetRel)
-	if dir == "." {
-		return lockBase
-	}
-	return filepath.Join(dir, lockBase)
 }
 
 func atomicRenameSourceRel(err error, fallbackRel string) string {

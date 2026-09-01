@@ -547,39 +547,6 @@ func TestLockPinnedReplacementFileSkipsNonOSFile(t *testing.T) {
 	}
 }
 
-// TestFallbackLockFileRelStaysWithinNTFSComponentLimit guards against
-// deriving the coordination lock name from the target's own basename: NTFS
-// caps a path component at 255 characters, and a target basename already
-// near that limit would overflow once a literal prefix was appended,
-// blocking an otherwise-valid replacement of a long-named file.
-func TestFallbackLockFileRelStaysWithinNTFSComponentLimit(t *testing.T) {
-	longBase := strings.Repeat("a", 250) + ".json"
-	targetRel := filepath.Join("keys", longBase)
-
-	lockRel := fallbackLockFileRel(targetRel)
-
-	lockBase := filepath.Base(lockRel)
-	if len(lockBase) > 255 {
-		t.Fatalf("coordination lock filename exceeds NTFS's 255-character component limit: %d chars (%q)", len(lockBase), lockBase)
-	}
-	if filepath.Dir(lockRel) != "keys" {
-		t.Fatalf("expected the coordination lock file to live next to its target, got dir %q", filepath.Dir(lockRel))
-	}
-}
-
-func TestFallbackLockFileRelIsDeterministicPerTarget(t *testing.T) {
-	first := fallbackLockFileRel(filepath.Join("keys", "one.json"))
-	second := fallbackLockFileRel(filepath.Join("keys", "one.json"))
-	if first != second {
-		t.Fatalf("expected the same target to derive the same coordination lock path, got %q and %q", first, second)
-	}
-
-	third := fallbackLockFileRel(filepath.Join("keys", "two.json"))
-	if first == third {
-		t.Fatalf("expected different targets to derive different coordination lock paths, both got %q", first)
-	}
-}
-
 // TestFallbackAtomicReplacementRollbackReadsSnapshotThroughLockedHandle
 // drives the full fallback transaction end to end against a real on-disk
 // file and a real *os.File (via openPinnedReplacementTarget, the same
@@ -632,17 +599,18 @@ func TestFallbackAtomicReplacementRollbackReadsSnapshotThroughLockedHandle(t *te
 }
 
 // TestFallbackAtomicReplacementDoesNotBlockConcurrentReadersOfLiveTarget
-// proves lockFallbackTransaction's coordination lock -- unlike the whole-file
-// lock this fallback path used to take directly on the live target -- never
-// touches the target itself. A concurrent reader opening its own independent
-// handle to that same path (the same shape as analysisCache.lookup reading a
-// cache pointer through ReadFileUnder, which does not participate in this
-// fallback path's locking protocol at all) must be able to read it while a
-// fallback transaction is in flight, rather than failing with a Windows lock
-// violation. This only exercises the real bug against a genuine *os.File and
-// a real LockFileEx call, via openPinnedReplacementTarget and openTestRoot,
-// the same production paths used elsewhere in this file; a mock has no lock
-// to block against and would pass regardless.
+// proves lockPinnedReplacementFile's fixed out-of-band sentinel range --
+// unlike the whole-file lock this fallback path used to take -- never
+// overlaps the target's actual data range. A concurrent reader opening its
+// own independent handle to that same path (the same shape as
+// analysisCache.lookup reading a cache pointer through ReadFileUnder, which
+// does not participate in this fallback path's locking protocol at all)
+// must be able to read it while a fallback transaction is in flight, rather
+// than failing with a Windows lock violation. This only exercises the real
+// bug against a genuine *os.File and a real LockFileEx call, via
+// openPinnedReplacementTarget and openTestRoot, the same production paths
+// used elsewhere in this file; a mock has no lock to block against and
+// would pass regardless.
 func TestFallbackAtomicReplacementDoesNotBlockConcurrentReadersOfLiveTarget(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(rootDir, writeTestFileName)
