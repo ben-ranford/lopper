@@ -732,8 +732,31 @@ func isKnownOSCompilerQualifiedHeader(header string) bool {
 	case "bits":
 		return filepath.Ext(leaf) == ".h" || filepath.Ext(leaf) == ".tcc" || leaf == "stdc++.h"
 	default:
+		return isLikelyLibCXXImplementationHeader(namespace, leaf)
+	}
+}
+
+// isLikelyLibCXXImplementationHeader recognizes libc++'s implementation
+// namespace convention, e.g. <__thread/thread.h>, without needing an
+// exhaustive list of libc++'s many "__foo/" directories (libc++ has dozens,
+// and getting that list precisely right without a real install to verify
+// against risks being wrong in either direction). A leading double
+// underscore on a top-level path component is reserved for the
+// implementation by the language itself ([lex.name]): no conforming
+// third-party code can legitimately use one, so it's a reliable signal on
+// its own. Requiring the leaf's stem to also match a real standard header
+// name keeps this from suppressing something unexpected under a
+// reserved-looking name it doesn't actually recognize.
+func isLikelyLibCXXImplementationHeader(namespace, leaf string) bool {
+	if !strings.HasPrefix(namespace, "__") {
 		return false
 	}
+	stem := strings.TrimSuffix(leaf, filepath.Ext(leaf))
+	if stem == "" {
+		return false
+	}
+	_, ok := cppStdHeaderSet[strings.ToLower(stem)]
+	return ok
 }
 
 func isLikelyMultiarchIncludePrefix(prefix string) bool {
