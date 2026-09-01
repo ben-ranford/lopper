@@ -265,14 +265,14 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 			commitReady = nil
 			postWrite = parentCheck
 			options.rollbackOnPostWriteFailure = true
-			options.commitRename = func(oldName, newName string) error {
+			options.commitRename = func(oldName, newName string, expected fs.FileInfo) error {
 				if err := writeFileRenameReadyFn(); err != nil {
 					return err
 				}
 				if err := parentCheck(); err != nil {
 					return err
 				}
-				return renameAtPinnedDirectory(parent, parentIdentity, oldName, newName)
+				return renameAtPinnedDirectory(parent, parentIdentity, oldName, newName, expected)
 			}
 			if err := parentCheck(); err != nil {
 				return err
@@ -287,7 +287,16 @@ func (r *WriteRoot) writeFileToTargetParent(target rootedTarget, data []byte, pe
 	})
 }
 
-func renameAtPinnedDirectory(parent Root, parentIdentity fs.FileInfo, oldName, newName string) error {
+// renameAtPinnedDirectory publishes oldName to newName within parent after
+// re-verifying parent's own identity hasn't changed since it was pinned. The
+// rename itself is conditioned on oldName still matching expected -- the
+// source's identity as snapshotted before this call -- via renameFileIfMatches
+// rather than a blind path-based rename: without that, another process with
+// access to the directory could replace oldName between the snapshot and
+// this rename, and the substitute would be published to newName. A caller
+// that only verifies identity after publishing would catch the mismatch too
+// late, once the substitute is already live and readable at newName.
+func renameAtPinnedDirectory(parent Root, parentIdentity fs.FileInfo, oldName, newName string, expected fs.FileInfo) error {
 	if filepath.Dir(oldName) != "." || filepath.Dir(newName) != "." {
 		return fmt.Errorf("rename paths must be direct children of pinned parent")
 	}
@@ -298,7 +307,17 @@ func renameAtPinnedDirectory(parent Root, parentIdentity fs.FileInfo, oldName, n
 	if !actual.IsDir() || !os.SameFile(parentIdentity, actual) {
 		return fmt.Errorf("pinned parent identity changed")
 	}
-	return parent.Rename(oldName, newName)
+	consumed, err := renameFileIfMatches(parent, oldName, newName, expected, temporaryFileChangedBeforeCommit)
+	if err != nil {
+		return withPublishRenameSource(err, oldName)
+	}
+	if !consumed {
+		return errors.Join(
+			verifyPublishedPathMatchesInfo(parent, newName, expected, committedTargetChangedBeforeValidation),
+			cleanupAtomicTempFileIfMatches(parent, oldName, expected),
+		)
+	}
+	return nil
 }
 
 func (r *WriteRoot) withTargetParent(target rootedTarget, createParents bool, parentPerm os.FileMode, write func(parent Root, parentTarget rootedTarget) error) (returnErr error) {

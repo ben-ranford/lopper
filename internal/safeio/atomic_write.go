@@ -230,16 +230,18 @@ func (s *atomicWriteSession) writeAndPrepare(data []byte, perm os.FileMode) erro
 	return s.tempFile.Chmod(perm)
 }
 
-type atomicRenameFunc func(oldName, newName string) error
+type atomicRenameFunc func(oldName, newName string, expected fs.FileInfo) error
 
 // commit publishes the temp file to targetRel. With no custom rename, it
 // delegates to commitPreparedSource -- the identity-bound staging commit
 // below -- for the safety that gives. A custom rename (used by callers that
 // must publish through an already-pinned parent, re-verifying the parent's
 // own identity immediately before the rename rather than staging the
-// source) takes the simpler direct-rename path instead; both are
-// identity-checked immediately adjacent to their respective renames, just
-// against different state.
+// source) takes the simpler direct-rename path instead, passing it the
+// temp file's own snapshotted identity (s.tempInfo) so it can condition the
+// rename on the source still matching that snapshot rather than trusting
+// oldName's path blindly; both are identity-checked immediately adjacent to
+// their respective renames, just against different state.
 func (s *atomicWriteSession) commit(commitReady func() error, rename atomicRenameFunc) error {
 	if err := writeFilePublishReadyFn(); err != nil {
 		return err
@@ -255,7 +257,7 @@ func (s *atomicWriteSession) commit(commitReady func() error, rename atomicRenam
 		}
 		return s.commitPreparedSource(temporaryFileChangedBeforeCommit, committedTargetChangedBeforeValidation)
 	}
-	if err := rename(s.tempRel, s.targetRel); err != nil {
+	if err := rename(s.tempRel, s.targetRel, s.tempInfo); err != nil {
 		return err
 	}
 	s.tempRel = ""
