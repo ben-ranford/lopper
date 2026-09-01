@@ -6641,14 +6641,23 @@ func newTempBenchGateGoRepo(t *testing.T) (string, map[string]string) {
 	runGitCommand(t, repo, "add", "go.mod", "go.sum")
 	runGitCommand(t, repo, "commit", "-m", "add Go module")
 	return repo, map[string]string{
-		"GO":                          goPath,
-		"GO_BIN":                      goPath,
-		"GO_TOOLCHAIN":                "local",
-		"HOME":                        homeDir,
-		"GOCACHE":                     cacheDir,
-		"GOMODCACHE":                  moduleCacheDir,
-		"BENCH_COUNT":                 "1",
-		"BENCH_TIME":                  "1x",
+		"GO":           goPath,
+		"GO_BIN":       goPath,
+		"GO_TOOLCHAIN": "local",
+		"HOME":         homeDir,
+		"GOCACHE":      cacheDir,
+		"GOMODCACHE":   moduleCacheDir,
+		"BENCH_COUNT":  "1",
+		"BENCH_TIME":   "1x",
+		// Passed as a make command-line argument rather than left to the
+		// Makefile's own "MEMORY_BENCH_ENFORCE ?= 1" default: make command-line
+		// arguments override both defaults and inherited environment
+		// variables, but a bare default would not -- and this test's own CI
+		// job exports MEMORY_BENCH_ENFORCE=0 for its own top-level bench-gate
+		// run (pull_request events get the softer "approval required" mode),
+		// which subprocess.Environ() then inherits into every test in this
+		// process unless overridden here.
+		"MEMORY_BENCH_ENFORCE":        "1",
 		"MEMORY_BENCH_MAX_BYTES_PCT":  "100000",
 		"MEMORY_BENCH_MAX_ALLOCS_PCT": "100000",
 	}
