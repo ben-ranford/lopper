@@ -415,7 +415,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 		}
 	}
 
-	selected, seenDecls := selectedBenchmarkHarnessFiles(roots, decls)
+	selected, seenNames := selectedBenchmarkHarnessFiles(roots, decls)
 	manifest := make([]string, 0, len(selected))
 	seen := make(map[string]struct{})
 	for _, rel := range files {
@@ -423,7 +423,7 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 			continue
 		}
 		appendManifestLine(&manifest, seen, kind, rel)
-		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel], seenDecls)
+		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel], seenNames)
 		if err != nil {
 			return nil, fmt.Errorf("resolve embeds in %s: %w", rel, err)
 		}
@@ -459,9 +459,25 @@ func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel 
 	*manifest = append(*manifest, line)
 }
 
-func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) (map[string]struct{}, map[ast.Decl]struct{}) {
+// selectedBenchmarkHarnessFiles walks the reachability graph from roots and
+// returns the selected files plus seenNames: every declared name actually
+// pulled in, at the name (not whole-declaration) granularity. A root
+// decl's own names are all considered seen -- the criteria that make a
+// decl a root (an import, an initialized var, a benchmark/init/TestMain
+// function, a method) apply to the whole declaration, not to one name
+// within it -- but a decl reached only because something else referenced
+// one of its names contributes just that name, not its siblings. This
+// lets embeddedFilesForSelectedFile scope go:embed comments to the
+// specific spec that was actually reached, rather than every spec sharing
+// its enclosing declaration.
+func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) (map[string]struct{}, map[string]struct{}) {
 	selected := make(map[string]struct{})
 	seenDecls := make(map[ast.Decl]struct{})
+	seenNames := make(map[string]struct{})
+	rootDecls := make(map[ast.Decl]struct{}, len(roots))
+	for _, root := range roots {
+		rootDecls[root.decl] = struct{}{}
+	}
 	queue := append([]harnessDecl(nil), roots...)
 	for len(queue) > 0 {
 		current := queue[0]
@@ -471,15 +487,39 @@ func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harne
 		}
 		seenDecls[current.decl] = struct{}{}
 		selected[current.file] = struct{}{}
+		selfDeclared := declaredNamesSet(current.decl)
+		if _, isRoot := rootDecls[current.decl]; isRoot {
+			for name := range selfDeclared {
+				seenNames[name] = struct{}{}
+			}
+		}
 		for name := range referencedPackageNames(current.decl) {
+			if _, isOwnDeclaration := selfDeclared[name]; isOwnDeclaration {
+				// referencedPackageNames walks the whole decl generically and
+				// cannot tell a declaration site from a use site, so a
+				// sibling in the same var/const/type group -- e.g. another
+				// name in the same var(...) block -- would otherwise look
+				// like this decl referencing itself.
+				continue
+			}
 			for _, next := range decls[name] {
+				seenNames[name] = struct{}{}
 				if _, ok := seenDecls[next.decl]; !ok {
 					queue = append(queue, next)
 				}
 			}
 		}
 	}
-	return selected, seenDecls
+	return selected, seenNames
+}
+
+func declaredNamesSet(decl ast.Decl) map[string]struct{} {
+	names := declaredNames(decl)
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		set[name] = struct{}{}
+	}
+	return set
 }
 
 func declaredNames(decl ast.Decl) []string {
@@ -737,21 +777,18 @@ func isGoTestEntrypoint(name, prefix string) bool {
 // _test.go file; fingerprinting every embed in the whole file would make an
 // ordinary test's fixture, unreachable from any benchmark, invalidate the
 // harness fingerprint when it changes.
-func embeddedFilesForSelectedFile(dir string, file *ast.File, seenDecls map[ast.Decl]struct{}) ([]string, error) {
+func embeddedFilesForSelectedFile(dir string, file *ast.File, seenNames map[string]struct{}) ([]string, error) {
 	if file == nil {
 		return nil, nil
 	}
 	seen := make(map[string]struct{})
 	files := make([]string, 0)
 	for _, decl := range file.Decls {
-		if _, ok := seenDecls[decl]; !ok {
-			continue
-		}
 		genDecl, ok := decl.(*ast.GenDecl)
 		if !ok || genDecl.Tok != token.VAR {
 			continue
 		}
-		for _, group := range embedDocCommentGroups(genDecl) {
+		for _, group := range embedDocCommentGroupsForSelectedSpecs(genDecl, seenNames) {
 			for _, comment := range group.List {
 				text := strings.TrimSpace(comment.Text)
 				if !strings.HasPrefix(text, "//go:embed") {
@@ -781,21 +818,41 @@ func embeddedFilesForSelectedFile(dir string, file *ast.File, seenDecls map[ast.
 	return files, nil
 }
 
-// embedDocCommentGroups returns decl's own doc comment along with each of
-// its specs' individual doc comments, covering both a single ungrouped var
-// declaration (doc on the GenDecl itself) and a grouped var block where
-// go:embed immediately precedes one specific spec within the group.
-func embedDocCommentGroups(decl *ast.GenDecl) []*ast.CommentGroup {
-	groups := make([]*ast.CommentGroup, 0, 1)
-	if decl.Doc != nil {
-		groups = append(groups, decl.Doc)
-	}
+// embedDocCommentGroupsForSelectedSpecs returns the doc comment for each of
+// decl's specs whose own declared name was actually reached (present in
+// seenNames), covering both a single ungrouped var declaration (Go attaches
+// its doc comment to the GenDecl itself, not the lone ValueSpec) and a
+// grouped var block (Go attaches each spec's own doc comment to that
+// ValueSpec directly). Scoping by spec, not by whether the whole decl was
+// selected, matters specifically for a grouped block: a benchmark
+// referencing only one of several embed vars in the same var(...) group
+// must not pull in the other vars' embed fixtures too.
+func embedDocCommentGroupsForSelectedSpecs(decl *ast.GenDecl, seenNames map[string]struct{}) []*ast.CommentGroup {
+	groups := make([]*ast.CommentGroup, 0, len(decl.Specs))
 	for _, spec := range decl.Specs {
-		if valueSpec, ok := spec.(*ast.ValueSpec); ok && valueSpec.Doc != nil {
-			groups = append(groups, valueSpec.Doc)
+		valueSpec, ok := spec.(*ast.ValueSpec)
+		if !ok {
+			continue
 		}
+		doc := valueSpec.Doc
+		if doc == nil && len(decl.Specs) == 1 {
+			doc = decl.Doc
+		}
+		if doc == nil || !valueSpecNameIsSeen(valueSpec, seenNames) {
+			continue
+		}
+		groups = append(groups, doc)
 	}
 	return groups
+}
+
+func valueSpecNameIsSeen(spec *ast.ValueSpec, seenNames map[string]struct{}) bool {
+	for _, name := range spec.Names {
+		if _, ok := seenNames[name.Name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func parseEmbedPatterns(text string) ([]string, error) {

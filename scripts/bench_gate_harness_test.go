@@ -465,6 +465,52 @@ func TestOrdinary(t *testing.T) {
 	}
 }
 
+// TestBenchGateIgnoresOrdinaryTestOnlyEmbedSharingVarGroupWithBenchmark
+// proves go:embed comment scoping works at the individual spec, not the
+// whole declaration: a benchmark referencing only one embed var in a
+// grouped var(...) block must not pull in a sibling var's embed fixture in
+// the same group, even though selecting the benchmark's own var marks the
+// whole surrounding *ast.GenDecl as reached.
+func TestBenchGateIgnoresOrdinaryTestOnlyEmbedSharingVarGroupWithBenchmark(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"bench_test.go": `package benchpkg
+
+import (
+	_ "embed"
+	"testing"
+)
+
+var (
+	//go:embed testdata/bench.txt
+	benchFixture string
+	//go:embed testdata/ordinary.txt
+	ordinaryFixture string
+)
+
+func BenchmarkValue(b *testing.B) {
+	_ = len(benchFixture)
+}
+
+func TestOrdinary(t *testing.T) {
+	if ordinaryFixture == "" {
+		t.Fatal("missing ordinary fixture")
+	}
+}
+`,
+		"testdata/bench.txt":    "bench\n",
+		"testdata/ordinary.txt": "base\n",
+	})
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{"testdata/ordinary.txt": "head\n"})
+	fixture.commit("head")
+
+	output, exitCode := fixture.runBenchGate()
+	if exitCode != 0 {
+		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+}
+
 func TestBenchGateIgnoresPackageCommentAndStringBenchmarkText(t *testing.T) {
 	fixture := newBenchGateFixture(t, "benchmarkpkg")
 	fixture.writeBenchmarkPackage("benchmarkpkg", map[string]string{
