@@ -654,6 +654,57 @@ func TestNoise(t *testing.T) {
 	}
 }
 
+// TestBenchGateIgnoresOrdinaryTestBodyChangeSharingFileWithBenchmark proves
+// that when a benchmark and an unrelated ordinary test share one _test.go
+// file, a change confined to the ordinary test's body doesn't invalidate
+// the fingerprint. The fingerprint hashes only the selected declarations'
+// source text, not the whole file, so TestNoise's own body -- never
+// selected, since the benchmark never references it -- can't affect it.
+func TestBenchGateIgnoresOrdinaryTestBodyChangeSharingFileWithBenchmark(t *testing.T) {
+	fixture := newBenchGateFixture(t, "benchpkg")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"bench_test.go": `package benchpkg
+
+import "testing"
+
+func BenchmarkValue(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+	}
+}
+
+func TestNoise(t *testing.T) {
+	if 1+1 != 2 {
+		t.Fatal("base assertion")
+	}
+}
+`,
+	})
+	fixture.commit("base")
+	fixture.writeBenchmarkPackage("benchpkg", map[string]string{
+		"bench_test.go": `package benchpkg
+
+import "testing"
+
+func BenchmarkValue(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+	}
+}
+
+func TestNoise(t *testing.T) {
+	if 2+2 != 4 {
+		t.Fatal("head assertion, totally different math")
+	}
+}
+`,
+	})
+	fixture.commit("head")
+
+	output, exitCode := fixture.runBenchGate()
+	if exitCode != 0 {
+		t.Fatalf("bench gate exit code = %d, want 0\n%s", exitCode, output)
+	}
+}
+
 func assertBenchGateHarnessMismatch(t *testing.T, fixture benchGateFixture) {
 	t.Helper()
 

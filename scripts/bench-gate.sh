@@ -265,10 +265,13 @@ echo "Memory benchmark Go toolchain: $expected_go_version";
 benchmark_harness_append_file() {
 	fingerprint_kind="$1";
 	fingerprint_file="$2";
-	if ! fingerprint_blob=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
-		return 1;
+	fingerprint_hash="$3";
+	if [ -z "$fingerprint_hash" ]; then
+		if ! fingerprint_hash=$(git hash-object -- "$fingerprint_dir/$fingerprint_file" 2>/dev/null); then
+			return 1;
+		fi;
 	fi;
-	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_blob" >> "$fingerprint_manifest_tmp";
+	printf "%s\t%s\t%s\n" "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash" >> "$fingerprint_manifest_tmp";
 };
 benchmark_harness_fingerprint() {
 	fingerprint_pkg="$1";
@@ -302,14 +305,14 @@ benchmark_harness_fingerprint() {
 	fi;
 	: > "$fingerprint_manifest_tmp";
 	fingerprint_failed=0;
-	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file; do
+	while IFS=$(printf '\t') read -r fingerprint_kind fingerprint_file fingerprint_hash; do
 		[ -n "$fingerprint_file" ] || continue;
 		case "$fingerprint_kind" in
 			test|xtest) ;;
 			test-embed|xtest-embed) ;;
 			*) continue ;;
 		esac;
-		if ! benchmark_harness_append_file "$fingerprint_kind" "$fingerprint_file"; then
+		if ! benchmark_harness_append_file "$fingerprint_kind" "$fingerprint_file" "$fingerprint_hash"; then
 			fingerprint_failed=1;
 			break;
 		fi;
@@ -353,6 +356,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -395,16 +400,25 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 		return nil, err
 	}
 	parsed := make(map[string]*ast.File, len(files))
+	filesets := make(map[string]*token.FileSet, len(files))
+	sources := make(map[string][]byte, len(files))
 	decls := make(map[string][]harnessDecl)
 	roots := make([]harnessDecl, 0)
 	modInfo := loadModuleInfo(dir)
 	for _, rel := range files {
 		abs := filepath.Join(dir, filepath.FromSlash(rel))
-		file, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.ParseComments)
+		src, err := os.ReadFile(abs)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", rel, err)
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, abs, src, parser.ParseComments)
 		if err != nil {
 			return nil, fmt.Errorf("parse %s: %w", rel, err)
 		}
 		parsed[rel] = file
+		filesets[rel] = fset
+		sources[rel] = src
 		for _, decl := range file.Decls {
 			for _, name := range declaredNames(decl) {
 				decls[name] = append(decls[name], harnessDecl{file: rel, decl: decl})
@@ -418,24 +432,48 @@ func benchmarkHarnessManifest(dir, kind string, stdin *os.File) ([]string, error
 		}
 	}
 
-	selected, seenNames := selectedBenchmarkHarnessFiles(roots, decls)
-	manifest := make([]string, 0, len(selected))
+	selectedDecls, seenNames := selectedBenchmarkHarnessFiles(roots, decls)
+	manifest := make([]string, 0, len(selectedDecls))
 	seen := make(map[string]struct{})
 	for _, rel := range files {
-		if _, ok := selected[rel]; !ok {
+		fileDecls, ok := selectedDecls[rel]
+		if !ok {
 			continue
 		}
-		appendManifestLine(&manifest, seen, kind, rel)
+		declHash := selectedDeclarationsSourceHash(sources[rel], filesets[rel], fileDecls)
+		appendManifestLine(&manifest, seen, kind, rel, declHash)
 		embedFiles, err := embeddedFilesForSelectedFile(dir, parsed[rel], seenNames)
 		if err != nil {
 			return nil, fmt.Errorf("resolve embeds in %s: %w", rel, err)
 		}
 		for _, embedFile := range embedFiles {
-			appendManifestLine(&manifest, seen, kind+"-embed", embedFile)
+			appendManifestLine(&manifest, seen, kind+"-embed", embedFile, "")
 		}
 	}
 	sort.Strings(manifest)
 	return manifest, nil
+}
+
+// selectedDeclarationsSourceHash hashes only the source text of the
+// selected declarations within a file, rather than the file's full
+// contents, so a change confined to an unselected declaration in the same
+// file (e.g. an unrelated ordinary test's body) doesn't affect the
+// fingerprint. Declarations are ordered by source position for a stable
+// hash regardless of map iteration order.
+func selectedDeclarationsSourceHash(source []byte, fset *token.FileSet, decls []ast.Decl) string {
+	ordered := append([]ast.Decl(nil), decls...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Pos() < ordered[j].Pos() })
+	hash := sha256.New()
+	for _, decl := range ordered {
+		start := fset.Position(decl.Pos()).Offset
+		end := fset.Position(decl.End()).Offset
+		if start < 0 || end > len(source) || start > end {
+			continue
+		}
+		hash.Write(source[start:end])
+		hash.Write([]byte("\n// --- decl boundary ---\n"))
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func readFileList(stdin *os.File) ([]string, error) {
@@ -453,8 +491,8 @@ func readFileList(stdin *os.File) ([]string, error) {
 	return files, nil
 }
 
-func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel string) {
-	line := kind + "\t" + filepath.ToSlash(rel)
+func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel, hash string) {
+	line := kind + "\t" + filepath.ToSlash(rel) + "\t" + hash
 	if _, ok := seen[line]; ok {
 		return
 	}
@@ -473,8 +511,8 @@ func appendManifestLine(manifest *[]string, seen map[string]struct{}, kind, rel 
 // lets embeddedFilesForSelectedFile scope go:embed comments to the
 // specific spec that was actually reached, rather than every spec sharing
 // its enclosing declaration.
-func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) (map[string]struct{}, map[string]struct{}) {
-	selected := make(map[string]struct{})
+func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harnessDecl) (map[string][]ast.Decl, map[string]struct{}) {
+	selected := make(map[string][]ast.Decl)
 	seenDecls := make(map[ast.Decl]struct{})
 	seenNames := make(map[string]struct{})
 	rootDecls := make(map[ast.Decl]struct{}, len(roots))
@@ -489,7 +527,7 @@ func selectedBenchmarkHarnessFiles(roots []harnessDecl, decls map[string][]harne
 			continue
 		}
 		seenDecls[current.decl] = struct{}{}
-		selected[current.file] = struct{}{}
+		selected[current.file] = append(selected[current.file], current.decl)
 		selfDeclared := declaredNamesSet(current.decl)
 		if _, isRoot := rootDecls[current.decl]; isRoot {
 			for name := range selfDeclared {
