@@ -7,7 +7,7 @@ Unreleased feature-flag migration guidance is maintained in the [v2 stable alias
 
 ### Bug Fixes
 
-* align Go toolchain Renovate updates ([cf2f413](https://github.com/ben-ranford/lopper/commit/cf2f413e1dd326027f5a070f2cb691c151fef0d9))
+* **build:** require Go 1.27 toolchain ([42d38d1](https://github.com/ben-ranford/lopper/commit/42d38d10cf6af1c51557232622ee8118311ffa31))
 * **cache:** capability-bound writable cache roots ([#1521](https://github.com/ben-ranford/lopper/issues/1521)) ([369779a](https://github.com/ben-ranford/lopper/commit/369779a7eab1460ca5aa6532b251bd6e16063c3b))
 * **cache:** detect writable root replacement ([#1527](https://github.com/ben-ranford/lopper/issues/1527)) ([6cd106a](https://github.com/ben-ranford/lopper/commit/6cd106a0e9657d405ddbb25c40f59d407e55d765))
 * **ci:** align Go toolchain Renovate updates ([#1506](https://github.com/ben-ranford/lopper/issues/1506)) ([cf2f413](https://github.com/ben-ranford/lopper/commit/cf2f413e1dd326027f5a070f2cb691c151fef0d9))
