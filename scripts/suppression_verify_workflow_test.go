@@ -624,7 +624,7 @@ printf '[{"filename":"a.go"},{"filename":"b.go"},{"filename":"c.go"}][{"filename
 
 	jqCmd := exec.Command("jq", "-e", ". | type == \"array\" and length == 5")
 	jqCmd.Stdin = strings.NewReader(output)
-	if jqErr := jqCmd.Run(); jqErr != nil {
+	if jqCmd.Run() != nil {
 		t.Fatalf("expected pr_files_json to be one flat 5-element array combining both pages, got:\n%q", output)
 	}
 }
