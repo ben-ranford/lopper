@@ -117,17 +117,18 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"core.setOutput('artifact-id'",
 		"core.setOutput('run-id'",
 		// The same head SHA can be shared by more than one open PR (e.g.
-		// one branch opened against both a release branch and main); the
-		// run selection must be bound to this PR's own number, not just
-		// its head SHA, or this trusted job could download a different
-		// PR's "pr-report-inputs" artifact.
+		// one branch opened against both a release branch and main, or --
+		// for forks, where GitHub does not expose a pull_requests
+		// association at all -- the same fork branch/commit reused across
+		// PRs with different bases). Matching runs after the fact by
+		// association or repository is not sufficient to disambiguate every
+		// such case; only an artifact name bound to this PR's own number
+		// (set by "ci.yml" from its own event payload, not forgeable by PR
+		// content) can.
 		"pullNumber = context.payload.pull_request.number",
-		"run.pull_requests.some((pr) => pr.number === pullNumber)",
-		// GitHub omits the pull_requests association for cross-repository
-		// (forked) pull requests, so a same-SHA run from a different fork
-		// must still be rejected via the run's own head repository.
-		"headRepositoryFullName = context.payload.pull_request.head.repo",
-		"run.head_repository && run.head_repository.full_name === headRepositoryFullName",
+		"artifactName = `pr-report-inputs-${pullNumber}`",
+		"const completed = candidates.filter((run) => run.status === 'completed')",
+		"const stillPending = candidates.some((run) => run.status !== 'completed')",
 	})
 
 	download := workflowStepByName(t, workflow.Jobs, "verify", "Download PR report inputs")

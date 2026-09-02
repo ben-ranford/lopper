@@ -114,7 +114,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		{label: "PR report upload step id", got: uploadInputs.ID, want: "upload_pr_report_inputs"},
 	})
 	assertCIArtifactAction(t, uploadInputs, "PR report upload", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", map[string]string{
-		"name":              "pr-report-inputs",
+		"name":              "pr-report-inputs-${{ github.event.pull_request.number }}",
 		"path":              "${{ runner.temp }}/pr-report-inputs",
 		"if-no-files-found": "error",
 	})

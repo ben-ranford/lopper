@@ -329,7 +329,16 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && always() && !env.ACT }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pr-report-inputs
+          # Named with this run's own PR number -- which GitHub sets from
+          # the pull_request event payload, not from anything this
+          # PR-controlled workflow file or its code can forge -- so the
+          # trusted suppression-verify workflow can select the artifact
+          # that genuinely belongs to a specific PR even when its head SHA
+          # is shared with another open PR (same branch, different base;
+          # or, for forks, the same fork branch/commit reused across PRs
+          # with different bases, where GitHub does not otherwise expose
+          # which PR a run belongs to).
+          name: pr-report-inputs-${{ github.event.pull_request.number }}
           path: ${{ runner.temp }}/pr-report-inputs
           if-no-files-found: error
 
