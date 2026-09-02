@@ -377,6 +377,31 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 	})
 }
 
+// fingerprintBindingInvocation extracts the fingerprint-binding script
+// assignment plus its immediately following invocation line from the gate's
+// run text, so callers can execute the real embedded script rather than
+// asserting on its source text.
+func fingerprintBindingInvocation(t *testing.T, run string) string {
+	t.Helper()
+
+	const startMarker = "fingerprint_binding_script='"
+	const endMarker = `fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"` + "\n"
+	startIdx := strings.Index(run, startMarker)
+	if startIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding script")
+	}
+	endIdx := strings.Index(run[startIdx:], endMarker)
+	if endIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding dedent line")
+	}
+	invocationStart := startIdx + endIdx + len(endMarker)
+	invocationEnd := strings.Index(run[invocationStart:], "\n")
+	if invocationEnd == -1 {
+		t.Fatalf("suppression tracking gate is missing the fingerprint-binding invocation line")
+	}
+	return run[startIdx : invocationStart+invocationEnd]
+}
+
 // TestCIWorkflowFingerprintBindingScriptExecutesCorrectly actually runs the
 // embedded Python fingerprint-binding script (not just asserting on its
 // source text): the script is indented to satisfy the YAML block scalar it
@@ -390,21 +415,7 @@ func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
-	const startMarker = "fingerprint_binding_script='"
-	const endMarker = `fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"` + "\n"
-	startIdx := strings.Index(gate.Run, startMarker)
-	if startIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the fingerprint-binding script")
-	}
-	endIdx := strings.Index(gate.Run[startIdx:], endMarker)
-	if endIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the fingerprint-binding dedent line")
-	}
-	invocationStart := startIdx + endIdx + len(endMarker)
-	invocationEnd := strings.Index(gate.Run[invocationStart:], "\n")
-	if invocationEnd == -1 {
-		t.Fatalf("suppression tracking gate is missing the fingerprint-binding invocation line")
-	}
+	invocation := fingerprintBindingInvocation(t, gate.Run)
 	dir := t.TempDir()
 	suppressionsPath := filepath.Join(dir, "inline-suppressions.json")
 	bundlePath := filepath.Join(dir, "occurrence-bundle")
@@ -414,7 +425,7 @@ func TestCIWorkflowFingerprintBindingScriptExecutesCorrectly(t *testing.T) {
 	// this bash variable (OCCURRENCE_BUNDLE_FILE="${occurrence_bundle_file}"
 	// python3 ...), so it must be defined here rather than passed only via
 	// the process environment.
-	script := "set -euo pipefail\noccurrence_bundle_file=" + shellQuote(bundlePath) + "\n" + gate.Run[startIdx:invocationStart+invocationEnd]
+	script := "set -euo pipefail\noccurrence_bundle_file=" + shellQuote(bundlePath) + "\n" + invocation
 
 	valid := suppressionFingerprint("main.go", "line one", 1)
 	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"line one","fingerprint":"`+valid+`","line":1}]}`)
@@ -510,21 +521,7 @@ func TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift(t *te
 	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
-	const startMarker = "fingerprint_binding_script='"
-	const endMarker = `fingerprint_binding_dedented="$(printf '%s' "${fingerprint_binding_script}" | python3 -c 'import sys, textwrap; sys.stdout.write(textwrap.dedent(sys.stdin.read()))')"` + "\n"
-	startIdx := strings.Index(gate.Run, startMarker)
-	if startIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the fingerprint-binding script")
-	}
-	endIdx := strings.Index(gate.Run[startIdx:], endMarker)
-	if endIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the fingerprint-binding dedent line")
-	}
-	invocationStart := startIdx + endIdx + len(endMarker)
-	invocationEnd := strings.Index(gate.Run[invocationStart:], "\n")
-	if invocationEnd == -1 {
-		t.Fatalf("suppression tracking gate is missing the fingerprint-binding invocation line")
-	}
+	invocation := fingerprintBindingInvocation(t, gate.Run)
 	dir := t.TempDir()
 	suppressionsPath := filepath.Join(dir, "inline-suppressions.json")
 	bundlePath := filepath.Join(dir, "occurrence-bundle")
@@ -534,7 +531,7 @@ func TestCIWorkflowFingerprintBindingRejectsAStaleOccurrenceAfterBaseDrift(t *te
 	// published.
 	writeFile(t, bundlePath, "\x01main.go\ntarget line\nother\ncode\ntarget line\n")
 
-	script := "set -euo pipefail\noccurrence_bundle_file=" + shellQuote(bundlePath) + "\n" + gate.Run[startIdx:invocationStart+invocationEnd]
+	script := "set -euo pipefail\noccurrence_bundle_file=" + shellQuote(bundlePath) + "\n" + invocation
 
 	stale := suppressionFingerprint("main.go", "target line", 1)
 	writeFile(t, suppressionsPath, `{"suppressions":[{"file":"main.go","content":"target line","fingerprint":"`+stale+`","line":4}]}`)
@@ -822,6 +819,24 @@ func TestCIWorkflowSuspectScanSkipsBlobFetchForMarkerlessPatches(t *testing.T) {
 	}
 }
 
+// sourceFileTestLine extracts the "source_file_test=" line from the gate's
+// run text, so callers can prefix a real patch-completeness check script
+// with the same source-file predicate the workflow itself uses.
+func sourceFileTestLine(t *testing.T, run string) string {
+	t.Helper()
+
+	const varsStart = `source_file_test=`
+	varsStartIdx := strings.Index(run, varsStart)
+	if varsStartIdx == -1 {
+		t.Fatalf("suppression tracking gate is missing the source-file test")
+	}
+	varsLineEnd := strings.Index(run[varsStartIdx:], "\n")
+	if varsLineEnd == -1 {
+		t.Fatalf("suppression tracking gate source-file test is unterminated")
+	}
+	return run[varsStartIdx : varsStartIdx+varsLineEnd]
+}
+
 // TestCIWorkflowIncompletePatchCheckExemptsRemovedFiles actually runs the
 // real incomplete-patch gate against a synthetic pull-files response where
 // a large deleted source file has its patch omitted (as GitHub does for
@@ -834,16 +849,7 @@ func TestCIWorkflowIncompletePatchCheckExemptsRemovedFiles(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
-	const varsStart = `source_file_test=`
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the source-file test")
-	}
-	varsLineEnd := strings.Index(gate.Run[varsStartIdx:], "\n")
-	if varsLineEnd == -1 {
-		t.Fatalf("suppression tracking gate source-file test is unterminated")
-	}
-	varsLine := gate.Run[varsStartIdx : varsStartIdx+varsLineEnd]
+	varsLine := sourceFileTestLine(t, gate.Run)
 
 	const checkStart = `incomplete_count="$(echo "${pr_files_json}"`
 	const checkEnd = "\nfi\n"
@@ -902,16 +908,7 @@ func TestCIWorkflowRejectsANonNullButTruncatedPatch(t *testing.T) {
 	readYAMLConfig(t, ".github/workflows/suppression-verify.yml", &workflow)
 	gate := workflowStepByName(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
 
-	const varsStart = `source_file_test=`
-	varsStartIdx := strings.Index(gate.Run, varsStart)
-	if varsStartIdx == -1 {
-		t.Fatalf("suppression tracking gate is missing the source-file test")
-	}
-	varsLineEnd := strings.Index(gate.Run[varsStartIdx:], "\n")
-	if varsLineEnd == -1 {
-		t.Fatalf("suppression tracking gate source-file test is unterminated")
-	}
-	varsLine := gate.Run[varsStartIdx : varsStartIdx+varsLineEnd]
+	varsLine := sourceFileTestLine(t, gate.Run)
 
 	const checkStart = "truncated_patch_count=0"
 	const checkEnd = `if [ "${truncated_patch_count}" -gt 0 ]; then` + "\n  exit 1\nfi\n"

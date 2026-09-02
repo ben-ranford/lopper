@@ -616,13 +616,17 @@ func exercisePRBaseWorkflowJob(t *testing.T, cfg prBaseWorkflowJobConfig) {
 	}
 }
 
-func newPRBaseScenario(t *testing.T) prBaseScenario {
+// newSeedRepoWithFirstFeatureCommit creates a bare "origin" remote and a seed
+// working repo with a base commit on main and one commit on a "feature"
+// branch checked out from it, returning the paths and SHAs callers need to
+// build their own scenario-specific history on top.
+func newSeedRepoWithFirstFeatureCommit(t *testing.T) (origin, seed, baseSHA, featureSHA string) {
 	t.Helper()
 
-	origin := filepath.Join(t.TempDir(), "origin.git")
+	origin = filepath.Join(t.TempDir(), "origin.git")
 	runGitCommand(t, t.TempDir(), "init", "--bare", origin)
 
-	seed := filepath.Join(t.TempDir(), "seed")
+	seed = filepath.Join(t.TempDir(), "seed")
 	if err := os.MkdirAll(seed, 0o755); err != nil {
 		t.Fatalf("create seed repo: %v", err)
 	}
@@ -633,13 +637,22 @@ func newPRBaseScenario(t *testing.T) prBaseScenario {
 	writeFile(t, filepath.Join(seed, "README.md"), "base\n")
 	runGitCommand(t, seed, "add", "README.md")
 	runGitCommand(t, seed, "commit", "-m", "base")
-	baseSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+	baseSHA = strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
 
 	runGitCommand(t, seed, "checkout", "-b", "feature")
 	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-1\n")
 	runGitCommand(t, seed, "add", "feature.txt")
 	runGitCommand(t, seed, "commit", "-m", "feature commit one")
-	headParentSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+	featureSHA = strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+
+	return origin, seed, baseSHA, featureSHA
+}
+
+func newPRBaseScenario(t *testing.T) prBaseScenario {
+	t.Helper()
+
+	origin, seed, baseSHA, headParentSHA := newSeedRepoWithFirstFeatureCommit(t)
+
 	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-2\n")
 	runGitCommand(t, seed, "add", "feature.txt")
 	runGitCommand(t, seed, "commit", "-m", "feature commit two")
@@ -790,27 +803,7 @@ func TestCIWorkflowFetchStepDoesNotReinterpretOrdinaryPRBranchMergeAsCheckoutMer
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	origin := filepath.Join(t.TempDir(), "origin.git")
-	runGitCommand(t, t.TempDir(), "init", "--bare", origin)
-
-	seed := filepath.Join(t.TempDir(), "seed")
-	if err := os.MkdirAll(seed, 0o755); err != nil {
-		t.Fatalf("create seed repo: %v", err)
-	}
-	runGitCommand(t, seed, "init", "-b", "main")
-	runGitCommand(t, seed, "config", "user.name", "Ben Ranford")
-	runGitCommand(t, seed, "config", "user.email", "84072202+ben-ranford@users.noreply.github.com")
-
-	writeFile(t, filepath.Join(seed, "README.md"), "base\n")
-	runGitCommand(t, seed, "add", "README.md")
-	runGitCommand(t, seed, "commit", "-m", "base")
-	baseSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
-
-	runGitCommand(t, seed, "checkout", "-b", "feature")
-	writeFile(t, filepath.Join(seed, "feature.txt"), "feature-1\n")
-	runGitCommand(t, seed, "add", "feature.txt")
-	runGitCommand(t, seed, "commit", "-m", "feature work")
-	featurePreMergeSHA := strings.TrimSpace(runGitCommand(t, seed, "rev-parse", "HEAD"))
+	origin, seed, baseSHA, featurePreMergeSHA := newSeedRepoWithFirstFeatureCommit(t)
 
 	runGitCommand(t, seed, "checkout", "main")
 	writeFile(t, filepath.Join(seed, "main.txt"), "drift\n")
