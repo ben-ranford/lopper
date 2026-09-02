@@ -116,6 +116,18 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"!candidate.expired",
 		"core.setOutput('artifact-id'",
 		"core.setOutput('run-id'",
+		// The same head SHA can be shared by more than one open PR (e.g.
+		// one branch opened against both a release branch and main); the
+		// run selection must be bound to this PR's own number, not just
+		// its head SHA, or this trusted job could download a different
+		// PR's "pr-report-inputs" artifact.
+		"pullNumber = context.payload.pull_request.number",
+		"run.pull_requests.some((pr) => pr.number === pullNumber)",
+		// GitHub omits the pull_requests association for cross-repository
+		// (forked) pull requests, so a same-SHA run from a different fork
+		// must still be rejected via the run's own head repository.
+		"headRepositoryFullName = context.payload.pull_request.head.repo",
+		"run.head_repository && run.head_repository.full_name === headRepositoryFullName",
 	})
 
 	download := workflowStepByName(t, workflow.Jobs, "verify", "Download PR report inputs")

@@ -50,6 +50,10 @@ jobs:
         with:
           script: |
             const headSha = process.env.EXPECTED_HEAD_SHA;
+            const pullNumber = context.payload.pull_request.number;
+            const headRepositoryFullName = context.payload.pull_request.head.repo
+              ? context.payload.pull_request.head.repo.full_name
+              : null;
             const artifactName = 'pr-report-inputs';
             // Bounded to the same shared-deadline style the trusted
             // tracking-issue poll below uses, so a stuck or missing "ci" run
@@ -68,10 +72,36 @@ jobs:
                 head_sha: headSha,
                 per_page: 100,
               });
-              // GitHub returns newest first; the most recent run at this
-              // exact head SHA is the one whose artifact (if any) reflects
-              // the current, immutable PR head.
-              return runs.find((run) => run.head_sha === headSha) ?? null;
+              // GitHub returns newest first, preserved through the filters
+              // below so the most recent qualifying run wins.
+              const candidates = runs.filter((run) => run.head_sha === headSha);
+              // The same head SHA can belong to more than one open PR (for
+              // example, one branch opened against both a release branch
+              // and main); a bare head_sha match would let this trusted job
+              // download a different PR's "pr-report-inputs" artifact,
+              // which was built against that other PR's own base/diff.
+              // GitHub's own pull_requests association on the run is the
+              // authoritative same-repository disambiguator.
+              const byPullRequest = candidates.filter(
+                (run) => Array.isArray(run.pull_requests) && run.pull_requests.some((pr) => pr.number === pullNumber)
+              );
+              if (byPullRequest.length > 0) {
+                return byPullRequest[0];
+              }
+              // GitHub omits the pull_requests association entirely for
+              // cross-repository (forked) pull requests, so fall back to
+              // matching the run's own head repository against this PR's
+              // head repository -- still sufficient to reject a same-SHA
+              // run that was actually produced by a different fork.
+              if (headRepositoryFullName) {
+                const byHeadRepository = candidates.filter(
+                  (run) => run.head_repository && run.head_repository.full_name === headRepositoryFullName
+                );
+                if (byHeadRepository.length > 0) {
+                  return byHeadRepository[0];
+                }
+              }
+              return null;
             };
 
             let run;
