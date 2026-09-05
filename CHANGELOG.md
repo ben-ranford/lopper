@@ -2,6 +2,13 @@
 
 Unreleased feature-flag migration guidance is maintained in the [v2 stable alias migration](docs/feature-flags.md#v2-stable-alias-migration) documentation so generated release entries remain chronological.
 
+## [1.8.7](https://github.com/ben-ranford/lopper/compare/v1.8.6...v1.8.7) (2026-09-05)
+
+
+### Bug Fixes
+
+* **ci:** move suppression verification to trusted pull_request_target workflow ([#1549](https://github.com/ben-ranford/lopper/issues/1549)) ([317ff4c](https://github.com/ben-ranford/lopper/commit/317ff4cbf1c3eabb1ff0ae1b05bb75beca9ce475))
+
 ## [1.8.6](https://github.com/ben-ranford/lopper/compare/v1.8.5...v1.8.6) (2026-09-01)
 
 

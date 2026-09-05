@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.7 (2026-09-05)
+
+- No user-visible VS Code extension changes.
+
 ## 1.8.6 (2026-09-01)
 
 - Updated VS Code behavior: normalize managed binary release tags
