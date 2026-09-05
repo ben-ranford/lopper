@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
 	"github.com/ben-ranford/lopper/internal/featureflags"
@@ -356,6 +357,86 @@ func TestExecuteDashboardReportsRepoURLCheckoutFailure(t *testing.T) {
 	}
 	if len(reportData.SourceWarnings) != 1 || !strings.Contains(reportData.SourceWarnings[0], "materialize repoUrl") {
 		t.Fatalf("expected dashboard warning for materialization failure, got %#v", reportData.SourceWarnings)
+	}
+}
+
+func TestExecuteDashboardBoundsHangingRepoURLAndContinuesOtherRepos(t *testing.T) {
+	originalTimeout := dashboardRepoMaterializeTimeout
+	dashboardRepoMaterializeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { dashboardRepoMaterializeTimeout = originalTimeout })
+
+	withFakeDashboardGit(t, func(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, error) {
+		if strings.Contains(strings.Join(args, " "), "clone") {
+			// Simulate a remote that never responds: block until the
+			// materializer's own deadline kills it, the same way a stalled
+			// network clone would never exit on its own.
+			return exec.CommandContext(ctx, fixedTestBinary(t, "sleep"), "30"), nil
+		}
+		return exec.CommandContext(ctx, fixedTestBinary(t, "true")), nil
+	})
+
+	cacheRoot := t.TempDir()
+	t.Setenv(dashboardRepoCacheEnv, cacheRoot)
+
+	localRepo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(localRepo, "go.mod"), "module example.com/local\n\ngo 1.22\n")
+
+	configPath := filepath.Join(t.TempDir(), "lopper-org.yml")
+	config := "dashboard:\n" +
+		"  repos:\n" +
+		"    - repoUrl: https://example.invalid/org/hangs.git\n" +
+		"      name: Hanging Remote\n" +
+		"    - path: " + localRepo + "\n" +
+		"      name: Local\n" +
+		"  output: json\n"
+	testutil.MustWriteFile(t, configPath, config)
+
+	analyzer := &mapAnalyzer{}
+	application := &App{Analyzer: analyzer}
+	req := DefaultRequest()
+	req.Mode = ModeDashboard
+	req.Dashboard.ConfigPath = configPath
+	req.Dashboard.Format = "json"
+	req.Dashboard.Features = enabledDashboardRemoteReposFeatures(t)
+
+	type executeResult struct {
+		output string
+		err    error
+	}
+	done := make(chan executeResult, 1)
+	start := time.Now()
+	go func() {
+		output, err := application.Execute(context.Background(), req)
+		done <- executeResult{output: output, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("dashboard execution took %s; a hanging repoUrl must not block the whole run", elapsed)
+		}
+		if result.err != nil {
+			t.Fatalf("execute dashboard with a hanging repoUrl: %v", result.err)
+		}
+		reportData := dashboard.Report{}
+		if err := json.Unmarshal([]byte(result.output), &reportData); err != nil {
+			t.Fatalf("unmarshal dashboard report: %v", err)
+		}
+		if len(reportData.Repos) != 2 {
+			t.Fatalf("expected two repo results, got %#v", reportData.Repos)
+		}
+		hanging, local := reportData.Repos[0], reportData.Repos[1]
+		if hanging.Name != "Hanging Remote" || !strings.Contains(hanging.Error, "materialize repoUrl") {
+			t.Fatalf("expected a bounded per-repo error for the hanging remote, got %#v", hanging)
+		}
+		if local.Name != "Local" || local.Error != "" {
+			t.Fatalf("expected the local repo to still be analyzed despite the hanging remote, got %#v", local)
+		}
+		if len(analyzer.calls) != 1 {
+			t.Fatalf("expected only the local repo to reach analysis, got %#v", analyzer.calls)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("dashboard execution did not return: a hanging repoUrl blocked the whole run indefinitely")
 	}
 }
 
@@ -954,6 +1035,7 @@ func fixedTestBinary(t *testing.T, name string) string {
 		"true":   {"/usr/bin/true", "/bin/true"},
 		"false":  {"/usr/bin/false", "/bin/false"},
 		"printf": {"/usr/bin/printf", "/bin/printf"},
+		"sleep":  {"/usr/bin/sleep", "/bin/sleep"},
 	}
 	for _, candidate := range candidates[name] {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
