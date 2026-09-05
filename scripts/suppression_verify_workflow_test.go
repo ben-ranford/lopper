@@ -95,6 +95,11 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"head_sha: context.payload.pull_request.head.sha",
 		"status: 'in_progress'",
 		"core.setOutput('check-id'",
+		// Shared by the later waiting steps so every deadline is measured
+		// from this job's own start rather than restarting a fresh budget
+		// per step, which could otherwise let their combined wait exceed
+		// the job's own 20-minute timeout.
+		"core.setOutput('job-start-ms'",
 	})
 
 	report := workflowStepByName(t, workflow.Jobs, "verify", "Report suppression verification check conclusion")
@@ -128,7 +133,24 @@ func TestSuppressionVerifyWorkflowUsesTrustedPullRequestTarget(t *testing.T) {
 		"pullNumber = context.payload.pull_request.number",
 		"artifactName = `pr-report-inputs-${pullNumber}`",
 		"const completed = candidates.filter((run) => run.status === 'completed')",
-		"const stillPending = candidates.some((run) => run.status !== 'completed')",
+		// An empty candidate list must be treated as "still pending", not
+		// "no run will ever appear": this verifier and the "ci" run it
+		// waits on are dispatched by the same event, but nothing guarantees
+		// their runs become visible through the API in the same instant, so
+		// failing closed on zero visible candidates would make the required
+		// check nondeterministically fail on ordinary PR events instead of
+		// using its ten-minute polling window.
+		"const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed')",
+		// A base-only edit (retargeting this PR) dispatches a fresh "ci" run
+		// at the same head SHA while an earlier, already-completed run
+		// (computed against the base this PR has since moved away from)
+		// still exists there; excluding runs created before this event
+		// (with a skew allowance, since both workflows fire from the same
+		// webhook delivery) stops that stale run's artifact from being
+		// trusted while the fresh one is still in flight.
+		"baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base)",
+		"earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0",
+		".filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs)",
 	})
 
 	download := workflowStepByName(t, workflow.Jobs, "verify", "Download PR report inputs")
@@ -162,6 +184,7 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		"GH_TOKEN":          "${{ github.token }}",
 		"PR_NUMBER":         "${{ github.event.pull_request.number }}",
 		"SUPPRESSIONS_FILE": "${{ runner.temp }}/pr-report-inputs/inline-suppressions.json",
+		"JOB_START_MS":      "${{ steps.pending_check.outputs.job-start-ms }}",
 	})
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		"jq -r '.suppressions[].fingerprint'",
@@ -170,15 +193,23 @@ func TestCIWorkflowGatesMergeOnHeadAssociatedSuppressionTrackingResult(t *testin
 		"sleep 15",
 		"exit 1",
 	})
-	// The wait must share one deadline across every fingerprint (outer
-	// `seq 1 40` loop polling all still-missing fingerprints per round),
-	// not an independent 40-round wait nested inside a per-fingerprint
-	// loop -- otherwise a persistently failed tracker could sleep for
-	// MAX_RECORDS x 10 minutes instead of reporting promptly.
-	assertWorkflowMarkerOrder(t, gate.Run, `for _ in $(seq 1 40); do`, `for fingerprint in "${missing[@]}"; do`)
+	// The wait must share one deadline across every fingerprint (outer loop
+	// polling all still-missing fingerprints per round), not an independent
+	// wait nested inside a per-fingerprint loop -- otherwise a persistently
+	// failed tracker could sleep for MAX_RECORDS x 10 minutes instead of
+	// reporting promptly.
+	assertWorkflowMarkerOrder(t, gate.Run, `while [ "${#missing[@]}" -gt 0 ]; do`, `for fingerprint in "${missing[@]}"; do`)
 	assertWorkflowStepRunContainsAll(t, gate, "suppression tracking gate", []string{
 		`missing=("${fingerprints[@]}")`,
 		"still_missing=()",
+		// Measured from the same job-start origin the artifact-resolution
+		// step uses, with buffer before the job's own 20-minute timeout, so
+		// GitHub cannot cancel the job mid-poll and leave the
+		// "suppression-verify" check stuck "in_progress" instead of
+		// reporting failure.
+		"job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))",
+		`now_ms="$(date +%s%3N)"`,
+		`if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then`,
 	})
 	// SUPPRESSIONS_FILE is produced by PR-controlled checked-out code (the
 	// suppression detector and Makefile), so a PR could neuter it to

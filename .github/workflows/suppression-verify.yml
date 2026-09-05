@@ -41,16 +41,38 @@ jobs:
               status: 'in_progress',
             });
             core.setOutput('check-id', String(check.id));
+            // Shared with every later waiting step so their deadlines are
+            // measured from the same origin as the job's own 20-minute
+            // timeout, instead of each restarting its own fresh budget.
+            core.setOutput('job-start-ms', String(Date.now()));
 
       - name: Resolve trusted ci artifact for this pull request head
         id: resolve_artifact
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          JOB_START_MS: ${{ steps.pending_check.outputs.job-start-ms }}
         with:
           script: |
             const headSha = process.env.EXPECTED_HEAD_SHA;
             const pullNumber = context.payload.pull_request.number;
+            const jobStartMs = Number(process.env.JOB_START_MS);
+            // A base-only edit (retargeting this PR) leaves any earlier,
+            // already-completed "ci" run at this same head SHA in place,
+            // still carrying a "pr-report-inputs-<PR>" artifact computed
+            // against the base this PR has since moved away from -- and
+            // that same "edited" event dispatches a fresh "ci" run at this
+            // identical head SHA to replace it. Both this run and that one
+            // are triggered by the exact same webhook event, so the fresh
+            // run is never meaningfully older than this very job; a 5
+            // -minute floor tolerates ordinary Actions dispatch/queueing
+            // skew between the two workflows while still excluding the
+            // stale pre-retarget run. Every other trigger type (a plain
+            // push, label, etc.) leaves the base untouched, so an already
+            // -completed run's artifact from before this event is still
+            // valid and the floor is skipped.
+            const baseJustChanged = context.payload.action === 'edited' && Boolean(context.payload.changes && context.payload.changes.base);
+            const earliestCreatedMs = baseJustChanged ? jobStartMs - 5 * 60 * 1000 : 0;
             // Named with the producing PR's own number (set by "ci.yml"
             // from its own pull_request event payload -- GitHub-assigned,
             // not something PR-controlled code or workflow-file edits can
@@ -64,11 +86,13 @@ jobs:
             // Only the run that was genuinely dispatched for this exact PR
             // number can have uploaded an artifact under this exact name.
             const artifactName = `pr-report-inputs-${pullNumber}`;
-            // Bounded to the same shared-deadline style the trusted
-            // tracking-issue poll below uses, so a stuck or missing "ci" run
-            // fails this required check promptly instead of occupying the
-            // job until its platform timeout.
-            const deadlineMs = Date.now() + 10 * 60 * 1000;
+            // Shared with the trusted tracking-issue poll below: both waits
+            // race against one deadline measured from this job's own start
+            // (not a fresh budget per step), with enough buffer before the
+            // job's 20-minute timeout for the remaining download/validate/
+            // report steps to still run and update the head check, instead
+            // of leaving it stuck "in_progress" when GitHub cancels the job.
+            const deadlineMs = jobStartMs + (18 * 60 + 30) * 1000;
             const delayMs = 15000;
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -81,7 +105,9 @@ jobs:
                 head_sha: headSha,
                 per_page: 100,
               });
-              const candidates = runs.filter((run) => run.head_sha === headSha);
+              const candidates = runs
+                .filter((run) => run.head_sha === headSha)
+                .filter((run) => new Date(run.created_at).getTime() >= earliestCreatedMs);
               const completed = candidates.filter((run) => run.status === 'completed');
               for (const run of completed) {
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
@@ -98,8 +124,13 @@ jobs:
               // A run at this head SHA that has not completed yet might
               // still be this PR's own "ci" run; only once every candidate
               // has completed without producing a matching artifact is it
-              // safe to fail closed instead of continuing to poll.
-              const stillPending = candidates.some((run) => run.status !== 'completed');
+              // safe to fail closed instead of continuing to poll. An empty
+              // candidate list is treated the same way: this verifier and
+              // the "ci" run it waits on are dispatched by the same event,
+              // but their runs are not guaranteed to become visible through
+              // the API in lockstep, so seeing none yet must not be treated
+              // as proof none will ever appear.
+              const stillPending = candidates.length === 0 || candidates.some((run) => run.status !== 'completed');
               return { run: null, artifact: null, stillPending };
             };
 
@@ -206,6 +237,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           SUPPRESSIONS_FILE: ${{ runner.temp }}/pr-report-inputs/inline-suppressions.json
+          JOB_START_MS: ${{ steps.pending_check.outputs.job-start-ms }}
         run: |
           # This step runs from this workflow's own trusted (default-branch)
           # revision, triggered by `pull_request_target`, not from the PR's
@@ -815,13 +847,21 @@ jobs:
           fi
 
           # Poll every still-missing fingerprint together under one shared
-          # deadline (40 rounds x 15s = 10 minutes total), not an
-          # independent wait per fingerprint -- otherwise a persistently
-          # failed tracker run could make this step sleep for up to
-          # MAX_RECORDS x 10 minutes instead of reporting promptly.
+          # deadline, not an independent wait per fingerprint -- otherwise a
+          # persistently failed tracker run could make this step sleep for
+          # up to MAX_RECORDS x 10 minutes instead of reporting promptly.
+          # The deadline is measured from this job's own start (the same
+          # origin the artifact-resolution step above uses), not a fresh
+          # budget restarted here, and leaves buffer before the job's
+          # 20-minute timeout for the final always() step to still run and
+          # update the head check -- otherwise GitHub can cancel the job
+          # mid-poll and leave "suppression-verify" stuck "in_progress"
+          # instead of reporting failure.
+          job_deadline_ms=$(( JOB_START_MS + (18 * 60 + 30) * 1000 ))
           missing=("${fingerprints[@]}")
-          for _ in $(seq 1 40); do
-            if [ "${#missing[@]}" -eq 0 ]; then
+          while [ "${#missing[@]}" -gt 0 ]; do
+            now_ms="$(date +%s%3N)"
+            if [ "${now_ms}" -ge "${job_deadline_ms}" ]; then
               break
             fi
             still_missing=()
