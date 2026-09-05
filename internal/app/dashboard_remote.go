@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/ben-ranford/lopper/internal/dashboard"
@@ -22,6 +23,14 @@ const (
 	dashboardRepoCacheHashLength       = 16
 	dashboardGitShallowDepthArg        = "--depth=1"
 )
+
+// dashboardRepoMaterializeTimeout bounds every git invocation for a single
+// repoUrl's clone/fetch/checkout/reset/clean sequence. The CLI supplies
+// context.Background() with no deadline, and materialization is sequential,
+// so without this an unresponsive remote would block the entire dashboard
+// run indefinitely instead of failing just that one repo. A var (not a
+// const) so tests can shrink it instead of waiting out a real deadline.
+var dashboardRepoMaterializeTimeout = 5 * time.Minute
 
 type dashboardRepoURLSpec struct {
 	normalized string
@@ -113,6 +122,9 @@ func dashboardRemoteCacheRoot() (string, error) {
 }
 
 func (m *dashboardRepoMaterializer) Materialize(ctx context.Context, repoURL string, revision dashboard.RepoRevision) (dashboardMaterializedRepo, error) {
+	ctx, cancel := context.WithTimeout(ctx, dashboardRepoMaterializeTimeout)
+	defer cancel()
+
 	spec, err := parseDashboardRepoURL(repoURL)
 	if err != nil {
 		return dashboardMaterializedRepo{}, err
