@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -753,12 +752,15 @@ func escapePortfolioRefPart(value string) string {
 }
 
 func stablePortfolioRefPath(value string) string {
-	trimmed := filepath.ToSlash(strings.TrimSpace(value))
+	// Normalize foreign path syntax before checking for machine-local roots.
+	trimmed := strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
 	trimmed = strings.TrimPrefix(trimmed, "./")
-	if trimmed == "" || filepath.IsAbs(value) {
+	driveAbsolute := len(trimmed) >= 3 && trimmed[1] == ':' && trimmed[2] == '/' &&
+		(trimmed[0] >= 'A' && trimmed[0] <= 'Z' || trimmed[0] >= 'a' && trimmed[0] <= 'z')
+	if strings.HasPrefix(trimmed, "/") || driveAbsolute {
 		return ""
 	}
-	return strings.TrimPrefix(trimmed, "/")
+	return trimmed
 }
 
 func sortPortfolioCycloneDXComponents(components []PortfolioComponent) []PortfolioComponent {
