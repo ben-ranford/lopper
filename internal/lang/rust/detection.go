@@ -190,7 +190,7 @@ func (w *rustDetectionWalker) walk(path string, entry fs.DirEntry) error {
 		w.roots[dir] = struct{}{}
 	case strings.ToLower(cargoLockName):
 		w.detection.Matched = true
-		w.detection.Confidence += 4
+		w.detection.Confidence += 6
 	}
 	if filepath.Ext(name) == ".rs" {
 		w.detection.Matched = true
