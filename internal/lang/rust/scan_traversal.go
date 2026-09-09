@@ -102,17 +102,18 @@ func scanRepoRootExcluding(ctx context.Context, options rustScanRootOptions) err
 }
 
 func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	return (rustScanRootOptions{
+	options := rustScanRootOptions{
 		repoPath:     repoPath,
 		root:         root,
 		depLookup:    depLookup,
 		scannedFiles: scannedFiles,
 		fileCount:    fileCount,
 		result:       result,
-	}).scanFile(path)
+	}
+	return options.scanFile(path)
 }
 
-func (o rustScanRootOptions) scanFile(path string) error {
+func (o *rustScanRootOptions) scanFile(path string) error {
 	if !strings.EqualFold(filepath.Ext(path), ".rs") || isExcludedRustSource(path, o.excludedSourceRoots) {
 		return nil
 	}
