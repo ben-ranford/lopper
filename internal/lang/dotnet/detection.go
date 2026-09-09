@@ -42,9 +42,13 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	if err := applyRootSignals(repoPath, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
+	malformedRoot, err := hasMalformedRootManifest(repoPath)
+	if err != nil {
+		return language.Detection{}, err
+	}
 
 	visited := 0
-	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -66,8 +70,33 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
+	if malformedRoot {
+		clear(roots)
+		roots[repoPath] = struct{}{}
+	}
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
+}
+
+func hasMalformedRootManifest(repoPath string) (bool, error) {
+	entries, err := os.ReadDir(repoPath)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || signalForName(entry.Name()) != fileSignalProject && signalForName(entry.Name()) != fileSignalCentral {
+			continue
+		}
+		_, err := parseManifestDependenciesForEntry(repoPath, filepath.Join(repoPath, entry.Name()), entry.Name())
+		if err == nil {
+			continue
+		}
+		if isDotNetManifestParseError(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
