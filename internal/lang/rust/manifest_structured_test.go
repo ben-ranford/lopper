@@ -173,6 +173,20 @@ func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
 	assertRustAnalysisSkipsMalformedManifest(t, "not valid = ", cargoTomlName)
 }
 
+func TestRustDetectionSkipsMalformedRootCargoManifest(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), "not valid = ")
+	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect malformed root Cargo manifest: %v", err)
+	}
+	if !detection.Matched || len(detection.Roots) == 0 {
+		t.Fatalf("expected Rust detection to continue from manifest names, got %#v", detection)
+	}
+}
+
 func TestRustAnalysisSkipsMalformedWorkspaceMemberManifest(t *testing.T) {
 	assertRustAnalysisSkipsMalformedManifest(t, "[workspace]\nmembers = [\"crates/*\"]\n", "crates/broken/Cargo.toml")
 }

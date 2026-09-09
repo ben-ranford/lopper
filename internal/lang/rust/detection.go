@@ -41,15 +41,18 @@ func applyRustRootSignals(repoPath string, detection *language.Detection, roots 
 
 		meta, _, parseErr := parseCargoManifest(cargoTomlPath, repoPath)
 		if parseErr != nil {
-			return false, parseErr
-		}
-		if meta.HasPackage {
-			roots[repoPath] = struct{}{}
-		}
-		if len(meta.WorkspaceMembers) > 0 {
-			workspaceOnlyRoot = !meta.HasPackage
-			for _, member := range meta.WorkspaceMembers {
-				addWorkspaceMemberRoot(repoPath, member, roots)
+			if !isCargoManifestParseError(parseErr) {
+				return false, parseErr
+			}
+		} else {
+			if meta.HasPackage {
+				roots[repoPath] = struct{}{}
+			}
+			if len(meta.WorkspaceMembers) > 0 {
+				workspaceOnlyRoot = !meta.HasPackage
+				for _, member := range meta.WorkspaceMembers {
+					addWorkspaceMemberRoot(repoPath, member, roots)
+				}
 			}
 		}
 	} else if !os.IsNotExist(err) {
