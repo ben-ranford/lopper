@@ -223,7 +223,7 @@ func codeownerEvidenceTarget(value string) string {
 			return ""
 		}
 	}
-	if strings.ContainsAny(target, " \t\r\n") || !staticLocation && !strings.Contains(target, "/") {
+	if strings.ContainsAny(target, "\t\r\n") || !staticLocation && !strings.Contains(target, "/") {
 		return ""
 	}
 	return target
@@ -318,7 +318,7 @@ func parseCodeownersLine(line, source string) (CodeownerRule, bool) {
 	if line == "" {
 		return CodeownerRule{}, false
 	}
-	fields := strings.Fields(line)
+	fields := codeownerFields(line)
 	if len(fields) == 0 || isUnsupportedCodeownerPattern(fields[0]) {
 		return CodeownerRule{}, false
 	}
@@ -328,6 +328,43 @@ func parseCodeownersLine(line, source string) (CodeownerRule, bool) {
 	}
 	sort.Strings(owners)
 	return CodeownerRule{Pattern: fields[0], Owners: owners, Source: source}, true
+}
+
+func codeownerFields(line string) []string {
+	fields := make([]string, 0)
+	var field strings.Builder
+	escaped := false
+	for _, r := range line {
+		if escaped {
+			if r == ' ' || r == '\t' {
+				field.WriteRune(r)
+			} else {
+				field.WriteByte('\\')
+				field.WriteRune(r)
+			}
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == ' ' || r == '\t' {
+			if field.Len() > 0 {
+				fields = append(fields, field.String())
+				field.Reset()
+			}
+			continue
+		}
+		field.WriteRune(r)
+	}
+	if escaped {
+		field.WriteByte('\\')
+	}
+	if field.Len() > 0 {
+		fields = append(fields, field.String())
+	}
+	return fields
 }
 
 func stripCodeownersComment(line string) string {

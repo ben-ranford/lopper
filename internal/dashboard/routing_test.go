@@ -142,6 +142,19 @@ func TestApplyRoutingUsesRootEvidencePathsForCodeowners(t *testing.T) {
 	assertRoutingAssignment(t, routed[0], "@team/api", "", "", "open", ".github/CODEOWNERS")
 }
 
+func TestApplyRoutingDropsCodeownerEvidencePathsWithSpaces(t *testing.T) {
+	rules := parseCodeowners("/docs/read\\ me.md @team/docs", ".github/CODEOWNERS")
+	items := []RemediationItem{{
+		Repo:     "docs",
+		RepoPath: "docs",
+		Evidence: []string{"static_location: docs/read me.md:12"},
+	}}
+
+	routed := ApplyRouting(items, RoutingOptions{Codeowners: rules})
+
+	assertRoutingAssignment(t, routed[0], "@team/docs", "", "", "open", ".github/CODEOWNERS")
+}
+
 func TestCodeownerEvidenceTargetsNormalizesFiltersAndDeduplicates(t *testing.T) {
 	got := codeownerEvidenceTargets([]string{
 		"",
@@ -162,7 +175,7 @@ func TestCodeownerEvidenceTargetsNormalizesFiltersAndDeduplicates(t *testing.T) 
 		"README.md",
 		"docs/read me.md",
 	})
-	want := []string{"services/api/go.mod", "services/web/main.go:not-a-line", "services/empty.go:", "main.go", "src/pkg/main.go"}
+	want := []string{"services/api/go.mod", "services/web/main.go:not-a-line", "services/empty.go:", "main.go", "src/pkg/main.go", "docs/read me.md"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("unexpected CODEOWNERS evidence targets: got %q, want %q", got, want)
 	}
