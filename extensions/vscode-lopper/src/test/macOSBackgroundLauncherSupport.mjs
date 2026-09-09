@@ -31,9 +31,14 @@ export function launcherEnvironment(environment) {
 
 export function terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, terminate) {
   for (const processLine of processOutput.split("\n")) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(processLine);
-    if (match && matchesTestProcess(match[2], executablePath, userDataDir)) {
-      terminate(Number(match[1]));
+    const line = processLine.trimStart();
+    const separator = line.indexOf(" ");
+    if (separator < 1) continue;
+    const pidText = line.slice(0, separator);
+    const pid = Number(pidText);
+    if (Number.isSafeInteger(pid) && pid > 0 && String(pid) === pidText &&
+        matchesTestProcess(line.slice(separator).trimStart(), executablePath, userDataDir)) {
+      terminate(pid);
     }
   }
 }
@@ -111,11 +116,11 @@ export function parseTestResult(contents) {
 }
 
 export function matchesTestProcess(command, executablePath, userDataDir) {
-  const escape = (value) => value.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&");
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
   const executable = escape(executablePath);
   const userData = escape(userDataDir);
   return (
-    new RegExp("(^|\\s)" + executable + "(?=\\s|$)").test(command) &&
-    new RegExp("(^|\\s)--user-data-dir(?:=|\\s+)" + userData + "(?=\\s|$)").test(command)
+    new RegExp(String.raw`(^|\s)${executable}(?=\s|$)`).test(command) &&
+    new RegExp(String.raw`(^|\s)--user-data-dir(?:=|\s+)${userData}(?=\s|$)`).test(command)
   );
 }

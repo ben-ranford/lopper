@@ -43,6 +43,10 @@ test("forwards required test paths and terminates only the isolated test process
   );
   assert.deepEqual(terminated, [100]);
   assert.equal(matchesTestProcess("/tmp/Code.app/Contents/MacOS/Code --user-data-dir=/tmp/profile-other", "/tmp/Code.app/Contents/MacOS/Code", "/tmp/profile"), false);
+  const executable = "/tmp/Code[1].app/Contents/MacOS/Code";
+  const profile = "/tmp/profile+1";
+  assert.equal(matchesTestProcess(`${executable} --user-data-dir=${profile}`, executable, profile), true);
+  assert.equal(matchesTestProcess("/tmp/Code1Xapp/Contents/MacOS/Code --user-data-dir=/tmp/profile11", executable, profile), false);
 });
 
 test("waits for graceful cleanup and escalates only stubborn matching processes", async () => {
