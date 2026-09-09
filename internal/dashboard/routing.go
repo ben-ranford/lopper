@@ -336,12 +336,7 @@ func codeownerFields(line string) []string {
 	escaped := false
 	for _, r := range line {
 		if escaped {
-			if r == ' ' || r == '\t' {
-				field.WriteRune(r)
-			} else {
-				field.WriteByte('\\')
-				field.WriteRune(r)
-			}
+			writeCodeownerEscapedRune(&field, r)
 			escaped = false
 			continue
 		}
@@ -349,11 +344,8 @@ func codeownerFields(line string) []string {
 			escaped = true
 			continue
 		}
-		if r == ' ' || r == '\t' {
-			if field.Len() > 0 {
-				fields = append(fields, field.String())
-				field.Reset()
-			}
+		if isCodeownerFieldSpace(r) {
+			fields = appendCodeownerField(fields, &field)
 			continue
 		}
 		field.WriteRune(r)
@@ -361,9 +353,26 @@ func codeownerFields(line string) []string {
 	if escaped {
 		field.WriteByte('\\')
 	}
-	if field.Len() > 0 {
-		fields = append(fields, field.String())
+	return appendCodeownerField(fields, &field)
+}
+
+func writeCodeownerEscapedRune(field *strings.Builder, r rune) {
+	if !isCodeownerFieldSpace(r) {
+		field.WriteByte('\\')
 	}
+	field.WriteRune(r)
+}
+
+func isCodeownerFieldSpace(r rune) bool {
+	return r == ' ' || r == '\t'
+}
+
+func appendCodeownerField(fields []string, field *strings.Builder) []string {
+	if field.Len() == 0 {
+		return fields
+	}
+	fields = append(fields, field.String())
+	field.Reset()
 	return fields
 }
 
