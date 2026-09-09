@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -149,7 +148,7 @@ func (m *dashboardRepoMaterializer) Materialize(ctx context.Context, repoURL str
 		resolvedCommit, err := m.refreshCheckout(ctx, checkoutPath, spec, normalizedRevision)
 		materialized.ResolvedCommit = resolvedCommit
 		if err != nil {
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if ctx.Err() != nil {
 				if cleanupErr := dashboardRemoveAllFn(checkoutPath); cleanupErr != nil {
 					return materialized, fmt.Errorf("%w; cleanup failed: %w", err, cleanupErr)
 				}
