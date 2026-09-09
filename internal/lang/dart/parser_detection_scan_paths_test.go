@@ -221,6 +221,26 @@ func TestCollectDirectiveBranches(t *testing.T) {
 	}
 }
 
+func TestCollectDirectiveLargeContinuationUsesBoundedAllocations(t *testing.T) {
+	const continuationCount = 4096
+	lines := make([]string, 0, continuationCount+1)
+	lines = append(lines, "import 'package:http/http.dart'")
+	for range continuationCount - 1 {
+		lines = append(lines, "  show HttpClient")
+	}
+	lines = append(lines, "  as http;")
+
+	allocations := testing.AllocsPerRun(1, func() {
+		directive, consumed, ok := collectDirective(lines)
+		if !ok || consumed != len(lines) || !strings.HasSuffix(directive, "as http;") {
+			t.Fatalf("expected large multiline directive to parse, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
+		}
+	})
+	if allocations > 2 {
+		t.Fatalf("expected bounded allocations for %d continuation lines, got %f", continuationCount, allocations)
+	}
+}
+
 func TestBuildDirectiveBindingsBranches(t *testing.T) {
 	location := report.Location{File: "lib/main.dart", Line: 1, Column: 1}
 	exportBindings := buildDirectiveBindings("export", fooPackageModule, "", "foo", location)
