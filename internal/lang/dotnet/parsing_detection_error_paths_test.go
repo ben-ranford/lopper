@@ -90,6 +90,15 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	}
 }
 
+func TestScanRepoCancellationPrecedesManifestParsing(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Broken.csproj"), `<Project><PackageReference Include="broken"`)
+
+	if _, err := scanRepo(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan to stop before manifest parsing, got %v", err)
+	}
+}
+
 func TestCollectDeclaredDependenciesIgnoresAncestorCentralPackages(t *testing.T) {
 	parent := t.TempDir()
 	repo := filepath.Join(parent, "src", "service")
