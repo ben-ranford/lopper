@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 
-import { applicationPathForExecutable, matchesTestProcess, openArguments, parseTestResult } from "./macOSBackgroundLauncherSupport.mjs";
+import { applicationPathForExecutable, launcherEnvironment, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
 
 const executablePath = process.env.LOPPER_VSCODE_TEST_EXECUTABLE;
 const resultPath = process.env.LOPPER_VSCODE_TEST_RESULT_PATH;
@@ -18,21 +18,30 @@ if (!executablePath || !resultPath || !userDataDir || !stdoutPath || !stderrPath
 const argumentsForOpen = openArguments({
   applicationPath: applicationPathForExecutable(executablePath),
   argumentsForVSCode: process.argv.slice(2),
-  environment: Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith("LOPPER_"))),
+  environment: launcherEnvironment(process.env),
   stdoutPath,
   stderrPath,
 });
 const open = spawn("/usr/bin/open", argumentsForOpen, { stdio: "inherit" });
+function cleanupTestProcess() {
+  const processOutput = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout;
+  terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, (pid) => process.kill(pid, "SIGTERM"));
+}
+
 const timeoutHandle = setTimeout(() => {
   open.kill("SIGTERM");
-  const processes = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout.split("\n");
-  for (const processLine of processes) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(processLine);
-    if (match && matchesTestProcess(match[2], executablePath, userDataDir)) {
-      process.kill(Number(match[1]), "SIGTERM");
-    }
-  }
+  cleanupTestProcess();
 }, timeout);
+
+function handleInterruption(signal, exitCode) {
+  clearTimeout(timeoutHandle);
+  open.kill("SIGTERM");
+  cleanupTestProcess();
+  process.exit(exitCode);
+}
+
+process.once("SIGINT", () => handleInterruption("SIGINT", 130));
+process.once("SIGTERM", () => handleInterruption("SIGTERM", 143));
 
 const exitCode = await new Promise((resolve, reject) => {
   open.once("error", reject);

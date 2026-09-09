@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applicationPathForExecutable, isBackgroundMacOSTestRun, matchesTestProcess, openArguments, parseTestResult } from "./macOSBackgroundLauncherSupport.mjs";
+import { applicationPathForExecutable, isBackgroundMacOSTestRun, launcherEnvironment, matchesTestProcess, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
 
 test("uses the background launcher only for local macOS runs", () => {
   assert.equal(isBackgroundMacOSTestRun({}, "darwin"), true);
@@ -23,6 +23,23 @@ test("builds a hidden no-focus launch with explicit test environment and argumen
     "--env", "TEST_VALUE=keep me", "/tmp/Visual Studio Code.app", "--args",
     "--user-data-dir", "/tmp/profile", "--extensionTestsPath=/tmp/tests",
   ]);
+});
+
+test("forwards only the binary path and terminates only the isolated test process", () => {
+  assert.deepEqual(launcherEnvironment({
+    LOPPER_BINARY_PATH: "/tmp/lopper",
+    LOPPER_GITHUB_TOKEN: "secret",
+    LOPPER_NOTIFY_WEBHOOK: "secret",
+  }), { LOPPER_BINARY_PATH: "/tmp/lopper" });
+
+  const terminated = [];
+  terminateMatchingTestProcesses(
+    "100 /tmp/Code.app/Contents/MacOS/Code --user-data-dir=/tmp/profile\n101 /tmp/Code.app/Contents/MacOS/Code --user-data-dir=/tmp/other\n102 /Applications/Code --user-data-dir=/tmp/profile",
+    "/tmp/Code.app/Contents/MacOS/Code",
+    "/tmp/profile",
+    (pid) => terminated.push(pid),
+  );
+  assert.deepEqual(terminated, [100]);
 });
 
 test("accepts only an explicit passed result and exact isolated process identity", () => {

@@ -21,6 +21,23 @@ export function openArguments({ applicationPath, argumentsForVSCode, environment
   return ["-n", "-g", "-j", "-W", "--stdout", stdoutPath, "--stderr", stderrPath, ...environmentArguments, applicationPath, "--args", ...argumentsForVSCode];
 }
 
+export function launcherEnvironment(environment) {
+  return Object.fromEntries(
+    ["LOPPER_BINARY_PATH"]
+      .filter((name) => environment[name] !== undefined)
+      .map((name) => [name, environment[name]]),
+  );
+}
+
+export function terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, terminate) {
+  for (const processLine of processOutput.split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(processLine);
+    if (match && matchesTestProcess(match[2], executablePath, userDataDir)) {
+      terminate(Number(match[1]));
+    }
+  }
+}
+
 export function parseTestResult(contents) {
   let result;
   try {
