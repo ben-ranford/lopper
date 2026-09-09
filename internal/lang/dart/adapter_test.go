@@ -227,6 +227,15 @@ void main() {}
 `,
 		},
 		{
+			name: "show list stops at hidden symbols",
+			source: `import 'package:http/http.dart'
+    show Client
+    hide Request;
+
+void main() {}
+`,
+		},
+		{
 			name: "alias before continuation comment",
 			source: `import 'package:http/http.dart' as http
     show Client; // http
