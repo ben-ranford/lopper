@@ -73,7 +73,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRequiresRepos(t *testing.T) {
+func TestLoadConfigAllowsDashboardDefaultsWithoutRepos(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, testDashboardConfigFile)
 	content := "dashboard:\n  output: html\n"
@@ -81,9 +81,12 @@ func TestLoadConfigRequiresRepos(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	_, err := LoadConfig(path)
-	if err == nil || !strings.Contains(err.Error(), "at least one repo") {
-		t.Fatalf("expected config repo validation error, got %v", err)
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config defaults: %v", err)
+	}
+	if len(loaded.Dashboard.Repos) != 0 || loaded.Dashboard.Output != "html" {
+		t.Fatalf("expected defaults-only dashboard config, got %#v", loaded.Dashboard)
 	}
 }
 
