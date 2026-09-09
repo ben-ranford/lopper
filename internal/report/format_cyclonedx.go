@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/references"
 )
 
 const (
@@ -64,11 +66,6 @@ type cycloneDXProperty struct {
 type cycloneDXDependencyInstance struct {
 	dependency DependencyReport
 	component  cycloneDXComponent
-}
-
-type cycloneDXRefAllocator struct {
-	reserved map[string]struct{}
-	used     map[string]struct{}
 }
 
 func formatCycloneDXJSON(reportData Report) (string, error) {
@@ -486,7 +483,7 @@ func buildCycloneDXDependencyInstances(reportData Report) []cycloneDXDependencyI
 	for _, dep := range dependencies {
 		baseRefs = append(baseRefs, cycloneDXBOMRef(dep))
 	}
-	refAllocator := newCycloneDXRefAllocator(baseRefs)
+	refAllocator := references.NewAllocator(baseRefs)
 
 	for index, dep := range dependencies {
 		delta := DependencyDelta{}
@@ -494,7 +491,7 @@ func buildCycloneDXDependencyInstances(reportData Report) []cycloneDXDependencyI
 			delta = *baselineDeltas[index]
 		}
 
-		ref := refAllocator.allocate(cycloneDXBOMRef(dep))
+		ref := refAllocator.Allocate(cycloneDXBOMRef(dep))
 		instances = append(instances, cycloneDXDependencyInstance{
 			dependency: dep,
 			component: cycloneDXComponent{
@@ -510,35 +507,6 @@ func buildCycloneDXDependencyInstances(reportData Report) []cycloneDXDependencyI
 	}
 
 	return instances
-}
-
-func newCycloneDXRefAllocator(bases []string) cycloneDXRefAllocator {
-	reserved := make(map[string]struct{}, len(bases))
-	for _, base := range bases {
-		reserved[base] = struct{}{}
-	}
-	return cycloneDXRefAllocator{
-		reserved: reserved,
-		used:     make(map[string]struct{}, len(bases)),
-	}
-}
-
-func (a *cycloneDXRefAllocator) allocate(base string) string {
-	if _, exists := a.used[base]; !exists {
-		a.used[base] = struct{}{}
-		return base
-	}
-	for suffix := 2; ; suffix++ {
-		candidate := base + ":" + strconv.Itoa(suffix)
-		if _, reserved := a.reserved[candidate]; reserved {
-			continue
-		}
-		if _, exists := a.used[candidate]; exists {
-			continue
-		}
-		a.used[candidate] = struct{}{}
-		return candidate
-	}
 }
 
 func cycloneDXSortKeyFromParts(parts []string) string {

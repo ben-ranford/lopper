@@ -3,6 +3,8 @@ package report
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/ben-ranford/lopper/internal/references"
 )
 
 var cycloneDXVEXJustificationValues = map[string]string{
@@ -89,12 +91,12 @@ func formatCycloneDXVulnerabilities(instances []cycloneDXDependencyInstance) []c
 			baseRefs = append(baseRefs, "lopper:vulnerability:"+escapeCycloneDXBOMRefPart(dep.Name)+":"+escapeCycloneDXBOMRefPart(finding.AdvisoryID))
 		}
 	}
-	refAllocator := newCycloneDXRefAllocator(baseRefs)
+	refAllocator := references.NewAllocator(baseRefs)
 	for _, instance := range instances {
 		dep := instance.dependency
 		for _, finding := range dep.Vulnerabilities {
 			items = append(items, cycloneDXVulnerability{
-				BOMRef:     refAllocator.allocate("lopper:vulnerability:" + escapeCycloneDXBOMRefPart(dep.Name) + ":" + escapeCycloneDXBOMRefPart(finding.AdvisoryID)),
+				BOMRef:     refAllocator.Allocate("lopper:vulnerability:" + escapeCycloneDXBOMRefPart(dep.Name) + ":" + escapeCycloneDXBOMRefPart(finding.AdvisoryID)),
 				ID:         finding.AdvisoryID,
 				Source:     cycloneDXVulnerabilitySourceForFinding(finding),
 				Ratings:    cycloneDXVulnerabilityRatings(finding),

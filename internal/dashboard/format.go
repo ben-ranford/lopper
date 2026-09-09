@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/csvsanitize"
+	"github.com/ben-ranford/lopper/internal/references"
 )
 
 const (
@@ -640,12 +641,12 @@ func portfolioCycloneDXComponents(reportData Report) []map[string]any {
 	for _, dep := range deps {
 		baseRefs = append(baseRefs, portfolioDependencyRef(dep))
 	}
-	refAllocator := newPortfolioRefAllocator(baseRefs)
+	refAllocator := references.NewAllocator(baseRefs)
 	for _, repo := range repos {
 		component := map[string]any{
 			"type":    "application",
 			"name":    repo.Name,
-			"bom-ref": refAllocator.allocate(portfolioRepoRef(repo)),
+			"bom-ref": refAllocator.Allocate(portfolioRepoRef(repo)),
 		}
 		if repo.ResolvedCommit != "" {
 			component["version"] = repo.ResolvedCommit
@@ -657,7 +658,7 @@ func portfolioCycloneDXComponents(reportData Report) []map[string]any {
 		component := map[string]any{
 			"type":    "library",
 			"name":    dep.Name,
-			"bom-ref": refAllocator.allocate(portfolioDependencyRef(dep)),
+			"bom-ref": refAllocator.Allocate(portfolioDependencyRef(dep)),
 			"properties": []map[string]string{
 				{"name": "lopper:repo", "value": repoLabel},
 				{"name": "lopper:language", "value": dep.Language},
@@ -721,40 +722,6 @@ func stablePortfolioDependencyRepoLabel(dep PortfolioComponent) string {
 		return name
 	}
 	return name + " (" + stablePath + ")"
-}
-
-type portfolioRefAllocator struct {
-	reserved map[string]struct{}
-	used     map[string]struct{}
-}
-
-func newPortfolioRefAllocator(bases []string) portfolioRefAllocator {
-	reserved := make(map[string]struct{}, len(bases))
-	for _, base := range bases {
-		reserved[base] = struct{}{}
-	}
-	return portfolioRefAllocator{
-		reserved: reserved,
-		used:     make(map[string]struct{}, len(bases)),
-	}
-}
-
-func (a *portfolioRefAllocator) allocate(base string) string {
-	if _, exists := a.used[base]; !exists {
-		a.used[base] = struct{}{}
-		return base
-	}
-	for suffix := 2; ; suffix++ {
-		candidate := base + ":" + strconv.Itoa(suffix)
-		if _, reserved := a.reserved[candidate]; reserved {
-			continue
-		}
-		if _, exists := a.used[candidate]; exists {
-			continue
-		}
-		a.used[candidate] = struct{}{}
-		return candidate
-	}
 }
 
 func joinPortfolioRefParts(parts ...string) string {
