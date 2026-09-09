@@ -23,7 +23,7 @@ func TestPortfolioRefsExcludeForeignAbsolutePaths(t *testing.T) {
 }
 
 func TestPortfolioRefsNormalizeRelativePathsAcrossPlatforms(t *testing.T) {
-	for _, value := range []string{"services/api", "./services/api", `services\api`, `.\services\api`, " services/api "} {
+	for _, value := range []string{"services/api", "./services/api", `services\api`, `.\services\api`, " services/api ", ".//services/api", ".\\\\services\\api", "././services/api"} {
 		if got := stablePortfolioRefPath(value); got != "services/api" {
 			t.Fatalf("relative path %q normalized to %q", value, got)
 		}
