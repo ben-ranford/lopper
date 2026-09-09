@@ -1199,10 +1199,11 @@ func TestPreparedDistributedLockfileRangesReuseRepositoryEntries(t *testing.T) {
 		t.Fatal("expected unchanged alpha lockfile range")
 	}
 	changedFiles := map[string]struct{}{"alpha/src/" + dotnetLockfileName: {}}
-	prefixes, err := preparedDistributedLockfileChangePrefixes(context.Background(), prepared, changedFiles)
+	prefix, err := distributedLockfileChangePrefix(context.Background(), rootRange.index, changedFiles)
 	if err != nil {
-		t.Fatalf("build distributed change prefixes: %v", err)
+		t.Fatalf("build distributed change prefix: %v", err)
 	}
+	prefixes := preparedDistributedLockfileChanges{rootRange.index: prefix}
 	if !preparedManifestChangeHasChangedLockfile(change, changedFiles, prefixes) {
 		t.Fatal("expected changed distributed lockfile to suppress manifest warning")
 	}
@@ -1314,29 +1315,27 @@ func (c *cancelAfterFirstCheckContext) Err() error {
 func TestPreparedDistributedLockfileChangePrefixesRespectCancellation(t *testing.T) {
 	index := &dotnetProjectLockfileIndex{lockfiles: []string{"src/one/" + dotnetLockfileName, "src/two/" + dotnetLockfileName}}
 	rangeValue := dotnetProjectLockfileRange{index: index, end: 2}
-	prepared := &lockfilePreparedScan{dirs: []lockfilePreparedDir{{rules: []lockfilePreparedRule{{manifestChange: &lockfilePreparedManifestChange{distributed: &rangeValue}}}}}}
-	if _, err := preparedDistributedLockfileChangePrefixes(nil, prepared, map[string]struct{}{index.lockfiles[0]: {}}); err != nil {
-		t.Fatalf("expected nil context to use background context, got %v", err)
+	prepared := lockfilePreparedManifestChange{
+		manifests:   []lockfilePreparedManifestRef{{name: dotnetCentralManifest, relPath: dotnetCentralManifest}},
+		distributed: &rangeValue,
+	}
+	gitContext := lockfileGitContext{hasGitContext: true, changedFiles: map[string]struct{}{dotnetCentralManifest: {}, index.lockfiles[0]: {}}}
+	changes := make(preparedDistributedLockfileChanges)
+	if err := ensurePreparedDistributedLockfileChanges(nil, prepared, gitContext, changes); err != nil || len(changes[index]) != len(index.lockfiles)+1 {
+		t.Fatalf("expected nil context to build cached prefixes, got %#v %v", changes, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := preparedDistributedLockfileChangePrefixes(ctx, prepared, map[string]struct{}{index.lockfiles[0]: {}}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected canceled prefix preparation, got %v", err)
+	if err := ensurePreparedDistributedLockfileChanges(ctx, prepared, gitContext, make(preparedDistributedLockfileChanges)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled lazy prefix preparation, got %v", err)
 	}
 	if _, err := distributedLockfileChangePrefix(nil, index, map[string]struct{}{}); err != nil {
 		t.Fatalf("expected nil context prefix traversal to succeed, got %v", err)
 	}
-	if _, err := distributedLockfileChangePrefix(&cancelAfterFirstCheckContext{}, index, map[string]struct{}{index.lockfiles[0]: {}}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected cancellation during prefix traversal, got %v", err)
+	if err := ensurePreparedDistributedLockfileChanges(&cancelAfterFirstCheckContext{}, prepared, gitContext, make(preparedDistributedLockfileChanges)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation during lazy prefix traversal, got %v", err)
 	}
-	if _, err := preparedDistributedLockfileChangePrefixes(&cancelAfterFirstCheckContext{}, prepared, map[string]struct{}{index.lockfiles[0]: {}}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected prefix traversal error to propagate, got %v", err)
-	}
-	result := scanPreparedLockfileDrift(ctx, lockfileGitContext{preparedScan: prepared, changedFiles: map[string]struct{}{index.lockfiles[0]: {}}}, nil)
-	if !errors.Is(result.err, context.Canceled) {
-		t.Fatalf("expected canceled prepared scan, got %v", result.err)
-	}
-	if !(&lockfileDriftResult{}).appendPreparedRule(lockfilePreparedDir{}, lockfilePreparedRule{manifestChange: &lockfilePreparedManifestChange{manifests: []lockfilePreparedManifestRef{{name: dotnetCentralManifest, relPath: dotnetCentralManifest}}}}, lockfileGitContext{hasGitContext: true}, newLockfileManifestCache(lockfileDirSnapshot{}), nil) {
+	if !(&lockfileDriftResult{}).appendPreparedRule(context.Background(), lockfilePreparedDir{}, lockfilePreparedRule{manifestChange: &lockfilePreparedManifestChange{manifests: []lockfilePreparedManifestRef{{name: dotnetCentralManifest, relPath: dotnetCentralManifest}}}}, lockfileGitContext{hasGitContext: true}, newLockfileManifestCache(lockfileDirSnapshot{}), nil) {
 		t.Fatal("expected unchanged prepared rule to continue")
 	}
 }
@@ -1513,5 +1512,70 @@ func TestEvaluateDistributedDotnetLockfileRulePreservesScopedStaleAndChangedSema
 	finding, found, err = evaluateLockfileRule(rootSnapshot, rule, lockfileGitContext{})
 	if err != nil || !found || len(finding.lockfiles) != 1 || finding.lockfiles[0].name != "src/"+dotnetLockfileName {
 		t.Fatalf("expected root stale lockfile finding, got %#v found=%v err=%v", finding, found, err)
+	}
+}
+
+type cancelDuringDistributedPrefixContext struct{ checks int }
+
+func (c *cancelDuringDistributedPrefixContext) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+func (c *cancelDuringDistributedPrefixContext) Done() <-chan struct{} { return nil }
+func (c *cancelDuringDistributedPrefixContext) Value(any) any         { return nil }
+func (c *cancelDuringDistributedPrefixContext) Err() error {
+	c.checks++
+	if c.checks > 2 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestPreparedLockfileScanRetainsEarlierFindingWhenLaterDistributedPrefixIsCanceled(t *testing.T) {
+	npmRule := mustLockfileRule(t, "npm", "package.json")
+	dotnetRule := mustLockfileRule(t, ".NET", dotnetCentralManifest)
+	index := &dotnetProjectLockfileIndex{lockfiles: []string{
+		"nested/src/one/" + dotnetLockfileName,
+		"nested/src/two/" + dotnetLockfileName,
+	}}
+	distributed := dotnetProjectLockfileRange{index: index, end: len(index.lockfiles)}
+	prepared := &lockfilePreparedScan{dirs: []lockfilePreparedDir{
+		{
+			repoPath: ".", path: ".", relDir: ".",
+			rules: []lockfilePreparedRule{{replay: &lockfilePreparedRuleReplay{
+				rule: npmRule, manifests: []string{"package.json"},
+			}}},
+		},
+		{
+			repoPath: ".", path: "nested", relDir: "nested",
+			rules: []lockfilePreparedRule{{manifestChange: &lockfilePreparedManifestChange{
+				rule: dotnetRule, relDir: "nested",
+				manifests:   []lockfilePreparedManifestRef{{name: dotnetCentralManifest, relPath: "nested/" + dotnetCentralManifest}},
+				distributed: &distributed,
+			}}},
+		},
+		{
+			repoPath: ".", path: "later", relDir: "later",
+			rules: []lockfilePreparedRule{{manifestChange: &lockfilePreparedManifestChange{
+				rule: npmRule, relDir: "later",
+				manifests: []lockfilePreparedManifestRef{{name: "package.json", relPath: "later/package.json"}},
+			}}},
+		},
+	}}
+	result := scanPreparedLockfileDrift(&cancelDuringDistributedPrefixContext{}, lockfileGitContext{
+		hasGitContext: true,
+		preparedScan:  prepared,
+		changedFiles: map[string]struct{}{
+			"nested/" + dotnetCentralManifest: {},
+			"later/package.json":              {},
+		},
+	}, []lockfileRule{npmRule, dotnetRule})
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("expected canceled later prefix construction, got %v", result.err)
+	}
+	if len(result.findings) != 1 || !strings.Contains(result.findings[0], "npm in .: package.json exists but no matching lockfile") {
+		t.Fatalf("expected earlier missing-lockfile finding only, got %#v", result.findings)
+	}
+	if len(result.orderedWarnings) != 1 || result.orderedWarnings[0] != result.findings[0] {
+		t.Fatalf("expected retained ordered earlier finding only, got %#v", result.orderedWarnings)
 	}
 }

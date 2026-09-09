@@ -388,11 +388,7 @@ func scanPreparedLockfileDrift(ctx context.Context, gitContext lockfileGitContex
 		findings:        make([]string, 0, len(rules)),
 		orderedWarnings: make([]string, 0, len(rules)),
 	}
-	distributedChanges, changesErr := preparedDistributedLockfileChangePrefixes(ctx, prepared, gitContext.changedFiles)
-	if changesErr != nil {
-		result.err = errors.Join(prepared.readErrors.joined(), changesErr)
-		return result
-	}
+	distributedChanges := make(preparedDistributedLockfileChanges)
 	for _, dir := range prepared.dirs {
 		if ctx != nil {
 			if err := ctx.Err(); err != nil {
@@ -400,7 +396,7 @@ func scanPreparedLockfileDrift(ctx context.Context, gitContext lockfileGitContex
 				return result
 			}
 		}
-		result.appendPreparedDir(dir, gitContext, manifestIO, distributedChanges)
+		result.appendPreparedDir(ctx, dir, gitContext, manifestIO, distributedChanges)
 		if result.err != nil && !isRecoverableLockfileManifestReadError(result.err) {
 			result.err = errors.Join(prepared.readErrors.joined(), result.err)
 			return result
@@ -1178,7 +1174,7 @@ func evaluateLockfileDirWithRulesAndCache(snapshot lockfileDirSnapshot, gitConte
 	return evaluation
 }
 
-func (r *lockfileDriftResult) appendPreparedDir(dir lockfilePreparedDir, gitContext lockfileGitContext, manifestIO lockfileManifestIO, distributedChanges preparedDistributedLockfileChanges) {
+func (r *lockfileDriftResult) appendPreparedDir(ctx context.Context, dir lockfilePreparedDir, gitContext lockfileGitContext, manifestIO lockfileManifestIO, distributedChanges preparedDistributedLockfileChanges) {
 	snapshot := lockfileDirSnapshot{
 		repoPath: dir.repoPath,
 		path:     dir.path,
@@ -1186,19 +1182,23 @@ func (r *lockfileDriftResult) appendPreparedDir(dir lockfilePreparedDir, gitCont
 	}
 	cache := newLockfileManifestCacheWithIO(snapshot, manifestIO)
 	for _, rule := range dir.rules {
-		if !r.appendPreparedRule(dir, rule, gitContext, cache, distributedChanges) {
+		if !r.appendPreparedRule(ctx, dir, rule, gitContext, cache, distributedChanges) {
 			return
 		}
 	}
 }
 
-func (r *lockfileDriftResult) appendPreparedRule(dir lockfilePreparedDir, rule lockfilePreparedRule, gitContext lockfileGitContext, cache *lockfileManifestCache, distributedChanges preparedDistributedLockfileChanges) bool {
+func (r *lockfileDriftResult) appendPreparedRule(ctx context.Context, dir lockfilePreparedDir, rule lockfilePreparedRule, gitContext lockfileGitContext, cache *lockfileManifestCache, distributedChanges preparedDistributedLockfileChanges) bool {
 	if rule.manifestReadErr != nil {
 		r.orderedWarnings = append(r.orderedWarnings, oversizedLockfileDriftWarning(rule.manifestReadErr))
 		return true
 	}
 	if rule.manifestChange == nil {
 		return r.appendPreparedReplayRule(dir, rule, gitContext, cache)
+	}
+	if err := ensurePreparedDistributedLockfileChanges(ctx, *rule.manifestChange, gitContext, distributedChanges); err != nil {
+		r.err = errors.Join(r.err, err)
+		return false
 	}
 	finding, found := evaluatePreparedManifestChangeWithChanges(*rule.manifestChange, gitContext, distributedChanges)
 	if !found {
@@ -1424,6 +1424,30 @@ func evaluatePreparedManifestChangeWithChanges(prepared lockfilePreparedManifest
 	}, true
 }
 
+func ensurePreparedDistributedLockfileChanges(ctx context.Context, prepared lockfilePreparedManifestChange, gitContext lockfileGitContext, distributedChanges preparedDistributedLockfileChanges) error {
+	if prepared.distributed == nil || !gitContext.hasGitContext || len(gitContext.changedFiles) == 0 || !preparedManifestChangeIsChanged(prepared, gitContext.changedFiles) {
+		return nil
+	}
+	if _, ok := distributedChanges[prepared.distributed.index]; ok {
+		return nil
+	}
+	prefixes, err := distributedLockfileChangePrefix(ctx, prepared.distributed.index, gitContext.changedFiles)
+	if err != nil {
+		return err
+	}
+	distributedChanges[prepared.distributed.index] = prefixes
+	return nil
+}
+
+func preparedManifestChangeIsChanged(prepared lockfilePreparedManifestChange, changedFiles map[string]struct{}) bool {
+	for _, manifest := range prepared.manifests {
+		if isPathChanged(changedFiles, manifest.relPath) {
+			return true
+		}
+	}
+	return false
+}
+
 func preparedManifestChangeHasChangedLockfile(prepared lockfilePreparedManifestChange, changedFiles map[string]struct{}, distributedChanges preparedDistributedLockfileChanges) bool {
 	if prepared.distributed != nil {
 		distributed := prepared.distributed
@@ -1443,29 +1467,6 @@ func preparedManifestChangeHasChangedLockfile(prepared lockfilePreparedManifestC
 		}
 	}
 	return false
-}
-
-func preparedDistributedLockfileChangePrefixes(ctx context.Context, prepared *lockfilePreparedScan, changedFiles map[string]struct{}) (preparedDistributedLockfileChanges, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	prefixesByIndex := make(preparedDistributedLockfileChanges)
-	if prepared == nil || len(changedFiles) == 0 {
-		return prefixesByIndex, nil
-	}
-	for _, distributed := range preparedDistributedLockfileRanges(prepared) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if _, seen := prefixesByIndex[distributed.index]; !seen {
-			prefixes, err := distributedLockfileChangePrefix(ctx, distributed.index, changedFiles)
-			if err != nil {
-				return nil, err
-			}
-			prefixesByIndex[distributed.index] = prefixes
-		}
-	}
-	return prefixesByIndex, nil
 }
 
 func distributedLockfileChangePrefix(ctx context.Context, index *dotnetProjectLockfileIndex, changedFiles map[string]struct{}) ([]int, error) {
