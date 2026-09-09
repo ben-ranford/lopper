@@ -31,6 +31,7 @@ type dotnetProjectLockfileIndex struct {
 	repoPath               string
 	lockfiles              []string
 	scopedLockfilesByScope map[string][]string
+	scopedRangesByScope    map[string]dotnetScopedLockfileRange
 	initialized            bool
 	scoped                 bool
 	findLockfiles          func(string) ([]presentLockfile, error)
@@ -1931,15 +1932,33 @@ func (i *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]pres
 }
 
 func (i *dotnetProjectLockfileIndex) scopedLockfileRangeUnder(relDir string) (dotnetScopedLockfileRange, error) {
+	return i.scopedLockfileRangeUnderWithParent(relDir, nil)
+}
+
+func (i *dotnetProjectLockfileIndex) scopedLockfileRangeUnderWithParent(relDir string, parent func(string) string) (dotnetScopedLockfileRange, error) {
 	scope := filepath.Clean(relDir)
 	if i.scopedLockfilesByScope == nil {
 		i.scopedLockfilesByScope = make(map[string][]string)
 	}
+	if i.scopedRangesByScope == nil {
+		i.scopedRangesByScope = make(map[string]dotnetScopedLockfileRange)
+	}
 	if lockfiles, ok := i.scopedLockfilesByScope[scope]; ok {
 		return dotnetScopedLockfileRange{lockfiles: lockfiles, end: len(lockfiles), baseRelDir: scope}, nil
 	}
+	if rangeValue, ok := i.scopedRangesByScope[scope]; ok {
+		return rangeValue, nil
+	}
 
-	if rangeValue, ok := i.cachedScopedLockfileRange(scope); ok {
+	var rangeValue dotnetScopedLockfileRange
+	var cached bool
+	if parent == nil {
+		rangeValue, cached = i.cachedScopedLockfileRange(scope)
+	} else {
+		rangeValue, cached = i.cachedScopedLockfileRangeWithParent(scope, parent)
+	}
+	if cached {
+		i.scopedRangesByScope[scope] = rangeValue
 		return rangeValue, nil
 	}
 
@@ -1957,18 +1976,69 @@ func (i *dotnetProjectLockfileIndex) scopedLockfileRangeUnder(relDir string) (do
 }
 
 func (i *dotnetProjectLockfileIndex) cachedScopedLockfileRange(scope string) (dotnetScopedLockfileRange, bool) {
-	for candidate := filepath.Clean(scope); ; candidate = filepath.Dir(candidate) {
+	return i.cachedScopedLockfileRangeWithParent(scope, filepath.Dir)
+}
+
+func (i *dotnetProjectLockfileIndex) cachedScopedLockfileRangeWithParent(scope string, parent func(string) string) (dotnetScopedLockfileRange, bool) {
+	walked := make([]string, 0, 1)
+	for candidate := filepath.Clean(scope); ; candidate = parent(candidate) {
+		walked = append(walked, candidate)
+		if rangeValue, ok := i.scopedRangesByScope[candidate]; ok {
+			return i.cacheDerivedScopedLockfileRanges(rangeValue, candidate, scope, walked)
+		}
 		if lockfiles, ok := i.scopedLockfilesByScope[candidate]; ok {
-			relativeScope, err := filepath.Rel(candidate, scope)
-			if err != nil {
-				return dotnetScopedLockfileRange{}, false
-			}
-			return scopedLockfileRangeForRelativeDir(lockfiles, candidate, relativeScope), true
+			rangeValue := scopedLockfileRangeForRelativeDir(lockfiles, candidate, ".")
+			return i.cacheDerivedScopedLockfileRanges(rangeValue, candidate, scope, walked)
 		}
 		if candidate == "." {
 			return dotnetScopedLockfileRange{}, false
 		}
 	}
+}
+
+func (i *dotnetProjectLockfileIndex) cacheDerivedScopedLockfileRanges(ancestor dotnetScopedLockfileRange, ancestorScope, scope string, walked []string) (dotnetScopedLockfileRange, bool) {
+	relativeScope, err := filepath.Rel(ancestorScope, scope)
+	if err != nil {
+		return dotnetScopedLockfileRange{}, false
+	}
+	result := scopedLockfileRangeWithin(ancestor, relativeScope)
+	cached := make([]struct {
+		scope      string
+		rangeValue dotnetScopedLockfileRange
+	}, 0, len(walked))
+	for _, candidate := range walked {
+		if candidate == ancestorScope {
+			continue
+		}
+		relativeCandidate, err := filepath.Rel(ancestorScope, candidate)
+		if err != nil {
+			return dotnetScopedLockfileRange{}, false
+		}
+		cached = append(cached, struct {
+			scope      string
+			rangeValue dotnetScopedLockfileRange
+		}{candidate, scopedLockfileRangeWithin(ancestor, relativeCandidate)})
+	}
+	for _, entry := range cached {
+		i.scopedRangesByScope[entry.scope] = entry.rangeValue
+	}
+	return result, true
+}
+
+func scopedLockfileRangeWithin(parent dotnetScopedLockfileRange, relDir string) dotnetScopedLockfileRange {
+	relativeScope := filepath.ToSlash(filepath.Clean(relDir))
+	if relativeScope == "." {
+		return parent
+	}
+	prefix := parent.relativePrefix + relativeScope + "/"
+	lockfiles := parent.lockfiles
+	start := parent.start + sort.Search(parent.end-parent.start, func(offset int) bool {
+		return lockfiles[parent.start+offset] >= prefix
+	})
+	end := start + sort.Search(parent.end-start, func(offset int) bool {
+		return !strings.HasPrefix(lockfiles[start+offset], prefix)
+	})
+	return dotnetScopedLockfileRange{lockfiles: lockfiles, start: start, end: end, baseRelDir: parent.baseRelDir, relativePrefix: prefix}
 }
 
 func scopedLockfileRangeForRelativeDir(lockfiles []string, baseRelDir, relDir string) dotnetScopedLockfileRange {

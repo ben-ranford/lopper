@@ -158,7 +158,7 @@ func TestDotnetProjectLockfileIndexDoesNotMaterializeAncestorCopies(t *testing.T
 	assertNestedDotnetLockfileAllocationBound(t, ".NET lockfile index", 10, measureDotnetProjectLockfileIndexAllocs)
 }
 
-func TestDotnetProjectLockfileIndexDoesNotCacheAncestorDerivedScopes(t *testing.T) {
+func TestDotnetProjectLockfileIndexCachesAncestorDerivedRangesWithoutCopies(t *testing.T) {
 	index := &dotnetProjectLockfileIndex{
 		repoPath: ".",
 		scoped:   true,
@@ -180,6 +180,14 @@ func TestDotnetProjectLockfileIndexDoesNotCacheAncestorDerivedScopes(t *testing.
 	}
 	if len(index.scopedLockfilesByScope) != 1 {
 		t.Fatalf("expected only filesystem-walk scopes to remain cached, got %#v", index.scopedLockfilesByScope)
+	}
+	if len(index.scopedRangesByScope) != 3 {
+		t.Fatalf("expected derived ranges for each queried scope, got %#v", index.scopedRangesByScope)
+	}
+	for scope, rangeValue := range index.scopedRangesByScope {
+		if len(rangeValue.lockfiles) != len(index.scopedLockfilesByScope["."]) || &rangeValue.lockfiles[0] != &index.scopedLockfilesByScope["."][0] {
+			t.Fatalf("expected %s derived range to share the root lockfile storage, got %#v", scope, rangeValue)
+		}
 	}
 }
 

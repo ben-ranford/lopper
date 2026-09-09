@@ -1424,12 +1424,168 @@ func measureLockfileWork(t *testing.T, work func()) (float64, uint64) {
 	return allocs, after.TotalAlloc - before.TotalAlloc
 }
 
+func TestDerivedScopedLockfileRangesPreserveParentBounds(t *testing.T) {
+	lockfiles := []string{
+		"alpha/" + dotnetLockfileName,
+		"alpha/child/" + dotnetLockfileName,
+		"beta/" + dotnetLockfileName,
+	}
+	sort.Strings(lockfiles)
+	root := scopedLockfileRangeForRelativeDir(lockfiles, ".", ".")
+	child := scopedLockfileRangeWithin(root, filepath.Join("alpha", "child"))
+	if child.end-child.start != 1 || child.lockfiles[child.start] != "alpha/child/"+dotnetLockfileName || child.relativePrefix != "alpha/child/" {
+		t.Fatalf("expected child bounds within root storage, got %#v", child)
+	}
+	if &child.lockfiles[0] != &root.lockfiles[0] {
+		t.Fatalf("expected child bounds to share parent lockfiles, got %#v", child)
+	}
+	direct := scopedLockfileRangeForRelativeDir(lockfiles, ".", filepath.Join("alpha", "child"))
+	if direct.start != child.start || direct.end != child.end || direct.relativePrefix != child.relativePrefix {
+		t.Fatalf("expected direct and derived child ranges to agree, got direct=%#v derived=%#v", direct, child)
+	}
+}
+
+func TestScopedLockfileRangeCachesDerivedAncestorLookups(t *testing.T) {
+	smallInitial, smallRepeated := measureDerivedScopedLockfileRangeProbes(t, 64)
+	largeInitial, largeRepeated := measureDerivedScopedLockfileRangeProbes(t, 384)
+	t.Logf("derived .NET scope cache parent probes: 64=%d/%d 384=%d/%d", smallInitial, smallRepeated, largeInitial, largeRepeated)
+	if smallInitial > 64 || largeInitial > 384 || smallRepeated != 0 || largeRepeated != 0 {
+		t.Fatalf("expected cold nested scopes to reuse the nearest cached range and repeats to hit directly, got 64=%d/%d 384=%d/%d", smallInitial, smallRepeated, largeInitial, largeRepeated)
+	}
+	assertDerivedScopedLockfileSiblingRanges(t)
+	assertEmptyDerivedScopedLockfileRange(t)
+	assertFailedScopedLockfileLookupIsNotCached(t)
+}
+
+func measureDerivedScopedLockfileRangeProbes(t *testing.T, depth int) (initial, repeated int) {
+	t.Helper()
+	lockfiles, scopes := nestedScopedLockfileNames(depth)
+	index := &dotnetProjectLockfileIndex{scopedLockfilesByScope: map[string][]string{".": lockfiles}}
+	probes := 0
+	parent := func(path string) string {
+		probes++
+		return filepath.Dir(path)
+	}
+	assertScopedLockfileRanges(t, index, scopes, parent, "cache derived")
+	initial = probes
+	probes = 0
+	assertScopedLockfileRanges(t, index, scopes, parent, "reuse derived")
+	return initial, probes
+}
+
+func nestedScopedLockfileNames(depth int) ([]string, []string) {
+	lockfiles := make([]string, 0, depth)
+	scopes := make([]string, 0, depth)
+	scope := "."
+	for value := range depth {
+		scope = filepath.Join(scope, fmt.Sprintf("nested-%03d", value))
+		scopes = append(scopes, scope)
+		lockfiles = append(lockfiles, filepath.ToSlash(filepath.Join(scope, dotnetLockfileName)))
+	}
+	sort.Strings(lockfiles)
+	return lockfiles, scopes
+}
+
+func assertScopedLockfileRanges(t *testing.T, index *dotnetProjectLockfileIndex, scopes []string, parent func(string) string, action string) {
+	t.Helper()
+	for _, scope := range scopes {
+		rangeValue, err := index.scopedLockfileRangeUnderWithParent(scope, parent)
+		if err != nil || rangeValue.start == rangeValue.end {
+			t.Fatalf("%s %s: range=%#v err=%v", action, scope, rangeValue, err)
+		}
+	}
+}
+
+func assertDerivedScopedLockfileSiblingRanges(t *testing.T) {
+	t.Helper()
+	index := &dotnetProjectLockfileIndex{scopedLockfilesByScope: map[string][]string{
+		".": {
+			"left/child/" + dotnetLockfileName,
+			"right/child/" + dotnetLockfileName,
+		},
+	}}
+	for _, scope := range []string{filepath.Join("left", "child"), filepath.Join("right", "child")} {
+		rangeValue, err := index.scopedLockfileRangeUnder(scope)
+		if err != nil || rangeValue.end-rangeValue.start != 1 {
+			t.Fatalf("expected sibling %s to use the root range without a filesystem walk, got %#v err=%v", scope, rangeValue, err)
+		}
+	}
+	if len(index.scopedLockfilesByScope) != 1 || len(index.scopedRangesByScope) != 4 {
+		t.Fatalf("expected sibling lookups to cache derived metadata only, got walks=%#v ranges=%#v", index.scopedLockfilesByScope, index.scopedRangesByScope)
+	}
+}
+
+func assertEmptyDerivedScopedLockfileRange(t *testing.T) {
+	t.Helper()
+	emptyScope := filepath.Join("nested", "empty")
+	index := &dotnetProjectLockfileIndex{scopedLockfilesByScope: map[string][]string{".": {"nested/" + dotnetLockfileName}}}
+	empty, err := index.scopedLockfileRangeUnder(emptyScope)
+	if err != nil || empty.start != empty.end {
+		t.Fatalf("expected cached empty descendant range, got %#v err=%v", empty, err)
+	}
+	if _, ok := index.scopedRangesByScope[filepath.Clean(emptyScope)]; !ok {
+		t.Fatal("expected empty descendant range to be cached")
+	}
+}
+
+func assertFailedScopedLockfileLookupIsNotCached(t *testing.T) {
+	t.Helper()
+	canceled := errors.New("canceled")
+	failed := &dotnetProjectLockfileIndex{findLockfiles: func(string) ([]presentLockfile, error) { return nil, canceled }}
+	if _, err := failed.scopedLockfileRangeUnder("missing"); !errors.Is(err, canceled) {
+		t.Fatalf("expected canceled filesystem lookup, got %v", err)
+	}
+	if len(failed.scopedLockfilesByScope) != 0 || len(failed.scopedRangesByScope) != 0 {
+		t.Fatalf("expected failed lookup not to cache scope metadata, got walks=%#v ranges=%#v", failed.scopedLockfilesByScope, failed.scopedRangesByScope)
+	}
+}
+
+func TestScopedLockfileRangeCompressesSharedAncestorChains(t *testing.T) {
+	measureProbes := func(t *testing.T, depth, siblings int) int {
+		t.Helper()
+		common := "."
+		for value := range depth {
+			common = filepath.Join(common, fmt.Sprintf("common-%03d", value))
+		}
+		lockfiles := make([]string, 0, siblings)
+		scopes := make([]string, 0, siblings)
+		for value := range siblings {
+			scope := filepath.Join(common, fmt.Sprintf("sibling-%03d", value))
+			scopes = append(scopes, scope)
+			lockfiles = append(lockfiles, filepath.ToSlash(filepath.Join(scope, dotnetLockfileName)))
+		}
+		sort.Strings(lockfiles)
+		index := &dotnetProjectLockfileIndex{scopedLockfilesByScope: map[string][]string{".": lockfiles}}
+		probes := 0
+		parent := func(path string) string {
+			probes++
+			return filepath.Dir(path)
+		}
+		for _, scope := range scopes {
+			rangeValue, err := index.scopedLockfileRangeUnderWithParent(scope, parent)
+			if err != nil || rangeValue.end-rangeValue.start != 1 {
+				t.Fatalf("cache sibling %s: range=%#v err=%v", scope, rangeValue, err)
+			}
+		}
+		return probes
+	}
+
+	const depth = 64
+	small := measureProbes(t, depth, 64)
+	large := measureProbes(t, depth, 384)
+	t.Logf("shared .NET ancestor cache parent probes: 64 siblings=%d 384 siblings=%d", small, large)
+	if small > depth+2*64 || large > depth+2*384 {
+		t.Fatalf("expected shared ancestor chain compression, got 64 siblings=%d 384 siblings=%d", small, large)
+	}
+}
+
 func TestCachedScopedLockfileRangeDoesNotProbeUnrelatedScopes(t *testing.T) {
 	measure := func(t *testing.T, count int) (float64, uint64) {
 		t.Helper()
-		index := &dotnetProjectLockfileIndex{scopedLockfilesByScope: map[string][]string{
-			".": {"target/src/" + dotnetLockfileName},
-		}}
+		index := &dotnetProjectLockfileIndex{
+			scopedLockfilesByScope: map[string][]string{".": {"target/src/" + dotnetLockfileName}},
+			scopedRangesByScope:    make(map[string]dotnetScopedLockfileRange),
+		}
 		for value := range count {
 			index.scopedLockfilesByScope[fmt.Sprintf("sibling-%04d", value)] = []string{"src/" + dotnetLockfileName}
 		}
