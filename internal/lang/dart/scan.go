@@ -265,12 +265,10 @@ func directiveDeclarationLocations(lines []string, bindings []importBinding) map
 		}
 	}
 	locations := make(map[string]directiveBindingLocation, len(wanted))
+	code := string(shared.MaskCommentsAndStringsForFile([]byte(strings.Join(lines, "\n")), "directive.dart"))
+	addDirectiveAliasLocation(code, locations, wanted)
 	showList := false
-	for lineOffset, line := range lines {
-		line = string(shared.MaskCommentsAndStringsForFile([]byte(line), "directive.dart"))
-		if match := aliasPattern.FindStringSubmatchIndex(line); len(match) == 4 {
-			addDirectiveBindingLocation(locations, wanted, line[match[2]:match[3]], lineOffset, match[2]+1)
-		}
+	for lineOffset, line := range strings.Split(code, "\n") {
 		showIndex := directiveIdentifierColumn(line, "show")
 		if showIndex > 0 {
 			showList = true
@@ -284,6 +282,17 @@ func directiveDeclarationLocations(lines []string, bindings []importBinding) map
 		collectShowBindingLocations(line, lineOffset, 0, locations, wanted)
 	}
 	return locations
+}
+
+func addDirectiveAliasLocation(code string, locations map[string]directiveBindingLocation, wanted map[string]struct{}) {
+	match := aliasPattern.FindStringSubmatchIndex(code)
+	if len(match) != 4 {
+		return
+	}
+	prefix := code[:match[2]]
+	lineOffset := strings.Count(prefix, "\n")
+	column := match[2] - strings.LastIndex(prefix, "\n")
+	addDirectiveBindingLocation(locations, wanted, code[match[2]:match[3]], lineOffset, column)
 }
 
 func collectShowBindingLocations(line string, lineOffset, columnOffset int, locations map[string]directiveBindingLocation, wanted map[string]struct{}) {

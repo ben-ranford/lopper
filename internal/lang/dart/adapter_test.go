@@ -202,6 +202,14 @@ void main() {}
 `,
 		},
 		{
+			name: "alias split after as",
+			source: `import 'package:http/http.dart' deferred as
+    http;
+
+void main() {}
+`,
+		},
+		{
 			name: "show token in import URI",
 			source: `import 'package:http/show/client.dart'
     show client;
