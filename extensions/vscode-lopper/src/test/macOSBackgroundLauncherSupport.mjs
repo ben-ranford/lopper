@@ -66,9 +66,9 @@ export async function cleanupMatchingTestProcesses({ listProcesses, terminate, w
 // before the independently launched VS Code process has finished shutting down.
 export async function waitForBackgroundProcess(child, { cleanup, timeout, signals = process }) {
   let stopCode;
-  let cleanupResult;
+  let cleanupResult = Promise.resolve();
   const stop = (code) => {
-    if (cleanupResult) return;
+    if (stopCode !== undefined) return;
     stopCode = code;
     cleanupResult = Promise.resolve().then(cleanup).then(
       () => undefined,
@@ -81,21 +81,26 @@ export async function waitForBackgroundProcess(child, { cleanup, timeout, signal
   const timeoutHandle = setTimeout(() => stop(124), timeout);
   signals.on("SIGINT", onInterrupt);
   signals.on("SIGTERM", onTerminate);
+  let exitCode;
+  let childError;
   try {
-    const code = await new Promise((resolve, reject) => {
+    exitCode = await new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", resolve);
     });
-    return stopCode ?? code;
+  } catch (error) {
+    childError = error;
   } finally {
     clearTimeout(timeoutHandle);
-    try {
-      const cleanupError = await cleanupResult;
-      if (cleanupError) throw cleanupError;
-    } finally {
-      signals.removeListener("SIGINT", onInterrupt);
-      signals.removeListener("SIGTERM", onTerminate);
-    }
+  }
+  try {
+    const cleanupError = await cleanupResult;
+    if (cleanupError) throw cleanupError;
+    if (childError) throw childError;
+    return stopCode ?? exitCode;
+  } finally {
+    signals.removeListener("SIGINT", onInterrupt);
+    signals.removeListener("SIGTERM", onTerminate);
   }
 }
 
