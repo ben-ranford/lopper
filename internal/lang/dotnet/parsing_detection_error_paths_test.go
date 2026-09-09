@@ -171,10 +171,13 @@ func TestByteWhitespaceAndCommentHelpers(t *testing.T) {
 	if _, ok := consumeKeyword([]byte("using"), "using"); ok {
 		t.Fatalf("expected consumeKeyword to require trailing whitespace")
 	}
+	if next, ok := consumeKeyword([]byte("using\fFoo.Bar;"), "using"); !ok || string(next) != "Foo.Bar;" {
+		t.Fatalf("expected consumeKeyword to accept form-feed whitespace: next=%q ok=%v", next, ok)
+	}
 	if !hasBytesPrefix([]byte("using Foo"), "using") || hasBytesPrefix([]byte("use Foo"), "using") {
 		t.Fatalf("unexpected hasBytesPrefix behavior")
 	}
-	if !isSpaceByte('\n') || isSpaceByte('x') {
+	if !isSpaceByte('\n') || !isSpaceByte('\f') || isSpaceByte('x') {
 		t.Fatalf("unexpected isSpaceByte behavior")
 	}
 	if !bytes.Equal(stripLineCommentBytes([]byte(" "+fooBarImportLine+" // note ")), []byte(fooBarImportLine)) {
