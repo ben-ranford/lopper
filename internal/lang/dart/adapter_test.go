@@ -181,85 +181,61 @@ void main() {
 }
 
 func TestDartAdapterDoesNotCountMultilineDirectiveDeclarationsAsUsage(t *testing.T) {
-	testCases := []struct {
-		name   string
-		source string
-	}{
-		{
-			name: "alias",
-			source: `import 'package:http/http.dart'
+	testCases := map[string]string{
+		"alias": `import 'package:http/http.dart'
     as clientLib;
 
 void main() {}
 `,
-		},
-		{
-			name: "show",
-			source: `import 'package:http/http.dart'
+		"show": `import 'package:http/http.dart'
     show Client;
 
 void main() {}
 `,
-		},
-		{
-			name: "alias split after as",
-			source: `import 'package:http/http.dart' deferred as
+		"alias split after as": `import 'package:http/http.dart' deferred as
     http;
 
 void main() {}
 `,
-		},
-		{
-			name: "show token in import URI",
-			source: `import 'package:http/show/client.dart'
+		"show token in import URI": `import 'package:http/show/client.dart'
     show client;
 
 void main() {}
 `,
-		},
-		{
-			name: "show entry after continuation",
-			source: `import 'package:http/http.dart'
+		"show entry after continuation": `import 'package:http/http.dart'
     show Client,
         Request;
 
 void main() {}
 `,
-		},
-		{
-			name: "show list stops at hidden symbols",
-			source: `import 'package:http/http.dart'
+		"show list stops at hidden symbols": `import 'package:http/http.dart'
     show Client
     hide Request;
 
 void main() {}
 `,
-		},
-		{
-			name: "alias before continuation comment",
-			source: `import 'package:http/http.dart' as http
+		"alias before continuation comment": `import 'package:http/http.dart' as http
     show Client; // http
 
 void main() {}
 `,
-		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
+	for name, source := range testCases {
+		t.Run(name, func(t *testing.T) {
 			repo := t.TempDir()
 			writeFile(t, filepath.Join(repo, pubspecYAMLName), appHTTPManifest)
-			writeFile(t, filepath.Join(repo, "lib", mainDartFileName), tc.source)
+			writeFile(t, filepath.Join(repo, "lib", mainDartFileName), source)
 
 			depReport, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "http"})
 			if err != nil {
-				t.Fatalf("analyse multiline %s directive: %v", tc.name, err)
+				t.Fatalf("analyse multiline %s directive: %v", name, err)
 			}
 			if len(depReport.Dependencies) != 1 {
 				t.Fatalf(expectedOneDependencyReport, len(depReport.Dependencies))
 			}
 			if got := depReport.Dependencies[0].UsedExportsCount; got != 0 {
-				t.Fatalf("expected multiline %s declaration-only import usage to be zero, got %d", tc.name, got)
+				t.Fatalf("expected multiline %s declaration-only import usage to be zero, got %d", name, got)
 			}
 		})
 	}
