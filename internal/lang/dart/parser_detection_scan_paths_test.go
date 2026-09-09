@@ -243,7 +243,7 @@ func collectDirectiveContinuationLines(continuationCount int) []string {
 
 func collectDirectiveAllocations(t *testing.T, lines []string) float64 {
 	t.Helper()
-	return testing.AllocsPerRun(3, func() {
+	return testing.AllocsPerRun(100, func() {
 		directive, consumed, ok := collectDirective(lines)
 		if !ok || consumed != len(lines) || !strings.HasSuffix(directive, "as http;") {
 			t.Fatalf("expected large multiline directive to parse, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
