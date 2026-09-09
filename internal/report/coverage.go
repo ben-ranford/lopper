@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	CoverageGapRubyOversizedGemspec    = "ruby-oversized-gemspec-declaration"
-	CoverageGapDotNetMalformedManifest = "dotnet-malformed-manifest-declaration"
-	CoverageGapRustMalformedManifest   = "rust-malformed-manifest-declaration"
+	CoverageGapRubyOversizedGemspec     = "ruby-oversized-gemspec-declaration"
+	CoverageGapDotNetMalformedManifest  = "dotnet-malformed-manifest-declaration"
+	CoverageGapRustMalformedManifest    = "rust-malformed-manifest-declaration"
+	CoverageGapRustManifestDiscoveryCap = "rust-manifest-discovery-truncated"
 )
 
 func StableCoverageGaps(gaps []CoverageGap) []CoverageGap {

@@ -136,13 +136,14 @@ func discoverManifestDataForScope(repoPath, scopeMode string, isolatedRoots ...[
 		return manifestDiscoveryResult{}, err
 	}
 
-	paths, warnings, err := discoverManifestsByWalk(repoPath)
+	paths, warnings, truncated, err := discoverManifestsByWalkWithStatus(repoPath)
 	if err != nil {
 		return manifestDiscoveryResult{}, err
 	}
 	return manifestDiscoveryResult{
 		ManifestPaths:      paths,
 		Warnings:           warnings,
+		CoverageGaps:       cargoManifestDiscoveryCoverageGaps(truncated),
 		ParsedDependencies: make(map[string]map[string]dependencyInfo),
 	}, nil
 }
@@ -151,7 +152,7 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 	meta, deps, parseErr := parseCargoManifest(rootManifest, repoPath)
 	if parseErr != nil {
 		if isCargoManifestParseError(parseErr) {
-			paths, warnings, walkErr := discoverManifestsByWalk(repoPath)
+			paths, warnings, truncated, walkErr := discoverManifestsByWalkWithStatus(repoPath)
 			if walkErr != nil {
 				return manifestDiscoveryResult{}, walkErr
 			}
@@ -164,7 +165,7 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 				ManifestPaths:       paths,
 				SourceFallbackRoots: []string{repoPath},
 				Warnings:            dedupeWarnings(warnings),
-				CoverageGaps:        []report.CoverageGap{malformedCargoManifestCoverageGap(repoPath, rootManifest, parseErr)},
+				CoverageGaps:        append([]report.CoverageGap{malformedCargoManifestCoverageGap(repoPath, rootManifest, parseErr)}, cargoManifestDiscoveryCoverageGaps(truncated)...),
 				ParsedDependencies:  make(map[string]map[string]dependencyInfo),
 			}, nil
 		}
@@ -226,14 +227,14 @@ func excludeSelectedFallbackManifestPaths(paths, fallbackRoots []string, isolate
 }
 
 func discoverRepositoryManifestData(repoPath, rootManifest string, rootDependencies map[string]dependencyInfo) (manifestDiscoveryResult, error) {
-	paths, warnings, err := discoverManifestsByWalk(repoPath)
+	paths, warnings, truncated, err := discoverManifestsByWalkWithStatus(repoPath)
 	if err != nil {
 		return manifestDiscoveryResult{}, err
 	}
 
 	validPaths := make([]string, 0, len(paths))
 	malformedRoots := make([]string, 0)
-	coverageGaps := make([]report.CoverageGap, 0)
+	coverageGaps := cargoManifestDiscoveryCoverageGaps(truncated)
 	parsedDependencies := make(map[string]map[string]dependencyInfo)
 	for _, manifestPath := range paths {
 		if samePath(manifestPath, rootManifest) {
@@ -265,14 +266,14 @@ func discoverRepositoryManifestData(repoPath, rootManifest string, rootDependenc
 }
 
 func discoverMalformedNestedCargoRoots(repoPath, rootManifest string, isolatedRoots ...[]string) ([]string, []string, []string, []string, []report.CoverageGap, error) {
-	paths, _, err := discoverManifestsByWalk(repoPath)
+	paths, discoveryWarnings, truncated, err := discoverManifestsByWalkWithStatus(repoPath)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	roots := make([]string, 0)
 	validPaths := make([]string, 0)
-	warnings := make([]string, 0)
-	coverageGaps := make([]report.CoverageGap, 0)
+	warnings := append([]string(nil), discoveryWarnings...)
+	coverageGaps := cargoManifestDiscoveryCoverageGaps(truncated)
 	for _, manifestPath := range paths {
 		if samePath(manifestPath, rootManifest) {
 			continue
@@ -373,6 +374,11 @@ func resolveWorkspaceMemberManifestPaths(repoPath, member string) ([]string, str
 }
 
 func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
+	paths, warnings, _, err := discoverManifestsByWalkWithStatus(repoPath)
+	return paths, warnings, err
+}
+
+func discoverManifestsByWalkWithStatus(repoPath string) ([]string, []string, bool, error) {
 	paths := make([]string, 0)
 	warnings := make([]string, 0)
 	count := 0
@@ -397,15 +403,32 @@ func discoverManifestsByWalk(repoPath string) ([]string, []string, error) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	if count > maxManifestCount {
-		warnings = append(warnings, fmt.Sprintf("cargo manifest discovery capped at %d manifests", maxManifestCount))
+	truncated := count > maxManifestCount
+	if truncated {
+		warnings = append(warnings, cargoManifestDiscoveryCapWarning())
 	}
 	if len(paths) == 0 {
 		warnings = append(warnings, "no Cargo.toml files found for analysis")
 	}
-	return uniquePaths(paths), dedupeWarnings(warnings), nil
+	return uniquePaths(paths), dedupeWarnings(warnings), truncated, nil
+}
+
+func cargoManifestDiscoveryCapWarning() string {
+	return fmt.Sprintf("cargo manifest discovery capped at %d manifests", maxManifestCount)
+}
+
+func cargoManifestDiscoveryCoverageGaps(truncated bool) []report.CoverageGap {
+	if !truncated {
+		return nil
+	}
+	return []report.CoverageGap{{
+		Code:     report.CoverageGapRustManifestDiscoveryCap,
+		Language: rustAdapterID,
+		Path:     ".",
+		Evidence: []string{cargoManifestDiscoveryCapWarning()},
+	}}
 }
 
 func resolveWorkspaceMembers(repoPath, pattern string) []string {
