@@ -59,6 +59,17 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 	return result, nil
 }
 
+const dotNetRepositoryScopeMarker = ".lopper-repository-scope"
+
+func isDotNetRepositoryScope(excludedFiles []string) bool {
+	for _, file := range excludedFiles {
+		if file == dotNetRepositoryScopeMarker {
+			return true
+		}
+	}
+	return false
+}
+
 type importBinding = shared.ImportRecord
 
 type fileScan struct {
