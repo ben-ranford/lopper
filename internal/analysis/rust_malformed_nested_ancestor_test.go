@@ -5,6 +5,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
 
 func TestServiceAnalyseRustValidAncestorExcludesMalformedNestedFallback(t *testing.T) {
@@ -24,25 +26,24 @@ name = "child"
 version = "0.1.0"
 
 [dependencies]
-foo = "1"
+bar = "1"
 `)
-	writeFile(t, filepath.Join(repo, "apps", "child", "src", "lib.rs"), "use foo::Child;\npub fn child() { let _ = Child; }\n")
+	writeFile(t, filepath.Join(repo, "apps", "child", "src", "lib.rs"), "use bar::Child;\npub fn child() { let _ = Child; }\n")
 
-	reportData := analyseMalformedManifestFixture(t, repo, "rust", "foo")
-	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "apps/Cargo.toml" {
-		t.Fatalf("expected malformed nested manifest coverage gap, got %#v", reportData.CoverageGaps)
-	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected merged root and nested child foo report, got %#v", reportData.Dependencies)
-	}
-	dependency := reportData.Dependencies[0]
-	if dependency.UsedExportsCount != 2 || dependency.TotalExportsCount != 2 || len(dependency.UsedImports) != 2 {
-		t.Fatalf("expected root and child imports counted once, got %#v", dependency)
-	}
-	for _, imported := range dependency.UsedImports {
-		if len(imported.Locations) != 1 || imported.Name == "App" {
-			t.Fatalf("expected no malformed-app attribution or duplicate locations, got %#v", dependency.UsedImports)
-		}
+	for _, scopeMode := range []string{"", ScopeModeRepo} {
+		t.Run(scopeMode, func(t *testing.T) {
+			reportData, err := NewService().Analyse(context.Background(), Request{
+				RepoPath:  repo,
+				Language:  "rust",
+				ScopeMode: scopeMode,
+				TopN:      2,
+				Cache:     &CacheOptions{Enabled: false},
+			})
+			if err != nil {
+				t.Fatalf("analyse nested malformed Rust manifest: %v", err)
+			}
+			assertRustMalformedNestedBoundary(t, reportData)
+		})
 	}
 
 	var err error
@@ -56,5 +57,26 @@ foo = "1"
 	})
 	if !errors.Is(err, ErrIncompleteCoverage) {
 		t.Fatalf("expected malformed nested manifest to fail complete coverage, got %v", err)
+	}
+}
+
+func assertRustMalformedNestedBoundary(t *testing.T, reportData report.Report) {
+	t.Helper()
+	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "apps/Cargo.toml" {
+		t.Fatalf("expected malformed nested manifest coverage gap, got %#v", reportData.CoverageGaps)
+	}
+	if len(reportData.Dependencies) != 2 {
+		t.Fatalf("expected isolated root and nested child reports, got %#v", reportData.Dependencies)
+	}
+	expectedImports := map[string]string{"foo": "Root", "bar": "Child"}
+	for _, dependency := range reportData.Dependencies {
+		if dependency.UsedExportsCount != 1 || dependency.TotalExportsCount != 1 || len(dependency.UsedImports) != 1 {
+			t.Fatalf("expected each declared dependency counted once, got %#v", dependency)
+		}
+		imported := dependency.UsedImports[0]
+		expectedImport, ok := expectedImports[dependency.Name]
+		if !ok || len(imported.Locations) != 1 || imported.Name != expectedImport {
+			t.Fatalf("expected isolated root and child declarations without malformed-app attribution, got %#v", reportData.Dependencies)
+		}
 	}
 }
