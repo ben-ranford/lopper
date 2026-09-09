@@ -261,11 +261,11 @@ func parseModuleExpressionItemAtDepth(item string, depth int) (string, bool, str
 			return "", false, moduleArrayDepthWarning()
 		}
 		modules, warnings := parseModuleExpressionAtDepth(inner, depth+1)
+		if len(modules) == 1 {
+			return modules[0], false, strings.Join(warnings, "; ")
+		}
 		if len(warnings) > 0 {
 			return "", false, strings.Join(warnings, "; ")
-		}
-		if len(modules) == 1 {
-			return modules[0], false, ""
 		}
 		if len(modules) > 1 {
 			return "", false, "nested module list produced multiple values"

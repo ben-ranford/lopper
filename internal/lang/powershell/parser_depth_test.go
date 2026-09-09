@@ -31,3 +31,14 @@ func TestModuleArrayDepthBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestRequiredModulesPreservesNestedSiblingAtDepthLimit(t *testing.T) {
+	deepEmpty := strings.Repeat("@(", 33) + strings.Repeat(")", 33)
+	modules, warnings := parseRequiredModules([]byte("RequiredModules = @('Root', @('Nested', "+deepEmpty+"))"), "module.psd1")
+	if !reflect.DeepEqual(modules, []string{"nested", "root"}) {
+		t.Fatalf("valid nested sibling was discarded: %v", modules)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "array nesting exceeds limit of 32") {
+		t.Fatalf("expected depth warning alongside retained modules, got %v", warnings)
+	}
+}
