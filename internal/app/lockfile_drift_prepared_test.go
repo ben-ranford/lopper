@@ -163,6 +163,37 @@ func TestScanLockfileDriftStopOnFirstScopesDotnetLockfileIndexToCentralManifest(
 	}
 }
 
+func TestScanLockfileDriftStopOnFirstReusesAncestorDotnetLockfileIndex(t *testing.T) {
+	repo := t.TempDir()
+	manifest := "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n"
+	for _, dir := range []string{".", "src", "src/App"} {
+		writeFile(t, filepath.Join(repo, dir, dotnetCentralManifest), manifest)
+	}
+	writeFile(t, filepath.Join(repo, "src", "App", "Project", dotnetProjectManifest), "<Project></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", "App", "Project", dotnetLockfileName), "{}\n")
+
+	original := findDotnetProjectLockfilesFn
+	calls := 0
+	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+		calls++
+		return original(rootDir)
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, true, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("scan lockfile drift: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings with matching project lockfile, got %#v", warnings)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one distributed .NET lockfile walk, got %d", calls)
+	}
+}
+
 func TestDirContainsDotnetProjectManifestSkipsSubdirectories(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
