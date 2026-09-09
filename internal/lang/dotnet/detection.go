@@ -42,7 +42,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	if err := applyRootSignals(repoPath, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
-	malformedRoots := make(map[string]struct{})
+	manifests := newManifestRootDiscovery()
 
 	visited := 0
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
@@ -62,12 +62,12 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if visited > maxDetectFiles {
 			return fs.SkipAll
 		}
-		return updateDetection(repoPath, path, entry.Name(), &detection, roots, malformedRoots)
+		return updateDetection(repoPath, path, entry.Name(), &detection, roots, manifests)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
-	isolateMalformedManifestRoots(roots, malformedRoots)
+	manifests.isolateFallbackRoots(roots)
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
@@ -92,23 +92,79 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 	return nil
 }
 
-func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}, malformedRootSets ...map[string]struct{}) error {
-	var malformedRoots map[string]struct{}
-	if len(malformedRootSets) > 0 {
-		malformedRoots = malformedRootSets[0]
+type manifestRootDiscovery struct {
+	validProjects     map[string]struct{}
+	centralRoots      map[string]struct{}
+	malformedProjects map[string]struct{}
+	malformedCentral  map[string]struct{}
+}
+
+func newManifestRootDiscovery() *manifestRootDiscovery {
+	return &manifestRootDiscovery{
+		validProjects:     make(map[string]struct{}),
+		centralRoots:      make(map[string]struct{}),
+		malformedProjects: make(map[string]struct{}),
+		malformedCentral:  make(map[string]struct{}),
+	}
+}
+
+func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}, manifestStates ...*manifestRootDiscovery) error {
+	var manifests *manifestRootDiscovery
+	if len(manifestStates) > 0 {
+		manifests = manifestStates[0]
 	}
 	signal := signalForName(name)
 	if signal == fileSignalProject || signal == fileSignalCentral {
-		if _, err := parseManifestDependenciesForEntry(repoPath, path, name); err != nil {
-			if !isDotNetManifestParseError(err) {
-				return err
-			}
-			if malformedRoots != nil {
-				malformedRoots[filepath.Dir(path)] = struct{}{}
-			}
+		_, err := parseManifestDependenciesForEntry(repoPath, path, name)
+		if err != nil && !isDotNetManifestParseError(err) {
+			return err
+		}
+		if manifests != nil {
+			manifests.record(filepath.Dir(path), signal, err != nil)
 		}
 	}
 	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
+}
+
+func (m *manifestRootDiscovery) record(root string, signal fileSignal, malformed bool) {
+	switch {
+	case signal == fileSignalCentral:
+		m.centralRoots[root] = struct{}{}
+		if malformed {
+			m.malformedCentral[root] = struct{}{}
+		}
+	case malformed:
+		m.malformedProjects[root] = struct{}{}
+	default:
+		m.validProjects[root] = struct{}{}
+	}
+}
+
+func (m *manifestRootDiscovery) isolateFallbackRoots(roots map[string]struct{}) {
+	for centralRoot := range m.centralRoots {
+		if !m.hasProjectAncestor(centralRoot) {
+			continue
+		}
+		delete(m.malformedCentral, centralRoot)
+		_, hasProject := m.validProjects[centralRoot]
+		_, hasMalformedProject := m.malformedProjects[centralRoot]
+		if !hasProject && !hasMalformedProject {
+			delete(roots, centralRoot)
+		}
+	}
+	for root := range m.malformedCentral {
+		m.malformedProjects[root] = struct{}{}
+	}
+	isolateMalformedManifestRoots(roots, m.malformedProjects)
+}
+
+func (m *manifestRootDiscovery) hasProjectAncestor(root string) bool {
+	for projectRoot := range m.validProjects {
+		if isDotNetSubPath(projectRoot, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func isolateMalformedManifestRoots(roots, malformedRoots map[string]struct{}) {

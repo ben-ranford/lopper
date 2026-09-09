@@ -205,8 +205,7 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 }
 
 func (d *scanInputDiscoverer) recordMalformedManifest(path, name string) {
-	switch signalForName(name) {
-	case fileSignalProject, fileSignalCentral:
+	if signalForName(name) == fileSignalProject {
 		d.malformedManifestRoots[filepath.Dir(path)] = struct{}{}
 	}
 }
@@ -227,9 +226,14 @@ func mergeDependencies(existing, added []string) []string {
 	return sortedDependencies(dependencies)
 }
 
+func (d *scanInputDiscoverer) hasMalformedRootProject() bool {
+	_, malformed := d.malformedManifestRoots[d.sourceDiscoverer.repoPath]
+	return malformed
+}
+
 func (d *scanInputDiscoverer) declaredDependencies(scopeMode string) []string {
 	rootDependencies, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]
-	if scopeMode == "repo" || !hasRootProject {
+	if scopeMode == "repo" || !hasRootProject || d.hasMalformedRootProject() {
 		return sortedDependencies(d.dependencySet)
 	}
 	dependencies := make(map[string]struct{})
@@ -247,7 +251,7 @@ func (d *scanInputDiscoverer) sourceFiles(scopeMode string) []sourceDocument {
 		files[index].ProjectRoot = projectRoot
 		files[index].MapperKey = strings.Join(dependencies, "\x00")
 	}
-	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject && scopeMode != "repo" {
+	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject && scopeMode != "repo" && !d.hasMalformedRootProject() {
 		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath, d.malformedManifestRoots)
 	}
 	return files

@@ -553,6 +553,7 @@ func applyInlineDependencyFields(value, alias string, info *dependencyInfo) {
 	if pathValue, ok := fields["path"]; ok && strings.TrimSpace(pathValue) != "" {
 		info.LocalPath = true
 	}
+	info.InheritsWorkspace = strings.EqualFold(fields["workspace"], "true")
 }
 
 func ensureCanonicalDependencyAlias(deps map[string]dependencyInfo, info dependencyInfo) {
@@ -681,6 +682,7 @@ func addTomlDependency(deps map[string]dependencyInfo, alias string, raw any) {
 		if tomlString(fields["path"]) != "" {
 			info.LocalPath = true
 		}
+		info.InheritsWorkspace, _ = fields["workspace"].(bool)
 	}
 	deps[alias] = info
 	ensureCanonicalDependencyAlias(deps, info)

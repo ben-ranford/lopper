@@ -40,7 +40,7 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 	if useRootLookups {
 		roots = scanRootsPreservingNested(options.manifestPaths, repoPath)
 		var err error
-		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, options.manifestPaths)
+		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, options.manifestPaths, options.excludedSourceRoots)
 		if err != nil {
 			return scanResult{}, err
 		}
@@ -96,19 +96,79 @@ func exclusionsOutsideRustRoot(root string, excludedSourceRoots []string) []stri
 	return filtered
 }
 
-func manifestDependencyLookupsByRoot(repoPath string, manifestPaths []string) (map[string]map[string]dependencyInfo, error) {
+func manifestDependencyLookupsByRoot(repoPath string, manifestPaths, malformedWorkspaceRoots []string) (map[string]map[string]dependencyInfo, error) {
 	lookups := make(map[string]map[string]dependencyInfo, len(manifestPaths))
+	workspaceDependenciesByRoot := make(map[string]map[string]dependencyInfo)
 	for _, manifestPath := range manifestPaths {
-		_, dependencies, err := parseCargoManifest(manifestPath, repoPath)
+		dependencies, workspaceDependencies, err := manifestDependencies(manifestPath, repoPath)
 		if err != nil {
 			if isCargoManifestParseError(err) {
 				continue
 			}
 			return nil, err
 		}
-		lookups[filepath.Dir(manifestPath)] = dependencies
+		root := filepath.Dir(manifestPath)
+		lookups[root] = dependencies
+		if workspaceDependencies != nil {
+			workspaceDependenciesByRoot[root] = workspaceDependencies
+		}
+	}
+	for root, dependencies := range lookups {
+		workspaceDependencies := nearestWorkspaceDependencies(root, workspaceDependenciesByRoot, malformedWorkspaceRoots)
+		lookups[root] = inheritWorkspaceDependencies(dependencies, workspaceDependencies)
 	}
 	return lookups, nil
+}
+
+func manifestDependencies(manifestPath, repoPath string) (map[string]dependencyInfo, map[string]dependencyInfo, error) {
+	content, err := safeio.ReadFileUnder(repoPath, manifestPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	document, err := parseCargoManifestDocument(content)
+	if err != nil {
+		return nil, nil, &cargoManifestParseError{err: fmt.Errorf("parse Cargo manifest %s: %w", relativeManifestPath(repoPath, manifestPath), err)}
+	}
+	workspace, _ := document["workspace"].(map[string]any)
+	if workspace == nil {
+		return cargoManifestDependencies(document), nil, nil
+	}
+	workspaceDependencies := make(map[string]dependencyInfo)
+	addTomlDependencyTable(workspaceDependencies, workspace[dependenciesSection])
+	return cargoManifestDependencies(document), workspaceDependencies, nil
+}
+
+func nearestWorkspaceDependencies(root string, workspaceDependenciesByRoot map[string]map[string]dependencyInfo, malformedWorkspaceRoots []string) map[string]dependencyInfo {
+	owner := ""
+	for workspaceRoot := range workspaceDependenciesByRoot {
+		if isSubPath(workspaceRoot, root) && (owner == "" || isSubPath(owner, workspaceRoot)) {
+			owner = workspaceRoot
+		}
+	}
+	malformedRoot := ""
+	for _, candidate := range malformedWorkspaceRoots {
+		if isSubPath(candidate, root) && (malformedRoot == "" || isSubPath(malformedRoot, candidate)) {
+			malformedRoot = candidate
+		}
+	}
+	if malformedRoot != "" && (owner == "" || isSubPath(owner, malformedRoot)) {
+		return nil
+	}
+	return workspaceDependenciesByRoot[owner]
+}
+
+func inheritWorkspaceDependencies(dependencies, workspaceDependencies map[string]dependencyInfo) map[string]dependencyInfo {
+	merged := make(map[string]dependencyInfo, len(dependencies))
+	for alias, info := range dependencies {
+		if info.InheritsWorkspace {
+			if inherited, ok := workspaceDependencies[alias]; ok {
+				merged[alias] = inherited
+				continue
+			}
+		}
+		merged[alias] = info
+	}
+	return merged
 }
 
 func compileScanWarnings(result scanResult) []string {

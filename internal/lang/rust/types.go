@@ -21,9 +21,10 @@ const (
 )
 
 type dependencyInfo struct {
-	Canonical string
-	LocalPath bool
-	Renamed   bool
+	Canonical         string
+	LocalPath         bool
+	Renamed           bool
+	InheritsWorkspace bool
 }
 
 type manifestMeta struct {
