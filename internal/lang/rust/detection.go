@@ -33,7 +33,17 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 }
 
 func applyRustRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) (bool, error) {
-	workspaceOnlyRoot := false
+	workspaceOnlyRoot, err := applyRootCargoManifestSignal(repoPath, detection, roots)
+	if err != nil {
+		return false, err
+	}
+	if err := applyRootCargoLockSignal(repoPath, workspaceOnlyRoot, detection, roots); err != nil {
+		return false, err
+	}
+	return workspaceOnlyRoot, nil
+}
+
+func applyRootCargoManifestSignal(repoPath string, detection *language.Detection, roots map[string]struct{}) (bool, error) {
 	cargoTomlPath := filepath.Join(repoPath, cargoTomlName)
 	if _, err := os.Stat(cargoTomlPath); err == nil {
 		detection.Matched = true
@@ -44,21 +54,25 @@ func applyRustRootSignals(repoPath string, detection *language.Detection, roots 
 			if !isCargoManifestParseError(parseErr) {
 				return false, parseErr
 			}
-		} else {
-			if meta.HasPackage {
-				roots[repoPath] = struct{}{}
-			}
-			if len(meta.WorkspaceMembers) > 0 {
-				workspaceOnlyRoot = !meta.HasPackage
-				for _, member := range meta.WorkspaceMembers {
-					addWorkspaceMemberRoot(repoPath, member, roots)
-				}
-			}
+			return false, nil
 		}
+		if meta.HasPackage {
+			roots[repoPath] = struct{}{}
+		}
+		if len(meta.WorkspaceMembers) == 0 {
+			return false, nil
+		}
+		for _, member := range meta.WorkspaceMembers {
+			addWorkspaceMemberRoot(repoPath, member, roots)
+		}
+		return !meta.HasPackage, nil
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
+	return false, nil
+}
 
+func applyRootCargoLockSignal(repoPath string, workspaceOnlyRoot bool, detection *language.Detection, roots map[string]struct{}) error {
 	cargoLockPath := filepath.Join(repoPath, cargoLockName)
 	if _, err := os.Stat(cargoLockPath); err == nil {
 		detection.Matched = true
@@ -67,10 +81,9 @@ func applyRustRootSignals(repoPath string, detection *language.Detection, roots 
 			roots[repoPath] = struct{}{}
 		}
 	} else if !os.IsNotExist(err) {
-		return false, err
+		return err
 	}
-
-	return workspaceOnlyRoot, nil
+	return nil
 }
 
 func addWorkspaceMemberRoot(repoPath, member string, roots map[string]struct{}) {
