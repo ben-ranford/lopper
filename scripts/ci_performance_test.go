@@ -24,25 +24,7 @@ func TestCIVerificationAggregatesEveryJob(t *testing.T) {
 	for _, aggregate := range []string{"verify", "verify-rolling"} {
 		t.Run(aggregate, func(t *testing.T) {
 			t.Parallel()
-			job := workflowJobByName(t, workflow.Jobs, aggregate)
-			assertWorkflowJobNeeds(t, job, aggregate, workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"})
-			if job.If != "${{ always() }}" || job.RunsOn != "ubuntu-latest" || len(job.Permissions) != 0 {
-				t.Fatal("aggregate must run after every result without write credentials")
-			}
-			assertWorkflowJobOmitsCheckout(t, job, aggregate)
-			gate := workflowStepByName(t, workflow.Jobs, aggregate, "Require every verification job")
-			assertWorkflowStepEnv(t, gate, aggregate, map[string]string{
-				"CHECKS_RESULT": "${{ needs." + aggregate + "-checks.result }}",
-				"TESTS_RESULT":  "${{ needs." + aggregate + "-tests.result }}",
-			})
-			for _, checks := range []string{"success", "failure", "cancelled", "skipped", ""} {
-				for _, tests := range []string{"success", "failure", "cancelled", "skipped", ""} {
-					output, err := runShellCommand(t.TempDir(), gate.Run, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests})
-					if (err == nil) != (checks == "success" && tests == "success") {
-						t.Fatalf("checks=%q tests=%q: %v\n%s", checks, tests, err, output)
-					}
-				}
-			}
+			assertCIVerificationAggregate(t, workflow.Jobs, aggregate)
 		})
 	}
 	if workflow.Jobs["verify"].Outputs["pr_report_artifact_id"] != "${{ needs.verify-checks.outputs.pr_report_artifact_id }}" {
@@ -50,6 +32,34 @@ func TestCIVerificationAggregatesEveryJob(t *testing.T) {
 	}
 	if workflow.Jobs["verify-rolling"].Name != "verify (rolling)" {
 		t.Fatal("rolling required check name changed")
+	}
+}
+
+func assertCIVerificationAggregate(t *testing.T, jobs map[string]workflowJobConfig, aggregate string) {
+	t.Helper()
+	job := workflowJobByName(t, jobs, aggregate)
+	assertWorkflowJobNeeds(t, job, aggregate, workflowJobNeeds{aggregate + "-checks", aggregate + "-tests"})
+	if job.If != "${{ always() }}" || job.RunsOn != "ubuntu-latest" || len(job.Permissions) != 0 {
+		t.Fatal("aggregate must run after every result without write credentials")
+	}
+	assertWorkflowJobOmitsCheckout(t, job, aggregate)
+	gate := workflowStepByName(t, jobs, aggregate, "Require every verification job")
+	assertWorkflowStepEnv(t, gate, aggregate, map[string]string{
+		"CHECKS_RESULT": "${{ needs." + aggregate + "-checks.result }}",
+		"TESTS_RESULT":  "${{ needs." + aggregate + "-tests.result }}",
+	})
+	assertCIVerificationOutcomes(t, gate.Run)
+}
+
+func assertCIVerificationOutcomes(t *testing.T, script string) {
+	t.Helper()
+	for _, checks := range []string{"success", "failure", "cancelled", "skipped", ""} {
+		for _, tests := range []string{"success", "failure", "cancelled", "skipped", ""} {
+			output, err := runShellCommand(t.TempDir(), script, map[string]string{"CHECKS_RESULT": checks, "TESTS_RESULT": tests})
+			if (err == nil) != (checks == "success" && tests == "success") {
+				t.Fatalf("checks=%q tests=%q: %v\n%s", checks, tests, err, output)
+			}
+		}
 	}
 }
 
