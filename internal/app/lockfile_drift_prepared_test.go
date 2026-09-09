@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/safeio"
@@ -129,6 +130,36 @@ func TestPrepareLockfileManifestChangeCandidatesSkipsDotnetIndexWithoutCentralMa
 	}
 	if calls != 0 {
 		t.Fatalf("expected no distributed .NET lockfile walk without a central manifest, got %d", calls)
+	}
+}
+
+func TestScanLockfileDriftStopOnFirstScopesDotnetLockfileIndexToCentralManifest(t *testing.T) {
+	repo := t.TempDir()
+	centralDir := filepath.Join(repo, "a-central")
+	writeFile(t, filepath.Join(centralDir, dotnetCentralManifest), "<Project></Project>\n")
+
+	original := findDotnetProjectLockfilesFn
+	var roots []string
+	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+		roots = append(roots, rootDir)
+		if filepath.Clean(rootDir) == filepath.Clean(repo) {
+			return nil, errors.New("unrelated later subtree is unreadable")
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, true, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("scan lockfile drift: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "a-central") {
+		t.Fatalf("expected early central-manifest warning, got %#v", warnings)
+	}
+	if len(roots) != 1 || filepath.Clean(roots[0]) != filepath.Clean(centralDir) {
+		t.Fatalf("expected one central-subtree lockfile walk, got %#v", roots)
 	}
 }
 
