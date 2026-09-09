@@ -340,9 +340,9 @@ toolchain-check:
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH (required for shell script CI checks)"; exit 1)
 	@command -v ruby >/dev/null 2>&1 || (echo "ruby not found in PATH (required for automation integrity YAML/JSON checks)"; exit 1)
 	@command -v node >/dev/null 2>&1 || (echo "node not found in PATH (required for automation integrity JavaScript syntax checks)"; exit 1)
-	@node_major="$$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"; \
-	if [ "$$node_major" -lt 20 ]; then \
-		echo "Node.js 20.x or newer is required (found major version $$node_major)."; \
+	@node_version="$$(node -e 'console.log(process.versions.node)' 2>/dev/null || echo 0.0.0)"; \
+	if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then \
+		echo "Node.js >=22.12.0 is required (found $$node_version)."; \
 		echo "Install/update Node from https://nodejs.org/ or use NodeSource (see .github/workflows/ci.yml)."; \
 		exit 1; \
 	fi
@@ -361,18 +361,33 @@ toolchain-install-macos:
 	brew install go zig shellcheck ruby node python
 
 toolchain-install-linux:
-	@if command -v apt-get >/dev/null 2>&1; then \
+	@set -e; \
+	if command -v apt-get >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
 		$$SUDO apt-get update; \
-		$$SUDO apt-get install -y golang-go zig shellcheck ruby nodejs python3; \
+		$$SUDO apt-get install -y golang-go zig shellcheck ruby python3 ca-certificates curl gnupg; \
+		$$SUDO install -d -m 0755 /usr/share/keyrings; \
+		$$SUDO curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO gpg --dearmor --yes --output /usr/share/keyrings/nodesource.gpg /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO rm -f /usr/share/keyrings/nodesource-repo.gpg.key; \
+		$$SUDO chmod 0644 /usr/share/keyrings/nodesource.gpg; \
+		printf '%s\n' 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main' | $$SUDO tee /etc/apt/sources.list.d/nodesource.list >/dev/null; \
+		$$SUDO apt-get update; \
+		$$SUDO apt-get install -y nodejs; \
 	elif command -v dnf >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
-		$$SUDO dnf install -y golang zig ShellCheck ruby nodejs python3; \
+		$$SUDO dnf install -y golang zig ShellCheck ruby python3; \
+		printf '%s\n' '[nodesource-nodejs]' 'name=Node.js 24.x Packages for Linux RPM based distros - $$basearch' 'baseurl=https://rpm.nodesource.com/pub_24.x/nodistro/nodejs/$$basearch' 'priority=9' 'enabled=1' 'gpgcheck=1' 'gpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key' 'module_hotfixes=1' | $$SUDO tee /etc/yum.repos.d/nodesource-nodejs.repo >/dev/null; \
+		$$SUDO dnf install -y nodejs; \
 	elif command -v pacman >/dev/null 2>&1; then \
 		if [ "$$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi; \
 		$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs python; \
 	else \
 		echo "No supported package manager found (need apt-get, dnf, or pacman)"; \
+		exit 1; \
+	fi; \
+	if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then \
+		echo "NodeSource installation did not provide Node.js >=22.12.0."; \
 		exit 1; \
 	fi
 

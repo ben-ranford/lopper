@@ -2,7 +2,6 @@ import * as assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { suite, test } from "mocha";
 import * as vscode from "vscode";
 
 import {

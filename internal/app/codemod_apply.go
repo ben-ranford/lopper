@@ -274,6 +274,10 @@ func buildCodemodSkipResults(skips []report.CodemodSkip) []report.CodemodApplyRe
 }
 
 func prepareCodemodFiles(repoPath string, suggestions []report.CodemodSuggestion) ([]preparedCodemodFile, []report.CodemodApplyResult) {
+	return prepareCodemodFilesWithStat(repoPath, suggestions, os.Stat)
+}
+
+func prepareCodemodFilesWithStat(repoPath string, suggestions []report.CodemodSuggestion, stat func(string) (os.FileInfo, error)) ([]preparedCodemodFile, []report.CodemodApplyResult) {
 	grouped := make(map[string][]report.CodemodSuggestion)
 	for _, suggestion := range suggestions {
 		grouped[suggestion.File] = append(grouped[suggestion.File], suggestion)
@@ -306,7 +310,7 @@ func prepareCodemodFiles(repoPath string, suggestions []report.CodemodSuggestion
 			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
 			continue
 		}
-		info, err := os.Stat(absPath)
+		info, err := stat(absPath)
 		if err != nil {
 			failures = append(failures, report.CodemodApplyResult{File: file, Status: codemodApplyStatusFailed, PatchCount: len(fileSuggestions), Message: err.Error()})
 			continue

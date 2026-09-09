@@ -506,8 +506,8 @@ func TestMakefileToolchainIncludesPython3ForCI(t *testing.T) {
 	assertContainsAll(t, makefile, []string{
 		`@command -v python3 >/dev/null 2>&1 || (echo "python3 not found in PATH (required for Python-based CI checks)"; exit 1)`,
 		`brew install go zig shellcheck ruby node python`,
-		`$$SUDO apt-get install -y golang-go zig shellcheck ruby nodejs python3`,
-		`$$SUDO dnf install -y golang zig ShellCheck ruby nodejs python3`,
+		`$$SUDO apt-get install -y golang-go zig shellcheck ruby python3 ca-certificates curl gnupg`,
+		`$$SUDO dnf install -y golang zig ShellCheck ruby python3`,
 		`$$SUDO pacman -Syu --noconfirm --needed go zig shellcheck ruby nodejs python`,
 	})
 }

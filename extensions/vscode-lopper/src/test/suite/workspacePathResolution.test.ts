@@ -2,7 +2,6 @@ import * as assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { suite, test } from "mocha";
 
 import { __testing } from "../../extension";
 

@@ -235,6 +235,7 @@ func TestServiceAnalyseElixirFixtureLanguage(t *testing.T) {
 		RepoPath:   repo,
 		Dependency: "jason",
 		Language:   "elixir",
+		Cache:      &CacheOptions{Enabled: false},
 	})
 	if err != nil {
 		t.Fatalf("analyse elixir fixture: %v", err)
@@ -254,6 +255,7 @@ func TestServiceAnalyseAllLanguagesElixirFixture(t *testing.T) {
 		RepoPath: repo,
 		TopN:     10,
 		Language: "all",
+		Cache:    &CacheOptions{Enabled: false},
 	})
 	if err != nil {
 		t.Fatalf("analyse all fixture: %v", err)

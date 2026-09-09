@@ -2,7 +2,6 @@ import * as assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { suite, teardown, test } from "mocha";
 
 import { deactivate } from "../../extension";
 
