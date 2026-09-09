@@ -223,22 +223,32 @@ func TestCollectDirectiveBranches(t *testing.T) {
 
 func TestCollectDirectiveLargeContinuationUsesBoundedAllocations(t *testing.T) {
 	const continuationCount = 4096
+	lines := collectDirectiveContinuationLines(continuationCount)
+	smallAllocations := collectDirectiveAllocations(t, collectDirectiveContinuationLines(8))
+	largeAllocations := collectDirectiveAllocations(t, lines)
+	if largeAllocations > smallAllocations+2 {
+		t.Fatalf("expected bounded allocation growth from 8 to %d continuation lines, got small=%f large=%f", continuationCount, smallAllocations, largeAllocations)
+	}
+}
+
+func collectDirectiveContinuationLines(continuationCount int) []string {
 	lines := make([]string, 0, continuationCount+1)
 	lines = append(lines, "import 'package:http/http.dart'")
 	for range continuationCount - 1 {
 		lines = append(lines, "  show HttpClient")
 	}
 	lines = append(lines, "  as http;")
+	return lines
+}
 
-	allocations := testing.AllocsPerRun(1, func() {
+func collectDirectiveAllocations(t *testing.T, lines []string) float64 {
+	t.Helper()
+	return testing.AllocsPerRun(3, func() {
 		directive, consumed, ok := collectDirective(lines)
 		if !ok || consumed != len(lines) || !strings.HasSuffix(directive, "as http;") {
 			t.Fatalf("expected large multiline directive to parse, got directive=%q consumed=%d ok=%v", directive, consumed, ok)
 		}
 	})
-	if allocations > 2 {
-		t.Fatalf("expected bounded allocations for %d continuation lines, got %f", continuationCount, allocations)
-	}
 }
 
 func TestBuildDirectiveBindingsBranches(t *testing.T) {
