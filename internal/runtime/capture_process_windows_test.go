@@ -18,6 +18,8 @@ import (
 	win "golang.org/x/sys/windows"
 )
 
+const windowsChildMarkerStartupTimeout = 10 * time.Second
+
 func TestStartCommandConfiguresWindowsJobCancellation(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "echo resumed")
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: win.CREATE_NO_WINDOW}
@@ -90,7 +92,7 @@ Wait-Process -Id $child.Id
 		}
 	}()
 
-	childPID := readChildPID(t, markerPath, 5*time.Second)
+	childPID := readChildPID(t, markerPath, windowsChildMarkerStartupTimeout)
 	childProcess, err := win.OpenProcess(win.SYNCHRONIZE, false, childPID)
 	if err != nil {
 		t.Fatalf("open child process %d for synchronization: %v", childPID, err)
