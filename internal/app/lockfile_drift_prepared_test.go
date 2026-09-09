@@ -122,6 +122,29 @@ func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t 
 	}
 }
 
+func TestDotnetProjectLockfileIndexGroupsSiblingScopes(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		repoPath: t.TempDir(),
+		lockfiles: []presentLockfile{
+			{name: "alpha/src/" + dotnetLockfileName},
+			{name: "beta/src/" + dotnetLockfileName},
+		},
+		initialized: true,
+	}
+	index.lockfilesByScope = indexDotnetProjectLockfilesByScope(index.lockfiles)
+
+	lockfiles, err := index.lockfilesUnder("alpha")
+	if err != nil {
+		t.Fatalf("index alpha lockfiles: %v", err)
+	}
+	if len(lockfiles) != 1 || lockfiles[0].name != "src/"+dotnetLockfileName {
+		t.Fatalf("expected only alpha lockfile, got %#v", lockfiles)
+	}
+	if _, ok := index.lockfilesByScope["beta"]; !ok {
+		t.Fatalf("expected sibling scope to be indexed")
+	}
+}
+
 func TestPrepareLockfileManifestChangeCandidatesSkipsDotnetIndexWithoutCentralManifest(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "src", dotnetProjectManifest), "<Project></Project>\\n")

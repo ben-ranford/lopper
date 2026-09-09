@@ -1407,9 +1407,27 @@ func (i *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) ([]presentLoc
 			return nil, err
 		}
 		i.lockfiles = lockfiles
+		i.lockfilesByScope = indexDotnetProjectLockfilesByScope(lockfiles)
 		i.initialized = true
 	}
-	return lockfilesUnderRelativeDir(i.lockfiles, relDir), nil
+	return append([]presentLockfile(nil), i.lockfilesByScope[filepath.Clean(relDir)]...), nil
+}
+
+func indexDotnetProjectLockfilesByScope(lockfiles []presentLockfile) map[string][]presentLockfile {
+	byScope := make(map[string][]presentLockfile)
+	for _, lockfile := range lockfiles {
+		for scope := filepath.Dir(lockfile.name); ; scope = filepath.Dir(scope) {
+			name := lockfile.name
+			if scope != "." {
+				name = strings.TrimPrefix(name, filepath.ToSlash(scope)+"/")
+			}
+			byScope[scope] = append(byScope[scope], presentLockfile{name: name})
+			if scope == "." {
+				break
+			}
+		}
+	}
+	return byScope
 }
 
 func (i *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]presentLockfile, error) {
