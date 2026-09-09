@@ -283,9 +283,12 @@ func TestDartManifestLoopingLockSymlinkFailsLoad(t *testing.T) {
 }
 
 func TestDartPubspecParsingBoundsUntrustedInput(t *testing.T) {
+	// These external limits keep the regression fixture buildable on the base revision.
+	const manifestLimit = 1 << 20
+	const metadataDepthLimit = 64
 	repo := t.TempDir()
 	manifestPath := filepath.Join(repo, pubspecYAMLName)
-	if err := os.WriteFile(manifestPath, []byte("name: app\n#"+strings.Repeat("x", maxPubspecYAMLBytes)), 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, []byte("name: app\n#"+strings.Repeat("x", manifestLimit)), 0o644); err != nil {
 		t.Fatalf("write oversized manifest: %v", err)
 	}
 	if _, err := readPubspecManifest(repo, manifestPath); !errors.Is(err, safeio.ErrFileTooLarge) {
@@ -293,7 +296,7 @@ func TestDartPubspecParsingBoundsUntrustedInput(t *testing.T) {
 	}
 
 	metadata := any(map[string]any{"platforms": "valid"})
-	for range maxPluginMetadataDepth {
+	for range metadataDepthLimit {
 		metadata = map[string]any{"nested": metadata}
 	}
 	if hasPluginMetadataValue(metadata) {
