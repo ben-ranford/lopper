@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package dotnet
 
 import (
@@ -5,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -64,6 +67,15 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	if _, err := scanRepo(context.Background(), ""); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("expected fs.ErrInvalid for empty repo path, got %v", err)
 	}
+	if _, err := scanRepo(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected missing streaming scan repo path to fail")
+	}
+	if _, err := discoverScanInputs(context.Background(), ""); !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("expected fs.ErrInvalid for empty scan input repo path, got %v", err)
+	}
+	if _, err := discoverScanInputs(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected missing scan input repo path to fail")
+	}
 
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "Generated.g.cs"), "using Foo;\n")
@@ -87,6 +99,34 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, programSourceName), "using Foo.Bar;\n")
 	if _, err := scanRepo(canceled, repo); err == nil {
 		t.Fatalf("expected canceled context error")
+	}
+	if _, err := discoverScanInputs(canceled, repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan input discovery, got %v", err)
+	}
+}
+
+func TestScanRepoCancellationPrecedesManifestParsing(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Broken.csproj"), `<Project><PackageReference Include="broken"`)
+
+	if _, err := scanRepo(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled scan to stop before manifest parsing, got %v", err)
+	}
+}
+
+func TestStreamingDiscoveryReturnsSourceReadErrors(t *testing.T) {
+	repo := t.TempDir()
+	outside := filepath.Join(t.TempDir(), programSourceName)
+	testutil.MustWriteFile(t, outside, "using Acme.Foo;\n")
+	if err := os.Symlink(outside, filepath.Join(repo, programSourceName)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if _, err := scanRepo(context.Background(), repo); err == nil {
+		t.Fatal("expected streaming scan to reject symlinked source")
+	}
+	if _, err := discoverScanInputs(context.Background(), repo); err != nil {
+		t.Fatalf("expected metadata-only scan input discovery to defer source reads, got %v", err)
 	}
 }
 

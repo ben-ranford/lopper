@@ -46,21 +46,33 @@ func scanRepo(ctx context.Context, repoPath string, scopeModes ...string) (scanR
 
 func scanRepoWithIsolatedProjectRoots(ctx context.Context, repoPath, scopeMode string, isolatedProjectRoots []string) (scanResult, error) {
 	result := newScanResult()
-
-	inputs, err := discoverScanInputsWithIsolatedProjectRoots(ctx, repoPath, scopeMode, isolatedProjectRoots)
+	scanner, sourceScan, err := discoverScanInputScanner(ctx, repoPath, isolatedProjectRoots)
 	if err != nil {
 		return result, err
 	}
 
-	result.DeclaredDependencies = inputs.DeclaredDependencies
-	result.CoverageGaps = inputs.CoverageGaps
-	result.Warnings = append(result.Warnings, inputs.Warnings...)
-	result.SkippedGeneratedFiles = inputs.SkippedGenerated
-	result.SkippedFileLimit = inputs.SkippedFileLimit
+	result.DeclaredDependencies = scanner.declaredDependencies(scopeMode)
+	result.CoverageGaps = scanner.coverageGaps
+	result.Warnings = append(result.Warnings, sourceScan.Warnings...)
+	result.SkippedGeneratedFiles = sourceScan.SkippedGeneratedFiles
+	result.SkippedFileLimit = sourceScan.SkippedFileLimit
 
-	mapper := newDependencyMapper(inputs.DeclaredDependencies)
+	mapper := newDependencyMapper(result.DeclaredDependencies)
 	projectMappers := make(map[string]dependencyMapper)
-	for _, source := range inputs.SourceFiles {
+	parseSource := func(source sourceDocument) {
+		if !scanner.shouldProcessSource(scopeMode, source.RelativePath) {
+			return
+		}
+		dependencies, hasProject, projectRoot := scanner.sourceDependencies(source.RelativePath)
+		source.DeclaredDependencies = dependencies
+		source.HasProjectDeclaration = hasProject
+		source.ProjectRoot = projectRoot
+		fallbackMode := "fallback-disabled"
+		if projectRoot != "" {
+			fallbackMode = "fallback-enabled"
+		}
+		source.MapperKey = fallbackMode + "\x00" + strings.Join(dependencies, "\x00")
+
 		currentMapper := mapper
 		if source.HasProjectDeclaration {
 			var ok bool
@@ -73,6 +85,10 @@ func scanRepoWithIsolatedProjectRoots(ctx context.Context, repoPath, scopeMode s
 		parsed := parseSourceDocument(source, currentMapper)
 		result.Files = append(result.Files, parsed.File)
 		addMappingMeta(&result, parsed.Mapping)
+	}
+	secondPass := sourceDiscovery{}
+	if err := discoverSourceFiles(ctx, repoPath, &secondPass, parseSource); err != nil {
+		return result, err
 	}
 	return result, nil
 }
@@ -87,13 +103,25 @@ func discoverScanInputs(ctx context.Context, repoPath string, scopeModes ...stri
 
 func discoverScanInputsWithIsolatedProjectRoots(ctx context.Context, repoPath, scopeMode string, isolatedProjectRoots []string) (scanInputs, error) {
 	inputs := scanInputs{}
-	if repoPath == "" {
-		return inputs, fs.ErrInvalid
+	scanner, sourceScan, err := discoverScanInputScanner(ctx, repoPath, isolatedProjectRoots)
+	if err != nil {
+		return inputs, err
 	}
 
+	inputs.DeclaredDependencies = scanner.declaredDependencies(scopeMode)
+	inputs.CoverageGaps = scanner.coverageGaps
+	inputs.SkippedGenerated = sourceScan.SkippedGeneratedFiles
+	inputs.SkippedFileLimit = sourceScan.SkippedFileLimit
+	inputs.Warnings = append(inputs.Warnings, sourceScan.Warnings...)
+	return inputs, nil
+}
+
+func discoverScanInputScanner(ctx context.Context, repoPath string, isolatedProjectRoots []string) (*scanInputDiscoverer, sourceDiscovery, error) {
+	if repoPath == "" {
+		return nil, sourceDiscovery{}, fs.ErrInvalid
+	}
 	sourceScan := sourceDiscovery{}
 	scanner := newScanInputDiscoverer(repoPath, &sourceScan, isolatedProjectRoots)
-
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if ctx != nil && ctx.Err() != nil {
 			return ctx.Err()
@@ -101,18 +129,10 @@ func discoverScanInputsWithIsolatedProjectRoots(ctx context.Context, repoPath, s
 		return scanner.walk(path, entry, walkErr)
 	})
 	if err != nil {
-		return inputs, err
+		return nil, sourceScan, err
 	}
-
 	appendSourceDiscoveryWarnings(&sourceScan)
-
-	inputs.DeclaredDependencies = scanner.declaredDependencies(scopeMode)
-	inputs.SourceFiles = scanner.sourceFiles(scopeMode)
-	inputs.CoverageGaps = scanner.coverageGaps
-	inputs.SkippedGenerated = sourceScan.SkippedGeneratedFiles
-	inputs.SkippedFileLimit = sourceScan.SkippedFileLimit
-	inputs.Warnings = append(inputs.Warnings, sourceScan.Warnings...)
-	return inputs, nil
+	return &scanner, sourceScan, nil
 }
 
 func newScanResult() scanResult {
@@ -132,8 +152,8 @@ func addMappingMeta(result *scanResult, meta mappingMetadata) {
 }
 
 type sourceDiscovery struct {
-	Files                 []sourceDocument
 	Warnings              []string
+	DiscoveredSourceFiles int
 	SkippedGeneratedFiles int
 	SkippedFileLimit      bool
 }
@@ -141,6 +161,7 @@ type sourceDiscovery struct {
 type sourceDiscoverer struct {
 	repoPath           string
 	discovery          *sourceDiscovery
+	processSource      func(sourceDocument)
 	visitedSourceFiles int
 }
 
@@ -156,11 +177,26 @@ type scanInputDiscoverer struct {
 	sourceScanLimited      bool
 }
 
-func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDiscoverer {
-	return sourceDiscoverer{
-		repoPath:  repoPath,
-		discovery: discovery,
+func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery, processSource ...func(sourceDocument)) sourceDiscoverer {
+	discoverer := sourceDiscoverer{repoPath: repoPath, discovery: discovery}
+	if len(processSource) > 0 {
+		discoverer.processSource = processSource[0]
 	}
+	return discoverer
+}
+
+func discoverSourceFiles(ctx context.Context, repoPath string, discovery *sourceDiscovery, processSource func(sourceDocument)) error {
+	discoverer := newSourceDiscoverer(repoPath, discovery, processSource)
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return discoverer.walk(path, entry, walkErr)
+	})
+	if errors.Is(err, fs.SkipAll) {
+		return nil
+	}
+	return err
 }
 
 func newScanInputDiscoverer(repoPath string, source *sourceDiscovery, isolatedRoots ...[]string) scanInputDiscoverer {
@@ -216,7 +252,7 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 	if d.sourceScanLimited {
 		return nil
 	}
-	err = d.sourceDiscoverer.discoverFile(path)
+	err = d.sourceDiscoverer.classifyFile(path)
 	if errors.Is(err, fs.SkipAll) {
 		d.sourceScanLimited = true
 		return nil
@@ -286,23 +322,11 @@ func (d *scanInputDiscoverer) declaredDependencies(scopeMode string) []string {
 	return sortedDependencies(dependencies)
 }
 
-func (d *scanInputDiscoverer) sourceFiles(scopeMode string) []sourceDocument {
-	files := append([]sourceDocument(nil), d.sourceDiscoverer.discovery.Files...)
-	for index := range files {
-		dependencies, hasProject, projectRoot := d.sourceDependencies(files[index].RelativePath)
-		files[index].DeclaredDependencies = dependencies
-		files[index].HasProjectDeclaration = hasProject
-		files[index].ProjectRoot = projectRoot
-		fallbackMode := "fallback-disabled"
-		if projectRoot != "" {
-			fallbackMode = "fallback-enabled"
-		}
-		files[index].MapperKey = fallbackMode + "\x00" + strings.Join(dependencies, "\x00")
+func (d *scanInputDiscoverer) shouldProcessSource(scopeMode, relativePath string) bool {
+	if (scopeMode != "package" && scopeMode != "changed-packages") || d.hasMalformedRootFallback() {
+		return true
 	}
-	if (scopeMode == "package" || scopeMode == "changed-packages") && !d.hasMalformedRootFallback() {
-		files = d.excludeIsolatedProjectSources(files)
-	}
-	return files
+	return !d.isolatedProjectRoot(filepath.Join(d.sourceDiscoverer.repoPath, relativePath))
 }
 
 func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string, bool, string) {
@@ -336,30 +360,12 @@ func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string,
 }
 
 func (d *scanInputDiscoverer) isolatedProjectRoot(path string) bool {
-	repoPath := filepath.Clean(d.sourceDiscoverer.repoPath)
-	path = filepath.Clean(path)
-	relativePath, err := filepath.Rel(repoPath, path)
-	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
-		return false
-	}
-	for current := path; !sameDotNetPath(current, repoPath); current = filepath.Dir(current) {
-		if _, isolated := d.isolationProjectRoots[current]; isolated {
+	for root := range d.isolationProjectRoots {
+		if !sameDotNetPath(root, d.sourceDiscoverer.repoPath) && isDotNetSubPath(d.sourceDiscoverer.repoPath, root) && isDotNetSubPath(root, path) {
 			return true
 		}
 	}
 	return false
-}
-
-func (d *scanInputDiscoverer) excludeIsolatedProjectSources(files []sourceDocument) []sourceDocument {
-	filtered := files[:0]
-	for _, file := range files {
-		path := filepath.Join(d.sourceDiscoverer.repoPath, file.RelativePath)
-		if d.isolatedProjectRoot(path) {
-			continue
-		}
-		filtered = append(filtered, file)
-	}
-	return filtered
 }
 
 func excludeNestedProjectSources(files []sourceDocument, repoPath string, malformedRoots map[string]struct{}) []sourceDocument {
@@ -405,7 +411,7 @@ func (d *sourceDiscoverer) walk(path string, entry fs.DirEntry, walkErr error) e
 	return d.discoverFile(path)
 }
 
-func (d *sourceDiscoverer) discoverFile(path string) error {
+func (d *sourceDiscoverer) classifyFile(path string) error {
 	if !isSourceFile(path) {
 		return nil
 	}
@@ -418,19 +424,29 @@ func (d *sourceDiscoverer) discoverFile(path string) error {
 		d.discovery.SkippedFileLimit = true
 		return fs.SkipAll
 	}
+	d.discovery.DiscoveredSourceFiles++
+	return nil
+}
+
+func (d *sourceDiscoverer) discoverFile(path string) error {
+	if err := d.classifyFile(path); err != nil {
+		return err
+	}
+	if !isSourceFile(path) || isGeneratedSource(path) {
+		return nil
+	}
 	content, relativePath, err := readSourceFile(d.repoPath, path)
 	if err != nil {
 		return err
 	}
-	d.discovery.Files = append(d.discovery.Files, sourceDocument{
-		RelativePath: relativePath,
-		Content:      content,
-	})
+	if d.processSource != nil {
+		d.processSource(sourceDocument{RelativePath: relativePath, Content: content})
+	}
 	return nil
 }
 
 func appendSourceDiscoveryWarnings(discovery *sourceDiscovery) {
-	if len(discovery.Files) == 0 {
+	if discovery.DiscoveredSourceFiles == 0 {
 		discovery.Warnings = append(discovery.Warnings, "no C#/F# source files found for analysis")
 	}
 	if discovery.SkippedGeneratedFiles > 0 {
