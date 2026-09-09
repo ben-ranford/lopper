@@ -39,9 +39,11 @@ func TestDashboardRepoMaterializerRunGitBoundsHelperPipeWaitAfterCancellation(t 
 
 func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "helper.pid")
+	var command *exec.Cmd
 	originalExec := execDashboardGitCommandFn
 	execDashboardGitCommandFn = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
-		return exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 30 & helper=$!; printf '%s' \"$helper\" > \"$1\"; wait", "dashboard-helper", marker), nil
+		command = exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 30 & helper=$!; printf '%s' \"$helper\" > \"$1\"; wait", "dashboard-helper", marker)
+		return command, nil
 	}
 	t.Cleanup(func() {
 		execDashboardGitCommandFn = originalExec
@@ -69,9 +71,12 @@ func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *te
 	if err != nil {
 		t.Fatalf("parse helper pid %q: %v", content, err)
 	}
-	terminated, err := testutil.ProcessTerminated(pid)
+	if command == nil || command.Process == nil {
+		t.Fatal("expected git command process")
+	}
+	terminated, err := testutil.ProcessGroupTerminated(command.Process.Pid)
 	if err != nil {
-		t.Fatalf("check transport helper %d: %v", pid, err)
+		t.Fatalf("check transport helper process group %d: %v", pid, err)
 	}
 	if !terminated {
 		t.Fatalf("expected transport helper %d to be terminated", pid)

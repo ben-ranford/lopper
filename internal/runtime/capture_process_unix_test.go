@@ -129,9 +129,9 @@ func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) 
 	cleanup()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		terminated, err := testutil.ProcessTerminated(childPID)
+		terminated, err := testutil.ProcessGroupTerminated(cmd.Process.Pid)
 		if err != nil {
-			t.Fatalf("check child process %d: %v", childPID, err)
+			t.Fatalf("check process group %d: %v", cmd.Process.Pid, err)
 		}
 		if terminated {
 			return
@@ -141,12 +141,26 @@ func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) 
 	t.Fatalf("child process %d outlived process group cleanup", childPID)
 }
 
-func TestRuntimeHelperTerminatedKeepsLiveProcess(t *testing.T) {
-	terminated, err := testutil.ProcessTerminated(os.Getpid())
+func TestRuntimeProcessGroupTerminatedKeepsLiveProcess(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "sleep 30")
+	configureRuntimeCommand(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start process: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cmd.Cancel(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("cancel live process: %v", err)
+		}
+		if err := cmd.Wait(); err != nil && !errors.Is(err, os.ErrProcessDone) && !strings.Contains(err.Error(), "signal: killed") {
+			t.Errorf("wait for live process: %v", err)
+		}
+	})
+
+	terminated, err := testutil.ProcessGroupTerminated(cmd.Process.Pid)
 	if err != nil {
-		t.Fatalf("check current process: %v", err)
+		t.Fatalf("check process group: %v", err)
 	}
 	if terminated {
-		t.Fatal("expected current process to remain live")
+		t.Fatal("expected live process group to remain running")
 	}
 }
