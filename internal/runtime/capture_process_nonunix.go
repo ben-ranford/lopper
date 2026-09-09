@@ -19,6 +19,7 @@ func ConfigureCommandCancellation(cmd *exec.Cmd) {
 }
 
 // StartCommand starts a command configured with ConfigureCommandCancellation.
+// These platforms do not allocate a process-tree handle that needs cleanup.
 func StartCommand(cmd *exec.Cmd) (func(), error) {
-	return func() {}, cmd.Start()
+	return nil, cmd.Start()
 }
