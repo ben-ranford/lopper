@@ -17,7 +17,7 @@ func TestServiceAnalyseDotNetMalformedRootKeepsSiblingDeclarationsScoped(t *test
 	writeFile(t, filepath.Join(repo, "b", "B.csproj"), "<Project></Project>")
 	writeFile(t, filepath.Join(repo, "b", "B.cs"), "using Foo;\nclass B {}\n")
 
-	reportData := analyseMalformedManifestFixture(t, repo, "dotnet", "foo")
+	reportData := analyseMalformedManifestFixtureInScope(t, repo, "dotnet", "foo", ScopeModeRepo)
 	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"."}) {
 		t.Fatalf("expected one malformed-root fallback scope, got %#v", reportData.Scope)
 	}
@@ -99,28 +99,30 @@ func TestServiceAnalyseDotNetValidRootSeparatesMalformedChildBoundary(t *testing
 	writeFile(t, filepath.Join(repo, "Program.cs"), "using Foo;\nclass Root {}\n")
 	writeFile(t, filepath.Join(repo, "apps", "Broken.csproj"), "<Project><PackageReference Include=\"broken\"")
 	writeFile(t, filepath.Join(repo, "apps", "App.cs"), "using Foo;\nclass BrokenApp {}\n")
-	writeFile(t, filepath.Join(repo, "apps", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Foo" /></ItemGroup></Project>`)
-	writeFile(t, filepath.Join(repo, "apps", "child", "Child.cs"), "using Foo;\nclass Child {}\n")
+	writeFile(t, filepath.Join(repo, "apps", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Child.Foo" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "apps", "child", "Child.cs"), "using Child.Foo;\nclass Child {}\n")
 
-	reportData := analyseMalformedManifestFixture(t, repo, "dotnet", "foo")
-	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{".", "apps"}) {
-		t.Fatalf("expected valid root and malformed child fallback scopes, got %#v", reportData.Scope)
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath: repo, Language: "dotnet", ScopeMode: ScopeModeRepo, TopN: 2, Cache: &CacheOptions{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("analyse repo-scoped valid root with malformed child: %v", err)
+	}
+	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"."}) {
+		t.Fatalf("expected repository scope to retain nested project analysis, got %#v", reportData.Scope)
 	}
 	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "apps/Broken.csproj" {
 		t.Fatalf("expected malformed child coverage gap, got %#v", reportData.CoverageGaps)
 	}
-	if len(reportData.Dependencies) != 1 {
-		t.Fatalf("expected merged Foo report, got %#v", reportData.Dependencies)
+	if len(reportData.Dependencies) != 2 {
+		t.Fatalf("expected root and nested project dependencies, got %#v", reportData.Dependencies)
 	}
-	dependency := reportData.Dependencies[0]
-	if dependency.UsedExportsCount != 2 || dependency.TotalExportsCount != 2 || len(dependency.Recommendations) != 0 {
-		t.Fatalf("expected root and valid child Foo declarations exactly once, got %#v", dependency)
-	}
-	if len(dependency.UsedImports) != 1 || len(dependency.UsedImports[0].Locations) != 2 {
-		t.Fatalf("expected only root and valid child Foo locations, got %#v", dependency.UsedImports)
+	for _, dependency := range reportData.Dependencies {
+		if dependency.UsedExportsCount != 1 || dependency.TotalExportsCount != 1 || len(dependency.Recommendations) != 0 || len(dependency.UsedImports) != 1 || len(dependency.UsedImports[0].Locations) != 1 {
+			t.Fatalf("expected each valid declaration and source exactly once, got %#v", reportData.Dependencies)
+		}
 	}
 
-	var err error
 	_, err = NewService().Analyse(context.Background(), Request{
 		RepoPath:                repo,
 		Language:                "dotnet",

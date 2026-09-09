@@ -36,10 +36,10 @@ type scanInputs struct {
 	SkippedFileLimit     bool
 }
 
-func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
+func scanRepo(ctx context.Context, repoPath, scopeMode string) (scanResult, error) {
 	result := newScanResult()
 
-	inputs, err := discoverScanInputs(ctx, repoPath)
+	inputs, err := discoverScanInputs(ctx, repoPath, scopeMode)
 	if err != nil {
 		return result, err
 	}
@@ -69,7 +69,7 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	return result, nil
 }
 
-func discoverScanInputs(ctx context.Context, repoPath string) (scanInputs, error) {
+func discoverScanInputs(ctx context.Context, repoPath, scopeMode string) (scanInputs, error) {
 	inputs := scanInputs{}
 	if repoPath == "" {
 		return inputs, fs.ErrInvalid
@@ -90,8 +90,8 @@ func discoverScanInputs(ctx context.Context, repoPath string) (scanInputs, error
 
 	appendSourceDiscoveryWarnings(&sourceScan)
 
-	inputs.DeclaredDependencies = scanner.declaredDependencies()
-	inputs.SourceFiles = scanner.sourceFiles()
+	inputs.DeclaredDependencies = scanner.declaredDependencies(scopeMode)
+	inputs.SourceFiles = scanner.sourceFiles(scopeMode)
 	inputs.CoverageGaps = scanner.coverageGaps
 	inputs.SkippedGenerated = sourceScan.SkippedGeneratedFiles
 	inputs.SkippedFileLimit = sourceScan.SkippedFileLimit
@@ -219,9 +219,9 @@ func mergeDependencies(existing, added []string) []string {
 	return sortedDependencies(dependencies)
 }
 
-func (d *scanInputDiscoverer) declaredDependencies() []string {
+func (d *scanInputDiscoverer) declaredDependencies(scopeMode string) []string {
 	rootDependencies, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]
-	if !hasRootProject {
+	if scopeMode == "repo" || !hasRootProject {
 		return sortedDependencies(d.dependencySet)
 	}
 	dependencies := make(map[string]struct{})
@@ -230,7 +230,7 @@ func (d *scanInputDiscoverer) declaredDependencies() []string {
 	return sortedDependencies(dependencies)
 }
 
-func (d *scanInputDiscoverer) sourceFiles() []sourceDocument {
+func (d *scanInputDiscoverer) sourceFiles(scopeMode string) []sourceDocument {
 	files := append([]sourceDocument(nil), d.sourceDiscoverer.discovery.Files...)
 	for index := range files {
 		dependencies, hasProject, projectRoot := d.sourceDependencies(files[index].RelativePath)
@@ -239,7 +239,7 @@ func (d *scanInputDiscoverer) sourceFiles() []sourceDocument {
 		files[index].ProjectRoot = projectRoot
 		files[index].MapperKey = strings.Join(dependencies, "\x00")
 	}
-	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject {
+	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject && scopeMode != "repo" {
 		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath, d.malformedManifestRoots)
 	}
 	return files

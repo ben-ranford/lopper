@@ -376,7 +376,7 @@ func TestDotNetDiscoveryAndParsingStagesCompose(t *testing.T) {
 		t.Fatalf(dotNetWriteProgramFileErrFmt, err)
 	}
 
-	inputs, err := discoverScanInputs(context.Background(), repo)
+	inputs, err := discoverScanInputs(context.Background(), repo, "")
 	if err != nil {
 		t.Fatalf("discover scan inputs: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestDotNetDiscoverScanInputsPreservesMixedRepoOutputs(t *testing.T) {
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "Lib", "Module.fs"), "open Acme.Logging\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "src", "App", "Generated.g.cs"), "using Generated;\n")
 
-	inputs, err := discoverScanInputs(context.Background(), repo)
+	inputs, err := discoverScanInputs(context.Background(), repo, "")
 	if err != nil {
 		t.Fatalf("discover scan inputs: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestDotNetDiscoverScanInputsKeepsManifestDiscoveryAfterSourceCap(t *testing
   </ItemGroup>
 </Project>`)
 
-	inputs, err := discoverScanInputs(context.Background(), repo)
+	inputs, err := discoverScanInputs(context.Background(), repo, "")
 	if err != nil {
 		t.Fatalf("discover scan inputs with cap: %v", err)
 	}

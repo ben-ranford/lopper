@@ -49,6 +49,7 @@ foo = "1"
 	_, err = NewService().Analyse(context.Background(), Request{
 		RepoPath:                repo,
 		Language:                "rust",
+		ScopeMode:               ScopeModeRepo,
 		Dependency:              "foo",
 		RequireCompleteCoverage: true,
 		Cache:                   &CacheOptions{Enabled: false},

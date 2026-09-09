@@ -14,6 +14,7 @@ const All = "all"
 
 type AnalysisOptions struct {
 	RepoPath                          string
+	ScopeMode                         string
 	ExcludedPaths                     []string
 	ExcludedFiles                     []string
 	Dependency                        string

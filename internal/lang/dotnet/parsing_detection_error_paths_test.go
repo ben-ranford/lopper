@@ -54,14 +54,14 @@ func TestDetectAndRootSignalBranches(t *testing.T) {
 }
 
 func TestScanRepoAndReadSourceBranches(t *testing.T) {
-	if _, err := scanRepo(context.Background(), ""); !errors.Is(err, fs.ErrInvalid) {
+	if _, err := scanRepo(context.Background(), "", ""); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("expected fs.ErrInvalid for empty repo path, got %v", err)
 	}
 
 	repo := t.TempDir()
 	testutil.MustWriteFile(t, filepath.Join(repo, "Generated.g.cs"), "using Foo;\n")
 	testutil.MustWriteFile(t, filepath.Join(repo, "notes.txt"), "x")
-	scan, err := scanRepo(context.Background(), repo)
+	scan, err := scanRepo(context.Background(), repo, "")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestScanRepoAndReadSourceBranches(t *testing.T) {
 
 	canceled := testutil.CanceledContext()
 	testutil.MustWriteFile(t, filepath.Join(repo, programSourceName), "using Foo.Bar;\n")
-	if _, err := scanRepo(canceled, repo); err == nil {
+	if _, err := scanRepo(canceled, repo, ""); err == nil {
 		t.Fatalf("expected canceled context error")
 	}
 }
@@ -453,7 +453,7 @@ func TestDetectAndScanFileLimitsAndAnalysisWarnings(t *testing.T) {
 		t.Fatalf("expected detection to match with many files")
 	}
 
-	scan, err := scanRepo(context.Background(), repo)
+	scan, err := scanRepo(context.Background(), repo, "")
 	if err != nil {
 		t.Fatalf("scan with many files: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestWalkDirPermissionErrorBranches(t *testing.T) {
 	if _, err := NewAdapter().DetectWithConfidence(context.Background(), repo); err == nil {
 		t.Fatalf("expected detect error for missing repo path")
 	}
-	if _, err := scanRepo(context.Background(), repo); err == nil {
+	if _, err := scanRepo(context.Background(), repo, ""); err == nil {
 		t.Fatalf("expected scan error for missing repo path")
 	}
 }

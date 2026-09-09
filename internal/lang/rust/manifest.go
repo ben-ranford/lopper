@@ -178,14 +178,16 @@ func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscov
 		paths = append(paths, memberManifests...)
 	}
 
-	excludedSourceRoots, err := discoverMalformedNestedCargoRoots(repoPath, rootManifest)
+	excludedSourceRoots, malformedWarnings, malformedCoverageGaps, err := discoverMalformedNestedCargoRoots(repoPath, rootManifest)
 	if err != nil {
 		return manifestDiscoveryResult{}, err
 	}
+	warnings = append(warnings, malformedWarnings...)
 	discovery := manifestDiscoveryResult{
 		ManifestPaths:       uniquePaths(paths),
 		ExcludedSourceRoots: excludedSourceRoots,
 		Warnings:            dedupeWarnings(warnings),
+		CoverageGaps:        malformedCoverageGaps,
 		ParsedDependencies:  make(map[string]map[string]dependencyInfo),
 	}
 	for _, manifestPath := range discovery.ManifestPaths {
@@ -197,12 +199,14 @@ func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscov
 	return discovery, nil
 }
 
-func discoverMalformedNestedCargoRoots(repoPath, rootManifest string) ([]string, error) {
+func discoverMalformedNestedCargoRoots(repoPath, rootManifest string) ([]string, []string, []report.CoverageGap, error) {
 	paths, _, err := discoverManifestsByWalk(repoPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	roots := make([]string, 0)
+	warnings := make([]string, 0)
+	coverageGaps := make([]report.CoverageGap, 0)
 	for _, manifestPath := range paths {
 		if samePath(manifestPath, rootManifest) {
 			continue
@@ -210,12 +214,14 @@ func discoverMalformedNestedCargoRoots(repoPath, rootManifest string) ([]string,
 		if _, _, err := parseCargoManifest(manifestPath, repoPath); err != nil {
 			if isCargoManifestParseError(err) {
 				roots = append(roots, filepath.Dir(manifestPath))
+				warnings = append(warnings, malformedCargoManifestWarning(repoPath, manifestPath, err))
+				coverageGaps = append(coverageGaps, malformedCargoManifestCoverageGap(repoPath, manifestPath, err))
 				continue
 			}
-			return nil, err
+			return nil, nil, nil, err
 		}
 	}
-	return uniquePaths(roots), nil
+	return uniquePaths(roots), dedupeWarnings(warnings), report.StableCoverageGaps(coverageGaps), nil
 }
 
 func removeManifestPath(paths []string, target string) []string {
