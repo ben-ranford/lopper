@@ -924,8 +924,7 @@ func TestPreparedDistributedLockfileChangePrefixesRespectCancellation(t *testing
 	if !errors.Is(result.err, context.Canceled) {
 		t.Fatalf("expected canceled prepared scan, got %v", result.err)
 	}
-	unchanged := lockfilePreparedRule{manifestChange: &lockfilePreparedManifestChange{manifests: []lockfilePreparedManifestRef{{name: dotnetCentralManifest, relPath: dotnetCentralManifest}}}}
-	if ok := (&lockfileDriftResult{}).appendPreparedRule(lockfilePreparedDir{}, unchanged, lockfileGitContext{hasGitContext: true}, newLockfileManifestCache(lockfileDirSnapshot{}), nil); !ok {
+	if ok := (&lockfileDriftResult{}).appendPreparedRule(lockfilePreparedDir{}, lockfilePreparedRule{manifestChange: &lockfilePreparedManifestChange{manifests: []lockfilePreparedManifestRef{{name: dotnetCentralManifest, relPath: dotnetCentralManifest}}}}, lockfileGitContext{hasGitContext: true}, newLockfileManifestCache(lockfileDirSnapshot{}), nil); !ok {
 		t.Fatal("expected unchanged prepared rule to continue")
 	}
 }

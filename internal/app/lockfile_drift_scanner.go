@@ -1076,7 +1076,7 @@ func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache 
 		manifestName = manifests[0]
 	}
 	lockfiles := findRuleLockfiles(snapshot.files, rule.lockfiles)
-	preparedDistributed, distributedCandidates, handledDistributed, distributedErr := prepareDistributedLockfileRule(snapshot, rule, manifests, hasManifest, manifestName, lockfiles, cache, readErrors)
+	preparedDistributed, distributedCandidates, handledDistributed, distributedErr := prepareDistributedLockfileRule(snapshot, rule, manifests, lockfiles, cache, readErrors)
 	if distributedErr != nil {
 		return lockfilePreparedRule{}, nil, distributedErr
 	}
@@ -1123,15 +1123,15 @@ func prepareLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, cache 
 	}, relativeLockfileCandidatePaths(snapshot, manifests, lockfiles), nil
 }
 
-func prepareDistributedLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, hasManifest bool, manifestName string, lockfiles []presentLockfile, cache *lockfileManifestCache, readErrors *lockfileManifestReadErrors) (lockfilePreparedRule, []string, bool, error) {
+func prepareDistributedLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, lockfiles []presentLockfile, cache *lockfileManifestCache, readErrors *lockfileManifestReadErrors) (lockfilePreparedRule, []string, bool, error) {
 	distributed, applies, err := distributedDotnetLockfileRange(snapshot, rule, manifests, lockfiles)
 	if err != nil || !applies {
 		return lockfilePreparedRule{}, nil, false, err
 	}
-	if !hasManifest || distributed.start == distributed.end {
+	if len(manifests) == 0 || distributed.start == distributed.end {
 		return lockfilePreparedRule{}, nil, false, nil
 	}
-	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifestName, cache)
+	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifests[0], cache)
 	if err != nil {
 		if prepared, recoverable := recoverablePreparedLockfileRule(snapshot, rule, err, readErrors); recoverable {
 			return prepared, nil, true, nil
