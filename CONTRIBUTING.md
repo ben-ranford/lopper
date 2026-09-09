@@ -10,7 +10,7 @@ Requirements:
 - `zig` (required for cross-CGO release builds)
 - `shellcheck` (required for `make ci` and git hooks)
 - Ruby (required for automation integrity YAML/JSON checks in `make ci`)
-- Node.js (required for automation integrity JavaScript syntax checks in `make ci`)
+- Node.js 22.12 or newer (required for automation integrity and VS Code extension tests)
 - `golangci-lint` (optional for faster local runs; `make lint` auto-runs a pinned version)
 - `gostyle` (optional for faster local runs; `make lint` auto-runs a pinned version)
 - `actionlint` (optional for faster local runs; `make actionlint` auto-runs a pinned version)

@@ -98,6 +98,8 @@ The extension deduplicates ordinary in-flight refreshes per folder/language/scop
 
 ## Development
 
+Development and test tooling requires Node.js 22.12 or newer.
+
 ```bash
 make build
 make vscode-extension-install
