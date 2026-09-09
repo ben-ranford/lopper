@@ -141,6 +141,7 @@ type scanInputDiscoverer struct {
 	projectDependencies    map[string][]string
 	centralDependencies    map[string][]string
 	malformedManifestRoots map[string]struct{}
+	malformedCentralRoots  map[string]struct{}
 	coverageGaps           []report.CoverageGap
 	sourceDiscoverer       sourceDiscoverer
 	sourceScanLimited      bool
@@ -159,6 +160,7 @@ func newScanInputDiscoverer(repoPath string, source *sourceDiscovery) scanInputD
 		projectDependencies:    make(map[string][]string),
 		centralDependencies:    make(map[string][]string),
 		malformedManifestRoots: make(map[string]struct{}),
+		malformedCentralRoots:  make(map[string]struct{}),
 		sourceDiscoverer:       newSourceDiscoverer(repoPath, source),
 	}
 }
@@ -205,8 +207,11 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 }
 
 func (d *scanInputDiscoverer) recordMalformedManifest(path, name string) {
-	if signalForName(name) == fileSignalProject {
+	switch signalForName(name) {
+	case fileSignalProject:
 		d.malformedManifestRoots[filepath.Dir(path)] = struct{}{}
+	case fileSignalCentral:
+		d.malformedCentralRoots[filepath.Dir(path)] = struct{}{}
 	}
 }
 
@@ -231,6 +236,15 @@ func (d *scanInputDiscoverer) hasMalformedRootProject() bool {
 	return malformed
 }
 
+func (d *scanInputDiscoverer) hasMalformedRootFallback() bool {
+	if d.hasMalformedRootProject() {
+		return true
+	}
+	_, malformedCentral := d.malformedCentralRoots[d.sourceDiscoverer.repoPath]
+	_, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]
+	return malformedCentral && !hasRootProject
+}
+
 func (d *scanInputDiscoverer) declaredDependencies(scopeMode string) []string {
 	rootDependencies, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]
 	if scopeMode == "repo" || !hasRootProject || d.hasMalformedRootProject() {
@@ -251,7 +265,7 @@ func (d *scanInputDiscoverer) sourceFiles(scopeMode string) []sourceDocument {
 		files[index].ProjectRoot = projectRoot
 		files[index].MapperKey = strings.Join(dependencies, "\x00")
 	}
-	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject && scopeMode != "repo" && !d.hasMalformedRootProject() {
+	if (scopeMode == "package" || scopeMode == "changed-packages") && !d.hasMalformedRootFallback() {
 		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath, d.malformedManifestRoots)
 	}
 	return files

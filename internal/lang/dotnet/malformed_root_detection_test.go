@@ -93,3 +93,26 @@ func TestDotNetMalformedProjectBoundaryDoesNotBorrowAncestorDeclarations(t *test
 		t.Fatalf("expected valid root source only after excluding nested and malformed-project sources, got %#v", files)
 	}
 }
+
+func TestDotNetMalformedRootFallbackIncludesOnlyUnownedCentralManifest(t *testing.T) {
+	repo := t.TempDir()
+
+	malformedProject := newScanInputDiscoverer(repo, &sourceDiscovery{})
+	malformedProject.malformedManifestRoots[repo] = struct{}{}
+	if !malformedProject.hasMalformedRootFallback() {
+		t.Fatal("expected malformed root project to retain fallback source ownership")
+	}
+
+	malformedCentral := newScanInputDiscoverer(repo, &sourceDiscovery{})
+	malformedCentral.malformedCentralRoots[repo] = struct{}{}
+	if !malformedCentral.hasMalformedRootFallback() {
+		t.Fatal("expected orphan malformed central manifest to retain fallback source ownership")
+	}
+
+	ownedCentral := newScanInputDiscoverer(repo, &sourceDiscovery{})
+	ownedCentral.malformedCentralRoots[repo] = struct{}{}
+	ownedCentral.projectDependencies[repo] = []string{"root.package"}
+	if ownedCentral.hasMalformedRootFallback() {
+		t.Fatal("expected valid root project to own malformed central manifest sources")
+	}
+}
