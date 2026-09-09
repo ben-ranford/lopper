@@ -202,6 +202,15 @@ void main() {}
 `,
 		},
 		{
+			name: "show entry after continuation",
+			source: `import 'package:http/http.dart'
+    show Client,
+        Request;
+
+void main() {}
+`,
+		},
+		{
 			name: "alias before continuation comment",
 			source: `import 'package:http/http.dart' as http
     show Client; // http
