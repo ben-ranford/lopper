@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 
-import { applicationPathForExecutable, launcherEnvironment, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
+import { applicationPathForExecutable, cleanupMatchingTestProcesses, launcherEnvironment, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
 
 const executablePath = process.env.LOPPER_VSCODE_TEST_EXECUTABLE;
 const resultPath = process.env.LOPPER_VSCODE_TEST_RESULT_PATH;
@@ -24,15 +24,19 @@ const argumentsForOpen = openArguments({
 });
 const open = spawn("/usr/bin/open", argumentsForOpen, { stdio: "inherit" });
 async function cleanupTestProcess() {
-  const processOutput = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout;
-  terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, (pid) => {
+  const listProcesses = () => {
+    const processOutput = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout;
+    const pids = [];
+    terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, (pid) => pids.push(pid));
+    return pids;
+  };
+  await cleanupMatchingTestProcesses({ listProcesses, terminate: (pid, signal) => {
     try {
-      process.kill(pid, "SIGTERM");
+      process.kill(pid, signal);
     } catch (error) {
       if (error.code !== "ESRCH") throw error;
     }
-  });
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  }, wait: () => new Promise((resolve) => setTimeout(resolve, 100)) });
 }
 
 const timeoutHandle = setTimeout(async () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applicationPathForExecutable, isBackgroundMacOSTestRun, launcherEnvironment, matchesTestProcess, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
+import { applicationPathForExecutable, cleanupMatchingTestProcesses, isBackgroundMacOSTestRun, launcherEnvironment, matchesTestProcess, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
 
 test("uses the background launcher only for local macOS runs", () => {
   assert.equal(isBackgroundMacOSTestRun({}, "darwin"), true);
@@ -42,6 +42,27 @@ test("forwards only the binary path and terminates only the isolated test proces
   );
   assert.deepEqual(terminated, [100]);
   assert.equal(matchesTestProcess("/tmp/Code.app/Contents/MacOS/Code --user-data-dir=/tmp/profile-other", "/tmp/Code.app/Contents/MacOS/Code", "/tmp/profile"), false);
+});
+
+test("waits for graceful cleanup and escalates only stubborn matching processes", async () => {
+  const signals = [];
+  let gracefulChecks = 0;
+  await cleanupMatchingTestProcesses({
+    listProcesses: () => (gracefulChecks++ === 0 ? [100] : []),
+    terminate: (pid, signal) => signals.push([pid, signal]),
+    wait: async () => {},
+    attempts: 2,
+  });
+  assert.deepEqual(signals, [[100, "SIGTERM"]]);
+
+  let stubbornChecks = 0;
+  await cleanupMatchingTestProcesses({
+    listProcesses: () => (stubbornChecks++ < 3 ? [101] : []),
+    terminate: (pid, signal) => signals.push([pid, signal]),
+    wait: async () => {},
+    attempts: 2,
+  });
+  assert.deepEqual(signals.slice(1), [[101, "SIGTERM"], [101, "SIGKILL"]]);
 });
 
 test("accepts only an explicit passed result and exact isolated process identity", () => {

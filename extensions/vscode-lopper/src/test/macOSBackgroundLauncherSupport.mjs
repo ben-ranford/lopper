@@ -38,6 +38,21 @@ export function terminateMatchingTestProcesses(processOutput, executablePath, us
   }
 }
 
+export async function cleanupMatchingTestProcesses({ listProcesses, terminate, wait, attempts = 10 }) {
+  let pids = listProcesses();
+  pids.forEach((pid) => terminate(pid, "SIGTERM"));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    pids = listProcesses();
+    if (pids.length === 0) return;
+    await wait();
+  }
+  pids.forEach((pid) => terminate(pid, "SIGKILL"));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (listProcesses().length === 0) return;
+    await wait();
+  }
+}
+
 export function parseTestResult(contents) {
   let result;
   try {
