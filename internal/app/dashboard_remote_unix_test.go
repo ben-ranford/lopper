@@ -87,11 +87,16 @@ func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *te
 	if err != nil {
 		t.Fatalf("parse helper pid %q: %v", content, err)
 	}
-	terminated, err := testutil.ProcessTerminated(pid)
-	if err != nil {
-		t.Fatalf("check transport helper %d: %v", pid, err)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		terminated, err := testutil.ProcessTerminated(pid)
+		if err != nil {
+			t.Fatalf("check transport helper %d: %v", pid, err)
+		}
+		if terminated {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if !terminated {
-		t.Fatalf("expected transport helper %d to be terminated", pid)
-	}
+	t.Fatalf("expected transport helper %d to be terminated", pid)
 }
