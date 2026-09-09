@@ -170,11 +170,20 @@ func TestParseCargoManifestReportsRelativeTOMLError(t *testing.T) {
 }
 
 func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
+	assertRustAnalysisSkipsMalformedManifest(t, "not valid = ", cargoTomlName)
+}
+
+func TestRustAnalysisSkipsMalformedWorkspaceMemberManifest(t *testing.T) {
+	assertRustAnalysisSkipsMalformedManifest(t, "[workspace]\nmembers = [\"crates/*\"]\n", "crates/broken/Cargo.toml")
+}
+
+func assertRustAnalysisSkipsMalformedManifest(t *testing.T, rootManifest, brokenPath string) {
+	t.Helper()
 	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cargoTomlName), "not valid = ")
+	writeFile(t, filepath.Join(repo, cargoTomlName), rootManifest)
+	writeFile(t, filepath.Join(repo, brokenPath), "not valid = ")
 	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n")
 	writeFile(t, filepath.Join(repo, "crates", "working", "src", "lib.rs"), "use serde::Serialize;\n")
-
 	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde"})
 	if err != nil {
 		t.Fatalf("analyse malformed Cargo manifest: %v", err)
@@ -182,27 +191,8 @@ func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
 	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "serde" {
 		t.Fatalf("expected dependency from valid Cargo manifest, got %#v", reportData.Dependencies)
 	}
-	if warnings := strings.Join(reportData.Warnings, "\n"); !strings.Contains(warnings, "skipped malformed Cargo manifest Cargo.toml") {
-		t.Fatalf("expected malformed Cargo manifest warning, got %#v", reportData.Warnings)
-	}
-}
-
-func TestRustAnalysisSkipsMalformedWorkspaceMemberManifest(t *testing.T) {
-	repo := t.TempDir()
-	writeFile(t, filepath.Join(repo, cargoTomlName), "[workspace]\nmembers = [\"crates/*\"]\n")
-	writeFile(t, filepath.Join(repo, "crates", "broken", cargoTomlName), "not valid = ")
-	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n")
-	writeFile(t, filepath.Join(repo, "crates", "working", "src", "lib.rs"), "use serde::Serialize;\n")
-
-	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde"})
-	if err != nil {
-		t.Fatalf("analyse malformed workspace member manifest: %v", err)
-	}
-	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "serde" {
-		t.Fatalf("expected dependency from valid workspace member manifest, got %#v", reportData.Dependencies)
-	}
-	if warnings := strings.Join(reportData.Warnings, "\n"); !strings.Contains(warnings, "skipped malformed Cargo manifest crates/broken/Cargo.toml") {
-		t.Fatalf("expected malformed workspace member warning, got %#v", reportData.Warnings)
+	if warnings := strings.Join(reportData.Warnings, "\n"); !strings.Contains(warnings, "skipped malformed Cargo manifest "+brokenPath) {
+		t.Fatalf("expected malformed manifest warning for %s, got %#v", brokenPath, reportData.Warnings)
 	}
 }
 
