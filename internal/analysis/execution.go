@@ -74,9 +74,6 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		}
 
 		exclusions := cache.cacheAnalysisExclusions(normalizedRoot, req, trueRepoPathOverride...)
-		if candidate.Adapter.ID() == "dotnet" && normalizeScopeMode(req.ScopeMode) == ScopeModeRepo {
-			exclusions.files = append(exclusions.files, ".lopper-repository-scope")
-		}
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
 			ScopeMode:                         req.ScopeMode,

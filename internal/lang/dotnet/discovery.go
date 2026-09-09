@@ -36,7 +36,11 @@ type scanInputs struct {
 	SkippedFileLimit     bool
 }
 
-func scanRepo(ctx context.Context, repoPath, scopeMode string) (scanResult, error) {
+func scanRepo(ctx context.Context, repoPath string, scopeModes ...string) (scanResult, error) {
+	scopeMode := ""
+	if len(scopeModes) > 0 {
+		scopeMode = scopeModes[0]
+	}
 	result := newScanResult()
 
 	inputs, err := discoverScanInputs(ctx, repoPath, scopeMode)
@@ -69,7 +73,11 @@ func scanRepo(ctx context.Context, repoPath, scopeMode string) (scanResult, erro
 	return result, nil
 }
 
-func discoverScanInputs(ctx context.Context, repoPath, scopeMode string) (scanInputs, error) {
+func discoverScanInputs(ctx context.Context, repoPath string, scopeModes ...string) (scanInputs, error) {
+	scopeMode := ""
+	if len(scopeModes) > 0 {
+		scopeMode = scopeModes[0]
+	}
 	inputs := scanInputs{}
 	if repoPath == "" {
 		return inputs, fs.ErrInvalid
