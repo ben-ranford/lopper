@@ -595,3 +595,105 @@ func assertPreparedReplayStateShape(t *testing.T, typ reflect.Type, seen map[ref
 		assertPreparedReplayStateShape(t, typ.Elem(), seen)
 	}
 }
+
+func TestDotnetProjectLockfileIndexCoversFallbackAndCachedScopes(t *testing.T) {
+	var missing *dotnetProjectLockfileIndex
+	lockfiles, err := missing.lockfilesUnder(".")
+	if err != nil || lockfiles != nil {
+		t.Fatalf("expected nil index to return no lockfiles, got %#v, %v", lockfiles, err)
+	}
+
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", dotnetProjectManifest), "<Project></Project>\n")
+	writeFile(t, filepath.Join(repo, "src", dotnetLockfileName), "{}\n")
+	index := &dotnetProjectLockfileIndex{repoPath: repo}
+	lockfiles, err = index.lockfilesUnder(".")
+	if err != nil {
+		t.Fatalf("read fallback index: %v", err)
+	}
+	if len(lockfiles) != 1 || lockfiles[0].name != "src/"+dotnetLockfileName {
+		t.Fatalf("expected fallback lockfile, got %#v", lockfiles)
+	}
+
+	scoped := &dotnetProjectLockfileIndex{
+		repoPath: repo,
+		scoped:   true,
+		scopedLockfilesByScope: map[string][]presentLockfile{
+			"src": {{name: dotnetLockfileName}},
+		},
+	}
+	lockfiles, err = scoped.lockfilesUnder("src")
+	if err != nil {
+		t.Fatalf("read cached scoped lockfiles: %v", err)
+	}
+	if len(lockfiles) != 1 || lockfiles[0].name != dotnetLockfileName {
+		t.Fatalf("expected cached scoped lockfile, got %#v", lockfiles)
+	}
+}
+
+func TestFindDotnetProjectLockfilesContextStopsBeforeWalk(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := findDotnetProjectLockfilesContext(ctx, t.TempDir())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled lockfile walk, got %v", err)
+	}
+}
+
+func TestDotnetProjectLockfileIndexPropagatesScopedDiscoveryError(t *testing.T) {
+	wantErr := errors.New("lockfile discovery failed")
+	index := &dotnetProjectLockfileIndex{
+		repoPath: t.TempDir(),
+		scoped:   true,
+		findLockfiles: func(string) ([]presentLockfile, error) {
+			return nil, wantErr
+		},
+	}
+	_, err := index.lockfilesUnder("nested")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected scoped discovery error, got %v", err)
+	}
+}
+
+func TestDotnetProjectLockfileIndexDoesNotUseSiblingCachedScope(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		scopedLockfilesByScope: map[string][]presentLockfile{
+			"alpha": {{name: "src/" + dotnetLockfileName}},
+		},
+	}
+	if lockfiles, ok := index.lockfilesFromCachedAncestor("alpha-other"); ok || lockfiles != nil {
+		t.Fatalf("expected sibling scope to miss ancestor cache, got %#v", lockfiles)
+	}
+}
+
+func TestFindDotnetProjectLockfilesContextAcceptsNilContext(t *testing.T) {
+	lockfiles, err := findDotnetProjectLockfilesContext(nil, t.TempDir())
+	if err != nil || len(lockfiles) != 0 {
+		t.Fatalf("expected empty nil-context walk, got %#v, %v", lockfiles, err)
+	}
+}
+
+func TestDotnetProjectLockfileHelpersReturnFilesystemErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	if _, err := findDotnetProjectLockfilesContext(context.Background(), missing); err == nil {
+		t.Fatal("expected missing scan root error")
+	}
+	if _, err := dirContainsDotnetProjectManifest(missing); err == nil {
+		t.Fatal("expected missing project directory error")
+	}
+	if _, err := dotnetProjectLockfileRelativePath("\x00", missing); err == nil {
+		t.Fatal("expected invalid root path error")
+	}
+}
+
+func TestDirContainsDotnetProjectManifestSkipsNestedEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, dotnetProjectManifest), "<Project></Project>\n")
+	hasProject, err := dirContainsDotnetProjectManifest(dir)
+	if err != nil || !hasProject {
+		t.Fatalf("expected root project after nested directory, got %v, %v", hasProject, err)
+	}
+}
