@@ -381,7 +381,7 @@ func writeCodeownerEscapedRune(field *strings.Builder, r rune) {
 }
 
 func isCodeownerFieldSpace(r rune) bool {
-	return r == ' ' || r == '\t'
+	return r == ' ' || r == '\t' || r == '\r'
 }
 
 func appendCodeownerField(fields []string, field *strings.Builder) []string {

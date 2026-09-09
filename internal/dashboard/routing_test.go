@@ -250,6 +250,16 @@ func TestLoadCodeownersPrefersGitHubPrecedenceAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestLoadCodeownersParsesCRLFFields(t *testing.T) {
+	repoPath := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repoPath, "CODEOWNERS"), "/docs/ @docs\r\n")
+
+	rules := LoadCodeowners(repoPath)
+	if len(rules) != 1 || rules[0].Pattern != "/docs/" || !slices.Equal(rules[0].Owners, []string{"@docs"}) {
+		t.Fatalf("expected CRLF CODEOWNERS rule, got %#v", rules)
+	}
+}
+
 func TestApplyRoutingFallsBackToUnassignedDefaults(t *testing.T) {
 	defaulted := ApplyRouting([]RemediationItem{{Repo: "unknown"}}, RoutingOptions{})
 	assertRoutingAssignment(t, defaulted[0], "unassigned", "", "", "open", "unassigned")
