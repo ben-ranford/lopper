@@ -620,8 +620,8 @@ func TestDotnetProjectLockfileIndexCoversFallbackAndCachedScopes(t *testing.T) {
 	scoped := &dotnetProjectLockfileIndex{
 		repoPath: repo,
 		scoped:   true,
-		scopedLockfilesByScope: map[string][]presentLockfile{
-			"src": {{name: dotnetLockfileName}},
+		scopedLockfilesByScope: map[string][]string{
+			"src": {dotnetLockfileName},
 		},
 	}
 	lockfiles, err = scoped.lockfilesUnder("src")
@@ -659,8 +659,8 @@ func TestDotnetProjectLockfileIndexPropagatesScopedDiscoveryError(t *testing.T) 
 
 func TestDotnetProjectLockfileIndexDoesNotUseSiblingCachedScope(t *testing.T) {
 	index := &dotnetProjectLockfileIndex{
-		scopedLockfilesByScope: map[string][]presentLockfile{
-			"alpha": {{name: "src/" + dotnetLockfileName}},
+		scopedLockfilesByScope: map[string][]string{
+			"alpha": {"src/" + dotnetLockfileName},
 		},
 	}
 	if lockfiles, ok := index.lockfilesFromCachedAncestor("alpha-other"); ok || lockfiles != nil {
@@ -748,12 +748,27 @@ func measurePreparedDistributedLockfileStorage(t *testing.T, repo string, rules 
 	return allocs, after.TotalAlloc - before.TotalAlloc
 }
 
+func TestDotnetProjectLockfileIndexReleasesDiscoveryCallbackAfterRepositoryInitialization(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		repoPath: ".",
+		findLockfiles: func(string) ([]presentLockfile, error) {
+			return []presentLockfile{{name: "src/" + dotnetLockfileName}}, nil
+		},
+	}
+	if _, err := index.lockfileRangeUnder("."); err != nil {
+		t.Fatalf("initialize repository lockfiles: %v", err)
+	}
+	if index.findLockfiles != nil {
+		t.Fatal("expected initialized repository index to release discovery callback")
+	}
+}
+
 func TestPreparedDistributedLockfileRangesReuseRepositoryEntries(t *testing.T) {
 	index := &dotnetProjectLockfileIndex{
 		repoPath: ".",
-		lockfiles: []presentLockfile{
-			{name: "alpha/src/" + dotnetLockfileName},
-			{name: "beta/src/" + dotnetLockfileName},
+		lockfiles: []string{
+			"alpha/src/" + dotnetLockfileName,
+			"beta/src/" + dotnetLockfileName,
 		},
 		initialized: true,
 	}
@@ -836,7 +851,7 @@ func TestPrepareLockfileRuleHandlesDistributedLockfileRangeOutcomes(t *testing.T
 	t.Run("manifest matcher error", func(t *testing.T) {
 		snapshot := lockfileDirSnapshot{
 			repoPath: repo, path: repo, relDir: ".", files: map[string]fs.FileInfo{dotnetCentralManifest: manifestInfo},
-			dotnetProjectLockfiles: &dotnetProjectLockfileIndex{repoPath: repo, lockfiles: []presentLockfile{{name: "src/" + dotnetLockfileName}}, initialized: true},
+			dotnetProjectLockfiles: &dotnetProjectLockfileIndex{repoPath: repo, lockfiles: []string{"src/" + dotnetLockfileName}, initialized: true},
 		}
 		matcherErr := errors.New("matcher failed")
 		failing := rule
@@ -850,7 +865,7 @@ func TestPrepareLockfileRuleHandlesDistributedLockfileRangeOutcomes(t *testing.T
 	t.Run("nonmatching manifest", func(t *testing.T) {
 		snapshot := lockfileDirSnapshot{
 			repoPath: repo, path: repo, relDir: ".", files: map[string]fs.FileInfo{dotnetCentralManifest: manifestInfo},
-			dotnetProjectLockfiles: &dotnetProjectLockfileIndex{repoPath: repo, lockfiles: []presentLockfile{{name: "src/" + dotnetLockfileName}}, initialized: true},
+			dotnetProjectLockfiles: &dotnetProjectLockfileIndex{repoPath: repo, lockfiles: []string{"src/" + dotnetLockfileName}, initialized: true},
 		}
 		nonmatching := rule
 		nonmatching.manifestMatcher = func(string, string) (bool, error) { return false, nil }
@@ -900,27 +915,27 @@ func (c *cancelAfterFirstCheckContext) Err() error {
 }
 
 func TestPreparedDistributedLockfileChangePrefixesRespectCancellation(t *testing.T) {
-	index := &dotnetProjectLockfileIndex{lockfiles: []presentLockfile{{name: "src/one/" + dotnetLockfileName}, {name: "src/two/" + dotnetLockfileName}}}
+	index := &dotnetProjectLockfileIndex{lockfiles: []string{"src/one/" + dotnetLockfileName, "src/two/" + dotnetLockfileName}}
 	rangeValue := dotnetProjectLockfileRange{index: index, end: 2}
 	prepared := &lockfilePreparedScan{dirs: []lockfilePreparedDir{{rules: []lockfilePreparedRule{{manifestChange: &lockfilePreparedManifestChange{distributed: &rangeValue}}}}}}
-	if _, err := preparedDistributedLockfileChangePrefixes(nil, prepared, map[string]struct{}{index.lockfiles[0].name: {}}); err != nil {
+	if _, err := preparedDistributedLockfileChangePrefixes(nil, prepared, map[string]struct{}{index.lockfiles[0]: {}}); err != nil {
 		t.Fatalf("expected nil context to use background context, got %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := preparedDistributedLockfileChangePrefixes(ctx, prepared, map[string]struct{}{index.lockfiles[0].name: {}}); !errors.Is(err, context.Canceled) {
+	if _, err := preparedDistributedLockfileChangePrefixes(ctx, prepared, map[string]struct{}{index.lockfiles[0]: {}}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled prefix preparation, got %v", err)
 	}
 	if _, err := distributedLockfileChangePrefix(nil, index, map[string]struct{}{}); err != nil {
 		t.Fatalf("expected nil context prefix traversal to succeed, got %v", err)
 	}
-	if _, err := distributedLockfileChangePrefix(&cancelAfterFirstCheckContext{}, index, map[string]struct{}{index.lockfiles[0].name: {}}); !errors.Is(err, context.Canceled) {
+	if _, err := distributedLockfileChangePrefix(&cancelAfterFirstCheckContext{}, index, map[string]struct{}{index.lockfiles[0]: {}}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation during prefix traversal, got %v", err)
 	}
-	if _, err := preparedDistributedLockfileChangePrefixes(&cancelAfterFirstCheckContext{}, prepared, map[string]struct{}{index.lockfiles[0].name: {}}); !errors.Is(err, context.Canceled) {
+	if _, err := preparedDistributedLockfileChangePrefixes(&cancelAfterFirstCheckContext{}, prepared, map[string]struct{}{index.lockfiles[0]: {}}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected prefix traversal error to propagate, got %v", err)
 	}
-	result := scanPreparedLockfileDrift(ctx, lockfileGitContext{preparedScan: prepared, changedFiles: map[string]struct{}{index.lockfiles[0].name: {}}}, nil)
+	result := scanPreparedLockfileDrift(ctx, lockfileGitContext{preparedScan: prepared, changedFiles: map[string]struct{}{index.lockfiles[0]: {}}}, nil)
 	if !errors.Is(result.err, context.Canceled) {
 		t.Fatalf("expected canceled prepared scan, got %v", result.err)
 	}
@@ -945,7 +960,7 @@ func TestDistributedLockfilePreparationPreservesDiscoveryAndRecoverableErrors(t 
 	if _, err := lockfileManifestChangeCandidatePathsForRule(snapshot, rule, newLockfileManifestCache(snapshot)); err == nil {
 		t.Fatal("expected distributed candidate discovery error")
 	}
-	snapshot.dotnetProjectLockfiles = &dotnetProjectLockfileIndex{repoPath: repo, lockfiles: []presentLockfile{{name: "src/" + dotnetLockfileName}}, initialized: true}
+	snapshot.dotnetProjectLockfiles = &dotnetProjectLockfileIndex{repoPath: repo, lockfiles: []string{"src/" + dotnetLockfileName}, initialized: true}
 	recoverable := rule
 	recoverable.manifestMatcher = func(string, string) (bool, error) { return false, safeio.ErrFileTooLarge }
 	prepared, _, err := prepareLockfileRule(snapshot, recoverable, newLockfileManifestCache(snapshot), &lockfileManifestReadErrors{})

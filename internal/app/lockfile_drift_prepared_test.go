@@ -127,10 +127,10 @@ func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t 
 func TestDotnetProjectLockfileIndexSlicesSortedRepositoryPathsByScope(t *testing.T) {
 	index := &dotnetProjectLockfileIndex{
 		repoPath: t.TempDir(),
-		lockfiles: []presentLockfile{
-			{name: "alpha-other/src/" + dotnetLockfileName},
-			{name: "alpha/src/" + dotnetLockfileName},
-			{name: "beta/src/" + dotnetLockfileName},
+		lockfiles: []string{
+			"alpha-other/src/" + dotnetLockfileName,
+			"alpha/src/" + dotnetLockfileName,
+			"beta/src/" + dotnetLockfileName,
 		},
 		initialized: true,
 	}
@@ -162,10 +162,10 @@ func TestDotnetProjectLockfileIndexDoesNotCacheAncestorDerivedScopes(t *testing.
 	index := &dotnetProjectLockfileIndex{
 		repoPath: ".",
 		scoped:   true,
-		scopedLockfilesByScope: map[string][]presentLockfile{
+		scopedLockfilesByScope: map[string][]string{
 			".": {
-				{name: "nested/one/" + dotnetLockfileName},
-				{name: "nested/two/" + dotnetLockfileName},
+				"nested/one/" + dotnetLockfileName,
+				"nested/two/" + dotnetLockfileName,
 			},
 		},
 	}
