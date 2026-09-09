@@ -82,6 +82,19 @@ func TestFindDotnetProjectLockfilesSortsResultsAndSkipsDirectories(t *testing.T)
 	}
 }
 
+func TestDotnetLockfilePathIsRelativeToFilesystemRoot(t *testing.T) {
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	path := filepath.Join(root, "projects", dotnetLockfileName)
+
+	relPath, err := dotnetProjectLockfileRelativePath(root, path)
+	if err != nil {
+		t.Fatalf("relative lockfile path: %v", err)
+	}
+	if want := "projects/" + dotnetLockfileName; relPath != want {
+		t.Fatalf("expected root-relative lockfile path %q, got %q", want, relPath)
+	}
+}
+
 func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t *testing.T) {
 	repo := t.TempDir()
 	for _, dir := range []string{"alpha", "beta", "gamma"} {

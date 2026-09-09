@@ -1489,7 +1489,10 @@ func findDotnetProjectLockfiles(rootDir string) ([]presentLockfile, error) {
 			return nil
 		}
 
-		relPath := filepath.ToSlash(strings.TrimPrefix(path, rootDir+string(filepath.Separator)))
+		relPath, err := dotnetProjectLockfileRelativePath(rootDir, path)
+		if err != nil {
+			return err
+		}
 		lockfiles = append(lockfiles, presentLockfile{name: relPath})
 		return nil
 	})
@@ -1500,6 +1503,14 @@ func findDotnetProjectLockfiles(rootDir string) ([]presentLockfile, error) {
 		return lockfiles[i].name < lockfiles[j].name
 	})
 	return lockfiles, nil
+}
+
+func dotnetProjectLockfileRelativePath(rootDir, path string) (string, error) {
+	relPath, err := filepath.Rel(rootDir, path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.ToSlash(relPath), nil
 }
 
 func dirContainsDotnetProjectManifest(dir string) (bool, error) {
