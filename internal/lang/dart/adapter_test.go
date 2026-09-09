@@ -201,6 +201,14 @@ void main() {}
 void main() {}
 `,
 		},
+		{
+			name: "alias before continuation comment",
+			source: `import 'package:http/http.dart' as http
+    show Client; // http
+
+void main() {}
+`,
+		},
 	}
 
 	for _, tc := range testCases {

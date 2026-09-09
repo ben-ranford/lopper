@@ -242,8 +242,11 @@ func locateDirectiveBindings(lines []string, bindings []importBinding) []importB
 		if bindings[i].Wildcard {
 			continue
 		}
+		if directiveDeclarationColumn(lines[0], bindings[i].Local) != 0 {
+			continue
+		}
 		for lineOffset, line := range lines[1:] {
-			column := directiveIdentifierColumn(line, bindings[i].Local)
+			column := directiveDeclarationColumn(line, bindings[i].Local)
 			if column == 0 {
 				continue
 			}
@@ -253,6 +256,36 @@ func locateDirectiveBindings(lines []string, bindings []importBinding) []importB
 		}
 	}
 	return bindings
+}
+
+func directiveDeclarationColumn(line, identifier string) int {
+	line = directiveCodeBeforeLineComment(line)
+	if match := aliasPattern.FindStringSubmatchIndex(line); len(match) == 4 && line[match[2]:match[3]] == identifier {
+		return match[2] + 1
+	}
+	showIndex := directiveIdentifierColumn(line, "show")
+	if showIndex == 0 {
+		return 0
+	}
+	column := directiveIdentifierColumn(line[showIndex-1+len("show"):], identifier)
+	if column == 0 {
+		return 0
+	}
+	return showIndex + len("show") + column - 1
+}
+
+func directiveCodeBeforeLineComment(line string) string {
+	state := directiveTerminatorState{}
+	for i := 0; i < len(line); i++ {
+		if state.consumeQuoted(line[i]) {
+			continue
+		}
+		if directiveCommentStarts(line, i) {
+			return line[:i]
+		}
+		state.openQuote(line[i])
+	}
+	return line
 }
 
 func directiveIdentifierColumn(line, identifier string) int {
