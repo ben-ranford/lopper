@@ -41,7 +41,7 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		RepoPath:    repoPath,
 	}
 
-	scan, err := scanRepo(ctx, repoPath, req.ScopeMode)
+	scan, err := scanRepoWithIsolatedProjectRoots(ctx, repoPath, req.ScopeMode, req.IsolatedProjectRoots)
 	if err != nil {
 		return report.Report{}, err
 	}

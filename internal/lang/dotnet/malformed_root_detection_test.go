@@ -6,6 +6,7 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -114,5 +115,69 @@ func TestDotNetMalformedRootFallbackIncludesOnlyUnownedCentralManifest(t *testin
 	ownedCentral.projectDependencies[repo] = []string{"root.package"}
 	if ownedCentral.hasMalformedRootFallback() {
 		t.Fatal("expected valid root project to own malformed central manifest sources")
+	}
+}
+
+func TestDotNetSourceFilesKeepMapperOwnershipPolicy(t *testing.T) {
+	repo := t.TempDir()
+	nested := filepath.Join(repo, "nested")
+	scanner := newScanInputDiscoverer(repo, &sourceDiscovery{Files: []sourceDocument{
+		{RelativePath: filepath.Join("nested", programSourceFileName)},
+		{RelativePath: filepath.Join("broken", programSourceFileName)},
+	}})
+	scanner.projectDependencies[nested] = []string{"nested.package"}
+	scanner.malformedManifestRoots[filepath.Join(repo, "broken")] = struct{}{}
+
+	files := scanner.sourceFiles("package")
+	if len(files) != 2 {
+		t.Fatalf("expected valid and malformed-boundary sources to remain without selected roots, got %#v", files)
+	}
+	if files[0].ProjectRoot != nested || !strings.HasPrefix(files[0].MapperKey, "fallback-enabled\x00") {
+		t.Fatalf("expected valid project source to keep undeclared-import fallback, got %#v", files[0])
+	}
+	if files[1].ProjectRoot != "" || !strings.HasPrefix(files[1].MapperKey, "fallback-disabled\x00") {
+		t.Fatalf("expected malformed-boundary source to keep restrictive fallback policy, got %#v", files[1])
+	}
+}
+
+func TestDotNetSelectedProjectIsolationStaysWithinAnalysisRoot(t *testing.T) {
+	repo := t.TempDir()
+	selected := filepath.Join(repo, "selected")
+	scanner := newScanInputDiscoverer(repo, &sourceDiscovery{}, []string{selected})
+	if !scanner.isolatedProjectRoot(filepath.Join(selected, "child", programSourceFileName)) {
+		t.Fatal("expected selected project subtree to be isolated")
+	}
+	if scanner.isolatedProjectRoot(repo) {
+		t.Fatal("analysis root must not isolate itself")
+	}
+	if scanner.isolatedProjectRoot(filepath.Dir(repo)) {
+		t.Fatal("paths outside the analysis root must not be isolated")
+	}
+	files := scanner.excludeIsolatedProjectSources([]sourceDocument{
+		{RelativePath: programSourceFileName},
+		{RelativePath: filepath.Join("selected", programSourceFileName)},
+	})
+	if len(files) != 1 || files[0].RelativePath != programSourceFileName {
+		t.Fatalf("expected selected subtree sources to be removed, got %#v", files)
+	}
+}
+
+func TestDotNetDeclaredDependenciesExcludeOnlySelectedSubtree(t *testing.T) {
+	repo := t.TempDir()
+	selected := filepath.Join(repo, "selected")
+	unselected := filepath.Join(repo, "unselected")
+	scanner := newScanInputDiscoverer(repo, &sourceDiscovery{}, []string{selected})
+	scanner.projectDependencies[repo] = []string{"root.package"}
+	scanner.projectDependencies[selected] = []string{"selected.package"}
+	scanner.projectDependencies[unselected] = []string{"unselected.package"}
+	scanner.centralDependencies[selected] = []string{"selected.central"}
+	scanner.centralDependencies[unselected] = []string{"unselected.central"}
+	addDependencies(scanner.dependencySet, []string{"root.package", "selected.package", "unselected.package", "selected.central", "unselected.central"})
+
+	if dependencies := scanner.declaredDependencies("package"); !slices.Equal(dependencies, []string{"root.package", "unselected.central", "unselected.package"}) {
+		t.Fatalf("expected only selected subtree declarations to be deferred, got %#v", dependencies)
+	}
+	if dependencies := scanner.declaredDependencies("repo"); !slices.Equal(dependencies, []string{"root.package", "selected.central", "selected.package", "unselected.central", "unselected.package"}) {
+		t.Fatalf("expected repository scope to retain all declarations, got %#v", dependencies)
 	}
 }

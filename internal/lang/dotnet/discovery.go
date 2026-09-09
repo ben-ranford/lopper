@@ -41,9 +41,13 @@ func scanRepo(ctx context.Context, repoPath string, scopeModes ...string) (scanR
 	if len(scopeModes) > 0 {
 		scopeMode = scopeModes[0]
 	}
+	return scanRepoWithIsolatedProjectRoots(ctx, repoPath, scopeMode, nil)
+}
+
+func scanRepoWithIsolatedProjectRoots(ctx context.Context, repoPath, scopeMode string, isolatedProjectRoots []string) (scanResult, error) {
 	result := newScanResult()
 
-	inputs, err := discoverScanInputs(ctx, repoPath, scopeMode)
+	inputs, err := discoverScanInputsWithIsolatedProjectRoots(ctx, repoPath, scopeMode, isolatedProjectRoots)
 	if err != nil {
 		return result, err
 	}
@@ -78,13 +82,17 @@ func discoverScanInputs(ctx context.Context, repoPath string, scopeModes ...stri
 	if len(scopeModes) > 0 {
 		scopeMode = scopeModes[0]
 	}
+	return discoverScanInputsWithIsolatedProjectRoots(ctx, repoPath, scopeMode, nil)
+}
+
+func discoverScanInputsWithIsolatedProjectRoots(ctx context.Context, repoPath, scopeMode string, isolatedProjectRoots []string) (scanInputs, error) {
 	inputs := scanInputs{}
 	if repoPath == "" {
 		return inputs, fs.ErrInvalid
 	}
 
 	sourceScan := sourceDiscovery{}
-	scanner := newScanInputDiscoverer(repoPath, &sourceScan)
+	scanner := newScanInputDiscoverer(repoPath, &sourceScan, isolatedProjectRoots)
 
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if ctx != nil && ctx.Err() != nil {
@@ -142,6 +150,7 @@ type scanInputDiscoverer struct {
 	centralDependencies    map[string][]string
 	malformedManifestRoots map[string]struct{}
 	malformedCentralRoots  map[string]struct{}
+	isolationProjectRoots  map[string]struct{}
 	coverageGaps           []report.CoverageGap
 	sourceDiscoverer       sourceDiscoverer
 	sourceScanLimited      bool
@@ -154,13 +163,22 @@ func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDisc
 	}
 }
 
-func newScanInputDiscoverer(repoPath string, source *sourceDiscovery) scanInputDiscoverer {
+func newScanInputDiscoverer(repoPath string, source *sourceDiscovery, isolatedRoots ...[]string) scanInputDiscoverer {
+	isolation := make(map[string]struct{})
+	if len(isolatedRoots) > 0 {
+		for _, root := range isolatedRoots[0] {
+			if root != "" {
+				isolation[filepath.Clean(root)] = struct{}{}
+			}
+		}
+	}
 	return scanInputDiscoverer{
 		dependencySet:          make(map[string]struct{}),
 		projectDependencies:    make(map[string][]string),
 		centralDependencies:    make(map[string][]string),
 		malformedManifestRoots: make(map[string]struct{}),
 		malformedCentralRoots:  make(map[string]struct{}),
+		isolationProjectRoots:  isolation,
 		sourceDiscoverer:       newSourceDiscoverer(repoPath, source),
 	}
 }
@@ -253,6 +271,18 @@ func (d *scanInputDiscoverer) declaredDependencies(scopeMode string) []string {
 	dependencies := make(map[string]struct{})
 	addDependencies(dependencies, rootDependencies)
 	addDependencies(dependencies, d.centralDependencies[d.sourceDiscoverer.repoPath])
+	for projectRoot, projectDependencies := range d.projectDependencies {
+		if sameDotNetPath(projectRoot, d.sourceDiscoverer.repoPath) || d.isolatedProjectRoot(projectRoot) {
+			continue
+		}
+		addDependencies(dependencies, projectDependencies)
+	}
+	for centralRoot, centralDependencies := range d.centralDependencies {
+		if sameDotNetPath(centralRoot, d.sourceDiscoverer.repoPath) || d.isolatedProjectRoot(centralRoot) {
+			continue
+		}
+		addDependencies(dependencies, centralDependencies)
+	}
 	return sortedDependencies(dependencies)
 }
 
@@ -270,7 +300,7 @@ func (d *scanInputDiscoverer) sourceFiles(scopeMode string) []sourceDocument {
 		files[index].MapperKey = fallbackMode + "\x00" + strings.Join(dependencies, "\x00")
 	}
 	if (scopeMode == "package" || scopeMode == "changed-packages") && !d.hasMalformedRootFallback() {
-		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath, d.malformedManifestRoots)
+		files = d.excludeIsolatedProjectSources(files)
 	}
 	return files
 }
@@ -303,6 +333,33 @@ func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string,
 		}
 	}
 	return sortedDependencies(dependencies), projectRoot != "" || len(d.projectDependencies) > 0, projectRoot
+}
+
+func (d *scanInputDiscoverer) isolatedProjectRoot(path string) bool {
+	repoPath := filepath.Clean(d.sourceDiscoverer.repoPath)
+	path = filepath.Clean(path)
+	relativePath, err := filepath.Rel(repoPath, path)
+	if err != nil || relativePath == ".." || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
+		return false
+	}
+	for current := path; !sameDotNetPath(current, repoPath); current = filepath.Dir(current) {
+		if _, isolated := d.isolationProjectRoots[current]; isolated {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *scanInputDiscoverer) excludeIsolatedProjectSources(files []sourceDocument) []sourceDocument {
+	filtered := files[:0]
+	for _, file := range files {
+		path := filepath.Join(d.sourceDiscoverer.repoPath, file.RelativePath)
+		if d.isolatedProjectRoot(path) {
+			continue
+		}
+		filtered = append(filtered, file)
+	}
+	return filtered
 }
 
 func excludeNestedProjectSources(files []sourceDocument, repoPath string, malformedRoots map[string]struct{}) []sourceDocument {

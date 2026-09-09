@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -149,5 +150,95 @@ func TestServiceAnalyseDotNetValidRootSeparatesMalformedChildBoundary(t *testing
 	})
 	if !errors.Is(err, ErrIncompleteCoverage) {
 		t.Fatalf("expected malformed child coverage gap in strict changed scope, got %v", err)
+	}
+}
+
+func TestServiceAnalyseDotNetKeepsNestedProjectMissedByDetectionCap(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Root.csproj"), `<Project><ItemGroup><PackageReference Include="Root.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), "using Root.Package;\nclass Root {}\n")
+	for index := 0; index <= 1024; index++ {
+		writeFile(t, filepath.Join(repo, fmt.Sprintf("%04d.txt", index)), "padding")
+	}
+	writeFile(t, filepath.Join(repo, "nested", "Nested.csproj"), `<Project><ItemGroup><PackageReference Include="Nested.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "nested", "Nested.cs"), "using Nested.Package;\nclass Nested {}\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath: repo,
+		Language: "dotnet",
+		TopN:     2,
+		Cache:    &CacheOptions{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("analyse .NET project whose nested manifest follows detection cap: %v", err)
+	}
+	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"."}) {
+		t.Fatalf("expected detection to schedule only the root, got %#v", reportData.Scope)
+	}
+	if len(reportData.Dependencies) != 2 {
+		t.Fatalf("expected root analysis to retain the unscheduled nested project, got %#v", reportData.Dependencies)
+	}
+	for _, dependency := range reportData.Dependencies {
+		if dependency.UsedExportsCount != 1 || dependency.TotalExportsCount != 1 || len(dependency.UsedImports) != 1 {
+			t.Fatalf("expected each retained project declaration and source once, got %#v", reportData.Dependencies)
+		}
+	}
+}
+
+func TestServiceAnalyseDotNetSelectedChildOwnsLateGrandchild(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Root.csproj"), `<Project><ItemGroup><PackageReference Include="Root.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), "using Root.Package;\nclass Root {}\n")
+	writeFile(t, filepath.Join(repo, "apps", "App.csproj"), `<Project><ItemGroup><PackageReference Include="App.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "apps", "App.cs"), "using App.Package;\nclass App {}\n")
+	for index := 0; index <= 1024; index++ {
+		writeFile(t, filepath.Join(repo, "apps", fmt.Sprintf("b%04d.txt", index)), "padding")
+	}
+	writeFile(t, filepath.Join(repo, "apps", "zlate", "Late.csproj"), `<Project><ItemGroup><PackageReference Include="Late.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "apps", "zlate", "Late.cs"), "using Late.Package;\nclass Late {}\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{RepoPath: repo, Language: "dotnet", TopN: 3, Cache: &CacheOptions{Enabled: false}})
+	if err != nil {
+		t.Fatalf("analyse selected child with late grandchild: %v", err)
+	}
+	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{".", "apps"}) {
+		t.Fatalf("expected only root and detected child scopes, got %#v", reportData.Scope)
+	}
+	if len(reportData.Dependencies) != 3 {
+		t.Fatalf("expected root, child, and late-grandchild declarations, got %#v", reportData.Dependencies)
+	}
+	for _, dependency := range reportData.Dependencies {
+		if dependency.UsedExportsCount != 1 || dependency.TotalExportsCount != 1 || len(dependency.UsedImports) != 1 {
+			t.Fatalf("expected each project source exactly once, got %#v", reportData.Dependencies)
+		}
+	}
+}
+
+func TestServiceAnalyseDotNetKeepsLateMalformedFallbackSubtree(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Root.csproj"), `<Project><ItemGroup><PackageReference Include="Root.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), "using Root.Package;\nclass Root {}\n")
+	for index := 0; index <= 1024; index++ {
+		writeFile(t, filepath.Join(repo, fmt.Sprintf("%04d.txt", index)), "padding")
+	}
+	writeFile(t, filepath.Join(repo, "nested", "Broken.csproj"), "<Project><PackageReference Include=\"broken\"")
+	writeFile(t, filepath.Join(repo, "nested", "Broken.cs"), "using Root.Package;\nclass Broken {}\n")
+	writeFile(t, filepath.Join(repo, "nested", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Child.Package" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "nested", "child", "Child.cs"), "using Child.Package;\nclass Child {}\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{RepoPath: repo, Language: "dotnet", TopN: 2, Cache: &CacheOptions{Enabled: false}})
+	if err != nil {
+		t.Fatalf("analyse late malformed fallback subtree: %v", err)
+	}
+	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"."}) {
+		t.Fatalf("expected only root candidate after bounded detection, got %#v", reportData.Scope)
+	}
+	if len(reportData.Dependencies) != 2 || len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "nested/Broken.csproj" {
+		t.Fatalf("expected root and valid child with malformed coverage gap, got dependencies=%#v gaps=%#v", reportData.Dependencies, reportData.CoverageGaps)
+	}
+	for _, dependency := range reportData.Dependencies {
+		if dependency.UsedExportsCount != 1 || dependency.TotalExportsCount != 1 || len(dependency.UsedImports) != 1 {
+			t.Fatalf("expected retained valid project sources exactly once, got %#v", reportData.Dependencies)
+		}
 	}
 }

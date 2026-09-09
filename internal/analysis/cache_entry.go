@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"io"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -31,10 +32,18 @@ type cacheInputDigestMemoKey struct {
 }
 
 func (c *analysisCache) prepareEntry(req Request, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
-	return c.prepareEntryWithSchemaVersion(req, adapterID, normalizedRoot, analysisCacheSchemaVersion, trueRepoPathOverride...)
+	return c.prepareEntryWithIsolationRoots(req, adapterID, normalizedRoot, nil, trueRepoPathOverride...)
+}
+
+func (c *analysisCache) prepareEntryWithIsolationRoots(req Request, adapterID, normalizedRoot string, isolationRoots []string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
+	return c.prepareEntryWithSchemaVersionAndIsolationRoots(req, adapterID, normalizedRoot, analysisCacheSchemaVersion, isolationRoots, trueRepoPathOverride...)
 }
 
 func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, normalizedRoot, schemaVersion string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
+	return c.prepareEntryWithSchemaVersionAndIsolationRoots(req, adapterID, normalizedRoot, schemaVersion, nil, trueRepoPathOverride...)
+}
+
+func (c *analysisCache) prepareEntryWithSchemaVersionAndIsolationRoots(req Request, adapterID, normalizedRoot, schemaVersion string, isolationRoots []string, trueRepoPathOverride ...string) (cacheEntryDescriptor, error) {
 	if c == nil || !c.options.Enabled || !c.cacheable {
 		return cacheEntryDescriptor{}, nil
 	}
@@ -48,6 +57,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 		"dependency":     req.Dependency,
 		"language":       normalizeCacheLanguage(req.Language),
 		"scopeMode":      normalizeScopeMode(req.ScopeMode),
+		"isolationRoots": normalizeIsolationRootsForCache(normalizedRoot, isolationRoots),
 		"topN":           req.TopN,
 		"suggestOnly":    req.SuggestOnly,
 		"runtimeProfile": req.RuntimeProfile,
@@ -220,4 +230,25 @@ func writeInputDigestRecord(w io.Writer, input cacheDigestInput) error {
 		return err
 	}
 	return nil
+}
+
+func normalizeIsolationRootsForCache(rootPath string, roots []string) []string {
+	if len(roots) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(strings.TrimSpace(root))
+		relativePath, err := filepath.Rel(rootPath, root)
+		if err != nil || relativePath == "." || relativePath == "" || strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) || relativePath == ".." {
+			continue
+		}
+		normalized = append(normalized, filepath.ToSlash(relativePath))
+	}
+	sort.Strings(normalized)
+	normalized = slices.Compact(normalized)
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
 }

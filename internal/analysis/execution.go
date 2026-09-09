@@ -50,6 +50,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 	rootSeen := make(map[string]struct{})
 	roots, rootWarnings := scopedCandidateRootsForRequest(req, candidate.Detection.Roots, repoPath)
 	warnings = append(warnings, rootWarnings...)
+	isolationRoots := normalizedIsolationRoots(repoPath, roots, req.ScopeMode)
 	for _, root := range roots {
 		normalizedRoot := normalizeCandidateRoot(repoPath, root)
 		if normalizedRoot == "" {
@@ -61,7 +62,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		}
 		analyzedRoots = append(analyzedRoots, normalizedRoot)
 
-		cacheEntry, cachedReport, hit := prepareAndLoadCachedReport(req, cache, candidate.Adapter.ID(), normalizedRoot, trueRepoPathOverride...)
+		cacheEntry, cachedReport, hit := prepareAndLoadCachedReportWithIsolationRoots(req, cache, candidate.Adapter.ID(), normalizedRoot, isolationRoots, trueRepoPathOverride...)
 		if hit {
 			applyLanguageID(cachedReport.Dependencies, candidate.Adapter.ID())
 			adjustRelativeLocations(repoPath, normalizedRoot, cachedReport.Dependencies)
@@ -77,6 +78,7 @@ func (s *Service) runCandidateOnRoots(ctx context.Context, req Request, repoPath
 		current, err := candidate.Adapter.Analyse(ctx, language.AnalysisOptions{
 			RepoPath:                          normalizedRoot,
 			ScopeMode:                         req.ScopeMode,
+			IsolatedProjectRoots:              isolationRoots,
 			ExcludedPaths:                     exclusions.directories,
 			ExcludedFiles:                     exclusions.files,
 			Dependency:                        req.Dependency,
@@ -175,7 +177,11 @@ func alreadySeenRoot(seen map[string]struct{}, normalizedRoot string) bool {
 }
 
 func prepareAndLoadCachedReport(req Request, cache *analysisCache, adapterID, normalizedRoot string, trueRepoPathOverride ...string) (cacheEntryDescriptor, report.Report, bool) {
-	cacheEntry, err := cache.prepareEntry(req, adapterID, normalizedRoot, trueRepoPathOverride...)
+	return prepareAndLoadCachedReportWithIsolationRoots(req, cache, adapterID, normalizedRoot, nil, trueRepoPathOverride...)
+}
+
+func prepareAndLoadCachedReportWithIsolationRoots(req Request, cache *analysisCache, adapterID, normalizedRoot string, isolationRoots []string, trueRepoPathOverride ...string) (cacheEntryDescriptor, report.Report, bool) {
+	cacheEntry, err := cache.prepareEntryWithIsolationRoots(req, adapterID, normalizedRoot, isolationRoots, trueRepoPathOverride...)
 	if err != nil {
 		cache.warn("analysis cache skipped for " + adapterID + ":" + normalizedRoot + ": " + err.Error())
 		return cacheEntryDescriptor{}, report.Report{}, false
@@ -278,4 +284,18 @@ func isAbsoluteLocationPath(value string) bool {
 		return (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
 	}
 	return false
+}
+
+func normalizedIsolationRoots(repoPath string, roots []string, scopeMode string) []string {
+	if normalizeScopeMode(scopeMode) == ScopeModeRepo {
+		return nil
+	}
+	isolated := make([]string, 0, len(roots))
+	for _, root := range roots {
+		normalized := normalizeCandidateRoot(repoPath, root)
+		if normalized != "" {
+			isolated = append(isolated, normalized)
+		}
+	}
+	return uniqueSorted(isolated)
 }
