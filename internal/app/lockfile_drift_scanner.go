@@ -28,7 +28,9 @@ type lockfileDirSnapshot struct {
 }
 
 type dotnetProjectLockfileIndex struct {
-	lockfiles []presentLockfile
+	repoPath    string
+	lockfiles   []presentLockfile
+	initialized bool
 }
 
 type lockfileManifestIO struct {
@@ -1345,7 +1347,7 @@ func findDistributedRuleLockfiles(snapshot lockfileDirSnapshot, rule lockfileRul
 		return lockfiles, nil
 	}
 	if snapshot.dotnetProjectLockfiles != nil {
-		return snapshot.dotnetProjectLockfiles.lockfilesUnder(snapshot.relDir), nil
+		return snapshot.dotnetProjectLockfiles.lockfilesUnder(snapshot.relDir)
 	}
 	projectLockfiles, err := findDotnetProjectLockfilesFn(snapshot.path)
 	if err != nil {
@@ -1378,11 +1380,7 @@ func newDotnetProjectLockfileIndex(repoPath string, rules []lockfileRule) (*dotn
 	if !hasDotnetCentralLockfileRule(rules) {
 		return nil, nil
 	}
-	lockfiles, err := findDotnetProjectLockfilesFn(repoPath)
-	if err != nil {
-		return nil, err
-	}
-	return &dotnetProjectLockfileIndex{lockfiles: lockfiles}, nil
+	return &dotnetProjectLockfileIndex{repoPath: repoPath}, nil
 }
 
 func hasDotnetCentralLockfileRule(rules []lockfileRule) bool {
@@ -1394,9 +1392,17 @@ func hasDotnetCentralLockfileRule(rules []lockfileRule) bool {
 	return false
 }
 
-func (index *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) []presentLockfile {
+func (index *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) ([]presentLockfile, error) {
 	if index == nil {
-		return nil
+		return nil, nil
+	}
+	if !index.initialized {
+		lockfiles, err := findDotnetProjectLockfilesFn(index.repoPath)
+		if err != nil {
+			return nil, err
+		}
+		index.lockfiles = lockfiles
+		index.initialized = true
 	}
 	prefix := ""
 	if relDir != "." {
@@ -1409,7 +1415,7 @@ func (index *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) []present
 		}
 		lockfiles = append(lockfiles, presentLockfile{name: strings.TrimPrefix(lockfile.name, prefix)})
 	}
-	return lockfiles
+	return lockfiles, nil
 }
 
 func findDotnetProjectLockfiles(rootDir string) ([]presentLockfile, error) {

@@ -108,6 +108,30 @@ func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t 
 	}
 }
 
+func TestPrepareLockfileManifestChangeCandidatesSkipsDotnetIndexWithoutCentralManifest(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", dotnetProjectManifest), "<Project></Project>\\n")
+	writeFile(t, filepath.Join(repo, "src", dotnetLockfileName), "{}\\n")
+
+	original := findDotnetProjectLockfilesFn
+	calls := 0
+	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+		calls++
+		return original(rootDir)
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	_, _, err := prepareLockfileManifestChangeCandidates(context.Background(), repo, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("prepare lockfile manifest change candidates: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no distributed .NET lockfile walk without a central manifest, got %d", calls)
+	}
+}
+
 func TestDirContainsDotnetProjectManifestSkipsSubdirectories(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
