@@ -254,13 +254,20 @@ func (m *dashboardRepoMaterializer) runGit(ctx context.Context, args ...string) 
 	// post-cancellation wait so one unresponsive remote cannot hold the whole
 	// dashboard run beyond its materialization deadline.
 	command.WaitDelay = dashboardGitCommandWaitDelay
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
-	output, err := command.Output()
+	cleanup, err := runtime.StartCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	err = command.Wait()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return output, nil
+	return stdout.Bytes(), nil
 }
 
 func gitConfigArgsForURL(repoURL string) []string {

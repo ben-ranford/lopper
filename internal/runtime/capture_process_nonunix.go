@@ -1,4 +1,4 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package runtime
 
@@ -16,4 +16,9 @@ func configureRuntimeCommand(cmd *exec.Cmd) {
 // ConfigureCommandCancellation applies the portable cancellation behavior.
 func ConfigureCommandCancellation(cmd *exec.Cmd) {
 	configureRuntimeCommand(cmd)
+}
+
+// StartCommand starts a command configured with ConfigureCommandCancellation.
+func StartCommand(cmd *exec.Cmd) (func(), error) {
+	return func() {}, cmd.Start()
 }

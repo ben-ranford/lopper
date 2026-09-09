@@ -46,3 +46,8 @@ func configureRuntimeCommand(cmd *exec.Cmd) {
 func ConfigureCommandCancellation(cmd *exec.Cmd) {
 	configureRuntimeCommand(cmd)
 }
+
+// StartCommand starts a command configured with ConfigureCommandCancellation.
+func StartCommand(cmd *exec.Cmd) (func(), error) {
+	return func() {}, cmd.Start()
+}
