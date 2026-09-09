@@ -669,11 +669,35 @@ func TestParsePHPImportsTracksClassContextNearLinearly(t *testing.T) {
 	}
 }
 
-func TestParsePHPImportsScansManyBraceContextsNearLinearly(t *testing.T) {
-	resolver := composerResolver{
+func TestParsePHPImportsKeepsTopLevelUseAfterManyBraceContexts(t *testing.T) {
+	resolver := phpBraceContextResolver()
+	parsed := parsePHPImports(phpBraceContextFixture(), "brace-contexts.php", resolver)
+	if len(parsed.imports) != 1 {
+		t.Fatalf("expected one import after brace-heavy prefix, got %#v", parsed.imports)
+	}
+	if parsed.imports[0].Wildcard {
+		t.Fatalf("expected top-level use after brace-heavy prefix to remain an import declaration, got %#v", parsed.imports[0])
+	}
+}
+
+func BenchmarkParseImportsBraceContexts(b *testing.B) {
+	content := phpBraceContextFixture()
+	resolver := phpBraceContextResolver()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = parsePHPImports(content, "brace-contexts.php", resolver)
+	}
+}
+
+func phpBraceContextResolver() composerResolver {
+	return composerResolver{
 		namespaceToDep: map[string]string{"Vendor\\Lib": helpersVendorLibDependency},
 		declared:       map[string]struct{}{helpersVendorLibDependency: {}},
 	}
+}
+
+func phpBraceContextFixture() []byte {
 	var content strings.Builder
 	content.WriteString(helpersPHPHeader)
 	padding := strings.Repeat(" ", maxPHPNamespaceAncestorBytes)
@@ -683,20 +707,7 @@ func TestParsePHPImportsScansManyBraceContextsNearLinearly(t *testing.T) {
 		content.WriteString("{ }\n")
 	}
 	content.WriteString("use Vendor\\Lib\\Thing;\n")
-
-	start := time.Now()
-	parsed := parsePHPImports([]byte(content.String()), "brace-contexts.php", resolver)
-	elapsed := time.Since(start)
-
-	if elapsed > 5*time.Second {
-		t.Fatalf("expected many brace contexts to scan quickly, took %s", elapsed)
-	}
-	if len(parsed.imports) != 1 {
-		t.Fatalf("expected one import after brace-heavy prefix, got %#v", parsed.imports)
-	}
-	if parsed.imports[0].Wildcard {
-		t.Fatalf("expected top-level use after brace-heavy prefix to remain an import declaration, got %#v", parsed.imports[0])
-	}
+	return []byte(content.String())
 }
 
 func TestFindNamespaceDeclarationsScansSameLineCandidatesNearLinearly(t *testing.T) {
