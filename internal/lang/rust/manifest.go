@@ -49,6 +49,10 @@ func extractManifestDependencies(repoPath string, discovery manifestDiscoveryRes
 		if !ok {
 			_, parsedDeps, parseErr := parseCargoManifest(manifestPath, repoPath)
 			if parseErr != nil {
+				if isCargoManifestParseError(parseErr) {
+					warnings = append(warnings, malformedCargoManifestWarning(repoPath, manifestPath, parseErr))
+					continue
+				}
 				return nil, nil, nil, parseErr
 			}
 			deps = parsedDeps
@@ -125,6 +129,19 @@ func discoverManifestData(repoPath string) (manifestDiscoveryResult, error) {
 func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscoveryResult, error) {
 	meta, deps, parseErr := parseCargoManifest(rootManifest, repoPath)
 	if parseErr != nil {
+		if isCargoManifestParseError(parseErr) {
+			paths, warnings, walkErr := discoverManifestsByWalk(repoPath)
+			if walkErr != nil {
+				return manifestDiscoveryResult{}, walkErr
+			}
+			paths = removeManifestPath(paths, rootManifest)
+			warnings = append(warnings, malformedCargoManifestWarning(repoPath, rootManifest, parseErr))
+			return manifestDiscoveryResult{
+				ManifestPaths:      paths,
+				Warnings:           dedupeWarnings(warnings),
+				ParsedDependencies: make(map[string]map[string]dependencyInfo),
+			}, nil
+		}
 		return manifestDiscoveryResult{}, parseErr
 	}
 	paths := make([]string, 0, 1+len(meta.WorkspaceMembers))
@@ -309,9 +326,41 @@ func parseCargoManifest(manifestPath, repoPath string) (manifestMeta, map[string
 	}
 	document, err := parseCargoManifestDocument(content)
 	if err != nil {
-		return manifestMeta{}, nil, fmt.Errorf("parse Cargo manifest %s: %w", relativeManifestPath(repoPath, manifestPath), err)
+		return manifestMeta{}, nil, &cargoManifestParseError{err: fmt.Errorf("parse Cargo manifest %s: %w", relativeManifestPath(repoPath, manifestPath), err)}
 	}
 	return cargoManifestMeta(document), cargoManifestDependencies(document), nil
+}
+
+type cargoManifestParseError struct {
+	err error
+}
+
+func (e *cargoManifestParseError) Error() string {
+	return e.err.Error()
+}
+
+func (e *cargoManifestParseError) Unwrap() error {
+	return e.err
+}
+
+func isCargoManifestParseError(err error) bool {
+	var parseErr *cargoManifestParseError
+	return errors.As(err, &parseErr)
+}
+
+func malformedCargoManifestWarning(repoPath, manifestPath string, err error) string {
+	return fmt.Sprintf("skipped malformed Cargo manifest %s: %v", relativeManifestPath(repoPath, manifestPath), err)
+}
+
+func removeManifestPath(paths []string, unwanted string) []string {
+	filtered := paths[:0]
+	for _, path := range paths {
+		if samePath(path, unwanted) {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
 }
 
 func parseCargoManifestContent(content string) manifestMeta {

@@ -1,9 +1,12 @@
 package rust
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/language"
 )
 
 type dependencyExpectation struct {
@@ -163,6 +166,43 @@ func TestParseCargoManifestReportsRelativeTOMLError(t *testing.T) {
 	writeFile(t, manifestPath, "not valid = ")
 	if _, _, err := parseCargoManifest(manifestPath, repo); err == nil || !strings.Contains(err.Error(), cargoTomlName) {
 		t.Fatalf("expected relative Cargo.toml parse error, got %v", err)
+	}
+}
+
+func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), "not valid = ")
+	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n")
+	writeFile(t, filepath.Join(repo, "crates", "working", "src", "lib.rs"), "use serde::Serialize;\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde"})
+	if err != nil {
+		t.Fatalf("analyse malformed Cargo manifest: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "serde" {
+		t.Fatalf("expected dependency from valid Cargo manifest, got %#v", reportData.Dependencies)
+	}
+	if warnings := strings.Join(reportData.Warnings, "\n"); !strings.Contains(warnings, "skipped malformed Cargo manifest Cargo.toml") {
+		t.Fatalf("expected malformed Cargo manifest warning, got %#v", reportData.Warnings)
+	}
+}
+
+func TestRustAnalysisSkipsMalformedWorkspaceMemberManifest(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), "[workspace]\nmembers = [\"crates/*\"]\n")
+	writeFile(t, filepath.Join(repo, "crates", "broken", cargoTomlName), "not valid = ")
+	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n")
+	writeFile(t, filepath.Join(repo, "crates", "working", "src", "lib.rs"), "use serde::Serialize;\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde"})
+	if err != nil {
+		t.Fatalf("analyse malformed workspace member manifest: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "serde" {
+		t.Fatalf("expected dependency from valid workspace member manifest, got %#v", reportData.Dependencies)
+	}
+	if warnings := strings.Join(reportData.Warnings, "\n"); !strings.Contains(warnings, "skipped malformed Cargo manifest crates/broken/Cargo.toml") {
+		t.Fatalf("expected malformed workspace member warning, got %#v", reportData.Warnings)
 	}
 }
 

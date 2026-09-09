@@ -143,6 +143,10 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 
 	dependencies, err := parseManifestDependenciesForEntry(d.sourceDiscoverer.repoPath, path, entry.Name())
 	if err != nil {
+		if isDotNetManifestParseError(err) {
+			d.sourceDiscoverer.discovery.Warnings = append(d.sourceDiscoverer.discovery.Warnings, malformedDotNetManifestWarning(d.sourceDiscoverer.repoPath, path, err))
+			return nil
+		}
 		return err
 	}
 	addDependencies(d.dependencySet, dependencies)
@@ -240,6 +244,9 @@ func (c *dependencyCollector) walk(path string, entry fs.DirEntry, walkErr error
 	}
 	dependencies, err := parseManifestDependenciesForEntry(c.repoPath, path, entry.Name())
 	if err != nil {
+		if isDotNetManifestParseError(err) {
+			return nil
+		}
 		return err
 	}
 	addDependencies(c.set, dependencies)
@@ -271,7 +278,36 @@ func parseManifestDependencies(repoPath, manifestPath string, elementName string
 	if err != nil {
 		return nil, err
 	}
-	return parseXMLManifestIncludes(content, elementName)
+	dependencies, err := parseXMLManifestIncludes(content, elementName)
+	if err != nil {
+		return nil, &dotNetManifestParseError{err: err}
+	}
+	return dependencies, nil
+}
+
+type dotNetManifestParseError struct {
+	err error
+}
+
+func (e *dotNetManifestParseError) Error() string {
+	return e.err.Error()
+}
+
+func (e *dotNetManifestParseError) Unwrap() error {
+	return e.err
+}
+
+func isDotNetManifestParseError(err error) bool {
+	var parseErr *dotNetManifestParseError
+	return errors.As(err, &parseErr)
+}
+
+func malformedDotNetManifestWarning(repoPath, manifestPath string, err error) string {
+	path, pathErr := filepath.Rel(repoPath, manifestPath)
+	if pathErr != nil {
+		path = filepath.Base(manifestPath)
+	}
+	return fmt.Sprintf("skipped malformed .NET manifest %s: %v", path, err)
 }
 
 func parseXMLManifestIncludes(content []byte, elementName string) ([]string, error) {

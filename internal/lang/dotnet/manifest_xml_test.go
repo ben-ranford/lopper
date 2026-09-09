@@ -1,9 +1,12 @@
 package dotnet
 
 import (
+	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -36,6 +39,28 @@ func TestParseXMLManifestIncludesStructuredBranches(t *testing.T) {
 
 	if _, err := parseXMLManifestIncludes([]byte(`<Project><PackageReference Include="broken"`), "PackageReference"); err == nil {
 		t.Fatalf("expected malformed XML to return an error")
+	}
+}
+
+func TestDotNetAnalysisSkipsMalformedProjectManifests(t *testing.T) {
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "Broken.csproj"), `<Project><PackageReference Include="broken"`)
+	testutil.MustWriteFile(t, filepath.Join(repo, centralPackagesFile), `<Project><PackageVersion Include="broken"`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Working.csproj"), `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>`)
+	testutil.MustWriteFile(t, filepath.Join(repo, "Program.cs"), "using Newtonsoft.Json;\n")
+
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "newtonsoft.json"})
+	if err != nil {
+		t.Fatalf("analyse malformed project manifests: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "newtonsoft.json" {
+		t.Fatalf("expected dependency from valid project manifest, got %#v", reportData.Dependencies)
+	}
+	joinedWarnings := strings.Join(reportData.Warnings, "\n")
+	for _, manifest := range []string{"Broken.csproj", centralPackagesFile} {
+		if !strings.Contains(joinedWarnings, manifest) || !strings.Contains(joinedWarnings, "skipped malformed .NET manifest") {
+			t.Fatalf("expected malformed-manifest warning for %s, got %#v", manifest, reportData.Warnings)
+		}
 	}
 }
 
