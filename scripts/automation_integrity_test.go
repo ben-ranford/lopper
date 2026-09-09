@@ -135,7 +135,7 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - windows-latest
+          - self-hosted
     runs-on: ${{ matrix.os }}
     steps:
       - run: make smoke
@@ -149,7 +149,7 @@ jobs:
 	}
 	assertOutputContainsAll(t, string(output), []string{
 		"GitHub Actions runner allowlist check failed",
-		"windows-latest",
+		"self-hosted",
 		"allowed runners:",
 	})
 }

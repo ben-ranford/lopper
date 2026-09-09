@@ -40,3 +40,27 @@ func configureRuntimeCommand(cmd *exec.Cmd) {
 		return nil
 	}
 }
+
+// ConfigureCommandCancellation makes a command's cancellation terminate its
+// process group where supported, preventing child helpers from outliving it.
+func ConfigureCommandCancellation(cmd *exec.Cmd) {
+	configureRuntimeCommand(cmd)
+}
+
+// StartCommand starts a command configured with ConfigureCommandCancellation.
+func StartCommand(cmd *exec.Cmd) (func() error, error) {
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return func() error {
+		return cleanupRuntimeProcessGroup(cmd.Process.Pid)
+	}, nil
+}
+
+func cleanupRuntimeProcessGroup(processID int) error {
+	err := runtimeKillProcessGroup(-processID, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}
