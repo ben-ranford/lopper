@@ -28,9 +28,10 @@ test("builds a hidden no-focus launch with explicit test environment and argumen
 test("forwards only the binary path and terminates only the isolated test process", () => {
   assert.deepEqual(launcherEnvironment({
     LOPPER_BINARY_PATH: "/tmp/lopper",
+    LOPPER_VSCODE_TEST_RESULT_PATH: "/tmp/result.json",
     LOPPER_GITHUB_TOKEN: "secret",
     LOPPER_NOTIFY_WEBHOOK: "secret",
-  }), { LOPPER_BINARY_PATH: "/tmp/lopper" });
+  }), { LOPPER_BINARY_PATH: "/tmp/lopper", LOPPER_VSCODE_TEST_RESULT_PATH: "/tmp/result.json" });
 
   const terminated = [];
   terminateMatchingTestProcesses(
@@ -40,6 +41,7 @@ test("forwards only the binary path and terminates only the isolated test proces
     (pid) => terminated.push(pid),
   );
   assert.deepEqual(terminated, [100]);
+  assert.equal(matchesTestProcess("/tmp/Code.app/Contents/MacOS/Code --user-data-dir=/tmp/profile-other", "/tmp/Code.app/Contents/MacOS/Code", "/tmp/profile"), false);
 });
 
 test("accepts only an explicit passed result and exact isolated process identity", () => {

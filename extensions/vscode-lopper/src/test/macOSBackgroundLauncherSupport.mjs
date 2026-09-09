@@ -23,7 +23,7 @@ export function openArguments({ applicationPath, argumentsForVSCode, environment
 
 export function launcherEnvironment(environment) {
   return Object.fromEntries(
-    ["LOPPER_BINARY_PATH"]
+    ["LOPPER_BINARY_PATH", "LOPPER_VSCODE_TEST_RESULT_PATH"]
       .filter((name) => environment[name] !== undefined)
       .map((name) => [name, environment[name]]),
   );
@@ -55,8 +55,11 @@ export function parseTestResult(contents) {
 }
 
 export function matchesTestProcess(command, executablePath, userDataDir) {
+  const escape = (value) => value.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&");
+  const executable = escape(executablePath);
+  const userData = escape(userDataDir);
   return (
-    command.includes(executablePath) &&
-    (command.includes(`--user-data-dir=${userDataDir}`) || command.includes(`--user-data-dir ${userDataDir}`))
+    new RegExp("(^|\\s)" + executable + "(?=\\s|$)").test(command) &&
+    new RegExp("(^|\\s)--user-data-dir(?:=|\\s+)" + userData + "(?=\\s|$)").test(command)
   );
 }

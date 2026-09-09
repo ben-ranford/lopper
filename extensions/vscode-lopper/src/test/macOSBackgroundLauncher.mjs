@@ -23,20 +23,27 @@ const argumentsForOpen = openArguments({
   stderrPath,
 });
 const open = spawn("/usr/bin/open", argumentsForOpen, { stdio: "inherit" });
-function cleanupTestProcess() {
+async function cleanupTestProcess() {
   const processOutput = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout;
-  terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, (pid) => process.kill(pid, "SIGTERM"));
+  terminateMatchingTestProcesses(processOutput, executablePath, userDataDir, (pid) => {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
 }
 
-const timeoutHandle = setTimeout(() => {
+const timeoutHandle = setTimeout(async () => {
   open.kill("SIGTERM");
-  cleanupTestProcess();
+  await cleanupTestProcess();
 }, timeout);
 
-function handleInterruption(signal, exitCode) {
+async function handleInterruption(signal, exitCode) {
   clearTimeout(timeoutHandle);
   open.kill("SIGTERM");
-  cleanupTestProcess();
+  await cleanupTestProcess();
   process.exit(exitCode);
 }
 
