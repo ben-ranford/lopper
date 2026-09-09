@@ -26,13 +26,18 @@ test("builds a hidden no-focus launch with explicit test environment and argumen
   ]);
 });
 
-test("forwards required test paths and terminates only the isolated test process", () => {
+test("forwards required test paths and PATH without exposing other LOPPER variables", () => {
   assert.deepEqual(launcherEnvironment({
     LOPPER_BINARY_PATH: "/tmp/lopper",
     LOPPER_VSCODE_TEST_RESULT_PATH: "/tmp/result.json",
+    PATH: "/opt/homebrew/bin:/usr/bin",
     LOPPER_GITHUB_TOKEN: "secret",
     LOPPER_NOTIFY_WEBHOOK: "secret",
-  }), { LOPPER_BINARY_PATH: "/tmp/lopper", LOPPER_VSCODE_TEST_RESULT_PATH: "/tmp/result.json" });
+  }), {
+    LOPPER_BINARY_PATH: "/tmp/lopper",
+    LOPPER_VSCODE_TEST_RESULT_PATH: "/tmp/result.json",
+    PATH: "/opt/homebrew/bin:/usr/bin",
+  });
 
   const terminated = [];
   terminateMatchingTestProcesses(

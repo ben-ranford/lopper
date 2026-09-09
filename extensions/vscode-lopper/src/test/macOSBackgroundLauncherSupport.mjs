@@ -23,7 +23,7 @@ export function openArguments({ applicationPath, argumentsForVSCode, environment
 
 export function launcherEnvironment(environment) {
   return Object.fromEntries(
-    ["LOPPER_BINARY_PATH", "LOPPER_VSCODE_TEST_RESULT_PATH"]
+    ["LOPPER_BINARY_PATH", "LOPPER_VSCODE_TEST_RESULT_PATH", "PATH"]
       .filter((name) => environment[name] !== undefined)
       .map((name) => [name, environment[name]]),
   );
