@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +91,12 @@ Wait-Process -Id $child.Id
 	}()
 
 	childPID := readChildPID(t, markerPath, 5*time.Second)
+	childProcess, err := win.OpenProcess(win.SYNCHRONIZE, false, childPID)
+	if err != nil {
+		t.Fatalf("open child process %d for synchronization: %v", childPID, err)
+	}
+	defer win.CloseHandle(childProcess)
+
 	cancel()
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("expected cancelled command to return an error")
@@ -100,8 +105,12 @@ Wait-Process -Id $child.Id
 		t.Fatalf("cleanup descendant command: %v", err)
 	}
 	cleanedUp = true
-	if err := waitForProcessExit(childPID, 2*time.Second); err != nil {
-		t.Fatalf("wait for child process %d to exit: %v", childPID, err)
+	status, err := win.WaitForSingleObject(childProcess, 0)
+	if err != nil {
+		t.Fatalf("check child process %d after cleanup: %v", childPID, err)
+	}
+	if status != win.WAIT_OBJECT_0 {
+		t.Fatalf("child process %d remained active after cleanup (status %d)", childPID, status)
 	}
 }
 
@@ -121,21 +130,4 @@ func readChildPID(t *testing.T, markerPath string, timeout time.Duration) uint32
 	}
 	t.Fatalf("child process marker was not created within %s", timeout)
 	return 0
-}
-
-func waitForProcessExit(processID uint32, timeout time.Duration) error {
-	process, err := win.OpenProcess(win.SYNCHRONIZE, false, processID)
-	if err != nil {
-		return nil
-	}
-	defer win.CloseHandle(process)
-
-	status, err := win.WaitForSingleObject(process, uint32(timeout.Milliseconds()))
-	if err != nil {
-		return err
-	}
-	if status != win.WAIT_OBJECT_0 {
-		return fmt.Errorf("process did not exit within %s", timeout)
-	}
-	return nil
 }
