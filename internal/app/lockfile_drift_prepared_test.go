@@ -81,6 +81,33 @@ func TestFindDotnetProjectLockfilesSortsResultsAndSkipsDirectories(t *testing.T)
 	}
 }
 
+func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t *testing.T) {
+	repo := t.TempDir()
+	for _, dir := range []string{"alpha", "beta", "gamma"} {
+		writeFile(t, filepath.Join(repo, dir, dotnetCentralManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(repo, dir, "src", dotnetProjectManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(repo, dir, "src", dotnetLockfileName), "{}\n")
+	}
+
+	original := findDotnetProjectLockfilesFn
+	calls := 0
+	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+		calls++
+		return original(rootDir)
+	}
+	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
+
+	_, _, err := prepareLockfileManifestChangeCandidates(context.Background(), repo, []lockfileRule{
+		mustLockfileRule(t, ".NET", dotnetCentralManifest),
+	})
+	if err != nil {
+		t.Fatalf("prepare lockfile manifest change candidates: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one distributed .NET lockfile walk, got %d", calls)
+	}
+}
+
 func TestDirContainsDotnetProjectManifestSkipsSubdirectories(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0o755); err != nil {
