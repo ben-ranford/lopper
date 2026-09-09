@@ -262,10 +262,6 @@ func hasPluginMetadataValueAtDepth(value any, depth int) bool {
 	return false
 }
 
-func hasPluginMetadataStringMap(values map[string]any) bool {
-	return hasPluginMetadataStringMapAtDepth(values, 0)
-}
-
 func hasPluginMetadataStringMapAtDepth(values map[string]any, depth int) bool {
 	for key, nested := range values {
 		if isPluginMetadataKey(key) || hasPluginMetadataValueAtDepth(nested, depth) {
