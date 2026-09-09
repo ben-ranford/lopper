@@ -173,6 +173,22 @@ func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
 	assertRustAnalysisSkipsMalformedManifest(t, "not valid = ", cargoTomlName)
 }
 
+func TestRustMalformedRootFallbackPreservesRootUsage(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), "[package]\nname = [")
+	writeFile(t, filepath.Join(repo, "child", cargoTomlName), demoPackageManifest+"[dependencies]\nserde_json = \"1\"\n")
+	writeFile(t, filepath.Join(repo, "src", testRustMainRS), "use serde_json::Value;\nfn main() { let _value = Value::Null; }\n")
+	writeFile(t, filepath.Join(repo, "child", "src", testRustLibRS), "pub fn child() {}\n")
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde_json"})
+	if err != nil {
+		t.Fatalf("analyse fallback repository: %v", err)
+	}
+	if len(result.Dependencies) != 1 || result.Dependencies[0].UsedExportsCount != 1 {
+		t.Fatalf("expected root Value usage to survive malformed manifest, got %#v", result.Dependencies)
+	}
+}
+
 func TestRustDetectionSkipsMalformedRootCargoManifest(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, cargoTomlName), "[workspace]\nmembers = [\"crates/*\"]\nbroken = [")

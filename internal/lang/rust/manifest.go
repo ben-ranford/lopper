@@ -134,12 +134,13 @@ func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscov
 			if walkErr != nil {
 				return manifestDiscoveryResult{}, walkErr
 			}
-			paths = removeManifestPath(paths, rootManifest)
 			warnings = append(warnings, malformedCargoManifestWarning(repoPath, rootManifest, parseErr))
+			// Keep the root for source discovery, but cache an empty dependency
+			// result so extraction does not parse its malformed manifest again.
 			return manifestDiscoveryResult{
 				ManifestPaths:      paths,
 				Warnings:           dedupeWarnings(warnings),
-				ParsedDependencies: make(map[string]map[string]dependencyInfo),
+				ParsedDependencies: map[string]map[string]dependencyInfo{rootManifest: nil},
 			}, nil
 		}
 		return manifestDiscoveryResult{}, parseErr
@@ -350,17 +351,6 @@ func isCargoManifestParseError(err error) bool {
 
 func malformedCargoManifestWarning(repoPath, manifestPath string, err error) string {
 	return fmt.Sprintf("skipped malformed Cargo manifest %s: %v", relativeManifestPath(repoPath, manifestPath), err)
-}
-
-func removeManifestPath(paths []string, unwanted string) []string {
-	filtered := paths[:0]
-	for _, path := range paths {
-		if samePath(path, unwanted) {
-			continue
-		}
-		filtered = append(filtered, path)
-	}
-	return filtered
 }
 
 func parseCargoManifestContent(content string) manifestMeta {
