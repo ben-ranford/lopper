@@ -653,12 +653,13 @@ func portfolioCycloneDXComponents(reportData Report) []map[string]any {
 		components = append(components, component)
 	}
 	for _, dep := range deps {
+		repoLabel := stablePortfolioDependencyRepoLabel(dep)
 		component := map[string]any{
 			"type":    "library",
 			"name":    dep.Name,
 			"bom-ref": refAllocator.allocate(portfolioDependencyRef(dep)),
 			"properties": []map[string]string{
-				{"name": "lopper:repo", "value": dep.Repo},
+				{"name": "lopper:repo", "value": repoLabel},
 				{"name": "lopper:language", "value": dep.Language},
 				{"name": "lopper:ecosystem", "value": dep.Ecosystem},
 			},
@@ -693,12 +694,24 @@ func portfolioRepoRef(repo RepoResult) string {
 }
 
 func portfolioDependencyRef(dep PortfolioComponent) string {
-	parts := []string{dep.Repo}
+	parts := []string{stablePortfolioDependencyRepoLabel(dep)}
 	if path := stablePortfolioRefPath(dep.RepoPath); path != "" {
 		parts = append(parts, path)
 	}
 	parts = append(parts, dep.Language, dep.Name, dep.Version)
 	return "lopper:dependency:" + joinPortfolioRefParts(parts...)
+}
+
+func stablePortfolioDependencyRepoLabel(dep PortfolioComponent) string {
+	label := strings.TrimSpace(dep.Repo)
+	path := strings.TrimSpace(dep.RepoPath)
+	if label == "" || path == "" || stablePortfolioRefPath(path) != "" {
+		return label
+	}
+	if label == path {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimSuffix(label, " ("+path+")"))
 }
 
 type portfolioRefAllocator struct {
@@ -785,13 +798,13 @@ func sortPortfolioCycloneDXRepos(repos []RepoResult) []RepoResult {
 
 func portfolioComponentRefSortKey(component PortfolioComponent) string {
 	parts := []string{
-		component.Repo,
+		stablePortfolioDependencyRepoLabel(component),
 		component.Language,
 		component.Name,
 		component.Version,
 		component.PURL,
 		component.Ecosystem,
-		component.RepoPath,
+		stablePortfolioRefPath(component.RepoPath),
 	}
 	var key strings.Builder
 	for _, part := range parts {
