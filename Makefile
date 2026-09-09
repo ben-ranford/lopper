@@ -340,9 +340,9 @@ toolchain-check:
 	@command -v shellcheck >/dev/null 2>&1 || (echo "shellcheck not found in PATH (required for shell script CI checks)"; exit 1)
 	@command -v ruby >/dev/null 2>&1 || (echo "ruby not found in PATH (required for automation integrity YAML/JSON checks)"; exit 1)
 	@command -v node >/dev/null 2>&1 || (echo "node not found in PATH (required for automation integrity JavaScript syntax checks)"; exit 1)
-	@node_major="$$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"; \
-	if [ "$$node_major" -lt 20 ]; then \
-		echo "Node.js 20.x or newer is required (found major version $$node_major)."; \
+	@node_version="$$(node -e 'console.log(process.versions.node)' 2>/dev/null || echo 0.0.0)"; \
+	if ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22 ? 0 : 1)' 2>/dev/null; then \
+		echo "Node.js ^20.19.0 or >=22.12.0 is required (found $$node_version)."; \
 		echo "Install/update Node from https://nodejs.org/ or use NodeSource (see .github/workflows/ci.yml)."; \
 		exit 1; \
 	fi

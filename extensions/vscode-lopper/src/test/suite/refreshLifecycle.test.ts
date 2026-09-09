@@ -2,7 +2,6 @@ import * as assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { setup, suite, test } from "mocha";
 import * as vscode from "vscode";
 
 import { binaryFileSignature } from "../../binaryIdentity";

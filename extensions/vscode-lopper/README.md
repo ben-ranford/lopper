@@ -105,4 +105,8 @@ make vscode-extension-test
 make vscode-extension-package
 ```
 
+Local macOS smoke runs launch their isolated VS Code application hidden and without foreground activation. Set
+`LOPPER_VSCODE_TEST_MINIMIZE=0` to use the direct, visible launcher while debugging. CI and non-macOS runs keep
+the direct `@vscode/test-electron` launcher.
+
 Repository docs: <https://github.com/ben-ranford/lopper#readme>
