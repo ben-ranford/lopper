@@ -240,15 +240,20 @@ func TestDetectLockfileDriftDotnetCentralProjectLockfilesAvoidRootMissingWarning
 }
 
 func TestPrepareLockfileManifestChangeCandidatesBoundsNestedDotnetDiscoveryAllocations(t *testing.T) {
+	assertNestedDotnetLockfileAllocationBound(t, "nested .NET discovery", 16, measurePreparedDotnetLockfileScanAllocs)
+}
+
+func assertNestedDotnetLockfileAllocationBound(t *testing.T, label string, maxMultiplier float64, measure func(*testing.T, string, []lockfileRule) float64) {
+	t.Helper()
 	rules := []lockfileRule{mustLockfileRule(t, ".NET", dotnetCentralManifest)}
 	smallRepo := newNestedDotnetCentralLockfileRepo(t, 8)
 	largeRepo := newNestedDotnetCentralLockfileRepo(t, 64)
 
-	smallAllocs := measurePreparedDotnetLockfileScanAllocs(t, smallRepo, rules)
-	largeAllocs := measurePreparedDotnetLockfileScanAllocs(t, largeRepo, rules)
-	t.Logf("nested .NET discovery allocations: depth 8=%.0f depth 64=%.0f", smallAllocs, largeAllocs)
-	if largeAllocs > smallAllocs*16 {
-		t.Fatalf("expected bounded nested discovery allocation growth, got depth 8=%.0f depth 64=%.0f", smallAllocs, largeAllocs)
+	smallAllocs := measure(t, smallRepo, rules)
+	largeAllocs := measure(t, largeRepo, rules)
+	t.Logf("%s allocations: depth 8=%.0f depth 64=%.0f", label, smallAllocs, largeAllocs)
+	if largeAllocs > smallAllocs*maxMultiplier {
+		t.Fatalf("expected bounded %s allocation growth, got depth 8=%.0f depth 64=%.0f", label, smallAllocs, largeAllocs)
 	}
 }
 
@@ -259,10 +264,10 @@ func newNestedDotnetCentralLockfileRepo(t *testing.T, depth int) string {
 	manifest := "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n"
 	for range depth {
 		writeFile(t, filepath.Join(dir, dotnetCentralManifest), manifest)
+		writeFile(t, filepath.Join(dir, "project", dotnetProjectManifest), "<Project></Project>\n")
+		writeFile(t, filepath.Join(dir, "project", dotnetLockfileName), "{}\n")
 		dir = filepath.Join(dir, "nested")
 	}
-	writeFile(t, filepath.Join(dir, dotnetProjectManifest), "<Project></Project>\n")
-	writeFile(t, filepath.Join(dir, dotnetLockfileName), "{}\n")
 	return repo
 }
 

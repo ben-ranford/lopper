@@ -28,11 +28,11 @@ type lockfileDirSnapshot struct {
 }
 
 type dotnetProjectLockfileIndex struct {
-	repoPath         string
-	lockfiles        []presentLockfile
-	lockfilesByScope map[string][]presentLockfile
-	initialized      bool
-	scoped           bool
+	repoPath               string
+	lockfiles              []presentLockfile
+	scopedLockfilesByScope map[string][]presentLockfile
+	initialized            bool
+	scoped                 bool
 }
 
 type lockfileManifestIO struct {
@@ -1407,39 +1407,20 @@ func (i *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) ([]presentLoc
 			return nil, err
 		}
 		i.lockfiles = lockfiles
-		i.lockfilesByScope = indexDotnetProjectLockfilesByScope(lockfiles)
 		i.initialized = true
 	}
-	return append([]presentLockfile(nil), i.lockfilesByScope[filepath.Clean(relDir)]...), nil
-}
-
-func indexDotnetProjectLockfilesByScope(lockfiles []presentLockfile) map[string][]presentLockfile {
-	byScope := make(map[string][]presentLockfile)
-	for _, lockfile := range lockfiles {
-		for scope := filepath.Dir(lockfile.name); ; scope = filepath.Dir(scope) {
-			name := lockfile.name
-			if scope != "." {
-				name = strings.TrimPrefix(name, filepath.ToSlash(scope)+"/")
-			}
-			byScope[scope] = append(byScope[scope], presentLockfile{name: name})
-			if scope == "." {
-				break
-			}
-		}
-	}
-	return byScope
+	return lockfilesUnderRelativeDir(i.lockfiles, relDir), nil
 }
 
 func (i *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]presentLockfile, error) {
 	scope := filepath.Clean(relDir)
-	if i.lockfilesByScope == nil {
-		i.lockfilesByScope = make(map[string][]presentLockfile)
+	if i.scopedLockfilesByScope == nil {
+		i.scopedLockfilesByScope = make(map[string][]presentLockfile)
 	}
-	if lockfiles, ok := i.lockfilesByScope[scope]; ok {
+	if lockfiles, ok := i.scopedLockfilesByScope[scope]; ok {
 		return append([]presentLockfile(nil), lockfiles...), nil
 	}
 	if lockfiles, ok := i.lockfilesFromCachedAncestor(scope); ok {
-		i.lockfilesByScope[scope] = lockfiles
 		return append([]presentLockfile(nil), lockfiles...), nil
 	}
 
@@ -1451,12 +1432,12 @@ func (i *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]pres
 	if err != nil {
 		return nil, err
 	}
-	i.lockfilesByScope[scope] = lockfiles
+	i.scopedLockfilesByScope[scope] = lockfiles
 	return append([]presentLockfile(nil), lockfiles...), nil
 }
 
 func (i *dotnetProjectLockfileIndex) lockfilesFromCachedAncestor(scope string) ([]presentLockfile, bool) {
-	for cachedScope, lockfiles := range i.lockfilesByScope {
+	for cachedScope, lockfiles := range i.scopedLockfilesByScope {
 		relativeScope, err := filepath.Rel(cachedScope, scope)
 		if err != nil || relativeScope == ".." || strings.HasPrefix(relativeScope, ".."+string(filepath.Separator)) {
 			continue
@@ -1467,14 +1448,18 @@ func (i *dotnetProjectLockfileIndex) lockfilesFromCachedAncestor(scope string) (
 }
 
 func lockfilesUnderRelativeDir(lockfiles []presentLockfile, relDir string) []presentLockfile {
-	prefix := ""
-	if relDir != "." {
-		prefix = filepath.ToSlash(filepath.Clean(relDir)) + "/"
+	scope := filepath.ToSlash(filepath.Clean(relDir))
+	if scope == "." {
+		return append([]presentLockfile(nil), lockfiles...)
 	}
+	prefix := scope + "/"
+	start := sort.Search(len(lockfiles), func(index int) bool {
+		return lockfiles[index].name >= prefix
+	})
 	filtered := make([]presentLockfile, 0)
-	for _, lockfile := range lockfiles {
+	for _, lockfile := range lockfiles[start:] {
 		if !strings.HasPrefix(lockfile.name, prefix) {
-			continue
+			break
 		}
 		filtered = append(filtered, presentLockfile{name: strings.TrimPrefix(lockfile.name, prefix)})
 	}

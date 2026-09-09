@@ -124,16 +124,16 @@ func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t 
 	}
 }
 
-func TestDotnetProjectLockfileIndexGroupsSiblingScopes(t *testing.T) {
+func TestDotnetProjectLockfileIndexSlicesSortedRepositoryPathsByScope(t *testing.T) {
 	index := &dotnetProjectLockfileIndex{
 		repoPath: t.TempDir(),
 		lockfiles: []presentLockfile{
+			{name: "alpha-other/src/" + dotnetLockfileName},
 			{name: "alpha/src/" + dotnetLockfileName},
 			{name: "beta/src/" + dotnetLockfileName},
 		},
 		initialized: true,
 	}
-	index.lockfilesByScope = indexDotnetProjectLockfilesByScope(index.lockfiles)
 
 	lockfiles, err := index.lockfilesUnder("alpha")
 	if err != nil {
@@ -142,9 +142,58 @@ func TestDotnetProjectLockfileIndexGroupsSiblingScopes(t *testing.T) {
 	if len(lockfiles) != 1 || lockfiles[0].name != "src/"+dotnetLockfileName {
 		t.Fatalf("expected only alpha lockfile, got %#v", lockfiles)
 	}
-	if _, ok := index.lockfilesByScope["beta"]; !ok {
-		t.Fatalf("expected sibling scope to be indexed")
+	if len(index.lockfiles) != 3 {
+		t.Fatalf("expected one repository-wide lockfile list, got %#v", index.lockfiles)
 	}
+	rootLockfiles, err := index.lockfilesUnder(".")
+	if err != nil {
+		t.Fatalf("index root lockfiles: %v", err)
+	}
+	if len(rootLockfiles) != 3 || rootLockfiles[1].name != "alpha/src/"+dotnetLockfileName {
+		t.Fatalf("expected root scope to retain sorted repository-relative paths, got %#v", rootLockfiles)
+	}
+}
+
+func TestDotnetProjectLockfileIndexDoesNotMaterializeAncestorCopies(t *testing.T) {
+	assertNestedDotnetLockfileAllocationBound(t, ".NET lockfile index", 10, measureDotnetProjectLockfileIndexAllocs)
+}
+
+func TestDotnetProjectLockfileIndexDoesNotCacheAncestorDerivedScopes(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		repoPath: ".",
+		scoped:   true,
+		scopedLockfilesByScope: map[string][]presentLockfile{
+			".": {
+				{name: "nested/one/" + dotnetLockfileName},
+				{name: "nested/two/" + dotnetLockfileName},
+			},
+		},
+	}
+	for _, scope := range []string{"nested", "nested/one", "nested/two"} {
+		lockfiles, err := index.scopedLockfilesUnder(scope)
+		if err != nil {
+			t.Fatalf("read %s lockfiles: %v", scope, err)
+		}
+		if len(lockfiles) == 0 {
+			t.Fatalf("expected %s lockfiles from ancestor scope", scope)
+		}
+	}
+	if len(index.scopedLockfilesByScope) != 1 {
+		t.Fatalf("expected only filesystem-walk scopes to remain cached, got %#v", index.scopedLockfilesByScope)
+	}
+}
+
+func measureDotnetProjectLockfileIndexAllocs(t *testing.T, repo string, rules []lockfileRule) float64 {
+	t.Helper()
+	return testing.AllocsPerRun(3, func() {
+		index, err := newDotnetProjectLockfileIndex(repo, rules, false)
+		if err != nil {
+			t.Fatalf("new .NET lockfile index: %v", err)
+		}
+		if _, err := index.lockfilesUnder("."); err != nil {
+			t.Fatalf("read .NET lockfile index: %v", err)
+		}
+	})
 }
 
 func TestPrepareLockfileManifestChangeCandidatesSkipsDotnetIndexWithoutCentralManifest(t *testing.T) {
