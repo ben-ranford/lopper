@@ -1582,6 +1582,11 @@ func evaluateLockfileRuleWithCache(snapshot lockfileDirSnapshot, rule lockfileRu
 	} else if applies {
 		return evaluateDistributedScopedLockfileRule(snapshot, rule, manifests, gitContext, cache, distributed)
 	}
+	if distributed, applies, err := distributedDotnetLockfileRange(snapshot, rule, manifests, lockfiles); err != nil {
+		return lockfileDriftFinding{}, false, err
+	} else if applies {
+		return evaluateDistributedLockfileRule(snapshot, rule, manifests, gitContext, cache, distributed)
+	}
 	lockfiles, err := findDistributedRuleLockfiles(snapshot, rule, manifests, lockfiles)
 	if err != nil {
 		return lockfileDriftFinding{}, false, err
@@ -1610,6 +1615,64 @@ func evaluateLockfileRuleWithCache(snapshot lockfileDirSnapshot, rule lockfileRu
 		return lockfileDriftFinding{}, false, nil
 	}
 	return evaluateManifestChangeFinding(snapshot, rule, gitContext, lockfiles, manifests)
+}
+
+func evaluateDistributedLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, gitContext lockfileGitContext, cache *lockfileManifestCache, lockfiles dotnetProjectLockfileRange) (lockfileDriftFinding, bool, error) {
+	hasManifest := len(manifests) > 0
+	manifestName := rule.manifest
+	if hasManifest {
+		manifestName = manifests[0]
+	}
+	if lockfiles.start == lockfiles.end {
+		return evaluateMissingOrStaleLockfileWithManifestAndCache(snapshot, rule, hasManifest, manifestName, nil, cache)
+	}
+	matchesManifest, err := manifestMatchesRuleWithCache(snapshot, rule, manifestName, cache)
+	if err != nil {
+		return lockfileDriftFinding{}, false, err
+	}
+	if !matchesManifest {
+		return evaluateDistributedStaleLockfile(snapshot, rule, lockfiles), true, nil
+	}
+	if !hasManifest || !gitContext.hasGitContext || len(gitContext.changedFiles) == 0 {
+		return lockfileDriftFinding{}, false, nil
+	}
+	changedManifest := changedLockfileManifest(snapshot, manifests, gitContext.changedFiles)
+	if changedManifest == "" || distributedLockfileRangeChanged(lockfiles, gitContext.changedFiles) {
+		return lockfileDriftFinding{}, false, nil
+	}
+	return lockfileDriftFinding{kind: lockfileDriftManifestChange, rule: rule, manifest: changedManifest, relDir: snapshot.relDir}, true, nil
+}
+
+func evaluateDistributedStaleLockfile(snapshot lockfileDirSnapshot, rule lockfileRule, lockfiles dotnetProjectLockfileRange) lockfileDriftFinding {
+	present := make([]presentLockfile, 0, lockfiles.end-lockfiles.start)
+	prefix := filepath.ToSlash(filepath.Clean(snapshot.relDir))
+	if prefix != "." {
+		prefix += "/"
+	} else {
+		prefix = ""
+	}
+	for _, name := range lockfiles.index.lockfiles[lockfiles.start:lockfiles.end] {
+		present = append(present, presentLockfile{name: strings.TrimPrefix(name, prefix)})
+	}
+	return staleLockfileFinding(snapshot, rule, present)
+}
+
+func changedLockfileManifest(snapshot lockfileDirSnapshot, manifests []string, changedFiles map[string]struct{}) string {
+	for _, manifest := range manifests {
+		if isPathChanged(changedFiles, relativeFilePath(snapshot.repoPath, snapshot.path, manifest)) {
+			return manifest
+		}
+	}
+	return ""
+}
+
+func distributedLockfileRangeChanged(lockfiles dotnetProjectLockfileRange, changedFiles map[string]struct{}) bool {
+	for _, lockfile := range lockfiles.index.lockfiles[lockfiles.start:lockfiles.end] {
+		if isPathChanged(changedFiles, lockfile) {
+			return true
+		}
+	}
+	return false
 }
 
 func evaluateDistributedScopedLockfileRule(snapshot lockfileDirSnapshot, rule lockfileRule, manifests []string, gitContext lockfileGitContext, cache *lockfileManifestCache, lockfiles dotnetScopedLockfileRange) (lockfileDriftFinding, bool, error) {
@@ -1893,24 +1956,18 @@ func (i *dotnetProjectLockfileIndex) scopedLockfileRangeUnder(relDir string) (do
 }
 
 func (i *dotnetProjectLockfileIndex) cachedScopedLockfileRange(scope string) (dotnetScopedLockfileRange, bool) {
-	bestScope := ""
-	for cachedScope := range i.scopedLockfilesByScope {
-		relativeScope, err := filepath.Rel(cachedScope, scope)
-		if err != nil || relativeScope == ".." || strings.HasPrefix(relativeScope, ".."+string(filepath.Separator)) {
-			continue
+	for candidate := filepath.Clean(scope); ; candidate = filepath.Dir(candidate) {
+		if lockfiles, ok := i.scopedLockfilesByScope[candidate]; ok {
+			relativeScope, err := filepath.Rel(candidate, scope)
+			if err != nil {
+				return dotnetScopedLockfileRange{}, false
+			}
+			return scopedLockfileRangeForRelativeDir(lockfiles, candidate, relativeScope), true
 		}
-		if bestScope == "" || len(cachedScope) > len(bestScope) {
-			bestScope = cachedScope
-		}
-	}
-	if bestScope != "" {
-		relativeScope, err := filepath.Rel(bestScope, scope)
-		if err != nil {
+		if candidate == "." {
 			return dotnetScopedLockfileRange{}, false
 		}
-		return scopedLockfileRangeForRelativeDir(i.scopedLockfilesByScope[bestScope], bestScope, relativeScope), true
 	}
-	return dotnetScopedLockfileRange{}, false
 }
 
 func scopedLockfileRangeForRelativeDir(lockfiles []string, baseRelDir, relDir string) dotnetScopedLockfileRange {

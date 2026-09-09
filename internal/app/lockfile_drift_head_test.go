@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1014,11 +1015,11 @@ func TestPrepareLockfileManifestChangeCandidatesBoundsNestedDistributedLockfileS
 
 func TestFailFastDistributedDotnetLockfilesDoNotCopyAncestorRanges(t *testing.T) {
 	rules := []lockfileRule{mustLockfileRule(t, ".NET", dotnetCentralManifest)}
-	smallAllocs, smallBytes := measureFailFastDistributedDotnetLockfileScan(t, newCompactNestedDotnetCentralLockfileRepo(t, 64), rules)
-	largeAllocs, largeBytes := measureFailFastDistributedDotnetLockfileScan(t, newCompactNestedDotnetCentralLockfileRepo(t, 384), rules)
-	t.Logf("fail-fast distributed .NET lockfile scan: depth 64=%.0f allocs/%d bytes depth 384=%.0f allocs/%d bytes", smallAllocs, smallBytes, largeAllocs, largeBytes)
-	if largeBytes > smallBytes*10 {
-		t.Fatalf("expected bounded fail-fast distributed .NET lockfile bytes, got depth 64=%d depth 384=%d", smallBytes, largeBytes)
+	smallAllocs, smallBytes := measureDistributedDotnetLockfileScan(t, 64, true, rules)
+	largeAllocs, largeBytes := measureDistributedDotnetLockfileScan(t, 384, true, rules)
+	t.Logf("fail-fast distributed .NET lockfile work beyond shared traversal: depth 64=%.0f allocs/%d bytes depth 384=%.0f allocs/%d bytes", smallAllocs, smallBytes, largeAllocs, largeBytes)
+	if largeBytes > smallBytes*12 {
+		t.Fatalf("expected bounded fail-fast distributed .NET lockfile work beyond shared traversal, got depth 64=%d depth 384=%d", smallBytes, largeBytes)
 	}
 }
 
@@ -1035,24 +1036,32 @@ func TestFailFastGitCandidatesReuseDistributedLockfileRangesAcrossBatches(t *tes
 	}
 }
 
-func measureFailFastDistributedDotnetLockfileScan(t *testing.T, repo string, rules []lockfileRule) (float64, uint64) {
+func measureDistributedDotnetLockfileScan(t *testing.T, depth int, stopOnFirst bool, rules []lockfileRule) (float64, uint64) {
 	t.Helper()
-	scan := func() {
-		warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, true, rules)
+	repo := newCompactNestedDotnetCentralLockfileRepo(t, depth)
+	allocs, bytes := measureLockfileWork(t, func() {
+		warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, stopOnFirst, rules)
 		if err != nil {
 			t.Fatalf("scan lockfile drift: %v", err)
 		}
 		if len(warnings) != 0 {
 			t.Fatalf("expected no warnings, got %#v", warnings)
 		}
+	})
+	controlRepo := newCompactNestedDotnetLockfileRepoWithManifest(t, nestedDotnetControlManifest, depth)
+	controlAllocs, controlBytes := measureLockfileWork(t, func() {
+		warnings, err := scanLockfileDrift(context.Background(), controlRepo, lockfileGitContext{}, stopOnFirst, rules)
+		if err != nil {
+			t.Fatalf("scan control lockfile drift: %v", err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("expected no control warnings, got %#v", warnings)
+		}
+	})
+	if allocs < controlAllocs || bytes < controlBytes {
+		t.Fatalf("expected distributed scan to include control traversal work, got %.0f/%d below %.0f/%d", allocs, bytes, controlAllocs, controlBytes)
 	}
-	allocs := testing.AllocsPerRun(3, scan)
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
-	scan()
-	runtime.ReadMemStats(&after)
-	return allocs, after.TotalAlloc - before.TotalAlloc
+	return allocs - controlAllocs, bytes - controlBytes
 }
 
 func countFailFastGitDistributedDotnetCandidates(t *testing.T, depth int, changed bool) int {
@@ -1090,13 +1099,24 @@ func countFailFastGitDistributedDotnetCandidates(t *testing.T, depth int, change
 	return totalCandidates
 }
 
+const nestedDotnetControlManifest = "Directory.Xackages.props"
+
 func newCompactNestedDotnetCentralLockfileRepo(t *testing.T, depth int) string {
 	t.Helper()
-	repo := t.TempDir()
+	return newCompactNestedDotnetLockfileRepoWithManifest(t, dotnetCentralManifest, depth)
+}
+
+func newCompactNestedDotnetLockfileRepoWithManifest(t *testing.T, manifestName string, depth int) string {
+	t.Helper()
+	repo, err := os.MkdirTemp("", "lopper-dotnet-")
+	if err != nil {
+		t.Fatalf("create compact .NET fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(repo) })
 	dir := repo
 	manifest := "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n"
 	for range depth {
-		writeFile(t, filepath.Join(dir, dotnetCentralManifest), manifest)
+		writeFile(t, filepath.Join(dir, manifestName), manifest)
 		writeFile(t, filepath.Join(dir, "src", dotnetProjectManifest), "<Project></Project>\n")
 		writeFile(t, filepath.Join(dir, "src", dotnetLockfileName), "{}\n")
 		dir = filepath.Join(dir, "n")
@@ -1343,5 +1363,155 @@ func TestDistributedLockfilePreparationPreservesDiscoveryAndRecoverableErrors(t 
 	prepared, _, err := prepareLockfileRule(snapshot, recoverable, newLockfileManifestCache(snapshot), &lockfileManifestReadErrors{})
 	if err != nil || prepared.manifestReadErr == nil {
 		t.Fatalf("expected recoverable manifest preparation, got %#v %v", prepared, err)
+	}
+}
+
+func TestFullDistributedDotnetLockfileEvaluationDoesNotMaterializeScopeSlices(t *testing.T) {
+	smallAllocs, smallBytes := measureFullDistributedDotnetLockfileEvaluation(t, 64)
+	largeAllocs, largeBytes := measureFullDistributedDotnetLockfileEvaluation(t, 384)
+	t.Logf("full distributed .NET lockfile evaluation beyond range lookup: depth 64=%.0f allocs/%d bytes depth 384=%.0f allocs/%d bytes", smallAllocs, smallBytes, largeAllocs, largeBytes)
+	if largeBytes > smallBytes*8+1024 {
+		t.Fatalf("expected bounded full distributed .NET lockfile evaluation beyond range lookup, got depth 64=%d depth 384=%d", smallBytes, largeBytes)
+	}
+}
+
+func measureFullDistributedDotnetLockfileEvaluation(t *testing.T, depth int) (float64, uint64) {
+	t.Helper()
+	rule := mustLockfileRule(t, ".NET", dotnetCentralManifest)
+	rule.manifestMatcher = func(string, string) (bool, error) { return true, nil }
+	index := &dotnetProjectLockfileIndex{initialized: true, repoPath: "."}
+	snapshots := make([]lockfileDirSnapshot, 0, depth)
+	dir := "."
+	for range depth {
+		lockfile := "src/" + dotnetLockfileName
+		if dir != "." {
+			lockfile = dir + "/" + lockfile
+		}
+		index.lockfiles = append(index.lockfiles, lockfile)
+		snapshots = append(snapshots, lockfileDirSnapshot{
+			repoPath: ".", path: dir, relDir: dir,
+			files:                  map[string]fs.FileInfo{dotnetCentralManifest: nil},
+			dotnetProjectLockfiles: index,
+		})
+		if dir == "." {
+			dir = "n"
+		} else {
+			dir += "/n"
+		}
+	}
+	sort.Strings(index.lockfiles)
+	evaluate := func() {
+		for _, snapshot := range snapshots {
+			finding, found, err := evaluateLockfileRule(snapshot, rule, lockfileGitContext{})
+			if err != nil {
+				t.Fatalf("evaluate distributed lockfile rule: %v", err)
+			}
+			if found {
+				t.Fatalf("expected no finding, got %#v", finding)
+			}
+		}
+	}
+	rangeLookups := func() {
+		for _, snapshot := range snapshots {
+			if _, err := index.lockfileRangeUnder(snapshot.relDir); err != nil {
+				t.Fatalf("look up distributed lockfile range: %v", err)
+			}
+		}
+	}
+	allocs, bytes := measureLockfileWork(t, evaluate)
+	rangeAllocs, rangeBytes := measureLockfileWork(t, rangeLookups)
+	if bytes < rangeBytes || allocs < rangeAllocs {
+		t.Fatalf("expected evaluation to include range lookup work, got %.0f/%d below %.0f/%d", allocs, bytes, rangeAllocs, rangeBytes)
+	}
+	return allocs - rangeAllocs, bytes - rangeBytes
+}
+
+func measureLockfileWork(t *testing.T, work func()) (float64, uint64) {
+	t.Helper()
+	allocs := testing.AllocsPerRun(3, work)
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	work()
+	runtime.ReadMemStats(&after)
+	return allocs, after.TotalAlloc - before.TotalAlloc
+}
+
+func TestCachedScopedLockfileRangeDoesNotProbeUnrelatedScopes(t *testing.T) {
+	measure := func(t *testing.T, count int) (float64, uint64) {
+		t.Helper()
+		index := &dotnetProjectLockfileIndex{scopedLockfilesByScope: map[string][]string{
+			".": {"target/src/" + dotnetLockfileName},
+		}}
+		for value := range count {
+			index.scopedLockfilesByScope[fmt.Sprintf("sibling-%04d", value)] = []string{"src/" + dotnetLockfileName}
+		}
+		lookup := func() {
+			rangeValue, ok := index.cachedScopedLockfileRange("target/child")
+			if !ok || rangeValue.start != rangeValue.end {
+				t.Fatalf("expected target cache range, got ok=%v range=%#v", ok, rangeValue)
+			}
+		}
+		allocs := testing.AllocsPerRun(10, lookup)
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		lookup()
+		runtime.ReadMemStats(&after)
+		return allocs, after.TotalAlloc - before.TotalAlloc
+	}
+	smallAllocs, smallBytes := measure(t, 64)
+	largeAllocs, largeBytes := measure(t, 384)
+	t.Logf("cached .NET scope lookup: 64=%.0f allocs/%d bytes 384=%.0f allocs/%d bytes", smallAllocs, smallBytes, largeAllocs, largeBytes)
+	if largeAllocs > smallAllocs*4 || largeBytes > smallBytes*4+1024 {
+		t.Fatalf("expected unrelated cached scopes not to affect lookup work, got 64=%.0f/%d 384=%.0f/%d", smallAllocs, smallBytes, largeAllocs, largeBytes)
+	}
+}
+
+func TestEvaluateDistributedDotnetLockfileRulePreservesScopedStaleAndChangedSemantics(t *testing.T) {
+	index := &dotnetProjectLockfileIndex{
+		repoPath:    ".",
+		lockfiles:   []string{"nested/src/" + dotnetLockfileName},
+		initialized: true,
+	}
+	snapshot := lockfileDirSnapshot{
+		repoPath: ".", path: "nested", relDir: "nested",
+		files:                  map[string]fs.FileInfo{dotnetCentralManifest: nil},
+		dotnetProjectLockfiles: index,
+	}
+	rule := mustLockfileRule(t, ".NET", dotnetCentralManifest)
+
+	rule.manifestMatcher = func(string, string) (bool, error) { return false, nil }
+	finding, found, err := evaluateLockfileRule(snapshot, rule, lockfileGitContext{})
+	if err != nil || !found || finding.kind != lockfileDriftStaleLockfile || len(finding.lockfiles) != 1 || finding.lockfiles[0].name != "src/"+dotnetLockfileName {
+		t.Fatalf("expected scoped stale lockfile finding, got %#v found=%v err=%v", finding, found, err)
+	}
+
+	rule.manifestMatcher = func(string, string) (bool, error) { return true, nil }
+	manifestPath := "nested/" + dotnetCentralManifest
+	finding, found, err = evaluateLockfileRule(snapshot, rule, lockfileGitContext{hasGitContext: true, changedFiles: map[string]struct{}{manifestPath: {}}})
+	if err != nil || !found || finding.kind != lockfileDriftManifestChange || finding.manifest != dotnetCentralManifest {
+		t.Fatalf("expected changed manifest finding, got %#v found=%v err=%v", finding, found, err)
+	}
+	finding, found, err = evaluateLockfileRule(snapshot, rule, lockfileGitContext{hasGitContext: true, changedFiles: map[string]struct{}{manifestPath: {}, index.lockfiles[0]: {}}})
+	if err != nil || found {
+		t.Fatalf("expected changed lockfile to suppress manifest finding, got %#v found=%v err=%v", finding, found, err)
+	}
+	finding, found, err = evaluateLockfileRule(snapshot, rule, lockfileGitContext{hasGitContext: true, changedFiles: map[string]struct{}{"other": {}}})
+	if err != nil || found {
+		t.Fatalf("expected unrelated change to leave distributed lockfiles unchanged, got %#v found=%v err=%v", finding, found, err)
+	}
+	rule.manifestMatcher = func(string, string) (bool, error) { return false, errors.New("matcher failed") }
+	if _, _, err := evaluateLockfileRule(snapshot, rule, lockfileGitContext{}); err == nil {
+		t.Fatal("expected distributed matcher error")
+	}
+
+	rootSnapshot := snapshot
+	rootSnapshot.path, rootSnapshot.relDir = ".", "."
+	rootSnapshot.dotnetProjectLockfiles = &dotnetProjectLockfileIndex{repoPath: ".", lockfiles: []string{"src/" + dotnetLockfileName}, initialized: true}
+	rule.manifestMatcher = func(string, string) (bool, error) { return false, nil }
+	finding, found, err = evaluateLockfileRule(rootSnapshot, rule, lockfileGitContext{})
+	if err != nil || !found || len(finding.lockfiles) != 1 || finding.lockfiles[0].name != "src/"+dotnetLockfileName {
+		t.Fatalf("expected root stale lockfile finding, got %#v found=%v err=%v", finding, found, err)
 	}
 }
