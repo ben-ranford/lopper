@@ -51,6 +51,13 @@ func TestDetectAndRootSignalBranches(t *testing.T) {
 	if updateDetection(repo, filepath.Join(repo, "broken.sln"), "broken.sln", &detection, roots) == nil {
 		t.Fatalf("expected updateDetection to fail for unreadable solution")
 	}
+	if updateDetection(repo, filepath.Join(repo, "missing.csproj"), "missing.csproj", &detection, roots) == nil {
+		t.Fatal("expected updateDetection to preserve missing project manifest error")
+	}
+
+	if _, err := NewAdapter().DetectWithConfidence(testutil.CanceledContext(), repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled detection context, got %v", err)
+	}
 }
 
 func TestScanRepoAndReadSourceBranches(t *testing.T) {

@@ -24,17 +24,28 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	manifestPaths, depLookup, renamedAliases, warnings, err := collectManifestData(repoPath)
+	manifestPaths, workspaceManifestPaths, sourceFallbackRoots, excludedSourceRoots, depLookup, renamedAliases, warnings, coverageGaps, err := collectManifestDataWithCoverage(repoPath, req.ScopeMode, req.IsolatedProjectRoots)
 	if err != nil {
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, warnings...)
 
-	scan, err := scanRepo(ctx, repoPath, manifestPaths, depLookup, renamedAliases)
+	scan, err := scanRepoWithFallback(ctx, repoPath, rustScanOptions{
+		manifestPaths:               manifestPaths,
+		workspaceManifestPaths:      workspaceManifestPaths,
+		sourceFallbackRoots:         sourceFallbackRoots,
+		excludedSourceRoots:         excludedSourceRoots,
+		fallbackExcludedSourceRoots: fallbackExcludedRustSourceRoots(sourceFallbackRoots, req.IsolatedProjectRoots),
+		depLookup:                   depLookup,
+		renamedAliases:              renamedAliases,
+		useRootLookups:              req.ScopeMode == "repo",
+	})
 	if err != nil {
 		return report.Report{}, err
 	}
+	scan.CoverageGaps = append(scan.CoverageGaps, coverageGaps...)
 	result.Warnings = append(result.Warnings, scan.Warnings...)
+	result.CoverageGaps = append(result.CoverageGaps, scan.CoverageGaps...)
 
 	dependencies, dependencyWarnings := buildRequestedRustDependencies(req, scan)
 	result.Dependencies = dependencies

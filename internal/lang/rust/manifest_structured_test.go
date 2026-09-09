@@ -1,9 +1,14 @@
 package rust
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/language"
 )
 
 type dependencyExpectation struct {
@@ -163,6 +168,89 @@ func TestParseCargoManifestReportsRelativeTOMLError(t *testing.T) {
 	writeFile(t, manifestPath, "not valid = ")
 	if _, _, err := parseCargoManifest(manifestPath, repo); err == nil || !strings.Contains(err.Error(), cargoTomlName) {
 		t.Fatalf("expected relative Cargo.toml parse error, got %v", err)
+	}
+}
+
+func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
+	assertRustAnalysisSkipsMalformedManifest(t, "not valid = ", cargoTomlName)
+}
+
+func TestRustMalformedRootFallbackLeavesRootImportsUnresolved(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), "[package]\nname = [")
+	writeFile(t, filepath.Join(repo, "child", cargoTomlName), demoPackageManifest+"[dependencies]\nserde_json = \"1\"\n")
+	writeFile(t, filepath.Join(repo, "src", testRustMainRS), "use serde_json::Value;\nfn main() { let _value = Value::Null; }\n")
+	writeFile(t, filepath.Join(repo, "child", "src", testRustLibRS), "pub fn child() {}\n")
+
+	result, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde_json"})
+	if err != nil {
+		t.Fatalf("analyse fallback repository: %v", err)
+	}
+	if len(result.Dependencies) != 1 || result.Dependencies[0].UsedExportsCount != 0 {
+		t.Fatalf("expected malformed root import not to borrow a child declaration, got %#v", result.Dependencies)
+	}
+	if !slices.Contains(result.Warnings, `could not resolve Rust crate alias "serde-json" from Cargo manifests`) {
+		t.Fatalf("expected unresolved root import warning, got %#v", result.Warnings)
+	}
+}
+
+func TestRustDetectionUsesOneFallbackForMalformedRootCargoManifest(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), "[workspace]\nmembers = [\"crates/*\"]\nbroken = [")
+	writeFile(t, filepath.Join(repo, cargoLockName), "version = 3\n")
+	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect malformed root Cargo manifest: %v", err)
+	}
+	if !detection.Matched || len(detection.Roots) != 1 || !samePath(detection.Roots[0], repo) {
+		t.Fatalf("expected one repository fallback without overlapping child roots, got %#v", detection)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewAdapter().DetectWithConfidence(ctx, repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled malformed-root detection, got %v", err)
+	}
+}
+
+func TestRustAnalysisSkipsMalformedWorkspaceMemberManifest(t *testing.T) {
+	assertRustAnalysisSkipsMalformedManifest(t, "[workspace]\nmembers = [\"crates/*\"]\n", "crates/broken/Cargo.toml")
+}
+
+func assertRustAnalysisSkipsMalformedManifest(t *testing.T, rootManifest, brokenPath string) {
+	t.Helper()
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, cargoTomlName), rootManifest)
+	writeFile(t, filepath.Join(repo, brokenPath), "not valid = ")
+	writeFile(t, filepath.Join(repo, "crates", "working", cargoTomlName), "[package]\nname = \"working\"\nversion = \"0.1.0\"\n[dependencies]\nserde = \"1\"\n")
+	writeFile(t, filepath.Join(repo, "crates", "working", "src", "lib.rs"), "use serde::Serialize;\n")
+	reportData, err := NewAdapter().Analyse(context.Background(), language.Request{RepoPath: repo, Dependency: "serde"})
+	if err != nil {
+		t.Fatalf("analyse malformed Cargo manifest: %v", err)
+	}
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "serde" {
+		t.Fatalf("expected dependency from valid Cargo manifest, got %#v", reportData.Dependencies)
+	}
+	var malformedWarning string
+	for _, warning := range reportData.Warnings {
+		if strings.Contains(warning, "skipped malformed Cargo manifest "+brokenPath) {
+			malformedWarning = warning
+			break
+		}
+	}
+	if malformedWarning == "" {
+		t.Fatalf("expected malformed manifest warning for %s, got %#v", brokenPath, reportData.Warnings)
+	}
+	if len(reportData.CoverageGaps) != 1 {
+		t.Fatalf("expected one malformed manifest coverage gap, got %#v", reportData.CoverageGaps)
+	}
+	gap := reportData.CoverageGaps[0]
+	if gap.Code != "rust-malformed-manifest-declaration" || gap.Language != rustAdapterID || gap.Path != filepath.ToSlash(brokenPath) {
+		t.Fatalf("unexpected malformed manifest coverage gap: %#v", gap)
+	}
+	if len(gap.Evidence) != 1 || gap.Evidence[0] != malformedWarning {
+		t.Fatalf("expected coverage gap evidence to retain the warning, got %#v", gap)
 	}
 }
 

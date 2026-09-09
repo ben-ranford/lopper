@@ -37,7 +37,8 @@ func normalizeDependencyID(value string) string {
 }
 
 type dependencyMapper struct {
-	declared []declaredDependency
+	declared      []declaredDependency
+	allowFallback bool
 }
 
 func newDependencyMapper(declared []string) dependencyMapper {
@@ -52,7 +53,13 @@ func newDependencyMapper(declared []string) dependencyMapper {
 			segments: splitNamespace(id),
 		})
 	}
-	return dependencyMapper{declared: items}
+	return dependencyMapper{declared: items, allowFallback: true}
+}
+
+func newProjectDependencyMapper(declared []string, allowFallback bool) dependencyMapper {
+	mapper := newDependencyMapper(declared)
+	mapper.allowFallback = allowFallback
+	return mapper
 }
 
 type declaredDependency struct {
@@ -96,6 +103,9 @@ func (m *dependencyMapper) resolve(module string) (dependency string, ambiguous 
 		}
 	}
 	if bestScore == 0 {
+		if !m.allowFallback {
+			return "", false, false
+		}
 		return fallbackDependencyID(moduleID), false, true
 	}
 	return bestID, bestMatches > 1, false

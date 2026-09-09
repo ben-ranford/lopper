@@ -34,6 +34,9 @@ func resolveDependency(path string, crateRoot string, depLookup map[string]depen
 	}
 	if scan != nil {
 		scan.UnresolvedImports[normalizedRoot]++
+		if scan.RequireDeclaredDependency {
+			return ""
+		}
 	}
 	return normalizedRoot
 }

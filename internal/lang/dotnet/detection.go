@@ -39,7 +39,8 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
-	if err := applyRootSignals(repoPath, &detection, roots); err != nil {
+	manifests := newManifestRootDiscovery()
+	if err := applyRootSignals(repoPath, &detection, roots, manifests); err != nil {
 		return language.Detection{}, err
 	}
 
@@ -61,16 +62,17 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if visited > maxDetectFiles {
 			return fs.SkipAll
 		}
-		return updateDetection(repoPath, path, entry.Name(), &detection, roots)
+		return updateDetection(repoPath, path, entry.Name(), &detection, roots, manifests)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
+	manifests.isolateFallbackRoots(roots)
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}, manifestStates ...*manifestRootDiscovery) error {
 	// .NET root detection is extension/pattern based and solution files can add
 	// extra roots, so it cannot be represented as exact shared.RootSignal names.
 	entries, err := os.ReadDir(repoPath)
@@ -83,6 +85,9 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 		}
 		name := entry.Name()
 		path := filepath.Join(repoPath, name)
+		if err := recordManifestState(repoPath, path, name, manifestStates...); err != nil {
+			return err
+		}
 		if err := applyDetectionSignal(repoPath, path, name, repoPath, detection, roots, rootDetectionWeights); err != nil {
 			return err
 		}
@@ -90,8 +95,113 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 	return nil
 }
 
-func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}) error {
+type manifestRootDiscovery struct {
+	validProjects     map[string]struct{}
+	centralRoots      map[string]struct{}
+	malformedProjects map[string]struct{}
+	malformedCentral  map[string]struct{}
+}
+
+func newManifestRootDiscovery() *manifestRootDiscovery {
+	return &manifestRootDiscovery{
+		validProjects:     make(map[string]struct{}),
+		centralRoots:      make(map[string]struct{}),
+		malformedProjects: make(map[string]struct{}),
+		malformedCentral:  make(map[string]struct{}),
+	}
+}
+
+func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}, manifestStates ...*manifestRootDiscovery) error {
+	if err := recordManifestState(repoPath, path, name, manifestStates...); err != nil {
+		return err
+	}
 	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
+}
+
+func recordManifestState(repoPath, path, name string, manifestStates ...*manifestRootDiscovery) error {
+	var manifests *manifestRootDiscovery
+	if len(manifestStates) > 0 {
+		manifests = manifestStates[0]
+	}
+	signal := signalForName(name)
+	if signal == fileSignalProject || signal == fileSignalCentral {
+		_, err := parseManifestDependenciesForEntry(repoPath, path, name)
+		if err != nil && !isDotNetManifestParseError(err) {
+			return err
+		}
+		if manifests != nil {
+			manifests.record(filepath.Dir(path), signal, err != nil)
+		}
+	}
+	return nil
+}
+
+func (m *manifestRootDiscovery) record(root string, signal fileSignal, malformed bool) {
+	switch {
+	case signal == fileSignalCentral:
+		m.centralRoots[root] = struct{}{}
+		if malformed {
+			m.malformedCentral[root] = struct{}{}
+		}
+	case malformed:
+		m.malformedProjects[root] = struct{}{}
+	default:
+		m.validProjects[root] = struct{}{}
+	}
+}
+
+func (m *manifestRootDiscovery) isolateFallbackRoots(roots map[string]struct{}) {
+	for centralRoot := range m.centralRoots {
+		if !m.hasProjectAncestor(centralRoot) {
+			continue
+		}
+		delete(m.malformedCentral, centralRoot)
+		_, hasProject := m.validProjects[centralRoot]
+		_, hasMalformedProject := m.malformedProjects[centralRoot]
+		if !hasProject && !hasMalformedProject {
+			delete(roots, centralRoot)
+		}
+	}
+	for root := range m.malformedCentral {
+		m.malformedProjects[root] = struct{}{}
+	}
+	isolateMalformedManifestRoots(roots, m.malformedProjects)
+}
+
+func (m *manifestRootDiscovery) hasProjectAncestor(root string) bool {
+	for projectRoot := range m.validProjects {
+		if isDotNetSubPath(projectRoot, root) {
+			return true
+		}
+	}
+	return false
+}
+
+func isolateMalformedManifestRoots(roots, malformedRoots map[string]struct{}) {
+	for malformedRoot := range malformedRoots {
+		owner := malformedRootOwner(malformedRoot, malformedRoots)
+		for root := range roots {
+			if isDotNetSubPath(owner, root) {
+				delete(roots, root)
+			}
+		}
+		roots[owner] = struct{}{}
+	}
+}
+
+func malformedRootOwner(root string, malformedRoots map[string]struct{}) string {
+	owner := root
+	for candidate := range malformedRoots {
+		if isDotNetSubPath(candidate, root) && len(candidate) < len(owner) {
+			owner = candidate
+		}
+	}
+	return owner
+}
+
+func isDotNetSubPath(parent, child string) bool {
+	relativePath, err := filepath.Rel(parent, child)
+	return err == nil && relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator))
 }
 
 func applyDetectionSignal(repoPath, path, name, root string, detection *language.Detection, roots map[string]struct{}, weights detectionWeights) error {
