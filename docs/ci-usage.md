@@ -34,6 +34,64 @@ Stable release automation:
 - Stable releases also publish the first-party action version refs. The release tag, such as `v1.7.0`, is the exact action ref; the workflow force-updates `v1` and `v1.7` to the same release commit for standard GitHub Actions major/minor pinning.
 - Set repository secret `RELEASE_PLEASE_TOKEN` to a PAT with contents and pull request write access so release-please-created PRs can trigger normal CI. If it is not configured, the workflow falls back to `MAIN_SYNC_PAT` and then `GITHUB_TOKEN`.
 
+## PR verification performance
+
+PR runs share a concurrency group per workflow and PR number. New pushes, body/title
+edits, and label changes cancel superseded runs; manual dispatches run independently.
+Metadata triggers remain enabled because regression proof and memory approval depend
+on the current PR title, body, and labels. See GitHub's
+[concurrency documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
+
+### Parallel verification
+
+All checks and invocations remain enabled, including coverage inside the Makefile
+and the later workflow coverage pass. Each build channel has two independent jobs:
+
+| Job | Work |
+| --- | --- |
+| `verify-tests` / `verify-rolling-tests` | Normal and leak tests, including tagged variants and Python checks (`make ci-tests`) |
+| `verify-checks` / `verify-rolling-checks` | Every remaining Makefile CI gate (`make ci-checks`), including race tests, security, benchmarks, build, and coverage |
+
+Primary PR regression proof, memory approval, demo checks, lopper reports, and the
+second coverage pass remain in `verify-checks`. Both coverage thresholds and report
+publication permissions are unchanged. `verify` and `verify (rolling)` retain their
+required check names and now aggregate the corresponding checks and tests jobs.
+They fail if either execution job fails, is cancelled, or is unexpectedly skipped.
+The primary aggregate forwards the exact report artifact ID to the existing
+publication job; aggregate jobs do not check out or execute repository code.
+
+Every execution job checks out the same event SHA into its own runner. Go already
+parallelizes compilation and packages, so no blanket `make -j` or overlapping test
+modes are introduced within a runner. Benchmarks run sequentially in the checks
+job. Runtime Python artifact checks run in each execution workspace, including a
+final test-workspace check after failures. Local and release `make ci` retain the
+original complete prerequisite order.
+
+The two extra test jobs raise the workflow's simultaneously runnable execution jobs
+from seven to nine (four verification jobs, two OS smoke jobs, two VS Code smoke
+jobs, and Homebrew). Aggregate/report jobs follow their producers. This bounded
+split avoids creating one runner job per Makefile target; account-wide runner
+limits and concurrent PRs still affect queue time. See GitHub's
+[runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+and [concurrency limits](https://docs.github.com/en/actions/reference/limits#job-concurrency-limits-for-github-hosted-runners).
+
+Go module/compiler caches for verification now include `go.sum`, `Makefile`, and
+`ci.yml` in their dependency inputs, separating them from smaller smoke caches and
+invalidating them when CI tool definitions change. Trusted full-source release CI
+uses matching inputs to warm the verification cache from default-branch runs.
+Test-only jobs use `ci-tests.yml` instead of `ci.yml` to keep their cache separate.
+They install no unused linter/security binaries. `setup-go` caches module downloads
+and compiled Go output; it does not cache installed `$GOPATH/bin` binaries.
+
+Five successful runs on September 8–9, 2026 took 25:54–28:48 for `verify` and
+22:42–24:06 for `verify (rolling)`. In
+[run 34346480732](https://github.com/ben-ranford/lopper/actions/runs/34346480732),
+normal/leak tests occupied about 9:16 of the serial path, race tests 5:44, and the
+later coverage pass 4:13. That normal/leak work can now overlap remaining checks;
+no post-change speedup is assumed. Compare queue time, execution time, cache
+restore/save overhead, and total runner minutes on subsequent PR runs before
+increasing parallelism further.
+
 ## Pull request auto-merge queue
 
 `.github/workflows/queue-me.yml` provides a repository-hosted queue for the default branch without requiring GitHub's organization-only merge queue feature. Apply the `queue-me` label to any open, non-draft pull request targeting `main`. The controller evaluates labeled pull requests in ascending PR-number order, requires each candidate to already contain the exact current `main`, audits PR-unique commits for matching canonical user author and committer identity, and enables squash auto-merge so the existing ruleset remains authoritative for checks, Sonar, metadata, and resolved conversations. Because GitHub branch update would rewrite PR commits with the queue App bot as committer, the controller never rebases a branch itself; if a queued pull request does not yet contain current `main` or fails the identity audit, it records the blocker, skips to the next queued pull request, and retries the blocked entry only after that branch or `main` changes. A merge or any other push to `main` causes the next eligible entry to be audited against the new exact base. Removing `queue-me` disables that pull request's auto-merge and advances the remaining queue.
