@@ -47,7 +47,9 @@ func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *te
 		content, err := os.ReadFile(marker)
 		if err == nil {
 			if pid, parseErr := strconv.Atoi(string(content)); parseErr == nil {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
+				if killErr := syscall.Kill(pid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+					t.Errorf("clean up helper %d: %v", pid, killErr)
+				}
 			}
 		}
 	})
