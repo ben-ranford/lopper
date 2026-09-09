@@ -1,3 +1,5 @@
+//go:build !regressionproof
+
 package dotnet
 
 import (
