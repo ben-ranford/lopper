@@ -39,11 +39,9 @@ func TestDashboardRepoMaterializerRunGitBoundsHelperPipeWaitAfterCancellation(t 
 
 func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "helper.pid")
-	var command *exec.Cmd
 	originalExec := execDashboardGitCommandFn
 	execDashboardGitCommandFn = func(ctx context.Context, _ string, _ ...string) (*exec.Cmd, error) {
-		command = exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 30 & helper=$!; printf '%s' \"$helper\" > \"$1\"; wait", "dashboard-helper", marker)
-		return command, nil
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "sleep 30 & helper=$!; printf '%s' \"$helper\" > \"$1\"; wait", "dashboard-helper", marker), nil
 	}
 	t.Cleanup(func() {
 		execDashboardGitCommandFn = originalExec
@@ -57,26 +55,41 @@ func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *te
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if _, err := (&dashboardRepoMaterializer{gitPath: "/bin/sh"}).runGit(ctx, "status"); err == nil {
+	result := make(chan error, 1)
+	go func() {
+		_, err := (&dashboardRepoMaterializer{gitPath: "/bin/sh"}).runGit(ctx, "status")
+		result <- err
+	}()
+
+	var content []byte
+	var readErr error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		content, readErr = os.ReadFile(marker)
+		if readErr == nil && len(content) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(content) == 0 {
+		cancel()
+		<-result
+		t.Fatalf("wait for helper pid marker: %v", readErr)
+	}
+	cancel()
+	if err := <-result; err == nil {
 		t.Fatal("expected canceled git command to fail")
 	}
 
-	content, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatalf("read helper pid: %v", err)
-	}
 	pid, err := strconv.Atoi(string(content))
 	if err != nil {
 		t.Fatalf("parse helper pid %q: %v", content, err)
 	}
-	if command == nil || command.Process == nil {
-		t.Fatal("expected git command process")
-	}
-	terminated, err := testutil.ProcessGroupTerminated(command.Process.Pid)
+	terminated, err := testutil.ProcessTerminated(pid)
 	if err != nil {
-		t.Fatalf("check transport helper process group %d: %v", pid, err)
+		t.Fatalf("check transport helper %d: %v", pid, err)
 	}
 	if !terminated {
 		t.Fatalf("expected transport helper %d to be terminated", pid)
