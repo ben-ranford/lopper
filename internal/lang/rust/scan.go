@@ -40,14 +40,29 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []
 			rootLookup = lookupsByRoot[root]
 			result.RequireDeclaredDependency = true
 		}
-		err := scanRepoRootExcluding(ctx, repoPath, root, rootLookup, excludedSourceRoots, scannedFiles, &fileCount, &result)
+		err := scanRepoRootExcluding(ctx, rustScanRootOptions{
+			repoPath:            repoPath,
+			root:                root,
+			depLookup:           rootLookup,
+			excludedSourceRoots: excludedSourceRoots,
+			scannedFiles:        scannedFiles,
+			fileCount:           &fileCount,
+			result:              &result,
+		})
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}
 	}
 	if sourceFallbackRoot != "" {
 		result.RequireDeclaredDependency = true
-		err := scanRepoRootExcluding(ctx, repoPath, sourceFallbackRoot, map[string]dependencyInfo{}, nil, scannedFiles, &fileCount, &result)
+		err := scanRepoRootExcluding(ctx, rustScanRootOptions{
+			repoPath:     repoPath,
+			root:         sourceFallbackRoot,
+			depLookup:    map[string]dependencyInfo{},
+			scannedFiles: scannedFiles,
+			fileCount:    &fileCount,
+			result:       &result,
+		})
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}

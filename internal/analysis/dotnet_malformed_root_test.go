@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"context"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,15 +14,7 @@ func TestServiceAnalyseDotNetMalformedRootAvoidsOverlappingNestedRoots(t *testin
 	writeFile(t, filepath.Join(repo, "nested", "Nested.csproj"), "<Project><ItemGroup><PackageReference Include=\"Newtonsoft.Json\" /></ItemGroup></Project>")
 	writeFile(t, filepath.Join(repo, "nested", "Nested.cs"), "using Newtonsoft.Json;\nclass Nested { void Run() { JsonConvert.SerializeObject(null); } }\n")
 
-	reportData, err := NewService().Analyse(context.Background(), Request{
-		RepoPath:   repo,
-		Language:   "dotnet",
-		Dependency: "newtonsoft.json",
-		Cache:      &CacheOptions{Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("analyse malformed root .NET manifest: %v", err)
-	}
+	reportData := analyseMalformedManifestFixture(t, repo, "dotnet", "newtonsoft.json")
 	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"."}) {
 		t.Fatalf("expected one repository fallback scope without nested overlap, got %#v", reportData.Scope)
 	}

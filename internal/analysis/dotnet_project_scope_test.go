@@ -17,15 +17,7 @@ func TestServiceAnalyseDotNetMalformedRootKeepsSiblingDeclarationsScoped(t *test
 	writeFile(t, filepath.Join(repo, "b", "B.csproj"), "<Project></Project>")
 	writeFile(t, filepath.Join(repo, "b", "B.cs"), "using Foo;\nclass B {}\n")
 
-	reportData, err := NewService().Analyse(context.Background(), Request{
-		RepoPath:   repo,
-		Language:   "dotnet",
-		Dependency: "foo",
-		Cache:      &CacheOptions{Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("analyse malformed root .NET project: %v", err)
-	}
+	reportData := analyseMalformedManifestFixture(t, repo, "dotnet", "foo")
 	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"."}) {
 		t.Fatalf("expected one malformed-root fallback scope, got %#v", reportData.Scope)
 	}
@@ -63,15 +55,7 @@ func TestServiceAnalyseDotNetNestedMalformedRootAvoidsOverlappingChild(t *testin
 	writeFile(t, filepath.Join(repo, "apps", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>`)
 	writeFile(t, filepath.Join(repo, "apps", "child", "Child.cs"), "using Newtonsoft.Json;\n")
 
-	reportData, err := NewService().Analyse(context.Background(), Request{
-		RepoPath:   repo,
-		Language:   "dotnet",
-		Dependency: "newtonsoft.json",
-		Cache:      &CacheOptions{Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("analyse nested malformed .NET project: %v", err)
-	}
+	reportData := analyseMalformedManifestFixture(t, repo, "dotnet", "newtonsoft.json")
 	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"apps"}) {
 		t.Fatalf("expected one isolated malformed-root scope, got %#v", reportData.Scope)
 	}
@@ -118,15 +102,7 @@ func TestServiceAnalyseDotNetValidRootSeparatesMalformedChildBoundary(t *testing
 	writeFile(t, filepath.Join(repo, "apps", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Foo" /></ItemGroup></Project>`)
 	writeFile(t, filepath.Join(repo, "apps", "child", "Child.cs"), "using Foo;\nclass Child {}\n")
 
-	reportData, err := NewService().Analyse(context.Background(), Request{
-		RepoPath:   repo,
-		Language:   "dotnet",
-		Dependency: "foo",
-		Cache:      &CacheOptions{Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("analyse valid root with malformed child .NET project: %v", err)
-	}
+	reportData := analyseMalformedManifestFixture(t, repo, "dotnet", "foo")
 	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{".", "apps"}) {
 		t.Fatalf("expected valid root and malformed child fallback scopes, got %#v", reportData.Scope)
 	}
@@ -144,6 +120,7 @@ func TestServiceAnalyseDotNetValidRootSeparatesMalformedChildBoundary(t *testing
 		t.Fatalf("expected only root and valid child Foo locations, got %#v", dependency.UsedImports)
 	}
 
+	var err error
 	_, err = NewService().Analyse(context.Background(), Request{
 		RepoPath:                repo,
 		Language:                "dotnet",

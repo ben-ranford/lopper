@@ -74,35 +74,59 @@ func dropNestedScanRoots(roots []string, candidate string) []string {
 	return filtered
 }
 
-func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	return scanRepoRootExcluding(ctx, repoPath, root, depLookup, nil, scannedFiles, fileCount, result)
+type rustScanRootOptions struct {
+	repoPath            string
+	root                string
+	depLookup           map[string]dependencyInfo
+	excludedSourceRoots []string
+	scannedFiles        map[string]struct{}
+	fileCount           *int
+	result              *scanResult
 }
 
-func scanRepoRootExcluding(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, excludedSourceRoots []string, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	return shared.WalkRepoFiles(ctx, root, 0, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		return scanRepoFileEntryExcluding(repoPath, root, path, depLookup, excludedSourceRoots, scannedFiles, fileCount, result)
+func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
+	return scanRepoRootExcluding(ctx, rustScanRootOptions{
+		repoPath:     repoPath,
+		root:         root,
+		depLookup:    depLookup,
+		scannedFiles: scannedFiles,
+		fileCount:    fileCount,
+		result:       result,
+	})
+}
+
+func scanRepoRootExcluding(ctx context.Context, options rustScanRootOptions) error {
+	return shared.WalkRepoFiles(ctx, options.root, 0, shouldSkipDir, func(path string, entry fs.DirEntry) error {
+		return options.scanFile(path)
 	})
 }
 
 func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	return scanRepoFileEntryExcluding(repoPath, root, path, depLookup, nil, scannedFiles, fileCount, result)
+	return (rustScanRootOptions{
+		repoPath:     repoPath,
+		root:         root,
+		depLookup:    depLookup,
+		scannedFiles: scannedFiles,
+		fileCount:    fileCount,
+		result:       result,
+	}).scanFile(path)
 }
 
-func scanRepoFileEntryExcluding(repoPath, root, path string, depLookup map[string]dependencyInfo, excludedSourceRoots []string, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {
-	if !strings.EqualFold(filepath.Ext(path), ".rs") || isExcludedRustSource(path, excludedSourceRoots) {
+func (o rustScanRootOptions) scanFile(path string) error {
+	if !strings.EqualFold(filepath.Ext(path), ".rs") || isExcludedRustSource(path, o.excludedSourceRoots) {
 		return nil
 	}
-	if _, ok := scannedFiles[path]; ok {
+	if _, ok := o.scannedFiles[path]; ok {
 		return nil
 	}
-	scannedFiles[path] = struct{}{}
+	o.scannedFiles[path] = struct{}{}
 
-	(*fileCount)++
-	if *fileCount > maxScanFiles {
-		result.SkippedFilesByBoundLimit = true
+	(*o.fileCount)++
+	if *o.fileCount > maxScanFiles {
+		o.result.SkippedFilesByBoundLimit = true
 		return fs.SkipAll
 	}
-	return scanRustSourceFile(repoPath, root, path, depLookup, result)
+	return scanRustSourceFile(o.repoPath, o.root, path, o.depLookup, o.result)
 }
 
 func isExcludedRustSource(path string, excludedRoots []string) bool {

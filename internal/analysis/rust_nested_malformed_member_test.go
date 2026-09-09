@@ -1,7 +1,6 @@
 package analysis
 
 import (
-	"context"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -23,15 +22,7 @@ foo = "1"
 `)
 	writeFile(t, filepath.Join(repo, "apps", "child", "src", "lib.rs"), "use foo::Thing;\npub fn child() { let _ = Thing; }\n")
 
-	reportData, err := NewService().Analyse(context.Background(), Request{
-		RepoPath:   repo,
-		Language:   "rust",
-		Dependency: "foo",
-		Cache:      &CacheOptions{Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("analyse malformed workspace member: %v", err)
-	}
+	reportData := analyseMalformedManifestFixture(t, repo, "rust", "foo")
 	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"apps"}) {
 		t.Fatalf("expected malformed member fallback as the only package scope, got %#v", reportData.Scope)
 	}

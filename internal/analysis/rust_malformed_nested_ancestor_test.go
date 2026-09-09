@@ -28,15 +28,7 @@ foo = "1"
 `)
 	writeFile(t, filepath.Join(repo, "apps", "child", "src", "lib.rs"), "use foo::Child;\npub fn child() { let _ = Child; }\n")
 
-	reportData, err := NewService().Analyse(context.Background(), Request{
-		RepoPath:   repo,
-		Language:   "rust",
-		Dependency: "foo",
-		Cache:      &CacheOptions{Enabled: false},
-	})
-	if err != nil {
-		t.Fatalf("analyse valid ancestor with malformed nested crate: %v", err)
-	}
+	reportData := analyseMalformedManifestFixture(t, repo, "rust", "foo")
 	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "apps/Cargo.toml" {
 		t.Fatalf("expected malformed nested manifest coverage gap, got %#v", reportData.CoverageGaps)
 	}
@@ -53,6 +45,7 @@ foo = "1"
 		}
 	}
 
+	var err error
 	_, err = NewService().Analyse(context.Background(), Request{
 		RepoPath:                repo,
 		Language:                "rust",

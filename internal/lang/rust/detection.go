@@ -36,10 +36,14 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		}
 	}
 
-	visited := 0
-	err = shared.WalkRepoFiles(ctx, repoPath, maxDetectionEntries, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		return walkRustDetectionEntryWithMalformedRoots(path, entry, repoPath, workspaceOnlyRoot, roots, malformedRoots, &detection, &visited)
-	})
+	walker := rustDetectionWalker{
+		repoPath:          repoPath,
+		workspaceOnlyRoot: workspaceOnlyRoot,
+		roots:             roots,
+		malformedRoots:    malformedRoots,
+		detection:         &detection,
+	}
+	err = shared.WalkRepoFiles(ctx, repoPath, maxDetectionEntries, shouldSkipDir, walker.walk)
 	if err != nil {
 		return language.Detection{}, err
 	}
@@ -130,11 +134,29 @@ func addWorkspaceMemberRoot(repoPath, member string, roots map[string]struct{}) 
 	}
 }
 
-func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, workspaceOnlyRoot bool, roots map[string]struct{}, detection *language.Detection, visited *int) error {
-	return walkRustDetectionEntryWithMalformedRoots(path, entry, repoPath, workspaceOnlyRoot, roots, nil, detection, visited)
+type rustDetectionWalker struct {
+	repoPath          string
+	workspaceOnlyRoot bool
+	roots             map[string]struct{}
+	malformedRoots    map[string]struct{}
+	detection         *language.Detection
+	visited           int
 }
 
-func walkRustDetectionEntryWithMalformedRoots(path string, entry fs.DirEntry, repoPath string, workspaceOnlyRoot bool, roots, malformedRoots map[string]struct{}, detection *language.Detection, visited *int) error {
+func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, workspaceOnlyRoot bool, roots map[string]struct{}, detection *language.Detection, visited *int) error {
+	walker := rustDetectionWalker{
+		repoPath:          repoPath,
+		workspaceOnlyRoot: workspaceOnlyRoot,
+		roots:             roots,
+		detection:         detection,
+		visited:           *visited,
+	}
+	err := walker.walk(path, entry)
+	*visited = walker.visited
+	return err
+}
+
+func (w *rustDetectionWalker) walk(path string, entry fs.DirEntry) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
@@ -142,44 +164,37 @@ func walkRustDetectionEntryWithMalformedRoots(path string, entry fs.DirEntry, re
 		return nil
 	}
 
-	(*visited)++
-	if *visited > maxDetectionEntries {
+	w.visited++
+	if w.visited > maxDetectionEntries {
 		return fs.SkipAll
 	}
 
 	name := strings.ToLower(entry.Name())
 	switch name {
 	case strings.ToLower(cargoTomlName):
-		detection.Matched = true
-		detection.Confidence += 12
+		w.detection.Matched = true
+		w.detection.Confidence += 12
 		dir := filepath.Dir(path)
-		if _, _, err := parseCargoManifest(path, repoPath); err != nil {
+		if _, _, err := parseCargoManifest(path, w.repoPath); err != nil {
 			if isCargoManifestParseError(err) {
-				if malformedRoots != nil {
-					malformedRoots[dir] = struct{}{}
+				if w.malformedRoots != nil {
+					w.malformedRoots[dir] = struct{}{}
 				}
 			} else {
 				return err
 			}
 		}
-		if workspaceOnlyRoot && samePath(dir, repoPath) {
+		if w.workspaceOnlyRoot && samePath(dir, w.repoPath) {
 			return nil
 		}
-		roots[dir] = struct{}{}
+		w.roots[dir] = struct{}{}
 	case strings.ToLower(cargoLockName):
-		detection.Matched = true
-		detection.Confidence += 6
-	}
-
-	if strings.EqualFold(filepath.Ext(path), ".rs") {
-		detection.Matched = true
-		detection.Confidence += 2
+		w.detection.Matched = true
+		w.detection.Confidence += 4
 	}
 	return nil
 }
 
-// isolateMalformedRustRoots retains each malformed crate root as the single
-// fallback owner for its descendant sources and valid nested crates.
 func isolateMalformedRustRoots(roots, malformedRoots map[string]struct{}) {
 	for root := range roots {
 		for malformedRoot := range malformedRoots {
