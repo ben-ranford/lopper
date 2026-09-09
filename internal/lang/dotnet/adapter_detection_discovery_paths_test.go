@@ -183,6 +183,41 @@ func TestDotNetDiscoverSourceFilesSkipsObjDir(t *testing.T) {
 	}
 }
 
+func TestDotNetDiscoverSourceFilesHonorsCancellationAndCap(t *testing.T) {
+	t.Run("canceled", func(t *testing.T) {
+		discovery := sourceDiscovery{}
+		if err := discoverSourceFiles(testutil.CanceledContext(), t.TempDir(), &discovery, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled source discovery, got %v", err)
+		}
+	})
+
+	t.Run("missing root", func(t *testing.T) {
+		discovery := sourceDiscovery{}
+		missing := filepath.Join(t.TempDir(), "missing")
+		if err := discoverSourceFiles(context.Background(), missing, &discovery, nil); err == nil {
+			t.Fatal("expected missing source root to fail discovery")
+		}
+	})
+
+	t.Run("cap", func(t *testing.T) {
+		repo := t.TempDir()
+		for index := 0; index < maxScanFiles+1; index++ {
+			testutil.MustWriteFile(t, filepath.Join(repo, "src", "File"+strconv.Itoa(index)+".cs"), "using Acme.Foo;\n")
+		}
+
+		discovery := sourceDiscovery{}
+		processed := 0
+		if err := discoverSourceFiles(context.Background(), repo, &discovery, func(source sourceDocument) {
+			processed++
+		}); err != nil {
+			t.Fatalf("discover capped source files: %v", err)
+		}
+		if !discovery.SkippedFileLimit || discovery.DiscoveredSourceFiles != maxScanFiles || processed != maxScanFiles {
+			t.Fatalf("unexpected capped source discovery: %#v, processed=%d", discovery, processed)
+		}
+	})
+}
+
 func TestDotNetAddMappingMetaAccumulates(t *testing.T) {
 	result := scanResult{
 		AmbiguousByDependency:  map[string]int{},
