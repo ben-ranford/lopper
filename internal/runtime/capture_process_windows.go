@@ -19,6 +19,17 @@ const runtimeCommandWaitDelay = 100 * time.Millisecond
 
 var runtimeCommandJobs sync.Map
 
+type jobBasicAccountingInformation struct {
+	totalUserTime             int64
+	totalKernelTime           int64
+	thisPeriodTotalUserTime   int64
+	thisPeriodTotalKernelTime int64
+	totalPageFaultCount       uint32
+	totalProcesses            uint32
+	activeProcesses           uint32
+	totalTerminatedProcesses  uint32
+}
+
 func configureRuntimeCommand(cmd *exec.Cmd) {
 	cmd.WaitDelay = runtimeCommandWaitDelay
 	cmd.Cancel = func() error {
@@ -41,7 +52,7 @@ func ConfigureCommandCancellation(cmd *exec.Cmd) {
 // StartCommand starts a command suspended, attaches it to a Windows job object,
 // then resumes it. This prevents child helpers from running before job
 // membership makes them subject to cancellation.
-func StartCommand(cmd *exec.Cmd) (func(), error) {
+func StartCommand(cmd *exec.Cmd) (func() error, error) {
 	job, err := win.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
@@ -52,36 +63,35 @@ func StartCommand(cmd *exec.Cmd) (func(), error) {
 		_ = win.CloseHandle(job)
 		return nil, err
 	}
-	cleanup := func() {
+	cleanup := func() error {
 		runtimeCommandJobs.Delete(cmd)
-		_ = win.CloseHandle(job)
+		terminateErr := win.TerminateJobObject(job, 1)
+		waitErr := waitForJobEmpty(job, cmd.WaitDelay)
+		closeErr := win.CloseHandle(job)
+		return errors.Join(terminateErr, waitErr, closeErr)
 	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.CreationFlags |= win.CREATE_SUSPENDED
 	if err := cmd.Start(); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 
 	process, err := win.OpenProcess(win.PROCESS_SET_QUOTA|win.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		reapErr := terminateAndReapCommand(cmd)
-		cleanup()
-		return nil, errors.Join(err, reapErr)
+		return nil, errors.Join(err, reapErr, cleanup())
 	}
 	defer win.CloseHandle(process)
 	if err := win.AssignProcessToJobObject(job, process); err != nil {
 		reapErr := terminateAndReapCommand(cmd)
-		cleanup()
-		return nil, errors.Join(err, reapErr)
+		return nil, errors.Join(err, reapErr, cleanup())
 	}
 	runtimeCommandJobs.Store(cmd, job)
 	if err := resumeCommandPrimaryThread(uint32(cmd.Process.Pid)); err != nil {
 		reapErr := terminateJobAndReapCommand(job, cmd)
-		cleanup()
-		return nil, errors.Join(err, reapErr)
+		return nil, errors.Join(err, reapErr, cleanup())
 	}
 	return cleanup, nil
 }
@@ -124,5 +134,26 @@ func terminateAndReapCommand(cmd *exec.Cmd) error {
 func terminateJobAndReapCommand(job win.Handle, cmd *exec.Cmd) error {
 	terminateErr := win.TerminateJobObject(job, 1)
 	waitErr := cmd.Wait()
-	return errors.Join(terminateErr, waitErr)
+	jobWaitErr := waitForJobEmpty(job, cmd.WaitDelay)
+	return errors.Join(terminateErr, waitErr, jobWaitErr)
+}
+
+func waitForJobEmpty(job win.Handle, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = runtimeCommandWaitDelay
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		info := jobBasicAccountingInformation{}
+		if err := win.QueryInformationJobObject(job, win.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+			return err
+		}
+		if info.activeProcesses == 0 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("wait for Windows job to empty: %d active processes", info.activeProcesses)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

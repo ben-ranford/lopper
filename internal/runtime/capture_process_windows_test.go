@@ -30,7 +30,11 @@ func TestStartCommandConfiguresWindowsJobCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start job command: %v", err)
 	}
-	defer cleanup()
+	defer func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup job command: %v", err)
+		}
+	}()
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("wait job command: %v", err)
 	}
@@ -70,7 +74,14 @@ Wait-Process -Id $child.Id
 	if err != nil {
 		t.Fatalf("start job command: %v", err)
 	}
-	defer cleanup()
+	cleanedUp := false
+	defer func() {
+		if !cleanedUp {
+			if err := cleanup(); err != nil {
+				t.Errorf("cleanup descendant command: %v", err)
+			}
+		}
+	}()
 	defer func() {
 		cancel()
 		if cmd.ProcessState == nil {
@@ -85,6 +96,10 @@ Wait-Process -Id $child.Id
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("expected cancelled command to return an error")
 	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup descendant command: %v", err)
+	}
+	cleanedUp = true
 	if err := waitForProcessExit(childPID, 2*time.Second); err != nil {
 		t.Fatalf("wait for child process %d to exit: %v", childPID, err)
 	}

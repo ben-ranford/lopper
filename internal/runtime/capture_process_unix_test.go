@@ -109,7 +109,14 @@ func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) 
 	if err != nil {
 		t.Fatalf("start command: %v", err)
 	}
-	defer cleanup()
+	cleanedUp := false
+	defer func() {
+		if !cleanedUp {
+			if err := cleanup(); err != nil {
+				t.Errorf("cleanup command: %v", err)
+			}
+		}
+	}()
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("wait for parent command: %v", err)
 	}
@@ -126,7 +133,10 @@ func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) 
 		t.Fatalf("expected child process %d to outlive its parent: %v", childPID, err)
 	}
 
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup process group: %v", err)
+	}
+	cleanedUp = true
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		terminated, err := testutil.ProcessTerminated(childPID)

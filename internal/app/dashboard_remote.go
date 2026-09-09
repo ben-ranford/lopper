@@ -267,12 +267,16 @@ func (m *dashboardRepoMaterializer) runGit(ctx context.Context, args ...string) 
 	if err != nil {
 		return nil, err
 	}
-	if cleanup != nil {
-		defer cleanup()
-	}
 	err = command.Wait()
+	cleanupErr := cleanup()
 	if err != nil {
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%w: %s; cleanup failed: %w", err, strings.TrimSpace(stderr.String()), cleanupErr)
+		}
 		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if cleanupErr != nil {
+		return nil, fmt.Errorf("cleanup git command: %w", cleanupErr)
 	}
 	return stdout.Bytes(), nil
 }

@@ -48,14 +48,12 @@ func ConfigureCommandCancellation(cmd *exec.Cmd) {
 }
 
 // StartCommand starts a command configured with ConfigureCommandCancellation.
-func StartCommand(cmd *exec.Cmd) (func(), error) {
+func StartCommand(cmd *exec.Cmd) (func() error, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return func() {
-		if err := cleanupRuntimeProcessGroup(cmd.Process.Pid); err != nil {
-			return
-		}
+	return func() error {
+		return cleanupRuntimeProcessGroup(cmd.Process.Pid)
 	}, nil
 }
 
