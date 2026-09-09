@@ -20,6 +20,7 @@ const (
 	pubIdentityManifestYAMLName  = "pubspec.yaml"
 	pubIdentityManifestYMLName   = "pubspec.yml"
 	pubIdentityLockName          = "pubspec.lock"
+	maxPubIdentityYAMLBytes      = 1 * 1024 * 1024
 )
 
 var exactComposerVersionPattern = regexp.MustCompile(`(?i)^v?[0-9]+(?:\.[0-9]+){0,3}(?:[-_.]?(?:dev|alpha|a|beta|b|rc|patch|pl|p)[-_.]?[0-9]*)?(?:\+[0-9a-z]+(?:[-_.][0-9a-z]+)*)?$`)
@@ -257,7 +258,7 @@ func groupPubIdentityFiles(paths []string) map[string]pubIdentityFiles {
 }
 
 func readPubIdentityDeclarations(repoPath, path string, declared map[string]struct{}, warnings *identityWarningCollector) []identityManifestPin {
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, maxPubIdentityYAMLBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return nil
@@ -295,7 +296,7 @@ func collectPubLockIdentityEvidence(repoPath, path string, declared map[string]s
 	if path == "" {
 		return resolved, nonHosted
 	}
-	data, err := safeio.ReadFileUnder(repoPath, path)
+	data, err := safeio.ReadFileUnderLimit(repoPath, path, maxPubIdentityYAMLBytes)
 	if err != nil {
 		warnings.addFailure("read", path, identityReadFailed, err)
 		return resolved, nonHosted

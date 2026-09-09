@@ -244,20 +244,27 @@ func federatedFamilyRole(dependency string) (string, string, bool) {
 }
 
 func hasPluginMetadataValue(value any) bool {
+	return hasPluginMetadataValueAtDepth(value, 0)
+}
+
+func hasPluginMetadataValueAtDepth(value any, depth int) bool {
+	if depth >= maxPluginMetadataDepth {
+		return false
+	}
 	switch typed := value.(type) {
 	case map[string]any:
-		return hasPluginMetadataStringMap(typed)
+		return hasPluginMetadataStringMapAtDepth(typed, depth+1)
 	case map[any]any:
-		return hasPluginMetadataAnyMap(typed)
+		return hasPluginMetadataAnyMapAtDepth(typed, depth+1)
 	case []any:
-		return hasPluginMetadataSlice(typed)
+		return hasPluginMetadataSliceAtDepth(typed, depth+1)
 	}
 	return false
 }
 
-func hasPluginMetadataStringMap(values map[string]any) bool {
+func hasPluginMetadataStringMapAtDepth(values map[string]any, depth int) bool {
 	for key, nested := range values {
-		if isPluginMetadataKey(key) || hasPluginMetadataValue(nested) {
+		if isPluginMetadataKey(key) || hasPluginMetadataValueAtDepth(nested, depth) {
 			return true
 		}
 	}
@@ -265,8 +272,12 @@ func hasPluginMetadataStringMap(values map[string]any) bool {
 }
 
 func hasPluginMetadataAnyMap(values map[any]any) bool {
+	return hasPluginMetadataAnyMapAtDepth(values, 0)
+}
+
+func hasPluginMetadataAnyMapAtDepth(values map[any]any, depth int) bool {
 	for key, nested := range values {
-		if isPluginMetadataKey(fmt.Sprint(key)) || hasPluginMetadataValue(nested) {
+		if isPluginMetadataKey(fmt.Sprint(key)) || hasPluginMetadataValueAtDepth(nested, depth) {
 			return true
 		}
 	}
@@ -274,8 +285,12 @@ func hasPluginMetadataAnyMap(values map[any]any) bool {
 }
 
 func hasPluginMetadataSlice(values []any) bool {
+	return hasPluginMetadataSliceAtDepth(values, 0)
+}
+
+func hasPluginMetadataSliceAtDepth(values []any, depth int) bool {
 	for _, item := range values {
-		if hasPluginMetadataValue(item) {
+		if hasPluginMetadataValueAtDepth(item, depth) {
 			return true
 		}
 	}
