@@ -125,8 +125,8 @@ func TestStreamingDiscoveryReturnsSourceReadErrors(t *testing.T) {
 	if _, err := scanRepo(context.Background(), repo); err == nil {
 		t.Fatal("expected streaming scan to reject symlinked source")
 	}
-	if _, err := discoverScanInputs(context.Background(), repo); err == nil {
-		t.Fatal("expected scan input discovery to reject symlinked source")
+	if _, err := discoverScanInputs(context.Background(), repo); err != nil {
+		t.Fatalf("expected metadata-only scan input discovery to defer source reads, got %v", err)
 	}
 }
 

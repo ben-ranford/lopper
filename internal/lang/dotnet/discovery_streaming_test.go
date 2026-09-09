@@ -3,6 +3,9 @@ package dotnet
 import (
 	"context"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/testutil"
@@ -75,5 +78,42 @@ func TestDotNetLegacyDependencyCollectorSkipsMalformedManifest(t *testing.T) {
 	}
 	if len(dependencies) != 0 {
 		t.Fatalf("expected malformed manifest to remain skipped by the compatibility collector, got %#v", dependencies)
+	}
+}
+
+func TestDotNetStreamingScanAvoidsFirstPassSourceReads(t *testing.T) {
+	const sourceCount = 3
+	const sourceBytes = 1 << 20
+
+	repo := t.TempDir()
+	testutil.MustWriteFile(t, filepath.Join(repo, "App.csproj"), "<Project></Project>\n")
+	content := strings.Repeat("x", sourceBytes)
+	for index := range sourceCount {
+		testutil.MustWriteFile(t, filepath.Join(repo, "src", "File"+strconv.Itoa(index)+".cs"), content)
+	}
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	inputs, err := discoverScanInputs(context.Background(), repo)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("scan inputs: %v", err)
+	}
+	if inputs.SkippedFileLimit || inputs.SkippedGenerated != 0 {
+		t.Fatalf("unexpected input discovery result: %#v", inputs)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("metadata scan allocated %d bytes for %d source bytes", allocated, len(content)*sourceCount)
+	if allocated > 1<<20 {
+		t.Fatalf("expected metadata scan to avoid loading source contents, got %d bytes", allocated)
+	}
+
+	scan, err := scanRepo(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("streaming scan: %v", err)
+	}
+	if len(scan.Files) != sourceCount {
+		t.Fatalf("expected %d parsed files, got %#v", sourceCount, scan.Files)
 	}
 }

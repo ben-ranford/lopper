@@ -252,7 +252,7 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 	if d.sourceScanLimited {
 		return nil
 	}
-	err = d.sourceDiscoverer.discoverFile(path)
+	err = d.sourceDiscoverer.classifyFile(path)
 	if errors.Is(err, fs.SkipAll) {
 		d.sourceScanLimited = true
 		return nil
@@ -411,7 +411,7 @@ func (d *sourceDiscoverer) walk(path string, entry fs.DirEntry, walkErr error) e
 	return d.discoverFile(path)
 }
 
-func (d *sourceDiscoverer) discoverFile(path string) error {
+func (d *sourceDiscoverer) classifyFile(path string) error {
 	if !isSourceFile(path) {
 		return nil
 	}
@@ -424,11 +424,21 @@ func (d *sourceDiscoverer) discoverFile(path string) error {
 		d.discovery.SkippedFileLimit = true
 		return fs.SkipAll
 	}
+	d.discovery.DiscoveredSourceFiles++
+	return nil
+}
+
+func (d *sourceDiscoverer) discoverFile(path string) error {
+	if err := d.classifyFile(path); err != nil {
+		return err
+	}
+	if !isSourceFile(path) || isGeneratedSource(path) {
+		return nil
+	}
 	content, relativePath, err := readSourceFile(d.repoPath, path)
 	if err != nil {
 		return err
 	}
-	d.discovery.DiscoveredSourceFiles++
 	if d.processSource != nil {
 		d.processSource(sourceDocument{RelativePath: relativePath, Content: content})
 	}
