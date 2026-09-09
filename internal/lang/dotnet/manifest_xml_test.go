@@ -2,6 +2,8 @@ package dotnet
 
 import (
 	"context"
+	"encoding/xml"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,6 +63,17 @@ func TestDotNetAnalysisSkipsMalformedProjectManifests(t *testing.T) {
 		if !strings.Contains(joinedWarnings, manifest) || !strings.Contains(joinedWarnings, "skipped malformed .NET manifest") {
 			t.Fatalf("expected malformed-manifest warning for %s, got %#v", manifest, reportData.Warnings)
 		}
+	}
+}
+
+func TestDotNetManifestErrorPreservesXMLSyntaxDetails(t *testing.T) {
+	repo := t.TempDir()
+	manifest := filepath.Join(repo, "Broken.csproj")
+	testutil.MustWriteFile(t, manifest, "<Project>\n<PackageReference")
+	_, err := parsePackageReferences(repo, manifest)
+	var syntaxError *xml.SyntaxError
+	if !errors.As(err, &syntaxError) || syntaxError.Line != 2 {
+		t.Fatalf("expected underlying XML syntax error on line 2, got %v", err)
 	}
 }
 
