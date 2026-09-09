@@ -42,13 +42,10 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	if err := applyRootSignals(repoPath, &detection, roots); err != nil {
 		return language.Detection{}, err
 	}
-	malformedRoot, err := hasMalformedRootManifest(repoPath)
-	if err != nil {
-		return language.Detection{}, err
-	}
+	malformedRoots := make(map[string]struct{})
 
 	visited := 0
-	err = filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -65,38 +62,14 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		if visited > maxDetectFiles {
 			return fs.SkipAll
 		}
-		return updateDetection(repoPath, path, entry.Name(), &detection, roots)
+		return updateDetection(repoPath, path, entry.Name(), &detection, roots, malformedRoots)
 	})
 	if err != nil && !errors.Is(err, fs.SkipAll) {
 		return language.Detection{}, err
 	}
-	if malformedRoot {
-		clear(roots)
-		roots[repoPath] = struct{}{}
-	}
+	isolateMalformedManifestRoots(roots, malformedRoots)
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
-}
-
-func hasMalformedRootManifest(repoPath string) (bool, error) {
-	entries, err := os.ReadDir(repoPath)
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || signalForName(entry.Name()) != fileSignalProject && signalForName(entry.Name()) != fileSignalCentral {
-			continue
-		}
-		_, err := parseManifestDependenciesForEntry(repoPath, filepath.Join(repoPath, entry.Name()), entry.Name())
-		if err == nil {
-			continue
-		}
-		if isDotNetManifestParseError(err) {
-			return true, nil
-		}
-		return false, err
-	}
-	return false, nil
 }
 
 func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
@@ -119,8 +92,45 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 	return nil
 }
 
-func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}) error {
+func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}, malformedRootSets ...map[string]struct{}) error {
+	var malformedRoots map[string]struct{}
+	if len(malformedRootSets) > 0 {
+		malformedRoots = malformedRootSets[0]
+	}
+	signal := signalForName(name)
+	if signal == fileSignalProject || signal == fileSignalCentral {
+		if _, err := parseManifestDependenciesForEntry(repoPath, path, name); err != nil {
+			if !isDotNetManifestParseError(err) {
+				return err
+			}
+			if malformedRoots != nil {
+				malformedRoots[filepath.Dir(path)] = struct{}{}
+			}
+		}
+	}
 	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
+}
+
+func isolateMalformedManifestRoots(roots, malformedRoots map[string]struct{}) {
+	for malformedRoot := range malformedRoots {
+		owner := malformedRoot
+		for root := range roots {
+			if isDotNetSubPath(root, malformedRoot) && len(root) < len(owner) {
+				owner = root
+			}
+		}
+		for root := range roots {
+			if isDotNetSubPath(owner, root) {
+				delete(roots, root)
+			}
+		}
+		roots[owner] = struct{}{}
+	}
+}
+
+func isDotNetSubPath(parent, child string) bool {
+	relativePath, err := filepath.Rel(parent, child)
+	return err == nil && relativePath != ".." && !strings.HasPrefix(relativePath, ".."+string(filepath.Separator))
 }
 
 func applyDetectionSignal(repoPath, path, name, root string, detection *language.Detection, roots map[string]struct{}, weights detectionWeights) error {

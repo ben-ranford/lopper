@@ -57,6 +57,29 @@ func TestServiceAnalyseDotNetMalformedRootKeepsCoverageForChangedNestedProject(t
 	}
 }
 
+func TestServiceAnalyseDotNetNestedMalformedRootAvoidsOverlappingChild(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "apps", "Broken.csproj"), "<Project><PackageReference Include=\"broken\"")
+	writeFile(t, filepath.Join(repo, "apps", "child", "Child.csproj"), `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "apps", "child", "Child.cs"), "using Newtonsoft.Json;\n")
+
+	reportData, err := NewService().Analyse(context.Background(), Request{
+		RepoPath:   repo,
+		Language:   "dotnet",
+		Dependency: "newtonsoft.json",
+		Cache:      &CacheOptions{Enabled: false},
+	})
+	if err != nil {
+		t.Fatalf("analyse nested malformed .NET project: %v", err)
+	}
+	if reportData.Scope == nil || !slices.Equal(reportData.Scope.Packages, []string{"apps"}) {
+		t.Fatalf("expected one isolated malformed-root scope, got %#v", reportData.Scope)
+	}
+	if len(reportData.Dependencies) != 1 || len(reportData.Dependencies[0].UsedImports) != 1 || len(reportData.Dependencies[0].UsedImports[0].Locations) != 1 {
+		t.Fatalf("expected nested child usage exactly once, got %#v", reportData.Dependencies)
+	}
+}
+
 func TestServiceAnalyseDotNetValidRootDoesNotRescanNestedProject(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "Root.csproj"), `<Project><ItemGroup><PackageReference Include="Root.Package" /></ItemGroup></Project>`)

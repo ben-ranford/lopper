@@ -16,6 +16,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
+	malformedRoots := make(map[string]struct{})
 	malformedRoot := false
 	workspaceOnlyRoot, err := applyRustRootSignals(repoPath, &detection, roots)
 	if err != nil {
@@ -27,6 +28,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 			// repository fallback so root sources and children are covered once,
 			// while retaining nested manifests, locks, and source signals.
 			roots[repoPath] = struct{}{}
+			malformedRoots[repoPath] = struct{}{}
 			malformedRoot = true
 			workspaceOnlyRoot = true
 		} else {
@@ -36,7 +38,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	visited := 0
 	err = shared.WalkRepoFiles(ctx, repoPath, maxDetectionEntries, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		return walkRustDetectionEntry(path, entry, repoPath, workspaceOnlyRoot, roots, &detection, &visited)
+		return walkRustDetectionEntryWithMalformedRoots(path, entry, repoPath, workspaceOnlyRoot, roots, malformedRoots, &detection, &visited)
 	})
 	if err != nil {
 		return language.Detection{}, err
@@ -45,6 +47,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 		clear(roots)
 		roots[repoPath] = struct{}{}
 	}
+	isolateMalformedRustRoots(roots, malformedRoots)
 
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
@@ -128,6 +131,10 @@ func addWorkspaceMemberRoot(repoPath, member string, roots map[string]struct{}) 
 }
 
 func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, workspaceOnlyRoot bool, roots map[string]struct{}, detection *language.Detection, visited *int) error {
+	return walkRustDetectionEntryWithMalformedRoots(path, entry, repoPath, workspaceOnlyRoot, roots, nil, detection, visited)
+}
+
+func walkRustDetectionEntryWithMalformedRoots(path string, entry fs.DirEntry, repoPath string, workspaceOnlyRoot bool, roots, malformedRoots map[string]struct{}, detection *language.Detection, visited *int) error {
 	if entry.IsDir() {
 		if shouldSkipDir(entry.Name()) {
 			return filepath.SkipDir
@@ -146,6 +153,15 @@ func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, wor
 		detection.Matched = true
 		detection.Confidence += 12
 		dir := filepath.Dir(path)
+		if _, _, err := parseCargoManifest(path, repoPath); err != nil {
+			if isCargoManifestParseError(err) {
+				if malformedRoots != nil {
+					malformedRoots[dir] = struct{}{}
+				}
+			} else {
+				return err
+			}
+		}
 		if workspaceOnlyRoot && samePath(dir, repoPath) {
 			return nil
 		}
@@ -160,4 +176,17 @@ func walkRustDetectionEntry(path string, entry fs.DirEntry, repoPath string, wor
 		detection.Confidence += 2
 	}
 	return nil
+}
+
+// isolateMalformedRustRoots retains each malformed crate root as the single
+// fallback owner for its descendant sources and valid nested crates.
+func isolateMalformedRustRoots(roots, malformedRoots map[string]struct{}) {
+	for root := range roots {
+		for malformedRoot := range malformedRoots {
+			if !samePath(root, malformedRoot) && isSubPath(malformedRoot, root) {
+				delete(roots, root)
+				break
+			}
+		}
+	}
 }
