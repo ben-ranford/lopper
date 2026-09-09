@@ -45,7 +45,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	verify := workflowJobByName(t, workflow.Jobs, "verify-checks")
 	assertWorkflowJobPermissions(t, verify, "ci verify", map[string]string{"contents": "read", "issues": "read"})
 	assertWorkflowJobCheckoutsDisablePersistedCredentials(t, verify, "ci verify")
 	assertWorkflowStepOrder(t, verify, "Run coverage gate", "Stage PR report inputs", "Upload PR report inputs", "Upload binary artifact", "Fail workflow on coverage gate")
@@ -54,10 +54,10 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	})
 
 	for _, check := range []workflowActionCheck{
-		{"verify", "Checkout", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "verify checkout"},
-		{"verify", "Setup Go", "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", "verify setup-go"},
-		{"verify", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},
-		{"verify", "Upload binary artifact", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify binary upload"},
+		{"verify-checks", "Checkout", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1", "verify checkout"},
+		{"verify-checks", "Setup Go", "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", "verify setup-go"},
+		{"verify-checks", "Upload PR report inputs", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify PR report upload"},
+		{"verify-checks", "Upload binary artifact", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "verify binary upload"},
 		{"publish-pr-reports", "Download PR report inputs", "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "PR report download"},
 		{"publish-pr-reports", "Comment memory benchmark report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "memory benchmark comment"},
 		{"publish-pr-reports", "Comment lopper report on PR", "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3", "lopper report comment"},
@@ -70,7 +70,7 @@ func TestCIWorkflowPinsPrivilegedVerifyActions(t *testing.T) {
 	}
 
 	immutableAction := regexp.MustCompile(`^[^@[:space:]]+@[0-9a-f]{40}$`)
-	for _, jobName := range []string{"verify", "publish-pr-reports"} {
+	for _, jobName := range []string{"verify-checks", "publish-pr-reports"} {
 		for _, step := range workflow.Jobs[jobName].Steps {
 			if step.Uses != "" && !immutableAction.MatchString(step.Uses) {
 				t.Fatalf("%s step %q must use an immutable action SHA: %q", jobName, step.Name, step.Uses)
@@ -86,7 +86,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
-	stageInputs := workflowStepByName(t, workflow.Jobs, "verify", "Stage PR report inputs")
+	stageInputs := workflowStepByName(t, workflow.Jobs, "verify-checks", "Stage PR report inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "PR report staging shell", got: stageInputs.Shell, want: hardenedShell},
 	})
@@ -109,7 +109,7 @@ func TestCIWorkflowIsolatesPRPublicationCredentials(t *testing.T) {
 		`coverage-status.txt|coverage-total.txt|memory-bench-status.txt)`,
 		`copy_bounded_report "${src}" "${report_root}/${report}" "${limit_bytes}"`,
 	})
-	uploadInputs := workflowStepByName(t, workflow.Jobs, "verify", "Upload PR report inputs")
+	uploadInputs := workflowStepByName(t, workflow.Jobs, "verify-checks", "Upload PR report inputs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "PR report upload step id", got: uploadInputs.ID, want: "upload_pr_report_inputs"},
 	})
@@ -277,7 +277,7 @@ func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-checks", "Run CI target")
 	assertWorkflowStepEnv(t, runCI, "ci verify run target", map[string]string{
 		"GH_EVENT_NAME":               "${{ github.event_name }}",
 		"SUPPRESSION_TRACKING_OUTPUT": ".artifacts/inline-suppressions.json",
@@ -289,7 +289,7 @@ func TestCIWorkflowEmitsInlineSuppressionRecordsFromVerifyJob(t *testing.T) {
 
 // TestCIWorkflowDoesNotGateMergeOnItsOwnPRControlledSuppressionVerification
 // guards against reintroducing the exact bypass a Codex finding described on
-// PR #1540: ci.yml's "verify" job runs on `pull_request`, so GitHub executes
+// PR #1540: ci.yml's "verify-checks" job runs on `pull_request`, so GitHub executes
 // it from the pull request's own (potentially tampered) copy of this file. A
 // suppression-verification step gating the merge from inside this job could
 // therefore be deleted by the very pull request it is meant to gate. That
@@ -302,9 +302,9 @@ func TestCIWorkflowDoesNotGateMergeOnItsOwnPRControlledSuppressionVerification(t
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	assertWorkflowStepAbsent(t, workflow.Jobs, "verify", "Verify inline suppression tracking issues were published")
+	assertWorkflowStepAbsent(t, workflow.Jobs, "verify-checks", "Verify inline suppression tracking issues were published")
 
-	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	verify := workflowJobByName(t, workflow.Jobs, "verify-checks")
 	assertWorkflowStepOrder(t, verify, "Run CI target", "Prove regression tests for fix PRs")
 }
 
@@ -391,7 +391,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	verify := workflowJobByName(t, workflow.Jobs, "verify")
+	verify := workflowJobByName(t, workflow.Jobs, "verify-checks")
 	expectedOrder := []string{
 		"Resolve PR base ref",
 		"Write PR body for regression proof",
@@ -401,7 +401,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 	}
 	assertWorkflowStepOrder(t, verify, expectedOrder...)
 
-	resolveBase := workflowStepByName(t, workflow.Jobs, "verify", "Resolve PR base ref")
+	resolveBase := workflowStepByName(t, workflow.Jobs, "verify-checks", "Resolve PR base ref")
 	assertWorkflowStepRunContainsAll(t, resolveBase, "resolve PR base ref", []string{
 		`printf 'BASE_REF=%s\n' "${base_ref}"`,
 		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"`,
@@ -409,7 +409,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		`} >> "$GITHUB_ENV"`,
 	})
 
-	writeBody := workflowStepByName(t, workflow.Jobs, "verify", "Write PR body for regression proof")
+	writeBody := workflowStepByName(t, workflow.Jobs, "verify-checks", "Write PR body for regression proof")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "regression body writer action", got: writeBody.Uses, want: "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3"},
 		{label: "regression body writer condition", got: writeBody.If, want: "${{ github.event_name == 'pull_request' }}"},
@@ -419,7 +419,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		`core.exportVariable('PR_BODY_FILE', bodyPath);`,
 	})
 
-	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-checks", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base", []string{
 		`resolve_act_merge_base() {`,
 		`base_sha="${BASE_SHA:-}"`,
@@ -436,7 +436,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		`printf 'MEMORY_BENCH_BASE=%s\n' "${base_sha}" >> "$GITHUB_ENV"`,
 	})
 
-	lopperBase := workflowStepByName(t, workflow.Jobs, "verify", "Run lopper self-analysis (base branch)")
+	lopperBase := workflowStepByName(t, workflow.Jobs, "verify-checks", "Run lopper self-analysis (base branch)")
 	assertWorkflowStepRunContainsAll(t, lopperBase, "lopper immutable base", []string{
 		`base_sha="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 		`git worktree add --detach .artifacts/base "${base_sha}"`,
@@ -445,7 +445,7 @@ func TestCIWorkflowRunsRegressionProofGateInVerifyJob(t *testing.T) {
 		`git worktree add --detach .artifacts/base "origin/${base_ref}"`,
 	})
 
-	proof := workflowStepByName(t, workflow.Jobs, "verify", "Prove regression tests for fix PRs")
+	proof := workflowStepByName(t, workflow.Jobs, "verify-checks", "Prove regression tests for fix PRs")
 	assertWorkflowStringValues(t, []workflowStringValue{
 		{label: "regression proof condition", got: proof.If, want: "${{ github.event_name == 'pull_request' && github.event.pull_request.user.login != 'renovate[bot]' }}"},
 		{label: "regression proof title env", got: proof.Env["PR_TITLE"], want: "${{ github.event.pull_request.title }}"},
@@ -463,7 +463,7 @@ func TestCIWorkflowUsesActOnlyMergeBasePRBaseFallback(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-checks", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base act fallback", []string{
 		`if [ -n "${ACT:-}" ]; then`,
 		`base_sha="$(resolve_act_merge_base "${base_ref}")"`,
@@ -479,7 +479,7 @@ func TestCIWorkflowFailsClosedWithoutHostedPRBaseSHA(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	fetchBase := workflowStepByName(t, workflow.Jobs, "verify", "Fetch PR base")
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-checks", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch PR base hosted guard", []string{
 		`echo "::error::PR base SHA is unavailable; cannot prepare memory benchmark base." >&2`,
 		`git rev-parse --verify -q --end-of-options "${base_sha}^{commit}" >/dev/null`,
@@ -497,17 +497,17 @@ func TestCIWorkflowOnlyAllowsMemoryApprovalForStatusOne(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	runCI := workflowStepByName(t, workflow.Jobs, "verify", "Run CI target")
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-checks", "Run CI target")
 	assertWorkflowStepRunContainsAll(t, runCI, "ci verify run target", []string{
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
-		`make ci`,
+		`make ci-checks`,
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "ci verify run target", []string{
 		`MEMORY_BENCH_BASE="origin/${base_ref}"`,
 	})
 
-	failUnapproved := workflowStepByName(t, workflow.Jobs, "verify", "Fail on unapproved memory regression")
+	failUnapproved := workflowStepByName(t, workflow.Jobs, "verify-checks", "Fail on unapproved memory regression")
 	assertWorkflowStepRunContainsAll(t, failUnapproved, "ci unapproved memory regression gate", []string{
 		`status="$(tr -d '[:space:]' < .artifacts/memory-bench-status.txt)"`,
 		`if [ "$status" = "1" ]; then`,
@@ -524,10 +524,10 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 	var workflow workflowConfig
 	readYAMLConfig(t, ".github/workflows/ci.yml", &workflow)
 
-	verifyRolling := workflowJobByName(t, workflow.Jobs, "verify-rolling")
+	verifyRolling := workflowJobByName(t, workflow.Jobs, "verify-rolling-checks")
 	assertWorkflowStepOrder(t, verifyRolling, "Resolve PR base ref", "Fetch PR base", "Run CI target with rolling defaults")
 
-	resolveBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Resolve PR base ref")
+	resolveBase := workflowStepByName(t, workflow.Jobs, "verify-rolling-checks", "Resolve PR base ref")
 	assertWorkflowStepRunContainsAll(t, resolveBase, "resolve rolling PR base ref", []string{
 		`printf 'BASE_REF=%s\n' "${base_ref}"`,
 		`printf 'BASE_SHA=%s\n' "${PR_BASE_SHA}"`,
@@ -535,7 +535,7 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 		`} >> "$GITHUB_ENV"`,
 	})
 
-	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Fetch PR base")
+	fetchBase := workflowStepByName(t, workflow.Jobs, "verify-rolling-checks", "Fetch PR base")
 	assertWorkflowStepRunContainsAll(t, fetchBase, "fetch rolling PR base", []string{
 		`resolve_act_merge_base() {`,
 		`base_sha="${BASE_SHA:-}"`,
@@ -550,11 +550,11 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 		`git fetch --no-tags --depth=1 origin "${base_ref}"`,
 	})
 
-	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling", "Run CI target with rolling defaults")
+	runCI := workflowStepByName(t, workflow.Jobs, "verify-rolling-checks", "Run CI target with rolling defaults")
 	assertWorkflowStepRunContainsAll(t, runCI, "run rolling CI target", []string{
 		`export MEMORY_BENCH_BASE="${MEMORY_BENCH_BASE:?prepared PR memory benchmark base is required}"`,
 		`export MEMORY_BENCH_ENFORCE=0`,
-		`make ci BUILD_CHANNEL="${BUILD_CHANNEL}"`,
+		`make ci-checks BUILD_CHANNEL="${BUILD_CHANNEL}"`,
 	})
 	assertWorkflowStepRunOmitsAll(t, runCI, "run rolling CI target", []string{
 		`export MEMORY_BENCH_BASE="origin/${base_ref}"`,
@@ -564,9 +564,9 @@ func TestCIWorkflowVerifyRollingUsesImmutablePRBaseSHA(t *testing.T) {
 func TestCIWorkflowVerifyUsesMergeBaseFallbackAndImmutableBaseWhenPRBaseRefDrifts(t *testing.T) {
 	t.Parallel()
 	exercisePRBaseWorkflowJob(t, prBaseWorkflowJobConfig{
-		jobName:     "verify",
+		jobName:     "verify-checks",
 		runStepName: "Run CI target",
-		runLabel:    "verify",
+		runLabel:    "verify-checks",
 		checkLopper: true,
 	})
 }
@@ -574,9 +574,9 @@ func TestCIWorkflowVerifyUsesMergeBaseFallbackAndImmutableBaseWhenPRBaseRefDrift
 func TestCIWorkflowVerifyRollingUsesMergeBaseFallbackWhenPRBaseRefDrifts(t *testing.T) {
 	t.Parallel()
 	exercisePRBaseWorkflowJob(t, prBaseWorkflowJobConfig{
-		jobName:      "verify-rolling",
+		jobName:      "verify-rolling-checks",
 		runStepName:  "Run CI target with rolling defaults",
-		runLabel:     "verify-rolling",
+		runLabel:     "verify-rolling-checks",
 		buildChannel: "rolling",
 	})
 }
@@ -743,8 +743,8 @@ func TestCIWorkflowActFallbackIgnoresHostileInheritedBaseSHA(t *testing.T) {
 		jobName  string
 		runLabel string
 	}{
-		{jobName: "verify", runLabel: "verify"},
-		{jobName: "verify-rolling", runLabel: "verify-rolling"},
+		{jobName: "verify-checks", runLabel: "verify-checks"},
+		{jobName: "verify-rolling-checks", runLabel: "verify-rolling-checks"},
 	} {
 		fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
 		assertFetchStepResolvesImmutableBase(t, scenario, fetchBase.Run, cfg.runLabel, hostileEnv)
@@ -765,8 +765,8 @@ func TestCIWorkflowFetchStepsHonorExplicitPRBaseSHA(t *testing.T) {
 		jobName  string
 		runLabel string
 	}{
-		{jobName: "verify", runLabel: "verify"},
-		{jobName: "verify-rolling", runLabel: "verify-rolling"},
+		{jobName: "verify-checks", runLabel: "verify-checks"},
+		{jobName: "verify-rolling-checks", runLabel: "verify-rolling-checks"},
 	} {
 		fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
 		githubEnv := filepath.Join(t.TempDir(), "github.env")
@@ -825,8 +825,8 @@ func TestCIWorkflowFetchStepDoesNotReinterpretOrdinaryPRBranchMergeAsCheckoutMer
 		jobName  string
 		runLabel string
 	}{
-		{jobName: "verify", runLabel: "verify"},
-		{jobName: "verify-rolling", runLabel: "verify-rolling"},
+		{jobName: "verify-checks", runLabel: "verify-checks"},
+		{jobName: "verify-rolling-checks", runLabel: "verify-rolling-checks"},
 	} {
 		fetchBase := workflowStepByName(t, workflow.Jobs, cfg.jobName, "Fetch PR base")
 		githubEnv := filepath.Join(t.TempDir(), "github.env")
@@ -987,7 +987,7 @@ func shellQuote(path string) string {
 }
 
 // extractSuspectScanVarsAndLoop pulls the suspect-pattern variable setup and
-// the per-file suspect scan loop body out of the real "verify" gate's run
+// the per-file suspect scan loop body out of the real "verify-checks" gate's run
 // script, for tests that execute that body directly against a synthetic
 // file_json fixture.
 func extractSuspectScanVarsAndLoop(t *testing.T, gate workflowStepConfig) (varsBlock string, loopBody string) {

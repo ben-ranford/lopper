@@ -12,8 +12,14 @@ on:
       - labeled
       - unlabeled
 
+# PR metadata changes affect approval gates, so keep their triggers while
+# replacing superseded verification runs. Manual dispatches remain independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
+  verify-checks:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,6 +31,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Go
@@ -32,6 +39,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci.yml
 
       - name: Setup Go (act)
         if: ${{ env.ACT }}
@@ -183,9 +194,9 @@ jobs:
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci
+            PATH="$(go env GOPATH)/bin:$PATH" make ci-checks
           else
-            make ci
+            make ci-checks
           fi
 
       - name: Prove regression tests for fix PRs
@@ -646,8 +657,8 @@ jobs:
               });
             }
 
-  verify-rolling:
-    name: verify (rolling)
+  verify-rolling-checks:
+    name: verification checks (rolling)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -656,12 +667,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - name: Setup Go
         if: ${{ !env.ACT }}
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci.yml
 
       - name: Setup Go (act)
         if: ${{ env.ACT }}
@@ -796,10 +812,55 @@ jobs:
             export MEMORY_BENCH_ENFORCE=0
           fi
           if [ -n "${ACT:-}" ]; then
-            PATH="$(go env GOPATH)/bin:$PATH" make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+            PATH="$(go env GOPATH)/bin:$PATH" make ci-checks BUILD_CHANNEL="${BUILD_CHANNEL}"
           else
-            make ci BUILD_CHANNEL="${BUILD_CHANNEL}"
+            make ci-checks BUILD_CHANNEL="${BUILD_CHANNEL}"
           fi
+
+  verify-tests:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      source_sha: ${{ github.sha }}
+      build_channel: dev
+
+  verify-rolling-tests:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-tests.yml
+    with:
+      source_sha: ${{ github.sha }}
+      build_channel: rolling
+
+  verify:
+    if: ${{ always() }}
+    needs: [verify-checks, verify-tests]
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      pr_report_artifact_id: ${{ needs.verify-checks.outputs.pr_report_artifact_id }}
+    steps:
+      - name: Require every verification job
+        env:
+          CHECKS_RESULT: ${{ needs.verify-checks.result }}
+          TESTS_RESULT: ${{ needs.verify-tests.result }}
+        run: |
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
+
+  verify-rolling:
+    name: verify (rolling)
+    if: ${{ always() }}
+    needs: [verify-rolling-checks, verify-rolling-tests]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require every verification job
+        env:
+          CHECKS_RESULT: ${{ needs.verify-rolling-checks.result }}
+          TESTS_RESULT: ${{ needs.verify-rolling-tests.result }}
+        run: |
+          test "${CHECKS_RESULT}" = success && test "${TESTS_RESULT}" = success
 
   os-smoke:
     name: os-smoke (${{ matrix.os }})

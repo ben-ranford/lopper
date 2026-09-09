@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
+.PHONY: format fmt format-check gostyle lint actionlint shellcheck mod-check feature-flag feature-flag-graduate feature-flag-check dup-check suppression-check github-actions-pinning github-actions-runners automation-examples release-automation-check managed-output-check automation-integrity security vuln-check test test-lockfiledrift-head vscode-release-notes-check cyclonedx-schema-check test-leaks test-leaks-lockfiledrift-head test-race test-race-lockfiledrift-head bench-mem bench-delta bench-gate cov cov-lockfiledrift-head benchdelta-cov build manpage ci ci-tests ci-checks smoke demos demos-check mem-profiles release clean toolchain-check toolchain-install toolchain-install-macos toolchain-install-linux print-gosec-version tools-install setup hooks-install hooks-uninstall sync-version vscode-extension-install vscode-extension-compile vscode-extension-test vscode-extension-package
 
 BINARY_NAME ?= lopper
 CMD_PATH ?= ./cmd/lopper
@@ -62,6 +62,11 @@ RELEASE_GO_LDFLAGS ?= -s -w $(RELEASE_VERSION_LDFLAGS)
 TEST_VERSION_LDFLAGS = -X $(VERSION_PKG).buildChannel=$(BUILD_CHANNEL)
 GO_TEST_LDFLAGS ?= $(TEST_VERSION_LDFLAGS)
 GO_TEST_LDFLAGS_ARGS = $(if $(strip $(GO_TEST_LDFLAGS)),-ldflags "$(GO_TEST_LDFLAGS)")
+
+# Keep the parallel CI partitions fixed so environment or command-line overrides
+# cannot omit a required gate. runtime-pycache-check runs after each partition.
+override CI_TEST_TARGETS := test test-leaks
+override CI_CHECK_TARGETS := fuzz-corpus-check benchdelta-cov automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test-race bench-gate build cov runtime-pycache-check
 
 format:
 	gofmt -w .
@@ -290,6 +295,10 @@ manpage:
 	./scripts/generate-manpage.sh $(MANPAGE_OUT)
 
 ci: automation-integrity format-check mod-check feature-flag-check lint actionlint shellcheck dup-check suppression-check security vuln-check test test-leaks test-race bench-gate build cov runtime-pycache-check
+
+ci-tests: $(CI_TEST_TARGETS) runtime-pycache-check
+
+ci-checks: $(CI_CHECK_TARGETS)
 
 smoke: mod-check test-race build
 

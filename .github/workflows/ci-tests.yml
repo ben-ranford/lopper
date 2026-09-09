@@ -1,0 +1,61 @@
+name: ci-tests
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      build_channel:
+        required: true
+        type: string
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact CI source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Go
+        if: ${{ !env.ACT }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            Makefile
+            .github/workflows/ci-tests.yml
+
+      - name: Setup test runtimes (act)
+        if: ${{ env.ACT }}
+        run: |
+          if ! command -v go >/dev/null 2>&1 || ! command -v ruby >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y golang-go ruby python3
+          fi
+          if ! command -v node >/dev/null 2>&1 || ! node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 12) ? 0 : 1)'; then
+            apt-get update
+            apt-get install -y ca-certificates curl gnupg
+            mkdir -p /usr/share/keyrings
+            curl -fsSL --proto '=https' --tlsv1.2 https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+            echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_24.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+            apt-get update
+            apt-get install -y nodejs
+          fi
+
+      - name: Run normal and leak tests
+        env:
+          BUILD_CHANNEL: ${{ inputs.build_channel }}
+        run: make ci-tests BUILD_CHANNEL="${BUILD_CHANNEL}"
+
+      # make stops at a failing prerequisite; inspect its workspace even then.
+      - name: Check runtime artifacts after tests
+        if: ${{ always() }}
+        run: make runtime-pycache-check
