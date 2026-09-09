@@ -9,10 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestDashboardRepoMaterializerRunGitBoundsHelperPipeWaitAfterCancellation(t *testing.T) {
@@ -68,29 +69,11 @@ func TestDashboardRepoMaterializerRunGitCancelsTransportHelperProcessGroup(t *te
 	if err != nil {
 		t.Fatalf("parse helper pid %q: %v", content, err)
 	}
-	terminated, err := helperProcessTerminated(pid)
+	terminated, err := testutil.ProcessTerminated(pid)
 	if err != nil {
 		t.Fatalf("check transport helper %d: %v", pid, err)
 	}
 	if !terminated {
 		t.Fatalf("expected transport helper %d to be terminated", pid)
 	}
-}
-
-func helperProcessTerminated(pid int) (bool, error) {
-	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-		return true, nil
-	} else if err != nil {
-		return false, err
-	}
-
-	output, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return true, nil
-		}
-		return false, err
-	}
-	return strings.HasPrefix(strings.TrimSpace(string(output)), "Z"), nil
 }

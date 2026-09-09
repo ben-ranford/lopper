@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
 func TestConfigureRuntimeCommandCancelPropagatesSignalErrors(t *testing.T) {
@@ -127,7 +129,7 @@ func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) 
 	cleanup()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		terminated, err := runtimeHelperTerminated(childPID)
+		terminated, err := testutil.ProcessTerminated(childPID)
 		if err != nil {
 			t.Fatalf("check child process %d: %v", childPID, err)
 		}
@@ -140,29 +142,11 @@ func TestStartCommandCleanupTerminatesProcessGroupAfterParentExit(t *testing.T) 
 }
 
 func TestRuntimeHelperTerminatedKeepsLiveProcess(t *testing.T) {
-	terminated, err := runtimeHelperTerminated(os.Getpid())
+	terminated, err := testutil.ProcessTerminated(os.Getpid())
 	if err != nil {
 		t.Fatalf("check current process: %v", err)
 	}
 	if terminated {
 		t.Fatal("expected current process to remain live")
 	}
-}
-
-func runtimeHelperTerminated(pid int) (bool, error) {
-	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-		return true, nil
-	} else if err != nil {
-		return false, err
-	}
-
-	output, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return true, nil
-		}
-		return false, err
-	}
-	return strings.HasPrefix(strings.TrimSpace(string(output)), "Z"), nil
 }
