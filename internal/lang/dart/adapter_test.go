@@ -202,6 +202,14 @@ void main() {}
 `,
 		},
 		{
+			name: "show token in import URI",
+			source: `import 'package:http/show/client.dart'
+    show client;
+
+void main() {}
+`,
+		},
+		{
 			name: "show entry after continuation",
 			source: `import 'package:http/http.dart'
     show Client,

@@ -267,7 +267,7 @@ func directiveDeclarationLocations(lines []string, bindings []importBinding) map
 	locations := make(map[string]directiveBindingLocation, len(wanted))
 	showList := false
 	for lineOffset, line := range lines {
-		line = directiveCodeBeforeLineComment(line)
+		line = string(shared.MaskCommentsAndStringsForFile([]byte(line), "directive.dart"))
 		if match := aliasPattern.FindStringSubmatchIndex(line); len(match) == 4 {
 			addDirectiveBindingLocation(locations, wanted, line[match[2]:match[3]], lineOffset, match[2]+1)
 		}
@@ -312,20 +312,6 @@ func addDirectiveBindingLocation(locations map[string]directiveBindingLocation, 
 	if _, ok := locations[identifier]; !ok {
 		locations[identifier] = directiveBindingLocation{lineOffset: lineOffset, column: column}
 	}
-}
-
-func directiveCodeBeforeLineComment(line string) string {
-	state := directiveTerminatorState{}
-	for i := 0; i < len(line); i++ {
-		if state.consumeQuoted(line[i]) {
-			continue
-		}
-		if directiveCommentStarts(line, i) {
-			return line[:i]
-		}
-		state.openQuote(line[i])
-	}
-	return line
 }
 
 func directiveIdentifierColumn(line, identifier string) int {
