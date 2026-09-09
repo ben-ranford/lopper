@@ -309,14 +309,21 @@ func collectDirective(lines []string) (string, int, bool) {
 		return lines[0], 1, true
 	}
 
-	directive := lines[0]
+	directiveSize := len(lines[0])
 	for i := 1; i < len(lines); i++ {
 		if !isDirectiveContinuationLine(lines[i]) {
 			return "", 1, false
 		}
-		directive += "\n" + lines[i]
+		directiveSize += 1 + len(lines[i])
 		if hasDirectiveTerminator(lines[i]) {
-			return directive, i + 1, true
+			var directive strings.Builder
+			directive.Grow(directiveSize)
+			directive.WriteString(lines[0])
+			for _, line := range lines[1 : i+1] {
+				directive.WriteByte('\n')
+				directive.WriteString(line)
+			}
+			return directive.String(), i + 1, true
 		}
 	}
 	return "", 1, false
