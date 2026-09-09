@@ -80,6 +80,33 @@ void main() {
 	}
 }
 
+func TestParseDartImportsLocatesLargeSplitShowList(t *testing.T) {
+	const symbols = 8192
+	var content strings.Builder
+	content.WriteString("import 'package:foo/foo.dart' show Symbol0000,\n")
+	for index := 1; index < symbols; index++ {
+		suffix := ","
+		if index == symbols-1 {
+			suffix = ";"
+		}
+		fmt.Fprintf(&content, "    Symbol%04d%s\n", index, suffix)
+	}
+
+	imports := parseDartImports([]byte(content.String()), "lib/main.dart", map[string]dependencyInfo{"foo": {}}, map[string]int{})
+	if len(imports) != symbols {
+		t.Fatalf("expected %d imports, got %d", symbols, len(imports))
+	}
+	for _, index := range []int{0, symbols / 2, symbols - 1} {
+		binding := imports[index]
+		if want := fmt.Sprintf("Symbol%04d", index); binding.Local != want {
+			t.Fatalf("binding %d local = %q, want %q", index, binding.Local, want)
+		}
+		if want := index + 1; binding.Location.Line != want {
+			t.Fatalf("binding %d line = %d, want %d", index, binding.Location.Line, want)
+		}
+	}
+}
+
 func TestParseDartImportsIgnoresBlockCommentImports(t *testing.T) {
 	content := []byte(`/*
 import 'package:http/http.dart' as http;

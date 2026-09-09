@@ -238,43 +238,80 @@ func parseDartImportsWithOptions(content []byte, filePath string, depLookup map[
 }
 
 func locateDirectiveBindings(lines []string, bindings []importBinding) []importBinding {
+	locations := directiveDeclarationLocations(lines, bindings)
 	for i := range bindings {
 		if bindings[i].Wildcard {
 			continue
 		}
-		lineOffset, column := directiveDeclarationLocation(lines, bindings[i].Local)
-		if lineOffset > 0 && column > 0 {
-			bindings[i].Location.Line += lineOffset
-			bindings[i].Location.Column = column
+		location, ok := locations[bindings[i].Local]
+		if ok && location.lineOffset > 0 {
+			bindings[i].Location.Line += location.lineOffset
+			bindings[i].Location.Column = location.column
 		}
 	}
 	return bindings
 }
 
-func directiveDeclarationLocation(lines []string, identifier string) (int, int) {
+type directiveBindingLocation struct {
+	lineOffset int
+	column     int
+}
+
+func directiveDeclarationLocations(lines []string, bindings []importBinding) map[string]directiveBindingLocation {
+	wanted := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if !binding.Wildcard && binding.Local != "" {
+			wanted[binding.Local] = struct{}{}
+		}
+	}
+	locations := make(map[string]directiveBindingLocation, len(wanted))
 	showList := false
 	for lineOffset, line := range lines {
 		line = directiveCodeBeforeLineComment(line)
-		if match := aliasPattern.FindStringSubmatchIndex(line); len(match) == 4 && line[match[2]:match[3]] == identifier {
-			return lineOffset, match[2] + 1
+		if match := aliasPattern.FindStringSubmatchIndex(line); len(match) == 4 {
+			addDirectiveBindingLocation(locations, wanted, line[match[2]:match[3]], lineOffset, match[2]+1)
 		}
 		showIndex := directiveIdentifierColumn(line, "show")
 		if showIndex > 0 {
 			showList = true
 			afterShow := line[showIndex-1+len("show"):]
-			if column := directiveIdentifierColumn(afterShow, identifier); column > 0 {
-				return lineOffset, showIndex + len("show") + column - 1
-			}
+			collectShowBindingLocations(afterShow, lineOffset, showIndex+len("show")-1, locations, wanted)
 			continue
 		}
 		if !showList {
 			continue
 		}
-		if column := directiveIdentifierColumn(line, identifier); column > 0 {
-			return lineOffset, column
-		}
+		collectShowBindingLocations(line, lineOffset, 0, locations, wanted)
 	}
-	return 0, 0
+	return locations
+}
+
+func collectShowBindingLocations(line string, lineOffset, columnOffset int, locations map[string]directiveBindingLocation, wanted map[string]struct{}) {
+	for index := 0; index < len(line); {
+		if !isDartIdentifierByte(line[index]) {
+			index++
+			continue
+		}
+		end := index + 1
+		for end < len(line) && isDartIdentifierByte(line[end]) {
+			end++
+		}
+		identifier := line[index:end]
+		if identifier == "hide" {
+			return
+		}
+		addDirectiveBindingLocation(locations, wanted, identifier, lineOffset, columnOffset+index+1)
+		index = end
+	}
+}
+
+func addDirectiveBindingLocation(locations map[string]directiveBindingLocation, wanted map[string]struct{}, identifier string, lineOffset, column int) {
+	if _, ok := wanted[identifier]; !ok {
+		return
+	}
+	if _, ok := locations[identifier]; !ok {
+		locations[identifier] = directiveBindingLocation{lineOffset: lineOffset, column: column}
+	}
 }
 
 func directiveCodeBeforeLineComment(line string) string {
