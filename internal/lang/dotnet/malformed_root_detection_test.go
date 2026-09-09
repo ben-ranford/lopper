@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/lopper/internal/language"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -40,6 +41,41 @@ func TestDotNetDetectionSeparatesMalformedChildFromValidAncestor(t *testing.T) {
 	want := []string{repo, filepath.Join(repo, "apps")}
 	if !slices.Equal(detection.Roots, want) {
 		t.Fatalf("expected valid ancestor and malformed child fallback roots, got %#v", detection.Roots)
+	}
+}
+
+func TestDotNetRootSignalsRecordManifestStates(t *testing.T) {
+	for _, fixture := range []struct {
+		name      string
+		manifest  string
+		malformed func(*manifestRootDiscovery) map[string]struct{}
+	}{
+		{
+			name:     "project",
+			manifest: "zzzz.csproj",
+			malformed: func(manifests *manifestRootDiscovery) map[string]struct{} {
+				return manifests.malformedProjects
+			},
+		},
+		{
+			name:     "central",
+			manifest: centralPackagesFile,
+			malformed: func(manifests *manifestRootDiscovery) map[string]struct{} {
+				return manifests.malformedCentral
+			},
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			repo := t.TempDir()
+			testutil.MustWriteFile(t, filepath.Join(repo, fixture.manifest), `<Project><ItemGroup><PackageReference Include="broken"`)
+			manifests := newManifestRootDiscovery()
+			if err := applyRootSignals(repo, &language.Detection{}, make(map[string]struct{}), manifests); err != nil {
+				t.Fatalf("apply root signals: %v", err)
+			}
+			if _, ok := fixture.malformed(manifests)[repo]; !ok {
+				t.Fatalf("expected malformed root %s manifest to be recorded, got %#v", fixture.name, manifests)
+			}
+		})
 	}
 }
 

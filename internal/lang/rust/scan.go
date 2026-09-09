@@ -20,12 +20,14 @@ func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depL
 }
 
 type rustScanOptions struct {
-	manifestPaths       []string
-	sourceFallbackRoots []string
-	excludedSourceRoots []string
-	depLookup           map[string]dependencyInfo
-	renamedAliases      map[string][]string
-	useRootLookups      bool
+	manifestPaths               []string
+	workspaceManifestPaths      []string
+	sourceFallbackRoots         []string
+	excludedSourceRoots         []string
+	fallbackExcludedSourceRoots []string
+	depLookup                   map[string]dependencyInfo
+	renamedAliases              map[string][]string
+	useRootLookups              bool
 }
 
 func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScanOptions) (scanResult, error) {
@@ -40,7 +42,7 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 	if useRootLookups {
 		roots = scanRootsPreservingNested(options.manifestPaths, repoPath)
 		var err error
-		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, options.manifestPaths, options.excludedSourceRoots)
+		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, options.manifestPaths, options.workspaceManifestPaths, options.excludedSourceRoots)
 		if err != nil {
 			return scanResult{}, err
 		}
@@ -70,12 +72,13 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 	for _, sourceFallbackRoot := range options.sourceFallbackRoots {
 		result.RequireDeclaredDependency = true
 		err := scanRepoRootExcluding(ctx, rustScanRootOptions{
-			repoPath:     repoPath,
-			root:         sourceFallbackRoot,
-			depLookup:    map[string]dependencyInfo{},
-			scannedFiles: scannedFiles,
-			fileCount:    &fileCount,
-			result:       &result,
+			repoPath:            repoPath,
+			root:                sourceFallbackRoot,
+			depLookup:           map[string]dependencyInfo{},
+			excludedSourceRoots: options.fallbackExcludedSourceRoots,
+			scannedFiles:        scannedFiles,
+			fileCount:           &fileCount,
+			result:              &result,
 		})
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
@@ -84,6 +87,19 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
 	result.Warnings = dedupeWarnings(result.Warnings)
 	return result, nil
+}
+
+func fallbackExcludedRustSourceRoots(sourceFallbackRoots, isolatedRoots []string) []string {
+	excluded := make([]string, 0, len(isolatedRoots))
+	for _, isolatedRoot := range isolatedRoots {
+		for _, fallbackRoot := range sourceFallbackRoots {
+			if !samePath(isolatedRoot, fallbackRoot) && isSubPath(fallbackRoot, isolatedRoot) {
+				excluded = append(excluded, isolatedRoot)
+				break
+			}
+		}
+	}
+	return uniquePaths(excluded)
 }
 
 func exclusionsOutsideRustRoot(root string, excludedSourceRoots []string) []string {
@@ -96,10 +112,11 @@ func exclusionsOutsideRustRoot(root string, excludedSourceRoots []string) []stri
 	return filtered
 }
 
-func manifestDependencyLookupsByRoot(repoPath string, manifestPaths, malformedWorkspaceRoots []string) (map[string]map[string]dependencyInfo, error) {
+func manifestDependencyLookupsByRoot(repoPath string, manifestPaths, workspaceManifestPaths, malformedWorkspaceRoots []string) (map[string]map[string]dependencyInfo, error) {
 	lookups := make(map[string]map[string]dependencyInfo, len(manifestPaths))
 	workspaceDependenciesByRoot := make(map[string]map[string]dependencyInfo)
-	for _, manifestPath := range manifestPaths {
+	lookupPaths := append(append([]string(nil), manifestPaths...), workspaceManifestPaths...)
+	for _, manifestPath := range uniquePaths(lookupPaths) {
 		dependencies, workspaceDependencies, err := manifestDependencies(manifestPath, repoPath)
 		if err != nil {
 			if isCargoManifestParseError(err) {

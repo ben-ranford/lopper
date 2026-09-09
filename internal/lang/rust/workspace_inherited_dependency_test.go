@@ -124,7 +124,7 @@ version = "0.1.0"
 `)
 	writeFile(t, malformedManifest, "[package\n")
 
-	lookups, err := manifestDependencyLookupsByRoot(repo, []string{validManifest, malformedManifest}, nil)
+	lookups, err := manifestDependencyLookupsByRoot(repo, []string{validManifest, malformedManifest}, nil, nil)
 	if err != nil {
 		t.Fatalf("build lookups with malformed manifest: %v", err)
 	}
@@ -132,7 +132,7 @@ version = "0.1.0"
 		t.Fatalf("expected only valid manifest lookup, got %#v", lookups)
 	}
 
-	_, err = manifestDependencyLookupsByRoot(repo, []string{filepath.Join(repo, "missing", cargoTomlName)}, nil)
+	_, err = manifestDependencyLookupsByRoot(repo, []string{filepath.Join(repo, "missing", cargoTomlName)}, nil, nil)
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected missing manifest read error, got %v", err)
 	}

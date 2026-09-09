@@ -22,30 +22,31 @@ const (
 )
 
 type manifestDiscoveryResult struct {
-	ManifestPaths       []string
-	ExcludedSourceRoots []string
-	SourceFallbackRoots []string
-	Warnings            []string
-	CoverageGaps        []report.CoverageGap
-	ParsedDependencies  map[string]map[string]dependencyInfo
+	ManifestPaths          []string
+	WorkspaceManifestPaths []string
+	ExcludedSourceRoots    []string
+	SourceFallbackRoots    []string
+	Warnings               []string
+	CoverageGaps           []report.CoverageGap
+	ParsedDependencies     map[string]map[string]dependencyInfo
 }
 
 func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, map[string][]string, []string, error) {
-	manifestPaths, _, _, lookup, renamed, warnings, _, err := collectManifestDataWithCoverage(repoPath, "")
+	manifestPaths, _, _, _, lookup, renamed, warnings, _, err := collectManifestDataWithCoverage(repoPath, "")
 	return manifestPaths, lookup, renamed, warnings, err
 }
 
-func collectManifestDataWithCoverage(repoPath, scopeMode string) ([]string, []string, []string, map[string]dependencyInfo, map[string][]string, []string, []report.CoverageGap, error) {
-	discovery, err := discoverManifestDataForScope(repoPath, scopeMode)
+func collectManifestDataWithCoverage(repoPath, scopeMode string, isolatedRoots ...[]string) ([]string, []string, []string, []string, map[string]dependencyInfo, map[string][]string, []string, []report.CoverageGap, error) {
+	discovery, err := discoverManifestDataForScope(repoPath, scopeMode, isolatedRoots...)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	lookup, renamedByDep, warnings, coverageGaps, err := extractManifestDependenciesWithCoverage(repoPath, discovery)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
-	return discovery.ManifestPaths, discovery.SourceFallbackRoots, discovery.ExcludedSourceRoots, lookup, renamedByDep, warnings, coverageGaps, nil
+	return discovery.ManifestPaths, discovery.WorkspaceManifestPaths, discovery.SourceFallbackRoots, discovery.ExcludedSourceRoots, lookup, renamedByDep, warnings, coverageGaps, nil
 }
 
 func extractManifestDependencies(repoPath string, discovery manifestDiscoveryResult) (map[string]dependencyInfo, map[string][]string, []string, error) {
@@ -127,10 +128,10 @@ func discoverManifestData(repoPath string) (manifestDiscoveryResult, error) {
 	return discoverManifestDataForScope(repoPath, "")
 }
 
-func discoverManifestDataForScope(repoPath, scopeMode string) (manifestDiscoveryResult, error) {
+func discoverManifestDataForScope(repoPath, scopeMode string, isolatedRoots ...[]string) (manifestDiscoveryResult, error) {
 	rootManifest := filepath.Join(repoPath, cargoTomlName)
 	if _, err := os.Stat(rootManifest); err == nil {
-		return discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode)
+		return discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode, isolatedRoots...)
 	} else if !os.IsNotExist(err) {
 		return manifestDiscoveryResult{}, err
 	}
@@ -146,7 +147,7 @@ func discoverManifestDataForScope(repoPath, scopeMode string) (manifestDiscovery
 	}, nil
 }
 
-func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode string) (manifestDiscoveryResult, error) {
+func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode string, isolatedRoots ...[]string) (manifestDiscoveryResult, error) {
 	meta, deps, parseErr := parseCargoManifest(rootManifest, repoPath)
 	if parseErr != nil {
 		if isCargoManifestParseError(parseErr) {
@@ -173,9 +174,12 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 		return discoverRepositoryManifestData(repoPath, rootManifest, deps)
 	}
 	paths := make([]string, 0, 1+len(meta.WorkspaceMembers))
+	workspaceManifestPaths := make([]string, 0, 1)
 	warnings := make([]string, 0)
 	if meta.HasPackage || len(meta.WorkspaceMembers) == 0 {
 		paths = append(paths, rootManifest)
+	} else {
+		workspaceManifestPaths = append(workspaceManifestPaths, rootManifest)
 	}
 	for _, member := range meta.WorkspaceMembers {
 		memberManifests, warning := resolveWorkspaceMemberManifestPaths(repoPath, member)
@@ -185,17 +189,20 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 		paths = append(paths, memberManifests...)
 	}
 
-	excludedSourceRoots, malformedWarnings, malformedCoverageGaps, err := discoverMalformedNestedCargoRoots(repoPath, rootManifest)
+	excludedSourceRoots, sourceFallbackRoots, nestedManifestPaths, malformedWarnings, malformedCoverageGaps, err := discoverMalformedNestedCargoRoots(repoPath, rootManifest, isolatedRoots...)
 	if err != nil {
 		return manifestDiscoveryResult{}, err
 	}
 	warnings = append(warnings, malformedWarnings...)
+	paths = excludeSelectedFallbackManifestPaths(paths, sourceFallbackRoots, isolatedRoots...)
 	discovery := manifestDiscoveryResult{
-		ManifestPaths:       uniquePaths(paths),
-		ExcludedSourceRoots: excludedSourceRoots,
-		Warnings:            dedupeWarnings(warnings),
-		CoverageGaps:        malformedCoverageGaps,
-		ParsedDependencies:  make(map[string]map[string]dependencyInfo),
+		ManifestPaths:          uniquePaths(append(paths, nestedManifestPaths...)),
+		WorkspaceManifestPaths: uniquePaths(workspaceManifestPaths),
+		ExcludedSourceRoots:    excludedSourceRoots,
+		SourceFallbackRoots:    sourceFallbackRoots,
+		Warnings:               dedupeWarnings(warnings),
+		CoverageGaps:           malformedCoverageGaps,
+		ParsedDependencies:     make(map[string]map[string]dependencyInfo),
 	}
 	for _, manifestPath := range discovery.ManifestPaths {
 		if manifestPath == rootManifest {
@@ -204,6 +211,18 @@ func discoverFromRootManifestDataForScope(repoPath, rootManifest, scopeMode stri
 		}
 	}
 	return discovery, nil
+}
+
+func excludeSelectedFallbackManifestPaths(paths, fallbackRoots []string, isolatedRoots ...[]string) []string {
+	selectedRoots := firstIsolatedRustRoots(isolatedRoots...)
+	filtered := paths[:0]
+	for _, manifestPath := range paths {
+		if isolatedRustManifestPath(manifestPath, fallbackRoots, selectedRoots) {
+			continue
+		}
+		filtered = append(filtered, manifestPath)
+	}
+	return filtered
 }
 
 func discoverRepositoryManifestData(repoPath, rootManifest string, rootDependencies map[string]dependencyInfo) (manifestDiscoveryResult, error) {
@@ -245,12 +264,13 @@ func discoverRepositoryManifestData(repoPath, rootManifest string, rootDependenc
 	}, nil
 }
 
-func discoverMalformedNestedCargoRoots(repoPath, rootManifest string) ([]string, []string, []report.CoverageGap, error) {
+func discoverMalformedNestedCargoRoots(repoPath, rootManifest string, isolatedRoots ...[]string) ([]string, []string, []string, []string, []report.CoverageGap, error) {
 	paths, _, err := discoverManifestsByWalk(repoPath)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	roots := make([]string, 0)
+	validPaths := make([]string, 0)
 	warnings := make([]string, 0)
 	coverageGaps := make([]report.CoverageGap, 0)
 	for _, manifestPath := range paths {
@@ -264,10 +284,69 @@ func discoverMalformedNestedCargoRoots(repoPath, rootManifest string) ([]string,
 				coverageGaps = append(coverageGaps, malformedCargoManifestCoverageGap(repoPath, manifestPath, err))
 				continue
 			}
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
+		}
+		validPaths = append(validPaths, manifestPath)
+	}
+	roots = uniquePaths(roots)
+	fallbackRoots := unselectedMalformedRustRoots(roots, isolatedRoots...)
+	nestedPaths := validNestedManifestPaths(validPaths, fallbackRoots, isolatedRoots...)
+	return roots, fallbackRoots, nestedPaths, dedupeWarnings(warnings), report.StableCoverageGaps(coverageGaps), nil
+}
+
+func unselectedMalformedRustRoots(roots []string, isolatedRoots ...[]string) []string {
+	selected := firstIsolatedRustRoots(isolatedRoots...)
+	fallbackRoots := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if _, ok := selected[filepath.Clean(root)]; !ok {
+			fallbackRoots = append(fallbackRoots, root)
 		}
 	}
-	return uniquePaths(roots), dedupeWarnings(warnings), report.StableCoverageGaps(coverageGaps), nil
+	return uniquePaths(fallbackRoots)
+}
+
+func validNestedManifestPaths(paths, fallbackRoots []string, isolatedRoots ...[]string) []string {
+	nested := make([]string, 0)
+	selectedRoots := firstIsolatedRustRoots(isolatedRoots...)
+	for _, manifestPath := range paths {
+		if isolatedRustManifestPath(manifestPath, fallbackRoots, selectedRoots) {
+			continue
+		}
+		for _, fallbackRoot := range fallbackRoots {
+			if isSubPath(fallbackRoot, filepath.Dir(manifestPath)) {
+				nested = append(nested, manifestPath)
+				break
+			}
+		}
+	}
+	return uniquePaths(nested)
+}
+
+func isolatedRustManifestPath(manifestPath string, fallbackRoots []string, selectedRoots map[string]struct{}) bool {
+	for _, fallbackRoot := range fallbackRoots {
+		if !isSubPath(fallbackRoot, filepath.Dir(manifestPath)) {
+			continue
+		}
+		for isolatedRoot := range selectedRoots {
+			if !samePath(isolatedRoot, fallbackRoot) && isSubPath(fallbackRoot, isolatedRoot) && isSubPath(isolatedRoot, filepath.Dir(manifestPath)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func firstIsolatedRustRoots(isolatedRoots ...[]string) map[string]struct{} {
+	selected := make(map[string]struct{})
+	if len(isolatedRoots) == 0 {
+		return selected
+	}
+	for _, root := range isolatedRoots[0] {
+		if root != "" {
+			selected[filepath.Clean(root)] = struct{}{}
+		}
+	}
+	return selected
 }
 
 func removeManifestPath(paths []string, target string) []string {

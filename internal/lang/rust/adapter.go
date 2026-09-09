@@ -24,19 +24,21 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	manifestPaths, sourceFallbackRoots, excludedSourceRoots, depLookup, renamedAliases, warnings, coverageGaps, err := collectManifestDataWithCoverage(repoPath, req.ScopeMode)
+	manifestPaths, workspaceManifestPaths, sourceFallbackRoots, excludedSourceRoots, depLookup, renamedAliases, warnings, coverageGaps, err := collectManifestDataWithCoverage(repoPath, req.ScopeMode, req.IsolatedProjectRoots)
 	if err != nil {
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, warnings...)
 
 	scan, err := scanRepoWithFallback(ctx, repoPath, rustScanOptions{
-		manifestPaths:       manifestPaths,
-		sourceFallbackRoots: sourceFallbackRoots,
-		excludedSourceRoots: excludedSourceRoots,
-		depLookup:           depLookup,
-		renamedAliases:      renamedAliases,
-		useRootLookups:      req.ScopeMode == "repo",
+		manifestPaths:               manifestPaths,
+		workspaceManifestPaths:      workspaceManifestPaths,
+		sourceFallbackRoots:         sourceFallbackRoots,
+		excludedSourceRoots:         excludedSourceRoots,
+		fallbackExcludedSourceRoots: fallbackExcludedRustSourceRoots(sourceFallbackRoots, req.IsolatedProjectRoots),
+		depLookup:                   depLookup,
+		renamedAliases:              renamedAliases,
+		useRootLookups:              req.ScopeMode == "repo",
 	})
 	if err != nil {
 		return report.Report{}, err

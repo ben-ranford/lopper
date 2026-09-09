@@ -39,10 +39,10 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 
 	detection := language.Detection{}
 	roots := make(map[string]struct{})
-	if err := applyRootSignals(repoPath, &detection, roots); err != nil {
+	manifests := newManifestRootDiscovery()
+	if err := applyRootSignals(repoPath, &detection, roots, manifests); err != nil {
 		return language.Detection{}, err
 	}
-	manifests := newManifestRootDiscovery()
 
 	visited := 0
 	err := filepath.WalkDir(repoPath, func(path string, entry fs.DirEntry, err error) error {
@@ -72,7 +72,7 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	return shared.FinalizeDetection(repoPath, detection, roots), nil
 }
 
-func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}) error {
+func applyRootSignals(repoPath string, detection *language.Detection, roots map[string]struct{}, manifestStates ...*manifestRootDiscovery) error {
 	// .NET root detection is extension/pattern based and solution files can add
 	// extra roots, so it cannot be represented as exact shared.RootSignal names.
 	entries, err := os.ReadDir(repoPath)
@@ -85,6 +85,9 @@ func applyRootSignals(repoPath string, detection *language.Detection, roots map[
 		}
 		name := entry.Name()
 		path := filepath.Join(repoPath, name)
+		if err := recordManifestState(repoPath, path, name, manifestStates...); err != nil {
+			return err
+		}
 		if err := applyDetectionSignal(repoPath, path, name, repoPath, detection, roots, rootDetectionWeights); err != nil {
 			return err
 		}
@@ -109,6 +112,13 @@ func newManifestRootDiscovery() *manifestRootDiscovery {
 }
 
 func updateDetection(repoPath, path, name string, detection *language.Detection, roots map[string]struct{}, manifestStates ...*manifestRootDiscovery) error {
+	if err := recordManifestState(repoPath, path, name, manifestStates...); err != nil {
+		return err
+	}
+	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
+}
+
+func recordManifestState(repoPath, path, name string, manifestStates ...*manifestRootDiscovery) error {
 	var manifests *manifestRootDiscovery
 	if len(manifestStates) > 0 {
 		manifests = manifestStates[0]
@@ -123,7 +133,7 @@ func updateDetection(repoPath, path, name string, detection *language.Detection,
 			manifests.record(filepath.Dir(path), signal, err != nil)
 		}
 	}
-	return applyDetectionSignal(repoPath, path, name, filepath.Dir(path), detection, roots, walkDetectionWeights)
+	return nil
 }
 
 func (m *manifestRootDiscovery) record(root string, signal fileSignal, malformed bool) {
