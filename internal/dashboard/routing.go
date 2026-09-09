@@ -92,7 +92,7 @@ func routingRuleMatches(rule RoutingRule, item RemediationItem) bool {
 }
 
 func codeownerRuleMatches(rule CodeownerRule, item RemediationItem) bool {
-	pattern := strings.TrimSpace(rule.Pattern)
+	pattern := rule.Pattern
 	if pattern == "" {
 		return false
 	}
@@ -114,7 +114,7 @@ func codeownerPathMatch(pattern, target string) (bool, error) {
 }
 
 func codeownerGlobRegexp(pattern string) (*regexp.Regexp, error) {
-	pattern = strings.TrimSpace(filepath.ToSlash(pattern))
+	pattern = filepath.ToSlash(pattern)
 	if pattern == "" || isUnsupportedCodeownerPattern(pattern) {
 		return nil, errInvalidCodeownerPattern
 	}
@@ -206,12 +206,15 @@ func codeownerEvidenceTarget(value string) string {
 	}
 	staticLocation := strings.HasPrefix(target, "static_location:")
 	if staticLocation {
-		target = strings.TrimSpace(strings.TrimPrefix(target, "static_location:"))
+		target = strings.TrimPrefix(target, "static_location:")
+		if strings.HasPrefix(target, " ") {
+			target = strings.TrimPrefix(target, " ")
+		}
 		if index := strings.LastIndex(target, ":"); index > strings.LastIndex(target, "/") && allDigits(target[index+1:]) {
 			target = target[:index]
 		}
 	}
-	target = strings.TrimSpace(strings.ReplaceAll(target, "\\", "/"))
+	target = strings.ReplaceAll(target, "\\", "/")
 	for strings.HasPrefix(target, "./") {
 		target = strings.TrimPrefix(target, "./")
 	}
@@ -223,7 +226,7 @@ func codeownerEvidenceTarget(value string) string {
 			return ""
 		}
 	}
-	if strings.ContainsAny(target, "\t\r\n") || !staticLocation && !strings.Contains(target, "/") {
+	if strings.ContainsAny(target, "\t\r\n") || !staticLocation && (strings.Contains(target, " ") || !strings.Contains(target, "/")) {
 		return ""
 	}
 	return target
@@ -395,7 +398,6 @@ func stripCodeownersComment(line string) string {
 }
 
 func isUnsupportedCodeownerPattern(pattern string) bool {
-	pattern = strings.TrimSpace(pattern)
 	return pattern == "" ||
 		strings.HasPrefix(pattern, "!") ||
 		strings.HasPrefix(pattern, `\#`) ||

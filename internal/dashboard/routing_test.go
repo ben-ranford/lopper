@@ -155,6 +155,32 @@ func TestApplyRoutingDropsCodeownerEvidencePathsWithSpaces(t *testing.T) {
 	assertRoutingAssignment(t, routed[0], "@team/docs", "", "", "open", ".github/CODEOWNERS")
 }
 
+func TestApplyRoutingDistinguishesCodeownerEscapedEdgeSpaces(t *testing.T) {
+	rules := parseCodeowners("/docs/readme\\  @spaced\n/docs/readme @plain", ".github/CODEOWNERS")
+	items := []RemediationItem{
+		{Evidence: []string{"static_location: docs/readme :12"}},
+		{Evidence: []string{"static_location: docs/readme:12"}},
+	}
+
+	routed := ApplyRouting(items, RoutingOptions{Codeowners: rules})
+	assertRoutingAssignment(t, routed[0], "@spaced", "", "", "open", ".github/CODEOWNERS")
+	assertRoutingAssignment(t, routed[1], "@plain", "", "", "open", ".github/CODEOWNERS")
+}
+
+func TestApplyRoutingFallsBackWhenEvidenceIsFreeFormMessage(t *testing.T) {
+	item := RemediationItem{
+		RepoPath: "docs/config.json",
+		Evidence: []string{"unable to read docs/config.json: permission denied"},
+	}
+	routed := ApplyRouting([]RemediationItem{item}, RoutingOptions{Codeowners: []CodeownerRule{{
+		Pattern: "/docs/",
+		Owners:  []string{"@docs"},
+		Source:  ".github/CODEOWNERS",
+	}}})
+
+	assertRoutingAssignment(t, routed[0], "@docs", "", "", "open", ".github/CODEOWNERS")
+}
+
 func TestCodeownerEvidenceTargetsNormalizesFiltersAndDeduplicates(t *testing.T) {
 	got := codeownerEvidenceTargets([]string{
 		"",
@@ -173,9 +199,8 @@ func TestCodeownerEvidenceTargetsNormalizesFiltersAndDeduplicates(t *testing.T) 
 		"../outside/file.go",
 		"/absolute/file.go",
 		"README.md",
-		"docs/read me.md",
 	})
-	want := []string{"services/api/go.mod", "services/web/main.go:not-a-line", "services/empty.go:", "main.go", "src/pkg/main.go", "docs/read me.md"}
+	want := []string{"services/api/go.mod", "services/web/main.go:not-a-line", "services/empty.go:", "main.go", "src/pkg/main.go"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("unexpected CODEOWNERS evidence targets: got %q, want %q", got, want)
 	}
