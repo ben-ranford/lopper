@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !regressionproof
 
 package app
 
