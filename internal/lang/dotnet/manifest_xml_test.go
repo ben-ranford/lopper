@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
+	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -55,15 +56,30 @@ func TestDotNetAnalysisSkipsMalformedProjectManifests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyse malformed project manifests: %v", err)
 	}
+	assertMalformedManifestDependency(t, reportData)
+	assertMalformedManifestWarnings(t, reportData)
+	assertMalformedManifestCoverageGaps(t, reportData)
+}
+
+func assertMalformedManifestDependency(t *testing.T, reportData report.Report) {
+	t.Helper()
 	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].Name != "newtonsoft.json" {
 		t.Fatalf("expected dependency from valid project manifest, got %#v", reportData.Dependencies)
 	}
+}
+
+func assertMalformedManifestWarnings(t *testing.T, reportData report.Report) {
+	t.Helper()
 	joinedWarnings := strings.Join(reportData.Warnings, "\n")
 	for _, manifest := range []string{"Broken.csproj", centralPackagesFile} {
 		if !strings.Contains(joinedWarnings, manifest) || !strings.Contains(joinedWarnings, "skipped malformed .NET manifest") {
 			t.Fatalf("expected malformed-manifest warning for %s, got %#v", manifest, reportData.Warnings)
 		}
 	}
+}
+
+func assertMalformedManifestCoverageGaps(t *testing.T, reportData report.Report) {
+	t.Helper()
 	if len(reportData.CoverageGaps) != 2 {
 		t.Fatalf("expected one coverage gap per malformed manifest, got %#v", reportData.CoverageGaps)
 	}

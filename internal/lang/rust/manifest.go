@@ -23,27 +23,28 @@ const (
 
 type manifestDiscoveryResult struct {
 	ManifestPaths      []string
+	SourceFallbackRoot string
 	Warnings           []string
 	CoverageGaps       []report.CoverageGap
 	ParsedDependencies map[string]map[string]dependencyInfo
 }
 
 func collectManifestData(repoPath string) ([]string, map[string]dependencyInfo, map[string][]string, []string, error) {
-	manifestPaths, lookup, renamed, warnings, _, err := collectManifestDataWithCoverage(repoPath)
+	manifestPaths, _, lookup, renamed, warnings, _, err := collectManifestDataWithCoverage(repoPath)
 	return manifestPaths, lookup, renamed, warnings, err
 }
 
-func collectManifestDataWithCoverage(repoPath string) ([]string, map[string]dependencyInfo, map[string][]string, []string, []report.CoverageGap, error) {
+func collectManifestDataWithCoverage(repoPath string) ([]string, string, map[string]dependencyInfo, map[string][]string, []string, []report.CoverageGap, error) {
 	discovery, err := discoverManifestData(repoPath)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, "", nil, nil, nil, nil, err
 	}
 
 	lookup, renamedByDep, warnings, coverageGaps, err := extractManifestDependenciesWithCoverage(repoPath, discovery)
 	if err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, "", nil, nil, nil, nil, err
 	}
-	return discovery.ManifestPaths, lookup, renamedByDep, warnings, coverageGaps, nil
+	return discovery.ManifestPaths, discovery.SourceFallbackRoot, lookup, renamedByDep, warnings, coverageGaps, nil
 }
 
 func extractManifestDependencies(repoPath string, discovery manifestDiscoveryResult) (map[string]dependencyInfo, map[string][]string, []string, error) {
@@ -150,13 +151,15 @@ func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscov
 			}
 			warning := malformedCargoManifestWarning(repoPath, rootManifest, parseErr)
 			warnings = append(warnings, warning)
-			// Keep the root for source discovery, but cache an empty dependency
-			// result so extraction does not parse its malformed manifest again.
+			paths = removeManifestPath(paths, rootManifest)
+			// Keep a source fallback for root files, while valid child manifests
+			// retain their own crate roots during scanning.
 			return manifestDiscoveryResult{
 				ManifestPaths:      paths,
+				SourceFallbackRoot: repoPath,
 				Warnings:           dedupeWarnings(warnings),
 				CoverageGaps:       []report.CoverageGap{malformedCargoManifestCoverageGap(repoPath, rootManifest, parseErr)},
-				ParsedDependencies: map[string]map[string]dependencyInfo{rootManifest: nil},
+				ParsedDependencies: make(map[string]map[string]dependencyInfo),
 			}, nil
 		}
 		return manifestDiscoveryResult{}, parseErr
@@ -186,6 +189,17 @@ func discoverFromRootManifestData(repoPath, rootManifest string) (manifestDiscov
 		}
 	}
 	return discovery, nil
+}
+
+func removeManifestPath(paths []string, target string) []string {
+	filtered := paths[:0]
+	for _, path := range paths {
+		if samePath(path, target) {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	return filtered
 }
 
 func resolveWorkspaceMemberManifestPaths(repoPath, member string) ([]string, string) {

@@ -12,6 +12,10 @@ import (
 )
 
 func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depLookup map[string]dependencyInfo, renamedAliases map[string][]string) (scanResult, error) {
+	return scanRepoWithFallback(ctx, repoPath, manifestPaths, "", depLookup, renamedAliases)
+}
+
+func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []string, sourceFallbackRoot string, depLookup map[string]dependencyInfo, renamedAliases map[string][]string) (scanResult, error) {
 	result := scanResult{
 		UnresolvedImports:   make(map[string]int),
 		RenamedAliasesByDep: renamedAliases,
@@ -22,6 +26,12 @@ func scanRepo(ctx context.Context, repoPath string, manifestPaths []string, depL
 	fileCount := 0
 	for _, root := range roots {
 		err := scanRepoRoot(ctx, repoPath, root, depLookup, scannedFiles, &fileCount, &result)
+		if err != nil && !errors.Is(err, fs.SkipAll) {
+			return scanResult{}, err
+		}
+	}
+	if sourceFallbackRoot != "" {
+		err := scanRepoRoot(ctx, repoPath, sourceFallbackRoot, depLookup, scannedFiles, &fileCount, &result)
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}

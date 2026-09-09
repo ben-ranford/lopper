@@ -24,13 +24,13 @@ func (a *Adapter) Analyse(ctx context.Context, req language.Request) (report.Res
 		return report.Report{}, err
 	}
 
-	manifestPaths, depLookup, renamedAliases, warnings, coverageGaps, err := collectManifestDataWithCoverage(repoPath)
+	manifestPaths, sourceFallbackRoot, depLookup, renamedAliases, warnings, coverageGaps, err := collectManifestDataWithCoverage(repoPath)
 	if err != nil {
 		return report.Report{}, err
 	}
 	result.Warnings = append(result.Warnings, warnings...)
 
-	scan, err := scanRepo(ctx, repoPath, manifestPaths, depLookup, renamedAliases)
+	scan, err := scanRepoWithFallback(ctx, repoPath, manifestPaths, sourceFallbackRoot, depLookup, renamedAliases)
 	if err != nil {
 		return report.Report{}, err
 	}
