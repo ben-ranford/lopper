@@ -6,7 +6,6 @@ import (
 	"context"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
@@ -157,22 +156,23 @@ func TestDotNetMalformedRootFallbackIncludesOnlyUnownedCentralManifest(t *testin
 func TestDotNetSourceFilesKeepMapperOwnershipPolicy(t *testing.T) {
 	repo := t.TempDir()
 	nested := filepath.Join(repo, "nested")
-	scanner := newScanInputDiscoverer(repo, &sourceDiscovery{Files: []sourceDocument{
-		{RelativePath: filepath.Join("nested", programSourceFileName)},
-		{RelativePath: filepath.Join("broken", programSourceFileName)},
-	}})
+	scanner := newScanInputDiscoverer(repo, &sourceDiscovery{})
 	scanner.projectDependencies[nested] = []string{"nested.package"}
 	scanner.malformedManifestRoots[filepath.Join(repo, "broken")] = struct{}{}
 
-	files := scanner.sourceFiles("package")
-	if len(files) != 2 {
-		t.Fatalf("expected valid and malformed-boundary sources to remain without selected roots, got %#v", files)
+	assertDotNetSourceMapperPolicy(t, scanner, filepath.Join("nested", programSourceFileName), nested, "fallback-enabled")
+	assertDotNetSourceMapperPolicy(t, scanner, filepath.Join("broken", programSourceFileName), "", "fallback-disabled")
+}
+
+func assertDotNetSourceMapperPolicy(t *testing.T, scanner scanInputDiscoverer, relativePath, wantProjectRoot, wantFallbackMode string) {
+	t.Helper()
+	dependencies, hasProject, projectRoot := scanner.sourceDependencies(relativePath)
+	fallbackMode := "fallback-disabled"
+	if projectRoot != "" {
+		fallbackMode = "fallback-enabled"
 	}
-	if files[0].ProjectRoot != nested || !strings.HasPrefix(files[0].MapperKey, "fallback-enabled\x00") {
-		t.Fatalf("expected valid project source to keep undeclared-import fallback, got %#v", files[0])
-	}
-	if files[1].ProjectRoot != "" || !strings.HasPrefix(files[1].MapperKey, "fallback-disabled\x00") {
-		t.Fatalf("expected malformed-boundary source to keep restrictive fallback policy, got %#v", files[1])
+	if projectRoot != wantProjectRoot || fallbackMode != wantFallbackMode || !hasProject {
+		t.Fatalf("source %q mapper policy = dependencies=%#v hasProject=%t projectRoot=%q fallback=%q", relativePath, dependencies, hasProject, projectRoot, fallbackMode)
 	}
 }
 
@@ -189,12 +189,8 @@ func TestDotNetSelectedProjectIsolationStaysWithinAnalysisRoot(t *testing.T) {
 	if scanner.isolatedProjectRoot(filepath.Dir(repo)) {
 		t.Fatal("paths outside the analysis root must not be isolated")
 	}
-	files := scanner.excludeIsolatedProjectSources([]sourceDocument{
-		{RelativePath: programSourceFileName},
-		{RelativePath: filepath.Join("selected", programSourceFileName)},
-	})
-	if len(files) != 1 || files[0].RelativePath != programSourceFileName {
-		t.Fatalf("expected selected subtree sources to be removed, got %#v", files)
+	if !scanner.shouldProcessSource("package", programSourceFileName) || scanner.shouldProcessSource("package", filepath.Join("selected", programSourceFileName)) {
+		t.Fatal("expected selected subtree sources to be deferred from the parent package scan")
 	}
 }
 
