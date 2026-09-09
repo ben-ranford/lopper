@@ -1,9 +1,57 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/ben-ranford/lopper/internal/report"
 )
+
+func TestPortfolioCycloneDXPreservesConfiguredPathLikeLabels(t *testing.T) {
+	for _, repoPath := range []string{"/workspace/api", `C:\workspace\api`, "services/api", `services\api`} {
+		for _, name := range []string{repoPath, "api (" + repoPath + ")"} {
+			t.Run(name, func(t *testing.T) {
+				data := Report{
+					Repos:               []RepoResult{{Name: name, Path: repoPath}},
+					PortfolioComponents: []PortfolioComponent{portfolioLabelComponent(name, repoPath, 1)},
+				}
+				output, bom := formatPortfolioCycloneDXForTest(t, data)
+				assertCycloneDXProperty(t, bom.Components[1].Properties, "lopper:repo", name)
+				if bom.Components[0].Name != name {
+					t.Fatalf("configured application name changed: %#v", bom.Components[0])
+				}
+				assertPortfolioLabelsSurviveJSON(t, data, output)
+			})
+		}
+	}
+}
+
+func portfolioLabelComponent(name, repoPath string, nameCount int) PortfolioComponent {
+	analysis := RepoAnalysis{
+		Input: RepoInput{Name: name, Path: repoPath},
+		Report: report.Report{Dependencies: []report.DependencyReport{{
+			Name: "example.com/lib", Language: "go", Identity: &report.DependencyIdentity{Version: "v1"},
+		}}},
+	}
+	return repoPortfolioComponents(analysis, map[string]int{name: nameCount})[0]
+}
+
+func assertPortfolioLabelsSurviveJSON(t *testing.T, data Report, expected string) {
+	t.Helper()
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Report
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	output, _ := formatPortfolioCycloneDXForTest(t, decoded)
+	if output != expected {
+		t.Fatal("repository label identities changed after a JSON round trip")
+	}
+}
 
 func TestPortfolioRefsExcludeForeignAbsolutePaths(t *testing.T) {
 	for _, value := range []string{"/home/user/repo", `C:\repo\services\api`, "d:/repo/services/api", `\\server\share\api`, "//server/share/api", `\\?\C:\repo\api`, " /home/user/repo "} {
@@ -60,21 +108,21 @@ func TestPortfolioCycloneDXNormalizesRelativeRepositoryLabels(t *testing.T) {
 func relativeRepositoryLabelsReport(name string, paths []string) Report {
 	data := Report{}
 	for _, repoPath := range paths {
-		label := crossRepoRepositoryLabel(RepoInput{Name: name, Path: repoPath}, map[string]int{name: 2})
-		data.PortfolioComponents = append(data.PortfolioComponents, PortfolioComponent{
-			Repo: label, RepoPath: repoPath, Language: "go", Name: "example.com/lib", Version: "v1",
-		})
+		data.PortfolioComponents = append(data.PortfolioComponents, portfolioLabelComponent(name, repoPath, 2))
 	}
 	return data
 }
 
 func TestPortfolioCycloneDXSanitizesAbsoluteDuplicateRepositoryLabels(t *testing.T) {
 	reportData := Report{PortfolioComponents: []PortfolioComponent{
-		{Repo: "api (/home/alice/platform/api)", RepoPath: "/home/alice/platform/api", Language: "go", Name: "example.com/lib", Version: "v1", PURL: "pkg:golang/example.com/lib@v1?variant=a"},
-		{Repo: `api (C:\Users\alice\services\api)`, RepoPath: `C:\Users\alice\services\api`, Language: "go", Name: "example.com/lib", Version: "v1", PURL: "pkg:golang/example.com/lib@v1?variant=b"},
+		portfolioLabelComponent("api", "/home/alice/platform/api", 2),
+		portfolioLabelComponent("api", `C:\Users\alice\services\api`, 2),
 	}}
+	reportData.PortfolioComponents[0].PURL = "pkg:golang/example.com/lib@v1?variant=a"
+	reportData.PortfolioComponents[1].PURL = "pkg:golang/example.com/lib@v1?variant=b"
 
 	output, bom := formatPortfolioCycloneDXForTest(t, reportData)
+	assertPortfolioLabelsSurviveJSON(t, reportData, output)
 	for _, path := range []string{"/home/alice/platform/api", `C:\Users\alice\services\api`} {
 		if strings.Contains(output, path) {
 			t.Fatalf("absolute path leaked into CycloneDX output: %q", output)
@@ -113,12 +161,12 @@ func TestPortfolioCycloneDXKeepsRelativeDuplicateRepositoryLabels(t *testing.T) 
 	}{
 		{
 			name: "named",
-			dep:  PortfolioComponent{Repo: "api (services/api)", RepoPath: path, Language: "go", Name: "example.com/lib"},
+			dep:  portfolioLabelComponent("api", path, 2),
 			want: "api%20%28services%2Fapi%29",
 		},
 		{
 			name: "nameless",
-			dep:  PortfolioComponent{Repo: crossRepoRepositoryLabel(RepoInput{Path: path}, map[string]int{path: 1}), RepoPath: path, Language: "go", Name: "example.com/lib"},
+			dep:  portfolioLabelComponent("", path, 1),
 			want: "services%2Fapi:services%2Fapi",
 		},
 	} {
@@ -135,10 +183,9 @@ func TestPortfolioCycloneDXSanitizesNamelessAbsoluteRepositoryLabels(t *testing.
 	reportData := Report{PortfolioComponents: make([]PortfolioComponent, 0, len(paths))}
 	variants := []string{"a", "b"}
 	for index, path := range paths {
-		label := crossRepoRepositoryLabel(RepoInput{Path: path}, map[string]int{path: 1})
-		reportData.PortfolioComponents = append(reportData.PortfolioComponents, PortfolioComponent{
-			Repo: label, RepoPath: path, Language: "go", Name: "example.com/lib", Version: "v1", PURL: "pkg:golang/example.com/lib@v1?variant=" + variants[index],
-		})
+		component := portfolioLabelComponent("", path, 1)
+		component.PURL = "pkg:golang/example.com/lib@v1?variant=" + variants[index]
+		reportData.PortfolioComponents = append(reportData.PortfolioComponents, component)
 	}
 
 	output, bom := formatPortfolioCycloneDXForTest(t, reportData)

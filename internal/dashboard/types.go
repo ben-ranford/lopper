@@ -122,13 +122,14 @@ type CrossRepoDependency struct {
 }
 
 type PortfolioComponent struct {
-	Repo      string `json:"repo"`
-	RepoPath  string `json:"repo_path,omitempty"`
-	Language  string `json:"language,omitempty"`
-	Name      string `json:"name"`
-	Version   string `json:"version,omitempty"`
-	PURL      string `json:"purl,omitempty"`
-	Ecosystem string `json:"ecosystem,omitempty"`
+	Repo               string `json:"repo"`
+	RepoPath           string `json:"repo_path,omitempty"`
+	RepoLabelGenerated bool   `json:"repo_label_generated,omitempty"`
+	Language           string `json:"language,omitempty"`
+	Name               string `json:"name"`
+	Version            string `json:"version,omitempty"`
+	PURL               string `json:"purl,omitempty"`
+	Ecosystem          string `json:"ecosystem,omitempty"`
 }
 
 type Summary struct {

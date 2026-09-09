@@ -705,7 +705,7 @@ func portfolioDependencyRef(dep PortfolioComponent) string {
 func stablePortfolioDependencyRepoLabel(dep PortfolioComponent) string {
 	label := strings.TrimSpace(dep.Repo)
 	path := strings.TrimSpace(dep.RepoPath)
-	if label == "" || path == "" {
+	if !dep.RepoLabelGenerated || label == "" || path == "" {
 		return label
 	}
 	stablePath := stablePortfolioRefPath(path)
