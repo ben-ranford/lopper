@@ -24,3 +24,16 @@ func TestRustDetectionMalformedRootRetainsNestedSignals(t *testing.T) {
 		t.Fatalf("expected nested manifest, lock, and source signals beyond malformed-root confidence, got %#v", detection)
 	}
 }
+
+func TestRustDetectionMatchesSourceWithoutCargoMetadata(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "src", testRustLibRS), "pub fn source_only() {}\n")
+
+	detection, err := NewAdapter().DetectWithConfidence(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("detect Rust source without Cargo metadata: %v", err)
+	}
+	if !detection.Matched || len(detection.Roots) != 1 || !samePath(detection.Roots[0], repo) {
+		t.Fatalf("expected Rust source signal to select the repository root, got %#v", detection)
+	}
+}

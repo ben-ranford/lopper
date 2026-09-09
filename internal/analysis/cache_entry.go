@@ -47,6 +47,7 @@ func (c *analysisCache) prepareEntryWithSchemaVersion(req Request, adapterID, no
 		"root":           stableRoot,
 		"dependency":     req.Dependency,
 		"language":       normalizeCacheLanguage(req.Language),
+		"scopeMode":      normalizeScopeMode(req.ScopeMode),
 		"topN":           req.TopN,
 		"suggestOnly":    req.SuggestOnly,
 		"runtimeProfile": req.RuntimeProfile,

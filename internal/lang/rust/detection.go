@@ -192,6 +192,10 @@ func (w *rustDetectionWalker) walk(path string, entry fs.DirEntry) error {
 		w.detection.Matched = true
 		w.detection.Confidence += 4
 	}
+	if filepath.Ext(name) == ".rs" {
+		w.detection.Matched = true
+		w.detection.Confidence += 2
+	}
 	return nil
 }
 

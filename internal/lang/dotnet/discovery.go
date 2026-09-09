@@ -257,11 +257,11 @@ func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string,
 	directory := filepath.Dir(filepath.Join(d.sourceDiscoverer.repoPath, relativePath))
 	projectRoot := ""
 	for current := directory; ; current = filepath.Dir(current) {
-		if _, malformed := d.malformedManifestRoots[current]; malformed {
-			break
-		}
 		if _, ok := d.projectDependencies[current]; ok {
 			projectRoot = current
+			break
+		}
+		if _, malformed := d.malformedManifestRoots[current]; malformed {
 			break
 		}
 		if sameDotNetPath(current, d.sourceDiscoverer.repoPath) {

@@ -29,6 +29,21 @@ func TestServiceAnalyseDotNetMalformedRootKeepsSiblingDeclarationsScoped(t *test
 	}
 }
 
+func TestServiceAnalyseDotNetMalformedCentralManifestKeepsSiblingProjectDeclaration(t *testing.T) {
+	repo := t.TempDir()
+	writeFile(t, filepath.Join(repo, "Directory.Packages.props"), "<Project><ItemGroup><PackageVersion Include=\"broken\"")
+	writeFile(t, filepath.Join(repo, "App.csproj"), `<Project><ItemGroup><PackageReference Include="Foo" /></ItemGroup></Project>`)
+	writeFile(t, filepath.Join(repo, "Program.cs"), "using Foo;\nclass Program { Foo.Value value; }\n")
+
+	reportData := analyseMalformedManifestFixtureInScope(t, repo, "dotnet", "foo", ScopeModeRepo)
+	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "Directory.Packages.props" {
+		t.Fatalf("expected malformed central manifest coverage gap, got %#v", reportData.CoverageGaps)
+	}
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].UsedExportsCount != 1 || len(reportData.Dependencies[0].UsedImports) != 1 {
+		t.Fatalf("expected valid sibling project declaration to authorize its source import, got %#v", reportData.Dependencies)
+	}
+}
+
 func TestServiceAnalyseDotNetMalformedRootKeepsCoverageForChangedNestedProject(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "Broken.csproj"), "<Project><PackageReference Include=\"broken\"")
