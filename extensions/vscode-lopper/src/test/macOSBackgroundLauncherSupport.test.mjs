@@ -33,3 +33,13 @@ test("accepts only an explicit passed result and exact isolated process identity
   assert.equal(matchesTestProcess("/tmp/Code.app/Contents/MacOS/Electron --user-data-dir=/tmp/profile", "/tmp/Code.app/Contents/MacOS/Electron", "/tmp/profile"), true);
   assert.equal(matchesTestProcess("/Applications/Code --user-data-dir=/tmp/profile", "/tmp/Code.app/Contents/MacOS/Electron", "/tmp/profile"), false);
 });
+
+
+test("resolves app bundles independently of the downloaded executable name", () => {
+  for (const executable of ["Electron", "Code", "Code - Insiders"]) {
+    assert.equal(applicationPathForExecutable(`/tmp/Visual Studio Code.app/Contents/MacOS/${executable}`), "/tmp/Visual Studio Code.app");
+  }
+  for (const executable of ["/tmp/Code", "/tmp/Code.app/Other/MacOS/Code", "/tmp/Code/Contents/MacOS/Code"]) {
+    assert.throws(() => applicationPathForExecutable(executable), /unexpected path/);
+  }
+});

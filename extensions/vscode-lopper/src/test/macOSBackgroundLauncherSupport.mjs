@@ -5,11 +5,13 @@ export function isBackgroundMacOSTestRun(environment, platform = process.platfor
 }
 
 export function applicationPathForExecutable(executablePath) {
-  const suffix = path.join("Contents", "MacOS", "Electron");
-  if (!executablePath.endsWith(suffix)) {
+  const executableDirectory = path.dirname(executablePath);
+  const contentsDirectory = path.dirname(executableDirectory);
+  const applicationPath = path.dirname(contentsDirectory);
+  if (path.basename(executableDirectory) !== "MacOS" || path.basename(contentsDirectory) !== "Contents" || path.extname(applicationPath) !== ".app") {
     throw new Error(`Downloaded VS Code executable has an unexpected path: ${executablePath}`);
   }
-  return path.dirname(path.dirname(path.dirname(executablePath)));
+  return applicationPath;
 }
 
 export function openArguments({ applicationPath, argumentsForVSCode, environment, stdoutPath, stderrPath }) {
