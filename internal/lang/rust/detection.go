@@ -18,6 +18,14 @@ func (a *Adapter) DetectWithConfidence(ctx context.Context, repoPath string) (la
 	roots := make(map[string]struct{})
 	workspaceOnlyRoot, err := applyRustRootSignals(repoPath, &detection, roots)
 	if err != nil {
+		if isCargoManifestParseError(err) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return language.Detection{}, ctxErr
+			}
+			// The malformed root cannot define package boundaries. Analyze one
+			// repository fallback so root sources and children are covered once.
+			return shared.FinalizeDetection(repoPath, detection, roots), nil
+		}
 		return language.Detection{}, err
 	}
 
@@ -51,10 +59,7 @@ func applyRootCargoManifestSignal(repoPath string, detection *language.Detection
 
 		meta, _, parseErr := parseCargoManifest(cargoTomlPath, repoPath)
 		if parseErr != nil {
-			if !isCargoManifestParseError(parseErr) {
-				return false, parseErr
-			}
-			return true, nil
+			return false, parseErr
 		}
 		if meta.HasPackage {
 			roots[repoPath] = struct{}{}

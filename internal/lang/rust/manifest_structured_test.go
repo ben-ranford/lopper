@@ -2,6 +2,7 @@ package rust
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,7 +190,7 @@ func TestRustMalformedRootFallbackPreservesRootUsage(t *testing.T) {
 	}
 }
 
-func TestRustDetectionSkipsMalformedRootCargoManifest(t *testing.T) {
+func TestRustDetectionUsesOneFallbackForMalformedRootCargoManifest(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, cargoTomlName), "[workspace]\nmembers = [\"crates/*\"]\nbroken = [")
 	writeFile(t, filepath.Join(repo, cargoLockName), "version = 3\n")
@@ -199,9 +200,13 @@ func TestRustDetectionSkipsMalformedRootCargoManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detect malformed root Cargo manifest: %v", err)
 	}
-	childRoot := filepath.Join(repo, "crates", "working")
-	if !detection.Matched || len(detection.Roots) != 1 || !samePath(detection.Roots[0], childRoot) {
-		t.Fatalf("expected malformed workspace root to expose only child crate root, got %#v", detection)
+	if !detection.Matched || len(detection.Roots) != 1 || !samePath(detection.Roots[0], repo) {
+		t.Fatalf("expected one repository fallback without overlapping child roots, got %#v", detection)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewAdapter().DetectWithConfidence(ctx, repo); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled malformed-root detection, got %v", err)
 	}
 }
 
