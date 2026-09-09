@@ -206,30 +206,46 @@ func codeownerEvidenceTarget(value string) string {
 	}
 	staticLocation := strings.HasPrefix(target, "static_location:")
 	if staticLocation {
-		target = strings.TrimPrefix(target, "static_location:")
-		if strings.HasPrefix(target, " ") {
-			target = strings.TrimPrefix(target, " ")
-		}
-		if index := strings.LastIndex(target, ":"); index > strings.LastIndex(target, "/") && allDigits(target[index+1:]) {
-			target = target[:index]
-		}
+		target = codeownerStaticLocationPath(target)
 	}
 	target = strings.ReplaceAll(target, "\\", "/")
 	for strings.HasPrefix(target, "./") {
 		target = strings.TrimPrefix(target, "./")
 	}
-	if target == "" || target == "." || strings.HasPrefix(target, "/") || codeownerWindowsDrivePath(target) {
-		return ""
-	}
-	for _, segment := range strings.Split(target, "/") {
-		if segment == ".." {
-			return ""
-		}
-	}
-	if strings.ContainsAny(target, "\t\r\n") || !staticLocation && (strings.Contains(target, " ") || !strings.Contains(target, "/")) {
+	if !codeownerRelativePath(target) || !codeownerEvidencePathAllowed(target, staticLocation) {
 		return ""
 	}
 	return target
+}
+
+func codeownerStaticLocationPath(value string) string {
+	target := strings.TrimPrefix(value, "static_location:")
+	if strings.HasPrefix(target, " ") {
+		target = strings.TrimPrefix(target, " ")
+	}
+	if index := strings.LastIndex(target, ":"); index > strings.LastIndex(target, "/") && allDigits(target[index+1:]) {
+		return target[:index]
+	}
+	return target
+}
+
+func codeownerRelativePath(target string) bool {
+	if target == "" || target == "." || strings.HasPrefix(target, "/") || codeownerWindowsDrivePath(target) {
+		return false
+	}
+	for _, segment := range strings.Split(target, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func codeownerEvidencePathAllowed(target string, staticLocation bool) bool {
+	if strings.ContainsAny(target, "\t\r\n") {
+		return false
+	}
+	return staticLocation || !strings.Contains(target, " ") && strings.Contains(target, "/")
 }
 
 func codeownerWindowsDrivePath(target string) bool {
