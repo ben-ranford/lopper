@@ -1394,38 +1394,38 @@ func hasDotnetCentralLockfileRule(rules []lockfileRule) bool {
 	return false
 }
 
-func (index *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) ([]presentLockfile, error) {
-	if index == nil {
+func (i *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) ([]presentLockfile, error) {
+	if i == nil {
 		return nil, nil
 	}
-	if index.scoped {
-		return index.scopedLockfilesUnder(relDir)
+	if i.scoped {
+		return i.scopedLockfilesUnder(relDir)
 	}
-	if !index.initialized {
-		lockfiles, err := findDotnetProjectLockfilesFn(index.repoPath)
+	if !i.initialized {
+		lockfiles, err := findDotnetProjectLockfilesFn(i.repoPath)
 		if err != nil {
 			return nil, err
 		}
-		index.lockfiles = lockfiles
-		index.initialized = true
+		i.lockfiles = lockfiles
+		i.initialized = true
 	}
-	return lockfilesUnderRelativeDir(index.lockfiles, relDir), nil
+	return lockfilesUnderRelativeDir(i.lockfiles, relDir), nil
 }
 
-func (index *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]presentLockfile, error) {
+func (i *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]presentLockfile, error) {
 	scope := filepath.Clean(relDir)
-	if index.lockfilesByScope == nil {
-		index.lockfilesByScope = make(map[string][]presentLockfile)
+	if i.lockfilesByScope == nil {
+		i.lockfilesByScope = make(map[string][]presentLockfile)
 	}
-	if lockfiles, ok := index.lockfilesByScope[scope]; ok {
+	if lockfiles, ok := i.lockfilesByScope[scope]; ok {
 		return append([]presentLockfile(nil), lockfiles...), nil
 	}
-	if lockfiles, ok := index.lockfilesFromCachedAncestor(scope); ok {
-		index.lockfilesByScope[scope] = lockfiles
+	if lockfiles, ok := i.lockfilesFromCachedAncestor(scope); ok {
+		i.lockfilesByScope[scope] = lockfiles
 		return append([]presentLockfile(nil), lockfiles...), nil
 	}
 
-	rootDir := index.repoPath
+	rootDir := i.repoPath
 	if scope != "." {
 		rootDir = filepath.Join(rootDir, scope)
 	}
@@ -1433,12 +1433,12 @@ func (index *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]
 	if err != nil {
 		return nil, err
 	}
-	index.lockfilesByScope[scope] = lockfiles
+	i.lockfilesByScope[scope] = lockfiles
 	return append([]presentLockfile(nil), lockfiles...), nil
 }
 
-func (index *dotnetProjectLockfileIndex) lockfilesFromCachedAncestor(scope string) ([]presentLockfile, bool) {
-	for cachedScope, lockfiles := range index.lockfilesByScope {
+func (i *dotnetProjectLockfileIndex) lockfilesFromCachedAncestor(scope string) ([]presentLockfile, bool) {
+	for cachedScope, lockfiles := range i.lockfilesByScope {
 		relativeScope, err := filepath.Rel(cachedScope, scope)
 		if err != nil || relativeScope == ".." || strings.HasPrefix(relativeScope, ".."+string(filepath.Separator)) {
 			continue
