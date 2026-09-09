@@ -705,13 +705,22 @@ func portfolioDependencyRef(dep PortfolioComponent) string {
 func stablePortfolioDependencyRepoLabel(dep PortfolioComponent) string {
 	label := strings.TrimSpace(dep.Repo)
 	path := strings.TrimSpace(dep.RepoPath)
-	if label == "" || path == "" || stablePortfolioRefPath(path) != "" {
+	if label == "" || path == "" {
 		return label
 	}
+	stablePath := stablePortfolioRefPath(path)
 	if label == path {
-		return ""
+		return stablePath
 	}
-	return strings.TrimSpace(strings.TrimSuffix(label, " ("+path+")"))
+	suffix := " (" + path + ")"
+	if !strings.HasSuffix(label, suffix) {
+		return label
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(label, suffix))
+	if stablePath == "" {
+		return name
+	}
+	return name + " (" + stablePath + ")"
 }
 
 type portfolioRefAllocator struct {

@@ -33,6 +33,41 @@ func TestPortfolioRefsNormalizeRelativePathsAcrossPlatforms(t *testing.T) {
 	}
 }
 
+func TestPortfolioCycloneDXNormalizesRelativeRepositoryLabels(t *testing.T) {
+	for _, name := range []string{"api", ""} {
+		t.Run("name="+name, func(t *testing.T) {
+			var expected string
+			for _, paths := range [][]string{
+				{"services/api", "platform/api"},
+				{`services\api`, `platform\api`},
+				{`.\services\api`, "./platform//api"},
+			} {
+				data := relativeRepositoryLabelsReport(name, paths)
+				output, bom := formatPortfolioCycloneDXForTest(t, data)
+				if bom.Components[0].BOMRef == bom.Components[1].BOMRef {
+					t.Fatal("relative repository labels lost their distinct identities")
+				}
+				if expected == "" {
+					expected = output
+				} else if output != expected {
+					t.Fatalf("equivalent relative paths changed CycloneDX refs or properties: %q\nwant:\n%s\ngot:\n%s", paths, expected, output)
+				}
+			}
+		})
+	}
+}
+
+func relativeRepositoryLabelsReport(name string, paths []string) Report {
+	data := Report{}
+	for _, repoPath := range paths {
+		label := crossRepoRepositoryLabel(RepoInput{Name: name, Path: repoPath}, map[string]int{name: 2})
+		data.PortfolioComponents = append(data.PortfolioComponents, PortfolioComponent{
+			Repo: label, RepoPath: repoPath, Language: "go", Name: "example.com/lib", Version: "v1",
+		})
+	}
+	return data
+}
+
 func TestPortfolioCycloneDXSanitizesAbsoluteDuplicateRepositoryLabels(t *testing.T) {
 	reportData := Report{PortfolioComponents: []PortfolioComponent{
 		{Repo: "api (/home/alice/platform/api)", RepoPath: "/home/alice/platform/api", Language: "go", Name: "example.com/lib", Version: "v1", PURL: "pkg:golang/example.com/lib@v1?variant=a"},
