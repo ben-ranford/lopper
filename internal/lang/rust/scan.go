@@ -22,6 +22,9 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []
 		LocalModuleCache:    make(map[string]bool),
 	}
 	roots := scanRoots(manifestPaths, repoPath)
+	if sourceFallbackRoot != "" {
+		roots = scanRootsPreservingNested(manifestPaths, repoPath)
+	}
 	scannedFiles := make(map[string]struct{})
 	fileCount := 0
 	for _, root := range roots {

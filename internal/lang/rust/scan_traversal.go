@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -19,6 +20,26 @@ func scanRoots(manifestPaths []string, repoPath string) []string {
 		return []string{repoPath}
 	}
 	return collapseScanRoots(roots)
+}
+
+func scanRootsPreservingNested(manifestPaths []string, repoPath string) []string {
+	roots := make([]string, 0, len(manifestPaths))
+	for _, manifestPath := range manifestPaths {
+		roots = append(roots, filepath.Dir(manifestPath))
+	}
+	roots = uniquePaths(roots)
+	if len(roots) == 0 {
+		return []string{repoPath}
+	}
+	sort.Slice(roots, func(i, j int) bool {
+		depthI := strings.Count(filepath.Clean(roots[i]), string(filepath.Separator))
+		depthJ := strings.Count(filepath.Clean(roots[j]), string(filepath.Separator))
+		if depthI != depthJ {
+			return depthI > depthJ
+		}
+		return roots[i] < roots[j]
+	})
+	return roots
 }
 
 func collapseScanRoots(roots []string) []string {
