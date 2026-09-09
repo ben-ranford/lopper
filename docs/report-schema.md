@@ -113,7 +113,9 @@ CycloneDX characteristics:
   records when `vulnerability-exceptions-vex-preview` is enabled.
 - Dashboard-wide combined CycloneDX SBOMs are emitted by `lopper dashboard
   --format cyclonedx-json` when `dashboard-cyclonedx-portfolio-preview` is
-  enabled.
+  enabled. Dashboard portfolio components retain `repo_label_generated: true`
+  in JSON when their display label includes a generated repository path. This
+  lets SBOM export normalize those paths while preserving configured names.
 - Signed attestations are deferred from these preview exports.
 
 ## Key fields

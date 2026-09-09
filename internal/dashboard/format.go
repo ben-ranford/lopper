@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
-	"path/filepath"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -653,12 +653,13 @@ func portfolioCycloneDXComponents(reportData Report) []map[string]any {
 		components = append(components, component)
 	}
 	for _, dep := range deps {
+		repoLabel := stablePortfolioDependencyRepoLabel(dep)
 		component := map[string]any{
 			"type":    "library",
 			"name":    dep.Name,
 			"bom-ref": refAllocator.allocate(portfolioDependencyRef(dep)),
 			"properties": []map[string]string{
-				{"name": "lopper:repo", "value": dep.Repo},
+				{"name": "lopper:repo", "value": repoLabel},
 				{"name": "lopper:language", "value": dep.Language},
 				{"name": "lopper:ecosystem", "value": dep.Ecosystem},
 			},
@@ -693,12 +694,33 @@ func portfolioRepoRef(repo RepoResult) string {
 }
 
 func portfolioDependencyRef(dep PortfolioComponent) string {
-	parts := []string{dep.Repo}
+	parts := []string{stablePortfolioDependencyRepoLabel(dep)}
 	if path := stablePortfolioRefPath(dep.RepoPath); path != "" {
 		parts = append(parts, path)
 	}
 	parts = append(parts, dep.Language, dep.Name, dep.Version)
 	return "lopper:dependency:" + joinPortfolioRefParts(parts...)
+}
+
+func stablePortfolioDependencyRepoLabel(dep PortfolioComponent) string {
+	label := strings.TrimSpace(dep.Repo)
+	path := strings.TrimSpace(dep.RepoPath)
+	if !dep.RepoLabelGenerated || label == "" || path == "" {
+		return label
+	}
+	stablePath := stablePortfolioRefPath(path)
+	if label == path {
+		return stablePath
+	}
+	suffix := " (" + path + ")"
+	if !strings.HasSuffix(label, suffix) {
+		return label
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(label, suffix))
+	if stablePath == "" {
+		return name
+	}
+	return name + " (" + stablePath + ")"
 }
 
 type portfolioRefAllocator struct {
@@ -753,12 +775,14 @@ func escapePortfolioRefPart(value string) string {
 }
 
 func stablePortfolioRefPath(value string) string {
-	trimmed := filepath.ToSlash(strings.TrimSpace(value))
-	trimmed = strings.TrimPrefix(trimmed, "./")
-	if trimmed == "" || filepath.IsAbs(value) {
+	// Normalize foreign path syntax before checking for machine-local roots.
+	trimmed := strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	driveAbsolute := len(trimmed) >= 3 && trimmed[1] == ':' && trimmed[2] == '/' &&
+		(trimmed[0] >= 'A' && trimmed[0] <= 'Z' || trimmed[0] >= 'a' && trimmed[0] <= 'z')
+	if trimmed == "" || strings.HasPrefix(trimmed, "/") || driveAbsolute {
 		return ""
 	}
-	return strings.TrimPrefix(trimmed, "/")
+	return path.Clean(trimmed)
 }
 
 func sortPortfolioCycloneDXComponents(components []PortfolioComponent) []PortfolioComponent {
@@ -783,13 +807,13 @@ func sortPortfolioCycloneDXRepos(repos []RepoResult) []RepoResult {
 
 func portfolioComponentRefSortKey(component PortfolioComponent) string {
 	parts := []string{
-		component.Repo,
+		stablePortfolioDependencyRepoLabel(component),
 		component.Language,
 		component.Name,
 		component.Version,
 		component.PURL,
 		component.Ecosystem,
-		component.RepoPath,
+		stablePortfolioRefPath(component.RepoPath),
 	}
 	var key strings.Builder
 	for _, part := range parts {
