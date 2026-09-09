@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
-	"github.com/ben-ranford/lopper/internal/report"
 	"github.com/ben-ranford/lopper/internal/testutil"
 )
 
@@ -69,7 +68,7 @@ func TestDotNetAnalysisSkipsMalformedProjectManifests(t *testing.T) {
 		t.Fatalf("expected one coverage gap per malformed manifest, got %#v", reportData.CoverageGaps)
 	}
 	for _, gap := range reportData.CoverageGaps {
-		if gap.Code != report.CoverageGapDotNetMalformedManifest || gap.Language != "dotnet" {
+		if gap.Code != "dotnet-malformed-manifest-declaration" || gap.Language != "dotnet" {
 			t.Fatalf("expected malformed .NET manifest coverage gap, got %#v", gap)
 		}
 		if gap.Path != "Broken.csproj" && gap.Path != centralPackagesFile {

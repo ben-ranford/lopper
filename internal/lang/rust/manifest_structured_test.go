@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/ben-ranford/lopper/internal/language"
-	"github.com/ben-ranford/lopper/internal/report"
 )
 
 type dependencyExpectation struct {
@@ -243,7 +242,7 @@ func assertRustAnalysisSkipsMalformedManifest(t *testing.T, rootManifest, broken
 		t.Fatalf("expected one malformed manifest coverage gap, got %#v", reportData.CoverageGaps)
 	}
 	gap := reportData.CoverageGaps[0]
-	if gap.Code != report.CoverageGapRustMalformedManifest || gap.Language != rustAdapterID || gap.Path != filepath.ToSlash(brokenPath) {
+	if gap.Code != "rust-malformed-manifest-declaration" || gap.Language != rustAdapterID || gap.Path != filepath.ToSlash(brokenPath) {
 		t.Fatalf("unexpected malformed manifest coverage gap: %#v", gap)
 	}
 	if len(gap.Evidence) != 1 || gap.Evidence[0] != malformedWarning {
