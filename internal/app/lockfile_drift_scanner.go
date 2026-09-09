@@ -17,7 +17,7 @@ import (
 
 const lockfileDriftManifestReadLimit int64 = 1 << 20
 
-var findDotnetProjectLockfilesFn = findDotnetProjectLockfiles
+var findDotnetProjectLockfilesFn = findDotnetProjectLockfilesContext
 
 type lockfileDirSnapshot struct {
 	repoPath               string
@@ -33,6 +33,7 @@ type dotnetProjectLockfileIndex struct {
 	scopedLockfilesByScope map[string][]presentLockfile
 	initialized            bool
 	scoped                 bool
+	findLockfiles          func(string) ([]presentLockfile, error)
 }
 
 type lockfileManifestIO struct {
@@ -295,7 +296,7 @@ func scanLockfileDriftDetailed(ctx context.Context, repoPath string, gitContext 
 		orderedWarnings: make([]string, 0, len(rules)),
 	}
 	var readErrors lockfileManifestReadErrors
-	dotnetProjectLockfiles, indexErr := newDotnetProjectLockfileIndex(repoPath, rules, stopOnFirst)
+	dotnetProjectLockfiles, indexErr := newDotnetProjectLockfileIndex(ctx, repoPath, rules, stopOnFirst)
 	if indexErr != nil {
 		return lockfileDriftResult{err: indexErr}
 	}
@@ -377,7 +378,7 @@ func scanLockfileDriftStopOnFirst(ctx context.Context, repoPath string, rules []
 }
 
 func (s *lockfileFailFastBatchScanner) scan(ctx context.Context) ([]string, error) {
-	dotnetProjectLockfiles, err := newDotnetProjectLockfileIndex(s.repoPath, s.rules, true)
+	dotnetProjectLockfiles, err := newDotnetProjectLockfileIndex(ctx, s.repoPath, s.rules, true)
 	if err != nil {
 		return nil, err
 	}
@@ -568,7 +569,7 @@ func prepareLockfileManifestChangeCandidatesWithIO(ctx context.Context, repoPath
 	prepared := &lockfilePreparedScan{
 		dirs: make([]lockfilePreparedDir, 0),
 	}
-	dotnetProjectLockfiles, indexErr := newDotnetProjectLockfileIndex(repoPath, rules, false)
+	dotnetProjectLockfiles, indexErr := newDotnetProjectLockfileIndex(ctx, repoPath, rules, false)
 	if indexErr != nil {
 		return prepared, nil, indexErr
 	}
@@ -1351,7 +1352,7 @@ func findDistributedRuleLockfiles(snapshot lockfileDirSnapshot, rule lockfileRul
 	if snapshot.dotnetProjectLockfiles != nil {
 		return snapshot.dotnetProjectLockfiles.lockfilesUnder(snapshot.relDir)
 	}
-	projectLockfiles, err := findDotnetProjectLockfilesFn(snapshot.path)
+	projectLockfiles, err := findDotnetProjectLockfilesFn(context.Background(), snapshot.path)
 	if err != nil {
 		return nil, err
 	}
@@ -1378,11 +1379,17 @@ func isDotnetCentralOnlyRuleManifest(rule lockfileRule, manifests []string) bool
 	return hasCentralManifest
 }
 
-func newDotnetProjectLockfileIndex(repoPath string, rules []lockfileRule, stopOnFirst bool) (*dotnetProjectLockfileIndex, error) {
+func newDotnetProjectLockfileIndex(ctx context.Context, repoPath string, rules []lockfileRule, stopOnFirst bool) (*dotnetProjectLockfileIndex, error) {
 	if !hasDotnetCentralLockfileRule(rules) {
 		return nil, nil
 	}
-	return &dotnetProjectLockfileIndex{repoPath: repoPath, scoped: stopOnFirst}, nil
+	return &dotnetProjectLockfileIndex{
+		repoPath: repoPath,
+		scoped:   stopOnFirst,
+		findLockfiles: func(rootDir string) ([]presentLockfile, error) {
+			return findDotnetProjectLockfilesFn(ctx, rootDir)
+		},
+	}, nil
 }
 
 func hasDotnetCentralLockfileRule(rules []lockfileRule) bool {
@@ -1402,7 +1409,7 @@ func (i *dotnetProjectLockfileIndex) lockfilesUnder(relDir string) ([]presentLoc
 		return i.scopedLockfilesUnder(relDir)
 	}
 	if !i.initialized {
-		lockfiles, err := findDotnetProjectLockfilesFn(i.repoPath)
+		lockfiles, err := i.find(i.repoPath)
 		if err != nil {
 			return nil, err
 		}
@@ -1428,7 +1435,7 @@ func (i *dotnetProjectLockfileIndex) scopedLockfilesUnder(relDir string) ([]pres
 	if scope != "." {
 		rootDir = filepath.Join(rootDir, scope)
 	}
-	lockfiles, err := findDotnetProjectLockfilesFn(rootDir)
+	lockfiles, err := i.find(rootDir)
 	if err != nil {
 		return nil, err
 	}
@@ -1466,10 +1473,26 @@ func lockfilesUnderRelativeDir(lockfiles []presentLockfile, relDir string) []pre
 	return filtered
 }
 
+func (i *dotnetProjectLockfileIndex) find(rootDir string) ([]presentLockfile, error) {
+	if i.findLockfiles != nil {
+		return i.findLockfiles(rootDir)
+	}
+	return findDotnetProjectLockfiles(rootDir)
+}
 func findDotnetProjectLockfiles(rootDir string) ([]presentLockfile, error) {
+	return findDotnetProjectLockfilesContext(context.Background(), rootDir)
+}
+
+func findDotnetProjectLockfilesContext(ctx context.Context, rootDir string) ([]presentLockfile, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	rootDir = filepath.Clean(rootDir)
 	lockfiles := make([]presentLockfile, 0)
 	err := filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}

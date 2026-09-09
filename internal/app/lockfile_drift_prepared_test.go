@@ -107,9 +107,9 @@ func TestPrepareLockfileManifestChangeCandidatesBuildsDotnetLockfileIndexOnce(t 
 
 	original := findDotnetProjectLockfilesFn
 	calls := 0
-	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
 		calls++
-		return original(rootDir)
+		return original(ctx, rootDir)
 	}
 	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
 
@@ -186,7 +186,7 @@ func TestDotnetProjectLockfileIndexDoesNotCacheAncestorDerivedScopes(t *testing.
 func measureDotnetProjectLockfileIndexAllocs(t *testing.T, repo string, rules []lockfileRule) float64 {
 	t.Helper()
 	return testing.AllocsPerRun(3, func() {
-		index, err := newDotnetProjectLockfileIndex(repo, rules, false)
+		index, err := newDotnetProjectLockfileIndex(context.Background(), repo, rules, false)
 		if err != nil {
 			t.Fatalf("new .NET lockfile index: %v", err)
 		}
@@ -203,9 +203,9 @@ func TestPrepareLockfileManifestChangeCandidatesSkipsDotnetIndexWithoutCentralMa
 
 	original := findDotnetProjectLockfilesFn
 	calls := 0
-	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
 		calls++
-		return original(rootDir)
+		return original(ctx, rootDir)
 	}
 	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
 
@@ -227,7 +227,7 @@ func TestScanLockfileDriftStopOnFirstScopesDotnetLockfileIndexToCentralManifest(
 
 	original := findDotnetProjectLockfilesFn
 	var roots []string
-	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
 		roots = append(roots, rootDir)
 		if filepath.Clean(rootDir) == filepath.Clean(repo) {
 			return nil, errors.New("unrelated later subtree is unreadable")
@@ -261,9 +261,9 @@ func TestScanLockfileDriftStopOnFirstReusesAncestorDotnetLockfileIndex(t *testin
 
 	original := findDotnetProjectLockfilesFn
 	calls := 0
-	findDotnetProjectLockfilesFn = func(rootDir string) ([]presentLockfile, error) {
+	findDotnetProjectLockfilesFn = func(ctx context.Context, rootDir string) ([]presentLockfile, error) {
 		calls++
-		return original(rootDir)
+		return original(ctx, rootDir)
 	}
 	t.Cleanup(func() { findDotnetProjectLockfilesFn = original })
 
