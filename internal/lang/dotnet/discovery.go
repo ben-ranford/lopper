@@ -62,7 +62,7 @@ func scanRepo(ctx context.Context, repoPath string, scopeModes ...string) (scanR
 			var ok bool
 			currentMapper, ok = projectMappers[source.MapperKey]
 			if !ok {
-				currentMapper = newProjectDependencyMapper(source.DeclaredDependencies)
+				currentMapper = newProjectDependencyMapper(source.DeclaredDependencies, source.ProjectRoot != "")
 				projectMappers[source.MapperKey] = currentMapper
 			}
 		}
@@ -263,7 +263,11 @@ func (d *scanInputDiscoverer) sourceFiles(scopeMode string) []sourceDocument {
 		files[index].DeclaredDependencies = dependencies
 		files[index].HasProjectDeclaration = hasProject
 		files[index].ProjectRoot = projectRoot
-		files[index].MapperKey = strings.Join(dependencies, "\x00")
+		fallbackMode := "fallback-disabled"
+		if projectRoot != "" {
+			fallbackMode = "fallback-enabled"
+		}
+		files[index].MapperKey = fallbackMode + "\x00" + strings.Join(dependencies, "\x00")
 	}
 	if (scopeMode == "package" || scopeMode == "changed-packages") && !d.hasMalformedRootFallback() {
 		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath, d.malformedManifestRoots)

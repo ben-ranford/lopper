@@ -56,9 +56,9 @@ func newDependencyMapper(declared []string) dependencyMapper {
 	return dependencyMapper{declared: items, allowFallback: true}
 }
 
-func newProjectDependencyMapper(declared []string) dependencyMapper {
+func newProjectDependencyMapper(declared []string, allowFallback bool) dependencyMapper {
 	mapper := newDependencyMapper(declared)
-	mapper.allowFallback = false
+	mapper.allowFallback = allowFallback
 	return mapper
 }
 

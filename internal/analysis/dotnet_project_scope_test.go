@@ -24,8 +24,8 @@ func TestServiceAnalyseDotNetMalformedRootKeepsSiblingDeclarationsScoped(t *test
 	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "Broken.csproj" {
 		t.Fatalf("expected malformed root coverage gap, got %#v", reportData.CoverageGaps)
 	}
-	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].UsedExportsCount != 0 {
-		t.Fatalf("expected Foo declared only by sibling A to remain unused, got %#v", reportData.Dependencies)
+	if len(reportData.Dependencies) != 1 || reportData.Dependencies[0].UsedExportsCount != 1 || !hasDotNetRiskCue(reportData.Dependencies[0], "undeclared-package-usage") || !hasDotNetRecommendation(reportData.Dependencies[0], "declare-dependency-explicitly") {
+		t.Fatalf("expected valid sibling B's undeclared Foo import to remain separate from sibling A's declaration, got %#v", reportData.Dependencies)
 	}
 }
 
