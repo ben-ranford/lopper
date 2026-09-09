@@ -1014,13 +1014,36 @@ func TestPrepareLockfileManifestChangeCandidatesBoundsNestedDistributedLockfileS
 }
 
 func TestFailFastDistributedDotnetLockfilesDoNotCopyAncestorRanges(t *testing.T) {
-	rules := []lockfileRule{mustLockfileRule(t, ".NET", dotnetCentralManifest)}
-	smallAllocs, smallBytes := measureDistributedDotnetLockfileScan(t, 64, true, rules)
-	largeAllocs, largeBytes := measureDistributedDotnetLockfileScan(t, 384, true, rules)
-	t.Logf("fail-fast distributed .NET lockfile work beyond shared traversal: depth 64=%.0f allocs/%d bytes depth 384=%.0f allocs/%d bytes", smallAllocs, smallBytes, largeAllocs, largeBytes)
-	if largeBytes > smallBytes*12 {
-		t.Fatalf("expected bounded fail-fast distributed .NET lockfile work beyond shared traversal, got depth 64=%d depth 384=%d", smallBytes, largeBytes)
+	allocs, bytes := measureFailFastDistributedDotnetLockfileEvaluation(t, 4096)
+	t.Logf("fail-fast distributed .NET lockfile evaluation: %.0f allocs/%d bytes", allocs, bytes)
+	if bytes > 16<<10 {
+		t.Fatalf("expected fail-fast distributed evaluation not to copy ancestor lockfiles, got %d bytes", bytes)
 	}
+}
+
+func measureFailFastDistributedDotnetLockfileEvaluation(t *testing.T, count int) (float64, uint64) {
+	t.Helper()
+	lockfiles := make([]string, 0, count)
+	for value := range count {
+		lockfiles = append(lockfiles, fmt.Sprintf("project-%04d/src/%s", value, dotnetLockfileName))
+	}
+	index := &dotnetProjectLockfileIndex{
+		repoPath: ".", scoped: true,
+		scopedLockfilesByScope: map[string][]string{".": lockfiles},
+	}
+	rule := mustLockfileRule(t, ".NET", dotnetCentralManifest)
+	rule.manifestMatcher = func(string, string) (bool, error) { return true, nil }
+	snapshot := lockfileDirSnapshot{
+		repoPath: ".", path: ".", relDir: ".",
+		files:                  map[string]fs.FileInfo{dotnetCentralManifest: nil},
+		dotnetProjectLockfiles: index,
+	}
+	return measureLockfileWork(t, func() {
+		finding, found, err := evaluateLockfileRule(snapshot, rule, lockfileGitContext{})
+		if err != nil || found {
+			t.Fatalf("evaluate distributed lockfile rule: finding=%#v found=%v err=%v", finding, found, err)
+		}
+	})
 }
 
 func TestFailFastGitCandidatesReuseDistributedLockfileRangesAcrossBatches(t *testing.T) {
@@ -1034,34 +1057,6 @@ func TestFailFastGitCandidatesReuseDistributedLockfileRangesAcrossBatches(t *tes
 			}
 		})
 	}
-}
-
-func measureDistributedDotnetLockfileScan(t *testing.T, depth int, stopOnFirst bool, rules []lockfileRule) (float64, uint64) {
-	t.Helper()
-	repo := newCompactNestedDotnetCentralLockfileRepo(t, depth)
-	allocs, bytes := measureLockfileWork(t, func() {
-		warnings, err := scanLockfileDrift(context.Background(), repo, lockfileGitContext{}, stopOnFirst, rules)
-		if err != nil {
-			t.Fatalf("scan lockfile drift: %v", err)
-		}
-		if len(warnings) != 0 {
-			t.Fatalf("expected no warnings, got %#v", warnings)
-		}
-	})
-	controlRepo := newCompactNestedDotnetLockfileRepoWithManifest(t, nestedDotnetControlManifest, depth)
-	controlAllocs, controlBytes := measureLockfileWork(t, func() {
-		warnings, err := scanLockfileDrift(context.Background(), controlRepo, lockfileGitContext{}, stopOnFirst, rules)
-		if err != nil {
-			t.Fatalf("scan control lockfile drift: %v", err)
-		}
-		if len(warnings) != 0 {
-			t.Fatalf("expected no control warnings, got %#v", warnings)
-		}
-	})
-	if allocs < controlAllocs || bytes < controlBytes {
-		t.Fatalf("expected distributed scan to include control traversal work, got %.0f/%d below %.0f/%d", allocs, bytes, controlAllocs, controlBytes)
-	}
-	return allocs - controlAllocs, bytes - controlBytes
 }
 
 func countFailFastGitDistributedDotnetCandidates(t *testing.T, depth int, changed bool) int {
@@ -1099,14 +1094,7 @@ func countFailFastGitDistributedDotnetCandidates(t *testing.T, depth int, change
 	return totalCandidates
 }
 
-const nestedDotnetControlManifest = "Directory.Xackages.props"
-
 func newCompactNestedDotnetCentralLockfileRepo(t *testing.T, depth int) string {
-	t.Helper()
-	return newCompactNestedDotnetLockfileRepoWithManifest(t, dotnetCentralManifest, depth)
-}
-
-func newCompactNestedDotnetLockfileRepoWithManifest(t *testing.T, manifestName string, depth int) string {
 	t.Helper()
 	repo, err := os.MkdirTemp("", "lopper-dotnet-")
 	if err != nil {
@@ -1116,7 +1104,7 @@ func newCompactNestedDotnetLockfileRepoWithManifest(t *testing.T, manifestName s
 	dir := repo
 	manifest := "<Project><ItemGroup><PackageVersion Include=\"Newtonsoft.Json\" Version=\"13.0.3\" /></ItemGroup></Project>\n"
 	for range depth {
-		writeFile(t, filepath.Join(dir, manifestName), manifest)
+		writeFile(t, filepath.Join(dir, dotnetCentralManifest), manifest)
 		writeFile(t, filepath.Join(dir, "src", dotnetProjectManifest), "<Project></Project>\n")
 		writeFile(t, filepath.Join(dir, "src", dotnetLockfileName), "{}\n")
 		dir = filepath.Join(dir, "n")
