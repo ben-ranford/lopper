@@ -33,7 +33,7 @@ func TestServiceAnalyseDotNetMalformedRootAvoidsOverlappingNestedRoots(t *testin
 	if len(reportData.CoverageGaps) != 1 || reportData.CoverageGaps[0].Path != "Broken.csproj" {
 		t.Fatalf("expected malformed root manifest coverage gap, got %#v", reportData.CoverageGaps)
 	}
-	if len(reportData.Dependencies) != 1 || len(reportData.Dependencies[0].UsedImports) != 1 || len(reportData.Dependencies[0].UsedImports[0].Locations) != 2 {
-		t.Fatalf("expected each root and nested source import exactly once, got %#v", reportData.Dependencies)
+	if len(reportData.Dependencies) != 1 || len(reportData.Dependencies[0].UsedImports) != 1 || len(reportData.Dependencies[0].UsedImports[0].Locations) != 1 {
+		t.Fatalf("expected only the nested project declaration to authorize its source import, got %#v", reportData.Dependencies)
 	}
 }

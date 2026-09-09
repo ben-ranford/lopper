@@ -19,8 +19,12 @@ import (
 )
 
 type sourceDocument struct {
-	RelativePath string
-	Content      []byte
+	RelativePath          string
+	Content               []byte
+	DeclaredDependencies  []string
+	HasProjectDeclaration bool
+	ProjectRoot           string
+	MapperKey             string
 }
 
 type scanInputs struct {
@@ -47,8 +51,18 @@ func scanRepo(ctx context.Context, repoPath string) (scanResult, error) {
 	result.SkippedFileLimit = inputs.SkippedFileLimit
 
 	mapper := newDependencyMapper(inputs.DeclaredDependencies)
+	projectMappers := make(map[string]dependencyMapper)
 	for _, source := range inputs.SourceFiles {
-		parsed := parseSourceDocument(source, mapper)
+		currentMapper := mapper
+		if source.HasProjectDeclaration {
+			var ok bool
+			currentMapper, ok = projectMappers[source.MapperKey]
+			if !ok {
+				currentMapper = newProjectDependencyMapper(source.DeclaredDependencies)
+				projectMappers[source.MapperKey] = currentMapper
+			}
+		}
+		parsed := parseSourceDocument(source, currentMapper)
 		result.Files = append(result.Files, parsed.File)
 		addMappingMeta(&result, parsed.Mapping)
 	}
@@ -76,8 +90,8 @@ func discoverScanInputs(ctx context.Context, repoPath string) (scanInputs, error
 
 	appendSourceDiscoveryWarnings(&sourceScan)
 
-	inputs.DeclaredDependencies = sortedDependencies(scanner.dependencySet)
-	inputs.SourceFiles = sourceScan.Files
+	inputs.DeclaredDependencies = scanner.declaredDependencies()
+	inputs.SourceFiles = scanner.sourceFiles()
 	inputs.CoverageGaps = scanner.coverageGaps
 	inputs.SkippedGenerated = sourceScan.SkippedGeneratedFiles
 	inputs.SkippedFileLimit = sourceScan.SkippedFileLimit
@@ -115,10 +129,12 @@ type sourceDiscoverer struct {
 }
 
 type scanInputDiscoverer struct {
-	dependencySet     map[string]struct{}
-	coverageGaps      []report.CoverageGap
-	sourceDiscoverer  sourceDiscoverer
-	sourceScanLimited bool
+	dependencySet       map[string]struct{}
+	projectDependencies map[string][]string
+	centralDependencies map[string][]string
+	coverageGaps        []report.CoverageGap
+	sourceDiscoverer    sourceDiscoverer
+	sourceScanLimited   bool
 }
 
 func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDiscoverer {
@@ -130,8 +146,10 @@ func newSourceDiscoverer(repoPath string, discovery *sourceDiscovery) sourceDisc
 
 func newScanInputDiscoverer(repoPath string, source *sourceDiscovery) scanInputDiscoverer {
 	return scanInputDiscoverer{
-		dependencySet:    make(map[string]struct{}),
-		sourceDiscoverer: newSourceDiscoverer(repoPath, source),
+		dependencySet:       make(map[string]struct{}),
+		projectDependencies: make(map[string][]string),
+		centralDependencies: make(map[string][]string),
+		sourceDiscoverer:    newSourceDiscoverer(repoPath, source),
 	}
 }
 
@@ -162,6 +180,7 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 		return err
 	}
 	addDependencies(d.dependencySet, dependencies)
+	d.recordManifestDependencies(path, entry.Name(), dependencies)
 
 	if d.sourceScanLimited {
 		return nil
@@ -172,6 +191,90 @@ func (d *scanInputDiscoverer) walk(path string, entry fs.DirEntry, walkErr error
 		return nil
 	}
 	return err
+}
+
+func (d *scanInputDiscoverer) recordManifestDependencies(path, name string, dependencies []string) {
+	switch signalForName(name) {
+	case fileSignalProject:
+		d.projectDependencies[filepath.Dir(path)] = mergeDependencies(d.projectDependencies[filepath.Dir(path)], dependencies)
+	case fileSignalCentral:
+		d.centralDependencies[filepath.Dir(path)] = mergeDependencies(d.centralDependencies[filepath.Dir(path)], dependencies)
+	}
+}
+
+func mergeDependencies(existing, added []string) []string {
+	dependencies := make(map[string]struct{}, len(existing)+len(added))
+	addDependencies(dependencies, existing)
+	addDependencies(dependencies, added)
+	return sortedDependencies(dependencies)
+}
+
+func (d *scanInputDiscoverer) declaredDependencies() []string {
+	rootDependencies, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]
+	if !hasRootProject {
+		return sortedDependencies(d.dependencySet)
+	}
+	dependencies := make(map[string]struct{})
+	addDependencies(dependencies, rootDependencies)
+	addDependencies(dependencies, d.centralDependencies[d.sourceDiscoverer.repoPath])
+	return sortedDependencies(dependencies)
+}
+
+func (d *scanInputDiscoverer) sourceFiles() []sourceDocument {
+	files := append([]sourceDocument(nil), d.sourceDiscoverer.discovery.Files...)
+	for index := range files {
+		dependencies, hasProject, projectRoot := d.sourceDependencies(files[index].RelativePath)
+		files[index].DeclaredDependencies = dependencies
+		files[index].HasProjectDeclaration = hasProject
+		files[index].ProjectRoot = projectRoot
+		files[index].MapperKey = strings.Join(dependencies, "\x00")
+	}
+	if _, hasRootProject := d.projectDependencies[d.sourceDiscoverer.repoPath]; hasRootProject {
+		files = excludeNestedProjectSources(files, d.sourceDiscoverer.repoPath)
+	}
+	return files
+}
+
+func (d *scanInputDiscoverer) sourceDependencies(relativePath string) ([]string, bool, string) {
+	directory := filepath.Dir(filepath.Join(d.sourceDiscoverer.repoPath, relativePath))
+	projectRoot := ""
+	for current := directory; ; current = filepath.Dir(current) {
+		if _, ok := d.projectDependencies[current]; ok {
+			projectRoot = current
+			break
+		}
+		if sameDotNetPath(current, d.sourceDiscoverer.repoPath) {
+			break
+		}
+	}
+
+	dependencies := make(map[string]struct{})
+	if projectRoot != "" {
+		addDependencies(dependencies, d.projectDependencies[projectRoot])
+		directory = projectRoot
+	}
+	for current := directory; ; current = filepath.Dir(current) {
+		addDependencies(dependencies, d.centralDependencies[current])
+		if sameDotNetPath(current, d.sourceDiscoverer.repoPath) {
+			break
+		}
+	}
+	return sortedDependencies(dependencies), projectRoot != "" || len(d.projectDependencies) > 0, projectRoot
+}
+
+func excludeNestedProjectSources(files []sourceDocument, repoPath string) []sourceDocument {
+	filtered := files[:0]
+	for _, file := range files {
+		if file.ProjectRoot != "" && !sameDotNetPath(file.ProjectRoot, repoPath) {
+			continue
+		}
+		filtered = append(filtered, file)
+	}
+	return filtered
+}
+
+func sameDotNetPath(first, second string) bool {
+	return filepath.Clean(first) == filepath.Clean(second)
 }
 
 func (d *sourceDiscoverer) walk(path string, entry fs.DirEntry, walkErr error) error {

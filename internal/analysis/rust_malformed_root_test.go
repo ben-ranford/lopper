@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestServiceAnalyseRustMalformedRootRetainsRootUsageAndWarning(t *testing.T) {
+func TestServiceAnalyseRustMalformedRootRetainsRootCoverageWarning(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, "Cargo.toml"), "[package\nname = \"broken-root\"\n")
 	writeFile(t, filepath.Join(repo, "child", "Cargo.toml"), `[package]
@@ -40,10 +40,13 @@ serde_json = "1"
 			serdeJSONUsage += dependency.UsedExportsCount
 		}
 	}
-	if serdeJSONUsage != 1 {
-		t.Fatalf("expected exactly one root serde-json usage without overlapping scopes, got %d from %#v", serdeJSONUsage, reportData.Dependencies)
+	if serdeJSONUsage != 0 {
+		t.Fatalf("expected malformed root imports not to borrow a child declaration, got %d from %#v", serdeJSONUsage, reportData.Dependencies)
 	}
 	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), "skipped malformed Cargo manifest Cargo.toml") {
 		t.Fatalf("expected malformed root Cargo.toml warning, got %#v", reportData.Warnings)
+	}
+	if !strings.Contains(strings.Join(reportData.Warnings, "\n"), `could not resolve Rust crate alias "serde-json" from Cargo manifests`) {
+		t.Fatalf("expected unresolved malformed root source warning, got %#v", reportData.Warnings)
 	}
 }

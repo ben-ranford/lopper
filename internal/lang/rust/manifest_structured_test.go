@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -174,7 +175,7 @@ func TestRustAnalysisSkipsMalformedCargoManifest(t *testing.T) {
 	assertRustAnalysisSkipsMalformedManifest(t, "not valid = ", cargoTomlName)
 }
 
-func TestRustMalformedRootFallbackPreservesRootUsage(t *testing.T) {
+func TestRustMalformedRootFallbackLeavesRootImportsUnresolved(t *testing.T) {
 	repo := t.TempDir()
 	writeFile(t, filepath.Join(repo, cargoTomlName), "[package]\nname = [")
 	writeFile(t, filepath.Join(repo, "child", cargoTomlName), demoPackageManifest+"[dependencies]\nserde_json = \"1\"\n")
@@ -185,8 +186,11 @@ func TestRustMalformedRootFallbackPreservesRootUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyse fallback repository: %v", err)
 	}
-	if len(result.Dependencies) != 1 || result.Dependencies[0].UsedExportsCount != 1 {
-		t.Fatalf("expected root Value usage to survive malformed manifest, got %#v", result.Dependencies)
+	if len(result.Dependencies) != 1 || result.Dependencies[0].UsedExportsCount != 0 {
+		t.Fatalf("expected malformed root import not to borrow a child declaration, got %#v", result.Dependencies)
+	}
+	if !slices.Contains(result.Warnings, `could not resolve Rust crate alias "serde-json" from Cargo manifests`) {
+		t.Fatalf("expected unresolved root import warning, got %#v", result.Warnings)
 	}
 }
 

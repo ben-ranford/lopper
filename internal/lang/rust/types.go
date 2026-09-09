@@ -40,15 +40,16 @@ type fileScan struct {
 }
 
 type scanResult struct {
-	Files                    []fileScan
-	CoverageGaps             []report.CoverageGap
-	Warnings                 []string
-	UnresolvedImports        map[string]int
-	RenamedAliasesByDep      map[string][]string
-	LocalModuleCache         map[string]bool
-	MacroAmbiguityDetected   bool
-	SkippedLargeFiles        int
-	SkippedFilesByBoundLimit bool
+	Files                     []fileScan
+	CoverageGaps              []report.CoverageGap
+	Warnings                  []string
+	UnresolvedImports         map[string]int
+	RenamedAliasesByDep       map[string][]string
+	LocalModuleCache          map[string]bool
+	RequireDeclaredDependency bool
+	MacroAmbiguityDetected    bool
+	SkippedLargeFiles         int
+	SkippedFilesByBoundLimit  bool
 }
 
 type useImportContext struct {

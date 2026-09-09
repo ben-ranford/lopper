@@ -22,19 +22,32 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []
 		LocalModuleCache:    make(map[string]bool),
 	}
 	roots := scanRoots(manifestPaths, repoPath)
+	lookupsByRoot := map[string]map[string]dependencyInfo(nil)
 	if sourceFallbackRoot != "" {
 		roots = scanRootsPreservingNested(manifestPaths, repoPath)
+		var err error
+		lookupsByRoot, err = manifestDependencyLookupsByRoot(repoPath, manifestPaths)
+		if err != nil {
+			return scanResult{}, err
+		}
 	}
 	scannedFiles := make(map[string]struct{})
 	fileCount := 0
 	for _, root := range roots {
-		err := scanRepoRoot(ctx, repoPath, root, depLookup, scannedFiles, &fileCount, &result)
+		rootLookup := depLookup
+		result.RequireDeclaredDependency = false
+		if sourceFallbackRoot != "" {
+			rootLookup = lookupsByRoot[root]
+			result.RequireDeclaredDependency = true
+		}
+		err := scanRepoRoot(ctx, repoPath, root, rootLookup, scannedFiles, &fileCount, &result)
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}
 	}
 	if sourceFallbackRoot != "" {
-		err := scanRepoRoot(ctx, repoPath, sourceFallbackRoot, depLookup, scannedFiles, &fileCount, &result)
+		result.RequireDeclaredDependency = true
+		err := scanRepoRoot(ctx, repoPath, sourceFallbackRoot, map[string]dependencyInfo{}, scannedFiles, &fileCount, &result)
 		if err != nil && !errors.Is(err, fs.SkipAll) {
 			return scanResult{}, err
 		}
@@ -42,6 +55,21 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, manifestPaths []
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
 	result.Warnings = dedupeWarnings(result.Warnings)
 	return result, nil
+}
+
+func manifestDependencyLookupsByRoot(repoPath string, manifestPaths []string) (map[string]map[string]dependencyInfo, error) {
+	lookups := make(map[string]map[string]dependencyInfo, len(manifestPaths))
+	for _, manifestPath := range manifestPaths {
+		_, dependencies, err := parseCargoManifest(manifestPath, repoPath)
+		if err != nil {
+			if isCargoManifestParseError(err) {
+				continue
+			}
+			return nil, err
+		}
+		lookups[filepath.Dir(manifestPath)] = dependencies
+	}
+	return lookups, nil
 }
 
 func compileScanWarnings(result scanResult) []string {
