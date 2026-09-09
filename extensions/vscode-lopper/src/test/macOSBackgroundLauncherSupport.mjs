@@ -46,10 +46,51 @@ export async function cleanupMatchingTestProcesses({ listProcesses, terminate, w
     if (pids.length === 0) return;
     await wait();
   }
+  pids = listProcesses();
   pids.forEach((pid) => terminate(pid, "SIGKILL"));
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (listProcesses().length === 0) return;
     await wait();
+  }
+  if (listProcesses().length > 0) {
+    throw new Error("Isolated VS Code test processes did not exit after bounded cleanup");
+  }
+}
+
+// Join cleanup into the same promise as child exit: stopping open can emit exit
+// before the independently launched VS Code process has finished shutting down.
+export async function waitForBackgroundProcess(child, { cleanup, timeout, signals = process }) {
+  let stopCode;
+  let cleanupResult;
+  const stop = (code) => {
+    if (cleanupResult) return;
+    stopCode = code;
+    cleanupResult = Promise.resolve().then(cleanup).then(
+      () => undefined,
+      (error) => error,
+    );
+    child.kill("SIGTERM");
+  };
+  const onInterrupt = () => stop(130);
+  const onTerminate = () => stop(143);
+  const timeoutHandle = setTimeout(() => stop(124), timeout);
+  signals.on("SIGINT", onInterrupt);
+  signals.on("SIGTERM", onTerminate);
+  try {
+    const code = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", resolve);
+    });
+    return stopCode ?? code;
+  } finally {
+    clearTimeout(timeoutHandle);
+    try {
+      const cleanupError = await cleanupResult;
+      if (cleanupError) throw cleanupError;
+    } finally {
+      signals.removeListener("SIGINT", onInterrupt);
+      signals.removeListener("SIGTERM", onTerminate);
+    }
   }
 }
 

@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 
-import { applicationPathForExecutable, cleanupMatchingTestProcesses, launcherEnvironment, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
+import { applicationPathForExecutable, cleanupMatchingTestProcesses, launcherEnvironment, openArguments, parseTestResult, terminateMatchingTestProcesses, waitForBackgroundProcess } from "./macOSBackgroundLauncherSupport.mjs";
 
 const executablePath = process.env.LOPPER_VSCODE_TEST_EXECUTABLE;
 const resultPath = process.env.LOPPER_VSCODE_TEST_RESULT_PATH;
@@ -39,26 +39,7 @@ async function cleanupTestProcess() {
   }, wait: () => new Promise((resolve) => setTimeout(resolve, 100)) });
 }
 
-const timeoutHandle = setTimeout(async () => {
-  open.kill("SIGTERM");
-  await cleanupTestProcess();
-}, timeout);
-
-async function handleInterruption(signal, exitCode) {
-  clearTimeout(timeoutHandle);
-  open.kill("SIGTERM");
-  await cleanupTestProcess();
-  process.exit(exitCode);
-}
-
-process.once("SIGINT", () => handleInterruption("SIGINT", 130));
-process.once("SIGTERM", () => handleInterruption("SIGTERM", 143));
-
-const exitCode = await new Promise((resolve, reject) => {
-  open.once("error", reject);
-  open.once("exit", (code) => resolve(code));
-});
-clearTimeout(timeoutHandle);
+const exitCode = await waitForBackgroundProcess(open, { cleanup: cleanupTestProcess, timeout });
 if (exitCode !== 0) {
   throw new Error(`open exited with code ${exitCode}`);
 }

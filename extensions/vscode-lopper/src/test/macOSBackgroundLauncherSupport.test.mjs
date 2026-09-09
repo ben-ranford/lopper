@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { EventEmitter } from "node:events";
 
-import { applicationPathForExecutable, cleanupMatchingTestProcesses, isBackgroundMacOSTestRun, launcherEnvironment, matchesTestProcess, openArguments, parseTestResult, terminateMatchingTestProcesses } from "./macOSBackgroundLauncherSupport.mjs";
+import { applicationPathForExecutable, cleanupMatchingTestProcesses, isBackgroundMacOSTestRun, launcherEnvironment, matchesTestProcess, openArguments, parseTestResult, terminateMatchingTestProcesses, waitForBackgroundProcess } from "./macOSBackgroundLauncherSupport.mjs";
 
 test("uses the background launcher only for local macOS runs", () => {
   assert.equal(isBackgroundMacOSTestRun({}, "darwin"), true);
@@ -25,7 +26,7 @@ test("builds a hidden no-focus launch with explicit test environment and argumen
   ]);
 });
 
-test("forwards only the binary path and terminates only the isolated test process", () => {
+test("forwards required test paths and terminates only the isolated test process", () => {
   assert.deepEqual(launcherEnvironment({
     LOPPER_BINARY_PATH: "/tmp/lopper",
     LOPPER_VSCODE_TEST_RESULT_PATH: "/tmp/result.json",
@@ -57,7 +58,7 @@ test("waits for graceful cleanup and escalates only stubborn matching processes"
 
   let stubbornChecks = 0;
   await cleanupMatchingTestProcesses({
-    listProcesses: () => (stubbornChecks++ < 3 ? [101] : []),
+    listProcesses: () => (stubbornChecks++ < 4 ? [101] : []),
     terminate: (pid, signal) => signals.push([pid, signal]),
     wait: async () => {},
     attempts: 2,
@@ -81,5 +82,29 @@ test("resolves app bundles independently of the downloaded executable name", () 
   }
   for (const executable of ["/tmp/Code", "/tmp/Code.app/Other/MacOS/Code", "/tmp/Code/Contents/MacOS/Code"]) {
     assert.throws(() => applicationPathForExecutable(executable), /unexpected path/);
+  }
+});
+
+
+test("an immediate open exit cannot bypass interruption cleanup", async () => {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const child = new EventEmitter();
+    const signals = new EventEmitter();
+    child.kill = () => child.emit("exit", null);
+    let finishCleanup;
+    let completed = false;
+    const result = waitForBackgroundProcess(child, {
+      cleanup: () => new Promise((resolve) => { finishCleanup = resolve; }),
+      timeout: 60_000,
+      signals,
+    }).then((code) => { completed = true; return code; });
+    signals.emit(signal);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(completed, false, "exit must wait for cleanup");
+    assert.equal(signals.listenerCount(signal), 1, "repeated signals remain handled during cleanup");
+    signals.emit(signal);
+    finishCleanup();
+    assert.equal(await result, signal === "SIGINT" ? 130 : 143);
+    assert.equal(signals.listenerCount(signal), 0);
   }
 });
