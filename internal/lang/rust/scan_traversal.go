@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/ben-ranford/lopper/internal/lang/shared"
 )
 
 func scanRoots(manifestPaths []string, repoPath string) []string {
@@ -79,6 +77,7 @@ type rustScanRootOptions struct {
 	root                string
 	depLookup           map[string]dependencyInfo
 	excludedSourceRoots []string
+	completedRoots      map[string]struct{}
 	scannedFiles        map[string]struct{}
 	fileCount           *int
 	result              *scanResult
@@ -96,9 +95,30 @@ func scanRepoRoot(ctx context.Context, repoPath, root string, depLookup map[stri
 }
 
 func scanRepoRootExcluding(ctx context.Context, options rustScanRootOptions) error {
-	return shared.WalkRepoFiles(ctx, options.root, 0, shouldSkipDir, func(path string, entry fs.DirEntry) error {
-		return options.scanFile(path)
+	return walkRustScanFiles(ctx, options.root, options.completedRoots, options.scanFile)
+}
+
+func walkRustScanFiles(ctx context.Context, root string, completedRoots map[string]struct{}, visit func(path string) error) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if entry.IsDir() {
+			if !samePath(path, root) && (shouldSkipDir(entry.Name()) || isCompletedRustScanRoot(path, completedRoots)) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return visit(path)
 	})
+}
+
+func isCompletedRustScanRoot(path string, roots map[string]struct{}) bool {
+	_, ok := roots[filepath.Clean(path)]
+	return ok
 }
 
 func scanRepoFileEntry(repoPath, root, path string, depLookup map[string]dependencyInfo, scannedFiles map[string]struct{}, fileCount *int, result *scanResult) error {

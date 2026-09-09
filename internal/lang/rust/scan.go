@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"path/filepath"
 
 	"github.com/ben-ranford/lopper/internal/lang/shared"
@@ -49,6 +48,7 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 	}
 	scannedFiles := make(map[string]struct{})
 	fileCount := 0
+	completedRoots := make(map[string]struct{}, len(roots)+len(options.sourceFallbackRoots))
 	for _, root := range roots {
 		rootLookup := options.depLookup
 		result.RequireDeclaredDependency = false
@@ -61,13 +61,15 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 			root:                root,
 			depLookup:           rootLookup,
 			excludedSourceRoots: exclusionsOutsideRustRoot(root, options.excludedSourceRoots),
+			completedRoots:      completedRoots,
 			scannedFiles:        scannedFiles,
 			fileCount:           &fileCount,
 			result:              &result,
 		})
-		if err != nil && !errors.Is(err, fs.SkipAll) {
+		if err != nil {
 			return scanResult{}, err
 		}
+		completedRoots[filepath.Clean(root)] = struct{}{}
 	}
 	for _, sourceFallbackRoot := range options.sourceFallbackRoots {
 		result.RequireDeclaredDependency = true
@@ -76,13 +78,15 @@ func scanRepoWithFallback(ctx context.Context, repoPath string, options rustScan
 			root:                sourceFallbackRoot,
 			depLookup:           map[string]dependencyInfo{},
 			excludedSourceRoots: options.fallbackExcludedSourceRoots,
+			completedRoots:      completedRoots,
 			scannedFiles:        scannedFiles,
 			fileCount:           &fileCount,
 			result:              &result,
 		})
-		if err != nil && !errors.Is(err, fs.SkipAll) {
+		if err != nil {
 			return scanResult{}, err
 		}
+		completedRoots[filepath.Clean(sourceFallbackRoot)] = struct{}{}
 	}
 	result.Warnings = append(result.Warnings, compileScanWarnings(result)...)
 	result.Warnings = dedupeWarnings(result.Warnings)
